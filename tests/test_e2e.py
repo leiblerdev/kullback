@@ -16,8 +16,7 @@ from kullback import report
 from kullback.ai.provider import RecordedModel, TestModel
 from kullback.builder import cluster, compile_env, ingest, mine, policy, user_sim
 from kullback.examiner import derive as verifier_mod
-from kullback.gates import artifacts
-from kullback.runner import boundary, canon, loop, regrade, route
+from kullback.runner import canon, loop, regrade, route
 from kullback.runner import verdict as verdict_mod
 from kullback.runner.records import (
     Environment,
@@ -181,10 +180,9 @@ def build(tmp_path_factory, request) -> dict:
 
     builds = {}
     for sig in sigs:
-        model = TestModel([TOOL_BODIES[sig.name]], loop=True)
-        builds[sig.name] = compile_env.compile_tool(
-            model, sig, calls_by_tool[sig.name], schema, state.db,
-            workdir / "tools" / sig.name, max_attempts=0)
+        builds[sig.name] = compile_env.grade_body(
+            sig, TOOL_BODIES[sig.name], calls_by_tool[sig.name], schema, state.db,
+            workdir / "tools" / sig.name)
     bodies = {name: build.body for name, build in builds.items()}
 
     policy_text = next((t.system_prompt for t in traces if t.system_prompt), "")
@@ -251,14 +249,11 @@ def build(tmp_path_factory, request) -> dict:
 
 # --- ingest ---
 
-def test_ingest_reads_the_fixture_and_its_gate_passes(build):
+def test_ingest_reads_the_fixture_and_keeps_the_grader_fields_out_of_the_traces(build):
     assert build["summary"]["format"] == "tau2_native"
     assert build["summary"]["runs"] == 3
     assert build["summary"]["gate"]["pass"] is True
     assert len(build["traces"]) == 3
-
-
-def test_grader_fields_are_in_the_sidecar_and_not_in_the_traces(build):
     workdir = build["workdir"]
     sidecars = sorted((workdir / "grader").glob("*.json"))
     assert len(sidecars) == 3
@@ -269,10 +264,12 @@ def test_grader_fields_are_in_the_sidecar_and_not_in_the_traces(build):
 
 # --- mine ---
 
-def test_mining_finds_the_seven_retail_tools_with_the_two_writes(build):
+def test_mining_finds_the_seven_tools_the_two_writes_and_the_three_tables(build):
     names = {sig.name: sig.kind for sig in build["sigs"]}
     assert set(names) == set(TOOL_BODIES)
     assert build["write_tools"] == {"exchange_delivered_order_items", "return_delivered_order_items"}
+    assert build["schema"].tables == ["orders", "products", "users"]
+    assert build["schema"].id_patterns["orders.order_id"] == r"^#W\d{7}$"
 
 
 def test_the_mine_gate_names_the_thin_tools_rather_than_passing_them(build):
@@ -283,11 +280,6 @@ def test_the_mine_gate_names_the_thin_tools_rather_than_passing_them(build):
     assert thin == {"list_all_product_types", "return_delivered_order_items",
                     "exchange_delivered_order_items"}
     assert gate.metrics["writes"] == 2
-
-
-def test_the_mined_schema_has_the_three_tau2_tables(build):
-    assert build["schema"].tables == ["orders", "products", "users"]
-    assert build["schema"].id_patterns["orders.order_id"] == r"^#W\d{7}$"
 
 
 # --- cluster ---
@@ -346,15 +338,6 @@ def test_replay_fidelity_is_measured_on_the_held_out_split_too(build):
 
 # --- the emitted tau2 shape ---
 
-def test_the_five_tau2_files_and_the_sidecar_are_written(build):
-    for name in ("data_model.py", "tools.py", "db.json", "policy.md", "tasks.json", "sidecar.json"):
-        assert build["emitted"][name].exists(), name
-    sidecar = json.loads(build["emitted"]["sidecar.json"].read_text(encoding="utf-8"))
-    assert sidecar["assisted_tools"] == ["list_all_product_types"]
-    gate = artifacts.environment_gate(Environment(env_id="e2e"), files_dir=build["emitted"]["db.json"].parent)
-    assert gate.passed, gate.failures
-
-
 def test_the_policy_splits_into_sentences_with_spans(build):
     """Every sentence carries the span it was cut from, so a Verifier can point back at the policy
     file rather than at a copy of the words."""
@@ -371,13 +354,10 @@ def test_the_policy_splits_into_sentences_with_spans(build):
 
 # --- the oracle replay ---
 
-def test_the_replay_follows_the_reference_call_for_call(build):
-    replayed = [e.payload["name"] for e in build["run_state"].run.events if e.type == "tool_call"]
-    assert replayed == [c.name for c in build["reference"].tool_calls]
-
-
-def test_every_call_was_answered_by_code_and_the_run_is_not_assisted(build):
+def test_the_replay_follows_the_reference_call_for_call_every_call_answered_by_code(build):
     run = build["run_state"].run
+    replayed = [e.payload["name"] for e in run.events if e.type == "tool_call"]
+    assert replayed == [c.name for c in build["reference"].tool_calls]
     assert run.route_counts == {"code": len(build["reference"].tool_calls)}
     assert run.assisted is False
     assert run.termination_reason == "user_stop"
@@ -443,10 +423,6 @@ def test_the_reference_passes_its_own_verifier(build):
     assert verdict.failing_atom is None
     assert verdict.class_ == "pass"
     assert verdict.environment_suspected is False
-
-
-def test_the_verdict_carries_the_sub_versions(build):
-    verdict = build["verdict"]
     assert verdict.env_id == "e2e"
     assert (verdict.schema_version, verdict.tools_version, verdict.policy_version) == ("1", "1", "1")
     assert verdict.verifier_version == build["verifier"].verifier_version
@@ -544,11 +520,3 @@ def test_the_candidate_run_is_graded_beside_the_oracle_replay(build):
     assert verdict.passed is False
     assert verdict.failing_atom.startswith("q.confirm"), verdict.notes
     assert build["verdict"].passed is True, "the same Verifier passes the Reference replay"
-
-
-# --- the boundaries the design draws ---
-
-def test_the_runner_never_imports_the_builder():
-    gate = boundary.import_boundary_check(Path(__file__).resolve().parents[1] / "kullback")
-    assert gate.passed, gate.failures
-

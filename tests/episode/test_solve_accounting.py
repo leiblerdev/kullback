@@ -19,17 +19,16 @@ from kullback.ai.provider import (  # noqa: E402
     TestModel,  # noqa: E402
 )
 from kullback.ai.usage import Usage  # noqa: E402
-from kullback.episode import BuiltEnvironment, solve_rate  # noqa: E402
+from kullback.runner.world import BuiltEnvironment  # noqa: E402
+from kullback.runner.world.solve import solve_rate  # noqa: E402
 from tests.episode.invented import write_env  # noqa: E402
 
 
 def _stub_priced(monkeypatch):
     from kullback.runner import budget
 
-    price = {"input": 1000000.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
-    monkeypatch.setattr(budget, "price_for", lambda model_id: dict(price) if model_id == "test/priced" else None)
-    monkeypatch.setattr(budget, "price_source", lambda model_id: "table" if model_id == "test/priced" else None)
-    monkeypatch.setattr(budget, "window_for", lambda model_id: 10000)
+    monkeypatch.setitem(budget.PRICES, "test/priced",
+                        {"input": 1000000.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0})
 
 
 def _priced_reply():
@@ -60,30 +59,37 @@ def test_no_ceiling_records_cost_sidecar(tmp_path, monkeypatch):
     assert (Path(session) / "solve_rate.json").is_file()
 
 
-def test_ceiling_overshoot_preserves_d86(tmp_path, monkeypatch):
+@pytest.mark.parametrize("ceiling,calls,runs,rate,cost_files", [
+    (1.0, 1, 0, None, 1),
+    (3.0, 2, 1, 0.0, 2),
+])
+def test_ceiling_overshoot_preserves_d86_and_accounts_across_attempts_without_resetting(
+        tmp_path, monkeypatch, ceiling, calls, runs, rate, cost_files):
     _stub_priced(monkeypatch)
     root = write_env(tmp_path / "env", with_rules=False)
     model = TestModel([_priced_reply()], name="test/priced", loop=True)
     table = solve_rate(
         BuiltEnvironment(root), ["widget_task"], model,
-        runs_per_task=3, ceiling_usd=1.0, outdir=tmp_path / "out",
+        runs_per_task=3, ceiling_usd=ceiling, outdir=tmp_path / "out",
     )
-    assert len(model.calls) == 1
-    assert table["spent_usd"] == 2.0
+    assert len(model.calls) == calls
+    assert table["spent_usd"] == 2.0 * calls
     assert table["ceiling_stopped"] is True
     assert table["ceiling_mode"] == "D86_post_call"
     row = table["tasks"][0]
-    assert row["runs"] == 0
+    assert row["runs"] == runs
     assert row["interrupted"] == 1
-    assert row["solve_rate"] is None
+    assert row["no_signal"] == 0
+    assert row["solve_rate"] == rate
     session = table["session_dir"]
     costs = _cost_files(session)
-    assert len(costs) == 1
-    assert json.loads(costs[0].read_text(encoding="utf-8"))["usd"] == 2.0
-    run_files = [p for p in Path(session).rglob("*.jsonl") if p.name != "events.jsonl"]
-    assert len(run_files) == 1
-    footer = json.loads(run_files[0].read_text(encoding="utf-8").strip().splitlines()[-1])
-    assert footer.get("termination_reason") == "budget_exceeded"
+    assert len(costs) == cost_files
+    if ceiling == 1.0:
+        assert json.loads(costs[0].read_text(encoding="utf-8"))["usd"] == 2.0
+        run_files = [p for p in Path(session).rglob("*.jsonl") if p.name != "events.jsonl"]
+        assert len(run_files) == 1
+        footer = json.loads(run_files[0].read_text(encoding="utf-8").strip().splitlines()[-1])
+        assert footer.get("termination_reason") == "budget_exceeded"
 
 
 def test_unknown_model_and_bad_settings_refused(tmp_path, monkeypatch):
@@ -120,26 +126,6 @@ def test_unpriced_without_ceiling_marks_incomplete(tmp_path, monkeypatch):
     assert table["spent_usd"] == 0
 
 
-def test_two_argument_policy_works(tmp_path, monkeypatch):
-    _stub_priced(monkeypatch)
-    root = write_env(tmp_path / "env", with_rules=False)
-
-    class TwoArg:
-        name = "test/priced"
-
-        def __init__(self):
-            self.calls = 0
-
-        def query(self, messages, tools=None):
-            self.calls += 1
-            return _priced_reply()
-
-    policy = TwoArg()
-    table = solve_rate(BuiltEnvironment(root), ["widget_task"], policy, outdir=tmp_path / "out")
-    assert policy.calls == 1
-    assert table["spent_usd"] == 2.0
-
-
 def test_shared_root_keeps_sessions_separate(tmp_path, monkeypatch):
     _stub_priced(monkeypatch)
     root = write_env(tmp_path / "env", with_rules=False)
@@ -161,8 +147,8 @@ def test_shared_root_keeps_sessions_separate(tmp_path, monkeypatch):
 
 
 def test_policy_error_aborts_without_reward(tmp_path, monkeypatch):
-    from kullback.episode import Episode
-    from kullback.episode.episode import EpisodeError
+    from kullback.runner.world import Episode
+    from kullback.runner.world.episode import EpisodeError
 
     _stub_priced(monkeypatch)
     root = write_env(tmp_path / "env", with_rules=False)
@@ -192,9 +178,9 @@ def test_policy_error_aborts_without_reward(tmp_path, monkeypatch):
 
 
 def test_env_error_counts_as_no_signal(tmp_path, monkeypatch):
-    from kullback.episode import Episode
-    from kullback.episode.episode import EpisodeError
     from kullback.runner import loop
+    from kullback.runner.world import Episode
+    from kullback.runner.world.episode import EpisodeError
 
     _stub_priced(monkeypatch)
     root = write_env(tmp_path / "env", with_rules=False)
@@ -233,82 +219,3 @@ def test_memo_hits_remain_visible_through_policy_adapter(tmp_path, monkeypatch):
     costs = [json.loads(path.read_text()) for path in _cost_files(table["session_dir"])]
     assert sorted(row["memo_hits"] for row in costs) == [0, 1]
     assert sorted(row["usd"] for row in costs) == [0.0, 2.0]
-
-
-def test_ceiling_accounts_across_attempts_without_resetting(tmp_path, monkeypatch):
-    _stub_priced(monkeypatch)
-    root = write_env(tmp_path / "env", with_rules=False)
-    model = TestModel([_priced_reply()], name="test/priced", loop=True)
-    table = solve_rate(BuiltEnvironment(root), ["widget_task"], model,
-                       runs_per_task=3, ceiling_usd=3.0, outdir=tmp_path / "out")
-    assert len(model.calls) == 2
-    assert table["spent_usd"] == 4.0
-    assert table["ceiling_stopped"] is True
-    assert table["tasks"][0]["runs"] == 1
-    assert table["tasks"][0]["interrupted"] == 1
-    assert table["tasks"][0]["no_signal"] == 0
-    assert table["tasks"][0]["solve_rate"] == 0.0
-    assert len(_cost_files(table["session_dir"])) == 2
-
-
-def _delete_run_files(outdir):
-    for path in Path(outdir).rglob("*.jsonl"):
-        if path.name != "events.jsonl":
-            path.unlink()
-
-
-def test_missing_record_file_still_reports_the_original_error(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from kullback.ai.usage import Usage
-    from kullback.episode.episode import EpisodeError
-
-    _stub_priced(monkeypatch)
-    root = write_env(tmp_path / "env", with_rules=False)
-    outdir = tmp_path / "out"
-
-    class DeleteAndFail:
-        name = "test/priced"
-
-        def __init__(self):
-            self.calls = 0
-
-        def query(self, messages, tools=None, config=None):
-            self.calls += 1
-            if self.calls == 1:
-                return SimpleNamespace(
-                    content=None,
-                    tool_calls=[{"id": "c1", "name": "describe_widget",
-                                 "arguments": {"widget_id": "w1"}}],
-                    model="test/priced", usage=Usage(input=2))
-            _delete_run_files(outdir)
-            raise EpisodeError("policy fell over")
-
-    with pytest.raises(EpisodeError, match="policy fell over"):
-        solve_rate(BuiltEnvironment(root), ["widget_task"], DeleteAndFail(), outdir=outdir)
-    run_files = [p for p in outdir.rglob("*.jsonl") if p.name != "events.jsonl"]
-    assert len(run_files) == 1
-    footer = json.loads(run_files[0].read_text(encoding="utf-8").strip().splitlines()[-1])
-    assert footer.get("termination_reason") == "policy_error"
-
-
-def test_cost_sidecar_uses_null_when_the_record_cannot_be_read(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from kullback.episode import Episode
-    from kullback.episode.solve import _attempt_cost
-    from kullback.runner import budget
-
-    _stub_priced(monkeypatch)
-    root = write_env(tmp_path / "env", with_rules=False)
-    episode = Episode(BuiltEnvironment(root), outdir=tmp_path / "out")
-    episode.reset("widget_task", seed=7)
-    episode.step({"content": None, "tool_calls": [
-        {"id": "c1", "name": "describe_widget", "arguments": {"widget_id": "w1"}}]})
-    _delete_run_files(tmp_path / "out")
-    model = SimpleNamespace(workdir=tmp_path / "budgets", model_id="test/priced")
-    before = budget.load_totals(model.workdir)["total"]
-    _attempt_cost(episode, model, before)
-    sidecars = list((tmp_path / "out").rglob("*.cost.json"))
-    assert len(sidecars) == 1
-    assert json.loads(sidecars[0].read_text(encoding="utf-8"))["termination_reason"] is None

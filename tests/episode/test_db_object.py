@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from kullback.episode.environment import BuiltEnvironment, EnvironmentError
+from kullback.runner.world.environment import BuiltEnvironment, EnvironmentError
 from tests.episode.invented import write_env
 
 PACKAGED = {"widgets": {"w1": {"widget_id": "w1", "label": "packaged"}}}
@@ -26,29 +26,20 @@ def test_missing_root_db_uses_the_packaged_db(tmp_path):
     assert BuiltEnvironment(root).db == PACKAGED
 
 
-@pytest.mark.parametrize("body", ["null", "[]", '"just a label"', "4"])
-def test_present_but_invalid_root_db_is_refused(tmp_path, body):
+@pytest.mark.parametrize("where,body,match,named", [
+    *[("root", body, "not an object", "db.json") for body in ["null", "[]", '"just a label"', "4"]],
+    ("root", "{", "unreadable or torn", None),
+    *[("packaged", body, "not an object", "env") for body in ["null", "[]"]],
+])
+def test_present_but_invalid_root_or_packaged_db_is_refused(tmp_path, where, body, match, named):
     root = write_env(tmp_path / "root")
-    _write_packaged(root)
-    (root / "db.json").write_text(body, encoding="utf-8")
-    with pytest.raises(EnvironmentError, match="not an object") as excinfo:
+    if where == "root":
+        _write_packaged(root)
+        (root / "db.json").write_text(body, encoding="utf-8")
+    else:
+        (root / "db.json").unlink()
+        (root / "env" / "db.json").write_text(body, encoding="utf-8")
+    with pytest.raises(EnvironmentError, match=match) as excinfo:
         BuiltEnvironment(root)
-    assert "db.json" in str(excinfo.value)
-
-
-def test_torn_root_db_still_raises(tmp_path):
-    root = write_env(tmp_path / "root")
-    _write_packaged(root)
-    (root / "db.json").write_text("{", encoding="utf-8")
-    with pytest.raises(EnvironmentError, match="unreadable or torn"):
-        BuiltEnvironment(root)
-
-
-@pytest.mark.parametrize("body", ["null", "[]"])
-def test_packaged_db_is_held_to_the_same_rule(tmp_path, body):
-    root = write_env(tmp_path / "root")
-    (root / "db.json").unlink()
-    (root / "env" / "db.json").write_text(body, encoding="utf-8")
-    with pytest.raises(EnvironmentError, match="not an object") as excinfo:
-        BuiltEnvironment(root)
-    assert "env" in str(excinfo.value)
+    if named:
+        assert named in str(excinfo.value)

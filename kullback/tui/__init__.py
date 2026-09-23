@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from kullback.ai.provider import DEFAULT_MODEL
 from kullback.tui import diagrams
 
 GLYPHS = {
@@ -50,7 +52,13 @@ MARKS = {
 }
 
 HELP = """\
-/build [--iterate] [--file PATH]   run the Builder and the Examiner in rounds over the ingested traces
+/build [--file PATH]              run the autonomous Builder session over the ingested traces,
+                                  in the background: the screen keeps taking commands
+/nudge TEXT                        steer the running session: delivered before its next model turn
+/tell TEXT                         follow up: delivered when the running session would stop
+/stop                              cancel the running session after its current step
+/context                           the session's context: window, used, share, compactions
+/compact                           compact the running session's context when its turn ends
 /run TASK [--count N]              run the Candidate against the built Environment
 /status                            the last build's stages, gates, rounds and spend
 /map                               the pipeline as a diagram: stages, states, hashes
@@ -87,10 +95,11 @@ FEED_LINES = 12
 # GET of its own model list, 2026-09-10); the OpenRouter default is the cheapest tool-capable model
 # in the registry snapshot at a whole megatoken of context, and its nested id is deliberate, since
 # an id with a second slash is the shape OpenRouter mostly speaks. Providers the local registry
-# adds are appended to this in _login_defaults, never repeated here.
+# adds are appended to this in _login_defaults, never repeated here. OpenAI starts at the harness
+# default model, so a login lands on the model the builds run on.
 LOGIN_DEFAULT_MODELS = {
     "anthropic": "anthropic/claude-opus-5",
-    "openai": "openai/gpt-4.1-mini",
+    "openai": DEFAULT_MODEL,
     "opencode-go": "opencode-go/glm-5.3-flash",
     "deepseek": "deepseek/deepseek-flash",
     "openrouter": "openrouter/qwen/qwen3.7-flash",
@@ -126,7 +135,12 @@ def registry_refusal(catalog: Optional[dict], model: str) -> Optional[str]:
 # are rendered from this, so a command added here appears in both; HELP stays a literal
 # beside it, and a test fails when a table name is missing from HELP, so the two cannot drift.
 COMMANDS = [
-    ("build", "/build [--iterate] [--file PATH]", "run the Builder over the ingested traces"),
+    ("build", "/build [--file PATH]", "run the Builder over the ingested traces, in the background"),
+    ("nudge", "/nudge TEXT", "steer the running session before its next model turn"),
+    ("tell", "/tell TEXT", "follow up when the running session would stop"),
+    ("stop", "/stop", "cancel the running session after its current step"),
+    ("context", "/context", "the session's context: window, used, share, compactions"),
+    ("compact", "/compact", "compact the running session's context when its turn ends"),
     ("run", "/run TASK [--count N]", "run the Candidate against the built Environment"),
     ("status", "/status", "the last build's stages, gates, rounds and spend"),
     ("map", "/map", "the pipeline as a diagram: stages, states, hashes"),
@@ -239,8 +253,8 @@ def _round_spend(record: dict) -> float:
 
 
 def _as_dict_event(event: Any) -> Optional[dict]:
-    """A typed stage, round or beat event of the agent core as the dict the board reads; anything else
-    is not for the board. The round and beat shapes are the ones rounds.emit sends to on_event."""
+    """A typed stage, round, beat or tool event of the agent core as the dict the board reads; anything
+    else is not for the board."""
     kind = getattr(event, "type", None)
     if kind == "stage_start":
         return {"kind": "stage", "stage": event.name, "state": "start", "attempt": 1}
@@ -254,6 +268,11 @@ def _as_dict_event(event: Any) -> Optional[dict]:
     if kind in ("beat_start", "beat_end"):
         return {"kind": "beat", "state": "start" if kind == "beat_start" else "end",
                 "agent": event.agent, "round": event.round}
+    if kind == "tool_execution_start":
+        return {"kind": "stage", "stage": event.tool_name, "state": "start", "attempt": 1}
+    if kind == "tool_execution_end":
+        return {"kind": "stage", "stage": event.tool_name,
+                "state": "error" if getattr(event, "is_error", False) else "ran", "attempt": 1}
     return None
 
 
@@ -409,6 +428,129 @@ class Board:
         return Panel(Group(*parts), title=self.title, title_align="left", border_style="dim")
 
 
+# How many transcript lines the screen keeps for its panel. The terminal's own scrollback holds the
+# whole session when the screen runs it; the panel is what /status and /watch show under the board.
+TRANSCRIPT_LINES = 200
+
+# One tool line's arguments are cut here, so a call that writes a whole file is one line, not fifty.
+ARGS_WIDTH = 100
+
+
+def _args_summary(arguments: Any, width: int = ARGS_WIDTH) -> str:
+    """A tool call's arguments as one line: key=value, the first line of each value, cut to fit."""
+    if not isinstance(arguments, dict):
+        return ""
+    parts = []
+    for key, value in arguments.items():
+        text = value if isinstance(value, str) else json.dumps(value, default=str)
+        first = (text.splitlines() or [""])[0]
+        if len(first) > 40 or first != text:
+            first = first[:40] + "..."
+        parts.append(f"{key}={first}")
+    line = ", ".join(parts)
+    return line if len(line) <= width else line[:width - 3] + "..."
+
+
+class Transcript:
+    """The Builder session as it happens, one line per thing it did, from its typed events.
+
+    This is tau's event adapter in small: the harness stream in, display lines out, nothing kept
+    that a replay of the same events would not rebuild, so the live session and a bus read by
+    /watch come out the same. Assistant text streams a line at a time: each delta is added to the
+    open line, and the line is printed when the model ends it, because a line-oriented screen
+    that takes commands on the same terminal cannot redraw half a line under the prompt. A tool
+    call is one line when it starts ("tool: args") and one when it ends (the first line of the
+    result, then each gate ruling it carries, then the findings when it is examine), the shape
+    cli._session_subscriber prints. A turn end prints the footer, which the caller supplies,
+    because the context fill and the spend are the harness's and the ledger's, not the events'.
+    """
+
+    def __init__(self, on_line: Optional[Any] = None, footer: Optional[Any] = None,
+                 keep: int = TRANSCRIPT_LINES):
+        self.on_line, self.footer, self.keep = on_line, footer, keep
+        self.lines: list[tuple[str, str]] = []
+        self._open = ""
+        self._streamed = False
+
+    def say(self, text: str, style: str = "") -> None:
+        self.lines.append((text, style))
+        del self.lines[:-self.keep]
+        if self.on_line is not None:
+            self.on_line(text, style)
+
+    def event(self, event: Any) -> None:
+        kind = getattr(event, "type", None)
+        if kind == "message_start":
+            self._open, self._streamed = "", False
+        elif kind == "message_update":
+            stream = getattr(event, "stream_event", None)
+            if getattr(stream, "type", None) == "text_delta":
+                self._streamed = True
+                self._open += stream.delta
+                while "\n" in self._open:
+                    line, self._open = self._open.split("\n", 1)
+                    self.say(f"  {line}", "white")
+        elif kind == "message_end":
+            self._message_end(event.message)
+        elif kind == "tool_execution_start":
+            self.say(f"▸ {event.tool_name}: {_args_summary(event.arguments)}", "yellow")
+        elif kind == "tool_execution_end":
+            self._tool_end(event)
+        elif kind == "turn_end" and self.footer is not None:
+            self.say(f"  {self.footer(event.turn)}", "dim")
+        elif kind == "compaction":
+            replaced = len(event.replaces_entry_ids)
+            self.say(f"compaction by {event.by}: {replaced} entries became one summary"
+                     + (f" ({event.reason})" if event.reason else ""), "magenta")
+        elif kind == "custom_message":
+            self.say(f"queued ({event.deliver_as}): {_first_line(event.content)}", "cyan")
+        elif kind == "error":
+            self.say(f"error: {event.message}", "red")
+        elif kind == "agent_end":
+            self.say("session run ended", "dim")
+
+    def _message_end(self, message: Any) -> None:
+        role = getattr(message, "role", None)
+        if role == "assistant":
+            rest = self._open if self._streamed else str(getattr(message, "content", None) or "")
+            for line in rest.splitlines():
+                self.say(f"  {line}", "white")
+            self._open, self._streamed = "", False
+        elif role == "user":
+            self.say(f"› {_first_line(str(getattr(message, 'content', '') or ''))}", "cyan")
+
+    def _tool_end(self, event: Any) -> None:
+        result = event.result
+        mark, style = ("✘", "red") if event.is_error else ("✔", "green")
+        self.say(f"{mark} {event.tool_name}: {_first_line(str(result.content or ''))}", style)
+        details = result.details or {}
+        for ruling in details.get("rulings") or ():
+            if isinstance(ruling, dict):
+                accepted = ruling.get("accepted")
+                self.say(f"    ruling {ruling.get('name')}: {'accepted' if accepted else 'rejected'}"
+                         f" ({ruling.get('line')})", "green" if accepted else "red")
+        if event.tool_name == "examine":
+            for finding in details.get("findings") or ():
+                if isinstance(finding, dict):
+                    self.say(f"    finding {finding.get('kind')} on {finding.get('task_id')}: "
+                             f"{finding.get('path')}: {finding.get('change')}", "magenta")
+
+    def render(self, limit: int = FEED_LINES * 2) -> Text:
+        out = Text()
+        for text, style in self.lines[-limit:]:
+            out.append(f"{text}\n", style=style or None)
+        return out
+
+
+def _spent(workdir: Path) -> float:
+    return float((_read(Path(workdir) / "budget.json", {}).get("total") or {}).get("usd") or 0.0)
+
+
+def _first_line(text: str, width: int = 160) -> str:
+    first = (text.strip().splitlines() or [""])[0]
+    return first if len(first) <= width else first[:width - 3] + "..."
+
+
 def _values(words: list[str], flag: str) -> list[str]:
     """Every value given to `flag`, in order. A flag with nothing after it, or with another flag
     after it, is a mistake the person typing can act on, so it is said in those words rather than
@@ -463,6 +605,15 @@ class Screen:
         # The / menu's numbered list, waiting for a bare number: (kind, rows). Kind is
         # "commands" (rows are COMMANDS entries) or "sessions" (rows are heartbeat dicts).
         self._pending: Optional[tuple[str, list]] = None
+        # The Builder session /build started here: its thread, its harness once session.build
+        # hands it over, the board and transcript its events feed, and the last harness, which
+        # /context reads after the session ends. Nothing else about a session is kept here.
+        self._session: Optional[threading.Thread] = None
+        self.harness: Any = None
+        self.last_harness: Any = None
+        self.board: Optional[Board] = None
+        self.transcript: Optional[Transcript] = None
+        self._compact_asked = False
 
     def open(self) -> None:
         """The entry screen: what this is, how it stands, what you can do, what is running.
@@ -499,11 +650,17 @@ class Screen:
         if stripped.isdigit() and self._pending is not None:
             return self._pick(int(stripped))
         self._pending = None
+        # A nudge is free text, so it is taken whole: shlex would refuse "don't" and eat quotes.
+        head, _, tail = stripped.partition(" ")
+        if head.lstrip("/") in ("nudge", "tell"):
+            self._queue(head.lstrip("/"), tail.strip())
+            return True
         parts = shlex.split(stripped)
         if not parts:
             return True
         verb, rest = parts[0].lstrip("/"), parts[1:]
         if verb in ("quit", "exit", "q"):
+            self.close()
             return False
         if parts[0].startswith("/") and (verb == "" or (verb not in self._verbs() and rest == [])):
             return self._menu(parts[0][1:])
@@ -532,7 +689,13 @@ class Screen:
         elif verb == "layers":
             self.console.print(diagrams.layers_text())
         elif verb == "build":
-            self._live("build", lambda emit: self._build(emit, rest))
+            self._start_build(rest)
+        elif verb == "stop":
+            self._stop()
+        elif verb == "context":
+            self._context()
+        elif verb == "compact":
+            self._compact()
         elif verb == "run":
             if not rest or rest[0].startswith("--"):
                 self.console.print(Text("run needs a task id: /run TASK [--count N]", style="red"))
@@ -633,17 +796,31 @@ class Screen:
     def _follow(self, pid: Any, every_seconds: float = 1.0) -> None:
         """Re-read this build's files until its pid goes, or until the person stops watching.
 
-        Two things are read: the board, off the records the build writes, and the feed, which is
-        the build's own event stream (kullback.runner.feed) and is what makes the calls visible as
-        they happen rather than a stage at a time. Ctrl-C stops the watching, never the build:
+        Two things are read: the board, off the records the build writes, and the build's own
+        event stream. A Builder session writes every event of its harness to workdir/bus.jsonl,
+        and that is read through the same Transcript the screen uses for a session it runs itself,
+        so watching another process reads the same lines as running here. A build with no bus
+        falls back to the feed (kullback.runner.feed). Ctrl-C stops the watching, never the build:
         they are different processes, and the build does not know anyone is here.
 
-        A build that writes no feed is still followed. The feed is new, so a build already running
-        under older code never opens it, and watching one showed a still board and nothing else;
-        for those the calls are read off the reply cache instead, which every build writes."""
+        A build that writes neither is still followed. For those the calls are read off the reply
+        cache instead, which every build writes."""
+        from kullback.agent.bus import Bus
         from kullback.runner import feed, heartbeat
 
+        bus = Bus(self.workdir / "bus.jsonl")
+        transcript = Transcript()
+        seq = 0
+
         def since(offset: int, mtime: float, first: bool) -> tuple[list[str], int, float]:
+            nonlocal seq
+            if bus.path.is_file():
+                # One pass of the follower: every record after the last one read, then stop, so
+                # the pid check above decides when watching ends, not the log.
+                for record in bus.tail(seq, stop=lambda: True):
+                    seq = record.seq
+                    transcript.event(record.event)
+                return [], offset, mtime  # the transcript holds them
             if feed.path_for(self.workdir).is_file():
                 rows, offset = feed.read_since(self.workdir, offset)
             else:
@@ -651,25 +828,30 @@ class Screen:
                     self.workdir, mtime, limit=FEED_LINES if first else None)
             return [feed.describe(row) for row in rows], offset, mtime
 
+        def shown(recent: list[str]) -> Any:
+            return self._watching(recent, transcript if bus.path.is_file() else None)
+
         lines, offset, mtime = since(0, 0.0, True)
         recent = lines[-FEED_LINES:]
-        with Live(self._watching(recent), console=self.console, refresh_per_second=4) as live:
+        with Live(shown(recent), console=self.console, refresh_per_second=4) as live:
             try:
                 while heartbeat.alive(pid):
                     time.sleep(every_seconds)
                     lines, offset, mtime = since(offset, mtime, False)
                     recent = (recent + lines)[-FEED_LINES:]
-                    live.update(self._watching(recent))
+                    live.update(shown(recent))
                 lines, offset, mtime = since(offset, mtime, False)
                 recent = (recent + lines)[-FEED_LINES:]
-                live.update(self._watching(recent))
+                live.update(shown(recent))
             except KeyboardInterrupt:
                 pass
         self.console.print(Text("  stopped watching; the build is untouched", style="dim"))
 
-    def _watching(self, recent: list[str]) -> Any:
+    def _watching(self, recent: list[str], transcript: Optional[Transcript] = None) -> Any:
         """The board with the build's last few events under it: state above, story below."""
         board = self._status_renderable()
+        if transcript is not None and transcript.lines:
+            return Group(board, transcript.render(FEED_LINES))
         if not recent:
             return Group(board, Text("  waiting for the build's next call", style="dim"))
         lines = Text()
@@ -723,9 +905,14 @@ class Screen:
         self.console.print(self._login_status())
 
     def _ask(self, prompt: str) -> str:
-        """One question to the person typing. A method so tests can answer without stdin."""
+        """One question to the person typing. A method so tests can answer without stdin.
+
+        Escaped, because rich reads the bracketed hint ("[1-6 or name]", "[default model]") as a
+        style tag and the person was asked "model :" with the default gone."""
+        from rich.markup import escape
+
         try:
-            return self.console.input(prompt)
+            return self.console.input(escape(prompt))
         except (EOFError, KeyboardInterrupt, OSError):
             return ""
 
@@ -804,21 +991,172 @@ class Screen:
                 board.outcome = f"{type(exc).__name__}: {exc}"
             live.update(board.render())
 
-    def _build(self, on_event: Any, rest: list[str]) -> None:
-        files = [Path(value) for value in _values(rest, "--file")]
+    # --- the session /build runs here ---
+
+    def running(self) -> bool:
+        """A session started here is still going."""
+        return self._session is not None and self._session.is_alive()
+
+    def wait(self, timeout: Optional[float] = None) -> None:
+        """Block until the session started here ends: the quit path and the tests use it."""
+        if self._session is not None:
+            self._session.join(timeout)
+
+    def close(self) -> None:
+        """Leaving with a session running cancels it and lets it write its last step, rather than
+        killing the thread mid write of the session file."""
+        if self.running():
+            self.console.print(Text("stopping the running session first", style="dim"))
+            if self.harness is not None:
+                self.harness.cancel()
+            self.wait(30)
+
+    def _start_build(self, rest: list[str]) -> None:
+        """Start the Builder session on its own thread; this screen keeps taking commands.
+
+        session.build is the same entry the CLI uses. It hands back the live harness through
+        on_harness, which is what /nudge, /tell, /stop, /compact and /context act on. Every event
+        feeds the board and the transcript; the transcript prints each line as it lands, so the
+        session scrolls past in the terminal above the prompt, and the board is printed when the
+        session ends (and on /status while it runs)."""
+        if self.running():
+            self.console.print(Text("a session is already running here: /nudge, /tell or /stop it",
+                                    style="red"))
+            return
+        try:
+            files = [Path(value) for value in _values(rest, "--file")]
+        except ValueError as exc:
+            self.console.print(Text(f"{exc}   (/help for usage)", style="red"))
+            return
         runner = self.runner
         if runner is None:
-            # the same entry the CLI uses: whole rounds, Builder then Examiner (D126)
-            from kullback import rounds
-            runner = rounds.run_rounds
-        runner(workdir=self.workdir, iterate="--iterate" in rest, model=self._adapter(), files=files,
-               on_event=on_event, ceiling_usd=self.ceiling_usd)
+            from kullback.builder import session as session_mod
+            runner = session_mod.build
+        board = Board(self.workdir, title="build", ceiling=self.ceiling_usd)
+        transcript = Transcript(on_line=self._print_line, footer=self._footer)
+        self.board, self.transcript, self._compact_asked = board, transcript, False
+
+        def on_event(event: Any) -> None:
+            board.event(event)
+            transcript.event(event)
+
+        def work() -> None:
+            try:
+                result = runner(workdir=self.workdir, model=self._adapter(), files=files,
+                                ceiling_usd=self.ceiling_usd,
+                                subscribers=[on_event, self._compact_when_asked],
+                                on_harness=self._attach)
+                if isinstance(result, dict) and result.get("stopped"):
+                    board.outcome = (f"stopped: {result['stopped']}; trusted {result.get('trusted', 0)}, "
+                                     f"refused {result.get('refused', 0)}, open {result.get('open', 0)}")
+            except Exception as exc:  # a failed build is a result to read, not a traceback to lose
+                board.outcome = f"{type(exc).__name__}: {exc}"
+            finally:
+                self.harness = None
+                self.console.print(board.render())
+
+        self.console.print(Text("  build started; /nudge TEXT, /tell TEXT, /stop, /context while it runs",
+                                style="dim"))
+        self._session = threading.Thread(target=work, name="kullback-build", daemon=True)
+        self._session.start()
+
+    def _attach(self, harness: Any) -> None:
+        self.harness = self.last_harness = harness
+
+    def _print_line(self, text: str, style: str) -> None:
+        self.console.print(Text(text, style=style or ""))
+
+    def _footer(self, turn: int) -> str:
+        """The line under each turn: the turn, the context fill off the harness, the spend off the
+        ledger, and the model. tau keeps these in a status bar; a line per turn is the same
+        numbers on a screen that scrolls."""
+        parts = [f"turn {turn}"]
+        if self.harness is not None:
+            estimate = self.harness.context.estimate()
+            parts.append(f"context {estimate.tokens:,} of {estimate.window:,} ({estimate.fill:.0%})")
+        spent = _spent(self.workdir)
+        parts.append(f"spend ${spent:,.4f}" + (f" of ${self.ceiling_usd:,.2f}" if self.ceiling_usd else ""))
+        if self.model:
+            parts.append(self.model)
+        return " · ".join(parts)
+
+    def _refuse_without_session(self, what: str) -> bool:
+        if self.running() and self.harness is not None:
+            return False
+        self.console.print(Text(f"no session running: {what} reaches a session /build started here",
+                                style="red"))
+        return True
+
+    def _queue(self, kind: str, text: str) -> None:
+        """/nudge steers (delivered before the next model turn), /tell follows up (delivered when
+        the run would otherwise stop). Both are the harness's own queues; the screen only says
+        what it queued, and the transcript shows the turn again when it is delivered."""
+        if not text:
+            self.console.print(Text(f"/{kind} needs text: /{kind} TEXT", style="red"))
+            return
+        if self._refuse_without_session(f"/{kind}"):
+            return
+        if kind == "nudge":
+            self.harness.steer(text)
+            when = "before the next model turn"
+        else:
+            self.harness.follow_up(text)
+            when = "when the current work ends"
+        line = f"queued {kind} ({when}): {text}"
+        if self.transcript is not None:
+            self.transcript.say(line, "cyan")
+        else:
+            self._print_line(line, "cyan")
+
+    def _stop(self) -> None:
+        if self._refuse_without_session("/stop"):
+            return
+        self.harness.cancel()
+        self.console.print(Text("cancel asked: the session stops before its next step", style="yellow"))
+
+    def _compact(self) -> None:
+        """Compaction mutates the transcript the loop is using, so it is never run from this
+        thread: it is asked for here and runs inside the session at the next turn end (tau
+        refuses a compaction during a run for the same reason)."""
+        if self._refuse_without_session("/compact"):
+            return
+        self._compact_asked = True
+        self.console.print(Text("compaction asked: it runs when the current turn ends", style="dim"))
+
+    def _compact_when_asked(self, event: Any) -> Any:
+        """A subscriber on the session's own loop: at the turn end after /compact, it returns the
+        compaction for the harness to await there; otherwise nothing."""
+        if (getattr(event, "type", None) != "turn_end" or not self._compact_asked
+                or self.harness is None):
+            return None
+        self._compact_asked = False
+        return self.harness.compact("/compact from the screen")
+
+    def _context(self) -> None:
+        """The context of the running session, else of the last one this screen ran."""
+        harness = self.harness or self.last_harness
+        if harness is None:
+            self.console.print(Text("no session yet: /build starts one, and /context reads it",
+                                    style="dim"))
+            return
+        estimate = harness.context.estimate()
+        stats = harness.context_stats
+        out = Text(("running session" if self.running() else "last session") + "\n", style="bold")
+        out.append(f"  window {estimate.window:,} tokens, used {estimate.tokens:,}, "
+                   f"share {estimate.fill:.0%} (compacts at {estimate.line:.0%}, "
+                   f"estimated from {estimate.source})\n", style="white")
+        out.append(f"  compactions {stats.compactions} ({stats.mechanical_summaries} by code), "
+                   f"{stats.entries_replaced} entries replaced", style="dim")
+        if stats.fill_at_turn_end:
+            out.append(f"\n  fill at turn end: last {stats.fill_at_turn_end[-1]:.0%}, "
+                       f"most {max(stats.fill_at_turn_end):.0%}", style="dim")
+        self.console.print(out)
 
     def _run(self, on_event: Any, rest: list[str]) -> None:
         runner = self.runner
         if runner is None:
-            from kullback.builder import build as builder
-            runner = builder.run_batch
+            from kullback.runner import tool as runner_tool
+            runner = runner_tool.reroll
         counts = _values(rest, "--count")
         try:
             count = int(counts[-1]) if counts else 1
@@ -827,8 +1165,8 @@ class Screen:
         if count < 1:
             raise ValueError(f"--count takes a number of runs, not {count}")
         on_event({"kind": "stage", "stage": rest[0], "state": "start", "attempt": 1})
-        runner(workdir=self.workdir, task_id=rest[0], model=self._adapter(), count=count,
-               ceiling_usd=self.ceiling_usd)
+        runner(environment_dir=self.workdir, task_id=rest[0], model=self._adapter(), count=count,
+               workdir=self.workdir)
         on_event({"kind": "stage", "stage": rest[0], "state": "ran", "attempt": 1})
         on_event({"kind": "pipeline", "state": "complete"})
 
@@ -951,6 +1289,12 @@ class Screen:
         self.console.print(diagrams.loop_text(diagrams.read_rounds_file(self.workdir)))
 
     def _status(self) -> None:
+        """While a session runs here, its live board with the transcript under it; otherwise the
+        last build read back off disk."""
+        if self.running() and self.board is not None and self.transcript is not None:
+            self.console.print(Group(self.board.render(), Panel(
+                self.transcript.render(), title="transcript", title_align="left", border_style="dim")))
+            return
         self.console.print(self._status_renderable())
 
     def _status_renderable(self) -> Any:
@@ -1069,6 +1413,7 @@ def loop(workdir: Path, model: Optional[str] = None, base_url: Optional[str] = N
             line = screen.console.input("[bold]›[/bold] ")
         except (EOFError, KeyboardInterrupt):
             screen.console.print()
+            screen.close()
             return
         if not screen.command(line):
             return

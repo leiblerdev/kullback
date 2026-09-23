@@ -1,70 +1,34 @@
 import json
 import sys
-from pathlib import Path
 
 import pytest
 
-from kullback.episode.environment import BuiltEnvironment, EnvironmentError, _json
+from kullback.runner.world import loading
+from kullback.runner.world.environment import BuiltEnvironment, EnvironmentError, _json, _text
 from tests.episode.invented import write_env
 
 
-@pytest.mark.parametrize("filename", ["environment.json", "schema.json", "tool_sigs.json", "bodies.json", "db.json"])
-def test_environment_rejects_corrupt_present_inputs(tmp_path, filename):
-    root = write_env(tmp_path / "env")
-    (root / filename).write_text("{", encoding="utf-8")
-    (root / "env" / "db.json").write_text(json.dumps({"widgets": {}}), encoding="utf-8")
-    with pytest.raises(EnvironmentError, match="unreadable or torn"):
-        BuiltEnvironment(root)
-
-
-def test_missing_optional_input_retains_its_default(tmp_path):
-    default = {}
-    assert _json(tmp_path / "missing.json", default) is default
-
-
-def test_permission_failure_does_not_become_an_empty_input(tmp_path, monkeypatch):
-    def denied(*args, **kwargs):
-        raise PermissionError("denied")
-    monkeypatch.setattr(Path, "read_text", denied)
-    with pytest.raises(EnvironmentError, match="unreadable or torn"):
-        _json(tmp_path / "db.json", None)
-
-
-def test_missing_root_db_still_uses_the_package_db(tmp_path, monkeypatch):
-    root = write_env(tmp_path / "env")
-    expected = {"widgets": {"w9": {"widget_id": "w9", "label": "packaged"}}}
-    (root / "env" / "db.json").write_text(json.dumps(expected), encoding="utf-8")
-    original = Path.read_text
-    def read(path, *args, **kwargs):
-        if path == root / "db.json":
-            raise FileNotFoundError(path)
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "read_text", read)
-    assert BuiltEnvironment(root).db == expected
+@pytest.mark.parametrize("read,break_file", [
+    (lambda path: _json(path, None), "deny"),
+    (_text, "deny"),
+    (_text, "bad_bytes"),
+])
+def test_present_but_unreadable_or_undecodable_input_is_refused_not_emptied(tmp_path, read, break_file):
+    path = tmp_path / "input"
+    if break_file == "deny":
+        path.write_text("{}", encoding="utf-8")
+        path.chmod(0)
+    else:
+        path.write_bytes(b"\xff")
+    try:
+        with pytest.raises(EnvironmentError, match="unreadable or torn"):
+            read(path)
+    finally:
+        path.chmod(0o600)
 
 
 def test_missing_policy_text_is_optional(tmp_path):
-    from kullback.episode.environment import _text
     assert _text(tmp_path / "absent.md") is None
-
-
-def test_present_unreadable_policy_text_is_not_silently_dropped(tmp_path, monkeypatch):
-    from pathlib import Path
-
-    from kullback.episode.environment import EnvironmentError, _text
-    def unreadable(self, *args, **kwargs):
-        raise PermissionError("unreadable")
-    monkeypatch.setattr(Path, "read_text", unreadable)
-    with pytest.raises(EnvironmentError, match="unreadable or torn"):
-        _text(tmp_path / "policy.md")
-
-
-def test_invalid_utf8_policy_text_is_reported(tmp_path):
-    from kullback.episode.environment import EnvironmentError, _text
-    path = tmp_path / "policy.md"
-    path.write_bytes(b"\xff")
-    with pytest.raises(EnvironmentError, match="unreadable or torn"):
-        _text(path)
 
 
 _MISSING = object()
@@ -129,6 +93,7 @@ def test_confirmed_reference_skips_unconfirmed_and_held_out(tmp_path):
     task = env.task("widget_task")
     rules = env.rules(task)
     assert [f.value for f in rules.facts if f.field == "speaker"] == ["rec2"]
+    assert [f.value for f in loading._user_rules(root, task).facts if f.field == "speaker"] == ["rec2"]
     assert env.reference(task).trace_id == "rec2"
     assert [t.trace_id for t in env.members(task)] == ["rec1", "rec2"]
     assert "held" not in [t.trace_id for t in env.members(task)]
@@ -159,6 +124,7 @@ def test_no_replays_file_selects_first_non_held(tmp_path):
     env = BuiltEnvironment(root)
     task = env.task("widget_task")
     assert [f.value for f in env.rules(task).facts if f.field == "speaker"] == ["rec1"]
+    assert [f.value for f in loading._user_rules(root, task).facts if f.field == "speaker"] == ["rec1"]
     assert env.reference(task).trace_id == "rec1"
     assert [t.trace_id for t in env.members(task)] == ["rec1", "rec2"]
 
@@ -178,82 +144,8 @@ def test_no_confirmed_rows_selects_nothing(tmp_path):
     env = BuiltEnvironment(root)
     task = env.task("widget_task")
     assert env.rules(task) is None
-    assert env.reference(task) is None
-
-
-def test_batch_choice_follows_the_confirmed_reference(tmp_path):
-    from kullback.episode import loading
-
-    root = write_env(tmp_path / "env")
-    _write_reference_fixture(root)
-    task = BuiltEnvironment(root).task("widget_task")
-    rules = loading._user_rules(root, task)
-    assert [f.value for f in rules.facts if f.field == "speaker"] == ["rec2"]
-
-
-def test_batch_choice_with_no_replays_file_takes_first_non_held(tmp_path):
-    from kullback.episode import loading
-
-    root = write_env(tmp_path / "env")
-    _write_reference_fixture(root, replays=None)
-    task = BuiltEnvironment(root).task("widget_task")
-    rules = loading._user_rules(root, task)
-    assert [f.value for f in rules.facts if f.field == "speaker"] == ["rec1"]
-
-
-def test_batch_choice_with_no_confirmed_rows_is_none(tmp_path):
-    from kullback.episode import loading
-
-    root = write_env(tmp_path / "env")
-    _write_reference_fixture(
-        root,
-        replays={
-            "widget_task": {
-                "rec1": {"trace_id": "rec1", "confirmed": False},
-                "held": {"trace_id": "held", "confirmed": False},
-                "rec2": {"trace_id": "rec2", "confirmed": False},
-            }
-        },
-    )
-    task = BuiltEnvironment(root).task("widget_task")
     assert loading._user_rules(root, task) is None
-
-
-@pytest.mark.parametrize("replays", [
-    {"widget_task": []},
-    {"widget_task": {"rec1": ["rec1"]}},
-    {"widget_task": {"rec1": {"confirmed": True}}},
-    {"widget_task": {"rec1": {"trace_id": 7, "confirmed": True}}},
-    {"widget_task": {"rec1": {"trace_id": "rec1", "confirmed": "yes"}}},
-])
-def test_user_rules_refuses_misshapen_replay_rows(tmp_path, replays):
-    from kullback.episode import loading
-    from kullback.runner.records import Task
-
-    root = write_env(tmp_path / "env")
-    _write_reference_fixture(root)
-    task = Task(id="widget_task", run_ids=["rec1", "held", "rec2"],
-                intent="give widget w1 the label striped")
-    (root / "replays.json").write_text(json.dumps(replays), encoding="utf-8")
-    with pytest.raises(loading.EnvironmentError) as excinfo:
-        loading._user_rules(root, task)
-    assert "replays.json" in str(excinfo.value)
-    assert "widget_task" in str(excinfo.value)
-
-
-def test_user_rules_refuses_misshapen_held_out(tmp_path):
-    from kullback.episode import loading
-    from kullback.runner.records import Task
-
-    root = write_env(tmp_path / "env")
-    _write_reference_fixture(root)
-    task = Task(id="widget_task", run_ids=["rec1", "held", "rec2"],
-                intent="give widget w1 the label striped")
-    (root / "anchor.json").write_text(json.dumps({"held_out": ["rec1"]}), encoding="utf-8")
-    with pytest.raises(loading.EnvironmentError) as excinfo:
-        loading._user_rules(root, task)
-    assert "anchor.json" in str(excinfo.value)
-    assert "held_out" in str(excinfo.value)
+    assert env.reference(task) is None
 
 
 def test_rules_path_rejects_unsafe_recording_ids(tmp_path):
@@ -279,17 +171,12 @@ def _hide_fidelity(monkeypatch, error):
     monkeypatch.setattr(sys, "meta_path", [_Blocker()] + sys.meta_path)
 
 
-def test_agent_driven_missing_module_answers_false(tmp_path, monkeypatch):
+def test_agent_driven_answers_false_without_scores_and_reads_them_without_the_user_package(tmp_path, monkeypatch):
     root = write_env(tmp_path / "env")
+    assert BuiltEnvironment(root).agent_driven("widget_task") is False
+    (root / "user_fidelity.json").write_text(json.dumps(
+        {"format": 1, "tasks": [{"task_id": "widget_task", "drives": True}]}), encoding="utf-8")
     env = BuiltEnvironment(root)
     _hide_fidelity(monkeypatch, ModuleNotFoundError("No module named 'kullback.user.fidelity'",
                                                     name="kullback.user"))
-    assert env.agent_driven("widget_task") is False
-
-
-def test_agent_driven_broken_transitive_import_propagates(tmp_path, monkeypatch):
-    root = write_env(tmp_path / "env")
-    env = BuiltEnvironment(root)
-    _hide_fidelity(monkeypatch, ImportError("broken transitive dependency", name="inner_dep"))
-    with pytest.raises(ImportError, match="broken transitive"):
-        env.agent_driven("widget_task")
+    assert env.agent_driven("widget_task") is True

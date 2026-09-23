@@ -12,7 +12,7 @@ from kullback import claims, difficulty, round_snapshot
 from kullback.examiner import lifecycle
 from kullback.report.data import ReportData, ScorecardItem, TaskCoverage
 from kullback.report.numbers import _by_pair, _percent, assisted_share_from_runs
-from kullback.report.pipeline import environment_gate, stage_statuses
+from kullback.report.pipeline import environment_gate
 from kullback.runner.records import (
     Constraint,
     EntitySchema,
@@ -331,30 +331,24 @@ def load(workdir: Any) -> ReportData:
     env_body = _json(root / "environment.json")
     environment = Environment.model_validate(env_body) if isinstance(env_body, dict) else None
     fidelity_body = _json(root / "tool_fidelity.json")
-    state = _json(root / "pipeline" / "state.json")
-    state = state if isinstance(state, dict) else {}
-    stopped = state.get("stopped") if isinstance(state.get("stopped"), dict) else {}
-    budget = _json(root / "budget.json")
-    stages = stage_statuses(state, budget if isinstance(budget, dict) else {}, stopped)
     config = _json(root / "report_config.json") or {}
     pairs = _jsonl(root / "judge_pairs.jsonl", unread)
     tasks = _records(root / "tasks", Task, unread)
     runs = load_runs(root / "runs", unread)
-    gates = _list_of(root / "gates.json", GateResult) + _list_of_bodies(state.get("gates"), GateResult)
+    gates = _list_of(root / "gates.json", GateResult)
     trusted = next((g for g in reversed(_list_of(root / "gates.json", GateResult)) if g.stage == "trusted"), None)
-    status = str(state.get("status", "complete"))
     snapshot = round_snapshot.read_snapshot(root)
     data = ReportData(
         title=config.get("title") or ("Run batch report" if config.get("kind") == "batch" else "Harness build report"),
         kind=config.get("kind", "build"),
-        built=environment is not None and status not in ("failed", "stopped"),
-        stopped_reason=state.get("stopped_reason") or stopped.get("reason") or config.get("stopped_reason"),
-        stopped=stopped,
+        built=environment is not None,
+        stopped_reason=config.get("stopped_reason"),
+        stopped={},
         records_not_read=unread,
         environment=environment,
         gates=gates,
         scorecard=scorecard_rows(_json(root / "scorecard.json")),
-        stages=stages,
+        stages=[],
         tasks=tasks,
         # D208: the live ones only. A workdir an older build left holds a file per Task that ever
         # had a Reference, and a report that counted one whose Reference has since been withdrawn

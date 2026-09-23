@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
-from kullback import claims, difficulty, round_snapshot, rounds
+from kullback import claims, difficulty, round_snapshot
 from kullback.report.data import (
     ENVIRONMENT,
     LESSONS,
@@ -15,7 +15,6 @@ from kullback.report.data import (
     TASKS,
     USER_FIDELITY,
     ReportData,
-    StageStatus,
 )
 from kullback.report.numbers import (
     _percent,
@@ -28,7 +27,7 @@ from kullback.report.numbers import (
     suggestion,
     task_numbers,
 )
-from kullback.report.pipeline import environment_gate, pipeline_dag
+from kullback.report.pipeline import environment_gate
 from kullback.runner.records import RoundRecord, Run, Verdict
 
 
@@ -47,11 +46,8 @@ def _stop_lines(data: ReportData) -> list[str]:
     stop = data.stopped
     if not stop:
         return []
-    done = [s.name for s in data.stages if s.status in ("ran", "cached", "rolled_back")]
-    left = [s.name for s in data.stages if s.status in ("pending", "stopped", "failed")]
     lines = [
         f"Stopped in stage {stop.get('stage') or 'unknown'} on {stop.get('item') or 'no item named'}.",
-        f"Completed stages: {', '.join(done) or 'none'}. Still to do: {', '.join(left) or 'none'}.",
         f"Spent {_usd(stop.get('spent'))} against a ceiling of {_usd(stop.get('ceiling_usd'))}; "
         f"the estimated cost to finish is {_usd(stop.get('estimate_to_finish'))}.",
     ]
@@ -186,7 +182,7 @@ def _exit_cell(record: RoundRecord) -> str:
     The counts on the row are what the round measured before the raise, so without this a reader
     takes a round that stopped half way for a round that measured that much and stopped.
     """
-    beat = str(((record.counts or {}).get(rounds.BEAT_ERROR) or {}).get("beat") or "")
+    beat = str(((record.counts or {}).get("beat_error") or {}).get("beat") or "")
     ended = record.exit or ""
     return f"{ended} (ended by {beat} error)".strip() if beat else ended
 
@@ -575,25 +571,9 @@ def _overlay_lines(data: ReportData) -> list[str]:
     ]
 
 
-def _pipeline_lines(data: ReportData) -> list[str]:
-    lines = ["", "### Pipeline", "", "```mermaid", pipeline_dag(data.stages), "```"]
-    cost = sum(stage.usd for stage in data.stages)
-    if not cost:
-        return lines + ["", "Cost per stage: nothing recorded, so this build's spend is not known."]
-    lines += [
-        "",
-        "Cost per stage: " + ", ".join(_cost_cell(s) for s in data.stages if s.usd),
-        f"Cost so far: ${cost:.2f}.",
-    ]
-    memo = sum(s.memo_hits for s in data.stages)
-    if memo:
-        lines += [f"Calls answered from the memo, at no cost: {memo}."]
-    return lines
-
-
 def _environment(data: ReportData) -> list[str]:
     """The Environment section, in the order a person reads it: what was built, what the gates and
-    the scorecard said, what still needs a look, and what the pipeline did and cost."""
+    the scorecard said, what still needs a look, and the coverage."""
     return (
         [ENVIRONMENT, ""]
         + _headline(data)
@@ -606,15 +586,7 @@ def _environment(data: ReportData) -> list[str]:
         + _overlay_lines(data)
         + ["", "### Coverage", ""]
         + _coverage(data)
-        + _pipeline_lines(data)
     )
-
-
-def _cost_cell(stage: StageStatus) -> str:
-    cell = f"{stage.name} ${stage.usd:.2f}"
-    if stage.cache_share:
-        cell += f" ({_percent(stage.cache_share)} of input from cache)"
-    return cell
 
 
 def _coverage(data: ReportData) -> list[str]:

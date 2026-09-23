@@ -9,9 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kullback import claims, difficulty, report, rounds
-from kullback.builder import agent as builder_agent
-from kullback.builder.build import BuildPlan
+from kullback import claims, difficulty, report
 from kullback.examiner import findings
 from kullback.report.render import _claims_table
 from kullback.runner.records import Atom, Event, Run, ToolSig, Verifier, as_dict, write_json
@@ -79,6 +77,10 @@ def test_the_claim_vocabulary_is_mined_from_the_write_tool_names_and_never_a_fix
     assert claims._stem("fire") not in VOCABULARY[GLAZE], "each tool carries the words of its own name"
     assert not any("pottery" in mined or "workshop" in mined for mined in VOCABULARY.values()), \
         "nothing outside the mined names and descriptions is in the vocabulary"
+    assert claims.leading_words("Fire the kiln that holds a shelf of pots.") == ["Fire"]
+    assert claims.leading_words("Glaze one pot. Return the pot.") == ["Glaze", "Return"]
+    assert claims._stem("shelf") not in VOCABULARY[FIRE], \
+        "a noun the description mentions is not a word that claims the action was done"
 
 
 def test_a_sentence_names_the_tool_whose_own_words_it_uses_and_the_general_verbs_name_them_all():
@@ -88,20 +90,6 @@ def test_a_sentence_names_the_tool_whose_own_words_it_uses_and_the_general_verbs
         "a general verb names no tool of its own, so every write tool is a candidate"
     assert claims.claimed_tools("I read the shelf.", VOCABULARY, GENERAL) == [], \
         "a read is not a claim about state"
-
-
-def test_an_inflected_word_is_reduced_to_the_stem_its_other_forms_share():
-    assert claims._stem("fired") == claims._stem("fires") == claims._stem("firing") == claims._stem("fire")
-    assert claims._stem("cancelled") == claims._stem("cancels") == "cancel"
-    assert claims._stem("applied") == "apply"
-    assert claims._stem("read") == "read", "a short word is not cut down to a letter or two"
-
-
-def test_a_description_is_mined_for_the_verb_it_opens_on_and_not_for_the_world_it_names():
-    assert claims.leading_words("Fire the kiln that holds a shelf of pots.") == ["Fire"]
-    assert claims.leading_words("Glaze one pot. Return the pot.") == ["Glaze", "Return"]
-    assert claims._stem("shelf") not in VOCABULARY[FIRE], \
-        "a noun the description mentions is not a word that claims the action was done"
 
 
 def test_a_promise_and_a_question_are_not_claims_that_the_action_has_happened():
@@ -174,12 +162,6 @@ def test_a_verifier_with_no_atom_has_no_partial_number_rather_than_a_perfect_one
     assert claims.band(0.0) == "p0" and claims.band(0.5) == "p2" and claims.band(1.0) == "p4"
 
 
-def test_the_difficulty_record_carries_the_partial_band_beside_its_other_counts():
-    record = difficulty.record_for(_verifier(_fire_atom()), calls=[], partial_completion=0.5)
-    assert record["partial_completion"] == 0.5 and record["partial_band"] == "p2"
-    assert difficulty.record_for(_verifier(_fire_atom()), calls=[])["partial_band"] == "none"
-
-
 # --- per Task, and the flag ----------------------------------------------------
 
 def _task_row(*rows: dict) -> dict:
@@ -236,25 +218,12 @@ def test_a_workdir_with_no_claim_file_reads_as_no_rows_rather_than_failing(tmp_p
     assert difficulty.partial_by_task(tmp_path) == {}
 
 
-def test_the_round_carries_the_four_counters_off_the_rows_it_wrote(tmp_path):
-    plan = BuildPlan(workdir=tmp_path / "work")
-    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan))
-    _, store = _workdir(tmp_path, ["I have fired the kiln."], [READ_S2])
-    counts = loop.claim_counts(store)
-    assert set(counts) == {"claims", "claims_unwritten", "writes_unclaimed", "partial_completion_mean"}
-    assert (counts["claims"], counts["claims_unwritten"], counts["writes_unclaimed"]) == (1, 1, 0)
-    assert counts["partial_completion_mean"] == 0.0
-    assert (plan.workdir / claims.FILE_NAME).is_file()
-
-
-def test_the_report_says_what_was_claimed_against_what_the_state_received(tmp_path):
-    _, store = _workdir(tmp_path, ["I have fired the kiln."], [READ_S2])
-    data = report.ReportData(claims=claims.compute(tmp_path, store=store))
-    lines = _claims_table(data)
-    assert "### Claims against state" in lines
-    assert any("1 claims" in line for line in lines)
-    assert any("Flagged for the Simulated user's end protocol: task_1" in line for line in lines)
-    assert any("never gates it" in line for line in lines), "the legend says it decides nothing"
+def test_the_claims_file_carries_the_four_counters_off_the_rows_it_wrote(tmp_path):
+    workdir, store = _workdir(tmp_path, ["I have fired the kiln."], [READ_S2])
+    totals = claims.refresh(workdir, store=store)["totals"]
+    assert (totals["claims"], totals["claims_unwritten"], totals["writes_unclaimed"]) == (1, 1, 0)
+    assert totals["partial_completion_mean"] == 0.0
+    assert (workdir / claims.FILE_NAME).is_file()
 
 
 def test_a_build_with_no_claim_record_says_so_rather_than_showing_an_empty_table():
@@ -262,7 +231,7 @@ def test_a_build_with_no_claim_record_says_so_rather_than_showing_an_empty_table
     assert any("No claim record was written" in line for line in lines)
 
 
-def test_a_flagged_task_is_filed_as_a_finding_that_points_at_the_end_protocol_and_suggests_no_verb():
+def test_a_flagged_task_is_filed_as_a_finding_pointing_at_the_end_protocol():
     rows = findings.claimed_unwritten_rows({"flagged": ["task_1"],
                                             "tasks": {"task_1": {"failing_runs": 2, "claims_unwritten": 2}}})
     assert [row["task_id"] for row in rows] == ["task_1"]

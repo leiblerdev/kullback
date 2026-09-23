@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from kullback import graph, synthesise
+from kullback.ai import TestModel
 from kullback.runner.records import Column, EntitySchema, FieldStat, ToolSig, write_json
 
 # One world nobody's customer has: kites on spools. Two reads and one write, the write refusing a
@@ -92,14 +93,9 @@ def test_a_walk_is_run_in_the_rebuilt_world_and_becomes_a_task_with_a_verifier(k
     verifier = json.loads((kite_world / synthesise.DIR / "verifiers" / f"{row['task_id']}.json").read_text())
     assert verifier["atoms"], "the executed End state derived no claim about itself"
     assert row["writes"] == 1
-
-
-def test_the_end_state_the_walk_left_is_what_the_verifier_was_derived_from(kite_world: Path):
-    body = synthesise.synthesise(kite_world, {"w1t3p1": 1})
-    row = body["tasks"][0]
-    verifier = json.loads((kite_world / synthesise.DIR / "verifiers" / f"{row['task_id']}.json").read_text())
     written = [atom for atom in verifier["atoms"] if (atom.get("target") or {}).get("kind") == "write"]
-    assert written and any(atom["target"].get("tool") == "retie_kite" for atom in written)
+    assert written and any(atom["target"].get("tool") == "retie_kite" for atom in written), \
+        "the Verifier was not derived from the End state the walk left"
 
 
 def test_a_walk_the_world_refuses_is_discarded_and_counted(kite_world: Path):
@@ -135,11 +131,8 @@ def test_a_draft_that_states_a_record_value_is_refused_and_not_edited():
     said = [{"field": "colour", "value": "teal1"}]
     held = [{"field": "kite_id", "value": "k1"}]
 
-    class Leaky:
-        def query(self, messages, tools=None, config=None):
-            return type("Reply", (), {"content": "please retie k1 for me"})()
-
-    text, why = synthesise.intent_text(Leaky(), said, held, "the fallback")
+    leaky = TestModel(["please retie k1 for me"])
+    text, why = synthesise.intent_text(leaky, said, held, "the fallback")
     assert text == "the fallback" and "world" in why
 
 
@@ -153,6 +146,8 @@ def test_the_user_says_the_askable_values_and_holds_the_rest(kite_world: Path):
 
 
 def test_nothing_synthetic_joins_the_tasks_the_build_counts(kite_world: Path):
+    from kullback import report
+
     write_json(kite_world / "tasks.json", {"tasks": []})
     write_json(kite_world / "task_status.json", {})
     synthesise.synthesise(kite_world, {"w1t3p1": 1})
@@ -162,19 +157,6 @@ def test_nothing_synthetic_joins_the_tasks_the_build_counts(kite_world: Path):
     counts = synthesise.counts_of(kite_world)
     assert counts["synthetic_tasks"] == 1
     assert "trusted" not in counts and "fidelity" not in counts
-
-
-def test_a_bucket_the_graph_cannot_reach_is_answered_with_what_it_did_reach(kite_world: Path):
-    body = synthesise.synthesise(kite_world, {"w3t3p1": 1})
-    for row in body["tasks"]:
-        assert row["bucket_requested"] == "w3t3p1"
-        assert row["bucket"] != "w3t3p1", "a band the world cannot fill was reported as filled"
-
-
-def test_the_report_shows_the_synthetic_rows_under_their_own_heading(kite_world: Path):
-    from kullback import report
-
-    synthesise.synthesise(kite_world, {"w1t3p1": 1})
     data = report.load(kite_world)
     text = report.render(data)
     assert report.SYNTHETIC in text
@@ -182,6 +164,13 @@ def test_the_report_shows_the_synthetic_rows_under_their_own_heading(kite_world:
     assert data.synthetic["tasks"], "the report read no synthetic store"
     # The generated Task is in its own section and not among the Tasks the build counts.
     assert data.synthetic["tasks"][0]["task_id"] not in {task.id for task in data.tasks}
+
+
+def test_a_bucket_the_graph_cannot_reach_is_answered_with_what_it_did_reach(kite_world: Path):
+    body = synthesise.synthesise(kite_world, {"w3t3p1": 1})
+    for row in body["tasks"]:
+        assert row["bucket_requested"] == "w3t3p1"
+        assert row["bucket"] != "w3t3p1", "a band the world cannot fill was reported as filled"
 
 
 def test_the_difficulty_command_fills_a_bucket_and_says_what_came_out(kite_world: Path):
@@ -265,31 +254,20 @@ def test_the_read_only_band_is_refused_with_a_reason(kite_world: Path):
 
 def test_a_judge_rejection_removes_a_task_and_is_counted(kite_world: Path):
     _read_domain(kite_world)
-
-    class Rejecting:
-        def query(self, messages, tools=None, config=None):
-            return type("Reply", (), {"content": json.dumps(
-                {"reject": True, "citation": "my kite hangs at the length I asked for"})})()
-
-    body = synthesise.shape(kite_world, per_archetype=1, judges=[Rejecting(), Rejecting()])
+    rejection = json.dumps({"reject": True, "citation": "my kite hangs at the length I asked for"})
+    rejecting = [TestModel([rejection], loop=True), TestModel([rejection], loop=True)]
+    body = synthesise.shape(kite_world, per_archetype=1, judges=rejecting)
     assert body["counts"]["tasks_shaped"] == 0
     assert body["counts"]["fell"]["plausible"] >= 1
 
-
-def test_a_judge_that_rejects_nothing_adds_no_task(kite_world: Path):
-    _read_domain(kite_world)
-
-    class Passing:
-        def query(self, messages, tools=None, config=None):
-            return type("Reply", (), {"content": json.dumps({"reject": False})})()
-
-    judged = synthesise.shape(kite_world, per_archetype=1, seed="one",
-                              judges=[Passing(), Passing()])
+    passing = [TestModel([json.dumps({"reject": False})], loop=True) for _ in range(2)]
+    judged = synthesise.shape(kite_world, per_archetype=1, seed="one", judges=passing)
     alone = synthesise.shape(kite_world, per_archetype=1, seed="one")
-    assert judged["counts"]["tasks_shaped"] == alone["counts"]["tasks_shaped"]
+    assert judged["counts"]["tasks_shaped"] == alone["counts"]["tasks_shaped"], \
+        "a judge that rejects nothing adds no task"
 
 
-def test_the_round_line_and_the_report_carry_the_archetype_counts(kite_world: Path):
+def test_the_report_carries_the_archetype_counts(kite_world: Path):
     from kullback import report
 
     _read_domain(kite_world)

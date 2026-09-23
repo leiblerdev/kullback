@@ -7,8 +7,10 @@ covered without a build and without a key.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import threading
 
 import pytest
 from rich.console import Console
@@ -73,27 +75,28 @@ def test_the_board_reads_the_typed_stage_events_of_the_agent_core_too(tmp_path):
     assert board.seconds["mine"] >= 0
 
 
-def test_the_screen_builds_through_the_round_driver_the_cli_uses(tmp_path, monkeypatch):
-    """/build goes through rounds.run_rounds, the same entry the CLI uses, with the dict events wired.
+def test_the_screen_builds_through_the_session_entry_the_cli_uses(tmp_path, monkeypatch):
+    """/build goes through session.build, the same entry the CLI uses, with the subscribers wired.
 
     The one claim the `runner=` seam every other Screen test uses cannot make is which callable
     the Screen reaches for when nothing is injected, so this test alone replaces that default.
-    The real run_rounds would drive whole rounds off an empty workdir.
     """
-    from kullback import rounds
+    from kullback.builder import session as session_module
 
     seen = {}
 
     def fake(**kwargs):
         seen.update(kwargs)
-        kwargs["on_event"]({"kind": "round", "state": "end", "round": 1, "counts": {}, "exit": "done"})
-        kwargs["on_event"]({"kind": "pipeline", "state": "complete"})
+        for subscriber in kwargs.get("subscribers", ()):
+            subscriber({"kind": "pipeline", "state": "complete"})
         return {}
 
-    monkeypatch.setattr(rounds, "run_rounds", fake)
+    monkeypatch.setattr(session_module, "build", fake)
     screen = Screen(tmp_path, console=_console())
-    assert screen.command("/build --iterate") is True
-    assert seen["iterate"] is True and seen["workdir"] == tmp_path and seen["model"] is None
+    assert screen.command("/build") is True
+    screen.wait()
+    assert seen["workdir"] == tmp_path and seen["model"] is None
+    assert seen["files"] == [] and "subscribers" in seen
 
 
 def test_the_board_shows_the_round_and_the_beat_from_the_typed_events(tmp_path):
@@ -242,15 +245,15 @@ def test_an_unknown_command_says_so_rather_than_doing_something(tmp_path):
     assert screen.runner.calls == []
 
 
-@pytest.mark.parametrize("line,iterate,files", [
-    ("/build --iterate --file traces.json", True, ["traces.json"]),
-    ("/build", False, []),
+@pytest.mark.parametrize("line,files", [
+    ("/build --file traces.json", ["traces.json"]),
+    ("/build", []),
 ])
-def test_build_passes_the_flags_it_was_typed_and_no_model_by_default(tmp_path, line, iterate, files):
+def test_build_passes_the_flags_it_was_typed_and_no_model_by_default(tmp_path, line, files):
     screen = _screen(tmp_path)
     screen.command(line)
+    screen.wait()
     call = screen.runner.calls[0]
-    assert call["iterate"] is iterate
     assert [p.name for p in call["files"]] == files
     assert call["model"] is None
 
@@ -258,6 +261,7 @@ def test_build_passes_the_flags_it_was_typed_and_no_model_by_default(tmp_path, l
 def test_the_ceiling_the_screen_was_opened_with_reaches_the_build(tmp_path):
     screen = _screen(tmp_path, ceiling_usd=2.5)
     screen.command("/build")
+    screen.wait()
     assert screen.runner.calls[0]["ceiling_usd"] == 2.5
 
 
@@ -281,6 +285,7 @@ def test_a_build_that_raises_is_shown_as_an_outcome_not_thrown_at_the_terminal(t
         raise RuntimeError("no key")
     screen = Screen(tmp_path, console=_console(), runner=angry)
     screen.command("/build")
+    screen.wait()
     assert "RuntimeError: no key" in _text(screen.console)
 
 
@@ -289,6 +294,7 @@ def test_a_screen_with_a_model_named_refuses_to_call_it_with_live_calls_off(tmp_
     monkeypatch.chdir(tmp_path)  # so load_dotenv finds no .env that could turn them on
     screen = _screen(tmp_path, model="openai/gpt-5.6-luna")
     screen.command("/build")
+    screen.wait()
     assert "live model requests are off" in _text(screen.console)
     assert screen.runner.calls == []
 
@@ -367,24 +373,19 @@ def test_map_before_any_build_says_there_is_none(tmp_path):
     assert "no stages yet" in diagrams.dag_text([], {}).plain
 
 
-def test_loop_without_rounds_says_single_pass(tmp_path):
+def test_loop_draws_the_session_loop_and_its_stop_rule(tmp_path):
     from kullback.tui import diagrams
 
-    assert "single-pass" in diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
-
-
-def test_loop_draws_beats_counts_and_exit(tmp_path):
-    from kullback.tui import diagrams
-
-    (tmp_path / "rounds.json").write_text(json.dumps([
-        {"round": 1, "counts": {"fidelity": 12, "tasks": 20, "trusted": 8, "refused_count": 1,
-                                "probes_passing": 5, "spend": {"total": 0.4231}}, "exit": None},
-        {"round": 2, "counts": {"fidelity": 20, "tasks": 20, "trusted": 15, "refused_count": 1,
-                                "probes_passing": 9, "spend": {"total": 0.9}}, "exit": "done"},
-    ]), encoding="utf-8")
     plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
-    assert "round 1" in plain and "round 2" in plain
-    assert "12/20" in plain and "exit: done" in plain
+    assert "Builder base tools" in plain and "examine" in plain
+    assert "every Task is trusted or refused" in plain
+
+
+def test_loop_names_the_agent_holding_the_stream(tmp_path):
+    from kullback.tui import diagrams
+
+    plain = diagrams.loop_text([], agent="builder").plain
+    assert "builder holds the stream" in plain
 
 
 def test_layers_names_every_package(tmp_path):
@@ -407,7 +408,7 @@ def test_map_loop_layers_commands_print(tmp_path):
     assert screen.command("/layers") is True
     assert screen.command("/loop") is True
     out = _text(console)
-    assert "mine" in out and "builder" in out and "single-pass" in out
+    assert "mine" in out and "builder" in out and "Builder base tools" in out
 
 
 # --- /login and /logout -----------------------------------------------------
@@ -534,20 +535,6 @@ def test_a_login_secret_reaches_no_file_and_no_line(tmp_path, monkeypatch):
     screen.command("/logout")
 
 
-def test_loop_shows_pending_findings_and_exit_notes(tmp_path):
-    from kullback.tui import diagrams
-
-    (tmp_path / "rounds.json").write_text(json.dumps([
-        {"round": 1, "counts": {}, "exit": None, "exit_note": "2 finding(s) owe the Builder a beat; the round continues",
-         "pending_findings": [{"finding_id": "f1"}, {"finding_id": "f2"}]},
-        {"round": 2, "counts": {}, "exit": "ceiling", "exit_note": "the ceiling ended the run first",
-         "pending_findings": [{"finding_id": "f3"}]},
-    ]), encoding="utf-8")
-    plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
-    assert "2 finding(s) owed the Builder a beat" in plain
-    assert "exit: ceiling" in plain and "the ceiling ended the run first" in plain
-
-
 def test_the_banner_is_a_gradient_styles_vary_plain_does_not(tmp_path):
     from kullback.tui import banner
 
@@ -580,17 +567,6 @@ def test_open_hides_zero_spend(tmp_path, monkeypatch):
     monkeypatch.delenv("HARNESS_ALLOW_MODEL_REQUESTS", raising=False)
     Screen(tmp_path, console=console).open()
     assert "$" not in _text(console)
-
-
-def test_loop_marks_a_failed_round(tmp_path):
-    from kullback.tui import diagrams
-
-    (tmp_path / "rounds.json").write_text(json.dumps([
-        {"round": 1, "counts": {}, "exit": "stalled", "exit_note": "examiner failed: no derive",
-         "failed": True, "pending_findings": []},
-    ]), encoding="utf-8")
-    plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
-    assert "exit: stalled (failed)" in plain and "examiner failed" in plain
 
 
 # --- the entry screen, the / menu, sessions, the login menu, loop-aware status ---
@@ -995,3 +971,286 @@ def test_the_spend_since_the_last_close_counts_every_closed_round_not_only_the_l
     heartbeat.beat(tmp_path, "openai/gpt-5.6-luna", "running")
     said = tui_module.in_flight(tmp_path) or ""
     assert "round 3 running" in said and "$0.2500 since round 2 closed" in said
+
+
+def test_the_login_menu_starts_openai_at_the_harness_default_model():
+    from kullback.ai.provider import DEFAULT_MODEL
+    from kullback.tui import LOGIN_DEFAULT_MODELS
+
+    assert LOGIN_DEFAULT_MODELS["openai"] == DEFAULT_MODEL
+
+
+# --- the live transcript ------------------------------------------------------
+
+def _tool_events(name="write", arguments=None, content="written; 1 of 2 calls replay",
+                 details=None, is_error=False):
+    from kullback.agent.events import ToolExecutionEndEvent, ToolExecutionStartEvent
+    from kullback.agent.tools import ToolResult
+
+    return [ToolExecutionStartEvent(tool_call_id="c1", tool_name=name,
+                                    arguments=arguments or {"path": "tools/rename.py"}),
+            ToolExecutionEndEvent(tool_call_id="c1", tool_name=name, is_error=is_error,
+                                  result=ToolResult(content=content, details=details))]
+
+
+RULED = {"rulings": [{"name": "fidelity", "accepted": False, "line": "1 of 2 calls replay"},
+                     {"name": "schema", "accepted": True, "line": "every call parses"}]}
+
+
+def test_watching_a_build_reads_its_bus_as_a_transcript_of_calls_results_and_rulings(
+        tmp_path, monkeypatch):
+    """A Builder session in another process writes every harness event to bus.jsonl; watching it
+    shows the tool call, the first line of its result and each gate ruling, not only the board."""
+    from kullback.agent.bus import Bus
+
+    other, screen = _watched(tmp_path, monkeypatch, alive=[True, True])
+    bus = Bus(other / "bus.jsonl", agent="builder")
+    for event in _tool_events(content="written\nsecond line not shown", details=RULED):
+        bus.append(event)
+    screen.command("/watch 1")
+    out = _text(screen.console)
+    assert "▸ write: path=tools/rename.py" in out
+    assert "✔ write: written" in out and "second line not shown" not in out
+    assert "ruling fidelity: rejected (1 of 2 calls replay)" in out
+    assert "ruling schema: accepted (every call parses)" in out
+    assert "waiting for the build's next call" not in out
+
+
+def test_the_transcript_streams_assistant_text_a_line_at_a_time_and_prints_the_rest_at_the_end():
+    from kullback.agent.events import MessageEndEvent, MessageStartEvent, MessageUpdateEvent
+    from kullback.agent.messages import AssistantMessage
+    from kullback.ai.events import TextDelta
+    from kullback.tui import Transcript
+
+    seen = []
+    transcript = Transcript(on_line=lambda text, style: seen.append(text))
+    partial = AssistantMessage(content="")
+    transcript.event(MessageStartEvent(message=partial))
+    for delta in ("Reading the ", "calls.\nThen the", " body."):
+        transcript.event(MessageUpdateEvent(message=partial, stream_event=TextDelta(
+            content_index=0, delta=delta, partial=partial)))
+        if delta == "Reading the ":
+            assert seen == []
+    assert seen == ["  Reading the calls."]
+    transcript.event(MessageEndEvent(message=AssistantMessage(content="Reading the calls.\nThen the body.")))
+    assert seen == ["  Reading the calls.", "  Then the body."]
+
+
+def test_the_transcript_shows_examine_findings_and_a_compaction():
+    from kullback.agent.events import Compaction
+    from kullback.tui import Transcript
+
+    transcript = Transcript()
+    for event in _tool_events("examine", {}, "1 findings open", {"findings": [
+            {"kind": "fidelity", "task_id": "t1", "path": "tools/a.py", "change": "keep the label"}]}):
+        transcript.event(event)
+    transcript.event(Compaction(summary="s", replaces_entry_ids=["e1", "e2"], by="code",
+                                reason="over the line"))
+    said = [text for text, _ in transcript.lines]
+    assert "    finding fidelity on t1: tools/a.py: keep the label" in said
+    assert "compaction by code: 2 entries became one summary (over the line)" in said
+
+
+def test_a_long_argument_is_one_cut_line_not_the_whole_file():
+    from kullback.tui import _args_summary
+
+    line = _args_summary({"path": "tools/a.py", "content": "def f():\n    return 1\n" * 50})
+    assert line.startswith("path=tools/a.py, content=def f():...") and "\n" not in line
+
+
+# --- the session /build runs here: live, nudged, stopped ----------------------
+
+class _HeldSession:
+    """A scripted Builder session in place of session.build: a real AgentHarness over a TestModel
+    and one tool, `write`, whose result carries rulings. The write numbered `hold_at` holds until
+    the test releases it, so the screen can be driven while the session is really running."""
+
+    def __init__(self, replies, keep_recent_batches=None, hold_at=1):
+        from kullback.ai.provider import TestModel
+
+        self.model = TestModel(replies)
+        self.keep_recent_batches = keep_recent_batches
+        self.hold_at, self.writes = hold_at, 0
+        self.inside, self.release = threading.Event(), threading.Event()
+        self.calls = []
+
+    def _tool(self):
+        from pydantic import BaseModel
+
+        from kullback.agent.tools import AgentTool
+
+        held = self
+
+        class Args(BaseModel):
+            path: str
+
+        class Result(BaseModel):
+            rulings: list[dict]
+
+        async def execute(args):
+            held.writes += 1
+            if held.writes == held.hold_at:
+                held.inside.set()
+                await asyncio.to_thread(held.release.wait, 10)
+            return Result(rulings=RULED["rulings"])
+
+        return AgentTool("write", "write a body", Args, Result, execute,
+                         render=lambda result: "written; 1 of 2 calls replay\nmore")
+
+    def __call__(self, *, workdir, model, files, ceiling_usd, subscribers, on_harness):
+        from kullback.agent.context import ContextConfig
+        from kullback.agent.harness import AgentHarness
+        from kullback.agent.session.store import SessionStore
+
+        self.calls.append(workdir)
+        context = (ContextConfig() if self.keep_recent_batches is None
+                   else ContextConfig(keep_recent_batches=self.keep_recent_batches))
+        harness = AgentHarness(model=self.model, tools=[self._tool()], context=context,
+                               session=SessionStore.load(workdir / "sessions" / "builder.jsonl"))
+        for subscriber in subscribers:
+            harness.subscribe(subscriber)
+        on_harness(harness)
+        events = asyncio.run(_drain(harness.prompt("Begin.")))
+        return {"stopped": "no tool call", "turns": sum(e.type == "turn_end" for e in events)}
+
+
+async def _drain(aiter):
+    return [event async for event in aiter]
+
+
+def _held(tmp_path, *replies, keep_recent_batches=None, hold_at=1):
+    from tests.builder.session_fixtures import reply
+
+    session = _HeldSession([reply("Writing the body.", ("write", {"path": "tools/rename.py"})),
+                            *[reply(*r) for r in replies]], keep_recent_batches, hold_at)
+    return session, Screen(tmp_path, console=_console(), runner=session)
+
+
+def test_a_build_runs_in_the_background_and_its_transcript_shows_the_call_result_and_rulings(tmp_path):
+    session, screen = _held(tmp_path, ("Done.",))
+    screen.command("/build")
+    assert session.inside.wait(10)
+    assert screen.running() and screen.command("/help") is True  # the screen still takes commands
+    session.release.set()
+    screen.wait(10)
+    out = _text(screen.console)
+    assert "  Writing the body." in out
+    assert "▸ write: path=tools/rename.py" in out
+    assert "✔ write: written; 1 of 2 calls replay" in out and "\nmore" not in out
+    assert "ruling fidelity: rejected (1 of 2 calls replay)" in out
+    assert "turn 1 · context" in out and "spend $0.0000" in out
+    assert "stopped: no tool call" in out and not screen.running()
+
+
+def test_a_nudge_reaches_the_harness_steer_queue_and_is_shown_before_the_next_turn(tmp_path):
+    session, screen = _held(tmp_path, ("Done.",))
+    screen.command("/build")
+    assert session.inside.wait(10)
+    screen.command("/nudge don't touch policy/, read the calls first")
+    session.release.set()
+    screen.wait(10)
+    out = _text(screen.console)
+    assert "queued nudge (before the next model turn): don't touch policy/, read the calls first" in out
+    assert "› don't touch policy/, read the calls first" in out  # delivered as a user turn
+    second = session.model.calls[1]["messages"]
+    assert any("read the calls first" in str(m.get("content")) for m in second)
+
+
+def test_a_tell_is_queued_as_a_follow_up_and_starts_another_turn(tmp_path):
+    session, screen = _held(tmp_path, ("Done.",), ("Checked.",))
+    screen.command("/build")
+    assert session.inside.wait(10)
+    screen.command("/tell now check the refusals")
+    session.release.set()
+    screen.wait(10)
+    out = _text(screen.console)
+    assert "queued tell (when the current work ends): now check the refusals" in out
+    assert "  Checked." in out and len(session.model.calls) == 3
+
+
+def test_stop_cancels_the_running_session(tmp_path):
+    session, screen = _held(tmp_path, ("Never reached.",))
+    screen.command("/build")
+    assert session.inside.wait(10)
+    screen.command("/stop")
+    session.release.set()
+    screen.wait(10)
+    out = _text(screen.console)
+    assert "cancel asked" in out and "Never reached." not in out
+    assert len(session.model.calls) == 1
+
+
+def test_compact_runs_inside_the_session_at_the_next_turn_end(tmp_path):
+    # The second write holds, so the first batch is finished and older than the one kept; the
+    # model writes the summary, so it is scripted between the second turn and the last.
+    session, screen = _held(tmp_path, ("Again.", ("write", {"path": "tools/rename.py"})),
+                            ("The body was written twice.",), ("Done.",),
+                            keep_recent_batches=1, hold_at=2)
+    screen.command("/build")
+    assert session.inside.wait(10)
+    screen.command("/compact")
+    session.release.set()
+    screen.wait(10)
+    out = _text(screen.console)
+    assert "compaction asked" in out
+    assert screen.last_harness.context_stats.compactions == 1
+    assert "compaction by " in out
+
+
+def test_context_prints_the_window_used_and_share_of_the_session(tmp_path):
+    session, screen = _held(tmp_path, ("Done.",))
+    screen.command("/build")
+    assert session.inside.wait(10)
+    screen.command("/context")
+    session.release.set()
+    screen.wait(10)
+    screen.command("/context")
+    out = _text(screen.console)
+    assert "running session" in out and "last session" in out
+    assert "window " in out and " tokens, used " in out and "share " in out
+    assert "compactions 0" in out
+
+
+def test_context_before_any_session_says_there_is_none(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/context")
+    assert "no session yet" in _text(screen.console)
+
+
+@pytest.mark.parametrize("line", ["/nudge read the calls", "/tell then stop", "/stop", "/compact"])
+def test_a_control_with_no_session_running_is_refused_in_words(tmp_path, line):
+    screen = _screen(tmp_path)
+    screen.command(line)
+    assert "no session running" in _text(screen.console)
+
+
+def test_a_nudge_with_no_text_says_what_it_needs(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/nudge")
+    assert "/nudge needs text" in _text(screen.console)
+
+
+def test_a_second_build_while_one_runs_is_refused(tmp_path):
+    session, screen = _held(tmp_path, ("Done.",))
+    screen.command("/build")
+    assert session.inside.wait(10)
+    screen.command("/build")
+    session.release.set()
+    screen.wait(10)
+    assert "a session is already running here" in _text(screen.console)
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize("name", ["nudge", "tell", "stop", "context", "compact", "login"])
+def test_every_session_command_is_in_the_table_and_in_help(name):
+    from kullback.tui import COMMANDS, HELP
+
+    assert name in {row[0] for row in COMMANDS} and f"/{name}" in HELP
+
+
+def test_the_login_menu_questions_keep_their_bracketed_hints(tmp_path):
+    console = Console(file=io.StringIO(), width=100, force_terminal=False, no_color=True)
+    console.input = lambda prompt="", **_: console.print(prompt, end="") or ""
+    screen = Screen(tmp_path, console=console)
+    screen._ask("    model [openai/gpt-6-luna]: ")
+    assert "model [openai/gpt-6-luna]:" in _text(console)
