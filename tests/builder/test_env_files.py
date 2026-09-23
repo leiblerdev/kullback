@@ -129,3 +129,30 @@ def test_expose_without_traces_still_copies_the_world_files(tmp_path):
     report = env_files.expose(root)
     assert set(report["files"]) >= {"schema.json", "tool_sigs.json", "db.json"}
     assert Path(root / "env" / "db.json").is_file()
+
+
+def test_explode_seeds_a_stub_per_signature_without_a_body_and_regenerate_renders_the_toolkit(tmp_path):
+    root = write_env(tmp_path / "work")
+    (root / "env" / "tools.py").unlink()
+    (root / "env" / "data_model.py").unlink()
+    write_json(root / "bodies.json", {"rename_widget": RENAME_BODY})
+    assert sorted(env_files.explode(root)) == ["describe_widget", "rename_widget"]
+    stub = root / "env" / "tools" / "describe_widget.py"
+    assert env_files.body_of(stub.read_text(encoding="utf-8")) == ("describe_widget", env_files.STUB_BODY)
+    assert env_files.is_stub(stub)
+    assert not env_files.is_stub(root / "env" / "tools" / "rename_widget.py")
+    env_files.regenerate(root)
+    assert (root / "env" / "tools.py").is_file() and (root / "env" / "data_model.py").is_file()
+    assert read_json(root / "bodies.json", {})["describe_widget"] == env_files.STUB_BODY
+
+
+def test_an_edited_stub_survives_a_second_explode(tmp_path):
+    root = write_env(tmp_path / "work")
+    env_files.explode(root)
+    stub = root / "env" / "tools" / "describe_widget.py"
+    stub.write_text(stub.read_text(encoding="utf-8").replace(env_files.STUB_BODY, DESCRIBE_BODY.replace(
+        "\n", "\n    ")), encoding="utf-8")
+    edited = stub.read_text(encoding="utf-8")
+    assert env_files.explode(root) == []
+    assert stub.read_text(encoding="utf-8") == edited
+    assert not env_files.is_stub(stub)

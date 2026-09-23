@@ -2,7 +2,8 @@
 
 A file `env/tools/<name>.py` holds one function `def <name>(self, <args>):` with the body
 the model writes, so the file is valid Python on its own and `edit` works on it. `explode`
-writes those files from `bodies.json`, `regenerate` reads them back into `bodies.json` plus
+writes those files from `bodies.json` and seeds a stub for every mined signature with no body,
+`regenerate` reads them back into `bodies.json` plus
 the rendered `env/tools.py` and `env/data_model.py`, `expose` copies the read surface under
 `env/`, and `executor` runs a written body over recorded calls for the gates.
 
@@ -29,6 +30,9 @@ TASKS_DIR = "tasks"
 BODIES_FILE = "bodies.json"
 SIGS_FILE = "tool_sigs.json"
 SCHEMA_FILE = "schema.json"
+
+#: The body a tool starts with until the model writes one, the default `render_tools` uses.
+STUB_BODY = "raise NotImplementedError"
 
 #: Files at the workdir root the Builder may read, copied under env/ by expose.
 READ_FILES = ("schema.json", "tool_sigs.json", "db.json", "canon-rules.json", "vocabulary.json")
@@ -86,14 +90,18 @@ def _tool_file(name: str, sig: Optional[ToolSig], body: str) -> str:
 
 
 def explode(workdir: Any) -> list[str]:
-    """Write `env/tools/<name>.py` for every `bodies.json` entry whose file is missing.
+    """Write `env/tools/<name>.py` for every tool whose file is missing.
 
-    Files the model already edited are never touched: only missing ones are written, with
-    the signature from `tool_sigs.json`. Returns the names written.
+    A `bodies.json` entry is written with its body; a mined signature in `tool_sigs.json`
+    with no body is seeded with the stub `raise NotImplementedError`, so every tool has a
+    file once the world is derived. Files the model already edited are never touched: only
+    missing ones are written. Returns the names written.
     """
     root = Path(workdir)
     bodies = _read_bodies(root)
     sigs = {sig.name: sig for sig in _read_sigs(root)}
+    for name in sigs:
+        bodies.setdefault(name, STUB_BODY)
     written = []
     for name, body in bodies.items():
         path = root / "env" / TOOLS_DIR / f"{name}.py"
@@ -103,6 +111,14 @@ def explode(workdir: Any) -> list[str]:
         path.write_text(_tool_file(name, sigs.get(name), body), encoding="utf-8")
         written.append(name)
     return written
+
+
+def is_stub(path: Path) -> bool:
+    """Whether the tool file at `path` still holds only the stub body."""
+    try:
+        return body_of(path.read_text(encoding="utf-8"))[1].strip() == STUB_BODY
+    except (OSError, SyntaxError, ValueError):
+        return False
 
 
 def regenerate(workdir: Any, env: Any = None) -> dict[str, Any]:
@@ -257,5 +273,5 @@ def executor(workdir: Any, env: Any = None) -> Callable[[Any, Iterable[ToolCall]
     return execute
 
 
-__all__ = ["BODIES_FILE", "CALLS_DIR", "READ_FILES", "SCHEMA_FILE", "SIGS_FILE", "TASKS_DIR", "TOOLS_DIR",
-           "body_of", "executor", "explode", "expose", "regenerate"]
+__all__ = ["BODIES_FILE", "CALLS_DIR", "READ_FILES", "SCHEMA_FILE", "SIGS_FILE", "STUB_BODY", "TASKS_DIR",
+           "TOOLS_DIR", "body_of", "executor", "explode", "expose", "is_stub", "regenerate"]

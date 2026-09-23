@@ -15,6 +15,9 @@ RECEIVE = (
     "the schema, the tool signatures, the database, the canon rules, the vocabulary, one "
     "file per Task under tasks/, and the shown call records under calls/. Held-out calls, "
     "Verifiers, probes, gates and the runner live outside your root and are never shown. "
+    "The tool bodies start as stubs under tools/, one file per tool with its signature and "
+    "a body that raises NotImplementedError. Write each body from the recorded calls under "
+    "calls/<tool>.jsonl, then edit it where the rulings point. "
     "Every write or edit you make is ruled before you see the result: the ruling rides the "
     "result with the rows that still differ, recorded value against yours, call by call."
 )
@@ -53,7 +56,8 @@ EXAMPLES = (
 
 CHOICE = (
     "Choosing. Read the rows before you touch a body. Edit the kept body in place with "
-    "edit, never a rewrite from scratch, one hypothesis per edit. Where several recorded "
+    "edit, never a rewrite from scratch, one hypothesis per edit. A stub is the one "
+    "exception: write it whole, once, from its calls. Where several recorded "
     "calls agree with each other and against the description, the body reproduces what "
     "the recording does: the recording is the standard. Never write world rows, Verifiers "
     "or probes. Refuse a Task only when no frontier Run of it finished."

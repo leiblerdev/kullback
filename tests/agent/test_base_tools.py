@@ -51,7 +51,7 @@ def root(tmp_path):
         ("ls", {"path": "PATH"}),
     ],
 )
-@pytest.mark.parametrize("outside", ["/etc/passwd", "../outside.txt", "sub/../../outside.txt", ""])
+@pytest.mark.parametrize("outside", ["/etc/passwd", "../outside.txt", "sub/../../outside.txt"])
 def test_every_path_tool_refuses_a_path_outside_the_root_and_names_the_rule(root, name, arguments, outside):
     tool = tools(root)[name]
     result = run(tool, **{key: (outside if value == "PATH" else value) for key, value in arguments.items()})
@@ -65,6 +65,13 @@ def test_a_link_that_leads_out_of_the_root_is_refused_like_a_path_that_steps_out
     (root / "link.txt").symlink_to(outside)
     result = run(tools(root)["read"], path="link.txt")
     assert result.is_error is True and "resolves outside" in result.content
+
+
+@pytest.mark.parametrize("empty", ["", "   "])
+def test_an_empty_path_lists_the_root(root, empty):
+    result = run(tools(root)["ls"], path=empty)
+    assert result.is_error is False
+    assert "notes.txt" in result.content and "sub/" in result.content
 
 
 # --- read, write, ls, find, grep ---
