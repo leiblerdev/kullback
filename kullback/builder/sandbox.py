@@ -123,6 +123,25 @@ def _traced(function, args, seen):
         sys.settrace(None)
 
 
+def _feed(instance, feed):
+    ctx = getattr(instance, "ctx", None)
+    if ctx is not None:
+        ctx.feed_call(feed or {})
+
+
+def _run_prefix(instance, entries):
+    # The calls the same trace made before the gated one, each with its own recorded feed, on
+    # the same toolkit and world. Their answers are thrown away: they are here only for the
+    # state they leave. One that raises, or names a tool the module does not hold, is skipped,
+    # the way the recording's own refusal left no state either.
+    for entry in entries:
+        _feed(instance, entry.get("feed"))
+        try:
+            getattr(instance, entry["name"])(**entry["args"])
+        except Exception:
+            continue
+
+
 def _plain(value):
     if isinstance(value, pydantic.BaseModel):
         return value.model_dump(mode="json")
@@ -220,15 +239,21 @@ def main():
         # appends to a list in place would otherwise leave its output standing in the world the
         # next call sharing this entry validates against, and one call's diff would carry another
         # call's writes.
-        world = copy.deepcopy(job["dbs"][call["db"]]) if want_diff else job["dbs"][call["db"]]
+        # A call with a prefix copies too: its prefix writes into the world it runs on.
+        prefix = [job["prefix_calls"][index] for index in call.get("prefix") or []]
+        world = job["dbs"][call["db"]]
+        if want_diff or prefix:
+            world = copy.deepcopy(world)
         instance = toolkit(db_class.model_validate(world))
+        _run_prefix(instance, prefix)
         # A fresh toolkit carries a fresh context, so the recorded feed of this call is laid
         # on it before the call runs: at replay and in the gates a body reads the values the
         # recording witnessed for this call, off them the seeded feed answers, counted. The
-        # feed rides on the call's own entry; a call with none takes the seeded feed.
+        # feed rides on the call's own entry; a call with none takes the seeded feed, and after
+        # a prefix that means laying an empty feed over the last prefix call's.
         feed = call.get("feed")
-        if feed:
-            instance.ctx.feed_call(feed)
+        if feed or prefix:
+            _feed(instance, feed)
         function = getattr(instance, call["name"])
         # The world the body actually sees, dumped before it runs: validation itself narrows the
         # world to what the schema declares, so the diff below compares what the body saw with
@@ -284,6 +309,15 @@ _RUNNER = _ARITH_SOURCE + _RUNNER_BODY
 _MISSING_MSG_INDEX = 1 << 62
 
 
+def calls_by_trace(calls: Iterable[ToolCall]) -> dict[str, list[ToolCall]]:
+    """Recorded calls grouped by the trace that made them, for `Sandbox(trace_calls=...)`."""
+    out: dict[str, list[ToolCall]] = {}
+    for call in calls:
+        if call.trace_id:
+            out.setdefault(call.trace_id, []).append(call)
+    return out
+
+
 def recorded_call_parts(call: Any) -> tuple:
     """The five parts of a recorded call, for a ToolCall or a dict."""
     if isinstance(call, ToolCall):
@@ -313,12 +347,19 @@ class Sandbox:
     Every recorded call executes on its own Starting state (design section 6, gate 2): the shared
     world by default, and the Task's own world where `call_states` names one for that call id, which
     is how a corpus showing one row in two versions still replays (D74).
+
+    Where `trace_calls` holds the call's trace, the call's prefix runs first on that same world:
+    every earlier call of the trace (smaller msg_index), whatever tool it names, each under its
+    own recorded feed, answers discarded. A recording made after an earlier write of its own trace
+    only matches on the world that write left, and without the prefix the same call on two traces
+    has two recorded answers and one input. A call the recording refused is left out of every
+    prefix: its refusal left no state.
     """
 
     def __init__(self, source: str, db: dict, workdir: Path | str, class_name: str = TOOLS_CLASS,
                  db_class: str = DB_CLASS, timeout: float = 30.0,
                  call_states: Optional[dict] = None, call_tasks: Optional[dict] = None,
-                 call_context: Optional[dict] = None):
+                 call_context: Optional[dict] = None, trace_calls: Optional[dict] = None):
         self.source, self.db, self.timeout = source, db, timeout
         self.class_name, self.db_class = class_name, db_class
         self.call_states = dict(call_states or {})  # call id -> the Starting state that call ran on
@@ -328,6 +369,11 @@ class Sandbox:
         # reads what the recording showed for this call; a call with no witnessed value takes
         # the seeded feed.
         self.call_context = dict(call_context or {})
+        # Trace id -> every recorded call of that trace, any tool, in recorded order: the one
+        # table each gated call's prefix is read out of.
+        self.trace_calls = {trace_id: sorted(calls, key=context_feed_key)
+                            for trace_id, calls in (trace_calls or {}).items() if trace_id}
+        self._prefix_digests: dict[tuple, str] = {}
         # Absolute, because the subprocess is started with cwd inside this directory: a relative
         # workdir would be resolved against it a second time and every path would double. Found on
         # the first live build, where `--workdir .work-retail` made all sixteen tools fail the
@@ -353,13 +399,39 @@ class Sandbox:
         """
         return (self.call_tasks.get(call.id) if call.id else None) or call.trace_id or (call.id or "unknown")
 
+    def prefix_of(self, call: ToolCall) -> list[ToolCall]:
+        """The calls this call's trace made before it, in order; none without a trace or a position."""
+        trace_id, position, _ = context_feed_key(call)
+        if not trace_id or position == _MISSING_MSG_INDEX:
+            return []
+        return [earlier for earlier in self.trace_calls.get(trace_id, ())
+                if context_feed_key(earlier)[1] < position and earlier.error is None]
+
     def state_key(self, call: ToolCall) -> str:
-        """A comparable key for the world this call runs on, memoised per world, never per call.
+        """A comparable key for the world this call runs on, memoised per world and prefix.
 
         Two calls with the same arguments on two different worlds are two different inputs, and a
-        body that answers them alike answered without looking at either.
+        body that answers them alike answered without looking at either. The same Starting state
+        after a different prefix is a different world; a call with no prefix keys its world alone.
         """
-        return self._state_hash(self.state_for(call))
+        state = self._state_hash(self.state_for(call))
+        prefix = self._prefix_digest(call)
+        return state if prefix is None else content_hash({"state": state, "prefix": prefix})
+
+    def _prefix_digest(self, call: ToolCall) -> Optional[str]:
+        key = context_feed_key(call)
+        if key not in self._prefix_digests:
+            prefix = self.prefix_of(call)
+            self._prefix_digests[key] = content_hash(
+                [[earlier.name, earlier.args, self._feed_of(earlier)] for earlier in prefix]) if prefix else None
+        return self._prefix_digests[key]
+
+    def _feed_of(self, call: ToolCall) -> Optional[dict]:
+        """The recorded feed that travels with this call, or None where it witnessed nothing."""
+        feed = self.call_context.get(context_feed_key(call))
+        if isinstance(feed, dict) and (feed.get("now") is not None or feed.get("new_ids")):
+            return feed
+        return None
 
     def _state_hash(self, state: dict) -> str:
         key = self._state_hashes.get(id(state))
@@ -374,8 +446,7 @@ class Sandbox:
         memo returns the first result rather than whatever the world looked like after the last one.
         """
         calls = list(calls)
-        keys = [content_hash({"name": c.name, "args": c.args, "state": self._state_hash(self.state_for(c))})
-                for c in calls]
+        keys = [content_hash({"name": c.name, "args": c.args, "state": self.state_key(c)}) for c in calls]
         todo, seen = [], set()
         for key, call in zip(keys, calls, strict=False):
             if (use_cache and key in self.cache) or key in seen:
@@ -449,18 +520,30 @@ class Sandbox:
         # what the seeded feed already says, and the job stays the bytes it always was for it.
         # The feed rides on its call's own entry, looked up here by feed key, so the child
         # needs no identity beyond the entry; a call absent from the mapping gets no feed.
-        entries = []
+        # A prefix call travels once in `prefix_calls`, and each entry names its prefix by index
+        # into that one table, so a trace's early calls are not written once per later call.
+        entries, prefix_calls, prefix_at = [], [], {}
         for call, i in zip(calls, indexes, strict=False):
             entry = {"id": call.id, "name": call.name, "args": call.args, "db": i}
-            feed = self.call_context.get(context_feed_key(call))
-            if isinstance(feed, dict) and (feed.get("now") is not None or feed.get("new_ids")):
+            feed = self._feed_of(call)
+            if feed is not None:
                 entry["feed"] = feed
+            prefix = []
+            for earlier in self.prefix_of(call):
+                key = context_feed_key(earlier)
+                if key not in prefix_at:
+                    prefix_at[key] = len(prefix_calls)
+                    prefix_calls.append({"name": earlier.name, "args": earlier.args,
+                                         "feed": self._feed_of(earlier)})
+                prefix.append(prefix_at[key])
+            if prefix:
+                entry["prefix"] = prefix
             entries.append(entry)
         job.write_text(json.dumps({"source": self.source, "dbs": states, "db_class": self.db_class,
                                    "class_name": self.class_name, "helpers": sorted(HELPERS),
                                    "trace": bool(trace), "diff": bool(want_diff),
                                    "want": [[str(pair[0]), str(pair[1])] for pair in want],
-                                   "calls": entries},
+                                   "prefix_calls": prefix_calls, "calls": entries},
                                   default=str), encoding="utf-8")
         try:
             done = subprocess.run([sys.executable, "-I", str(self.runner), str(job), str(out)],

@@ -12,6 +12,8 @@ Agent-World (arXiv 2604.18292) and Agent World Model (arXiv 2602.10090) both rep
 
 4. Many corpora at once (operations). Builds already run per workdir with cumulative ceilings; a fleet command runs the loop on every corpus under one budget, publishes each environment to the Hub (D221) with its card, and reports the funnel per environment side by side. The diagnosis across Tasks that Agent-World credits for its largest gains sits here as an Examiner stage that ranks weak Tasks by relation class (D211's classes) before the repair beat.
 
+Beside the four axes: feedback mining from traces (founder, 2026-09-23, production direction), in docs/todo.md under that name.
+
 ## What stays fixed
 
 Trusted means a recorded trace replayed at fidelity, a Reference confirmed, a Verifier derived and the suite passed. Nothing synthetic joins that count. Synthetic Tasks, specification environments and forks each carry their own heading and their own numbers, so a card on the Hub says how much of an environment is recorded and how much is generated. The harness stays general: the walk generator, the specification reader and the fork tool name classes, never a domain.

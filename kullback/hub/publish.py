@@ -1,8 +1,8 @@
 """Publishing an Environment and fetching one back (D221).
 
 `publish` exports the workdir into a staging directory, writes the card beside the package and
-uploads the whole directory as one commit, then tags that commit `round-<n>` so an older publish
-stays reachable after the card's numbers have moved. Publishing again is the same call: a new commit
+uploads the whole directory as one commit, then tags that commit `round-<n>`, or `build-<YYYYMMDD>`
+where no round closed, so an older publish stays reachable after the card's numbers have moved. Publishing again is the same call: a new commit
 on the same repository, a rewritten card, the old tags untouched.
 
 The bar between a release and a preview is one number and one rule. Replay fidelity over Tasks at or
@@ -96,7 +96,7 @@ def publish(workdir: Any, repo_id: str, *, client: Optional[HubClient] = None, n
         manifest = stage(workdir, out, repo_id, name=name, preview=preview, corpus=corpus,
                          corpus_license=corpus_license, corpus_url=corpus_url, bar=bar)
         url = host.create_repo(repo_id)
-        tag = f"round-{manifest.get('round')}" if manifest.get("round") is not None else "round-unknown"
+        tag = manifest["tag"]
         commit = host.upload_folder(repo_id, out, _commit_message(manifest, tag))
         host.tag(repo_id, tag, revision=commit or None)
     finally:

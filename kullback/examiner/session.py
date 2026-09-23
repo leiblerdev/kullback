@@ -9,6 +9,7 @@ to `findings.json` at once, never a round late (learnings 7).
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -43,7 +44,7 @@ from kullback.runner import budget
 from kullback.runner.canon import rules_of
 from kullback.runner.records import Constraint, Task, ToolSig, UserRules, Verifier, read_json, run_path, write_json
 
-BASE_ONLY = ("read", "grep", "find", "ls", "web_search")
+BASE_ONLY = ("read", "grep", "find", "ls", "inspect", "web_search")
 WRITABLE_DIRS = prompt_mod.WRITABLE_DIRS
 EXAMINE_MESSAGE = "Examine."
 # The Examiner's turn cap: reading Runs, replays and Verifiers before filing takes tens of turns, and
@@ -56,8 +57,9 @@ HINT_CHARS = 200
 RUN_PATHS_SHOWN = 5
 # How many left-out Tasks the note names before the count of the rest.
 LEFT_OUT_SHOWN = 10
-# How many Tasks one examine call derives; the rest wait for the next call (F40).
-TASKS_PER_CALL = 10
+# How many Tasks the derivation derives at once when the caller names no number: every picked Task
+# is derived in one call, so one Task at a time left most of a build underived (F40, F55).
+MAX_DERIVE_WORKERS = 8
 NOT_DERIVED_SHOWN = 10
 NO_FINISHED_RUN = "no finished Run"
 NO_CONFIRMED_REFERENCE = "no confirmed Reference"
@@ -227,7 +229,7 @@ def select_for_session(task_ids: Iterable[str], replays: dict, rerolls: dict,
 
 
 def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> list[str]:
-    """The Tasks this examine call is about, in id order, before the cap (F40).
+    """The Tasks this examine call is about, in id order (F40).
 
     With task_ids, those that name a Task. Without, every Task not derived yet: it has no status
     row because no derivation has read it, or its Verifier file is absent and either its row holds
@@ -253,15 +255,25 @@ def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> lis
     return [task_id for task_id in known if pending(task_id)]
 
 
-def not_derived_finding(later: list[str]) -> Finding:
-    """The note naming the confirmed Tasks past this call's cap, one row each (F40)."""
+def default_workers() -> int:
+    """How many Tasks derive at once when the caller names no number: the cores, at most eight."""
+    return max(1, min(MAX_DERIVE_WORKERS, os.cpu_count() or 1))
+
+
+def not_derived_finding(later: list[str], limit: Optional[int] = None) -> Finding:
+    """The note naming the Tasks past a limit the caller asked for, one row each (F40).
+
+    examine derives every Task it picks unless the caller passes `limit`; only then are Tasks
+    left for the next call, and this note says which.
+    """
     named = ", ".join(later[:NOT_DERIVED_SHOWN])
     rest = len(later) - NOT_DERIVED_SHOWN
     named += f" and {rest} more" if rest > 0 else ""
     text = f"{len(later)} confirmed Tasks not derived yet: {named}; call examine again"
+    why = f"this examine call was limited to {limit} Tasks" if limit is not None else "a limit was set"
     return Finding(kind="other", source="derive", text=text,
-                   rows=[{"task_id": task_id, "not_derived": "cap"} for task_id in later],
-                   change=f"examine derives {TASKS_PER_CALL} Tasks per call; {text}")
+                   rows=[{"task_id": task_id, "not_derived": "limit"} for task_id in later],
+                   change=f"{why}; {text}")
 
 
 def left_out_finding(left_out: list[tuple[str, str]], examined: int) -> Finding:
@@ -467,7 +479,8 @@ def _one_line(text: str, limit: int = HINT_CHARS) -> str:
 def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: Any,
             judge_model: Any = None, probe_model: Any = None, reroll_model: Any = None,
             allowance_usd: Optional[float] = None, session_path: Any = None,
-            subscribers: Iterable[Callable] = (), max_turns: int = EXAMINE_MAX_TURNS) -> list[Finding]:
+            subscribers: Iterable[Callable] = (), max_turns: int = EXAMINE_MAX_TURNS,
+            workers: Optional[int] = None, limit: Optional[int] = None) -> list[Finding]:
     """Derive the Verifiers by code, file what the records say, then run one model session.
 
     With `model=None` the session is code only: the derivation and its findings. With a model,
@@ -480,24 +493,30 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     The probe, re-roll and variant runners come from the runner tool over the workdir (D120):
     without a re-roll model the derivation stays code only and buys no Runs.
 
+    Every Task derive_pick returns is derived in this call, `workers` at a time (default: the
+    cores, at most eight); `limit`, when given, derives only the first that many and files one
+    note naming the rest (F40, F55). The exam view is copied after the derivation, so the
+    session reads this call's Verifiers and task status, never the last call's (F52).
+
     The session sees only the Tasks with a finished Run and a confirmed Reference; one finding
     of kind other names the rest and why, and when none is left no session opens at all (F24).
     """
     root = Path(workdir)
     task_ids = list(task_ids) if task_ids is not None else None
-    expose(workdir)
     store = load_store(workdir)
     anchor = _load_anchor(root)
     ctx = stage_mod.ExamContext(root, GateLedger(root), anchor=anchor)
     runners = runners_mod.runners_for(root, reroll_model=reroll_model, anchor=anchor)
     picked = derive_pick(root, store, task_ids)
-    now, later = picked[:TASKS_PER_CALL], picked[TASKS_PER_CALL:]
+    now, later = (picked, []) if limit is None else (picked[:limit], picked[limit:])
     if now:
         stage_mod.derive_all(ctx, store, probe_model=probe_model, judge_model=judge_model,
                              run_probe=runners["run_probe"],
                              run_rerolls=runners["run_rerolls"] if reroll_model is not None else None,
-                             run_variant=runners["run_variant"], round_number=0, only=now)
-    findings = derive_findings(workdir, store) + ([not_derived_finding(later)] if later else [])
+                             run_variant=runners["run_variant"], round_number=0, only=now,
+                             workers=workers if workers is not None else default_workers())
+    expose(workdir)
+    findings = derive_findings(workdir, store) + ([not_derived_finding(later, limit)] if later else [])
     if task_ids is not None:
         wanted = set(task_ids)
         findings = [f for f in findings if f.task_id in wanted or

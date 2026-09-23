@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from nursery_domain import ELICITED_VALUE, RECORDED_TURN
+from nursery_domain import ELICITED_VALUE, RECORDED_TURN, build_unclosed_workdir
 from typer.testing import CliRunner
 
 from kullback import cli
@@ -61,6 +63,32 @@ def test_the_manifest_carries_the_numbers_the_artifacts_hold(nursery, tmp_path):
     assert manifest["env_id"] == "env-hash-1"
     assert manifest["source"] == {"corpus": "nursery traces", "license": "MIT", "url": None}
     assert manifest["content_hash"] and manifest["files"]
+
+
+def test_a_build_with_no_closed_round_publishes_the_workdir_status_and_a_date_tag(tmp_path, hub):
+    workdir = build_unclosed_workdir(tmp_path / "work")
+    sessions = workdir / "sessions"
+    sessions.mkdir()
+    (sessions / "builder.jsonl").write_text("{}\n", encoding="utf-8")
+    stamp = datetime(2026, 9, 23, 12, tzinfo=timezone.utc).timestamp()
+    os.utime(sessions / "builder.jsonl", (stamp, stamp))
+    hosted, manifest = publish_mod.publish(workdir, "leibler/nursery", client=hub, preview=True)
+    assert manifest["round"] is None
+    assert manifest["reference_confirmed"] == 3
+    assert manifest["replay_fidelity"]["tasks"] == 3 and manifest["tasks_total"] == 4
+    assert manifest["trusted"] == 2
+    assert manifest["tag"] == hosted.tag == "build-20260923"
+    assert manifest["counts_source"] == package_mod.NO_ROUND_SOURCE
+    card = hub.repos["leibler/nursery"]["commits"][hosted.commit]["README.md"].decode()
+    assert "counts from the workdir status, no round closed" in card
+    assert "round-unknown" not in card and "round-unknown" not in hub.messages[0]
+
+
+def test_a_build_with_a_round_record_keeps_the_rounds_trusted_count_and_tag(nursery, tmp_path, hub):
+    hosted, manifest = publish_mod.publish(nursery, "leibler/nursery", client=hub, preview=True)
+    assert manifest["trusted"] == 1 and manifest["round"] == 2
+    assert manifest["tag"] == hosted.tag == "round-2"
+    assert manifest["counts_source"] == "the last round record"
 
 
 def test_every_task_carries_its_funnel_stage_and_why_it_stopped(nursery, tmp_path):

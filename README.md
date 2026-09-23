@@ -21,15 +21,20 @@ Kullback is the open-source Builder and Runner behind [Leibler](https://leibler.
 
 ## News
 
+- **2026-09-23.** Smoke 7: two builds with `openai/gpt-6-sol` as the Builder, no ceiling, killed on the founder's request at 13:44 UTC (commit 92d3f28). Replay is near complete: 202 of 205 retail References and 100 of 119 airline References are confirmed. The remaining walls are three body rules and the write gate replaying on the Starting state; trusted is limited by derivation volume (ten Tasks per examine call, killed early), not by Verifiers failing. The readings are in `.claude/reports/sol-behaviour-2026-09-23.md` and `.claude/reports/env-quality-vs-tau2-2026-09-23.md`. Both Environments were republished on Hugging Face the same day under the tag `build-20260923`: [leibler/retail](https://huggingface.co/datasets/leibler/retail) as a release and [leibler/airline](https://huggingface.co/datasets/leibler/airline) as a preview, since airline's 84.0% over Tasks is below the 90% bar.
 - **2026-09-09.** The retail Environment is published on Hugging Face as a release at [leibler/retail](https://huggingface.co/datasets/leibler/retail), with airline and telecom beside it as previews. We are now extending the Tasks in it: first by raising the trusted count, then by generating new Tasks over the rebuilt world.
 
 ## Environments
 
-| Environment | Replay fidelity | Trusted Tasks | Status |
-| --- | --- | --- | --- |
-| [leibler/retail](https://huggingface.co/datasets/leibler/retail) | 95.1% | 122 of 205 | release |
-| [leibler/airline](https://huggingface.co/datasets/leibler/airline) | 72.3% | 38 of 119 | preview |
-| [leibler/telecom](https://huggingface.co/datasets/leibler/telecom) | 9.3% | 0 of 183 | preview |
+Smoke 7, 2026-09-23, Builder `openai/gpt-6-sol`, published under the tag `build-20260923`. Fidelity over Tasks is the card's number: the Tasks whose Reference replays confirmed, over all Tasks. Call fidelity is the share of every recorded call whose replay agrees with the recording.
+
+| Environment | Fidelity over Tasks | Over Runs | Call fidelity | Verifiers | Trusted Tasks | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| [leibler/retail](https://huggingface.co/datasets/leibler/retail) | 98.5% (202 of 205) | 96.7% | 99.53% over 3220 calls | 20 | 14 of 205 | release |
+| [leibler/airline](https://huggingface.co/datasets/leibler/airline) | 84.0% (100 of 119) | 84.5% | 95.64% over 1513 calls | 30 | 22 of 119 | preview |
+| [leibler/telecom](https://huggingface.co/datasets/leibler/telecom) | telecom: not in this round | | | | | preview |
+
+Previous numbers (the 2026-09-09 packages, replay fidelity and trusted): retail 95.1% and 122 of 205, airline 72.3% and 38 of 119, telecom 9.3% and 0 of 183. The builds were killed before any round closed, so the cards take their counts from the workdir status.
 
 A release replays at least 90% of its Tasks. A preview is below that bar and is published anyway, with its numbers on its card. All three come from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora (MIT). A package holds the rebuilt world, the Task list and the Verifiers, and none of the recordings it was built from.
 
