@@ -241,3 +241,41 @@ def test_default_examine_passes_the_session_model_through(tmp_path, monkeypatch)
     assert not result.is_error, result.content
     assert seen["model"] is sentinel
     assert seen["task_ids"] is None
+
+
+def _record_examine(monkeypatch):
+    from kullback.examiner import session as examiner_session
+
+    seen = {}
+
+    def examine(workdir, *, task_ids=None, model=None, judge_model=None, probe_model=None,
+                reroll_model=None, **kwargs):
+        seen.update(model=model, judge_model=judge_model, probe_model=probe_model,
+                    reroll_model=reroll_model)
+        return []
+
+    monkeypatch.setattr(examiner_session, "examine", examine)
+    return seen
+
+
+def test_default_examine_runs_judges_probe_and_rerolls_on_the_builder_model(tmp_path, monkeypatch):
+    seen = _record_examine(monkeypatch)
+    builder = object()
+    domain_tools_mod.default_examine_fn(tmp_path, None, model=builder)
+    assert seen == {"model": builder, "judge_model": builder, "probe_model": builder,
+                    "reroll_model": builder}
+
+
+def test_default_examine_hands_a_named_judge_probe_or_reroll_model_its_own_role(tmp_path, monkeypatch):
+    seen = _record_examine(monkeypatch)
+    builder, judge, probe, reroll = object(), object(), object(), object()
+    domain_tools_mod.default_examine_fn(tmp_path, None, model=builder, judge_model=judge,
+                                        probe_model=probe, reroll_model=reroll)
+    assert seen == {"model": builder, "judge_model": judge, "probe_model": probe,
+                    "reroll_model": reroll}
+
+
+def test_default_examine_with_no_model_leaves_every_model_none(tmp_path, monkeypatch):
+    seen = _record_examine(monkeypatch)
+    domain_tools_mod.default_examine_fn(tmp_path, None)
+    assert seen == {"model": None, "judge_model": None, "probe_model": None, "reroll_model": None}
