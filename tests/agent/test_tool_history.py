@@ -19,14 +19,6 @@ def result(call_id: str, content: str = "ok") -> ToolResultMessage:
     return ToolResultMessage(tool_call_id=call_id, tool_name="t", content=content)
 
 
-def test_interrupted_tool_results_answer_dangling_calls():
-    messages = [UserMessage(content="go"), assistant("c1", "c2"), result("c1")]
-    repairs = interrupted_tool_results(messages)
-    assert [r.tool_call_id for r in repairs] == ["c2"]
-    assert repairs[0].is_error and "interrupted" in repairs[0].content
-    assert interrupted_tool_results(messages + repairs) == []
-
-
 def test_a_transcript_already_in_order_is_returned_unchanged():
     messages = [UserMessage(content="go"), assistant("c1"), result("c1"), AssistantMessage(content="done")]
     repair = repair_tool_history(messages)
@@ -45,6 +37,12 @@ def test_an_unanswered_call_is_answered_with_an_interruption_in_place():
     assert kinds == [("AssistantMessage", None), ("ToolResultMessage", "c1"), ("ToolResultMessage", "c2")]
     assert repair.messages[1].content == INTERRUPTED_TOOL_RESULT and repair.messages[1].is_error
     assert repair.changed is True and repair.counts()["synthesized_results"] == 1
+    # the dangling call finder answers each unanswered call once
+    messages = [UserMessage(content="go"), assistant("c1", "c2"), result("c1")]
+    repairs = interrupted_tool_results(messages)
+    assert [r.tool_call_id for r in repairs] == ["c2"]
+    assert repairs[0].is_error and "interrupted" in repairs[0].content
+    assert interrupted_tool_results(messages + repairs) == []
 
 
 def test_a_result_that_drifted_from_its_call_is_moved_back_beside_it():

@@ -10,7 +10,7 @@ import pytest
 
 from kullback.ai.provider import TestModel
 from kullback.builder import intent as intent_mod
-from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, UserRules
+from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
 from kullback.user import context as context_mod
 from kullback.user import factory as factory_mod
 from kullback.user import fidelity as fidelity_mod
@@ -126,45 +126,18 @@ def test_the_three_call_paths_build_users_with_equal_configuration(workdir):
         assert live.guards.strip(probe) == minimal.guards.strip(probe)
 
 
-def test_the_factory_wires_the_builds_own_strip_over_the_tasks_evidence(workdir):
-    """The scorer's user strips what the build's strip strips, on the same Task (G5)."""
-    from kullback.builder import intent as intent_mod
-    model = TestModel([], loop=True)
-    user = factory_mod.build_user(workdir, "task_1", model, factory_mod.PURPOSE_SCORE)
-    assert isinstance(user, AgentUser)
-    index = fidelity_mod.trace_index(workdir)
-    direct = intent_mod.value_strip([index["t1"]], schema=None, rules=None)
-    probes = ["My plot number is PLOT-4471.", "The courier reference is CR-90881.", "Hello."]
-    for probe in probes:
-        assert user.guards.strip is not None
-        assert user.guards.strip(probe) == direct(probe)
-
-
 def test_an_examination_with_no_reference_is_nothing_to_examine(workdir):
     assert factory_mod.build_user(workdir, "missing", TestModel([], loop=True),
                                   factory_mod.PURPOSE_SCORE) is None
 
 
-def test_a_run_with_no_reference_and_no_live_inputs_is_an_error(workdir):
+@pytest.mark.parametrize("task_id,purpose", [
+    ("task_1", "examine"),
+    ("missing", factory_mod.PURPOSE_RUN),
+], ids=["unknown-purpose", "run-with-no-reference-and-no-live-inputs"])
+def test_an_unknown_purpose_or_a_run_with_nothing_to_drive_is_an_error(workdir, task_id, purpose):
     with pytest.raises(ValueError):
-        factory_mod.build_user(workdir, "missing", TestModel([], loop=True),
-                               factory_mod.PURPOSE_RUN)
-
-
-def test_an_unknown_purpose_is_an_error(workdir):
-    with pytest.raises(ValueError):
-        factory_mod.build_user(workdir, "task_1", TestModel([], loop=True), "examine")
-
-
-def test_a_rules_floor_is_not_an_agent_user(workdir):
-    """The factory builds the driver over the floor; the floor alone is not one."""
-    rules: UserRules = fidelity_mod.rules_for(workdir, "t1")
-    floor = simulated_mod.SimulatedUser(rules, vocab=VOCAB)
-    assert not isinstance(floor, AgentUser)
-    user = factory_mod.build_user(workdir, "task_1", TestModel([], loop=True),
-                                  factory_mod.PURPOSE_SCORE, fallback=floor)
-    assert isinstance(user, AgentUser)
-    assert user.fallback is floor
+        factory_mod.build_user(workdir, task_id, TestModel([], loop=True), purpose)
 
 
 def test_full_live_inputs_never_touch_the_disk(workdir):
@@ -222,13 +195,17 @@ def test_the_disk_derivation_lists_the_tasks_own_recordings_as_members(workdir):
     schema = EntitySchema.model_validate(read_json(workdir / "schema.json", {}))
     live_strip = intent_mod.value_strip(disk_members, schema=schema,
                                         rules=canon_mod.load_rules(workdir / "canon-rules.json"))
+    direct = intent_mod.value_strip([reference], schema=None, rules=None)
+    assert user.guards.strip is not None
     for probe in ("My plot number is PLOT-4471.", "The courier reference is CR-90881.",
                   "Hello."):
         assert user.guards.strip(probe) == live_strip(probe)
+        assert user.guards.strip(probe) == direct(probe)
 
 
-def test_the_built_user_carries_the_workdirs_bus_by_default(workdir):
-    """No bus passed means the workdir's own, named for this agent."""
+def test_the_built_user_carries_the_workdirs_bus_unless_the_caller_passes_one(workdir):
+    """No bus passed means the workdir's own, named for this agent; a caller's own is kept."""
+    from kullback.agent.bus import Bus
     user = factory_mod.build_user(workdir, "task_1", TestModel([], loop=True),
                                   factory_mod.PURPOSE_SCORE)
     assert user.bus is not None
@@ -236,10 +213,6 @@ def test_the_built_user_carries_the_workdirs_bus_by_default(workdir):
     assert user.bus.agent == "user"
     assert user.harness().bus is user.bus
 
-
-def test_an_explicit_bus_reaches_the_harness_unchanged(workdir):
-    """A caller with its own bus keeps it; the factory makes no second one."""
-    from kullback.agent.bus import Bus
     bus = Bus(workdir / "custom.jsonl", "user")
     user = factory_mod.build_user(workdir, "task_1", TestModel([], loop=True),
                                   factory_mod.PURPOSE_SCORE, bus=bus)

@@ -104,6 +104,11 @@ def test_a_no_write_recording_that_stated_facts_and_one_that_stated_nothing_are_
     assert answered("a").end_state == ref.ANSWERED
     assert refused("b").end_state == ()
     assert len(ref.group([answered("a"), refused("b")])) == 2
+    # A recording that read nothing shares the stated nothing state with a refusal after a read.
+    read_nothing = ref.Recording(run_id="c", path="c", end_state=ref.end_state(
+        make_run("c", [user("Is the library open on Sunday?"), assistant("I cannot check that.")]),
+        LIBRARY_WRITES, _canon))
+    assert read_nothing.end_state == refused("b").end_state == ()
 
 
 def test_two_answered_no_write_recordings_share_one_end_state():
@@ -111,13 +116,6 @@ def test_two_answered_no_write_recordings_share_one_end_state():
     other = answered("b", answer="It is due back on 2026-09-20; nothing is owed on LB-4412.")
     assert answered("a").end_state == other.end_state == ref.ANSWERED
     assert len(ref.group([answered("a"), other])) == 1
-
-
-def test_a_recording_that_read_nothing_and_a_refusal_after_a_read_share_the_stated_nothing_state():
-    read_nothing = ref.Recording(run_id="c", path="c", end_state=ref.end_state(
-        make_run("c", [user("Is the library open on Sunday?"), assistant("I cannot check that.")]),
-        LIBRARY_WRITES, _canon))
-    assert read_nothing.end_state == refused("b").end_state == ()
 
 
 def test_a_recording_with_writes_keeps_its_write_state_whatever_it_said():
@@ -183,6 +181,9 @@ def test_a_recording_that_broke_a_constraint_is_a_failed_recording():
     out = ref.confirm([cancel_run("a"), broken])
     assert [r.run_id for r in out.references] == ["a"]
     assert out.failed == {"b": "violates c_pending"}
+    written = out.as_dict()
+    assert [r["run_id"] for r in written["recordings"]] == ["a", "b"]
+    assert written["failed"] == {"b": "violates c_pending"}
 
 
 def test_two_end_states_and_no_judge_is_no_reference():
@@ -588,13 +589,6 @@ def test_a_rule_broken_by_a_few_percent_of_the_recordings_is_demoted():
     assert ref.demote(rules, {"rare": {"failed": 1, "runs": 80}})[1] == []
 
 
-def test_the_confirmation_lists_every_recording_it_saw():
-    broken = cancel_run("b")
-    broken.violated = ["c1"]
-    out = ref.confirm([cancel_run("a"), broken]).as_dict()
-    assert [r["run_id"] for r in out["recordings"]] == ["a", "b"] and out["failed"] == {"b": "violates c1"}
-
-
 # --- the order of a list argument (fix C) -----------------------------------
 # A caterer: the guest names three dishes and the agent books them in one call. Two recordings list
 # the same dishes in different orders; the kitchen answers both with the same booking.
@@ -619,13 +613,15 @@ def _catering(run_id: str, dishes: list[str], answered: dict, kind: str = ref.RE
 BOOKED = {"table_id": "T-9", "covers": 3, "status": "booked"}
 
 
-def test_the_same_dishes_booked_in_another_order_are_one_end_state():
+def test_the_same_dishes_booked_in_another_order_are_one_end_state_and_confirm_a_reference():
     first = _catering("a", ["soup", "pie", "tart"], BOOKED)
     second = _catering("b", ["tart", "soup", "pie"], BOOKED)
     assert first.end_state != second.end_state
     assert first.settled == second.settled
     groups = ref.group([first, second])
     assert len(groups) == 1 and groups[0]["runs"] == ["a", "b"]
+    out = ref.confirm([first, second], judge=None)
+    assert [r.run_id for r in out.references] == ["a", "b"] and out.reason is None
 
 
 def test_the_same_dishes_the_kitchen_answered_differently_stay_two_end_states():
@@ -639,12 +635,6 @@ def test_two_runs_that_booked_different_dishes_stay_two_end_states():
     first = _catering("a", ["soup", "pie", "tart"], BOOKED)
     second = _catering("b", ["soup", "pie", "cake"], BOOKED)
     assert len(ref.group([first, second])) == 2
-
-
-def test_a_task_whose_recordings_differ_only_in_that_order_confirms_a_reference():
-    out = ref.confirm([_catering("a", ["soup", "pie", "tart"], BOOKED),
-                       _catering("b", ["tart", "soup", "pie"], BOOKED)], judge=None)
-    assert [r.run_id for r in out.references] == ["a", "b"] and out.reason is None
 
 
 # --- D245 stable heads ---

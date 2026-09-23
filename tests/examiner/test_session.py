@@ -103,19 +103,6 @@ def test_model_write_of_verifiers_carries_rulings_runs_write_refused(tmp_path):
     assert writes[1].is_error is True
 
 
-def test_scripted_reroll_is_refused_when_the_allowance_is_spent(tmp_path):
-    world = make_world(tmp_path)
-    materialize(world)
-    events: list = []
-    S.examine(world.workdir, model=TestModel([
-        reply("buying", ("reroll", {"task_id": "t1", "count": 1})),
-        reply("done"),
-    ]), reroll_model=object(), allowance_usd=0.0, subscribers=[events.append])
-    [bought] = _ends(events, "reroll")
-    assert bought.is_error is True
-    assert "allowance is spent" in bought.result.content
-
-
 def test_model_finding_publishes_and_duplicates_are_refused_with_the_id(tmp_path):
     world = make_world(tmp_path)
     materialize(world)

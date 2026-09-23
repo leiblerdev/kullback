@@ -56,7 +56,7 @@ def test_over_line_is_strictly_above_the_line():
 # --- the record ---
 
 
-def test_a_harness_with_a_session_records_every_message_and_reads_the_active_path(tmp_path, add_tool):
+def test_a_session_records_every_message_and_reloads_without_reusing_entry_ids(tmp_path, add_tool):
     model = TestModel([reply(None, call("add", {"a": 1, "b": 2}, "c1")), reply("three")])
     harness = harness_with_session(tmp_path, model, [add_tool])
     collect(harness.prompt("go"))
@@ -68,24 +68,17 @@ def test_a_harness_with_a_session_records_every_message_and_reads_the_active_pat
     assert [m.role for m in harness.messages] == ["user", "assistant", "tool", "assistant"]
     reloaded = SessionStore.load(store.path)
     assert [m.content for m in reloaded.active_messages()] == [m.content for m in harness.messages]
-
-
-def test_messages_given_at_construction_are_recorded_first(tmp_path):
-    store = SessionStore(tmp_path / "s.jsonl")
-    harness = AgentHarness(TestModel(["ok"]), messages=[UserMessage(content="earlier")], session=store)
-    assert [e.type for e in store.entries] == ["session_info", "message"]
-    assert [m.content for m in harness.messages] == ["earlier"]
-
-
-def test_entry_ids_never_reuse_numbers_on_a_reloaded_session(tmp_path):
-    store = SessionStore(tmp_path / "s.jsonl")
-    first = AgentHarness(TestModel(["one"]), session=store)
-    collect(first.prompt("go"))
-    second = AgentHarness(TestModel(["two"]), session=SessionStore.load(store.path))
+    # a harness on the reloaded session never reuses an entry number
+    second = AgentHarness(TestModel(["two"]), session=reloaded)
     collect(second.prompt("again"))
     ids = [e.id for e in second.session.entries]
     assert len(ids) == len(set(ids))
     assert ids[-1] == f"e{len(ids)}"
+    # messages given at construction are recorded first
+    early = SessionStore(tmp_path / "early.jsonl")
+    seeded = AgentHarness(TestModel(["ok"]), messages=[UserMessage(content="earlier")], session=early)
+    assert [e.type for e in early.entries] == ["session_info", "message"]
+    assert [m.content for m in seeded.messages] == ["earlier"]
 
 
 # --- the note ---
@@ -101,14 +94,17 @@ def test_context_note_is_off_by_default(tmp_path, add_tool):
     assert plain.messages[2].content == '{"total": 3}'
 
 
-def test_context_note_on_appends_the_estimate_and_the_entry_id_and_the_hook_is_gone_between_runs(tmp_path, add_tool):
+def test_context_note_on_appends_the_estimate_and_the_entry_id_after_the_extension_hooks(tmp_path, add_tool):
     model = TestModel([reply(None, call("add", {"a": 1, "b": 2}, "c1")), reply("ok")])
     harness = harness_with_session(tmp_path, model, [add_tool], note=True, window=5000)
     events = collect(harness.prompt("go"))
     content = harness.messages[2].content
     first, note = content.split("\n")
     assert first == '{"total": 3}'
-    assert note.startswith("context ") and "of 5000, line at 40%, estimated from characters; this result is entry e4" in note
+    assert (
+        note.startswith("context ")
+        and "of 5000, line at 40%, estimated from characters; this result is entry e4" in note
+    )
     assert harness.session.get("e4").message.tool_call_id == "c1"
     end = next(e for e in events if e.type == "tool_execution_end")
     assert end.result.content == content and end.result.details == {"total": 3}
@@ -117,34 +113,39 @@ def test_context_note_on_appends_the_estimate_and_the_entry_id_and_the_hook_is_g
     # and the hook is gone between runs
     assert harness.hooks.tool_result == []
 
+    # without a session the note carries no entry id
+    bare = AgentHarness(
+        TestModel([reply(None, call("add", {"a": 1, "b": 2}, "c1")), reply("ok")]),
+        tools=[add_tool],
+        context=ContextConfig(note=True),
+    )
+    collect(bare.prompt("go"))
+    bare_note = bare.messages[2].content.split("\n")[1]
+    assert bare_note.startswith("context ") and "entry" not in bare_note
 
-def test_context_note_without_a_session_carries_no_entry_id(add_tool):
-    model = TestModel([reply(None, call("add", {"a": 1, "b": 2}, "c1")), reply("ok")])
-    harness = AgentHarness(model, tools=[add_tool], context=ContextConfig(note=True))
-    collect(harness.prompt("go"))
-    note = harness.messages[2].content.split("\n")[1]
-    assert note.startswith("context ") and "entry" not in note
+    # the note reads usage when the provider reported it
+    first_reply = ModelReply(tool_calls=[call("add", {"a": 1, "b": 2}, "c1")], usage=Usage(input=4000, output=20))
+    used = harness_with_session(
+        tmp_path / "usage", TestModel([first_reply, reply("ok")]), [add_tool], note=True, window=10000
+    )
+    collect(used.prompt("go"))
+    usage_note = used.messages[2].content.split("\n")[1]
+    assert "estimated from usage" in usage_note and usage_note.startswith("context 40% of 10000")
 
-
-def test_context_note_reads_usage_when_the_provider_reported_it(tmp_path, add_tool):
-    first = ModelReply(tool_calls=[call("add", {"a": 1, "b": 2}, "c1")], usage=Usage(input=4000, output=20))
-    model = TestModel([first, reply("ok")])
-    harness = harness_with_session(tmp_path, model, [add_tool], note=True, window=10000)
-    collect(harness.prompt("go"))
-    note = harness.messages[2].content.split("\n")[1]
-    assert "estimated from usage" in note and note.startswith("context 40% of 10000")
-
-
-def test_note_hook_runs_after_the_extension_hooks(tmp_path, add_tool):
-    model = TestModel([reply(None, call("add", {"a": 1, "b": 2}, "c1")), reply("ok")])
-    harness = harness_with_session(tmp_path, model, [add_tool], note=True)
+    # the note hook runs after the extension hooks
+    gated = harness_with_session(
+        tmp_path / "gate",
+        TestModel([reply(None, call("add", {"a": 1, "b": 2}, "c1")), reply("ok")]),
+        [add_tool],
+        note=True,
+    )
 
     def setup(api: ExtensionAPI):
         api.tool_result(lambda c, r: ToolResult(content=r.content + "\ngate: accepted", details=r.details))
 
-    load_extensions(harness, [setup])
-    collect(harness.prompt("go"))
-    lines = harness.messages[2].content.split("\n")
+    load_extensions(gated, [setup])
+    collect(gated.prompt("go"))
+    lines = gated.messages[2].content.split("\n")
     assert lines[0] == '{"total": 3}' and lines[1] == "gate: accepted" and lines[2].startswith("context ")
 
 

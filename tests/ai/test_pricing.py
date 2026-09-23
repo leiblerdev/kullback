@@ -69,30 +69,17 @@ def test_price_from_catalog_reads_the_full_provider_slash_model_id():
     assert price == {"input": 0.2, "output": 1.2, "cache_read": 0.02, "cache_write": 0.25}
 
 
-def test_price_from_catalog_missing_cache_write_defaults_to_zero():
-    price = pricing.price_from_catalog(CATALOG, "openai/gpt-4.1-mini")
-    assert price["cache_write"] == 0.0
-
-
-def test_price_from_catalog_missing_cache_read_defaults_to_input():
+def test_price_from_catalog_missing_cache_read_defaults_to_input_and_missing_cache_write_to_zero():
     catalog = {"x": {"models": {"m": {"cost": {"input": 3.0, "output": 9.0}}}}}
     price = pricing.price_from_catalog(catalog, "x/m")
     assert price["cache_read"] == 3.0
     assert price["cache_write"] == 0.0
+    assert pricing.price_from_catalog(CATALOG, "openai/gpt-4.1-mini")["cache_write"] == 0.0
 
 
-def test_price_from_catalog_matches_the_bare_wire_id_across_providers():
-    assert pricing.price_from_catalog(CATALOG, "gpt-5.6-luna") == pricing.price_from_catalog(
-        CATALOG, "openai/gpt-5.6-luna"
-    )
-
-
-def test_price_from_catalog_unknown_model_is_none():
+def test_price_from_catalog_unknown_model_or_missing_catalog_is_none():
     assert pricing.price_from_catalog(CATALOG, "openai/does-not-exist") is None
     assert pricing.price_from_catalog(CATALOG, "nobody/nothing") is None
-
-
-def test_price_from_catalog_handles_a_missing_or_empty_catalog():
     assert pricing.price_from_catalog(None, "openai/gpt-5.6-luna") is None
     assert pricing.price_from_catalog({}, "openai/gpt-5.6-luna") is None
     assert pricing.price_from_catalog(CATALOG, None) is None
@@ -117,21 +104,14 @@ def test_price_from_catalog_ignores_experimental_modes():
 # --- refresh: live off ---
 
 
-def test_refresh_live_off_with_no_snapshot_returns_none_and_touches_no_network(tmp_path):
-    def handler(request):
-        raise AssertionError("refresh must not reach the network while live is off")
-
-    result = pricing.refresh(
-        client=transport_of(handler), path=tmp_path / "models.dev.json", env={}
-    )
-    assert from_models_dev(result) == {}
-
-
-def test_refresh_live_off_reads_the_existing_snapshot_regardless_of_age(tmp_path):
+def test_refresh_live_off_reads_only_the_snapshot_on_disk_however_old_and_touches_no_network(tmp_path):
     def handler(request):
         raise AssertionError("refresh must not reach the network while live is off")
 
     path = tmp_path / "models.dev.json"
+    result = pricing.refresh(client=transport_of(handler), path=path, env={})
+    assert from_models_dev(result) == {}
+
     write_snapshot(path, CATALOG, fetched_at=datetime.now(timezone.utc) - timedelta(days=365))
     result = pricing.refresh(client=transport_of(handler), path=path, env={})
     assert from_models_dev(result) == CATALOG
@@ -196,6 +176,13 @@ def test_refresh_network_failure_falls_back_to_the_existing_snapshot(tmp_path):
     def handler(request):
         raise httpx.ConnectError("boom", request=request)
 
+    empty = pricing.refresh(
+        client=transport_of(handler), path=tmp_path / "none" / "models.dev.json",
+        env={pricing.LIVE_ENV_VAR: "1"}
+    )
+    assert from_models_dev(empty) == {}, "with no snapshot only the local registry is left"
+    assert set(empty) == set(pricing.local_providers())
+
     path = tmp_path / "models.dev.json"
     write_snapshot(path, CATALOG, fetched_at=datetime.now(timezone.utc) - timedelta(days=30))
     result = pricing.refresh(
@@ -205,18 +192,6 @@ def test_refresh_network_failure_falls_back_to_the_existing_snapshot(tmp_path):
         "a network error must fall back to the old snapshot, not raise"
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert stored["catalog"] == CATALOG, "a failed fetch must not touch the file on disk"
-
-
-def test_refresh_network_failure_with_no_snapshot_leaves_only_the_local_registry(tmp_path):
-    def handler(request):
-        raise httpx.ConnectError("boom", request=request)
-
-    path = tmp_path / "models.dev.json"
-    result = pricing.refresh(
-        client=transport_of(handler), path=path, env={pricing.LIVE_ENV_VAR: "1"}
-    )
-    assert from_models_dev(result) == {}
-    assert set(result) == set(pricing.local_providers())
 
 
 # --- budget.price_for and budget.price_source: models.dev first, then the table ---
@@ -241,13 +216,6 @@ def test_budget_prices_from_the_snapshot_when_it_has_a_row_and_from_the_table_ot
 def test_budget_price_source_is_none_for_a_model_priced_by_neither_source():
     assert budget.price_for("openai/mystery") is None
     assert budget.price_source("openai/mystery") is None
-
-
-def test_budget_price_for_reads_no_snapshot_by_default_in_tests():
-    """isolated_price_catalog (conftest) points _SNAPSHOT_PATH at an empty tmp dir, so with no
-    snapshot written, every model still comes from the table alone."""
-    assert budget.price_source("anthropic/claude-opus-5") == "table"
-    assert budget.price_for("anthropic/claude-opus-5") == budget.PRICES["anthropic/claude-opus-5"]
 
 
 def test_record_call_writes_price_source_onto_the_event_and_the_totals(tmp_path, workdir):
@@ -301,6 +269,9 @@ def test_a_bare_wire_id_every_provider_prices_the_same_still_prices():
         "a-mirror": {"models": {"gpt-5.6-luna": {"cost": {"input": 0.2, "output": 1.2}}}},
     }
     assert pricing.price_from_catalog(catalog, "gpt-5.6-luna")["input"] == 0.2
+    assert pricing.price_from_catalog(CATALOG, "gpt-5.6-luna") == pricing.price_from_catalog(
+        CATALOG, "openai/gpt-5.6-luna"
+    )
 
 
 # --- nested wire ids, the shape a reseller mostly speaks ---
@@ -375,10 +346,25 @@ def test_the_local_registry_can_add_one_model_row_to_a_provider_models_dev_alrea
     assert pricing.endpoint_from_catalog(catalog, "a-vendor/new-1").key_env_var == "A_VENDOR_API_KEY"
 
 
-def test_a_row_correcting_one_number_keeps_everything_else_the_catalog_knows(tmp_path):
+def vendor_refresh(path, row, override):
+    """Refresh over one vendor whose model old-1 is row, with a local file saying override for it;
+    override is a mapping written as JSON, or raw text for what JSON cannot write."""
+    write_snapshot(path, {"a-vendor": {"id": "a-vendor", "npm": "@ai-sdk/openai-compatible",
+                                       "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
+                                       "models": row}})
+    if isinstance(override, str):
+        (path.parent / pricing.LOCAL_PROVIDERS_NAME).write_text(override, encoding="utf-8")
+    else:
+        write_local(path, {"a-vendor": {"models": override}})
+    return pricing.refresh(path=path, env={})
+
+
+def test_a_row_correcting_some_numbers_keeps_everything_else_the_catalog_knows(tmp_path):
     """A file that moves a price says the price and stops. Restating the window to keep it would be
     a second place for it to go stale, and dropping it would leave the model priced and unsized,
-    which is a Run refused for a limit nobody meant to remove."""
+    which is a Run refused for a limit nobody meant to remove. The same rule holds inside the cost
+    mapping (a model left with an input and no output is refused by the budget gate), and at the
+    narrow end an override row with no fields in it wipes nothing."""
     path = tmp_path / "models.dev.json"
     write_snapshot(path, {"a-vendor": {"id": "a-vendor", "npm": "@ai-sdk/openai-compatible",
                                        "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
@@ -391,36 +377,19 @@ def test_a_row_correcting_one_number_keeps_everything_else_the_catalog_knows(tmp
     assert pricing.window_from_catalog(catalog, "a-vendor/old-1") == 200_000
     assert catalog["a-vendor"]["models"]["old-1"]["name"] == "Old One"
 
-
-def test_a_row_correcting_one_rate_keeps_the_rates_beside_it(tmp_path):
-    """The same rule inside the cost mapping. A file that says the input rate moved says that and
-    nothing else, and a model left with an input and no output is a model the budget gate refuses,
-    which is a Run lost to a number nobody meant to remove."""
-    path = tmp_path / "models.dev.json"
-    write_snapshot(path, {"a-vendor": {"id": "a-vendor", "npm": "@ai-sdk/openai-compatible",
-                                       "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
-                                       "models": {"old-1": {"limit": {"context": 200_000, "output": 8_000},
-                                                            "cost": {"input": 9.0, "output": 18.0,
-                                                                     "cache_read": 0.9}}}}})
-    write_local(path, {"a-vendor": {"models": {"old-1": {"cost": {"input": 3.0},
-                                                         "limit": {"context": 400_000}}}}})
-    catalog = pricing.refresh(path=path, env={})
+    catalog = vendor_refresh(tmp_path / "rate" / "models.dev.json",
+                             {"old-1": {"limit": {"context": 200_000, "output": 8_000},
+                                        "cost": {"input": 9.0, "output": 18.0, "cache_read": 0.9}}},
+                             {"old-1": {"cost": {"input": 3.0}, "limit": {"context": 400_000}}})
     assert pricing.price_from_catalog(catalog, "a-vendor/old-1") == {
         "input": 3.0, "output": 18.0, "cache_read": 0.9, "cache_write": 0.0}
     assert pricing.window_from_catalog(catalog, "a-vendor/old-1") == 400_000
     assert catalog["a-vendor"]["models"]["old-1"]["limit"]["output"] == 8_000
 
-
-def test_a_model_row_that_names_nothing_changes_nothing(tmp_path):
-    """The narrow end of the same rule: an override row with no fields in it says nothing, so the
-    price and the window underneath stand rather than being wiped by an empty row."""
-    path = tmp_path / "models.dev.json"
-    write_snapshot(path, {"a-vendor": {"id": "a-vendor", "npm": "@ai-sdk/openai-compatible",
-                                       "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
-                                       "models": {"old-1": {"limit": {"context": 200_000},
-                                                            "cost": {"input": 9.0, "output": 9.0}}}}})
-    write_local(path, {"a-vendor": {"models": {"old-1": {}}}})
-    catalog = pricing.refresh(path=path, env={})
+    catalog = vendor_refresh(tmp_path / "empty" / "models.dev.json",
+                             {"old-1": {"limit": {"context": 200_000},
+                                        "cost": {"input": 9.0, "output": 9.0}}},
+                             {"old-1": {}})
     assert pricing.price_from_catalog(catalog, "a-vendor/old-1")["input"] == 9.0
     assert pricing.window_from_catalog(catalog, "a-vendor/old-1") == 200_000
 
@@ -443,19 +412,13 @@ def test_a_cost_or_limit_written_as_something_other_than_a_mapping_leaves_the_on
     assert pricing.window_from_catalog(catalog, "a-vendor/old-1") == 200_000
     assert catalog["a-vendor"]["models"]["old-1"]["name"] == "Old One, corrected"
 
-
-def test_a_rate_or_a_window_written_as_a_string_leaves_the_number_underneath(tmp_path):
-    """The same rule one level further down, at the numbers themselves. A rate written as a string
-    is not a rate, and taking it would leave the model unpriced for the budget gate and unsized for
-    the context cap, so the catalogs numbers stand and the readable rate beside them lands."""
-    path = tmp_path / "models.dev.json"
-    write_snapshot(path, {"a-vendor": {"id": "a-vendor", "npm": "@ai-sdk/openai-compatible",
-                                       "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
-                                       "models": {"old-1": {"limit": {"context": 200_000},
-                                                            "cost": {"input": 9.0, "output": 18.0}}}}})
-    write_local(path, {"a-vendor": {"models": {"old-1": {"cost": {"input": "invalid", "output": 20.0},
-                                                         "limit": {"context": "invalid"}}}}})
-    catalog = pricing.refresh(path=path, env={})
+    # one level further down: a rate or a window written as a string is not a number, so the
+    # catalog's numbers stand and the readable rate beside them lands
+    catalog = vendor_refresh(tmp_path / "leaf" / "models.dev.json",
+                             {"old-1": {"limit": {"context": 200_000},
+                                        "cost": {"input": 9.0, "output": 18.0}}},
+                             {"old-1": {"cost": {"input": "invalid", "output": 20.0},
+                                        "limit": {"context": "invalid"}}})
     priced = pricing.price_from_catalog(catalog, "a-vendor/old-1")
     assert priced["input"] == 9.0
     assert priced["output"] == 20.0
@@ -478,7 +441,7 @@ def test_a_field_the_catalog_does_not_carry_is_taken_as_written(tmp_path):
     assert catalog["a-vendor"]["models"]["old-1"]["limit"]["output"] == 8_000
 
 
-def test_a_rate_that_is_not_a_finite_number_leaves_the_model_unpriced(tmp_path):
+def test_a_rate_or_window_that_is_not_a_finite_number_leaves_the_model_unpriced_or_unsized(tmp_path):
     """NaN is a number to float() and to nothing else. Billing it would make every total it touches
     NaN, a ledger that can no longer say what a Run cost, so the model reads as unpriced instead
     and the budget gate refuses the call, the way it does for a row missing a rate."""
@@ -492,21 +455,14 @@ def test_a_rate_that_is_not_a_finite_number_leaves_the_model_unpriced(tmp_path):
     catalog = pricing.refresh(path=path, env={})
     assert pricing.price_from_catalog(catalog, "a-vendor/old-1") is None
 
-
-def test_a_window_that_is_not_a_finite_number_reads_as_no_window(tmp_path):
-    """An infinite window is not a window, and int() raises on it, out of a lookup every Run makes.
-    It reads as no window listed instead, which the context cap already answers with the generic
-    limit, and the model beside it in the same file still gives its own."""
-    path = tmp_path / "models.dev.json"
-    write_snapshot(path, {"a-vendor": {"id": "a-vendor", "npm": "@ai-sdk/openai-compatible",
-                                       "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
-                                       "models": {"old-1": {"limit": {"context": 200_000},
-                                                            "cost": {"input": 9.0, "output": 18.0}},
-                                                  "old-2": {"limit": {"context": 128_000},
-                                                            "cost": {"input": 1.0, "output": 2.0}}}}})
-    (path.parent / pricing.LOCAL_PROVIDERS_NAME).write_text(
-        '{"a-vendor": {"models": {"old-1": {"limit": {"context": Infinity}}}}}', encoding="utf-8")
-    catalog = pricing.refresh(path=path, env={})
+    # An infinite window is not a window either: it reads as no window listed, which the context
+    # cap answers with the generic limit, and the model beside it still gives its own.
+    catalog = vendor_refresh(tmp_path / "window" / "models.dev.json",
+                             {"old-1": {"limit": {"context": 200_000},
+                                        "cost": {"input": 9.0, "output": 18.0}},
+                              "old-2": {"limit": {"context": 128_000},
+                                        "cost": {"input": 1.0, "output": 2.0}}},
+                             '{"a-vendor": {"models": {"old-1": {"limit": {"context": Infinity}}}}}')
     assert pricing.window_from_catalog(catalog, "a-vendor/old-1") is None
     assert pricing.window_from_catalog(catalog, "a-vendor/old-2") == 128_000
 
@@ -520,7 +476,7 @@ def test_a_local_registry_file_that_cannot_be_read_is_ignored_not_raised_on(tmp_
     assert set(pricing.local_providers(path)) == set(pricing.BUILTIN_LOCAL_PROVIDERS)
 
 
-def test_a_provider_row_whose_models_is_a_list_is_left_out_and_the_rows_beside_it_still_price(tmp_path):
+def test_a_provider_row_whose_models_is_a_list_or_string_is_left_out_and_the_rows_beside_it_still_price(tmp_path):
     """A misshapen row must not take every model call down. Its shape is wrong, not one of its
     fields, so the whole row is left out rather than half-applied, and the file's other providers
     are read as if it were not there."""
@@ -536,11 +492,9 @@ def test_a_provider_row_whose_models_is_a_list_is_left_out_and_the_rows_beside_i
     assert pricing.endpoint_from_catalog(catalog, "a-host/quick-1").key_env_var == "A_HOST_API_KEY"
     assert catalog["openai"] == CATALOG["openai"]
 
-
-def test_a_provider_row_whose_models_is_a_string_is_left_out_of_the_registry(tmp_path):
-    path = tmp_path / "models.dev.json"
-    write_local(path, {"c-host": {"api": "https://c-host.invalid/v1", "models": "swift-2"}})
-    registry = pricing.local_providers(path)
+    string_path = tmp_path / "string" / "models.dev.json"
+    write_local(string_path, {"c-host": {"api": "https://c-host.invalid/v1", "models": "swift-2"}})
+    registry = pricing.local_providers(string_path)
     assert "c-host" not in registry
     assert set(registry) == set(pricing.BUILTIN_LOCAL_PROVIDERS), "the built-in rows still answer"
 
@@ -622,34 +576,26 @@ def test_a_row_that_names_a_price_list_is_billed_at_the_rates_that_list_serves_n
         "the list prices the model, it does not restate the rest of the row"
 
 
-def test_a_price_list_that_does_not_carry_the_named_field_leaves_the_written_rates_standing(tmp_path):
-    """A vendor that renames the field, or lists a model it does not price, must leave the ledger
-    with a rate rather than with none."""
-    listing = {"data": [{"id": "brisk-4", "cost_per_token": {"input": 0.5, "output": 1.25}}]}
-    catalog = refresh_with(listing, tmp_path / "models.dev.json")
+@pytest.mark.parametrize(
+    ("listing", "status"),
+    [
+        (None, 200),
+        ({"data": [{"id": "brisk-4", "cost_per_token": {"input": 0.5, "output": 1.25}}]}, 200),
+        ({"error": "no key"}, 503),
+        ({"data": [{"id": "brisk-4", "rates": {"input": "half a cent", "output": 1.25}},
+                   {"id": "brisk-5", "rates": {"input": -1.0, "output": 1.25}}]}, 200),
+    ],
+    ids=["unreachable", "field-missing", "error-answer", "rate-not-a-number"],
+)
+def test_a_price_list_that_cannot_be_read_leaves_the_written_rates_standing(tmp_path, listing, status):
+    """A vendor that is down, answers an error, renames the field, lists a model it does not price,
+    or writes a rate that is not a number must leave the ledger with a rate rather than with none.
+    A misread rate is worse than a dated one: it bills every call of the Run wrong."""
+    catalog = refresh_with(listing, tmp_path / "models.dev.json", status=status)
     assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
 
 
-def test_a_price_list_that_cannot_be_reached_leaves_the_written_rates_standing(tmp_path):
-    catalog = refresh_with(None, tmp_path / "models.dev.json")
-    assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
-
-
-def test_a_price_list_that_answers_an_error_leaves_the_written_rates_standing(tmp_path):
-    listing = {"error": "no key"}
-    catalog = refresh_with(listing, tmp_path / "models.dev.json", status=503)
-    assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
-
-
-def test_a_rate_that_does_not_read_as_a_number_leaves_the_written_rates_standing(tmp_path):
-    """A misread rate is worse than a dated one: it bills every call of the Run wrong."""
-    listing = {"data": [{"id": "brisk-4", "rates": {"input": "half a cent", "output": 1.25}},
-                        {"id": "brisk-5", "rates": {"input": -1.0, "output": 1.25}}]}
-    catalog = refresh_with(listing, tmp_path / "models.dev.json")
-    assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
-
-
-def test_the_price_list_is_asked_for_with_the_key_the_row_names_and_only_when_live_is_on(tmp_path):
+def test_the_price_list_is_asked_for_with_the_key_the_row_names_only_when_live_is_on_and_a_key_is_held(tmp_path):
     """The list is behind the provider's own key, and reaching for it is a call off the machine, so
     it happens under the one switch every other call is under."""
     listing = {"data": [{"id": "brisk-4", "rates": {"input": 0.5, "output": 1.25}}]}
@@ -664,15 +610,11 @@ def test_the_price_list_is_asked_for_with_the_key_the_row_names_and_only_when_li
     assert [request for request in off if str(request.url) == PRICE_LIST_URL] == []
     assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
 
-
-def test_no_key_for_a_provider_means_its_price_list_is_never_asked_for(tmp_path):
-    """Nobody can call a provider they hold no key for, so its rates price nothing, and a machine
-    that only ever calls one vendor must not be reaching out to another's host to ask."""
-    listing = {"data": [{"id": "brisk-4", "rates": {"input": 0.5, "output": 1.25}}]}
-    seen = []
-    catalog = refresh_with(listing, tmp_path / "models.dev.json", seen=seen,
+    # No key for the provider: nobody can call it, so its list is never asked for either.
+    keyless = []
+    catalog = refresh_with(listing, tmp_path / "keyless.json", seen=keyless,
                            env={pricing.LIVE_ENV_VAR: "1"})
-    assert [request for request in seen if str(request.url) == PRICE_LIST_URL] == []
+    assert [request for request in keyless if str(request.url) == PRICE_LIST_URL] == []
     assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
 
 
@@ -720,33 +662,16 @@ def test_a_price_list_cannot_add_a_model_the_row_does_not_offer(tmp_path):
     assert pricing.price_from_catalog(catalog, "e-host/brisk-9") is None
 
 
-def test_the_built_in_gateway_row_names_its_price_list_and_carries_a_fallback_rate():
-    """The row that went stale inside a day: it says where its prices live, and what to bill at
-    when that list cannot be read."""
-    row = pricing.BUILTIN_LOCAL_PROVIDERS["cheaperinference"]
-    assert row["prices"]["url"].startswith(row["api"])
-    assert row["prices"]["field"]
-    for model in row["models"].values():
-        assert model["cost"]["input"] > 0 and model["cost"]["output"] > 0
-
-
-def test_a_row_whose_models_mapping_names_nothing_readable_is_left_out_whole(tmp_path):
-    """An empty mapping, or one whose every row is misshapen, leaves nothing to lay over. Landing
-    the top-level fields alone would move the host and leave the prices where they were, which is
-    the same half-applied row a models field of the wrong shape would have been."""
-    path = tmp_path / "models.dev.json"
-    name = next(iter(pricing.BUILTIN_LOCAL_PROVIDERS))
-    for models in ({}, {"quick-1": "1 in, 2 out"}):
-        write_local(path, {name: {"api": "https://elsewhere.invalid/v1", "models": models}})
-        assert pricing.local_providers(path)[name] == pricing.BUILTIN_LOCAL_PROVIDERS[name]
-
-
-def test_a_built_in_provider_given_a_misshapen_models_field_keeps_the_rows_it_shipped_with(tmp_path):
+@pytest.mark.parametrize("models", [["not", "an", "object"], {}, {"quick-1": "1 in, 2 out"}],
+                         ids=["list", "empty-mapping", "no-readable-row"])
+def test_a_built_in_provider_given_models_it_cannot_read_keeps_the_rows_it_shipped_with(tmp_path, models):
     """The overlay row is dropped whole, so the provider underneath is untouched: the built-in
-    host and prices stand rather than a half-merged mixture of the two."""
+    host and prices stand rather than a half-merged mixture of the two. An empty mapping, or one
+    whose every row is misshapen, leaves nothing to lay over either; landing the top-level fields
+    alone would move the host and leave the prices where they were."""
     path = tmp_path / "models.dev.json"
     name = next(iter(pricing.BUILTIN_LOCAL_PROVIDERS))
-    write_local(path, {name: {"api": "https://elsewhere.invalid/v1", "models": ["not", "an", "object"]}})
+    write_local(path, {name: {"api": "https://elsewhere.invalid/v1", "models": models}})
     row = pricing.local_providers(path)[name]
     assert row == pricing.BUILTIN_LOCAL_PROVIDERS[name]
 
@@ -762,25 +687,29 @@ def test_the_local_file_wins_over_a_built_in_row_of_the_same_name(tmp_path):
 def test_a_wire_id_priced_only_by_the_overlay_is_billed_and_an_unpriced_one_still_is_not(tmp_path):
     """The gate that refused the Run must keep refusing: an overlay row prices its own model and
     nothing else, so a model neither source names stays unpriced."""
+    # isolated_price_catalog (conftest) already points budget at this path with nothing loaded
     path = tmp_path / "models.dev.json"
     write_snapshot(path, CATALOG)
     write_local(path, LOCAL_FILE)
-    budget._SNAPSHOT_PATH = path
-    budget._CATALOG_LOADED = False
-    try:
-        assert budget.is_priced("a-host/quick-1") is True
-        assert budget.price_source("a-host/quick-1") == "models.dev"
-        assert budget.is_priced("a-host/absent-9") is False
-        with pytest.raises(budget.UnpricedModel):
-            budget.Ceiling(usd=1.0).require_priced("a-host/absent-9")
-    finally:
-        budget._CATALOG_LOADED = False
+    assert budget.is_priced("a-host/quick-1") is True
+    assert budget.price_source("a-host/quick-1") == "models.dev"
+    assert budget.is_priced("a-host/absent-9") is False
+    with pytest.raises(budget.UnpricedModel):
+        budget.Ceiling(usd=1.0).require_priced("a-host/absent-9")
 
 
 def test_every_built_in_local_provider_row_carries_what_the_one_lookup_needs():
     """A row read off a vendor's docs is only useful if it answers all four questions the single
-    lookup asks: where to post, which variable holds the key, what a call costs, what fits."""
+    lookup asks: where to post, which variable holds the key, what a call costs, what fits. A row
+    that names a price list says where its prices live and carries a fallback rate to bill at
+    when that list cannot be read."""
+    assert any("prices" in entry for entry in pricing.BUILTIN_LOCAL_PROVIDERS.values())
     for name, entry in pricing.BUILTIN_LOCAL_PROVIDERS.items():
+        if "prices" in entry:
+            assert entry["prices"]["url"].startswith(entry["api"])
+            assert entry["prices"]["field"]
+            for model in entry["models"].values():
+                assert model["cost"]["input"] > 0 and model["cost"]["output"] > 0
         models = entry.get("models") or {}
         assert models, f"{name} names no model"
         for wire, row in models.items():
@@ -804,15 +733,14 @@ ECHOING_CATALOG = {
 }
 
 
-def test_a_model_the_gateway_answers_under_an_upstream_name_prices_from_its_own_row():
+def test_a_gateway_model_named_nested_or_bare_prices_from_the_row_listed_under_the_other_name():
     """The ledger keys a call on the id the endpoint echoed, and a gateway asked for 'quick-1' can
     answer 'a-lab/quick-1'. Without this the call is billed nothing and fails the budget gate."""
     price = pricing.price_from_catalog(ECHOING_CATALOG, "a-gateway/a-lab/quick-1")
     assert price["input"] == 0.06
     assert pricing.window_from_catalog(ECHOING_CATALOG, "a-gateway/a-lab/quick-1") == 400_000
 
-
-def test_a_bare_name_also_finds_the_row_a_provider_lists_under_a_nested_one():
+    # and the reverse: a bare name finds the row a provider lists under a nested one
     catalog = {"a-gateway": {"models": {"a-lab/quick-1": {"cost": {"input": 0.06, "output": 0.2}}}}}
     assert pricing.price_from_catalog(catalog, "a-gateway/quick-1")["input"] == 0.06
 

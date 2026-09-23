@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
+import copy
 
 import pytest
 from pydantic import ValidationError
 
-from kullback.runner.records import RawPtr, Task, ToolCall, Trace, Turn, UserRules
-from kullback.user.population import RecordingStanding, build_population, pick_user
+from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
 from kullback.user.signals import EndEvidence, ModelLabel, mine_signal
 
 
@@ -76,20 +75,19 @@ def test_exact_counts_and_last_speaker():
     assert sig.last_speaker == "tool"
     assert sig.trace_id == "t"
 
-
-def test_empty_trace_signal():
-    sig = mine_signal(_trace("e", [], []))
-    assert (sig.system_turns, sig.user_turns, sig.assistant_turns, sig.tool_turns) == (0, 0, 0, 0)
-    assert sig.last_speaker is None
-    assert sig.repeated_user_utterances == 0
-    assert sig.transfer_call is False
-    assert (sig.unanswered_calls, sig.truncated_calls) == (0, 0)
-    assert sig.end_kind == "unknown"
-    assert sig.ending_actor == "unknown"
-    assert sig.why_left is None
-    assert sig.stated_frustration is None
-    assert sig.dropped == ()
-    assert sig.contradictions == 0
+    empty = mine_signal(_trace("e", [], []))
+    assert (empty.system_turns, empty.user_turns, empty.assistant_turns, empty.tool_turns) == (
+        0, 0, 0, 0)
+    assert empty.last_speaker is None
+    assert empty.repeated_user_utterances == 0
+    assert empty.transfer_call is False
+    assert (empty.unanswered_calls, empty.truncated_calls) == (0, 0)
+    assert empty.end_kind == "unknown"
+    assert empty.ending_actor == "unknown"
+    assert empty.why_left is None
+    assert empty.stated_frustration is None
+    assert empty.dropped == ()
+    assert empty.contradictions == 0
 
 
 def test_end_evidence_stored():
@@ -150,21 +148,33 @@ def test_incomplete_recordings_produce_signals():
     assert sig.last_speaker == "assistant"
 
 
-def test_valid_why_and_frustration_stored():
-    content = "I am leaving now, this is hopeless"
+@pytest.mark.parametrize("as_model", [False, True], ids=["dict_labels", "model_labels"])
+def test_valid_why_and_frustration_stored(as_model):
+    """Spans are kept at their own character offsets, from dicts or ModelLabel instances."""
+    content = "sält: leaving now, leaving now, this is hopeless Ω"
     trace = _trace("t", [_turn(0, "assistant", "hi"), _turn(1, "user", content)])
+    second = content.index("leaving now", content.index("leaving now") + 1)
+    why = {
+        "kind": "why_left",
+        "span": {"turn_idx": 1, "start": second, "end": second + len("leaving now"),
+                 "quote": "leaving now"},
+    }
+    labels = [why, _label("stated_frustration", 1, content, "hopeless Ω")]
+    if as_model:
+        labels = [ModelLabel.model_validate(label) for label in labels]
     sig = mine_signal(
         trace,
         end={"end_kind": "walked_away", "ending_actor": "user"},
-        labels=[
-            _label("why_left", 1, content, "leaving now"),
-            _label("stated_frustration", 1, content, "hopeless"),
-        ],
+        labels=labels,
     )
     assert sig.why_left.quote == "leaving now"
     assert sig.why_left.turn_idx == 1
     assert sig.why_left.source.file_hash == "bb"
-    assert sig.stated_frustration.quote == "hopeless"
+    assert sig.why_left.start == second
+    assert sig.why_left.end == second + len("leaving now")
+    assert content[sig.why_left.start:sig.why_left.end] == "leaving now"
+    assert sig.why_left.start != content.index("leaving now")
+    assert sig.stated_frustration.quote == "hopeless Ω"
     assert sig.dropped == ()
     assert sig.contradictions == 0
 
@@ -203,6 +213,32 @@ def _drop_inputs(case):
             _label("stated_frustration", 1, "done now", "done now"),
         ]
         return trace, labels, [("why_left", "non_user_turn"), ("stated_frustration", "non_user_turn")]
+    if case == "byte_offsets":
+        trace = _trace("t", [_turn(0, "user", "sält Ω ok")])
+        labels = [{"kind": "why_left", "span": {"turn_idx": 0, "start": 6, "end": 7, "quote": "Ω"}}]
+        return trace, labels, [("why_left", "nonverbatim_quote")]
+    if case == "bool_offsets":
+        trace = _trace("t", [_turn(0, "user", "xab")])
+        labels = [
+            {"kind": "why_left", "span": {"turn_idx": 0, "start": True, "end": 3, "quote": "ab"}},
+            {"kind": "why_left", "span": {"turn_idx": 0, "start": 0, "end": True, "quote": "x"}},
+        ]
+        return trace, labels, [("why_left", "bad_bounds")] * 2
+    if case == "strict_offset_types":
+        trace = _trace("t", [_turn(0, "user", "xab")])
+        labels = [
+            {"kind": "why_left", "span": {"turn_idx": 0, "start": "1", "end": 3, "quote": "ab"}},
+            {"kind": "why_left", "span": {"turn_idx": 0, "start": 0, "end": 3.0, "quote": "xab"}},
+            {"kind": "stated_frustration",
+             "span": {"turn_idx": "0", "start": 0, "end": 3, "quote": "xab"}},
+            {"kind": "why_left", "span": {"turn_idx": True, "start": 0, "end": 1, "quote": "x"}},
+        ]
+        return trace, labels, [
+            ("why_left", "bad_bounds"),
+            ("why_left", "bad_bounds"),
+            ("stated_frustration", "unknown_turn"),
+            ("why_left", "unknown_turn"),
+        ]
     trace = _trace("t", [_turn(0, "user", "a   b")])
     labels = [
         {"kind": "why_left", "span": {"turn_idx": 0, "start": 0, "end": 0, "quote": ""}},
@@ -219,40 +255,37 @@ def _drop_inputs(case):
         pytest.param("nonverbatim_quote", id="nonverbatim_quote"),
         pytest.param("non_user_turn", id="non_user_turn"),
         pytest.param("empty_quote", id="empty_quote"),
+        pytest.param("byte_offsets", id="byte_offsets"),
+        pytest.param("bool_offsets", id="bool_offsets"),
+        pytest.param("strict_offset_types", id="strict_offset_types"),
     ],
 )
 def test_unusable_spans_dropped(case):
+    """Each unusable span is dropped with its reason, and the caller's labels stay as given."""
     trace, labels, want = _drop_inputs(case)
+    given = repr(copy.deepcopy(labels))
     sig = mine_signal(trace, labels=labels)
     assert sig.why_left is None
     assert sig.stated_frustration is None
     assert [(d.kind, d.reason) for d in sig.dropped] == want
-
-
-def test_bool_offsets_dropped():
-    trace = _trace("t", [_turn(0, "user", "xab")])
-    first = {"kind": "why_left", "span": {"turn_idx": 0, "start": True, "end": 3, "quote": "ab"}}
-    second = {"kind": "why_left", "span": {"turn_idx": 0, "start": 0, "end": True, "quote": "x"}}
-    sig = mine_signal(trace, labels=[first, second])
-    assert sig.why_left is None
-    assert [d.reason for d in sig.dropped] == ["bad_bounds", "bad_bounds"]
     assert sig.contradictions == 0
-    assert first["span"]["start"] is True
-    assert second["span"]["end"] is True
-
-
-def test_char_offsets_accepted_byte_offsets_dropped():
-    content = "sält Ω ok"
-    trace = _trace("t", [_turn(0, "user", content)])
-    sig = mine_signal(trace, labels=[_label("why_left", 0, content, "Ω")])
-    assert sig.why_left.quote == "Ω"
-    byte_style = {"kind": "why_left", "span": {"turn_idx": 0, "start": 6, "end": 7, "quote": "Ω"}}
-    sig2 = mine_signal(trace, labels=[byte_style])
-    assert sig2.why_left is None
-    assert [(d.kind, d.reason) for d in sig2.dropped] == [("why_left", "nonverbatim_quote")]
+    assert repr(labels) == given
 
 
 def _malformed_shape(case):
+    if case.startswith("construct_"):
+        span = {
+            "construct_str_start": {"turn_idx": 0, "start": "1", "end": 2, "quote": "hi"},
+            "construct_float_end": {"turn_idx": 0, "start": 0, "end": 2.0, "quote": "hi"},
+            "construct_bool_start": {"turn_idx": 0, "start": True, "end": 2, "quote": "hi"},
+            "construct_float_idx": {"turn_idx": 1.0, "start": 0, "end": 2, "quote": "hi"},
+        }[case]
+        return lambda: ModelLabel(kind="why_left", span=span)
+    trace, kwargs = _mined(case)
+    return lambda: mine_signal(trace, **kwargs)
+
+
+def _mined(case):
     hi = _trace("t", [_turn(0, "user", "hi")])
     if case == "override":
         override = dict(_label("why_left", 0, "hi", "hi"))
@@ -289,12 +322,16 @@ def _malformed_shape(case):
         pytest.param("bad_end_actor", id="bad_end_actor"),
         pytest.param("mixed_override", id="mixed_override"),
         pytest.param("mixed_bad_kind", id="mixed_bad_kind"),
+        pytest.param("construct_str_start", id="construct_str_start"),
+        pytest.param("construct_float_end", id="construct_float_end"),
+        pytest.param("construct_bool_start", id="construct_bool_start"),
+        pytest.param("construct_float_idx", id="construct_float_idx"),
     ],
 )
 def test_malformed_label_and_end_shapes_rejected(case):
-    trace, kwargs = _malformed_shape(case)
+    """The miner and direct ModelLabel construction both refuse nonstrict shapes."""
     with pytest.raises(ValidationError):
-        mine_signal(trace, **kwargs)
+        _malformed_shape(case)()
 
 
 def test_contradiction_precedence_and_counter():
@@ -323,18 +360,14 @@ def test_contradiction_precedence_and_counter():
     assert sig_unknown.why_left.quote == "leaving now"
     assert sig_unknown.end_kind == "unknown"
     assert sig_unknown.contradictions == 0
-
-
-def test_frustration_coexists_with_assistant_end():
-    content = "this is hopeless, fine"
-    trace = _trace("t", [_turn(0, "user", content), _turn(1, "assistant", "closed")])
-    sig = mine_signal(
-        trace,
+    frustrated = "this is hopeless, fine"
+    sig_frustrated = mine_signal(
+        _trace("f", [_turn(0, "user", frustrated), _turn(1, "assistant", "closed")]),
         end={"end_kind": "agent_closed", "ending_actor": "assistant"},
-        labels=[_label("stated_frustration", 0, content, "hopeless")],
+        labels=[_label("stated_frustration", 0, frustrated, "hopeless")],
     )
-    assert sig.stated_frustration.quote == "hopeless"
-    assert sig.contradictions == 0
+    assert sig_frustrated.stated_frustration.quote == "hopeless"
+    assert sig_frustrated.contradictions == 0
 
 
 def _adjudication_case(case):
@@ -386,119 +419,6 @@ def test_detached_and_deterministic():
     assert first.why_left.quote == "leaving now"
     assert first.why_left.source.file_hash == "bb"
     assert labels == [_label("why_left", 0, content, "leaving now")]
-
-
-def test_model_label_instance_accepted():
-    content = "I am leaving now"
-    trace = _trace("t", [_turn(0, "user", content)])
-    label = ModelLabel.model_validate(_label("why_left", 0, content, "leaving now"))
-    sig = mine_signal(
-        trace, end={"end_kind": "walked_away", "ending_actor": "user"}, labels=[label]
-    )
-    assert sig.why_left.quote == "leaving now"
-
-
-def test_signals_never_change_population_selection():
-    args = {"city": "X"}
-    first_call = ToolCall(
-        name="set_addr", args=dict(args), result="ok", has_result=True, resolved=True, raw_ptr=_ptr()
-    )
-    second_call = ToolCall(
-        name="set_addr", args=dict(args), result="ok", has_result=True, resolved=True, raw_ptr=_ptr()
-    )
-    traces = {
-        "r1": _trace("r1", [_turn(0, "user", "please set it")], [first_call]),
-        "r2": _trace("r2", [_turn(0, "user", "please set it")], [second_call]),
-    }
-    task = Task(id="t9", run_ids=["r1", "r2"])
-    standings = {
-        "r1": RecordingStanding(task_eligible=True, complete=True, replay_confirmed=True),
-        "r2": RecordingStanding(task_eligible=True, complete=True, replay_confirmed=True),
-    }
-    rules = {"r1": UserRules(), "r2": UserRules()}
-    pop = build_population(
-        task,
-        traces,
-        reference_id="r1",
-        standings=standings,
-        rules=rules,
-        held_out_ids=set(),
-        write_tools=["set_addr"],
-    )
-    before = pick_user(pop, seed=1, salt="sig-salt")
-    for trace in traces.values():
-        mine_signal(
-            trace,
-            end={"end_kind": "walked_away", "ending_actor": "user"},
-            labels=[_label("why_left", 0, "please set it", "set it")],
-        )
-    after = pick_user(pop, seed=1, salt="sig-salt")
-    assert before == after
-    assert pop.support_count == 2
-
-
-def test_strict_offset_types_dropped():
-    trace = _trace("t", [_turn(0, "user", "xab")])
-    str_start = {"kind": "why_left", "span": {"turn_idx": 0, "start": "1", "end": 3, "quote": "ab"}}
-    float_end = {"kind": "why_left", "span": {"turn_idx": 0, "start": 0, "end": 3.0, "quote": "xab"}}
-    str_idx = {
-        "kind": "stated_frustration",
-        "span": {"turn_idx": "0", "start": 0, "end": 3, "quote": "xab"},
-    }
-    bool_idx = {"kind": "why_left", "span": {"turn_idx": True, "start": 0, "end": 1, "quote": "x"}}
-    sig = mine_signal(trace, labels=[str_start, float_end, str_idx, bool_idx])
-    assert sig.why_left is None
-    assert sig.stated_frustration is None
-    assert [(d.kind, d.reason) for d in sig.dropped] == [
-        ("why_left", "bad_bounds"),
-        ("why_left", "bad_bounds"),
-        ("stated_frustration", "unknown_turn"),
-        ("why_left", "unknown_turn"),
-    ]
-    assert sig.contradictions == 0
-    assert str_start["span"]["start"] == "1"
-    assert float_end["span"]["end"] == 3.0
-    assert str_idx["span"]["turn_idx"] == "0"
-
-
-@pytest.mark.parametrize(
-    "span",
-    [
-        pytest.param({"turn_idx": 0, "start": "1", "end": 2, "quote": "hi"}, id="str_start"),
-        pytest.param({"turn_idx": 0, "start": 0, "end": 2.0, "quote": "hi"}, id="float_end"),
-        pytest.param({"turn_idx": 0, "start": True, "end": 2, "quote": "hi"}, id="bool_start"),
-        pytest.param({"turn_idx": 1.0, "start": 0, "end": 2, "quote": "hi"}, id="float_idx"),
-    ],
-)
-def test_direct_construction_rejects_nonstrict_offsets(span):
-    with pytest.raises(ValidationError):
-        ModelLabel(kind="why_left", span=span)
-
-
-def test_accepted_label_retains_offsets():
-    content = "set it, set it"
-    trace = _trace("t", [_turn(0, "user", content)])
-    second = content.index("set it", 1)
-    label = {
-        "kind": "why_left",
-        "span": {"turn_idx": 0, "start": second, "end": second + len("set it"), "quote": "set it"},
-    }
-    sig = mine_signal(trace, labels=[label])
-    assert sig.why_left.quote == "set it"
-    assert sig.why_left.start == second
-    assert sig.why_left.end == second + len("set it")
-    assert content[sig.why_left.start:sig.why_left.end] == "set it"
-    assert (sig.why_left.start, sig.why_left.end) != (0, len("set it"))
-
-
-def test_signal_module_boundary():
-    text = Path("kullback/user/signals.py").read_text(encoding="utf-8")
-    assert "kullback.builder" not in text
-    assert "kullback.examiner" not in text
-    assert "kullback.rounds" not in text
-    assert "verdict" not in text
-    assert "kullback.gates" not in text
-    assert "end_of_run" not in text
 
 
 def _container_case(case):

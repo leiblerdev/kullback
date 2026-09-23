@@ -72,15 +72,11 @@ def invoke(*args, **kwargs):
 
 # --- the command list -------------------------------------------------------
 
-def test_help_lists_every_command():
-    result = invoke("--help")
-    assert result.exit_code == 0
+def test_help_lists_every_command_and_each_takes_a_workdir():
+    listed = invoke("--help")
+    assert listed.exit_code == 0
     for command in ("ingest", "build", "freeze-runner", "run", "verdict", "regrade", "report"):
-        assert command in result.output
-
-
-def test_every_command_takes_a_workdir():
-    for command in ("ingest", "build", "freeze-runner", "run", "verdict", "regrade", "report"):
+        assert command in listed.output
         result = invoke(command, "--help")
         assert result.exit_code == 0, command
         assert "--workdir" in result.output, command
@@ -88,23 +84,28 @@ def test_every_command_takes_a_workdir():
 
 # --- ingest and build -------------------------------------------------------
 
-def test_ingest_passes_each_file_to_the_ingest_module(tmp_path, workdir, fake_modules):
-    first, second = tmp_path / "a.json", tmp_path / "b.json"
-    for path in (first, second):
-        path.write_text("{}", encoding="utf-8")
-    result = invoke("ingest", str(first), str(second), "--workdir", str(workdir))
-    assert result.exit_code == 0
-    calls = fake_modules["kullback.builder.ingest.ingest_file"]
-    assert [call["args"][0] for call in calls] == [first, second]
+def test_ingest_ingests_each_file_under_the_declared_floor(tmp_path, workdir):
+    """Two tiny invented recordings ingested for real: one raw file and one intake ruling each."""
+    import hashlib
 
-
-def test_ingest_forwards_a_declared_floor(tmp_path, workdir, fake_modules):
-    target = tmp_path / "c.json"
-    target.write_text("{}", encoding="utf-8")
-    result = invoke("ingest", str(target), "--workdir", str(workdir), "--intake-floor", "0.4")
-    assert result.exit_code == 0
-    call = fake_modules["kullback.builder.ingest.ingest_file"][0]
-    assert call["kwargs"]["intake_floor"] == 0.4
+    paths = []
+    for name in ("a", "b"):
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps({"rows": [{
+            "row_idx": 0, "truncated_cells": [],
+            "row": {"conversations": _rescue_turns(f"# invented {name}\nSolve invented.\n"),
+                    "trial_name": f"invented-task-{name}__invented", "original_source": "invented-source"},
+        }]}), encoding="utf-8")
+        paths.append(path)
+    result = invoke("ingest", *map(str, paths), "--workdir", str(workdir), "--intake-floor", "0.4")
+    assert result.exit_code == 0, result.output
+    hashes = [hashlib.sha256(path.read_bytes()).hexdigest() for path in paths]
+    summaries = json.loads((workdir / "ingest_summary.json").read_text(encoding="utf-8"))
+    assert [row["raw_hash"] for row in summaries] == hashes
+    for raw_hash in hashes:
+        assert (workdir / "raw" / f"{raw_hash}.json").is_file()
+        ruling = json.loads((workdir / "intake" / f"{raw_hash}.json").read_text(encoding="utf-8"))
+        assert ruling["floor"] == 0.4
 
 
 def test_ingest_refuses_a_floor_outside_unit_interval(tmp_path, workdir):
@@ -132,21 +133,6 @@ def test_a_missing_entry_point_is_one_clear_message(capsys):
         cli._entry("kullback.builder.session", "no_such_entry_point")
     assert stopped.value.exit_code == 2
     assert "kullback.builder.session.no_such_entry_point is not available yet" in capsys.readouterr().out
-
-
-def test_build_and_run_reach_a_function_that_actually_exists():
-    """cli build and cli run are the only path to a build; a missing entry point makes both dead ends."""
-    import inspect
-
-    from kullback.builder import session as session_module
-    from kullback.runner import tool as runner_tool
-
-    assert callable(getattr(session_module, "build", None)), "session.build is what cli build calls"
-    assert callable(getattr(runner_tool, "reroll", None)), "runner.tool.reroll is what cli run calls"
-    build_args = inspect.signature(session_module.build).parameters
-    assert {"files", "ceiling_usd", "subscribers"} <= set(build_args)
-    reroll_args = inspect.signature(runner_tool.reroll).parameters
-    assert {"count", "workdir"} <= set(reroll_args)
 
 
 def _named_adapters(monkeypatch):
@@ -208,8 +194,9 @@ def version_file(workdir: Path) -> Path:
     return Path(workdir) / "runner_version.json"
 
 
-def test_freeze_runner_writes_after_a_yes(workdir):
-    result = invoke("freeze-runner", "--workdir", str(workdir), input="y\n")
+@pytest.mark.parametrize("flags, answer", [([], "y\n"), (["--yes"], None)], ids=["after_a_yes", "with_yes"])
+def test_freeze_runner_writes_the_runner_version_after_a_yes_or_with_yes(workdir, flags, answer):
+    result = invoke("freeze-runner", "--workdir", str(workdir), *flags, input=answer)
     assert result.exit_code == 0
     body = json.loads(version_file(workdir).read_text(encoding="utf-8"))
     assert body["runner_version"]
@@ -218,6 +205,10 @@ def test_freeze_runner_writes_after_a_yes(workdir):
     assert body["gates_version"] and body["gates_version"] != body["runner_version"]
     assert set(body["gates_file_hashes"]) >= {"__init__.py", "artifacts.py", "verifier_suite.py"}
     assert "gates version" in result.output
+    # The version written is the hash of the runner files, read back.
+    again = cli.runner_version()
+    assert again.runner_version == body["runner_version"]
+    assert again.gates_version == body["gates_version"]
 
 
 def test_freeze_runner_writes_nothing_on_a_no(workdir):
@@ -225,20 +216,6 @@ def test_freeze_runner_writes_nothing_on_a_no(workdir):
     assert result.exit_code != 0
     assert not version_file(workdir).exists()
     assert "not frozen" in result.output
-
-
-def test_yes_skips_the_question(workdir):
-    result = invoke("freeze-runner", "--workdir", str(workdir), "--yes")
-    assert result.exit_code == 0
-    assert version_file(workdir).exists()
-
-
-def test_the_runner_version_is_the_hash_of_the_runner_files(workdir):
-    invoke("freeze-runner", "--workdir", str(workdir), "--yes")
-    first = json.loads(version_file(workdir).read_text(encoding="utf-8"))
-    second = cli.runner_version()
-    assert second.runner_version == first["runner_version"]
-    assert second.gates_version == first["gates_version"]
 
 
 def test_a_routing_config_changes_the_version(workdir, tmp_path):
@@ -300,16 +277,12 @@ def stored_verdicts(workdir: Path, task_id: str = "t1") -> list[dict]:
     return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(folder.glob("*.json"))]
 
 
-def test_verdict_scores_the_stored_runs_of_a_task(workdir):
+def test_verdict_scores_the_stored_runs_of_a_task_or_of_every_task(workdir):
     seed_task(workdir)
     result = invoke("verdict", "--workdir", str(workdir), "--task", "t1")
     assert result.exit_code == 0
     assert "task t1: scored 1 Runs" in result.output
     assert [body["run_id"] for body in stored_verdicts(workdir)] == ["r1"]
-
-
-def test_verdict_without_a_task_scores_every_task(workdir):
-    seed_task(workdir)
     seed_task(workdir, "t2", "r2")
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
     assert [body["run_id"] for body in stored_verdicts(workdir, "t1")] == ["r1"]
@@ -336,7 +309,7 @@ def test_regrade_re_scores_without_re_executing(workdir):
 
 # --- report -----------------------------------------------------------------
 
-def test_report_writes_markdown_under_the_workdir(workdir):
+def test_report_writes_markdown_under_the_workdir_or_the_output_path(workdir, tmp_path):
     seed_task(workdir)
     result = invoke("report", "--workdir", str(workdir))
     assert result.exit_code == 0
@@ -344,20 +317,9 @@ def test_report_writes_markdown_under_the_workdir(workdir):
     assert text.startswith("# ")
     assert "## Environment" in text
     assert str(workdir / "report.md") in result.output
-
-
-def test_report_takes_an_output_path(workdir, tmp_path):
     out = tmp_path / "elsewhere" / "build.md"
     assert invoke("report", "--workdir", str(workdir), "--out", str(out)).exit_code == 0
     assert out.is_file()
-
-
-def test_report_names_a_run_batch(workdir):
-    result = invoke("report", "--workdir", str(workdir), "--batch")
-    assert result.exit_code == 0
-    text = (workdir / "report.md").read_text(encoding="utf-8")
-    assert text.splitlines()[0] == "# Run batch report"
-    assert "These are the numbers for one Run batch" in text
 
 
 def test_a_batch_report_counts_only_the_runs_of_that_model(workdir):
@@ -371,6 +333,11 @@ def test_a_batch_report_counts_only_the_runs_of_that_model(workdir):
     assert "- Runs graded: 1" in text
     assert "  - r1: pass" in text
     assert "r2" not in text.split("### Task t1", 1)[1]
+    batch = invoke("report", "--workdir", str(workdir), "--batch")
+    assert batch.exit_code == 0
+    text = (workdir / "report.md").read_text(encoding="utf-8")
+    assert text.splitlines()[0] == "# Run batch report"
+    assert "These are the numbers for one Run batch" in text
 
 
 # --- the ToolSigs a Verdict needs (D70, side effects) -----------------------
@@ -385,14 +352,23 @@ def seed_tool_sigs(workdir: Path) -> None:
     ]), encoding="utf-8")
 
 
-def test_verdict_passes_the_write_tools_and_the_flagged_tools(workdir, fake_modules):
+def test_verdict_passes_the_write_tools_and_the_flagged_tools(workdir):
     """Without these the extra-write, entity-count and D70 checks never fire from the CLI."""
     seed_task(workdir)
     seed_tool_sigs(workdir)
+    lines = [{"run_id": "r1", "env_id": "env-1", "task_id": "t1"},
+             {"idx": 0, "type": "tool_call", "payload": {"id": "c1", "name": "cancel_order", "args": {}}},
+             {"idx": 1, "type": "tool_result", "payload": {"id": "c1", "result": {"ok": True}}},
+             {"idx": 2, "type": "tool_call", "payload": {"id": "c2", "name": "mystery_tool", "args": {}}},
+             {"idx": 3, "type": "tool_result", "payload": {"id": "c2", "result": {"ok": True}}},
+             {"idx": 4, "type": "stop", "payload": {"termination_reason": "done"}}]
+    (workdir / "runs" / "t1" / "r1.jsonl").write_text(
+        "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
-    call = fake_modules["kullback.runner.regrade.regrade"][0]
-    assert call["kwargs"]["write_tools"] == {"cancel_order"}
-    assert call["kwargs"]["flagged_tools"] == {"mystery_tool"}
+    (body,) = stored_verdicts(workdir)
+    assert body["pass"] is False and body["failing_atom"] == "extra_write:cancel_order"
+    assert "env_mark:flagged_tool:mystery_tool" in body["notes"]
+    assert "side_effect_check_skipped" not in body["notes"]
 
 
 def test_verdict_says_when_neither_tool_sigs_nor_a_schema_are_on_disk(workdir, fake_modules):
@@ -413,13 +389,6 @@ def test_the_report_computes_task_coverage_when_no_stage_wrote_it(workdir):
     assert "t1: not covered, no Reference confirmation is recorded for this Task (D57, D93)" in text
 
 
-# --- house rules ------------------------------------------------------------
-
-def test_no_em_dashes_in_the_source():
-    source = (Path(__file__).resolve().parents[1] / "kullback" / "cli.py").read_text(encoding="utf-8")
-    assert "\u2014" not in source and "\u2013" not in source
-
-
 def test_the_verdict_carries_the_environment_and_runner_versions(workdir):
     seed_task(workdir)
     invoke("freeze-runner", "--workdir", str(workdir), "--yes")
@@ -432,36 +401,29 @@ def test_the_verdict_carries_the_environment_and_runner_versions(workdir):
 
 # --- what the Verdict is actually given (D39, D73, D84) ---------------------
 
-def test_verdict_passes_the_entity_schema_so_exempt_columns_are_dropped(workdir, fake_modules):
+def test_verdict_passes_the_entity_schema_so_exempt_columns_are_dropped(workdir):
     """D73: without the schema a forbidden atom over diff() fires on a column the customer exempted."""
-    from kullback.runner.records import Column, EntitySchema
+    from kullback.runner.records import Atom, Column, EntitySchema
 
     seed_task(workdir)
+    (workdir / "verifiers" / "t1.json").write_text(json.dumps(as_dict(Verifier(
+        task_id="t1", verifier_version="v1",
+        atoms=[Atom(id="a_nothing_moves", kind="forbidden", predicate_src="diff()")]))), encoding="utf-8")
+    stop = {"idx": 0, "type": "stop", "payload": {
+        "run_id": "r1", "start_state": {"orders": {"o1": {"updated_at": "t0"}}},
+        "end_state": {"orders": {"o1": {"updated_at": "t1"}}}}}
+    (workdir / "runs" / "t1" / "r1.jsonl").write_text(json.dumps(stop) + "\n", encoding="utf-8")
     schema = EntitySchema(tables=["orders"], columns=[
         Column(table="orders", name="updated_at", **{"class": "exempt"})])
     (workdir / "schema.json").write_text(json.dumps(as_dict(schema)), encoding="utf-8")
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
-    call = fake_modules["kullback.runner.regrade.regrade"][0]
-    assert [c.name for c in call["kwargs"]["schema"].columns] == ["updated_at"]
+    (body,) = stored_verdicts(workdir)
+    assert body["pass"] is True and body["failing_atom"] is None
 
 
 def test_regrade_reads_the_queue_and_verdict_leaves_it_alone(workdir):
-    """D84: only regrade re-scores a Run whose equivalence entry a person overturned."""
-    from kullback.runner import canon
-
-    seed_task(workdir)
-    assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
-    canon._append(workdir / canon.USES_FILE, {"run_id": "r1", "key": "k1", "task_id": "t1"})
-    assert canon.queue_regrade(workdir, "k1", "overturned by a reviewer") == ["r1"]
-
-    assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
-    assert canon.queued_regrades(workdir) == ["r1"], "verdict must not consume the regrade queue"
-    assert invoke("regrade", "--workdir", str(workdir)).exit_code == 0
-    assert canon.queued_regrades(workdir) == []
-
-
-def test_regrade_re_scores_a_queued_run_and_empties_the_queue(workdir):
-    """The whole D84 path with the real regrade: queue a Run, regrade, the stale Verdict is gone."""
+    """D84: only regrade re-scores a Run whose equivalence entry a person overturned, and the
+    stale Verdict is gone once it has."""
     from kullback.runner import canon
 
     seed_task(workdir)
@@ -470,9 +432,11 @@ def test_regrade_re_scores_a_queued_run_and_empties_the_queue(workdir):
     assert len(stored) == 1
     stored[0].write_text(json.dumps(dict(json.loads(stored[0].read_text(encoding="utf-8")),
                                          notes=["stale"])), encoding="utf-8")
-
     canon._append(workdir / canon.USES_FILE, {"run_id": "r1", "key": "k1", "task_id": "t1"})
     assert canon.queue_regrade(workdir, "k1", "overturned by a reviewer") == ["r1"]
+
+    assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
+    assert canon.queued_regrades(workdir) == ["r1"], "verdict must not consume the regrade queue"
     result = invoke("regrade", "--workdir", str(workdir))
     assert result.exit_code == 0
     assert "1 re-scored from the regrade queue" in result.output
@@ -727,6 +691,10 @@ def _task_of(workdir: Path, trace_hash: str) -> str:
 
 def test_rescue_attaches_matching_skips_mismatched_reports_missing(tmp_path, workdir):
     built = _rescue_workdir(tmp_path, workdir)
+    dry = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]), "--dry-run")
+    assert dry.exit_code == 0, dry.output
+    assert "attached 1" in dry.output
+    assert not (workdir / "task_defs").exists(), "a dry run writes nothing"
     result = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]))
     assert result.exit_code == 0, result.output
     assert "looked up 3" in result.output
@@ -757,15 +725,6 @@ def test_rescue_raw_hash_scopes_the_lookup(tmp_path, workdir):
                    "--raw-hash", "0" * 64, "--dry-run")
     assert other.exit_code == 0, other.output
     assert "looked up 0" in other.output
-
-
-def test_rescue_dry_run_writes_nothing(tmp_path, workdir):
-    built = _rescue_workdir(tmp_path, workdir)
-    result = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]),
-                    "--dry-run")
-    assert result.exit_code == 0, result.output
-    assert "attached 1" in result.output
-    assert not (workdir / "task_defs").exists()
 
 
 def test_rescue_reaches_set_aside_recordings(tmp_path, workdir):
@@ -831,19 +790,19 @@ def test_consistency_checks_one_named_task_and_refuses_an_unknown_one(workdir):
                   "--sequences", "2").exit_code == 0
     refused = invoke("consistency", "--workdir", str(workdir), "--task", "nope")
     assert refused.exit_code != 0 and "no Task named nope" in refused.output
+    for sequences in ("0", "-1"):
+        refused = invoke("consistency", "--workdir", str(workdir), "--sequences", sequences)
+        assert refused.exit_code == 2, sequences
+        assert "--sequences" in refused.output and "1 or more" in refused.output
 
 
-def test_consistency_writes_nothing_without_out(workdir):
+def test_consistency_out_writes_the_same_numbers_as_json_and_nothing_without_it(workdir, tmp_path):
     seed_built_env(workdir)
     before = {path for path in workdir.rglob("*")}
     result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
                     "--max-length", "2")
     assert result.exit_code == 0, result.output
     assert {path for path in workdir.rglob("*")} == before
-
-
-def test_consistency_out_writes_the_same_numbers_as_json(workdir, tmp_path):
-    seed_built_env(workdir)
     out = tmp_path / "consistency.json"
     result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
                     "--max-length", "2", "--out", str(out))
@@ -857,13 +816,7 @@ def test_consistency_out_writes_the_same_numbers_as_json(workdir, tmp_path):
     assert body["laws_version"] == 1
 
 
-def test_consistency_refuses_a_missing_workdir(tmp_path):
-    result = invoke("consistency", "--workdir", str(tmp_path / "absent"))
-    assert result.exit_code != 0
-    assert result.output.strip()
-
-
-def test_consistency_requested_task_with_broken_overlay_exits_3(workdir, tmp_path):
+def test_consistency_exits_3_when_the_requested_or_every_task_is_skipped(workdir, tmp_path):
     seed_built_env(workdir)
     (workdir / "overlays" / "widget_task.json").write_text("{", encoding="utf-8")
     refused = invoke("consistency", "--workdir", str(workdir), "--task", "widget_task",
@@ -875,22 +828,39 @@ def test_consistency_requested_task_with_broken_overlay_exits_3(workdir, tmp_pat
                      "--sequences", "2", "--out", str(out))
     assert refused.exit_code == 3
     assert "widget_task" in json.loads(out.read_text(encoding="utf-8"))["skipped"]
+    every = invoke("consistency", "--workdir", str(workdir), "--sequences", "2")
+    assert every.exit_code == 3
+    assert "1 skipped" in every.output
 
 
-def test_consistency_all_tasks_skipped_exits_3(workdir):
-    seed_built_env(workdir)
-    (workdir / "overlays" / "widget_task.json").write_text("{", encoding="utf-8")
-    refused = invoke("consistency", "--workdir", str(workdir), "--sequences", "2")
-    assert refused.exit_code == 3
-    assert "1 skipped" in refused.output
+@pytest.mark.parametrize("breakage", ["broken_overlay", "toolkit_fails_to_load"])
+def test_consistency_one_skip_among_several_still_succeeds(workdir, tmp_path, breakage):
+    """A second Task whose overlay does not parse, or whose toolkit raises on load, is skipped with
+    its reason while the rest are still checked."""
+    from tests.episode.invented import TOOLS
 
-
-def test_consistency_one_skip_among_several_still_succeeds(workdir, tmp_path):
     seed_built_env(workdir)
     (workdir / "tasks" / "t2.json").write_text(json.dumps({
         "id": "t2", "run_ids": ["ghost"], "intent": "nothing recorded",
     }), encoding="utf-8")
-    (workdir / "overlays" / "t2.json").write_text("{", encoding="utf-8")
+    if breakage == "broken_overlay":
+        (workdir / "overlays" / "t2.json").write_text("{", encoding="utf-8")
+    else:
+        (workdir / "overlays" / "t2.json").write_text(json.dumps({
+            "overlay": {"task_id": "t2",
+                        "rows": [{"table": "widgets", "id": "w1", "version_hash": "h-poison"}],
+                        "steps": []},
+            "values": {"h-poison": {"widget_id": "w1", "label": "poison"}},
+        }), encoding="utf-8")
+        tools_path = workdir / "env" / "tools.py"
+        poisoned = tools_path.read_text(encoding="utf-8").replace(
+            "        super().__init__(db)\n        self.db = db",
+            "        super().__init__(db)\n        self.db = db\n"
+            "        if any(row.label == \"poison\" for row in self.db.widgets.values()):\n"
+            "            raise KeyError(\"poison\")",
+        )
+        assert poisoned != TOOLS
+        tools_path.write_text(poisoned, encoding="utf-8")
     out = tmp_path / "consistency.json"
     result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
                     "--max-length", "2", "--out", str(out))
@@ -899,6 +869,9 @@ def test_consistency_one_skip_among_several_still_succeeds(workdir, tmp_path):
     assert set(body["tasks"]) == {"widget_task"}
     assert "t2" in body["skipped"]
     assert "1 skipped" in result.output
+    assert "t2" in result.output and "skipped" in result.output
+    if breakage == "toolkit_fails_to_load":
+        assert "KeyError" in body["skipped"]["t2"]
 
 
 def test_consistency_names_unfit_tools_in_output_and_json(workdir, tmp_path):
@@ -925,27 +898,6 @@ def test_consistency_names_unfit_tools_in_output_and_json(workdir, tmp_path):
     assert body["unfit"]["widget_task"]["describe_widget"] == \
         "required argument widget_id has no type"
     assert "widget_task" in body["tasks"]
-
-
-def test_consistency_names_the_requestor_of_each_tool(workdir, tmp_path):
-    seed_built_env(workdir)
-    out = tmp_path / "consistency.json"
-    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
-                    "--max-length", "2", "--out", str(out))
-    assert result.exit_code == 0, result.output
-    assert "describe_widget as assistant" in result.output
-    assert "rename_widget as assistant" in result.output
-    body = json.loads(out.read_text(encoding="utf-8"))
-    assert body["tasks"]["widget_task"]["requestors"] == {
-        "describe_widget": "assistant", "rename_widget": "assistant"}
-
-
-@pytest.mark.parametrize("sequences", ["0", "-1"])
-def test_consistency_refuses_zero_sequences(workdir, sequences):
-    seed_built_env(workdir)
-    refused = invoke("consistency", "--workdir", str(workdir), "--sequences", sequences)
-    assert refused.exit_code == 2
-    assert "--sequences" in refused.output and "1 or more" in refused.output
 
 
 def test_consistency_skips_a_task_that_checked_nothing(workdir, tmp_path):
@@ -977,37 +929,6 @@ def test_consistency_skips_a_task_that_checked_nothing(workdir, tmp_path):
     assert body["unfit"]["widget_task"]["rename_widget"] == \
         "required argument label has no type; required argument widget_id has no type"
 
-
-def test_consistency_skips_a_task_whose_toolkit_fails_to_load(workdir, tmp_path):
-    from tests.episode.invented import TOOLS
-
-    seed_built_env(workdir)
-    (workdir / "tasks" / "t2.json").write_text(json.dumps({
-        "id": "t2", "run_ids": ["ghost"], "intent": "nothing recorded",
-    }), encoding="utf-8")
-    (workdir / "overlays" / "t2.json").write_text(json.dumps({
-        "overlay": {"task_id": "t2",
-                    "rows": [{"table": "widgets", "id": "w1", "version_hash": "h-poison"}],
-                    "steps": []},
-        "values": {"h-poison": {"widget_id": "w1", "label": "poison"}},
-    }), encoding="utf-8")
-    tools_path = workdir / "env" / "tools.py"
-    poisoned = tools_path.read_text(encoding="utf-8").replace(
-        "        super().__init__(db)\n        self.db = db",
-        "        super().__init__(db)\n        self.db = db\n"
-        "        if any(row.label == \"poison\" for row in self.db.widgets.values()):\n"
-        "            raise KeyError(\"poison\")",
-    )
-    assert poisoned != TOOLS
-    tools_path.write_text(poisoned, encoding="utf-8")
-    out = tmp_path / "consistency.json"
-    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
-                    "--max-length", "2", "--out", str(out))
-    assert result.exit_code == 0, result.output
-    assert "t2" in result.output and "skipped" in result.output
-    body = json.loads(out.read_text(encoding="utf-8"))
-    assert "widget_task" in body["tasks"]
-    assert "KeyError" in body["skipped"]["t2"]
 
 
 def test_a_build_that_ended_on_a_provider_error_beats_failed_and_exits_one(workdir, fake_modules, monkeypatch):

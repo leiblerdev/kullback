@@ -71,15 +71,18 @@ def test_firecrawl_is_keyless_and_reads_the_v2_shapes():
     assert all("Authorization" not in r.headers for r in seen)
 
 
-def test_firecrawl_refusing_keyless_is_a_search_error_with_its_words():
-    def handler(request: httpx.Request) -> httpx.Response:
+def test_the_chain_is_tinyfish_then_keyless_firecrawl_and_names_every_failure_it_falls_through():
+    both = sx.providers_from_env({LIVE_ENV_VAR: "1", sx.TINYFISH_KEY_VAR: "k"})
+    assert [p.name for p in both] == ["tinyfish", "firecrawl"]
+    assert [p.name for p in sx.providers_from_env({LIVE_ENV_VAR: "1"})] == ["firecrawl"]
+    assert sx.live_allowed({LIVE_ENV_VAR: "1"}) and not sx.live_allowed({})
+
+    def refusing(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"success": False, "error": "your IP address looks suspicious"})
 
     with pytest.raises(sx.SearchError, match="looks suspicious"):
-        sx.Firecrawl(client=_client(handler)).search("q")
+        sx.Firecrawl(client=_client(refusing)).search("q")
 
-
-def test_the_chain_falls_through_to_the_next_provider_and_names_every_failure():
     def failing(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="down")
 
@@ -115,9 +118,3 @@ def test_live_off_means_no_provider_but_the_memo_still_answers(tmp_path):
     with pytest.raises(sx.SearchError):
         memo.search("q")
 
-
-def test_live_on_builds_tinyfish_then_firecrawl_keyless():
-    both = sx.providers_from_env({LIVE_ENV_VAR: "1", sx.TINYFISH_KEY_VAR: "k"})
-    assert [p.name for p in both] == ["tinyfish", "firecrawl"]
-    assert [p.name for p in sx.providers_from_env({LIVE_ENV_VAR: "1"})] == ["firecrawl"]
-    assert sx.live_allowed({LIVE_ENV_VAR: "1"}) and not sx.live_allowed({})

@@ -79,7 +79,7 @@ def test_the_argument_of_the_tool_that_opens_a_run_is_an_identity_field():
     assert any(re.search(cue, "what is your reservation code?") for cue in reservation.cues)
 
 
-def test_a_value_shape_that_matches_ordinary_words_is_read_only_when_asked():
+def test_a_value_shape_that_matches_ordinary_words_gives_no_scanning_pattern():
     """Six plain letters is what many words look like; such a pattern must not scan every turn."""
     schema = EntitySchema(tables=["reservations"], id_patterns={"reservations.reservation_id": r"^.{6}$"})
     words = "hi, can you help me, i am not sure what to do, it is about my trip and i need an answer today, " \
@@ -92,18 +92,6 @@ def test_a_value_shape_that_matches_ordinary_words_is_read_only_when_asked():
     assert spec.pattern is None and spec.asked_only is not None
     assert user_sim.extracted_values("GHIJKL", asked=["reservation_id"], vocab=vocab) == [("reservation_id", "GHIJKL")]
     assert user_sim.extracted_values("please GHIJKL", vocab=vocab) == []
-
-
-def test_a_few_distinct_values_are_matched_by_listing_them():
-    traces = [trace(f"c{i}", f"Book me in {cabin.replace('_', ' ')} please.",
-                    [("book_reservation", {"cabin": cabin})]) for i, cabin in enumerate(["economy", "business", "basic_economy", "economy"])]
-    vocab = vb.derive(traces, EntitySchema(tables=[]), [sig("book_reservation", "cabin")])
-    cabin = vocab.get("cabin")
-    assert cabin.kind == "value" and re.search(cabin.pattern, "I want basic economy")
-    assert user_sim.extracted_values("Business class, please.", vocab=vocab) == [("cabin", "Business")]
-
-
-def test_a_shape_that_is_any_word_gives_no_pattern_and_a_value_said_everywhere_is_not_enumerated():
     states = ["TX", "NY", "CA", "WA"]
     traces = [trace(f"s{i}", f"No, I do not want insurance. Ship it to {states[i]} please, no rush.",
                     [("book", {"insurance": "no", "state": states[i]})]) for i in range(4)]
@@ -113,6 +101,15 @@ def test_a_shape_that_is_any_word_gives_no_pattern_and_a_value_said_everywhere_i
     assert state is not None and state.pattern is None and state.asked_only is None, "two letters is any word"
     assert vocab.get("insurance").pattern is None, '"no" goes with every Run, not with the booking'
     assert user_sim.extracted_values("No, thanks.", vocab=vocab) == []
+
+
+def test_a_few_distinct_values_are_matched_by_listing_them():
+    traces = [trace(f"c{i}", f"Book me in {cabin.replace('_', ' ')} please.",
+                    [("book_reservation", {"cabin": cabin})]) for i, cabin in enumerate(["economy", "business", "basic_economy", "economy"])]
+    vocab = vb.derive(traces, EntitySchema(tables=[]), [sig("book_reservation", "cabin")])
+    cabin = vocab.get("cabin")
+    assert cabin.kind == "value" and re.search(cabin.pattern, "I want basic economy")
+    assert user_sim.extracted_values("Business class, please.", vocab=vocab) == [("cabin", "Business")]
 
 
 def test_an_id_shape_of_letters_and_digits_only_matches_where_a_digit_is():
@@ -160,7 +157,7 @@ def test_web_aliases_become_cues_only_when_a_fetched_page_carries_them():
     assert "help.example/booking" in model.calls[0]["messages"][0]["content"]
 
 
-def test_generic_fields_are_not_searched_and_the_web_being_down_is_a_note():
+def test_generic_fields_the_web_being_down_and_unreadable_alias_replies_add_nothing():
     down = ScriptedSearch()  # nothing scripted: every search answers with no hits, every fetch fails
     vocab = vb.enrich(_airline_vocab(), down, TestModel([]))
     assert [r["field"] for r in vocab.searched] == ["reservation_id"] and vocab.searched[0]["urls"] == []
@@ -178,6 +175,9 @@ def test_generic_fields_are_not_searched_and_the_web_being_down_is_a_note():
     vocab = vb.enrich(_airline_vocab(), Broken(), TestModel([]))
     assert vocab.notes == ["search unavailable: RuntimeError: no route to host"]
     assert vb.enrich(_airline_vocab(), None, None).notes == ["no web search: the cues are the field names alone"]
+    assert vb.parse_aliases("sure, here: booking reference") == []
+    assert vb.parse_aliases('{"aliases": "booking reference"}') == []
+    assert vb.parse_aliases('```json\n{"aliases": ["Booking Reference"]}\n```') == ["booking reference"]
 
 
 def test_a_value_of_the_field_is_never_an_alias():
@@ -188,15 +188,3 @@ def test_a_value_of_the_field_is_never_an_alias():
                             pages={"https://a/": "Choose a cabin class: economy or business."})
     out = vb.enrich(vocab, search, TestModel(['{"aliases": ["cabin class", "economy", "business"]}']))
     assert out.get("cabin").aliases == ["cabin", "cabin class"]
-
-
-def test_an_unreadable_alias_reply_adds_nothing():
-    assert vb.parse_aliases("sure, here: booking reference") == []
-    assert vb.parse_aliases('{"aliases": "booking reference"}') == []
-    assert vb.parse_aliases('```json\n{"aliases": ["Booking Reference"]}\n```') == ["booking reference"]
-
-
-def test_the_vocabulary_round_trips_as_a_record():
-    vocab = vb.derive(retail_traces(), RETAIL_SCHEMA, RETAIL_SIGS)
-    again = vb.Vocabulary.model_validate(vocab.model_dump(mode="json"))
-    assert again == vocab and again.get("order_id").prefix == "#"

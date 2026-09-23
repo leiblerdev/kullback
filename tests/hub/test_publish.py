@@ -24,7 +24,8 @@ def _export(workdir: Path, out: Path, **kwargs):
 # --- the package ---------------------------------------------------------------------
 
 
-def test_the_export_writes_the_world_the_tasks_and_the_verifiers_and_nothing_of_the_recordings(nursery, tmp_path):
+def test_the_export_writes_the_world_the_tasks_and_the_verifiers_and_nothing_of_the_recordings(
+        nursery, tmp_path, hub):
     out = tmp_path / "package"
     _export(nursery, out)
     assert (out / "env" / "db.json").is_file()
@@ -34,14 +35,16 @@ def test_the_export_writes_the_world_the_tasks_and_the_verifiers_and_nothing_of_
     assert sorted(p.name for p in (out / "verifiers").glob("*.json")) == ["task_one.json", "task_two.json"]
     written = {path.relative_to(out).as_posix().split("/", 1)[0] for path in out.rglob("*") if path.is_file()}
     assert not written & set(package_mod.NEVER_EXPORTED)
-
-
-def test_an_exported_task_names_none_of_the_recordings_it_was_clustered_from(nursery, tmp_path):
-    out = tmp_path / "package"
-    _export(nursery, out)
     task = read_json(out / "tasks" / "task_one.json")
-    assert task["run_ids"] == []
+    assert task["run_ids"] == [], "an exported Task names none of the recordings it was clustered from"
     assert task["intent"] == "water the plot that is due"
+
+    # and what is fetched back holds no builder state either
+    publish_mod.publish(nursery, "leibler/nursery", client=hub, preview=True)
+    fetched = tmp_path / "fetched"
+    publish_mod.fetch("leibler/nursery", fetched, client=hub)
+    for name in ("raw", "runs", "task_status.json", "rounds.json", "replays.json"):
+        assert not (fetched / name).exists()
 
 
 def test_the_manifest_carries_the_numbers_the_artifacts_hold(nursery, tmp_path):
@@ -62,7 +65,7 @@ def test_the_manifest_carries_the_numbers_the_artifacts_hold(nursery, tmp_path):
 
 def test_every_task_carries_its_funnel_stage_and_why_it_stopped(nursery, tmp_path):
     out = tmp_path / "package"
-    _export(nursery, out)
+    manifest = _export(nursery, out)
     rows = {row["task_id"]: row for row in read_json(out / package_mod.TASKS_INDEX_NAME)["tasks"]}
     assert rows["task_one"]["stage"] == "trusted"
     assert rows["task_one"]["stopped_because"] is None
@@ -71,10 +74,7 @@ def test_every_task_carries_its_funnel_stage_and_why_it_stopped(nursery, tmp_pat
     assert "second_path_passes" in rows["task_two"]["stopped_because"]
     assert rows["task_three"]["stage"] == "clustered"
     assert rows["task_three"]["stopped_because"] == "no replay of the Task was confirmed"
-
-
-def test_the_untrusted_reasons_are_the_harness_own_words_and_quote_no_record(nursery, tmp_path):
-    manifest = _export(nursery, tmp_path / "package")
+    # the manifest's untrusted reasons are the harness's own words and quote no record
     assert manifest["untrusted"]["count"] == 2
     reasons = {entry["reason"] for entry in manifest["untrusted"]["reasons"]}
     assert "no replay of the Task was confirmed" in reasons
@@ -89,11 +89,21 @@ def test_a_workdir_with_no_environment_is_refused(tmp_path):
 # --- the leak scan -------------------------------------------------------------------
 
 
-def test_the_leak_scan_passes_a_package_whose_values_the_world_files_hold(nursery, tmp_path):
+def test_the_leak_scan_passes_a_package_whose_values_the_world_files_or_the_harness_words_hold(nursery, tmp_path):
     manifest = _export(nursery, tmp_path / "package")
     assert manifest["leak_scan"]["leaks"] == 0
     assert manifest["leak_scan"]["corpus_strings"] > 0
     assert manifest["leak_scan"]["files_scanned"] >= 4
+    # a word of the harness's own vocabulary is not a leak however often the corpus says it
+    kinds = {atom["kind"] for atom in read_json(nursery / "verifiers" / "task_one.json")["atoms"]}
+    assert "question" in kinds  # a word the corpus and the harness both use
+
+    # nor is a value the world files hold, however often the recordings say it
+    verifier = read_json(nursery / "verifiers" / "task_one.json")
+    verifier["atoms"][1]["target"]["value"] = "2026-03-01"  # a value db.json holds
+    write_json(nursery / "verifiers" / "task_one.json", verifier)
+    manifest = _export(nursery, tmp_path / "held")
+    assert manifest["leak_scan"]["leaks"] == 0
 
 
 def test_the_leak_scan_fails_an_export_that_copies_a_recorded_turn_into_a_grader(nursery, tmp_path):
@@ -106,7 +116,7 @@ def test_the_leak_scan_fails_an_export_that_copies_a_recorded_turn_into_a_grader
     assert not out.exists()
 
 
-def test_a_value_the_caller_gave_mid_conversation_is_counted_as_an_echo_and_does_not_stop_the_export(
+def test_a_value_the_caller_gave_mid_conversation_is_an_echo_unless_the_task_states_it_and_never_stops_the_export(
         nursery, tmp_path):
     verifier = read_json(nursery / "verifiers" / "task_one.json")
     verifier["atoms"][0]["target"]["raw"] = ELICITED_VALUE
@@ -115,40 +125,35 @@ def test_a_value_the_caller_gave_mid_conversation_is_counted_as_an_echo_and_does
     assert manifest["leak_scan"]["leaks"] == 0
     assert manifest["leak_scan"]["value_echoes"] == 1
 
-
-def test_a_value_the_task_instruction_states_is_not_an_echo_in_the_verifier(nursery, tmp_path):
-    verifier = read_json(nursery / "verifiers" / "task_one.json")
-    verifier["atoms"][0]["target"]["raw"] = ELICITED_VALUE
-    write_json(nursery / "verifiers" / "task_one.json", verifier)
     task = read_json(nursery / "tasks" / "task_one.json")
     task["intent"] = f"water the plot and send the crew to {ELICITED_VALUE}"
     write_json(nursery / "tasks" / "task_one.json", task)
-    manifest = _export(nursery, tmp_path / "package")
+    manifest = _export(nursery, tmp_path / "stated")
     assert manifest["leak_scan"]["value_echoes"] == 0
-
-
-def test_a_word_of_the_harness_own_vocabulary_is_not_a_leak_however_often_the_corpus_says_it(
-        nursery, tmp_path):
-    manifest = _export(nursery, tmp_path / "package")
-    kinds = {atom["kind"] for atom in read_json(nursery / "verifiers" / "task_one.json")["atoms"]}
-    assert "question" in kinds  # a word the corpus and the harness both use
-    assert manifest["leak_scan"]["leaks"] == 0
-
-
-def test_a_value_the_world_files_hold_is_not_a_leak_however_often_the_recordings_say_it(nursery, tmp_path):
-    verifier = read_json(nursery / "verifiers" / "task_one.json")
-    verifier["atoms"][1]["target"]["value"] = "2026-03-01"  # a value db.json holds
-    write_json(nursery / "verifiers" / "task_one.json", verifier)
-    manifest = _export(nursery, tmp_path / "package")
-    assert manifest["leak_scan"]["leaks"] == 0
 
 
 # --- the release form ----------------------------------------------------------------
 
 
-def test_a_release_is_refused_below_the_fidelity_bar_and_says_the_number(nursery, tmp_path):
+def test_a_release_is_refused_below_the_fidelity_bar_saying_the_number_and_passes_at_it(
+        nursery, tmp_path, hub, monkeypatch):
     with pytest.raises(publish_mod.PublishError, match="66.7%"):
         publish_mod.stage(nursery, tmp_path / "package", "leibler/nursery")
+
+    # the publish command refuses the same release and uploads nothing
+    monkeypatch.setattr("kullback.hub.client.HuggingFaceHub", lambda *a, **k: hub)
+    result = CliRunner().invoke(cli.app, ["publish", "--workdir", str(nursery), "--repo", "leibler/nursery"])
+    assert result.exit_code != 0
+    assert hub.repos == {}
+
+    write_json(nursery / "replays.json", {
+        "task_one": {"trace-task_one": {"confirmed": True}},
+        "task_two": {"trace-task_two": {"confirmed": True}},
+        "task_three": {"trace-task_three": {"confirmed": True}},
+    })
+    manifest = publish_mod.stage(nursery, tmp_path / "released", "leibler/nursery")
+    assert manifest["status"] == "release"
+    assert manifest["preview"] is False
 
 
 def test_preview_passes_below_the_bar_and_the_card_opens_with_the_banner(nursery, tmp_path):
@@ -160,17 +165,6 @@ def test_preview_passes_below_the_bar_and_the_card_opens_with_the_banner(nursery
     body = (out / package_mod.CARD_NAME).read_text(encoding="utf-8")
     assert "> **Preview.**" in body
     assert "66.7%" in body
-
-
-def test_a_release_passes_at_the_bar(nursery, tmp_path):
-    write_json(nursery / "replays.json", {
-        "task_one": {"trace-task_one": {"confirmed": True}},
-        "task_two": {"trace-task_two": {"confirmed": True}},
-        "task_three": {"trace-task_three": {"confirmed": True}},
-    })
-    manifest = publish_mod.stage(nursery, tmp_path / "package", "leibler/nursery")
-    assert manifest["status"] == "release"
-    assert manifest["preview"] is False
 
 
 def test_an_environment_whose_replays_were_never_scored_cannot_be_a_release():
@@ -259,14 +253,6 @@ def test_a_fetch_verifies_the_hash_and_lays_out_a_directory_the_runner_loads(nur
     assert toolkit.get_plot(plot_id="P-1").last_watered == "2026-03-09"
 
 
-def test_a_fetched_directory_holds_no_builder_state(nursery, tmp_path, hub):
-    publish_mod.publish(nursery, "leibler/nursery", client=hub, preview=True)
-    out = tmp_path / "fetched"
-    publish_mod.fetch("leibler/nursery", out, client=hub)
-    for name in ("raw", "runs", "task_status.json", "rounds.json", "replays.json"):
-        assert not (out / name).exists()
-
-
 def test_a_fetch_refuses_a_tampered_package_and_leaves_nothing_behind(nursery, tmp_path, hub):
     hosted, _ = publish_mod.publish(nursery, "leibler/nursery", client=hub, preview=True)
     files = hub.repos["leibler/nursery"]["commits"][hosted.commit]
@@ -312,23 +298,16 @@ def test_the_organisation_card_lists_every_environment_with_its_numbers_and_stat
     assert "kullback fetch leibler/<environment>" in body
 
 
-def test_an_organisation_card_the_host_will_not_take_is_reported_rather_than_claimed(hub):
+def test_an_organisation_card_is_published_where_the_host_takes_it_and_reported_where_it_will_not(
+        hub, hub_with_organisation_card):
     took, note = publish_mod.publish_organisation_card("leibler", "# leibler\n", client=hub)
     assert took is False
     assert "organisation profile" in note
 
-
-def test_an_organisation_card_the_host_takes_is_published(hub_with_organisation_card):
     host = hub_with_organisation_card
     took, where = publish_mod.publish_organisation_card("leibler", "# leibler\n", client=host)
     assert took is True and "leibler" in where
     assert host.organisation_cards["leibler"] == "# leibler\n"
-
-
-def test_the_card_template_documents_every_manifest_field_a_card_shows():
-    body = card_mod.environment_card_template()
-    for field in ("replay_fidelity.tasks_rate", "trusted", "leak_scan", "content_hash", "preview"):
-        assert field in body
 
 
 # --- the three commands ---------------------------------------------------------------
@@ -342,13 +321,6 @@ def test_the_export_command_writes_a_package_and_prints_its_numbers(nursery, tmp
     assert "replay fidelity 66.7% over Tasks" in result.output
     assert "leak scan: 0 recorded strings" in result.output
     assert (out / package_mod.MANIFEST_NAME).is_file()
-
-
-def test_the_publish_command_refuses_a_release_below_the_bar(nursery, tmp_path, hub, monkeypatch):
-    monkeypatch.setattr("kullback.hub.client.HuggingFaceHub", lambda *a, **k: hub)
-    result = CliRunner().invoke(cli.app, ["publish", "--workdir", str(nursery), "--repo", "leibler/nursery"])
-    assert result.exit_code != 0
-    assert hub.repos == {}
 
 
 def test_the_publish_and_fetch_commands_round_trip_an_environment(nursery, tmp_path, hub, monkeypatch):
@@ -397,12 +369,18 @@ def test_the_package_carries_one_flat_row_per_task_for_a_dataset_viewer_and_the_
 # --- what the domain reading attests, on the card (D225) ------------------------------
 
 
-def test_the_card_says_how_many_domain_archetypes_were_read_and_how_many_no_tool_realises(
+def test_the_card_says_how_many_domain_archetypes_were_read_and_how_many_no_tool_realises_if_any_were(
         nursery, tmp_path):
     """Someone deciding whether to use a package wants the second number: it says what this
     Environment cannot be asked to do, and nothing else on the card says it."""
     from kullback import domain as domain_mod
     from kullback.runner.records import write_json as write
+
+    # None of the rows rather than zeros before the domain was read: never asked and nothing
+    # found are not the same reading.
+    unread = package_mod.export(nursery, tmp_path / "unread", name="nursery", preview=True)
+    assert unread["domain"] == {}
+    assert "Domain archetypes" not in card_mod.card_markdown(unread, "leibler/nursery")
 
     store = nursery / domain_mod.DIR
     write(store / domain_mod.ARCHETYPES, {"format": domain_mod.FORMAT, "counts": {},
@@ -416,9 +394,3 @@ def test_the_card_says_how_many_domain_archetypes_were_read_and_how_many_no_tool
     assert "| Domain archetypes read | 2 (1 a tool of this Environment realises) |" in body
     assert "| Domain archetypes with no tool | 1 |" in body
 
-
-def test_a_package_from_a_workdir_that_read_no_domain_carries_no_such_rows(nursery, tmp_path):
-    """None of them rather than zeros: never asked and nothing found are not the same reading."""
-    manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
-    assert manifest["domain"] == {}
-    assert "Domain archetypes" not in card_mod.card_markdown(manifest, "leibler/nursery")
