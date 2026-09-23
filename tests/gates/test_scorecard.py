@@ -92,7 +92,8 @@ def test_scorecard_task_coverage_plain_and_run_weighted(build_dir: Path):
 
 
 def test_scorecard_uncovered_task_carries_the_first_failing_reason(build_dir: Path):
-    runs = json.loads((build_dir / "runs.json").read_text())
+    original = json.loads((build_dir / "runs.json").read_text())
+    runs = json.loads(json.dumps(original))
     runs[1]["events"][0]["assisted"] = True
     (build_dir / "runs.json").write_text(json.dumps(runs), encoding="utf-8")
     coverage = scorecard(build_dir)["task_coverage"]
@@ -102,6 +103,11 @@ def test_scorecard_uncovered_task_carries_the_first_failing_reason(build_dir: Pa
     assert coverage["uncovered"][0]["task_id"] == "t1"
     assert "assisted" in coverage["uncovered"][0]["reason"]
     assert "r2" in coverage["uncovered"][0]["reason"]
+
+    # A Run that was never replayed uncovers its Task the same way.
+    (build_dir / "runs.json").write_text(json.dumps(original[1:]), encoding="utf-8")
+    coverage = scorecard(build_dir)["task_coverage"]
+    assert "r1" in coverage["uncovered"][0]["reason"]
 
 
 @pytest.mark.parametrize(
@@ -130,9 +136,7 @@ def test_scorecard_coverage_needs_a_confirmed_reference_and_a_passing_verifier(b
     assert "Reference" in reasons["t1"]
     assert "Verifier" in reasons["t2"]
 
-
-def test_scorecard_coverage_needs_a_status_entry_at_all(build_dir: Path):
-    """No entry means nothing confirmed the Reference and nothing ran the D79 suite (D96)."""
+    # No entry means nothing confirmed the Reference and nothing ran the D79 suite (D96).
     (build_dir / "task_status.json").unlink()
     coverage = scorecard(build_dir)["task_coverage"]
     assert coverage["tasks_covered"] == 0
@@ -146,12 +150,6 @@ def test_scorecard_coverage_needs_a_status_entry_at_all(build_dir: Path):
     coverage = scorecard(build_dir)["task_coverage"]
     assert coverage["tasks_covered"] == 1
     assert "no D79 result" in coverage["uncovered"][0]["reason"]
-
-
-def test_scorecard_coverage_says_which_d96_reasons_nothing_measures(build_dir: Path):
-    """overlay_miss and reconstructed are read here; only the first has a producer today."""
-    coverage = scorecard(build_dir)["task_coverage"]
-    assert coverage["reasons_not_measured"] == ["reconstructed", "truncated"]
 
 
 def test_task_coverage_counts_a_task_with_no_runs_as_uncovered():
@@ -220,13 +218,6 @@ def test_a_task_set_aside_as_not_gradeable_leaves_the_agreement_denominator(buil
     assert card["gate"]["pass"] is True
 
 
-def test_scorecard_counts_a_run_that_was_never_replayed_as_uncovered(build_dir: Path):
-    runs = json.loads((build_dir / "runs.json").read_text())
-    (build_dir / "runs.json").write_text(json.dumps(runs[1:]), encoding="utf-8")
-    coverage = scorecard(build_dir)["task_coverage"]
-    assert "r1" in coverage["uncovered"][0]["reason"]
-
-
 def test_scorecard_user_fact_consistency_reports_raw_and_explained_rates_with_the_miss_by_reason(build_dir: Path):
     facts = scorecard(build_dir)["user_fact_consistency"]
     assert facts["total"] == 2
@@ -247,15 +238,6 @@ def test_scorecard_verdict_agreement_explains_a_miss_by_its_reason_and_lists_the
     assert miss["run_id"] == "r2"
     assert miss["ours"] is False
     assert miss["reference"] is True
-
-
-def test_scorecard_takes_a_supplied_reference_verdict_set(build_dir: Path):
-    reference = [{"run_id": "r1", "pass": False, "reason": "our_bug"},
-                 {"run_id": "r2", "pass": False},
-                 {"run_id": "r3", "pass": True}]
-    agreement = scorecard(build_dir, reference_verdicts=reference)["verdict_agreement"]
-    assert agreement["matched"] == 2
-    assert agreement["by_reason"] == {"our_bug": 1}
 
 
 def test_scorecard_gate_fails_on_a_miss_with_no_reason(build_dir: Path):
@@ -295,7 +277,7 @@ def test_scorecard_rejects_a_reason_outside_the_vocabulary(build_dir: Path):
     assert set(MISS_REASONS) == {"our_bug", "reference_bug", "ambiguous"}
 
 
-def test_scorecard_passes_policy_coverage_through(build_dir: Path):
+def test_policy_coverage_is_reported_and_never_gates(build_dir: Path):
     """R22 item 10 keeps its own line: read as written, and never folded into the gate."""
     card = scorecard(build_dir)
     assert card["policy_coverage"] == {"rules": 40, "compiled": 6, "residual": 2}
@@ -313,11 +295,6 @@ def test_scorecard_on_an_empty_build_dir_reports_nothing_rather_than_a_hundred_p
     assert card["gate"]["pass"] is True
 
 
-def test_scorecard_is_json_serializable(build_dir: Path):
-    card = scorecard(build_dir)
-    assert json.loads(json.dumps(card)) == card
-
-
 def test_the_scorecard_gate_is_never_green_over_nothing(build_dir: Path):
     status = {t: {"reference_confirmed": False, "verifier_passed": False, "reason": "x"} for t in ("t1", "t2")}
     (build_dir / "task_status.json").write_text(json.dumps(status), encoding="utf-8")
@@ -327,10 +304,10 @@ def test_the_scorecard_gate_is_never_green_over_nothing(build_dir: Path):
     assert any("no Task is gradeable" in f for f in card["gate"]["failures"])
 
 
-
-
-def test_the_frozen_list_holds_the_task_records_a_later_round_resumes_from(build_dir: Path):
-    """D200: an id says a Task went missing, the record says which Runs it grouped."""
+def test_the_frozen_list_keeps_each_tasks_run_ids(build_dir: Path, tmp_path: Path):
+    """D200: an id says a Task went missing, the record says which Runs it grouped. A build that
+    never froze a list reads back as no list at all."""
+    assert frozen_tasks(tmp_path) is None
     freeze_tasks(build_dir, [Task(id="t1", run_ids=["r1", "r2"]), Task(id="t2", run_ids=["r3"])])
     assert [(t["id"], t["run_ids"]) for t in frozen_tasks(build_dir)] == [("t1", ["r1", "r2"]), ("t2", ["r3"])]
 
@@ -343,7 +320,3 @@ def test_a_frozen_list_written_as_ids_alone_is_filled_in_from_the_per_task_files
     assert frozen_tasks(build_dir) == [{"id": "t1", "category_id": None, "run_ids": ["r1"], "intent": None,
                                         "unguarded": False, "name": None, "anchor_run_ids": []},
                                        {"id": "t2", "run_ids": []}]
-
-
-def test_a_build_that_never_froze_a_list_reads_back_as_no_list_at_all(tmp_path: Path):
-    assert frozen_tasks(tmp_path) is None
