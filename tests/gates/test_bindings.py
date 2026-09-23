@@ -33,7 +33,7 @@ from gates.verifier_fixtures import (
 from kullback.builder import compile_env as ce
 from kullback.builder import sandbox as sb
 from kullback.gates import verifier_suite as S
-from kullback.gates.bindings import BINDINGS, binding_for, rows_for, rulings_for
+from kullback.gates.bindings import BINDINGS, binding_for, load_trace_calls, rows_for, rulings_for
 from kullback.gates.loosening import false_rejection_gate, loosening_gate
 from kullback.gates.tool_runs import MEMORISED_STAGE, SensitivityPair
 from kullback.runner.records import (
@@ -216,6 +216,21 @@ def test_an_executor_taking_the_trace_table_is_handed_every_traced_call_of_the_w
     rulings_for(root, rel, work, execute=execute, evidence={"db": dict(DB), "schema": _schema()})
     assert handed
     assert {call.id for call in handed[0]["t1"]} == {"a1", "a2"}
+
+
+def test_a_workdir_with_only_calls_files_yields_one_table_across_tools_in_recorded_order(tmp_path):
+    work = tmp_path / "work"
+    (work / "env" / "calls").mkdir(parents=True)
+    read = _traced_call("b1", "t1", 1, "read_widget", {"widget_id": "W-1"}, {"widget_id": "W-1"})
+    write = _traced_call("b2", "t1", 4, "set_status", {"widget_id": "W-1", "new_status": "done"},
+                         {"widget_id": "W-1", "status": "done"})
+    again = _traced_call("b3", "t1", 7, "read_widget", {"widget_id": "W-1"}, {"widget_id": "W-1"})
+    for name, calls in (("read_widget", [again, read]), ("set_status", [write])):
+        (work / "env" / "calls" / f"{name}.jsonl").write_text(
+            "".join(json.dumps(as_dict(call)) + "\n" for call in calls), encoding="utf-8")
+    table = load_trace_calls(work, "tools/set_status.py")
+    assert list(table) == ["t1"]
+    assert [call.id for call in table["t1"]] == ["b1", "b2", "b3"]
 
 
 def test_an_executor_without_the_trace_table_keyword_is_called_as_before(tmp_path):

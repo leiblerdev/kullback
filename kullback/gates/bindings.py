@@ -122,21 +122,56 @@ def load_calls(workdir: Path, path: str) -> Optional[list[ToolCall]]:
     return out or None
 
 
-def load_trace_calls(workdir: Path, path: str) -> Optional[dict[str, list[ToolCall]]]:
-    """Every recorded call out of `traces/`, any tool, grouped by the trace that made it.
+#: Where a workdir keeps its recorded calls one jsonl per tool, read where `traces/` holds none.
+CALLS_DIRS = ("env/calls", "calls")
 
-    The table a gated call's prefix is read from: the calls its own trace made before it.
+
+def _jsonl_calls(file: Path) -> list[ToolCall]:
+    try:
+        lines = file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    rows = []
+    for line in lines:
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    return _as_calls(rows) or []
+
+
+def load_trace_calls(workdir: Path, path: str) -> Optional[dict[str, list[ToolCall]]]:
+    """Every recorded call, any tool, grouped by the trace that made it.
+
+    The table a gated call's prefix is read from: the calls its own trace made before it. The
+    source is `traces/`, the same files `load_calls` reads the gated calls from, so every gated
+    call finds its own trace here; a workdir with no calls there is read from its calls
+    directory, one jsonl per tool.
     """
     _ = path
+    calls: list[ToolCall] = []
     traces = workdir / "traces"
-    if not traces.is_dir():
-        return None
+    if traces.is_dir():
+        for file in sorted(traces.glob("*.json")):
+            calls += _as_calls(_read_json(workdir, f"traces/{file.name}") or []) or []
+    for name in CALLS_DIRS if not calls else ():
+        folder = workdir / name
+        if folder.is_dir():
+            for file in sorted(folder.glob("*.jsonl")):
+                calls += _jsonl_calls(file)
+            break
     out: dict[str, list[ToolCall]] = {}
-    for file in sorted(traces.glob("*.json")):
-        for call in _as_calls(_read_json(workdir, f"traces/{file.name}") or []) or []:
-            if call.trace_id:
-                out.setdefault(call.trace_id, []).append(call)
+    for call in calls:
+        if call.trace_id:
+            out.setdefault(call.trace_id, []).append(call)
+    for rows in out.values():
+        rows.sort(key=_recorded_order)
     return out or None
+
+
+def _recorded_order(call: ToolCall) -> tuple:
+    position = getattr(call.raw_ptr, "msg_index", None)
+    return (position is None, position if isinstance(position, int) else 0, call.id or "")
 
 
 def load_schema(workdir: Path, path: str) -> Optional[EntitySchema]:

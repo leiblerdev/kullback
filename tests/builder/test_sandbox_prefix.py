@@ -7,8 +7,12 @@ the world that write left, so the gated call runs after the calls its trace made
 
 from __future__ import annotations
 
+import json
+
 from kullback.builder import compile_env as ce
 from kullback.builder import sandbox as sb
+from kullback.builder.env_files import executor
+from kullback.gates.bindings import rulings_for
 from kullback.runner.records import (
     Column,
     EntitySchema,
@@ -17,6 +21,7 @@ from kullback.runner.records import (
     ToolCall,
     ToolCallError,
     ToolSig,
+    as_dict,
 )
 
 DB = {"widgets": {"W-1": {"widget_id": "W-1", "status": "new"},
@@ -130,3 +135,42 @@ def test_the_prefix_is_the_earlier_calls_of_the_trace_in_recorded_order_whatever
     assert [call.id for call in box.prefix_of(READ_AFTER)] == ["w1", "w3"]
     assert box.prefix_of(WRITE) == []
     assert box.prefix_of(READ_ALONE) == []
+
+
+# --- the live write gate: rulings_for with the session's executor over a workdir ---
+
+def _workdir(tmp_path):
+    work, env = tmp_path / "work", tmp_path / "work" / "env"
+    (work / "traces").mkdir(parents=True)
+    (env / "tools").mkdir(parents=True)
+    (work / "schema.json").write_text(json.dumps(as_dict(_schema())), encoding="utf-8")
+    (work / "tool_sigs.json").write_text(json.dumps([as_dict(sig) for sig in _sigs()]), encoding="utf-8")
+    (work / "db.json").write_text(json.dumps(DB), encoding="utf-8")
+    for name, calls in (("t1", [WRITE, READ_AFTER]), ("t2", [READ_ALONE])):
+        (work / "traces" / f"{name}.json").write_text(
+            json.dumps({"tool_calls": [as_dict(call) for call in calls]}), encoding="utf-8")
+    (env / "tools" / "set_status.py").write_text(
+        "def set_status(self, widget_id, new_status):\n" + _indented(SET_BODY), encoding="utf-8")
+    (env / "tools" / "get_widget.py").write_text(
+        "def get_widget(self, widget_id):\n" + _indented(GET_BODY), encoding="utf-8")
+    return work, env
+
+
+def _indented(body: str) -> str:
+    return "".join("    " + line + "\n" for line in body.splitlines())
+
+
+def _replay(rulings) -> bool:
+    return next(ruling for ruling in rulings if ruling.stage == "replay_fidelity").passed
+
+
+def test_the_write_gate_passes_a_read_of_a_row_its_trace_wrote_only_because_the_prefix_ran(tmp_path):
+    work, env = _workdir(tmp_path)
+    execute = executor(work, env)
+
+    def without_table(source, calls, db):
+        return execute(source, calls, db)
+
+    without_table.render = execute.render
+    assert _replay(rulings_for(env, "tools/get_widget.py", work, execute=execute))
+    assert not _replay(rulings_for(env, "tools/get_widget.py", work, execute=without_table))
