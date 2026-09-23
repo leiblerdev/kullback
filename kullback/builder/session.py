@@ -226,14 +226,17 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
           ceiling_usd: Optional[float] = None, session_path: Any = None,
           subscribers: Iterable[Callable[[Any], Any]] = (),
           max_turns: Optional[int] = None, judge_model: Any = None, probe_model: Any = None,
-          reroll_model: Any = None) -> dict:
+          reroll_model: Any = None,
+          on_harness: Optional[Callable[[AgentHarness], Any]] = None) -> dict:
     """Run one Builder session over the workdir and say how it stopped.
 
     `files` are customer files to ingest first, as paths under the workdir. `session_path`
     defaults to workdir/sessions/builder.jsonl. The dict carries the status tool's rows,
     the trusted, refused and open counts, the spend, the turns, how it stopped (one of:
     no tool call, ceiling, cancelled, max turns) and the last assistant line. `judge_model`, `probe_model` and `reroll_model` reach examine;
-    each is `model` when not named.
+    each is `model` when not named. `on_harness` is handed the live harness once it exists and
+    before the first model turn, so a caller on another thread can steer, follow up, compact or
+    cancel it while this call runs.
     """
     root = Path(workdir)
     env = root / "env"
@@ -259,6 +262,8 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
         _, guard_stop = ceiling_guard(
             harness, _GuardPlan(workdir=root,
                                 ceiling=budget.Ceiling.from_totals(root, ceiling_usd)))
+    if on_harness is not None:
+        on_harness(harness)
     events = _collect(harness.prompt(OPENING))
     turns = [event for event in events if event.type == "turn_end"]
     last_message = turns[-1].message if turns else None
