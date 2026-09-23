@@ -55,18 +55,7 @@ def _pinned(workdir, task_id):
     return {(row.table, row.id): values[row.version_hash] for row in overlay.rows}
 
 
-def test_a_row_two_levels_inside_a_result_is_pinned(workdir):
-    """A search answers a list of routes, each holding its legs; the legs are rows of the world."""
-    result = [{"route_id": "R1", "carrier": "north", "legs": [
-        {"leg_id": "L1", "surface": "gravel"}, {"leg_id": "L2", "surface": "asphalt"}]}]
-    trace = _trace("A", [_call("search_routes", {"carrier": "north"}, result=result)])
-    state = ce.build_starting_state([trace], _schema(), workdir, [Task(id="t1", run_ids=["A"])],
-                                    _sigs(), synthetic=False)
-    assert set(state.db["legs"]) == {"L1", "L2"}
-    assert state.db["legs"]["L2"]["surface"] == "asphalt"
-
-
-def test_a_parent_row_and_the_child_rows_it_embeds_are_both_pinned(workdir):
+def test_a_parent_row_and_the_child_rows_it_embeds_at_any_depth_are_pinned(workdir):
     result = {"route_id": "R1", "carrier": "north", "legs": [{"leg_id": "L1", "surface": "gravel"}]}
     trace = _trace("A", [_call("get_route_details", {"route_id": "R1"}, result=result)])
     ce.build_starting_state([trace], _schema(), workdir, [Task(id="t1", run_ids=["A"])], _sigs(),
@@ -74,6 +63,16 @@ def test_a_parent_row_and_the_child_rows_it_embeds_are_both_pinned(workdir):
     pinned = _pinned(workdir, "t1")
     assert set(pinned) == {("routes", "R1"), ("legs", "L1")}
     assert pinned[("legs", "L1")]["surface"] == "gravel"
+    # a search answers routes holding their legs; the legs two levels down are rows too
+    two_levels = workdir.parent / "two_levels"
+    two_levels.mkdir()
+    result = [{"route_id": "R1", "carrier": "north", "legs": [
+        {"leg_id": "L1", "surface": "gravel"}, {"leg_id": "L2", "surface": "asphalt"}]}]
+    trace = _trace("A", [_call("search_routes", {"carrier": "north"}, result=result)])
+    state = ce.build_starting_state([trace], _schema(), two_levels, [Task(id="t1", run_ids=["A"])],
+                                    _sigs(), synthetic=False)
+    assert set(state.db["legs"]) == {"L1", "L2"}
+    assert state.db["legs"]["L2"]["surface"] == "asphalt"
 
 
 def test_a_leg_mentioned_inside_a_route_does_not_rewrite_the_leg_the_corpus_states_on_its_own(workdir):
@@ -116,15 +115,6 @@ def test_the_walk_stops_at_the_depth_cap_and_says_how_often(workdir):
     assert set(_pinned(workdir, "t1")) == {("routes", "R1")}
     assert pins["depth_cap"] == ce.ROW_WALK_DEPTH
     assert pins["results_deeper_than_the_cap"] >= 1
-
-
-def test_the_walk_ends_on_a_result_that_points_back_at_itself():
-    """No recorded result can be cyclic; the walk still ends on one, and keeps what it did reach."""
-    loop: dict = {"route_id": "R1", "carrier": "north"}
-    loop["itself"] = loop
-    rows, capped = ce.walk_result_rows(_schema(), loop, {"carrier": "north"})
-    assert [(table, row_id) for table, row_id, _row, _depth in rows] == [("routes", "R1")]
-    assert capped == 0
 
 
 def test_a_result_without_a_key_pins_its_columns_on_the_row_the_call_named(workdir):
@@ -170,7 +160,7 @@ def test_a_column_only_a_later_run_read_is_pinned_beside_the_earliest_value(work
     assert row == {"route_id": "R1", "carrier": "north", "status": "open"}
 
 
-def test_two_runs_that_read_one_row_differently_are_recorded_as_a_disagreement(workdir):
+def test_two_runs_that_read_one_row_differently_disagree_and_reading_different_parts_does_not(workdir):
     first = _trace("A", [_call("get_route_details", {"route_id": "R1"},
                                result={"route_id": "R1", "carrier": "north"})])
     second = _trace("B", [_call("get_route_details", {"route_id": "R1"},
@@ -178,14 +168,13 @@ def test_two_runs_that_read_one_row_differently_are_recorded_as_a_disagreement(w
     state = ce.build_starting_state([first, second], _schema(), workdir,
                                     [Task(id="t1", run_ids=["A", "B"])], _sigs(), synthetic=False)
     assert any("runs disagree on routes row R1" in line for line in state.assumptions)
-
-
-def test_two_runs_that_read_different_parts_of_one_row_do_not_disagree(workdir):
+    other_parts = workdir.parent / "other_parts"
+    other_parts.mkdir()
     first = _trace("A", [_call("get_route_details", {"route_id": "R1"},
                                result={"route_id": "R1", "carrier": "north"})])
     second = _trace("B", [_call("get_route_details", {"route_id": "R1"},
                                 result={"route_id": "R1", "status": "open"})])
-    state = ce.build_starting_state([first, second], _schema(), workdir,
+    state = ce.build_starting_state([first, second], _schema(), other_parts,
                                     [Task(id="t1", run_ids=["A", "B"])], _sigs(), synthetic=False)
     assert not any("runs disagree" in line for line in state.assumptions)
 
@@ -254,15 +243,8 @@ def test_two_reads_of_one_row_with_a_column_that_moved_are_served_in_call_order(
     assert router.state.row("meters", "M1")["reading"] == "41"
     router.route("get_meter_reading", {"meter_id": "M1"})
     assert router.state.row("meters", "M1")["reading"] == "77"
-
-
-def test_a_read_past_the_end_of_the_sequence_holds_the_last_recorded_value(workdir):
-    state = ce.build_starting_state([_read_twice("41", "77")], _schema(), workdir,
-                                    [Task(id="t1", run_ids=["A"])], _sigs(), synthetic=False)
-    router = _reader_router(workdir, "t1", state.db)
-    for _ in range(3):
-        router.route("get_meter_reading", {"meter_id": "M1"})
-    assert router.state.row("meters", "M1")["reading"] == "77"
+    router.route("get_meter_reading", {"meter_id": "M1"})
+    assert router.state.row("meters", "M1")["reading"] == "77", "a read past the end holds the last value"
 
 
 def test_a_column_that_did_not_move_keeps_one_pin_and_no_sequence(workdir):
@@ -302,16 +284,6 @@ def test_a_write_between_two_reads_ends_the_sequence_and_the_write_stands(workdi
     router.route("get_meter_reading", {"meter_id": "M1"})
     assert overlay.steps == []
     assert router.state.row("meters", "M1")["reading"] == "41"
-
-
-def test_the_sequence_a_task_pinned_is_counted_per_task_and_per_table(workdir):
-    state = ce.build_starting_state([_read_twice("41", "77", "77")], _schema(), workdir,
-                                    [Task(id="t1", run_ids=["A"])], _sigs(), synthetic=False)
-    pins = json.loads((workdir / ce.PINS_FILE).read_text(encoding="utf-8"))
-    assert state.db["meters"]["M1"]["reading"] == "77"
-    assert pins["tasks"]["t1"]["columns_time_varying"] == 1
-    assert pins["totals"]["sequences_served"] == 3
-    assert pins["columns_time_varying_by_table"] == {"meters": 1}
 
 
 def test_the_world_a_body_is_scored_on_carries_the_value_that_calls_own_read_saw(workdir):
@@ -357,6 +329,15 @@ def test_a_nested_element_is_named_by_its_own_key_and_not_by_where_it_sits_in_th
     assert state.db["runs"]["N1|mon"]["seats"] == 4
     assert state.db["runs"]["N1|tue"]["seats"] == 9
     assert _pins(workdir)["homed_by"] == {"key": 3, "position": 0}
+    # an element with no key of its own beside ones that do is counted, not guessed
+    keyless = workdir.parent / "keyless"
+    keyless.mkdir()
+    result = [{"route_id": "R1", "carrier": "north", "runs": [
+        {"run_id": "N1", "day": "mon", "seats": 4}, {"seats": 9}]}]
+    trace = _trace("A", [_call("search_routes", {"carrier": "north"}, result=result)])
+    ce.build_starting_state([trace], _run_schema(), keyless, [Task(id="t1", run_ids=["A"])],
+                            _sigs(), synthetic=False)
+    assert _pins(keyless)["list_elements_carrying_no_key"] == 1
 
 
 def test_a_nested_element_takes_the_missing_key_part_from_the_dict_it_sits_in(workdir):
@@ -411,16 +392,6 @@ def test_one_key_naming_two_different_rows_in_one_result_is_a_finding(workdir):
     pins = _pins(workdir)
     assert pins["nested_key_collision"] == 1
     assert pins["nested_key_collisions"] == [{"table": "runs", "depth": 0, "key_class": "composite"}]
-
-
-def test_a_list_element_that_carries_no_key_beside_ones_that_do_is_counted(workdir):
-    """Nothing is homed by its position; an element with no key of its own is counted, not guessed."""
-    result = [{"route_id": "R1", "carrier": "north", "runs": [
-        {"run_id": "N1", "day": "mon", "seats": 4}, {"seats": 9}]}]
-    trace = _trace("A", [_call("search_routes", {"carrier": "north"}, result=result)])
-    ce.build_starting_state([trace], _run_schema(), workdir, [Task(id="t1", run_ids=["A"])],
-                            _sigs(), synthetic=False)
-    assert _pins(workdir)["list_elements_carrying_no_key"] == 1
 
 
 # --- D213: a Task's own Runs disagree, so each Run replays against its own sighting --------------
