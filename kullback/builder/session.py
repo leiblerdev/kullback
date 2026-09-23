@@ -34,7 +34,7 @@ from kullback.agent.harness import AgentHarness
 from kullback.agent.session.store import SessionStore
 from kullback.builder import env_files
 from kullback.builder import prompt as prompt_mod
-from kullback.builder.domain_tools import domain_tools, status_of
+from kullback.builder.domain_tools import domain_tools, opening_for, status_of
 from kullback.builder.world_tools import ingest_files
 from kullback.gates import names_protected_path
 from kullback.gates.hook import PATH_KEYS, gate_writes
@@ -53,6 +53,11 @@ OPENING = ("Begin in your root env/. Derive the world when the traces are stored
            "bodies where the rulings point, replay and run the Tasks, examine when ready. "
            "Answer with no tool call when every Task is trusted or refused with a reason, "
            "when the spend ceiling is reached, or when you state why you cannot go further.")
+
+
+def opening(workdir: Any) -> str:
+    """The opening message for this workdir: its stage and next step first, then OPENING."""
+    return opening_for(workdir, OPENING)
 
 
 @dataclass
@@ -247,6 +252,8 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
                       for name in files], root)
     env_files.expose(root)
     env_files.explode(root)
+    if (root / env_files.SIGS_FILE).is_file() and (root / env_files.SCHEMA_FILE).is_file():
+        env_files.regenerate(root)
     session = SessionStore.load(Path(session_path) if session_path is not None
                                 else root / "sessions" / "builder.jsonl")
     harness = AgentHarness(
@@ -265,7 +272,7 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
                                 ceiling=budget.Ceiling.from_totals(root, ceiling_usd)))
     if on_harness is not None:
         on_harness(harness)
-    events = _collect(harness.prompt(OPENING))
+    events = _collect(harness.prompt(opening(root)))
     turns = [event for event in events if event.type == "turn_end"]
     last_message = turns[-1].message if turns else None
     last_line = str(getattr(last_message, "content", None) or "")
@@ -288,5 +295,5 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
 
 
 __all__ = ["BuilderRoot", "CEILING_STAGE", "OPENING", "WRITABLE_NAMES", "WRITABLE_PREFIXES", "build",
-           "builder_extension", "ceiling_guard", "no_agent_writes_gates_or_runner", "regenerate_and_guard",
+           "builder_extension", "ceiling_guard", "no_agent_writes_gates_or_runner", "opening", "regenerate_and_guard",
            "spent_in", "write_fence"]

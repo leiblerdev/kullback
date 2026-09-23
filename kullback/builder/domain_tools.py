@@ -31,6 +31,7 @@ from kullback.builder.replay_evidence import (
 from kullback.gates.fidelity import reference_replay_gate
 from kullback.gates.hook import ruling_line
 from kullback.gates.ledger import GateLedger
+from kullback.gates.loosening import legitimate_runs
 from kullback.gates.trust import trusted_gate
 from kullback.runner import tool as runner_tool
 from kullback.runner.records import read_json, write_json
@@ -319,6 +320,51 @@ def _coerce_examine(raw: Any) -> ExamineResult:
     return ExamineResult(summary=str(body.get("summary") or ""), findings=rows)
 
 
+def stage_of(workdir: Any) -> dict[str, Any]:
+    """Where the build stands, off the workdir files: traces, world, toolkit, stubs, finished Runs.
+
+    `finished` counts the Tasks with a finished Run the way `trusted_gate` reads them (confirmed
+    replays plus finished re-rolls), so the reading and the gate never disagree on it.
+    """
+    root = Path(workdir)
+    traces = root / "traces"
+    tools_dir = root / "env" / env_files.TOOLS_DIR
+    tool_files = sorted(tools_dir.glob("*.py")) if tools_dir.is_dir() else []
+    tasks = [path for path in (root / "tasks").glob("*.json") if path.name != "tasks.json"]
+    runs = legitimate_runs(read_json(root / "replays.json", None) or {},
+                           read_json(root / "rerolls.json", None) or {})
+    return {
+        "traces": sum(1 for path in traces.rglob("*") if path.is_file()) if traces.is_dir() else 0,
+        "world_derived": (root / env_files.SCHEMA_FILE).is_file() and (root / env_files.SIGS_FILE).is_file(),
+        "toolkit_rendered": (root / "env" / "tools.py").is_file() and (root / "env" / "data_model.py").is_file(),
+        "stubs": sum(1 for path in tool_files if env_files.is_stub(path)),
+        "tools": len(tool_files),
+        "finished": sum(1 for run_ids in runs.values() if run_ids),
+        "tasks": len(tasks),
+    }
+
+
+def stage_line(stage: dict[str, Any]) -> str:
+    """The stage as one line, the first the status tool renders."""
+    return (f"stage: traces {stage['traces']}, "
+            f"{'world derived' if stage['world_derived'] else 'world not derived'}, "
+            f"{'toolkit rendered' if stage['toolkit_rendered'] else 'toolkit not rendered'}, "
+            f"stubs {stage['stubs']} of {stage['tools']}, "
+            f"tasks with a finished run {stage['finished']} of {stage['tasks']}")
+
+
+def opening_for(workdir: Any, default: str) -> str:
+    """The Builder's first message: the state and the next step, else `default`."""
+    stage = stage_of(workdir)
+    if stage["traces"] and not stage["world_derived"]:
+        return (f"{stage['traces']} traces are stored and the world is not derived: "
+                f"call derive_world first. {default}")
+    if stage["world_derived"] and stage["tools"] and stage["stubs"] == stage["tools"]:
+        return (f"The world is derived and every body is a stub ({stage['stubs']} of {stage['tools']}): "
+                f"write each body from its calls, then replay. {default}")
+    return default
+
+
 def status_of(workdir: Any) -> dict[str, Any]:
     """One row per Task (trusted, refused or open, with its reason) and per tool (last replay fidelity).
 
@@ -417,12 +463,13 @@ class StatusResult(BaseModel):
     """One row per Task and per tool, in text and in details."""
 
     summary: str = ""
+    stage: dict = Field(default_factory=dict)
     tasks: list[dict] = Field(default_factory=list)
     tools: list[dict] = Field(default_factory=list)
 
 
 def _render_status(result: StatusResult) -> str:
-    lines = [result.summary]
+    lines = ([stage_line(result.stage)] if result.stage else []) + [result.summary]
     for row in result.tasks:
         lines.append(f"task {row.get('task_id')}: {row.get('state')}"
                      + (f" ({row.get('reason')})" if row.get("reason") else ""))
@@ -461,6 +508,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
     async def derive(args: DeriveArgs) -> DeriveResult:
         report = world_tools.derive_world(root, grow=dict(args.grow or {}) if args.grow else None)
         written = env_files.explode(root)
+        env_files.regenerate(root)
         exposed = env_files.expose(root)
         files_written = [f"env/tools/{name}.py" for name in written]
         return DeriveResult(
@@ -482,7 +530,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
         return StatusResult(
             summary=(f"{states.count('trusted')} trusted, {states.count('refused')} refused, "
                      f"{states.count('open')} open over {len(states)} tasks"),
-            tasks=body["tasks"], tools=body["tools"])
+            stage=stage_of(root), tasks=body["tasks"], tools=body["tools"])
 
 
     async def replay(args: ReplayArgs) -> ReplayResult:
@@ -534,7 +582,14 @@ def domain_tools(*, workdir: Any, model: Any = None,
 
     async def examine(args: ExamineArgs) -> ExamineResult:
         # The Examiner session owns its own event loop, so it runs off the Builder's, on a thread.
-        return _coerce_examine(await asyncio.to_thread(examine_call, root, args.task_ids))
+        result = _coerce_examine(await asyncio.to_thread(examine_call, root, args.task_ids))
+        if not result.findings:
+            stage = stage_of(root)
+            why = f"{stage['finished']} of {stage['tasks']} tasks have a finished run"
+            if not stage["finished"]:
+                why += ", so there is nothing to examine yet: replay or run the Tasks first"
+            result.summary = f"{result.summary}: {why}" if result.summary else why
+        return result
 
     return [
         AgentTool("ingest", "Store customer files as traces under the workdir.",
@@ -556,4 +611,5 @@ def domain_tools(*, workdir: Any, model: Any = None,
     ]
 
 
-__all__ = ["ROWS_SHOWN", "default_examine_fn", "domain_tools", "fidelity_index", "status_of"]
+__all__ = ["ROWS_SHOWN", "default_examine_fn", "domain_tools", "fidelity_index", "opening_for", "stage_line",
+           "stage_of", "status_of"]

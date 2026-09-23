@@ -72,10 +72,9 @@ def resolve_in_root(root: Path, path: str) -> Path:
 
     Relative to the root, always: an absolute path, a step above the root, and a link that leads
     out of it are all the same mistake, which is asking for a file this extension does not own.
+    An empty path reads as the root itself.
     """
-    text = (path or "").strip()
-    if not text:
-        raise PathRefused("rule root: a path is required, relative to this agent's root directory")
+    text = (path or "").strip() or "."
     candidate = Path(text)
     if candidate.is_absolute():
         raise PathRefused(
