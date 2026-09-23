@@ -37,6 +37,11 @@ def _with_reference(world) -> None:
     write_json(world.workdir / "references.json", {"t1": {"references": [{"run_id": "ref"}, {"run_id": "alt"}]}})
 
 
+# A proposal that changes the atoms and none of the rulings: a write cap no Run reaches, which
+# no check can mutate. A proposal of no change is refused before the suite (F37).
+_WIDE_CAP_PROPOSAL = {"id": "wide_cap", "kind": "allowed", "payload": {"kind": "entity_count", "count": 1000}}
+
+
 def _run(coro):
     return asyncio.run(coro)
 
@@ -175,7 +180,7 @@ def test_accepted_proposal_on_a_task_with_a_reference_carries_the_suite_and_keep
                                  task_status={"t1": {"verifier_passed": False, "references": 1}})
     _with_reference(world)
     [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
-    result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", drop=[], add=[])))
+    result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[_WIDE_CAP_PROPOSAL])))
     names = [record["name"] for record in result.rulings]
     assert [name for name in names if name in D79_STAGES] == list(D79_STAGES)
     assert "trusted" in names and all(record["accepted"] for record in result.rulings)
@@ -191,7 +196,7 @@ def test_proposal_on_a_single_reference_task_with_a_waived_row_is_accepted_and_k
                            task_status={"t1": {"verifier_passed": True, "second_path_waived": True}})
     write_json(world.workdir / "references.json", {"t1": {"references": [{"run_id": "ref"}]}})
     [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
-    result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", drop=[], add=[])))
+    result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[_WIDE_CAP_PROPOSAL])))
     assert "trusted" in [record["name"] for record in result.rulings]
     assert all(record["accepted"] for record in result.rulings)
     alt = next(record for record in result.rulings if record["name"] == "verifier_alt_path")
@@ -206,7 +211,7 @@ def test_proposal_on_a_task_with_a_reference_is_refused_while_the_loophole_probe
     _with_reference(world)
     [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
     with pytest.raises(RetryableToolError, match="verifier_loophole"):
-        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", drop=[], add=[])))
+        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[_WIDE_CAP_PROPOSAL])))
     assert root.history["t1"].versions[-1].rejected_by == ["verifier_loophole"]
     assert root.task_status["t1"] == {"verifier_passed": True}, "a refusal changes no status"
     assert not (world.workdir / "exam" / "task_status.json").exists()
@@ -218,7 +223,7 @@ def test_proposal_on_a_task_with_a_reference_is_refused_when_the_loophole_probe_
     _with_reference(world)
     [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
     with pytest.raises(RetryableToolError) as excinfo:
-        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", drop=[], add=[])))
+        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[_WIDE_CAP_PROPOSAL])))
     assert "verifier_loophole fail" in str(excinfo.value)
     assert "reached the End state and scored pass" in str(excinfo.value)
     assert root.history["t1"].versions[-1].rejected_by == ["verifier_loophole"]
@@ -293,3 +298,83 @@ def test_a_refusal_names_the_atom_its_empty_run_rows_carry():
     message = str(D._refuse_proposal("t1", "2", records))
     assert "verifier_empty_run: the atom the empty Run passed on is w0.reason (reason is given)" in message
     assert "verifier_alt_path: the atom" not in message, "no atom in the rows, none named"
+
+
+def _history_proposal(world):
+    path = world.workdir / "exam" / "history.json"
+    return read_json(path) if path.is_file() else None
+
+
+def test_a_proposal_that_changes_nothing_is_refused_without_the_suite_and_leaves_the_history(tmp_path):
+    root, world, current = _root(tmp_path)
+    _with_reference(world)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    before, rows = _history_proposal(world), dict(root.history)
+    with pytest.raises(RetryableToolError) as excinfo:
+        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="again", drop=[], add=[])))
+    assert str(excinfo.value) == (f"the proposal changes nothing: version {current.verifier_version} already "
+                                  "holds these atoms; drop or add an atom, or move on to another Task")
+    assert _history_proposal(world) == before and root.history == rows, "no history row for no change"
+    assert not (world.workdir / "exam" / "verifiers" / "t1.json").exists(), "nothing was written"
+
+
+def test_a_proposal_that_changes_nothing_counts_toward_the_refusals_that_say_stop(tmp_path):
+    root, _, _ = _root(tmp_path)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    messages = []
+    for _ in range(D.REFUSALS_PER_TASK + 1):
+        with pytest.raises(RetryableToolError) as excinfo:
+            _run(tool.execute(D.ProposeArgs(task_id="t1", reason="again")))
+        messages.append(str(excinfo.value))
+    assert not any("Stop proposing" in message for message in messages[:-1]), messages
+    assert messages[-1].endswith("Stop proposing for this Task in this session."), messages[-1]
+
+
+def _empty_run_records_proposal(verifier, empty) -> list[dict]:
+    from kullback.gates.bindings import rows_for
+    from kullback.gates.verifier_suite import validate_verifier
+
+    gates = validate_verifier(verifier, VF.reference_run(), empty)
+    return [{"name": g.stage, "accepted": g.passed, "line": f"{g.stage} {'pass' if g.passed else 'fail'}",
+             "rows": rows_for(g, {})} for g in gates if g.stage == "verifier_empty_run"]
+
+
+def test_a_refusal_on_an_empty_run_of_allowed_atoms_names_them_and_says_what_to_add():
+    from kullback.gates.verifier_suite import make_atom
+    from kullback.runner.records import Verifier
+
+    verifier = Verifier(task_id="t1", atoms=[make_atom("cap", "allowed", {"kind": "entity_count", "count": 5})])
+    message = str(D._refuse_proposal("t1", "2", _empty_run_records_proposal(verifier, VF.empty_run())))
+    assert "verifier_empty_run: the atom the empty Run passed on is cap" in message, message
+    assert ("every atom here passes an empty Run: add a question or communicate atom for what the "
+            "Reference said, or a required write") in message, message
+
+
+def test_a_refusal_on_an_empty_run_that_passes_a_communicate_atom_names_it_and_gives_no_advice():
+    from kullback.examiner.derive import derive_verifier
+    from kullback.gates.verifier_suite import atom_payload
+
+    answering = VF.make_run("answering", [
+        VF.user("What is the status of order #W123?"),
+        VF.call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        VF.result(VF.ORDER, cid="c0"), VF.assistant("Order #W123 is pending."), VF.user("Thanks, bye.")])
+    derived = derive_verifier(VF.TASK, answering, [], None, write_tools=VF.WRITE_TOOLS)
+    [said] = [a for a in derived.atoms if atom_payload(a).get("kind") == "communicate"]
+    verifier = derived.model_copy(update={"atoms": [said]})
+    message = str(D._refuse_proposal("t1", "2", _empty_run_records_proposal(verifier, answering)))
+    assert f"verifier_empty_run: the atom the empty Run passed on is {said.id}" in message, message
+    assert "every atom here passes an empty Run" not in message, message
+
+
+def test_a_reroll_from_the_tool_lands_its_model_calls_in_the_runner_stage(tmp_path):
+    """The Examiner's own reroll tool prices its Runs like the derivation's runners (F29)."""
+    from kullback.runner import budget
+    from tests.examiner.test_runners import _exam_env, _priced_script
+
+    workdir = _exam_env(tmp_path / "env")
+    model = _priced_script()
+    root = ExamRoot(workdir=workdir, reroll_model=model)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "reroll"]
+    _run(tool.execute(D.RerollArgs(task_id="widget_task", count=1)))
+    stage = budget.load_totals(workdir)["stages"]["runner"]
+    assert stage["calls"] == len(model.calls) > 0 and stage["usd"] > 0

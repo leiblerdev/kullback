@@ -25,6 +25,7 @@ from kullback.examiner import stage as stage_mod
 from kullback.examiner.domain_tools import domain_tools
 from kullback.examiner.exam_files import (
     DERIVED_DIR,
+    SPOKEN_DIR,
     ExamRoot,
     Finding,
     evidence_of,
@@ -184,7 +185,16 @@ def _verifier_part(root: ExamRoot, task_id: str) -> str:
     trace_id = reference_trace_id(root, task_id)
     parts.append(f"user rules: user_rules/{trace_id}.json" if trace_id
                  else "user rules: no user rules until the Reference is confirmed")
+    parts.append(_spoken_part(root, task_id))
     return "; ".join(parts)
+
+
+def _spoken_part(root: ExamRoot, task_id: str) -> str:
+    """The Task's spoken file under its name on disk, extension and all, so no read guesses it (F35)."""
+    folder = root.exam_dir / SPOKEN_DIR
+    names = sorted(p.name for p in folder.glob(f"{task_id}.*") if p.is_file() and p.stem == task_id) \
+        if folder.is_dir() else []
+    return f"spoken: {SPOKEN_DIR}/{names[0]}" if names else "spoken: none"
 
 
 def reference_trace_id(root: ExamRoot, task_id: str) -> Optional[str]:
@@ -527,7 +537,9 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
                 capped.append(True)
 
     asyncio.run(go())
-    out = list(exam_root.findings) + note + ([turns_ran_out(max_turns)] if capped else [])
+    cap_note = turns_ran_out(max_turns, task_id=_last_task(harness.messages, selected),
+                             refusal=_last_refusal(harness.messages)) if capped else None
+    out = list(exam_root.findings) + note + ([cap_note] if cap_note else [])
     write_json(root / "findings.json", [f.as_dict() for f in out])
     return out
 
@@ -537,13 +549,42 @@ def _stopped_on_cap(message: Any) -> bool:
     return str(getattr(message, "error_message", None) or "").startswith(CAP_STOP)
 
 
-def turns_ran_out(max_turns: int) -> Finding:
-    """The note a session stopped on its cap files: the findings beside it are partial (F17)."""
-    return Finding(kind="other", source="derive",
+def turns_ran_out(max_turns: int, task_id: Optional[str] = None,
+                  refusal: Optional[str] = None) -> Finding:
+    """The note a session stopped on its cap files: the findings beside it are partial (F17).
+
+    It names the Task the session was on and the last refusal it read, so the Builder sees where
+    the turns went (F36).
+    """
+    return Finding(kind="other", source="derive", task_id=task_id,
                    text=f"the Examiner ran out of turns at {max_turns} before it finished reading",
                    rows=[{"max_turns": max_turns}],
                    change=(f"the Examiner ran out of turns at {max_turns}, so these findings are "
-                           "partial; call examine again to continue"))
+                           "partial; call examine again to continue"
+                           + (f"; last refusal: {refusal}" if refusal else "")))
+
+
+# The tools whose task_id says which Task a session is working on (F36).
+TASK_TOOLS = ("propose_verifier", "probe")
+
+
+def _last_task(messages: Iterable[Any], selected: list[str]) -> Optional[str]:
+    """The task_id of the session's last propose or probe call, else the first selected Task."""
+    last = None
+    for message in messages:
+        for call in getattr(message, "tool_calls", None) or []:
+            if call.name in TASK_TOOLS and call.arguments.get("task_id"):
+                last = str(call.arguments["task_id"])
+    return last or (selected[0] if selected else None)
+
+
+def _last_refusal(messages: Iterable[Any]) -> Optional[str]:
+    """The first line of the last tool result the session read as an error, if any."""
+    last = None
+    for message in messages:
+        if getattr(message, "role", None) == "tool" and message.is_error and message.content.strip():
+            last = message.content.strip().splitlines()[0]
+    return last
 
 
 def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model: Any = None,

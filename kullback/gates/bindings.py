@@ -611,6 +611,10 @@ def _suite_rows(evidence: dict, result: GateResult) -> list[dict]:
             rows.append({"check": result.stage, "atom": atom, "text": _atom_text(evidence, atom)})
         else:
             rows.append({"check": result.stage, "failure": line})
+    if not result.passed:
+        # F37: an expected-fail Run that passed passed every atom; each is a row the refusal names.
+        rows += [{"check": result.stage, "atom": atom["id"], "kind": atom["kind"]}
+                 for atom in (result.metrics or {}).get("passing_atoms") or []]
     return rows
 
 
