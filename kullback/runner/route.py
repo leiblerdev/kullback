@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import inspect
 import json
+import traceback
 from typing import Any, Iterable, NamedTuple, Optional
 
 from pydantic import BaseModel
@@ -24,8 +25,11 @@ STATE_PARAMS = ("state", "db", "world", "env")
 # or by the recording (G28). The Candidate is never shown an answer for it, and the Verdict
 # carries no reward either way.
 CANNOT_ANSWER_REASON = "environment_cannot_answer"
+# How much of a body fault's message the record keeps (F57).
+FAULT_MESSAGE_LIMIT = 500
+# A TypeError is not here: arguments the signature refuses are classed at binding, and one the
+# body raises afterwards is a body fault (F57).
 EXCEPTION_CLASSES = {
-    TypeError: "invalid_arguments",
     KeyError: "not_found_entity",
     LookupError: "not_found_entity",
     PermissionError: "permission_denied",
@@ -289,6 +293,12 @@ class Router:
         return limit_kept_export(self.real_end_states.get(name, b""), limit_bytes)
 
     def _code(self, name: str, function: Any, args: dict) -> RouteResult:
+        try:
+            _bind(function, self.state, args)
+        except TypeError as exc:
+            # F57: arguments the signature cannot take are the caller's mistake, checked before
+            # the body runs, so a TypeError the body raises later is never read as one.
+            return self._error(name, "invalid_arguments", _message_of(exc))
         snapshot = _snapshot_world(self.tools, self.state)
         try:
             result = _call(function, self.state, args)
@@ -302,20 +312,22 @@ class Router:
                 error_class = _class_of(exc)
                 sample = _corpus_error(self.sigs.get(name), error_class) if _is_pythons(exc) else None
                 return self._error(name, error_class, _message_of(exc), sample=sample)
-            return self._body_fault(name, exc)
+            return self._body_fault(name, exc, function)
 
-    def _body_fault(self, name: str, exc: Exception) -> RouteResult:
+    def _body_fault(self, name: str, exc: Exception, function: Any = None) -> RouteResult:
         """A body fault (G27): the body's own bug, never the customer's answer and never a business error.
 
         The Candidate gets a neutral unavailable answer in the tool's own error encoding. The Run
-        records the tool name and the exception type, never the message, and carries the D88
+        records the tool name, the exception type, its message and the body line that raised
+        (F57), so a replay row and a Run transcript say what broke, and carries the D88
         environment mark so the fault counts against the Environment and not the Candidate.
         """
         fault = type(exc).__name__
         encoding = _encoding_for(self.sigs.get(name), "body_fault")
         result: Any = "unavailable" if encoding == "text" else {"error": "unavailable", "class": "body_fault"}
-        error = ToolCallError(class_="body_fault", payload={"tool": name, "fault": fault},
-                              encoding="json", classified_by="code")
+        payload = {"tool": name, "fault": fault, "message": _message_of(exc)[:FAULT_MESSAGE_LIMIT],
+                   **_raising_line(exc, function)}
+        error = ToolCallError(class_="body_fault", payload=payload, encoding="json", classified_by="code")
         misses = self._misses() or []
         misses.append({"body_fault": name, "fault": fault})
         return RouteResult(result, "code", False, error, misses)
@@ -568,12 +580,48 @@ def _encoding_for(sig: Optional[ToolSig], error_class: str) -> str:
     return sig.error_shapes[0].encoding
 
 
+def _takes_state(function: Any) -> bool:
+    parameters = list(inspect.signature(function).parameters)
+    return bool(parameters) and parameters[0] in STATE_PARAMS
+
+
 def _call(function: Any, state: StateView, args: dict) -> Any:
     """Generated tool bodies take the state view first when they name it; others take args only."""
-    parameters = list(inspect.signature(function).parameters)
-    if parameters and parameters[0] in STATE_PARAMS:
+    if _takes_state(function):
         return function(state, **args)
     return function(**args)
+
+
+def _bind(function: Any, state: StateView, args: dict) -> None:
+    """Raise TypeError when the call's arguments do not fit the body's signature, before it runs.
+
+    A callable with no signature Python can read is not checked here; its call still runs.
+    """
+    try:
+        signature = inspect.signature(function)
+    except (TypeError, ValueError):
+        return
+    if _takes_state(function):
+        signature.bind(state, **args)
+    else:
+        signature.bind(**args)
+
+
+def _raising_line(exc: Exception, function: Any) -> dict:
+    """The body line that raised: the innermost frame in the body's own file, else the innermost frame.
+
+    Empty when the exception carries no traceback. `code` is the source text when the file is readable.
+    """
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return {}
+    own_file = getattr(getattr(inspect.unwrap(function), "__code__", None), "co_filename", None) if function else None
+    own = [frame for frame in frames if frame.filename == own_file]
+    frame = (own or frames)[-1]
+    out: dict = {"line": frame.lineno}
+    if frame.line:
+        out["code"] = frame.line.strip()
+    return out
 
 
 def _is_pythons(exc: Exception) -> bool:
