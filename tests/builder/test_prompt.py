@@ -35,3 +35,10 @@ def test_receive_says_the_bodies_start_as_stubs_written_from_their_calls():
     assert "stubs under tools/" in prompt_mod.RECEIVE
     assert "NotImplementedError" in prompt_mod.RECEIVE
     assert "calls/<tool>.jsonl" in prompt_mod.RECEIVE
+
+
+def test_receive_points_at_the_tool_file_header_and_names_every_provided_helper():
+    from kullback.gates.confinement import PROVIDED_HELPERS
+
+    assert "header of every tool file names the imports and helpers" in prompt_mod.RECEIVE
+    assert all(helper in prompt_mod.RECEIVE for helper in PROVIDED_HELPERS)

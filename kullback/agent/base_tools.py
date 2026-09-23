@@ -110,11 +110,17 @@ class Truncation(BaseModel):
     total_bytes: int = 0
     output_lines: int = 0
     output_bytes: int = 0
+    # A line that alone exceeds the byte limit is shown cut inside the line, not dropped.
+    line_cut: bool = False
 
 
 def truncate_head(content: str, max_lines: int = MAX_OUTPUT_LINES,
                   max_bytes: int = MAX_OUTPUT_BYTES) -> tuple[str, Truncation]:
-    """The first lines that fit; what a read of a file returns."""
+    """The first lines that fit; what a read of a file returns.
+
+    A first line that alone exceeds `max_bytes` is shown cut to its head and counted as one
+    shown line (`line_cut`), so a file of long lines is still readable one line at a time.
+    """
     lines = content.split("\n")
     total_bytes = len(content.encode())
     if len(lines) <= max_lines and total_bytes <= max_bytes:
@@ -127,13 +133,16 @@ def truncate_head(content: str, max_lines: int = MAX_OUTPUT_LINES,
         cost = len(line.encode()) + (1 if index else 0)
         if size + cost > max_bytes:
             by = "bytes"
+            if not kept:
+                kept.append(line.encode()[:max_bytes].decode(errors="ignore"))
             break
         kept.append(line)
         size += cost
     output = "\n".join(kept)
     return output, Truncation(truncated=True, truncated_by=by, total_lines=len(lines),
                               total_bytes=total_bytes, output_lines=len(kept),
-                              output_bytes=len(output.encode()))
+                              output_bytes=len(output.encode()),
+                              line_cut=by == "bytes" and len(kept) == 1 and kept[0] != lines[0])
 
 
 def truncate_tail(content: str, max_lines: int = MAX_OUTPUT_LINES,
@@ -147,6 +156,7 @@ def truncate_tail(content: str, max_lines: int = MAX_OUTPUT_LINES,
     kept: list[str] = []
     size = 0
     by = "lines"
+    cut = False
     for line in reversed(lines):
         if len(kept) >= max_lines:
             by = "lines"
@@ -158,13 +168,14 @@ def truncate_tail(content: str, max_lines: int = MAX_OUTPUT_LINES,
                 clipped = line.encode()[-max_bytes:].decode(errors="ignore")
                 kept.insert(0, clipped)
                 size = len(clipped.encode())
+                cut = True
             break
         kept.insert(0, line)
         size += cost
     output = "\n".join(kept)
     return output, Truncation(truncated=True, truncated_by=by, total_lines=len(lines),
                               total_bytes=total_bytes, output_lines=len(kept),
-                              output_bytes=len(output.encode()))
+                              output_bytes=len(output.encode()), line_cut=cut)
 
 
 # --- the shell allowlist -----------------------------------------------------
@@ -431,7 +442,10 @@ def _read_tool(config: BaseToolConfig) -> AgentTool:
         output, truncation = truncate_head(selected)
         note = ""
         shown = truncation.output_lines if truncation.truncated else end - start
-        if truncation.truncated:
+        if truncation.line_cut:
+            note = (f"line {start + 1} is longer than {truncation.output_bytes} bytes and was cut there; "
+                    f"read again with offset={start + 2} for the next line")
+        elif truncation.truncated:
             note = (f"showing lines {start + 1} to {start + shown} of {len(lines)}; "
                     f"read again with offset={start + shown + 1} to continue")
         elif end < len(lines):

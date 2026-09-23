@@ -10,6 +10,8 @@ standard), D171 (per-call rows), D224 (synthetic rows never in a trusted Task).
 
 from __future__ import annotations
 
+from kullback.gates.confinement import PROVIDED_HELPERS
+
 RECEIVE = (
     "You build the Environment under your root env/. What you may read is already there: "
     "the schema, the tool signatures, the database, the canon rules, the vocabulary, one "
@@ -18,6 +20,8 @@ RECEIVE = (
     "The tool bodies start as stubs under tools/, one file per tool with its signature and "
     "a body that raises NotImplementedError. Write each body from the recorded calls under "
     "calls/<tool>.jsonl, then edit it where the rulings point. "
+    "The header of every tool file names the imports and helpers a body may use; the helpers "
+    f"({', '.join(sorted(PROVIDED_HELPERS))}) are called by name with no import. "
     "Every write or edit you make is ruled before you see the result: the ruling rides the "
     "result with the rows that still differ, recorded value against yours, call by call."
 )

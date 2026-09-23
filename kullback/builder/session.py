@@ -49,7 +49,8 @@ no_agent_writes_gates_or_runner = refuse_paths(
     names_protected_path, "a path under kullback/gates or kullback/runner, which no agent may write (D122)",
     "no_agent_writes_gates_or_runner")
 
-OPENING = ("Begin in your root env/. Derive the world when the traces are stored, edit tool "
+OPENING = ("Your root is the workdir's env/ directory and every path is relative to it: "
+           "tools/, calls/, tasks/, never env/ itself. Derive the world when the traces are stored, edit tool "
            "bodies where the rulings point, replay and run the Tasks, examine when ready. "
            "Answer with no tool call when every Task is trusted or refused with a reason, "
            "when the spend ceiling is reached, or when you state why you cannot go further.")
