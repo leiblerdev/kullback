@@ -79,6 +79,24 @@ class BuiltEnvironment:
             raise EnvironmentError("recording id must be a single safe path component")
         return self.root / "user_rules" / f"{run_id}.json"
 
+    @property
+    def real_tools(self) -> dict[str, dict]:
+        """The tools environment.json declares run for real (D262), each declaration naming its tool.
+
+        Empty when the file declares none; a declaration that is not an object is a refusal, not
+        a tool silently imitated.
+        """
+        declared = self.environment.get("real_tools") or {}
+        if not isinstance(declared, dict):
+            raise EnvironmentError(f"{self.root / 'environment.json'} holds real_tools that is not an object")
+        tools = {}
+        for name, declaration in declared.items():
+            if not isinstance(declaration, dict):
+                raise EnvironmentError(f"{self.root / 'environment.json'} declares real tool {name} "
+                                       "with a declaration that is not an object")
+            tools[name] = {"name": name, **declaration}
+        return tools
+
     def _reference_id(self, task: Task) -> Optional[str]:
         return loading._reference_run_id(task, self._replays.get(task.id), self._held_out,
                                          self.root / "user_rules")

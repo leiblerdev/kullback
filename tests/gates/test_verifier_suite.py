@@ -663,19 +663,31 @@ def _allowed_only_verifier() -> Verifier:
                                          S.make_atom("wide", "allowed", {"kind": "entity_count", "count": 9})])
 
 
-def test_an_empty_run_that_passes_a_verifier_of_allowed_atoms_names_each_atom_in_its_rows(tmp_path):
+def test_an_empty_run_that_passes_a_verifier_of_allowed_atoms_names_no_atom_and_says_none_is_checked(tmp_path):
     from kullback.gates.bindings import rows_for
 
     gates = {g.stage: g for g in S.validate_verifier(_allowed_only_verifier(), reference_run(), empty_run())}
     gate = gates["verifier_empty_run"]
     assert gate.passed is False
-    assert gate.metrics["passing_atoms"] == [{"id": "cap", "kind": "allowed"}, {"id": "wide", "kind": "allowed"}]
+    assert gate.metrics["passing_atoms"] == []
     rows = rows_for(gate, {})
     assert {"check": "verifier_empty_run", "failure": "expected fail, got pass"} in rows
-    assert [row for row in rows if "atom" in row] == [
-        {"check": "verifier_empty_run", "atom": "cap", "kind": "allowed"},
-        {"check": "verifier_empty_run", "atom": "wide", "kind": "allowed"}]
-    assert all(row["check"] == "verifier_empty_run" for row in rows)
+    assert {"check": "verifier_empty_run",
+            "failure": "no atom of the Verifier is one a Run is checked on, so no Run can fail it"} in rows
+    assert [row for row in rows if "atom" in row] == []
+
+
+def test_an_expected_fail_run_that_passed_names_only_the_atoms_check_run_evaluated(tmp_path):
+    from kullback.gates.bindings import rows_for
+
+    verifier = Verifier(task_id="t1", atoms=[S.make_atom("few", "required", {"kind": "entity_count", "count": 5}),
+                                             S.make_atom("wide", "allowed", {"kind": "entity_count", "count": 9})])
+    gates = {g.stage: g for g in S.validate_verifier(verifier, reference_run(), empty_run())}
+    gate = gates["verifier_empty_run"]
+    assert gate.passed is False
+    assert gate.metrics["passing_atoms"] == [{"id": "few", "kind": "required"}]
+    assert [row for row in rows_for(gate, {}) if "atom" in row] == [
+        {"check": "verifier_empty_run", "atom": "few", "kind": "required"}]
 
 
 def test_an_expected_fail_run_that_failed_or_an_expected_pass_carries_no_passing_atoms(tmp_path):

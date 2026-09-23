@@ -504,6 +504,24 @@ def _one_atom(atom: Atom, payload: dict, kind: Any, effects: dict, asked: set, s
     return True
 
 
+def evaluated_atoms(atoms: Iterable[Atom]) -> list[Atom]:
+    """The atoms check_run evaluates on a Run, in order; every other atom is skipped there.
+
+    A code atom is evaluated when it is Hard, required, a forbidden write, or a question or
+    communicate atom of any kind. Judge atoms and the rest (an allowed count, a forbidden
+    value) carry no check a Run can fail here, so nothing may name them as passed (F37).
+    """
+    kept = []
+    for atom in atoms:
+        kind = atom_payload(atom).get("kind")
+        if atom.judge:
+            continue
+        if (atom.kind in ("hard", "required") or (atom.kind == "forbidden" and kind == "write")
+                or kind in ("question", "communicate")):
+            kept.append(atom)
+    return kept
+
+
 def check_run(verifier: Any, run: Any, canon: Any = None, *,
               write_tools: Optional[Iterable[str]] = None) -> tuple[bool, Optional[str]]:
     """Does this Run satisfy the atoms? Called by the D79 checks and, through them, the gates."""
@@ -515,19 +533,18 @@ def check_run(verifier: Any, run: Any, canon: Any = None, *,
     wrote_with = {e["tool"] for e in effects.values()}
     values = {(e["tool"], e["entity"], f, v) for e in effects.values() for f, v in e["values"].items()}
     asked, said = set(question_keys(run, effects, fn)), set(communicate_values(run, fn))
-    for atom in code_atoms(verifier):
+    for atom in evaluated_atoms(verifier.atoms):
         payload = atom_payload(atom)
         kind = payload.get("kind")
         target = (payload.get("tool"), payload.get("entity"))
-        if atom.kind == "forbidden" and kind == "write" and atom_holds(
-                atom, run, fn, tools, effects=effects, asked=asked, said=said):
-            return False, atom.id
+        if atom.kind == "forbidden" and kind == "write":
+            if atom_holds(atom, run, fn, tools, effects=effects, asked=asked, said=said):
+                return False, atom.id
+            continue
         if atom.kind == "hard":
             held = hard_holds(atom, run, tools, fn)
             if held is False:
                 return False, atom.id
-            continue
-        if atom.kind != "required" and kind not in ("question", "communicate"):
             continue
         if kind == "write" and (payload.get("tool") not in wrote_with if names_no_row(payload)
                                 else target not in present):

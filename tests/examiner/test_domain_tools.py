@@ -339,13 +339,14 @@ def _empty_run_records_proposal(verifier, empty) -> list[dict]:
              "rows": rows_for(g, {})} for g in gates if g.stage == "verifier_empty_run"]
 
 
-def test_a_refusal_on_an_empty_run_of_allowed_atoms_names_them_and_says_what_to_add():
+def test_a_refusal_on_an_empty_run_of_allowed_atoms_names_none_of_them_and_says_what_to_add():
     from kullback.gates.verifier_suite import make_atom
     from kullback.runner.records import Verifier
 
     verifier = Verifier(task_id="t1", atoms=[make_atom("cap", "allowed", {"kind": "entity_count", "count": 5})])
     message = str(D._refuse_proposal("t1", "2", _empty_run_records_proposal(verifier, VF.empty_run())))
-    assert "verifier_empty_run: the atom the empty Run passed on is cap" in message, message
+    assert "the atom the empty Run passed on is cap" not in message, message
+    assert "no atom of the Verifier is one a Run is checked on" in message, message
     assert ("every atom here passes an empty Run: add a question or communicate atom for what the "
             "Reference said, or a required write") in message, message
 
@@ -378,3 +379,21 @@ def test_a_reroll_from_the_tool_lands_its_model_calls_in_the_runner_stage(tmp_pa
     _run(tool.execute(D.RerollArgs(task_id="widget_task", count=1)))
     stage = budget.load_totals(workdir)["stages"]["runner"]
     assert stage["calls"] == len(model.calls) > 0 and stage["usd"] > 0
+
+
+def test_an_allowance_that_covers_one_run_buys_one_run_of_a_count_of_three(tmp_path):
+    from tests.examiner.test_runners import _exam_env, _priced_script
+
+    priced = ExamRoot(workdir=_exam_env(tmp_path / "priced"), reroll_model=_priced_script())
+    [measure] = [t for t in D.domain_tools(priced) if t.name == "reroll"]
+    one_run = _run(measure.execute(D.RerollArgs(task_id="widget_task", count=1))).spent_usd
+    assert one_run > 0
+
+    root = ExamRoot(workdir=_exam_env(tmp_path / "env"), reroll_model=_priced_script(),
+                    allowance_remaining=one_run)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "reroll"]
+    result = _run(tool.execute(D.RerollArgs(task_id="widget_task", count=3)))
+    assert len(result.runs) == 1
+    assert result.spent_usd == pytest.approx(one_run)
+    assert "stopped after 1 of 3 Runs: the allowance is spent" in result.summary
+    assert root.allowance_remaining <= 0

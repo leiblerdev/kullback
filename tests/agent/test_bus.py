@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import threading
+
+import pytest
 
 from kullback.agent.bus import Bus, BusRecord
 from kullback.agent.events import AgentEnd, CustomEvent, TurnStart
@@ -150,3 +153,45 @@ def test_two_processes_appending_to_one_log_number_every_record_once(tmp_path):
     records = Bus(path).replay()
     assert [r.seq for r in records] == list(range(1, 41))
     assert sorted(r.agent for r in records) == ["builder"] * 20 + ["examiner"] * 20
+
+
+def test_a_short_write_is_continued_until_the_whole_record_is_on_disk(tmp_path, monkeypatch):
+    bus = Bus(tmp_path / "bus.jsonl", agent="builder")
+    bus.publish_custom("first", {"n": 1})
+    real_write = os.write
+    calls = []
+
+    def half_then_rest(handle, data):
+        calls.append(len(data))
+        return real_write(handle, bytes(data)[: max(len(data) // 2, 1)] if len(calls) == 1 else data)
+
+    monkeypatch.setattr(os, "write", half_then_rest)
+    bus.publish_custom("second", {"text": "x" * 200})
+    monkeypatch.setattr(os, "write", real_write)
+    assert len(calls) == 2 and calls[1] < calls[0]
+    records = Bus(tmp_path / "bus.jsonl", agent="reader").replay()
+    assert [(r.seq, r.event.name) for r in records] == [(1, "first"), (2, "second")]
+    assert records[1].event.payload == {"text": "x" * 200}
+
+
+def test_a_write_that_raises_leaves_the_log_at_its_old_length(tmp_path, monkeypatch):
+    path = tmp_path / "bus.jsonl"
+    bus = Bus(path, agent="builder")
+    bus.publish_custom("first", {"n": 1})
+    length = path.stat().st_size
+    real_write = os.write
+    calls = []
+
+    def part_then_fail(handle, data):
+        calls.append(len(data))
+        if len(calls) == 1:
+            return real_write(handle, bytes(data)[:10])
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "write", part_then_fail)
+    with pytest.raises(OSError, match="No space left"):
+        bus.publish_custom("second", {"n": 2})
+    monkeypatch.setattr(os, "write", real_write)
+    assert path.stat().st_size == length
+    bus.publish_custom("third", {"n": 3})
+    assert [(r.seq, r.event.name) for r in Bus(path, agent="reader").replay()] == [(1, "first"), (2, "third")]

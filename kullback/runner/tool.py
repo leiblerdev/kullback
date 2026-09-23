@@ -25,6 +25,7 @@ from typing import Any, Optional
 from kullback import sampling
 from kullback.runner import loop, route
 from kullback.runner import replay as replay_mod
+from kullback.runner.real_tools import default_world_factory, real_tools_from
 from kullback.runner.records import (
     RawPtr,
     ToolCall,
@@ -151,7 +152,8 @@ def _router_for(env: BuiltEnvironment, task_id: str, seed: int,
     """The Task's Router: built toolkit, Starting state, overlay, signatures, canon rules.
 
     With a Trace named, the overlay is that Run's own layer of the Task's (D213), so a column
-    two Runs of the Task recorded in two values is served each Run the version it saw.
+    two Runs of the Task recorded in two values is served each Run the version it saw. A tool
+    environment.json declares real is routed to its world first (D262), never imitated.
     """
     overlay, overlay_rows = env.overlay(task_id, trace_id)
     source = env.toolkit_source()
@@ -164,7 +166,8 @@ def _router_for(env: BuiltEnvironment, task_id: str, seed: int,
         env_tools_module=toolkit, starting_state=copy.deepcopy(env.db),
         overlay=overlay, overlay_rows=overlay_rows, tool_sigs=env.sigs,
         canon_rules=env.canon_rules,
-        synthetic_rows=getattr(env.schema, "synthetic_rows", None) or ())
+        synthetic_rows=getattr(env.schema, "synthetic_rows", None) or (),
+        real_tools=real_tools_from(env.real_tools, default_world_factory))
 
 
 def _freeze(value: Any) -> str:
@@ -530,8 +533,11 @@ def write_runs_index(workdir: Any) -> Path:
 
 
 def reroll(environment_dir: Any, task_id: str, model: Any, *, count: int,
-           workdir: Any, prefix: str = "", user: Any = None, make_user: Any = None) -> list[RunReport]:
-    """Play `count` Runs of the candidate model over the Task, seeds counting up from zero.
+           workdir: Any, prefix: str = "", user: Any = None, make_user: Any = None,
+           first_seed: int = 0) -> list[RunReport]:
+    """Play `count` Runs of the candidate model over the Task, seeds counting up from `first_seed`.
+
+    A buyer that checks its allowance between Runs calls it with count=1 and the next seed.
 
     With a `prefix` the Runs are named for their buyer (D133: the Examiner's second-path batches),
     so a re-roll never writes different bytes under a name something already read. The candidate's
@@ -541,7 +547,7 @@ def reroll(environment_dir: Any, task_id: str, model: Any, *, count: int,
     return [run(environment_dir, task_id, model, user=user, make_user=make_user,
                 workdir=workdir, seed=seed,
                 run_id=f"{prefix}-{seed}" if prefix else None)
-            for seed in range(max(int(count), 0))]
+            for seed in range(first_seed, first_seed + max(int(count), 0))]
 
 
 __all__ = ["ReplayCall", "ReplayReport", "RunReport", "call_trace", "probe", "replay",

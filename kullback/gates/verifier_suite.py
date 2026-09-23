@@ -725,6 +725,10 @@ def _spans_gate(verifier: Verifier, runs: dict[str, Run], fn: Callable) -> GateR
                       metrics={"atoms_checked": checked}, failures=failures)
 
 
+# An expected-fail Run passed a Verifier none of whose atoms check_run evaluates (F37).
+NO_ATOM_CHECKED = "no atom of the Verifier is one a Run is checked on, so no Run can fail it"
+
+
 def _run_gate(stage: str, scored: Callable, run: Any, *, expect_pass: bool,
               missing: str = "no Run was supplied for this check",
               atoms: Iterable[Atom] = ()) -> GateResult:
@@ -734,8 +738,8 @@ def _run_gate(stage: str, scored: Callable, run: Any, *, expect_pass: bool,
     missing because the Task has one Reference and not because the Verifier turned a second path
     away, and a reader that cannot tell those apart reaches for the wrong repair (D173).
 
-    A Run expected to fail that passed passed every atom of the Verifier, so the result names them
-    by id and kind as the atoms to change (F37).
+    A Run expected to fail that passed passed every atom check_run evaluates, so the result names
+    those by id and kind as the atoms to change (F37), and never an atom check_run skips.
     """
     if run is None:
         return GateResult(stage=stage, passed=False, metrics={"skipped": True, "not_run_reason": missing},
@@ -745,7 +749,10 @@ def _run_gate(stage: str, scored: Callable, run: Any, *, expect_pass: bool,
     failures = [] if passed is expect_pass else [f"expected {want}, got {'pass' if passed else 'fail'}"]
     metrics = {"run_passed": passed, "failing_atom": failing_atom}
     if passed and not expect_pass:
-        metrics["passing_atoms"] = [{"id": atom.id, "kind": atom.kind} for atom in atoms]
+        checked = _target.evaluated_atoms(atoms)
+        metrics["passing_atoms"] = [{"id": atom.id, "kind": atom.kind} for atom in checked]
+        if not checked:
+            failures.append(NO_ATOM_CHECKED)
     return GateResult(stage=stage, passed=passed is expect_pass, failures=failures, metrics=metrics)
 
 

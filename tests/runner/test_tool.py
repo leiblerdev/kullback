@@ -276,3 +276,24 @@ def test_run_path_joins_a_relative_path_to_the_workdir_and_keeps_an_absolute_one
     assert stored_run_path(tmp_path / "work", tmp_path / "work" / "runs" / "a.jsonl") == "runs/a.jsonl"
     assert stored_run_path(tmp_path / "work", older) == str(older)
     assert stored_run_path(tmp_path / "work", "") == ""
+
+
+def test_a_real_tool_declared_in_environment_json_reaches_the_router_and_ends_the_run_as_cannot_answer(tmp_path):
+    """With no container runtime configured, the declared tool is routed real, never run as compiled code."""
+    from kullback.runner.world.environment import BuiltEnvironment
+
+    root = _env_with_trace(tmp_path / "env")
+    write_json(root / "environment.json", {"env_id": "widgets-1",
+                                           "real_tools": {"describe_widget": {"image": "img"}}})
+    router = tool._router_for(BuiltEnvironment(root), "widget_task", seed=0)
+    assert set(router.real_tools) == {"describe_widget"}
+    out = router.route("describe_widget", {"commands": [{"keystrokes": "ls"}]})
+    assert out.route == "cannot_answer" and out.error.class_ == "cannot_answer"
+    assert "no container runtime is configured for real tool describe_widget" in out.error.payload["world_error"]
+
+
+def test_an_environment_that_declares_no_real_tool_gives_a_router_with_none(tmp_path):
+    from kullback.runner.world.environment import BuiltEnvironment
+
+    router = tool._router_for(BuiltEnvironment(_env_with_trace(tmp_path / "env")), "widget_task", seed=0)
+    assert router.real_tools == {}
