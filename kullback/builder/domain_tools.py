@@ -377,17 +377,26 @@ def status_of(workdir: Any) -> dict[str, Any]:
     """One row per Task (trusted, refused or open, with its reason) and per tool (last replay fidelity).
 
     Read off the workdir files through `trusted_gate`, the way the Examiner's summary does;
-    the reading is carried here, not the import, since that module is going away. Files not
+    the reading is carried here, not the import, since that module is going away. The Examiner's
+    artefacts (its proposed Verifiers, the version histories, the task runs, the probe pools) are
+    read where the Examiner wrote them, through the path functions in records (F22). Files not
     there yet read as empty, so a Task with no Verifier is open with its reason.
     """
     root = Path(workdir)
     task_ids = [path.stem for path in sorted((root / "tasks").glob("*.json")) if path.name != "tasks.json"]
     task_status = read_json(root / "task_status.json", None) or {}
+    # The Examiner's artefacts, named where the Examiner writes them (F22); imported here so the
+    # module's shared import block stays untouched by this region.
+    from kullback.runner.records import exam_verifier_path, load_exam_history, load_exam_task_runs, load_probe_pools
+
     verifiers: list[dict] = []
-    if (root / "verifiers").is_dir():
-        for path in sorted((root / "verifiers").glob("*.json")):
+    for path in sorted((root / "verifiers").glob("*.json")) if (root / "verifiers").is_dir() else []:
+        # Each Task's live Verifier: the Examiner's proposal where it wrote one, else the derived file.
+        proposal = exam_verifier_path(root, path.stem)
+        for source in (proposal, path) if proposal.is_file() else (path,):
             try:
-                verifiers.append(json.loads(path.read_text(encoding="utf-8")))
+                verifiers.append(json.loads(source.read_text(encoding="utf-8")))
+                break
             except (OSError, ValueError):
                 continue
     refusals: dict[str, Any] = {}
@@ -398,11 +407,8 @@ def status_of(workdir: Any) -> dict[str, Any]:
                     refusals.setdefault(path.stem, json.loads(path.read_text(encoding="utf-8")))
                 except (OSError, ValueError):
                     continue
-    # Probes and version history are not workdir files in this flow (the Examiner's open
-    # item), and task runs are the Examiner's derivation, so the status rules on the suite,
-    # the refusals and the version reason only.
-    ruling = trusted_gate(task_status if isinstance(task_status, dict) else {}, verifiers, {},
-                          {}, refusals, {},
+    ruling = trusted_gate(task_status if isinstance(task_status, dict) else {}, verifiers,
+                          load_probe_pools(root), load_exam_history(root), refusals, load_exam_task_runs(root),
                           read_json(root / "replays.json", None) or {},
                           read_json(root / "rerolls.json", None) or {},
                           read_json(root / "canon-rules.json", None),

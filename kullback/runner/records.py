@@ -859,3 +859,118 @@ ALL_RECORDS: tuple[type[BaseModel], ...] = tuple(
     o for o in list(globals().values())
     if isinstance(o, type) and issubclass(o, BaseModel) and o not in (BaseModel, Record)
 )
+
+
+# The Examiner's artefacts on disk, named once from the workdir (F22). The Examiner writes them
+# and the gates' loaders and the Builder's status read them, so all three rule over the same files.
+# They live here because the gates sit below the Examiner and may not import it.
+EXAM_DIR = "exam"
+PROBES_DIR = "probes"
+
+
+def exam_history_path(workdir: Any) -> Path:
+    """The per-Task Verifier histories the Examiner keeps: exam/history.json (D127)."""
+    return Path(workdir) / EXAM_DIR / "history.json"
+
+
+def exam_task_runs_path(workdir: Any) -> Path:
+    """The Runs per Task the Examiner's rulings compare versions over: exam/task_runs.json (D201)."""
+    return Path(workdir) / EXAM_DIR / "task_runs.json"
+
+
+def exam_verifier_path(workdir: Any, task_id: str) -> Path:
+    """The Examiner's proposed Verifier for a Task: exam/verifiers/<task>.json."""
+    return Path(workdir) / EXAM_DIR / "verifiers" / f"{task_id}.json"
+
+
+def exam_probe_path(workdir: Any, task_id: str, number: int) -> Path:
+    """One probe Run the Examiner's session wrote: exam/probes/<task>/<n>.json."""
+    return Path(workdir) / EXAM_DIR / PROBES_DIR / task_id / f"{number}.json"
+
+
+def probe_pool_path(workdir: Any, task_id: str) -> Path:
+    """A Task's saved probe pool under the workdir: probes/<task>/pool.json (D127)."""
+    return Path(workdir) / PROBES_DIR / task_id / "pool.json"
+
+
+def as_probe_pool(task_id: str, runs: Any) -> ProbePool:
+    """A Task's probes as a ProbePool: a pool passes through, a bare Run (or its dict) becomes a Probe.
+
+    Scoring reads only each probe's Run, so the metadata a bare Run does not carry (the class, the
+    version written against) reads empty. A row that is neither is skipped.
+    """
+    if isinstance(runs, ProbePool):
+        return runs
+    probes: list[Probe] = []
+    for row in runs or []:
+        if isinstance(row, Probe):
+            probes.append(row)
+            continue
+        run = row if isinstance(row, Run) else None
+        if run is None:
+            try:
+                probes.append(Probe.model_validate(row))
+                continue
+            except ValueError:
+                pass
+            try:
+                run = Run.model_validate(row)
+            except ValueError:
+                continue
+        probes.append(Probe(probe_id=run.run_id, task_id=task_id, bug_class="", verifier_hash="", run=run))
+    return ProbePool(task_id=task_id, probes=probes)
+
+
+def _json_or_none(path: Path) -> Any:
+    try:
+        return read_json(path, None)
+    except (OSError, ValueError):
+        return None
+
+
+def load_exam_history(workdir: Any) -> dict[str, VerifierHistory]:
+    """The histories off exam/history.json; a missing file or a bad row reads as none."""
+    raw = _json_or_none(exam_history_path(workdir))
+    out: dict[str, VerifierHistory] = {}
+    for task_id, body in (raw.items() if isinstance(raw, dict) else ()):
+        try:
+            out[str(task_id)] = VerifierHistory.model_validate(body)
+        except ValueError:
+            continue
+    return out
+
+
+def load_exam_task_runs(workdir: Any) -> dict[str, list[Run]]:
+    """The Runs per Task off exam/task_runs.json; a missing file or a bad row reads as none."""
+    raw = _json_or_none(exam_task_runs_path(workdir))
+    out: dict[str, list[Run]] = {}
+    for task_id, rows in (raw.items() if isinstance(raw, dict) else ()):
+        runs = []
+        for row in rows or []:
+            try:
+                runs.append(Run.model_validate(row))
+            except ValueError:
+                continue
+        out[str(task_id)] = runs
+    return out
+
+
+def load_probe_pools(workdir: Any) -> dict[str, ProbePool]:
+    """Every probe on disk per Task: the saved pools under probes/ plus the session's probe Runs under exam/probes/."""
+    pools: dict[str, ProbePool] = {}
+    root = Path(workdir)
+    for path in sorted((root / PROBES_DIR).glob("*/pool.json")):
+        try:
+            pools[path.parent.name] = ProbePool.model_validate(read_json(path))
+        except (OSError, ValueError):
+            continue
+    session = root / EXAM_DIR / PROBES_DIR
+    for folder in sorted(session.iterdir()) if session.is_dir() else []:
+        runs = [_json_or_none(path) for path in sorted(folder.glob("*.json"), key=lambda p: (len(p.stem), p.stem))]
+        extra = as_probe_pool(folder.name, [row for row in runs if isinstance(row, dict)]).probes
+        known = pools.get(folder.name) or ProbePool(task_id=folder.name)
+        seen = {probe.probe_id for probe in known.probes}
+        known.probes.extend(probe for probe in extra if probe.probe_id not in seen)
+        if known.probes:
+            pools[folder.name] = known
+    return pools
