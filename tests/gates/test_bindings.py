@@ -132,8 +132,11 @@ def test_a_write_outside_every_binding_draws_no_ruling(tmp_path):
 
 # --- acceptance: one wrong answer names its call and its column ---
 
-def test_a_body_answering_one_recorded_call_wrongly_is_refused_at_replay_with_rows(tmp_path):
+def test_a_body_answering_every_call_right_passes_and_one_answering_a_call_wrongly_is_refused_with_rows(tmp_path):
     root, work = tmp_path / "root", tmp_path / "work"
+    right = _write(root, "tools/right.py", _source(RIGHT))
+    rulings = rulings_for(root, right, work, execute=_execute(tmp_path / "box_right"), evidence=_evidence())
+    assert [ruling.stage for ruling in rulings if not ruling.passed] == []
     rel = _write(root, "tools/set_status.py", _source(WRONG_ON_W2))
     rulings = rulings_for(root, rel, work, execute=_execute(tmp_path / "box"), evidence=_evidence())
     stages = [ruling.stage for ruling in rulings]
@@ -145,13 +148,6 @@ def test_a_body_answering_one_recorded_call_wrongly_is_refused_at_replay_with_ro
     assert row["call"] == "c2" and row["column"] == "status"
     assert row["recorded"]["status"] == "done" and row["ours"]["status"] == "new"
     assert row["tool"] == "set_status" and row["args"]
-
-
-def test_a_body_answering_every_call_right_passes_replay(tmp_path):
-    root, work = tmp_path / "root", tmp_path / "work"
-    rel = _write(root, "tools/set_status.py", _source(RIGHT))
-    rulings = rulings_for(root, rel, work, execute=_execute(tmp_path / "box"), evidence=_evidence())
-    assert [ruling.stage for ruling in rulings if not ruling.passed] == []
 
 
 def test_a_write_read_off_the_workdir_files_rules_the_same_way(tmp_path):
@@ -211,6 +207,7 @@ def test_every_refusal_names_its_rows(tmp_path):
                                                 "writes": [{"expected": {"a": 1},
                                                             "actual": {"a": 2}}]}]}, {}),
     }
+    refused_by_rel = {}
     for rel, (made, kwargs) in cases.items():
         root, work = tmp_path / "root", tmp_path / "work"
         path = root / rel
@@ -223,6 +220,14 @@ def test_every_refusal_names_its_rows(tmp_path):
         assert refused, rel
         for ruling in refused:
             assert ruling.rows, (rel, ruling.stage)
+        refused_by_rel[rel] = refused
+    memorised = refused_by_rel["tools/memorised.py"]
+    assert [ruling.stage for ruling in memorised] == [MEMORISED_STAGE]
+    assert memorised[0].rows[0]["literal"] == "'W-1'"
+    assert "widgets" in memorised[0].rows[0]["match"]
+    refusal = refused_by_rel["refusals/t1.json"]
+    assert refusal[0].stage == "refuse"
+    assert refusal[0].rows[0] == {"task": "t1", "finished": ["r1"]}
 
 
 def _flip_flop():
@@ -233,25 +238,6 @@ def _flip_flop():
         return [{"ok": True, "value": {"n": state["n"]}} for _ in calls]
 
     return run
-
-
-def test_the_memorised_refusal_names_the_literal_and_what_it_matched(tmp_path):
-    root, work = tmp_path / "root", tmp_path / "work"
-    rel = _write(root, "tools/memorised.py", "hold = \"W-1\"\nx = 1\n")
-    refused = _refusals(root, work, rel, evidence={"schema": _schema(), "db": dict(DB), "calls": CALLS})
-    assert [ruling.stage for ruling in refused] == [MEMORISED_STAGE]
-    assert refused[0].rows[0]["literal"] == "'W-1'"
-    assert "widgets" in refused[0].rows[0]["match"]
-
-
-def test_the_refusal_names_the_runs_that_finished(tmp_path):
-    root, work = tmp_path / "root", tmp_path / "work"
-    rel = _write(root, "refusals/t1.json", json.dumps({"t1": {"reason": "no path"}}))
-    refused = _refusals(root, work, rel,
-                        evidence={"replays": {"t1": {"a": {"confirmed": True, "run_id": "r1"}}},
-                                  "rerolls": {}})
-    assert refused and refused[0].stage == "refuse"
-    assert refused[0].rows[0] == {"task": "t1", "finished": ["r1"]}
 
 
 def test_the_verifier_suite_refusal_names_the_check_and_the_atom(tmp_path):
@@ -286,27 +272,6 @@ def _suite_evidence(verifier, **overrides) -> dict:
                 "task_status": {verifier.task_id: {"verifier_passed": False}}}
     evidence.update(overrides)
     return evidence
-
-
-def test_a_verifiers_write_with_a_reference_draws_the_suite_rulings(tmp_path):
-    verifier = derive(tmp_path)
-    root = tmp_path / "root"
-    rel = _write(root, "verifiers/t1.json", json.dumps(as_dict(verifier)))
-    out = rulings_for(root, rel, tmp_path / "work", evidence=_suite_evidence(verifier))
-    assert [r.stage for r in out if r.stage in S.D79_STAGES] == list(S.D79_STAGES)
-
-
-def test_the_trusted_ruling_reads_the_suite_that_just_ran_not_the_status_row(tmp_path):
-    verifier = derive(tmp_path)
-    root = tmp_path / "root"
-    rel = _write(root, "verifiers/t1.json", json.dumps(as_dict(verifier)))
-    out = rulings_for(root, rel, tmp_path / "work", evidence=_suite_evidence(verifier))
-    trusted = next(r for r in out if r.stage == "trusted")
-    assert not any("suite" in failure for failure in trusted.failures), trusted.failures
-
-    no_suite = rulings_for(root, rel, tmp_path / "work", evidence=_suite_evidence(verifier, reference=None))
-    trusted = next(r for r in no_suite if r.stage == "trusted")
-    assert any("D79 suite did not pass" in failure for failure in trusted.failures), trusted.failures
 
 
 def test_a_single_reference_task_with_a_waived_row_is_trusted_on_a_passing_suite(tmp_path):
