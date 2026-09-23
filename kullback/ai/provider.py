@@ -89,6 +89,10 @@ _reasoning_of = reasoning_of
 # the model it wraps.
 ALLOW_MODEL_REQUESTS = False
 
+# The harness default for the Builder, the Examiner, the judges, the probe and the re-rolls;
+# founder decision 2026-09-22.
+DEFAULT_MODEL = "openai/gpt-6-luna"
+
 # The one way to turn live calls on: a person exports this before running the CLI. There is
 # no flag a module can set by accident, and the default above stays False.
 LIVE_ENV_VAR = "HARNESS_ALLOW_MODEL_REQUESTS"
