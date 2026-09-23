@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.runner import tool
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, Verifier, write_json
+from kullback.runner.world.loading import EnvironmentError
 from tests.episode.invented import write_env
 
 PTR = RawPtr(file_hash="f" * 64, sim_index=0, msg_index=0)
@@ -81,6 +84,89 @@ def test_replay_confirms_where_the_body_answers_straight(tmp_path):
     assert report.confirmed, report.reasons
     assert report.fidelity == 1.0
     assert all(call.first_differing_column is None for call in report.calls)
+
+
+def _describe_trace(trace_id: str, label: str) -> Trace:
+    """A Run that only looks widget w1 up and saw it carry `label`."""
+    turns = [
+        Turn(idx=0, role="assistant", content="Hi! How can I help?", raw_ptr=PTR),
+        Turn(idx=1, role="user", content="What label does widget w1 carry?", raw_ptr=PTR),
+        Turn(idx=2, role="assistant", content=None, tool_call_ids=[f"{trace_id}-c1"], raw_ptr=PTR),
+        Turn(idx=3, role="tool", content=json.dumps({"widget_id": "w1", "label": label}),
+             tool_call_ids=[f"{trace_id}-c1"], raw_ptr=PTR),
+        Turn(idx=4, role="assistant", content=f"It carries {label}.", raw_ptr=PTR),
+        Turn(idx=5, role="user", content="Thanks.", raw_ptr=PTR),
+    ]
+    calls = [ToolCall(id=f"{trace_id}-c1", name="describe_widget", args={"widget_id": "w1"},
+                      result={"widget_id": "w1", "label": label}, raw_ptr=PTR, trace_id=trace_id)]
+    return Trace(trace_id=trace_id, raw_hash="d" * 64, ingest_version="1", source="test",
+                 turns=turns, tool_calls=calls, raw_ptr=PTR)
+
+
+def _env_with_three_runs(root: Path) -> Path:
+    """The widget Task over three Runs: the reference renames w1, the other two only look it up.
+
+    The second saw w1 as the Starting state holds it; the third saw it carry another label, which
+    its own layer of the Task's overlay pins (D213), and it is the anchor's held-out Run.
+    """
+    _env_with_trace(root)
+    write_json(root / "traces" / "rec2.json",
+               _describe_trace("rec2", "plain").model_dump(mode="json", by_alias=True))
+    write_json(root / "traces" / "rec3.json",
+               _describe_trace("rec3", "dotted").model_dump(mode="json", by_alias=True))
+    write_json(root / "tasks" / "widget_task.json",
+               {"id": "widget_task", "run_ids": ["rec2", "rec1", "rec3"],
+                "intent": "give widget w1 the label striped"})
+    write_json(root / "overlays" / "widget_task.json", {
+        "overlay": {"task_id": "widget_task", "rows": [
+            {"table": "widgets", "id": "w1", "version_hash": "seen-plain"}], "steps": []},
+        "values": {"seen-plain": {"widget_id": "w1", "label": "plain"},
+                   "seen-dotted": {"widget_id": "w1", "label": "dotted"}},
+        "runs": {"rec3": {"rows": [{"table": "widgets", "id": "w1", "version_hash": "seen-dotted"}]}},
+    })
+    write_json(root / "anchor.json", {"held_out": {"widget_task": ["rec3"]}})
+    return root
+
+
+def test_replay_all_reports_every_trace_with_the_reference_first(tmp_path):
+    root = _env_with_three_runs(tmp_path / "env")
+    reports = tool.replay_all(root, "widget_task", workdir=tmp_path / "work")
+    assert [report.trace_id for report in reports] == ["rec1", "rec2", "rec3"]
+
+
+def test_replay_all_replays_each_trace_in_a_fresh_world(tmp_path):
+    """The reference renames w1 first; the next Run still reads the label the Starting state holds."""
+    root = _env_with_three_runs(tmp_path / "env")
+    reports = {report.trace_id: report for report in tool.replay_all(root, "widget_task",
+                                                                     workdir=tmp_path / "work")}
+    assert reports["rec1"].confirmed, reports["rec1"].reasons
+    assert [(call.verdict, call.ours) for call in reports["rec2"].calls] == [
+        ("same", '{"label": "plain", "widget_id": "w1"}')]
+
+
+def test_a_trace_replays_on_its_own_overlay_layer(tmp_path):
+    """Two Runs saw w1 in two labels; each is served the version it recorded (D213)."""
+    root = _env_with_three_runs(tmp_path / "env")
+    third = tool.replay(root, "widget_task", workdir=tmp_path / "work", trace_id="rec3")
+    assert [(call.verdict, call.ours) for call in third.calls] == [
+        ("same", '{"label": "dotted", "widget_id": "w1"}')]
+    second = tool.replay(root, "widget_task", workdir=tmp_path / "work", trace_id="rec2")
+    assert [(call.verdict, call.ours) for call in second.calls] == [
+        ("same", '{"label": "plain", "widget_id": "w1"}')]
+
+
+def test_replay_all_marks_the_anchor_runs_held_out(tmp_path):
+    root = _env_with_three_runs(tmp_path / "env")
+    reports = tool.replay_all(root, "widget_task", workdir=tmp_path / "work")
+    assert {report.trace_id: report.held_out for report in reports} == {
+        "rec1": False, "rec2": False, "rec3": True}
+    assert reports[-1].as_dict()["held_out"] is True
+
+
+def test_replay_refuses_a_trace_the_task_does_not_hold(tmp_path):
+    root = _env_with_three_runs(tmp_path / "env")
+    with pytest.raises(EnvironmentError, match="no Trace missing"):
+        tool.replay(root, "widget_task", workdir=tmp_path / "work", trace_id="missing")
 
 
 def test_run_plays_verdicts_and_diffs_one_run(tmp_path):
