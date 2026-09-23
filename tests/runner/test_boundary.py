@@ -10,20 +10,15 @@ from kullback.runner.boundary import import_boundary_check, runner_version
 
 # --- D89 import boundary ---
 
-def test_import_boundary_check_passes_on_this_repo():
+def test_the_repo_obeys_the_runner_import_boundary():
+    """The live check passes on the package directory and on the repo root above it."""
     import kullback
 
     root = Path(kullback.__file__).resolve().parent
     out = import_boundary_check(root)
     assert out.stage == "import_boundary"
     assert out.passed is True, out.failures
-
-
-def test_import_boundary_check_accepts_the_repo_root_too():
-    import kullback
-
-    repo_root = Path(kullback.__file__).resolve().parents[1]
-    assert import_boundary_check(repo_root).passed is True
+    assert import_boundary_check(root.parent).passed is True
 
 
 def _tree(root: Path, runner_src: str, ai_src: str = "x = 1\n") -> Path:
@@ -36,11 +31,27 @@ def _tree(root: Path, runner_src: str, ai_src: str = "x = 1\n") -> Path:
     return root
 
 
-def test_import_boundary_check_catches_a_top_level_builder_import(tmp_path: Path):
+def test_a_runner_import_of_the_builder_is_caught(tmp_path: Path):
+    """D89 in both directions: the Runner or the ai package importing the Builder, and the
+    derivation reaching into the Runner past records and canon (D91, D121, D123)."""
     root = _tree(tmp_path / "kullback", "from kullback.builder import mine\n")
     out = import_boundary_check(root)
     assert out.passed is False
     assert any("loop.py" in f and "kullback.builder" in f for f in out.failures)
+
+    root = _tree(tmp_path / "ai_side" / "kullback", "x = 1\n", ai_src="from kullback.builder import mine\n")
+    out = import_boundary_check(root)
+    assert out.passed is False
+    assert any("provider.py" in f for f in out.failures)
+
+    root = _tree(tmp_path / "derive_side" / "kullback", "x = 1\n")
+    (root / "examiner" / "derive.py").write_text("from kullback.runner.loop import run\n", encoding="utf-8")
+    out = import_boundary_check(root)
+    assert out.passed is False
+    assert any("examiner/derive.py" in f and "kullback.runner.loop" in f for f in out.failures)
+    (root / "examiner" / "derive.py").write_text(
+        "from kullback.runner.records import Run\nfrom kullback.gates import verifier_suite\n", encoding="utf-8")
+    assert import_boundary_check(root).passed is True
 
 
 @pytest.mark.parametrize(
@@ -83,43 +94,10 @@ def test_import_boundary_check_leaves_the_predicate_exec_alone_and_lists_it(tmp_
     assert any("loop.py" in site and "exec" in site for site in out.metrics["dynamic_code_sites"])
 
 
-def test_import_boundary_check_catches_the_derivation_reaching_into_the_runner(tmp_path: Path):
-    """D91's other direction, which D89 says the same test covers.
-
-    records and canon moved into runner/ from the dissolved shared/ package (D121) and stay
-    readable to the derivation, the same allowance it always had; every other runner/ module is
-    still off limits. The derivation is examiner/derive.py since phase 5 (D123), and the failure
-    names it there.
-    """
-    root = _tree(tmp_path / "kullback", "x = 1\n")
-    (root / "examiner" / "derive.py").write_text("from kullback.runner.loop import run\n", encoding="utf-8")
-    out = import_boundary_check(root)
-    assert out.passed is False
-    assert any("examiner/derive.py" in f and "kullback.runner.loop" in f for f in out.failures)
-    (root / "examiner" / "derive.py").write_text(
-        "from kullback.runner.records import Run\nfrom kullback.gates import verifier_suite\n", encoding="utf-8")
-    assert import_boundary_check(root).passed is True
-
-
-def test_import_boundary_check_no_longer_scans_a_builder_verifier_module(tmp_path: Path):
-    """The old path is not the derivation any more: a file left there is an ordinary Builder module."""
-    root = _tree(tmp_path / "kullback", "x = 1\n")
-    (root / "builder" / "verifier.py").write_text("from kullback.runner.loop import run\n", encoding="utf-8")
-    out = import_boundary_check(root)
-    assert out.passed is True and out.failures == []
-
-
 def test_import_boundary_check_fails_a_file_that_does_not_parse_rather_than_raising(tmp_path: Path):
     out = import_boundary_check(_tree(tmp_path / "kullback", "def go(:\n"))
     assert out.passed is False
     assert any("loop.py" in f and "does not parse" in f for f in out.failures)
-
-
-def test_import_boundary_check_catches_the_ai_package_importing_the_builder(tmp_path: Path):
-    root = _tree(tmp_path / "kullback", "x = 1\n", ai_src="from kullback.builder import mine\n")
-    out = import_boundary_check(root)
-    assert out.passed is False
-    assert any("provider.py" in f for f in out.failures)
 
 
 def test_import_boundary_check_allows_ai_imports_from_runner(tmp_path: Path):
@@ -138,6 +116,11 @@ def _runner_tree(root: Path, loop_body="a = 1\n") -> Path:
 
 
 def test_runner_version_hashes_every_runner_file_and_the_routing_config(tmp_path: Path):
+    """The hash covers every Runner file and the routing config; on the real tree every file is
+    hashed as it is on disk (D61: Runner frozen)."""
+    import kullback
+    from kullback.runner.records import content_hash
+
     root = _runner_tree(tmp_path / "kullback")
     out = runner_version(root, routing_config={"order": ["code", "recording", "llm"]})
     assert set(out.file_hashes) == {"loop.py", "route.py", "verdict.py"}
@@ -147,21 +130,24 @@ def test_runner_version_hashes_every_runner_file_and_the_routing_config(tmp_path
     assert runner_version(root, routing_config={"order": ["code", "recording", "llm"]}).runner_version == \
         out.runner_version
 
+    real = Path(kullback.__file__).resolve().parent
+    out = runner_version(real)
+    for name in ("loop.py", "route.py", "verdict.py"):
+        assert out.file_hashes[name] == content_hash((real / "runner" / name).read_text(encoding="utf-8"))
+    assert out.runner_version == runner_version(real).runner_version
+    assert out.runner_version != runner_version(real, routing_config={"order": ["code"]}).runner_version
 
-def test_runner_version_moves_when_the_routing_config_changes(tmp_path: Path):
+
+def test_runner_version_follows_the_files_under_runner_and_the_routing_config(tmp_path: Path):
+    """RUNNER_FILES went away with the move (D121, D130): the hash is over whatever is under runner/.
+
+    A file that is not there is not hashed, not marked "missing", and a new file joins the hash
+    unasked; both move the version, and so does a changed routing config.
+    """
     root = _runner_tree(tmp_path / "kullback")
     a = runner_version(root, routing_config={"order": ["code"]}).runner_version
     b = runner_version(root, routing_config={"order": ["code", "recording"]}).runner_version
     assert a != b
-
-
-def test_runner_version_follows_the_files_under_runner(tmp_path: Path):
-    """RUNNER_FILES went away with the move (D121, D130): the hash is over whatever is under runner/.
-
-    A file that is not there is not hashed, not marked "missing", and a new file joins the hash
-    unasked; both move the version.
-    """
-    root = _runner_tree(tmp_path / "kullback")
     before = runner_version(root).runner_version
     (root / "runner" / "verdict.py").unlink()
     removed = runner_version(root)
@@ -172,21 +158,6 @@ def test_runner_version_follows_the_files_under_runner(tmp_path: Path):
     added = runner_version(root)
     assert set(added.file_hashes) == {"loop.py", "route.py", "gate_support.py"}
     assert added.runner_version not in (before, removed.runner_version)
-
-
-def test_runner_version_hashes_the_real_runner_files_as_they_are_on_disk():
-    """Every real Runner file, hashed as it is on disk (D61: Runner frozen)."""
-    import kullback
-    from kullback.runner.records import content_hash
-
-    root = Path(kullback.__file__).resolve().parent
-    out = runner_version(root)
-    for name in ("loop.py", "route.py", "verdict.py"):
-        assert out.file_hashes[name] == content_hash((root / "runner" / name).read_text(encoding="utf-8"))
-    assert out.runner_version == runner_version(root).runner_version
-    assert out.runner_version != runner_version(root, routing_config={"order": ["code"]}).runner_version
-
-
 
 
 # --- the gates hash beside the Runner's (D122) ---
@@ -201,7 +172,12 @@ def _gated_tree(root: Path) -> Path:
 
 def test_the_gates_package_is_hashed_beside_the_runner_and_never_into_it(tmp_path: Path):
     """A gate that changes does not change what executes or grades a Run, so the Runner's hash
-    holds still and the gates hash moves; a regrade can name both."""
+    holds still and the gates hash moves; a regrade can name both. A tree with no gates package
+    (a RunnerVersion frozen before phase 3) records None, and the real package is hashed file by
+    file as it is on disk."""
+    import kullback
+    from kullback.runner.records import content_hash
+
     root = _gated_tree(tmp_path / "kullback")
     out = runner_version(root)
     assert set(out.gates_file_hashes) == {"__init__.py", "artifacts.py"}
@@ -216,23 +192,14 @@ def test_the_gates_package_is_hashed_beside_the_runner_and_never_into_it(tmp_pat
     assert runner_moved.runner_version != out.runner_version
     assert runner_moved.gates_version == moved.gates_version
 
+    bare = runner_version(_runner_tree(tmp_path / "bare" / "kullback"))
+    assert bare.gates_version is None
+    assert bare.gates_file_hashes == {}
 
-def test_a_tree_with_no_gates_package_records_no_gates_version(tmp_path: Path):
-    """A RunnerVersion frozen before phase 3 has no gates hash, and the record says so with None."""
-    out = runner_version(_runner_tree(tmp_path / "kullback"))
-    assert out.gates_version is None
-    assert out.gates_file_hashes == {}
-
-
-def test_gates_version_hashes_every_file_under_the_real_gates_package():
-    """Every .py under kullback/gates/, hashed as it is on disk, the same way the Runner is."""
-    import kullback
-    from kullback.runner.records import content_hash
-
-    root = Path(kullback.__file__).resolve().parent
-    out = runner_version(root)
-    on_disk = sorted(p.relative_to(root / "gates").as_posix() for p in (root / "gates").rglob("*.py"))
+    real = Path(kullback.__file__).resolve().parent
+    out = runner_version(real)
+    on_disk = sorted(p.relative_to(real / "gates").as_posix() for p in (real / "gates").rglob("*.py"))
     assert sorted(out.gates_file_hashes) == on_disk
     for name in ("__init__.py", "artifacts.py", "verifier_suite.py", "fidelity.py", "confinement.py"):
-        assert out.gates_file_hashes[name] == content_hash((root / "gates" / name).read_text(encoding="utf-8"))
+        assert out.gates_file_hashes[name] == content_hash((real / "gates" / name).read_text(encoding="utf-8"))
     assert out.gates_version == content_hash({"files": out.gates_file_hashes})

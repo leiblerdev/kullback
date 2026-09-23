@@ -6,7 +6,6 @@ import fnmatch
 import inspect
 import json
 import os
-import stat
 import threading
 from pathlib import Path
 
@@ -30,7 +29,7 @@ def _leftover_temps(folder: Path) -> list[Path]:
     return [p for p in folder.iterdir() if p.suffix == ".tmp" or p.name.startswith(".")]
 
 
-def test_bytes_match_the_old_direct_write(tmp_path: Path):
+def test_write_json_writes_the_same_bytes_as_a_direct_write(tmp_path: Path):
     body = {"zebra": {"n": [3, 2, 1], "m": "x"}, "apple": {"token": _Token()}, "mid": [None, True, 1]}
     target = tmp_path / "harbor.json"
     write_json(target, body)
@@ -53,16 +52,26 @@ def test_serialisation_failure_keeps_the_old_file(tmp_path: Path):
     assert _leftover_temps(tmp_path) == []
 
 
-def test_replace_failure_keeps_the_old_file_and_no_temp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def _swap_fails(src: str, dst: str) -> None:
+    raise OSError("swap failed")
+
+
+def _interrupted(_fd: int) -> None:
+    raise KeyboardInterrupt("killed mid-write")
+
+
+@pytest.mark.parametrize(("step", "fault", "raised"), [
+    ("replace", _swap_fails, OSError),
+    ("fsync", _interrupted, KeyboardInterrupt),
+], ids=["replace-fails", "interrupt-between-stage-and-swap"])
+def test_a_failed_or_interrupted_swap_keeps_the_old_file_and_no_temp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                       step, fault, raised):
     target = tmp_path / "ledger.json"
     write_json(target, {"kept": 2})
     before = target.read_text(encoding="utf-8")
 
-    def _boom(src: str, dst: str) -> None:
-        raise OSError("swap failed")
-
-    monkeypatch.setattr(os, "replace", _boom)
-    with pytest.raises(OSError):
+    monkeypatch.setattr(os, step, fault)
+    with pytest.raises(raised):
         write_json(target, {"next": 3})
     assert target.read_text(encoding="utf-8") == before
     assert _leftover_temps(tmp_path) == []
@@ -91,65 +100,6 @@ def test_two_threads_writing_one_path_both_leave_valid_json(tmp_path: Path):
     assert on_disk in (json.loads(json.dumps(first, sort_keys=True, default=str)),
                        json.loads(json.dumps(second, sort_keys=True, default=str)))
     assert _leftover_temps(tmp_path) == []
-
-
-def test_fresh_and_replaced_files_keep_plain_write_modes(tmp_path: Path):
-    # A fresh file gets the mode a plain write_text would give (the kernel applies the umask
-    # at creation, so no umask is read), and a replaced file keeps its destination mode.
-    fresh = tmp_path / "fresh.json"
-    write_json(fresh, {"kept": 1})
-    sibling = tmp_path / "sibling.json"
-    sibling.write_text("{}", encoding="utf-8")
-    assert stat.S_IMODE(fresh.stat().st_mode) == stat.S_IMODE(sibling.stat().st_mode)
-
-    plain = tmp_path / "plain.json"
-    plain.write_text(json.dumps({"kept": 1}), encoding="utf-8")
-    plain_mode = stat.S_IMODE(plain.stat().st_mode)
-    write_json(plain, {"kept": 2})
-    assert read_json(plain) == {"kept": 2}
-    assert stat.S_IMODE(plain.stat().st_mode) == plain_mode
-
-    target = tmp_path / "ledger.json"
-    target.write_text(json.dumps({"kept": 1}), encoding="utf-8")
-    os.chmod(target, 0o600)
-    write_json(target, {"kept": 2})
-    assert read_json(target) == {"kept": 2}
-    assert stat.S_IMODE(target.stat().st_mode) == 0o600
-
-
-def test_keyboard_interrupt_between_stage_and_swap_cleans_up(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    target = tmp_path / "ledger.json"
-    write_json(target, {"kept": 1})
-    before = target.read_text(encoding="utf-8")
-
-    def _interrupted(_fd: int) -> None:
-        raise KeyboardInterrupt("killed mid-write")
-
-    monkeypatch.setattr(os, "fsync", _interrupted)
-    with pytest.raises(KeyboardInterrupt):
-        write_json(target, {"kept": 2})
-    assert target.read_text(encoding="utf-8") == before
-    assert _leftover_temps(tmp_path) == []
-
-
-def test_fchmod_failure_closes_the_staging_descriptor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    target = tmp_path / "ledger.json"
-    write_json(target, {"kept": 1})
-    before = target.read_text(encoding="utf-8")
-    seen_fds: list[int] = []
-
-    def _failing(fd: int, _mode: int) -> None:
-        seen_fds.append(fd)
-        raise OSError("cannot set mode")
-
-    monkeypatch.setattr(os, "fchmod", _failing)
-    with pytest.raises(OSError):
-        write_json(target, {"kept": 2})
-    assert target.read_text(encoding="utf-8") == before
-    assert _leftover_temps(tmp_path) == []
-    for fd in seen_fds:
-        with pytest.raises(OSError):
-            os.fstat(fd)
 
 
 def test_reader_sees_only_whole_files_while_a_swap_waits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

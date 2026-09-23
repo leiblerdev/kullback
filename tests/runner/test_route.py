@@ -127,15 +127,9 @@ def test_overlay_is_read_before_the_shared_world():
     assert toolkit.route("get_order_details", {"order_id": "123"}).result["status"] == "pending"
     assert Router(env_tools_module=Toolkit(shared()), starting_state=shared(), tool_sigs=sigs()).route(
         "get_order_details", {"order_id": "123"}).result["status"] == "delivered"
-
-
-def test_the_start_state_of_a_toolkit_run_carries_the_overlay():
-    """D74, D46: the Starting state a Verdict compares against is the overlay over the shared world."""
-    overlay, rows = pinned_overlay()
-    router = Router(env_tools_module=Toolkit(shared()), starting_state=shared(),
-                    overlay=overlay, overlay_rows=rows, tool_sigs=sigs())
-    assert router.start_world["orders"]["123"]["status"] == "pending"
-    assert router.world()["orders"]["123"]["status"] == "pending"
+    # D46: the Starting state a Verdict compares against is the overlay over the shared world
+    assert toolkit.start_world["orders"]["123"]["status"] == "pending"
+    assert toolkit.world()["orders"]["123"]["status"] == "pending"
 
 
 def test_the_start_state_is_not_moved_by_a_tool_that_edits_the_row_it_was_handed():
@@ -164,29 +158,23 @@ def test_a_write_to_an_overlaid_row_reaches_the_end_state():
     router.route("cancel_order", {"order_id": "123"})
     assert router.route("get_order_details", {"order_id": "123"}).result["status"] == "cancelled"
     assert router.world()["orders"]["123"]["status"] == "cancelled"
+    # the view's own write path: one row put through it reads back merged
+    view = StateView(shared=shared())
+    view.put("orders", "123", {"status": "shipped"})
+    assert view.row("orders", "123") == {"id": "123", "status": "shipped", "total": 25}
 
 
-def test_the_state_view_write_path_lands_in_the_world():
-    """A tool body writes one row through the view, and the End state and the next read both see it."""
-    state = StateView(shared=shared())
-    state.put("orders", "123", {"status": "shipped"})
-    assert state.row("orders", "123") == {"id": "123", "status": "shipped", "total": 25}
-
-
-def test_an_overlay_row_with_no_stored_value_is_recorded_as_a_miss():
+def test_only_an_overlay_row_with_no_stored_value_is_recorded_as_a_miss():
     """D74, D88: a missing overlay value is an env mark on the Run, never a silent fallback."""
     overlay = TaskOverlay(task_id="t1", rows=[OverlayRow(table="orders", id="123", version_hash="gone")])
     router = make_router(state=StateView(shared=shared(), overlay=overlay, overlay_rows={}))
     assert router.state.overlay_misses == [{"table": "orders", "id": "123", "version_hash": "gone"}]
     out = router.route("get_order_details", {"order_id": "123"})
     assert out.overlay_miss == router.state.overlay_misses
-
-
-def test_a_task_whose_overlay_is_whole_carries_no_miss():
     overlay, rows = pinned_overlay()
-    router = make_router(state=StateView(shared=shared(), overlay=overlay, overlay_rows=rows))
-    assert router.state.overlay_misses == []
-    assert router.route("get_order_details", {"order_id": "123"}).overlay_miss is None
+    whole = make_router(state=StateView(shared=shared(), overlay=overlay, overlay_rows=rows))
+    assert whole.state.overlay_misses == []
+    assert whole.route("get_order_details", {"order_id": "123"}).overlay_miss is None
 
 
 def test_an_overlay_given_beside_a_state_view_is_not_dropped():
@@ -222,9 +210,10 @@ def test_unknown_tool_is_answered_not_raised():
     assert out.assisted is False
 
 
-def test_a_caller_the_tool_never_answered_is_refused_and_the_world_is_untouched():
+def test_a_caller_the_tool_never_answered_is_refused_before_anything_runs_and_its_own_callers_are_answered():
     """D164: the recording answered `cancel_order` for the assistant and never for the simulated
-    user, so a call from the user is refused in the same class, before any code runs."""
+    user, so a call from the user is refused in the same class, before any code or real world runs;
+    a tool of the user's own toolkit answers the user."""
     router = make_router(tool_sigs=[ToolSig(name="get_order_details"),
                                     ToolSig(name="cancel_order", callers=["assistant"],
                                             refused_callers=["user"])])
@@ -235,14 +224,23 @@ def test_a_caller_the_tool_never_answered_is_refused_and_the_world_is_untouched(
     assert router.state_hash() == before
     assert router.world()["orders"]["123"]["status"] == "delivered"
 
+    own = make_router(tool_sigs=[ToolSig(name="get_order_details", callers=["user"])])
+    answered = own.route("get_order_details", {"order_id": "123"}, requestor="user")
+    assert answered.error is None and answered.route == "code"
+    assert answered.result["status"] == "delivered"
+    assert own.route("get_order_details", {"order_id": "123"}).error.class_ == "tool_not_found"
 
-def test_the_same_call_from_a_caller_the_tool_answers_runs():
-    """The other side of D164: a tool of the user's own toolkit answers the user."""
-    router = make_router(tool_sigs=[ToolSig(name="get_order_details", callers=["user"])])
-    out = router.route("get_order_details", {"order_id": "123"}, requestor="user")
-    assert out.error is None and out.route == "code"
-    assert out.result["status"] == "delivered"
-    assert router.route("get_order_details", {"order_id": "123"}).error.class_ == "tool_not_found"
+    from test_real_tools import FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld()
+    real = Router(env_tools_module=real_shell_module(),
+                  starting_state=StateView(shared={}),
+                  tool_sigs=[ToolSig(name="shell", callers=["user"])],
+                  real_tools={"shell": RealTool("shell", lambda: world)})
+    refused = real.route("shell", {"commands": [{"keystrokes": "ls"}]}, requestor="assistant")
+    assert refused.error is not None and refused.error.class_ == "tool_not_found"
+    assert world.reset_count == 0
 
 
 def test_invalid_arguments_keep_the_customers_encoding():
@@ -258,17 +256,10 @@ def test_a_missing_entity_is_classed_not_found_entity_by_code():
     assert out.error.classified_by == "code"
 
 
-def test_text_encoding_when_the_traces_show_text_errors():
-    router = make_router(tool_sigs=[ToolSig(name="get_order_details", error_shapes=[
-        ErrorShape(class_="not_found_entity", sample_payload="no such order", encoding="text"),
-    ])])
-    out = router.route("get_order_details", {"order_id": "999"})
-    assert out.error.encoding == "text"
-    assert isinstance(out.result, str)
-
-
-def test_a_python_exception_is_answered_in_the_words_the_corpus_shows_for_its_class():
-    """Build 8: 155 unknown-id lookups came back as `KeyError: '#W...'` beside recordings that said 'Order not found'."""
+def test_an_exception_is_answered_in_the_corpus_words_for_its_class():
+    """Build 8: 155 unknown-id lookups came back as `KeyError: '#W...'` beside recordings that said 'Order not found'.
+    A JSON corpus error comes back as JSON, a class the corpus never showed keeps the exception text, and
+    an error the body raised in its own words keeps them."""
     router = make_router(tool_sigs=[ToolSig(name="get_order_details", error_shapes=[
         ErrorShape(class_="not_found_entity", sample_payload="Error: Order not found", encoding="text"),
     ])])
@@ -277,37 +268,36 @@ def test_a_python_exception_is_answered_in_the_words_the_corpus_shows_for_its_cl
     assert out.error.payload == "Error: Order not found"
     assert out.error.class_ == "not_found_entity"
 
+    assert make_router().route("get_order_details", {"order_id": "999"}).result == {"error": "no such order"}
 
-def test_a_json_corpus_error_is_answered_as_the_corpus_shows_it():
-    out = make_router().route("get_order_details", {"order_id": "999"})
-    assert out.result == {"error": "no such order"}
+    unshown = make_router().route("get_order_details", {"nope": 1})
+    assert unshown.error.class_ == "invalid_arguments"
+    assert "TypeError" in unshown.result["error"]
 
-
-def test_a_class_the_corpus_never_showed_keeps_the_exception_text():
-    out = make_router().route("get_order_details", {"nope": 1})
-    assert out.error.class_ == "invalid_arguments"
-    assert "TypeError" in out.result["error"]
-
-
-def test_an_error_the_body_raised_in_its_own_words_keeps_them():
-    class Toolkit:
+    class RaisingToolkit:
         def __init__(self, db):
             self.db = db
 
         def cancel_order(self, order_id):
             raise ValueError("Order is not pending")
 
-    router = make_router(env_tools_module=Toolkit({}), tool_sigs=[ToolSig(name="cancel_order", error_shapes=[
+    raising = make_router(env_tools_module=RaisingToolkit({}), tool_sigs=[ToolSig(name="cancel_order", error_shapes=[
         ErrorShape(class_="business_error", sample_payload="Error: Item not found", encoding="text"),
     ])])
-    out = router.route("cancel_order", {"order_id": "123"})
-    assert out.error.class_ == "business_error"
-    assert out.result == "ValueError: Order is not pending"
+    own_words = raising.route("cancel_order", {"order_id": "123"})
+    assert own_words.error.class_ == "business_error"
+    assert own_words.result == "ValueError: Order is not pending"
 
 
-def test_encoding_falls_back_to_text_when_no_errors_were_observed():
+def test_the_error_encoding_follows_the_traces_and_falls_back_to_text():
     out = make_router(tool_sigs=[ToolSig(name="get_order_details")]).route("get_order_details", {"order_id": "999"})
     assert out.error.encoding == "text"
+    router = make_router(tool_sigs=[ToolSig(name="get_order_details", error_shapes=[
+        ErrorShape(class_="not_found_entity", sample_payload="no such order", encoding="text"),
+    ])])
+    shown = router.route("get_order_details", {"order_id": "999"})
+    assert shown.error.encoding == "text"
+    assert isinstance(shown.result, str)
 
 
 # --- recording route ---
@@ -320,6 +310,9 @@ def test_recording_is_an_exact_lookup_on_tool_args_and_pre_state_hash():
     assert out.route == "recording"
     assert out.result == {"name": "Ada"}
     assert out.assisted is False
+    canon = recording("lookup_user", {"email": "a@b.com", "n": 25}, state.hash(), "ok")
+    canonical = make_router(state=state, recordings=[canon]).route("lookup_user", {"email": " a@b.com ", "n": 25.0})
+    assert canonical.route == "recording"
 
 
 def test_a_stale_recording_cannot_answer_a_changed_state():
@@ -330,27 +323,29 @@ def test_a_stale_recording_cannot_answer_a_changed_state():
     out = router.route("lookup_user", {"email": "a@b.com"})
     assert out.route != "recording"
     assert out.error.class_ == "tool_not_found"
+    unkeyed = make_router(state=StateView(shared=shared()), recordings=[{"tool": "lookup_user", "args": {}, "result": "ok"}])
+    assert unkeyed.unkeyed_recordings == 1
+    assert unkeyed.route("lookup_user", {}).route != "recording"
 
 
-def test_recording_matches_on_canonical_args():
-    state = StateView(shared=json.loads(json.dumps(SHARED)))
-    entry = recording("lookup_user", {"email": "a@b.com", "n": 25}, state.hash(), "ok")
-    router = make_router(state=state, recordings=[entry])
-    out = router.route("lookup_user", {"email": " a@b.com ", "n": 25.0})
-    assert out.route == "recording"
-
-
-def test_a_recorded_error_comes_back_as_an_error():
+def test_a_recorded_error_comes_back_as_an_error_and_writes_nothing():
     state = StateView(shared=json.loads(json.dumps(SHARED)))
     entry = recording("lookup_user", {"email": "x"}, state.hash(), None,
                       error={"class": "business_error", "payload": "closed account", "encoding": "text"})
     out = make_router(state=state, recordings=[entry]).route("lookup_user", {"email": "x"})
     assert out.route == "recording"
     assert out.error.class_ == "business_error"
+    entry = recording("refund_order", {"order_id": "123"}, state.hash(), None,
+                      error={"class": "business_error", "payload": "already shipped", "encoding": "text"},
+                      writes={"orders": {"123": {"id": "123", "status": "refunded"}}})
+    router = make_router(state=StateView(shared=shared()), recordings=[entry])
+    router.route("refund_order", {"order_id": "123"})
+    assert router.world()["orders"]["123"]["status"] == "delivered"
 
 
 def test_a_write_answered_from_the_recording_lands_in_the_world():
-    """A recorded write changes the world, so a later read is not stale and the End state shows it."""
+    """A recorded write changes the world, so a later read is not stale and the End state shows it,
+    on the state view and on a compiled toolkit that reads self.db."""
     state = StateView(shared=json.loads(json.dumps(SHARED)))
     entry = recording("refund_order", {"order_id": "123"}, state.hash(), {"status": "refunded"},
                       writes={"orders": {"123": {"id": "123", "status": "refunded", "total": 25}}})
@@ -362,16 +357,13 @@ def test_a_write_answered_from_the_recording_lands_in_the_world():
     assert router.world()["orders"]["123"]["status"] == "refunded"
     assert router.route("get_order_details", {"order_id": "123"}).result["status"] == "refunded"
 
-
-def test_a_recorded_write_is_visible_to_the_next_toolkit_read():
-    """The same rule on the real path: a compiled body reads self.db, so the write has to land there."""
-    router = Router(env_tools_module=Toolkit(shared()), starting_state=shared(), tool_sigs=sigs())
-    entry = recording("refund_order", {"order_id": "123"}, router.state_hash(), {"status": "refunded"},
+    toolkit = Router(env_tools_module=Toolkit(shared()), starting_state=shared(), tool_sigs=sigs())
+    entry = recording("refund_order", {"order_id": "123"}, toolkit.state_hash(), {"status": "refunded"},
                       writes={"orders": {"123": {"id": "123", "status": "refunded", "total": 25}}})
-    router.recordings = {recording_key("refund_order", {"order_id": "123"}, router.state_hash()): entry}
-    assert router.route("refund_order", {"order_id": "123"}).route == "recording"
-    assert router.world()["orders"]["123"]["status"] == "refunded"
-    assert router.route("get_order_details", {"order_id": "123"}).result["status"] == "refunded"
+    toolkit.recordings = {recording_key("refund_order", {"order_id": "123"}, toolkit.state_hash()): entry}
+    assert toolkit.route("refund_order", {"order_id": "123"}).route == "recording"
+    assert toolkit.world()["orders"]["123"]["status"] == "refunded"
+    assert toolkit.route("get_order_details", {"order_id": "123"}).result["status"] == "refunded"
 
 
 def test_a_code_write_after_a_recorded_write_is_the_one_the_end_state_shows():
@@ -385,33 +377,9 @@ def test_a_code_write_after_a_recorded_write_is_the_one_the_end_state_shows():
     assert router.world()["orders"]["123"]["status"] == "cancelled"
 
 
-def test_a_recorded_error_writes_nothing():
-    state = StateView(shared=json.loads(json.dumps(SHARED)))
-    entry = recording("refund_order", {"order_id": "123"}, state.hash(), None,
-                      error={"class": "business_error", "payload": "already shipped", "encoding": "text"},
-                      writes={"orders": {"123": {"id": "123", "status": "refunded"}}})
-    router = make_router(state=state, recordings=[entry])
-    router.route("refund_order", {"order_id": "123"})
-    assert router.world()["orders"]["123"]["status"] == "delivered"
-
-
-def test_a_recording_without_a_pre_state_hash_never_matches():
-    state = StateView(shared=json.loads(json.dumps(SHARED)))
-    router = make_router(state=state, recordings=[{"tool": "lookup_user", "args": {}, "result": "ok"}])
-    assert router.unkeyed_recordings == 1
-    assert router.route("lookup_user", {}).route != "recording"
-
-
-def test_recordings_may_be_given_already_keyed():
-    state = StateView(shared=json.loads(json.dumps(SHARED)))
-    key = recording_key("lookup_user", {"email": "a@b.com"}, state.hash())
-    router = make_router(state=state, recordings={key: {"result": "ok"}})
-    assert router.route("lookup_user", {"email": "a@b.com"}).result == "ok"
-
-
 # --- stand-in route ---
 
-def test_the_stand_in_answers_last_and_marks_the_run_assisted():
+def test_the_stand_in_answers_last_only_and_marks_the_run_assisted():
     """D49: an LLM stand-in is the last route and every Run that uses it is Assisted."""
     model = TestModel(['{"name": "Ada"}'])
     out = make_router(stand_in_model=model).route("lookup_user", {"email": "a@b.com"})
@@ -419,13 +387,10 @@ def test_the_stand_in_answers_last_and_marks_the_run_assisted():
     assert out.assisted is True
     assert out.result == {"name": "Ada"}
     assert len(model.calls) == 1
-
-
-def test_the_stand_in_is_not_asked_when_code_answers():
-    model = TestModel(["never used"])
-    out = make_router(stand_in_model=model).route("get_order_details", {"order_id": "123"})
-    assert out.route == "code"
-    assert model.calls == []
+    unused = TestModel(["never used"])
+    coded = make_router(stand_in_model=unused).route("get_order_details", {"order_id": "123"})
+    assert coded.route == "code"
+    assert unused.calls == []
 
 
 def test_a_non_json_stand_in_reply_comes_back_as_text():
@@ -436,19 +401,17 @@ def test_a_non_json_stand_in_reply_comes_back_as_text():
 
 # --- canonical args helper ---
 
-@pytest.mark.parametrize("a,b", [
-    ({"n": 25}, {"n": 25.0}),
-    ({"s": "abc"}, {"s": " abc "}),
-    ({"a": 1, "b": 2}, {"b": 2, "a": 1}),
-])
-def test_canonical_args_agrees_on_the_same_call(a, b):
-    assert canonical_args(a) == canonical_args(b)
-
-
-def test_canonical_args_keeps_real_differences():
-    assert canonical_args({"n": 25}) != canonical_args({"n": 26})
+@pytest.mark.parametrize("a,b,same", [
+    ({"n": 25}, {"n": 25.0}, True),
+    ({"s": "abc"}, {"s": " abc "}, True),
+    ({"a": 1, "b": 2}, {"b": 2, "a": 1}, True),
+    ({"n": 25}, {"n": 26}, False),
     # True == 1 in Python, so the difference has to show in the key, which is where it counts
-    assert recording_key("t", {"ok": True}, "s") != recording_key("t", {"ok": 1}, "s")
+    ({"ok": True}, {"ok": 1}, False),
+])
+def test_canonical_args_agrees_on_the_same_call_and_keeps_real_differences(a, b, same):
+    assert (canonical_args(a) == canonical_args(b)) is same
+    assert (recording_key("t", a, "s") == recording_key("t", b, "s")) is same
 
 
 def test_the_recording_key_folds_the_way_the_customers_rules_fold():
@@ -463,14 +426,208 @@ def test_the_recording_key_folds_the_way_the_customers_rules_fold():
 
 # --- a synthetic row read through a tool makes the Run assisted (D40, D49, D107) ---
 
-def test_a_code_route_that_returns_a_synthetic_row_is_assisted():
+def test_only_a_code_route_that_returns_a_synthetic_row_is_assisted():
     router = make_router(synthetic_rows=["123"])
     out = router.route("get_order_details", {"order_id": "123"})
     assert out.route == "code" and out.error is None
     assert out.assisted is True
-
-
-def test_a_code_route_that_touches_no_synthetic_row_is_not_assisted():
-    router = make_router(synthetic_rows=["999"])
-    assert router.route("get_order_details", {"order_id": "123"}).assisted is False
+    assert make_router(synthetic_rows=["999"]).route("get_order_details", {"order_id": "123"}).assisted is False
     assert make_router().route("get_order_details", {"order_id": "123"}).assisted is False
+
+
+# --- a Real tool runs for real before any imitation (D262) ---
+
+def real_shell_module():
+    """A compiled toolkit that also carries a shell body, which the real route must beat."""
+    module = types.ModuleType("real_shell_module")
+
+    def shell(commands):
+        return "compiled"
+
+    module.shell = shell
+    return module
+
+
+def test_a_real_tool_answers_before_a_compiled_body_of_the_same_name():
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"real-out")])
+    router = Router(env_tools_module=real_shell_module(),
+                    starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    out = router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert out.route == "real" and out.error is None
+    assert out.result == "real-out"
+    assert world.commands == ["ls"]
+
+
+def test_a_real_call_leaves_the_state_hash_unchanged():
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"out")])
+    router = Router(env_tools_module=real_shell_module(),
+                    starting_state=StateView(shared=json.loads(json.dumps(SHARED))),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    before = router.state_hash()
+    router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert router.state_hash() == before
+
+
+def test_a_routed_world_error_ends_the_run_against_the_environment():
+    """The outcome field decides, never the message text: a novel failure class still ends the Run."""
+    from test_real_tools import FakeWorld, UnresolvedError
+
+    from kullback.runner.real_tools import RealTool
+    from kullback.runner.route import CANNOT_ANSWER_REASON
+    world = FakeWorld()
+    world.step_error = UnresolvedError("creation is unresolved")
+    router = Router(env_tools_module=real_shell_module(),
+                    starting_state=StateView(shared={}),
+                    tool_sigs=[ToolSig(name="shell", error_shapes=[
+                        ErrorShape(class_="unknown", count=1,
+                                   sample_payload={"error": "nope"}, encoding="json")])],
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    out = router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert out.route == "cannot_answer"
+    assert out.error is not None and out.error.class_ == "cannot_answer"
+    assert out.error.payload["reason"] == CANNOT_ANSWER_REASON
+    assert out.error.payload["tool"] == "shell"
+    assert out.error.payload["world_error_class"] == "unknown"
+    assert "UnresolvedError" in (out.error.payload["world_error"] or "")
+    world.step_error = None
+    again = router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert again.error is None
+
+    from kullback.runner.real_tools import RealOutcome
+
+    class StubReal:
+        def call(self, args):
+            return RealOutcome(None, "mystery_class", "mystery words", [], world_answered=False)
+
+    novel = Router(env_tools_module=real_shell_module(),
+                   starting_state=StateView(shared={}),
+                   real_tools={"shell": StubReal()})
+    unmatched = novel.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert unmatched.route == "cannot_answer"
+    assert unmatched.error is not None and unmatched.error.class_ == "cannot_answer"
+    assert unmatched.error.payload["reason"] == CANNOT_ANSWER_REASON
+    assert unmatched.error.payload["tool"] == "shell"
+    assert unmatched.error.payload["world_error_class"] == "mystery_class"
+    assert unmatched.error.payload["world_error"] == "mystery words"
+
+
+def test_refuse_stand_in_leaves_real_tools_answering():
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    from kullback.runner.route import refuse_stand_in
+    world = FakeWorld([FakeReceipt(stdout=b"real-out")])
+    router = Router(env_tools_module=real_shell_module(),
+                    starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    refuse_stand_in(router)
+    out = router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert out.route == "real" and out.result == "real-out"
+
+
+def test_close_real_closes_every_opened_world_reports_failures_and_opens_nothing_new():
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    first, second = FakeWorld([FakeReceipt(stdout=b"a")]), FakeWorld()
+    made_second = []
+    router = Router(starting_state=StateView(shared={}), real_tools={
+        "one": RealTool("one", lambda: first),
+        "two": RealTool("two", lambda: made_second.append(second) or second)})
+    router.route("one", {"commands": [{"keystrokes": "ls"}]})
+    router.close_real()
+    assert first.closed is True
+    assert made_second == []
+
+    from test_real_tools import shell_batch
+    failing = FakeWorld([FakeReceipt(stdout=b"a")])
+    failing.close_error = RuntimeError("cannot remove")
+    closing = FakeWorld([FakeReceipt(stdout=b"b")])
+    both = Router(starting_state=StateView(shared={}), real_tools={
+        "a": RealTool("a", lambda: failing), "b": RealTool("b", lambda: closing)})
+    both.route("a", shell_batch("ls"))
+    both.route("b", shell_batch("ls"))
+    assert both.close_real() == [("a", "RuntimeError: cannot remove")]
+    assert closing.closed is True
+
+
+def test_a_listed_tool_with_a_real_route_does_not_end_the_run():
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"real-out")])
+    router = Router(starting_state=StateView(shared={}),
+                    tool_sigs=[ToolSig(name="shell", callers=["assistant"])],
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    out = router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert out.route == "real" and out.result == "real-out"
+
+
+def test_last_real_receipts_carries_the_exit_codes_and_starts_empty():
+    from test_real_tools import FakeReceipt, FakeWorld, shell_batch
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"one"),
+                       FakeReceipt(stdout=b"two", exit_code=1)])
+    router = Router(starting_state=StateView(shared={}), real_tools={
+        "shell": RealTool("shell", lambda: world),
+        "other": RealTool("other", lambda: FakeWorld())})
+    assert router.last_real_receipts("shell") == []
+    out = router.route("shell", shell_batch("one", "two"))
+    assert out.error is None and isinstance(out.result, str)
+    assert [receipt.exit_code for receipt in router.last_real_receipts("shell")] == [0, 1]
+    assert router.last_real_receipts("other") == []
+
+
+def test_close_real_exports_under_the_routers_limit_and_the_kept_export_obeys_it_too():
+    from test_real_tools import FakeReceipt, FakeWorld, shell_batch
+
+    from kullback.runner.real_tools import RealTool
+    from kullback.runner.route import REAL_EXPORT_LIMIT_BYTES
+    world = FakeWorld([FakeReceipt(stdout=b"a")], export=b"tar-here")
+    router = Router(starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    assert router.real_export_limit == REAL_EXPORT_LIMIT_BYTES == 64 * 1024 * 1024
+    router.real_export_limit = 1234
+    router.route("shell", shell_batch("ls"))
+    router.close_real()
+    assert world.export_limit == 1234
+
+    from kullback.runner.real_tools import ExportLimitError
+    kept = FakeWorld([FakeReceipt(stdout=b"a")], export=b"12345678")
+    router = Router(starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: kept)})
+    router.route("shell", shell_batch("ls"))
+    with pytest.raises(ExportLimitError) as live:
+        router.real_end_state("shell", 4)
+    router.close_real()
+    assert router.real_end_state("shell", 64) == b"12345678"
+    with pytest.raises(ExportLimitError) as refused:
+        router.real_end_state("shell", 4)
+    assert str(refused.value) == str(live.value)
+
+
+def test_a_real_world_timeout_ends_routing_as_cannot_answer():
+    """A world that could not run the call ends the Run, naming the tool and the reason."""
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    from kullback.runner.route import CANNOT_ANSWER_REASON
+    world = FakeWorld([FakeReceipt(stdout=b"part", timed_out=True)])
+    router = Router(env_tools_module=real_shell_module(),
+                    starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    out = router.route("shell", {"commands": [{"keystrokes": "sleep 99"}]})
+    assert out.route == "cannot_answer"
+    assert out.result is None
+    assert out.error is not None and out.error.class_ == "cannot_answer"
+    assert out.error.payload["reason"] == CANNOT_ANSWER_REASON
+    assert out.error.payload["tool"] == "shell"
+    assert out.error.payload["world_error_class"] == "transient"

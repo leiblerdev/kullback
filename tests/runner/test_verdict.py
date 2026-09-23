@@ -194,23 +194,18 @@ def test_skipped_required_question_fails(verifier, write_run):
     assert out.failing_atom == "a_ask_why"
 
 
-def test_different_wording_of_an_allowed_value_passes(verifier, write_run):
-    """The reason is user-elicited, so any plausible wording passes (D42)."""
-    out = verdict(
-        write_run(oracle_lines(reason="I simply changed my mind")),
-        verifier,
-        canon_value,
-        write_tools=WRITE_TOOLS,
-    )
+@pytest.mark.parametrize("lines", [
+    oracle_lines(reason="I simply changed my mind"),
+    oracle_lines(order_id="  w123 "),
+])
+def test_different_wording_of_an_allowed_value_or_a_write_argument_passes(verifier, write_run, lines):
+    """The reason is user-elicited, so any plausible wording passes (D42), and the write
+    arguments are canonicalized before they are compared."""
+    out = verdict(write_run(lines), verifier, canon_value, write_tools=WRITE_TOOLS)
     assert out.passed is True
 
 
 # --- the rest of the checks verdict() owns ---
-
-def test_canonicalization_is_applied_to_write_arguments(verifier, write_run):
-    out = verdict(write_run(oracle_lines(order_id="  w123 ")), verifier, canon_value, write_tools=WRITE_TOOLS)
-    assert out.passed is True
-
 
 def test_forbidden_write_fails(verifier, write_run):
     lines = oracle_lines()
@@ -238,16 +233,13 @@ def test_hard_constraint_on_the_transcript_fails(verifier, write_run):
     assert out.failing_atom == "a_confirm_first"
 
 
-def test_extra_write_is_a_spurious_side_effect(verifier, write_run):
+def test_extra_write_is_a_spurious_side_effect_and_side_effects_are_counted(verifier, write_run):
     lines = oracle_lines()
     lines.insert(-1, call(70, "modify_order", {"order_id": "W900", "note": "x"}, cid="c70"))
     lines.insert(-1, result(71, "c70", {"ok": True}))
     out = verdict(write_run(lines), verifier, canon_value, write_tools=WRITE_TOOLS)
     assert out.passed is False
     assert out.failing_atom.startswith("extra_write:modify_order")
-
-
-def test_side_effect_count_is_reported(verifier, write_run):
     out = verdict(write_run(oracle_lines()), verifier, canon_value, write_tools=WRITE_TOOLS)
     assert "side_effects=1" in out.notes
     assert "tool_calls=2" in out.notes
@@ -323,26 +315,18 @@ def _wrong_run_with(extra_event):
         ),
         ({"idx": 60, "type": "tool_call", "payload": {"name": "lookup", "args": {}, "overlay_miss": True}},
          "env_mark:overlay_miss"),
+        (None, "env_mark:flagged_tool:get_order_details"),
     ],
 )
 def test_code_marks_environment_suspected(verifier, write_run, event, mark):
-    out = verdict(write_run(_wrong_run_with(event)), verifier, canon_value, write_tools=WRITE_TOOLS)
+    """An event mark, or a flagged tool the Run read, suspects the Environment."""
+    lines = oracle_lines(order_id="W999") if event is None else _wrong_run_with(event)
+    flagged = {READ} if event is None else None
+    out = verdict(write_run(lines), verifier, canon_value, write_tools=WRITE_TOOLS, flagged_tools=flagged)
     assert out.passed is False
     assert out.environment_suspected is True
     assert mark in out.notes
     assert out.cause is None  # code marks it, the judge names the cause (D88)
-
-
-def test_flagged_tool_marks_environment_suspected(verifier, write_run):
-    out = verdict(
-        write_run(oracle_lines(order_id="W999")),
-        verifier,
-        canon_value,
-        write_tools=WRITE_TOOLS,
-        flagged_tools={READ},
-    )
-    assert out.environment_suspected is True
-    assert "env_mark:flagged_tool:get_order_details" in out.notes
 
 
 def test_unmarked_failure_waits_for_the_judge(verifier, write_run):
@@ -373,7 +357,17 @@ def test_judge_used_only_when_judge_results_are_supplied(verifier, write_run):
 
     with_pass = verdict(path, judged, canon_value, {"a_polite": True}, write_tools=WRITE_TOOLS)
     assert with_pass.judge_used is True
-    assert with_pass.passed is True
+    assert with_pass.passed is False
+    assert with_pass.class_ == "not_verdicted"
+    assert with_pass.failing_atom == "a_polite"
+    assert "judge_reported:a_polite:pass" in with_pass.notes
+
+    with_fail = verdict(path, judged, canon_value, {"a_polite": False}, write_tools=WRITE_TOOLS)
+    assert with_fail.judge_used is True
+    assert with_fail.passed is False
+    assert with_fail.class_ == "not_verdicted"
+    assert with_fail.failing_atom == "a_polite"
+    assert "judge_reported:a_polite:fail" in with_fail.notes
 
 
 # --- same path (D46) ---
@@ -398,7 +392,7 @@ def test_same_path_compares_the_write_order_against_the_reference_and_is_unknown
 
 # --- versions (D97) ---
 
-def test_all_versions_are_copied_onto_the_verdict(verifier, write_run):
+def test_all_versions_are_copied_onto_the_verdict_and_left_absent_without_an_environment(verifier, write_run):
     env = Environment(
         env_id="env-abc", schema_version="s3", tools_version="t7", policy_version="p2", version=4
     )
@@ -416,10 +410,7 @@ def test_all_versions_are_copied_onto_the_verdict(verifier, write_run):
     assert out.runner_version == "runner-1"
     assert out.verdict_version == VERDICT_VERSION
     assert out.run_id == "r1"
-
-
-def test_a_verdict_scored_without_an_environment_leaves_those_versions_absent(verifier, write_run):
-    """A placeholder version string is truthy, so it walks past regrade's presence check (D97)."""
+    # A placeholder version string is truthy, so it walks past regrade's presence check (D97).
     out = verdict(write_run(oracle_lines()), verifier, canon_value, write_tools=WRITE_TOOLS)
     assert (out.schema_version, out.tools_version, out.policy_version) == (None, None, None)
     assert regrade_gate([out]).passed is False
@@ -484,7 +475,7 @@ def test_a_semantic_column_is_settled_by_the_equivalence_table_not_by_string_equ
     assert not [note for note in out.notes if note.startswith("semantic_unresolved")]
 
 
-def test_a_semantic_pair_nobody_settled_is_named_and_never_read_as_equal(write_run, tmp_path):
+def test_a_semantic_pair_nobody_settled_is_named_never_read_as_equal_and_never_passes_an_atom(write_run, tmp_path):
     """verdict.py never calls a model (D91), so an unsettled pair is left open, not judged here."""
     path, semantic, schema = _semantic_setup(write_run)
     out = verdict(path, semantic, schema=schema, workdir=tmp_path)
@@ -492,12 +483,9 @@ def test_a_semantic_pair_nobody_settled_is_named_and_never_read_as_equal(write_r
     assert any(note.startswith("semantic_unresolved:") for note in out.notes)
     used = (tmp_path / "equivalence_uses.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(used) == 1 and json.loads(used[0])["run_id"] == "r1"
-
-
-def test_an_atom_resting_on_a_pair_nobody_settled_is_unresolved_and_never_a_pass(write_run):
-    """D219: a forbidden atom asking whether the End state holds a forbidden wording used to read
-    an unsettled pair as "not there" and pass. It is now its own outcome: the Run is not verdicted,
-    the atom is named, and the count of them is on the Verdict."""
+    # D219: a forbidden atom asking whether the End state holds a forbidden wording used to read
+    # an unsettled pair as "not there" and pass. It is now its own outcome: the Run is not verdicted,
+    # the atom is named, and the count of them is on the Verdict.
     lines = oracle_lines()
     lines[-1] = stop(8, start_state={"orders": {"W123": {"status": "pending", "note": "open"}}},
                      end_state={"orders": {"W123": {"status": "cancelled", "note": "cancelled by user"}}})
@@ -535,15 +523,12 @@ def test_the_same_atom_passes_or_fails_once_the_table_settles_the_pair(write_run
 
 # --- loading and the code-only property ---
 
-def test_load_run_reads_header_events_and_footer(write_run):
+def test_load_run_reads_header_events_and_footer_or_a_whole_run_on_one_line(write_run):
     path = write_run([header(run_id="rx"), user(0, "hi"), stop(1, reason="done")])
     run = load_run(path)
     assert run.run_id == "rx"
     assert run.task_id == "t1"
     assert [event.type for event in run.events] == ["user_turn", "stop"]
-
-
-def test_load_run_accepts_a_whole_run_on_one_line(write_run):
     path = write_run([{"run_id": "ry", "events": [user(0, "hi")]}])
     assert load_run(path).run_id == "ry"
 
@@ -596,20 +581,6 @@ def test_an_atom_without_a_predicate_leaves_the_run_not_verdicted(verifier, writ
     assert "atom_without_predicate:a_bare" in out.notes
 
 
-def test_an_atom_that_cannot_be_checked_never_counts_as_a_pass(write_run):
-    """An allowed atom is not required to hold, so only the required one stops the Verdict."""
-    broken = Verifier(task_id="t1", atoms=[
-        Atom(id="a_loose", kind="allowed", predicate_src="wrote("),
-        Atom(id="a_bad", kind="required", predicate_src="1 / 0"),
-    ])
-    out = verdict(write_run(oracle_lines()), broken, canon_value)
-    assert any(note.startswith("atom_rejected:a_loose") for note in out.notes)
-    assert any(note.startswith("atom_error:a_bad:ZeroDivisionError") for note in out.notes)
-    assert out.passed is False
-    assert out.class_ == "not_verdicted"
-    assert out.failing_atom == "a_bad"
-
-
 def test_a_predicate_using_a_certified_builtin_is_evaluated_not_skipped(tmp_path):
     from kullback.runner.records import Atom, Verifier
     from kullback.runner.verdict import verdict as run_verdict
@@ -626,33 +597,20 @@ def test_a_predicate_using_a_certified_builtin_is_evaluated_not_skipped(tmp_path
 
 # --- the atom vocabulary is a fence, not a doorway (design section 7, code without exception) ---
 
-def test_a_predicate_that_reaches_module_globals_is_rejected_before_it_runs(write_run, tmp_path):
-    """wrote.__globals__ used to hand an atom this module's Path and json, so an atom could write files."""
+@pytest.mark.parametrize("predicate_src,reason", [
+    ("wrote.__globals__['Path']({marker!r}).write_text('pwned') or True", ""),
+    ("len(().__class__.__base__.__subclasses__()) > 10 and canon.__self__.run.run_id == 'r1'", ""),
+    ("def check():\n    import os\n    return os.getpid() > 0\n", "imports"),
+])
+def test_a_predicate_that_escapes_its_sandbox_is_rejected_before_it_runs(write_run, tmp_path, predicate_src, reason):
+    """wrote.__globals__ used to hand an atom this module's Path and json, so an atom could write files;
+    walking subclasses, a bound self, or an import is refused the same way."""
     marker = tmp_path / "escaped.txt"
     escape = Verifier(task_id="t1", atoms=[Atom(
-        id="esc", kind="required",
-        predicate_src=f"wrote.__globals__['Path']({str(marker)!r}).write_text('pwned') or True")])
+        id="esc", kind="required", predicate_src=predicate_src.replace("{marker!r}", repr(str(marker))))])
     out = verdict(write_run(oracle_lines()), escape, canon_value)
     assert marker.exists() is False
-    assert any(note.startswith("atom_rejected:esc") for note in out.notes)
-    assert out.passed is False
-
-
-def test_a_predicate_that_walks_subclasses_or_a_bound_self_is_rejected(write_run):
-    escape = Verifier(task_id="t1", atoms=[Atom(
-        id="esc", kind="required",
-        predicate_src="len(().__class__.__base__.__subclasses__()) > 10 and canon.__self__.run.run_id == 'r1'")])
-    out = verdict(write_run(oracle_lines()), escape, canon_value)
-    assert any(note.startswith("atom_rejected:esc") for note in out.notes)
-    assert out.passed is False
-
-
-def test_a_predicate_that_imports_is_rejected(write_run):
-    escape = Verifier(task_id="t1", atoms=[Atom(
-        id="esc", kind="required",
-        predicate_src="def check():\n    import os\n    return os.getpid() > 0\n")])
-    out = verdict(write_run(oracle_lines()), escape, canon_value)
-    assert any("imports" in note for note in out.notes if note.startswith("atom_rejected:esc"))
+    assert any(reason in note for note in out.notes if note.startswith("atom_rejected:esc"))
     assert out.passed is False
 
 
@@ -697,11 +655,15 @@ def test_every_judge_use_maps_its_own_verdict_words(verifier, write_run):
     for word in holds:
         out = verdict(write_run(oracle_lines()), judged, canon_value,
                       {"a_polite": {"verdict": word}}, write_tools=WRITE_TOOLS)
-        assert out.passed is True, word
+        assert out.passed is False and out.class_ == "not_verdicted", word
+        assert out.failing_atom == "a_polite", word
+        assert "judge_reported:a_polite:pass" in out.notes, word
     for word in fails:
         out = verdict(write_run(oracle_lines()), judged, canon_value,
                       {"a_polite": {"verdict": word}}, write_tools=WRITE_TOOLS)
-        assert out.passed is False and out.failing_atom == "a_polite", word
+        assert out.passed is False and out.class_ == "not_verdicted", word
+        assert out.failing_atom == "a_polite", word
+        assert "judge_reported:a_polite:fail" in out.notes, word
 
 
 def test_an_abstaining_judge_atom_leaves_the_run_not_verdicted(verifier, write_run):
@@ -748,6 +710,17 @@ def test_a_required_atom_that_cannot_be_evaluated_is_not_a_pass(write_run):
     # The Verifier could not answer, so nothing here points at the Environment (design section 6).
     assert out.environment_suspected is False
     assert out.cause == "undetermined"
+    # An allowed atom is not required to hold, so only the required one stops the Verdict.
+    broken = Verifier(task_id="t1", atoms=[
+        Atom(id="a_loose", kind="allowed", predicate_src="wrote("),
+        Atom(id="a_bad", kind="required", predicate_src="1 / 0"),
+    ])
+    out = verdict(write_run(oracle_lines()), broken, canon_value)
+    assert any(note.startswith("atom_rejected:a_loose") for note in out.notes)
+    assert any(note.startswith("atom_error:a_bad:ZeroDivisionError") for note in out.notes)
+    assert out.passed is False
+    assert out.class_ == "not_verdicted"
+    assert out.failing_atom == "a_bad"
 
 
 def test_a_definite_failure_wins_over_an_unevaluable_atom(write_run):
@@ -782,7 +755,7 @@ def test_value_returns_the_raw_value_and_eq_canonicalizes(write_run):
 
 # --- the transcript a predicate sees (D43 case 3, D45) ---
 
-def test_inline_tool_calls_keep_the_position_of_their_model_call(write_run):
+def test_inline_tool_calls_keep_their_position_and_are_read_from_a_nested_reply(write_run):
     lines = [
         header(),
         user(0, "Cancel W123"),
@@ -795,18 +768,9 @@ def test_inline_tool_calls_keep_the_position_of_their_model_call(write_run):
         id="h", kind="hard", predicate_src='user_confirmed_before("cancel_pending_order")')])
     out = verdict(write_run(lines), confirmed, canon_value)
     assert out.passed is True
-
-
-def test_inline_tool_calls_are_read_from_a_reply_nested_payload(write_run):
-    """loop.py always nests the reply (and its tool_calls) under payload["reply"] (D90)."""
-    lines = [
-        header(),
-        user(0, "Cancel W123"),
-        user(1, "yes go ahead"),
-        {"idx": 2, "type": "model_call", "payload": {"reply": {"content": "", "tool_calls": [
-            {"id": "c2", "name": CANCEL, "arguments": {"order_id": "W123"}}]}}},
-        stop(3),
-    ]
+    # loop.py always nests the reply (and its tool_calls) under payload["reply"] (D90).
+    lines[3] = {"idx": 2, "type": "model_call", "payload": {"reply": {"content": "", "tool_calls": [
+        {"id": "c2", "name": CANCEL, "arguments": {"order_id": "W123"}}]}}}
     confirmed = Verifier(task_id="t1", atoms=[Atom(
         id="h", kind="hard", predicate_src='wrote("cancel_pending_order", order_id="W123")')])
     out = verdict(write_run(lines), confirmed, canon_value)
