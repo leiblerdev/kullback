@@ -1,4 +1,4 @@
-"""What the gates package is: no model call, no agent, no Builder, and one registry naming every gate (D122)."""
+"""What the gates package is: no model call and one registry naming every gate (D122); the import-linter contracts hold its import boundary."""
 
 from __future__ import annotations
 
@@ -12,30 +12,7 @@ import kullback.gates as gates
 from kullback.runner.records import GateResult
 
 GATES_DIR = Path(gates.__file__).resolve().parent
-FORBIDDEN_PACKAGES = ("kullback.ai", "kullback.agent", "kullback.builder", "kullback.examiner", "kullback.rounds",
-                      "kullback.cli", "kullback.tui", "kullback.report")
 GATE_FILES = sorted(GATES_DIR.rglob("*.py"))
-
-
-def _imports(tree: ast.AST) -> list[str]:
-    out = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            out += [alias.name for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            base = node.module or ""
-            out += [base] + [f"{base}.{alias.name}" for alias in node.names]
-    return out
-
-
-@pytest.mark.parametrize("path", GATE_FILES, ids=lambda p: p.name)
-def test_no_gate_module_imports_the_provider_layer_or_an_agent(path: Path):
-    """D122: a gate is code no agent can write and no model is consulted for; the import list is
-    the first place that would show, and lint-imports checks the same line at the package level."""
-    tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
-    for name in _imports(tree):
-        for forbidden in FORBIDDEN_PACKAGES:
-            assert not (name == forbidden or name.startswith(forbidden + ".")), f"{path.name} imports {name}"
 
 
 @pytest.mark.parametrize("path", GATE_FILES, ids=lambda p: p.name)
@@ -69,18 +46,6 @@ def test_the_registry_names_every_gate_once_and_every_one_lives_in_the_package()
         gates.gate_named("no-such-gate")
 
 
-def test_the_registry_covers_every_stage_the_gates_package_rules_under():
-    """Every stage name a function in this package returns is registered, so a later phase can run
-    'every gate' generically and a report can find the gate behind one of these stage names."""
-    rulings = {stage for spec in gates.GATES for stage in spec.rulings}
-    for stage in ("ingest", "mine", "compile_tools.parses", "compile_tools.replay_fidelity", "compile_policy",
-                  "build_environment", "build_user_rules", "replay_reference", "derive_verifier", "leak_check",
-                  "budget", "scorecard", "confined", "verifier_oracle", "verifier_unfinished_run",
-                  "probe_pool", "probe_admission", "loosening", "false_rejection", "refuse", "trusted"):
-        assert stage in rulings, stage
-    assert set(gates.D79_STAGES) <= rulings
-
-
 def _stage_literals(path: Path, callees: tuple[str, ...]) -> set[str]:
     """Every stage name a ruling written in this file rules under.
 
@@ -105,32 +70,31 @@ def _stage_literals(path: Path, callees: tuple[str, ...]) -> set[str]:
     return out
 
 
-def test_the_stages_the_build_records_outside_the_registry_are_none():
-    """Every stage in a build's gates.json is a registered gate. Until phase 4 twelve were not: the
-    six sandbox rulings lived in builder/sandbox.py beside the subprocess they read, and six more
-    were rulings build.py made inline with gate_support.gate(). The sandbox rulings are now
-    functions over what the subprocess returned (gates/tool_runs.py) and the inline ones functions
-    over the stage's artifact (gates/stages.py), so a new inline ruling cannot appear in the Builder
-    without a registered gate behind it, and the tool_result hook can run any of them. The scan
-    covers every module of the Builder, not only the two the rulings left, because a ruling can be
-    written anywhere in the package, and since phase 5 every module of the Examiner too, which rules
-    through the same ledger; what a whole build actually leaves on disk is pinned in
-    tests/builder/test_extension.py, which is the same claim measured rather than read."""
+def test_the_registry_covers_every_stage_the_gates_package_rules_under():
+    """Every stage name a function in this package returns is registered, so a later phase can run
+    'every gate' generically and a report can find the gate behind one of these stage names."""
+    rulings = {stage for spec in gates.GATES for stage in spec.rulings}
+    for stage in ("ingest", "mine", "compile_tools.parses", "compile_tools.replay_fidelity", "compile_policy",
+                  "build_environment", "build_user_rules", "replay_reference", "derive_verifier", "leak_check",
+                  "budget", "scorecard", "confined", "verifier_oracle", "verifier_unfinished_run",
+                  "probe_pool", "probe_admission", "loosening", "false_rejection", "refuse", "trusted"):
+        assert stage in rulings, stage
+    assert set(gates.D79_STAGES) <= rulings
+    for stage in ("cluster", "compile_tools", "intent", "rerolls", "tau2_export", "vocabulary",
+                  "parses", "executes_on_s0", "deterministic", "non_trivial", "replay_fidelity", "refuses_unknown"):
+        assert stage in rulings, stage
+    # A ruling can be written anywhere in the Builder or the Examiner, so the scan reads every module
+    # of both: no stage either records may go unregistered. Under mutmut's copy a source scan would
+    # read every mutant's literal rather than the code's, so only that half is left out there.
     import kullback.builder as builder
 
     builder_dir = Path(builder.__file__).resolve().parent
-    if "mutants" in builder_dir.parts:
-        pytest.skip("a source scan over mutmut's copy reads every mutant's literal, not the Builder's")
-    scanned = [builder_dir, builder_dir.parent / "examiner"]
-    recorded: set[str] = set()
-    for package_dir in scanned:
-        for path in sorted(package_dir.rglob("*.py")) if package_dir.is_dir() else []:
-            recorded |= _stage_literals(path, ("gate", "_gate"))
-    registered = {stage for spec in gates.GATES for stage in spec.rulings}
-    assert recorded - registered == set()
-    for stage in ("cluster", "compile_tools", "intent", "rerolls", "tau2_export", "vocabulary",
-                  "parses", "executes_on_s0", "deterministic", "non_trivial", "replay_fidelity", "refuses_unknown"):
-        assert stage in registered, stage
+    if "mutants" not in builder_dir.parts:
+        recorded: set[str] = set()
+        for package_dir in (builder_dir, builder_dir.parent / "examiner"):
+            for path in sorted(package_dir.rglob("*.py")) if package_dir.is_dir() else []:
+                recorded |= _stage_literals(path, ("gate", "_gate"))
+        assert recorded - rulings == set()
 
 
 def test_the_artifact_bindings_name_artifacts_the_build_declares():
