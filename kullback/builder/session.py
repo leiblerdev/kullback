@@ -89,6 +89,9 @@ class _GuardPlan:
 
 CEILING_STAGE = "builder_session"
 
+#: How many follow-ups the harness sends when the model stops with Tasks open (F20).
+CONTINUATIONS = 3
+
 
 def spent_in(workdir: Any) -> float:
     """What this workdir has paid for so far, off the one ledger budget.py writes."""
@@ -240,7 +243,9 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
     defaults to workdir/sessions/builder.jsonl. The dict carries the status tool's rows,
     the trusted, refused and open counts, the spend, the turns, how it stopped (one of:
     no tool call, ceiling, cancelled, max turns, error) and the last assistant line, or the
-    provider's error message when the last turn ended in an error. `judge_model`, `probe_model` and `reroll_model` reach examine;
+    provider's error message when the last turn ended in an error. A stop with no tool call
+    while Tasks are open and the spend is under the ceiling draws a follow-up (`continuation`),
+    at most CONTINUATIONS of them; "continued" counts those sent. `judge_model`, `probe_model` and `reroll_model` reach examine;
     each is `model` when not named. `on_harness` is handed the live harness once it exists and
     before the first model turn, so a caller on another thread can steer, follow up, compact or
     cancel it while this call runs.
@@ -273,28 +278,64 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
         _, guard_stop = ceiling_guard(harness, _GuardPlan(workdir=root, ceiling=ceiling))
     if on_harness is not None:
         on_harness(harness)
-    events = _collect(harness.prompt(opening(root)))
-    turns = [event for event in events if event.type == "turn_end"]
-    last_message = turns[-1].message if turns else None
+    turns: list = []
+    continued = 0
+    message = opening(root)
+    while True:
+        events = _collect(harness.prompt(message))
+        run_turns = [event for event in events if event.type == "turn_end"]
+        turns += run_turns
+        last_message = run_turns[-1].message if run_turns else None
+        stopped = _stop_of(last_message, run_turns, guard_stop, max_turns)
+        status = status_of(root)
+        # A follow-up answered with no tool call is the model stating why it cannot go further.
+        answered_with_work = continued == 0 or len(run_turns) > 1
+        follow = (continuation(status, spent_in(root), ceiling_usd)
+                  if stopped == "no tool call" and answered_with_work else None)
+        if follow is None or continued >= CONTINUATIONS:
+            break
+        continued += 1
+        message = follow
     last_line = str(getattr(last_message, "content", None) or "")
-    status = status_of(root)
-    states = [row["state"] for row in status["tasks"]]
-    if guard_stop:
-        stopped = "ceiling"
-    elif getattr(last_message, "stop_reason", None) == "error":
-        stopped = "error"
+    if stopped == "error":
         last_line = str(getattr(last_message, "error_message", None) or last_line)
-    elif max_turns is not None and len(turns) >= max_turns:
-        stopped = "max turns"
-    elif last_message is not None and list(getattr(last_message, "tool_calls", None) or []):
-        stopped = "cancelled"
-    else:
-        stopped = "no tool call"
+    states = [row["state"] for row in status["tasks"]]
     return {"status": status, "trusted": states.count("trusted"), "refused": states.count("refused"),
             "open": states.count("open"), "spend": spent_in(root), "turns": len(turns),
-            "stopped": stopped, "last_line": last_line}
+            "stopped": stopped, "last_line": last_line, "continued": continued}
 
 
-__all__ = ["BuilderRoot", "CEILING_STAGE", "OPENING", "WRITABLE_NAMES", "WRITABLE_PREFIXES", "build",
-           "builder_extension", "ceiling_guard", "no_agent_writes_gates_or_runner", "opening", "regenerate_and_guard",
+def _stop_of(last_message: Any, turns: list, guard_stop: dict, max_turns: Optional[int]) -> str:
+    """How one harness run stopped: ceiling, error, max turns, cancelled or no tool call."""
+    if guard_stop:
+        return "ceiling"
+    if getattr(last_message, "stop_reason", None) == "error":
+        return "error"
+    if max_turns is not None and len(turns) >= max_turns:
+        return "max turns"
+    if last_message is not None and list(getattr(last_message, "tool_calls", None) or []):
+        return "cancelled"
+    return "no tool call"
+
+
+def continuation(status: dict, spent: float, ceiling_usd: Optional[float]) -> Optional[str]:
+    """The follow-up the harness sends when the model stops early, or None when it may stop (F20).
+
+    The stop rule lives in the prompt; this holds the model to it. While a Task is open and the
+    spend is under the ceiling (or there is none), the answer is the counts and the rule, built
+    from the status alone.
+    """
+    states = [row["state"] for row in status.get("tasks") or []]
+    open_count = states.count("open")
+    if not open_count or (ceiling_usd is not None and spent >= ceiling_usd):
+        return None
+    budget_text = (f"{spent:.4f} USD spent of the {ceiling_usd:.4f} USD ceiling" if ceiling_usd is not None
+                   else f"{spent:.4f} USD spent, no ceiling")
+    return (f"{open_count} Tasks are open, {states.count('trusted')} trusted, "
+            f"{states.count('refused')} refused; {budget_text}. The stop rule is not met. "
+            "Replay every Task, examine the confirmed ones, run them, "
+            "or state in one sentence why you cannot go further.")
+
+__all__ = ["BuilderRoot", "CEILING_STAGE", "CONTINUATIONS", "OPENING", "WRITABLE_NAMES", "WRITABLE_PREFIXES", "build",
+           "builder_extension", "ceiling_guard", "continuation", "no_agent_writes_gates_or_runner", "opening", "regenerate_and_guard",
            "spent_in", "write_fence"]
