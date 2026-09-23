@@ -86,32 +86,26 @@ def _build(traces, workdir, bodies, tasks=None, schema=None):
                                    _sigs(), synthetic=False, bodies=bodies)
 
 
-def test_a_flag_a_task_only_ever_wrote_is_pinned_to_the_value_the_write_flipped_it_from(
-        workdir, elsewhere):
-    """The write's own recorded result is the only evidence of what the flag held before it."""
-    task = _trace("A", [_call("flip_seal", {"meter_id": "M2"},
-                              result={"meter_id": "M2", "sealed": True})])
-    state = _build([task, *elsewhere], workdir, {"flip_seal": FLIP_SEAL_BODY})
+@pytest.mark.parametrize(("tool", "body", "column", "written", "before", "shared"), [
+    ("flip_seal", FLIP_SEAL_BODY, "sealed", True, False, True),
+    ("cycle_mode", CYCLE_MODE_BODY, "mode", "audited", "metered", "idle"),
+], ids=["flag", "enum"])
+def test_a_column_a_task_only_ever_wrote_is_pinned_to_the_value_that_reproduces_the_write(
+        workdir, elsewhere, tool, body, column, written, before, shared):
+    """The write's own recorded result is the only evidence of what the column held before it;
+    for an enum, one of the values on offer is the pre-state the recording implies."""
+    task = _trace("A", [_call(tool, {"meter_id": "M2"},
+                              result={"meter_id": "M2", column: written})])
+    state = _build([task, *elsewhere], workdir, {tool: body})
 
-    assert _pinned(workdir, "t1")[("meters", "M2")]["sealed"] is False
-    assert state.db["meters"]["M2"]["sealed"] is True, "the shared world keeps what the corpus agrees on"
+    assert _pinned(workdir, "t1")[("meters", "M2")][column] == before
+    assert state.db["meters"]["M2"][column] == shared, "the shared world keeps what the corpus agrees on"
     pins = _pins(workdir)
     assert pins["totals"]["columns_inverted"] == 1
     inversion = pins["tasks"]["t1"]["inversions"][0]
-    assert inversion["column"] == "sealed" and inversion["reason"] == "inverted_from_write"
-    assert inversion["call_id"] == "c0" and inversion["tool"] == "flip_seal"
+    assert inversion["column"] == column and inversion["reason"] == "inverted_from_write"
+    assert inversion["call_id"] == "c0" and inversion["tool"] == tool
     assert inversion["body"], "the reason names the body the inversion trusted"
-
-
-def test_an_enum_a_task_only_ever_wrote_is_pinned_to_the_one_value_that_reproduces_the_write(
-        workdir, elsewhere):
-    """Three values are on offer and one of them is the pre-state the recording implies."""
-    task = _trace("A", [_call("cycle_mode", {"meter_id": "M2"},
-                              result={"meter_id": "M2", "mode": "audited"})])
-    _build([task, *elsewhere], workdir, {"cycle_mode": CYCLE_MODE_BODY})
-
-    assert _pinned(workdir, "t1")[("meters", "M2")]["mode"] == "metered"
-    assert _pins(workdir)["totals"]["columns_inverted"] == 1
 
 
 def test_a_write_no_candidate_starting_value_reproduces_leaves_the_shared_value_and_is_counted(

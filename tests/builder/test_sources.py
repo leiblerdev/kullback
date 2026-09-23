@@ -88,12 +88,9 @@ def test_a_registered_adapter_maps_through_derive_with_no_seam_edit(toy_formats,
     assert [t.trace_id for t in traces] == ["e1"]
     assert traces[0].source == "ember"
     assert traces[0].raw_ptr.file_hash == raw.raw_hash
-
-
-def test_each_toy_format_reads_only_its_own_key(toy_formats, workdir, tmp_path):
-    raw = ingest.store_raw(write_json(tmp_path / "harbor.json", {"harbors": [{"id": "h1"}]}), workdir)
-    assert raw.format_detected == "harbor"
-    assert [t.trace_id for t in ingest.derive_traces(raw.raw_hash, workdir)] == ["h1"]
+    other = ingest.store_raw(write_json(tmp_path / "harbor.json", {"harbors": [{"id": "h1"}]}), workdir)
+    assert other.format_detected == "harbor"
+    assert [t.trace_id for t in ingest.derive_traces(other.raw_hash, workdir)] == ["h1"]
 
 
 # --- ambiguity gives unknown -------------------------------------------------
@@ -118,14 +115,11 @@ def test_a_payload_no_adapter_claims_is_refused_with_the_reasons_in_words(workdi
 # --- a declared format is trusted before any guess from shape ----------------
 
 
-def test_a_declared_format_wins_over_a_shape_guess(toy_formats, workdir, tmp_path):
+def test_a_declared_format_or_span_kind_wins_over_a_shape_guess(toy_formats, workdir, tmp_path):
     payload = {"format": "harbor", "embers": [{"id": "e1"}], "harbors": [{"id": "h1"}]}
     assert ingest.format_detect(payload) == "harbor"
     raw = ingest.store_raw(write_json(tmp_path / "declared.json", payload), workdir)
     assert [t.trace_id for t in ingest.derive_traces(raw.raw_hash, workdir)] == ["h1"]
-
-
-def test_a_declared_span_kind_is_trusted_like_a_declared_format(toy_formats):
     assert ingest.format_detect({"span_kind": "ember", "embers": []}) == "ember"
 
 
@@ -141,14 +135,12 @@ def test_a_bare_messages_list_with_an_id_is_unknown(workdir, tmp_path):
         ingest.derive_traces(raw.raw_hash, workdir)
 
 
-def test_one_recording_with_a_task_marker_still_detects():
-    payload = {"id": "s1", "task_id": "t1", "messages": [{"role": "user", "content": "hi"}]}
-    assert ingest.format_detect(payload) == "tau2_native"
-
-
-def test_one_recording_with_tool_structure_still_detects():
-    payload = {"id": "s1", "messages": [
+@pytest.mark.parametrize("payload", [
+    {"id": "s1", "task_id": "t1", "messages": [{"role": "user", "content": "hi"}]},
+    {"id": "s1", "messages": [
         {"role": "assistant", "content": None,
          "tool_calls": [{"id": "c1", "name": "look_up", "arguments": {}, "requestor": "assistant"}]},
-    ]}
+    ]},
+], ids=["task-marker", "tool-structure"])
+def test_one_recording_with_a_task_marker_or_tool_structure_still_detects(payload):
     assert ingest.format_detect(payload) == "tau2_native"

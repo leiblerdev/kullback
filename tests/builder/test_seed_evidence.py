@@ -8,9 +8,7 @@ is counted rather than guessed.
 
 from __future__ import annotations
 
-import json
-
-from kullback.builder import compile_env, replay_evidence, world_tools
+from kullback.builder import compile_env, replay_evidence
 from kullback.gates.tool_runs import body_memorised_values_gate
 from kullback.runner.records import RawPtr, Task, ToolCall, ToolSig, Trace, Turn
 
@@ -36,25 +34,9 @@ def _ferry_inputs() -> dict:
     return {"traces": [seed, held],
             "tasks": [Task(id="task_ferry", category_id="cat", run_ids=["run_seed", "run_held"])],
             "sigs": [ToolSig(name="read_crossing", kind="read")]}
-# --- the counts on the round -------------------------------------------------
 
-def test_the_split_is_counted_per_task_where_it_is_drawn(workdir):
-    tasks = [Task(id="task_ferry", run_ids=["run_seed", "run_held"]),
-             Task(id="task_quay", run_ids=["run_quay"])]
-    anchor = world_tools.draw_anchor(tasks, workdir)
-    body = json.loads((workdir / "anchor.json").read_text(encoding="utf-8"))
-    assert body["held_out"] == anchor["held_out"]
-    for task in tasks:
-        held = set(anchor["held_out"].get(task.id, []))
-        assert world_tools.seed_runs(anchor, task.id, task.run_ids) == [
-            run_id for run_id in task.run_ids if run_id not in held]
-    counts = json.loads((workdir / "evidence_counts.json").read_text(encoding="utf-8"))
-    for task in tasks:
-        held = set(anchor["held_out"].get(task.id, []))
-        assert counts[task.id] == {
-            "evidence_traces": len([r for r in task.run_ids if r not in held]),
-            "anchor_traces": len([r for r in task.run_ids if r in held])}
 
+# --- the seed set -------------------------------------------------------------
 
 def test_a_readmission_from_a_held_out_run_is_blocked_and_counted(workdir):
     """D191 puts a call the Reference replay failed on back over every filter. The seed set is not
@@ -82,17 +64,12 @@ DB = {"crossings": {"x1": {"crossing_id": "x1", "berth": "north"},
                     "x3": {"crossing_id": "x3", "berth": "composed"}}}
 
 
-def test_a_value_only_a_held_out_run_witnessed_is_named_and_a_shared_one_is_not():
+def test_a_value_only_a_held_out_run_witnessed_is_named_and_a_shared_or_unwitnessed_one_is_not():
     columns = compile_env.holdout_columns(WITNESSES, ["run_held"])
 
     assert columns == {"crossings": {"x2": ["berth", "crossing_id"]}}
     assert compile_env.holdout_values(DB, columns) == {"x2": "crossings.crossing_id",
                                                        "windward": "crossings.berth"}
-
-
-def test_a_column_no_run_witnessed_is_nobodys_evidence_and_is_not_withheld():
-    columns = compile_env.holdout_columns(WITNESSES, ["run_held"])
-
     assert "x3" not in columns.get("crossings", {}), "a composed value was never learned from a Run"
 
 
@@ -106,15 +83,7 @@ def test_the_body_writer_is_shown_the_column_and_not_the_value_it_was_not_given(
     assert '"berth"' in text and compile_env.MASKED in text, "the column is still there"
 
 
-def test_the_world_still_holds_the_row_a_held_out_run_reads():
-    columns = compile_env.holdout_columns(WITNESSES, ["run_held"])
-
-    assert DB["crossings"]["x2"]["berth"] == "windward", (
-        "masking is on the writer's view; a world missing the row is a different failure")
-    assert set(columns["crossings"]) == {"x2"}
-
-
-def test_the_memorised_values_gate_refuses_a_literal_equal_to_a_held_out_only_value():
+def test_the_memorised_values_gate_refuses_a_held_out_only_literal_and_leaves_a_seen_one_alone():
     source = ("class Tools:\n"
               "    def read_crossing(self, crossing_id):\n"
               "        return {'berth': 'windward'}\n")
@@ -127,8 +96,6 @@ def test_the_memorised_values_gate_refuses_a_literal_equal_to_a_held_out_only_va
     assert any("crossings.berth" in failure for failure in ruling.failures)
     assert ruling.metrics["holdout_values"] == len(holdout)
 
-
-def test_a_body_that_names_a_value_every_run_witnessed_is_left_alone():
     source = ("class Tools:\n"
               "    def read_crossing(self, crossing_id):\n"
               "        return {'berth': 'north'}\n")

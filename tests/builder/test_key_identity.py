@@ -47,7 +47,7 @@ def test_a_row_homed_under_a_composed_id_carries_its_key_parts_as_columns(workdi
     assert row["shift"] == "early"
 
 
-def test_a_write_is_never_charged_for_a_column_that_is_part_of_the_row_key():
+def test_a_write_is_charged_for_the_columns_it_changed_and_never_for_a_key_part():
     """A key part is a key sighting, not an effect, so it is dropped from the evidence."""
     schema = dock_schema()
     trace = _trace("A", [
@@ -68,22 +68,7 @@ def test_a_write_is_never_charged_for_a_column_that_is_part_of_the_row_key():
     assert ("docks", "shift") not in [
         (row["table"], row["path"]) for rows in effects.replay_evidence(seen).values()
         for row in rows]
-
-
-def test_a_non_key_column_on_the_same_row_is_still_charged():
-    schema = dock_schema()
-    trace = _trace("A", [
-        _call("get_dock", {"dock_id": "dock_1", "shift": "early"},
-              result={"dock_id": "dock_1", "shift": None, "seats": 4, "zone": "north"},
-              idx=0),
-        _call("adjust_dock", {"dock_id": "dock_1", "shift": "early"},
-              result={"dock_id": "dock_1", "shift": "early", "seats": 9, "zone": "north"},
-              idx=1),
-        _call("get_dock", {"dock_id": "dock_1", "shift": "early"},
-              result={"dock_id": "dock_1", "shift": "early", "seats": 9, "zone": "north"},
-              idx=2),
-    ])
-    seen = effects.observe_effects([trace], schema, {"adjust_dock"})
     seats = [column for effect in seen.get("adjust_dock", []) for column in effect.columns
              if (column.table, column.path) == ("docks", "seats")]
     assert seats and (seats[0].before, seats[0].after) == (4, 9)
+

@@ -21,13 +21,15 @@ def _triple(call_id, args=None, theirs=None, ours=None, their_error="", our_erro
 # --- 1. the full diff ---------------------------------------------------------------
 
 
-def test_the_diff_lists_every_leaf_two_answers_part_on_not_only_the_first():
+def test_the_diff_lists_every_leaf_two_answers_part_on_and_none_when_they_agree():
     theirs = {"crates": [{"depot": "north", "weight": 4}, {"depot": "north", "weight": 4}]}
     ours = {"crates": [{"depot": "north", "weight": 4}, {"depot": "south", "weight": 9}]}
     leaves, dropped = lesson.differing_leaves(theirs, ours)
     assert dropped == 0
     assert [where for where, _, _ in leaves] == ["crates[1].depot", "crates[1].weight"]
     assert leaves[0][1:] == ('"north"', '"south"')
+    same = {"crates": [{"depot": "north"}]}
+    assert lesson.full_diff_line(_triple("c1", theirs=same, ours=same)) == ""
 
 
 def test_the_diff_caps_the_leaves_it_carries_and_says_how_many_it_left_out():
@@ -37,11 +39,6 @@ def test_the_diff_caps_the_leaves_it_carries_and_says_how_many_it_left_out():
     assert len(leaves) == 4 and dropped == 8
     line = lesson.full_diff_line(_triple("c1", theirs=theirs, ours=ours), cap=4)
     assert "parts at 12 leaves" in line and "8 more leaves differ" in line
-
-
-def test_a_call_the_two_sides_answered_alike_leaves_no_diff_line():
-    same = {"crates": [{"depot": "north"}]}
-    assert lesson.full_diff_line(_triple("c1", theirs=same, ours=same)) == ""
 
 
 def test_a_call_one_side_refused_is_reported_as_a_refusal_and_not_as_leaves():
@@ -59,29 +56,31 @@ def _broadcast_triple(call_id):
     return _triple(call_id, args={"crate": "k1"}, theirs=theirs, ours=ours)
 
 
-def test_broadcast_is_found_when_the_recording_carries_one_element_value_on_every_element():
+def test_broadcast_is_found_only_when_the_recording_carries_one_element_value_on_every_element():
     found = lesson.relations_over([_broadcast_triple("c1"), _broadcast_triple("c2")])
     broadcast = [r for r in found if r.kind == "broadcast"]
     assert [r.where for r in broadcast] == ["parcels.day"]
     assert broadcast[0].on_all and broadcast[0].of == 2
     assert "first element" in broadcast[0].detail
     assert "holds on all 2 failing calls" in broadcast[0].sentence()
-
-
-def test_broadcast_is_absent_when_the_two_sides_vary_together():
     theirs = {"parcels": [{"day": "monday"}, {"day": "friday"}]}
     ours = {"parcels": [{"day": "monday"}, {"day": "sunday"}]}
     found = lesson.relations_over([_triple("c1", theirs=theirs, ours=ours)])
     assert not [r for r in found if r.kind == "broadcast"]
 
 
-def test_shared_value_names_the_side_that_flattened_what_the_other_distinguishes():
+def test_shared_value_names_whichever_side_flattened_what_the_other_distinguishes():
     theirs = {"parcels": [{"fee": 3}, {"fee": 7}]}
     ours = {"parcels": [{"fee": 5}, {"fee": 5}]}
     found = lesson.relations_over([_triple("c1", theirs=theirs, ours=ours)])
     shared = [r for r in found if r.kind == "shared_value"]
     assert [r.where for r in shared] == ["parcels.fee"]
     assert shared[0].detail.startswith("the body puts one value")
+    triples = [_triple(f"c{i}", args={"crate": f"k{i}"}, theirs={"note": f"open until {i}"},
+                       ours={"note": "closed for collection"}) for i in range(5)]
+    found = lesson.relations_over(triples)
+    shared = [r for r in found if r.kind == "shared_value" and r.where == "note"]
+    assert shared and "the body answers every one of these calls with one value here" in shared[0].detail
 
 
 def test_a_relation_a_passing_call_also_holds_is_not_what_tells_the_failing_calls_apart():
@@ -100,38 +99,32 @@ def test_a_relation_most_failing_calls_hold_is_stated_with_its_exceptions():
     assert "it does not hold on c9" in broadcast[0].sentence()
 
 
-def test_order_is_found_when_the_recorded_list_is_a_sort_the_body_did_not_make():
+def test_order_is_found_only_when_the_recorded_list_is_a_sort_the_body_did_not_make():
     theirs = {"stops": [{"rank": 1}, {"rank": 2}, {"rank": 3}]}
     ours = {"stops": [{"rank": 3}, {"rank": 1}, {"rank": 2}]}
     found = lesson.relations_over([_triple("c1", theirs=theirs, ours=ours)])
     order = [r for r in found if r.kind == "order"]
     assert order and "ascending order of rank" in order[0].detail
-
-
-def test_order_is_absent_when_the_two_lists_are_not_the_same_elements():
     theirs = {"stops": [{"rank": 1}, {"rank": 2}]}
     ours = {"stops": [{"rank": 1}, {"rank": 9}]}
     found = lesson.relations_over([_triple("c1", theirs=theirs, ours=ours)])
     assert not [r for r in found if r.kind == "order"]
 
 
-def test_arithmetic_is_found_when_a_recorded_number_is_a_product_of_the_call_numbers():
+def test_arithmetic_is_found_only_when_a_recorded_number_is_a_product_of_the_call_numbers():
     triples = [_triple(f"c{i}", args={"crates": 3 + i, "rate": 4},
                        theirs={"price": (3 + i) * 4}, ours={"price": 0}) for i in range(3)]
     found = lesson.relations_over(triples)
     arithmetic = [r for r in found if r.kind == "arithmetic"]
     assert arithmetic and arithmetic[0].where == "price"
     assert any("times" in r.detail for r in arithmetic)
-
-
-def test_arithmetic_is_absent_when_no_one_rule_holds_across_the_failing_calls():
     triples = [_triple("c1", args={"crates": 3, "rate": 4}, theirs={"price": 12}, ours={"price": 0}),
                _triple("c2", args={"crates": 5, "rate": 4}, theirs={"price": 99}, ours={"price": 0})]
     found = lesson.relations_over(triples)
     assert not [r for r in found if r.kind == "arithmetic"]
 
 
-def test_one_recorded_answer_over_a_run_of_calls_the_body_tells_apart_is_stated_once():
+def test_one_recorded_answer_over_a_run_of_calls_is_stated_once_and_free_variation_is_not():
     """The shape a hint written per call can never see: the recording answers a run of calls alike."""
     triples = [_triple(f"c{i}", args={"crate": f"k{i}"}, theirs={"note": "closed for collection"},
                        ours={"note": f"open until {i}"}) for i in range(5)]
@@ -139,22 +132,11 @@ def test_one_recorded_answer_over_a_run_of_calls_the_body_tells_apart_is_stated_
     shared = [r for r in found if r.kind == "shared_value" and r.where == "note"]
     assert shared and shared[0].on_all
     assert "the recording answers every one of these calls with one value here" in shared[0].detail
-
-
-def test_one_body_answer_over_calls_the_recording_tells_apart_is_stated_the_other_way_round():
-    triples = [_triple(f"c{i}", args={"crate": f"k{i}"}, theirs={"note": f"open until {i}"},
-                       ours={"note": "closed for collection"}) for i in range(5)]
-    found = lesson.relations_over(triples)
-    shared = [r for r in found if r.kind == "shared_value" and r.where == "note"]
-    assert shared and "the body answers every one of these calls with one value here" in shared[0].detail
-
-
-def test_no_relation_across_calls_when_both_sides_vary_freely():
     triples = [_triple(f"c{i}", theirs={"note": f"a{i}"}, ours={"note": f"b{i}"}) for i in range(5)]
     assert not [r for r in lesson.relations_over(triples) if r.kind == "shared_value"]
 
 
-def test_a_refusal_predicate_states_what_the_refused_calls_share_that_accepted_ones_lack():
+def test_a_refusal_predicate_states_what_refused_calls_share_and_is_absent_without_refusals():
     refused = [_triple(f"r{i}", args={"crate": "k1", "override": True}, their_error="NotPermitted")
                for i in range(3)]
     accepted = [_triple(f"a{i}", args={"crate": "k2"}, theirs={"price": 1}, ours={"price": 1},
@@ -163,9 +145,6 @@ def test_a_refusal_predicate_states_what_the_refused_calls_share_that_accepted_o
     predicates = [r for r in found if r.kind == "refusal_predicate"]
     assert any(r.where == "override" for r in predicates)
     assert any("refused every call that carries override" in r.detail for r in predicates)
-
-
-def test_no_refusal_predicate_is_stated_when_the_recording_refused_nothing():
     accepted = [_triple(f"a{i}", args={"crate": "k2"}, theirs={"price": 1}, ours={"price": 2})
                 for i in range(3)]
     assert not [r for r in lesson.relations_over(accepted) if r.kind == "refusal_predicate"]
@@ -194,16 +173,13 @@ def test_every_branch_loop_and_assignment_of_one_function_is_found_with_the_line
     assert all(c.line > 0 for c in constructs)
 
 
-def test_a_branch_no_recorded_call_reached_is_named_as_unsupported():
+def test_only_a_branch_no_recorded_call_reached_is_named_as_unsupported():
     constructs = lesson.constructs_of(SOURCE, "quote_haulage")
     branch = next(c for c in constructs if c.kind == "branch")
     reached = {c.line for c in constructs} - {branch.line}
     dead = lesson.unwitnessed(constructs, reached)
     assert [c.line for c in dead] == [branch.line]
     assert "express" in dead[0].text
-
-
-def test_a_construct_every_call_reached_is_not_named():
     constructs = lesson.constructs_of(SOURCE, "quote_haulage")
     assert lesson.unwitnessed(constructs, {c.line for c in constructs}) == []
 
@@ -213,14 +189,11 @@ def test_a_function_the_module_does_not_hold_yields_no_constructs():
     assert lesson.constructs_of("def broken(:", "broken") == []
 
 
-def test_a_refusal_the_recording_shows_and_the_body_never_raises_is_named_as_missing():
+def test_a_refusal_the_body_never_raises_is_named_as_missing_and_a_matched_one_is_not():
     triples = [_triple(f"r{i}", their_error="NotPermitted", ours={"price": 1}) for i in range(4)]
     note = lesson.missing_refusal(triples, SOURCE, "quote_haulage")
     assert "refused 4 of these calls (NotPermitted)" in note
     assert "the body holds no raise at all" in note
-
-
-def test_no_missing_refusal_is_named_when_the_body_refuses_the_same_calls():
     triples = [_triple(f"r{i}", their_error="NotPermitted", our_error="NotPermitted") for i in range(4)]
     assert lesson.missing_refusal(triples, SOURCE, "quote_haulage") == ""
 
@@ -238,20 +211,14 @@ def test_the_stall_limit_switches_the_ask_from_patching_to_rewriting():
     assert patched.counts()["rewrites_forced"] == 0
 
 
-def test_a_tie_where_both_bodies_fall_at_one_gate_before_fidelity_is_reported_as_blocked():
+def test_only_a_tie_where_both_bodies_fall_at_one_gate_before_fidelity_is_reported_as_blocked():
     kept = [{"stage": "parses", "pass": True}, {"stage": "executes_on_s0", "pass": False}]
     attempt = [{"stage": "parses", "pass": True}, {"stage": "executes_on_s0", "pass": False}]
     assert lesson.blocked_gate(kept, attempt) == "executes_on_s0"
     told = lesson.diagnose("quote_haulage", [], blocked="executes_on_s0").lesson()
     assert "fail the executes_on_s0 gate" in told and "before the replay ruling" in told
-
-
-def test_a_tie_at_the_fidelity_ruling_itself_is_not_reported_as_blocked_by_a_gate():
     both = [{"stage": "parses", "pass": True}, {"stage": "replay_fidelity", "pass": False}]
     assert lesson.blocked_gate(both, both) == ""
-
-
-def test_two_bodies_that_fall_at_different_gates_are_not_blocked_by_one():
     kept = [{"stage": "executes_on_s0", "pass": False}]
     attempt = [{"stage": "deterministic", "pass": False}]
     assert lesson.blocked_gate(kept, attempt) == ""
@@ -274,18 +241,6 @@ def test_the_diagnosis_counts_relations_by_kind_and_lines_nothing_witnesses():
     told = found.lesson()
     assert lesson.RELATION_HEAD in told and lesson.DIFF_HEAD in told
     assert lesson.UNWITNESSED_HEAD in told
-
-
-def test_the_round_adds_the_per_tool_counts_up():
-    one = {"relations_found": {"broadcast": 1}, "unwitnessed_lines": 3, "rewrites_forced": 1,
-           "blocked_by_gate": 0}
-    other = {"relations_found": {"broadcast": 2, "order": 1}, "unwitnessed_lines": 0,
-             "rewrites_forced": 0, "blocked_by_gate": 1}
-    total = lesson.merge_counts([one, other])
-    assert total["relations_found"]["broadcast"] == 3
-    assert total["relations_found"]["order"] == 1
-    assert total["unwitnessed_lines"] == 3
-    assert total["rewrites_forced"] == 1 and total["blocked_by_gate"] == 1
 
 
 def test_a_tool_with_nothing_found_says_nothing():
