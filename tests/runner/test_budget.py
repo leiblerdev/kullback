@@ -446,3 +446,10 @@ def test_the_subscriber_ignores_a_message_without_usage_and_the_turn_end_that_re
     price(_assistant_end(Usage()))
     price(TurnEndEvent(turn=1, message=AssistantMessage(content="ok", usage=Usage(input=10, output=5))))
     assert not budget.totals_path(workdir).exists()
+
+
+def test_gpt_6_sol_is_priced_from_the_table_and_has_its_catalogue_window():
+    assert budget.price_for("openai/gpt-6-sol") == {
+        "input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5}
+    assert budget.price_source("openai/gpt-6-sol") == "table"
+    assert budget.window_for("openai/gpt-6-sol") == 1_050_000
