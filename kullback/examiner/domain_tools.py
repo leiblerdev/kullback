@@ -30,7 +30,7 @@ from kullback.examiner.exam_files import (
 from kullback.gates.bindings import ALT_PATH_STAGE, WAIVED_ROW, rulings_for
 from kullback.gates.hook import ruling_line
 from kullback.gates.probes import version_hash, write_tools_of
-from kullback.gates.verifier_suite import D79_STAGES, HELPERS_SRC, check_run, make_atom
+from kullback.gates.verifier_suite import D79_STAGES, HELPERS_SRC, NO_ATOM_CHECKED, check_run, make_atom
 from kullback.runner import budget
 from kullback.runner import tool as runner_tool
 from kullback.runner.records import Atom, Event, Run, Verifier, VerifierVersion, as_dict, write_json
@@ -274,7 +274,8 @@ def _atoms_named(records: list[dict]) -> str:
                 text = f" ({row['text']})" if row.get("text") else ""
                 lines.append(f"{record['name']}: {_ATOM_CHECKS[record['name']]} is {row['atom']}{text}")
         kinds = {row["kind"] for row in record["rows"] if isinstance(row, dict) and row.get("kind")}
-        if record["name"] == "verifier_empty_run" and kinds and kinds <= _EMPTY_PASSING_KINDS:
+        none_checked = any(isinstance(row, dict) and row.get("failure") == NO_ATOM_CHECKED for row in record["rows"])
+        if record["name"] == "verifier_empty_run" and (none_checked or (kinds and kinds <= _EMPTY_PASSING_KINDS)):
             lines.append(_EMPTY_RUN_ADVICE)
     return "\n".join(lines)
 

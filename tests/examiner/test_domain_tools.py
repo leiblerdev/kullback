@@ -339,13 +339,14 @@ def _empty_run_records_proposal(verifier, empty) -> list[dict]:
              "rows": rows_for(g, {})} for g in gates if g.stage == "verifier_empty_run"]
 
 
-def test_a_refusal_on_an_empty_run_of_allowed_atoms_names_them_and_says_what_to_add():
+def test_a_refusal_on_an_empty_run_of_allowed_atoms_names_none_of_them_and_says_what_to_add():
     from kullback.gates.verifier_suite import make_atom
     from kullback.runner.records import Verifier
 
     verifier = Verifier(task_id="t1", atoms=[make_atom("cap", "allowed", {"kind": "entity_count", "count": 5})])
     message = str(D._refuse_proposal("t1", "2", _empty_run_records_proposal(verifier, VF.empty_run())))
-    assert "verifier_empty_run: the atom the empty Run passed on is cap" in message, message
+    assert "the atom the empty Run passed on is cap" not in message, message
+    assert "no atom of the Verifier is one a Run is checked on" in message, message
     assert ("every atom here passes an empty Run: add a question or communicate atom for what the "
             "Reference said, or a required write") in message, message
 
