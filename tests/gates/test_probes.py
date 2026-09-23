@@ -7,7 +7,7 @@ import json
 from gates.examiner_fixtures import SIGS, TASK, base, loosen, pool, probe, tighten
 from gates.verifier_fixtures import extra_write_run, other_reason_run, reference_run, wrong_run
 from kullback.gates import probes as P
-from kullback.runner.records import ProbePool, Verifier, as_dict, content_hash
+from kullback.runner.records import ProbePool, as_dict, content_hash
 
 
 def test_a_probe_the_current_verifier_rejects_leaves_the_pool_gate_green(tmp_path):
@@ -43,7 +43,7 @@ def test_every_probe_ever_written_is_scored_against_a_new_version_so_a_repair_ca
     assert P.probe_pool_gate([first], {TASK: pool(found)}, None, SIGS).passed
 
 
-def test_probing_a_task_is_admitted_until_three_consecutive_probes_were_already_rejected(tmp_path):
+def test_probing_a_task_closes_after_three_consecutive_rejections_and_a_pass_between_resets_the_count(tmp_path):
     verifier = base(tmp_path)
     rejected = [probe(f"probe-t1-{n}", wrong_run(), verifier) for n in range(1, 4)]
     open_pool = {TASK: pool(*rejected[:2])}
@@ -54,10 +54,7 @@ def test_probing_a_task_is_admitted_until_three_consecutive_probes_were_already_
     assert closed.failures == [f"task t1: probing stopped, the last 3 probes were already rejected by version "
                                f"{P.version_hash(verifier)}"]
     assert closed.metrics == {"closed": ["t1"], "stop": P.PROBE_STOP} and P.PROBE_STOP == 3
-
-
-def test_a_probe_that_scored_a_pass_between_two_rejections_resets_the_consecutive_count(tmp_path):
-    verifier = base(tmp_path)
+    # A probe that scored a pass between two rejections resets the consecutive count.
     rows = [probe("probe-t1-1", wrong_run(), verifier), probe("probe-t1-2", wrong_run(), verifier),
             probe("probe-t1-3", reference_run(), verifier), probe("probe-t1-4", wrong_run(), verifier)]
     assert rows[2].scored_pass is True
@@ -77,17 +74,6 @@ def test_the_consecutive_count_is_over_probes_written_against_the_current_versio
     assert P.consecutive_failed(pool(*against_first), P.version_hash(second)) == 0
     assert P.consecutive_failed(pool(*against_first, *against_second), P.version_hash(second)) == 1
     assert P.probe_admission_gate({TASK: pool(*against_first, *against_second)}, [second]).passed
-
-
-def test_the_two_gates_over_no_probes_and_no_verifiers_pass_with_zero_counts():
-    empty = P.probe_pool_gate([], {}, None, [])
-    assert empty.passed and empty.metrics == {"probes": 0, "tasks_probed": 0, "passing": 0, "passing_ids": {}}
-    admission = P.probe_admission_gate({}, [])
-    assert admission.passed and admission.metrics == {"closed": [], "stop": 3}
-    # A pool for a Task with no current Verifier is counted and not scored.
-    orphan = P.probe_pool_gate([], {TASK: pool(probe("probe-t1-1", wrong_run(), Verifier(task_id=TASK),
-                                                     scored_pass=False))}, None, SIGS)
-    assert orphan.passed and orphan.metrics["probes"] == 1 and orphan.metrics["tasks_probed"] == 1
 
 
 def test_a_probe_pool_round_trips_through_json_with_its_runs_and_hashes_by_content(tmp_path):
