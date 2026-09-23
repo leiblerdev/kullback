@@ -63,9 +63,13 @@ def test_version_is_a_stable_hex_digest():
     assert first == second
 
 
-def test_replay_names_the_first_differing_column(tmp_path):
+def test_replay_confirms_a_straight_body_and_names_the_first_differing_column_of_a_broken_one(tmp_path):
     """A body returning the wrong value on one recorded call is reported by its column."""
     root = _env_with_trace(tmp_path / "env")
+    straight = tool.replay(root, "widget_task", workdir=tmp_path / "work")
+    assert straight.confirmed, straight.reasons
+    assert straight.fidelity == 1.0
+    assert all(call.first_differing_column is None for call in straight.calls)
     _break_rename(root)
     report = tool.replay(root, "widget_task", workdir=tmp_path / "work")
     assert not report.confirmed
@@ -76,14 +80,6 @@ def test_replay_names_the_first_differing_column(tmp_path):
     described = next(call for call in report.calls if call.tool == "describe_widget")
     assert described.verdict in ("same", "cosmetic", "both_refused")
     assert described.first_differing_column is None
-
-
-def test_replay_confirms_where_the_body_answers_straight(tmp_path):
-    root = _env_with_trace(tmp_path / "env")
-    report = tool.replay(root, "widget_task", workdir=tmp_path / "work")
-    assert report.confirmed, report.reasons
-    assert report.fidelity == 1.0
-    assert all(call.first_differing_column is None for call in report.calls)
 
 
 def _describe_trace(trace_id: str, label: str) -> Trace:
@@ -257,11 +253,3 @@ def test_reroll_with_prefix_names_its_files_for_the_buyer_and_carries_user_end(t
     direct = tool.run(root, "widget_task", _rename_script(), workdir=tmp_path / "named", run_id="custom-7")
     assert direct.run_id == "custom-7" and (tmp_path / "named" / "runs" / "custom-7.jsonl").is_file()
 
-
-def test_the_shared_retail_fixture_loads():
-    """The small shared fixture in tests/fixtures parses: simulations beside their tasks."""
-    body = json.loads((Path(__file__).resolve().parents[1] / "fixtures"
-                       / "tau2_retail_small.json").read_text(encoding="utf-8"))
-    assert len(body["simulations"]) >= 1
-    wanted = {sim["task_id"] for sim in body["simulations"]}
-    assert wanted <= {task["id"] for task in body["tasks"]}

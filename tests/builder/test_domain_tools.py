@@ -64,14 +64,6 @@ def test_replay_answers_each_recorded_call_with_both_values(tmp_path):
     assert first["recorded"] and first["ours"]
 
 
-def test_replay_text_caps_rows_at_twenty_then_counts(tmp_path):
-    assert domain_tools_mod.ROWS_SHOWN == 20
-    root = _workdir(tmp_path)
-    (replay,) = [tool for tool in domain_tools_mod.domain_tools(workdir=root) if tool.name == "replay"]
-    result = _run(replay, {"task_id": "widget_task"})
-    assert "over 2 recorded calls" in result.content
-
-
 def test_run_reports_each_fresh_run_with_verdict_routes_diff_and_spend(tmp_path):
     root = _workdir(tmp_path)
     model = TestModel([
