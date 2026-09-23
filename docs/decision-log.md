@@ -1969,3 +1969,40 @@ Four decisions are the founder's and are not taken here.
 **The five retail source-bug Tasks.** The source recording writes the last new item's price and options onto every modified item, 17 times out of 17. Reaching full fidelity on retail means compiling a body that broadcasts the same way, which is against D162 (a body may not memorise the recordings) and D195 (a body must read state). Either fidelity means reproducing the source's bugs, or those five Tasks are set aside as source defects and counted apart.
 
 **The re-freeze.** Workdirs are frozen at a runner and gates hash and only the founder re-freezes. D253 (the step split) and D254 (one scorer) each need a re-freeze of their own, bundled with nothing, because their acceptance test is exact: regrade every stored Run for identical Verdicts, replay every Trace for identical fidelity. A re-freeze is a new baseline on all three corpora, so when it happens is the founder's call.
+
+## Smoke 7 (D279)
+
+### D279. 2026-09-23 smoke 7 numbers and the founder's next wave (2026-09-23)
+
+Smoke 7 ran retail and airline with `openai/gpt-6-sol` as the Builder, no ceiling, harness at 92d3f28, and was killed
+on the founder's request at 13:44 UTC. Retail: 202 of 205 References confirmed, Reference fidelity 0.9982, call
+fidelity 0.9953 over 3220 calls, 14 trusted (191 open, 185 no Verifier yet), 118 turns, 4.15 USD. Airline: 100 of 119
+confirmed, 0.9687, 0.9564 over 1513 calls, 22 trusted (97 open, 89 no Verifier yet), 105 turns, 5.11 USD. Telecom was
+not in this round. Replay is near complete; trusted is limited by derivation volume, not by Verifiers failing.
+
+The rule. The harness changes now in flight, one line each:
+
+- The write gate replays the trace prefix, not the Starting state alone.
+- Static gates run before replay.
+- Rulings show every failing row, and a rulings tool reads them.
+- Refusals compare the message, and the body header says raise ValueError.
+- Body faults carry their line.
+- An inspect tool.
+- Web search and web fetch: withdrawn by the founder the same day; the agents get no web access until it is needed.
+- Proposal gates are scoped to the proposed Task.
+- Not run is not a failure.
+- Unscored atoms are refused.
+- Every Task is derived, in parallel.
+- Probe slots come after residue.
+- Expose after derivation.
+- Run only Tasks with a Verifier.
+- Examine names its Tasks.
+
+Checked in code. Nothing yet; each change lands with its own brief and tests.
+
+Against it. Nothing was recorded against this.
+
+Evidence. `.claude/reports/smoke-luna-observations-2026-09-23.md` (section "Smoke 7 final numbers"),
+`.claude/reports/sol-behaviour-2026-09-23.md` and `.claude/reports/env-quality-vs-tau2-2026-09-23.md`.
+
+Status: decided 2026-09-23, building.
