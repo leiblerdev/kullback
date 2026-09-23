@@ -292,7 +292,6 @@ def test_only_a_role_standing_where_the_other_was_due_counts_a_gap_and_then_resy
     assert alternating.counts["writes"] == 1 and alternating.counts["reads"] == 1
 
 
-
 # --- D217: a cosmetic verdict says which way it was reached, and states are not cosmetic ---
 
 def _kiln_state_comparer(judge=None):
