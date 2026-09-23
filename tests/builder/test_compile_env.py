@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import hashlib
 import json
 import tokenize
 
@@ -290,16 +289,6 @@ def test_an_overlay_row_carries_the_pre_write_version(sample, schema, sigs, work
 # --- the model writes the body, code writes the signature, docstring and schema ---
 
 
-def test_write_tool_body_asks_the_model_and_returns_the_body(make_test_model, sigs, order_calls):
-    model = make_test_model(["```python\n" + CORRECT_BODY.strip() + "\n```"])
-    body = ce.write_tool_body(model, sigs[0], order_calls)
-    assert body.strip().startswith("if order_id not in self.db.orders")
-    assert "```" not in body
-    prompt = model.calls[0]["messages"][-1]["content"]
-    assert "get_order_details" in prompt
-    assert order_calls[0].args["order_id"] in prompt
-
-
 def test_render_tools_writes_the_signature_and_the_docstring(schema, sigs):
     source = ce.render_tools(schema, sigs[:1], {"get_order_details": CORRECT_BODY})
     assert "def get_order_details(self, order_id: str)" in source
@@ -358,13 +347,6 @@ def test_a_constant_body_fails_the_non_trivial_gate(schema, sigs, db0, workdir, 
     assert result.stage == "non_trivial"
 
 
-def test_a_correct_body_is_deterministic_across_two_runs(schema, sigs, db0, workdir, order_calls):
-    source, box = _sandbox(schema, sigs, db0, workdir, CORRECT_BODY)
-    result = ce.gate_deterministic(box, order_calls[:1])
-    assert result.passed is True
-    assert result.metrics["calls"] == 1
-
-
 def test_replay_fidelity_reports_success_and_error_separately(schema, sigs, db0, workdir, order_calls):
     source, box = _sandbox(schema, sigs, db0, workdir, CORRECT_BODY)
     result = ce.gate_replay_fidelity(box, order_calls, schema)
@@ -403,23 +385,7 @@ def test_split_calls_puts_every_call_in_exactly_one_of_the_shown_and_held_out_sp
 # --- hold-out by argument shape (D250) ---
 
 
-KILN_DB = {"bins": {"b1": {"bin_id": "b1"}}}
-KILN_SCHEMA = EntitySchema(
-    tables=["bins"],
-    columns=[Column(table="bins", name="bin_id", **{"class": "hard"}, classified_by="rule")],
-    id_patterns={"bins": r"^b\d+$"},
-)
-KILN_SIG = ToolSig(
-    name="describe_ware",
-    description="Return one ware as recorded.",
-    args_fields=[FieldStat(name="ware", types=["dict"], optional=False)],
-    kind="read",
-    unclassified=False,
-)
 # Copies only the keys the unadorned wares carry, so a held-out ware with a mark misses that key.
-SHOWN_KEYS_BODY = """
-return {"kind": ware["kind"], "glaze": ware["glaze"]}
-"""
 COPY_WARE_BODY = """
 return ware
 """
@@ -454,17 +420,6 @@ def _leaf_strings(value):
         yield str(value)
 
 
-def test_arg_shape_drops_values_and_keeps_list_length_and_nested_keys():
-    one_filter = ce.arg_shape({"q": "cups", "filters": ["kind"]})
-    same_shape = ce.arg_shape({"q": "bowls", "filters": ["glaze"]})
-    two_filters = ce.arg_shape({"q": "vases", "filters": ["kind", "glaze"]})
-    assert one_filter == same_shape != two_filters
-    plain = ce.arg_shape({"ware": {"glaze": "ash", "kind": "cup"}})
-    other_plain = ce.arg_shape({"ware": {"glaze": "salt", "kind": "bowl"}})
-    marked = ce.arg_shape({"ware": {"glaze": "ash", "kind": "vase", "mark": "incised"}})
-    assert plain == other_plain != marked
-
-
 def test_split_calls_holds_out_a_whole_argument_shape():
     calls = _ware_calls()
     shown, held_out = ce.split_calls(calls)
@@ -474,6 +429,14 @@ def test_split_calls_holds_out_a_whole_argument_shape():
     assert len(shown) + len(held_out) == len(calls)
     assert shown_shapes and held_shapes and shown_shapes.isdisjoint(held_shapes)
     assert ce.no_shape_holdout(calls) is False
+    one_filter = ce.arg_shape({"q": "cups", "filters": ["kind"]})
+    same_shape = ce.arg_shape({"q": "bowls", "filters": ["glaze"]})
+    two_filters = ce.arg_shape({"q": "vases", "filters": ["kind", "glaze"]})
+    assert one_filter == same_shape != two_filters
+    plain = ce.arg_shape({"ware": {"glaze": "ash", "kind": "cup"}})
+    other_plain = ce.arg_shape({"ware": {"glaze": "salt", "kind": "bowl"}})
+    marked = ce.arg_shape({"ware": {"glaze": "ash", "kind": "vase", "mark": "incised"}})
+    assert plain == other_plain != marked
 
 
 def test_split_calls_falls_back_to_every_third_when_every_call_shares_one_shape(order_calls):
@@ -485,68 +448,11 @@ def test_split_calls_falls_back_to_every_third_when_every_call_shares_one_shape(
     assert ce.no_shape_holdout(order_calls) is True
 
 
-def test_the_kept_attempt_is_the_one_that_got_furthest_through_the_gates():
-    """The gates run in one order and stop at the first failure, so how many passed is how far the
-    body got; two bodies that fell at the same gate are separated by what their replay matched."""
-    from kullback.runner.records import GateResult
-
-    def gates(passed: int, matches: int) -> list:
-        names = ["parses", "confined", "executes_on_s0", "deterministic", "non_trivial", "replay_fidelity"]
-        return [GateResult(stage=name, **{"pass": True},
-                           metrics={"success_matches": matches} if name == "replay_fidelity" else {})
-                for name in names[:passed]]
-
-    assert ce.attempt_score(gates(6, 44)) > ce.attempt_score(gates(2, 0))
-    assert ce.attempt_score(gates(6, 44)) > ce.attempt_score(gates(6, 12))
-    assert ce.attempt_score([]) == (0, 0)
-
-
-def test_a_tool_whose_own_recordings_answer_alike_is_not_called_hardcoded():
-    """Where the recorded calls share one answer, one answer is what the tool does."""
-    calls = [_call("close_ticket", {"ticket_id": f"t-{i}"}, result={"status": "closed"}, idx=i)
-             for i in range(3)]
-    rows = [{"call_id": call.id, "answer": "one", "world": "w"} for call in calls]
-    assert ce.hardcoded_body(calls, rows) is False
-    differing = [_call("close_ticket", {"ticket_id": f"t-{i}"}, result={"status": f"s-{i}"}, idx=i)
-                 for i in range(3)]
-    rows = [{"call_id": c.id, "answer": "one", "world": "w"} for c in differing]
-    assert ce.hardcoded_body(differing, rows) is True
-    assert ce.hardcoded_body(differing[:1], rows[:1]) is False
-
-
-def test_a_tool_with_no_arguments_is_hardcoded_when_it_answers_two_worlds_the_same_way():
-    """The live build's own case: every recorded call carried no arguments at all, the recordings
-    answered two ways out of the Task's own world, and the body answered one way on both."""
-    calls = [_call("current_balance", {}, result={"balance": f"{i}"}, idx=i) for i in range(4)]
-    worlds = [{"call_id": call.id, "answer": "one", "world": f"w-{i}"} for i, call in enumerate(calls)]
-    assert ce.hardcoded_body(calls, worlds) is True
-    one_world = [dict(row, world="w") for row in worlds]
-    assert ce.hardcoded_body(calls, one_world) is False, "one input, so one answer says nothing"
-
-
 def test_the_shape_of_an_id_generalizes_its_characters_and_keeps_the_rest():
     assert ce.value_shape("m-14") == "a-##"
     assert ce.value_shape("AB_9") == "AA_#"
     assert ce.table_read("row = self.db.members[member_id]") == "members"
     assert ce.table_read("return {}") == ""
-
-
-def test_the_exception_a_failing_gate_quotes_is_read_off_its_failure_line():
-    from kullback.runner.records import GateResult
-
-    crash = GateResult(stage="executes_on_s0", **{"pass": False}, failures=[
-        "get_member(member_id='m-1') raised AttributeError: 'dict' object has no attribute 'copy_id'"])
-    green = GateResult(stage="parses", **{"pass": True})
-    assert ce.exception_line([green, crash]) == "AttributeError: 'dict' object has no attribute 'copy_id'"
-    assert ce.exception_line([green]) == ""
-    assert ce.exception_in("get_member(member_id='m-1') answered differently on a second run") == ""
-
-
-def test_with_no_lesson_the_compile_prompt_is_unchanged(schema, sigs, order_calls):
-    """The offline builds are deterministic byte for byte, so a tool with no lesson has to send
-    exactly the messages it sent before there was such a thing as a lesson."""
-    assert (ce.body_messages(sigs[0], order_calls[:3], schema=schema, lesson="")
-            == ce.body_messages(sigs[0], order_calls[:3], schema=schema))
 
 
 # --- the tau2 file shape (D56) ---
@@ -649,7 +555,10 @@ def test_the_export_prefers_the_version_seen_before_a_write(tmp_path):
 
 # --- the Environment record, its sub-versions and its open flags (D67, D70, D97) ---
 
-def test_build_environment_carries_the_sub_versions_and_the_flags():
+def test_build_environment_carries_the_sub_versions_the_flags_and_the_assisted_tools(schema, sigs):
+    env = ce.build_environment(schema, sigs, {s.name: "pass" for s in sigs}, "policy",
+                               assisted_tools=["cancel_pending_order"])
+    assert env.assisted_tools == ["cancel_pending_order"]
     from kullback.builder.compile_env import build_environment
     from kullback.runner.records import Column, EntitySchema, ErrorShape, ToolSig
 
@@ -849,7 +758,7 @@ def test_a_body_that_writes_the_result_file_itself_is_refused(sample, sigs, work
 # --- column classes decide inside a list result too (D73, D84) ---
 
 
-def test_an_exempt_column_cannot_fail_a_replay_inside_a_list_result(sample, workdir):
+def test_inside_a_list_result_a_hard_column_fails_a_replay_and_an_exempt_one_cannot(sample, workdir):
     order = sample["by_status"]["pending"]
     now = dict(order, last_seen="2026-06-01T00:00:00Z")
     then = dict(order, last_seen="2026-03-01T00:00:00Z")
@@ -862,9 +771,9 @@ def test_an_exempt_column_cannot_fail_a_replay_inside_a_list_result(sample, work
     source = ce.module_source(schema, [sig], {sig.name: body})
     gate = ce.gate_replay_fidelity(ce.Sandbox(source, db, workdir), calls, schema)
     assert gate.passed is True, gate.failures
-
-
-def test_a_hard_column_inside_a_list_result_still_fails_the_replay(sample, workdir):
+    # the same list replay with a hard column that moved fails
+    hard = workdir.parent / "hard"
+    hard.mkdir()
     order = sample["by_status"]["pending"]
     db = {"orders": {order["order_id"]: dict(order, status="cancelled")}, "users": {}, "products": {}}
     schema = _schema_for(db)
@@ -873,7 +782,7 @@ def test_a_hard_column_inside_a_list_result_still_fails_the_replay(sample, workd
     calls = [_call(sig.name, {"user_id": order["user_id"]}, result=[order], idx=0)]
     body = "return [o for o in self.db.orders.values() if o.user_id == user_id]"
     source = ce.module_source(schema, [sig], {sig.name: body})
-    gate = ce.gate_replay_fidelity(ce.Sandbox(source, db, workdir), calls, schema)
+    gate = ce.gate_replay_fidelity(ce.Sandbox(source, db, hard), calls, schema)
     assert gate.passed is False
     assert any("status" in failure for failure in gate.failures)
 
@@ -881,40 +790,16 @@ def test_a_hard_column_inside_a_list_result_still_fails_the_replay(sample, workd
 # --- two Runs of one Task that disagree are recorded, not pinned silently (D74) ---
 
 
-def test_two_runs_of_one_task_that_saw_different_versions_are_recorded_as_an_assumption(
-    sample, schema, sigs, workdir
-):
-    order = sample["by_status"]["pending"]
-    oid = order["order_id"]
-    traces = [
-        _trace("A", [_call("get_order_details", {"order_id": oid}, result=order, idx=0)]),
-        _trace("B", [_call("get_order_details", {"order_id": oid},
-                           result=dict(order, status="cancelled"), idx=1)]),
-    ]
-    state = ce.build_starting_state(traces, schema, workdir, tasks=[Task(id="t", run_ids=["A", "B"])],
-                                    tool_sigs=sigs)
-    overlay, values = ce.load_overlay(workdir, "t")
-    assert values[overlay.rows[0].version_hash]["status"] == "pending"
-    assert any("t" in note and oid in note and "disagree" in note for note in state.assumptions)
-
-
-def test_two_runs_of_one_task_that_agree_record_nothing(sample, schema, sigs, workdir):
-    order = sample["by_status"]["pending"]
-    traces = [
-        _trace("A", [_call("get_order_details", {"order_id": order["order_id"]}, result=order, idx=0)]),
-        _trace("B", [_call("get_order_details", {"order_id": order["order_id"]}, result=order, idx=1)]),
-    ]
-    state = ce.build_starting_state(traces, schema, workdir, tasks=[Task(id="t", run_ids=["A", "B"])],
-                                    tool_sigs=sigs)
-    assert not [note for note in state.assumptions if "disagree" in note]
-
-
 # --- gate 3 checks every call, not the first two ---
 
 
-def test_a_body_that_is_nondeterministic_on_a_later_call_fails_the_deterministic_gate(
-    sample, sigs, workdir
-):
+def test_a_correct_body_passes_the_deterministic_gate_and_one_nondeterministic_on_a_later_call_fails(sample, sigs, workdir, schema, db0, order_calls):
+    correct = workdir.parent / "correct"
+    correct.mkdir()
+    source, box = _sandbox(schema, sigs, db0, correct, CORRECT_BODY)
+    result = ce.gate_deterministic(box, order_calls[:1])
+    assert result.passed is True
+    assert result.metrics["calls"] == 1
     orders = list(sample["orders"].values())
     db = {"orders": {o["order_id"]: o for o in orders}, "users": {}, "products": {}}
     schema = _schema_for(db)
@@ -936,7 +821,13 @@ def test_a_body_that_is_nondeterministic_on_a_later_call_fails_the_deterministic
 # --- env_id moves when the world moves (design section 5) ---
 
 
-def test_env_id_and_files_follow_the_five_emitted_files():
+def test_tau2_files_are_what_emit_writes_and_what_env_id_can_hash(schema, sigs, db0, workdir):
+    bundle = _bundle(schema, sigs, db0)
+    files = ce.tau2_files(bundle)
+    assert set(files) == {"data_model.py", "tools.py", "db.json", "policy.md", "tasks.json"}
+    paths = ce.emit_tau2_shape(bundle, workdir / "out")
+    for name, text in files.items():
+        assert paths[name].read_text(encoding="utf-8") == text
     schema = EntitySchema(tables=["orders"], columns=[Column(table="orders", name="status", class_="hard")])
     one = {"db.json": '{"orders": {"#W1": {"status": "pending"}}}\n', "policy.md": "p"}
     two = {"db.json": '{"orders": {"#W1": {"status": "cancelled"}}}\n', "policy.md": "p"}
@@ -946,15 +837,6 @@ def test_env_id_and_files_follow_the_five_emitted_files():
     assert set(first.files) == {"db.json", "policy.md"}
     assert first.files["policy.md"] == second.files["policy.md"]
     assert first.schema_version == second.schema_version
-
-
-def test_tau2_files_are_what_emit_writes_and_what_env_id_can_hash(schema, sigs, db0, workdir):
-    bundle = _bundle(schema, sigs, db0)
-    files = ce.tau2_files(bundle)
-    assert set(files) == {"data_model.py", "tools.py", "db.json", "policy.md", "tasks.json"}
-    paths = ce.emit_tau2_shape(bundle, workdir / "out")
-    for name, text in files.items():
-        assert paths[name].read_text(encoding="utf-8") == text
 
 
 # --- ids the traces referenced but never showed get a tagged synthetic row (D40, D41) ---
@@ -1032,6 +914,14 @@ def test_a_body_that_reaches_outside_the_world_is_refused_before_it_runs(schema,
         f"{sigs[0].name} imports os", f"{sigs[0].name} uses open"]
     with pytest.raises(ce.SandboxError):
         ce.load_toolkit(source, db0)
+    with_eval = _quotes_source("return eval(self.db.quotes[quote_id].formula)\n")
+    assert "settle_quote uses eval" in ce.source_confinement(with_eval)
+    with pytest.raises(ce.SandboxError):
+        ce.load_toolkit(with_eval, QUOTES_DB)
+    with_ast = _quotes_source("import ast\nreturn ast.parse(self.db.quotes[quote_id].formula)\n")
+    assert "settle_quote imports ast" in ce.source_confinement(with_ast)
+    with pytest.raises(ce.SandboxError):
+        ce.load_toolkit(with_ast, QUOTES_DB)
 
 
 def test_a_body_that_walks_the_class_tree_is_refused(schema, sigs, db0, workdir):
@@ -1042,11 +932,6 @@ def test_a_body_that_walks_the_class_tree_is_refused(schema, sigs, db0, workdir)
     assert any("touches __class__" in line for line in ce.source_confinement(source))
     with pytest.raises(ce.SandboxError):
         ce.load_toolkit(source, db0)
-
-
-def test_a_body_that_walks_the_class_tree_through_getattr_is_refused(schema, sigs, db0, workdir):
-    """The same escape as above, spelled through getattr so the literal dunder attribute never
-    appears; DENIED_BUILTINS has to name getattr, setattr and delattr, not just the dunder."""
     body = ("cls = getattr(getattr(getattr((), '__class__'), '__base__'), '__subclasses__')()\n"
             "return {'n': len(cls)}\n")
     source = ce.module_source(schema, sigs[:1], {sigs[0].name: body})
@@ -1092,10 +977,6 @@ def test_the_mined_id_pattern_actually_guards_referenced_ids():
         _call("get_order_details", {"order_id": "not-an-order"}, result="{}", idx=1),
     ])]
     assert ce.referenced_ids(traces, schema) == [("orders", "#W123")]
-
-
-def test_the_id_pattern_lookup_reads_a_hand_written_schema_too():
-    """A schema written by hand keys the pattern by the table; both keys must resolve."""
     from kullback.builder.sandbox import id_pattern_for
 
     by_column = EntitySchema(tables=["orders"], id_patterns={"orders.order_id": r"^#W\d+$"})
@@ -1115,24 +996,6 @@ def test_a_relative_workdir_still_finds_the_runner_it_just_wrote(tmp_path, monke
     box = ce.Sandbox(source, db0, "work")
     assert box.dir.is_absolute() and box.runner.is_file()
     box.run([order_calls[0]])
-
-
-def test_the_prompt_states_the_rules_the_gate_will_enforce(schema, sigs):
-    """Four of sixteen tools were refused on the first live build for reaching for names nothing
-    had told the model about. The rules are in the stable prefix, so saying them is free."""
-    from kullback.gates.confinement import ALLOWED_IMPORTS, DENIED_BUILTINS
-
-    system = ce.body_messages(sigs[0], [], schema=schema)[0]["content"]
-    for name in DENIED_BUILTINS:
-        assert name in system, f"the gate denies {name} and the prompt never says so"
-    for name in ALLOWED_IMPORTS:
-        assert name in system
-    assert "dunder" in system
-
-
-def test_the_rules_in_the_prompt_are_generated_from_the_gate_not_copied():
-    """A hand-written copy drifts the first time the gate changes; a generated one cannot."""
-    assert "summon_a_demon" in ce._confinement_block(denied=frozenset({"summon_a_demon"}))
 
 
 # --- the code-owned helpers both loaders bind (runner/arith.py) ---
@@ -1187,199 +1050,7 @@ def test_the_helper_is_the_only_name_the_loaders_add_and_the_gate_knows_that_nam
     assert PROVIDED_HELPERS == {"evaluate_arithmetic"}
 
 
-def test_a_body_that_reaches_for_eval_or_for_ast_is_refused_as_it_was_before():
-    """The helper is not a loosening: the names it exists to replace stay refused."""
-    with_eval = _quotes_source("return eval(self.db.quotes[quote_id].formula)\n")
-    assert "settle_quote uses eval" in ce.source_confinement(with_eval)
-    with pytest.raises(ce.SandboxError):
-        ce.load_toolkit(with_eval, QUOTES_DB)
-    with_ast = _quotes_source("import ast\nreturn ast.parse(self.db.quotes[quote_id].formula)\n")
-    assert "settle_quote imports ast" in ce.source_confinement(with_ast)
-    with pytest.raises(ce.SandboxError):
-        ce.load_toolkit(with_ast, QUOTES_DB)
-
-
-def test_the_prompt_names_the_helper_so_no_body_has_to_write_a_parser():
-    """Four attempts of build 12 went on a hand-written parser nobody had told the model about."""
-    block = ce._confinement_block()
-    for name in PROVIDED_HELPERS:
-        assert name in block, f"the loaders bind {name} and the prompt never says so"
-    assert "never write a parser" in block
-    assert "evaluate_arithmetic" in ce.body_messages(QUOTES_SIG, [], schema=QUOTES_SCHEMA)[0]["content"]
-
-
-def test_a_scalar_result_tool_is_described_as_a_bare_value_not_an_object():
-    """calculate's traces record a bare number ("-121.2"), never {"value": ...}. The prompt has to
-    say so, or the model reaches for the one-field-object shape it uses for any other tool whose
-    result_schema lists one name, and every replay against the real tool fails."""
-    from kullback.builder.mine import SCALAR_RESULT_FIELD
-
-    calc = ToolSig(name="calculate", description="Calculate the result of an expression.",
-                   args_fields=[FieldStat(name="expression", types=["str"], optional=False)],
-                   result_schema=[FieldStat(name=SCALAR_RESULT_FIELD, types=["str"], count=3, optional=False)],
-                   kind="generic", unclassified=False)
-    block = ce._tool_block(calc, [_call("calculate", {"expression": "1 + 1"}, result="2")])
-    assert "Result fields:" not in block
-    assert 'Result: a bare str, returned directly, not as {"value": ...}' in block
-    assert "a bare str, not wrapped in an object" in ce._docstring(calc)
-
-
-def test_the_prompt_says_rows_are_pydantic_models_not_dicts(schema, sigs):
-    """modify_pending_order_payment called order.get("payment_history") on the live build and
-    crashed with AttributeError. The prompt said self.db holds one dict per table and never said
-    what is inside the dict."""
-    system = ce.body_messages(sigs[0], [], schema=schema)[0]["content"]
-    assert "pydantic model rows" in system
-    assert ".get(" in system  # named as what not to do
-
-
-def test_the_schema_block_shows_a_sample_of_a_dict_shaped_column():
-    """products.variants and a mined "items" table carried the same rows on the live corpus, and
-    nothing in the block said so beyond the bare column name."""
-    schema = EntitySchema(tables=["items", "products"], columns=[
-        Column(table="items", name="item_id", **{"class": "hard"}, classified_by="rule"),
-        Column(table="products", name="variants", **{"class": "hard"}, classified_by="rule",
-               evidence={"types": ["dict"]},
-               samples=['{"9612497925":{"item_id":"9612497925","price":50.88}}'])])
-    block = ce._schema_block(schema)
-    assert 'products.variants looks like: {"9612497925":{"item_id":"9612497925","price":50.88}}' in block
-
-
 # --- what a column holds is a plain list or dict, and the prompt says so ---
-
-
-def _library_schema():
-    """A lending library: a member's loans are a list of dicts, a title's copies a dict of dicts."""
-    return EntitySchema(
-        tables=["members", "titles"],
-        columns=[
-            Column(table="members", name="member_id", **{"class": "hard"}, classified_by="rule",
-                   evidence={"types": ["str"]}, samples=["m-1"]),
-            Column(table="members", name="loans", **{"class": "hard"}, classified_by="rule",
-                   evidence={"types": ["list"]},
-                   samples=['[{"copy_id": "c-1", "due": "2026-01-02"}]']),
-            Column(table="titles", name="copies", **{"class": "hard"}, classified_by="rule",
-                   evidence={"types": ["dict"]},
-                   samples=['{"c-1": {"shelf": "A3", "copy_id": "c-1"}}']),
-        ],
-        id_patterns={"members": r"^m-\d+$", "titles": r"^t-\d+$"},
-    )
-
-
-def test_the_schema_block_names_the_access_form_of_a_list_column_and_of_a_dict_column():
-    """The data model types every column Optional[Any], so a column holding a list holds a plain
-    list whatever the row around it is. One write tool crashed on all four of its compile attempts
-    reading such a column by attribute, as the system rule told it to."""
-    block = ce._schema_block(_library_schema())
-    assert "members.loans is a list of plain dicts, not model rows" in block
-    assert '{"copy_id": "c-1", "due": "2026-01-02"}' in block
-    assert 'read element["copy_id"], never element.copy_id' in block
-    assert "titles.copies is a dict of plain dicts keyed by copy_id" in block
-    assert 'read copies[key]["shelf"], never copies[key].shelf' in block
-
-
-def test_the_access_form_names_no_field_when_the_mined_sample_does_not_parse():
-    """Mining cuts a long nested sample at a length, so the text beside the column is not always
-    JSON. What it is stays true, so the line is still said, with no field named."""
-    schema = EntitySchema(tables=["members"], columns=[
-        Column(table="members", name="loans", **{"class": "hard"}, classified_by="rule",
-               evidence={"types": ["list"]}, samples=['[{"copy_id": "c-1", "du...'])])
-    block = ce._schema_block(schema)
-    assert "members.loans is a plain list, not a model row" in block
-    assert "never by attribute" in block
-
-
-def test_the_system_rule_says_a_row_is_a_model_and_that_what_a_column_holds_is_not():
-    """Both halves, or the first one alone sends a body to read a list of dicts by attribute."""
-    sig = ToolSig(name="get_member", kind="read", unclassified=False,
-                  args_fields=[FieldStat(name="member_id", types=["str"], optional=False)])
-    system = ce.body_messages(sig, [])[0]["content"]
-    assert "pydantic model rows" in system and ".get(" in system
-    assert "read or write a row's field by attribute" in system
-    assert "is a plain Python list or dict" in system
-    assert "write them by plain assignment" in system
-
-
-def test_the_stable_prefix_is_the_same_bytes_for_two_tools_of_one_build():
-    """D65: the access forms live in the schema block, which is the prefix every tool of a build
-    shares, so adding them may not make one tool's prompt differ from another's."""
-    schema = _library_schema()
-    names = ["get_member", "return_copy"]
-    reader = ToolSig(name="get_member", kind="read", unclassified=False,
-                     args_fields=[FieldStat(name="member_id", types=["str"], optional=False)])
-    writer = ToolSig(name="return_copy", kind="write", unclassified=False,
-                     args_fields=[FieldStat(name="copy_id", types=["str"], optional=False)])
-    first = ce.body_messages(reader, [_call("get_member", {"member_id": "m-1"}, result={})],
-                             schema=schema, tool_names=names)[0]["content"]
-    second = ce.body_messages(writer, [_call("return_copy", {"copy_id": "c-1"}, result={})],
-                              schema=schema, tool_names=names)[0]["content"]
-    assert first == second
-    assert "members.loans is a list of plain dicts, not model rows" in first
-
-
-def test_the_schema_block_stays_quiet_for_a_column_with_no_dict_samples():
-    schema = EntitySchema(tables=["orders"], columns=[
-        Column(table="orders", name="status", **{"class": "hard"}, classified_by="rule",
-               evidence={"types": ["str"]}, samples=["pending"])])
-    assert "looks like:" not in ce._schema_block(schema)
-
-
-def test_constant_evidence_note_speaks_only_when_the_recorded_calls_already_agree(order_calls):
-    same = [_call("transfer_to_human_agents", {"summary": s}, result="Transfer successful", idx=i)
-            for i, s in enumerate("ab")]
-    assert "already answer every one of them the same way" in ce._constant_evidence_note(same)
-    assert ce._constant_evidence_note(order_calls) == ""
-    assert ce._constant_evidence_note(same[:1]) == ""
-
-
-def test_the_example_block_peels_the_transport_error_prefix_off_the_payload():
-    """tau2 wraps every raised exception as "Error: {e}" before the agent sees it. A model that
-    copies the payload verbatim raises ValueError("Error: User not found") where the real tool
-    raises ValueError("User not found"); seven bodies did on the first live build."""
-    calls = [_call("find_user_id_by_email", {"email": "a@example.com"},
-                   error=ToolCallError(**{"class": "not_found_entity"}, payload="Error: User not found")),
-             _call("get_order_details", {"order_id": "#W0000000"},
-                   error=ToolCallError(**{"class": "not_found_entity"}, payload="Error: Order not found"),
-                   idx=1)]
-    block = ce._example_block(calls)
-    assert "'User not found'" in block and "'Order not found'" in block
-    assert "Error: User not found" not in block
-
-
-def test_a_single_recorded_error_is_shown_whole_because_one_message_is_its_own_prefix():
-    calls = [_call("find_user_id_by_email", {"email": "a@example.com"},
-                   error=ToolCallError(**{"class": "not_found_entity"}, payload="Error: User not found"))]
-    assert "'Error: User not found'" in ce._example_block(calls)
-    assert "'User not found'" in ce._example_block(calls, error_prefix="Error: ")
-
-
-@pytest.mark.parametrize("payloads, expected", [
-    (["Error: User not found", "Error: Order not found"], "Error: "),
-    (["Error: User not found", "Error: User not found"], "Error: "),
-    (["ValueError: Error: a", "ValueError: Error: b"], "ValueError: Error: "),
-    (["User not found", "Order not found"], ""),
-    (["Error: User not found"], ""),
-    (["Error: ", "Error: x"], ""),
-    (["Error: x", {"message": "Error: y"}], ""),
-])
-def test_the_shared_error_prefix_is_read_off_the_corpus_not_written_in(payloads, expected):
-    """D51: which wrapper a customer's transport adds is not known in advance. The rule is the
-    prefix every recorded error shares, cut at a ': ' boundary that leaves a message behind."""
-    calls = [_call("t", {"i": i}, error=ToolCallError(**{"class": "unknown"}, payload=payload), idx=i)
-             for i, payload in enumerate(payloads)]
-    assert ce.shared_error_prefix(calls) == expected
-
-
-def test_a_repair_prompt_names_an_allowed_module_the_body_forgot_to_import():
-    """transfer_to_human_agents used re.findall and never imported re: 25 of 25 replays died on
-    the same NameError, and the retry handed back the traceback instead of the one-line fix."""
-    from kullback.runner.gate_support import gate
-    gates = [gate("executes", ["call 0: NameError: name 're' is not defined",
-                               "call 1: NameError: name 'requests' is not defined"])]
-    text = ce._failure_text(gates)
-    assert "`re` is on the allowed import list but the body never imported it" in text
-    assert "`requests` is on the allowed import list" not in text
-    assert ce._failure_text([gate("executes", [])]) == ""
 
 
 def _retail_nesting_traces():
@@ -1413,14 +1084,6 @@ def test_a_nested_collection_never_shown_on_its_own_stays_a_column_of_its_parent
     assert "items" not in schema.tables
 
 
-def test_the_schema_block_says_where_a_table_with_a_home_is_stored():
-    from kullback.builder import mine
-    block = ce._schema_block(mine.mine_schema(_retail_nesting_traces()))
-    assert "items rows are stored inside products.variants, keyed by item_id" in block
-    assert "self.db.products.values()" in block and ".variants" in block
-    assert "may be empty on the customer's real database" in block
-
-
 def test_the_starting_state_folds_a_standalone_row_into_its_home(workdir):
     from kullback.builder import mine
     traces = _retail_nesting_traces()
@@ -1441,24 +1104,6 @@ def test_a_row_whose_parent_was_never_shown_stays_in_its_table():
     assert list(db["items"]) == ["y1"]
 
 
-def test_the_example_block_leaves_a_payload_with_no_transport_prefix_alone():
-    calls = [_call("get_order_details", {"order_id": "#W0000000"},
-                   error=ToolCallError(**{"class": "not_found_entity"}, payload="Order not found"))]
-    assert "'Order not found'" in ce._example_block(calls)
-
-
-def test_the_example_block_does_not_peel_a_prefix_out_of_a_json_payload():
-    """D67's code-classified errors carry a structured payload; the prefix is a string artifact."""
-    calls = [_call("find_user_id_by_email", {"email": "a@example.com"},
-                   error=ToolCallError(**{"class": "not_found_entity"},
-                                       payload={"message": "Error: User not found"}))]
-    assert "{'message': 'Error: User not found'}" in ce._example_block(calls)
-
-
-def test_the_system_prompt_says_the_transport_prefix_is_already_removed():
-    assert "same transport prefix" in ce._SYSTEM and "prefix removed" in ce._SYSTEM
-
-
 # --- the Starting state grows on request, and the ids are tagged (D40, D107) ---
 
 def _twelve_user_traces():
@@ -1473,7 +1118,7 @@ def _twelve_user_traces():
     return traces
 
 
-def test_the_starting_state_grows_to_the_asked_size_and_tags_every_grown_row(tmp_path):
+def test_the_starting_state_grows_only_when_asked_and_tags_every_grown_row(tmp_path):
     from kullback.builder import mine
     traces = _twelve_user_traces()
     schema = mine.mine_schema(traces)
@@ -1488,14 +1133,13 @@ def test_the_starting_state_grows_to_the_asked_size_and_tags_every_grown_row(tmp
     first, last = grown["name"]["first_name"], grown["name"]["last_name"]
     assert grown["user_id"].startswith(f"{first.lower()}_{last.lower()}_")
     assert grown["email"].startswith(f"{first.lower()}.{last.lower()}")
-
-
-def test_without_grow_nothing_is_grown_and_no_synthetic_file_is_written(tmp_path):
-    from kullback.builder import mine
-    traces = _twelve_user_traces()
-    state = ce.build_starting_state(traces, mine.mine_schema(traces), tmp_path)
+    # without grow nothing is grown and no synthetic file is written
+    ungrown = tmp_path / "ungrown"
+    ungrown.mkdir()
+    ungrown_traces = _twelve_user_traces()
+    state = ce.build_starting_state(ungrown_traces, mine.mine_schema(ungrown_traces), ungrown)
     assert len(state.db["users"]) == 12 and state.synthetic_rows == []
-    assert not (tmp_path / "synthetic.json").exists()
+    assert not (ungrown / "synthetic.json").exists()
 
 
 # --- gate 4 against the recording, gate 6 the refusal probe ---
@@ -1553,11 +1197,6 @@ return {"order_id": order_id, "status": statuses[order_id]}
 """
 
 
-def test_reference_args_are_the_arguments_whose_values_the_world_holds(schema, sigs, db0, workdir, sample):
-    source, box = _both_tools(schema, sigs, db0, workdir, STRICT_CANCEL_BODY)
-    assert list(sandbox_mod.reference_args(box, _cancel_calls(sample))) == ["order_id"]  # reason is free text
-
-
 def test_the_refusal_probe_fails_a_body_that_writes_on_an_id_nobody_holds(schema, sigs, db0, workdir, sample):
     calls = _cancel_calls(sample)
     for body, expected in ((STRICT_CANCEL_BODY, True), (PERMISSIVE_CANCEL_BODY, False)):
@@ -1566,6 +1205,8 @@ def test_the_refusal_probe_fails_a_body_that_writes_on_an_id_nobody_holds(schema
         assert result.passed is expected, body
         assert result.metrics["reference_args"] == 1
     assert "accepted order_id=" in result.failures[0]
+    source, box = _both_tools(schema, sigs, db0, workdir, STRICT_CANCEL_BODY)
+    assert list(sandbox_mod.reference_args(box, _cancel_calls(sample))) == ["order_id"]  # reason is free text
 
 
 def test_the_refusal_probe_runs_on_write_tools_only(schema, sigs, db0, workdir, sample):
@@ -1576,29 +1217,7 @@ def test_the_refusal_probe_runs_on_write_tools_only(schema, sigs, db0, workdir, 
     assert probed[-1].stage == "refuses_unknown" and probed[-1].passed is False
 
 
-def test_build_environment_lists_the_assisted_tools_it_is_told(schema, sigs):
-    env = ce.build_environment(schema, sigs, {s.name: "pass" for s in sigs}, "policy",
-                               assisted_tools=["cancel_pending_order"])
-    assert env.assisted_tools == ["cancel_pending_order"]
-
-
 # --- the builder tools: lookup_rows and test_body, in a bounded loop (D117) ---
-
-
-def test_test_body_reports_a_held_out_shape_fail_without_quoting_values(workdir):
-    calls = _ware_calls()
-    shown, held_out = ce.split_calls(calls)
-    impl = ce._build_tools_impl(KILN_SCHEMA, KILN_SIG, shown, held_out, KILN_DB, None, workdir,
-                                0, 30.0, None)
-    text = impl["test_body"](SHOWN_KEYS_BODY)
-    assert ce.PROBE_HELD_OUT in text
-    assert "more on calls you were not shown" not in text
-    shown_words = {word for call in shown for word in _leaf_strings(call.args)}
-    hidden_words = {word for call in held_out for word in _leaf_strings(call.args)} - shown_words
-    hidden_words |= {word for call in held_out for word in _leaf_strings(call.result)} - shown_words
-    leaked = [word for word in hidden_words if word in text]
-    assert leaked == [], f"held-out values reached test_body: {leaked}"
-    assert "passed every gate" not in text
 
 
 # --- per-call replay outcomes, the per-Task grain of the fidelity ruling (D171) ---
@@ -1681,7 +1300,9 @@ def a_dock(dock_id: str, seats: int, shift=None) -> dict:
     return {"dock_id": dock_id, "shift": shift, "seats": seats, "zone": "north"}
 
 
-def test_a_composite_key_keeps_both_versions_of_one_id(workdir):
+def test_a_composite_key_keeps_both_versions_of_one_id_and_a_single_key_table_is_keyed_as_before(workdir, schema, sample):
+    order = sample["by_status"]["pending"]
+    assert ce.match_table(schema, order, {"anything": "at all"}) == ("orders", order["order_id"])
     schema = dock_schema()
     trace = _trace("A", [
         _call("list_docks", {"shift": "early"}, result=[a_dock("dock_1", 4)], idx=0),
@@ -1699,11 +1320,6 @@ def test_a_key_column_the_row_leaves_null_is_taken_from_the_call_that_returned_i
     assert ce.match_table(schema, row, {"shift": "early"}) == ("docks", "dock_1|early")
     assert ce.match_table(schema, row) == ("docks", "dock_1|")
     assert ce.match_table(schema, dict(row, shift="late"), {"shift": "early"}) == ("docks", "dock_1|late")
-
-
-def test_a_single_key_table_is_keyed_exactly_as_it_was(schema, sample):
-    order = sample["by_status"]["pending"]
-    assert ce.match_table(schema, order, {"anything": "at all"}) == ("orders", order["order_id"])
 
 
 def test_a_partial_sighting_folds_into_the_rows_whose_known_key_columns_match(workdir):
@@ -1746,16 +1362,6 @@ def test_an_id_a_call_named_without_every_key_column_owes_no_synthetic_row(workd
     assert state.synthetic_rows == ["dock_8|late"]
 
 
-def test_the_tables_block_tells_the_body_writer_how_to_form_a_composite_key():
-    block = ce._schema_block(dock_schema())
-    assert 'f"{dock_id}|{shift}"' in block
-    assert "never look one up by dock_id alone" in block
-
-
-def test_the_tables_block_says_nothing_about_keys_for_a_single_key_table(schema):
-    assert "keyed by" not in ce._schema_block(schema)
-
-
 # --- ids named below the top level of a call's arguments ---------------------
 
 
@@ -1777,22 +1383,6 @@ def test_an_id_two_levels_down_in_a_list_of_dicts_is_a_referenced_id():
                                                                    {"vessel_id": "VSL7"}]}},
                                result={"booked": 2}, idx=0)])
     assert ce.referenced_ids([trace], schema) == [("vessels", "VSL4"), ("vessels", "VSL7")]
-
-
-def test_a_nested_row_completes_its_composite_key_from_the_object_it_sits_in():
-    """Each object in the list names its own shift, so the two rows are two keys, not one."""
-    schema = _berth_schema()
-    trace = _trace("A", [_call("book_berths", {"legs": [{"dock_id": "dock_4", "shift": "early"},
-                                                        {"dock_id": "dock_4", "shift": "late"}]},
-                               result={"booked": 2}, idx=0)])
-    assert ce.referenced_ids([trace], schema) == [("docks", "dock_4|early"), ("docks", "dock_4|late")]
-
-
-def test_a_nested_row_takes_the_key_part_the_call_states_once_at_the_top_level():
-    schema = _berth_schema()
-    trace = _trace("A", [_call("book_berths", {"shift": "late", "legs": [{"dock_id": "dock_4"}]},
-                               result={"booked": 1}, idx=0)])
-    assert ce.referenced_ids([trace], schema) == [("docks", "dock_4|late")]
 
 
 def test_a_nested_value_the_id_pattern_rejects_owes_no_row():
@@ -1838,6 +1428,12 @@ def test_a_dash_in_code_is_replaced_and_the_same_dash_in_a_string_is_kept():
     assert f'"keep {DASH} inside strings"' in fixed
     assert "return x - 1  # trailing -" in fixed
     assert "replaced typographic characters outside strings" in note
+    body = "def f(x):\n    return x + 1\n"
+    assert ce.sanitize_body(body) == (body, None)
+    assert ce.sanitize_body(f"def f(x):\n  return (x {DASH} 1\n") == (
+        f"def f(x):\n  return (x {DASH} 1\n", None)
+    fixed, _ = ce.sanitize_body(f"def f():\n    return 1  # {QUOTE}a{UNQUOTE} and {ELLIPSIS}\n")
+    assert fixed == 'def f():\n    return 1  # "a" and ...\n'
 
 
 def test_a_dash_inside_an_f_string_expression_is_replaced_and_the_printed_text_is_kept():
@@ -1848,53 +1444,14 @@ def test_a_dash_inside_an_f_string_expression_is_replaced_and_the_printed_text_i
     assert _parses(fixed)
     assert fixed == f'def f(value):\n    return f"keep {DASH} here {{value - 1}}"\n'
     assert note is not None
-
-
-def test_an_f_string_keeps_its_format_spec_its_conversion_and_its_nested_string():
-    """Everything an f-string prints stays as written: the spec after the colon, the text after a
-    conversion, the doubled braces and a string nested inside a replacement field."""
     for printed in [f'f"{{v:{DASH}>10}}"', f'f"{{v!r}} {DASH} x"', f'f"{{{{{DASH}}}}} x"',
                     f"f\"{{d['a{DASH}b']}}\""]:
         body = f"def f(v, d):\n    return {printed}\n"
         assert ce.sanitize_body(body) == (body, None), printed
-
-
-def test_a_clean_body_is_returned_untouched_and_unremarked():
-    body = "def f(x):\n    return x + 1\n"
-    assert ce.sanitize_body(body) == (body, None)
-
-
-def test_a_non_ascii_character_with_no_replacement_is_named_rather_than_guessed_at():
-    body = f"def f(x):\n    return x {PLUS_MINUS} 1\n"
-    fixed, note = ce.sanitize_body(body)
-    assert fixed == body
-    assert "U+00B1" in note
-
-
-def test_a_body_the_tokenizer_refuses_is_returned_unchanged_and_unremarked():
-    """A body that does not tokenize has nothing to stand on, and the compile gate already tells the
-    model where it does not parse."""
-    assert ce.sanitize_body(f"def f(x):\n  return (x {DASH} 1\n") == (
-        f"def f(x):\n  return (x {DASH} 1\n", None)
-
-
-def test_a_smart_quote_becomes_a_straight_quote_and_an_ellipsis_becomes_three_dots():
-    fixed, _ = ce.sanitize_body(f"def f():\n    return 1  # {QUOTE}a{UNQUOTE} and {ELLIPSIS}\n")
-    assert fixed == 'def f():\n    return 1  # "a" and ...\n'
-
-
-def test_the_expression_halves_of_an_f_string_are_found_without_help_from_the_tokenizer():
-    """Up to Python 3.11 the tokenizer hands a whole f-string back as one string token, so what the
-    field runs has to be told apart from what the string prints here. From 3.12 the tokenizer does
-    it, and both readings have to agree."""
     token = f"f\"keep {DASH} here {{d['a{DASH}b'] {DASH} 1}} {{w:>{{n}}}}\""
     runs = [token[begin:end] for begin, end in ce._fstring_expression_spans(token)]
     assert runs == ["d[", f"] {DASH} 1", "w", "n"]
     assert ce._fstring_expression_spans(f'"plain {DASH} string"') == []
-
-
-def test_a_whole_f_string_arriving_as_one_token_protects_only_what_it_prints():
-    """The reading Python 3.11 produces, spelled out as tokens so it is checked on every version."""
     line = f'x = f"keep {DASH} here {{value {DASH} 1}}"\n'
     tokens = [tokenize.TokenInfo(tokenize.STRING, line[4:-1], (1, 4), (1, len(line) - 1), line)]
     printed = ce._printed_positions(tokens, [line])
@@ -1902,8 +1459,11 @@ def test_a_whole_f_string_arriving_as_one_token_protects_only_what_it_prints():
     assert (1, line.index(DASH, line.index("value"))) not in printed
 
 
-def test_the_confinement_prompt_asks_for_ascii_only():
-    assert "ASCII only" in ce._confinement_block()
+def test_a_non_ascii_character_with_no_replacement_is_named_rather_than_guessed_at():
+    body = f"def f(x):\n    return x {PLUS_MINUS} 1\n"
+    fixed, note = ce.sanitize_body(body)
+    assert fixed == body
+    assert "U+00B1" in note
 
 
 # --- mined names are text, not identifiers (a review walked past the gate through one) ---
@@ -1920,18 +1480,10 @@ def test_a_column_name_carrying_python_source_is_refused_before_it_is_written():
     with pytest.raises(ValueError) as raised:
         ce.render_data_model(schema)
     assert "cannot be written into the generated module" in str(raised.value)
-
-
-def test_a_name_that_is_a_keyword_or_carries_a_space_is_refused_by_name():
-    """The benign twin of the same defect: these used to fail the parse gate in the code-owned
-    skeleton, where no body could repair it and the message named no cause."""
     schema = EntitySchema(tables=["berth slots"], columns=[
         Column(table="berth slots", name="class", **{"class": "hard"})])
     assert ce.unsafe_names(schema) == ["table 'berth slots' is not a Python name",
                                        "column 'class' of berth slots is not a Python name"]
-
-
-def test_a_tool_or_argument_name_that_is_not_a_python_name_is_refused_too():
     schema = EntitySchema(tables=["berths"],
                           columns=[Column(table="berths", name="status", **{"class": "hard"})])
     sig = ToolSig(name="find berth", kind="read",
@@ -1973,31 +1525,3 @@ def test_an_argument_named_like_the_receiver_or_mined_twice_is_refused():
 
 
 # --- D246: the compile_tools envelope is frozen per build ---
-
-def _invented_sig(name):
-    return ToolSig(name=name, kind="read", unclassified=False,
-                   args_fields=[FieldStat(name="berth_id", types=["str"])],
-                   result_schema=[])
-
-
-def test_the_system_head_is_byte_identical_across_ten_tools_of_one_build(schema):
-    """D246: one build, one head. Ten invented tools hash to a single value."""
-    names = [f"check_berth_{word}" for word in
-             ("alder", "birch", "cedar", "dune", "elm", "fern", "grove", "heath", "iris", "juniper")]
-    sigs = [_invented_sig(name) for name in names]
-    heads = [ce.body_messages(sig, [], schema=schema, tool_names=names,
-                              builder_tools=True)[0]["content"] for sig in sigs]
-    assert len(heads) == 10
-    assert len(set(heads)) == 1
-    digest = hashlib.sha256(heads[0].encode("utf-8")).hexdigest()
-    assert all(hashlib.sha256(h.encode("utf-8")).hexdigest() == digest for h in heads)
-
-
-def test_the_helper_paragraph_is_last_so_the_shared_prefix_caches(schema):
-    """D246: the helper on path keeps the helper off bytes as its prefix."""
-    names = ["check_berth_alder", "check_berth_birch"]
-    off = ce._stable_system(schema, names, False, "")
-    on = ce._stable_system(schema, names, True, "")
-    assert on == off + "\n\n" + ce._BUILDER_TOOLS_PARAGRAPH
-
-

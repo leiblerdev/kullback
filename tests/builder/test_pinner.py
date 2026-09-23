@@ -160,7 +160,7 @@ def test_a_column_only_a_later_run_read_is_pinned_beside_the_earliest_value(work
     assert row == {"route_id": "R1", "carrier": "north", "status": "open"}
 
 
-def test_two_runs_that_read_one_row_differently_disagree_and_reading_different_parts_does_not(workdir):
+def test_two_runs_that_read_one_row_differently_disagree_and_runs_that_agree_or_read_other_parts_do_not(workdir):
     first = _trace("A", [_call("get_route_details", {"route_id": "R1"},
                                result={"route_id": "R1", "carrier": "north"})])
     second = _trace("B", [_call("get_route_details", {"route_id": "R1"},
@@ -168,6 +168,9 @@ def test_two_runs_that_read_one_row_differently_disagree_and_reading_different_p
     state = ce.build_starting_state([first, second], _schema(), workdir,
                                     [Task(id="t1", run_ids=["A", "B"])], _sigs(), synthetic=False)
     assert any("runs disagree on routes row R1" in line for line in state.assumptions)
+    assert any("t1" in note and "R1" in note and "disagree" in note for note in state.assumptions)
+    overlay, values = ce.load_overlay(workdir, "t1")
+    assert values[overlay.rows[0].version_hash]["carrier"] == "north", "the first version read is kept"
     other_parts = workdir.parent / "other_parts"
     other_parts.mkdir()
     first = _trace("A", [_call("get_route_details", {"route_id": "R1"},
@@ -177,6 +180,13 @@ def test_two_runs_that_read_one_row_differently_disagree_and_reading_different_p
     state = ce.build_starting_state([first, second], _schema(), other_parts,
                                     [Task(id="t1", run_ids=["A", "B"])], _sigs(), synthetic=False)
     assert not any("runs disagree" in line for line in state.assumptions)
+    same = workdir.parent / "same"
+    same.mkdir()
+    agree = [_trace(run, [_call("get_route_details", {"route_id": "R1"},
+                                result={"route_id": "R1", "carrier": "north"})]) for run in ("A", "B")]
+    state = ce.build_starting_state(agree, _schema(), same, [Task(id="t1", run_ids=["A", "B"])], _sigs(),
+                                    synthetic=False)
+    assert not [note for note in state.assumptions if "disagree" in note]
 
 
 def test_a_scalar_reading_is_pinned_through_the_tools_own_reader(workdir):
@@ -350,9 +360,13 @@ def test_a_nested_element_takes_the_missing_key_part_from_the_dict_it_sits_in(wo
     assert sorted(state.db["runs"]) == ["N1|mon", "N1|tue"]
     assert state.db["runs"]["N1|mon"]["seats"] == 4
     assert _pins(workdir)["nested_key_sources"] == {"own": 0, "parent": 2, "args": 0, "missing": 0}
+    # an argument list whose objects each name their key part names one row per object
+    legs = _call("search_routes", {"legs": [{"run_id": "N1", "day": "mon"}, {"run_id": "N1", "day": "tue"}]},
+                 result=[], idx=1)
+    assert ce.referenced_ids([_trace("B", [legs])], _run_schema()) == [("runs", "N1|mon"), ("runs", "N1|tue")]
 
 
-def test_a_key_part_the_call_states_twice_names_no_row_and_the_sighting_keeps_a_partial_key(workdir):
+def test_a_key_part_the_call_states_once_names_the_row_and_twice_names_none(workdir):
     """One candidate in the arguments can name a row; two candidates name none of them."""
     one = _call("search_routes", {"day": "mon"}, result=[{"run_id": "N1", "seats": 4}], idx=0)
     both = _call("search_routes", {"days": [{"day": "mon"}, {"day": "tue"}]},
@@ -362,6 +376,9 @@ def test_a_key_part_the_call_states_twice_names_no_row_and_the_sighting_keeps_a_
     assert "N1|mon" in state.db["runs"]
     assert "N2|" in state.db["runs"], "the part the call could not name is left empty, not guessed"
     assert _pins(workdir)["nested_key_sources"]["args"] == 1
+    # a key part the call states once at the top level completes a nested row
+    once = _call("search_routes", {"day": "tue", "legs": [{"run_id": "N1"}]}, result=[], idx=2)
+    assert ce.referenced_ids([_trace("B", [once])], _run_schema()) == [("runs", "N1|tue")]
 
 
 def test_a_nested_element_a_write_named_is_marked_written_so_the_world_keeps_its_earlier_value(workdir):
