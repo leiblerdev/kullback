@@ -211,7 +211,7 @@ def builder_extension(root: BuilderRoot) -> Callable[[ExtensionAPI], None]:
         model = getattr(getattr(api, "harness", None), "model", None)
         for tool in domain_tools(workdir=root.workdir, model=model, examine_fn=root.examine_fn,
                                  judge_model=root.judge_model, probe_model=root.probe_model,
-                                 reroll_model=root.reroll_model):
+                                 reroll_model=root.reroll_model, env=env):
             api.register_tool(tool)
         for name, text in prompt_mod.sections():
             api.add_prompt_section(f"builder_{name}", text)
