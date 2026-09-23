@@ -478,3 +478,10 @@ def test_an_already_qualified_model_id_is_left_alone(tmp_path):
     assert budget.priced_model_id(Cost(provider="openai", model="openai/gpt-5.6-luna")) == \
         "openai/gpt-5.6-luna"
     assert budget.priced_model_id(Cost(model="gpt-5.6-luna")) == "gpt-5.6-luna"
+
+
+def test_the_default_model_is_priced_and_has_its_own_window_offline():
+    from kullback.ai.provider import DEFAULT_MODEL
+
+    assert budget.price_for(DEFAULT_MODEL) is not None
+    assert budget.window_for(DEFAULT_MODEL) != budget.DEFAULT_CONTEXT_WINDOW

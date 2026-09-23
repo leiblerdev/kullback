@@ -25,7 +25,7 @@ from kullback.runner.records import Cost, Event, Usage
 # checked by hand on the date below anyway, and add an entry for every model a build
 # actually calls: a model priced by neither source is not priced at zero quietly, its calls
 # are counted under unpriced_calls in the totals file and the report shows that count.
-PRICES_CHECKED = "2026-08-28"
+PRICES_CHECKED = "2026-09-23"
 PRICES_NOTE = (
     "list prices per 1M tokens, checked by hand on "
     + PRICES_CHECKED
@@ -44,6 +44,10 @@ PRICES: dict[str, dict[str, float]] = {
     # cannot see the model at all.
     "opencode-go/muse-spark-1.3-contributor": {"input": 0.10, "output": 0.20, "cache_read": 0.002,
                                                 "cache_write": 0.0},
+    # The harness default model (provider.DEFAULT_MODEL). OpenRouter's catalogue
+    # (api/v1/models, read 2026-09-23), per-token prices times 1M, the tier below 272,000 prompt
+    # tokens; a longer prompt is billed at twice the input and one and a half times the output.
+    "openai/gpt-6-luna": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
 }
 
 # What fits in one call, per model, for the D65 cap. A model with no row uses the default.
@@ -60,6 +64,9 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "openai/gpt-5.6-luna": 400_000,
     "openai/gpt-5.6-sol": 400_000,
     "openai/gpt-5.6-terra": 400_000,
+    # The harness default model: context_length in OpenRouter's catalogue (api/v1/models, read
+    # 2026-09-23).
+    "openai/gpt-6-luna": 1_050_000,
 }
 
 TOTALS_NAME = "budget.json"
