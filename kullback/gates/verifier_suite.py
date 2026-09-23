@@ -59,6 +59,18 @@ _NEVER_HOLDS = "def check(pre_state, write_call, transcript):\n    return False\
 # Reference. It is the only reason the Examiner's stage leaves that Run out (`suite_for` passes the
 # second Reference or None), and a check with no input is not evidence of a narrow Verifier (D173).
 ALT_PATH_NOT_RUN = "one Reference, so there is no second path to score"
+# How a check with no input words its failure line. The GateResult stays not passed, so the
+# derivation keeps the Task untrusted, but a ruling on a proposal reads a line that starts with
+# this as a check that did not run, never as a check the proposal failed (F45).
+NOT_RUN = "not run: "
+
+
+def not_run_reason(failures: Iterable[str]) -> Optional[str]:
+    """Why a check did not run, when every failure line it carries says so; None for a check that ran."""
+    lines = [str(line) for line in failures or ()]
+    if not lines or not all(line.startswith(NOT_RUN) for line in lines):
+        return None
+    return "; ".join(line[len(NOT_RUN):] for line in lines)
 
 # The transcript helpers a compiled Hard predicate may call, pasted into its source by `_predicate`
 # at derivation time and by the policy compiler's sandbox at build time. One text, read by both
@@ -743,7 +755,7 @@ def _run_gate(stage: str, scored: Callable, run: Any, *, expect_pass: bool,
     """
     if run is None:
         return GateResult(stage=stage, passed=False, metrics={"skipped": True, "not_run_reason": missing},
-                          failures=[f"not run: {missing}"])
+                          failures=[f"{NOT_RUN}{missing}"])
     passed, failing_atom = scored(run)
     want = "pass" if expect_pass else "fail"
     failures = [] if passed is expect_pass else [f"expected {want}, got {'pass' if passed else 'fail'}"]
@@ -901,7 +913,7 @@ def loophole_probe(verifier: Verifier, model: Any, *, run_probe: Optional[Callab
         why = f"{missing}, so the Verifier is not known to be tight"
         return GateResult(stage="verifier_loophole", passed=False,
                           metrics={"skipped": True, "not_run_reason": why},
-                          failures=[f"not run: {why}"])
+                          failures=[f"{NOT_RUN}{why}"])
     passed, failing_atom = check_run(verifier, run_probe(model, verifier), canon, write_tools=write_tools)
     return GateResult(stage="verifier_loophole", passed=not passed,
                       metrics={"probe_passed": passed, "failing_atom": failing_atom},

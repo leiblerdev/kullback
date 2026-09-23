@@ -323,18 +323,34 @@ def evidence_of(root: ExamRoot, task_id: Optional[str] = None) -> dict:
     the trusted gate reads. Empty is None, so a gate with nothing to rule over is skipped the
     way a missing workdir file skips it.
 
-    With a `task_id`, the D79 suite's inputs for that Task join them (`reference_evidence`), so
-    the suite rules on the write. A Task with no Reference Run on disk adds nothing, and the
-    suite is skipped for missing evidence as before.
+    With a `task_id`, the ruling is on that Task only (F47): the Verifier, probes, Runs, replay and
+    re-roll rows, history and status row handed on are that Task's, as empty containers where it
+    has none, so no loader fills them back with the whole set. The gates keep their loops over
+    what they are given, so another Task's missing probe or failed suite can no longer refuse this
+    proposal. The D79 suite's inputs for that Task join them (`reference_evidence`), so the suite
+    rules on the write. A Task with no Reference Run on disk adds nothing, and the suite is
+    skipped for missing evidence as before. Without a `task_id` (the status pass) every Task is
+    handed on.
     """
+    task_runs = task_runs_of(root.replays, root.rerolls, workdir=root.workdir)
     evidence = {"replays": root.replays or None, "rerolls": root.rerolls or None,
-                "history": root.history or None, "task_runs": task_runs_of(root.replays, root.rerolls, workdir=root.workdir) or None,
+                "history": root.history or None, "task_runs": task_runs or None,
                 "verifiers": list(root.verifiers.values()) or None, "probes": _probe_pools(root) or None,
                 "sigs": root.sigs or None, "rules": root.canon_rules,
                 "task_status": root.task_status or None}
     if task_id is not None:
+        verifier = root.verifiers.get(task_id)
+        evidence.update({name: _own(evidence[name], task_id)
+                         for name in ("replays", "rerolls", "history", "task_runs", "probes")})
+        evidence.update({"verifiers": [verifier] if verifier is not None else [],
+                         "task_status": _own(root.task_status, task_id) if root.task_status else None})
         evidence.update(reference_evidence(root, task_id))
     return evidence
+
+
+def _own(rows: Optional[dict], task_id: str) -> dict:
+    """One Task's entry of a per-Task mapping, or an empty mapping when it has none."""
+    return {task_id: rows[task_id]} if rows and task_id in rows else {}
 
 
 def reference_evidence(root: ExamRoot, task_id: str) -> dict:

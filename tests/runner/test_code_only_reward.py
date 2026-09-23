@@ -452,7 +452,7 @@ def test_broken_predicate_keeps_unproven_coverage_unverdicted():
         ],
     )
     assert S.check_run(verifier, _passing_run(), write_tools=WRITE_TOOLS) == (
-        False, "extra_write:archive_entry")
+        False, "atom b0: kind None is not scored")
     out = verdict(_passing_run(), verifier, write_tools=WRITE_TOOLS,
                   judge_results={"j0": True})
     assert out.passed is False

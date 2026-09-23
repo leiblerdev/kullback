@@ -22,6 +22,8 @@ _WORD = re.compile(r"[A-Za-z0-9#$€£¥._/-]+")
 CURRENCY = "".join(CanonRules().currency_symbols)
 AFFIRMATIONS = ("yes", "yeah", "yep", "sure", "please do", "go ahead", "confirm", "correct", "ok", "okay")
 JUDGE_MUST_HOLD = frozenset({"required", "question", "communicate", "hard"})
+# The payload kinds check_run scores a required atom on; a Hard atom is scored on its predicate_src (F51).
+SCORED_KINDS = ("write", "write_value", "entity_count", "question", "communicate")
 
 
 def is_judge_must_hold(atom: Atom) -> bool:
@@ -522,6 +524,11 @@ def evaluated_atoms(atoms: Iterable[Atom]) -> list[Atom]:
     return kept
 
 
+def unscored(atom: Atom) -> str:
+    """The failure check_run names for a required atom whose payload kind it does not score."""
+    return f"atom {atom.id}: kind {atom_payload(atom).get('kind')} is not scored"
+
+
 def check_run(verifier: Any, run: Any, canon: Any = None, *,
               write_tools: Optional[Iterable[str]] = None) -> tuple[bool, Optional[str]]:
     """Does this Run satisfy the atoms? Called by the D79 checks and, through them, the gates."""
@@ -546,6 +553,9 @@ def check_run(verifier: Any, run: Any, canon: Any = None, *,
             if held is False:
                 return False, atom.id
             continue
+        if atom.kind == "required" and kind not in SCORED_KINDS:
+            # A required atom nothing here can score is a failure, never a vacuous pass (F51).
+            return False, unscored(atom)
         if kind == "write" and (payload.get("tool") not in wrote_with if names_no_row(payload)
                                 else target not in present):
             return False, atom.id

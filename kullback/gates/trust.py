@@ -20,6 +20,10 @@ the other steps. Every ruling carries the fraction (`false_rejection`), the pool
 A suite failure names every check behind it (D198): the ones that failed and the ones that had no
 input with the reason each gate gave, in the suite's fixed order, so a reader can tabulate the Tasks
 that stop here instead of reading one sentence that says only that they stopped.
+
+A Task whose suite failed only by checks that had no input is ruled on every other step first, and
+held by the not-run checks only when all of them pass; `not_run_only` names those Tasks, so a
+proposal on one is not refused for a check nobody could run (F45).
 """
 
 from __future__ import annotations
@@ -112,6 +116,16 @@ def _suite_reason(row: Any, skipped: list[str]) -> str:
     return "the D79 suite did not pass: " + ", ".join(named)
 
 
+def _held_by_not_run(row: Any, skipped: list[str]) -> bool:
+    """The suite did not pass only because checks had no input: every check that ran passed (F45).
+
+    The Task stays untrusted, the reason names each check not run and why, and a proposal ruled on
+    it is not refused for that: the checks nobody could run say nothing against the atoms proposed.
+    """
+    checks = _get(row, "checks", None) or {}
+    return bool(skipped) and all(ok for name, ok in checks.items() if name not in skipped)
+
+
 def _is_accepted_version(verifier: Verifier, history: Optional[Any]) -> bool:
     """The current file is the last accepted row of the Task's history, hash for hash."""
     if history is None:
@@ -150,6 +164,7 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     pool_sizes: dict[str, int] = {}
     pool_says: dict[str, str] = {}
     not_run: dict[str, list[str]] = {}
+    not_run_only: list[str] = []
     probes_passing = 0
     failures: list[str] = []
     for verifier in sorted(map(as_verifier, verifiers or ()), key=lambda v: v.task_id):
@@ -168,7 +183,9 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
         skipped = [D79_STAGES.get(stage, stage) for stage in (_get(row, "not_run", None) or [])]
         if skipped:
             not_run[task_id] = skipped
-        if not _get(row, "verifier_passed", False):
+        suite_passed = bool(_get(row, "verifier_passed", False))
+        only_not_run = not suite_passed and _held_by_not_run(row, skipped)
+        if not suite_passed and not only_not_run:
             reason = _suite_reason(row, skipped)
         elif passing:
             reason = f"probe {passing[0]} scores a pass"
@@ -182,6 +199,9 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
         elif over_strict(held):
             reason = (f"false_rejection {pool_says[task_id]}: the required atoms reject every held-out Run that "
                       "reached the Reference, so the Verifier checks one path and not the Task")
+        elif only_not_run:
+            reason = _suite_reason(row, skipped)
+            not_run_only.append(task_id)
         else:
             trusted.append(task_id)
             continue
@@ -189,4 +209,4 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
         failures.append(f"task {task_id}: {reason}")
     return gate("trusted", failures, trusted=trusted, untrusted=untrusted, probes_passing=probes_passing,
                 false_rejection=fractions, false_rejection_pool=pool_sizes, false_rejection_ruling=pool_says,
-                refused=refused, checks_not_run=not_run)
+                refused=refused, checks_not_run=not_run, not_run_only=not_run_only)
