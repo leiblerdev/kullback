@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,7 +52,13 @@ MARKS = {
 }
 
 HELP = """\
-/build [--file PATH]              run the autonomous Builder session over the ingested traces
+/build [--file PATH]              run the autonomous Builder session over the ingested traces,
+                                  in the background: the screen keeps taking commands
+/nudge TEXT                        steer the running session: delivered before its next model turn
+/tell TEXT                         follow up: delivered when the running session would stop
+/stop                              cancel the running session after its current step
+/context                           the session's context: window, used, share, compactions
+/compact                           compact the running session's context when its turn ends
 /run TASK [--count N]              run the Candidate against the built Environment
 /status                            the last build's stages, gates, rounds and spend
 /map                               the pipeline as a diagram: stages, states, hashes
@@ -128,7 +135,12 @@ def registry_refusal(catalog: Optional[dict], model: str) -> Optional[str]:
 # are rendered from this, so a command added here appears in both; HELP stays a literal
 # beside it, and a test fails when a table name is missing from HELP, so the two cannot drift.
 COMMANDS = [
-    ("build", "/build [--file PATH]", "run the Builder over the ingested traces"),
+    ("build", "/build [--file PATH]", "run the Builder over the ingested traces, in the background"),
+    ("nudge", "/nudge TEXT", "steer the running session before its next model turn"),
+    ("tell", "/tell TEXT", "follow up when the running session would stop"),
+    ("stop", "/stop", "cancel the running session after its current step"),
+    ("context", "/context", "the session's context: window, used, share, compactions"),
+    ("compact", "/compact", "compact the running session's context when its turn ends"),
     ("run", "/run TASK [--count N]", "run the Candidate against the built Environment"),
     ("status", "/status", "the last build's stages, gates, rounds and spend"),
     ("map", "/map", "the pipeline as a diagram: stages, states, hashes"),
@@ -530,6 +542,10 @@ class Transcript:
         return out
 
 
+def _spent(workdir: Path) -> float:
+    return float((_read(Path(workdir) / "budget.json", {}).get("total") or {}).get("usd") or 0.0)
+
+
 def _first_line(text: str, width: int = 160) -> str:
     first = (text.strip().splitlines() or [""])[0]
     return first if len(first) <= width else first[:width - 3] + "..."
@@ -589,6 +605,15 @@ class Screen:
         # The / menu's numbered list, waiting for a bare number: (kind, rows). Kind is
         # "commands" (rows are COMMANDS entries) or "sessions" (rows are heartbeat dicts).
         self._pending: Optional[tuple[str, list]] = None
+        # The Builder session /build started here: its thread, its harness once session.build
+        # hands it over, the board and transcript its events feed, and the last harness, which
+        # /context reads after the session ends. Nothing else about a session is kept here.
+        self._session: Optional[threading.Thread] = None
+        self.harness: Any = None
+        self.last_harness: Any = None
+        self.board: Optional[Board] = None
+        self.transcript: Optional[Transcript] = None
+        self._compact_asked = False
 
     def open(self) -> None:
         """The entry screen: what this is, how it stands, what you can do, what is running.
@@ -625,11 +650,17 @@ class Screen:
         if stripped.isdigit() and self._pending is not None:
             return self._pick(int(stripped))
         self._pending = None
+        # A nudge is free text, so it is taken whole: shlex would refuse "don't" and eat quotes.
+        head, _, tail = stripped.partition(" ")
+        if head.lstrip("/") in ("nudge", "tell"):
+            self._queue(head.lstrip("/"), tail.strip())
+            return True
         parts = shlex.split(stripped)
         if not parts:
             return True
         verb, rest = parts[0].lstrip("/"), parts[1:]
         if verb in ("quit", "exit", "q"):
+            self.close()
             return False
         if parts[0].startswith("/") and (verb == "" or (verb not in self._verbs() and rest == [])):
             return self._menu(parts[0][1:])
@@ -658,7 +689,13 @@ class Screen:
         elif verb == "layers":
             self.console.print(diagrams.layers_text())
         elif verb == "build":
-            self._live("build", lambda emit: self._build(emit, rest))
+            self._start_build(rest)
+        elif verb == "stop":
+            self._stop()
+        elif verb == "context":
+            self._context()
+        elif verb == "compact":
+            self._compact()
         elif verb == "run":
             if not rest or rest[0].startswith("--"):
                 self.console.print(Text("run needs a task id: /run TASK [--count N]", style="red"))
@@ -949,15 +986,166 @@ class Screen:
                 board.outcome = f"{type(exc).__name__}: {exc}"
             live.update(board.render())
 
-    def _build(self, on_event: Any, rest: list[str]) -> None:
-        files = [Path(value) for value in _values(rest, "--file")]
+    # --- the session /build runs here ---
+
+    def running(self) -> bool:
+        """A session started here is still going."""
+        return self._session is not None and self._session.is_alive()
+
+    def wait(self, timeout: Optional[float] = None) -> None:
+        """Block until the session started here ends: the quit path and the tests use it."""
+        if self._session is not None:
+            self._session.join(timeout)
+
+    def close(self) -> None:
+        """Leaving with a session running cancels it and lets it write its last step, rather than
+        killing the thread mid write of the session file."""
+        if self.running():
+            self.console.print(Text("stopping the running session first", style="dim"))
+            if self.harness is not None:
+                self.harness.cancel()
+            self.wait(30)
+
+    def _start_build(self, rest: list[str]) -> None:
+        """Start the Builder session on its own thread; this screen keeps taking commands.
+
+        session.build is the same entry the CLI uses. It hands back the live harness through
+        on_harness, which is what /nudge, /tell, /stop, /compact and /context act on. Every event
+        feeds the board and the transcript; the transcript prints each line as it lands, so the
+        session scrolls past in the terminal above the prompt, and the board is printed when the
+        session ends (and on /status while it runs)."""
+        if self.running():
+            self.console.print(Text("a session is already running here: /nudge, /tell or /stop it",
+                                    style="red"))
+            return
+        try:
+            files = [Path(value) for value in _values(rest, "--file")]
+        except ValueError as exc:
+            self.console.print(Text(f"{exc}   (/help for usage)", style="red"))
+            return
         runner = self.runner
         if runner is None:
-            # the same entry the CLI uses: the autonomous Builder session
             from kullback.builder import session as session_mod
             runner = session_mod.build
-        runner(workdir=self.workdir, model=self._adapter(), files=files,
-               ceiling_usd=self.ceiling_usd, subscribers=[on_event])
+        board = Board(self.workdir, title="build", ceiling=self.ceiling_usd)
+        transcript = Transcript(on_line=self._print_line, footer=self._footer)
+        self.board, self.transcript, self._compact_asked = board, transcript, False
+
+        def on_event(event: Any) -> None:
+            board.event(event)
+            transcript.event(event)
+
+        def work() -> None:
+            try:
+                result = runner(workdir=self.workdir, model=self._adapter(), files=files,
+                                ceiling_usd=self.ceiling_usd,
+                                subscribers=[on_event, self._compact_when_asked],
+                                on_harness=self._attach)
+                if isinstance(result, dict) and result.get("stopped"):
+                    board.outcome = (f"stopped: {result['stopped']}; trusted {result.get('trusted', 0)}, "
+                                     f"refused {result.get('refused', 0)}, open {result.get('open', 0)}")
+            except Exception as exc:  # a failed build is a result to read, not a traceback to lose
+                board.outcome = f"{type(exc).__name__}: {exc}"
+            finally:
+                self.harness = None
+                self.console.print(board.render())
+
+        self.console.print(Text("  build started; /nudge TEXT, /tell TEXT, /stop, /context while it runs",
+                                style="dim"))
+        self._session = threading.Thread(target=work, name="kullback-build", daemon=True)
+        self._session.start()
+
+    def _attach(self, harness: Any) -> None:
+        self.harness = self.last_harness = harness
+
+    def _print_line(self, text: str, style: str) -> None:
+        self.console.print(Text(text, style=style or ""))
+
+    def _footer(self, turn: int) -> str:
+        """The line under each turn: the turn, the context fill off the harness, the spend off the
+        ledger, and the model. tau keeps these in a status bar; a line per turn is the same
+        numbers on a screen that scrolls."""
+        parts = [f"turn {turn}"]
+        if self.harness is not None:
+            estimate = self.harness.context.estimate()
+            parts.append(f"context {estimate.tokens:,} of {estimate.window:,} ({estimate.fill:.0%})")
+        spent = _spent(self.workdir)
+        parts.append(f"spend ${spent:,.4f}" + (f" of ${self.ceiling_usd:,.2f}" if self.ceiling_usd else ""))
+        if self.model:
+            parts.append(self.model)
+        return " · ".join(parts)
+
+    def _refuse_without_session(self, what: str) -> bool:
+        if self.running() and self.harness is not None:
+            return False
+        self.console.print(Text(f"no session running: {what} reaches a session /build started here",
+                                style="red"))
+        return True
+
+    def _queue(self, kind: str, text: str) -> None:
+        """/nudge steers (delivered before the next model turn), /tell follows up (delivered when
+        the run would otherwise stop). Both are the harness's own queues; the screen only says
+        what it queued, and the transcript shows the turn again when it is delivered."""
+        if not text:
+            self.console.print(Text(f"/{kind} needs text: /{kind} TEXT", style="red"))
+            return
+        if self._refuse_without_session(f"/{kind}"):
+            return
+        if kind == "nudge":
+            self.harness.steer(text)
+            when = "before the next model turn"
+        else:
+            self.harness.follow_up(text)
+            when = "when the current work ends"
+        line = f"queued {kind} ({when}): {text}"
+        if self.transcript is not None:
+            self.transcript.say(line, "cyan")
+        else:
+            self._print_line(line, "cyan")
+
+    def _stop(self) -> None:
+        if self._refuse_without_session("/stop"):
+            return
+        self.harness.cancel()
+        self.console.print(Text("cancel asked: the session stops before its next step", style="yellow"))
+
+    def _compact(self) -> None:
+        """Compaction mutates the transcript the loop is using, so it is never run from this
+        thread: it is asked for here and runs inside the session at the next turn end (tau
+        refuses a compaction during a run for the same reason)."""
+        if self._refuse_without_session("/compact"):
+            return
+        self._compact_asked = True
+        self.console.print(Text("compaction asked: it runs when the current turn ends", style="dim"))
+
+    def _compact_when_asked(self, event: Any) -> Any:
+        """A subscriber on the session's own loop: at the turn end after /compact, it returns the
+        compaction for the harness to await there; otherwise nothing."""
+        if (getattr(event, "type", None) != "turn_end" or not self._compact_asked
+                or self.harness is None):
+            return None
+        self._compact_asked = False
+        return self.harness.compact("/compact from the screen")
+
+    def _context(self) -> None:
+        """The context of the running session, else of the last one this screen ran."""
+        harness = self.harness or self.last_harness
+        if harness is None:
+            self.console.print(Text("no session yet: /build starts one, and /context reads it",
+                                    style="dim"))
+            return
+        estimate = harness.context.estimate()
+        stats = harness.context_stats
+        out = Text(("running session" if self.running() else "last session") + "\n", style="bold")
+        out.append(f"  window {estimate.window:,} tokens, used {estimate.tokens:,}, "
+                   f"share {estimate.fill:.0%} (compacts at {estimate.line:.0%}, "
+                   f"estimated from {estimate.source})\n", style="white")
+        out.append(f"  compactions {stats.compactions} ({stats.mechanical_summaries} by code), "
+                   f"{stats.entries_replaced} entries replaced", style="dim")
+        if stats.fill_at_turn_end:
+            out.append(f"\n  fill at turn end: last {stats.fill_at_turn_end[-1]:.0%}, "
+                       f"most {max(stats.fill_at_turn_end):.0%}", style="dim")
+        self.console.print(out)
 
     def _run(self, on_event: Any, rest: list[str]) -> None:
         runner = self.runner
@@ -1096,6 +1284,12 @@ class Screen:
         self.console.print(diagrams.loop_text(diagrams.read_rounds_file(self.workdir)))
 
     def _status(self) -> None:
+        """While a session runs here, its live board with the transcript under it; otherwise the
+        last build read back off disk."""
+        if self.running() and self.board is not None and self.transcript is not None:
+            self.console.print(Group(self.board.render(), Panel(
+                self.transcript.render(), title="transcript", title_align="left", border_style="dim")))
+            return
         self.console.print(self._status_renderable())
 
     def _status_renderable(self) -> Any:
@@ -1214,6 +1408,7 @@ def loop(workdir: Path, model: Optional[str] = None, base_url: Optional[str] = N
             line = screen.console.input("[bold]›[/bold] ")
         except (EOFError, KeyboardInterrupt):
             screen.console.print()
+            screen.close()
             return
         if not screen.command(line):
             return
