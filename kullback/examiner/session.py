@@ -382,6 +382,7 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
                            bus=Bus(root / "bus.jsonl", agent="examiner"))
     for subscriber in subscribers:
         harness.subscribe(subscriber)
+    harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
     load_extensions(harness, [examiner_extension(exam_root)])
 
     async def go() -> None:
