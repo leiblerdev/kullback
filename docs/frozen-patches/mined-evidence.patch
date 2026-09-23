@@ -1,10 +1,9 @@
 diff --git a/kullback/runner/records.py b/kullback/runner/records.py
-index a767a92..b22df4b 100644
 --- a/kullback/runner/records.py
 +++ b/kullback/runner/records.py
 @@ -16,7 +16,7 @@ ErrorClass = Literal[
      "tool_not_found", "invalid_arguments", "permission_denied", "business_error",
-     "not_found_entity", "transient", "cancelled", "unknown",
+     "not_found_entity", "transient", "cancelled", "unknown", "body_fault",
  ]
 -ClassifiedBy = Literal["code", "rule", "llm", "observed", "human"]
 +ClassifiedBy = Literal["code", "rule", "llm", "observed", "human", "declared"]
