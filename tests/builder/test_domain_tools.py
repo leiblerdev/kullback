@@ -321,3 +321,45 @@ def test_default_examine_with_no_model_leaves_every_model_none(tmp_path, monkeyp
     seen = _record_examine(monkeypatch)
     domain_tools_mod.default_examine_fn(tmp_path, None)
     assert seen == {"model": None, "judge_model": None, "probe_model": None, "reroll_model": None}
+
+
+def _unrendered_workdir(tmp_path):
+    """A fresh workdir: traces and a derivable world, no bodies, no rendered toolkit under env/."""
+    root = _workdir(tmp_path)
+    (root / "env" / "tools.py").unlink()
+    (root / "env" / "data_model.py").unlink()
+    return root
+
+
+def test_derive_renders_the_toolkit_so_replay_no_longer_lacks_it(tmp_path):
+    root = _unrendered_workdir(tmp_path)
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root)}
+    derived = _run(tools["derive_world"], {})
+    assert not derived.is_error, derived.content
+    assert (root / "env" / "tools.py").is_file() and (root / "env" / "data_model.py").is_file()
+    assert sorted(derived.details["files_written"]) == ["env/tools/describe_widget.py",
+                                                        "env/tools/rename_widget.py"]
+    replayed = _run(tools["replay"], {"task_id": "widget_task"})
+    assert "no rendered toolkit" not in replayed.content
+
+
+def test_status_renders_the_stage_line_first(tmp_path):
+    root = _unrendered_workdir(tmp_path)
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root)}
+    _run(tools["derive_world"], {})
+    result = _run(tools["status"], {})
+    assert not result.is_error, result.content
+    tasks = len(result.details["tasks"])
+    assert result.content.splitlines()[0] == (
+        f"stage: traces 1, world derived, toolkit rendered, stubs 2 of 2, tasks with a finished run 0 of {tasks}")
+    assert result.details["stage"]["stubs"] == 2
+
+
+def test_examine_with_no_finished_run_says_replay_or_run_comes_first(tmp_path):
+    root = _workdir(tmp_path)
+    (examine,) = [tool for tool in domain_tools_mod.domain_tools(workdir=root, examine_fn=lambda w, t: [])
+                  if tool.name == "examine"]
+    result = _run(examine, {"task_ids": None})
+    assert not result.is_error, result.content
+    assert "0 of 1 tasks have a finished run" in result.content
+    assert "replay or run the Tasks first" in result.content

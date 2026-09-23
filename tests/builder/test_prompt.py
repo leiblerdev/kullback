@@ -30,3 +30,8 @@ def test_sections_hold_no_dash_outside_ascii():
     for _, text in prompt_mod.sections():
         assert "\u2014" not in text and "\u2013" not in text
 
+
+def test_receive_says_the_bodies_start_as_stubs_written_from_their_calls():
+    assert "stubs under tools/" in prompt_mod.RECEIVE
+    assert "NotImplementedError" in prompt_mod.RECEIVE
+    assert "calls/<tool>.jsonl" in prompt_mod.RECEIVE

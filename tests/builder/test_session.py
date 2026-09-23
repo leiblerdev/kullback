@@ -221,3 +221,22 @@ def test_the_ceiling_stops_a_build_once_its_priced_usage_reaches_it(tmp_path):
     assert result["stopped"] == "ceiling"
     assert result["spend"] >= 0.01
     assert model.index == 1
+
+
+def test_the_opening_names_derive_world_when_traces_are_stored_and_no_world_is(tmp_path):
+    root = _workdir(tmp_path)
+    (root / "schema.json").unlink()
+    (root / "tool_sigs.json").unlink()
+    opening = session_mod.opening(root)
+    assert opening.startswith("1 traces are stored and the world is not derived: call derive_world first.")
+    assert opening.endswith(session_mod.OPENING)
+
+
+def test_the_opening_names_the_stubs_when_the_world_is_derived_and_every_body_is_one(tmp_path):
+    root = _workdir(tmp_path)
+    model = TestModel([reply("Done.")])
+    session_mod.build(root, model)
+    opening = session_mod.opening(root)
+    assert opening.startswith("The world is derived and every body is a stub (2 of 2): "
+                              "write each body from its calls, then replay.")
+    assert opening in (root / "sessions" / "builder.jsonl").read_text(encoding="utf-8").replace("\\n", "\n")
