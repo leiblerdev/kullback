@@ -438,9 +438,12 @@ Starting state. Trusted is low because the Examiner derived ten Tasks per examin
 because Verifiers failed: 195 retail and 79 airline Tasks were never derived. Both sol Builders tried to stop once
 and were sent back by the stop rule guard.
 
-Hugging Face: retail republished as a release on 2026-09-23 (dataset commit f1613092, tag round-unknown); its card
-counts 20 References and 0 trusted, because the killed build wrote no round record. Airline was refused at 84.0%
-over Tasks and stays at its 2026-09-09 preview.
+Hugging Face, 2026-09-23. The cards count from the workdir status, since no round closed; fidelity over Tasks
+there is the Tasks whose Reference replays confirmed, where the table above counts calls.
+- retail: release, tag build-20260923, 98.5% over Tasks (202 of 205), 96.7% over Runs, 20 Verifiers, 14 trusted,
+  https://huggingface.co/datasets/leibler/retail
+- airline: preview, tag build-20260923, 84.0% over Tasks (100 of 119), 84.5% over Runs, 30 Verifiers, 22 trusted,
+  https://huggingface.co/datasets/leibler/airline
 
 Readings: `.claude/reports/smoke-luna-observations-2026-09-23.md` (section "Smoke 7 final numbers"),
 `.claude/reports/sol-behaviour-2026-09-23.md` and `.claude/reports/env-quality-vs-tau2-2026-09-23.md`.
