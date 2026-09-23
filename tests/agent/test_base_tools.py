@@ -87,6 +87,13 @@ def test_read_answers_the_file_and_slices_it_with_offset_and_limit(root):
     assert "read again with offset=3" in sliced.content
 
 
+def test_read_past_the_last_line_answers_empty_with_the_line_count_and_is_no_error(root):
+    result = run(tools(root)["read"], path="notes.txt", offset=70)
+    assert result.is_error is False
+    assert result.details["text"] == ""
+    assert result.content == "\n[the file has 4 lines; nothing at offset 70]"
+
+
 def test_read_of_a_missing_file_and_of_a_directory_are_both_refused(root):
     read = tools(root)["read"]
     assert "no file" in run(read, path="gone.txt").content

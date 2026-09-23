@@ -436,7 +436,9 @@ def _read_tool(config: BaseToolConfig) -> AgentTool:
         lines = text.split("\n")
         start = 0 if not args.offset else args.offset - 1
         if start >= len(lines):
-            raise ValueError(f"offset {args.offset} is past the end of the file ({len(lines)} lines)")
+            # Past the end answers what is there rather than failing the call (F31).
+            return ReadResult(path=_relative(config.root, path), text="", lines=len(lines),
+                              note=f"the file has {len(lines)} lines; nothing at offset {args.offset}")
         end = min(start + args.limit, len(lines)) if args.limit is not None else len(lines)
         selected = "\n".join(lines[start:end])
         output, truncation = truncate_head(selected)

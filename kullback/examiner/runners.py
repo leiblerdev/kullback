@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from kullback.runner import budget
 from kullback.runner import tool as runner_tool
 from kullback.runner.records import UserRules, read_json, run_path
 from kullback.runner.target import as_run
@@ -103,6 +104,21 @@ def _make_user(workdir: Any, task_id: str, anchor: Any, router: Any) -> Optional
         answer_strip=value_strip(members) if members else None)
 
 
+# Every model call of a Run is priced under this stage, the Builder's and the Examiner's alike (F29).
+RUNNER_STAGE = "runner"
+
+
+def _priced(model: Any, workdir: Path) -> Any:
+    """The model a Run plays, priced into budget.json under the runner stage, never twice.
+
+    The candidate is tested under the production setting, so its context is never capped (D65).
+    """
+    if model is None or isinstance(model, budget.BudgetedModel):
+        return model
+    return budget.BudgetedModel(model, stage=RUNNER_STAGE, workdir=workdir,
+                                model_id=getattr(model, "name", None), cap_context=False)
+
+
 def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None) -> dict:
     """The derivation's three runners over the runner tool, with the workdir as environment (D120).
 
@@ -114,6 +130,7 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None) -
     (D123).
     """
     root = Path(workdir)
+    reroll_model = _priced(reroll_model, root)
 
     def run_probe(model: Any, verifier: Any) -> Any:
         """Check 6's loophole probe as the derivation takes it: `run_probe(model, verifier)` (D79).
@@ -123,7 +140,7 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None) -
         inside the probe (G28: a scored probe is never answered by a model).
         """
         report = runner_tool.probe(
-            root, verifier.task_id, model, verifier=verifier, workdir=root,
+            root, verifier.task_id, _priced(model, root), verifier=verifier, workdir=root,
             make_user=lambda router: _make_user(root, verifier.task_id, anchor, router))
         return as_run(run_path(root, report.path))
 
