@@ -12,7 +12,7 @@ Agent-World (arXiv 2604.18292) and Agent World Model (arXiv 2602.10090) both rep
 
 4. Many corpora at once (operations). Builds already run per workdir with cumulative ceilings; a fleet command runs the loop on every corpus under one budget, publishes each environment to the Hub (D221) with its card, and reports the funnel per environment side by side. The diagnosis across Tasks that Agent-World credits for its largest gains sits here as an Examiner stage that ranks weak Tasks by relation class (D211's classes) before the repair beat.
 
-Beside the four axes: feedback mining from traces, a production direction (founder, 2026-09-23), is in docs/todo.md under "Feedback mining from traces".
+Beside the four axes: feedback mining from traces (founder, 2026-09-23, production direction), in docs/todo.md under that name.
 
 ## What stays fixed
 
