@@ -11,7 +11,7 @@ from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.examiner import session as S
 from kullback.examiner.exam_files import ExamRoot
 from kullback.gates.probes import version_hash
-from kullback.runner import tool
+from kullback.runner import budget, tool
 from kullback.runner.records import Verifier, as_dict, read_json, write_json
 from tests.runner.test_tool import _env_with_trace
 
@@ -203,3 +203,14 @@ def test_session_proposal_whose_probe_reaches_the_end_state_is_refused_at_the_lo
     written = read_json(root / "exam" / "history.json")
     assert written["widget_task"]["versions"][-1]["rejected_by"] == ["verifier_loophole"]
 
+
+
+def test_an_examiner_session_prices_its_model_calls_into_the_ledger_under_its_stage(tmp_path):
+    world = make_world(tmp_path)
+    materialize(world)
+    usage = {"input": 1890, "output": 17, "cache_write": 1887}
+    model = TestModel([reply("done").model_copy(update={"usage": usage})],
+                      name=next(iter(budget.PRICES)))
+    S.examine(world.workdir, model=model)
+    stage = budget.load_totals(world.workdir)["stages"]["examiner"]
+    assert stage["calls"] == 1 and stage["usd"] > 0

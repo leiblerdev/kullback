@@ -415,3 +415,34 @@ def test_the_default_model_is_priced_and_has_its_own_window_offline():
 
     assert budget.price_for(DEFAULT_MODEL) is not None
     assert budget.window_for(DEFAULT_MODEL) != budget.DEFAULT_CONTEXT_WINDOW
+
+
+# --- the harness subscriber ---
+
+
+def _assistant_end(usage, model=None):
+    from kullback.agent.events import MessageEndEvent
+    from kullback.ai.messages import AssistantMessage
+
+    return MessageEndEvent(message=AssistantMessage(content="ok", usage=usage, model=model))
+
+
+def test_the_subscriber_prices_one_assistant_message_into_the_ledger_under_its_stage(workdir):
+    model_id = next(iter(budget.PRICES))
+    price = budget.subscriber(workdir, "builder_session", model_id)
+    price(_assistant_end(Usage(input=1890, output=17, cache_write=1887)))
+    totals = budget.load_totals(workdir)
+    bucket = totals["stages"]["builder_session"]
+    assert (bucket["calls"], bucket["input"], bucket["output"], bucket["cache_write"]) == (1, 1890, 17, 1887)
+    assert bucket["usd"] > 0
+    assert totals["total"]["usd"] == bucket["usd"]
+
+
+def test_the_subscriber_ignores_a_message_without_usage_and_the_turn_end_that_repeats_one(workdir):
+    from kullback.agent.events import TurnEndEvent
+    from kullback.ai.messages import AssistantMessage
+
+    price = budget.subscriber(workdir, "builder_session", next(iter(budget.PRICES)))
+    price(_assistant_end(Usage()))
+    price(TurnEndEvent(turn=1, message=AssistantMessage(content="ok", usage=Usage(input=10, output=5))))
+    assert not budget.totals_path(workdir).exists()

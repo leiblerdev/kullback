@@ -368,6 +368,45 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
     return event
 
 
+def subscriber(workdir: str | Path, stage: str, model_id: Optional[str],
+               ceiling: Optional[Ceiling] = None) -> Any:
+    """A harness subscriber that prices every assistant message the core streams into budget.json.
+
+    The agent core streams its model and never calls BudgetedModel.query, so its calls are priced
+    here, off the events: one assistant message_end with reported usage is one call, built into the
+    same model_call Event BudgetedModel builds and recorded under `stage`. turn_end carries the same
+    message again and is ignored, so no call is counted twice. The runner sits below the agent core,
+    so the event is read by its shape, not its class. With a ceiling, record_call charges it; the
+    stop itself is the caller's guard, since a raise here would end the run from inside its stream.
+    """
+    name = model_id or "model"
+    provider = name.split("/", 1)[0] if "/" in name else None
+    calls = 0
+
+    def price(event: Any) -> None:
+        nonlocal calls
+        if getattr(event, "type", None) != "message_end":
+            return
+        message = getattr(event, "message", None)
+        usage = getattr(message, "usage", None)
+        if getattr(message, "role", None) != "assistant" or not isinstance(usage, Usage):
+            return
+        if usage.input + usage.output + usage.cache_read + usage.cache_write <= 0:
+            return
+        with _LEDGER_LOCK:
+            calls += 1
+            idx = calls - 1
+        record = Event(idx=idx, type="model_call",
+                       cost=Cost(provider=provider, model=getattr(message, "model", None) or name,
+                                 usage=usage, wall_ms=0.0))
+        try:
+            record_call(record, stage, workdir, ceiling=ceiling, item=name)
+        except BudgetExceeded:
+            return
+
+    return price
+
+
 def estimate_tokens(*parts: Any) -> int:
     """Prompt size before the call, from the characters the request will carry."""
     chars = 0

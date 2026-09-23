@@ -265,11 +265,11 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
                     judge_model=judge_model, probe_model=probe_model, reroll_model=reroll_model))])
     for subscriber in subscribers:
         harness.subscribe(subscriber)
+    ceiling = budget.Ceiling.from_totals(root, ceiling_usd) if ceiling_usd is not None else None
+    harness.subscribe(budget.subscriber(root, CEILING_STAGE, getattr(model, "name", None), ceiling))
     guard_stop: dict = {}
-    if ceiling_usd is not None:
-        _, guard_stop = ceiling_guard(
-            harness, _GuardPlan(workdir=root,
-                                ceiling=budget.Ceiling.from_totals(root, ceiling_usd)))
+    if ceiling is not None:
+        _, guard_stop = ceiling_guard(harness, _GuardPlan(workdir=root, ceiling=ceiling))
     if on_harness is not None:
         on_harness(harness)
     events = _collect(harness.prompt(opening(root)))

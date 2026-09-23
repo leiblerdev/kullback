@@ -7,8 +7,9 @@ import json
 from kullback.agent.events import ToolExecutionEnd as ToolEnd
 from kullback.ai.provider import TestModel
 from kullback.builder import session as session_mod
+from kullback.runner import budget
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
-from tests.builder.session_fixtures import error, reply
+from tests.builder.session_fixtures import error, priced, reply
 from tests.episode.invented import write_env
 
 PTR = RawPtr(file_hash="f" * 64, sim_index=0, msg_index=0)
@@ -194,6 +195,32 @@ def test_a_provider_error_on_the_last_turn_is_reported_as_an_error_stop(tmp_path
     result = session_mod.build(_workdir(tmp_path), error("HTTP 400: the endpoint refused the request"))
     assert result["stopped"] == "error"
     assert "HTTP 400: the endpoint refused the request" in result["last_line"]
+
+
+def test_a_build_whose_replies_carry_usage_reports_the_spend_and_one_ledger_call_per_turn(tmp_path):
+    root = _workdir(tmp_path)
+    model = TestModel([
+        priced(reply("Reading the calls.", ("read", {"path": "calls/rename_widget.jsonl"}))),
+        priced(reply("Done.")),
+    ], name=next(iter(budget.PRICES)))
+    result = session_mod.build(root, model)
+    assert result["spend"] > 0
+    stage = budget.load_totals(root)["stages"][session_mod.CEILING_STAGE]
+    assert stage["calls"] == result["turns"] == 2
+    assert stage["usd"] == result["spend"]
+
+
+def test_the_ceiling_stops_a_build_once_its_priced_usage_reaches_it(tmp_path):
+    root = _workdir(tmp_path)
+    model = TestModel([
+        priced(reply("Reading the calls.", ("read", {"path": "calls/rename_widget.jsonl"})),
+               input=1_000_000),
+        priced(reply("Never reached.")),
+    ], name=next(iter(budget.PRICES)))
+    result = session_mod.build(root, model, ceiling_usd=0.01)
+    assert result["stopped"] == "ceiling"
+    assert result["spend"] >= 0.01
+    assert model.index == 1
 
 
 def test_the_opening_names_derive_world_when_traces_are_stored_and_no_world_is(tmp_path):

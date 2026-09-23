@@ -290,12 +290,18 @@ def test_derive_all_rewrites_the_scorecard_after_the_task_status(tmp_path):
 
 def test_the_derivation_hands_the_task_to_the_agent_judge_and_the_record_says_what_it_looked_at(tmp_path):
     """A Task whose Runs ended in two states goes to the judge, and derive_all is what builds it: the
-    reference record carries the tool it called before it failed a state."""
+    reference record carries the tool it called before it failed a state, and the workdir's ledger
+    prices each of the judge's turns under its own stage."""
     world = make_world(tmp_path, rerolls=("wrong",))
+    usage = {"input": 1890, "output": 17, "cache_write": 1887}
     model = TestModel([
-        ModelReply(content=None, tool_calls=[ToolCallRequest(id="c1", name="rows", arguments={"group": "B"})]),
-        ModelReply(content=_fails_the_wrong_row("it wrote to another row", evidence=("rows",)))])
+        ModelReply(content=None, usage=usage,
+                   tool_calls=[ToolCallRequest(id="c1", name="rows", arguments={"group": "B"})]),
+        ModelReply(content=_fails_the_wrong_row("it wrote to another row", evidence=("rows",)), usage=usage)],
+        name=next(iter(budget.PRICES)))
     out = _derive(world.workdir, world.inputs, judge_model=model, judge_agent=True)
+    judged = budget.load_totals(world.workdir)["stages"]["judge"]
+    assert judged["calls"] == 2 and judged["usd"] > 0
     row = _read(world.workdir / "references.json")["t1"]
     assert row["judged"] and row["judge_fallback"] is None and not row["judge_abstained"]
     assert [call["tool"] for call in row["judge_calls"]] == ["rows"]
