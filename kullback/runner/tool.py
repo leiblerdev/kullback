@@ -95,6 +95,7 @@ class ReplayReport:
     reasons: list = field(default_factory=list)
     runner_version: str = ""
     held_out: bool = False
+    reference: bool = False
 
     def as_dict(self) -> dict:
         return {"task_id": self.task_id, "trace_id": self.trace_id, "run_id": self.run_id,
@@ -102,7 +103,8 @@ class ReplayReport:
                 "calls": [call.as_dict() if isinstance(call, ReplayCall) else call
                           for call in self.calls],
                 "counts": dict(self.counts), "reasons": list(self.reasons),
-                "runner_version": self.runner_version, "held_out": self.held_out}
+                "runner_version": self.runner_version, "held_out": self.held_out,
+                "reference": self.reference}
 
 
 def version() -> str:
@@ -273,7 +275,7 @@ def _held_out(env: BuiltEnvironment, task_id: str) -> set[str]:
 
 
 def _replay_one(env: BuiltEnvironment, task_id: str, trace: Trace, *, workdir: Any,
-                held_out: set[str]) -> ReplayReport:
+                held_out: set[str], reference: Optional[Trace]) -> ReplayReport:
     """One Trace replayed in a fresh world on its own overlay layer (D213), and reported."""
     router = _router_for(env, task_id, seed=0, trace_id=trace.trace_id)
     _refuse_stand_in(router)
@@ -284,6 +286,7 @@ def _replay_one(env: BuiltEnvironment, task_id: str, trace: Trace, *, workdir: A
         write_tools=env.write_tools(), canon_rules=env.canon_rules)
     report = _replay_report(task_id, out)
     report.held_out = trace.trace_id in held_out
+    report.reference = reference is not None and trace.trace_id == reference.trace_id
     return report
 
 
@@ -298,22 +301,25 @@ def replay(environment_dir: Any, task_id: str, *, workdir: Any,
     """
     env = BuiltEnvironment(environment_dir)
     task = env.task(task_id)
+    reference = env.reference(task)
     if trace_id is None:
-        trace = env.reference(task)
+        trace = reference
         if trace is None:
             raise EnvironmentError(f"{environment_dir} holds no reference Trace for Task {task_id}")
     else:
         trace = env.traces().get(trace_id) if trace_id in task.run_ids else None
         if trace is None:
             raise EnvironmentError(f"{environment_dir} holds no Trace {trace_id} for Task {task_id}")
-    return _replay_one(env, task_id, trace, workdir=workdir, held_out=_held_out(env, task_id))
+    return _replay_one(env, task_id, trace, workdir=workdir, held_out=_held_out(env, task_id),
+                       reference=reference)
 
 
 def replay_all(environment_dir: Any, task_id: str, *, workdir: Any) -> list[ReplayReport]:
     """Every recorded Trace of the Task replayed, the reference first, then the rest in Run order.
 
     Carried from the deleted replay stage (D108, D213): the anchor's held-out Runs replay too, so a
-    reader can say how they fare (`held_out` tells the two grains apart), each Trace in its own fresh
+    reader can say how they fare (`held_out` tells the two grains apart, `reference` marks the
+    Trace the Task's user context comes from), each Trace in its own fresh
     world on its own layer of the Task's overlay, so no replay sees what an earlier one wrote.
     """
     env = BuiltEnvironment(environment_dir)
@@ -323,7 +329,8 @@ def replay_all(environment_dir: Any, task_id: str, *, workdir: Any) -> list[Repl
     order = [reference.trace_id] if reference is not None else []
     order += [run_id for run_id in task.run_ids if run_id in traces and run_id not in order]
     held_out = _held_out(env, task_id)
-    return [_replay_one(env, task_id, traces[run_id], workdir=workdir, held_out=held_out)
+    return [_replay_one(env, task_id, traces[run_id], workdir=workdir, held_out=held_out,
+                        reference=reference)
             for run_id in order]
 
 

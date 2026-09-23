@@ -132,6 +132,7 @@ def test_replay_all_reports_every_trace_with_the_reference_first(tmp_path):
     root = _env_with_three_runs(tmp_path / "env")
     reports = tool.replay_all(root, "widget_task", workdir=tmp_path / "work")
     assert [report.trace_id for report in reports] == ["rec1", "rec2", "rec3"]
+    assert [report.reference for report in reports] == [True, False, False]
 
 
 def test_replay_all_replays_each_trace_in_a_fresh_world(tmp_path):
