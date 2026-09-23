@@ -117,6 +117,37 @@ def last_round(workdir: Path) -> dict:
     return counts
 
 
+# The one line a card and manifest carry when no round closed, so a reader knows where the counts are from.
+NO_ROUND_SOURCE = "counts from the workdir status, no round closed"
+
+
+def trusted_ids(workdir: Path, counts: Optional[dict] = None) -> set[str]:
+    """The trusted Task ids: the last round's ruling where one closed, else the Builder's status rule.
+
+    The status rule is `status_of` in the Builder's domain tools, the same reading its status tool
+    answers, so a build killed before any round closed publishes what that tool reported rather than
+    nothing. The hub is the top layer and may import the Builder, so there is one rule, not a copy.
+    """
+    counts = last_round(workdir) if counts is None else counts
+    if counts:
+        return set(counts.get("trusted_ids") or ())
+    from kullback.builder.domain_tools import status_of
+    return {row["task_id"] for row in status_of(workdir)["tasks"] if row.get("state") == "trusted"}
+
+
+def build_tag(workdir: Path, counts: Optional[dict] = None) -> str:
+    """`round-<n>` for the last round on disk, else `build-<YYYYMMDD>` of the newest session or bus write."""
+    counts = last_round(workdir) if counts is None else counts
+    if counts.get("round") is not None:
+        return f"round-{counts['round']}"
+    sessions = workdir / "sessions"
+    marks = list(sessions.glob("*.jsonl")) if sessions.is_dir() else []
+    marks += [path for path in (workdir / "bus.jsonl",) if path.is_file()]
+    stamp = max((path.stat().st_mtime for path in marks), default=None)
+    moment = datetime.fromtimestamp(stamp, timezone.utc) if stamp is not None else datetime.now(timezone.utc)
+    return f"build-{moment:%Y%m%d}"
+
+
 def frozen_task_ids(workdir: Path) -> list[str]:
     """The Task list this build's numbers are measured against, newest snapshot first.
 
@@ -223,7 +254,7 @@ def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
     status = read_json(workdir / "task_status.json", {}) or {}
     replays = read_json(workdir / "replays.json", {}) or {}
     counts = last_round(workdir)
-    trusted_ids = set(counts.get("trusted_ids") or ())
+    trusted = trusted_ids(workdir, counts)
     refused = set((counts.get("refused") or {}))
     records = _difficulty_records(workdir)
     rows = []
@@ -232,7 +263,7 @@ def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
         confirmed = any(_confirmed(entry) for entry in (replays.get(task_id) or {}).values())
         has_verifier = (workdir / "verifiers" / f"{task_id}.json").is_file()
         stage = funnel_stage(task_id, status_row=row, replay_confirmed=confirmed, has_verifier=has_verifier,
-                             trusted_ids=trusted_ids, refused=refused)
+                             trusted_ids=trusted, refused=refused)
         record = records.get(task_id) or {}
         rows.append({
             "task_id": task_id,
@@ -241,7 +272,8 @@ def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
             "stage": stage,
             "stopped_because": stopped_because(stage, row),
             "replay_confirmed": confirmed,
-            "reference_confirmed": bool(row.get("reference_confirmed")),
+            # A Task with any confirmed replay, the count replay fidelity reports, so the two agree.
+            "reference_confirmed": confirmed,
             "verifier": has_verifier,
             "recordings": int(row.get("recordings") or 0),
             "difficulty": {key: value for key, value in record.items() if key != "task_id"} or None,
@@ -615,6 +647,8 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source": {"corpus": corpus, "license": corpus_license, "url": corpus_url},
         "round": counts.get("round"),
+        "tag": build_tag(workdir, counts),
+        "counts_source": "the last round record" if counts else NO_ROUND_SOURCE,
         "tasks_total": len(task_ids),
         # Tasks the build holds a ruling for that are not on the frozen list: they appeared after the
         # freeze, so D96 keeps them out of the denominator and the round line counts them in. Naming
