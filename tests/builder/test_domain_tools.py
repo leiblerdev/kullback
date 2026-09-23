@@ -7,6 +7,7 @@ import json
 
 from kullback.ai.provider import TestModel
 from kullback.builder import domain_tools as domain_tools_mod
+from kullback.builder import world_tools
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, write_json
 from tests.builder.session_fixtures import reply
 from tests.episode.invented import write_env
@@ -14,8 +15,8 @@ from tests.episode.invented import write_env
 PTR = RawPtr(file_hash="f" * 64, sim_index=0, msg_index=0)
 
 
-def _workdir(tmp_path):
-    root = write_env(tmp_path / "work")
+def _workdir(tmp_path, **env):
+    root = write_env(tmp_path / "work", **env)
     traces = root / "traces"
     traces.mkdir(parents=True, exist_ok=True)
     turns = [
@@ -363,3 +364,86 @@ def test_examine_with_no_finished_run_says_replay_or_run_comes_first(tmp_path):
     assert not result.is_error, result.content
     assert "0 of 1 tasks have a finished run" in result.content
     assert "replay or run the Tasks first" in result.content
+
+
+def _with_prose_result(root):
+    """The recording also carries one call another requestor made, answered with a sentence."""
+    path = root / "traces" / "rec1.json"
+    body = json.loads(path.read_text(encoding="utf-8"))
+    body["tool_calls"].append(ToolCall(
+        id="u1", name="check_panel", args={}, result="Panel: DIM", requestor="user",
+        raw_ptr=PTR, trace_id="rec1", has_result=True, resolved=True,
+    ).model_dump(mode="json", by_alias=True))
+    path.write_text(json.dumps(body), encoding="utf-8")
+    return root
+
+
+def test_derive_hands_the_session_model_to_the_readers_step_and_prices_it(tmp_path):
+    """Prose results from another requestor are read with the session model, under stage readers."""
+    root = _with_prose_result(_workdir(tmp_path))
+    model = TestModel([reply("no reader")], loop=True)
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root, model=model)}
+    derived = _run(tools["derive_world"], {})
+    assert "no model to propose" not in derived.content
+    assert not derived.is_error, derived.content
+    assert model.calls, "the readers step never asked the session model"
+    assert "check_panel" in json.dumps(model.calls[0]["messages"])
+    ledger = json.loads((root / "budget.json").read_text(encoding="utf-8"))
+    assert "readers" in json.dumps(ledger)
+
+
+def test_derive_without_a_model_still_refuses_prose_results_by_name(tmp_path):
+    root = _with_prose_result(_workdir(tmp_path))
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root)}
+    derived = _run(tools["derive_world"], {})
+    assert derived.is_error
+    assert "no model to propose" in derived.content
+
+
+def _greeting_first_candidate():
+    """A candidate that greets before it acts, the way the smoke build's candidate opened."""
+    return TestModel([
+        reply("What would you like help with?"),
+        reply(None, ("rename_widget", {"widget_id": "w1", "label": "striped"})),
+        reply("Done, widget w1 is labelled striped."),
+    ], loop=True)
+
+
+def _fresh_workdir(tmp_path):
+    """A workdir whose Task carries no intent and whose rules only derive_world can write."""
+    root = _workdir(tmp_path, with_rules=False)
+    task = root / "tasks" / "widget_task.json"
+    task.write_text(json.dumps({**json.loads(task.read_text(encoding="utf-8")), "intent": None}),
+                    encoding="utf-8")
+    return root
+
+
+def test_a_fresh_run_without_user_rules_stops_at_the_greeting_with_no_calls(tmp_path):
+    """Before derive_world writes rules, nobody speaks first or answers: the Run ends agent_stop."""
+    root = _fresh_workdir(tmp_path)
+    tools = {tool.name: tool for tool in
+             domain_tools_mod.domain_tools(workdir=root, model=_greeting_first_candidate())}
+    result = _run(tools["run"], {"task_id": "widget_task", "count": 1})
+    assert not result.is_error, result.content
+    (row,) = result.details["runs"]
+    assert row["termination_reason"] == "agent_stop"
+    assert row["routes"] == []
+    assert "0 finished" in result.content and "no calls" in result.content
+
+
+def test_derived_user_rules_open_a_fresh_run_that_finishes_with_a_verdict(tmp_path):
+    """derive_world writes the rules, the rule user opens with the goal, the goal is met, a Verdict."""
+    root = _fresh_workdir(tmp_path)
+    candidate = _greeting_first_candidate()
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root, model=candidate)}
+    # The world alone, so the invented bodies stand in for the ones the Builder writes after it.
+    assert "user_rules/rec1.json" in world_tools.derive_world(root).paths
+    result = _run(tools["run"], {"task_id": "widget_task", "count": 1})
+    assert not result.is_error, result.content
+    (row,) = result.details["runs"]
+    opening = candidate.calls[0]["messages"]
+    assert any(m.get("role") == "user" and "striped" in str(m.get("content")) for m in opening)
+    assert [route["name"] for route in row["routes"]] == ["rename_widget"]
+    assert row["user_end"] == "goal_satisfied"
+    assert row["verdict"] is not None and row["verdict"]["passed"]
+    assert "1 finished" in result.content

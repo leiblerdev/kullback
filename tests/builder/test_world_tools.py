@@ -116,3 +116,29 @@ def test_the_held_out_anchor_is_absent_from_the_seed(tmp_path):
     seed = world_tools.seed_runs(drawn, "task-big", [f"run-{i}" for i in range(5)])
     assert len(seed) == 4
     assert not set(seed) & set(drawn["held_out"]["task-big"])
+
+
+def test_derive_world_writes_one_user_rules_file_per_trace_and_rewrites_it_unchanged(tmp_path):
+    """Every stored Trace gets the Simulated user rules a fresh Run answers from (D44)."""
+    from kullback.builder import world_tools
+    from kullback.runner.records import UserRules
+
+    ours = tmp_path / "ours"
+    ours.mkdir()
+    report = _first_pass(ours)
+    trace_ids = [trace.trace_id for trace in world_tools.load_traces(ours)]
+    assert trace_ids
+    for trace_id in trace_ids:
+        path = ours / "user_rules" / f"{trace_id}.json"
+        assert f"user_rules/{trace_id}.json" in report.paths
+        rules = UserRules.model_validate(json.loads(path.read_text(encoding="utf-8")))
+        assert rules.style_sample == [trace_id]
+    assert any(UserRules.model_validate(json.loads(p.read_text(encoding="utf-8"))).facts
+               for p in (ours / "user_rules").glob("*.json"))
+
+    theirs = tmp_path / "theirs"
+    shutil.copytree(ours, theirs)
+    (theirs / world_tools.WORLD_LOCK_FILE).unlink()
+    assert not world_tools.derive_world(theirs).from_cache
+    for path in sorted((ours / "user_rules").glob("*.json")):
+        assert path.read_bytes() == (theirs / "user_rules" / path.name).read_bytes(), path.name
