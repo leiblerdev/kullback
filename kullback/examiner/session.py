@@ -57,6 +57,9 @@ HINT_CHARS = 200
 RUN_PATHS_SHOWN = 5
 # How many left-out Tasks the note names before the count of the rest.
 LEFT_OUT_SHOWN = 10
+# How many Tasks one examine call derives; the rest wait for the next call (F40).
+TASKS_PER_CALL = 10
+NOT_DERIVED_SHOWN = 10
 NO_FINISHED_RUN = "no finished Run"
 NO_CONFIRMED_REFERENCE = "no confirmed Reference"
 
@@ -265,6 +268,35 @@ def select_for_session(task_ids: Iterable[str], replays: dict, rerolls: dict,
         else:
             selected.append(task_id)
     return selected, left_out
+
+
+def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> list[str]:
+    """The Tasks this examine call is about, in id order, before the cap (F40).
+
+    With task_ids, those that name a Task. Without, every Task not derived yet: it has no status
+    row because no derivation has read it, or its row holds a confirmed Reference and its Verifier
+    file is absent."""
+    known = sorted(task.id for task in store.get("tasks") or [])
+    if task_ids is not None:
+        wanted = set(task_ids)
+        return [task_id for task_id in known if task_id in wanted]
+    root = Path(workdir)
+    status = read_json(root / "task_status.json", {}) or {}
+    status = status if isinstance(status, dict) else {}
+    return [task_id for task_id in known
+            if task_id not in status or ((status[task_id] or {}).get("reference_confirmed")
+                                         and not (root / "verifiers" / f"{task_id}.json").is_file())]
+
+
+def not_derived_finding(later: list[str]) -> Finding:
+    """The note naming the confirmed Tasks past this call's cap, one row each (F40)."""
+    named = ", ".join(later[:NOT_DERIVED_SHOWN])
+    rest = len(later) - NOT_DERIVED_SHOWN
+    named += f" and {rest} more" if rest > 0 else ""
+    text = f"{len(later)} confirmed Tasks not derived yet: {named}; call examine again"
+    return Finding(kind="other", source="derive", text=text,
+                   rows=[{"task_id": task_id, "not_derived": "cap"} for task_id in later],
+                   change=f"examine derives {TASKS_PER_CALL} Tasks per call; {text}")
 
 
 def left_out_finding(left_out: list[tuple[str, str]], examined: int) -> Finding:
@@ -493,11 +525,14 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     anchor = _load_anchor(root)
     ctx = stage_mod.ExamContext(root, GateLedger(root), anchor=anchor)
     runners = runners_mod.runners_for(root, reroll_model=reroll_model, anchor=anchor)
-    stage_mod.derive_all(ctx, store, probe_model=probe_model, judge_model=judge_model,
-                         run_probe=runners["run_probe"],
-                         run_rerolls=runners["run_rerolls"] if reroll_model is not None else None,
-                         run_variant=runners["run_variant"], round_number=0)
-    findings = derive_findings(workdir, store)
+    picked = derive_pick(root, store, task_ids)
+    now, later = picked[:TASKS_PER_CALL], picked[TASKS_PER_CALL:]
+    if now:
+        stage_mod.derive_all(ctx, store, probe_model=probe_model, judge_model=judge_model,
+                             run_probe=runners["run_probe"],
+                             run_rerolls=runners["run_rerolls"] if reroll_model is not None else None,
+                             run_variant=runners["run_variant"], round_number=0, only=now)
+    findings = derive_findings(workdir, store) + ([not_derived_finding(later)] if later else [])
     if task_ids is not None:
         wanted = set(task_ids)
         findings = [f for f in findings if f.task_id in wanted or

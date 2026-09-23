@@ -821,8 +821,11 @@ def domain_tools(*, workdir: Any, model: Any = None,
         # The Tasks the Examiner session left out, and why, lead the summary (F24).
         left_out = [f.get("change") for f in result.findings
                     if any(isinstance(r, dict) and "left_out" in r for r in f.get("rows") or [])]
-        if left_out:
-            result.summary = "; ".join(filter(None, [result.summary, *left_out]))
+        # The confirmed Tasks past this call's derivation cap come first, so the Builder calls again (F40).
+        not_derived = [f.get("text") for f in result.findings
+                       if any(isinstance(r, dict) and "not_derived" in r for r in f.get("rows") or [])]
+        if left_out or not_derived:
+            result.summary = "; ".join(filter(None, [*not_derived, result.summary, *left_out]))
         stage = stage_of(root)
         if not result.findings or not stage["finished"]:
             why = f"{stage['finished']} of {stage['tasks']} tasks have a finished run"
