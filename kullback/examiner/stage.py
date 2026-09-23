@@ -1236,13 +1236,14 @@ def _seed_row_confirmed(row: dict) -> bool:
 
 
 def _build_judge(judge_model: Any, judge_agent: bool, constraints: list, write_tools: set,
-                 read_tools: set, fn: Any) -> Any:
+                 read_tools: set, fn: Any, workdir: Any = None) -> Any:
     """The residue judge: nothing, the one-shot judge, or the agent with a bounded look (D185)."""
     if judge_model is None:
         return None
     if judge_agent:
         return judge_mod.AgentJudge(judge_model, constraints=constraints,
-                                    write_tools=write_tools, read_tools=read_tools, fn=fn)
+                                    write_tools=write_tools, read_tools=read_tools, fn=fn,
+                                    workdir=workdir)
     return judge_model
 
 
@@ -1304,7 +1305,8 @@ def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
     assisted_tools = set(_store_list(inputs, "assisted_tools"))
     tool_fidelity = _store_map(inputs, "tool_fidelity")
     atoms = reference_mod.hard_atoms(constraints, write_tools, read_tools)
-    judge = _build_judge(judge_model, judge_agent, constraints, write_tools, read_tools, fn)
+    judge = _build_judge(judge_model, judge_agent, constraints, write_tools, read_tools, fn,
+                         workdir=ctx.workdir)
     probe = _probe_of(run_probe, probe_model)
     common = _key_base(code_hash, canon_rules, constraints, policy_lines, write_tools,
                        probe_model, probe_limit, probe, judge_model, judge_agent)
