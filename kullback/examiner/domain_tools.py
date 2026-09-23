@@ -31,6 +31,7 @@ from kullback.gates.bindings import ALT_PATH_STAGE, WAIVED_ROW, rulings_for
 from kullback.gates.hook import ruling_line
 from kullback.gates.probes import version_hash, write_tools_of
 from kullback.gates.verifier_suite import D79_STAGES, HELPERS_SRC, check_run, make_atom
+from kullback.runner import budget
 from kullback.runner import tool as runner_tool
 from kullback.runner.records import Atom, Event, Run, Verifier, VerifierVersion, as_dict, write_json
 
@@ -427,6 +428,18 @@ def _finding(root: ExamRoot):
     return finding
 
 
+def _reroll_row(report: Any) -> dict:
+    """One re-rolled Run as the row the tool answers."""
+    body = report.as_dict() if hasattr(report, "as_dict") else dict(report)
+    return {"run_id": body.get("run_id"), "verdict": body.get("verdict"),
+            "termination_reason": body.get("termination_reason"), "spend": body.get("spend") or {}}
+
+
+def _ledger_usd(workdir: Any) -> float:
+    """What budget.json says the build has spent, where every priced Run call lands (F29)."""
+    return float(budget.load_totals(workdir)["total"].get("usd") or 0.0)
+
+
 def _reroll(root: ExamRoot):
     from kullback.examiner.runners import _priced  # imported here: this closure is the only user
 
@@ -438,25 +451,28 @@ def _reroll(root: ExamRoot):
                              "file a finding naming the Task instead")
         # Priced under the runner stage like every other Run, so the re-roll counts (F29).
         model = _priced(root.reroll_model, root.workdir)
-        reports = runner_tool.reroll(root.workdir, args.task_id, model,
-                                     count=args.count, workdir=root.workdir)
         rows = []
         spent = 0.0
-        for report in reports or []:
-            body = report.as_dict() if hasattr(report, "as_dict") else dict(report)
-            spend = body.get("spend") or {}
-            price = spend.get("usd", 0.0) if isinstance(spend, dict) else 0.0
-            try:
-                spent += float(price)
-            except (TypeError, ValueError):
-                pass
-            rows.append({"run_id": body.get("run_id"), "verdict": body.get("verdict"),
-                         "termination_reason": body.get("termination_reason"), "spend": spend})
-        if root.allowance_remaining is not None:
-            root.allowance_remaining -= spent
+        stopped = False
+        # One Run at a time, the allowance checked before each and deducted after each, so a
+        # batch never spends past what is left.
+        for seed in range(args.count):
+            if root.allowance_remaining is not None and root.allowance_remaining <= 0:
+                stopped = True
+                break
+            before = _ledger_usd(root.workdir)
+            reports = runner_tool.reroll(root.workdir, args.task_id, model, count=1,
+                                         workdir=root.workdir, first_seed=seed)
+            rows.extend(_reroll_row(report) for report in reports or [])
+            price = max(_ledger_usd(root.workdir) - before, 0.0)
+            spent += price
+            if root.allowance_remaining is not None:
+                root.allowance_remaining -= price
         summary = (f"reroll of task {args.task_id}: {len(rows)} Runs, "
                    f"{sum(1 for r in rows if r['termination_reason'] == 'success')} finished, "
                    f"{spent:.4f} USD")
+        if stopped:
+            summary += f"; stopped after {len(rows)} of {args.count} Runs: the allowance is spent"
         return RerollResult(summary=summary, task_id=args.task_id, runs=rows, spent_usd=spent)
 
     return reroll

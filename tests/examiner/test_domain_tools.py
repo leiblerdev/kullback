@@ -378,3 +378,21 @@ def test_a_reroll_from_the_tool_lands_its_model_calls_in_the_runner_stage(tmp_pa
     _run(tool.execute(D.RerollArgs(task_id="widget_task", count=1)))
     stage = budget.load_totals(workdir)["stages"]["runner"]
     assert stage["calls"] == len(model.calls) > 0 and stage["usd"] > 0
+
+
+def test_an_allowance_that_covers_one_run_buys_one_run_of_a_count_of_three(tmp_path):
+    from tests.examiner.test_runners import _exam_env, _priced_script
+
+    priced = ExamRoot(workdir=_exam_env(tmp_path / "priced"), reroll_model=_priced_script())
+    [measure] = [t for t in D.domain_tools(priced) if t.name == "reroll"]
+    one_run = _run(measure.execute(D.RerollArgs(task_id="widget_task", count=1))).spent_usd
+    assert one_run > 0
+
+    root = ExamRoot(workdir=_exam_env(tmp_path / "env"), reroll_model=_priced_script(),
+                    allowance_remaining=one_run)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "reroll"]
+    result = _run(tool.execute(D.RerollArgs(task_id="widget_task", count=3)))
+    assert len(result.runs) == 1
+    assert result.spent_usd == pytest.approx(one_run)
+    assert "stopped after 1 of 3 Runs: the allowance is spent" in result.summary
+    assert root.allowance_remaining <= 0

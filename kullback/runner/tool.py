@@ -530,8 +530,11 @@ def write_runs_index(workdir: Any) -> Path:
 
 
 def reroll(environment_dir: Any, task_id: str, model: Any, *, count: int,
-           workdir: Any, prefix: str = "", user: Any = None, make_user: Any = None) -> list[RunReport]:
-    """Play `count` Runs of the candidate model over the Task, seeds counting up from zero.
+           workdir: Any, prefix: str = "", user: Any = None, make_user: Any = None,
+           first_seed: int = 0) -> list[RunReport]:
+    """Play `count` Runs of the candidate model over the Task, seeds counting up from `first_seed`.
+
+    A buyer that checks its allowance between Runs calls it with count=1 and the next seed.
 
     With a `prefix` the Runs are named for their buyer (D133: the Examiner's second-path batches),
     so a re-roll never writes different bytes under a name something already read. The candidate's
@@ -541,7 +544,7 @@ def reroll(environment_dir: Any, task_id: str, model: Any, *, count: int,
     return [run(environment_dir, task_id, model, user=user, make_user=make_user,
                 workdir=workdir, seed=seed,
                 run_id=f"{prefix}-{seed}" if prefix else None)
-            for seed in range(max(int(count), 0))]
+            for seed in range(first_seed, first_seed + max(int(count), 0))]
 
 
 __all__ = ["ReplayCall", "ReplayReport", "RunReport", "call_trace", "probe", "replay",
