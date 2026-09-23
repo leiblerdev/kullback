@@ -36,13 +36,14 @@ from kullback.examiner.exam_files import (
 from kullback.gates import names_protected_path
 from kullback.gates.hook import PATH_KEYS, WRITE_TOOLS, gate_writes
 from kullback.gates.ledger import GateLedger
+from kullback.gates.loosening import finished_run_ids
 from kullback.gates.verifier_suite import load_run
 from kullback.runner import budget
 from kullback.runner.canon import rules_of
 from kullback.runner.records import Constraint, Task, ToolSig, UserRules, Verifier, read_json, run_path, write_json
 
 BASE_ONLY = ("read", "write", "edit", "grep", "find", "ls", "web_search")
-WRITABLE_DIRS = ("verifiers", "probes")
+WRITABLE_DIRS = prompt_mod.WRITABLE_DIRS
 EXAMINE_MESSAGE = "Examine."
 # The Examiner's turn cap: reading Runs, replays and Verifiers before filing takes tens of turns, and
 # at 8 every live session stopped while still reading (F17).
@@ -50,6 +51,12 @@ EXAMINE_MAX_TURNS = 40
 # The harness's own words when a session stops on its cap (agent/loop.py).
 CAP_STOP = "stopped after max_turns="
 HINT_CHARS = 200
+# How many Run paths one Task's rulings line names before the count of the rest.
+RUN_PATHS_SHOWN = 5
+# How many left-out Tasks the note names before the count of the rest.
+LEFT_OUT_SHOWN = 10
+NO_FINISHED_RUN = "no finished Run"
+NO_CONFIRMED_REFERENCE = "no confirmed Reference"
 
 
 def _written_path(arguments: Any) -> Optional[str]:
@@ -130,25 +137,74 @@ def _result_protection(api: ExtensionAPI) -> Callable:
     return protect
 
 
-def rulings_line(root: ExamRoot) -> str:
-    """One line per Task saying what it has: a Reference, a Verifier, a refusal."""
+def rulings_line(root: ExamRoot, task_ids: Optional[Iterable[str]] = None) -> str:
+    """One line per Task saying what it has, with the paths of its Runs and its Verifier.
+
+    Paths are relative to the Examiner's root, so the session opens them instead of searching.
+    `task_ids` limits the lines to the Tasks the session examines.
+    """
     lines = []
+    wanted = set(task_ids) if task_ids is not None else None
     for task_id in sorted({*root.replays, *root.rerolls, *root.verifiers}):
+        if wanted is not None and task_id not in wanted:
+            continue
         row = root.task_status.get(task_id) or {}
         parts = ["reference confirmed" if row.get("reference_confirmed") else "no reference",
-                 "verifier passed" if row.get("verifier_passed") else "verifier not passed"]
+                 "verifier passed" if row.get("verifier_passed") else "verifier not passed",
+                 _runs_part(root, task_id), _verifier_part(root, task_id)]
         lines.append(f"{task_id}: " + "; ".join(parts))
     return "\n".join(lines) if lines else "no Tasks"
 
 
-def examiner_extension(root: ExamRoot) -> Callable[[ExtensionAPI], None]:
-    """The setup the harness loads: base tools over exam/, domain tools, prompt, hooks."""
+def _runs_part(root: ExamRoot, task_id: str) -> str:
+    """The Task's Runs as paths under the Examiner's root, the ones its copy holds."""
+    rows = list(((root.replays or {}).get(task_id) or {}).values())
+    rows += list((root.rerolls or {}).get(task_id) or [])
+    paths: list[str] = []
+    for row in rows:
+        stored = row.get("path") if isinstance(row, dict) else None
+        rel = _relative_to(run_path(root.workdir, stored), Path(root.workdir)) if stored else None
+        if rel and rel not in paths and (root.exam_dir / rel).is_file():
+            paths.append(rel)
+    if not paths:
+        return "runs: none copied"
+    rest = len(paths) - RUN_PATHS_SHOWN
+    return "runs: " + ", ".join(paths[:RUN_PATHS_SHOWN]) + (f" and {rest} more" if rest > 0 else "")
+
+
+def _verifier_part(root: ExamRoot, task_id: str) -> str:
+    rel = f"verifiers/{task_id}.json"
+    if (root.exam_dir / rel).is_file():
+        return f"verifier: {rel}"
+    return f"verifier: {rel} once you first propose one"
+
+
+def _relative_to(path: Path, base: Path) -> Optional[str]:
+    try:
+        return path.relative_to(base).as_posix()
+    except ValueError:
+        return None
+
+
+def root_listing(folder: Path) -> list[str]:
+    """The entries directly under a root, directories with a trailing slash, sorted."""
+    if not folder.is_dir():
+        return []
+    return sorted(f"{p.name}/" if p.is_dir() else p.name for p in folder.iterdir())
+
+
+def examiner_extension(root: ExamRoot,
+                       task_ids: Optional[Iterable[str]] = None) -> Callable[[ExtensionAPI], None]:
+    """The setup the harness loads: base tools over exam/, domain tools, prompt, hooks.
+
+    The prompt names the root as "." and lists what it holds, computed once here (F18, F25).
+    """
 
     def setup(api: ExtensionAPI) -> None:
         register_base_tools(api, root.exam_dir, only=BASE_ONLY)
         for tool in domain_tools(root):
             api.register_tool(tool)
-        for name, text in prompt_mod.sections(rulings_line(root), str(root.exam_dir)):
+        for name, text in prompt_mod.sections(rulings_line(root, task_ids), root_listing(root.exam_dir)):
             api.add_prompt_section(f"examiner_{name}", prompt_block(name, text))
         api.tool_call(refuse_paths(
             names_protected_path, "under the gates or the Runner, which no agent writes (D122)",
@@ -160,6 +216,39 @@ def examiner_extension(root: ExamRoot) -> Callable[[ExtensionAPI], None]:
         api.tool_result(_result_protection(api))
 
     return setup
+
+
+def select_for_session(task_ids: Iterable[str], replays: dict, rerolls: dict,
+                       status: dict) -> tuple[list[str], list[tuple[str, str]]]:
+    """Which Tasks the model session sees, and the rest with why they were left out (F24).
+
+    A Task is examined when it has a finished Run and a confirmed Reference; a session over
+    anything else spends and has nothing to read.
+    """
+    selected: list[str] = []
+    left_out: list[tuple[str, str]] = []
+    for task_id in sorted(set(task_ids)):
+        if not finished_run_ids(task_id, replays, rerolls):
+            left_out.append((task_id, NO_FINISHED_RUN))
+        elif not (status.get(task_id) or {}).get("reference_confirmed"):
+            left_out.append((task_id, NO_CONFIRMED_REFERENCE))
+        else:
+            selected.append(task_id)
+    return selected, left_out
+
+
+def left_out_finding(left_out: list[tuple[str, str]], examined: int) -> Finding:
+    """The note naming the Tasks the session did not see and why, one row each (F24)."""
+    named = ", ".join(f"{task_id} ({reason})" for task_id, reason in left_out[:LEFT_OUT_SHOWN])
+    rest = len(left_out) - LEFT_OUT_SHOWN
+    named += f" and {rest} more" if rest > 0 else ""
+    opened = (f"the Examiner session read {examined} Tasks" if examined
+              else "no Examiner session opened")
+    return Finding(kind="other", source="derive",
+                   text=f"{len(left_out)} Tasks left out of the Examiner session: {named}",
+                   rows=[{"task_id": task_id, "left_out": reason} for task_id, reason in left_out],
+                   change=(f"{opened}; {len(left_out)} Tasks left out: {named}; replay or run them "
+                           "until a Run finishes on a confirmed Reference, then examine again"))
 
 
 def load_store(workdir: Any) -> dict:
@@ -363,8 +452,12 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
 
     The probe, re-roll and variant runners come from the runner tool over the workdir (D120):
     without a re-roll model the derivation stays code only and buys no Runs.
+
+    The session sees only the Tasks with a finished Run and a confirmed Reference; one finding
+    of kind other names the rest and why, and when none is left no session opens at all (F24).
     """
     root = Path(workdir)
+    task_ids = list(task_ids) if task_ids is not None else None
     expose(workdir)
     store = load_store(workdir)
     anchor = _load_anchor(root)
@@ -382,6 +475,18 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     write_json(root / "findings.json", [f.as_dict() for f in findings])
     if model is None:
         return findings
+    candidates = task_ids if task_ids is not None else {
+        *(t.id for t in store.get("tasks") or []), *(store.get("replays") or {}),
+        *(store.get("rerolls") or {})}
+    status = read_json(root / "task_status.json", {}) or {}
+    selected, left_out = select_for_session(candidates, store.get("replays") or {},
+                                            store.get("rerolls") or {},
+                                            status if isinstance(status, dict) else {})
+    note = [left_out_finding(left_out, len(selected))] if left_out else []
+    if not selected:
+        out = findings + note
+        write_json(root / "findings.json", [f.as_dict() for f in out])
+        return out
     exam_root = _exam_root(workdir, store, findings, reroll_model=reroll_model,
                            probe_model=probe_model, run_probe=runners["run_probe"],
                            allowance_usd=allowance_usd)
@@ -392,7 +497,7 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     for subscriber in subscribers:
         harness.subscribe(subscriber)
     harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
-    load_extensions(harness, [examiner_extension(exam_root)])
+    load_extensions(harness, [examiner_extension(exam_root, selected)])
 
     capped: list[bool] = []
 
@@ -402,7 +507,7 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
                 capped.append(True)
 
     asyncio.run(go())
-    out = list(exam_root.findings) + ([turns_ran_out(max_turns)] if capped else [])
+    out = list(exam_root.findings) + note + ([turns_ran_out(max_turns)] if capped else [])
     write_json(root / "findings.json", [f.as_dict() for f in out])
     return out
 
@@ -457,4 +562,5 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     save_history(exam_root, history)
     return exam_root
 __all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "derive_findings", "examine", "examiner_extension",
-           "finding_from_row", "load_store", "rulings_line", "task_runs_of", "turns_ran_out"]
+           "finding_from_row", "left_out_finding", "load_store", "root_listing", "rulings_line",
+           "select_for_session", "task_runs_of", "turns_ran_out"]

@@ -274,3 +274,52 @@ def test_an_examiner_that_finishes_under_its_cap_files_no_turn_note(tmp_path):
     reading = TestModel([reply("reading", ("ls", {"path": "."}))] * 9 + [reply("done")])
     findings = S.examine(world.workdir, model=reading)
     assert not any("ran out of turns" in f.change for f in findings)
+
+
+def test_session_prompt_names_dot_as_root_lists_entries_and_the_paths_of_each_task(tmp_path):
+    world = make_world(tmp_path)
+    materialize(world)
+    model = TestModel([reply("done")])
+    S.examine(world.workdir, model=model)
+    [call] = model.calls
+    system = " ".join(str(m.get("content")) for m in call["messages"])
+    assert 'Your root is "."' in system
+    assert str(world.workdir) not in system
+    assert "The root holds: history.json, replays.json, rerolls.json, runs/, tasks/." in system
+    assert "on your first write under them: verifiers/, probes/" in system
+    assert "runs: runs/t1/ref.jsonl, runs/t1/alt.jsonl" in system
+    assert "verifier: verifiers/t1.json once you first propose one" in system
+
+
+def test_examine_with_no_finished_run_opens_no_session_and_names_the_task_left_out(tmp_path):
+    world = make_world(tmp_path, confirmed=False, rerolls=())
+    materialize(world)
+    model = TestModel([reply("done")])
+    findings = S.examine(world.workdir, model=model)
+    assert model.calls == []
+    [note] = [f for f in findings if any("left_out" in r for r in f.rows)]
+    assert (note.kind, note.source) == ("other", "derive")
+    assert note.rows == [{"task_id": "t1", "left_out": S.NO_FINISHED_RUN}]
+    assert "no Examiner session opened" in note.change
+    assert not (world.workdir / "budget.json").is_file() or "examiner" not in (
+        world.workdir / "budget.json").read_text()
+
+
+def test_a_task_without_a_confirmed_reference_is_left_out_with_its_reason():
+    replays = {"t1": {"a": {"run_id": "a", "confirmed": True}},
+               "t2": {"b": {"run_id": "b", "confirmed": True}},
+               "t3": {"c": {"run_id": "c", "confirmed": False}}}
+    status = {"t1": {"reference_confirmed": True}, "t2": {"reference_confirmed": False}}
+    selected, left_out = S.select_for_session(["t1", "t2", "t3"], replays, {}, status)
+    assert selected == ["t1"]
+    assert left_out == [("t2", S.NO_CONFIRMED_REFERENCE), ("t3", S.NO_FINISHED_RUN)]
+    note = S.left_out_finding(left_out, examined=1)
+    assert "t2 (no confirmed Reference), t3 (no finished Run)" in note.text
+    assert note.change.startswith("the Examiner session read 1 Tasks")
+
+
+def test_the_rulings_line_covers_only_the_tasks_the_session_examines(tmp_path):
+    world = make_world(tmp_path, tasks=2)
+    root = ExamRoot(workdir=world.workdir, replays=world.inputs["replays"])
+    lines = S.rulings_line(root, ["t2"]).splitlines()
+    assert [line.split(":")[0] for line in lines] == ["t2"]
