@@ -48,6 +48,9 @@ PRICES: dict[str, dict[str, float]] = {
     # (api/v1/models, read 2026-09-23), per-token prices times 1M, the tier below 272,000 prompt
     # tokens; a longer prompt is billed at twice the input and one and a half times the output.
     "openai/gpt-6-luna": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
+    # models.dev's snapshot lacks it. OpenRouter's catalogue (api/v1/models, read 2026-09-23),
+    # per-token prices times 1M, the tier below 272,000 prompt tokens.
+    "openai/gpt-6-sol": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
 }
 
 # What fits in one call, per model, for the D65 cap. A model with no row uses the default.
@@ -67,6 +70,8 @@ CONTEXT_WINDOWS: dict[str, int] = {
     # The harness default model: context_length in OpenRouter's catalogue (api/v1/models, read
     # 2026-09-23).
     "openai/gpt-6-luna": 1_050_000,
+    # context_length in OpenRouter's catalogue (api/v1/models, read 2026-09-23).
+    "openai/gpt-6-sol": 1_050_000,
 }
 
 TOTALS_NAME = "budget.json"
