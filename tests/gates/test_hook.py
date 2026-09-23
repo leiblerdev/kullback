@@ -106,3 +106,25 @@ def test_ruled_names_every_failing_call_past_the_bindings_cap_with_its_trace_and
     text = ruling_line(failing)
     assert "30 rows raise KeyError:" in text
     assert "trace tr29 call c29 args {\"widget_id\":\"W-29\"}: KeyError: 'W-29' at `return self.db[widget_id]`" in text
+
+
+def test_ruled_hands_the_executor_every_keyword_the_rulings_pass_it(tmp_path, monkeypatch):
+    import inspect
+
+    from kullback.gates import hook
+
+    seen = []
+
+    def recording(source, calls, db, **kwargs):
+        seen.append(kwargs)
+        return []
+
+    def rulings_stub(root, path, workdir, *, execute=None, evidence=None):
+        takes = any(param.kind is inspect.Parameter.VAR_KEYWORD
+                    for param in inspect.signature(execute).parameters.values())
+        execute("source", [], {}, **({"trace_calls": ["prefix"]} if takes else {}))
+        return []
+
+    monkeypatch.setattr(hook, "rulings_for", rulings_stub)
+    assert ruled(tmp_path, "tools/m.py", tmp_path, execute=recording) == []
+    assert seen == [{"trace_calls": ["prefix"]}]

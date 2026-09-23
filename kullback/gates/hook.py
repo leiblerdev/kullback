@@ -148,12 +148,15 @@ def _written_path(call: Any) -> Optional[str]:
 
 
 def _capturing(execute: Any, seen: dict) -> Any:
-    """The executor, keeping its first answer: the recorded calls run once, the rows read them."""
+    """The executor, keeping its first answer: the recorded calls run once, the rows read them.
+
+    Keywords the caller hands the executor (a trace prefix) pass through, and the wrapper takes
+    `**kwargs` so a signature check on it sees that it accepts them."""
     if execute is None:
         return None
 
-    def run(source: Any, calls: Any, db: Any) -> Any:
-        results = list(execute(source, calls, db))
+    def run(source: Any, calls: Any, db: Any, **kwargs: Any) -> Any:
+        results = list(execute(source, calls, db, **kwargs))
         seen.setdefault("results", results)
         return results
 
