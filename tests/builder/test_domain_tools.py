@@ -446,3 +446,16 @@ def test_derived_user_rules_open_a_fresh_run_that_finishes_with_a_verdict(tmp_pa
     assert row["user_end"] == "goal_satisfied"
     assert row["verdict"] is not None and row["verdict"]["passed"]
     assert "1 finished" in result.content
+
+
+def test_the_examine_summary_leads_with_the_tasks_not_derived_yet(tmp_path):
+    """F40: the cap note comes first in the summary, so the Builder knows to call examine again."""
+    from kullback.examiner.session import not_derived_finding
+
+    root = _workdir(tmp_path)
+    note = not_derived_finding(["t3", "t4"])
+    (examine,) = [tool for tool in domain_tools_mod.domain_tools(workdir=root, examine_fn=lambda w, t: [note])
+                  if tool.name == "examine"]
+    result = _run(examine, {"task_ids": None})
+    assert not result.is_error, result.content
+    assert result.content.startswith("2 confirmed Tasks not derived yet: t3, t4; call examine again")

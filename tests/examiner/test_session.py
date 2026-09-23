@@ -371,3 +371,54 @@ def test_a_session_capped_after_a_refused_proposal_files_its_note_on_that_task_w
     assert note.task_id == "t1"
     assert "; last refusal: " in note.change
     assert read_json(world.workdir / "findings.json")[-1]["task_id"] == "t1"
+
+
+def _derived(world) -> list[str]:
+    return sorted(path.stem for path in (world.workdir / "verifiers").glob("*.json"))
+
+
+def _not_derived(findings) -> list:
+    return [f for f in findings if any("not_derived" in row for row in f.rows)]
+
+
+def test_examine_derives_at_most_the_cap_and_names_the_rest_until_a_second_call_derives_them(tmp_path, monkeypatch):
+    """F40: one call derives TASKS_PER_CALL Tasks in id order; one finding names the rest, the next call clears it."""
+    monkeypatch.setattr(S, "TASKS_PER_CALL", 2)
+    world = make_world(tmp_path, tasks=4)
+    materialize(world)
+    first = S.examine(world.workdir, model=None)
+    assert _derived(world) == ["t1", "t2"]
+    [note] = _not_derived(first)
+    assert note.kind == "other" and note.source == "derive"
+    assert note.text == "2 confirmed Tasks not derived yet: t3, t4; call examine again"
+    assert note.rows == [{"task_id": t, "not_derived": "cap"} for t in ("t3", "t4")]
+    second = S.examine(world.workdir, model=None)
+    assert _derived(world) == ["t1", "t2", "t3", "t4"]
+    assert not _not_derived(second)
+    status = read_json(world.workdir / "task_status.json")
+    assert sorted(status) == ["t1", "t2", "t3", "t4"], "each call merges its rows into the status"
+
+
+def test_examine_with_task_ids_derives_exactly_those(tmp_path):
+    world = make_world(tmp_path, tasks=4)
+    materialize(world)
+    findings = S.examine(world.workdir, task_ids=["t3", "t1"], model=None)
+    assert _derived(world) == ["t1", "t3"]
+    assert not _not_derived(findings)
+
+
+def test_examine_with_every_confirmed_task_derived_derives_nothing_and_files_no_cap_note(tmp_path):
+    world = make_world(tmp_path, tasks=2)
+    materialize(world)
+    S.examine(world.workdir, model=None)
+    before = (world.workdir / "task_status.json").read_bytes()
+    findings = S.examine(world.workdir, model=None)
+    assert (world.workdir / "task_status.json").read_bytes() == before, "no derivation ran"
+    assert not _not_derived(findings)
+
+
+def test_the_cap_note_names_ten_tasks_and_counts_the_rest():
+    note = S.not_derived_finding([f"t{n:02d}" for n in range(1, 13)])
+    assert note.text.startswith("12 confirmed Tasks not derived yet: t01, t02,")
+    assert "t10 and 2 more; call examine again" in note.text
+    assert len(note.rows) == 12

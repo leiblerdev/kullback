@@ -932,3 +932,15 @@ def test_the_two_pools_together_never_run_more_jobs_than_they_were_given():
     assert sorted(outs) == [0, 1, 2, 3]
     assert inners == [4, 5, 6, 7]
     assert track["max"] <= 2, "the two pools share one ceiling of two"
+
+
+def test_derive_all_with_only_as_a_set_derives_those_tasks_and_merges_them_into_the_status(tmp_path):
+    """F40: `only` takes an iterable of task ids; the Tasks outside it are skipped as one id skips them."""
+    world = make_world(tmp_path, tasks=3)
+    out = _derive(world.workdir, world.inputs, only={"t3", "t1"})
+    assert out["ran"] == 2 and sorted(v.task_id for v in out["verifiers"]) == ["t1", "t3"]
+    assert sorted(_read(world.workdir / "task_status.json")) == ["t1", "t3"]
+    _derive(world.workdir, world.inputs, only=["t2"])
+    assert sorted(_read(world.workdir / "task_status.json")) == ["t1", "t2", "t3"]
+    with pytest.raises(ValueError, match="no Task is named t9"):
+        _derive(world.workdir, world.inputs, only={"t1", "t9"})

@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, Union
 
 from kullback import sampling
 from kullback.examiner import derive as verifier_mod
@@ -1280,15 +1280,18 @@ def _probe_of(run_probe: Any, probe_model: Any) -> Any:
     return run_probe
 
 
-def _select_tasks(inputs: dict, only: Optional[str]) -> list:
-    """The Tasks to derive, or the one named Task; an unknown name is refused."""
+def _select_tasks(inputs: dict, only: Union[str, Iterable[str], None]) -> list:
+    """The Tasks to derive, or the named ones in Task order; an unknown name is refused.
+
+    `only` is one task id as a str or an iterable of task ids (F40)."""
     tasks = list(inputs["tasks"])
     if only is None:
         return tasks
-    picked = [task for task in tasks if task.id == only]
-    if not picked:
-        raise ValueError(f"no Task is named {only}")
-    return picked
+    wanted = {only} if isinstance(only, str) else {str(task_id) for task_id in only}
+    unknown = sorted(wanted - {task.id for task in tasks})
+    if unknown:
+        raise ValueError(f"no Task is named {', '.join(unknown)}")
+    return [task for task in tasks if task.id in wanted]
 
 
 def _key_base(code_hash: Optional[str], canon_rules: Any, constraints: list, policy_lines: list,
@@ -1528,7 +1531,7 @@ def _collect_outputs(jobs: list[_Job], entries: list[dict]) -> tuple[list, dict,
     return verifiers, status, references, sum(1 for job in jobs if job.cached)
 
 
-def _read_prior(workdir: Path, only: Optional[str]) -> tuple[dict, dict]:
+def _read_prior(workdir: Path, only: Any) -> tuple[dict, dict]:
     """The live rows already on disk, for the `only` merge and the stamps.
 
     The references file is read only when one Task is merged into it, as it was.
@@ -1544,7 +1547,7 @@ def _read_prior(workdir: Path, only: Optional[str]) -> tuple[dict, dict]:
     return prior_status, prior_references
 
 
-def _persist_results(ctx: ExamContext, status: dict, references: dict, only: Optional[str],
+def _persist_results(ctx: ExamContext, status: dict, references: dict, only: Any,
                      round_number: int) -> tuple[dict, dict, dict]:
     """Merge a single-Task derivation, retire withdrawn artefacts, write the live files.
 
@@ -1726,7 +1729,7 @@ def _record_round(ctx: ExamContext, status: dict, metrics: dict) -> None:
 def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe_limit: Optional[int] = None,
                judge_model: Any = None, judge_agent: bool = False, run_probe: Any = None,
                run_rerolls: Any = None, run_variant: Any = None, round_number: int = 0,
-               only: Optional[str] = None,
+               only: Union[str, Iterable[str], None] = None,
                workers: int = 1, code_hash: Optional[str] = None) -> dict:
     """One Verifier per Task from its References by the D111 rule, through the whole D79 suite.
 
@@ -1771,8 +1774,8 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     `blocking_tools` on the row names. Every row carries the Task's own replay fidelity per tool,
     confirmed or not.
 
-    With `only` one Task is derived and its rows are merged into the task_status.json and
-    references.json already on disk; without it the whole build is derived and the files are the
+    With `only`, one task id or an iterable of them, those Tasks are derived and their rows are
+    merged into the task_status.json and references.json already on disk; without it the whole build is derived and the files are the
     stage's, byte for byte. Either way scorecard.json is rewritten last, so it reads as it did when
     the stage ran inside the pipeline.
 
