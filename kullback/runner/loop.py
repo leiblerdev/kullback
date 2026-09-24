@@ -214,7 +214,7 @@ def _call_cost(reply: Any, model: Any) -> Cost:
     exchange = getattr(reply, "exchange", None)
     cost = Cost(
         provider=getattr(exchange, "provider", None),
-        model=reply.model or getattr(model, "name", None),
+        model=getattr(exchange, "wire_id", None) or reply.model or getattr(model, "name", None),
         usage=reply.usage,
         wall_ms=getattr(exchange, "wall_ms", 0.0) or 0.0,
     )
