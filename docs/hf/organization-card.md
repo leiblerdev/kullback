@@ -32,7 +32,7 @@ Smoke 8, 2026-09-23, Builder `openai/gpt-6-sol`, tag `build-20260923`. Fidelity 
 | [airline](https://huggingface.co/datasets/leibler/airline) | 79.8% (95 of 119) | 78.5% (157 of 200) | 96.03% over 1513 calls | 95 | 95 | 53 of 119 | preview |
 | [telecom](https://huggingface.co/datasets/leibler/telecom) | 9.3% (17 of 183) | 18.5% (27 of 146) | not on its card | 7 | 14 | 0 of 183 | preview |
 
-Telecom was not rebuilt in smoke 8. Its row is still round 5, built 2026-09-09. No round closed in smoke 8, so the retail and airline counts come from the workdir status, as the "Counts from" row on each card says.
+The trusted counts are under review, because 49 retail and 27 airline of them rest on a second-path seed read from a file that several Tasks wrote at once; they will be re-derived before anything is built on them. Telecom was not rebuilt in smoke 8. Its row is still round 5, built 2026-09-09. No round closed in smoke 8, so the retail and airline counts come from the workdir status, as the "Counts from" row on each card says.
 
 The build before this one, smoke 7 on the same day and the same Builder, ended with 14 trusted retail Tasks at 98.5% (202 of 205) and 22 trusted airline Tasks at 84.0% (100 of 119). Airline replays fewer Tasks than it did then, and its booking tool matches only 3 of its 29 recorded calls. It has more than twice as many trusted Tasks, though.
 

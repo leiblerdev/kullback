@@ -9,4 +9,6 @@ Latest build there: smoke 8, retail and airline on `openai/gpt-6-sol` at commit 
   `.claude/logs/smoke-<corpus>-0923-sol8.log`.
 - Published under the tag build-20260923: retail as a release (2026-09-23), https://huggingface.co/datasets/leibler/retail;
   airline as a preview (2026-09-24), https://huggingface.co/datasets/leibler/airline. Telecom is still round 5 from 2026-09-09.
+- The trusted counts are under review, because 49 retail and 27 airline of them rest on a second-path seed read
+  from a file that several Tasks wrote at once; they will be re-derived before anything is built on them.
 - An investigation into the open Tasks, the spend and the Builder's failures is running.
