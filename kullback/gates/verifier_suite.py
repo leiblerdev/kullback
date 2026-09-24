@@ -29,6 +29,7 @@ it builds its atoms with `make_atom` from here, wrapping a Hard predicate with `
 from __future__ import annotations
 
 import ast
+import re
 from typing import Any, Callable, Iterable, Optional
 
 from kullback.runner import target as _target
@@ -38,8 +39,8 @@ from kullback.runner.records import (
     Run,
     UserRules,
     Verifier,
-    as_dict,
     canonical_json,
+    load_task_run,
 )
 
 # loop.py's own stop reasons are in here: a re-run that ran to the end without a Simulated user
@@ -59,6 +60,18 @@ _NEVER_HOLDS = "def check(pre_state, write_call, transcript):\n    return False\
 # Reference. It is the only reason the Examiner's stage leaves that Run out (`suite_for` passes the
 # second Reference or None), and a check with no input is not evidence of a narrow Verifier (D173).
 ALT_PATH_NOT_RUN = "one Reference, so there is no second path to score"
+# How a check with no input words its failure line. The GateResult stays not passed, so the
+# derivation keeps the Task untrusted, but a ruling on a proposal reads a line that starts with
+# this as a check that did not run, never as a check the proposal failed (F45).
+NOT_RUN = "not run: "
+
+
+def not_run_reason(failures: Iterable[str]) -> Optional[str]:
+    """Why a check did not run, when every failure line it carries says so; None for a check that ran."""
+    lines = [str(line) for line in failures or ()]
+    if not lines or not all(line.startswith(NOT_RUN) for line in lines):
+        return None
+    return "; ".join(line[len(NOT_RUN):] for line in lines)
 
 # The transcript helpers a compiled Hard predicate may call, pasted into its source by `_predicate`
 # at derivation time and by the policy compiler's sandbox at build time. One text, read by both
@@ -231,6 +244,12 @@ question_keys = _target.question_keys  # moved to kullback/runner/target.py (G3)
 
 
 communicate_values = _target.communicate_values  # moved to kullback/runner/target.py (G3), imported here
+
+
+fact_source = _target.fact_source  # what a stated fact was read from, keyed by meaning (D285)
+
+
+field_of_value = _target.field_of_value  # the field a whole value sits under in a Run's results (D285)
 
 
 # --- atoms: the payload and the predicate vocabulary -----------------------
@@ -496,6 +515,7 @@ D79_STAGES = {
     "verifier_loophole": "loophole_probe_fails",
     "verifier_leak": "leak_check_clean",
     "verifier_mutation": "mutation_flips",
+    "verifier_specific": "verifier_specific",
 }
 
 
@@ -524,7 +544,11 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
     the column of anything it missed.
     """
     reference = as_run(reference_run)
-    runs = {r.trace_id or r.run_id: r for r in [as_run(s) for s in (seed_runs or [])] + [reference]}
+    # D281: the seeds and the second path are Runs of this Task, through the loader that refuses another's.
+    own = [load_task_run(s, verifier.task_id) for s in (seed_runs or [])]
+    runs = {r.trace_id or r.run_id: r for r in own + [reference]}
+    if alt_path_run is not None:
+        alt_path_run = load_task_run(alt_path_run, verifier.task_id)
 
     def score(atoms_of: Verifier, run):
         return check_run(atoms_of, run, canon, write_tools=write_tools)
@@ -543,26 +567,28 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
         passed, failing = score(verifier, run)
         if not passed:
             return passed, failing
-        fn = canon_fn(canon)
         tools = scored_write_tools(verifier, as_run(run), write_tools)
         for atom in verifier.atoms:
             if atom.kind == "hard" and _target.hard_defect(atom, as_run(run), tools, fn):
                 return False, atom.id
         return True, None
 
+    fn = canon_fn(canon)
+    rows = world_rows(runs.values())
     return [
-        _spans_gate(verifier, runs, canon_fn(canon)),
+        _spans_gate(verifier, runs, fn),
         _run_gate("verifier_oracle", oracle_scored, reference, expect_pass=True),
         _run_gate("verifier_empty_run", scored,
                   empty_run if empty_run is not None else _empty_run(reference), expect_pass=False,
                   atoms=verifier.atoms),
-        _run_gate("verifier_wrong_run", scored, wrong_run, expect_pass=False, atoms=verifier.atoms),
+        _wrong_gate(verifier, reference, wrong_run, scored, fn, rows),
         _run_gate("verifier_unfinished_run", scored, unfinished_run(verifier, reference, canon),
                   expect_pass=False, atoms=verifier.atoms),
         _run_gate("verifier_alt_path", scored, alt_path_run, expect_pass=True, missing=ALT_PATH_NOT_RUN),
         loophole_probe(verifier, model, run_probe=run_probe, canon=canon, write_tools=write_tools),
-        _leak_gate(verifier, reference, intent_text, user_rules, runs.values(), intent),
-        _mutation_gate(verifier, reference, score, canon_fn(canon), write_tools),
+        _leak_gate(verifier, reference, intent_text, user_rules, runs.values(), intent, fn=fn),
+        _mutation_gate(verifier, reference, score, fn, write_tools),
+        specific_gate(verifier, reference, fn, rows),
     ]
 
 
@@ -743,7 +769,7 @@ def _run_gate(stage: str, scored: Callable, run: Any, *, expect_pass: bool,
     """
     if run is None:
         return GateResult(stage=stage, passed=False, metrics={"skipped": True, "not_run_reason": missing},
-                          failures=[f"not run: {missing}"])
+                          failures=[f"{NOT_RUN}{missing}"])
     passed, failing_atom = scored(run)
     want = "pass" if expect_pass else "fail"
     failures = [] if passed is expect_pass else [f"expected {want}, got {'pass' if passed else 'fail'}"]
@@ -829,6 +855,229 @@ def _mutant(atom: Atom, fn: Callable) -> Optional[Atom]:
     return None
 
 
+# --- specificity: what a demand says about this Task and no other (D285, D286) ---
+
+# A field is generic when most of the world holds the same value under it. Every Task of an
+# Environment is about some rows of one world, so a value most rows carry under a column is a value
+# most Tasks see, and demanding it tells one Task from none of the others: a status nearly every row
+# has, a year every date shares. Half is the line because above it the value is the rule of the
+# column rather than a fact of one row. A value that is not the whole value of any field (a year or
+# a day cut out of a date, the digits of a prefixed id, the zeros of a time) names no column at all,
+# and is generic whatever the counts say. Fewer than three rows under a column are too few to call a
+# value common, so only the fragment rule answers there.
+GENERIC_SHARE = 0.5
+GENERIC_MIN_ROWS = 3
+FRAGMENT = "a fragment of a longer value, not the whole value of any field"
+
+
+def world_rows(runs: Iterable[Run], *, read_only: bool = False) -> list[dict]:
+    """The rows of the world these Runs saw: their Starting state and every tool result, each row once.
+
+    A row is any record holding a scalar column. What the Runs read is the evidence the Task has of
+    its world; the Starting state, where a Run carries it, is the whole of it. `read_only` keeps the
+    rows the Runs were handed and leaves the Starting state out.
+    """
+    seen: dict[str, dict] = {}
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if any(not isinstance(item, (dict, list, tuple)) for item in value.values()):
+                seen.setdefault(canonical_json(value), value)
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+
+    for run in runs:
+        if not read_only:
+            walk(_target.start_state(run))
+        for event in run.events:
+            if event.type == "tool_result":
+                walk(_payload(event).get("result"))
+    return list(seen.values())
+
+
+def generic_reason(field: Optional[str], key: str, rows: list[dict], fn: Callable) -> Optional[str]:
+    """Why a demanded value under this field is generic, or None when it is specific to the Task."""
+    if not field:
+        return FRAGMENT
+    column = field.rsplit(".", 1)[-1]
+    held = [row[column] for row in rows if column in row and not isinstance(row[column], (dict, list, tuple))]
+    same = sum(1 for value in held if _key(fn, value) == key)
+    if len(held) >= GENERIC_MIN_ROWS and same > GENERIC_SHARE * len(held):
+        return f"held by {same} of {len(held)} rows under {column}"
+    return None
+
+
+def _value_generic_reason(payload: dict, kind: str, reference: Run, fn: Callable,
+                          rows: list[dict]) -> Optional[str]:
+    """Why a written value or a stated fact is generic, headed by the value, or None when it is specific."""
+    key = str(payload.get("value"))
+    field = payload.get("field") if kind == "write_value" else (
+        payload.get("field") or field_of_value(reference, key, fn))
+    reason = generic_reason(field, key, rows, fn)
+    return None if reason is None else f"{payload.get('text') or payload.get('raw')}: {reason}"
+
+
+def demand_specificity(verifier: Verifier, reference: Run, fn: Callable,
+                       rows: list[dict]) -> tuple[list[str], dict[str, str]]:
+    """The atoms that demand something of this Task alone, and every other demand with why it is not.
+
+    A write, a question the Task asks before it, and the shape of a written value name the Task's
+    own rows. A fact the answer states or a written value is specific only when its field is not
+    generic (above). A write count, the claim that nothing was written and a policy rule are true of
+    every Task that does nothing, so on their own they demand nothing of this one.
+    """
+    specific: list[str] = []
+    generic: dict[str, str] = {}
+    for atom in verifier.atoms:
+        payload = atom_payload(atom)
+        kind = payload.get("kind")
+        if atom.kind in ("allowed", "forbidden") or kind == "communicate_reported":
+            continue
+        if atom.kind == "hard":
+            if payload.get("derived_as") == "shape":
+                specific.append(atom.id)
+            else:
+                generic[atom.id] = ("the claim that the Run wrote nothing" if payload.get("derived_as") == "no_write"
+                                    else "a rule every Task keeps, not a value of this one")
+        elif kind == "entity_count":
+            count = int(payload.get("count", 0) or 0)
+            generic[atom.id] = "a write count of zero" if not count else f"a cap of {count} writes"
+        elif kind in ("write", "question"):
+            specific.append(atom.id)
+        elif kind in ("write_value", "communicate"):
+            reason = _value_generic_reason(payload, kind, reference, fn, rows)
+            if reason is None:
+                specific.append(atom.id)
+            else:
+                generic[atom.id] = reason
+        else:
+            generic[atom.id] = f"kind {kind} names no value of this Task"
+    return specific, generic
+
+
+def specific_gate(verifier: Verifier, reference: Run, fn: Callable, rows: list[dict]) -> GateResult:
+    """Check 10: the Verifier demands at least one thing specific to its Task (D285).
+
+    A Verifier whose demands are all generic (a value most of the world holds, a fragment of one, a
+    write count of zero) passes any Run that states a common value and writes nothing, whatever Task
+    it answered; the suite used to pass eight such Verifiers on every other check. The failure names
+    each generic atom and why.
+    """
+    specific, generic = demand_specificity(verifier, reference, fn, rows)
+    failures = [] if specific else [
+        "demands nothing specific to this Task: " + ("; ".join(f"{atom_id} ({why})" for atom_id, why in generic.items())
+                                                     or "no atom demands anything")]
+    return GateResult(stage="verifier_specific", passed=not failures,
+                      metrics={"specific": specific, "generic": generic}, failures=failures)
+
+
+def _shape_call(run: Run, payload: dict) -> Optional[Any]:
+    """The first call of the Reference that wrote the column a shape atom demands."""
+    return next((e for e in run.events if e.type == "tool_call" and _payload(e).get("name") == payload.get("tool")
+                 and payload.get("field") in _args(e)), None)
+
+
+def _write_swap_target(payload: dict, kind: str, run: Run, fn: Callable) -> Optional[tuple[str, Any, Any]]:
+    """What swapping a required write changes: the written field, its value, and the call that wrote it."""
+    calls = {e.idx: e for e in run.events if e.type == "tool_call"}
+    event = calls.get(payload.get("at"))
+    if event is None:
+        return None
+    args = _args(event)
+    field = payload.get("field") if kind == "write_value" else (
+        payload.get("id_field") or _target._entity(args, fn)[0])
+    return (field, args.get(field), event) if field and field in args else None
+
+
+def _swap_target(atom: Atom, run: Run, fn: Callable) -> Optional[tuple[str, Any, Any]]:
+    """What swapping this demand changes in the Reference: (field, the value, the call or None for the answer)."""
+    payload = atom_payload(atom)
+    kind = payload.get("kind")
+    if atom.kind == "required" and kind in ("write", "write_value"):
+        return _write_swap_target(payload, kind, run, fn)
+    if atom.kind == "hard" and payload.get("derived_as") == "shape":
+        event = _shape_call(run, payload)
+        return (payload["field"], _args(event)[payload["field"]], event) if event is not None else None
+    if atom.kind == "communicate" and kind == "communicate":
+        field = payload.get("field") or field_of_value(run, str(payload.get("value")), fn)
+        return (field, payload.get("text"), None) if field else None
+    return None
+
+
+def _other_value(field: str, current: Any, run: Run, rows: list[dict], fn: Callable) -> Optional[Any]:
+    """Another value the same world holds under the same field, never an invented one."""
+    column = field.rsplit(".", 1)[-1]
+    known = [row[column] for row in rows if column in row] + _values_named(run, column)
+    here = _key(fn, current)
+    return next((value for value in known if not isinstance(value, (dict, list, tuple))
+                 and value not in (None, "") and _key(fn, value) != here), None)
+
+
+def _said_instead(text: str, old: str, new: str) -> str:
+    """The answer with every whole-token mention of one value replaced by another."""
+    return re.sub(rf"(?<![A-Za-z0-9]){re.escape(old)}(?![A-Za-z0-9])", new, text)
+
+
+def swapped_runs(verifier: Verifier, reference: Any, fn: Callable,
+                 rows: list[dict]) -> list[tuple[str, str, Run]]:
+    """The mandatory swap probe (D286): one wrong Run per demanded value, from the Reference itself.
+
+    Each Run is the Reference with one demanded value (a written id or value, the shape of a written
+    column, a fact the answer states) replaced by another value of the same field from the same
+    world. The swap is a real value of that column, so a Verifier that accepts any value of the
+    field passes it; a Verifier that demands this Task's value fails it. A demand the world offers
+    no second value for is not swapped. Returns (atom id, the swap in words, the Run).
+    """
+    reference = as_run(reference)
+    out: list[tuple[str, str, Run]] = []
+    for atom in verifier.atoms:
+        target = _swap_target(atom, reference, fn)
+        if target is None or target[1] is None:
+            continue
+        field, current, call = target
+        other = _other_value(field, current, reference, rows, fn)
+        if other is None:
+            continue
+        run = reference.model_copy(deep=True)
+        run.run_id = f"{reference.run_id}.swap.{atom.id}"
+        if call is not None:
+            event = next(e for e in run.events if e.idx == call.idx)
+            key = "args" if "args" in (event.payload or {}) else "arguments"
+            event.payload = dict(event.payload, **{key: dict(_args(event), **{field: other})})
+        else:
+            for event in run.events:
+                if event.type == "model_call" and _assistant_text(event):
+                    reply = dict(_reply(event), content=_said_instead(_assistant_text(event), text_of(current),
+                                                                       text_of(other)))
+                    event.payload = dict(event.payload, reply=reply) if "reply" in (event.payload or {}) else reply
+        out.append((atom.id, f"{field} {text_of(current)} -> {text_of(other)}", run))
+    return out
+
+
+def _wrong_gate(verifier: Verifier, reference: Run, wrong: Any, scored: Callable, fn: Callable,
+                rows: list[dict]) -> GateResult:
+    """Check 4, the plausible wrong End state: the caller's wrong Run and every swap must fail (D286).
+
+    The swap probe extends `wrong_run`: that Run aims the first required write at another entity or
+    silences the conversation, and it is one Run; the probe builds one Run per demanded value, the
+    written ids and values, the shapes and the stated facts alike, each swapped for another value of
+    its own field. The check is not run only when there is neither.
+    """
+    swaps = swapped_runs(verifier, reference, fn, rows)
+    if wrong is None and not swaps:
+        return _run_gate("verifier_wrong_run", scored, None, expect_pass=False, atoms=verifier.atoms)
+    gate = (_run_gate("verifier_wrong_run", scored, wrong, expect_pass=False, atoms=verifier.atoms)
+            if wrong is not None else GateResult(stage="verifier_wrong_run", passed=True, metrics={}, failures=[]))
+    passed_swaps = [(atom_id, swap) for atom_id, swap, run in swaps if scored(run)[0]]
+    failures = list(gate.failures) + [f"swap of {atom_id} ({swap}) scored pass: the Verifier accepts any value "
+                                      "of that field" for atom_id, swap in passed_swaps]
+    metrics = dict(gate.metrics, swaps=len(swaps), swaps_passed=[a for a, _ in passed_swaps])
+    return GateResult(stage="verifier_wrong_run", passed=not failures, metrics=metrics, failures=failures)
+
+
 def atom_column(atom: Atom) -> str:
     """The column an atom's value sat under, as the Intent strip and a finding name it (D196).
 
@@ -843,44 +1092,74 @@ def atom_column(atom: Atom) -> str:
     return str(field or tool or atom.kind)
 
 
+def _user_rule_text(user_rules: Optional[UserRules]) -> str:
+    """What the Simulated user rules say, as text: the values and the words, never a span or an index.
+
+    Matching the whole record matched the message positions its spans carry, so a day of the month
+    read as leaked because a span pointed at turn 17 (D287).
+    """
+    if user_rules is None:
+        return ""
+    parts: list[str] = []
+    for fact in user_rules.facts:
+        parts += [*_texts(fact.value), fact.context or ""]
+    parts += [rule.condition or "" for rule in user_rules.disclosure]
+    parts += [*user_rules.refusals, *user_rules.walk_away, *user_rules.style_sample, *user_rules.incomplete_reasons]
+    return " ".join(part for part in parts if part)
+
+
+def _said_by_users(runs: Iterable[Run], user_rules: Optional[UserRules]) -> str:
+    """Everything a user of the Task said: every seed recording's user turns and the facts the user rules
+    record out of a user turn (a fact with a span), which is the user's own spelling of a value."""
+    turns = [_user_text(e) for run in runs for e in run.events if e.type == "user_turn"]
+    facts = [text for fact in (user_rules.facts if user_rules is not None else ()) if fact.span is not None
+             for text in _texts(fact.value)]
+    return " ".join(turns + facts)
+
+
+def _world_keys(seeds: list[Run], fn: Callable) -> set[str]:
+    """The canonical key of every scalar value in a row of the world the seed Runs read."""
+    return {_key(fn, value) for row in world_rows(seeds, read_only=True) for value in row.values()
+            if not isinstance(value, (dict, list, tuple))}
+
+
 def _leak_gate(verifier: Verifier, reference: Run, intent_text: Optional[str],
                user_rules: Optional[UserRules], runs: Iterable[Run] = (),
-               intent: Any = None) -> GateResult:
+               intent: Any = None, *, fn: Callable) -> GateResult:
     """Check 7: constants only the Verifier should know, found in the Intent or the Simulated user rules.
 
-    A value is only a secret when no user said it, and the users who count are the users of every
-    seed recording of the Task, not the one recording that happens to be the Reference. The Intent is
-    mined from all of them (D83), so reading `said_by_user` off the Reference alone made this check
-    stricter than the miner it polices: on the last build, of 24 leaked values across 14 Tasks, 18
-    were spoken by a user in another recording of the same Task, and those 14 Tasks were blocked for
-    nothing. `runs` is the Task's other seed Runs; the Reference is read whether or not it is among
-    them, so a caller that has only the Reference keeps the behaviour it always had.
+    Every comparison is canonical, through the Environment's one canonicaliser (D284, D287): a user
+    who said an id without its prefix said the id. A value is only a secret when no user said it,
+    and the users who count are the users of every seed recording of the Task plus the facts the
+    user rules record out of a user turn, not the one recording that happens to be the Reference
+    (the Intent is mined from all of them, D83). A value that is a row of the world the Task's Runs
+    read is not a secret either, even when the Intent says it: it is the world's, open to any Run
+    that reads it, and what the check is for is a value only the Verifier holds, one no row of the
+    world gives away (an agent's own number, a computed answer). The user rules are read as their
+    values and words only (`_user_rule_text`), never their spans.
 
     With `intent`, the Intent record itself, this is an audit of the D196 strip rather than the first
-    time anyone looked: the miner has already taken every system-known value out of the line and said
-    on the record which columns it took, so what reaches here is what the strip missed. The check
-    still fails, exactly as it did before, and it names the column each missed value came from, which
-    is what a finding can be keyed on and what the next build's strip has to cover. A caller with no
-    record passes none and the check reads as it always did.
+    time anyone looked, and it names the column each missed value came from.
     """
-    said_by_user = " ".join(_user_text(e) for run in [reference, *runs]
-                            for e in run.events if e.type == "user_turn")
+    seeds = [reference, *runs]
+    said_by_user = _said_by_users(seeds, user_rules)
+    world = _world_keys(seeds, fn)
     secrets: dict[str, str] = {}
     for atom in verifier.atoms:
         payload = atom_payload(atom)
         if atom.provenance not in ("system_derived", "agent_chosen"):
             continue
-        # Numbers leak as readily as strings: an amount read off a tool result and repeated in the
-        # Intent is the constant D79 check 7 is looking for, whether the trace stored it as 150.0 or "150.0".
+        # Numbers leak as readily as strings: an amount repeated in the Intent is the constant D79
+        # check 7 is looking for, whether the trace stored it as 150.0 or "150.0".
         value = payload["text"] if payload.get("text") is not None else payload.get("raw")
         for text in _texts(value) if value is not None else []:
-            if len(text) > 1 and text not in ("true", "false", "null") and not _token_in(said_by_user, text):
+            if len(text) <= 1 or text in ("true", "false", "null") or _key(fn, text) in world:
+                continue
+            if not _matches(said_by_user, text, fn):
                 secrets.setdefault(text, atom_column(atom))
-    blobs = {"intent": intent_text or ""}
-    if user_rules is not None:
-        blobs["user_rules"] = canonical_json(as_dict(user_rules))
+    blobs = {"intent": intent_text or "", "user_rules": _user_rule_text(user_rules)}
     missed = [(text, secrets[text], where) for text in sorted(secrets)
-              for where, blob in blobs.items() if _token_in(blob, text)]
+              for where, blob in blobs.items() if blob and _matches(blob, text, fn)]
     failures = [f"{where} leaks {text} (column {column})" for text, column, where in missed]
     stripped = list(getattr(intent, "stripped", ()) or ())
     return GateResult(stage="verifier_leak", passed=not failures,
@@ -901,7 +1180,7 @@ def loophole_probe(verifier: Verifier, model: Any, *, run_probe: Optional[Callab
         why = f"{missing}, so the Verifier is not known to be tight"
         return GateResult(stage="verifier_loophole", passed=False,
                           metrics={"skipped": True, "not_run_reason": why},
-                          failures=[f"not run: {why}"])
+                          failures=[f"{NOT_RUN}{why}"])
     passed, failing_atom = check_run(verifier, run_probe(model, verifier), canon, write_tools=write_tools)
     return GateResult(stage="verifier_loophole", passed=not passed,
                       metrics={"probe_passed": passed, "failing_atom": failing_atom},

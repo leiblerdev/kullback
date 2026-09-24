@@ -10,6 +10,7 @@ from typing import Any, Optional
 from gates.verifier_fixtures import WRITE_TOOLS, derive
 from kullback.gates.probes import version_hash
 from kullback.gates.verifier_suite import check_run
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import (
     Probe,
     ProbePool,
@@ -42,7 +43,7 @@ def loosen(verifier: Verifier) -> Verifier:
 
 
 def scores(verifier: Verifier, run: Run) -> bool:
-    return check_run(verifier, run, None, write_tools=WRITE_TOOLS)[0]
+    return check_run(verifier, run, CanonRules(), write_tools=WRITE_TOOLS)[0]
 
 
 def probe(probe_id: str, run: Run, against: Verifier, bug_class: str = "other",

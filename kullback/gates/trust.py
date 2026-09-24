@@ -20,10 +20,22 @@ the other steps. Every ruling carries the fraction (`false_rejection`), the pool
 A suite failure names every check behind it (D198): the ones that failed and the ones that had no
 input with the reason each gate gave, in the suite's fixed order, so a reader can tabulate the Tasks
 that stop here instead of reading one sentence that says only that they stopped.
+
+A Task whose suite failed only by checks that had no input is ruled on every other step first, and
+held by the not-run checks only when all of them pass; `not_run_only` names those Tasks, so a
+proposal on one is not refused for a check nobody could run (F45).
+
+D281 adds provenance, where the caller names the workdir: every seed Run the accepted version
+records must resolve, through the Run loader, to a Run of the same Task. A seed read from a file
+another Task wrote, a file holding two Runs, or a file nobody can find again is evidence nobody can
+attribute, so the version is not trusted, the reason names the seeds, and the history is kept for
+the Examiner's next round to derive again. `untrusted_seeds` names each such Task's seeds.
 """
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Optional
 
 from kullback.gates.loosening import (
@@ -44,8 +56,22 @@ from kullback.gates.probes import (
     write_tools_of,
 )
 from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES
+from kullback.runner.canon import load_rules
 from kullback.runner.gate_support import _get, gate
-from kullback.runner.records import GateResult, ProbePool, Run, Verifier, VerifierHistory
+from kullback.runner.records import (
+    GateResult,
+    ProbePool,
+    Run,
+    Verifier,
+    VerifierHistory,
+    exam_verifier_path,
+    load_exam_history,
+    load_exam_task_runs,
+    load_probe_pools,
+    load_task_run,
+    read_json,
+    run_path,
+)
 
 # A check the suite could not run, and why it had no input. The stage names the status row carries
 # are the suite's; the trusted ruling speaks the D79 check names a person reads (D173).
@@ -53,6 +79,9 @@ NOT_RUN_REASON = {"second_path_passes": ALT_PATH_NOT_RUN}
 # What the false-rejection step says about a Task that held nothing out: no held-out Run reached the
 # Reference, so the number is not a zero rate and not a failure, it is an absent measurement (D194).
 NO_POOL = "no_pool"
+# The Examiner's own re-roll rows (second-path batches), beside the workdir's re-roll file (D133).
+EXAMINER_REROLLS = ("examiner", "rerolls.json")
+RUNS_DIR = "runs"
 
 
 def finished_runs(task_id: str, replays: dict, rerolls: dict) -> list[str]:
@@ -112,6 +141,16 @@ def _suite_reason(row: Any, skipped: list[str]) -> str:
     return "the D79 suite did not pass: " + ", ".join(named)
 
 
+def _held_by_not_run(row: Any, skipped: list[str]) -> bool:
+    """The suite did not pass only because checks had no input: every check that ran passed (F45).
+
+    The Task stays untrusted, the reason names each check not run and why, and a proposal ruled on
+    it is not refused for that: the checks nobody could run say nothing against the atoms proposed.
+    """
+    checks = _get(row, "checks", None) or {}
+    return bool(skipped) and all(ok for name, ok in checks.items() if name not in skipped)
+
+
 def _is_accepted_version(verifier: Verifier, history: Optional[Any]) -> bool:
     """The current file is the last accepted row of the Task's history, hash for hash."""
     if history is None:
@@ -134,11 +173,79 @@ def _loosens_past_the_frontier(task_id: str, history: Any, task_runs: dict, repl
     return None if ruling.passed else ruling.failures[0]
 
 
+def _run_rows(index: Any) -> dict[str, list[dict]]:
+    """Per Task, the rows of a replay index (a dict per Task) or a re-roll index (a list per Task)."""
+    out: dict[str, list[dict]] = {}
+    for task_id, rows in (index or {}).items() if isinstance(index, dict) else ():
+        values = rows.values() if isinstance(rows, dict) else rows if isinstance(rows, list) else ()
+        out[task_id] = [row for row in values if isinstance(row, dict) and row.get("path")]
+    return out
+
+
+def seed_files(workdir: Any, replays: dict, rerolls: dict) -> dict[str, dict[str, Path]]:
+    """Per Task, the file each run id names: the replay and re-roll rows, then the Examiner's rows."""
+    examiner = read_json(Path(workdir).joinpath(*EXAMINER_REROLLS), {}) or {}
+    files: dict[str, dict[str, Path]] = {}
+    for index in (replays, rerolls, examiner):
+        for task_id, rows in _run_rows(index).items():
+            named = files.setdefault(task_id, {})
+            for row in rows:
+                for key in ("run_id", "trace_id"):
+                    if row.get(key):
+                        named.setdefault(str(row[key]), run_path(workdir, row["path"]))
+    return files
+
+
+def unattributed_seeds(verifier: Verifier, workdir: Any, files: dict[str, dict[str, Path]]) -> list[str]:
+    """The seeds of this version that do not load, through the Run loader, as Runs of its Task (D281).
+
+    A seed no row names is looked for under the Task's own runs folder, where the runner writes a
+    replay or a variant; one found nowhere is not attributable either.
+    """
+    task_id = verifier.task_id
+    named = files.get(task_id) or {}
+    bad = []
+    for seed in verifier.seed_run_ids:
+        path = named.get(seed) or Path(workdir) / RUNS_DIR / task_id / f"{seed}.jsonl"
+        try:
+            load_task_run(path, task_id)
+        except (OSError, ValueError):
+            bad.append(seed)
+    return bad
+
+
+def _passing_probes(verifier: Verifier, pool: Any, canon_rules: Any, write_tools: Any) -> list[str]:
+    """The probes of the Task's pool the Verifier scores a pass, none without a pool."""
+    scores = probe_scores(verifier, as_pool(pool), canon_rules, write_tools) if pool is not None else {}
+    return [probe_id for probe_id, ok in scores.items() if ok]
+
+
+def _pool_ruling(held: dict) -> str:
+    """The false-rejection number in words, or NO_POOL when no held-out Run was scored."""
+    return NO_POOL if not held["held_out"] else f"{held['fraction']:.2f} of {held['held_out']} held-out Runs"
+
+
+def _skipped_stages(row: Any) -> list[str]:
+    """The checks the Task's status row says did not run, by their D79 names."""
+    return [D79_STAGES.get(stage, stage) for stage in (_get(row, "not_run", None) or [])]
+
+
+def _unattributed_seeds(verifier: Verifier, workdir: Any, files: dict) -> list[str]:
+    """The seeds that are not Runs of the Task, none without a workdir to check them in."""
+    return unattributed_seeds(verifier, workdir, files) if workdir is not None else []
+
+
 def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str, ProbePool],
                  history: dict[str, VerifierHistory], refusals: dict[str, dict], task_runs: dict[str, list[Run]],
-                 replays: dict, rerolls: dict, canon_rules: Any, sigs: list) -> GateResult:
-    """A failure per Task with a Verifier that is not trusted, with the first reason that holds."""
+                 replays: dict, rerolls: dict, canon_rules: Any, sigs: list, *,
+                 workdir: Any = None) -> GateResult:
+    """A failure per Task with a Verifier that is not trusted, with the first reason that holds.
+
+    Given the workdir, the seeds of each accepted version are checked for provenance (D281).
+    """
     write_tools = write_tools_of(sigs)
+    files = seed_files(workdir, replays, rerolls) if workdir is not None else {}
+    foreign_seeds: dict[str, list[str]] = {}
     # D133's number is over the Runs that did the job, so the discarded recordings are out of the
     # pool (D173); the loosening rule below reads the whole pool, which is a different question.
     legitimate = legitimate_runs(replays, rerolls, discarded_runs(task_status))
@@ -150,30 +257,34 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     pool_sizes: dict[str, int] = {}
     pool_says: dict[str, str] = {}
     not_run: dict[str, list[str]] = {}
+    not_run_only: list[str] = []
     probes_passing = 0
     failures: list[str] = []
     for verifier in sorted(map(as_verifier, verifiers or ()), key=lambda v: v.task_id):
         task_id = verifier.task_id
-        pool = (probes or {}).get(task_id)
-        scores = probe_scores(verifier, as_pool(pool), canon_rules, write_tools) if pool is not None else {}
-        passing = [probe_id for probe_id, ok in scores.items() if ok]
+        passing = _passing_probes(verifier, (probes or {}).get(task_id), canon_rules, write_tools)
         probes_passing += len(passing)
         held = false_rejection(verifier, (task_runs or {}).get(task_id, []), legitimate.get(task_id, set()),
                                canon_rules, write_tools)
         fractions[task_id] = held["fraction"]
         pool_sizes[task_id] = held["held_out"]
-        pool_says[task_id] = NO_POOL if not held["held_out"] else \
-            f"{held['fraction']:.2f} of {held['held_out']} held-out Runs"
+        pool_says[task_id] = _pool_ruling(held)
         row = (task_status or {}).get(task_id) or {}
-        skipped = [D79_STAGES.get(stage, stage) for stage in (_get(row, "not_run", None) or [])]
+        skipped = _skipped_stages(row)
         if skipped:
             not_run[task_id] = skipped
-        if not _get(row, "verifier_passed", False):
+        suite_passed = bool(_get(row, "verifier_passed", False))
+        only_not_run = not suite_passed and _held_by_not_run(row, skipped)
+        if not suite_passed and not only_not_run:
             reason = _suite_reason(row, skipped)
         elif passing:
             reason = f"probe {passing[0]} scores a pass"
         elif not _is_accepted_version(verifier, (history or {}).get(task_id)):
             reason = f"version {version_hash(verifier)} is not an accepted version"
+        elif unattributed := _unattributed_seeds(verifier, workdir, files):
+            foreign_seeds[task_id] = unattributed
+            reason = (f"version {version_hash(verifier)} was derived from seeds that are not Runs of this Task: "
+                      f"{', '.join(unattributed)}")
         elif (loosened := _loosens_past_the_frontier(task_id, history[task_id], task_runs or {}, replays or {},
                                                      rerolls or {}, canon_rules, sigs)) is not None:
             reason = f"version {version_hash(verifier)} loosens past the frontier: {loosened}"
@@ -182,6 +293,9 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
         elif over_strict(held):
             reason = (f"false_rejection {pool_says[task_id]}: the required atoms reject every held-out Run that "
                       "reached the Reference, so the Verifier checks one path and not the Task")
+        elif only_not_run:
+            reason = _suite_reason(row, skipped)
+            not_run_only.append(task_id)
         else:
             trusted.append(task_id)
             continue
@@ -189,4 +303,46 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
         failures.append(f"task {task_id}: {reason}")
     return gate("trusted", failures, trusted=trusted, untrusted=untrusted, probes_passing=probes_passing,
                 false_rejection=fractions, false_rejection_pool=pool_sizes, false_rejection_ruling=pool_says,
-                refused=refused, checks_not_run=not_run)
+                refused=refused, checks_not_run=not_run, not_run_only=not_run_only,
+                untrusted_seeds=foreign_seeds)
+
+
+def _live_verifiers(root: Path) -> list[dict]:
+    """Each Task's live Verifier: the Examiner's proposal where it wrote one, else the derived file."""
+    verifiers: list[dict] = []
+    for path in sorted((root / "verifiers").glob("*.json")) if (root / "verifiers").is_dir() else []:
+        proposal = exam_verifier_path(root, path.stem)
+        for source in (proposal, path) if proposal.is_file() else (path,):
+            try:
+                verifiers.append(json.loads(source.read_text(encoding="utf-8")))
+                break
+            except (OSError, ValueError):
+                continue
+    return verifiers
+
+
+def _refusal_files(root: Path) -> dict[str, Any]:
+    refusals: dict[str, Any] = {}
+    for folder in (root / "refusals", root / "env" / "refusals"):
+        for path in sorted(folder.glob("*.json")) if folder.is_dir() else ():
+            try:
+                refusals.setdefault(path.stem, json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                continue
+    return refusals
+
+
+def workdir_trusted_ruling(workdir: Any) -> GateResult:
+    """The trusted ruling over a workdir's live files, with provenance: the one trusted number (D281).
+
+    The Builder's status and the round's snapshot both read trust here, so they cannot disagree: the
+    Examiner's artefacts where it wrote them (F22), the refusals, the replay and re-roll rows, and
+    the workdir for the seed provenance step. Files not there yet read as empty.
+    """
+    root = Path(workdir)
+    task_status = read_json(root / "task_status.json", None) or {}
+    return trusted_gate(task_status if isinstance(task_status, dict) else {}, _live_verifiers(root),
+                        load_probe_pools(root), load_exam_history(root), _refusal_files(root),
+                        load_exam_task_runs(root), read_json(root / "replays.json", None) or {},
+                        read_json(root / "rerolls.json", None) or {}, load_rules(root / "canon-rules.json"),
+                        read_json(root / "tool_sigs.json", None) or [], workdir=root)

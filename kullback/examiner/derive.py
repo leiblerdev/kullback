@@ -40,6 +40,8 @@ from kullback.gates.verifier_suite import (
     canon_fn,
     classify_provenance,
     communicate_values,
+    fact_source,
+    generic_reason,
     hard_holds,
     make_atom,
     ptr,
@@ -47,9 +49,10 @@ from kullback.gates.verifier_suite import (
     resolve_write_tools,
     run_calls,
     text_of,
+    world_rows,
     write_effects,
 )
-from kullback.runner.records import Atom, Constraint, Run, Task, Verifier
+from kullback.runner.records import Atom, Constraint, Run, Task, Verifier, load_task_run
 
 # A write value is required only when it is agreed across the good Runs *and* the customer or their
 # world is where it came from; a value the Candidate invented is never required of it.
@@ -68,8 +71,11 @@ NEVER_SECRET = ("true", "false", "null")
 _WORDS = re.compile(r"[A-Za-z0-9]+")
 
 
-def load_runs(paths: Iterable[Any]) -> list[Run]:
-    return [as_run(p) for p in paths]
+def load_runs(paths: Iterable[Any], task_id: Optional[str] = None) -> list[Run]:
+    """The seed Runs, each through the Run loader; given a Task, another Task's Run is refused (D281)."""
+    if task_id is None:
+        return [as_run(p) for p in paths]
+    return [load_task_run(p, task_id) for p in paths]
 
 
 def successful(run: Run, successful_run_ids: Optional[Iterable[str]]) -> bool:
@@ -301,6 +307,9 @@ def shape_atom(atom_id: str, tool: str, field: str, id_field: str, tools: Iterab
                                        sources=tuple(sources))
     atom = _rule_atom(atom_id, payload_source, tools, SHAPE_ATOM,
                       f"{tool} writes under {field} a value this Run read for itself")
+    # The column the shape is about, so the swap probe (D286) knows which value of the Reference to
+    # replace; the rule itself reads the same names out of its source.
+    atom.target.update(tool=tool, field=field, id_field=id_field)
     if source:
         atom.target["shape_source"] = source
     return atom
@@ -472,8 +481,9 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
     not one of these References, wrote something; it decides whether a cap of 0 is written (below).
     """
     fn = canon_fn(canon)
-    reference = as_run(reference_run)
-    reruns = load_runs(rerun_paths or [])
+    task_id = _task_id(task)
+    reference = load_task_run(reference_run, task_id)
+    reruns = load_runs(rerun_paths or [], task_id)
     tools = resolve_write_tools([reference] + reruns, write_tools)
     good = [reference] + [r for r in reruns if successful(r, successful_run_ids)]
     good_effects = [write_effects(r, tools, fn) for r in good]
@@ -496,7 +506,7 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
         # says something a Run can contradict.
         atoms.append(no_write_atom(tools))
 
-    return Verifier(task_id=_task_id(task), atoms=atoms, verifier_version=verifier_version,
+    return Verifier(task_id=task_id, atoms=atoms, verifier_version=verifier_version,
                     seed_run_ids=[r.run_id for r in good])
 
 
@@ -629,11 +639,30 @@ def _stated_facts(said: list[dict], atoms: list[Atom]) -> set[str]:
     Task with nothing else it leaves a Verifier no Run can fail at all. What the Reference itself told
     the user is then the evidence of the work, and the facts of it the request asked for are demanded;
     the ones it did not ask for stay reported, as D182 says.
+
+    D285: agreement is over meaning (the field a fact was read from and its value), and only a fact
+    specific to the Task counts as agreement. Good Runs that share nothing but generic values (a year,
+    the zeros of a time) agree on nothing, which is also what a seed that answered another Task looks
+    like, so the Reference's own facts are what the answer is derived from.
     """
     common = set.intersection(*[set(s) for s in said]) if said else set()
-    if common or _demands_something(atoms):
+    if any(not said[0][key].get("generic") for key in common) or _demands_something(atoms):
         return common
     return set(said[0]) if said else set()
+
+
+def meant_facts(run: Run, fn: Any, rows: list[dict]) -> dict[str, dict]:
+    """The facts a Run's answers state, keyed by meaning: the field the fact was read from and its value.
+
+    Each fact records the tool and field of the result it was read from, and whether it is generic
+    (a fragment of a value, or a value most of the world holds under its field, D285).
+    """
+    out: dict[str, dict] = {}
+    for key, fact in communicate_values(run, fn).items():
+        tool, field = fact_source(run, fact["span"], key, fn)
+        out.setdefault(f"{field or ''}={key}", dict(fact, key=key, tool=tool, field=field,
+                                                    generic=generic_reason(field, key, rows, fn)))
+    return out
 
 
 def _redemand_reported(atoms: list[Atom], reported: list[int], spoken: str) -> None:
@@ -645,6 +674,8 @@ def _redemand_reported(atoms: list[Atom], reported: list[int], spoken: str) -> N
     only evidence of the work, and it is demanded again.
     """
     for at in reported:
+        if atoms[at].target.get("generic"):
+            continue  # a generic value is never demanded, whatever else the Verifier lacks (D285)
         payload = dict(atoms[at].target, kind="communicate")
         atoms[at] = _demanded_fact(atoms[at].id, payload,
                                    atoms[at].spans[0] if atoms[at].spans else None,
@@ -658,13 +689,18 @@ def _communicate_atoms(reference: Run, good: list[Run], spoken: str, request: tu
     `atoms` is what the derivation has written so far, which is what says whether there is anything
     else a Run can fail; the flag is read before the fallback below, which the cap ignores.
     """
-    said = [communicate_values(r, fn) for r in good]
+    rows = world_rows(good)
+    said = [meant_facts(r, fn, rows) for r in good]
     facts: list[Atom] = []
     reported: list[int] = []
-    for number, key in enumerate(sorted(_stated_facts(said, atoms))):
-        fact = said[0][key]
-        payload = {"kind": "communicate", "value": key, "text": fact["text"]}
-        if communicate_kind(fact, key, reference, request):
+    for number, meaning in enumerate(sorted(_stated_facts(said, atoms))):
+        fact = said[0][meaning]
+        key = fact["key"]
+        payload = {"kind": "communicate", "value": key, "text": fact["text"], "field": fact["field"],
+                   "source_tool": fact["tool"]}
+        if fact["generic"]:
+            payload["generic"] = fact["generic"]
+        if not fact["generic"] and communicate_kind(fact, key, reference, request):
             facts.append(_demanded_fact(f"c{number}", payload, fact["span"],
                                         spoken=user_said(spoken, fact["text"])))
             continue

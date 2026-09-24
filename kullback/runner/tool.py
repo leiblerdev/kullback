@@ -40,7 +40,7 @@ from kullback.runner.records import (
 from kullback.runner.replay import AGREES
 from kullback.runner.target import load_run
 from kullback.runner.verdict import verdict as score_verdict
-from kullback.runner.world import loading
+from kullback.runner.world import clock, loading
 from kullback.runner.world.environment import BuiltEnvironment
 from kullback.runner.world.loading import RUN_SEED_KIND, EnvironmentError
 
@@ -159,9 +159,7 @@ def _router_for(env: BuiltEnvironment, task_id: str, seed: int,
     source = env.toolkit_source()
     db = copy.deepcopy(env.db)
     toolkit = loading.load_toolkit(source, db, overlay=overlay, overlay_values=overlay_rows)
-    context = getattr(toolkit, "ctx", None)
-    if context is not None:
-        context.reseed(seed)
+    clock.start_context(toolkit, seed, env.clock(task_id, trace_id))
     return route.Router(
         env_tools_module=toolkit, starting_state=copy.deepcopy(env.db),
         overlay=overlay, overlay_rows=overlay_rows, tool_sigs=env.sigs,
@@ -222,15 +220,14 @@ def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, mak
         user = make_user(router)
     runs_dir = Path(workdir) / RUNS_DIR
     runs_dir.mkdir(parents=True, exist_ok=True)
-    if run_id is None:
-        run_id = f"{task_id}-{seed}"
     specs = env.tool_specs()
-    state = loop.new_run_state(
-        run_id, workdir=runs_dir, env_id=env.env_id, task_id=task_id,
+    state = _fresh_run_state(
+        run_id, f"{task_id}-{seed}", workdir=runs_dir, env_id=env.env_id, task_id=task_id,
         model=_model_name(model), seed=seed, user=user,
         user_rules=env.rules(task),
         max_turns=MAX_TURNS, system_prompt=env.system_prompt(task),
         first_user=task.intent if user is None else None)
+    run_id = state.run.run_id
     loop.open_with_user(state)
     loop.run(state, model, tools=specs, router=router)
     loop.finish(state, router)
@@ -247,6 +244,23 @@ def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, mak
                      spend=as_dict(state.run.cost), runner_version=report_version,
                      termination_reason=state.run.termination_reason,
                      user_end=_user_end_of(user))
+
+
+def _fresh_run_state(run_id: Optional[str], base: str, **fields: Any) -> loop.RunState:
+    """A new Run under the caller's name, or under `base` and the first attempt whose file is free.
+
+    A caller's name is written once like every Run file (D281). Without one, the same Task and seed
+    played again (a second re-roll call that starts its seeds at 0) is a new Run, not the old file
+    rewritten, so it takes the next attempt: `base`, then `base-a2`, `base-a3` and on.
+    """
+    if run_id is not None:
+        return loop.new_run_state(run_id, **fields)
+    attempt = 1
+    while True:
+        try:
+            return loop.new_run_state(base if attempt == 1 else f"{base}-a{attempt}", **fields)
+        except FileExistsError:
+            attempt += 1
 
 
 def _user_end_of(user: Any) -> Optional[str]:
@@ -425,7 +439,7 @@ def probe(environment_dir: Any, task_id: str, model: Any, *, verifier: Any, work
     run_id = f"probe-{task_id}"
     specs = env.tool_specs()
     state = loop.new_run_state(
-        run_id, workdir=probes_dir, env_id=env.env_id, task_id=task_id,
+        run_id, workdir=probes_dir, env_id=env.env_id, task_id=task_id, supersedes=True,
         model=f"probe:{_model_name(model)}", seed=seed, user=user,
         user_rules=env.rules(task),
         max_turns=max_turns, system_prompt=_probe_prompt(task, verifier, env.sigs))
@@ -539,14 +553,15 @@ def reroll(environment_dir: Any, task_id: str, model: Any, *, count: int,
 
     A buyer that checks its allowance between Runs calls it with count=1 and the next seed.
 
-    With a `prefix` the Runs are named for their buyer (D133: the Examiner's second-path batches),
-    so a re-roll never writes different bytes under a name something already read. The candidate's
+    With a `prefix` the Runs are named for their buyer (D133: the Examiner's second-path batches)
+    and for the Task, so a re-roll never writes different bytes under a name something already read
+    and two Tasks bought under one prefix never share a file (D281). The candidate's
     user arrives as an object or as a `make_user(router)` factory, never as an import. Each report
     carries `user_end`, how the Simulated user ended that Run (D133).
     """
     return [run(environment_dir, task_id, model, user=user, make_user=make_user,
                 workdir=workdir, seed=seed,
-                run_id=f"{prefix}-{seed}" if prefix else None)
+                run_id=f"{prefix}-{task_id}-{seed}" if prefix else None)
             for seed in range(first_seed, first_seed + max(int(count), 0))]
 
 

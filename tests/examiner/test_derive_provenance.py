@@ -12,6 +12,7 @@ from typing import Any, Optional
 from kullback.examiner import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.atom_context import AtomContext
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import Event, Run
 
 ASSIGN = "assign_locker"
@@ -71,7 +72,7 @@ def assignment_events(badge: str = "QX41", read_badge: Optional[str] = None) -> 
 
 def derive(reference: Run, reruns: list[Run] = (), **kwargs) -> Any:
     kwargs.setdefault("write_tools", WRITE_TOOLS)
-    return V.derive_verifier(kwargs.pop("task", "t1"), reference, list(reruns), None, **kwargs)
+    return V.derive_verifier(kwargs.pop("task", "t1"), reference, list(reruns), CanonRules(), **kwargs)
 
 
 def atom(verifier: Any, atom_id: str) -> Any:
@@ -96,20 +97,27 @@ def test_the_leak_check_passes_over_a_shape_atom_whose_value_the_intent_spells_o
     """The value the Intent gives away is no longer a constant the Verifier keeps."""
     reference = run("ref", assignment_events())
     verifier = derive(reference)
-    gate = S._leak_gate(verifier, reference, "assign the locker whose badge code is QX41", None)
+    gate = S._leak_gate(verifier, reference, "assign the locker whose badge code is QX41", None,
+                        fn=S.canon_fn(CanonRules()))
     assert gate.passed, gate.failures
 
 
-def test_what_a_user_said_is_read_the_way_the_leak_check_reads_it():
-    """`user_said` and the frozen leak check agree value by value, which is why one may relax the other."""
+def test_the_leak_check_passes_a_value_a_user_said_or_a_row_the_run_read_holds_and_flags_the_rest():
+    """`user_said` is one half of what the leak check forgives; a value of a row the Run read is the
+    other (D287), so the badge code the roster answered is no secret although no user said it."""
     reference = run("ref", assignment_events())
     spoken = V.spoken_text([reference])
-    for value in ("L9", "QX41", "locker", "true", "9", 12, ["L9", "QX41"], ["L9"]):
+    expected = {"L9": True, "QX41": True, "locker": True, "true": True, "9": True, "12": False,
+                "L9 QX41": True, "L9 12": False}
+    for text, passed in expected.items():
+        value = text.split() if " " in text else text
         one = S.make_atom("a0", "communicate", {"kind": "communicate", "value": "k", "text": value},
                           provenance="system_derived")
         held = S.Verifier(task_id="t1", atoms=[one])
-        gate = S._leak_gate(held, reference, " ".join(S._texts(value)), None)
-        assert gate.passed is V.user_said(spoken, value), value
+        gate = S._leak_gate(held, reference, text, None, fn=S.canon_fn(CanonRules()))
+        assert gate.passed is passed, text
+        if passed is False:
+            assert V.user_said(spoken, value) is False
 
 
 # --- D206: the shape is checked against what the Run read, not against the row it wrote ------
@@ -162,7 +170,7 @@ def test_a_value_read_off_another_rows_result_satisfies_the_shape():
     reference = run("ref", copy_across_rows_events())
     verifier = derive(reference)
     assert source_of(verifier, "w0.badge_code") == "prior_result"
-    assert S.check_run(verifier, reference, write_tools=WRITE_TOOLS)[0]
+    assert S.check_run(verifier, reference, CanonRules(), write_tools=WRITE_TOOLS)[0]
 
 
 def test_a_value_a_prose_result_states_satisfies_the_shape():
@@ -170,13 +178,13 @@ def test_a_value_a_prose_result_states_satisfies_the_shape():
     reference = run("ref", prose_events())
     verifier = derive(reference)
     assert source_of(verifier, "w0.badge_code") == "result_text"
-    assert S.check_run(verifier, reference, write_tools=WRITE_TOOLS)[0]
+    assert S.check_run(verifier, reference, CanonRules(), write_tools=WRITE_TOOLS)[0]
 
 
 def test_the_shape_is_satisfied_by_the_write_s_own_row_as_it_always_was():
     verifier = derive(run("ref", assignment_events()))
     assert source_of(verifier, "w0.badge_code") == "own_row"
-    assert S.check_run(verifier, run("again", assignment_events()), write_tools=WRITE_TOOLS)[0]
+    assert S.check_run(verifier, run("again", assignment_events()), CanonRules(), write_tools=WRITE_TOOLS)[0]
 
 
 def test_a_value_the_run_never_read_is_rejected_wherever_the_write_lands():
@@ -187,12 +195,12 @@ def test_a_value_the_run_never_read_is_rejected_wherever_the_write_lands():
         result({"locker_id": "L4", "assigned": True}, cid="c1"),
         says("Locker L4 is yours."),
     ])
-    passed, failing = S.check_run(verifier, invented, write_tools=WRITE_TOOLS)
+    passed, failing = S.check_run(verifier, invented, CanonRules(), write_tools=WRITE_TOOLS)
     assert not passed and failing == "w0.badge_code"
     # The own_row shape rejects it too: relaxed is not empty.
     own_row = derive(run("ref", assignment_events()))
     wrong = run("other", assignment_events(badge="TM08", read_badge="QX41"))
-    passed, failing = S.check_run(own_row, wrong, write_tools=WRITE_TOOLS)
+    passed, failing = S.check_run(own_row, wrong, CanonRules(), write_tools=WRITE_TOOLS)
     assert not passed and failing == "w0.badge_code"
 
 
@@ -203,7 +211,7 @@ def test_a_shape_that_would_reject_its_own_reference_is_counted_and_not_stored()
     assert [a.id for a in verifier.atoms if a.id == "w0.badge_code"] == []
     assert V.derivation_counts(verifier)["atoms_dropped_as_shape_self_reject"] == 1
     assert S.atom_payload(atom(verifier, "w0"))["shape_self_reject"] == ["badge_code"]
-    assert S.check_run(verifier, reference, write_tools=WRITE_TOOLS)[0]
+    assert S.check_run(verifier, reference, CanonRules(), write_tools=WRITE_TOOLS)[0]
 
 
 def test_a_row_whose_column_is_empty_demands_nothing_under_it():
@@ -215,7 +223,7 @@ def test_a_row_whose_column_is_empty_demands_nothing_under_it():
                                                     + [_event("stop", start_state=empty)])])
     verifier = derive(seeded)
     assert source_of(verifier, "w0.badge_code") == "no_column"
-    assert S.check_run(verifier, seeded, write_tools=WRITE_TOOLS)[0]
+    assert S.check_run(verifier, seeded, CanonRules(), write_tools=WRITE_TOOLS)[0]
 
 
 def test_a_shape_the_row_rule_accepted_keeps_the_row_rule_and_turns_a_swap_away():
@@ -235,7 +243,7 @@ def test_a_shape_the_row_rule_accepted_keeps_the_row_rule_and_turns_a_swap_away(
         result({"locker_id": "L9", "assigned": True}, cid="c1"),
         says("Locker L9 is yours."),
     ])
-    passed, failing = S.check_run(verifier, swapped, write_tools=WRITE_TOOLS)
+    passed, failing = S.check_run(verifier, swapped, CanonRules(), write_tools=WRITE_TOOLS)
     assert not passed and failing == "w0.badge_code"
 
 
@@ -269,7 +277,7 @@ def test_a_task_that_wrote_nothing_and_told_nothing_claims_its_end_state_is_its_
     claim = atom(verifier, V.NO_WRITE_ATOM)
     assert claim.kind == "hard"
     assert V.derivation_counts(verifier)["atoms_added_for_falsification"] == 1
-    assert S.check_run(verifier, run("ref", handover_events()), write_tools=WRITE_TOOLS)[0]
+    assert S.check_run(verifier, run("ref", handover_events()), CanonRules(), write_tools=WRITE_TOOLS)[0]
 
 
 def test_a_run_that_wrote_fails_the_no_write_claim():
@@ -280,14 +288,14 @@ def test_a_run_that_wrote_fails_the_no_write_claim():
         says("I have assigned you locker L4 instead."),
     ])
     assert S.hard_holds(atom(verifier, V.NO_WRITE_ATOM), wrote, WRITE_TOOLS) is False
-    assert not S.check_run(verifier, wrote, write_tools=WRITE_TOOLS)[0]
+    assert not S.check_run(verifier, wrote, CanonRules(), write_tools=WRITE_TOOLS)[0]
 
 
 def test_the_claim_is_one_the_mutation_check_can_flip_on_a_read_only_reference():
     """The D79 check that a Verifier says something falsifiable about its own Reference (D173)."""
     reference = run("ref", handover_events())
     verifier = derive(reference)
-    gates = {g.stage: g for g in S.validate_verifier(verifier, reference, write_tools=WRITE_TOOLS)}
+    gates = {g.stage: g for g in S.validate_verifier(verifier, reference, write_tools=WRITE_TOOLS, canon=CanonRules())}
     assert gates["verifier_mutation"].passed, gates["verifier_mutation"].failures
     assert gates["verifier_oracle"].passed
 

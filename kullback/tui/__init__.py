@@ -95,14 +95,16 @@ FEED_LINES = 12
 # GET of its own model list, 2026-09-10); the OpenRouter default is the cheapest tool-capable model
 # in the registry snapshot at a whole megatoken of context, and its nested id is deliberate, since
 # an id with a second slash is the shape OpenRouter mostly speaks. Providers the local registry
-# adds are appended to this in _login_defaults, never repeated here. OpenAI starts at the harness
-# default model, so a login lands on the model the builds run on.
+# adds are appended to this in _login_defaults, never repeated here. Bedrock starts at the harness
+# default model, so a login lands on the model the builds run on; OpenAI at gpt-6-luna, the
+# default before it.
 LOGIN_DEFAULT_MODELS = {
     "anthropic": "anthropic/claude-opus-5",
-    "openai": DEFAULT_MODEL,
+    "openai": "openai/gpt-6-luna",
     "opencode-go": "opencode-go/glm-5.3-flash",
     "deepseek": "deepseek/deepseek-flash",
     "openrouter": "openrouter/qwen/qwen3.7-flash",
+    "bedrock": DEFAULT_MODEL,
 }
 
 
@@ -587,6 +589,38 @@ def _keys(env: dict[str, str], session: set[str] = frozenset()) -> Text:
         out.append(f"{name:<32}", style="dim")
         out.append("set (this session)\n", style="green")
     return out
+
+
+def _credential_source(model: str, host: str) -> tuple[tuple[tuple[str, ...], ...], str]:
+    """The key variable groups a model reads, and the host its calls go to unless one was given."""
+    from kullback.ai import provider as pv
+
+    provider_name, _ = pv.split_model_id(model)
+    adapter_cls = pv.ADAPTERS.get(provider_name)
+    if adapter_cls is not None:
+        # The adapter names its own variables; one that signs requests reads several.
+        return adapter_cls.credential_vars(), host or "built-in adapter"
+    try:
+        endpoint = pv.registry_endpoint(model)
+    except Exception:
+        endpoint = None
+    if endpoint is None:
+        return (), host
+    groups = ((endpoint.key_env_var,),) if endpoint.key_env_var else ()
+    return groups, host or endpoint.base_url
+
+
+def _append_key_lines(out: Text, groups: tuple[tuple[str, ...], ...]) -> None:
+    """One line per key variable saying set or missing, the alternative groups joined by `or`."""
+    for index, group in enumerate(groups):
+        if index:
+            out.append("or\n", style="dim")
+        for key_var in group:
+            out.append(f"{key_var:<32}", style="dim")
+            out.append("set\n" if os.environ.get(key_var) else "missing\n",
+                         style="green" if os.environ.get(key_var) else "red")
+    if not groups:
+        out.append("no key variable: this endpoint takes none\n", style="dim")
 
 
 class Screen:
@@ -1228,28 +1262,10 @@ class Screen:
         if not self.model:
             return Text("no model: /login provider/model to use one", style="dim")
         out.append(f"model {self.model}\n", style="bold")
-        provider_name, _ = pv.split_model_id(self.model)
-        key_var, host = "", self.base_url or ""
-        adapter_cls = pv.ADAPTERS.get(provider_name)
-        if adapter_cls is not None:
-            key_var = adapter_cls.key_env_var
-            host = host or "built-in adapter"
-        else:
-            try:
-                endpoint = pv.registry_endpoint(self.model)
-            except Exception:
-                endpoint = None
-            if endpoint is not None:
-                key_var = endpoint.key_env_var
-                host = host or endpoint.base_url
+        groups, host = _credential_source(self.model, self.base_url or "")
         if host:
             out.append(f"host {host}\n", style="dim")
-        if key_var:
-            out.append(f"{key_var:<32}", style="dim")
-            out.append("set\n" if os.environ.get(key_var) else "missing\n",
-                         style="green" if os.environ.get(key_var) else "red")
-        else:
-            out.append("no key variable: this endpoint takes none\n", style="dim")
+        _append_key_lines(out, groups)
         try:
             live = pv.enable_live_calls_from_env()
         except Exception:

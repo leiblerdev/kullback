@@ -37,7 +37,7 @@ def round_counts(task_status: dict, verifiers: list[Verifier], probes: dict[str,
                  history: dict[str, VerifierHistory], refusals: dict[str, dict], task_runs: dict[str, list[Run]],
                  replays: dict, rerolls: dict, canon_rules: Any, sigs: list, *,
                  record: Optional[Callable[[GateResult], Any]] = None,
-                 intents: Optional[dict] = None) -> dict:
+                 intents: Optional[dict] = None, workdir: Any = None) -> dict:
     """D126's counts for one round, each read off a ruling; `record`, when given, receives the two
     rulings computed here (replay_reference, trusted) so a driver can land them in its ledger.
 
@@ -45,10 +45,12 @@ def round_counts(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     off it and off the status rows: how many Intents the strip touched, how many values it took out,
     and how many Task and column pairs the leak check found it had missed. The three say whether the
     strip is doing the work or the check still is, which is the only way to tell a strip that covers
-    a corpus from one that covers the two lines someone looked at."""
+    a corpus from one that covers the two lines someone looked at.
+
+    `workdir`, when the caller has the path, turns on the trusted gate's seed provenance step (D281)."""
     fidelity_ruling = reference_replay_gate(replays or {})
     trusted_ruling = trusted_gate(task_status, verifiers, probes, history, refusals, task_runs, replays, rerolls,
-                                  canon_rules, sigs)
+                                  canon_rules, sigs, workdir=workdir)
     for ruling in (fidelity_ruling, trusted_ruling):
         if record is not None:
             record(ruling)

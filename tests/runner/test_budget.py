@@ -35,6 +35,15 @@ def test_price_lookup_takes_the_full_id_or_the_wire_id():
     assert budget.price_for("openai/gpt-does-not-exist") is None
 
 
+def test_price_lookup_takes_an_inference_profile_off_the_id_and_leaves_other_dots_alone():
+    row = budget.price_for("bedrock/anthropic.claude-opus-5-5")
+    for profile in ("global.", "us.", "eu.", "apac."):
+        assert budget.price_for(f"bedrock/{profile}anthropic.claude-opus-5-5") == row
+        assert budget.price_for(f"{profile}anthropic.claude-opus-5-5") == row
+    assert budget.price_for("openai/gpt-6-sol") == budget.PRICES["openai/gpt-6-sol"]
+    assert budget.window_for("bedrock/global.anthropic.claude-haiku-4-5") == 200_000
+
+
 # --- per call cost ---
 
 

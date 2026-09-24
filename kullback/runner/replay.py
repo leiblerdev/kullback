@@ -19,6 +19,7 @@ own account.
 from __future__ import annotations
 
 import json
+import re
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
@@ -49,7 +50,14 @@ REASKED_AFTER_CALLS = {"assistant": True, "user": False}
 # How one routed call compares with the recording. The first three agree on effect; the rest do not.
 SAME, COSMETIC, BOTH_REFUSED = "same", "cosmetic", "both_refused"
 DIFFERS, OURS_REFUSED, THEIRS_REFUSED, UNRECORDED = "differs", "ours_refused", "theirs_refused", "unrecorded"
+# F56. Both sides refused, but not with the same message after the cosmetic normalisation, or our
+# side's refusal was the body's own fault: neither is agreement, whatever the recording refused with.
+REFUSED_DIFFERENTLY, BODY_FAULT = "refused_differently", "body_fault"
 AGREES = frozenset({SAME, COSMETIC, BOTH_REFUSED})
+# The prefixes a refusal message carries in one spelling and not the other: a Python class name
+# the body's exception adds, or the "Error: " a recording's text channel adds.
+REFUSAL_PREFIXES = ("error: ", "valueerror: ")
+NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?![\w])")
 # D215. A write is judged on every row it changed, not only on the answer it gave. `EFFECT` is the
 # reason kind a write fails under when the recording shows it moving a column and the replayed body
 # left that column where it was; `DOWNSTREAM` marks the later read that saw the stale value, so a
@@ -439,7 +447,10 @@ def compare_call_route(recorded: ToolCall, result: Any, error: Any, rules: Any =
     """
     ours_failed, theirs_failed = error is not None, recorded.error is not None
     if ours_failed and theirs_failed:
-        return BOTH_REFUSED, [], BY_ERROR
+        if _error_class(error) == BODY_FAULT:
+            return BODY_FAULT, [], BY_ERROR
+        agreed = refusal_message(error, rules) == refusal_message(recorded.error, rules)
+        return (BOTH_REFUSED if agreed else REFUSED_DIFFERENTLY), [], BY_ERROR
     if ours_failed:
         return OURS_REFUSED, [], BY_ERROR
     if theirs_failed:
@@ -453,6 +464,33 @@ def compare_call_route(recorded: ToolCall, result: Any, error: Any, rules: Any =
         return DIFFERS, [], BY_VALUE
     agreed, notes = comparer.agrees(recorded.name, theirs, ours)
     return (COSMETIC if agreed else DIFFERS), list(notes), _route_of(agreed, notes)
+
+
+def _error_class(error: Any) -> Optional[str]:
+    if isinstance(error, dict):
+        return error.get("class") or error.get("class_")
+    return getattr(error, "class_", None)
+
+
+def refusal_message(error: Any, rules: Any = None) -> str:
+    """A refusal's message under the cosmetic normalisation: case, whitespace, numbers, prefixes (F56).
+
+    The message is the payload's text, or its `error` or `message` field when the payload is an
+    object. The "Error: " and "ValueError: " prefixes are dropped wherever they lead, a closing full
+    stop is dropped, and every number and the text as a whole pass through `canonicalize`, so
+    "Total 10.00." and "total 10" are one message. Two refusals that say different things stay different.
+    """
+    payload = plain(error.get("payload") if isinstance(error, dict) else getattr(error, "payload", None))
+    if isinstance(payload, dict):
+        payload = next((payload[key] for key in ("error", "message") if isinstance(payload.get(key), str)),
+                       payload)
+    text = payload if isinstance(payload, str) else _dumps(payload)
+    text = re.sub(r"\s+", " ", text).strip()
+    while text.lower().startswith(REFUSAL_PREFIXES):
+        text = text.split(": ", 1)[1].strip()
+    text = text.rstrip(". ")
+    text = NUMBER.sub(lambda match: canonicalize(match.group(), rules), text)
+    return canonicalize(text, rules)
 
 
 def _norm(value: Any) -> Any:
@@ -570,7 +608,8 @@ def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_i
     scored = ScoredRouter(router, model.expected, write_tools, canon_rules, comparer, effects,
                           holdout_values=holdout_values, before_call=before_call)
     run_id = run_id or f"replay-{trace.trace_id}"
-    state = loop.new_run_state(run_id, workdir=workdir, env_id=env_id, task_id=task_id,
+    # A replay of one recording after a repair is the same Run again, so it replaces its own file (D281).
+    state = loop.new_run_state(run_id, workdir=workdir, env_id=env_id, task_id=task_id, supersedes=True,
                                trace_id=trace.trace_id, model=RECORDED, user=user,
                                max_turns=len(trace.turns) + 2, system_prompt=trace.system_prompt)
     user.state, user.router = state, scored
@@ -602,6 +641,29 @@ def _label(check: dict) -> str:
     return "user_call" if check.get("requestor") == "user" else check["kind"]
 
 
+def _replay_reasons(writes_off: list[dict], effect_off: list[dict], reads_off: list[dict], unmade: list[str],
+                    counts: dict, crashed: Optional[str], state: Any) -> list[str]:
+    """Why a replay is not confirmed, one line per call or condition that parted from the recording."""
+    # The route is part of the reason: "differs" alone does not say whether the two answers were
+    # made of different domain tokens, held different columns, or simply parted at a value (D217).
+    # A write that agreed on its own answer and failed on the rows it moved is named by its effects
+    # instead, and the read that saw the stale value carries the write it came from (D215).
+    reasons = [f"{c['tool']} {_label(c)}: {c['verdict']} ({c.get('verdict_route') or BY_VALUE})"
+               for c in writes_off if c["verdict"] not in AGREES]
+    reasons += [line for c in effect_off for line in effect_reasons(c)]
+    reasons += [f"{c['tool']} {_label(c)}: {c['verdict']} ({c.get('verdict_route') or BY_VALUE})"
+                + (f", {DOWNSTREAM} {c['downstream_tool']}" if c.get(DOWNSTREAM) else "")
+                for c in reads_off]
+    reasons += [f"{name} was recorded and never called" for name in unmade]
+    if counts["gaps"]:
+        reasons.append(f"{counts['gaps']} turn(s) out of order")
+    if crashed:
+        reasons.append(f"replay crashed: {crashed}")
+    if int(state.run.route_counts.get("llm") or 0):
+        reasons.append("a call was answered by the stand-in")
+    return reasons
+
+
 def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, model: TraceModel,
            user: TraceUser, crashed: Optional[str]) -> Replay:
     writes = [c for c in scored.checks if c["kind"] == "write"]
@@ -618,6 +680,9 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
         "reads": len(reads), "reads_same": sum(c["verdict"] == SAME for c in reads),
         "reads_cosmetic": sum(c["verdict"] == COSMETIC for c in reads),
         "reads_both_refused": sum(c["verdict"] == BOTH_REFUSED for c in reads),
+        # F56: calls both sides refused that do not agree, by a different message or a body fault.
+        "refused_differently": sum(c["verdict"] == REFUSED_DIFFERENTLY for c in scored.checks),
+        "body_faults": sum(c["verdict"] == BODY_FAULT for c in scored.checks),
         "reads_semantic": len(reads_off), "unmade": len(unmade), "gaps": model.gaps + user.gaps,
         # What the cursor read as one logical turn rather than as a gap it could never resync from.
         "absorbed_user_runs": script.absorbed["user"], "absorbed_model_runs": script.absorbed["assistant"],
@@ -645,23 +710,7 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
         "differs_by_judge": _by_route(scored.checks, DIFFERS, BY_JUDGE),
         "differs_unresolved": _by_route(scored.checks, DIFFERS, BY_UNRESOLVED),
     }
-    # The route is part of the reason: "differs" alone does not say whether the two answers were
-    # made of different domain tokens, held different columns, or simply parted at a value (D217).
-    # A write that agreed on its own answer and failed on the rows it moved is named by its effects
-    # instead, and the read that saw the stale value carries the write it came from (D215).
-    reasons = [f"{c['tool']} {_label(c)}: {c['verdict']} ({c.get('verdict_route') or BY_VALUE})"
-               for c in writes_off if c["verdict"] not in AGREES]
-    reasons += [line for c in effect_off for line in effect_reasons(c)]
-    reasons += [f"{c['tool']} {_label(c)}: {c['verdict']} ({c.get('verdict_route') or BY_VALUE})"
-                + (f", {DOWNSTREAM} {c['downstream_tool']}" if c.get(DOWNSTREAM) else "")
-                for c in reads_off]
-    reasons += [f"{name} was recorded and never called" for name in unmade]
-    if counts["gaps"]:
-        reasons.append(f"{counts['gaps']} turn(s) out of order")
-    if crashed:
-        reasons.append(f"replay crashed: {crashed}")
-    if int(state.run.route_counts.get("llm") or 0):
-        reasons.append("a call was answered by the stand-in")
+    reasons = _replay_reasons(writes_off, effect_off, reads_off, unmade, counts, crashed, state)
     return Replay(run_id=state.run.run_id, trace_id=trace.trace_id, task_id=state.run.task_id or "",
                   path=str(state.path) if state.path else "", confirmed=not reasons,
                   termination_reason=state.run.termination_reason, counts=counts, reasons=reasons,

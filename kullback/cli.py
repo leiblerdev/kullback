@@ -471,8 +471,8 @@ def _counts_line(workdir: Path) -> str:
     replays = _json_at(root, "replays.json")
     result = counts_mod.round_counts(
         task_status, verifiers, {}, {}, _refusal_dicts(root), {}, replays,
-        _json_at(root, "rerolls.json"), _json_at(root, "canon-rules.json") or None,
-        (_json_at(root, "tool_sigs.json") or {}).get("sigs", []))
+        _json_at(root, "rerolls.json"), _entry("kullback.runner.canon", "load_rules")(root / "canon-rules.json"),
+        (_json_at(root, "tool_sigs.json") or {}).get("sigs", []), workdir=root)
     return (f"trusted {result['trusted']}, refused {result['refused_count']}, "
             f"fidelity {result['fidelity']}/{result['tasks']}")
 
@@ -981,6 +981,37 @@ def _wrapped_model(model: Any, stage: str, workdir: Path, ceiling_usd: Optional[
     cache_key = f"kullback-{content_hash(str(Path(workdir).resolve()))[:12]}-{stage}"
     return budget.BudgetedModel(inner, stage=stage, workdir=workdir, model_id=name,
                                 ceiling=ceiling, prompt_cache_key=cache_key)
+
+
+budget_app = typer.Typer(add_completion=False,
+                         help="What a build spent, read from its ledger and feed; nothing is called.")
+app.add_typer(budget_app, name="budget")
+
+
+@budget_app.command("cache")
+def budget_cache(workdir: Path = WORKDIR,
+                 as_json: bool = typer.Option(False, "--json", help="Print the view as JSON.")):
+    """Per stage: calls, the share of prompt tokens read from the cache, writes on new and on already
+    sent prefixes, conversations that grew and still read nothing, and the ten largest uncached calls."""
+    cache_view = importlib.import_module("kullback.runner.cache_view")
+    view = cache_view.cache_view(workdir)
+    if as_json:
+        typer.echo(json.dumps(view, indent=2))
+        return
+    for line in cache_view.render(view):
+        typer.echo(line)
+
+
+@budget_app.command("reprice")
+def budget_reprice(workdir: Path = WORKDIR,
+                   model: Optional[str] = typer.Option(None, "--model",
+                                                       help="Price every call under this provider/model id "
+                                                            "instead of the id its feed line recorded.")):
+    """Price the calls in the feed again and rewrite the dollars in budget.json; nothing is called."""
+    budget = importlib.import_module("kullback.runner.budget")
+    total = budget.reprice(workdir, model_id=model)["total"]
+    typer.echo(f"{int(total['calls'])} calls, ${total['usd']:,.4f}, "
+               f"{int(total['unpriced_calls'])} unpriced; {budget.cache_line(total)}")
 
 
 user_app = typer.Typer(add_completion=False,

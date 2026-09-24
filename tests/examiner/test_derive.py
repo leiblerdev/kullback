@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from gates.verifier_fixtures import (
     ORDER,
     TASK,
@@ -35,17 +37,18 @@ from gates.verifier_fixtures import (
 from kullback.examiner import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules, canon_value
-from kullback.runner.records import Constraint, Task, Verifier, as_dict, content_hash
+from kullback.runner.records import Constraint, ForeignRunError, Task, Verifier, as_dict, content_hash
 
 # The derivation over verifier_fixtures.derive(tmp_path): seven atoms, seeds ref, alt and rr2. It was
 # pinned at the commit the phase 5 move started from (a40812c, 77d497a99ac9e8c1) to hold that the
-# move changed no byte of the artifact (D130). It has moved three times since: when a stated fact the
+# move changed no byte of the artifact (D130). It has moved four times since: when a stated fact the
 # request never asked about stopped being a demand, when the write cap moved to the end of the atom
 # list so the rule on a cap of 0 could see what else the Verifier demands, and at D190, when a
-# demanded fact took the provenance of the value it carries and a reported one stopped carrying any.
+# demanded fact took the provenance of the value it carries and a reported one stopped carrying any,
+# and at D285, when a stated fact started recording the tool and field it was read from.
 # A change to this value is a change to every Verifier of every build, so it is moved deliberately
 # or not at all.
-DERIVATION_HASH = "15c3e65d0651f92e539d80f0e9215b7c4bc76a499d7327acaeebfcc814fc65d0"
+DERIVATION_HASH = "f25957f0f6323e180b079207699cec3f7e8c0a7396fd781c5d10652f21825be9"
 
 
 def test_the_derivation_never_imports_the_builder_the_runner_internals_or_anything_that_runs(tmp_path):
@@ -121,8 +124,8 @@ def test_system_derived_and_agent_chosen_provenance(tmp_path):
         assistant("Refunded 42.5."),
     ]
     run = make_run("p", events)
-    assert S.classify_provenance(run, 5, "#W555", S.canon_fn(None))[0] == "system_derived"
-    verifier = V.derive_verifier(TASK, run, [], None, write_tools=WRITE_TOOLS)
+    assert S.classify_provenance(run, 5, "#W555", S.canon_fn(CanonRules()))[0] == "system_derived"
+    verifier = V.derive_verifier(TASK, run, [], CanonRules(), write_tools=WRITE_TOOLS)
     order = atom_by_id(verifier, "w0.order_id")
     reason = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "reason"][0]
     assert order.kind == "hard" and S.atom_payload(order)["derived_as"] == V.SHAPE_ATOM
@@ -175,7 +178,7 @@ def test_a_write_whose_result_carried_an_error_is_not_an_effect(tmp_path):
         result({"order_id": "#W123", "status": "cancelled"}, cid="c2"),
         assistant("Cancelled."),
     ])
-    verifier = V.derive_verifier(TASK, ref, [], None, write_tools=WRITE_TOOLS)
+    verifier = V.derive_verifier(TASK, ref, [], CanonRules(), write_tools=WRITE_TOOLS)
     writes = [S.atom_payload(a)["entity"] for a in verifier.atoms if S.atom_payload(a)["kind"] == "write"]
     assert writes == [canon_value("#W123")]
     assert S.atom_payload(atom_by_id(verifier, "entity_count"))["count"] == 1
@@ -185,7 +188,7 @@ def test_a_write_whose_result_carried_an_error_is_not_an_effect(tmp_path):
         result({"order_id": "#W123", "status": "cancelled"}, cid="c2"),
         assistant("Cancelled."),
     ])
-    assert S.check_run(verifier, good) == (True, None)
+    assert S.check_run(verifier, good, CanonRules()) == (True, None)
 
 
 def test_the_entity_is_the_scalar_id_and_not_a_list_of_item_ids(tmp_path):
@@ -200,12 +203,12 @@ def test_the_entity_is_the_scalar_id_and_not_a_list_of_item_ids(tmp_path):
         ]
     rerun = make_run("rr", events(["2002", "1001"]))
     verifier = V.derive_verifier(TASK, make_run("ref", events(["1001", "2002"])),
-                                 [write_events_jsonl(rerun, tmp_path / "rr.jsonl")], None,
+                                 [write_events_jsonl(rerun, tmp_path / "rr.jsonl")], CanonRules(),
                                  write_tools={"exchange_delivered_order_items"})
     writes = [(a.kind, S.atom_payload(a)["entity"]) for a in verifier.atoms
               if S.atom_payload(a)["kind"] == "write"]
     assert writes == [("required", canon_value("#W1"))]
-    assert S.check_run(verifier, empty_run())[0] is False
+    assert S.check_run(verifier, empty_run(), CanonRules())[0] is False
 
 
 def test_a_user_stated_amount_in_another_spelling_is_still_user_stated(tmp_path):
@@ -217,12 +220,12 @@ def test_a_user_stated_amount_in_another_spelling_is_still_user_stated(tmp_path)
             result({"ok": True}, cid="c1"),
             assistant("Refunded."),
         ]
-    verifier = V.derive_verifier(TASK, make_run("ref", events(150.0)), [], None,
+    verifier = V.derive_verifier(TASK, make_run("ref", events(150.0)), [], CanonRules(),
                                  write_tools={"refund_order"})
     amount = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "amount"][0]
     assert amount.provenance == "user_stated"
     assert amount.kind == "required"
-    assert S.check_run(verifier, make_run("cand", events(10)))[0] is False
+    assert S.check_run(verifier, make_run("cand", events(10)), CanonRules())[0] is False
 
 
 def test_a_user_side_write_keeps_its_requestor(tmp_path):
@@ -233,14 +236,14 @@ def test_a_user_side_write_keeps_its_requestor(tmp_path):
         result({"paid": True}, cid="u1"),
         assistant("Thanks, I see the payment."),
     ])
-    verifier = V.derive_verifier(TASK, ref, [], None)
+    verifier = V.derive_verifier(TASK, ref, [], CanonRules())
     write = [a for a in verifier.atoms if S.atom_payload(a)["kind"] == "write"][0]
     assert S.atom_payload(write)["requestor"] == "user"
     assert V.export_tau2_actions(verifier)[0]["requestor"] == "user"
 
 
 def test_write_tools_can_come_from_the_event_marking(tmp_path):
-    verifier = V.derive_verifier(TASK, reference_run(), [], None)
+    verifier = V.derive_verifier(TASK, reference_run(), [], CanonRules())
     written = [S.atom_payload(a)["entity"] for a in verifier.atoms if S.atom_payload(a).get("kind") == "write"]
     assert written == [canon_value("#W123")]
 
@@ -248,7 +251,7 @@ def test_write_tools_can_come_from_the_event_marking(tmp_path):
 def test_successful_run_ids_decides_which_reruns_agree(tmp_path):
     reruns = [alt_path_run(), other_reason_run()]
     paths = [write_events_jsonl(r, tmp_path / f"{r.run_id}.jsonl") for r in reruns]
-    verifier = V.derive_verifier(TASK, reference_run(), paths, None, write_tools=WRITE_TOOLS,
+    verifier = V.derive_verifier(TASK, reference_run(), paths, CanonRules(), write_tools=WRITE_TOOLS,
                                  successful_run_ids=["alt"])
     assert verifier.seed_run_ids == ["ref", "alt"]
 
@@ -290,7 +293,7 @@ def test_a_run_that_skips_the_required_question_fails(tmp_path):
         result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
         assistant("Your order #W123 is cancelled and 150.0 is refunded."),
     ])
-    passed, failing = S.check_run(verifier, silent)
+    passed, failing = S.check_run(verifier, silent, CanonRules())
     assert passed is False
     assert failing == "q.field:reason"
 
@@ -319,7 +322,7 @@ def test_entity_count_atom_caps_side_effects(tmp_path):
         call("cancel_pending_order", {"order_id": "#W777", "reason": "oops"}, cid="c2"),
         result({"status": "cancelled"}, cid="c2"),
     ])
-    passed, failing = S.check_run(verifier, noisy)
+    passed, failing = S.check_run(verifier, noisy, CanonRules())
     assert passed is False
     assert failing in ("entity_count", "w1")
 
@@ -333,7 +336,7 @@ def test_the_write_cap_counts_calls_so_the_same_entity_twice_fails(tmp_path):
         assistant("Your order #W123 is cancelled and 150.0 is refunded."),
     ])
     assert atom_by_id(verifier, "entity_count").predicate_src == "writes_count() <= 1"
-    assert S.check_run(verifier, twice) == (False, "entity_count")
+    assert S.check_run(verifier, twice, CanonRules()) == (False, "entity_count")
 
 
 def test_a_rerun_that_ran_to_the_end_without_a_simulated_user_is_successful(tmp_path):
@@ -365,11 +368,11 @@ def test_check_run_fails_a_run_that_breaks_a_hard_constraint(tmp_path):
     always = Constraint(id="k2", text="always allowed", compiled=True,
                         predicate_src="def check(pre_state, write_call, transcript):\n    return True\n")
     unconfirmed = derive(tmp_path, constraints=[never])
-    passed, failing = S.check_run(unconfirmed, reference_run())
+    passed, failing = S.check_run(unconfirmed, reference_run(), CanonRules())
     assert passed is False
     assert failing == "hard.k1"
     satisfied = derive(tmp_path, constraints=[always])
-    assert S.check_run(satisfied, reference_run()) == (True, None)
+    assert S.check_run(satisfied, reference_run(), CanonRules()) == (True, None)
 
 
 def test_a_judge_atom_is_never_answered_by_code(tmp_path):
@@ -381,11 +384,11 @@ def test_a_judge_atom_is_never_answered_by_code(tmp_path):
     assert not atom.predicate_src  # nothing for verdict.py to evaluate
     assert S.hard_holds(atom, reference_run(), WRITE_TOOLS) is None
     # A must-hold judge atom leaves the Run without a code score, whatever the Run said.
-    assert S.check_run(verifier, reference_run()) == (False, "hard.k2")
+    assert S.check_run(verifier, reference_run(), CanonRules()) == (False, "hard.k2")
     rude = make_run("rude", reference_events(
         final="No. Your order #W123 is cancelled and 150.0 is refunded, deal with it."))
-    assert S.check_run(derive(tmp_path), rude) == (True, None)
-    assert S.check_run(verifier, rude) == (False, "hard.k2")
+    assert S.check_run(derive(tmp_path), rude, CanonRules()) == (True, None)
+    assert S.check_run(verifier, rude, CanonRules()) == (False, "hard.k2")
 
 
 # --- tau2 export ----------------------------------------------------------
@@ -435,7 +438,7 @@ def pump_run(run_id: str = "shop-ref",
 
 
 def pump_verifier(intent_text: str) -> Verifier:
-    return V.derive_verifier(Task(id="shop", intent=intent_text), pump_run(), [], None,
+    return V.derive_verifier(Task(id="shop", intent=intent_text), pump_run(), [], CanonRules(),
                              write_tools=SHOP_TOOLS)
 
 
@@ -458,7 +461,7 @@ def test_a_fact_the_request_never_asked_about_is_reported_and_rejects_no_run(tmp
     verifier = pump_verifier("tell the caller about the pump they asked about")
     assert stated(verifier, V.REPORTED_COMMUNICATE) == ["249.0", "36"]
     quieter = pump_run("shop-alt", final="Your pump P-2044 is still under warranty.")
-    assert S.check_run(verifier, quieter, write_tools=SHOP_TOOLS) == (True, None)
+    assert S.check_run(verifier, quieter, CanonRules(), write_tools=SHOP_TOOLS) == (True, None)
     # Reported is not dropped: the Verdict can still say whether the Run stated the fact.
     price = fact_atom(verifier, "249.0")
     # No provenance since D190: provenance is what evidences a demand, and this atom makes none.
@@ -475,7 +478,7 @@ def test_a_fact_the_request_names_by_its_field_must_be_stated_back(tmp_path):
     assert fact_atom(verifier, "36").kind == "communicate"
     assert stated(verifier, V.REPORTED_COMMUNICATE) == ["249.0"]
     silent = pump_run("shop-alt", final="Your pump P-2044 is still under warranty.")
-    assert S.check_run(verifier, silent, write_tools=SHOP_TOOLS)[0] is False
+    assert S.check_run(verifier, silent, CanonRules(), write_tools=SHOP_TOOLS)[0] is False
 
 
 # --- the write cap on a Task whose Reference wrote nothing -----------------
@@ -495,7 +498,7 @@ def test_a_cap_of_zero_is_not_written_when_another_run_of_the_task_wrote_and_not
     """The Task's own Runs contradict the cap, and the request named no fact to keep it for."""
     vague = pump_run(asked="Can you look into my pump for me?")
     verifier = V.derive_verifier(Task(id="shop", intent="look into the pump the caller asked about"),
-                                 vague, [], None, write_tools=SHOP_TOOLS, writes_elsewhere=True)
+                                 vague, [], CanonRules(), write_tools=SHOP_TOOLS, writes_elsewhere=True)
     assert cap_atoms(verifier) == []
 
 
@@ -503,12 +506,12 @@ def test_a_verifier_that_would_ask_nothing_at_all_keeps_the_facts_the_reference_
     """An empty Run has to fail: with no write and no fact named, what was said is the only evidence."""
     vague = pump_run(asked="Can you look into my pump for me?")
     verifier = V.derive_verifier(Task(id="shop", intent="look into the pump the caller asked about"),
-                                 vague, [], None, write_tools=SHOP_TOOLS)
+                                 vague, [], CanonRules(), write_tools=SHOP_TOOLS)
     assert stated(verifier, V.REPORTED_COMMUNICATE) == []
     assert stated(verifier, "communicate") == ["249.0", "36", "P-2044"]
     assert "asks nothing else" in (fact_atom(verifier, "249.0").description or "")
     silent = pump_run("shop-alt", asked="Can you look into my pump for me?", final="I have looked.")
-    assert S.check_run(verifier, silent, write_tools=SHOP_TOOLS)[0] is False
+    assert S.check_run(verifier, silent, CanonRules(), write_tools=SHOP_TOOLS)[0] is False
     # A single character is never a fact, so a bay letter the answer states is not demanded.
     bay = make_run("shop-bay", [
         user("Can you look into my pump for me?"),
@@ -517,13 +520,20 @@ def test_a_verifier_that_would_ask_nothing_at_all_keeps_the_facts_the_reference_
         assistant("Pump P-2044 in bay B lists at 249.0."),
     ], task_id="shop")
     lettered = V.derive_verifier(Task(id="shop", intent="look into the pump the caller asked about"),
-                                 bay, [], None, write_tools=SHOP_TOOLS)
+                                 bay, [], CanonRules(), write_tools=SHOP_TOOLS)
     assert stated(lettered, "communicate") == ["249.0", "P-2044"]
 
 
 def test_the_cap_stays_when_the_verifier_asks_for_something_else(tmp_path):
     """It is only the Verifier that is nothing but the cap that the writing Run contradicts."""
     verifier = V.derive_verifier(Task(id="shop", intent="tell the caller how many warranty months are left"),
-                                 pump_run(), [], None, write_tools=SHOP_TOOLS, writes_elsewhere=True)
+                                 pump_run(), [], CanonRules(), write_tools=SHOP_TOOLS, writes_elsewhere=True)
     assert cap_atoms(verifier) == ["entity_count"]
     assert [a.id for a in verifier.atoms if a.kind == "communicate"] == ["c1", "c2"]
+
+
+def test_derivation_refuses_a_seed_file_of_another_task_by_name(tmp_path):
+    """D281: the seeds load through the Run loader, so another Task's Run is never derived from."""
+    foreign = write_events_jsonl(alt_path_run().model_copy(update={"task_id": "t_other"}), tmp_path / "alt.jsonl")
+    with pytest.raises(ForeignRunError, match=f"t_other, not of Task {TASK.id}"):
+        V.derive_verifier(TASK, reference_run(), [foreign], CanonRules(), write_tools=WRITE_TOOLS)

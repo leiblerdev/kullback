@@ -311,7 +311,10 @@ def gate_confined(source: str, class_name: str = TOOLS_CLASS, written: str | Non
     and it rides the ruling as `metrics["note"]`, never as a fail of this write. A line naming no
     method (the module does not parse) stays the write's own.
     """
-    failures = source_confinement(source, class_name) + unbound_names(source, class_name)
+    from kullback.runner.world.clock import wall_clock_reads  # late: the world package imports this one
+
+    failures = (source_confinement(source, class_name) + unbound_names(source, class_name)
+                + wall_clock_reads(source, class_name))
     metrics: dict = {"chars": len(source), "unbound": len(unbound_names(source, class_name))}
     others = _tool_methods(source, class_name) - {written} if written else set()
     elsewhere = [line for line in failures if line.split(" ", 1)[0] in others]

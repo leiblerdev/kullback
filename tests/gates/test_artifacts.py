@@ -333,6 +333,7 @@ def test_verifier_gate_needs_every_d79_check():
         "provenance_spans": True, "oracle_passes": True, "empty_fails": True,
         "plausible_wrong_fails": True, "unsolved_state_fails": True, "second_path_passes": True,
         "loophole_probe_fails": True, "leak_check_clean": True, "mutation_flips": True,
+        "verifier_specific": True,
     }
     assert verifier_gate(checks).passed is True
     checks.pop("mutation_flips")

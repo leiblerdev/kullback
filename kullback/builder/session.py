@@ -25,13 +25,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from kullback.agent.base_tools import DEFAULT_ALLOWLIST, register_base_tools
+from kullback.agent.base_tools import DEFAULT_ALLOWLIST, TOOL_NAMES, register_base_tools
 from kullback.agent.bus import Bus
 from kullback.agent.context import ContextConfig
 from kullback.agent.events import ToolExecutionEnd
 from kullback.agent.extensions import ExtensionAPI, load_extensions, refuse_paths
 from kullback.agent.harness import AgentHarness
 from kullback.agent.session.store import SessionStore
+from kullback.ai.cache import ttl_for
+from kullback.ai.provider import ModelConfig
 from kullback.builder import env_files
 from kullback.builder import prompt as prompt_mod
 from kullback.builder.domain_tools import domain_tools, opening_for, status_of
@@ -43,6 +45,9 @@ from kullback.runner import budget
 #: The directories under env/ the model may write; everything else there is read-only for it.
 WRITABLE_PREFIXES = ("tools/", "intents/", "refusals/", "policy/")
 WRITABLE_NAMES = ("tools", "intents", "refusals", "policy")
+
+#: The base tools the Builder gets: every one but web_search, withdrawn while search is unconfigured.
+BUILDER_BASE_TOOLS = tuple(name for name in TOOL_NAMES if name != "web_search")
 
 #: The tool_call hook (D122): the rule and the walk are the gates' own, the refusal is the core's.
 no_agent_writes_gates_or_runner = refuse_paths(
@@ -155,6 +160,31 @@ def write_fence(call: Any) -> None:
 write_fence.hook_name = "builder_write_fence"  # type: ignore[attr-defined]
 
 
+def refusal_waits_for_note(workdir: Any) -> Callable[[Any], None]:
+    """Refuse a write or edit of refusals/<task>.json while the Task's note has no Examiner ruling.
+
+    An open note blocks that one Task's refusal and nothing else: every other write goes through.
+    """
+    from kullback.examiner.domain_tools import open_note
+
+    def refuse(call: Any) -> None:
+        if getattr(call, "name", None) not in ("write", "edit"):
+            return None
+        path = _written_path(call)
+        text = (path or "").replace("\\", "/").lstrip("/")
+        if not text.startswith("refusals/"):
+            return None
+        task_id = Path(text).stem
+        if open_note(workdir, task_id) is None:
+            return None
+        raise PermissionError(
+            f"task {task_id} has an open note the Examiner has not ruled on; examine the Task so it "
+            "rules, then refuse it if the ruling leaves it unverifiable")
+
+    refuse.hook_name = "builder_refusal_waits_for_note"  # type: ignore[attr-defined]
+    return refuse
+
+
 def _rel_in_env(env: Path, written_path: str) -> Optional[str]:
     try:
         return str(Path(env, written_path).resolve().relative_to(env.resolve())).replace("\\", "/")
@@ -207,16 +237,17 @@ def builder_extension(root: BuilderRoot) -> Callable[[ExtensionAPI], None]:
     def setup(api: ExtensionAPI) -> None:
         env = root.env
         env.mkdir(parents=True, exist_ok=True)
-        register_base_tools(api, env, allowlist=DEFAULT_ALLOWLIST)
+        register_base_tools(api, env, allowlist=DEFAULT_ALLOWLIST, only=BUILDER_BASE_TOOLS)
         model = getattr(getattr(api, "harness", None), "model", None)
         for tool in domain_tools(workdir=root.workdir, model=model, examine_fn=root.examine_fn,
                                  judge_model=root.judge_model, probe_model=root.probe_model,
-                                 reroll_model=root.reroll_model):
+                                 reroll_model=root.reroll_model, env=env):
             api.register_tool(tool)
         for name, text in prompt_mod.sections():
             api.add_prompt_section(f"builder_{name}", text)
         api.tool_call(no_agent_writes_gates_or_runner)
         api.tool_call(write_fence)
+        api.tool_call(refusal_waits_for_note(root.workdir))
         api.tool_result(gate_writes(root=env, workdir=root.workdir,
                                     execute=env_files.executor(root.workdir, env)))
         api.tool_result(regenerate_and_guard(api, root))
@@ -262,8 +293,10 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
         env_files.regenerate(root)
     session = SessionStore.load(Path(session_path) if session_path is not None
                                 else root / "sessions" / "builder.jsonl")
+    # The session waits on its own long tools (examine, run) between turns, past the five-minute
+    # TTL, so its cache points are written to live an hour (cache.STAGE_CACHE_TTL says why).
     harness = AgentHarness(
-        model=model, session=session,
+        model=model, session=session, config=ModelConfig(cache_ttl=ttl_for(CEILING_STAGE)),
         context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
         bus=Bus(root / "bus.jsonl", agent="builder"), max_turns=max_turns)
     load_extensions(harness, [builder_extension(
@@ -336,6 +369,6 @@ def continuation(status: dict, spent: float, ceiling_usd: Optional[float]) -> Op
             "Replay every Task, examine the confirmed ones, run them, "
             "or state in one sentence why you cannot go further.")
 
-__all__ = ["BuilderRoot", "CEILING_STAGE", "CONTINUATIONS", "OPENING", "WRITABLE_NAMES", "WRITABLE_PREFIXES", "build",
-           "builder_extension", "ceiling_guard", "continuation", "no_agent_writes_gates_or_runner", "opening", "regenerate_and_guard",
+__all__ = ["BUILDER_BASE_TOOLS", "BuilderRoot", "CEILING_STAGE", "CONTINUATIONS", "OPENING", "WRITABLE_NAMES", "WRITABLE_PREFIXES", "build",
+           "builder_extension", "ceiling_guard", "continuation", "no_agent_writes_gates_or_runner", "opening", "refusal_waits_for_note", "regenerate_and_guard",
            "spent_in", "write_fence"]

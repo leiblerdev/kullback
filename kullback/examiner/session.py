@@ -9,6 +9,7 @@ to `findings.json` at once, never a round late (learnings 7).
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -22,7 +23,7 @@ from kullback.examiner import findings as findings_mod
 from kullback.examiner import prompt as prompt_mod
 from kullback.examiner import runners as runners_mod
 from kullback.examiner import stage as stage_mod
-from kullback.examiner.domain_tools import domain_tools
+from kullback.examiner.domain_tools import domain_tools, note_line, notes_of
 from kullback.examiner.exam_files import (
     DERIVED_DIR,
     SPOKEN_DIR,
@@ -34,16 +35,17 @@ from kullback.examiner.exam_files import (
     save_history,
     seeded_history,
 )
+from kullback.examiner.plan import merged_rerolls
 from kullback.gates import names_protected_path
 from kullback.gates.hook import WRITE_TOOLS
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import finished_run_ids
 from kullback.gates.verifier_suite import load_run
 from kullback.runner import budget
-from kullback.runner.canon import rules_of
+from kullback.runner.canon import load_rules, rules_of
 from kullback.runner.records import Constraint, Task, ToolSig, UserRules, Verifier, read_json, run_path, write_json
 
-BASE_ONLY = ("read", "grep", "find", "ls", "web_search")
+BASE_ONLY = ("read", "grep", "find", "ls", "inspect", "web_search")
 WRITABLE_DIRS = prompt_mod.WRITABLE_DIRS
 EXAMINE_MESSAGE = "Examine."
 # The Examiner's turn cap: reading Runs, replays and Verifiers before filing takes tens of turns, and
@@ -56,8 +58,9 @@ HINT_CHARS = 200
 RUN_PATHS_SHOWN = 5
 # How many left-out Tasks the note names before the count of the rest.
 LEFT_OUT_SHOWN = 10
-# How many Tasks one examine call derives; the rest wait for the next call (F40).
-TASKS_PER_CALL = 10
+# How many Tasks the derivation derives at once when the caller names no number: every picked Task
+# is derived in one call, so one Task at a time left most of a build underived (F40, F55).
+MAX_DERIVE_WORKERS = 8
 NOT_DERIVED_SHOWN = 10
 NO_FINISHED_RUN = "no finished Run"
 NO_CONFIRMED_REFERENCE = "no confirmed Reference"
@@ -81,7 +84,7 @@ def _refuse_forbidden_paths() -> Callable:
     return refuse
 
 
-EXAMINER_WRITES = ("the Examiner writes Verifiers through propose_verifier and probes through probe, "
+EXAMINER_WRITES = ("the Examiner writes Verifiers through edit_verifier and probes through probe, "
                    "not with write or edit")
 
 
@@ -185,18 +188,33 @@ def root_listing(folder: Path) -> list[str]:
     return sorted(f"{p.name}/" if p.is_dir() else p.name for p in folder.iterdir())
 
 
+def session_opening(root: ExamRoot, task_ids: Optional[Iterable[str]] = None) -> str:
+    """The Examiner's opening message: the ask, what its root holds, the rulings to answer (F25),
+    and the Builder's notes on these Tasks, each open or with its ruling."""
+    return prompt_mod.opening(EXAMINE_MESSAGE, rulings_line(root, task_ids), root_listing(root.exam_dir),
+                              notes_line(root, task_ids))
+
+
+def notes_line(root: ExamRoot, task_ids: Optional[Iterable[str]] = None) -> str:
+    """One line per Builder note on the Tasks the session examines, open or with its ruling."""
+    wanted = set(task_ids) if task_ids is not None else None
+    return "\n".join(note_line(task_id, note, ruling) for task_id, (note, ruling) in sorted(notes_of(root.workdir).items())
+                     if wanted is None or task_id in wanted)
+
+
 def examiner_extension(root: ExamRoot,
                        task_ids: Optional[Iterable[str]] = None) -> Callable[[ExtensionAPI], None]:
     """The setup the harness loads: base tools over exam/, domain tools, prompt, hooks.
 
-    The prompt names the root as "." and lists what it holds, computed once here (F18, F25).
+    The prompt names the root as "." (F18); what the root holds and the rulings (F25) are this
+    session's own facts, so `examine` says them in the opening message (`session_opening`).
     """
 
     def setup(api: ExtensionAPI) -> None:
         register_base_tools(api, root.exam_dir, only=BASE_ONLY)
         for tool in domain_tools(root):
             api.register_tool(tool)
-        for name, text in prompt_mod.sections(rulings_line(root, task_ids), root_listing(root.exam_dir)):
+        for name, text in prompt_mod.sections():
             api.add_prompt_section(f"examiner_{name}", prompt_block(name, text))
         api.tool_call(refuse_paths(
             names_protected_path, "under the gates or the Runner, which no agent writes (D122)",
@@ -227,7 +245,7 @@ def select_for_session(task_ids: Iterable[str], replays: dict, rerolls: dict,
 
 
 def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> list[str]:
-    """The Tasks this examine call is about, in id order, before the cap (F40).
+    """The Tasks this examine call is about, in id order (F40).
 
     With task_ids, those that name a Task. Without, every Task not derived yet: it has no status
     row because no derivation has read it, or its Verifier file is absent and either its row holds
@@ -253,15 +271,25 @@ def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> lis
     return [task_id for task_id in known if pending(task_id)]
 
 
-def not_derived_finding(later: list[str]) -> Finding:
-    """The note naming the confirmed Tasks past this call's cap, one row each (F40)."""
+def default_workers() -> int:
+    """How many Tasks derive at once when the caller names no number: the cores, at most eight."""
+    return max(1, min(MAX_DERIVE_WORKERS, os.cpu_count() or 1))
+
+
+def not_derived_finding(later: list[str], limit: Optional[int] = None) -> Finding:
+    """The note naming the Tasks past a limit the caller asked for, one row each (F40).
+
+    examine derives every Task it picks unless the caller passes `limit`; only then are Tasks
+    left for the next call, and this note says which.
+    """
     named = ", ".join(later[:NOT_DERIVED_SHOWN])
     rest = len(later) - NOT_DERIVED_SHOWN
     named += f" and {rest} more" if rest > 0 else ""
     text = f"{len(later)} confirmed Tasks not derived yet: {named}; call examine again"
+    why = f"this examine call was limited to {limit} Tasks" if limit is not None else "a limit was set"
     return Finding(kind="other", source="derive", text=text,
-                   rows=[{"task_id": task_id, "not_derived": "cap"} for task_id in later],
-                   change=f"examine derives {TASKS_PER_CALL} Tasks per call; {text}")
+                   rows=[{"task_id": task_id, "not_derived": "limit"} for task_id in later],
+                   change=f"{why}; {text}")
 
 
 def left_out_finding(left_out: list[tuple[str, str]], examined: int) -> Finding:
@@ -285,7 +313,7 @@ def load_store(workdir: Any) -> dict:
     sigs = _load_records(root / "tool_sigs.json", ToolSig, [])
     constraints = _load_records(root / "constraints.json", Constraint, [])
     store = {"tasks": tasks, "sigs": sigs, "constraints": constraints,
-             "canon_rules": read_json(root / "canon-rules.json", {}) or {},
+             "canon_rules": load_rules(root / "canon-rules.json"),
              "replays": read_json(root / "replays.json", {}) or {},
              "rerolls": read_json(root / "rerolls.json", {}) or {},
              "intents": _load_keyed(root / "intents", "intents.json"),
@@ -467,7 +495,8 @@ def _one_line(text: str, limit: int = HINT_CHARS) -> str:
 def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: Any,
             judge_model: Any = None, probe_model: Any = None, reroll_model: Any = None,
             allowance_usd: Optional[float] = None, session_path: Any = None,
-            subscribers: Iterable[Callable] = (), max_turns: int = EXAMINE_MAX_TURNS) -> list[Finding]:
+            subscribers: Iterable[Callable] = (), max_turns: int = EXAMINE_MAX_TURNS,
+            workers: Optional[int] = None, limit: Optional[int] = None) -> list[Finding]:
     """Derive the Verifiers by code, file what the records say, then run one model session.
 
     With `model=None` the session is code only: the derivation and its findings. With a model,
@@ -480,24 +509,30 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     The probe, re-roll and variant runners come from the runner tool over the workdir (D120):
     without a re-roll model the derivation stays code only and buys no Runs.
 
+    Every Task derive_pick returns is derived in this call, `workers` at a time (default: the
+    cores, at most eight); `limit`, when given, derives only the first that many and files one
+    note naming the rest (F40, F55). The exam view is copied after the derivation, so the
+    session reads this call's Verifiers and task status, never the last call's (F52).
+
     The session sees only the Tasks with a finished Run and a confirmed Reference; one finding
     of kind other names the rest and why, and when none is left no session opens at all (F24).
     """
     root = Path(workdir)
     task_ids = list(task_ids) if task_ids is not None else None
-    expose(workdir)
     store = load_store(workdir)
     anchor = _load_anchor(root)
     ctx = stage_mod.ExamContext(root, GateLedger(root), anchor=anchor)
     runners = runners_mod.runners_for(root, reroll_model=reroll_model, anchor=anchor)
     picked = derive_pick(root, store, task_ids)
-    now, later = picked[:TASKS_PER_CALL], picked[TASKS_PER_CALL:]
+    now, later = (picked, []) if limit is None else (picked[:limit], picked[limit:])
     if now:
         stage_mod.derive_all(ctx, store, probe_model=probe_model, judge_model=judge_model,
                              run_probe=runners["run_probe"],
                              run_rerolls=runners["run_rerolls"] if reroll_model is not None else None,
-                             run_variant=runners["run_variant"], round_number=0, only=now)
-    findings = derive_findings(workdir, store) + ([not_derived_finding(later)] if later else [])
+                             run_variant=runners["run_variant"], round_number=0, only=now,
+                             workers=workers if workers is not None else default_workers())
+    expose(workdir)
+    findings = derive_findings(workdir, store) + ([not_derived_finding(later, limit)] if later else [])
     if task_ids is not None:
         wanted = set(task_ids)
         findings = [f for f in findings if f.task_id in wanted or
@@ -528,20 +563,27 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
         harness.subscribe(subscriber)
     harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
     load_extensions(harness, [examiner_extension(exam_root, selected)])
+    cap_notes = _run_session(harness, session_opening(exam_root, selected), max_turns, selected)
+    out = list(exam_root.findings) + note + cap_notes
+    write_json(root / "findings.json", [f.as_dict() for f in out])
+    return out
 
+
+def _run_session(harness: AgentHarness, opening_message: str, max_turns: int,
+                 selected: list[str]) -> list[Finding]:
+    """Play the session on its opening message; the one cap note when it stopped on the turn cap, else none."""
     capped: list[bool] = []
 
     async def go() -> None:
-        async for event in harness.prompt(EXAMINE_MESSAGE):
+        async for event in harness.prompt(opening_message):
             if getattr(event, "type", None) == "turn_end" and _stopped_on_cap(event.message):
                 capped.append(True)
 
     asyncio.run(go())
-    cap_note = turns_ran_out(max_turns, task_id=_last_task(harness.messages, selected),
-                             refusal=_last_refusal(harness.messages)) if capped else None
-    out = list(exam_root.findings) + note + ([cap_note] if cap_note else [])
-    write_json(root / "findings.json", [f.as_dict() for f in out])
-    return out
+    if not capped:
+        return []
+    return [turns_ran_out(max_turns, task_id=_last_task(harness.messages, selected),
+                          refusal=_last_refusal(harness.messages))]
 
 
 def _stopped_on_cap(message: Any) -> bool:
@@ -565,7 +607,7 @@ def turns_ran_out(max_turns: int, task_id: Optional[str] = None,
 
 
 # The tools whose task_id says which Task a session is working on (F36).
-TASK_TOOLS = ("propose_verifier", "probe")
+TASK_TOOLS = ("edit_verifier", "propose_verifier", "probe")
 
 
 def _last_task(messages: Iterable[Any], selected: list[str]) -> Optional[str]:
@@ -593,6 +635,7 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     """The session root: live Verifiers, signatures, rules, rows, task status and version history.
 
     Task status is what derive_all wrote to task_status.json in this same examine call, and the
+    re-roll rows join the derivation's own (the second path Runs it bought) to the workdir's, and the
     history is the exam history.json with every live Verifier seeded as version 1 by derive and
     saved. The trusted gate reads each derived file as the current accepted version from that
     seed, and the loosening gate compares each proposal against the version before it (D127).
@@ -611,7 +654,9 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     status = read_json(root / "task_status.json", None)
     exam_root = ExamRoot(workdir=root, verifiers=verifiers, sigs=list(store.get("sigs") or []),
                          canon_rules=rules_of({"canon_rules": store.get("canon_rules")}),
-                         replays=store.get("replays") or {}, rerolls=store.get("rerolls") or {},
+                         replays=store.get("replays") or {},
+                         rerolls=merged_rerolls(store.get("rerolls") or {},
+                                                read_json(stage_mod.extra_rerolls_path(root), {}) or {}),
                          task_status=status if isinstance(status, dict) else {},
                          findings=list(findings), reroll_model=reroll_model,
                          probe_model=probe_model, run_probe=run_probe,
@@ -622,6 +667,6 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     exam_root.history = history
     save_history(exam_root, history)
     return exam_root
-__all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "derive_findings", "examine", "examiner_extension",
-           "finding_from_row", "left_out_finding", "load_store", "root_listing", "rulings_line",
+__all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "derive_findings", "examine", "examiner_extension", "session_opening",
+           "finding_from_row", "left_out_finding", "load_store", "notes_line", "root_listing", "rulings_line",
            "select_for_session", "task_runs_of", "turns_ran_out"]

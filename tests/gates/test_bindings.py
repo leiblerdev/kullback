@@ -28,19 +28,22 @@ from gates.verifier_fixtures import (
     extra_write_run,
     other_reason_run,
     reference_run,
+    write_events_jsonl,
     wrong_run,
 )
 from kullback.builder import compile_env as ce
 from kullback.builder import sandbox as sb
 from kullback.gates import verifier_suite as S
-from kullback.gates.bindings import BINDINGS, binding_for, rows_for, rulings_for
+from kullback.gates.bindings import BINDINGS, binding_for, load_trace_calls, rows_for, rulings_for
 from kullback.gates.loosening import false_rejection_gate, loosening_gate
 from kullback.gates.tool_runs import MEMORISED_STAGE, SensitivityPair
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import (
     Column,
     Constraint,
     EntitySchema,
     FieldStat,
+    RawPtr,
     ToolCall,
     ToolSig,
     as_dict,
@@ -109,11 +112,11 @@ def _evidence(**overrides) -> dict:
 
 # --- the bindings themselves ---
 
-def test_tools_writes_draw_the_nine_body_gates_in_order():
+def test_tools_writes_draw_the_static_body_gates_before_the_execution_gates():
     binding = binding_for("tools/set_status.py")
     assert binding is not None
-    assert binding.gates == ("confined", "parses", "executes_on_s0", "deterministic", "non_trivial",
-                             "sensitivity", "replay_fidelity", "refuses_unknown", MEMORISED_STAGE)
+    assert binding.gates == ("confined", "parses", MEMORISED_STAGE, "executes_on_s0", "deterministic",
+                             "non_trivial", "sensitivity", "replay_fidelity", "refuses_unknown")
 
 
 def test_verifier_refusal_intent_and_policy_writes_each_draw_their_gates():
@@ -132,16 +135,21 @@ def test_a_write_outside_every_binding_draws_no_ruling(tmp_path):
 
 # --- acceptance: one wrong answer names its call and its column ---
 
-def test_a_body_answering_every_call_right_passes_and_one_answering_a_call_wrongly_is_refused_with_rows(tmp_path):
+def test_a_body_answering_every_call_right_passes_every_gate(tmp_path):
     root, work = tmp_path / "root", tmp_path / "work"
     right = _write(root, "tools/right.py", _source(RIGHT))
     rulings = rulings_for(root, right, work, execute=_execute(tmp_path / "box_right"), evidence=_evidence())
     assert [ruling.stage for ruling in rulings if not ruling.passed] == []
+
+
+def test_a_body_answering_a_call_wrongly_is_refused_by_replay_fidelity_with_the_call_and_column(tmp_path):
+    root, work = tmp_path / "root", tmp_path / "work"
     rel = _write(root, "tools/set_status.py", _source(WRONG_ON_W2))
     rulings = rulings_for(root, rel, work, execute=_execute(tmp_path / "box"), evidence=_evidence())
     stages = [ruling.stage for ruling in rulings]
-    assert stages[:5] == ["confined", "parses", "executes_on_s0", "deterministic", "non_trivial"]
-    refused = next(ruling for ruling in rulings if not ruling.passed)
+    assert stages[:6] == ["confined", "parses", MEMORISED_STAGE, "executes_on_s0", "deterministic",
+                          "non_trivial"]
+    refused = next(ruling for ruling in rulings if not ruling.passed and ruling.stage != MEMORISED_STAGE)
     assert refused.stage == "replay_fidelity"
     assert refused.rows and len(refused.rows) == 1
     row = refused.rows[0]
@@ -159,9 +167,86 @@ def test_a_write_read_off_the_workdir_files_rules_the_same_way(tmp_path):
     (work / "schema.json").write_text(json.dumps(as_dict(_schema())), encoding="utf-8")
     (work / "db.json").write_text(json.dumps(DB), encoding="utf-8")
     rulings = rulings_for(root, rel, work, execute=_execute(tmp_path / "box"))
-    refused = next(ruling for ruling in rulings if not ruling.passed)
+    refused = next(ruling for ruling in rulings if not ruling.passed and ruling.stage != MEMORISED_STAGE)
     assert refused.stage == "replay_fidelity"
     assert refused.rows and refused.rows[0]["call"] == "c2"
+
+
+# --- static gates rule first, together (F41) ---
+
+def test_a_body_with_a_memorised_literal_and_a_replay_difference_draws_both_refusals_memorised_first(tmp_path):
+    root, work = tmp_path / "root", tmp_path / "work"
+    rel = _write(root, "tools/set_status.py", _source(WRONG_ON_W2))
+    rulings = rulings_for(root, rel, work, execute=_execute(tmp_path / "box"), evidence=_evidence())
+    refused = [ruling.stage for ruling in rulings if not ruling.passed]
+    assert refused == [MEMORISED_STAGE, "replay_fidelity"]
+
+
+def test_a_body_that_does_not_parse_draws_every_static_ruling_and_no_execution_ruling(tmp_path):
+    root, work = tmp_path / "root", tmp_path / "work"
+    rel = _write(root, "tools/set_status.py", "def broken(:\n")
+    ran = []
+
+    def execute(source: str, calls: list, db: dict) -> list[dict]:
+        ran.append(source)
+        return [{"ok": True, "value": {}} for _ in calls]
+
+    rulings = rulings_for(root, rel, work, execute=execute, evidence=_evidence())
+    assert "parses" in [ruling.stage for ruling in rulings if not ruling.passed]
+    assert all(ruling.stage in ("confined", "parses", MEMORISED_STAGE) for ruling in rulings)
+    assert ran == []
+
+
+# --- the trace table reaches an executor that takes it (F50) ---
+
+def _traced_call(call_id: str, trace: str, at: int, name: str, args: dict, result: dict) -> ToolCall:
+    return ToolCall(id=call_id, name=name, args=args, result=result, trace_id=trace,
+                    raw_ptr=RawPtr(file_hash="f", sim_index=0, msg_index=at))
+
+
+def test_an_executor_taking_the_trace_table_is_handed_every_traced_call_of_the_workdir(tmp_path):
+    root, work = tmp_path / "root", tmp_path / "work"
+    rel = _write(root, "tools/set_status.py", _source(RIGHT))
+    first = _traced_call("a1", "t1", 1, "read_widget", {"widget_id": "W-1"}, {"widget_id": "W-1"})
+    second = _traced_call("a2", "t1", 2, "set_status", {"widget_id": "W-1", "new_status": "done"},
+                          {"widget_id": "W-1", "status": "done"})
+    (work / "traces").mkdir(parents=True)
+    (work / "traces" / "t1.json").write_text(
+        json.dumps({"tool_calls": [as_dict(call) for call in (first, second)]}), encoding="utf-8")
+    handed = []
+
+    def execute(source: str, calls: list, db: dict, trace_calls=None) -> list[dict]:
+        handed.append(trace_calls)
+        return sb.Sandbox(source, DB, tmp_path / "box", trace_calls=trace_calls).run(list(calls))
+
+    rulings_for(root, rel, work, execute=execute, evidence={"db": dict(DB), "schema": _schema()})
+    assert handed
+    assert {call.id for call in handed[0]["t1"]} == {"a1", "a2"}
+
+
+def test_a_workdir_with_only_calls_files_yields_one_table_across_tools_in_recorded_order(tmp_path):
+    work = tmp_path / "work"
+    (work / "env" / "calls").mkdir(parents=True)
+    read = _traced_call("b1", "t1", 1, "read_widget", {"widget_id": "W-1"}, {"widget_id": "W-1"})
+    write = _traced_call("b2", "t1", 4, "set_status", {"widget_id": "W-1", "new_status": "done"},
+                         {"widget_id": "W-1", "status": "done"})
+    again = _traced_call("b3", "t1", 7, "read_widget", {"widget_id": "W-1"}, {"widget_id": "W-1"})
+    for name, calls in (("read_widget", [again, read]), ("set_status", [write])):
+        (work / "env" / "calls" / f"{name}.jsonl").write_text(
+            "".join(json.dumps(as_dict(call)) + "\n" for call in calls), encoding="utf-8")
+    table = load_trace_calls(work, "tools/set_status.py")
+    assert list(table) == ["t1"]
+    assert [call.id for call in table["t1"]] == ["b1", "b2", "b3"]
+
+
+def test_an_executor_without_the_trace_table_keyword_is_called_as_before(tmp_path):
+    root, work = tmp_path / "root", tmp_path / "work"
+    rel = _write(root, "tools/set_status.py", _source(RIGHT))
+    second = _traced_call("a2", "t1", 2, "set_status", {"widget_id": "W-1", "new_status": "done"},
+                          {"widget_id": "W-1", "status": "done"})
+    rulings = rulings_for(root, rel, work, execute=_execute(tmp_path / "box"),
+                          evidence=_evidence(calls=[second], trace_calls={"t1": [second]}))
+    assert [ruling.stage for ruling in rulings if not ruling.passed] == []
 
 
 # --- every refusal names its rows ---
@@ -245,7 +330,7 @@ def test_the_verifier_suite_refusal_names_the_check_and_the_atom(tmp_path):
                       predicate_src=("def check(pre_state, write_call, transcript):\n"
                                      "    return pre_state['orders']['#W123']['status'] == 'pending'\n"))
     verifier = derive(tmp_path, constraints=[rule])
-    results = S.validate_verifier(verifier, reference_run())
+    results = S.validate_verifier(verifier, reference_run(), canon=CanonRules())
     oracle = next(result for result in results if result.stage == "verifier_oracle")
     assert not oracle.passed
     rows = rows_for(oracle, {"verifier": verifier})
@@ -279,6 +364,10 @@ def test_a_single_reference_task_with_a_waived_row_is_trusted_on_a_passing_suite
     root = tmp_path / "root"
     rel = _write(root, "verifiers/t1.json", json.dumps(as_dict(verifier)))
     waived_row = {verifier.task_id: {"verifier_passed": True, "second_path_waived": True}}
+    seeds = tmp_path / "work" / "runs" / TASK
+    seeds.mkdir(parents=True)
+    for run in (reference_run(), alt_path_run(), other_reason_run()):
+        write_events_jsonl(run, seeds / f"{run.run_id}.jsonl")  # the seeds, as Runs of this Task (D281)
     out = rulings_for(root, rel, tmp_path / "work",
                       evidence=_suite_evidence(verifier, alt_path_run=None, task_status=waived_row))
     alt = next(r for r in out if r.stage == "verifier_alt_path")
@@ -304,7 +393,7 @@ def test_loosening_and_false_rejection_refusals_name_their_runs(tmp_path):
     replays = {TASK: {"tr1": replay_row("tr1", True, run_id="ref")}}
     unfinished = {TASK: [reroll_row("rr2", "max_steps")]}
     hist = history(version(strict), version(plain, 2, by="repair", accepted=False))
-    out = loosening_gate(hist, runs, replays, unfinished, None, SIGS)
+    out = loosening_gate(hist, runs, replays, unfinished, CanonRules(), SIGS)
     assert not out.passed
     rows = rows_for(out, {})
     assert rows and rows[0] == {"task": TASK, "run": "rr2"}
@@ -312,7 +401,7 @@ def test_loosening_and_false_rejection_refusals_name_their_runs(tmp_path):
     strict = tighten(base(tmp_path)).model_copy(update={"seed_run_ids": ["ref"]})
     out = false_rejection_gate([strict], {TASK: [reference_run(), other_reason_run()]},
                                {TASK: {"tr1": replay_row("tr1", True, run_id="ref")}},
-                               {TASK: [reroll_row("rr2", "success")]}, None, SIGS, task_status={})
+                               {TASK: [reroll_row("rr2", "success")]}, CanonRules(), SIGS, task_status={})
     assert not out.passed
     rows = rows_for(out, {})
     assert rows and {row["run"] for row in rows if "run" in row} == {"rr2"}

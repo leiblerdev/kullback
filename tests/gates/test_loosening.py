@@ -8,6 +8,7 @@ from gates.verifier_fixtures import WRITE_TOOLS, alt_path_run, extra_write_run, 
 from kullback.gates import loosening as L
 from kullback.gates.probes import version_hash
 from kullback.gates.verifier_suite import check_run
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import Atom
 
 REPLAYS = {TASK: {"tr1": replay_row("tr1", True, run_id="ref"), "tr2": replay_row("tr2", False, run_id="replay-tr2")}}
@@ -38,9 +39,9 @@ def test_the_pool_leaves_out_the_recordings_the_reference_rule_discarded_when_it
 def test_a_new_version_may_newly_pass_the_reference_or_a_frontier_reroll(tmp_path):
     strict, plain = tighten(base(tmp_path)), base(tmp_path)
     runs = {TASK: [reference_run(), alt_path_run(), other_reason_run()]}
-    assert L.newly_passed(strict, plain, runs[TASK], None, WRITE_TOOLS) == ["rr2"]
+    assert L.newly_passed(strict, plain, runs[TASK], CanonRules(), WRITE_TOOLS) == ["rr2"]
     ruling = L.loosening_gate(history(version(strict), version(plain, 2, by="repair", parent=strict)),
-                              runs, REPLAYS, REROLLS, None, SIGS)
+                              runs, REPLAYS, REROLLS, CanonRules(), SIGS)
     assert ruling.passed, ruling.failures
     assert ruling.metrics == {"tasks": 1, "compared": 1, "loosened": {}, "legitimate": {TASK: 2}}
 
@@ -50,7 +51,7 @@ def test_a_new_version_that_newly_passes_any_other_run_is_rejected_and_the_run_i
     runs = {TASK: [reference_run(), alt_path_run(), other_reason_run()]}
     unfinished = {TASK: [reroll_row("rr2", "max_steps")]}
     ruling = L.loosening_gate(history(version(strict), version(plain, 2, by="repair", accepted=False)),
-                              runs, REPLAYS, unfinished, None, SIGS)
+                              runs, REPLAYS, unfinished, CanonRules(), SIGS)
     assert not ruling.passed
     assert ruling.failures == [f"task t1: version {version_hash(plain)} newly passes rr2, which is not the Reference, "
                                "a frontier re-roll or a production Run"]
@@ -60,20 +61,20 @@ def test_a_new_version_that_newly_passes_any_other_run_is_rejected_and_the_run_i
 def test_a_version_that_only_tightens_passes_the_gate(tmp_path):
     plain, strict = base(tmp_path), tighten(base(tmp_path))
     runs = {TASK: [reference_run(), alt_path_run(), other_reason_run(), extra_write_run()]}
-    ruling = L.loosening_gate(history(version(plain), version(strict, 2, by="repair")), runs, {}, {}, None, SIGS)
+    ruling = L.loosening_gate(history(version(plain), version(strict, 2, by="repair")), runs, {}, {}, CanonRules(), SIGS)
     assert ruling.passed and ruling.metrics["compared"] == 1 and ruling.metrics["loosened"] == {}
 
 
 def test_the_first_version_has_nothing_to_loosen_from_and_passes(tmp_path):
     plain = base(tmp_path)
     runs = {TASK: [reference_run(), extra_write_run()]}
-    ruling = L.loosening_gate(history(version(plain)), runs, {}, {}, None, SIGS)
+    ruling = L.loosening_gate(history(version(plain)), runs, {}, {}, CanonRules(), SIGS)
     assert ruling.passed and ruling.metrics["compared"] == 0
     # A rejected first attempt followed by a second is still a first accepted version to come.
     ruling = L.loosening_gate(history(version(plain, accepted=False, rejected_by=["verifier_oracle"]),
-                                      version(loosen(plain), 2)), runs, {}, {}, None, SIGS)
+                                      version(loosen(plain), 2)), runs, {}, {}, CanonRules(), SIGS)
     assert ruling.passed and ruling.metrics["compared"] == 0
-    assert L.loosening_gate({}, {}, {}, {}, None, []).passed
+    assert L.loosening_gate({}, {}, {}, {}, CanonRules(), []).passed
 
 
 def test_the_previous_version_is_the_last_accepted_one_not_a_rejected_attempt(tmp_path):
@@ -84,7 +85,7 @@ def test_the_previous_version_is_the_last_accepted_one_not_a_rejected_attempt(tm
     runs = {TASK: [reference_run(), other_reason_run()]}
     rows = history(version(strict), version(plain, 2, by="repair", accepted=False, rejected_by=["loosening"]),
                    version(plain, 3, by="repair", accepted=False))
-    ruling = L.loosening_gate(rows, runs, {}, {}, None, SIGS)
+    ruling = L.loosening_gate(rows, runs, {}, {}, CanonRules(), SIGS)
     assert not ruling.passed and ruling.metrics["loosened"] == {TASK: ["rr2"]}
     assert L.accepted_versions(rows[TASK]) == [rows[TASK].versions[0]]
 
@@ -94,7 +95,7 @@ def test_false_rejection_counts_the_held_out_legitimate_runs_the_required_atoms_
     assert strict.seed_run_ids == ["ref", "alt", "rr2"]
     strict = strict.model_copy(update={"seed_run_ids": ["ref"]})
     runs = [reference_run(), alt_path_run(), other_reason_run()]
-    row = L.false_rejection(strict, runs, {"ref", "alt", "rr2"}, None, WRITE_TOOLS)
+    row = L.false_rejection(strict, runs, {"ref", "alt", "rr2"}, CanonRules(), WRITE_TOOLS)
     assert row == {"held_out": 2, "rejected": 1, "fraction": 0.5, "rejected_ids": ["rr2"]}
 
 
@@ -102,10 +103,10 @@ def test_a_seed_run_is_never_held_out(tmp_path):
     strict = tighten(base(tmp_path))
     runs = [reference_run(), alt_path_run(), other_reason_run()]
     # Every legitimate Run is a seed of this version, so nothing is held out, whatever it would score.
-    row = L.false_rejection(strict, runs, {"ref", "alt", "rr2"}, None, WRITE_TOOLS)
+    row = L.false_rejection(strict, runs, {"ref", "alt", "rr2"}, CanonRules(), WRITE_TOOLS)
     assert row["held_out"] == 0 and row["rejected_ids"] == []
     # A Run that is legitimate and not a seed is held out; one that is not legitimate is not.
-    row = L.false_rejection(strict.model_copy(update={"seed_run_ids": ["ref", "alt"]}), runs, {"ref", "rr2"}, None,
+    row = L.false_rejection(strict.model_copy(update={"seed_run_ids": ["ref", "alt"]}), runs, {"ref", "rr2"}, CanonRules(),
                             WRITE_TOOLS)
     assert row["held_out"] == 1 and row["rejected_ids"] == ["rr2"]
 
@@ -117,35 +118,35 @@ def test_a_held_out_frontier_run_rejected_only_by_a_hard_constraint_is_not_a_fal
     policy = Atom(id="hard.never", kind="hard", predicate_src="def check():\n    return False\n")
     strict_policy = plain.model_copy(update={"atoms": plain.atoms + [policy]})
     runs = [reference_run(), alt_path_run()]
-    assert check_run(strict_policy, alt_path_run(), None, write_tools=WRITE_TOOLS) == (False, "hard.never")
-    row = L.false_rejection(strict_policy, runs, {"ref", "alt"}, None, WRITE_TOOLS)
+    assert check_run(strict_policy, alt_path_run(), CanonRules(), write_tools=WRITE_TOOLS) == (False, "hard.never")
+    row = L.false_rejection(strict_policy, runs, {"ref", "alt"}, CanonRules(), WRITE_TOOLS)
     assert row == {"held_out": 1, "rejected": 0, "fraction": 0.0, "rejected_ids": []}
     # The required atoms still count: the tightened reason rejects rr2 with or without the policy atom.
     tight = tighten(strict_policy)
-    row = L.false_rejection(tight, runs + [other_reason_run()], {"ref", "alt", "rr2"}, None, WRITE_TOOLS)
+    row = L.false_rejection(tight, runs + [other_reason_run()], {"ref", "alt", "rr2"}, CanonRules(), WRITE_TOOLS)
     assert row["rejected_ids"] == ["rr2"] and row["fraction"] == 0.5
 
 
 def test_false_rejection_with_no_held_out_runs_is_none_not_zero(tmp_path):
     plain = base(tmp_path)
-    assert L.false_rejection(plain, [reference_run()], set(), None, WRITE_TOOLS)["fraction"] is None
-    assert L.false_rejection(plain, [], {"ref"}, None, WRITE_TOOLS) == {"held_out": 0, "rejected": 0,
+    assert L.false_rejection(plain, [reference_run()], set(), CanonRules(), WRITE_TOOLS)["fraction"] is None
+    assert L.false_rejection(plain, [], {"ref"}, CanonRules(), WRITE_TOOLS) == {"held_out": 0, "rejected": 0,
                                                                           "fraction": None, "rejected_ids": []}
 
 
 def test_rejecting_every_held_out_frontier_run_fails_the_false_rejection_gate(tmp_path):
     strict = tighten(base(tmp_path)).model_copy(update={"seed_run_ids": ["ref"]})
     single_path = L.false_rejection_gate([strict], {TASK: [reference_run(), other_reason_run()]}, REPLAYS, REROLLS,
-                                         None, SIGS)
+                                         CanonRules(), SIGS)
     assert not single_path.passed
     assert single_path.failures == ["task t1: the required atoms reject every held-out frontier Run"]
     assert single_path.metrics["per_task"][TASK]["fraction"] == 1.0
     some = L.false_rejection_gate([strict], {TASK: [reference_run(), alt_path_run(), other_reason_run()]},
                                   {TASK: dict(REPLAYS[TASK], tr3=replay_row("tr3", True, run_id="alt"))}, REROLLS,
-                                  None, SIGS)
+                                  CanonRules(), SIGS)
     assert some.passed and some.metrics["per_task"][TASK]["fraction"] == 0.5
     assert some.metrics["per_task"][TASK]["rejected_ids"] == ["rr2"]
-    assert L.false_rejection_gate([], {}, {}, {}, None, []).passed
+    assert L.false_rejection_gate([], {}, {}, {}, CanonRules(), []).passed
 
 
 def test_a_run_the_reference_rule_discarded_is_not_a_false_rejection_of_the_verifier(tmp_path):
@@ -154,10 +155,10 @@ def test_a_run_the_reference_rule_discarded_is_not_a_false_rejection_of_the_veri
     put 50 Tasks of one build and 9 of another at 1.0 for rejecting exactly what they should (D173)."""
     strict = tighten(base(tmp_path)).model_copy(update={"seed_run_ids": ["ref"]})
     runs = {TASK: [reference_run(), other_reason_run()]}
-    ruling = L.false_rejection_gate([strict], runs, REPLAYS, REROLLS, None, SIGS)
+    ruling = L.false_rejection_gate([strict], runs, REPLAYS, REROLLS, CanonRules(), SIGS)
     assert not ruling.passed and ruling.metrics["per_task"][TASK]["fraction"] == 1.0
     status = {TASK: {"failed_recordings": {"rr2": "judge: it did not do the job"}}}
-    ruling = L.false_rejection_gate([strict], runs, REPLAYS, REROLLS, None, SIGS, status)
+    ruling = L.false_rejection_gate([strict], runs, REPLAYS, REROLLS, CanonRules(), SIGS, status)
     assert ruling.passed
     assert ruling.metrics["per_task"][TASK] == {"held_out": 0, "rejected": 0, "fraction": None,
                                                 "rejected_ids": [],

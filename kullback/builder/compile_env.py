@@ -29,6 +29,7 @@ from kullback.builder.sandbox import (
     Sandbox,
     SandboxError,
     args_text,
+    calls_by_trace,
     context_feed_key,
     id_field,
     id_pattern_for,
@@ -81,6 +82,7 @@ from kullback.runner.records import (
     content_hash,
 )
 from kullback.runner.route import call_fingerprint  # D197: one fingerprint, written and served alike
+from kullback.runner.world.clock import HARNESS_LINE
 from kullback.runner.world.loading import (
     OVERLAY_DIR,
     _with_run_scope,
@@ -1923,8 +1925,10 @@ _CONTEXT_SHIM = '''class ToolContext:
 
     The draws are pure functions of the seed and the step: each serving call advances
     the step once, whatever feed answered, so the step sequence of a Run never depends
-    on which feed any call landed on. now() off the path is a calendar date in 2024
-    fixed by the seed and the step, never the wall clock. random() is always seeded.
+    on which feed any call landed on. now() off the path is the world clock where the
+    Runner set one (the recording's time for the Task, D283), else a calendar date in
+    2024 fixed by the seed and the step; never the machine's clock. random() is always
+    seeded. turn() is the call's position in the Run, where the Runner said it.
     new_id(table) off the path mints an id shaped like the ids the table already
     holds (a numeric sequence continues, a fixed shape draws per position from the
     observed alphabet, a table with no rows mints under the prefix new_), and an id
@@ -1948,8 +1952,22 @@ _CONTEXT_SHIM = '''class ToolContext:
         self._issued = {}
         self._served_recorded = 0
         self._served_seeded = 0
+        self._clock = None
+        self._turn = None
         self._starting_ids = self._snapshot_starting_ids()
         self._starting_times = self._snapshot_starting_times()
+
+    def set_clock(self, clock):
+        """The world's time for this Run, served by now() wherever no witnessed time answers."""
+        self._clock = clock
+
+    def begin_call(self, turn):
+        """The position of the call about to run, as the Runner counts the Run's calls."""
+        self._turn = turn
+
+    def turn(self):
+        """The running call's position in the Run, or None where nothing counted it."""
+        return self._turn
 
     def _snapshot_starting_ids(self):
         try:
@@ -2062,6 +2080,8 @@ _CONTEXT_SHIM = '''class ToolContext:
         self._time_cursor = 0
         self._served_recorded = 0
         self._served_seeded = 0
+        self._clock = None
+        self._turn = None
         self._starting_ids = self._snapshot_starting_ids()
         self._starting_times = self._snapshot_starting_times()
 
@@ -2070,7 +2090,7 @@ _CONTEXT_SHIM = '''class ToolContext:
         return {"recorded": self._served_recorded, "seeded": self._served_seeded}
 
     def now(self):
-        """The call's time: the recorded time at replay, a fixed function of seed and step off it.
+        """The call's time: the recorded time at replay, the world clock, else seed and step.
 
         A witnessed time the world already held at reset is what the call found, not what it
         made, so the seeded feed answers for it, counted as seeded. A feed the creation rule
@@ -2094,6 +2114,11 @@ _CONTEXT_SHIM = '''class ToolContext:
             self._time_cursor += 1
             self._served_recorded += 1
             return value
+        if self._clock is not None:
+            # The world's own time: a row the start state holds may carry it too, which is
+            # what a world with one clock looks like, so the reset check does not apply.
+            self._served_recorded += 1
+            return self._clock
         self._served_seeded += 1
         return self._seeded_now()
 
@@ -2379,11 +2404,154 @@ def render_tools(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict,
              f'\n\nclass {class_name}(_ToolKitBase):\n    """Every tool mined from the customer\'s '
              f'traces."""\n\n    def __init__(self, db) -> None:\n        super().__init__(db)\n'
              "        self.db = db\n        self.ctx = ToolContext(db)\n"]
+    logged = action_tools(schema)
     for sig in sigs:
         body = textwrap.dedent(bodies.get(sig.name, "raise NotImplementedError")).strip("\n") or "pass"
+        if sig.name in logged:
+            body = _action_lines(sig, logged[sig.name]) + body
         parts.append(f"\n    @is_tool(ToolType.{sig.kind.upper()})\n{_signature(sig)}\n{_docstring(sig)}\n"
                      + textwrap.indent(body, "        ").rstrip() + "\n")
     return "".join(parts)
+
+
+# --- a tool whose recorded effect is to end the Run (D282) ---
+
+# A tool that hands the conversation on and writes nothing leaves no trace in the world, so no
+# atom can demand it and an empty Run passes a Verifier derived from a Reference that called it.
+# The world records such a call as a row of its own: the compile step writes the row ahead of
+# the body, the tool is a write, and the ordinary write atom covers it. The answer the body gives
+# is untouched, so replay fidelity is what it was.
+# A read takes the world as input: its arguments name values the world holds, an id or key of the
+# Starting state or of an earlier result of the same Trace. A tool that ends the Run consumes
+# nothing of the world: its arguments are free text or empty. So a final status, total or
+# availability lookup that closes most of its Traces stays a read, because on its calls an argument
+# names a row of the world (D288); and a tool the miner classified as a read (not its unclassified
+# default) never moves. The world of a call is its own Trace's: that Trace's Starting state and its
+# earlier results, never another Trace's. The mine step runs before the Starting state is
+# inverted, so there only the Trace's earlier results count.
+ACTIONS_TABLE = "actions"
+# The share of a tool's successful recorded calls that closed their Trace (no tool call after it)
+# for the tool to read as one that ends the Run. Below one because a corpus has stray orderings:
+# a hand-off answered and then a last lookup is still a hand-off.
+ENDS_RUN_SHARE = 0.9
+ENDS_RUN_MIN_CALLS = 3
+ACTION_COLUMNS = {"action_id": "exempt", "tool": "hard", "args": "exempt", "turn": "exempt"}
+
+
+def _world_values(value: Any, out: Optional[set] = None) -> set:
+    """Every scalar a result shows, canonical, a flag or an empty text aside: what an argument may name."""
+    out = set() if out is None else out
+    if isinstance(value, dict):
+        for item in value.values():
+            _world_values(item, out)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _world_values(item, out)
+    elif value is not None and not isinstance(value, bool) and str(value).strip():
+        out.add(canon(value))
+    return out
+
+
+def _ending_candidates(sigs: Iterable[ToolSig]) -> set[str]:
+    """The tools that may end the Run: neither a mined write nor a classified read."""
+    return {sig.name for sig in sigs
+            if sig.kind != "write" and not (sig.kind == "read" and not sig.unclassified)}
+
+
+def _tally_trace(trace: Trace, seed: set, counts: dict[str, list[int]]) -> None:
+    """Add one Trace's successful calls to `counts`: calls, last calls, row answers, calls naming the world.
+
+    An argument names the world when it equals a value of `seed` (the Trace's own Starting state)
+    or of an earlier result of the same Trace.
+    """
+    calls = [call for call in trace.tool_calls if call.error is None]
+    seen = set(seed)
+    for at, call in enumerate(calls):
+        tally = counts.setdefault(call.name, [0, 0, 0, 0])
+        tally[0] += 1
+        tally[1] += at == len(calls) - 1
+        tally[2] += isinstance(call.result, (dict, list, tuple))
+        tally[3] += bool(_world_values(call.args) & seen)
+        _world_values(call.result, seen)
+
+
+def _ends_runs(tally: list[int]) -> bool:
+    """Enough calls, none answering rows or naming the world, and nearly all of them last in their Trace."""
+    total, last, rows, named = tally
+    return total >= ENDS_RUN_MIN_CALLS and not rows and not named and last >= ENDS_RUN_SHARE * total
+
+
+def ending_tools(traces: Iterable[Trace], sigs: Iterable[ToolSig],
+                 starts: Optional[dict[str, Any]] = None) -> list[str]:
+    """The tools the recording shows ending the Run and writing nothing.
+
+    Not a write by its mined kind nor a classified read, answered with a scalar on every successful
+    call (no row came back), called at least `ENDS_RUN_MIN_CALLS` times, the last tool call of its
+    Trace on at least `ENDS_RUN_SHARE` of them, and on every call no argument value equals a value
+    of that Trace's own Starting state or of an earlier result of the same Trace (D288). Nothing
+    of another Trace counts. `starts` maps a Trace id to its Starting state; the mine step runs
+    before the Starting state is inverted, so there the seed is empty and only the Trace's earlier
+    results count.
+    """
+    candidates = _ending_candidates(sigs)
+    counts: dict[str, list[int]] = {}
+    for trace in traces:
+        _tally_trace(trace, _world_values((starts or {}).get(trace.trace_id)), counts)
+    return sorted(name for name, tally in counts.items() if name in candidates and _ends_runs(tally))
+
+
+def action_tools(schema: EntitySchema) -> dict[str, str]:
+    """Per tool whose calls the world records as rows, the table that holds them."""
+    out: dict[str, str] = {}
+    for column in schema.columns:
+        for tool in (column.evidence or {}).get("actions_of") or ():
+            out[str(tool)] = column.table
+    return out
+
+
+def record_ending_actions(traces: Iterable[Trace], sigs: list[ToolSig], schema: EntitySchema) -> list[str]:
+    """Give every tool that ends the Run a row in the world's actions table, and make it a write.
+
+    Mutates `sigs` and `schema` in place and returns the tools it moved. The table is named
+    `ACTIONS_TABLE`, suffixed where the customer's world already has a table of that name or class.
+    Idempotent: a schema that already records a tool's actions keeps its table.
+    """
+    traces = list(traces)
+    tools = [name for name in ending_tools(traces, sigs) if name not in action_tools(schema)]
+    if not tools:
+        return []
+    existing = action_tools(schema)
+    table = next(iter(existing.values()), None)
+    if table is None:
+        table = ACTIONS_TABLE
+        classes = {_class_name(t) for t in schema.tables}
+        while table in schema.tables or _class_name(table) in classes:
+            table += "_"
+        schema.tables = sorted([*schema.tables, table])
+        for name, klass in ACTION_COLUMNS.items():
+            schema.columns.append(Column(
+                table=table, name=name, class_=klass, class_rule=klass, class_confidence="high",
+                class_reason="a column of the harness's record of the calls that end the Run",
+                classified_by="code", evidence={"actions_of": []}))
+    for column in schema.columns:
+        if column.table == table:
+            column.evidence = {**(column.evidence or {}),
+                               "actions_of": sorted({*(column.evidence or {}).get("actions_of", []), *tools})}
+    schema.columns = sorted(schema.columns, key=lambda c: (c.table, c.name))
+    for sig in sigs:
+        if sig.name in tools:
+            sig.kind, sig.kind_confidence, sig.classified_by = "write", "high", "rule"
+            sig.kind_reason = ("the recording shows every call ending the Run and writing nothing, so "
+                               f"the world records each call as a row of {table} (D282)")
+    return tools
+
+
+def _action_lines(sig: ToolSig, table: str) -> str:
+    """The two lines the compile step writes ahead of the body: the call recorded as a row."""
+    args = ", ".join(f"{field.name!r}: {field.name}" for field in sig.args_fields)
+    return (f"_action_id = str(len(self.db.{table}) + 1)  {HARNESS_LINE}\n"
+            f"self.db.{table}[_action_id] = {_class_name(table)}(action_id=_action_id, "
+            f"tool={sig.name!r}, args={{{args}}}, turn=self.ctx.turn())  {HARNESS_LINE}\n")
 
 
 def module_source(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict) -> str:
@@ -3125,6 +3293,9 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
     probes = {"n": 0}
     # The recorded feed each gate call is served from, built once: a pure function of the calls.
     ctx_feeds = recorded_call_contexts(list(shown) + list(held_out), schema)
+    # The module holds this one tool, so the prefix each gated call replays first is its own
+    # tool's earlier calls in the same trace; the others would name a tool it does not hold.
+    by_trace = calls_by_trace(list(shown) + list(held_out))
 
     def lookup_rows(table: Optional[str] = None, key: Optional[str] = None) -> str:
         return _lookup_rows_text(schema, db, shown, call_states, table, key, holdout=holdout)
@@ -3137,7 +3308,7 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
         body, sanitized = sanitize_body(body or "")
         source = module_source(schema, [toolsig], {toolsig.name: body})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}_probe_{probes['n']}", timeout=timeout,
-                          call_states=call_states, call_context=ctx_feeds)
+                          call_states=call_states, call_context=ctx_feeds, trace_calls=by_trace)
         gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                           probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
                           holdout_values=holdout_values, effect_values=effect_values,
@@ -3651,7 +3822,8 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
     source = module_source(schema, [toolsig], {toolsig.name: build.body})
     sandbox = Sandbox(source, db, workdir, timeout=timeout, call_states=call_states,
                       call_tasks=call_tasks,
-                      call_context=recorded_call_contexts(shown + held_out, schema))
+                      call_context=recorded_call_contexts(shown + held_out, schema),
+                      trace_calls=calls_by_trace(shown + held_out))
     build.gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                             probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
                             holdout_values=holdout_values, effect_values=effect_values,
@@ -4143,7 +4315,7 @@ def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], sche
         return missed("no body was compiled for this tool")
     source = module_source(schema, [toolsig], {toolsig.name: body})
     sandbox = Sandbox(source, db, Path(workdir) / "attribution", timeout=timeout, call_states=call_states,
-                      call_context=recorded_call_contexts(calls, schema))
+                      call_context=recorded_call_contexts(calls, schema), trace_calls=calls_by_trace(calls))
     try:
         results = sandbox.run(calls)
     except SandboxError as exc:

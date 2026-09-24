@@ -476,7 +476,7 @@ class AgentJudge:
         self.constraints = tuple(constraints)
         self.write_tools = frozenset(write_tools)
         self.read_tools = frozenset(read_tools)
-        self.fn = fn or verifier_suite.canon_fn(None)
+        self.fn = verifier_suite.canon_fn(fn)
         self.max_calls = max_calls
         self.max_turns = max_turns
 

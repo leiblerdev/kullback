@@ -10,10 +10,13 @@ from kullback.agent.events import ToolExecutionEnd
 from kullback.agent.extensions import load_extensions
 from kullback.agent.harness import AgentHarness, drive_tool
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
+from kullback.examiner import domain_tools as exam_tools
 from kullback.examiner import session as S
+from kullback.examiner import stage as stage_mod
 from kullback.examiner.exam_files import ExamRoot
 from kullback.gates.probes import version_hash
 from kullback.runner import budget, tool
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import Verifier, as_dict, read_json, write_json
 from tests.runner.test_tool import _env_with_trace
 
@@ -77,7 +80,7 @@ def test_fresh_session_seeds_version_1_accepted_for_each_derived_verifier(tmp_pa
 _WIDE_CAP = {"id": "wide_cap", "kind": "allowed", "payload": {"kind": "entity_count", "count": 1000}}
 
 
-def test_model_propose_verifier_is_refused_while_the_loophole_probe_cannot_run(tmp_path):
+def test_model_propose_verifier_lands_while_the_loophole_probe_cannot_run(tmp_path):
     world = make_world(tmp_path)
     materialize(world)
     events = _scripted_events(world, [
@@ -86,14 +89,13 @@ def test_model_propose_verifier_is_refused_while_the_loophole_probe_cannot_run(t
         reply("done"),
     ])
     [proposed] = _ends(events, "propose_verifier")
-    assert proposed.is_error is True
-    assert "verifier_loophole fail (not run: no model" in proposed.result.content
-    assert "rows" in proposed.result.content
-    assert not (world.workdir / "exam" / "verifiers" / "t1.json").exists()
+    assert proposed.is_error is False
+    assert "verifier_loophole not run (no model" in proposed.result.content
+    assert (world.workdir / "exam" / "verifiers" / "t1.json").is_file()
     written = read_json(world.workdir / "exam" / "history.json")
-    assert [v["accepted"] for v in written["t1"]["versions"]] == [True, False]
-    assert written["t1"]["versions"][-1]["rejected_by"] == ["verifier_loophole"]
-    assert not (world.workdir / "exam" / "task_status.json").exists(), "a refusal writes no status"
+    assert [v["accepted"] for v in written["t1"]["versions"]] == [True, True]
+    row = read_json(world.workdir / "exam" / "task_status.json")["t1"]
+    assert row["verifier_passed"] is False and "verifier_loophole" in row["not_run"]
 
 
 def test_a_model_write_or_edit_under_verifiers_is_refused_and_names_the_tools_that_write(tmp_path):
@@ -108,7 +110,7 @@ def test_a_model_write_or_edit_under_verifiers_is_refused_and_names_the_tools_th
     refused = _ends(events, "write") + _ends(events, "edit")
     assert [end.is_error for end in refused] == [True, True]
     for end in refused:
-        assert ("the Examiner writes Verifiers through propose_verifier and probes through probe, "
+        assert ("the Examiner writes Verifiers through edit_verifier and probes through probe, "
                 "not with write or edit") in end.result.content
     assert read_json(world.workdir / "exam" / "verifiers" / "t1.json") == before
 
@@ -136,16 +138,25 @@ def test_model_finding_publishes_and_duplicates_are_refused_with_the_id(tmp_path
 
 def test_bash_write_and_edit_are_not_registered_and_base_tools_are_scoped_to_exam(tmp_path):
     world = make_world(tmp_path)
-    root = ExamRoot(workdir=world.workdir)
+    root = ExamRoot(workdir=world.workdir, canon_rules=CanonRules())
     harness = AgentHarness(model=TestModel([]))
     load_extensions(harness, [S.examiner_extension(root)])
     names = harness.registry.names()
     assert not {"bash", "write", "edit"} & set(names)
     assert {"read", "grep", "find", "ls", "web_search",
-            "propose_verifier", "probe", "finding", "reroll"} <= set(names)
+            "edit_verifier", "propose_verifier", "probe", "finding", "reroll"} <= set(names)
     S.expose(world.workdir)
     refused = drive_tool(harness, "write", {"path": "runs/x.jsonl", "content": "{}"})
     assert refused.is_error is True
+
+
+def test_the_examiner_gets_inspect_among_its_base_tools_and_still_no_write_edit_or_bash(tmp_path):
+    world = make_world(tmp_path)
+    harness = AgentHarness(model=TestModel([]))
+    load_extensions(harness, [S.examiner_extension(ExamRoot(workdir=world.workdir, canon_rules=CanonRules()))])
+    names = set(harness.registry.names())
+    assert "inspect" in names
+    assert not {"write", "edit", "bash"} & names
 
 
 def _rename_loop() -> TestModel:
@@ -293,7 +304,8 @@ def test_session_prompt_names_dot_as_root_lists_entries_and_the_paths_of_each_ta
     system = " ".join(str(m.get("content")) for m in call["messages"])
     assert 'Your root is "."' in system
     assert str(world.workdir) not in system
-    assert "The root holds: history.json, replays.json, rerolls.json, runs/, tasks/." in system
+    assert ("The root holds: derived/, history.json, references.json, replays.json, rerolls.json, "
+            "runs/, spoken/, task_status.json, tasks/.") in system
     assert "on your first write under them: verifiers/, probes/" in system
     assert "runs: runs/t1/ref.jsonl, runs/t1/alt.jsonl" in system
     assert "proposal: verifiers/t1.json once you first propose one" in system
@@ -328,7 +340,7 @@ def test_a_task_without_a_confirmed_reference_is_left_out_with_its_reason():
 
 def test_the_rulings_line_covers_only_the_tasks_the_session_examines(tmp_path):
     world = make_world(tmp_path, tasks=2)
-    root = ExamRoot(workdir=world.workdir, replays=world.inputs["replays"])
+    root = ExamRoot(workdir=world.workdir, replays=world.inputs["replays"], canon_rules=CanonRules())
     lines = S.rulings_line(root, ["t2"]).splitlines()
     assert [line.split(":")[0] for line in lines] == ["t2"]
 
@@ -339,7 +351,7 @@ def test_the_rulings_line_names_the_derived_verifier_and_the_user_rules_of_a_con
     S.expose(world.workdir)
     replays = dict(world.inputs["replays"])
     replays["t2"] = {"ref": {**replays["t2"]["ref"], "confirmed": False}}
-    root = ExamRoot(workdir=world.workdir, replays=replays)
+    root = ExamRoot(workdir=world.workdir, replays=replays, canon_rules=CanonRules())
     lines = dict(line.split(": ", 1) for line in S.rulings_line(root).splitlines())
     assert "derived verifier: derived/t1.json" in lines["t1"]
     assert "proposal: verifiers/t1.json once you first propose one" in lines["t1"]
@@ -384,17 +396,38 @@ def _not_derived(findings) -> list:
     return [f for f in findings if any("not_derived" in row for row in f.rows)]
 
 
-def test_examine_derives_at_most_the_cap_and_names_the_rest_until_a_second_call_derives_them(tmp_path, monkeypatch):
-    """F40: one call derives TASKS_PER_CALL Tasks in id order; one finding names the rest, the next call clears it."""
-    monkeypatch.setattr(S, "TASKS_PER_CALL", 2)
+def test_one_examine_call_derives_all_twelve_confirmed_tasks_and_files_no_not_derived_note(tmp_path):
+    """F40, F55: examine derives every Task derive_pick returns, with no cap per call."""
+    world = make_world(tmp_path, tasks=12)
+    materialize(world)
+    findings = S.examine(world.workdir, model=None)
+    assert _derived(world) == sorted(f"t{n}" for n in range(1, 13))
+    assert not _not_derived(findings)
+    assert S.derive_pick(world.workdir, S.load_store(world.workdir), None) == []
+
+
+def test_the_exam_view_after_examine_holds_the_verifiers_and_status_this_call_derived(tmp_path):
+    """F52: expose runs after the derivation, so the first call's session reads current files."""
+    world = make_world(tmp_path, tasks=2)
+    materialize(world)
+    S.examine(world.workdir, model=None)
+    exam = world.workdir / "exam"
+    assert sorted(read_json(exam / "task_status.json")) == ["t1", "t2"]
+    assert read_json(exam / "task_status.json") == read_json(world.workdir / "task_status.json")
+    assert sorted(p.stem for p in (exam / "derived").glob("*.json")) == ["t1", "t2"]
+
+
+def test_examine_with_a_limit_derives_that_many_and_names_the_rest_until_a_second_call(tmp_path):
+    """F40: an explicit limit derives the first Tasks in id order; one finding names the rest."""
     world = make_world(tmp_path, tasks=4)
     materialize(world)
-    first = S.examine(world.workdir, model=None)
+    first = S.examine(world.workdir, model=None, limit=2)
     assert _derived(world) == ["t1", "t2"]
     [note] = _not_derived(first)
     assert note.kind == "other" and note.source == "derive"
     assert note.text == "2 confirmed Tasks not derived yet: t3, t4; call examine again"
-    assert note.rows == [{"task_id": t, "not_derived": "cap"} for t in ("t3", "t4")]
+    assert note.change.startswith("this examine call was limited to 2 Tasks; ")
+    assert note.rows == [{"task_id": t, "not_derived": "limit"} for t in ("t3", "t4")]
     second = S.examine(world.workdir, model=None)
     assert _derived(world) == ["t1", "t2", "t3", "t4"]
     assert not _not_derived(second)
@@ -439,3 +472,22 @@ def test_a_task_left_unconfirmed_is_picked_again_once_its_replay_is_confirmed(tm
     replays["t1"]["ref"].update(confirmed=True, reasons=[])
     write_json(world.workdir / "replays.json", replays)
     assert S.derive_pick(world.workdir, S.load_store(world.workdir), None) == ["t1"]
+
+
+def test_the_session_root_holds_the_second_path_runs_the_derivation_bought(world):
+    alt = [row for row in world.inputs["rerolls"]["t1"] if row.get("run_id") == "alt"]
+    store = {**world.inputs, "rerolls": {"t1": [r for r in world.inputs["rerolls"]["t1"] if r.get("run_id") != "alt"]}}
+    write_json(stage_mod.extra_rerolls_path(world.workdir),
+               {"t1": [{**row, "reason": stage_mod.SECOND_PATH_REASON} for row in alt]})
+    root = S._exam_root(world.workdir, store, [])
+    assert "alt" in [row.get("run_id") for row in root.rerolls["t1"]]
+
+
+def test_the_examiners_opening_lists_the_builders_open_notes_on_its_tasks(world):
+    exam_tools.write_note(world.workdir, "t1", "fact_unavailable_to_user", "the user never learns the code.")
+    exam_tools.write_json(world.workdir / "tasks" / "t9.json", {"id": "t9"})
+    exam_tools.write_note(world.workdir, "t9", "outcome_not_in_state", "only said, never written.")
+    opening = S.session_opening(ExamRoot(workdir=world.workdir), ["t1"])
+    assert "The Builder's notes" in opening
+    assert "t1: fact_unavailable_to_user: the user never learns the code. (open)" in opening
+    assert "t9:" not in opening

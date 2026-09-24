@@ -12,6 +12,7 @@ from kullback.builder import effects as effects_mod
 from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite as suite
 from kullback.runner import replay
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import Task, ToolCallError, Trace, Turn
 from runner.replay_fixtures import PTR, Toolkit, call, do_replay, events, router, sigs, trace, world  # noqa: F401
 
@@ -72,6 +73,50 @@ def test_compare_call_names_every_way_two_answers_part():
     refused = call("x", "t", {}, None, error=ToolCallError(**{"class": "not_found_entity"}))
     assert replay.compare_call(refused, {"a": 1}, None) == replay.THEIRS_REFUSED
     assert replay.compare_call(refused, None, ToolCallError(**{"class": "unknown"})) == replay.BOTH_REFUSED
+
+
+class Refusing(Toolkit):
+    def cancel_order(self, order_id, reason="requested"):
+        raise ValueError("Payment amount 25.00 does not add up")
+
+
+def _refused_row(toolkit_class, recorded_message: str) -> dict:
+    """One cancel_order call the recording refused with `recorded_message`, routed through a body."""
+    recorded = call("c2", "cancel_order", {"order_id": "123"}, None,
+                    error=ToolCallError(**{"class": "not_found_entity"}, payload=recorded_message))
+    scored = replay.ScoredRouter(router(toolkit_class), deque([recorded]), write_tools={"cancel_order"})
+    scored.route("cancel_order", {"order_id": "123"})
+    return scored.checks[0]
+
+
+def test_two_refusals_with_different_messages_disagree_and_the_row_keeps_both_messages():
+    """F56: both sides refusing is not agreement when they refuse for different reasons."""
+    row = _refused_row(Refusing, "Error: Order is not pending")
+    assert row["verdict"] == replay.REFUSED_DIFFERENTLY
+    assert row["verdict"] not in replay.AGREES
+    assert "Payment amount 25.00 does not add up" in row["difference"]["ours_error"]
+    assert row["difference"]["theirs_error"] == "Error: Order is not pending"
+
+
+def test_the_same_refusal_message_agrees_across_prefix_case_spacing_and_number_spelling():
+    """F56: the "ValueError: " our body adds and the "Error: " the recording carries are not a difference."""
+    row = _refused_row(Refusing, "Error: payment  amount 25 does NOT add up.")
+    assert row["verdict"] == replay.BOTH_REFUSED
+    assert row["verdict"] in replay.AGREES
+
+
+def test_a_body_fault_is_never_both_refused_and_its_row_names_the_fault():
+    """F56: a body that crashed did not refuse, whatever the recording refused with."""
+
+    class Crashing(Toolkit):
+        def cancel_order(self, order_id, reason="requested"):
+            raise RuntimeError("Payment amount 25.00 does not add up")
+
+    row = _refused_row(Crashing, "Error: Payment amount 25.00 does not add up")
+    assert row["verdict"] == replay.BODY_FAULT
+    assert row["verdict"] not in replay.AGREES
+    assert "RuntimeError: Payment amount 25.00 does not add up" in row["difference"]["ours_error"]
+    assert '"class_": "body_fault"' in row["ours"]
 
 
 def _checks(out, verdict: str) -> list[dict]:
@@ -143,11 +188,11 @@ def test_the_verifier_derives_from_the_replayed_run(tmp_path):
     """The whole point: a Run on disk the Verifier stage can read (D91), with the write as an atom."""
     out = do_replay(tmp_path)
     task = Task(id="t1", run_ids=["tr1"])
-    verifier = verifier_mod.derive_verifier(task, out.path, write_tools={"cancel_order"})
+    verifier = verifier_mod.derive_verifier(task, out.path, write_tools={"cancel_order"}, canon=CanonRules())
     writes = [a for a in verifier.atoms if a.target.get("kind") == "write"]
     assert [a.kind for a in writes] == ["required"] and writes[0].target["tool"] == "cancel_order"
     gates = {g.stage: g.passed for g in suite.validate_verifier(
-        verifier, out.path, write_tools={"cancel_order"})}
+        verifier, out.path, write_tools={"cancel_order"}, canon=CanonRules())}
     assert gates["verifier_oracle"] and gates["verifier_empty_run"]
 
 

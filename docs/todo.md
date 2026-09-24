@@ -27,3 +27,15 @@ Cleared on 2026-09-22. The harness is being rebuilt around one event bus, a Buil
    this is the "scenario generation and seed augmentation" line in harness-design.md, not new work.
 6. Generate and harden the Tasks: the TauForge stages augment, validate, harden, the last steps of the
    four this loop already runs under other names.
+
+## Feedback mining from traces (founder, 2026-09-23, production direction)
+
+- The recorded traces and the Environments built from them already hold what customers ask for (Intents), what
+  they know and hand over (typed facts), what they ask (question atoms), where policy stops them (refusals), where
+  they give up (terminations) and what they want that the tools cannot do (off-path requests).
+- Reported in aggregate only, with personal data stripped; never a view of one customer.
+- Not built before fidelity, the quality pass and synthetic Tasks.
+
+## Environment comparison
+
+Right output by a wrong method is scored as a pass by design: the Verifier scores the End state and what the user was told, never the route. An Environment that scores the route gives a different refusal rate, so a comparison across Environments is fair only once every Environment scores the same thing. Forbidden routes are Hard atoms written per Task.

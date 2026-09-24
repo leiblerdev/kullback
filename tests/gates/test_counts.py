@@ -5,6 +5,7 @@ from __future__ import annotations
 from gates.examiner_fixtures import SIGS, TASK, base, history, pool, probe, replay_row, reroll_row, status, version
 from gates.verifier_fixtures import alt_path_run, other_reason_run, reference_run, wrong_run
 from kullback.gates import counts
+from kullback.runner.canon import CanonRules
 
 D126_COUNTS = ("fidelity", "trusted", "refused", "assisted_runs", "probes_passing")
 
@@ -17,7 +18,7 @@ def _world(tmp_path, **update):
                  task_runs={TASK: [reference_run(), alt_path_run(), other_reason_run()]},
                  replays={TASK: {"tr1": replay_row("tr1", True, run_id="ref")}, "t2": {"tr2": replay_row("tr2", False)}},
                  rerolls={TASK: [reroll_row("rr2"), reroll_row("alt")], "t2": [reroll_row("reroll-t2-0", "max_steps")]},
-                 canon_rules=None, sigs=SIGS)
+                 canon_rules=CanonRules(), sigs=SIGS)
     world.update(update)
     return world
 

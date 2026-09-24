@@ -15,6 +15,7 @@ key or the run path inside it, that it was read from.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -32,7 +33,7 @@ from env_fidelity import cause as fidelity_cause  # noqa: E402
 
 # The Runner's own words for how one replayed call compared with the recording (runner/replay.py).
 AGREES = ("same", "cosmetic", "both_refused")
-PARTS = ("differs", "ours_refused", "theirs_refused", "unrecorded")
+PARTS = ("differs", "ours_refused", "theirs_refused", "refused_differently", "body_fault", "unrecorded")
 # A replay reason reads "<tool> <label>: <verdict>", and since D217 the route the verdict was
 # reached by follows it in brackets. A rule matches on the verdict, so it reads the word out of the
 # line rather than off its tail, and a reason written before the route existed still matches.
@@ -453,10 +454,11 @@ def headline_rows(build: Build) -> list[tuple[str, str, str]]:
 def check_cause(check: dict) -> str:
     """The env_fidelity cause behind one replayed call that missed, `none` when it agreed.
 
-    A call the Runner counts as agreement gets no cause, `both_refused` included: env_fidelity
-    splits two refusals whose wording differs into `error_prefix` and `error_message`, and the
-    preview replays.json keeps is not always long enough to tell, so that split lives with the
-    tool that can read the whole answer and not here.
+    A call the Runner counts as agreement gets no cause, `both_refused` included: since F56 the
+    Runner calls two refusals agreement only when their messages agree after its normalisation,
+    and a pair that does not is `refused_differently`, named here the way env_fidelity names two
+    refusals whose wording differs. A `body_fault` is our body crashing where the recording
+    refused, named off the fault's message the way env_fidelity names a body that raised.
 
     A check that did not agree carries a `difference` record (runner/replay.py): each side's error
     message, each answer up to 4,000 characters with a flag saying whether that was all of it, and
@@ -470,14 +472,25 @@ def check_cause(check: dict) -> str:
         return "none"
     if verdict == "theirs_refused":
         return fidelity_cause("only_theirs_errored", {}, {"error": detail.get("theirs_error") or theirs})
+    if verdict == "refused_differently":
+        return fidelity_cause("both_error_other_message",
+                              {"error": _side_error(detail, "ours", ours)},
+                              {"error": _side_error(detail, "theirs", theirs)})
+    if verdict == "body_fault":
+        return fidelity_cause("only_ours_errored", {"error": _fault_message(detail, ours)}, {"result": theirs})
     if verdict == "ours_refused":
         return fidelity_cause("only_ours_errored",
-                              {"error": str(detail.get("ours_error") or "") or _message(ours)},
+                              {"error": _side_error(detail, "ours", ours)},
                               {"result": theirs})
     mine, real = _whole(detail, "ours", ours), _whole(detail, "theirs", theirs)
     if mine is None or real is None:
         return _shape_cause(detail)
     return fidelity_cause("result_differs", {"result": mine}, {"result": real})
+
+
+def _side_error(detail: dict, side: str, preview: str) -> str:
+    """One side's error message: the difference record's, else the one read off its preview."""
+    return str(detail.get(f"{side}_error") or "") or _message(preview)
 
 
 def _whole(detail: dict, side: str, preview: str) -> Any:
@@ -497,6 +510,18 @@ def _shape_cause(detail: dict) -> str:
     if detail.get("keys_changed") or detail.get("lengths"):
         return "value"
     return UNREADABLE
+
+
+def _fault_message(detail: dict, preview: str) -> str:
+    """The message a body fault's record keeps (F57), read off the difference or else the preview."""
+    for text in (str(detail.get("ours_error") or ""), _message(preview)):
+        try:
+            fault = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            continue
+        if isinstance(fault, dict) and fault.get("message"):
+            return str(fault["message"])
+    return _side_error(detail, "ours", preview)
 
 
 def _message(preview: str) -> str:
@@ -853,15 +878,18 @@ def tool_section(build: Build) -> list[str]:
         agrees = sum(counts[word] for word in AGREES)
         body.append([f"`{row['tool']}`", row["kind"], f"{counts['calls']:,}",
                      f"{agrees:,}", f"{counts['differs']:,}", f"{counts['ours_refused']:,}",
-                     f"{counts['theirs_refused']:,}", row["top_cause"], row["attempts"],
+                     f"{counts['theirs_refused']:,}", f"{counts['refused_differently']:,}",
+                     f"{counts['body_fault']:,}", row["top_cause"], row["attempts"],
                      row["reds"], "yes" if row["assisted"] else "", f"`{row['where']}`"])
     lines = table(["tool", "kind", "calls", "agrees", "differs", "ours refused", "theirs refused",
-                   "top cause", "bodies", "gates red on the last body", "assisted", "read from"],
-                  ["l", "l", "r", "r", "r", "r", "r", "l", "r", "l", "l", "l"], body)
+                   "refused differently", "body faults", "top cause", "bodies",
+                   "gates red on the last body", "assisted", "read from"],
+                  ["l", "l", "r", "r", "r", "r", "r", "r", "r", "l", "r", "l", "l", "l"], body)
     lines += ["", "Agrees is `same`, `cosmetic` and `both_refused` together, which is how "
-                  "`runner/replay.py` counts a call that agrees; a refusal on both sides whose "
-                  "wording differs is agreement here and a miss to `env_fidelity.py`, which reads "
-                  "the whole answer rather than the preview replays.json keeps.", "",
+                  "`runner/replay.py` counts a call that agrees; a refusal on both sides agrees only "
+                  "when the two messages agree after the Runner's normalisation, else it is "
+                  "`refused differently`, and a body that crashed where the recording refused is a "
+                  "`body fault`, never agreement.", "",
               "### Where the misses come from", ""]
     if not causes:
         return lines + ["No replayed call missed."]

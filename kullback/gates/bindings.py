@@ -3,7 +3,10 @@
 A `Binding` maps a glob, relative to the extension root the write landed under, to the
 ordered gate names that run on that write and the loaders that fetch what those gates
 need from the workdir. `rulings_for` runs them in order and stops at the first refusal,
-the way the stage gate did. Every `Ruling` carries `rows`: the per-call records behind
+the way the stage gate did, with one exception: the static gates of a tool body (those that
+read its text and run nothing) all rule before any execution gate, and a memorised-values
+refusal does not stop the chain, so every static failure is reported together, ahead of the
+replay ones. Every `Ruling` carries `rows`: the per-call records behind
 a refusal (call id, tool, arguments digest, recorded value, our value, first differing
 column), never a bare count.
 
@@ -14,12 +17,15 @@ are skipped, never failed. Running a tool body needs an executor, which lives ou
 this package (the gates never import an agent or a builder): `rulings_for` and
 `gate_writes` take it as `execute(source, calls, db)`, returning one sandbox-shaped
 result dict per call (`ok` with `value`, or `error` with `message`). With no executor
-the execution gates are skipped the same way.
+the execution gates are skipped the same way. An executor that takes a `trace_calls`
+keyword is handed every recorded call of the workdir grouped by trace (all tools), so it
+can replay each gated call's trace prefix first.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import inspect
 import json
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, NamedTuple, Optional
@@ -116,6 +122,58 @@ def load_calls(workdir: Path, path: str) -> Optional[list[ToolCall]]:
     return out or None
 
 
+#: Where a workdir keeps its recorded calls one jsonl per tool, read where `traces/` holds none.
+CALLS_DIRS = ("env/calls", "calls")
+
+
+def _jsonl_calls(file: Path) -> list[ToolCall]:
+    try:
+        lines = file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    rows = []
+    for line in lines:
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    return _as_calls(rows) or []
+
+
+def load_trace_calls(workdir: Path, path: str) -> Optional[dict[str, list[ToolCall]]]:
+    """Every recorded call, any tool, grouped by the trace that made it.
+
+    The table a gated call's prefix is read from: the calls its own trace made before it. The
+    source is `traces/`, the same files `load_calls` reads the gated calls from, so every gated
+    call finds its own trace here; a workdir with no calls there is read from its calls
+    directory, one jsonl per tool.
+    """
+    _ = path
+    calls: list[ToolCall] = []
+    traces = workdir / "traces"
+    if traces.is_dir():
+        for file in sorted(traces.glob("*.json")):
+            calls += _as_calls(_read_json(workdir, f"traces/{file.name}") or []) or []
+    for name in CALLS_DIRS if not calls else ():
+        folder = workdir / name
+        if folder.is_dir():
+            for file in sorted(folder.glob("*.jsonl")):
+                calls += _jsonl_calls(file)
+            break
+    out: dict[str, list[ToolCall]] = {}
+    for call in calls:
+        if call.trace_id:
+            out.setdefault(call.trace_id, []).append(call)
+    for rows in out.values():
+        rows.sort(key=_recorded_order)
+    return out or None
+
+
+def _recorded_order(call: ToolCall) -> tuple:
+    position = getattr(call.raw_ptr, "msg_index", None)
+    return (position is None, position if isinstance(position, int) else 0, call.id or "")
+
+
 def load_schema(workdir: Path, path: str) -> Optional[EntitySchema]:
     _ = path
     raw = _read_json(workdir, "schema.json")
@@ -173,13 +231,19 @@ def _file_loader(name: str) -> Loader:
     return load
 
 
-TOOL_GATES = ("confined", "parses", "executes_on_s0", "deterministic", "non_trivial", "sensitivity",
-              "replay_fidelity", "refuses_unknown", MEMORISED_STAGE)
+#: The tool-body gates that read the text and run nothing. They rule first, all of them.
+STATIC_TOOL_GATES = ("confined", "parses", MEMORISED_STAGE)
+#: A failed static gate among these stops the chain: a body that is not Python, or not confined,
+#: is never run. A memorised-values refusal lets the execution gates rule after it.
+STOPPING_STATIC_GATES = frozenset({"confined", "parses"})
+TOOL_GATES = STATIC_TOOL_GATES + ("executes_on_s0", "deterministic", "non_trivial", "sensitivity",
+                                  "replay_fidelity", "refuses_unknown")
 VERIFIER_GATES = ("gate_a_oracle_replay", "verifier_suite", "loosening", "false_rejection", "trusted")
 
 BINDINGS: tuple[Binding, ...] = (
     Binding("tools/*.py", TOOL_GATES,
-            {"calls": load_calls, "db": load_db, "schema": load_schema, "rules": load_rules}),
+            {"calls": load_calls, "db": load_db, "schema": load_schema, "rules": load_rules,
+             "trace_calls": load_trace_calls}),
     Binding("verifiers/*.json", VERIFIER_GATES,
             {"replays": _file_loader("replays.json"), "rerolls": _file_loader("rerolls.json"),
              "history": load_history, "task_runs": load_task_runs,
@@ -237,14 +301,29 @@ def _verifier_of(evidence: dict) -> Optional[Verifier]:
         return None
 
 
+def _takes_trace_calls(execute: Any) -> bool:
+    try:
+        parameters = inspect.signature(execute).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == "trace_calls" or p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
+
+
+def _execute(evidence: dict, calls: list[ToolCall]) -> list[dict]:
+    """The executor over these calls, handed the trace table where it takes one."""
+    execute, trace_calls = evidence["execute"], evidence.get("trace_calls")
+    if trace_calls and _takes_trace_calls(execute):
+        return list(execute(evidence.get("source"), calls, evidence.get("db"), trace_calls=trace_calls))
+    return list(execute(evidence.get("source"), calls, evidence.get("db")))
+
+
 def _run_execute(evidence: dict, calls: list[ToolCall]) -> Optional[list[dict]]:
     """One shared execution of the body over these calls, cached on the evidence."""
     if "_results" not in evidence:
-        execute = evidence.get("execute")
-        if execute is None:
+        if evidence.get("execute") is None:
             return None
         try:
-            evidence["_results"] = list(execute(evidence.get("source"), calls, evidence.get("db")))
+            evidence["_results"] = _execute(evidence, calls)
         except Exception as exc:  # noqa: BLE001, the sandbox's own failure is a ruling, not a crash
             evidence["_results"] = None
             evidence["_exec_error"] = str(exc)
@@ -296,12 +375,10 @@ def _gate_executes(evidence: dict) -> Optional[list[GateResult]]:
 
 def _gate_deterministic(evidence: dict) -> Optional[list[GateResult]]:
     calls = _calls_of(evidence)
-    execute = evidence.get("execute")
-    if not calls or execute is None:
+    if not calls or evidence.get("execute") is None:
         return None
     try:
-        first = list(execute(evidence.get("source"), calls, evidence.get("db")))
-        second = list(execute(evidence.get("source"), calls, evidence.get("db")))
+        first, second = _execute(evidence, calls), _execute(evidence, calls)
     except Exception as exc:  # noqa: BLE001, see _run_execute
         return [body_deterministic_gate(calls, None, None, evidence.get("rules"), error=str(exc))]
     evidence["_first"], evidence["_second"] = first, second
@@ -343,7 +420,7 @@ def _gate_refuses_unknown(evidence: dict) -> Optional[list[GateResult]]:
         return None
     calls = [probe[2] for probe in probes]
     try:
-        results = list(evidence["execute"](evidence.get("source"), calls, evidence.get("db")))
+        results = _execute(evidence, calls)
     except Exception as exc:  # noqa: BLE001, see _run_execute
         return [body_refuses_unknown_gate(probes, None, error=str(exc))]
     return [body_refuses_unknown_gate(probes, results)]
@@ -392,7 +469,8 @@ def _gate_loosening(evidence: dict) -> Optional[list[GateResult]]:
     if evidence.get("history") is None:
         return None
     return [loosening_gate(evidence["history"], evidence.get("task_runs") or {}, evidence.get("replays") or {},
-                           evidence.get("rerolls") or {}, evidence.get("rules"), evidence.get("sigs") or [])]
+                           evidence.get("rerolls") or {}, evidence.get("rules"), evidence.get("sigs") or [],
+                         workdir=evidence.get("workdir"))]
 
 
 def _gate_false_rejection(evidence: dict) -> Optional[list[GateResult]]:
@@ -443,7 +521,8 @@ def _gate_trusted(evidence: dict) -> Optional[list[GateResult]]:
     return [trusted_gate(task_status, evidence["verifiers"], evidence.get("probes") or {},
                          evidence.get("history") or {}, evidence.get("refusals") or {},
                          evidence.get("task_runs") or {}, evidence.get("replays") or {},
-                         evidence.get("rerolls") or {}, evidence.get("rules"), evidence.get("sigs") or [])]
+                         evidence.get("rerolls") or {}, evidence.get("rules"), evidence.get("sigs") or [],
+                         workdir=evidence.get("workdir"))]
 
 
 def _gate_refuse(evidence: dict) -> Optional[list[GateResult]]:
@@ -741,27 +820,12 @@ def _rel(root: Any, written_path: str) -> Optional[str]:
         return None
 
 
-def rulings_for(root: Any, written_path: str, workdir: Any, *, execute: Any = None,
-                evidence: Optional[dict] = None) -> list[Any]:
-    """Every ruling a write of this path draws, in binding order, stopping at the first
-    refusal. A path no binding matches, or a file that is gone, draws nothing.
-
-    `execute(source, calls, db)` runs a tool body over recorded calls; without it the
-    execution gates are skipped for missing evidence; its `render(source)`, when it carries
-    one, is the rendered module the confinement gate reads. `evidence` overrides or extends
-    what the loaders read from the workdir, keyed by evidence name. Each gate sees the
-    rulings drawn before it as evidence "rulings", so trusted reads the suite that just ran.
-    """
-    rel = _rel(root, written_path)
-    binding = binding_for(rel) if rel is not None else None
-    if rel is None or binding is None:
-        return []
-    try:
-        text = Path(root, rel).read_text(encoding="utf-8")
-    except OSError:
-        return []
-    workdir_path = Path(workdir)
-    merged: dict[str, Any] = {"path": rel, "stem": PurePosixPath(rel).stem}
+def _gate_evidence(binding: Any, rel: str, text: str, workdir_path: Path, execute: Any,
+                   evidence: Optional[dict]) -> dict[str, Any]:
+    """What the gates of this binding read: the written file, the loaders' evidence from the workdir,
+    the executor, and the caller's overrides, a None override leaving the loaded value in place."""
+    # The workdir is evidence too: the trusted gate's provenance step opens seed Runs under it (D281).
+    merged: dict[str, Any] = {"path": rel, "stem": PurePosixPath(rel).stem, "workdir": workdir_path}
     if rel.endswith(".py"):
         merged["source"] = text
     if rel.endswith(".json"):
@@ -781,8 +845,35 @@ def rulings_for(root: Any, written_path: str, workdir: Any, *, execute: Any = No
     for name, value in (evidence or {}).items():
         if value is not None:
             merged[name] = value
+    return merged
+
+
+def rulings_for(root: Any, written_path: str, workdir: Any, *, execute: Any = None,
+                evidence: Optional[dict] = None) -> list[Any]:
+    """Every ruling a write of this path draws, in binding order, stopping at the first
+    refusal, except that a memorised-values refusal lets the execution gates rule after it
+    (see the module docstring). A path no binding matches, or a file that is gone, draws nothing.
+
+    `execute(source, calls, db)` runs a tool body over recorded calls; without it the
+    execution gates are skipped for missing evidence; its `render(source)`, when it carries
+    one, is the rendered module the confinement gate reads. `evidence` overrides or extends
+    what the loaders read from the workdir, keyed by evidence name. Each gate sees the
+    rulings drawn before it as evidence "rulings", so trusted reads the suite that just ran.
+    """
+    rel = _rel(root, written_path)
+    binding = binding_for(rel) if rel is not None else None
+    if rel is None or binding is None:
+        return []
+    try:
+        text = Path(root, rel).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    merged = _gate_evidence(binding, rel, text, Path(workdir), execute, evidence)
     out: list[Any] = []
+    halted = False  # a stopping static gate refused: no execution gate runs
     for gate in binding.gates:
+        if halted and gate not in STATIC_TOOL_GATES:
+            return out
         adapter = ADAPTERS.get(gate)
         if adapter is None:
             continue
@@ -794,7 +885,10 @@ def rulings_for(root: Any, written_path: str, workdir: Any, *, execute: Any = No
             continue
         for gate_result in results:
             out.append(_to_ruling(gate_result, merged))
-            if not out[-1].passed:
+            if out[-1].passed:
+                continue
+            if gate not in STATIC_TOOL_GATES:
                 return out
+            halted = halted or gate in STOPPING_STATIC_GATES
         merged["rulings"] = list(out)
     return out

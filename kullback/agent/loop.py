@@ -60,6 +60,8 @@ from kullback.agent.messages import AssistantMessage, Message, ToolCall, ToolRes
 from kullback.agent.provider import ModelProvider, provider_for
 from kullback.agent.tool_history import repair_tool_history
 from kullback.agent.tools import ToolRegistry, ToolResult
+from kullback.ai.cache import fingerprint
+from kullback.ai.messages import to_wire
 from kullback.ai.provider import Model, ModelConfig
 from kullback.ai.stream import StreamDone, StreamError, error_message
 
@@ -151,10 +153,10 @@ async def run_agent_loop(
                 await send(TurnEndEvent(turn=turn, message=assistant))
                 await send(AgentEndEvent(messages=new))
                 return new
-            assistant = await _stream_assistant(state, provider, tools, send)
+            assistant, request = await _stream_assistant(state, provider, tools, send)
             state.messages.append(assistant)
             new.append(assistant)
-            await send(MessageEndEvent(message=assistant))
+            await send(MessageEndEvent(message=assistant, request=request))
             if assistant.stop_reason == "error":
                 await send(TurnEndEvent(turn=turn, message=assistant))
                 await send(AgentEndEvent(messages=new))
@@ -220,15 +222,20 @@ def provider_context(messages: Sequence[Message]) -> list[Message]:
     return list(repair_tool_history(messages).messages)
 
 
-async def _stream_assistant(state: LoopState, provider: ModelProvider, tools: ToolRegistry, send) -> AssistantMessage:
-    """One assistant message through the provider's stream, as message events. Always returns one."""
+async def _stream_assistant(state: LoopState, provider: ModelProvider, tools: ToolRegistry,
+                            send) -> tuple[AssistantMessage, dict]:
+    """One assistant message through the provider's stream, as message events. Always returns one,
+    with the cache fingerprint of the request that asked for it (kullback.ai.cache), taken over the
+    same wire list the provider is sent, so it matches the one BudgetedModel takes of a direct call."""
     started = False
     final: Optional[AssistantMessage] = None
     schemas = tools.schemas() or None
+    context = provider_context(state.messages)
+    request = fingerprint(to_wire(context, state.system or None), schemas)
     async for event in provider.stream_response(
         model=getattr(provider, "name", "") or "",
         system=state.system,
-        messages=provider_context(state.messages),
+        messages=context,
         tools=schemas,
         config=state.config,
     ):
@@ -248,7 +255,7 @@ async def _stream_assistant(state: LoopState, provider: ModelProvider, tools: To
     if final is None:  # pragma: no cover - the stream always ends in done or error
         final = error_message("the stream ended without a message", getattr(provider, "name", None))
         await send(MessageStartEvent(message=final))
-    return final
+    return final, request
 
 
 async def execute_tool_call(call: ToolCall, tools: ToolRegistry, hooks: Hooks, send,

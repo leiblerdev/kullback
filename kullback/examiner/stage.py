@@ -18,6 +18,7 @@ Runner as a tool of both agents (D120).
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import time
 from collections import Counter
@@ -40,6 +41,7 @@ from kullback.gates.ledger import GateLedger
 from kullback.runner import budget, parallel
 from kullback.runner.canon import rules_of
 from kullback.runner.records import (
+    ForeignRunError,
     GateResult,
     Intent,
     Task,
@@ -47,6 +49,7 @@ from kullback.runner.records import (
     apply_intent,
     as_dict,
     content_hash,
+    load_task_run,
     read_json,
     run_path,
     stored_run_path,
@@ -301,6 +304,12 @@ EXTRA_REROLLS = ("examiner", "rerolls.json")
 _EXTRA_REROLLS_LOCK = threading.Lock()
 
 
+# D281: the second-path files a resumed derivation dropped, each logged once however many Tasks name it.
+_REFUSED_FILES: set[str] = set()
+_REFUSED_LOCK = threading.Lock()
+LOG = logging.getLogger(__name__)
+
+
 def extra_rerolls_path(workdir: Path) -> Path:
     return Path(workdir).joinpath(*EXTRA_REROLLS)
 
@@ -318,7 +327,23 @@ def second_path_rows(workdir: Path, task_id: str) -> list[dict]:
     resolved = with_run_paths(workdir, {task_id: rows.get(task_id) or []})[task_id]
     return [dict(row) for row in resolved
             if isinstance(row, dict) and row.get("reason") == SECOND_PATH_REASON
-            and row.get("path") and Path(row["path"]).is_file()]
+            and row.get("path") and Path(row["path"]).is_file() and _own_run_file(row["path"], task_id)]
+
+
+def _own_run_file(path: str, task_id: str) -> bool:
+    """Does the loader read this file as a Run of this Task? A file written before D281 may hold
+    another Task's Run, or several Runs: its row is dropped, not raised, and said once per file."""
+    try:
+        load_task_run(path, task_id)
+    except ForeignRunError as exc:
+        with _REFUSED_LOCK:
+            if path not in _REFUSED_FILES:
+                _REFUSED_FILES.add(path)
+                LOG.warning("second-path row of task %s dropped: %s", task_id, exc)
+        return False
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def next_batch(workdir: Path, task_id: str) -> int:
@@ -353,10 +378,11 @@ def record_second_path(workdir: Path, task_id: str, rows: Iterable[dict], batch:
     return tagged
 
 
-def finished_recordings(rows: Iterable[dict], *, write_tools: set, fn: Callable, atoms: Any) -> list:
-    """The Runs of some re-roll rows that reached a success termination, as Recordings."""
+def finished_recordings(rows: Iterable[dict], *, write_tools: set, fn: Callable, atoms: Any,
+                        task_id: Optional[str] = None) -> list:
+    """The Runs of some re-roll rows that reached a success termination, as Recordings of the Task."""
     return [reference_mod.load(row["path"], reference_mod.REROLL, run_id=row["run_id"],
-                               write_tools=write_tools, fn=fn, atoms=atoms)
+                               write_tools=write_tools, fn=fn, atoms=atoms, task_id=task_id)
             for row in rows
             if row.get("path")
             and (row.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
@@ -506,7 +532,7 @@ def second_path_search(task_id: str, confirmation: Any, *, workdir: Path, run_re
         runs += len(rows)
         record_second_path(workdir, task_id, rows, attempt)
         attempt += 1
-        fresh = finished_recordings(rows, write_tools=write_tools, fn=fn, atoms=atoms)
+        fresh = finished_recordings(rows, write_tools=write_tools, fn=fn, atoms=atoms, task_id=task_id)
         recordings.extend(fresh)
         merge_second_path(confirmation, fresh)
     found = len(confirmation.references) > 1
@@ -796,18 +822,37 @@ def wrote_outside(confirmation: Any) -> bool:
 
 def suite_for(task_for: Task, verifier: Verifier, paths: list, *, canon_rules: Any, write_tools: set,
               user_rules: dict, rules_trace: Optional[str], probe_model: Any, run_probe: Any,
-              may_probe: bool, intent: Any = None) -> list[GateResult]:
+              may_probe: bool, intent: Any = None, probe_skip: Optional[str] = None) -> list[GateResult]:
     """The whole D79 suite over one Verifier: the wrong Run, the second path, the leak, the probe (D79, D119).
 
     The Intent record goes in beside its line so the leak check reads it as an audit of the D196
-    strip and names the column of anything the strip missed.
+    strip and names the column of anything the strip missed. `probe_skip` is why this Task holds
+    no probe slot, and it replaces the suite's own not-run words, which can only say "no model"
+    (F49).
     """
-    return verifier_suite.validate_verifier(
+    gates = verifier_suite.validate_verifier(
         verifier, paths[0], canon=canon_rules, write_tools=write_tools, seed_runs=paths[1:],
         wrong_run=verifier_suite.wrong_run(verifier, paths[0], canon_rules),
         alt_path_run=paths[1] if len(paths) > 1 else None,
         intent_text=task_for.intent, user_rules=user_rules.get(rules_trace), intent=intent,
         model=probe_model if may_probe else None, run_probe=run_probe)
+    if may_probe or not probe_skip:
+        return gates
+    return [_probe_skipped(gate, probe_skip) if gate.stage == LOOPHOLE_STAGE and gate.metrics.get("skipped")
+            else gate for gate in gates]
+
+
+LOOPHOLE_STAGE = "verifier_loophole"
+NO_PROBE_MODEL = "no probe model"
+NO_PROBE_RUNNER = "no probe runner"
+
+
+def _probe_skipped(gate: GateResult, why: str) -> GateResult:
+    """The loophole gate not run, in the words of why this Task holds no probe slot (F49)."""
+    reason = f"{why}, so the Verifier is not known to be tight"
+    return GateResult(stage=gate.stage, passed=False,
+                      metrics={**gate.metrics, "not_run_reason": reason},
+                      failures=[f"not run: {reason}"])
 
 
 # --- the residue, settled by deriving a Verifier per survivor (D198) --------------
@@ -1011,7 +1056,7 @@ def _fraction_text(row: dict) -> str:
 def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_tools: set, constraints: list,
                  intents: dict, user_rules: dict, recordings: int, rerolls: int, probe: Any,
                  probe_model: Any, may_probe: bool, fidelity_row: Optional[dict] = None,
-                 pool_runs: Iterable[tuple[str, str]] = (), fn: Optional[Callable] = None,
+                 probe_skip: Optional[str] = None, pool_runs: Iterable[tuple[str, str]] = (), fn: Optional[Callable] = None,
                  second_path: Optional[dict] = None, user_ends: Optional[dict] = None,
                  verifier_version: str = "1") -> tuple[Verifier, dict]:
     """One Task's Verifier from its References, through the whole D79 suite, with its status row.
@@ -1036,7 +1081,8 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
     rules_trace = first.trace_id or next((r.trace_id for r in confirmation.references if r.trace_id), None)
     gates = suite_for(task_for, record, paths, canon_rules=canon_rules, write_tools=write_tools,
                       user_rules=user_rules, rules_trace=rules_trace, probe_model=probe_model,
-                      run_probe=probe, may_probe=may_probe, intent=intents.get(task.id))
+                      run_probe=probe, may_probe=may_probe, intent=intents.get(task.id),
+                      probe_skip=probe_skip)
     results = verifier_suite.d79_results(gates)
     passed = artifacts.verifier_gate(results).passed
     write_json(ctx.workdir / "verifiers" / f"{task.id}.json", as_dict(record))
@@ -1171,6 +1217,7 @@ class _Job:
     entry: Optional[dict] = None  # the cache hit, with the Task's outputs in it
     confirmation: Any = None      # the D111 answer, on a miss
     may_probe: bool = False
+    probe_skip: Optional[str] = None  # why the Task holds no probe slot, in words that are true (F49)
     # Every Run the key was taken over: the Task's own recordings and the extra batches an earlier
     # derivation bought for the second path (D189), which are merged after the rule has settled.
     recordings: list = field(default_factory=list)
@@ -1354,17 +1401,18 @@ def _prepare_one(task: Task, state: _DeriveState) -> _Job:
     """One Task's Runs, its cache key, and the D111 answer when the key is not on disk."""
     recordings = [reference_mod.load(r["path"], reference_mod.RECORDING, run_id=r["run_id"],
                                      trace_id=r["trace_id"], write_tools=state.write_tools,
-                                     fn=state.fn, atoms=state.atoms)
+                                     fn=state.fn, atoms=state.atoms, task_id=task.id)
                   for r in state.seed_replays[task.id]]
     recordings += [reference_mod.load(r["path"], reference_mod.REROLL, run_id=r["run_id"],
-                                      write_tools=state.write_tools, fn=state.fn, atoms=state.atoms)
+                                      write_tools=state.write_tools, fn=state.fn, atoms=state.atoms,
+                                      task_id=task.id)
                    for r in state.rerolls.get(task.id, [])
                    if (r.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
     # D189: the extra batches an earlier derivation bought sit outside the D111 rule's evidence,
     # so they are in the key (a batch bought is a different derivation) and are merged onto the
     # Confirmation afterwards rather than being handed to `confirm`.
     extra = finished_recordings(second_path_rows(state.ctx.workdir, task.id),
-                                write_tools=state.write_tools, fn=state.fn, atoms=state.atoms)
+                                write_tools=state.write_tools, fn=state.fn, atoms=state.atoms, task_id=task.id)
     key = cache_key(task, recordings + extra, state.common, intents=state.intents,
                     user_rules=state.user_rules, traces=state.traces,
                     fidelity_row=task_fidelity(state.tool_fidelity, task.id))
@@ -1389,7 +1437,9 @@ def _assign_probe_slots(jobs: list[_Job], state: _DeriveState) -> int:
     """Hand the loophole probe budget out by the Tasks' own keys (D212), and count slots spent.
 
     A Task served from the cache spent its slot when it ran, so the slots left are the limit minus
-    those; which Tasks hold a slot never moves when a Task is added or dropped.
+    those; which Tasks hold a slot never moves when a Task is added or dropped. It runs after the
+    residues settle, so a Task whose Reference a survivor supplied is eligible like any other (F49).
+    A Task left without a slot carries why: no probe model, no probe runner, or the limit.
     """
     probed = sum(1 for job in jobs if job.cached and job.entry.get("probed"))
     eligible = [job for job in jobs if not job.cached and job.confirmation.references]
@@ -1403,8 +1453,24 @@ def _assign_probe_slots(jobs: list[_Job], state: _DeriveState) -> int:
         chosen = set(order[:max(0, state.probe_limit - probed)])
     for job in eligible:
         job.may_probe = job.task.id in chosen
+        job.probe_skip = None if job.may_probe else _probe_skip_reason(state)
         probed += int(job.may_probe)
     return probed
+
+
+def _probe_skip_reason(state: _DeriveState) -> str:
+    """Why an eligible Task holds no probe slot."""
+    if state.probe_model is None:
+        return NO_PROBE_MODEL
+    if state.probe is None:
+        return NO_PROBE_RUNNER
+    return f"the probe limit of {state.probe_limit} Tasks was spent"
+
+
+def _settle_all(state: _DeriveState, jobs: list[_Job], workers: int) -> None:
+    """Every missed Task's residue settled, in Task order, before the probe slots are handed out."""
+    parallel.each([job for job in jobs if not job.cached],
+                  lambda job: _guarded(state.sem, lambda: _settle_job(state, job)), workers)
 
 
 def _finish_cached(state: _DeriveState, job: _Job) -> dict:
@@ -1487,7 +1553,7 @@ def _derive_and_store(state: _DeriveState, job: _Job, second: dict, bought: list
         user_rules=state.user_rules, recordings=len(state.seed_replays[task.id]),
         rerolls=len(state.rerolls.get(task.id, [])), probe=state.probe,
         probe_model=state.probe_model, may_probe=job.may_probe, fidelity_row=fidelity_row,
-        second_path=second,
+        probe_skip=job.probe_skip, second_path=second,
         pool_runs=pool_runs_of(task.id, state.replays, state.rerolls) + extra_pool,
         fn=state.fn, user_ends=pool_user_ends(task.id, state.rerolls))
     return _write_entry(state, task.id, job.key, row, confirmation.as_dict(), as_dict(record),
@@ -1498,7 +1564,6 @@ def _finish_one(state: _DeriveState, job: _Job, ceiling: threading.Event) -> dic
     """One Task's outputs: the cache entry as it stands, or the derivation and a new entry."""
     if job.cached:
         return _finish_cached(state, job)
-    _settle_job(state, job)
     confirmation = job.confirmation
     fidelity_row = task_fidelity(state.tool_fidelity, job.task.id)
     if not confirmation.references:
@@ -1796,6 +1861,7 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                             round_number=round_number, code_hash=code_hash, pool=pool, sem=sem)
         tasks = _select_tasks(inputs, only)
         jobs = _prepare_all(tasks, state, workers)
+        _settle_all(state, jobs, workers)
         probed = _assign_probe_slots(jobs, state)
 
         # Set when a second-path batch hit the run ceiling, so the caller can stop the round rather than

@@ -25,6 +25,7 @@ from kullback.runner.records import (
     TaskOverlay,
     UserRules,
 )
+from kullback.runner.world.clock import wall_clock_reads
 
 # Every name the old kullback.episode.loading exported, privates included: the old module path
 # is a star-import shim, and only names listed here travel through it.
@@ -230,7 +231,9 @@ def load_toolkit(source: str, db: dict, class_name: str = TOOLS_CLASS, db_class:
     """
     if overlay is not None:
         db = merge_overlays(db, [overlay], overlay_values or {})
-    refused = source_confinement(source, class_name)
+    # D283: the world clock is the only time a body sees, so a body reading the machine's is
+    # refused here as well as at the Builder's gate.
+    refused = source_confinement(source, class_name) + wall_clock_reads(source, class_name)
     if refused:
         raise SandboxError("the generated module is not confined and would run in this process: "
                            + "; ".join(refused))
@@ -277,7 +280,9 @@ def _tool_definitions(sigs: list, vocab: Any = None) -> list[dict]:
     tool descriptions of their own.
     """
     out = []
-    for sig in sigs:
+    # By name, not by the order the signatures were mined in: an added trace can move a tool's first
+    # appearance, and the tool list is the head of every cached prefix (prompt-caching.md).
+    for sig in sorted(sigs, key=lambda sig: sig.name):
         schema = sig.args_schema if isinstance(sig.args_schema, dict) and "properties" in sig.args_schema else {
             "type": "object", "properties": {name: {"type": "string"} for name in (sig.args_schema or {})}}
         parameters = _json_schema(schema)

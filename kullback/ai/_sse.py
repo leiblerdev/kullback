@@ -70,6 +70,7 @@ def stream_sse_events(
     url: str,
     headers: dict,
     payload: dict,
+    content: Optional[bytes] = None,
     parser_factory: Callable[[], StreamParser],
     parser_name: str,
     model: Optional[str] = None,
@@ -82,14 +83,18 @@ def stream_sse_events(
 
     A retry is only offered while the parser has said nothing: once a delta has been yielded the
     consumer has seen part of an answer, and a second attempt would give it a second one.
+
+    `content`, when given, is `payload` already encoded: the exact bytes the headers were signed
+    over, posted as they are rather than encoded a second time.
     """
+    sent = {"content": content} if content is not None else {"json": payload}
 
     async def iterator() -> AsyncIterator[ProviderEvent]:
         attempt = 0
         while True:
             parser = parser_factory()
             try:
-                async with client().stream("POST", url, json=payload, headers=headers) as response:
+                async with client().stream("POST", url, headers=headers, **sent) as response:
                     if response.status_code >= 400:
                         body = (await response.aread()).decode(errors="replace")
                         if attempt < max_retries and retryable_status(response.status_code):
@@ -116,21 +121,7 @@ def stream_sse_events(
                         )
                         return
 
-                    yield ProviderResponseStart(model=model, request_id=request_id_of(response.headers))
-                    async for line in response.aiter_lines():
-                        if signal is not None and signal.is_cancelled():
-                            return
-                        chunk = parse_sse_line(line)
-                        if chunk is None:
-                            continue
-                        events, done = parser.feed(chunk)
-                        for event in events:
-                            yield event
-                        if done:
-                            break
-                    if parser.fatal:
-                        return
-                    for event in parser.finalize():
+                    async for event in _answer_events(response, parser, model=model, signal=signal):
                         yield event
                     return
             except httpx.HTTPError as exc:
@@ -155,6 +146,32 @@ def stream_sse_events(
                 return
 
     return iterator()
+
+
+async def _answer_events(
+    response: httpx.Response,
+    parser: StreamParser,
+    *,
+    model: Optional[str],
+    signal: Optional[CancelSignal],
+) -> AsyncIterator[ProviderEvent]:
+    """The events of a successful response: its start, each parsed line's events, then the parser's last."""
+    yield ProviderResponseStart(model=model, request_id=request_id_of(response.headers))
+    async for line in response.aiter_lines():
+        if signal is not None and signal.is_cancelled():
+            return
+        chunk = parse_sse_line(line)
+        if chunk is None:
+            continue
+        events, done = parser.feed(chunk)
+        for event in events:
+            yield event
+        if done:
+            break
+    if parser.fatal:
+        return
+    for event in parser.finalize():
+        yield event
 
 
 def _retry_event(

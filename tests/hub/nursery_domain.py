@@ -10,6 +10,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from kullback.gates.probes import version_hash
 from kullback.runner.records import (
     Atom,
     Column,
@@ -20,7 +21,11 @@ from kullback.runner.records import (
     TaskOverlay,
     ToolSig,
     Verifier,
+    VerifierHistory,
+    VerifierVersion,
     as_dict,
+    exam_history_path,
+    read_json,
     write_json,
 )
 
@@ -199,3 +204,31 @@ class FakeHub:
             raise HubError("this host has no API for an organisation profile")
         self.organisation_cards[organisation] = markdown
         return f"https://example.invalid/{organisation}"
+
+
+def build_unclosed_workdir(workdir: Path) -> Path:
+    """A build killed before any round closed: no rounds.json, four Tasks, three confirmed, two trusted.
+
+    Trust comes from what the Builder's status rule reads: the D79 suite passed and the Verifier on
+    disk is the last accepted version of its history.
+    """
+    build_workdir(workdir)
+    (workdir / "rounds.json").unlink()
+    task_ids = [*TASK_IDS, "task_four"]
+    write_json(workdir / "tasks" / "task_four.json",
+               as_dict(Task(id="task_four", run_ids=["trace-task_four"], intent="water the plot that is due")))
+    write_json(workdir / "overlays" / "task_four.json", overlay("task_four"))
+    write_json(workdir / "tasks_frozen.json", {"format": 2, "task_ids": task_ids, "tasks": []})
+    replays = read_json(workdir / "replays.json")
+    replays["task_four"] = {"trace-task_four": {"confirmed": True}}
+    write_json(workdir / "replays.json", replays)
+    status = read_json(workdir / "task_status.json")
+    status["task_two"] = {"reference_confirmed": True, "verifier_passed": True, "recordings": 1, "checks": {}}
+    status["task_four"] = {"reference_confirmed": True, "recordings": 1}
+    write_json(workdir / "task_status.json", status)
+    write_json(exam_history_path(workdir), {
+        task_id: as_dict(VerifierHistory(task_id=task_id, versions=[VerifierVersion(
+            task_id=task_id, content_hash=version_hash(verifier(task_id)), verifier_version="1",
+            by="derive", accepted=True, verifier=verifier(task_id))]))
+        for task_id in ("task_one", "task_two")})
+    return workdir

@@ -34,10 +34,11 @@ from typing import Any, AsyncIterator, Iterable, Optional, Protocol, Sequence, r
 from urllib.parse import urlparse
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
 # ruff: noqa: F401 - the imports below that this module does not itself use are the re-exports
 # named in the note under them: the rest of the Harness spells them kullback.ai.provider.X.
+from kullback.ai.cache import CACHE_TTLS, MAX_CACHE_POINTS, cache_control, count_cache_points
 from kullback.ai.events import StreamEvent
 from kullback.ai.http import (
     CONNECT_TIMEOUT_S,
@@ -61,6 +62,7 @@ from kullback.ai.http_errors import (
     is_context_overflow,
 )
 from kullback.ai.messages import Message
+from kullback.ai.model_limits import RequestRules, request_rules_for, split_vendor
 from kullback.ai.retry import (
     RetryPolicy,
     backoff_delay,
@@ -89,9 +91,10 @@ _reasoning_of = reasoning_of
 # the model it wraps.
 ALLOW_MODEL_REQUESTS = False
 
-# The harness default for the Builder, the Examiner, the judges, the probe and the re-rolls;
-# founder decision 2026-09-22.
-DEFAULT_MODEL = "openai/gpt-6-luna"
+# The harness default for the Builder, the Examiner, the judges, the probe and the re-rolls:
+# Opus 5.5 on Bedrock's global profile, the experiment model (founder decision 2026-09-24;
+# openai/gpt-6-luna, the default from 2026-09-22, stays a valid choice).
+DEFAULT_MODEL = "bedrock/global.anthropic.claude-opus-5-5"
 
 # The one way to turn live calls on: a person exports this before running the CLI. There is
 # no flag a module can set by accident, and the default above stays False.
@@ -147,6 +150,17 @@ class ModelReply(BaseModel):
     # What the adapter sent to get this reply. None on the three offline models: TestModel and
     # RecordedModel never touch a wire, and a MemoModel hit carries the original call's exchange.
     exchange: Optional[Exchange] = None
+    # The Messages API's signed thinking blocks, exactly as they came, for the next request of the
+    # conversation to send back unchanged (see AnthropicModel.parse_reply). A reply without them
+    # omits the key when dumped, so a memo or recording written before the field is unchanged.
+    thinking_blocks: Optional[list[dict]] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_thinking_blocks(self, handler):
+        data = handler(self)
+        if self.thinking_blocks is None:
+            data.pop("thinking_blocks", None)
+        return data
 
 
 class ModelConfig(BaseModel):
@@ -174,6 +188,10 @@ class ModelConfig(BaseModel):
     # cache. Set once per build and stage (build.py); the Anthropic adapter ignores it, since it
     # caches by cache_control points instead (cache_system, cache_last_two below).
     prompt_cache_key: Optional[str] = None
+    # Anthropic: how long a cache point lives, "5m" (the default, a bare mark) or "1h" (cache.py
+    # says when each pays). OpenAI-shaped endpoints cache on their own and take no such field, so
+    # their adapters ignore it. budget.BudgetedModel fills it from the stage when it is not set.
+    cache_ttl: Optional[str] = None
     # Logprobs, for a training renderer that needs them (D159). OpenAI chat takes both fields, the
     # Responses API takes top_logprobs and an include entry, and Anthropic offers neither, so its
     # adapter ignores both. Whatever comes back lands in the reply's `raw` and nowhere else.
@@ -192,6 +210,13 @@ class ModelConfig(BaseModel):
     def _known_tool_choice(cls, value: Optional[str]) -> Optional[str]:
         if value is not None and value not in TOOL_CHOICES:
             raise ValueError(f"tool_choice is one of {', '.join(TOOL_CHOICES)}, not {value!r}")
+        return value
+
+    @field_validator("cache_ttl")
+    @classmethod
+    def _known_cache_ttl(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value not in CACHE_TTLS:
+            raise ValueError(f"cache_ttl is one of {', '.join(CACHE_TTLS)}, not {value!r}")
         return value
 
 
@@ -394,11 +419,16 @@ class MemoModel(Model):
         self._local.hit = bool(value)
 
     def _key(self, messages: list[dict], tools: Optional[list[dict]], config: Optional[ModelConfig]) -> str:
+        settings = (config or ModelConfig()).model_dump(mode="json")
+        # An unset cache TTL is left out, so the key of every request stored before the field
+        # existed is the key it had: the TTL is how long the provider keeps a prefix, not the ask.
+        if settings.get("cache_ttl") is None:
+            settings.pop("cache_ttl", None)
         payload = {
             "model": self.name,
             "messages": normalize_messages(messages),
             "tools": tools or [],
-            "config": (config or ModelConfig()).model_dump(mode="json"),
+            "config": settings,
         }
         blob = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -536,8 +566,16 @@ def _read_assistant_replies(path: Path) -> list[ModelReply]:
 
 
 ENV_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-CACHE_CONTROL = {"type": "ephemeral"}
+CACHE_CONTROL = cache_control()
 TEXT_BLOCK_TYPES = ("text", "reasoning", "thinking")
+# The Messages API's reasoning blocks, which a later request sends back byte for byte.
+THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
+# A wire assistant message may carry the reply's thinking blocks under this key; only the Messages
+# API shape reads it, and the OpenAI shapes' key whitelist drops it.
+THINKING_BLOCKS_KEY = "thinking_blocks"
+# Said in the system prompt when a caller asks for a tool call from a model that refuses a forced
+# tool_choice (model_limits.RequestRules.forced_tool_choice): `auto` goes on the wire instead.
+FORCED_TOOL_LINE = "Answer this turn with a tool call."
 # The keys of a request body that are the prompt itself rather than the sampling: each adapter
 # builds a different body, so the sampling is what is left after these come out, never a list of
 # the fields worth keeping (a field nobody enumerated is a field a Run would not record).
@@ -586,6 +624,10 @@ def strip_surrogates_deep(value: Any) -> Any:
 def _is_empty_block(block: Any) -> bool:
     if not isinstance(block, dict):
         return not block
+    if block.get("type") in THINKING_BLOCK_TYPES and (block.get("signature") or block.get("data")):
+        # A signed thinking block comes back with empty text under the default display and still
+        # has to be echoed; only the signature (or the redacted payload) says it is real.
+        return False
     if block.get("type") in TEXT_BLOCK_TYPES:
         text = block.get("text") or block.get("thinking") or ""
         return not str(text).strip()
@@ -627,24 +669,49 @@ def normalize_messages(messages: list[dict]) -> list[dict]:
     return out
 
 
-def cache_system(system: Any) -> list[dict]:
+def cache_tools(tools: list[dict], ttl: Optional[str] = None) -> list[dict]:
+    """A cache point on the last tool: tools render first, so this caches the whole tool list.
+
+    Tools and system usually change at different rates (a role's tools are fixed for a build, a
+    session's system prompt can differ per session), so each gets its own point (prompt-caching.md,
+    Placement patterns); a call whose system changed still reads the tools.
+    """
+    out = copy.deepcopy(tools)
+    if out:
+        out[-1] = {**out[-1], "cache_control": cache_control(ttl)}
+    return out
+
+
+def cache_system(system: Any, ttl: Optional[str] = None) -> list[dict]:
     """A cache point on the system prompt: it is the same on every call of a build."""
     blocks = [{"type": "text", "text": system}] if isinstance(system, str) else copy.deepcopy(system or [])
     if blocks:
-        blocks[-1] = {**blocks[-1], "cache_control": CACHE_CONTROL}
+        blocks[-1] = {**blocks[-1], "cache_control": cache_control(ttl)}
     return blocks
 
 
-def cache_last_two(messages: list[dict]) -> list[dict]:
-    """Cache points on the last two non-system messages, so a growing conversation reuses its prefix."""
+def cache_last_two(messages: list[dict], ttl: Optional[str] = None) -> list[dict]:
+    """Cache points on the last two non-system messages, so a growing conversation reuses its prefix.
+
+    The last one is where the next call's read starts; the one before it is where this call reads
+    from, when the previous call wrote its point there. A block that cannot carry a mark (a thinking
+    block, an empty text) is skipped for the one before it in the same message.
+    """
     out = copy.deepcopy(messages)
     marked = 0
     for message in reversed(out):
         if marked >= 2 or message.get("role") == "system":
             continue
         blocks = message.get("content")
-        if isinstance(blocks, list) and blocks and isinstance(blocks[-1], dict):
-            blocks[-1] = {**blocks[-1], "cache_control": CACHE_CONTROL}
+        if not isinstance(blocks, list):
+            continue
+        # A thinking block cannot carry a cache point, and an empty text block is refused with one,
+        # so the point goes on the last block that can.
+        last = next((i for i in range(len(blocks) - 1, -1, -1) if isinstance(blocks[i], dict)
+                     and blocks[i].get("type") not in THINKING_BLOCK_TYPES and not _is_empty_block(blocks[i])),
+                    None)
+        if last is not None:
+            blocks[last] = {**blocks[last], "cache_control": cache_control(ttl)}
             marked += 1
     return out
 
@@ -689,6 +756,35 @@ class HttpModel(Model):
         # Request-shape fields an endpoint's 400 taught this instance (see `shape_adjustment`).
         self.shape_fixes: set[str] = set()
 
+    @classmethod
+    def for_model(cls, model_id: str) -> type:
+        """The adapter class that serves this id; a provider serving several shapes picks here."""
+        return cls
+
+    @classmethod
+    def sent_wire_id(cls, wire_id: str) -> str:
+        """The id this adapter puts on the wire for the part after `provider/`; most send it as is."""
+        return wire_id
+
+    @classmethod
+    def credential_vars(cls) -> tuple[tuple[str, ...], ...]:
+        """The environment variables that authenticate this adapter: any one group, fully set, is enough.
+
+        One place for the names, so the missing-key error and the TUI's /login status say the same
+        thing. Most adapters read one key; an adapter that signs requests reads several.
+        """
+        return ((cls.key_env_var,),) if cls.key_env_var else ()
+
+    def has_credentials(self) -> bool:
+        return bool(self.api_key)
+
+    def missing_key_message(self) -> str:
+        return f"no API key for {self.name}; set {self.key_env_var} or pass api_key"
+
+    def encode_body(self, body: dict) -> bytes:
+        """The exact bytes posted: httpx's own JSON encoding, spelled here so a signer sees them."""
+        return json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
     def client(self) -> Any:
         # httpx.Client is safe to share across threads; creating it is the one step that is
         # not, so the first caller makes it and the rest wait (D118).
@@ -705,8 +801,8 @@ class HttpModel(Model):
         config: Optional[ModelConfig] = None,
     ) -> ModelReply:
         require_live_calls_enabled()
-        if self.key_required and not self.api_key:
-            raise ProviderError(f"no API key for {self.name}; set {self.key_env_var} or pass api_key")
+        if self.key_required and not self.has_credentials():
+            raise ProviderError(self.missing_key_message())
         config = config or ModelConfig()
         body = self.build_body(messages, tools, config)
         started = time.monotonic()
@@ -758,11 +854,14 @@ class HttpModel(Model):
         # builds a body and posts it must not reach the transport while live calls are off.
         require_live_calls_enabled()
         url = self.base_url + self.path
-        headers = self.headers()
+        content = self.encode_body(body)
         for attempt in range(1, self.retry.attempts + 1):
             last_attempt = attempt == self.retry.attempts
+            # Per attempt: a signed request carries its time, and a retry after a long wait
+            # would otherwise send a signature the endpoint has stopped accepting.
+            headers = self.headers(content)
             try:
-                response = self.client().post(url, headers=headers, json=body, timeout=self.request_timeout)
+                response = self.client().post(url, headers=headers, content=content, timeout=self.request_timeout)
             except httpx.HTTPError as exc:
                 if last_attempt:
                     # A timeout names the budget that was in force, so the log line that lands
@@ -830,7 +929,9 @@ class HttpModel(Model):
             return ContextOverflowError(text, status=response.status_code, body=body)
         return ProviderError(text, status=response.status_code, body=body)
 
-    def headers(self) -> dict:
+    def headers(self, body: Optional[bytes] = None) -> dict:
+        """The headers of one request. `body` is the exact bytes that will be posted, for an adapter
+        that signs them; the others ignore it."""
         raise NotImplementedError
 
     def build_body(self, messages: list[dict], tools: Optional[list[dict]], config: ModelConfig) -> dict:
@@ -849,7 +950,7 @@ class AnthropicModel(HttpModel):
     api_version = "2023-06-01"
     default_max_tokens = 4096
 
-    def headers(self) -> dict:
+    def headers(self, body: Optional[bytes] = None) -> dict:
         return {
             "x-api-key": self.api_key or "",
             "anthropic-version": self.api_version,
@@ -857,39 +958,54 @@ class AnthropicModel(HttpModel):
         }
 
     def build_body(self, messages: list[dict], tools: Optional[list[dict]], config: ModelConfig) -> dict:
+        # What this model refuses, read from one table by capability (model_limits.REQUEST_RULES),
+        # so the same model is asked the same way on every host that serves it.
+        rules = request_rules_for(self.wire_id)
         system, converted = _to_anthropic(messages)
+        ttl = config.cache_ttl
+        # The four cache points, in render order: tools, system, then the last two messages. They
+        # sit on blocks only: a top-level cache_control field is refused by the legacy Bedrock stack.
         body: dict[str, Any] = {
             "model": self.wire_id,
             "max_tokens": config.max_tokens or self.default_max_tokens,
-            "messages": cache_last_two(normalize_messages(converted)),
+            "messages": cache_last_two(normalize_messages(converted), ttl),
         }
         if system:
-            body["system"] = cache_system(system)
+            body["system"] = cache_system(system, ttl)
         if tools:
-            body["tools"] = [_anthropic_tool(t) for t in tools]
-            if config.tool_choice:
-                body["tool_choice"] = dict(ANTHROPIC_TOOL_CHOICE[config.tool_choice])
-        if config.temperature is not None:
+            body["tools"] = cache_tools([_anthropic_tool(t) for t in tools], ttl)
+            _put_anthropic_tool_choice(body, config.tool_choice, rules)
+        if config.temperature is not None and rules.sampling:
             body["temperature"] = config.temperature
         if config.stop:
             body["stop_sequences"] = list(config.stop)
         # Reasoning branch one of three: Anthropic takes thinking as its own block and the
         # depth as output_config.effort. budget_tokens is not sent: the current models reject it.
-        if config.thinking:
-            body["thinking"] = dict(config.thinking)
+        thinking = _anthropic_thinking(config.thinking, rules)
+        if thinking:
+            body["thinking"] = thinking
         if config.effort:
             body["output_config"] = {"effort": config.effort}
         # config.logprobs and config.top_logprobs are deliberately not sent: the Messages API has
         # no logprobs field, and a field it does not know makes it refuse the whole request.
+        points = count_cache_points(body)
+        if points > MAX_CACHE_POINTS:  # pragma: no cover - the placement above makes at most four
+            raise ValueError(f"{points} cache points in one request; the Messages API takes {MAX_CACHE_POINTS}")
         return body
 
     def parse_reply(self, data: dict) -> ModelReply:
         text: list[str] = []
         calls: list[ToolCallRequest] = []
+        thinking: list[dict] = []
         for block in data.get("content") or []:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "text":
+            if block.get("type") in THINKING_BLOCK_TYPES:
+                # Kept whole, signature and all: the next request of a tool loop sends them back
+                # unchanged (preserved thinking), and an edited block is a 400.
+                if block.get("signature") or block.get("data"):
+                    thinking.append(copy.deepcopy(block))
+            elif block.get("type") == "text":
                 text.append(block.get("text") or "")
             elif block.get("type") == "tool_use":
                 calls.append(
@@ -906,7 +1022,137 @@ class AnthropicModel(HttpModel):
             model=data.get("model") or self.wire_id,
             stop_reason=data.get("stop_reason"),
             raw=data,
+            thinking_blocks=thinking or None,
         )
+
+
+# Claude in Amazon Bedrock: the Messages API on AWS. The anthropic SDK's
+# src/anthropic/lib/bedrock/_mantle.py gave the bearer variables (line 38), the bearer header
+# (line 234) and anthropic-version (line 242). The host and the ids are the founder's live probes
+# of 2026-09-24 in us-east-2: bedrock-mantle.<region>.api.aws answers 404 "The model does not
+# exist" for every id, while bedrock-runtime.<region>.amazonaws.com/anthropic/v1/messages answers
+# 200 with the same headers, and only for an inference profile id (us. or global.): the bare
+# anthropic.<model> is refused, on-demand throughput is not supported for it.
+BEDROCK_SERVICE = "bedrock"
+# Global profiles are billed at the list price, a regional one about ten percent over it (the
+# founder, 2026-09-24), so a bare id goes out on the global profile in every region.
+BEDROCK_DEFAULT_PROFILE = "global."
+BEDROCK_DEFAULT_REGION = "us-east-2"
+BEDROCK_BEARER_VARS = ("AWS_BEARER_TOKEN_BEDROCK", "ANTHROPIC_AWS_API_KEY")
+BEDROCK_KEY_VARS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
+BEDROCK_SESSION_VAR = "AWS_SESSION_TOKEN"
+
+
+def bedrock_region(env: dict[str, str]) -> str:
+    """AWS_REGION, then AWS_DEFAULT_REGION (the SDK's order), else the Harness default."""
+    return env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION") or BEDROCK_DEFAULT_REGION
+
+
+# A bare Bedrock model id, `vendor.model` with no profile in front: one dot, no ARN.
+_BARE_BEDROCK_ID = re.compile(r"[a-z0-9-]+\.[a-z0-9:-]+")
+
+
+def bedrock_wire_id(wire_id: str) -> str:
+    """The id Bedrock is sent: a profile id or an ARN unchanged, a bare id on the global profile."""
+    return BEDROCK_DEFAULT_PROFILE + wire_id if _BARE_BEDROCK_ID.fullmatch(wire_id) else wire_id
+
+
+def _put_anthropic_tool_choice(body: dict[str, Any], choice: Optional[str], rules: RequestRules) -> None:
+    """Set the Messages API tool_choice, moving a forced choice into the prompt where it is refused."""
+    if choice == "required" and not rules.forced_tool_choice:
+        # A forced choice is a 400 on this model: `auto` goes on the wire and the demand
+        # moves into the prompt, after the cache point so the cached system stays reusable.
+        choice = "auto"
+        body["system"] = list(body.get("system") or []) + [{"type": "text", "text": FORCED_TOOL_LINE}]
+    if choice:
+        body["tool_choice"] = dict(ANTHROPIC_TOOL_CHOICE[choice])
+
+
+def _anthropic_thinking(requested: Optional[dict], rules: RequestRules) -> dict:
+    """The thinking block to send, empty when the model's rules leave the field out."""
+    thinking = dict(requested or {})
+    if rules.thinking_always_on:
+        # Disabled or budgeted thinking is a 400 here; leaving the field out is adaptive.
+        thinking.pop("budget_tokens", None)
+        if thinking.get("type") != "adaptive":
+            thinking = {}
+    return thinking
+
+
+class BedrockAuth:
+    """What every vendor on Bedrock shares: the runtime host of a region, the wire id, the keys.
+
+    Mixed in front of a vendor's own adapter, which keeps its body, its parsing and its stream. The
+    vendor's route on the host is `bedrock_route`; the wire id is whatever follows `bedrock/`, a
+    profile id sent as is and a bare `vendor.model` put on the `global.` profile, which is the one
+    served on demand. Two ways in, in the SDK's order for keys read from the environment: a Bedrock
+    API key (AWS_BEARER_TOKEN_BEDROCK) goes as a bearer token, else the access key pair signs every
+    request with SigV4 over the exact body bytes. Keys come from the environment or .env only: no
+    profile files, no instance metadata, no STS.
+    """
+
+    key_env_var = BEDROCK_BEARER_VARS[0]
+    bedrock_route = ""
+
+    def __init__(self, model_id: str, base_url: Optional[str] = None, **kwargs):
+        env = dict(os.environ) if kwargs.get("env") is None else dict(kwargs["env"])
+        self.region = bedrock_region(env)
+        default = f"https://bedrock-runtime.{self.region}.amazonaws.com/{self.bedrock_route}"
+        super().__init__(model_id, base_url=base_url or default, **kwargs)
+        self.wire_id = self.sent_wire_id(self.wire_id)
+        self.api_key = self.api_key or next((self.env[v] for v in BEDROCK_BEARER_VARS if self.env.get(v)), None)
+        self.access_key = self.env.get(BEDROCK_KEY_VARS[0]) or None
+        self.secret_key = self.env.get(BEDROCK_KEY_VARS[1]) or None
+        self.session_token = self.env.get(BEDROCK_SESSION_VAR) or None
+
+    @classmethod
+    def sent_wire_id(cls, wire_id: str) -> str:
+        return bedrock_wire_id(wire_id)
+
+    @classmethod
+    def credential_vars(cls) -> tuple[tuple[str, ...], ...]:
+        return ((BEDROCK_BEARER_VARS[0],), BEDROCK_KEY_VARS)
+
+    def has_credentials(self) -> bool:
+        return bool(self.api_key or (self.access_key and self.secret_key))
+
+    def missing_key_message(self) -> str:
+        return (f"no AWS credentials for {self.name}; set {BEDROCK_BEARER_VARS[0]}, or "
+                f"{' and '.join(BEDROCK_KEY_VARS)} (plus {BEDROCK_SESSION_VAR} for temporary keys), "
+                f"and AWS_REGION if not {BEDROCK_DEFAULT_REGION}")
+
+    def authorized(self, headers: dict, body: Optional[bytes]) -> dict:
+        """The vendor's headers with the bearer token on, or signed with SigV4 over the body."""
+        if self.api_key:
+            return {**headers, "authorization": f"Bearer {self.api_key}"}
+        if not (self.access_key and self.secret_key):
+            raise ProviderError(self.missing_key_message())
+        from kullback.ai import sigv4
+
+        return sigv4.sign("POST", self.base_url + self.path, headers, body or b"",
+                          access_key=self.access_key, secret_key=self.secret_key,
+                          session_token=self.session_token, region=self.region, service=BEDROCK_SERVICE)
+
+
+class BedrockAnthropicModel(BedrockAuth, AnthropicModel):
+    """Claude through Amazon Bedrock's Messages endpoint: the Anthropic body, AWS authentication.
+
+    The body, the cache points and the model rules are AnthropicModel's unchanged; the host, the
+    wire id and the keys are BedrockAuth's. The adapter `bedrock/` ids resolve to (ADAPTERS): a
+    model of another vendor is handed to that vendor's Bedrock adapter (for_model).
+    """
+
+    bedrock_route = "anthropic"
+    path = "/v1/messages"
+
+    @classmethod
+    def for_model(cls, model_id: str) -> type:
+        """The Bedrock adapter for this id's vendor: OpenAI's models speak Chat Completions there."""
+        vendor = split_vendor(split_model_id(model_id)[1])
+        return BEDROCK_VENDOR_ADAPTERS.get(vendor[0] if vendor else "", cls)
+
+    def headers(self, body: Optional[bytes] = None) -> dict:
+        return self.authorized({"anthropic-version": self.api_version, "content-type": "application/json"}, body)
 
 
 # gpt-<major> or o<digit>, after an optional gateway prefix such as 'openai/'.
@@ -942,7 +1188,7 @@ class OpenAIModel(HttpModel):
     default_base_url = "https://api.openai.com/v1"
     path = "/chat/completions"
 
-    def headers(self) -> dict:
+    def headers(self, body: Optional[bytes] = None) -> dict:
         headers = {"content-type": "application/json"}
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
@@ -1034,6 +1280,30 @@ class OpenAIModel(HttpModel):
         )
 
 
+class BedrockOpenAIModel(BedrockAuth, OpenAIModel):
+    """OpenAI's models through Amazon Bedrock: the Chat Completions body and stream, AWS authentication.
+
+    Bedrock serves them at `/openai/v1/chat/completions` on the same runtime host, in OpenAI's own
+    shape: choices, tool calls with JSON string arguments, usage with prompt_tokens_details carrying
+    cached_tokens and cache_write_tokens (reviewer's live probe, us-east-2, 2026-09-24). So the body,
+    the parsing and the stream are OpenAIModel's; the host, the wire id and the keys are BedrockAuth's.
+    """
+
+    bedrock_route = "openai/v1"
+
+    def headers(self, body: Optional[bytes] = None) -> dict:
+        return self.authorized({"content-type": "application/json"}, body)
+
+    def _reasoning_family(self) -> bool:
+        """The shape test on the model alone: `<profile>.openai.gpt-<n>` is a gpt-<n>."""
+        vendor = split_vendor(self.wire_id)
+        return reasoning_family(vendor[1] if vendor else self.wire_id or "")
+
+
+# The Bedrock adapter per vendor segment of the wire id; a vendor with no row speaks the Messages API.
+BEDROCK_VENDOR_ADAPTERS: dict[str, type] = {"openai": BedrockOpenAIModel}
+
+
 # One session id per process for OpenCode's prompt-cache optimization. Stable across the whole
 # run on purpose: the same id on every call is what lets the gateway cache, and a fresh id per
 # call would look like the abusive traffic the Go docs ask clients not to generate.
@@ -1057,8 +1327,12 @@ def key_var_for_provider(provider: str) -> str:
     """The variable a provider's key is read from when nothing else names one: PROVIDER_API_KEY.
 
     One rule, spelled once: the TUI's /login menu shows the person typing the same name this
-    reads, so what they are asked to set is what the adapter later looks for.
+    reads, so what they are asked to set is what the adapter later looks for. A provider with an
+    adapter of its own answers with that adapter's variable (Bedrock's is AWS_BEARER_TOKEN_BEDROCK).
     """
+    adapter = ADAPTERS.get(provider)
+    if adapter is not None and adapter.key_env_var:
+        return adapter.key_env_var
     return f"{provider.upper().replace('-', '_')}_API_KEY" if provider else ""
 
 
@@ -1077,8 +1351,8 @@ class OpenAICompatibleModel(OpenAIModel):
             if key_env_var is None else key_env_var
         super().__init__(model_id, base_url=base_url, **kwargs)
 
-    def headers(self) -> dict:
-        return opencode_headers(self.base_url, super().headers())
+    def headers(self, body: Optional[bytes] = None) -> dict:
+        return opencode_headers(self.base_url, super().headers(body))
 
     def reasoning_fields(self, config: ModelConfig) -> dict:
         """Reasoning branch three of three: a local endpoint gets none of it. Servers that do
@@ -1145,7 +1419,7 @@ class OpenAIResponsesModel(HttpModel):
         self.key_required = bool(key_env_var)
         super().__init__(model_id, base_url=base_url, **kwargs)
 
-    def headers(self) -> dict:
+    def headers(self, body: Optional[bytes] = None) -> dict:
         headers = {"content-type": "application/json"}
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
@@ -1243,7 +1517,7 @@ def _responses_input(messages: list[dict]) -> list[dict]:
             items.append({"type": "function_call",
                           "call_id": clean_tool_call_id(call.get("id")),
                           "name": function.get("name", call.get("name", "")),
-                          "arguments": args if isinstance(args, str) else json.dumps(args or {})})
+                          "arguments": args if isinstance(args, str) else json.dumps(args or {}, sort_keys=True)})
         if text or not calls:
             items.append({"role": role if role in ("user", "assistant", "system", "developer") else "user",
                           "content": text})
@@ -1262,7 +1536,7 @@ def _responses_text(content: Any) -> str:
     return str(content)
 
 
-ADAPTERS: dict[str, type] = {"anthropic": AnthropicModel, "openai": OpenAIModel}
+ADAPTERS: dict[str, type] = {"anthropic": AnthropicModel, "openai": OpenAIModel, "bedrock": BedrockAnthropicModel}
 
 # The registry snapshot unknown providers are resolved against. None is the real default
 # (kullback.ai.pricing.snapshot_path()); tests point it at a tmp file, so no test reads the real one.
@@ -1282,6 +1556,19 @@ def registry_endpoint(model_id: str, env: Optional[dict[str, str]] = None) -> An
     return pricing.endpoint_from_catalog(catalog, model_id)
 
 
+def sent_model_id(model_id: str) -> str:
+    """The 'provider/model' id as its adapter sends it, so a call is priced under what went out.
+
+    A Bedrock id with no profile goes out on `global.`, and the catalog prices the bare row and the
+    `global.` row differently; a provider with no adapter of its own sends the id as given.
+    """
+    provider, wire = split_model_id(model_id)
+    adapter = ADAPTERS.get(provider)
+    if adapter is None or not wire:
+        return model_id
+    return f"{provider}/{adapter.for_model(model_id).sent_wire_id(wire)}"
+
+
 def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     """The one place a live adapter is built, from the 'provider/model' id.
 
@@ -1294,7 +1581,7 @@ def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     provider, _ = split_model_id(model_id)
     adapter = ADAPTERS.get(provider)
     if adapter is not None:
-        return adapter(model_id, base_url=base_url, **kwargs)
+        return adapter.for_model(model_id)(model_id, base_url=base_url, **kwargs)
     if model_id in RESPONSES_API_MODELS and base_url:
         # An explicit endpoint never changes the wire shape: a Responses model speaks
         # Responses wherever it lives, so this check sits before the base_url branch.
@@ -1449,6 +1736,30 @@ def _text_of(message: dict) -> str:
     return str(content or "")
 
 
+def _anthropic_blocks(message: dict) -> list[dict]:
+    """One user or assistant message's content blocks: its thinking, its content, then its tool calls."""
+    content = message.get("content")
+    # The reply's own thinking blocks lead its turn, unchanged: the Messages API reads them
+    # before the text and tool calls they preceded, and refuses an edited one.
+    thinking = [copy.deepcopy(b) for b in message.get(THINKING_BLOCKS_KEY) or [] if isinstance(b, dict)]
+    if isinstance(content, list) and all(isinstance(b, dict) and "type" in b for b in content):
+        blocks = thinking + list(content)
+    elif content:
+        blocks = thinking + [{"type": "text", "text": _text_of(message)}]
+    else:
+        blocks = thinking
+    for call in message.get("tool_calls") or []:
+        blocks.append(
+            {
+                "type": "tool_use",
+                "id": call.get("id"),
+                "name": call.get("name") or (call.get("function") or {}).get("name") or "",
+                "input": _arguments_of(call),
+            }
+        )
+    return blocks
+
+
 def _to_anthropic(messages: list[dict]) -> tuple[list[dict], list[dict]]:
     """Our canonical messages into Anthropic's: system pulled out, tool calls and results as blocks.
 
@@ -1479,21 +1790,6 @@ def _to_anthropic(messages: list[dict]) -> tuple[list[dict], list[dict]]:
                 in_tool_group = True
             continue
         in_tool_group = False
-        content = message.get("content")
-        if isinstance(content, list) and all(isinstance(b, dict) and "type" in b for b in content):
-            blocks = list(content)
-        elif content:
-            blocks = [{"type": "text", "text": _text_of(message)}]
-        else:
-            blocks = []
-        for call in message.get("tool_calls") or []:
-            blocks.append(
-                {
-                    "type": "tool_use",
-                    "id": call.get("id"),
-                    "name": call.get("name") or (call.get("function") or {}).get("name") or "",
-                    "input": _arguments_of(call),
-                }
-            )
+        blocks = _anthropic_blocks(message)
         out.append({"role": "assistant" if role == "assistant" else "user", "content": blocks})
     return system, out

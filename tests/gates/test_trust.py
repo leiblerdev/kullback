@@ -19,9 +19,10 @@ from gates.examiner_fixtures import (
     tighten,
     version,
 )
-from gates.verifier_fixtures import alt_path_run, other_reason_run, reference_run, wrong_run
+from gates.verifier_fixtures import alt_path_run, other_reason_run, reference_run, write_events_jsonl, wrong_run
 from kullback.gates import trust as T
 from kullback.gates.probes import version_hash
+from kullback.runner.canon import CanonRules
 
 REFUSAL = {TASK: {"task_id": TASK, "reason": "no frontier Run reaches the End state", "round": 1}}
 NOTHING_FINISHED = ({TASK: {"tr1": replay_row("tr1", False)}}, {TASK: [reroll_row("reroll-t1-0", "max_steps")]})
@@ -61,7 +62,7 @@ def _world(tmp_path, verifier=None):
     return dict(task_status={TASK: status()}, verifiers=[verifier],
                 probes={TASK: pool(probe("probe-t1-1", wrong_run(), verifier))},
                 history=history(version(verifier)), refusals={}, task_runs=runs, replays=replays, rerolls=rerolls,
-                canon_rules=None, sigs=SIGS)
+                canon_rules=CanonRules(), sigs=SIGS)
 
 
 def test_a_verifier_meeting_every_trust_condition_is_trusted(tmp_path):
@@ -211,3 +212,72 @@ def test_a_task_with_nothing_held_out_says_no_pool_and_is_trusted_on_the_other_g
     world["task_status"] = {TASK: status(verifier_passed=False)}
     denied = T.trusted_gate(**world)
     assert denied.metrics["trusted"] == [] and denied.metrics["false_rejection_ruling"] == {TASK: "no_pool"}
+
+
+def test_a_task_held_only_by_checks_that_did_not_run_is_untrusted_and_named_in_not_run_only(tmp_path):
+    """F45: every check that ran passed, so the Task is held by the checks nobody could run. It stays
+    untrusted with each one named and why, and `not_run_only` lets a proposal ruling tell that apart
+    from a Task whose atoms something failed."""
+    world = _world(tmp_path)
+    checks = {name: True for name in T.D79_STAGES.values()}
+    checks["second_path_passes"] = False
+    world["task_status"] = {TASK: status(verifier_passed=False, checks=checks, not_run=["verifier_alt_path"])}
+    ruling = T.trusted_gate(**world)
+    assert ruling.metrics["trusted"] == [] and ruling.metrics["not_run_only"] == [TASK]
+    assert ruling.metrics["untrusted"] == {
+        TASK: "the D79 suite did not pass: second_path_passes not run (one Reference, so there is no "
+              "second path to score)"}
+    checks["mutation_flips"] = False
+    world["task_status"] = {TASK: status(verifier_passed=False, checks=checks, not_run=["verifier_alt_path"])}
+    assert T.trusted_gate(**world).metrics["not_run_only"] == [], "a check that ran and failed holds it"
+
+
+def test_a_task_held_by_not_run_checks_is_still_ruled_on_its_other_steps_first(tmp_path):
+    world = _world(tmp_path)
+    verifier = world["verifiers"][0]
+    world["probes"] = {TASK: pool(probe("probe-t1-2", reference_run(), verifier))}
+    world["task_status"] = {TASK: status(verifier_passed=False, checks={"second_path_passes": False},
+                                         not_run=["verifier_alt_path"])}
+    ruling = T.trusted_gate(**world)
+    assert ruling.metrics["untrusted"] == {TASK: "probe probe-t1-2 scores a pass"}
+    assert ruling.metrics["not_run_only"] == []
+
+
+def _seeded_world(tmp_path, foreign: tuple = ()):
+    """The trusted world with its seed Runs on disk under a workdir, the named seeds played by another Task."""
+    world = _world(tmp_path)
+    workdir = tmp_path / "work"
+    folder = workdir / "runs" / TASK
+    folder.mkdir(parents=True)
+    rows = {}
+    for run in (reference_run(), alt_path_run(), other_reason_run()):
+        owner = "t_other" if run.run_id in foreign else TASK
+        write_events_jsonl(run.model_copy(update={"task_id": owner}), folder / f"{run.run_id}.jsonl")
+        rows[run.run_id] = f"runs/{TASK}/{run.run_id}.jsonl"
+    world["replays"] = {TASK: {"tr1": replay_row("tr1", True, run_id="ref", path=rows["ref"])}}
+    world["rerolls"] = {TASK: [reroll_row(run_id, "success", path=rows[run_id]) for run_id in ("rr2", "alt")]}
+    return dict(world, workdir=workdir)
+
+
+def test_a_verifier_seeded_from_its_own_task_runs_passes_the_provenance_step(tmp_path):
+    world = _seeded_world(tmp_path)
+    assert set(world["verifiers"][0].seed_run_ids) >= {"ref", "alt"}
+    ruling = T.trusted_gate(**world)
+    assert ruling.metrics["trusted"] == [TASK] and ruling.metrics["untrusted_seeds"] == {}
+
+
+def test_a_verifier_seeded_from_another_tasks_run_fails_the_trusted_gate_naming_the_seed(tmp_path):
+    """D281: a seed file that the loader attributes to another Task withdraws trust; the history stays."""
+    world = _seeded_world(tmp_path, foreign=("alt",))
+    kept = world["history"][TASK].model_copy(deep=True)
+    ruling = T.trusted_gate(**world)
+    assert ruling.metrics["trusted"] == [] and ruling.metrics["untrusted_seeds"] == {TASK: ["alt"]}
+    assert ruling.failures == [f"task t1: version {version_hash(world['verifiers'][0])} was derived from seeds "
+                               "that are not Runs of this Task: alt"]
+    assert world["history"][TASK] == kept
+
+
+def test_a_seed_no_row_or_runs_folder_can_find_is_not_attributable(tmp_path):
+    world = _seeded_world(tmp_path)
+    (world["workdir"] / "runs" / TASK / "alt.jsonl").unlink()
+    assert T.trusted_gate(**world).metrics["untrusted_seeds"] == {TASK: ["alt"]}

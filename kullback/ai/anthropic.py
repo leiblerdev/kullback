@@ -86,11 +86,15 @@ class AnthropicProvider:
                                    config or ModelConfig())
         )
         payload["stream"] = True
+        # Encoded once, here: a handle that signs its requests signs these bytes, and these are
+        # the bytes posted.
+        content = self.handle.encode_body(payload)
         return stream_sse_events(
             client=self._get_client,
             url=self.handle.base_url + self.handle.path,
-            headers=self.handle.headers(),
+            headers=self.handle.headers(content),
             payload=payload,
+            content=content,
             parser_factory=MessagesStreamParser,
             parser_name=self.handle.name,
             model=self.handle.name,
@@ -115,6 +119,8 @@ class MessagesStreamParser:
         self._text: list[str] = []
         self._thinking: list[str] = []
         self._builders: dict[int, _ToolUseBuilder] = {}
+        # Thinking blocks by index, signature and all, for the next request to send back unchanged.
+        self._thinking_blocks: dict[int, dict] = {}
         self._finish_reason: Optional[str] = None
         self._usage = Usage()
 
@@ -130,29 +136,41 @@ class MessagesStreamParser:
             if isinstance(message, dict):
                 self._usage = usage_from_anthropic(message.get("usage"))
         elif kind == "content_block_start":
-            block = data.get("content_block")
-            if isinstance(block, dict) and block.get("type") == "tool_use":
-                builder = self._builders.setdefault(int(data.get("index", 0) or 0), _ToolUseBuilder())
-                builder.id = str(block.get("id") or "")
-                builder.name = str(block.get("name") or "")
-                self.emitted_content = True
+            self._block_start(data)
         elif kind == "content_block_delta":
             return self._block_delta(data)
         elif kind == "message_delta":
-            delta = data.get("delta")
-            if isinstance(delta, dict):
-                self._finish_reason = delta.get("stop_reason") or self._finish_reason
-            # message_delta carries the output count, which message_start could not know yet.
-            self._usage = _with_output(self._usage, data.get("usage"))
+            self._message_delta(data)
         elif kind == "message_stop":
             return [], True
         elif kind == "error":
-            self.fatal = True
-            error = data.get("error")
-            message = error.get("message") if isinstance(error, dict) else None
-            return [ProviderErrorEvent(message=str(message or "the provider ended the stream with an error"),
-                                       data={"event": data})], True
+            return self._stream_error(data)
         return [], False
+
+    def _block_start(self, data: dict) -> None:
+        """A thinking block kept to send back, or a tool_use block's id and name."""
+        block = data.get("content_block")
+        if isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking"):
+            self._thinking_blocks[_block_index(data)] = dict(block)
+        elif isinstance(block, dict) and block.get("type") == "tool_use":
+            builder = self._builders.setdefault(_block_index(data), _ToolUseBuilder())
+            builder.id = str(block.get("id") or "")
+            builder.name = str(block.get("name") or "")
+            self.emitted_content = True
+
+    def _message_delta(self, data: dict) -> None:
+        delta = data.get("delta")
+        if isinstance(delta, dict):
+            self._finish_reason = delta.get("stop_reason") or self._finish_reason
+        # message_delta carries the output count, which message_start could not know yet.
+        self._usage = _with_output(self._usage, data.get("usage"))
+
+    def _stream_error(self, data: dict) -> tuple[list[ProviderEvent], bool]:
+        self.fatal = True
+        error = data.get("error")
+        message = error.get("message") if isinstance(error, dict) else None
+        return [ProviderErrorEvent(message=str(message or "the provider ended the stream with an error"),
+                                   data={"event": data})], True
 
     def _block_delta(self, data: dict) -> tuple[list[ProviderEvent], bool]:
         delta = data.get("delta")
@@ -160,22 +178,36 @@ class MessagesStreamParser:
             return [], False
         kind = delta.get("type")
         if kind == "text_delta":
-            text = str(delta.get("text") or "")
-            if text:
-                self.emitted_content = True
-                self._text.append(text)
-                return [ProviderTextDelta(delta=text)], False
+            return self._text_delta(delta), False
+        if kind == "signature_delta":
+            block = self._thinking_blocks.setdefault(_block_index(data), {"type": "thinking"})
+            block["signature"] = str(block.get("signature") or "") + str(delta.get("signature") or "")
         elif kind == "thinking_delta":
-            thinking = str(delta.get("thinking") or "")
-            if thinking:
-                self.emitted_content = True
-                self._thinking.append(thinking)
-                return [ProviderThinkingDelta(delta=thinking)], False
+            return self._thinking_delta(data, delta), False
         elif kind == "input_json_delta":
-            builder = self._builders.setdefault(int(data.get("index", 0) or 0), _ToolUseBuilder())
+            builder = self._builders.setdefault(_block_index(data), _ToolUseBuilder())
             builder.arguments.append(str(delta.get("partial_json") or ""))
             self.emitted_content = True
         return [], False
+
+    def _text_delta(self, delta: dict) -> list[ProviderEvent]:
+        text = str(delta.get("text") or "")
+        if not text:
+            return []
+        self.emitted_content = True
+        self._text.append(text)
+        return [ProviderTextDelta(delta=text)]
+
+    def _thinking_delta(self, data: dict, delta: dict) -> list[ProviderEvent]:
+        """Thinking grows its block for the next request, and is reported when it says anything."""
+        thinking = str(delta.get("thinking") or "")
+        block = self._thinking_blocks.setdefault(_block_index(data), {"type": "thinking"})
+        block["thinking"] = str(block.get("thinking") or "") + thinking
+        if not thinking:
+            return []
+        self.emitted_content = True
+        self._thinking.append(thinking)
+        return [ProviderThinkingDelta(delta=thinking)]
 
     def finalize(self) -> list[ProviderEvent]:
         calls = [builder.build(index) for index, builder in sorted(self._builders.items())]
@@ -187,6 +219,10 @@ class MessagesStreamParser:
                     thinking="".join(self._thinking) or None,
                     tool_calls=calls,
                     usage=self._usage,
+                    # An unsigned block (a stream cut before its signature) would be refused if
+                    # sent back, so only signed or redacted ones are kept.
+                    thinking_blocks=[block for _, block in sorted(self._thinking_blocks.items())
+                                     if block.get("signature") or block.get("data")] or None,
                 ),
                 finish_reason=self._finish_reason,
             )
@@ -210,6 +246,11 @@ class _ToolUseBuilder:
             name=self.name,
             arguments=parsed if parsed is not None else {"_raw": text},
         )
+
+
+def _block_index(data: dict) -> int:
+    """The content block an event is about; a missing index is block 0."""
+    return int(data.get("index", 0) or 0)
 
 
 def _with_output(usage: Usage, reported: Any) -> Usage:

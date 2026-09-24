@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-import copy
 import inspect
 import json
+import traceback
 from typing import Any, Iterable, NamedTuple, Optional
-
-from pydantic import BaseModel
 
 from kullback.runner.canon import canonical_args
 from kullback.runner.real_tools import RealTool, limit_kept_export
 from kullback.runner.records import ToolCallError, ToolSig, content_hash
 from kullback.runner.records import plain as _plain
-from kullback.runner.state import StateView, _db_put, _row_model
+from kullback.runner.state import StateView, _db_put
+from kullback.runner.transaction import freeze, restore_db, snapshot_db, thaw
 
 # The default cap on one real tool's kept workspace export: 64 MiB, overridable per
 # Router through `real_export_limit` (D262).
@@ -24,8 +23,11 @@ STATE_PARAMS = ("state", "db", "world", "env")
 # or by the recording (G28). The Candidate is never shown an answer for it, and the Verdict
 # carries no reward either way.
 CANNOT_ANSWER_REASON = "environment_cannot_answer"
+# How much of a body fault's message the record keeps (F57).
+FAULT_MESSAGE_LIMIT = 500
+# A TypeError is not here: arguments the signature refuses are classed at binding, and one the
+# body raises afterwards is a body fault (F57).
 EXCEPTION_CLASSES = {
-    TypeError: "invalid_arguments",
     KeyError: "not_found_entity",
     LookupError: "not_found_entity",
     PermissionError: "permission_denied",
@@ -106,6 +108,7 @@ class Router:
                                   else getattr(overlay, "steps", None))
         self.steps_served = 0  # how many of them this Run laid in the world, for the Run's record
         self._calls_seen: dict[str, int] = {}
+        self.calls_routed = 0  # every call this Run asked for, so a body can know its own turn (D282)
         self._lay_overlay_in_db()
         self.start_world = self.world()
 
@@ -142,6 +145,7 @@ class Router:
 
     def route(self, name: str, args: Optional[dict] = None, requestor: str = "assistant") -> RouteResult:
         args = dict(args or {})
+        self.calls_routed += 1
         if not self._may_call(name, requestor):
             # D164: the recording answered this tool for other callers and refused this one, so the
             # Run refuses it too, in the same class, before any code, recording or stand-in is asked
@@ -289,6 +293,15 @@ class Router:
         return limit_kept_export(self.real_end_states.get(name, b""), limit_bytes)
 
     def _code(self, name: str, function: Any, args: dict) -> RouteResult:
+        begin_call = getattr(getattr(self.tools, "ctx", None), "begin_call", None)
+        if begin_call is not None:
+            begin_call(self.calls_routed)
+        try:
+            _bind(function, self.state, args)
+        except TypeError as exc:
+            # F57: arguments the signature cannot take are the caller's mistake, checked before
+            # the body runs, so a TypeError the body raises later is never read as one.
+            return self._error(name, "invalid_arguments", _message_of(exc))
         snapshot = _snapshot_world(self.tools, self.state)
         try:
             result = _call(function, self.state, args)
@@ -302,20 +315,22 @@ class Router:
                 error_class = _class_of(exc)
                 sample = _corpus_error(self.sigs.get(name), error_class) if _is_pythons(exc) else None
                 return self._error(name, error_class, _message_of(exc), sample=sample)
-            return self._body_fault(name, exc)
+            return self._body_fault(name, exc, function)
 
-    def _body_fault(self, name: str, exc: Exception) -> RouteResult:
+    def _body_fault(self, name: str, exc: Exception, function: Any = None) -> RouteResult:
         """A body fault (G27): the body's own bug, never the customer's answer and never a business error.
 
         The Candidate gets a neutral unavailable answer in the tool's own error encoding. The Run
-        records the tool name and the exception type, never the message, and carries the D88
+        records the tool name, the exception type, its message and the body line that raised
+        (F57), so a replay row and a Run transcript say what broke, and carries the D88
         environment mark so the fault counts against the Environment and not the Candidate.
         """
         fault = type(exc).__name__
         encoding = _encoding_for(self.sigs.get(name), "body_fault")
         result: Any = "unavailable" if encoding == "text" else {"error": "unavailable", "class": "body_fault"}
-        error = ToolCallError(class_="body_fault", payload={"tool": name, "fault": fault},
-                              encoding="json", classified_by="code")
+        payload = {"tool": name, "fault": fault, "message": _message_of(exc)[:FAULT_MESSAGE_LIMIT],
+                   **_raising_line(exc, function)}
+        error = ToolCallError(class_="body_fault", payload=payload, encoding="json", classified_by="code")
         misses = self._misses() or []
         misses.append({"body_fault": name, "fault": fault})
         return RouteResult(result, "code", False, error, misses)
@@ -378,30 +393,6 @@ class Router:
         return RouteResult(payload, route, False, error, self._misses())
 
 
-def _freeze(value: Any) -> tuple[str, Any]:
-    """Snapshot one store as bytes when it round trips through JSON, else as plain objects.
-
-    The success path pays only the serialise; the bytes are parsed back solely on rollback, which
-    almost never happens. A pydantic db serialises through its own Rust encoder. Where serialising
-    fails (a value JSON cannot carry, like a set), the snapshot falls back to a deep copy, which
-    restores by replacement with no aliases back into the live world.
-    """
-    try:
-        if hasattr(value, "model_dump_json"):
-            return ("json", value.model_dump_json().encode("utf-8"))
-        return ("json", json.dumps(value).encode("utf-8"))
-    except (TypeError, ValueError):
-        return ("deepcopy", copy.deepcopy(value))
-
-
-def _thaw(snapshot: Any) -> Any:
-    """Parse a frozen snapshot back to plain data. Runs only on rollback, never per call."""
-    if snapshot is None:
-        return None
-    kind, payload = snapshot
-    return json.loads(payload) if kind == "json" else payload
-
-
 def _snapshot_world(tools: Any, state: StateView) -> tuple[Any, Any, Any, Any]:
     """The world before one body runs, frozen: the toolkit db and the whole StateView.
 
@@ -410,9 +401,7 @@ def _snapshot_world(tools: Any, state: StateView) -> tuple[Any, Any, Any, Any]:
     both. Frozen, not aliased: a snapshot that shared objects with the live world would move with
     it and restore nothing. No mined tool kind is trusted to skip the snapshot.
     """
-    db = getattr(tools, "db", None)
-    return (_freeze(db) if db is not None else None, _freeze(state.shared),
-            _freeze(state.overlay), _freeze(state.overlay_misses))
+    return (snapshot_db(tools), freeze(state.shared), freeze(state.overlay), freeze(state.overlay_misses))
 
 
 def _restore_world(tools: Any, state: StateView, snapshot: tuple[Any, Any, Any, Any]) -> None:
@@ -425,88 +414,11 @@ def _restore_world(tools: Any, state: StateView, snapshot: tuple[Any, Any, Any, 
     """
     db_snapshot, shared_snapshot, overlay_snapshot, misses_snapshot = snapshot
     state.shared.clear()
-    state.shared.update(_thaw(shared_snapshot))
+    state.shared.update(thaw(shared_snapshot))
     state.overlay.clear()
-    state.overlay.update(_thaw(overlay_snapshot))
-    state.overlay_misses[:] = _thaw(misses_snapshot)
-    _restore_db(getattr(tools, "db", None), _thaw(db_snapshot))
-
-
-def _prune_added(current: dict, snapshot: dict) -> None:
-    """Drop the rows a body added: everything the snapshot never held."""
-    for key in [key for key in current if key not in snapshot]:
-        del current[key]
-
-
-def _restore_plain_db(db: dict, snapshot: dict) -> None:
-    """Put a plain dict db back: added tables removed, added rows dropped, kept rows reset."""
-    for table in [key for key in db if key not in snapshot]:
-        del db[table]
-    for table, rows in snapshot.items():
-        current = db.get(table)
-        if isinstance(current, dict) and isinstance(rows, dict):
-            _prune_added(current, rows)
-            current.update(rows)
-        else:
-            db[table] = rows
-
-
-def _restore_model_table(db: Any, table: str, rows: Any) -> None:
-    """Put one table of a pydantic db back, its row classes rebuilt as `_db_put` builds them.
-
-    A body that replaced the table with a plain value or deleted it gets a fresh dict, so the
-    corruption does not survive the rollback and later bodies read rows by attribute again.
-    """
-    if not isinstance(rows, dict):
-        return
-    current = getattr(db, table, None)
-    if not isinstance(current, dict):
-        current = {}
-        setattr(db, table, current)
-    _prune_added(current, rows)
-    model = _row_model(db, table)
-    for row_id, row in rows.items():
-        current[row_id] = model.model_validate(_plain(row)) if model is not None else row
-
-
-def _restore_db(db: Any, snapshot: Any) -> None:
-    """Put a toolkit db back to its snapshot: added rows go, removed rows return, changed rows reset.
-
-    A pydantic db gets its row classes back through the same model lookup `_db_put` uses, so a
-    later body still reads rows by attribute. A plain dict db already holds plain rows, so its
-    snapshot values land as they are and tables the snapshot never held are removed outright.
-    """
-    if isinstance(db, BaseModel) and isinstance(snapshot, type(db)):
-        db.__setstate__(copy.deepcopy(snapshot.__getstate__()))
-        return
-    if db is None or snapshot is None or not isinstance(snapshot, dict):
-        return
-    if isinstance(db, dict):
-        _restore_plain_db(db, snapshot)
-        return
-    for table, rows in snapshot.items():
-        _restore_model_table(db, table, rows)
-    _clear_added_tables(db, snapshot)
-
-
-def _clear_added_tables(db: Any, snapshot: dict) -> None:
-    """Drop what a body added past the snapshot: unknown tables emptied, unknown attrs removed."""
-    for table in (getattr(type(db), "model_fields", {}) or {}):
-        current = getattr(db, table, None)
-        if table not in snapshot and isinstance(current, dict):
-            current.clear()
-    _drop_unknown_attrs(db, snapshot)
-
-
-def _drop_unknown_attrs(db: Any, snapshot: dict) -> None:
-    """Remove the non field attributes a body set past the snapshot."""
-    fields = set(getattr(type(db), "model_fields", {}) or {})
-    for name in [key for key in vars(db) if key not in snapshot and key not in fields
-                 and not key.startswith("_")]:
-        try:
-            delattr(db, name)
-        except AttributeError:
-            pass
+    state.overlay.update(thaw(overlay_snapshot))
+    state.overlay_misses[:] = thaw(misses_snapshot)
+    restore_db(tools, db_snapshot)
 
 
 def refuse_stand_in(router: Any) -> None:
@@ -568,12 +480,48 @@ def _encoding_for(sig: Optional[ToolSig], error_class: str) -> str:
     return sig.error_shapes[0].encoding
 
 
+def _takes_state(function: Any) -> bool:
+    parameters = list(inspect.signature(function).parameters)
+    return bool(parameters) and parameters[0] in STATE_PARAMS
+
+
 def _call(function: Any, state: StateView, args: dict) -> Any:
     """Generated tool bodies take the state view first when they name it; others take args only."""
-    parameters = list(inspect.signature(function).parameters)
-    if parameters and parameters[0] in STATE_PARAMS:
+    if _takes_state(function):
         return function(state, **args)
     return function(**args)
+
+
+def _bind(function: Any, state: StateView, args: dict) -> None:
+    """Raise TypeError when the call's arguments do not fit the body's signature, before it runs.
+
+    A callable with no signature Python can read is not checked here; its call still runs.
+    """
+    try:
+        signature = inspect.signature(function)
+    except (TypeError, ValueError):
+        return
+    if _takes_state(function):
+        signature.bind(state, **args)
+    else:
+        signature.bind(**args)
+
+
+def _raising_line(exc: Exception, function: Any) -> dict:
+    """The body line that raised: the innermost frame in the body's own file, else the innermost frame.
+
+    Empty when the exception carries no traceback. `code` is the source text when the file is readable.
+    """
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return {}
+    own_file = getattr(getattr(inspect.unwrap(function), "__code__", None), "co_filename", None) if function else None
+    own = [frame for frame in frames if frame.filename == own_file]
+    frame = (own or frames)[-1]
+    out: dict = {"line": frame.lineno}
+    if frame.line:
+        out["code"] = frame.line.strip()
+    return out
 
 
 def _is_pythons(exc: Exception) -> bool:
