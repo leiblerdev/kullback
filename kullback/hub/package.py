@@ -617,6 +617,18 @@ def git_sha(root: Optional[Path] = None) -> str:
     return out.stdout.strip() if out.returncode == 0 else "unknown"
 
 
+def _row_counts(rows: list[dict]) -> dict:
+    """The manifest's Task counts: confirmed, derived, trusted, refused, and each funnel stage."""
+    return {
+        "reference_confirmed": sum(1 for row in rows if row["reference_confirmed"]),
+        "verifier_derived": sum(1 for row in rows if row["verifier"]),
+        "trusted": sum(1 for row in rows if row["trusted"]),
+        "refused": sum(1 for row in rows if row["refused"]),
+        "funnel": {stage: sum(1 for row in rows if row["stage"] == stage)
+                   for stage in FUNNEL + (REFUSED_STAGE,)},
+    }
+
+
 def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Optional[str] = None,
            corpus_license: Optional[str] = None, corpus_url: Optional[str] = None,
            preview: bool = False, scan: bool = True) -> dict:
@@ -655,12 +667,7 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         # the number is what stops the two readings from looking like a mistake.
         "tasks_added_later": len(set(read_json(workdir / "task_status.json", {}) or {}) - set(task_ids)),
         "replay_fidelity": fidelity,
-        "reference_confirmed": sum(1 for row in rows if row["reference_confirmed"]),
-        "verifier_derived": sum(1 for row in rows if row["verifier"]),
-        "trusted": sum(1 for row in rows if row["trusted"]),
-        "refused": sum(1 for row in rows if row["refused"]),
-        "funnel": {stage: sum(1 for row in rows if row["stage"] == stage)
-                   for stage in FUNNEL + (REFUSED_STAGE,)},
+        **_row_counts(rows),
         "buckets": _buckets(rows),
         "untrusted": untrusted_reasons(rows),
         # D225: what the domain's own public material was read to attest, and how much of it this

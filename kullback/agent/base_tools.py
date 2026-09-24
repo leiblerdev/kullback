@@ -60,7 +60,7 @@ INSPECT_ROW_CHARS = 200
 INSPECT_MAX_ROWS = 5
 INSPECT_MAX_FIELDS = 60
 # The input cap: a file at most this size is parsed whole, one over it never is. 8 MiB clears every
-# file a Builder reads to learn the corpus with room to spare (on the smoke 8 retail workdir the world
+# file a Builder reads to learn the corpus with room to spare (on one smoke build's workdir the world
 # is 0.5 MB, the largest call log 1.8 MB, the run digest 4.7 MB, the Builder session 5 MB), while the
 # files that grow with trace volume (the event bus, the raw corpus, the exam's run store, 32 MB to
 # 660 MB there) are past it, and parsing one of those whole could exhaust memory or stall the loop.
@@ -893,32 +893,50 @@ def _counted(label: str, counts: Counter[str]) -> list[str]:
         f"  {name}: {count}" for name, count in counts.most_common()]
 
 
-def _describe_lines(text: str, rows: int, of_bytes: Optional[int] = None) -> list[str]:
-    """A JSONL summary; with `of_bytes`, `text` is the head of a file that size and the header says so."""
+def _parse_lines(lines: list[str]) -> tuple[list[Any], int]:
+    """The records that parse as JSON, and how many lines did not."""
     records: list[Any] = []
     broken = 0
-    lines = [line for line in text.split("\n") if line.strip()]
     for line in lines:
         try:
             records.append(json.loads(line))
         except json.JSONDecodeError:
             broken += 1
-    objects = [record for record in records if isinstance(record, dict)]
-    head = f"jsonl: {len(lines)} lines"
+    return records, broken
+
+
+def _lines_head(count: int, broken: int, of_bytes: Optional[int]) -> str:
+    """The header line of a JSONL summary, saying when the counts cover only a file's head."""
+    head = f"jsonl: {count} lines"
     if of_bytes is not None:
         head = (f"jsonl: the file is {of_bytes} bytes, over the {INSPECT_MAX_BYTES} byte inspect cap, so every "
-                f"count below is over its first {len(lines)} lines only")
-    out = [head + (f", {broken} not JSON" if broken else "")]
-    if len(objects) < len(records):
-        out.append(f"{len(records) - len(objects)} lines are not objects")
-    if objects:
-        out += ["keys:"] + _fields(objects, len(objects))
+                f"count below is over its first {count} lines only")
+    return head + (f", {broken} not JSON" if broken else "")
+
+
+def _outcome_counts(objects: list[dict[str, Any]]) -> list[str]:
+    """The result types and error classes a log's object lines carry, each counted."""
+    out: list[str] = []
     results = Counter(_shape(record["result"]) for record in objects if "result" in record)
     if results:
         out += _counted("result types", results)
     errors = Counter(_error_class(record["error"]) for record in objects if record.get("error") is not None)
     if errors:
         out += _counted("error classes", errors)
+    return out
+
+
+def _describe_lines(text: str, rows: int, of_bytes: Optional[int] = None) -> list[str]:
+    """A JSONL summary; with `of_bytes`, `text` is the head of a file that size and the header says so."""
+    lines = [line for line in text.split("\n") if line.strip()]
+    records, broken = _parse_lines(lines)
+    objects = [record for record in records if isinstance(record, dict)]
+    out = [_lines_head(len(lines), broken, of_bytes)]
+    if len(objects) < len(records):
+        out.append(f"{len(records) - len(objects)} lines are not objects")
+    if objects:
+        out += ["keys:"] + _fields(objects, len(objects))
+    out += _outcome_counts(objects)
     if rows and records:
         out.append(f"sample lines ({min(rows, len(records))}):")
         out += [f"  {_compact(record)}" for record in records[:rows]]
