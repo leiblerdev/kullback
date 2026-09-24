@@ -97,20 +97,27 @@ def test_the_leak_check_passes_over_a_shape_atom_whose_value_the_intent_spells_o
     """The value the Intent gives away is no longer a constant the Verifier keeps."""
     reference = run("ref", assignment_events())
     verifier = derive(reference)
-    gate = S._leak_gate(verifier, reference, "assign the locker whose badge code is QX41", None)
+    gate = S._leak_gate(verifier, reference, "assign the locker whose badge code is QX41", None,
+                        fn=S.canon_fn(CanonRules()))
     assert gate.passed, gate.failures
 
 
-def test_what_a_user_said_is_read_the_way_the_leak_check_reads_it():
-    """`user_said` and the frozen leak check agree value by value, which is why one may relax the other."""
+def test_the_leak_check_passes_a_value_a_user_said_or_a_row_the_run_read_holds_and_flags_the_rest():
+    """`user_said` is one half of what the leak check forgives; a value of a row the Run read is the
+    other (D293), so the badge code the roster answered is no secret although no user said it."""
     reference = run("ref", assignment_events())
     spoken = V.spoken_text([reference])
-    for value in ("L9", "QX41", "locker", "true", "9", 12, ["L9", "QX41"], ["L9"]):
+    expected = {"L9": True, "QX41": True, "locker": True, "true": True, "9": True, "12": False,
+                "L9 QX41": True, "L9 12": False}
+    for text, passed in expected.items():
+        value = text.split() if " " in text else text
         one = S.make_atom("a0", "communicate", {"kind": "communicate", "value": "k", "text": value},
                           provenance="system_derived")
         held = S.Verifier(task_id="t1", atoms=[one])
-        gate = S._leak_gate(held, reference, " ".join(S._texts(value)), None)
-        assert gate.passed is V.user_said(spoken, value), value
+        gate = S._leak_gate(held, reference, text, None, fn=S.canon_fn(CanonRules()))
+        assert gate.passed is passed, text
+        if passed is False:
+            assert V.user_said(spoken, value) is False
 
 
 # --- D206: the shape is checked against what the Run read, not against the row it wrote ------

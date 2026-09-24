@@ -197,7 +197,7 @@ def test_an_extra_write_on_an_uncovered_tool_fails_given_write_tools(tmp_path):
 
 # --- D79 validation -------------------------------------------------------
 
-def test_the_suite_runs_the_nine_d79_checks_in_order_and_passes_a_sound_verifier_given_every_run(
+def test_the_suite_runs_the_d79_checks_and_the_specificity_check_in_order_and_passes_a_sound_verifier(
         tmp_path, test_model):
     verifier = derive(tmp_path)
     gates = S.validate_verifier(verifier, reference_run(), empty_run(), wrong_run(), alt_path_run(),
@@ -207,7 +207,7 @@ def test_the_suite_runs_the_nine_d79_checks_in_order_and_passes_a_sound_verifier
     assert [g.stage for g in gates] == [
         "verifier_provenance_spans", "verifier_oracle", "verifier_empty_run",
         "verifier_wrong_run", "verifier_unfinished_run", "verifier_alt_path", "verifier_loophole",
-        "verifier_leak", "verifier_mutation",
+        "verifier_leak", "verifier_mutation", "verifier_specific",
     ]
     assert all(g.passed for g in gates), [(g.stage, g.failures) for g in gates]
 
@@ -511,19 +511,24 @@ def _refund_run():
     ])
 
 
-@pytest.mark.parametrize("tool, reference, intent_text, user_rules, expected_pass, leaked", [
-    pytest.param("cancel_pending_order", reference_run, "cancel #W123 and refund exactly 150.0", UserRules(),
-                 False, "intent leaks 150.0", id="intent"),
-    pytest.param("cancel_pending_order", reference_run, "", UserRules(refusals=["do not accept less than 150.0"]),
-                 False, "user_rules leaks 150.0", id="user_rules"),
-    pytest.param("cancel_pending_order", reference_run, "cancel order #W123 and record the reason", UserRules(),
-                 True, None, id="own_words"),
-    pytest.param("refund_order", _refund_run, "refund exactly 150.0 on #W123", UserRules(),
-                 False, "150.0", id="number_off_a_tool_result"),
+@pytest.mark.parametrize("tool, reference, amount, intent_text, user_rules, expected_pass, leaked", [
+    pytest.param("cancel_pending_order", reference_run, 175.0, "cancel #W123 and refund exactly 175.0", UserRules(),
+                 False, "intent leaks 175.0", id="intent"),
+    pytest.param("cancel_pending_order", reference_run, 175.0, "",
+                 UserRules(refusals=["do not accept less than 175.0"]), False, "user_rules leaks 175.0",
+                 id="user_rules"),
+    pytest.param("cancel_pending_order", reference_run, 175.0, "cancel order #W123 and record the reason",
+                 UserRules(), True, None, id="own_words"),
+    pytest.param("refund_order", _refund_run, 150.0, "refund exactly 150.0 on #W123", UserRules(),
+                 True, None, id="world_value_read_off_a_tool_result"),
+    pytest.param("cancel_pending_order", reference_run, 175.0, "refund $175 on #W123", UserRules(),
+                 False, "intent leaks 175.0", id="another_spelling_of_the_value"),
 ])
-def test_the_leak_check_finds_a_system_derived_constant_in_the_intent_or_the_user_rules_and_never_the_users_own_words(
-        tmp_path, tool, reference, intent_text, user_rules, expected_pass, leaked):
-    verifier = literal_value_atom(tool, "#W123", "order_id", "amount", 150.0)
+def test_the_leak_check_finds_a_constant_only_the_verifier_holds_and_never_a_world_value_or_the_users_own_words(
+        tmp_path, tool, reference, amount, intent_text, user_rules, expected_pass, leaked):
+    """D293: the comparison is canonical, and a value a row of the world holds is not a secret even
+    when the Intent says it; a value no row holds (the agent's own number) is."""
+    verifier = literal_value_atom(tool, "#W123", "order_id", "amount", amount, provenance="agent_chosen")
     gates = {g.stage: g for g in S.validate_verifier(
         verifier, reference(), empty_run(), wrong_run(), alt_path_run(),
         intent_text=intent_text, user_rules=user_rules, canon=CanonRules())}
@@ -537,11 +542,11 @@ def test_the_leak_check_names_the_column_the_strip_missed_and_says_whether_it_au
     cover yet, and the column is what a finding can be keyed on and the next strip has to read.
     A caller that holds no record still gets the check, and says on the ruling that it audited
     nothing: a strip that never ran must not read as a strip that found nothing."""
-    record = Intent(task_id="t1", text="cancel #W123 and refund exactly 150.0", grounded=True,
+    record = Intent(task_id="t1", text="cancel #W123 and refund exactly 175.0", grounded=True,
                     stripped=[StrippedValue(column="order_id", table="orders", shape="last4",
                                             replacement="ending 0123")])
     gate = {g.stage: g for g in S.validate_verifier(
-        literal_value_atom("cancel_pending_order", "#W123", "order_id", "amount", 150.0),
+        literal_value_atom("cancel_pending_order", "#W123", "order_id", "amount", 175.0),
         reference_run(), intent_text=record.text, user_rules=UserRules(),
         intent=record, canon=CanonRules())}["verifier_leak"]
     assert gate.passed is False
@@ -550,8 +555,8 @@ def test_the_leak_check_names_the_column_the_strip_missed_and_says_whether_it_au
     assert gate.metrics["stripped"] == 1 and gate.metrics["audited"] is True
 
     gate = {g.stage: g for g in S.validate_verifier(
-        literal_value_atom("cancel_pending_order", "#W123", "order_id", "amount", 150.0),
-        reference_run(), intent_text="cancel #W123 and refund exactly 150.0",
+        literal_value_atom("cancel_pending_order", "#W123", "order_id", "amount", 175.0),
+        reference_run(), intent_text="cancel #W123 and refund exactly 175.0",
         user_rules=UserRules(), canon=CanonRules())}["verifier_leak"]
     assert gate.passed is False
     assert gate.metrics["audited"] is False and gate.metrics["stripped"] == 0
@@ -563,15 +568,16 @@ def _garage_events(said: str) -> list[dict]:
         user(said),
         call("get_vehicle", {"plate": "KP19TRX"}, kind="read", cid="c0"),
         result({"plate": "KP19TRX", "quote": 240.0}, cid="c0"),
-        call("book_service", {"plate": "KP19TRX", "quote": 240.0}, cid="c1"),
+        call("book_service", {"plate": "KP19TRX", "quote": 264.0}, cid="c1"),
         result({"booked": True}, cid="c1"),
         assistant("Booked."),
     ]
 
 
 def _garage_verifier() -> Verifier:
-    """The price kept as a literal: the driver was never told it, so check 7 rules on it (D190)."""
-    return literal_value_atom("book_service", "KP19TRX", "plate", "quote", 240.0)
+    """The price with tax kept as a literal: no row holds it and the driver was never told it, so check 7
+    rules on it (D190, D293)."""
+    return literal_value_atom("book_service", "KP19TRX", "plate", "quote", 264.0, provenance="agent_chosen")
 
 
 def test_a_value_is_no_leak_only_when_a_user_said_it_in_some_seed_recording():
@@ -585,17 +591,17 @@ def test_a_value_is_no_leak_only_when_a_user_said_it_in_some_seed_recording():
     """
     gates = {g.stage: g for g in S.validate_verifier(
         _garage_verifier(), make_run("ref", _garage_events("please book my car in for its service")),
-        intent_text="book the 240.0 service", user_rules=UserRules(),
-        seed_runs=[make_run("seed", _garage_events("book the service, i was quoted 240.0 last month"))], canon=CanonRules())}
+        intent_text="book the 264.0 service", user_rules=UserRules(),
+        seed_runs=[make_run("seed", _garage_events("book the service, i was quoted 264.0 last month"))], canon=CanonRules())}
     assert gates["verifier_leak"].passed is True
     assert gates["verifier_leak"].failures == []
 
     gates = {g.stage: g for g in S.validate_verifier(
         _garage_verifier(), make_run("ref", _garage_events("please book my car in for its service")),
-        intent_text="book the 240.0 service", user_rules=UserRules(),
+        intent_text="book the 264.0 service", user_rules=UserRules(),
         seed_runs=[make_run("seed", _garage_events("book my car in, the brakes are grinding"))], canon=CanonRules())}
     assert gates["verifier_leak"].passed is False
-    assert "intent leaks 240.0" in " ".join(gates["verifier_leak"].failures)
+    assert "intent leaks 264.0" in " ".join(gates["verifier_leak"].failures)
 
 
 def test_a_loophole_probe_that_did_not_run_is_not_a_pass(tmp_path):

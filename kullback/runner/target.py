@@ -321,6 +321,47 @@ def communicate_values(run: Run, fn: Callable) -> dict[str, dict]:
     return out
 
 
+def leaves(value: Any, path: str = "") -> list[tuple[str, Any]]:
+    """Every scalar under a result or a row, with the dotted field path it sits under (list positions dropped)."""
+    if isinstance(value, dict):
+        return [leaf for name, item in value.items() for leaf in leaves(item, f"{path}.{name}" if path else str(name))]
+    if isinstance(value, (list, tuple)):
+        return [leaf for item in value for leaf in leaves(item, path)]
+    return [(path, value)] if path and value is not None and value != "" else []
+
+
+def whole_field(result: Any, key: str, fn: Callable) -> Optional[str]:
+    """The field whose whole value is this canonical key, or None when the key is only part of a value.
+
+    A fact is keyed by meaning (D291): the column it came from plus the value. A token that is a
+    piece of a longer value (a year or a day out of a date, the digits of an id with a prefix) names
+    no column and is a fragment, never a fact of its own.
+    """
+    return next((path for path, value in leaves(result) if _key(fn, value) == key), None)
+
+
+def fact_source(run: Run, span: Any, key: str, fn: Callable) -> tuple[Optional[str], Optional[str]]:
+    """The tool and the field a stated fact was read from: the result its span names, and its call."""
+    idx = getattr(span, "msg_index", None)
+    result = next((e for e in run.events if e.idx == idx and e.type == "tool_result"), None)
+    if result is None:
+        return None, None
+    call = next((e for e in reversed(run.events) if e.type == "tool_call" and e.idx < result.idx
+                 and _payload(e).get("id") in (None, _payload(result).get("id"))), None)
+    tool = str(_payload(call).get("name") or "") or None if call is not None else None
+    return tool, whole_field(_payload(result).get("result"), key, fn)
+
+
+def field_of_value(run: Run, key: str, fn: Callable) -> Optional[str]:
+    """The first field of any result of the Run whose whole value is this canonical key."""
+    for event in run.events:
+        if event.type == "tool_result":
+            field = whole_field(_payload(event).get("result"), key, fn)
+            if field:
+                return field
+    return None
+
+
 def atom_payload(atom: Atom) -> dict:
     """The structured target an Atom carries; an atom stored before `target` existed is decoded."""
     if atom.target:
