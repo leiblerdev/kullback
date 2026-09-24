@@ -14,7 +14,7 @@ Kullback rebuilds a running copy of your system from your agent's traces and gra
 ## News
 
 - **2026-09-23.** Retail replays all 205 Tasks with 133 trusted; airline 95 of 119 with 53 trusted. Both published as `build-20260923`.
-- **2026-09-09.** Retail published on Hugging Face as a release, airline and telecom as previews.
+- **2026-09-09.** Retail published on Hugging Face as a release, airline as a preview.
 
 ## Environments
 
@@ -22,9 +22,8 @@ Kullback rebuilds a running copy of your system from your agent's traces and gra
 | --- | --- | --- | --- | --- | --- |
 | [leibler/retail](https://huggingface.co/datasets/leibler/retail) | 100.0% (205 of 205) | 100.00% of 3220 | 205 | 133 of 205 | release |
 | [leibler/airline](https://huggingface.co/datasets/leibler/airline) | 79.8% (95 of 119) | 96.03% of 1513 | 95 | 53 of 119 | preview |
-| [leibler/telecom](https://huggingface.co/datasets/leibler/telecom) | 9.3% (17 of 183) | not on its card | 14 | 0 of 183 | preview |
 
-The trusted counts are under review because some rest on a seed file several Tasks shared. All three come from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora (MIT); no package carries the recordings.
+The trusted counts are under review because some rest on a seed file several Tasks shared. Both come from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora (MIT); no package carries the recordings.
 
 ```bash
 uv run kullback fetch leibler/retail --out env-retail
