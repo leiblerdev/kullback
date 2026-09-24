@@ -13,32 +13,22 @@ Kullback rebuilds a running copy of your system from your agent's traces and gra
 
 ## News
 
-- **2026-09-24.** Smoke 9 on Opus 5.5 (Bedrock): retail replays all 223 Tasks with 193 trusted, airline all 130 with 82 trusted. Both published as `build-20260924`, airline now as a release.
+- **2026-09-24.** Retail and airline now replay every Task, and both are released on Hugging Face as `build-20260924` (airline moved from preview to release).
 - **2026-09-23.** Retail replays all 205 Tasks with 133 trusted; airline 95 of 119 with 53 trusted. Both published as `build-20260923`.
 - **2026-09-09.** Retail published on Hugging Face as a release, airline as a preview.
 
 ## Environments
 
-Latest build: smoke 9, 2026-09-24, built and examined with Opus 5.5 on Amazon Bedrock.
+Built 2026-09-24 with Claude Opus 5.5, published on Hugging Face as `build-20260924`.
 
-| | Retail | Airline |
+| | [Retail](https://huggingface.co/datasets/leibler/retail) | [Airline](https://huggingface.co/datasets/leibler/airline) |
 |---|---|---|
 | Tasks | 223 | 130 |
-| Reference Traces confirmed by replay | 223 | 130 |
-| Task replay fidelity | 1.00 | 1.00 |
-| Run replay fidelity | 456 of 456 | 199 of 200 |
-| Call fidelity | 100.00% of 3220 calls | 99.93% of 1513 calls |
-| Verifiers derived | 222 | 128 |
-| Trusted Tasks | 193 | 82 |
-| Refused | 0 | 0 |
-| Spend, USD | 71.01 | 74.67 |
-| Of which the runner (Candidate Runs) | about 57 | about 59 |
-| Of which the Examiner | about 9 | about 12 |
-| Of which the Builder | about 2 | about 4 |
+| Tasks replayed faithfully | 100% | 100% |
+| Tool calls that match the recording | 100% | 99.9% |
+| Trusted Tasks (graded by a checked Verifier) | 193 | 82 |
 
-Building and examining are cheap; replaying and running Candidates is most of the cost.
-
-Both packages on the Hub, [leibler/retail](https://huggingface.co/datasets/leibler/retail) and [leibler/airline](https://huggingface.co/datasets/leibler/airline), are this build. Both Environments come from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora (MIT); no package carries the recordings.
+Both Environments come from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora (MIT); no package carries the recordings.
 
 ```bash
 uv run kullback fetch leibler/retail --out env-retail
