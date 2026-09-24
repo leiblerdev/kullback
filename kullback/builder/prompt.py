@@ -5,7 +5,8 @@ the rows that still differ). The tools with one example call each. General examp
 tied to one corpus. The choice rule. The shape of the feedback. The stop rule last.
 
 Carried: D124 (an unacted ruling stays in front of the model), D155 (the recording is the
-standard), D171 (per-call rows), D224 (synthetic rows never in a trusted Task).
+standard), D171 (per-call rows), D224 (synthetic rows never in a trusted Task),
+D282 (a tool that ends the Run is a write), D283 (the world clock).
 """
 
 from __future__ import annotations
@@ -70,7 +71,12 @@ EXAMPLES = (
     "(outcome_not_in_state, intent_contradicts_reference, fact_unavailable_to_user, "
     "needs_action_record) and one sentence. The note carries no atom and no Verifier text. "
     "The Examiner rules on it; the ruling is in your opening message next round, and the "
-    "Task cannot be refused while its note is open."
+    "Task cannot be refused while its note is open.\n"
+    "A tool whose calls end the Run and write nothing (it hands the conversation on) is a "
+    "write all the same: its file says so, the harness writes each call as a row of the "
+    "actions table ahead of the body, and the body only returns the answer the recording "
+    "shows. A body reads time only as self.ctx.now(), the world clock the recording set; a "
+    "body that imports a clock module or reads the machine's clock is refused at its line."
 )
 
 CHOICE = (
