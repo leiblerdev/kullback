@@ -32,6 +32,8 @@ from kullback.agent.events import ToolExecutionEnd
 from kullback.agent.extensions import ExtensionAPI, load_extensions, refuse_paths
 from kullback.agent.harness import AgentHarness
 from kullback.agent.session.store import SessionStore
+from kullback.ai.cache import ttl_for
+from kullback.ai.provider import ModelConfig
 from kullback.builder import env_files
 from kullback.builder import prompt as prompt_mod
 from kullback.builder.domain_tools import domain_tools, opening_for, status_of
@@ -265,8 +267,10 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
         env_files.regenerate(root)
     session = SessionStore.load(Path(session_path) if session_path is not None
                                 else root / "sessions" / "builder.jsonl")
+    # The session waits on its own long tools (examine, run) between turns, past the five-minute
+    # TTL, so its cache points are written to live an hour (cache.STAGE_CACHE_TTL says why).
     harness = AgentHarness(
-        model=model, session=session,
+        model=model, session=session, config=ModelConfig(cache_ttl=ttl_for(CEILING_STAGE)),
         context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
         bus=Bus(root / "bus.jsonl", agent="builder"), max_turns=max_turns)
     load_extensions(harness, [builder_extension(

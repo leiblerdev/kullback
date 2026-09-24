@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from kullback.agent.messages import AssistantMessage, Message, ToolResultMessage
 from kullback.agent.tools import ToolResult
@@ -69,8 +69,20 @@ class MessageUpdateEvent(_Event):
 
 
 class MessageEndEvent(_Event):
+    """A message is complete. An assistant message the model streamed carries `request`: the cache
+    fingerprint of what was sent for it (kullback.ai.cache.fingerprint), which budget.subscriber puts
+    on the feed. Any other message carries none, and the key is then left out of the stored form."""
+
     type: Literal["message_end"] = "message_end"
     message: Message
+    request: Optional[dict[str, Any]] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_request(self, handler):
+        data = handler(self)
+        if self.request is None:
+            data.pop("request", None)
+        return data
 
 
 class ToolExecutionStartEvent(_Event):

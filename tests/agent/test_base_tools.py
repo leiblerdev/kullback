@@ -450,7 +450,8 @@ def test_an_extension_is_registered_with_the_subset_it_is_given(root):
     harness = AgentHarness(TestModel(["done"]))
     registered = register_base_tools(ExtensionAPI(harness), root, only=["read", "grep", "find", "ls"])
     assert [tool.name for tool in registered] == ["read", "grep", "find", "ls"]
-    assert [schema["name"] for schema in harness.registry.schemas()] == ["read", "grep", "find", "ls"]
+    # The schemas go out by name, whatever the registration order: they head every cached prefix.
+    assert [schema["name"] for schema in harness.registry.schemas()] == ["find", "grep", "ls", "read"]
     # the tools an extension is not given are the boundary it cannot argue with
     assert "bash" not in harness.registry and "write" not in harness.registry
 

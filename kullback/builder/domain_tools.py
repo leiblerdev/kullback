@@ -21,6 +21,7 @@ from typing import Any, Callable, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.tools import AgentTool
+from kullback.ai.provider import MemoModel
 from kullback.builder import env_files, world_tools
 from kullback.builder.replay_evidence import (
     HOLDOUT_ANSWERS_FILE,
@@ -468,8 +469,15 @@ def priced_model(model: Any, workdir: Any, stage: str, *, cap_context: bool = Tr
 
 
 def reader_model(model: Any, workdir: Any) -> Any:
-    """The session model as the readers step takes it, priced under its own stage (F12, F23)."""
-    return priced_model(model, workdir, "readers")
+    """The session model as the readers step takes it, priced under its own stage (F12, F23).
+
+    Memoised on disk (provider.MemoModel): a reader proposal is a deterministic re-ask of the same
+    recording, so a rebuild or a resumed build in the same workdir asks nothing it asked before and
+    the ledger counts the hit under memo_hits. A model already priced is taken as it is.
+    """
+    if model is None or isinstance(model, budget.BudgetedModel):
+        return model
+    return priced_model(MemoModel(model, workdir), workdir, "readers")
 
 
 def runner_model(model: Any, workdir: Any) -> Any:

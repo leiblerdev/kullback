@@ -38,6 +38,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serial
 
 # ruff: noqa: F401 - the imports below that this module does not itself use are the re-exports
 # named in the note under them: the rest of the Harness spells them kullback.ai.provider.X.
+from kullback.ai.cache import CACHE_TTLS, MAX_CACHE_POINTS, cache_control, count_cache_points
 from kullback.ai.events import StreamEvent
 from kullback.ai.http import (
     CONNECT_TIMEOUT_S,
@@ -186,6 +187,10 @@ class ModelConfig(BaseModel):
     # cache. Set once per build and stage (build.py); the Anthropic adapter ignores it, since it
     # caches by cache_control points instead (cache_system, cache_last_two below).
     prompt_cache_key: Optional[str] = None
+    # Anthropic: how long a cache point lives, "5m" (the default, a bare mark) or "1h" (cache.py
+    # says when each pays). OpenAI-shaped endpoints cache on their own and take no such field, so
+    # their adapters ignore it. budget.BudgetedModel fills it from the stage when it is not set.
+    cache_ttl: Optional[str] = None
     # Logprobs, for a training renderer that needs them (D159). OpenAI chat takes both fields, the
     # Responses API takes top_logprobs and an include entry, and Anthropic offers neither, so its
     # adapter ignores both. Whatever comes back lands in the reply's `raw` and nowhere else.
@@ -204,6 +209,13 @@ class ModelConfig(BaseModel):
     def _known_tool_choice(cls, value: Optional[str]) -> Optional[str]:
         if value is not None and value not in TOOL_CHOICES:
             raise ValueError(f"tool_choice is one of {', '.join(TOOL_CHOICES)}, not {value!r}")
+        return value
+
+    @field_validator("cache_ttl")
+    @classmethod
+    def _known_cache_ttl(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value not in CACHE_TTLS:
+            raise ValueError(f"cache_ttl is one of {', '.join(CACHE_TTLS)}, not {value!r}")
         return value
 
 
@@ -406,11 +418,16 @@ class MemoModel(Model):
         self._local.hit = bool(value)
 
     def _key(self, messages: list[dict], tools: Optional[list[dict]], config: Optional[ModelConfig]) -> str:
+        settings = (config or ModelConfig()).model_dump(mode="json")
+        # An unset cache TTL is left out, so the key of every request stored before the field
+        # existed is the key it had: the TTL is how long the provider keeps a prefix, not the ask.
+        if settings.get("cache_ttl") is None:
+            settings.pop("cache_ttl", None)
         payload = {
             "model": self.name,
             "messages": normalize_messages(messages),
             "tools": tools or [],
-            "config": (config or ModelConfig()).model_dump(mode="json"),
+            "config": settings,
         }
         blob = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -548,7 +565,7 @@ def _read_assistant_replies(path: Path) -> list[ModelReply]:
 
 
 ENV_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-CACHE_CONTROL = {"type": "ephemeral"}
+CACHE_CONTROL = cache_control()
 TEXT_BLOCK_TYPES = ("text", "reasoning", "thinking")
 # The Messages API's reasoning blocks, which a later request sends back byte for byte.
 THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
@@ -651,16 +668,34 @@ def normalize_messages(messages: list[dict]) -> list[dict]:
     return out
 
 
-def cache_system(system: Any) -> list[dict]:
+def cache_tools(tools: list[dict], ttl: Optional[str] = None) -> list[dict]:
+    """A cache point on the last tool: tools render first, so this caches the whole tool list.
+
+    Tools and system usually change at different rates (a role's tools are fixed for a build, a
+    session's system prompt can differ per session), so each gets its own point (prompt-caching.md,
+    Placement patterns); a call whose system changed still reads the tools.
+    """
+    out = copy.deepcopy(tools)
+    if out:
+        out[-1] = {**out[-1], "cache_control": cache_control(ttl)}
+    return out
+
+
+def cache_system(system: Any, ttl: Optional[str] = None) -> list[dict]:
     """A cache point on the system prompt: it is the same on every call of a build."""
     blocks = [{"type": "text", "text": system}] if isinstance(system, str) else copy.deepcopy(system or [])
     if blocks:
-        blocks[-1] = {**blocks[-1], "cache_control": CACHE_CONTROL}
+        blocks[-1] = {**blocks[-1], "cache_control": cache_control(ttl)}
     return blocks
 
 
-def cache_last_two(messages: list[dict]) -> list[dict]:
-    """Cache points on the last two non-system messages, so a growing conversation reuses its prefix."""
+def cache_last_two(messages: list[dict], ttl: Optional[str] = None) -> list[dict]:
+    """Cache points on the last two non-system messages, so a growing conversation reuses its prefix.
+
+    The last one is where the next call's read starts; the one before it is where this call reads
+    from, when the previous call wrote its point there. A block that cannot carry a mark (a thinking
+    block, an empty text) is skipped for the one before it in the same message.
+    """
     out = copy.deepcopy(messages)
     marked = 0
     for message in reversed(out):
@@ -669,11 +704,13 @@ def cache_last_two(messages: list[dict]) -> list[dict]:
         blocks = message.get("content")
         if not isinstance(blocks, list):
             continue
-        # A thinking block cannot carry a cache point, so the point goes on the last block that can.
+        # A thinking block cannot carry a cache point, and an empty text block is refused with one,
+        # so the point goes on the last block that can.
         last = next((i for i in range(len(blocks) - 1, -1, -1) if isinstance(blocks[i], dict)
-                     and blocks[i].get("type") not in THINKING_BLOCK_TYPES), None)
+                     and blocks[i].get("type") not in THINKING_BLOCK_TYPES and not _is_empty_block(blocks[i])),
+                    None)
         if last is not None:
-            blocks[last] = {**blocks[last], "cache_control": CACHE_CONTROL}
+            blocks[last] = {**blocks[last], "cache_control": cache_control(ttl)}
             marked += 1
     return out
 
@@ -914,15 +951,18 @@ class AnthropicModel(HttpModel):
         # so the same model is asked the same way on every host that serves it.
         rules = request_rules_for(self.wire_id)
         system, converted = _to_anthropic(messages)
+        ttl = config.cache_ttl
+        # The four cache points, in render order: tools, system, then the last two messages. They
+        # sit on blocks only: a top-level cache_control field is refused by the legacy Bedrock stack.
         body: dict[str, Any] = {
             "model": self.wire_id,
             "max_tokens": config.max_tokens or self.default_max_tokens,
-            "messages": cache_last_two(normalize_messages(converted)),
+            "messages": cache_last_two(normalize_messages(converted), ttl),
         }
         if system:
-            body["system"] = cache_system(system)
+            body["system"] = cache_system(system, ttl)
         if tools:
-            body["tools"] = [_anthropic_tool(t) for t in tools]
+            body["tools"] = cache_tools([_anthropic_tool(t) for t in tools], ttl)
             choice = config.tool_choice
             if choice == "required" and not rules.forced_tool_choice:
                 # A forced choice is a 400 on this model: `auto` goes on the wire and the demand
@@ -949,6 +989,9 @@ class AnthropicModel(HttpModel):
             body["output_config"] = {"effort": config.effort}
         # config.logprobs and config.top_logprobs are deliberately not sent: the Messages API has
         # no logprobs field, and a field it does not know makes it refuse the whole request.
+        points = count_cache_points(body)
+        if points > MAX_CACHE_POINTS:  # pragma: no cover - the placement above makes at most four
+            raise ValueError(f"{points} cache points in one request; the Messages API takes {MAX_CACHE_POINTS}")
         return body
 
     def parse_reply(self, data: dict) -> ModelReply:
@@ -1387,7 +1430,7 @@ def _responses_input(messages: list[dict]) -> list[dict]:
             items.append({"type": "function_call",
                           "call_id": clean_tool_call_id(call.get("id")),
                           "name": function.get("name", call.get("name", "")),
-                          "arguments": args if isinstance(args, str) else json.dumps(args or {})})
+                          "arguments": args if isinstance(args, str) else json.dumps(args or {}, sort_keys=True)})
         if text or not calls:
             items.append({"role": role if role in ("user", "assistant", "system", "developer") else "user",
                           "content": text})

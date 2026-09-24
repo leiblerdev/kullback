@@ -177,7 +177,10 @@ class ToolRegistry:
         return list(self._tools)
 
     def schemas(self) -> list[dict]:
-        return [tool.schema() for tool in self._tools.values()]
+        """The tool schemas by name, not by registration: tools render first in every request, so
+        their order is the head of the cached prefix and must not depend on which extension or skill
+        registered first (prompt-caching.md: serialise tools deterministically, sort by name)."""
+        return [self._tools[name].schema() for name in sorted(self._tools)]
 
     def __len__(self) -> int:
         return len(self._tools)

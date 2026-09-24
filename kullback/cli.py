@@ -983,6 +983,25 @@ def _wrapped_model(model: Any, stage: str, workdir: Path, ceiling_usd: Optional[
                                 ceiling=ceiling, prompt_cache_key=cache_key)
 
 
+budget_app = typer.Typer(add_completion=False,
+                         help="What a build spent, read from its ledger and feed; nothing is called.")
+app.add_typer(budget_app, name="budget")
+
+
+@budget_app.command("cache")
+def budget_cache(workdir: Path = WORKDIR,
+                 as_json: bool = typer.Option(False, "--json", help="Print the view as JSON.")):
+    """Per stage: calls, the share of prompt tokens read from the cache, writes on new and on already
+    sent prefixes, conversations that grew and still read nothing, and the ten largest uncached calls."""
+    cache_view = importlib.import_module("kullback.runner.cache_view")
+    view = cache_view.cache_view(workdir)
+    if as_json:
+        typer.echo(json.dumps(view, indent=2))
+        return
+    for line in cache_view.render(view):
+        typer.echo(line)
+
+
 user_app = typer.Typer(add_completion=False,
                        help="The Simulated user: how close its turns are to the recorded ones, and how "
                             "often it runs out of scenario (D214).")
