@@ -124,6 +124,16 @@ def test_a_thinking_block_is_skipped_and_the_mark_goes_on_the_block_before_it():
     assert "cache_control" in marked[-1]["content"][0] and "cache_control" not in marked[-1]["content"][1]
 
 
+def test_an_empty_text_and_a_signed_empty_thinking_block_are_both_passed_over_for_the_mark():
+    blocks = [{"type": "tool_use", "id": "t1", "name": "lookup", "input": {}},
+              {"type": "redacted_thinking", "data": "opaque"},
+              {"type": "thinking", "thinking": "", "signature": "s"},
+              {"type": "text", "text": "  "}]
+    marked = pv.cache_last_two(conversation() + [{"role": "assistant", "content": blocks}], ttl="1h")
+    assert [("cache_control" in block) for block in marked[-1]["content"]] == [True, False, False, False]
+    assert marked[-1]["content"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
 def test_an_unknown_ttl_is_refused_where_it_is_set():
     with pytest.raises(ValueError):
         cache_control("2h")
