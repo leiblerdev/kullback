@@ -1,26 +1,27 @@
 # Builds
-Latest documented build: smoke 8, retail and airline on `openai/gpt-6-sol` (2026-09-23), section at the end.
+Latest documented build: smoke 9, retail and airline on Opus 5.5 on Amazon Bedrock (2026-09-24), section at the end.
 The words these sections use (confirmed Reference, the three fidelities, Verifier, trusted, open, refused, preview)
 are defined from the code in the "Words" section of the top-level README.md.
-Previous latest: retail build 14 with airline and telecom first rounds (2026-09-07).
-Builds 14 (retail, three arms), airline and telecom are running under workdirs that are not yet documented.
+Builds 14 (retail, three arms) and the first airline and telecom rounds of 2026-09-07 were never written up.
 Placeholder rows below mark builds 9, 10, 12-agent and 14; rows only, no retroactive tables.
-Machine generated tables in this directory are frozen; each carries an archived flag at the top.
+The machine generated tables of builds 8 to 13 were deleted on 2026-09-24; git history keeps them.
 
 ## Index
 
-| Build | Table | Notes |
+| Build | Record | Notes |
 |---|---|---|
-| 8 | build-8.md | First Tasks with a Verdict, 20 of 205 |
-| 9 | none, prose below | Retail crash in compile_tools, found 2026-09-06 |
-| 10 | none, prose below | Airline two rounds, stalled, found 2026-09-06 |
-| 11 code driver | build-11-code-driver.md | D135 experiment, code arm |
-| 11 model driving | build-11-model-driving.md | D135 experiment, model arm |
-| 12 code driver | build-12-code-driver.md | Ten round comparison, code arm |
-| 12 model driving | build-12-model-driving.md | Ten round comparison, model arm |
-| 13 model driving | build-13-model-driving.md | D145 to D153 code, died in round 2 |
-| 14 | none, prose below | Retail, airline and telecom generalisation test |
-| smoke 7 | none, prose below | Retail and airline on gpt-6-sol, killed 13:44 UTC 2026-09-23 |
+| 8 | prose below | First Tasks with a Verdict, 20 of 205 |
+| 9 | prose below | Retail crash in compile_tools, found 2026-09-06 |
+| 10 | prose below | Airline two rounds, stalled, found 2026-09-06 |
+| 11 code driver | prose below | D135 experiment, code arm |
+| 11 model driving | prose below | D135 experiment, model arm |
+| 12 code driver | prose below | Ten round comparison, code arm |
+| 12 model driving | prose below | Ten round comparison, model arm |
+| 13 model driving | prose below | D145 to D153 code, died in round 2 |
+| 14 | prose below | Retail, airline and telecom generalisation test |
+| smoke 7 | prose below | Retail and airline on gpt-6-sol, killed 13:44 UTC 2026-09-23 |
+| smoke 8 | prose below | Retail and airline on gpt-6-sol, published as build-20260923 |
+| smoke 9 | prose below | Retail and airline on Opus 5.5 (Bedrock), held back by the leak scan |
 
 # The first live build (2026-08-29)
 
@@ -341,7 +342,7 @@ Build 12 runs both arms again on fresh copies of build 8's workdir.
 
 ## Build 12, the model arm (2026-09-06 to 2026-09-07): ten rounds, stalled at trusted 64
 
-The other half of the D135 experiment: the same retail corpus and code as build 12's code driver (`docs/builds/build-12-code-driver.md`), `openai/gpt-5.6-luna` driving the Builder and the Examiner with `--agent`, eight workers, a 25 dollar ceiling. It ran 19h 29m over ten rounds and left on the stalled exit. The table is `docs/builds/build-12-model-driving.md`.
+The other half of the D135 experiment: the same retail corpus and code as build 12's code driver, `openai/gpt-5.6-luna` driving the Builder and the Examiner with `--agent`, eight workers, a 25 dollar ceiling. It ran 19h 29m over ten rounds and left on the stalled exit.
 
 | | build 12, code driver | build 12, model driving | build 13, model driving |
 |---|---:|---:|---:|
@@ -360,7 +361,7 @@ The other half of the D135 experiment: the same retail corpus and code as build 
 
 ## Build 13 (2026-09-06 to 2026-09-07): the model driving on the D145 to D153 code, 16 hours, dead in round 2
 
-Launched on a fresh copy of the retail workdir with `--agent`, `openai/gpt-5.6-luna` driving both sessions, eight workers, a 25 dollar ceiling, on the working tree after D153 (the triage skill, the fact miner, the cache effect, the driver's build) and before D154. D154 to D158 were committed while it ran; the process kept its imports, so what follows is the D153 code. The table is `docs/builds/build-13-model-driving.md`; build 12's code arm (`docs/builds/build-12-code-driver.md`) is the comparison, the model arm of build 12 was still running when this was written.
+Launched on a fresh copy of the retail workdir with `--agent`, `openai/gpt-5.6-luna` driving both sessions, eight workers, a 25 dollar ceiling, on the working tree after D153 (the triage skill, the fact miner, the cache effect, the driver's build) and before D154. D154 to D158 were committed while it ran; the process kept its imports, so what follows is the D153 code. Build 12's code arm is the comparison, the model arm of build 12 was still running when this was written.
 
 | | build 12, code driver | build 13, model driving |
 |---|---:|---:|
@@ -501,3 +502,28 @@ Hugging Face, tag build-20260923. No round closed, so the cards count from the w
 
 An investigation into the open Tasks, the spend and the Builder's failures is running (three read-only Workers);
 its findings will be added here.
+
+# Smoke 9 (2026-09-24): retail and airline on Opus 5.5 on Amazon Bedrock
+
+Both builds ran on the overhaul branch after D290 and D291, with the Builder, the Examiner and the runner on
+Opus 5.5 through Bedrock's global profile. Every Reference Trace replayed and confirmed in both corpora.
+
+| | Retail | Airline |
+|---|---|---|
+| Tasks | 223 | 130 |
+| Reference Traces confirmed by replay | 223 | 130 |
+| Task replay fidelity | 1.00 | 1.00 |
+| Run replay fidelity | 456 of 456 | 199 of 200 |
+| Verifiers derived | 222 | 128 |
+| Trusted Tasks | 193 | 82 |
+| Refused | 0 | 0 |
+| Spend, USD | 71.01 | 74.67 |
+| Of which the runner (Candidate Runs) | about 57 | about 59 |
+| Of which the Examiner | about 9 | about 12 |
+| Of which the Builder | about 2 | about 4 |
+
+Building and examining are cheap. Replaying and running Candidates is most of the cost.
+
+Nothing was published. The export's leak scan refused both packages: in 13 Verifiers (1 retail, 12 airline) an
+atom's `target.raw` holds a whole recorded agent message of 60 to 110 words. The Hub still carries build-20260923.
+Workdirs: `.work-retail` and `.work-airline` in the smoke 9 worktree. What comes next is in `docs/todo.md`.
