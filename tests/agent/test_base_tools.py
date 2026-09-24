@@ -4,6 +4,7 @@ segment, the truncation, the exact-match edit, and the subset an extension is re
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import subprocess
 
@@ -441,6 +442,61 @@ def test_inspect_names_how_many_keys_it_left_out_of_a_wide_object(root):
 def test_inspect_refuses_more_than_five_sample_rows(world):
     result = run(tools(world)["inspect"], path="db.json", rows=6)
     assert result.is_error is True and "rows must be 0 to 5" in result.content
+
+
+# The package exports a function named like the module, so the module is taken from the import system.
+base_tools_mod = importlib.import_module("kullback.agent.base_tools")
+
+
+def _log(root, name: str, count: int) -> int:
+    lines = [json.dumps({"n": n, "result": {"ok": True}} if n % 2 else {"n": n, "error": "Refused: no"})
+             for n in range(count)]
+    (root / name).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return (root / name).stat().st_size
+
+
+def test_inspect_summarises_a_jsonl_file_over_the_input_cap_from_its_first_lines_and_says_so(root, monkeypatch):
+    size = _log(root, "long.jsonl", 400)
+    monkeypatch.setattr(base_tools_mod, "INSPECT_MAX_BYTES", size // 4)
+    monkeypatch.setattr(base_tools_mod, "INSPECT_SAMPLE_LINES", 50)
+    result = run(tools(root)["inspect"], path="long.jsonl", rows=1)
+    assert result.is_error is False
+    assert f"the file is {size} bytes, over the {size // 4} byte inspect cap" in result.content
+    assert "every count below is over its first 50 lines only" in result.content
+    assert "n: integer (50 of 50 rows)" in result.content
+    assert "object{ok}: 25" in result.content and "Refused: 25" in result.content
+
+
+def test_inspect_reads_no_more_than_the_input_cap_when_the_sample_lines_would_run_past_it(root, monkeypatch):
+    size = _log(root, "long.jsonl", 400)
+    monkeypatch.setattr(base_tools_mod, "INSPECT_MAX_BYTES", size // 4)
+    text = run(tools(root)["inspect"], path="long.jsonl").content
+    whole, total = 0, 0
+    for line in (root / "long.jsonl").read_bytes().splitlines(keepends=True):
+        if total + len(line) > size // 4:
+            break
+        whole, total = whole + 1, total + len(line)
+    assert f"over its first {whole} lines only" in text and whole < 400
+    assert "not JSON" not in text
+
+
+def test_inspect_refuses_one_json_document_over_the_input_cap_and_names_its_size(world, monkeypatch):
+    size = (world / "db.json").stat().st_size
+    monkeypatch.setattr(base_tools_mod, "INSPECT_MAX_BYTES", size - 1)
+    result = run(tools(world)["inspect"], path="db.json", key="things")
+    assert result.is_error is True
+    assert f"db.json is {size} bytes, over the {size - 1} byte inspect cap" in result.content
+    assert "read it with offset and limit" in result.content
+
+
+def test_inspect_of_a_file_at_the_input_cap_gives_the_same_summary_as_without_the_cap(world, monkeypatch):
+    _log(world, "short.jsonl", 40)
+    before = [run(tools(world)["inspect"], path=name, rows=2).content for name in ("db.json", "short.jsonl")]
+    monkeypatch.setattr(base_tools_mod, "INSPECT_MAX_BYTES", max((world / name).stat().st_size
+                                                                   for name in ("db.json", "short.jsonl")))
+    monkeypatch.setattr(base_tools_mod, "INSPECT_SAMPLE_LINES", 5)
+    after = [run(tools(world)["inspect"], path=name, rows=2).content for name in ("db.json", "short.jsonl")]
+    assert after == before and "jsonl: 40 lines" in after[1]
 
 
 # --- registration ---
