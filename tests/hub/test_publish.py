@@ -446,6 +446,35 @@ def test_call_fidelity_counts_same_cosmetic_and_both_refused_as_agreeing_and_bot
     assert "| Call fidelity | 60.00% of 5 |" in card_mod.card_markdown(manifest, "leibler/nursery")
 
 
+def test_a_recorded_call_the_replay_never_made_lowers_call_fidelity(nursery, tmp_path):
+    replays = read_json(nursery / "replays.json")
+    replays["task_one"]["trace-task_one"]["checks"] = [{"verdict": "same"}]
+    replays["task_one"]["trace-task_one"]["counts"] = {"calls": 1, "unmade": 1}
+    write_json(nursery / "replays.json", replays)
+    fidelity = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)["replay_fidelity"]
+    assert (fidelity["calls"], fidelity["calls_total"], fidelity["calls_rate"]) == (1, 2, 0.5)
+
+
+def test_a_call_the_recording_never_made_leaves_call_fidelity_unchanged(nursery, tmp_path):
+    replays = read_json(nursery / "replays.json")
+    replays["task_one"]["trace-task_one"]["checks"] = [{"verdict": "same"}, {"verdict": "unrecorded"}]
+    replays["task_one"]["trace-task_one"]["counts"] = {"calls": 2, "unmade": 0}
+    write_json(nursery / "replays.json", replays)
+    fidelity = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)["replay_fidelity"]
+    assert (fidelity["calls"], fidelity["calls_total"], fidelity["calls_rate"]) == (1, 1, 1.0)
+
+
+def test_a_replay_record_without_counts_is_counted_from_its_checks(nursery, tmp_path):
+    replays = read_json(nursery / "replays.json")
+    replays["task_one"]["trace-task_one"].pop("counts", None)
+    replays["task_one"]["trace-task_one"]["checks"] = [{"verdict": "same"}, {"verdict": "differs"}]
+    write_json(nursery / "replays.json", replays)
+    manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
+    fidelity = manifest["replay_fidelity"]
+    assert (fidelity["calls"], fidelity["calls_total"], fidelity["calls_rate"]) == (1, 2, 0.5)
+    assert "| Call fidelity | 50.00% of 2 |" in card_mod.card_markdown(manifest, "leibler/nursery")
+
+
 def test_a_pipe_or_a_line_break_in_corpus_text_stays_inside_its_table_cell(nursery, tmp_path):
     manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True,
                                   corpus="nursery | traces\nsecond line", corpus_license="MIT")
