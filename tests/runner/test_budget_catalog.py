@@ -18,6 +18,8 @@ CATALOG = {
                                   "limit": {"context": 900_000}},
         "us.a-vendor.big-1": {"cost": {"input": 4.4, "output": 22.0, "cache_read": 0.44, "cache_write": 5.5},
                               "limit": {"context": 900_000}},
+        "global.a-vendor.small-1": {"cost": {"input": 1.0, "output": 5.0}},
+        "a-vendor.small-1": {"cost": {"input": 1.1, "output": 5.5}},
     }},
     "a-vendor": {"id": "a-vendor", "models": {
         "big-1": {"cost": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
@@ -86,3 +88,16 @@ def test_reprice_recovers_the_cost_of_a_round_that_ran_unpriced(catalog, tmp_pat
     assert after["total"]["unpriced_calls"] == 0 and after["total"]["calls"] == 2
     assert after["stages"]["solve"]["usd"] == after["total"]["usd"]
     assert budget.load_totals(workdir) == after
+
+
+def test_a_bare_bedrock_id_is_priced_under_the_global_row_it_is_sent_on(catalog, tmp_path):
+    """The adapter puts a bare id on the `global.` profile, so the ledger prices that row, not the bare one."""
+    from kullback.agent.events import MessageEndEvent
+    from kullback.ai.messages import AssistantMessage
+
+    workdir = tmp_path / "w"
+    price = budget.subscriber(workdir, "builder", "bedrock/a-vendor.small-1")
+    price(MessageEndEvent(message=AssistantMessage(content="ok", usage=Usage(input=1_000_000), model="small-1")))
+    assert budget.load_totals(workdir)["total"]["usd"] == pytest.approx(1.0)
+    rows = [json.loads(line) for line in feed.path_for(workdir).read_text(encoding="utf-8").splitlines()]
+    assert [row["model"] for row in rows] == ["bedrock/global.a-vendor.small-1"]

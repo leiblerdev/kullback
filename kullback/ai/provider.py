@@ -762,6 +762,11 @@ class HttpModel(Model):
         return cls
 
     @classmethod
+    def sent_wire_id(cls, wire_id: str) -> str:
+        """The id this adapter puts on the wire for the part after `provider/`; most send it as is."""
+        return wire_id
+
+    @classmethod
     def credential_vars(cls) -> tuple[tuple[str, ...], ...]:
         """The environment variables that authenticate this adapter: any one group, fully set, is enough.
 
@@ -1094,11 +1099,15 @@ class BedrockAuth:
         self.region = bedrock_region(env)
         default = f"https://bedrock-runtime.{self.region}.amazonaws.com/{self.bedrock_route}"
         super().__init__(model_id, base_url=base_url or default, **kwargs)
-        self.wire_id = bedrock_wire_id(self.wire_id)
+        self.wire_id = self.sent_wire_id(self.wire_id)
         self.api_key = self.api_key or next((self.env[v] for v in BEDROCK_BEARER_VARS if self.env.get(v)), None)
         self.access_key = self.env.get(BEDROCK_KEY_VARS[0]) or None
         self.secret_key = self.env.get(BEDROCK_KEY_VARS[1]) or None
         self.session_token = self.env.get(BEDROCK_SESSION_VAR) or None
+
+    @classmethod
+    def sent_wire_id(cls, wire_id: str) -> str:
+        return bedrock_wire_id(wire_id)
 
     @classmethod
     def credential_vars(cls) -> tuple[tuple[str, ...], ...]:
@@ -1545,6 +1554,19 @@ def registry_endpoint(model_id: str, env: Optional[dict[str, str]] = None) -> An
 
     catalog = pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=env)
     return pricing.endpoint_from_catalog(catalog, model_id)
+
+
+def sent_model_id(model_id: str) -> str:
+    """The 'provider/model' id as its adapter sends it, so a call is priced under what went out.
+
+    A Bedrock id with no profile goes out on `global.`, and the catalog prices the bare row and the
+    `global.` row differently; a provider with no adapter of its own sends the id as given.
+    """
+    provider, wire = split_model_id(model_id)
+    adapter = ADAPTERS.get(provider)
+    if adapter is None or not wire:
+        return model_id
+    return f"{provider}/{adapter.for_model(model_id).sent_wire_id(wire)}"
 
 
 def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:

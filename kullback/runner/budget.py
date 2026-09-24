@@ -12,7 +12,7 @@ from typing import Any, Optional
 from kullback.ai import cache as cache_module
 from kullback.ai import pricing as pricing_module
 from kullback.ai.model_limits import catalog_candidates, without_profile
-from kullback.ai.provider import Model, ModelConfig, ModelReply
+from kullback.ai.provider import Model, ModelConfig, ModelReply, sent_model_id
 from kullback.runner import feed
 from kullback.runner.records import Cost, Event, Usage
 
@@ -305,15 +305,16 @@ def priced_model_id(cost: Any) -> Optional[str]:
 
 
 def sent_wire_id(model_id: Optional[str], echoed: Optional[str]) -> Optional[str]:
-    """The wire id a call is priced and recorded under: the one it was sent with.
+    """The wire id a call is priced and recorded under: the one its adapter sent.
 
     An endpoint echoes a shorter name than it was called by (Bedrock answers
     `global.anthropic.claude-opus-5-5` with `claude-opus-5-5`), and the profile is what picks the
-    catalog row, so the configured id wins whenever it names its provider; the echo is used only
-    when nothing else names the model.
+    catalog row, so the configured id wins whenever it names its provider, as the adapter sends it
+    (provider.sent_model_id: a bare Bedrock id goes out on `global.`); the echo is used only when
+    nothing else names the model.
     """
     if model_id and "/" in model_id:
-        return model_id.split("/", 1)[1]
+        return sent_model_id(model_id).split("/", 1)[1]
     return echoed or model_id
 
 
