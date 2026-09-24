@@ -471,8 +471,8 @@ def _counts_line(workdir: Path) -> str:
     replays = _json_at(root, "replays.json")
     result = counts_mod.round_counts(
         task_status, verifiers, {}, {}, _refusal_dicts(root), {}, replays,
-        _json_at(root, "rerolls.json"), _json_at(root, "canon-rules.json") or None,
-        (_json_at(root, "tool_sigs.json") or {}).get("sigs", []))
+        _json_at(root, "rerolls.json"), _entry("kullback.runner.canon", "load_rules")(root / "canon-rules.json"),
+        (_json_at(root, "tool_sigs.json") or {}).get("sigs", []), workdir=root)
     return (f"trusted {result['trusted']}, refused {result['refused_count']}, "
             f"fidelity {result['fidelity']}/{result['tasks']}")
 

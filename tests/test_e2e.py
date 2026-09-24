@@ -18,6 +18,7 @@ from kullback.builder import cluster, compile_env, ingest, mine, policy, user_si
 from kullback.examiner import derive as verifier_mod
 from kullback.runner import canon, loop, regrade, route
 from kullback.runner import verdict as verdict_mod
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import (
     Environment,
     GateResult,
@@ -228,7 +229,7 @@ def build(tmp_path_factory, request) -> dict:
     rules = user_sim.derive_user_rules(reference)
     simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state)
 
-    verifier = verifier_mod.derive_verifier(task, run_state.path, write_tools=write_tools)
+    verifier = verifier_mod.derive_verifier(task, run_state.path, write_tools=write_tools, canon=CanonRules())
     verdict = verdict_mod.verdict(run_state.path, verifier, canon, environment=environment,
                                   write_tools=write_tools, schema=schema)
     regraded = regrade.regrade([run_state.path], verifier, canon, out_dir=workdir / "verdicts",

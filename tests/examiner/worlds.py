@@ -39,29 +39,37 @@ def make_world(root: Path, *, rerolls: tuple = ("alt",), confirmed: bool = True,
     finished re-roll that cancels with another reason (a second End state), `wrong` a finished
     re-roll that cancelled the wrong order, `extra` one that cancelled a second order as well.
     `confirmed` is what the replay row says of `ref`; `terminations` overrides what a re-roll row
-    says of how its Run ended. `tasks` repeats that Task under the ids t1, t2, ... over the same
-    Runs, which is the world several Tasks are derived in at once and cached one by one (D163).
+    says of how its Run ended. `tasks` repeats that Task under the ids t1, t2, ... with the same
+    Runs written again under each Task's own folder and id, which is the world several Tasks are
+    derived in at once and cached one by one (D163); a Run file is one Task's Run (D281).
     """
     workdir = root / "world"
-    folder = workdir / "runs" / WORLD_TASK
-    folder.mkdir(parents=True)
     runs = {"ref": VF.reference_run(), "alt": VF.alt_path_run(), "bad": VF.failed_run(),
             "rr2": VF.other_reason_run(), "wrong": VF.wrong_run(), "extra": VF.extra_write_run()}
-    paths = {run_id: _write(run, folder) for run_id, run in runs.items()}
     task_ids = [f"t{n}" for n in range(1, tasks + 1)]
+    task_paths = {}
+    for task_id in task_ids:
+        folder = workdir / "runs" / task_id
+        folder.mkdir(parents=True)
+        task_paths[task_id] = {run_id: _write(run.model_copy(update={"task_id": task_id}), folder)
+                               for run_id, run in runs.items()}
+    paths = task_paths[WORLD_TASK]
     replays = {task_id: {"ref": {"trace_id": "ref", "run_id": "ref", "confirmed": confirmed,
-                                 "path": paths["ref"], "reasons": [] if confirmed else ["writes differ"]}}
+                                 "path": task_paths[task_id]["ref"],
+                                 "reasons": [] if confirmed else ["writes differ"]}}
                for task_id in task_ids}
-    reroll_rows = [{"run_id": run_id, "path": paths[run_id],
-                    "termination_reason": (terminations or {}).get(run_id, runs[run_id].termination_reason)}
-                   for run_id in rerolls]
+    reroll_rows = {task_id: [{"run_id": run_id, "path": task_paths[task_id][run_id],
+                              "termination_reason": (terminations or {}).get(run_id,
+                                                                             runs[run_id].termination_reason)}
+                             for run_id in rerolls]
+                   for task_id in task_ids}
     inputs = {
         "tasks": [Task(id=task_id, intent=VF.TASK.intent, run_ids=["ref"]) for task_id in task_ids],
         "sigs": list(SIGS),
         "constraints": [],
         "canon_rules": {},
         "replays": replays,
-        "rerolls": {task_id: [dict(row) for row in reroll_rows] for task_id in task_ids},
+        "rerolls": reroll_rows,
         "intents": {},
         "user_rules": {},
         "traces": [],

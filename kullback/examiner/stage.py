@@ -18,6 +18,7 @@ Runner as a tool of both agents (D120).
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import time
 from collections import Counter
@@ -40,6 +41,7 @@ from kullback.gates.ledger import GateLedger
 from kullback.runner import budget, parallel
 from kullback.runner.canon import rules_of
 from kullback.runner.records import (
+    ForeignRunError,
     GateResult,
     Intent,
     Task,
@@ -47,6 +49,7 @@ from kullback.runner.records import (
     apply_intent,
     as_dict,
     content_hash,
+    load_task_run,
     read_json,
     run_path,
     stored_run_path,
@@ -301,6 +304,12 @@ EXTRA_REROLLS = ("examiner", "rerolls.json")
 _EXTRA_REROLLS_LOCK = threading.Lock()
 
 
+# D281: the second-path files a resumed derivation dropped, each logged once however many Tasks name it.
+_REFUSED_FILES: set[str] = set()
+_REFUSED_LOCK = threading.Lock()
+LOG = logging.getLogger(__name__)
+
+
 def extra_rerolls_path(workdir: Path) -> Path:
     return Path(workdir).joinpath(*EXTRA_REROLLS)
 
@@ -318,7 +327,23 @@ def second_path_rows(workdir: Path, task_id: str) -> list[dict]:
     resolved = with_run_paths(workdir, {task_id: rows.get(task_id) or []})[task_id]
     return [dict(row) for row in resolved
             if isinstance(row, dict) and row.get("reason") == SECOND_PATH_REASON
-            and row.get("path") and Path(row["path"]).is_file()]
+            and row.get("path") and Path(row["path"]).is_file() and _own_run_file(row["path"], task_id)]
+
+
+def _own_run_file(path: str, task_id: str) -> bool:
+    """Does the loader read this file as a Run of this Task? A file written before D281 may hold
+    another Task's Run, or several Runs: its row is dropped, not raised, and said once per file."""
+    try:
+        load_task_run(path, task_id)
+    except ForeignRunError as exc:
+        with _REFUSED_LOCK:
+            if path not in _REFUSED_FILES:
+                _REFUSED_FILES.add(path)
+                LOG.warning("second-path row of task %s dropped: %s", task_id, exc)
+        return False
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def next_batch(workdir: Path, task_id: str) -> int:
@@ -353,10 +378,11 @@ def record_second_path(workdir: Path, task_id: str, rows: Iterable[dict], batch:
     return tagged
 
 
-def finished_recordings(rows: Iterable[dict], *, write_tools: set, fn: Callable, atoms: Any) -> list:
-    """The Runs of some re-roll rows that reached a success termination, as Recordings."""
+def finished_recordings(rows: Iterable[dict], *, write_tools: set, fn: Callable, atoms: Any,
+                        task_id: Optional[str] = None) -> list:
+    """The Runs of some re-roll rows that reached a success termination, as Recordings of the Task."""
     return [reference_mod.load(row["path"], reference_mod.REROLL, run_id=row["run_id"],
-                               write_tools=write_tools, fn=fn, atoms=atoms)
+                               write_tools=write_tools, fn=fn, atoms=atoms, task_id=task_id)
             for row in rows
             if row.get("path")
             and (row.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
@@ -506,7 +532,7 @@ def second_path_search(task_id: str, confirmation: Any, *, workdir: Path, run_re
         runs += len(rows)
         record_second_path(workdir, task_id, rows, attempt)
         attempt += 1
-        fresh = finished_recordings(rows, write_tools=write_tools, fn=fn, atoms=atoms)
+        fresh = finished_recordings(rows, write_tools=write_tools, fn=fn, atoms=atoms, task_id=task_id)
         recordings.extend(fresh)
         merge_second_path(confirmation, fresh)
     found = len(confirmation.references) > 1
@@ -1375,17 +1401,18 @@ def _prepare_one(task: Task, state: _DeriveState) -> _Job:
     """One Task's Runs, its cache key, and the D111 answer when the key is not on disk."""
     recordings = [reference_mod.load(r["path"], reference_mod.RECORDING, run_id=r["run_id"],
                                      trace_id=r["trace_id"], write_tools=state.write_tools,
-                                     fn=state.fn, atoms=state.atoms)
+                                     fn=state.fn, atoms=state.atoms, task_id=task.id)
                   for r in state.seed_replays[task.id]]
     recordings += [reference_mod.load(r["path"], reference_mod.REROLL, run_id=r["run_id"],
-                                      write_tools=state.write_tools, fn=state.fn, atoms=state.atoms)
+                                      write_tools=state.write_tools, fn=state.fn, atoms=state.atoms,
+                                      task_id=task.id)
                    for r in state.rerolls.get(task.id, [])
                    if (r.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
     # D189: the extra batches an earlier derivation bought sit outside the D111 rule's evidence,
     # so they are in the key (a batch bought is a different derivation) and are merged onto the
     # Confirmation afterwards rather than being handed to `confirm`.
     extra = finished_recordings(second_path_rows(state.ctx.workdir, task.id),
-                                write_tools=state.write_tools, fn=state.fn, atoms=state.atoms)
+                                write_tools=state.write_tools, fn=state.fn, atoms=state.atoms, task_id=task.id)
     key = cache_key(task, recordings + extra, state.common, intents=state.intents,
                     user_rules=state.user_rules, traces=state.traces,
                     fidelity_row=task_fidelity(state.tool_fidelity, task.id))

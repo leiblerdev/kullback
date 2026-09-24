@@ -2012,3 +2012,68 @@ Status: decided 2026-09-23, building.
 ### D280. Examiner rulings reach the Builder, edit_verifier, and the Builder's note on a Task (2026-09-24)
 
 The smoke 8 investigation found three breaks in the channel between the two agents. An accepted Verifier repair was kept only in the Examiner's own status file, so the Builder's status still showed the old suite result and it repaired what was already fixed; the proposal ruling never read the second path Runs the derivation bought, so that check stayed not run; and the Builder had no way to say a Task is not verifiable as written. The rule. An accepted ruling writes the Task's status row, with the new suite result and the Verifier version, into both the exposed and the workdir status files in the same transaction as the Verifier file, and the ruling merges every second path Run bought for the Task into its evidence first. The Examiner's repair tool is edit_verifier: an edit list changes named fields of existing atoms (the kind stays, an unknown atom id is refused by name) before drop and add, ruled the same way, one version per call; propose_verifier stays one release as an alias whose result says it is deprecated. The Builder writes one note per Task under notes/ in the workdir through note_task, with a reason off a fixed list (outcome not in state, Intent contradicts Reference, fact unavailable to the user, needs an action record) and one sentence, and a note carrying an atom or Verifier text is refused. The Examiner reads the open notes in its opening message and rules on each with an accepted edit_verifier (agrees), a probe, or a finding with note_ruling; the ruling is written next to the note and shows in the Builder's next opening message. An open note blocks only that Task's refusal, never the round. Checked in code: tests/examiner/test_domain_tools.py and tests/examiner/test_session.py, tests/builder/test_session.py. Status: decided 2026-09-24 by the founder (the note design), built on overhaul-0922/fix-channel.
+
+## Run provenance (D281)
+
+### D281. A Run file is one Run of one Task, and trust needs seeds of its own Task (2026-09-24)
+
+A bought re-roll was named by round, attempt and seed only, so every Task of a round wrote its second path to the same
+nine files: the writer truncated, the loader spliced every Run it found into one, and smoke 8 derived 49 retail and 27
+airline trusted Verifiers from files other Tasks wrote. Now a re-roll is named by its prefix, Task and seed, a default
+Run name that is taken moves to the next attempt, and every Run file opens with a line naming its run_id and task_id and
+is created once: a path that exists is an error naming it, and only a replay or probe of the same Run under the same
+name replaces its own file. The loader refuses a file holding two Runs, and given a Task it refuses a file of another
+Task with both ids in the error; derivation and the suite's seeds and second path load through it. The trusted gate,
+given the workdir, resolves every seed of the accepted version through the replay, re-roll and Examiner rows (then the
+Task's runs folder) and the loader; a seed that is not a Run of the same Task fails the gate with the seeds named and
+leaves the history in place for the next round to derive again. The Builder's status and the round's snapshot read one
+ruling (`workdir_trusted_ruling`), and bindings and the counts pass the workdir, so there is one trusted number. A resumed
+workdir from before D281 drops a second-path row whose file the loader refuses for that Task, logged once per file. On the smoke 8 workdirs, read only, this withdraws trust
+from 48 of 133 retail and 25 of 53 airline Verifiers, the eight airline Verifiers with the seed signal among them
+(`.claude/herdr/overhaul-0922/reports/ov-fix-runs/report.md`). Status: decided 2026-09-24, built on overhaul-0922/fix-runs.
+
+## Smoke 8 fixes: the world records hand-offs and keeps the time (D282, D283)
+
+### D282. A tool that ends the Run and writes nothing leaves a row, so a write atom can demand it (2026-09-24)
+
+A mined tool that is not a write, answers every successful call with a scalar, is called at least three times and is the
+last tool call of its Trace on at least nine in ten of them is read as ending the Run (it hands the conversation on).
+`compile_env.record_ending_actions` runs in the mine step: it adds one actions table to the schema (action_id, tool, args,
+turn; suffixed where the customer already has that name), makes the tool a write, and the compile step writes two harness
+lines ahead of its body that record each call as a row (the tool name, the arguments, the call's turn as the Router counts
+it). The body the model writes only returns the recorded answer, so replay is unchanged, and the ordinary write atom
+demands the call, so an empty Run fails the Verifier of a Reference that handed off. The tool file and the Builder prompt
+say so in one paragraph. Stored Verifiers derived before this rule treat such a call as no write and need re-deriving.
+Evidence: the ov-inv-verifier report (section 2.3, 10 Tasks whose Verifier an empty Run passed); tests in
+`tests/builder/test_ending_actions.py`; the airline smoke 8 replay stays at 112 of 119 Tasks with the rule applied.
+Status: decided 2026-09-24, built on overhaul-0922/fix-world.
+
+### D283. A body reads the world clock, never the machine's (2026-09-24)
+
+Every Run has one clock: the recording's time for the Task, read off the recording by `runner/world/clock.py` (the moment
+the first row creating write stamped, preferring one no earlier call showed). The Runner sets it on the tool context at
+every reset (replay per Trace, a live Run and an Episode per Task), and `self.ctx.now()` serves it wherever no witnessed
+time answers, without the start state check, because in a world with one clock a stored row carries the same time. A
+recording with no creating write keeps the seeded draw. The Builder's confined gate and the Runner's loader refuse a
+body that imports a clock module or calls a clock reading other than the context's, naming the body line and its text.
+Evidence: the airline smoke 8 replay went from 99 to 112 of 119 Tasks (163 to 184 of 200 Traces); the 21 Traces that
+first differed on a creation stamp all confirm, none that confirmed before is lost; retail stays at 205 of 205. Tests in
+`tests/runner/test_world_clock.py`. Status: decided 2026-09-24, built on overhaul-0922/fix-world.
+
+## Verifier scoring after smoke 8 (D284 to D287)
+
+### D284. One canonicaliser per Environment, and no scorer without it (2026-09-24)
+
+The status tool scored held-out Runs with the raw dict of `canon-rules.json`, which the scorer did not recognise and silently replaced with the module defaults, while derivation, the suite and the Examiner scored under the Environment's `CanonRules`; an id the rules keep cased was stored cased in the atom and lowercased in the Run, and 48 of the 69 false rejections of smoke 8 were that divergence alone. The rule: the Environment's `CanonRules` are loaded once (`canon.load_rules` off the workdir, `canon.rules_of` off a store) and that one object is passed to every scorer; `target.canon_fn` accepts only `CanonRules` or a callable already bound from them, and anything else, None and the raw dict included, raises `CanonMissing` naming the caller. The status tool, the round snapshot, the round counts and the Examiner's store all load the rules this way. Checked in code: `tests/builder/test_status_trust.py::test_status_scores_held_out_runs_under_the_environments_rules_so_an_id_they_keep_cased_is_not_rejected` and `tests/runner/test_one_scorer.py::test_scoring_without_the_environments_rules_raises_and_names_the_caller`. Evidence: `.claude/herdr/overhaul-0922/reports/ov-inv-verifier/report.md` section 1. Status: built 2026-09-24.
+
+### D285. Facts are keyed by meaning, and a Verifier must demand something of its own Task (2026-09-24)
+
+Of the 23 second-path failures of smoke 8, 22 were read-only Tasks whose Verifier demanded fragments every Task shares (a year, a day, the zeros of a midnight, the digits of a prefixed id) and a write count of zero; a seed and the Reference that agreed on `00` alone counted as agreeing, so derivation demanded that fragment. The rule: a stated fact is keyed by the field it came from plus its canonical value (`target.fact_source` finds the source tool and the dotted result field whose whole value it is, `derive.meant_facts` keys by both), and the atom records `field` and `source_tool`. A fact is generic when it is no field's whole value (`FRAGMENT`) or when more than `GENERIC_SHARE` (half) of the world's rows hold it under that field, counted over at least `GENERIC_MIN_ROWS` rows; the world is the Starting state plus every tool result the Runs read (`verifier_suite.world_rows`), the one set of rows a Task's derivation can see, so "most Tasks" is read as "most rows the Tasks are drawn from". Generic facts are never demanded (they become reported atoms carrying their reason), agreement with a seed on generic facts alone falls back to the Reference's own facts, and a new suite check `verifier_specific` refuses a Verifier whose demands are all generic, Hard atoms that are not write shapes, or a write count cap, naming each generic atom and why. Checked in code: `tests/gates/test_verifier_specific.py` (the eight vacuous shapes refused, a booking-specific Verifier surviving, the seed falling back). Evidence: `.claude/herdr/overhaul-0922/reports/ov-inv-verifier/report.md` section 2.1. Status: built 2026-09-24.
+
+### D286. The wrong-Run check swaps every demanded value for another the world holds (2026-09-24)
+
+A Verifier that names the tool and not the row passes a Run that acted on the wrong row, and the one plausible wrong Run the check had before could not show that when the pool held none. The rule: `verifier_wrong_run` also runs a swap probe, always. For each demanded write, write value and communicate atom the Reference satisfies, the value it demands (the write's id, the written value, the stated fact) is replaced in a copy of the Reference by another value the same world holds under the same field, never an invented one (`verifier_suite.swapped_runs`, value from `world_rows` first, then from the values the Run was handed under that name); the Verifier must fail every swapped Run, and each swap it passes is named as `swap of <atom> (<field> <old> -> <new>) scored pass`. The check now runs when there is no plausible wrong Run but there are swaps. Checked in code: `tests/gates/test_verifier_specific.py::test_the_swap_probe_refuses_a_verifier_that_accepts_any_value_of_the_field_and_names_the_swap` and `test_a_swap_takes_another_value_the_world_holds_under_the_same_field_and_never_an_invented_one`. Status: built 2026-09-24.
+
+### D287. The leak check compares canonical values, and a value the world holds is not a leak (2026-09-24)
+
+All ten leak findings of smoke 8 were false: seven matched span metadata (a message index equal to a small number) because the check searched the whole Simulated user record, and three missed the user's own fact because it was compared on raw spelling. The rule: the leak check canonicalises both sides through the Environment's one canonicaliser (D284), searches only the content of the user rules (fact values and context, disclosure conditions, refusals, walk-away, style sample, incomplete reasons, never spans), and treats a value that a row the Reference read holds (`world_rows` without the Starting state) as world knowledge rather than a secret, even when the Intent states it. This reverses the D190 reading for system-derived values: only a value no row the Runs read holds (an agent-chosen or computed value) can leak now. Checked in code: `tests/gates/test_verifier_suite.py::test_the_leak_check_finds_a_constant_only_the_verifier_holds_and_never_a_world_value_or_the_users_own_words` (case `world_value_read_off_a_tool_result` is not flagged, case `another_spelling_of_the_value` is). Evidence: report section 2.2. Status: built 2026-09-24.

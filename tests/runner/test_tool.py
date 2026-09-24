@@ -9,7 +9,17 @@ import pytest
 
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.runner import tool
-from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, Verifier, run_path, stored_run_path, write_json
+from kullback.runner.records import (
+    RawPtr,
+    ToolCall,
+    Trace,
+    Turn,
+    Verifier,
+    load_run_jsonl,
+    run_path,
+    stored_run_path,
+    write_json,
+)
 from kullback.runner.world.loading import EnvironmentError
 from tests.episode.invented import write_env
 
@@ -195,7 +205,8 @@ def test_run_plays_verdicts_and_diffs_one_run(tmp_path):
                             arguments={"widget_id": "w1", "label": "striped"})]),
         ModelReply(content="Done.", model="test"),
     ], loop=True), count=2, workdir=tmp_path / "work")
-    assert [item.run_id for item in rerolled] == ["widget_task-0", "widget_task-1"]
+    # Seed 0 was already played above, so the re-roll of it is a new attempt and not the old file.
+    assert [item.run_id for item in rerolled] == ["widget_task-0-a2", "widget_task-1"]
 
 
 def _rename_script():
@@ -248,7 +259,7 @@ def test_reroll_with_prefix_names_its_files_for_the_buyer_and_carries_user_end(t
     root = _env_with_trace(tmp_path / "env")
     reports = tool.reroll(root, "widget_task", _rename_script(), count=2,
                           workdir=tmp_path / "work", prefix="second-path-r0-b0")
-    assert [report.run_id for report in reports] == ["second-path-r0-b0-0", "second-path-r0-b0-1"]
+    assert [report.run_id for report in reports] == ["second-path-r0-b0-widget_task-0", "second-path-r0-b0-widget_task-1"]
     assert all(Path(report.path).name.startswith("second-path-r0-b0-") for report in reports)
     assert all((tmp_path / "work" / report.path).is_file() for report in reports)
     assert all("user_end" in report.as_dict() for report in reports)
@@ -297,3 +308,17 @@ def test_an_environment_that_declares_no_real_tool_gives_a_router_with_none(tmp_
 
     router = tool._router_for(BuiltEnvironment(_env_with_trace(tmp_path / "env")), "widget_task", seed=0)
     assert router.real_tools == {}
+
+
+def test_a_round_with_two_tasks_writes_two_files_and_each_loads_back_its_own_run(tmp_path):
+    """D281: one buyer's prefix over two Tasks names each Run by its Task, so no file is shared."""
+    root = _env_with_trace(tmp_path / "env")
+    write_env(root, task_id="other_task", run_id="rec1")
+    reports = [report for task_id in ("widget_task", "other_task")
+               for report in tool.reroll(root, task_id, _rename_script(), count=1,
+                                         workdir=tmp_path / "work", prefix="second-path-r0-b1")]
+    files = {report.task_id: tmp_path / "work" / report.path for report in reports}
+    assert len(set(files.values())) == 2
+    for task_id, path in files.items():
+        loaded = load_run_jsonl(path, task_id=task_id)
+        assert loaded.task_id == task_id and task_id in loaded.run_id

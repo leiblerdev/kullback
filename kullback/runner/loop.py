@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from kullback.ai.provider import ProviderError
 from kullback.runner import budget
-from kullback.runner.records import Cost, Event, Run, as_dict
+from kullback.runner.records import Cost, Event, Run, as_dict, load_run_jsonl
 
 TRANSFER = "###TRANSFER###"
 STOP_MARKERS = ("###STOP###", TRANSFER)
@@ -34,8 +34,15 @@ class RunState:
 
 def new_run_state(run_id: str, *, workdir: Any = None, path: Any = None, system_prompt: Optional[str] = None,
                   first_user: Optional[str] = None, user: Any = None, max_turns: int = 20,
-                  **run_fields: Any) -> RunState:
-    """A fresh Run with its opening transcript and an empty JSONL file under the workdir."""
+                  supersedes: bool = False, **run_fields: Any) -> RunState:
+    """A fresh Run with its opening transcript and a new JSONL file under the workdir.
+
+    D281: a Run file is written once. The file opens with one line naming the Run and its Task, and
+    a path that already exists is an error naming it, so two Runs never share a file and a Run
+    never truncates a file another Run wrote. `supersedes` is for a caller that plays the same Run
+    again under the same name (a replay of one recording after a repair): the old file is removed
+    only when its own records name this run_id and this Task, and refused like any other otherwise.
+    """
     messages: list[dict] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -43,12 +50,34 @@ def new_run_state(run_id: str, *, workdir: Any = None, path: Any = None, system_
         messages.append({"role": "user", "content": first_user})
     if path is None and workdir is not None:
         path = Path(workdir) / f"{run_id}.jsonl"
+    run = Run(run_id=run_id, **run_fields)
     if path is not None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("", encoding="utf-8")
-    return RunState(run=Run(run_id=run_id, **run_fields), messages=messages, path=path,
-                    user=user, max_turns=max_turns)
+        if supersedes and path.exists():
+            _remove_own(path, run)
+        try:
+            with path.open("x", encoding="utf-8") as handle:
+                handle.write(json.dumps({"run_id": run.run_id, "task_id": run.task_id}) + "\n")
+        except FileExistsError:
+            raise FileExistsError(f"Run file {path} already exists; a Run file is written once (D281)") from None
+    return RunState(run=run, messages=messages, path=path, user=user, max_turns=max_turns)
+
+
+def _remove_own(path: Path, run: Run) -> None:
+    """Remove an earlier file of this same Run; a file another Run or Task wrote raises instead.
+
+    A file written before D281 carries no opening line, so a missing task_id is read as this Task's
+    when the run_id matches; a file holding two Runs is refused by the loader before that.
+    """
+    try:
+        held = load_run_jsonl(path)
+    except (OSError, ValueError) as exc:
+        raise FileExistsError(f"Run file {path} already exists and is not Run {run.run_id}: {exc}") from None
+    if held.run_id != run.run_id or held.task_id not in (None, run.task_id):
+        raise FileExistsError(f"Run file {path} holds Run {held.run_id} of Task {held.task_id}, "
+                              f"not Run {run.run_id} of Task {run.task_id}")
+    path.unlink()
 
 
 def emit(state: RunState, event_type: str, payload: dict, route: Optional[str] = None,

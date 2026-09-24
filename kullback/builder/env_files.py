@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 from kullback.builder.compile_env import (
+    action_tools,
     module_source,
     recorded_call_contexts,
     render_data_model,
@@ -108,9 +109,16 @@ def _signature_of(sig: Optional[ToolSig], name: str) -> str:
     return _signature(sig).strip()
 
 
-def _tool_file(name: str, sig: Optional[ToolSig], body: str) -> str:
+# D282: said in the file of a tool the world records as a row, so the body's author knows the row
+# is written already and the body only answers.
+ACTION_NOTE = ("# This tool ends the Run and writes nothing of its own. The harness records each call as a row\n"
+               "# of {table} before this body runs; the body only returns the answer the recording shows.\n")
+
+
+def _tool_file(name: str, sig: Optional[ToolSig], body: str, table: Optional[str] = None) -> str:
     text = (body or "pass").strip("\n") or "pass"
-    return f"{_FILE_HEAD}{_signature_of(sig, name)}\n" + textwrap.indent(text, "    ") + "\n"
+    note = ACTION_NOTE.format(table=table) if table else ""
+    return f"{_FILE_HEAD}{note}{_signature_of(sig, name)}\n" + textwrap.indent(text, "    ") + "\n"
 
 
 def explode(workdir: Any) -> list[str]:
@@ -126,13 +134,14 @@ def explode(workdir: Any) -> list[str]:
     sigs = {sig.name: sig for sig in _read_sigs(root)}
     for name in sigs:
         bodies.setdefault(name, STUB_BODY)
+    logged = action_tools(_read_schema(root))
     written = []
     for name, body in bodies.items():
         path = root / "env" / TOOLS_DIR / f"{name}.py"
         if path.is_file():
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_tool_file(name, sigs.get(name), body), encoding="utf-8")
+        path.write_text(_tool_file(name, sigs.get(name), body, logged.get(name)), encoding="utf-8")
         written.append(name)
     return written
 

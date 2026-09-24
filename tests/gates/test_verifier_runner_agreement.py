@@ -29,6 +29,7 @@ from gates.verifier_fixtures import (
 from kullback.examiner import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner import verdict as R
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import Constraint, Task, Verifier
 
 TASK = Task(id="t1", intent="cancel the pending order and record the reason")
@@ -36,7 +37,7 @@ TASK = Task(id="t1", intent="cancel the pending order and record the reason")
 
 def both(verifier: Verifier, run, write_tools=WRITE_TOOLS):
     """Score one Run the Builder's way and the Runner's way."""
-    builder = S.check_run(verifier, run, write_tools=write_tools)
+    builder = S.check_run(verifier, run, CanonRules(), write_tools=write_tools)
     graded = R.verdict(run, verifier, None, write_tools=write_tools)
     return builder, (graded.passed, graded.failing_atom), graded.notes
 
@@ -83,14 +84,14 @@ def test_a_wrong_entity_fails_both_scorers_when_the_id_came_from_the_user(tmp_pa
             result({"order_id": written, "status": "cancelled"}, cid="c1"),
             assistant("Done, it is cancelled."),
         ]
-    verifier = V.derive_verifier(TASK, make_run("ref", events("#W123")), [], None, write_tools=WRITE_TOOLS)
+    verifier = V.derive_verifier(TASK, make_run("ref", events("#W123")), [], CanonRules(), write_tools=WRITE_TOOLS)
     agree(verifier, make_run("ref", events("#W123")), True)
     assert agree(verifier, make_run("wrong", events("#W999")), False)[1] == "w0"
 
 
 def test_an_elicited_value_is_bound_to_the_users_own_reply(tmp_path):
     """D43: the agent asked, the user answered, and the write has to carry what the user answered."""
-    verifier = V.derive_verifier(TASK, make_run("ref", reference_events()), [], None,
+    verifier = V.derive_verifier(TASK, make_run("ref", reference_events()), [], CanonRules(),
                                  write_tools=WRITE_TOOLS)
     invented = make_run("invented", [
         user("Please cancel my order #W123."),
@@ -117,7 +118,7 @@ def test_a_confirmation_in_the_users_own_words_passes_both_scorers(tmp_path):
         result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
         assistant("Cancelled."),
     ]
-    verifier = V.derive_verifier(TASK, make_run("ref", events), [], None, write_tools=WRITE_TOOLS)
+    verifier = V.derive_verifier(TASK, make_run("ref", events), [], CanonRules(), write_tools=WRITE_TOOLS)
     assert any(S.atom_payload(a).get("key") == "confirm:cancel_pending_order" for a in verifier.atoms)
     agree(verifier, make_run("ref", events), True)
     unasked = make_run("unasked", [
@@ -151,7 +152,7 @@ def test_a_hard_rule_agrees_on_a_confirmation_that_came_too_late(tmp_path):
         result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
         assistant("Cancelled."),
     ])
-    verifier = V.derive_verifier(TASK, confirmed, [], None, write_tools=WRITE_TOOLS, constraints=[never])
+    verifier = V.derive_verifier(TASK, confirmed, [], CanonRules(), write_tools=WRITE_TOOLS, constraints=[never])
     hard_only = Verifier(task_id="t1", atoms=[a for a in verifier.atoms if a.kind == "hard"])
     late = make_run("late", [
         user("Please cancel my order #W123."),

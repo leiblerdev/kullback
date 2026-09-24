@@ -18,7 +18,7 @@ from typing import Any, Mapping, Optional
 from kullback.laws import ArgSpec, Outcome, ToolInfo, _type_bucket
 from kullback.runner import route
 from kullback.runner.records import Task, ToolSig, Trace, plain
-from kullback.runner.world import loading
+from kullback.runner.world import clock, loading
 from kullback.runner.world.environment import BuiltEnvironment
 
 LAWS_VERSION = 1
@@ -249,9 +249,7 @@ class EnvironmentLawWorld:
         source = self._env.toolkit_source()
         toolkit = loading.load_toolkit(source, copy.deepcopy(self._env.db),
                                        overlay=overlay, overlay_values=overlay_rows)
-        context = getattr(toolkit, "ctx", None)
-        if context is not None:
-            context.reseed(self._seed)
+        clock.start_context(toolkit, self._seed, self._env.clock(self._task_id))
         self._router = route.Router(
             env_tools_module=toolkit, starting_state=copy.deepcopy(self._env.db),
             overlay=overlay, overlay_rows=overlay_rows, tool_sigs=self._env.sigs,

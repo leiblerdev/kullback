@@ -144,6 +144,8 @@ def _mine_step(workdir: Path, traces: list[Trace]) -> tuple[list, Any]:
     # The write tools are the sigs' own, so the composite-key rule reads the same kinds the rest
     # of the build does rather than classifying the tools a second time.
     schema = mine.mine_schema(traces, write_tools=sorted(s.name for s in sigs if s.kind == "write"))
+    # D282: a tool the recording shows ending the Run with no write is recorded as a row, a write.
+    compile_env.record_ending_actions(traces, sigs, schema)
     # D164: the names the recording refused on every call, and the ones a recorded agent
     # invented, are no tool of this customer. They are written beside the sigs so a build can
     # see them, and they are never a failure: a Run refuses them as the recording did.

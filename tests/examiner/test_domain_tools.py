@@ -16,6 +16,7 @@ from kullback.examiner import prompt as P
 from kullback.examiner import stage
 from kullback.examiner.exam_files import ExamRoot
 from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import as_dict, read_json, write_json
 
 
@@ -28,7 +29,7 @@ def _root(tmp_path, **kwargs):
     write_json(workdir / "rerolls.json", world.inputs["rerolls"])
     keyword = dict(workdir=workdir, verifiers={"t1": verifier}, sigs=list(SIGS),
                    replays=world.inputs["replays"], rerolls=world.inputs["rerolls"],
-                   bus=Bus(tmp_path / "bus.jsonl", agent="examiner"))
+                   bus=Bus(tmp_path / "bus.jsonl", agent="examiner"), canon_rules=CanonRules())
     keyword.update(kwargs)
     return ExamRoot(**keyword), world, verifier
 
@@ -421,7 +422,7 @@ def _empty_run_records_proposal(verifier, empty) -> list[dict]:
     from kullback.gates.bindings import rows_for
     from kullback.gates.verifier_suite import validate_verifier
 
-    gates = validate_verifier(verifier, VF.reference_run(), empty)
+    gates = validate_verifier(verifier, VF.reference_run(), empty, canon=CanonRules())
     return [{"name": g.stage, "accepted": g.passed, "line": f"{g.stage} {'pass' if g.passed else 'fail'}",
              "rows": rows_for(g, {})} for g in gates if g.stage == "verifier_empty_run"]
 
@@ -446,7 +447,7 @@ def test_a_refusal_on_an_empty_run_that_passes_a_communicate_atom_names_it_and_g
         VF.user("What is the status of order #W123?"),
         VF.call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
         VF.result(VF.ORDER, cid="c0"), VF.assistant("Order #W123 is pending."), VF.user("Thanks, bye.")])
-    derived = derive_verifier(VF.TASK, answering, [], None, write_tools=VF.WRITE_TOOLS)
+    derived = derive_verifier(VF.TASK, answering, [], CanonRules(), write_tools=VF.WRITE_TOOLS)
     [said] = [a for a in derived.atoms if atom_payload(a).get("kind") == "communicate"]
     verifier = derived.model_copy(update={"atoms": [said]})
     message = str(D._refuse_proposal("t1", "2", _empty_run_records_proposal(verifier, answering)))
@@ -461,7 +462,7 @@ def test_a_reroll_from_the_tool_lands_its_model_calls_in_the_runner_stage(tmp_pa
 
     workdir = _exam_env(tmp_path / "env")
     model = _priced_script()
-    root = ExamRoot(workdir=workdir, reroll_model=model)
+    root = ExamRoot(workdir=workdir, reroll_model=model, canon_rules=CanonRules())
     [tool] = [t for t in D.domain_tools(root) if t.name == "reroll"]
     _run(tool.execute(D.RerollArgs(task_id="widget_task", count=1)))
     stage = budget.load_totals(workdir)["stages"]["runner"]
@@ -471,13 +472,13 @@ def test_a_reroll_from_the_tool_lands_its_model_calls_in_the_runner_stage(tmp_pa
 def test_an_allowance_that_covers_one_run_buys_one_run_of_a_count_of_three(tmp_path):
     from tests.examiner.test_runners import _exam_env, _priced_script
 
-    priced = ExamRoot(workdir=_exam_env(tmp_path / "priced"), reroll_model=_priced_script())
+    priced = ExamRoot(workdir=_exam_env(tmp_path / "priced"), reroll_model=_priced_script(), canon_rules=CanonRules())
     [measure] = [t for t in D.domain_tools(priced) if t.name == "reroll"]
     one_run = _run(measure.execute(D.RerollArgs(task_id="widget_task", count=1))).spent_usd
     assert one_run > 0
 
     root = ExamRoot(workdir=_exam_env(tmp_path / "env"), reroll_model=_priced_script(),
-                    allowance_remaining=one_run)
+                    allowance_remaining=one_run, canon_rules=CanonRules())
     [tool] = [t for t in D.domain_tools(root) if t.name == "reroll"]
     result = _run(tool.execute(D.RerollArgs(task_id="widget_task", count=3)))
     assert len(result.runs) == 1

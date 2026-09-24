@@ -42,7 +42,7 @@ from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import finished_run_ids
 from kullback.gates.verifier_suite import load_run
 from kullback.runner import budget
-from kullback.runner.canon import rules_of
+from kullback.runner.canon import load_rules, rules_of
 from kullback.runner.records import Constraint, Task, ToolSig, UserRules, Verifier, read_json, run_path, write_json
 
 BASE_ONLY = ("read", "grep", "find", "ls", "inspect", "web_search")
@@ -313,7 +313,7 @@ def load_store(workdir: Any) -> dict:
     sigs = _load_records(root / "tool_sigs.json", ToolSig, [])
     constraints = _load_records(root / "constraints.json", Constraint, [])
     store = {"tasks": tasks, "sigs": sigs, "constraints": constraints,
-             "canon_rules": read_json(root / "canon-rules.json", {}) or {},
+             "canon_rules": load_rules(root / "canon-rules.json"),
              "replays": read_json(root / "replays.json", {}) or {},
              "rerolls": read_json(root / "rerolls.json", {}) or {},
              "intents": _load_keyed(root / "intents", "intents.json"),

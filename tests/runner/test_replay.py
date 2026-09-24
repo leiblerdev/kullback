@@ -12,6 +12,7 @@ from kullback.builder import effects as effects_mod
 from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite as suite
 from kullback.runner import replay
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import Task, ToolCallError, Trace, Turn
 from runner.replay_fixtures import PTR, Toolkit, call, do_replay, events, router, sigs, trace, world  # noqa: F401
 
@@ -187,11 +188,11 @@ def test_the_verifier_derives_from_the_replayed_run(tmp_path):
     """The whole point: a Run on disk the Verifier stage can read (D91), with the write as an atom."""
     out = do_replay(tmp_path)
     task = Task(id="t1", run_ids=["tr1"])
-    verifier = verifier_mod.derive_verifier(task, out.path, write_tools={"cancel_order"})
+    verifier = verifier_mod.derive_verifier(task, out.path, write_tools={"cancel_order"}, canon=CanonRules())
     writes = [a for a in verifier.atoms if a.target.get("kind") == "write"]
     assert [a.kind for a in writes] == ["required"] and writes[0].target["tool"] == "cancel_order"
     gates = {g.stage: g.passed for g in suite.validate_verifier(
-        verifier, out.path, write_tools={"cancel_order"})}
+        verifier, out.path, write_tools={"cancel_order"}, canon=CanonRules())}
     assert gates["verifier_oracle"] and gates["verifier_empty_run"]
 
 

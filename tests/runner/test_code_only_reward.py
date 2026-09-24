@@ -7,6 +7,7 @@ import pytest
 
 from kullback.gates import verifier_suite as S
 from kullback.runner import target as T
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import Atom, AtomKind, Column, EntitySchema, Event, Run, Verdict, Verifier, as_dict
 from kullback.runner.regrade import cache_key, regrade_run, verdict_path
 from kullback.runner.verdict import MUST_HOLD, verdict
@@ -113,7 +114,7 @@ def test_must_hold_judge_is_unscoreable_for_every_judge_value(tmp_path, judge_ki
                                        "entity": _entity("E-100")}, judge=True),
     ])
     for unscoreable, run in ((no_write, _quiet_run()), (malformed, _unmarked_write_run())):
-        assert S.check_run(unscoreable, run) == (False, "j0")
+        assert S.check_run(unscoreable, run, CanonRules()) == (False, "j0")
         out = verdict(run, unscoreable, judge_results=results)
         assert out.passed is False
         assert out.class_ == "not_verdicted"
@@ -164,7 +165,7 @@ def test_a_code_failure_fails_the_verdict_whatever_the_judge_says(tmp_path, atom
     structured or malformed, and the build-time gate names the same failure."""
     verifier = Verifier(task_id="t9", verifier_version="v1", atoms=atoms())
     if gate:
-        assert S.check_run(verifier, run(tmp_path), write_tools=tools) == (False, failing)
+        assert S.check_run(verifier, run(tmp_path), CanonRules(), write_tools=tools) == (False, failing)
     results = {} if judge_value is None else {"j0": judge_value}
     out = verdict(run(tmp_path), verifier, write_tools=tools, judge_results=results)
     assert out.passed is False
@@ -189,7 +190,7 @@ def test_an_optional_judge_never_changes_the_code_verdict(tmp_path, judge_value,
     verifier = Verifier(task_id="t9", verifier_version="v1", atoms=[write, _judge(judge_kind)])
     results = {} if judge_value is None else {"j0": judge_value}
     if structured:
-        assert S.check_run(verifier, run, write_tools=WRITE_TOOLS) == ((True, None) if code_passes else (False, "w0"))
+        assert S.check_run(verifier, run, CanonRules(), write_tools=WRITE_TOOLS) == ((True, None) if code_passes else (False, "w0"))
     out = verdict(run, verifier, write_tools=WRITE_TOOLS, judge_results=results)
     assert out.passed is code_passes
     assert out.class_ == ("pass" if code_passes else "fail")
@@ -205,7 +206,7 @@ def test_judge_only_verifier_never_passes(tmp_path, judge_value):
         atoms=[Atom(id="j0", kind="required", judge=True, description="policy tone")],
     )
     results = {} if judge_value is None else {"j0": judge_value}
-    assert S.check_run(verifier, _quiet_run(), write_tools=WRITE_TOOLS) == (False, "j0")
+    assert S.check_run(verifier, _quiet_run(), CanonRules(), write_tools=WRITE_TOOLS) == (False, "j0")
     quiet = verdict(_quiet_run(), verifier, write_tools=WRITE_TOOLS, judge_results=results)
     assert quiet.passed is False
     assert quiet.class_ == "not_verdicted"
@@ -243,7 +244,7 @@ def test_supplied_judge_opinions_are_reported_without_scoring(tmp_path):
 
 
 def _entity(value: str) -> str:
-    return T.text_of(T.canon_fn(None)(value))
+    return T.text_of(T.canon_fn(CanonRules())(value))
 
 
 def _quiet_run() -> Run:
@@ -266,11 +267,11 @@ def test_gate_scoreability_refuses_a_judge_only_must_hold():
             Atom(id="j0", kind="hard", judge=True, description="policy tone"),
         ],
     )
-    assert S.check_run(verifier, _passing_run(), write_tools=WRITE_TOOLS) == (False, "j0")
+    assert S.check_run(verifier, _passing_run(), CanonRules(), write_tools=WRITE_TOOLS) == (False, "j0")
 
 
 def test_grounded_communicate_still_scores_without_any_judge(tmp_path):
-    key = T._key(T.canon_fn(None), "E-999")
+    key = T._key(T.canon_fn(CanonRules()), "E-999")
     atom = S.make_atom("c0", "communicate", {"kind": "communicate", "value": key, "text": "E-999"})
     verifier = Verifier(task_id="t9", verifier_version="v1", atoms=[atom])
     run = _make_run(
@@ -284,8 +285,8 @@ def test_grounded_communicate_still_scores_without_any_judge(tmp_path):
             _assistant("Done, entry E-999 is archived."),
         ],
     )
-    assert T.communicate_values(run, T.canon_fn(None)) == {}
-    assert S.check_run(verifier, run, write_tools=WRITE_TOOLS) == (False, "c0")
+    assert T.communicate_values(run, T.canon_fn(CanonRules())) == {}
+    assert S.check_run(verifier, run, CanonRules(), write_tools=WRITE_TOOLS) == (False, "c0")
     out = verdict(run, verifier, write_tools=WRITE_TOOLS)
     assert out.passed is False and out.failing_atom == "c0"
 
@@ -329,7 +330,7 @@ def _structured_judge(kind):
                            {"kind": "question", "key": "confirm:archive_entry",
                             "tool": "archive_entry", "field": None}, judge=True)
     if kind == "communicate":
-        key = T._key(T.canon_fn(None), "E-999")
+        key = T._key(T.canon_fn(CanonRules()), "E-999")
         return S.make_atom("j0", "communicate",
                            {"kind": "communicate", "value": key, "text": "E-999"},
                            judge=True)
@@ -350,7 +351,7 @@ def test_judge_write_target_present_does_not_authorize_the_write():
                            {"kind": "write", "tool": "archive_entry",
                             "entity": _entity("E-100")}, judge=True)],
     )
-    assert S.check_run(verifier, _passing_run(), write_tools=WRITE_TOOLS) == (
+    assert S.check_run(verifier, _passing_run(), CanonRules(), write_tools=WRITE_TOOLS) == (
         False, "extra_write:archive_entry")
     out = verdict(_passing_run(), verifier, write_tools=WRITE_TOOLS,
                   judge_results={"j0": True})
@@ -370,7 +371,7 @@ def test_judge_write_target_present_does_not_authorize_the_write():
                          "entity": _entity("E-100")}, judge=True),
         ],
     )
-    assert S.check_run(verifier, _extra_run(), write_tools=tools) == (
+    assert S.check_run(verifier, _extra_run(), CanonRules(), write_tools=tools) == (
         False, "extra_write:purge_entry")
     out = verdict(_extra_run(), verifier, write_tools=tools, judge_results={"j0": True})
     assert out.passed is False
@@ -451,7 +452,7 @@ def test_broken_predicate_keeps_unproven_coverage_unverdicted():
             Atom(id="b0", kind="required"),
         ],
     )
-    assert S.check_run(verifier, _passing_run(), write_tools=WRITE_TOOLS) == (
+    assert S.check_run(verifier, _passing_run(), CanonRules(), write_tools=WRITE_TOOLS) == (
         False, "atom b0: kind None is not scored")
     out = verdict(_passing_run(), verifier, write_tools=WRITE_TOOLS,
                   judge_results={"j0": True})
@@ -508,7 +509,7 @@ def test_required_judge_write_detected_without_metadata_or_kind():
                            {"kind": "write", "tool": "archive_entry",
                             "entity": _entity("E-100")}, judge=True)],
     )
-    assert S.check_run(verifier, _unmarked_write_run()) == (
+    assert S.check_run(verifier, _unmarked_write_run(), CanonRules()) == (
         False, "extra_write:archive_entry")
     out = verdict(_unmarked_write_run(), verifier, judge_results={"j0": True})
     assert out.passed is False
@@ -521,7 +522,7 @@ def test_required_judge_write_detected_without_metadata_or_kind():
                            {"kind": "write", "tool": "purge_entry",
                             "entity": _entity("E-100")}, judge=True)],
     )
-    assert S.check_run(verifier, _unmarked_purge_run()) == (
+    assert S.check_run(verifier, _unmarked_purge_run(), CanonRules()) == (
         False, "extra_write:purge_entry")
     out = verdict(_unmarked_purge_run(), verifier, judge_results={"j0": True})
     assert out.passed is False
@@ -539,7 +540,7 @@ def test_required_judge_write_detected_without_metadata_or_kind():
                          "entity": _entity("E-100")}, judge=True),
         ],
     )
-    assert S.check_run(control, _unmarked_purge_run()) == (True, None)
+    assert S.check_run(control, _unmarked_purge_run(), CanonRules()) == (True, None)
     cout = verdict(_unmarked_purge_run(), control, judge_results={"j0": True})
     assert cout.passed is True
     assert cout.class_ == "pass"
@@ -565,17 +566,17 @@ def _malformed_judge_verifier(tool):
                          ids=["list", "dict", "numeric", "empty", "none", "missing"])
 def test_malformed_judge_tool_grants_no_detection_and_never_crashes(bad_tool):
     verifier = _malformed_judge_verifier(bad_tool)
-    assert S.check_run(verifier, _quiet_run()) == (False, "j0")
+    assert S.check_run(verifier, _quiet_run(), CanonRules()) == (False, "j0")
     quiet = verdict(_quiet_run(), verifier, judge_results={"j0": True})
     assert quiet.passed is False
     assert quiet.class_ == "not_verdicted"
     assert quiet.failing_atom == "j0"
-    assert S.check_run(verifier, _unmarked_write_run()) == (False, "j0")
+    assert S.check_run(verifier, _unmarked_write_run(), CanonRules()) == (False, "j0")
     out = verdict(_unmarked_write_run(), verifier, judge_results={"j0": True})
     assert out.passed is False
     assert out.class_ == "not_verdicted"
     assert out.failing_atom == "j0"
-    assert S.check_run(verifier, _quiet_run(), write_tools=WRITE_TOOLS) == (False, "j0")
+    assert S.check_run(verifier, _quiet_run(), CanonRules(), write_tools=WRITE_TOOLS) == (False, "j0")
     explicit = verdict(_unmarked_write_run(), verifier, write_tools=WRITE_TOOLS,
                        judge_results={"j0": True})
     assert explicit.passed is False
@@ -639,7 +640,7 @@ def test_each_extra_write_call_that_succeeded_counts_one_side_effect(run, covere
         atoms = [_judge_write("required")]
     verifier = Verifier(task_id="t9", verifier_version="v1", atoms=atoms)
     if covered:
-        assert S.check_run(verifier, run()) == (True, None)
+        assert S.check_run(verifier, run(), CanonRules()) == (True, None)
     out = verdict(run(), verifier, judge_results={"j0": True})
     assert out.passed is covered
     assert out.class_ == ("pass" if covered else "fail")

@@ -7,7 +7,7 @@ patch. It never asks a policy itself and never imports the Builder. Every Run is
 one under a folder of its own: the seed in the footer, the route on every tool result, the Run
 file beside nothing the build wrote.
 
-The same seed, Task and messages give the same Run: nothing on this path reads a clock, a random
+The same seed, Task and messages give the same Run: nothing on this path reads the machine's clock, a random
 source or a model, and the seed only labels the record. What the record already treats as its own
 (run id, file path) is the only thing that differs between two such Runs.
 """
@@ -24,7 +24,7 @@ from typing import Any, Optional
 from kullback.runner import loop, route
 from kullback.runner.records import as_dict
 from kullback.runner.verdict import load_run, verdict
-from kullback.runner.world import loading
+from kullback.runner.world import clock, loading
 from kullback.runner.world.environment import BuiltEnvironment, episode_message
 
 RUNS_DIR = "episodes"
@@ -108,9 +108,7 @@ class Episode:
         source = self.env.toolkit_source()
         db = copy.deepcopy(self.env.db)
         toolkit = loading.load_toolkit(source, db, overlay=overlay, overlay_values=overlay_rows)
-        context = getattr(toolkit, "ctx", None)
-        if context is not None:
-            context.reseed(seed)
+        clock.start_context(toolkit, seed, self.env.clock(task_id))
         self._router = route.Router(
             env_tools_module=toolkit, starting_state=copy.deepcopy(self.env.db),
             overlay=overlay, overlay_rows=overlay_rows, tool_sigs=self.env.sigs,

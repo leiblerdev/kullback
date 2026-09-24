@@ -82,6 +82,7 @@ from kullback.runner.records import (
     content_hash,
 )
 from kullback.runner.route import call_fingerprint  # D197: one fingerprint, written and served alike
+from kullback.runner.world.clock import HARNESS_LINE
 from kullback.runner.world.loading import (
     OVERLAY_DIR,
     _with_run_scope,
@@ -1924,8 +1925,10 @@ _CONTEXT_SHIM = '''class ToolContext:
 
     The draws are pure functions of the seed and the step: each serving call advances
     the step once, whatever feed answered, so the step sequence of a Run never depends
-    on which feed any call landed on. now() off the path is a calendar date in 2024
-    fixed by the seed and the step, never the wall clock. random() is always seeded.
+    on which feed any call landed on. now() off the path is the world clock where the
+    Runner set one (the recording's time for the Task, D283), else a calendar date in
+    2024 fixed by the seed and the step; never the machine's clock. random() is always
+    seeded. turn() is the call's position in the Run, where the Runner said it.
     new_id(table) off the path mints an id shaped like the ids the table already
     holds (a numeric sequence continues, a fixed shape draws per position from the
     observed alphabet, a table with no rows mints under the prefix new_), and an id
@@ -1949,8 +1952,22 @@ _CONTEXT_SHIM = '''class ToolContext:
         self._issued = {}
         self._served_recorded = 0
         self._served_seeded = 0
+        self._clock = None
+        self._turn = None
         self._starting_ids = self._snapshot_starting_ids()
         self._starting_times = self._snapshot_starting_times()
+
+    def set_clock(self, clock):
+        """The world's time for this Run, served by now() wherever no witnessed time answers."""
+        self._clock = clock
+
+    def begin_call(self, turn):
+        """The position of the call about to run, as the Runner counts the Run's calls."""
+        self._turn = turn
+
+    def turn(self):
+        """The running call's position in the Run, or None where nothing counted it."""
+        return self._turn
 
     def _snapshot_starting_ids(self):
         try:
@@ -2063,6 +2080,8 @@ _CONTEXT_SHIM = '''class ToolContext:
         self._time_cursor = 0
         self._served_recorded = 0
         self._served_seeded = 0
+        self._clock = None
+        self._turn = None
         self._starting_ids = self._snapshot_starting_ids()
         self._starting_times = self._snapshot_starting_times()
 
@@ -2071,7 +2090,7 @@ _CONTEXT_SHIM = '''class ToolContext:
         return {"recorded": self._served_recorded, "seeded": self._served_seeded}
 
     def now(self):
-        """The call's time: the recorded time at replay, a fixed function of seed and step off it.
+        """The call's time: the recorded time at replay, the world clock, else seed and step.
 
         A witnessed time the world already held at reset is what the call found, not what it
         made, so the seeded feed answers for it, counted as seeded. A feed the creation rule
@@ -2095,6 +2114,11 @@ _CONTEXT_SHIM = '''class ToolContext:
             self._time_cursor += 1
             self._served_recorded += 1
             return value
+        if self._clock is not None:
+            # The world's own time: a row the start state holds may carry it too, which is
+            # what a world with one clock looks like, so the reset check does not apply.
+            self._served_recorded += 1
+            return self._clock
         self._served_seeded += 1
         return self._seeded_now()
 
@@ -2380,11 +2404,105 @@ def render_tools(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict,
              f'\n\nclass {class_name}(_ToolKitBase):\n    """Every tool mined from the customer\'s '
              f'traces."""\n\n    def __init__(self, db) -> None:\n        super().__init__(db)\n'
              "        self.db = db\n        self.ctx = ToolContext(db)\n"]
+    logged = action_tools(schema)
     for sig in sigs:
         body = textwrap.dedent(bodies.get(sig.name, "raise NotImplementedError")).strip("\n") or "pass"
+        if sig.name in logged:
+            body = _action_lines(sig, logged[sig.name]) + body
         parts.append(f"\n    @is_tool(ToolType.{sig.kind.upper()})\n{_signature(sig)}\n{_docstring(sig)}\n"
                      + textwrap.indent(body, "        ").rstrip() + "\n")
     return "".join(parts)
+
+
+# --- a tool whose recorded effect is to end the Run (D282) ---
+
+# A tool that hands the conversation on and writes nothing leaves no trace in the world, so no
+# atom can demand it and an empty Run passes a Verifier derived from a Reference that called it.
+# The world records such a call as a row of its own: the compile step writes the row ahead of
+# the body, the tool is a write, and the ordinary write atom covers it. The answer the body gives
+# is untouched, so replay fidelity is what it was.
+ACTIONS_TABLE = "actions"
+# The share of a tool's successful recorded calls that closed their Trace (no tool call after it)
+# for the tool to read as one that ends the Run. Below one because a corpus has stray orderings:
+# a hand-off answered and then a last lookup is still a hand-off.
+ENDS_RUN_SHARE = 0.9
+ENDS_RUN_MIN_CALLS = 3
+ACTION_COLUMNS = {"action_id": "exempt", "tool": "hard", "args": "exempt", "turn": "exempt"}
+
+
+def ending_tools(traces: Iterable[Trace], sigs: Iterable[ToolSig]) -> list[str]:
+    """The tools the recording shows ending the Run and writing nothing.
+
+    Not a write by its mined kind, answered with a scalar on every successful call (no row came
+    back), called at least `ENDS_RUN_MIN_CALLS` times, and the last tool call of its Trace on at
+    least `ENDS_RUN_SHARE` of them.
+    """
+    kinds = {sig.name: sig.kind for sig in sigs}
+    counts: dict[str, list[int]] = {}
+    for trace in traces:
+        calls = [call for call in trace.tool_calls if call.error is None]
+        for at, call in enumerate(calls):
+            tally = counts.setdefault(call.name, [0, 0, 0])
+            tally[0] += 1
+            tally[1] += at == len(calls) - 1
+            tally[2] += isinstance(call.result, (dict, list, tuple))
+    return sorted(name for name, (total, last, rows) in counts.items()
+                  if name in kinds and kinds[name] != "write" and total >= ENDS_RUN_MIN_CALLS
+                  and not rows and last >= ENDS_RUN_SHARE * total)
+
+
+def action_tools(schema: EntitySchema) -> dict[str, str]:
+    """Per tool whose calls the world records as rows, the table that holds them."""
+    out: dict[str, str] = {}
+    for column in schema.columns:
+        for tool in (column.evidence or {}).get("actions_of") or ():
+            out[str(tool)] = column.table
+    return out
+
+
+def record_ending_actions(traces: Iterable[Trace], sigs: list[ToolSig], schema: EntitySchema) -> list[str]:
+    """Give every tool that ends the Run a row in the world's actions table, and make it a write.
+
+    Mutates `sigs` and `schema` in place and returns the tools it moved. The table is named
+    `ACTIONS_TABLE`, suffixed where the customer's world already has a table of that name or class.
+    Idempotent: a schema that already records a tool's actions keeps its table.
+    """
+    traces = list(traces)
+    tools = [name for name in ending_tools(traces, sigs) if name not in action_tools(schema)]
+    if not tools:
+        return []
+    existing = action_tools(schema)
+    table = next(iter(existing.values()), None)
+    if table is None:
+        table = ACTIONS_TABLE
+        classes = {_class_name(t) for t in schema.tables}
+        while table in schema.tables or _class_name(table) in classes:
+            table += "_"
+        schema.tables = sorted([*schema.tables, table])
+        for name, klass in ACTION_COLUMNS.items():
+            schema.columns.append(Column(
+                table=table, name=name, class_=klass, class_rule=klass, class_confidence="high",
+                class_reason="a column of the harness's record of the calls that end the Run",
+                classified_by="code", evidence={"actions_of": []}))
+    for column in schema.columns:
+        if column.table == table:
+            column.evidence = {**(column.evidence or {}),
+                               "actions_of": sorted({*(column.evidence or {}).get("actions_of", []), *tools})}
+    schema.columns = sorted(schema.columns, key=lambda c: (c.table, c.name))
+    for sig in sigs:
+        if sig.name in tools:
+            sig.kind, sig.kind_confidence, sig.classified_by = "write", "high", "rule"
+            sig.kind_reason = ("the recording shows every call ending the Run and writing nothing, so "
+                               f"the world records each call as a row of {table} (D282)")
+    return tools
+
+
+def _action_lines(sig: ToolSig, table: str) -> str:
+    """The two lines the compile step writes ahead of the body: the call recorded as a row."""
+    args = ", ".join(f"{field.name!r}: {field.name}" for field in sig.args_fields)
+    return (f"_action_id = str(len(self.db.{table}) + 1)  {HARNESS_LINE}\n"
+            f"self.db.{table}[_action_id] = {_class_name(table)}(action_id=_action_id, "
+            f"tool={sig.name!r}, args={{{args}}}, turn=self.ctx.turn())  {HARNESS_LINE}\n")
 
 
 def module_source(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict) -> str:
