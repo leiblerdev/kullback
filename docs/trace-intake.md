@@ -17,5 +17,5 @@ Questions to answer when a customer's traces arrive (first: the vendor export ex
 | 9 | Outcome signals: CSAT, escalation, reopen, refund reversal, anything the customer records after the Run? | | Reference confirmation (step 5) and audit calibration. |
 | 10 | Labels: can a domain expert mark 20 to 50 conversations pass or fail? | | D50 proof 3; D48 check 1 second pair of eyes. |
 | 11 | Policy or knowledge documents available beyond the system prompt? | | ADR-0006 rung 4. |
-| 12 | Where the traces live: gitignored folder in `monitoring-tool/`, a folder outside the repository, or a bucket. Never committed. | | Customer data must not enter git history. |
+| 12 | Where the traces live: the gitignored `data/` folder of this repository, a folder outside the repository, or a bucket. Never committed. | | Customer data must not enter git history. |
 | 13 | Retention and sharing rules the customer set (what may leave their boundary, for how long). | | ADR-0002 and rung 6 (snapshot inside their boundary). |
