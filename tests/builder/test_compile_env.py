@@ -1525,3 +1525,86 @@ def test_an_argument_named_like_the_receiver_or_mined_twice_is_refused():
 
 
 # --- D246: the compile_tools envelope is frozen per build ---
+
+
+# --- a row a recording created is not a starting fact (D290) -----------------
+
+
+def _mooring_schema() -> EntitySchema:
+    """An invented harbour: a skipper reads their moorings and a write reserves a new one."""
+    names = {"skippers": ["skipper_id", "name"], "moorings": ["mooring_id", "skipper_id", "berth"]}
+    return EntitySchema(
+        tables=sorted(names),
+        columns=[Column(table=table, name=name, **{"class": "hard"}, classified_by="rule")
+                 for table, columns in sorted(names.items()) for name in columns],
+        id_patterns={"skippers.skipper_id": r"^SK\d+$", "moorings.mooring_id": r"^M\d+$"},
+    )
+
+
+MOORING_SIGS = [ToolSig(name="find_skipper", kind="read", unclassified=False),
+                ToolSig(name="find_mooring", kind="read", unclassified=False),
+                ToolSig(name="reserve_mooring", kind="write", unclassified=False)]
+
+
+def _reserving_trace(trace_id, skipper="SK1"):
+    """A Trace that reads its skipper, then reserves mooring M1 and reads it back: M1 is its own."""
+    return _trace(trace_id, [
+        _call("find_skipper", {"skipper_id": skipper}, result={"skipper_id": skipper, "name": "Ada"}, idx=0),
+        _call("reserve_mooring", {"skipper_id": skipper, "berth": "north"},
+              result={"mooring_id": "M1", "skipper_id": skipper, "berth": "north"}, idx=1),
+        _call("find_mooring", {"mooring_id": "M1"},
+              result={"mooring_id": "M1", "skipper_id": skipper, "berth": "north"}, idx=2),
+    ])
+
+
+def test_a_row_a_write_created_is_absent_from_the_shared_db_and_the_overlay(workdir):
+    schema, trace = _mooring_schema(), _reserving_trace("A")
+    state = ce.build_starting_state([trace], schema, workdir, tasks=[Task(id="t_reserve", run_ids=["A"])],
+                                    tool_sigs=MOORING_SIGS)
+    assert "M1" not in state.db["moorings"]
+    assert state.synthetic_rows == []  # the later read names what the Trace made, so nothing is filled
+    overlay, _ = ce.load_overlay(workdir, "t_reserve")
+    assert [(row.table, row.id) for row in overlay.rows] == [("skippers", "SK1")]
+    assert "moorings row M1 was created by A, reserve_mooring: absent at start" in state.assumptions
+    feed = ce.recorded_call_contexts(trace.tool_calls, schema)[sandbox_mod.context_feed_key(trace.tool_calls[1])]
+    assert feed["new_ids"] == {"moorings": ["M1"]}
+
+
+def test_a_row_read_before_any_write_stays_in_the_shared_db(workdir):
+    schema = _mooring_schema()
+    trace = _trace("A", [
+        _call("find_mooring", {"mooring_id": "M4"}, result={"mooring_id": "M4", "skipper_id": "SK1", "berth": "east"},
+              idx=0),
+        _call("reserve_mooring", {"skipper_id": "SK1", "berth": "east"},
+              result={"mooring_id": "M4", "skipper_id": "SK1", "berth": "west"}, idx=1),
+    ])
+    state = ce.build_starting_state([trace], schema, workdir, tool_sigs=MOORING_SIGS, synthetic=False)
+    assert state.db["moorings"]["M4"]["berth"] == "east"
+    assert not any("absent at start" in line for line in state.assumptions)
+
+
+def test_a_row_another_trace_read_without_creating_it_stays_for_that_trace(workdir):
+    schema = _mooring_schema()
+    reader = _trace("B", [_call("find_mooring", {"mooring_id": "M1"},
+                                result={"mooring_id": "M1", "skipper_id": "SK2", "berth": "south"}, idx=0)])
+    tasks = [Task(id="t_reserve", run_ids=["A"]), Task(id="t_read", run_ids=["B"])]
+    state = ce.build_starting_state([_reserving_trace("A"), reader], schema, workdir, tasks=tasks,
+                                    tool_sigs=MOORING_SIGS, synthetic=False)
+    assert state.db["moorings"]["M1"]["berth"] == "south"  # the reader's sighting, never the creator's
+    read_overlay, read_values = ce.load_overlay(workdir, "t_read")
+    assert read_values[read_overlay.rows[0].version_hash]["skipper_id"] == "SK2"
+    reserve_overlay, _ = ce.load_overlay(workdir, "t_reserve")
+    assert ("moorings", "M1") not in {(row.table, row.id) for row in reserve_overlay.rows}
+    assert any(line.startswith("moorings row M1 was created by A") and "kept shared" in line
+               for line in state.assumptions)
+
+
+def test_a_row_a_write_answers_nested_inside_the_row_it_changed_is_not_a_creation(workdir):
+    schema = _mooring_schema()
+    trace = _trace("A", [_call("reserve_mooring", {"skipper_id": "SK3", "berth": "north"},
+                               result={"skipper_id": "SK3", "name": "Bo",
+                                       "moorings": [{"mooring_id": "M7", "skipper_id": "SK3", "berth": "north"}]},
+                               idx=0)])
+    state = ce.build_starting_state([trace], schema, workdir, tool_sigs=MOORING_SIGS, synthetic=False)
+    assert "M7" in state.db["moorings"]
+    assert not any("absent at start" in line for line in state.assumptions)
