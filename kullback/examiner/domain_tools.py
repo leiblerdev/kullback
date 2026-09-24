@@ -860,34 +860,49 @@ def _probe(root: ExamRoot):
     return probe
 
 
+def _on_task(task_id: Optional[str]) -> str:
+    """The ` on task <id>` clause a finding's message carries, empty when it names no Task."""
+    return f" on task {task_id}" if task_id else ""
+
+
+def _check_finding(root: ExamRoot, args: FindingArgs) -> str:
+    """The finding's kind once its kind, Task and note ruling hold; raises naming what does not."""
+    kind = (args.kind or "").strip()
+    if kind not in FINDING_KINDS:
+        raise ValueError(f"{args.kind!r} is not a finding kind. The kinds are: "
+                         f"{', '.join(FINDING_KINDS)}.")
+    if args.task_id is not None:
+        known_task(root.workdir, args.task_id)
+    if args.note_ruling is not None and open_note(root.workdir, args.task_id or "") is None:
+        raise ValueError(f"task {args.task_id} has no open note from the Builder to rule on; "
+                         "file the finding without note_ruling")
+    return kind
+
+
+def _refuse_repeat(root: ExamRoot, record: Finding, args: FindingArgs) -> None:
+    """Raise when an open finding already says what `record` says."""
+    key = finding_key(record.kind, record.path or record.change, args.task_id or "")
+    existing = open_by_key(root.findings).get(key)
+    if existing is not None:
+        raise ValueError(f"{existing} already says this ({record.kind}"
+                         + (f" in {args.path}" if args.path else "")
+                         + _on_task(args.task_id)
+                         + "); it is filed and the Builder has not answered it yet. Act on it, "
+                           "or file a finding that says something else.")
+
+
 def _finding(root: ExamRoot):
     async def finding(args: FindingArgs) -> FindingResult:
-        kind = (args.kind or "").strip()
-        if kind not in FINDING_KINDS:
-            raise ValueError(f"{args.kind!r} is not a finding kind. The kinds are: "
-                             f"{', '.join(FINDING_KINDS)}.")
-        if args.task_id is not None:
-            known_task(root.workdir, args.task_id)
-        if args.note_ruling is not None and open_note(root.workdir, args.task_id or "") is None:
-            raise ValueError(f"task {args.task_id} has no open note from the Builder to rule on; "
-                             "file the finding without note_ruling")
+        kind = _check_finding(root, args)
         record = Finding(task_id=args.task_id, kind=kind, text=args.text, rows=list(args.rows),
                          path=args.path, change=args.change, source="model")
-        key = finding_key(kind, record.path or record.change, args.task_id or "")
-        existing = open_by_key(root.findings).get(key)
-        if existing is not None:
-            raise ValueError(f"{existing} already says this ({kind}"
-                             + (f" in {args.path}" if args.path else "")
-                             + (f" on task {args.task_id}" if args.task_id else "")
-                             + "); it is filed and the Builder has not answered it yet. Act on it, "
-                               "or file a finding that says something else.")
+        _refuse_repeat(root, record, args)
         root.findings.append(record)
         body = record.as_dict()
         if root.bus is not None:
             root.bus.publish_custom("finding", body)
-        summary = f"finding {body['finding_id']} ({kind}) filed" + \
-            (f" on task {args.task_id}" if args.task_id else "") + \
-            (f", naming {args.path}" if args.path else "")
+        summary = (f"finding {body['finding_id']} ({kind}) filed" + _on_task(args.task_id)
+                   + (f", naming {args.path}" if args.path else ""))
         if args.note_ruling is not None:
             rule_note(root.workdir, args.task_id, "finding", args.note_ruling, args.text)
             summary += f"; the Builder's note on task {args.task_id} is ruled: {args.note_ruling}"
