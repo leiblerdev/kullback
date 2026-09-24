@@ -1,5 +1,7 @@
 # Builds
-Latest documented build: smoke 7, retail and airline on `openai/gpt-6-sol` (2026-09-23), section at the end.
+Latest documented build: smoke 8, retail and airline on `openai/gpt-6-sol` (2026-09-23), section at the end.
+The words these sections use (confirmed Reference, the three fidelities, Verifier, trusted, open, refused, preview)
+are defined from the code in the "Words" section of the top-level README.md.
 Previous latest: retail build 14 with airline and telecom first rounds (2026-09-07).
 Builds 14 (retail, three arms), airline and telecom are running under workdirs that are not yet documented.
 Placeholder rows below mark builds 9, 10, 12-agent and 14; rows only, no retroactive tables.
@@ -431,8 +433,8 @@ at 13:44 UTC, in their second session, in the Examiner stage. Two luna arms besi
 Beside them, the luna arms of the same smoke (killed 13:22 UTC): retail 15 of 205 confirmed at 0.7509, 0 trusted,
 15 turns, 0.27 USD; airline 10 of 119 at 0.6183, 0 trusted, 271 turns, 0.51 USD.
 
-Fidelity is the share of recorded calls whose replay agrees with the recording; a confirmed Reference is a whole
-recorded trace that replays with every call agreeing; trusted is a Task whose Verifier survived the whole suite plus
+Fidelity is the share of recorded calls whose replay agrees with the recording; a confirmed Reference is a Task with at
+least one confirmed replay (see Words in README.md); trusted is a Task whose Verifier survived the whole suite plus
 fresh Runs. Replay is near complete: the remaining walls are three body rules and the write gate replaying on the
 Starting state. Trusted is low because the Examiner derived ten Tasks per examine call and was killed early, not
 because Verifiers failed: 195 retail and 79 airline Tasks were never derived. Both sol Builders tried to stop once
