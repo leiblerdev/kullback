@@ -13,7 +13,7 @@ Kullback rebuilds a running copy of your system from your agent's traces and gra
 
 ## News
 
-- **2026-09-24.** Retail and airline now replay every Task, and both are released on Hugging Face as `build-20260924` (airline moved from preview to release).
+- **2026-09-24.** Retail replays all 223 Tasks with 193 trusted, airline all 130 with 82 trusted. Both published as `build-20260924`, airline now as a release.
 - **2026-09-23.** Retail replays all 205 Tasks with 133 trusted; airline 95 of 119 with 53 trusted. Both published as `build-20260923`.
 - **2026-09-09.** Retail published on Hugging Face as a release, airline as a preview.
 
