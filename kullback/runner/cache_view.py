@@ -80,6 +80,36 @@ def counts(row: dict) -> dict:
             "prompt": uncached + read + write, "derived_write": derived}
 
 
+def _tally_counts(view: dict, row: dict, c: dict) -> None:
+    """Add one call's token counts, memo hit and write kind to the stage's view."""
+    view["derived_write"] = view["derived_write"] or c["derived_write"]
+    for key in ("prompt", "cache_read", "cache_write", "input"):
+        view[key] += c[key]
+    view["memo_hits"] += int(bool(row.get("memo_hit")))
+    if c["cache_write"] and c["cache_read"]:
+        view["tail_writes"] += 1
+    elif c["cache_write"]:
+        view["cold_writes"] += 1
+
+
+def _tally_prefix(view: dict, row: dict, c: dict, at: float, ttl: float,
+                  last_seen: dict[str, float], histories: set[tuple[str, str]]) -> None:
+    """Add one hashed call's prefix writes and unread appends, then remember its prefix and history."""
+    prefix = row["prefix_hash"]
+    seen_at = last_seen.get(prefix)
+    if c["cache_write"] and seen_at is None:
+        view["writes_new_prefix"] += 1
+    elif c["cache_write"] and not c["cache_read"]:
+        view["writes_seen_prefix"] += 1
+        view["writes_seen_prefix_past_ttl"] += int(at - seen_at > ttl)
+    parent = row.get("parent_hash")
+    if parent and (prefix, parent) in histories and not c["cache_read"] and not row.get("memo_hit"):
+        view["appended_but_unread"] += 1
+    last_seen[prefix] = at
+    if row.get("history_hash"):
+        histories.add((prefix, row["history_hash"]))
+
+
 def stage_view(rows: Iterable[dict], stage: str) -> dict:
     """The cache counts of one stage over its calls, in feed order."""
     rows = list(rows)
@@ -94,29 +124,11 @@ def stage_view(rows: Iterable[dict], stage: str) -> dict:
     calls = []
     for row in rows:
         c = counts(row)
-        view["derived_write"] = view["derived_write"] or c["derived_write"]
-        for key in ("prompt", "cache_read", "cache_write", "input"):
-            view[key] += c[key]
-        view["memo_hits"] += int(bool(row.get("memo_hit")))
-        if c["cache_write"] and c["cache_read"]:
-            view["tail_writes"] += 1
-        elif c["cache_write"]:
-            view["cold_writes"] += 1
+        _tally_counts(view, row, c)
         prefix = row.get("prefix_hash")
         at = float(row.get("at") or 0.0)
         if prefix:
-            seen_at = last_seen.get(prefix)
-            if c["cache_write"] and seen_at is None:
-                view["writes_new_prefix"] += 1
-            elif c["cache_write"] and not c["cache_read"]:
-                view["writes_seen_prefix"] += 1
-                view["writes_seen_prefix_past_ttl"] += int(at - seen_at > ttl)
-            parent = row.get("parent_hash")
-            if parent and (prefix, parent) in histories and not c["cache_read"] and not row.get("memo_hit"):
-                view["appended_but_unread"] += 1
-            last_seen[prefix] = at
-            if row.get("history_hash"):
-                histories.add((prefix, row["history_hash"]))
+            _tally_prefix(view, row, c, at, ttl, last_seen, histories)
         calls.append({"at": at, "prefix_hash": prefix, "n_messages": row.get("n_messages"), **c})
     view["read_share"] = view["cache_read"] / view["prompt"] if view["prompt"] else 0.0
     view["largest_uncached"] = sorted(calls, key=lambda c: (-c["input"], c["at"]))[:TOP_UNCACHED]
