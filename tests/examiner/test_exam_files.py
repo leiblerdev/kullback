@@ -17,8 +17,6 @@ def test_expose_copies_runs_json_records_and_spoken(tmp_path):
     write_json(workdir / "rerolls.json", world.inputs["rerolls"])
     write_json(workdir / "references.json", {"t1": {"references": [{"run_id": "ref"}]}})
     write_json(workdir / "task_status.json", {"t1": {"reference_confirmed": True}})
-    (workdir / "tasks").mkdir()
-    write_json(workdir / "tasks" / "t1.json", as_dict(world.inputs["tasks"][0]))
     out = F.expose(workdir)
     assert (workdir / "exam" / "runs" / "t1" / "ref.jsonl").is_file()
     assert (workdir / "exam" / "replays.json").is_file()

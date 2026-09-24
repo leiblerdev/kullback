@@ -11,7 +11,7 @@ from typing import Any, Optional
 from gates import verifier_fixtures as VF
 from gates.examiner_fixtures import SIGS
 from kullback.examiner.plan import ExaminerPlan
-from kullback.runner.records import Run, Task, as_dict
+from kullback.runner.records import Run, Task, as_dict, write_json
 
 WORLD_TASK = "t1"
 
@@ -63,8 +63,12 @@ def make_world(root: Path, *, rerolls: tuple = ("alt",), confirmed: bool = True,
                                                                              runs[run_id].termination_reason)}
                              for run_id in rerolls]
                    for task_id in task_ids}
+    tasks_of = [Task(id=task_id, intent=VF.TASK.intent, run_ids=["ref"]) for task_id in task_ids]
+    # The Task files a model-named id is checked against, as a built workdir holds them.
+    for task in tasks_of:
+        write_json(workdir / "tasks" / f"{task.id}.json", as_dict(task))
     inputs = {
-        "tasks": [Task(id=task_id, intent=VF.TASK.intent, run_ids=["ref"]) for task_id in task_ids],
+        "tasks": tasks_of,
         "sigs": list(SIGS),
         "constraints": [],
         "canon_rules": {},
