@@ -27,7 +27,7 @@ Kullback is the open-source Builder and Runner behind [Leibler](https://leibler.
 
 ## Environments
 
-Smoke 8, 2026-09-23, Builder `openai/gpt-6-sol`, published under the tag `build-20260923`. Fidelity over Tasks is the card's number: the Tasks whose Reference replays confirmed, over all Tasks. Call fidelity is the share of every recorded call whose replay agrees with the recording.
+Smoke 8, 2026-09-23, Builder `openai/gpt-6-sol`, published under the tag `build-20260923`. Fidelity over Tasks is the card's number: the Tasks with at least one confirmed replay, over all Tasks. Call fidelity is the share of every recorded call whose replay agrees with the recording.
 
 | Environment | Fidelity over Tasks | Over Runs | Call fidelity | References confirmed | Verifiers | Trusted Tasks | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -47,6 +47,22 @@ uv run kullback run --workdir env-retail --task <task id> --model provider/model
 uv run kullback verdict --workdir env-retail
 uv run kullback report --workdir env-retail
 ```
+
+## Words
+
+These are the harness's own definitions, each with the code it is computed in.
+
+A Run is one conversation of an agent with the tools, and a Trace is a recorded production Run. A Task's Reference is the Trace its user context comes from, the first of its Runs with rules (`kullback/runner/world/environment.py:203`). Replaying a Trace drives the rebuilt tools with the Trace's own turns and compares every call with the recording. A call agrees when its verdict is same, cosmetic or both refused (`AGREES`, `kullback/runner/replay.py:56`).
+
+A replay is confirmed when nothing in it is off: every write and read agrees, no write leaves a row the recording moved where it was, no recorded call goes unmade, no turn is out of order, nothing crashes and no call is answered by the stand-in model (`confirmed=not reasons`, `kullback/runner/replay.py:707`). A confirmed Reference on the cards is a Task with at least one confirmed replay of any of its Traces, the same count as fidelity over Tasks (`kullback/hub/package.py:263`).
+
+Fidelity over Tasks is Tasks with at least one confirmed replay divided by the Tasks on the frozen list. Fidelity over Runs is confirmed replays divided by every replay of those Tasks (`replay_fidelity`, `kullback/hub/package.py:185`). Call fidelity is the calls whose verdict agrees divided by every recorded call replayed, summed over the tools; it reads the verdict on the call's own answer, so a write that answered right but left a row unmoved still counts as agreeing there while it fails the replay (`fidelity_index`, `kullback/builder/domain_tools.py:255`).
+
+A Verifier is one Task's End-state check, a list of atoms (`kullback/runner/records.py:523`). An atom is required, allowed, forbidden, question, communicate or hard (`kullback/runner/records.py:23`); a hard atom is a Hard rule compiled from the Environment's policy. The Examiner derives a Verifier from the Task's confirmed Reference and re-runs and is its one writer: it has no write or edit, only `propose_verifier`, which runs the gates before a version lands (`kullback/examiner/derive.py:1`, `kullback/examiner/session.py:85`). The Builder cannot change a Verifier: it writes only under `tools/`, `intents/`, `refusals/` and `policy/` (`kullback/builder/session.py:44`). The gates on a Verifier file are the oracle replay, the suite, loosening, false rejection and trusted (`VERIFIER_GATES`, `kullback/gates/bindings.py:241`). Loosening lets a new version newly pass a Run only when that Run is in the legitimate pool: confirmed replays and finished re-rolls (`kullback/gates/loosening.py:46`).
+
+A Task is trusted when all of these hold (`trusted_gate`, `kullback/gates/trust.py:151`). Its Verifier passed the nine suite checks: provenance spans, the oracle passes on the Reference, an empty Run fails, a plausible wrong Run fails, an unsolved state fails, a second path passes, the loophole probe fails, the leak check is clean and a mutation flips it (`validate_verifier`, `kullback/gates/verifier_suite.py:520`). No probe in its pool scores a pass. The file is the last accepted version and does not loosen past the frontier. The Task is not refused. And the Verifier is not over strict: over the legitimate Runs it was not derived from, it does not reject every one (`over_strict`, `kullback/gates/loosening.py:141`, threshold 1.0 at line 29). A pool of one Run that the Verifier rejects is enough to fail this.
+
+An open Task is any other Task: it has no Verifier yet, or the first of those conditions that fails is its reason (`status_of`, `kullback/builder/domain_tools.py:563`). A refused Task is one the Builder refused in `refusals/<task>.json` as one nobody can finish, admitted only when no frontier Run of it finished (`refuse_gate`, `kullback/gates/trust.py:67`). A release replays at least 90% of its Tasks (`FIDELITY_BAR`, `kullback/hub/card.py:25`); a preview is below that bar and publishes only with `--preview`.
 
 ## Quick start
 
