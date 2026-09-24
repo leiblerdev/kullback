@@ -601,7 +601,7 @@ RUN_IDENTITY = ("run_id", "task_id")
 
 
 class ForeignRunError(ValueError):
-    """A Run file that holds another Task's Run, or more than one Run (D280)."""
+    """A Run file that holds another Task's Run, or more than one Run (D281)."""
 
 
 def load_run_jsonl(path: Any, task_id: Optional[str] = None) -> Run:
@@ -612,10 +612,10 @@ def load_run_jsonl(path: Any, task_id: Optional[str] = None) -> Run:
     `stop` event's payload instead of being dropped, which is where loop.py's Start and End state
     land. verdict.py calls this directly, and gates/verifier_suite.py reads its Runs through it.
 
-    D280: a file is one Run. Two header lines naming different Runs or different Tasks are refused
+    D281: a file is one Run. Two header lines naming different Runs or different Tasks are refused
     rather than spliced into one, and given `task_id` a file whose records name another Task is
     refused, with both Task ids in the error, so a Run is never read as evidence about a Task it
-    did not play. A file that names no Task at all (written before D280) names no other Task either.
+    did not play. A file that names no Task at all (written before D281) names no other Task either.
     """
     file = Path(path)
     header: dict = {}
@@ -645,7 +645,7 @@ def load_run_jsonl(path: Any, task_id: Optional[str] = None) -> Run:
 
 
 def load_task_run(source: Any, task_id: str) -> Run:
-    """One Run of the named Task from a path, a dict or a Run; another Task's Run is refused (D280)."""
+    """One Run of the named Task from a path, a dict or a Run; another Task's Run is refused (D281)."""
     if isinstance(source, (Run, dict)):
         run = source if isinstance(source, Run) else Run.model_validate(source)
         if run.task_id is not None and run.task_id != task_id:

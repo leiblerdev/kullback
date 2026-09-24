@@ -337,7 +337,7 @@ def _run_file(path: Path, *headers: dict) -> Path:
 
 
 def test_the_run_loader_refuses_a_file_of_another_task_by_both_names(tmp_path):
-    """D280: asked for one Task, a file whose records name another is refused, naming both."""
+    """D281: asked for one Task, a file whose records name another is refused, naming both."""
     path = _run_file(tmp_path / "r1.jsonl", {"run_id": "r1", "task_id": "t_other"})
     assert records_module.load_run_jsonl(path, task_id="t_other").task_id == "t_other"
     with pytest.raises(records_module.ForeignRunError, match="t_other.*t_asked"):

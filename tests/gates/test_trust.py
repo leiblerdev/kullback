@@ -266,7 +266,7 @@ def test_a_verifier_seeded_from_its_own_task_runs_passes_the_provenance_step(tmp
 
 
 def test_a_verifier_seeded_from_another_tasks_run_fails_the_trusted_gate_naming_the_seed(tmp_path):
-    """D280: a seed file that the loader attributes to another Task withdraws trust; the history stays."""
+    """D281: a seed file that the loader attributes to another Task withdraws trust; the history stays."""
     world = _seeded_world(tmp_path, foreign=("alt",))
     kept = world["history"][TASK].model_copy(deep=True)
     ruling = T.trusted_gate(**world)

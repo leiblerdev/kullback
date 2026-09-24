@@ -25,7 +25,7 @@ A Task whose suite failed only by checks that had no input is ruled on every oth
 held by the not-run checks only when all of them pass; `not_run_only` names those Tasks, so a
 proposal on one is not refused for a check nobody could run (F45).
 
-D280 adds provenance, where the caller names the workdir: every seed Run the accepted version
+D281 adds provenance, where the caller names the workdir: every seed Run the accepted version
 records must resolve, through the Run loader, to a Run of the same Task. A seed read from a file
 another Task wrote, a file holding two Runs, or a file nobody can find again is evidence nobody can
 attribute, so the version is not trusted, the reason names the seeds, and the history is kept for
@@ -34,6 +34,7 @@ the Examiner's next round to derive again. `untrusted_seeds` names each such Tas
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Optional
 
@@ -62,6 +63,10 @@ from kullback.runner.records import (
     Run,
     Verifier,
     VerifierHistory,
+    exam_verifier_path,
+    load_exam_history,
+    load_exam_task_runs,
+    load_probe_pools,
     load_task_run,
     read_json,
     run_path,
@@ -191,7 +196,7 @@ def seed_files(workdir: Any, replays: dict, rerolls: dict) -> dict[str, dict[str
 
 
 def unattributed_seeds(verifier: Verifier, workdir: Any, files: dict[str, dict[str, Path]]) -> list[str]:
-    """The seeds of this version that do not load, through the Run loader, as Runs of its Task (D280).
+    """The seeds of this version that do not load, through the Run loader, as Runs of its Task (D281).
 
     A seed no row names is looked for under the Task's own runs folder, where the runner writes a
     replay or a variant; one found nowhere is not attributable either.
@@ -214,7 +219,7 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
                  workdir: Any = None) -> GateResult:
     """A failure per Task with a Verifier that is not trusted, with the first reason that holds.
 
-    Given the workdir, the seeds of each accepted version are checked for provenance (D280).
+    Given the workdir, the seeds of each accepted version are checked for provenance (D281).
     """
     write_tools = write_tools_of(sigs)
     files = seed_files(workdir, replays, rerolls) if workdir is not None else {}
@@ -281,3 +286,44 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
                 false_rejection=fractions, false_rejection_pool=pool_sizes, false_rejection_ruling=pool_says,
                 refused=refused, checks_not_run=not_run, not_run_only=not_run_only,
                 untrusted_seeds=foreign_seeds)
+
+
+def _live_verifiers(root: Path) -> list[dict]:
+    """Each Task's live Verifier: the Examiner's proposal where it wrote one, else the derived file."""
+    verifiers: list[dict] = []
+    for path in sorted((root / "verifiers").glob("*.json")) if (root / "verifiers").is_dir() else []:
+        proposal = exam_verifier_path(root, path.stem)
+        for source in (proposal, path) if proposal.is_file() else (path,):
+            try:
+                verifiers.append(json.loads(source.read_text(encoding="utf-8")))
+                break
+            except (OSError, ValueError):
+                continue
+    return verifiers
+
+
+def _refusal_files(root: Path) -> dict[str, Any]:
+    refusals: dict[str, Any] = {}
+    for folder in (root / "refusals", root / "env" / "refusals"):
+        for path in sorted(folder.glob("*.json")) if folder.is_dir() else ():
+            try:
+                refusals.setdefault(path.stem, json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                continue
+    return refusals
+
+
+def workdir_trusted_ruling(workdir: Any) -> GateResult:
+    """The trusted ruling over a workdir's live files, with provenance: the one trusted number (D281).
+
+    The Builder's status and the round's snapshot both read trust here, so they cannot disagree: the
+    Examiner's artefacts where it wrote them (F22), the refusals, the replay and re-roll rows, and
+    the workdir for the seed provenance step. Files not there yet read as empty.
+    """
+    root = Path(workdir)
+    task_status = read_json(root / "task_status.json", None) or {}
+    return trusted_gate(task_status if isinstance(task_status, dict) else {}, _live_verifiers(root),
+                        load_probe_pools(root), load_exam_history(root), _refusal_files(root),
+                        load_exam_task_runs(root), read_json(root / "replays.json", None) or {},
+                        read_json(root / "rerolls.json", None) or {}, read_json(root / "canon-rules.json", None),
+                        read_json(root / "tool_sigs.json", None) or [], workdir=root)

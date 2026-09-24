@@ -28,6 +28,7 @@ from gates.verifier_fixtures import (
     extra_write_run,
     other_reason_run,
     reference_run,
+    write_events_jsonl,
     wrong_run,
 )
 from kullback.builder import compile_env as ce
@@ -358,6 +359,10 @@ def test_a_single_reference_task_with_a_waived_row_is_trusted_on_a_passing_suite
     root = tmp_path / "root"
     rel = _write(root, "verifiers/t1.json", json.dumps(as_dict(verifier)))
     waived_row = {verifier.task_id: {"verifier_passed": True, "second_path_waived": True}}
+    seeds = tmp_path / "work" / "runs" / TASK
+    seeds.mkdir(parents=True)
+    for run in (reference_run(), alt_path_run(), other_reason_run()):
+        write_events_jsonl(run, seeds / f"{run.run_id}.jsonl")  # the seeds, as Runs of this Task (D281)
     out = rulings_for(root, rel, tmp_path / "work",
                       evidence=_suite_evidence(verifier, alt_path_run=None, task_status=waived_row))
     alt = next(r for r in out if r.stage == "verifier_alt_path")

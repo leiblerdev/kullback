@@ -41,7 +41,7 @@ def make_world(root: Path, *, rerolls: tuple = ("alt",), confirmed: bool = True,
     `confirmed` is what the replay row says of `ref`; `terminations` overrides what a re-roll row
     says of how its Run ended. `tasks` repeats that Task under the ids t1, t2, ... with the same
     Runs written again under each Task's own folder and id, which is the world several Tasks are
-    derived in at once and cached one by one (D163); a Run file is one Task's Run (D280).
+    derived in at once and cached one by one (D163); a Run file is one Task's Run (D281).
     """
     workdir = root / "world"
     runs = {"ref": VF.reference_run(), "alt": VF.alt_path_run(), "bad": VF.failed_run(),

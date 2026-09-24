@@ -251,7 +251,7 @@ def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, mak
 def _fresh_run_state(run_id: Optional[str], base: str, **fields: Any) -> loop.RunState:
     """A new Run under the caller's name, or under `base` and the first attempt whose file is free.
 
-    A caller's name is written once like every Run file (D280). Without one, the same Task and seed
+    A caller's name is written once like every Run file (D281). Without one, the same Task and seed
     played again (a second re-roll call that starts its seeds at 0) is a new Run, not the old file
     rewritten, so it takes the next attempt: `base`, then `base-a2`, `base-a3` and on.
     """
@@ -557,7 +557,7 @@ def reroll(environment_dir: Any, task_id: str, model: Any, *, count: int,
 
     With a `prefix` the Runs are named for their buyer (D133: the Examiner's second-path batches)
     and for the Task, so a re-roll never writes different bytes under a name something already read
-    and two Tasks bought under one prefix never share a file (D280). The candidate's
+    and two Tasks bought under one prefix never share a file (D281). The candidate's
     user arrives as an object or as a `make_user(router)` factory, never as an import. Each report
     carries `user_end`, how the Simulated user ended that Run (D133).
     """

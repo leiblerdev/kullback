@@ -37,7 +37,7 @@ def new_run_state(run_id: str, *, workdir: Any = None, path: Any = None, system_
                   supersedes: bool = False, **run_fields: Any) -> RunState:
     """A fresh Run with its opening transcript and a new JSONL file under the workdir.
 
-    D280: a Run file is written once. The file opens with one line naming the Run and its Task, and
+    D281: a Run file is written once. The file opens with one line naming the Run and its Task, and
     a path that already exists is an error naming it, so two Runs never share a file and a Run
     never truncates a file another Run wrote. `supersedes` is for a caller that plays the same Run
     again under the same name (a replay of one recording after a repair): the old file is removed
@@ -60,14 +60,14 @@ def new_run_state(run_id: str, *, workdir: Any = None, path: Any = None, system_
             with path.open("x", encoding="utf-8") as handle:
                 handle.write(json.dumps({"run_id": run.run_id, "task_id": run.task_id}) + "\n")
         except FileExistsError:
-            raise FileExistsError(f"Run file {path} already exists; a Run file is written once (D280)") from None
+            raise FileExistsError(f"Run file {path} already exists; a Run file is written once (D281)") from None
     return RunState(run=run, messages=messages, path=path, user=user, max_turns=max_turns)
 
 
 def _remove_own(path: Path, run: Run) -> None:
     """Remove an earlier file of this same Run; a file another Run or Task wrote raises instead.
 
-    A file written before D280 carries no opening line, so a missing task_id is read as this Task's
+    A file written before D281 carries no opening line, so a missing task_id is read as this Task's
     when the run_id matches; a file holding two Runs is refused by the loader before that.
     """
     try:

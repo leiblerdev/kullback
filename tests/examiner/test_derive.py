@@ -532,7 +532,7 @@ def test_the_cap_stays_when_the_verifier_asks_for_something_else(tmp_path):
 
 
 def test_derivation_refuses_a_seed_file_of_another_task_by_name(tmp_path):
-    """D280: the seeds load through the Run loader, so another Task's Run is never derived from."""
+    """D281: the seeds load through the Run loader, so another Task's Run is never derived from."""
     foreign = write_events_jsonl(alt_path_run().model_copy(update={"task_id": "t_other"}), tmp_path / "alt.jsonl")
     with pytest.raises(ForeignRunError, match=f"t_other, not of Task {TASK.id}"):
         V.derive_verifier(TASK, reference_run(), [foreign], None, write_tools=WRITE_TOOLS)

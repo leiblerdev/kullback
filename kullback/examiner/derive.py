@@ -69,7 +69,7 @@ _WORDS = re.compile(r"[A-Za-z0-9]+")
 
 
 def load_runs(paths: Iterable[Any], task_id: Optional[str] = None) -> list[Run]:
-    """The seed Runs, each through the Run loader; given a Task, another Task's Run is refused (D280)."""
+    """The seed Runs, each through the Run loader; given a Task, another Task's Run is refused (D281)."""
     if task_id is None:
         return [as_run(p) for p in paths]
     return [load_task_run(p, task_id) for p in paths]

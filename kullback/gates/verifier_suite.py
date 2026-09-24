@@ -537,7 +537,7 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
     the column of anything it missed.
     """
     reference = as_run(reference_run)
-    # D280: the seeds and the second path are Runs of this Task, through the loader that refuses another's.
+    # D281: the seeds and the second path are Runs of this Task, through the loader that refuses another's.
     own = [load_task_run(s, verifier.task_id) for s in (seed_runs or [])]
     runs = {r.trace_id or r.run_id: r for r in own + [reference]}
     if alt_path_run is not None:

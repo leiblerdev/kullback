@@ -395,7 +395,7 @@ def test_the_stop_event_carries_the_system_prompt_and_the_tool_specs_the_candida
 
 
 def test_a_run_file_opens_with_its_run_and_task_and_a_second_write_to_its_path_raises(workdir):
-    """D280: the first line names the Run and its Task, and a path that exists is never rewritten."""
+    """D281: the first line names the Run and its Task, and a path that exists is never rewritten."""
     state = new_run_state("r1", workdir=workdir, task_id="t1")
     assert json.loads(state.path.read_text(encoding="utf-8").splitlines()[0]) == {"run_id": "r1", "task_id": "t1"}
     with pytest.raises(FileExistsError, match=str(state.path)):
