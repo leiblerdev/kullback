@@ -135,11 +135,15 @@ def test_a_write_outside_every_binding_draws_no_ruling(tmp_path):
 
 # --- acceptance: one wrong answer names its call and its column ---
 
-def test_a_body_answering_every_call_right_passes_and_one_answering_a_call_wrongly_is_refused_with_rows(tmp_path):
+def test_a_body_answering_every_call_right_passes_every_gate(tmp_path):
     root, work = tmp_path / "root", tmp_path / "work"
     right = _write(root, "tools/right.py", _source(RIGHT))
     rulings = rulings_for(root, right, work, execute=_execute(tmp_path / "box_right"), evidence=_evidence())
     assert [ruling.stage for ruling in rulings if not ruling.passed] == []
+
+
+def test_a_body_answering_a_call_wrongly_is_refused_by_replay_fidelity_with_the_call_and_column(tmp_path):
+    root, work = tmp_path / "root", tmp_path / "work"
     rel = _write(root, "tools/set_status.py", _source(WRONG_ON_W2))
     rulings = rulings_for(root, rel, work, execute=_execute(tmp_path / "box"), evidence=_evidence())
     stages = [ruling.stage for ruling in rulings]

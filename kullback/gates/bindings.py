@@ -820,27 +820,10 @@ def _rel(root: Any, written_path: str) -> Optional[str]:
         return None
 
 
-def rulings_for(root: Any, written_path: str, workdir: Any, *, execute: Any = None,
-                evidence: Optional[dict] = None) -> list[Any]:
-    """Every ruling a write of this path draws, in binding order, stopping at the first
-    refusal, except that a memorised-values refusal lets the execution gates rule after it
-    (see the module docstring). A path no binding matches, or a file that is gone, draws nothing.
-
-    `execute(source, calls, db)` runs a tool body over recorded calls; without it the
-    execution gates are skipped for missing evidence; its `render(source)`, when it carries
-    one, is the rendered module the confinement gate reads. `evidence` overrides or extends
-    what the loaders read from the workdir, keyed by evidence name. Each gate sees the
-    rulings drawn before it as evidence "rulings", so trusted reads the suite that just ran.
-    """
-    rel = _rel(root, written_path)
-    binding = binding_for(rel) if rel is not None else None
-    if rel is None or binding is None:
-        return []
-    try:
-        text = Path(root, rel).read_text(encoding="utf-8")
-    except OSError:
-        return []
-    workdir_path = Path(workdir)
+def _gate_evidence(binding: Any, rel: str, text: str, workdir_path: Path, execute: Any,
+                   evidence: Optional[dict]) -> dict[str, Any]:
+    """What the gates of this binding read: the written file, the loaders' evidence from the workdir,
+    the executor, and the caller's overrides, a None override leaving the loaded value in place."""
     # The workdir is evidence too: the trusted gate's provenance step opens seed Runs under it (D281).
     merged: dict[str, Any] = {"path": rel, "stem": PurePosixPath(rel).stem, "workdir": workdir_path}
     if rel.endswith(".py"):
@@ -862,6 +845,30 @@ def rulings_for(root: Any, written_path: str, workdir: Any, *, execute: Any = No
     for name, value in (evidence or {}).items():
         if value is not None:
             merged[name] = value
+    return merged
+
+
+def rulings_for(root: Any, written_path: str, workdir: Any, *, execute: Any = None,
+                evidence: Optional[dict] = None) -> list[Any]:
+    """Every ruling a write of this path draws, in binding order, stopping at the first
+    refusal, except that a memorised-values refusal lets the execution gates rule after it
+    (see the module docstring). A path no binding matches, or a file that is gone, draws nothing.
+
+    `execute(source, calls, db)` runs a tool body over recorded calls; without it the
+    execution gates are skipped for missing evidence; its `render(source)`, when it carries
+    one, is the rendered module the confinement gate reads. `evidence` overrides or extends
+    what the loaders read from the workdir, keyed by evidence name. Each gate sees the
+    rulings drawn before it as evidence "rulings", so trusted reads the suite that just ran.
+    """
+    rel = _rel(root, written_path)
+    binding = binding_for(rel) if rel is not None else None
+    if rel is None or binding is None:
+        return []
+    try:
+        text = Path(root, rel).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    merged = _gate_evidence(binding, rel, text, Path(workdir), execute, evidence)
     out: list[Any] = []
     halted = False  # a stopping static gate refused: no execution gate runs
     for gate in binding.gates:
