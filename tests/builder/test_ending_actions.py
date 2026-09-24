@@ -89,6 +89,22 @@ def test_a_final_scalar_lookup_keyed_by_an_id_from_the_world_is_not_an_ending_to
     assert "ticket_total" not in compile_env.record_ending_actions(traces, sigs, schema)
 
 
+def test_a_final_lookup_keyed_by_an_id_of_the_starting_state_never_returned_before_is_not_an_ending_tool():
+    other = dict(TICKET, ticket_id="T2")
+    shown = [ToolCall(id="w-1", name="look_ticket", args={"ticket_id": "T2"}, result=other, raw_ptr=PTR,
+                      trace_id="w")]
+    first = [Trace(trace_id=f"u{n}", raw_hash="r" * 64, ingest_version="1", source="test", raw_ptr=PTR,
+                   tool_calls=[ToolCall(id=f"u{n}-1", name="ticket_total", args={"ticket_id": "T2"},
+                                        result=2, raw_ptr=PTR, trace_id=f"u{n}")])
+             for n in range(4)]
+    traces = first + [Trace(trace_id="w", raw_hash="r" * 64, ingest_version="1", source="test",
+                            raw_ptr=PTR, tool_calls=shown)] + [_trace(f"h{n}", hand_off=True) for n in range(4)]
+    sigs, _ = _mined(traces)
+    assert compile_env.ending_tools(traces, sigs) == [HANDOFF]
+    assert compile_env.ending_tools(first, _mined(first)[0], world={"tickets": {"T2": other}}) == []
+    assert compile_env.ending_tools(first, _mined(first)[0], world={}) == ["ticket_total"]
+
+
 def test_a_tool_the_miner_classified_as_a_read_is_not_an_ending_tool():
     traces = _corpus()
     sigs, _ = _mined(traces)
