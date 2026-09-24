@@ -145,6 +145,12 @@ class AtomContext:
                     self.covered.add(call["i"])
         return hit
 
+    def filled(self, tool: str, field: str, **fields: Any) -> bool:
+        """A write of this tool, on this row, whose field holds something: prose is not pinned (D292)."""
+        return any(str((call["args"] or {}).get(field) or "").strip() != ""
+                   and all(self.c((call["args"] or {}).get(k)) == self.c(v) for k, v in fields.items())
+                   for call in self.calls if call["name"] == tool and not call["error"])
+
     def called(self, tool: str) -> bool:
         """A call the Environment rejected had no effect, so it is not a call that happened (D45)."""
         return any(call["name"] == tool and not call["error"] for call in self.calls)
@@ -288,7 +294,7 @@ class AtomContext:
         # A fresh copy of the builtins per evaluation: _evaluate's dict(env) is shallow, so handing
         # out the module-level dict would let one atom pop a name every later atom and every later
         # Verdict in this process would then miss.
-        return {"__builtins__": dict(SAFE_BUILTINS), "wrote": self.wrote, "called": self.called,
+        return {"__builtins__": dict(SAFE_BUILTINS), "wrote": self.wrote, "filled": self.filled, "called": self.called,
                 "attempted": self.attempted, "eq": self.eq,
                 "asked": self.asked, "communicated": self.communicated, "user_said": self.user_said,
                 "user_confirmed_before": self.user_confirmed_before, "value": self.value,
