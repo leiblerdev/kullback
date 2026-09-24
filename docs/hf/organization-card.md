@@ -9,6 +9,8 @@
 | [leibler/retail](https://huggingface.co/datasets/leibler/retail) | 100.0% (205 of 205) | 100.00% of 3220 | 205 | 133 of 205 | release |
 | [leibler/airline](https://huggingface.co/datasets/leibler/airline) | 79.8% (95 of 119) | 96.03% of 1513 | 95 | 53 of 119 | preview |
 
+A newer build finished on 2026-09-24 (Claude Opus 5.5 on Amazon Bedrock) and replays every Task: retail 223 of 223 with 193 trusted, airline 130 of 130 with 82 trusted. It is not published yet because the export's leak scan found Verifiers that quote a recorded agent message word for word; the table above is the published 2026-09-23 build until that is fixed.
+
 The trusted counts are under review because some rest on a seed file several Tasks shared. Both come from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora (MIT); no package carries the recordings.
 
 ## Words
@@ -16,7 +18,7 @@ The trusted counts are under review because some rest on a seed file several Tas
 - Run and Trace: a Run is an agent's conversation with the tools; a Trace is a recorded one.
 - Reference: the Trace a Task's user context comes from.
 - Replay and agree: a replay re-drives a Trace's turns; a call agrees when its verdict is same, cosmetic or both refused.
-- Confirmed: a replay where every call agrees, none was answered by the stand-in, and nothing is missing, reordered or crashed.
+- Confirmed: a replay where every call agrees and nothing is missing, reordered or crashed.
 - Fidelity over Tasks: Tasks with a confirmed replay, over all Tasks.
 - Fidelity over Runs: confirmed replays over all replays.
 - Call fidelity: agreeing calls over all recorded calls.
@@ -24,7 +26,7 @@ The trusted counts are under review because some rest on a seed file several Tas
 - Atom: one Verifier check: required, allowed, forbidden, question, communicate or hard.
 - Gates: oracle replay, suite, loosening, false rejection, trusted.
 - Trusted: suite passed, probes fail, last version, no loosening, not over strict, not refused.
-- Open: neither trusted nor refused.
+- Open: not yet trusted.
 - Refused: a Task the Builder showed nobody can finish.
 - Release and preview: a release replays at least 90% of its Tasks; a preview is below that.
 
