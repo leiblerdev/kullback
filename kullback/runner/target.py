@@ -11,6 +11,8 @@ verdicted.
 from __future__ import annotations
 
 import re
+import sys
+from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 from kullback.runner.canon import CanonRules, canon_value
@@ -78,19 +80,34 @@ def _user_text(event: Event) -> str:
     return str(_payload(event).get("content") or _payload(event).get("text") or "")
 
 
-def canon_fn(canon: Any) -> Callable[[Any], Any]:
-    """canon.py's rules by default (D39); a caller may pass the module or its own callable.
+class CanonMissing(TypeError):
+    """A scorer was asked to canonicalise without the Environment's rules (D290)."""
 
-    The customer's own CanonRules are accepted here as well, and bound to that one canonicalizer.
+
+def _caller() -> str:
+    """The first frame outside this module and the suite that re-exports it: the caller to name."""
+    frame = sys._getframe(2)
+    while frame is not None and frame.f_code.co_filename.endswith(("runner/target.py", "gates/verifier_suite.py")):
+        frame = frame.f_back
+    if frame is None:
+        return "unknown caller"
+    return f"{frame.f_code.co_name} ({Path(frame.f_code.co_filename).name}:{frame.f_lineno})"
+
+
+def canon_fn(canon: Any) -> Callable[[Any], Any]:
+    """The one canonicaliser of an Environment, bound from its CanonRules (D39, D290).
+
+    The rules are built once per Environment (`canon.load_rules`, `canon.rules_of`) and passed to
+    every scorer. A callable already bound from them passes through. Anything else, None or the
+    raw dict of the rules file included, raises and names the caller: a silent fallback to the
+    module defaults used to score the status with other rules than the suite that derived the atom.
     """
-    if canon is None:
-        return canon_value
     if isinstance(canon, CanonRules):
         return lambda value: canon_value(value, rules=canon)
-    for attr in ("canon_value", "canonicalize", "canonical", "normalize"):
-        if callable(getattr(canon, attr, None)):
-            return getattr(canon, attr)
-    return canon if callable(canon) else canon_value
+    if callable(canon):
+        return canon
+    raise CanonMissing(f"{_caller()} scored without the Environment's CanonRules "
+                       f"(got {type(canon).__name__}); load them once with canon.load_rules or canon.rules_of")
 
 
 def _key(fn: Callable, value: Any) -> str:

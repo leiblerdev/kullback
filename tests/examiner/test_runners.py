@@ -11,6 +11,7 @@ from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.ai.usage import Usage
 from kullback.examiner import runners as R
 from kullback.runner import budget, tool
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import Verifier, write_json
 from kullback.runner.target import check_run
 from tests.runner.test_tool import _env_with_trace
@@ -51,7 +52,7 @@ def test_run_probe_returns_the_scored_run_and_files_it_under_probes(tmp_path):
     assert run.run_id == "probe-widget_task"
     assert (root / "probes" / "probe-widget_task.jsonl").is_file()
     assert list((root / "runs").glob("probe-*.jsonl")) == []
-    passed, _ = check_run(_verifier(root), run)
+    passed, _ = check_run(_verifier(root), run, CanonRules())
     assert passed is True
 
 

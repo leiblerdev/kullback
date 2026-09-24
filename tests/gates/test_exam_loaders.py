@@ -6,6 +6,7 @@ from examiner.worlds import make_world
 from gates import verifier_fixtures as VF
 from kullback.examiner import exam_files as F
 from kullback.gates.bindings import binding_for
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import (
     Probe,
     ProbePool,
@@ -30,7 +31,7 @@ def test_the_history_and_task_runs_loaders_read_what_the_examiner_saved(tmp_path
     world = make_world(tmp_path)
     verifier = _verifier(tmp_path / "v")
     root = F.ExamRoot(workdir=world.workdir, replays=world.inputs["replays"], rerolls=world.inputs["rerolls"],
-                      history={"t1": F.seeded_history({}, "t1", verifier)})
+                      history={"t1": F.seeded_history({}, "t1", verifier)}, canon_rules=CanonRules())
     F.save_ruling_files(root)
     reads = _reads()
     history = reads["history"](world.workdir, "verifiers/t1.json")

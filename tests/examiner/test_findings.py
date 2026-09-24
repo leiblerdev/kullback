@@ -14,6 +14,7 @@ from gates.examiner_fixtures import SIGS, TASK, base, tighten
 from gates.verifier_fixtures import other_reason_run, reference_run
 from kullback.examiner import findings as F
 from kullback.examiner.plan import ExaminerPlan
+from kullback.runner.canon import CanonRules
 
 RENEW, HOLD, FINE, CARD = "task_renew", "task_hold", "task_fine", "task_card"
 DUE_DATE = 'hard columns differ: due_date: ours "2026-03-01", recorded "2026-03-15"'
@@ -156,7 +157,7 @@ def test_a_verifier_is_filed_against_its_task_only_when_it_rejects_every_held_ou
     store = {"verifiers": [strict], "task_runs": {TASK: [reference_run(), other_reason_run()]}, "sigs": SIGS,
              "replays": {TASK: {"tr1": {"trace_id": "tr1", "run_id": "ref", "confirmed": True, "path": ""}}},
              "rerolls": {TASK: [{"run_id": "rr2", "termination_reason": "success", "path": ""}]},
-             "canon_rules": None}
+             "canon_rules": CanonRules()}
     row = F.false_rejection_rows(store)[0]
     assert row["kind"] == "false_rejection" and row["task_id"] == TASK and row["run_id"] == "rr2"
     assert row["suggested"] == "repair" and "reject all 1 held-out" in row["text"]

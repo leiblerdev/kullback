@@ -16,6 +16,7 @@ from kullback.examiner import stage as stage_mod
 from kullback.examiner.exam_files import ExamRoot
 from kullback.gates.probes import version_hash
 from kullback.runner import budget, tool
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import Verifier, as_dict, read_json, write_json
 from tests.runner.test_tool import _env_with_trace
 
@@ -137,7 +138,7 @@ def test_model_finding_publishes_and_duplicates_are_refused_with_the_id(tmp_path
 
 def test_bash_write_and_edit_are_not_registered_and_base_tools_are_scoped_to_exam(tmp_path):
     world = make_world(tmp_path)
-    root = ExamRoot(workdir=world.workdir)
+    root = ExamRoot(workdir=world.workdir, canon_rules=CanonRules())
     harness = AgentHarness(model=TestModel([]))
     load_extensions(harness, [S.examiner_extension(root)])
     names = harness.registry.names()
@@ -152,7 +153,7 @@ def test_bash_write_and_edit_are_not_registered_and_base_tools_are_scoped_to_exa
 def test_the_examiner_gets_inspect_among_its_base_tools_and_still_no_write_edit_or_bash(tmp_path):
     world = make_world(tmp_path)
     harness = AgentHarness(model=TestModel([]))
-    load_extensions(harness, [S.examiner_extension(ExamRoot(workdir=world.workdir))])
+    load_extensions(harness, [S.examiner_extension(ExamRoot(workdir=world.workdir, canon_rules=CanonRules()))])
     names = set(harness.registry.names())
     assert "inspect" in names
     assert not {"write", "edit", "bash"} & names
@@ -339,7 +340,7 @@ def test_a_task_without_a_confirmed_reference_is_left_out_with_its_reason():
 
 def test_the_rulings_line_covers_only_the_tasks_the_session_examines(tmp_path):
     world = make_world(tmp_path, tasks=2)
-    root = ExamRoot(workdir=world.workdir, replays=world.inputs["replays"])
+    root = ExamRoot(workdir=world.workdir, replays=world.inputs["replays"], canon_rules=CanonRules())
     lines = S.rulings_line(root, ["t2"]).splitlines()
     assert [line.split(":")[0] for line in lines] == ["t2"]
 
@@ -350,7 +351,7 @@ def test_the_rulings_line_names_the_derived_verifier_and_the_user_rules_of_a_con
     S.expose(world.workdir)
     replays = dict(world.inputs["replays"])
     replays["t2"] = {"ref": {**replays["t2"]["ref"], "confirmed": False}}
-    root = ExamRoot(workdir=world.workdir, replays=replays)
+    root = ExamRoot(workdir=world.workdir, replays=replays, canon_rules=CanonRules())
     lines = dict(line.split(": ", 1) for line in S.rulings_line(root).splitlines())
     assert "derived verifier: derived/t1.json" in lines["t1"]
     assert "proposal: verifiers/t1.json once you first propose one" in lines["t1"]

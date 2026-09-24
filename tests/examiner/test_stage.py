@@ -24,6 +24,7 @@ from kullback.gates import verifier_suite
 from kullback.gates.artifacts import D79_CHECKS, D79_STAGES
 from kullback.gates.ledger import GateLedger
 from kullback.runner import budget
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import Task, ToolCall, Trace, Verifier
 
 # D218 rule 2 put `round` and `updated_at` on every row of the file, so a reader can see the live file
@@ -117,7 +118,7 @@ def test_the_suite_for_a_repaired_verifier_runs_every_d79_check_the_derivation_r
     verifier = Verifier.model_validate(_read(derived.workdir / "verifiers" / "t1.json"))
     status = _read(derived.workdir / "task_status.json")["t1"]
     task = derived.inputs["tasks"][0]
-    gates = stage.suite_for(task, verifier, [derived.paths["ref"], derived.paths["alt"]], canon_rules=None,
+    gates = stage.suite_for(task, verifier, [derived.paths["ref"], derived.paths["alt"]], canon_rules=CanonRules(),
                             write_tools=VF.WRITE_TOOLS, user_rules={}, rules_trace="ref", probe_model=object(),
                             run_probe=probe_runner_over(), may_probe=True)
     assert [g.stage for g in gates] == list(D79_STAGES)
@@ -682,7 +683,7 @@ def test_a_task_derives_at_most_the_capped_number_of_survivors_and_says_it_chose
     """The cost of settling a residue is one derivation per surviving End state, so it is capped; a
     Task over the cap chose among the first states by recording order and its row says so."""
     world = make_world(tmp_path, rerolls=("wrong", "extra", "rr2"))
-    fn = verifier_suite.canon_fn({})
+    fn = verifier_suite.canon_fn(CanonRules())
     records = [reference.load(world.paths[run_id], reference.RECORDING, run_id=run_id,
                               write_tools=VF.WRITE_TOOLS, fn=fn)
                for run_id in ("ref", "wrong", "extra", "rr2")]
@@ -690,7 +691,7 @@ def test_a_task_derives_at_most_the_capped_number_of_survivors_and_says_it_chose
     assert len(groups) == 4, "the world's four Runs reach four End states"
     confirmation = reference.Confirmation(recordings=records, survivors=groups)
     stage.settle_residue(Task(id="t1", intent=VF.TASK.intent, run_ids=["ref"]), confirmation,
-                         canon_rules={}, write_tools=set(VF.WRITE_TOOLS), constraints=[],
+                         canon_rules=CanonRules(), write_tools=set(VF.WRITE_TOOLS), constraints=[],
                          intents={}, user_rules={}, fn=fn, cap=2)
     assert confirmation.survivors_capped is True
     assert {row["label"] for row in confirmation.survivor_scores} == {"A", "B"}, \
@@ -761,10 +762,10 @@ def test_a_second_search_for_a_second_path_takes_batch_numbers_above_the_ones_al
     runner = _reroll_runner_over(world, VF.wrong_run, calls)
     stage.second_path_search("t1", _confirmation_of(world), workdir=world.workdir, run_rerolls=runner,
                              round_number=1, write_tools=set(VF.WRITE_TOOLS),
-                             fn=verifier_suite.canon_fn({}), atoms=[], cap=2)
+                             fn=verifier_suite.canon_fn(CanonRules()), atoms=[], cap=2)
     stage.second_path_search("t1", _confirmation_of(world), workdir=world.workdir, run_rerolls=runner,
                              round_number=1, write_tools=set(VF.WRITE_TOOLS),
-                             fn=verifier_suite.canon_fn({}), atoms=[], cap=2)
+                             fn=verifier_suite.canon_fn(CanonRules()), atoms=[], cap=2)
     assert [prefix for _, _, prefix in calls] == [
         "second-path-r1-b1", "second-path-r1-b2", "second-path-r1-b3", "second-path-r1-b4"]
     assert {row["batch"] for row in stage.second_path_rows(world.workdir, "t1")} == {1, 2, 3, 4}
@@ -773,7 +774,7 @@ def test_a_second_search_for_a_second_path_takes_batch_numbers_above_the_ones_al
 
 def _confirmation_of(world) -> reference.Confirmation:
     """The world's Reference as a settled Confirmation, so the search has something to look past."""
-    fn = verifier_suite.canon_fn({})
+    fn = verifier_suite.canon_fn(CanonRules())
     record = reference.load(world.paths["ref"], reference.RECORDING, run_id="ref",
                             write_tools=VF.WRITE_TOOLS, fn=fn)
     return reference.Confirmation(recordings=[record], references=[record])

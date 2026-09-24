@@ -2059,3 +2059,9 @@ body that imports a clock module or calls a clock reading other than the context
 Evidence: the airline smoke 8 replay went from 99 to 112 of 119 Tasks (163 to 184 of 200 Traces); the 21 Traces that
 first differed on a creation stamp all confirm, none that confirmed before is lost; retail stays at 205 of 205. Tests in
 `tests/runner/test_world_clock.py`. Status: decided 2026-09-24, built on overhaul-0922/fix-world.
+
+## Verifier scoring after smoke 8 (D290 to D293)
+
+### D290. One canonicaliser per Environment, and no scorer without it (2026-09-24)
+
+The status tool scored held-out Runs with the raw dict of `canon-rules.json`, which the scorer did not recognise and silently replaced with the module defaults, while derivation, the suite and the Examiner scored under the Environment's `CanonRules`; an id the rules keep cased was stored cased in the atom and lowercased in the Run, and 48 of the 69 false rejections of smoke 8 were that divergence alone. The rule: the Environment's `CanonRules` are loaded once (`canon.load_rules` off the workdir, `canon.rules_of` off a store) and that one object is passed to every scorer; `target.canon_fn` accepts only `CanonRules` or a callable already bound from them, and anything else, None and the raw dict included, raises `CanonMissing` naming the caller. The status tool, the round snapshot, the round counts and the Examiner's store all load the rules this way. Checked in code: `tests/builder/test_status_trust.py::test_status_scores_held_out_runs_under_the_environments_rules_so_an_id_they_keep_cased_is_not_rejected` and `tests/runner/test_one_scorer.py::test_scoring_without_the_environments_rules_raises_and_names_the_caller`. Evidence: `.claude/herdr/overhaul-0922/reports/ov-inv-verifier/report.md` section 1. Status: built 2026-09-24.

@@ -7,12 +7,13 @@ import json
 from gates.examiner_fixtures import SIGS, TASK, base, loosen, pool, probe, tighten
 from gates.verifier_fixtures import extra_write_run, other_reason_run, reference_run, wrong_run
 from kullback.gates import probes as P
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import ProbePool, as_dict, content_hash
 
 
 def test_a_probe_the_current_verifier_rejects_leaves_the_pool_gate_green(tmp_path):
     verifier = base(tmp_path)
-    ruling = P.probe_pool_gate([verifier], {TASK: pool(probe("probe-t1-1", wrong_run(), verifier))}, None, SIGS)
+    ruling = P.probe_pool_gate([verifier], {TASK: pool(probe("probe-t1-1", wrong_run(), verifier))}, CanonRules(), SIGS)
     assert ruling.passed and ruling.stage == "probe_pool"
     assert ruling.metrics == {"probes": 1, "tasks_probed": 1, "passing": 0, "passing_ids": {}}
 
@@ -20,7 +21,7 @@ def test_a_probe_the_current_verifier_rejects_leaves_the_pool_gate_green(tmp_pat
 def test_a_probe_the_current_verifier_passes_fails_the_pool_gate_and_names_the_probe_its_bug_class_and_the_version_hash(tmp_path):
     verifier = base(tmp_path)
     attack = probe("probe-t1-2", reference_run(), verifier, bug_class="extra_field_acceptance")
-    ruling = P.probe_pool_gate([verifier], {TASK: pool(probe("probe-t1-1", wrong_run(), verifier), attack)}, None, SIGS)
+    ruling = P.probe_pool_gate([verifier], {TASK: pool(probe("probe-t1-1", wrong_run(), verifier), attack)}, CanonRules(), SIGS)
     assert not ruling.passed
     assert ruling.failures == [f"task t1: probe probe-t1-2 (extra_field_acceptance) scores a pass on version "
                                f"{P.version_hash(verifier)}"]
@@ -35,12 +36,12 @@ def test_every_probe_ever_written_is_scored_against_a_new_version_so_a_repair_ca
     found = probe("probe-t1-1", other_reason_run(), first, bug_class="loose_answer_extraction")
     assert found.scored_pass is False and found.verifier_hash == P.version_hash(first)
     second = base(tmp_path)
-    ruling = P.probe_pool_gate([second], {TASK: pool(found)}, None, SIGS)
+    ruling = P.probe_pool_gate([second], {TASK: pool(found)}, CanonRules(), SIGS)
     assert not ruling.passed
     assert ruling.failures[0].startswith("task t1: probe probe-t1-1 (loose_answer_extraction) scores a pass on version "
                                          + P.version_hash(second))
     # The same pool against the first version is still green: the probe found a hole in the second.
-    assert P.probe_pool_gate([first], {TASK: pool(found)}, None, SIGS).passed
+    assert P.probe_pool_gate([first], {TASK: pool(found)}, CanonRules(), SIGS).passed
 
 
 def test_probing_a_task_closes_after_three_consecutive_rejections_and_a_pass_between_resets_the_count(tmp_path):
@@ -85,4 +86,4 @@ def test_a_probe_pool_round_trips_through_json_with_its_runs_and_hashes_by_conte
     assert again == original
     assert content_hash(again) == content_hash(original)
     assert again.probes[1].run.events[-1].payload == original.probes[1].run.events[-1].payload
-    assert P.probe_scores(verifier, again, None, {"cancel_pending_order"}) == {"probe-t1-1": False, "probe-t1-2": False}
+    assert P.probe_scores(verifier, again, CanonRules(), {"cancel_pending_order"}) == {"probe-t1-1": False, "probe-t1-2": False}

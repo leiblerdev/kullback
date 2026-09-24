@@ -102,3 +102,37 @@ def test_the_round_snapshot_and_the_status_agree_on_a_task_whose_seeds_are_anoth
     assert row["state"] == "open" and seed in row["reason"] and "not Runs of this Task" in row["reason"]
     [snapshot] = [r for r in snapshot_rows(root, 2) if r["task_id"] == TASK]
     assert snapshot["trusted"] is False and snapshot["trusted_reason"] == row["reason"]
+
+
+def _cased_workdir(tmp_path, rules):
+    """A workdir whose one Verifier was derived under case-keeping rules, with one held-out Run beside its seeds."""
+    from gates.examiner_fixtures import SIGS, history, replay_row, reroll_row, status, version
+    from gates.verifier_fixtures import TASK as FIXTURE_TASK
+    from gates.verifier_fixtures import alt_path_run, derive, other_reason_run, reference_run
+    from kullback.runner.canon import save_rules
+    from kullback.runner.records import exam_task_runs_path
+
+    verifier = derive(tmp_path, reruns=[alt_path_run()], canon=rules)
+    task_id = FIXTURE_TASK.id
+    write_json(tmp_path / "tasks" / f"{task_id}.json", as_dict(FIXTURE_TASK))
+    write_json(tmp_path / "verifiers" / f"{task_id}.json", as_dict(verifier))
+    write_json(tmp_path / "task_status.json", {task_id: status()})
+    write_json(tmp_path / "replays.json", {task_id: {"tr1": replay_row("tr1", True, run_id="ref")}})
+    write_json(tmp_path / "rerolls.json", {task_id: [reroll_row("alt"), reroll_row("rr2")]})
+    write_json(tmp_path / "tool_sigs.json", [as_dict(sig) for sig in SIGS])
+    write_json(exam_history_path(tmp_path), {k: as_dict(v) for k, v in history(version(verifier)).items()})
+    write_json(exam_task_runs_path(tmp_path),
+               {task_id: [as_dict(run) for run in (reference_run(), alt_path_run(), other_reason_run())]})
+    save_rules(rules, tmp_path / "canon-rules.json")
+    return tmp_path, task_id
+
+
+def test_status_scores_held_out_runs_under_the_environments_rules_so_an_id_they_keep_cased_is_not_rejected(tmp_path):
+    from kullback.runner.canon import CanonRules
+
+    root, task_id = _cased_workdir(tmp_path, CanonRules(lowercase=False))
+    rows = {row["task_id"]: row for row in domain_tools_mod.status_of(root)["tasks"]}
+    assert rows[task_id] == {"task_id": task_id, "state": "trusted", "reason": ""}
+    (root / "canon-rules.json").unlink()
+    rows = {row["task_id"]: row for row in domain_tools_mod.status_of(root)["tasks"]}
+    assert rows[task_id]["state"] == "open" and rows[task_id]["reason"].startswith("false_rejection")

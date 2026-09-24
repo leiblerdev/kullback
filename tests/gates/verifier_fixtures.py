@@ -11,6 +11,7 @@ from pathlib import Path
 
 from kullback.examiner import derive as V
 from kullback.gates import verifier_suite as S
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import Atom, Event, Run, Task, Verifier, as_dict
 
 WRITE_TOOLS = {"cancel_pending_order"}
@@ -150,7 +151,7 @@ def derive(tmp_path: Path, reruns=None, **kwargs) -> Verifier:
     reruns = reruns if reruns is not None else [alt_path_run(), other_reason_run()]
     paths = [write_events_jsonl(r, tmp_path / f"{r.run_id}.jsonl") for r in reruns]
     kwargs.setdefault("write_tools", WRITE_TOOLS)
-    return V.derive_verifier(TASK, reference_run(), paths, None, **kwargs)
+    return V.derive_verifier(TASK, reference_run(), paths, kwargs.pop("canon", CanonRules()), **kwargs)
 
 
 def atom_by_id(verifier: Verifier, atom_id: str) -> Atom:
