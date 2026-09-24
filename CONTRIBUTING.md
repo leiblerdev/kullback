@@ -6,7 +6,7 @@ Thanks for looking. This file says how to get a change in and what a change has 
 
 Open an issue for a bug, a wrong number in a report, a trace format I do not read, or a place where the design and the code disagree. Open a pull request for a fix or a small feature. For anything that changes a decision in the decision log, open an issue first and say which decision and why; the log records the alternative each decision beat, so read that entry before arguing against it.
 
-Good first contributions: an ingest mapper for a trace format you use (OpenTelemetry GenAI, Claude Code JSONL, MCP logs), a canonicalization rule with a test, a survivor from `mutmut` turned into a real test, a number in the README's measured section that you can check or extend.
+Good first contributions: an ingest mapper for a trace format you use (OpenTelemetry GenAI, Claude Code JSONL, MCP logs), a canonicalization rule with a test, a survivor from `mutmut` turned into a real test, a number in the README's Environments table that you can check or extend.
 
 ## Setup
 
@@ -17,7 +17,7 @@ uv sync
 uv run pytest
 ```
 
-Python 3.11 or newer. The test suite is 1,815 tests, runs in under three minutes and never calls a model. Install the pre-commit hook once, `uv run pre-commit install`; it runs `ruff check` on the files you stage and fixes what it safely can. To run the offline slice on real data, `scripts/fetch_tau2_traces.sh` downloads Sierra's public tau2 retail runs into `data/raw/`; that directory is gitignored and stays that way.
+Python 3.11 or newer. The test suite holds over 3,700 tests and never calls a model. Install the pre-commit hook once, `uv run pre-commit install`; it runs `ruff check` on the files you stage and fixes what it safely can. To run the offline slice on real data, `scripts/fetch_tau2_traces.sh` downloads Sierra's public tau2 retail runs into `data/raw/`; that directory is gitignored and stays that way.
 
 ## The workflow
 
@@ -36,7 +36,7 @@ The raw trace is the only source of truth. Files are stored byte for byte and ha
 
 No model calls in tests. `ALLOW_MODEL_REQUESTS` is `False` by default and `conftest.py` keeps it there. Code that needs a model takes a `Model` as a parameter and never constructs one; tests pass one of the three offline models `kullback/ai/provider.py` defines, `TestModel`, `RecordedModel` or `MemoModel`. Those three and the two autouse fixtures in `tests/conftest.py` are the only stand-ins the suite keeps: a fake belongs at the provider boundary or at a parameter the production code already takes, and patching a module's internals is not a way to make a test pass. A test that has to reach inside is telling you the seam is missing.
 
-The Runner never imports the Builder, and nothing on the Runner side ever reads a Verifier except `verdict.py` reading the one it is given. `validate.import_boundary_check` scans for this and `tests/test_e2e.py` asserts it (D89, D91).
+The Runner never imports the Builder, and nothing on the Runner side ever reads a Verifier except `verdict.py` reading the one it is given. `validate.import_boundary_check` scans for this and `tests/runner/test_boundary.py` asserts it (D89, D91).
 
 Two agents, one boundary between them (D122, D123). The Builder writes the Environment and never a Verifier or a probe; the Examiner writes Verifiers and probes and never reads a tool body, the Starting state, the schema, the Environment or the sandbox (`examiner.stage.inputs_from` refuses a store that names one, and the Examiner's `tool_call` hook refuses a call that does); neither writes under `kullback/gates/` or `kullback/runner/`. Every accept-or-reject rule is a pure function in `kullback/gates/` returning a `GateResult`, registered in `GATES`; a tool of either agent calls a gate and reports what it said, and never decides a ruling itself. `tests/gates/test_package.py` scans both agents' source for a ruling written outside the registry.
 
@@ -50,7 +50,7 @@ Errors from a customer's tools keep their verbatim payload beside the classified
 
 Every module is one file with one sentence of purpose at the top. Each has a size band in design section 10. If you cannot fit, say why in the pull request rather than growing silently.
 
-Model-written code (tool bodies, policy predicates, Verifier atoms) runs only through the four paths that gate it: `builder/compile_env.py` and `builder/policy.py` at build time, and `gates/artifacts.py`'s `_run_predicate` and `gates/verifier_suite.py`'s `_hard_holds` at ruling time. Each follows the same two rules: `confine()` certifies the source before it runs, and every `exec` gets its own copy of the builtins allowlist, so code that empties or edits `__builtins__` takes nothing from the next predicate. Do not add an `exec` or `eval` elsewhere.
+Model-written code (tool bodies, policy predicates, Verifier atoms) runs only where a gate stands in front of it. At build time `builder/sandbox.py` and `builder/policy.py` run it in a subprocess. In process, a toolkit loads through `runner/world/loading.py`, a reader through `gates/tool_runs.py`, a constraint through `gates/artifacts.py`'s `_run_predicate`, and a Verifier atom through `runner/atom_context.py` and `runner/target.py`'s `hard_holds`. Each in-process path runs a confinement check from `runner/confinement.py` or `gates/confinement.py` before the source runs, and every predicate `exec` gets its own copy of the builtins allowlist, so code that empties or edits `__builtins__` takes nothing from the next predicate. Do not add an `exec` or `eval` elsewhere.
 
 ## Writing
 
@@ -62,7 +62,7 @@ Commit messages say what changed and why in the first line, in the imperative, u
 
 Small clarifications go straight into `docs/harness-design.md` in the same pull request as the code. A change of decision needs a new entry in `docs/decision-log.md` with the next D number, what it replaces, and the alternative it beat. An ADR in `docs/adr/` is only for a decision that is hard to reverse, surprising without context, and the result of a real trade-off; most changes are not that.
 
-New numbers from an experiment go into the README's measured section or a decision log entry, with the script that produced them and the seed and held-out figures side by side. Numbers without the script do not get merged.
+New numbers from an experiment go into `docs/builds/README.md` or a decision log entry, with the script that produced them and the seed and held-out figures side by side. Numbers without the script do not get merged.
 
 ## Reporting problems with a customer's data
 

@@ -10,23 +10,29 @@ The package is `kullback` at the repository root, no `src/` (D129). Each subpack
 
 ```
 kullback/
-  ai/         provider (the Model interface, the offline models, the adapters), stream, messages, pricing, usage
-  agent/      the shared agent core: messages, tools, events, loop, harness, extensions, session/,
-              context and context_tools (phases 2 and 7)
+  ai/         the provider layer: provider (the Model interface, the offline models, the HTTP models),
+              anthropic and openai_compatible (the streaming adapters), stream, events, messages,
+              pricing, usage, retry, model_catalog, model_limits
+  agent/      the shared agent core: messages, tools, base_tools, events, loop, harness, extensions,
+              session/, context, compaction, skills
   runner/     records, canon, confinement, budget, loop, route, verdict, validate, judge, regrade,
-              replay, state, scorecard, atom_context, gate_support, boundary (the D89 scan and RunnerVersion)
-  gates/      every accept-or-reject check and the registry: verifier_suite, artifacts, stages, tool_runs,
-              fidelity, confinement, scorecard (phase 3); probes, loosening, trust, round_end and ledger
-              (the one gates.json writer both agents use) (phase 5)
-  builder/    ingest, mine, cluster, intent, compile_env, policy, user_sim, memory, sandbox, synth,
-              vocabulary, search, parallel, build (the stage graph), pipeline (the scheduler),
-              tools (the stages as tools), extension (the hooks), agent (the Builder's session driver)
-  examiner/   derive (the derivation), reference (D111 confirmation), stage (the derive stage outside the
-              pipeline), plan, tools (the seven verbs), skills (the probe skill), extension, agent (phase 5)
-  rounds.py   the round driver behind `kullback build`: Builder beat, Examiner beat, round_end, the exits
-  cli.py      the command line
+              replay, state, target, atom_context, gate_support, boundary (the D89 scan and
+              RunnerVersion), world/ (the world a Run executes in: loading, environment, episode, clock)
+  gates/      every accept-or-reject check and the registry: verifier_suite, artifacts, stages,
+              tool_runs, fidelity, confinement, scorecard, probes, loosening, trust, counts, bindings,
+              hook, ledger (the one gates.json writer both agents use)
+  user/       the Simulated user as an agent: simulated, agent, rules, ends, guards, fidelity (D214)
+  builder/    ingest, sources/ (one reader per trace format), mine, cluster, intent, compile_env,
+              policy, user_sim, memory, sandbox, synth, vocabulary, search, parallel, triage,
+              session (the Builder as an extension on the agent core, behind `kullback build`)
+  examiner/   derive, reference (D111 confirmation), stage (the derive stage), plan, judge, loosen,
+              variants, findings, lifecycle, session (the Examiner as an extension, called by the Builder)
+  hub/        package, card, publish and client: the export, its card, the upload and the fetch (D221)
+  report/     the customer-facing report
   tui/        the terminal screen
-  report.py   the customer-facing report
+  cli.py      the command line
+  graph.py, synthesise.py, domain.py, difficulty.py, laws.py, consistency.py, claims.py, sampling.py,
+  round_snapshot.py, store.py, store_specs.py, container_*.py   one-file modules the frontends share
 tests/
   ai/ runner/ builder/ ...   one directory per package, mirroring the layout above
   fixtures/   the small tau2 file and tau2-bench's retail domain files
@@ -40,7 +46,7 @@ uv sync
 uv run pytest -q
 ```
 
-Python 3.11. Dependencies: pydantic v2, typer, httpx, pytest. Nothing heavier goes in without a reason in the pull request.
+Python 3.11 or newer. Dependencies: pydantic v2, typer, httpx, rich and huggingface-hub; pytest, ruff, import-linter, mutmut and pre-commit for development. Nothing heavier goes in without a reason in the pull request.
 
 ## Records
 
@@ -62,7 +68,7 @@ class Model:
     def query(self, messages, tools=None, config=None) -> ModelReply: ...
 ```
 
-`ModelReply` is `content, tool_calls, usage (input, output, cache_read, cache_write), model, stop_reason, raw`. `TestModel(replies)` gives scripted replies in order (a string, a dict in message shape, or a `ModelReply`). `RecordedModel(run_jsonl_path)` replays the assistant messages of a stored Run: it reads `model_call` events (`payload.reply`, or the payload itself) and plain `{"role": "assistant", ...}` lines, in file order. Real adapters live under the marked extension point at the bottom of the file and must call `require_live_calls_enabled()` first.
+`ModelReply` is `content, tool_calls, usage (input, output, cache_read, cache_write), model, stop_reason, raw`. `TestModel(replies)` gives scripted replies in order (a string, a dict in message shape, or a `ModelReply`). `RecordedModel(run_jsonl_path)` replays the assistant messages of a stored Run: it reads `model_call` events (`payload.reply`, or the payload itself) and plain `{"role": "assistant", ...}` lines, in file order. Real adapters (`HttpModel` and its subclasses further down the file, and the streaming adapters in `kullback/ai/anthropic.py` and `kullback/ai/openai_compatible.py`) must call `require_live_calls_enabled()` first.
 
 Code that needs a model takes one as a parameter. It never constructs one.
 
@@ -70,13 +76,13 @@ Code that needs a model takes one as a parameter. It never constructs one.
 
 - `tests/fixtures/tau2_retail_small.json`: the first 3 simulations of Sierra's public tau2 retail run `claude-3-7-sonnet-20250219_retail_default_gpt-4.1-2025-04-14_4trials.json` (Claude 3.7 Sonnet as the agent, GPT-4.1 as the user simulator) plus the 3 tasks those simulations reference. Top-level `timestamp` and `info` are kept as they are, nothing else is changed. Grader fields (`reward_info`, `trial`, `evaluation_criteria`, `action_checks`, `nl_assertions`) are still in it on purpose, so ingest can be tested stripping them (D66). Rebuild it with `uv run python tests/fixtures/make_tau2_retail_small.py [path/to/raw.json]`.
 - `tests/fixtures/tau2_retail/{db.json,policy.md,tasks.json}`: copied unchanged from tau2-bench `data/tau2/domains/retail/` at commit `a2c0247`. They are the truth for the tau2 slice: what `compile_env.py` emits is checked against them, and what it emits must load in tau2's harness.
-- The full raw traces under `../data/raw/` are never committed and never modified. The `raw_dir` fixture skips a test when they are absent. `scripts/fetch_tau2_traces.sh` downloads them from Sierra's public bucket.
+- The full raw traces under `data/raw/` are never committed and never modified. The `raw_dir` fixture skips a test when they are absent. `scripts/fetch_tau2_traces.sh` downloads them from Sierra's public bucket.
 
 Shape of a raw file: `{timestamp, info, tasks, simulations}`. A simulation is `{id, task_id, trial, seed, termination_reason, duration, agent_cost, user_cost, reward_info, messages}`. A message has `role` in `assistant | user | tool`, `content`, `turn_idx`, `timestamp`, and either `tool_calls: [{id, name, arguments, requestor}]` (assistant) or `id, requestor, error: bool` (tool). Note that `user` messages carry the user simulator's own cost and usage, so token counts on a `user` message belong to the simulated user, not to the agent.
 
 ## Fixtures in conftest.py
 
-`fixtures_dir`, `tau2_small_path`, `tau2_small` (parsed), `tau2_retail_dir`, `raw_dir` (skips when missing), `workdir` (a fresh tmp directory; module state lives under a workdir, never in module globals), `make_test_model`, `test_model`, `write_run_jsonl` (write dict lines as a Run JSONL, get the path), `make_recorded_model`, and an autouse `no_live_models`.
+`fixtures_dir`, `tau2_small_path`, `tau2_small` (parsed), `tau2_retail_dir`, `raw_dir` (skips when missing), `workdir` (a fresh tmp directory; module state lives under a workdir, never in module globals), `make_test_model`, `test_model`, `write_run_jsonl` (write dict lines as a Run JSONL, get the path), `make_recorded_model`, `retail_raw_files` (the two retail files under `raw_dir`), and the autouse `no_live_models`, `isolated_sessions_dir`, `isolated_price_catalog` and `plain_terminal`.
 
 ## Mutation testing
 

@@ -1,29 +1,31 @@
 # Builds
-Latest documented build: smoke 9, retail and airline on Opus 5.5 on Amazon Bedrock (2026-09-24), section at the end.
+
+This is the build record from 2026-08-29 to 2026-09-24, kept as it was written at the time. Builds are named by
+date, or by their Hugging Face tag once they were published (build-20260923, build-20260924). The newest, retail and
+airline on Opus 5.5 on Amazon Bedrock (build-20260924), is the last section.
+
 The words these sections use (confirmed Reference, the three fidelities, Verifier, trusted, open, refused, preview)
-are defined from the code in the "Words" section of the top-level README.md.
-Builds 14 (retail, three arms) and the first airline and telecom rounds of 2026-09-07 were never written up.
-Placeholder rows below mark builds 9, 10, 12-agent and 14; rows only, no retroactive tables.
-The machine generated tables of builds 8 to 13 were deleted on 2026-09-24; git history keeps them.
+are defined from the code in the "Words" section of the top-level README.md. The machine generated tables of the
+builds from 2026-09-02 to 2026-09-07 were deleted on 2026-09-24; git history keeps them. Some paths below name
+workdirs by an internal number (`.work-b9-agent`); those are file names, not build names.
 
 ## Index
 
-| Build | Record | Notes |
-|---|---|---|
-| 8 | prose below | First Tasks with a Verdict, 20 of 205 |
-| 9 | prose below | Retail crash in compile_tools, found 2026-09-06 |
-| 10 | prose below | Airline two rounds, stalled, found 2026-09-06 |
-| 11 code driver | prose below | D135 experiment, code arm |
-| 11 model driving | prose below | D135 experiment, model arm |
-| 12 code driver | prose below | Ten round comparison, code arm |
-| 12 model driving | prose below | Ten round comparison, model arm |
-| 13 model driving | prose below | D145 to D153 code, died in round 2 |
-| 14 | prose below | Retail, airline and telecom generalisation test |
-| smoke 7 | prose below | Retail and airline on gpt-6-sol, killed 13:44 UTC 2026-09-23 |
-| smoke 8 | prose below | Retail and airline on gpt-6-sol, published as build-20260923 |
-| smoke 9 | prose below | Retail and airline on Opus 5.5 (Bedrock), published as releases, build-20260924 |
+| Build | Notes |
+|---|---|
+| 2026-08-29, three builds | The first live builds on retail with `openai/gpt-5.6-luna` |
+| 2026-09-02 | First Tasks with a Verdict, 20 of 205 |
+| 2026-09-03, retail | Crash in compile_tools, found 2026-09-06 |
+| 2026-09-03, airline | Two rounds, stalled, found 2026-09-06 |
+| 2026-09-06, the D135 experiment | Code driver against the model driving, one arm each |
+| 2026-09-06, ten round comparison | Code driver against the model driving, ten rounds |
+| 2026-09-06, the triage build | The model driving on the D145 to D153 code, died in round 2 |
+| 2026-09-07 | Retail, airline and telecom, the generalisation test |
+| 2026-09-23, killed | Retail and airline on gpt-6-sol, killed at 13:44 UTC |
+| build-20260923 | Retail and airline on gpt-6-sol, both finished and published |
+| build-20260924 | Retail and airline on Opus 5.5 (Bedrock), published as releases |
 
-# The first live build (2026-08-29)
+## The first live build (2026-08-29)
 
 Retail, 456 tau2 simulations, `openai/gpt-5.6-luna`. Nothing in the Builder above `starting_state`
 had ever run against a real model, and every one of the findings below is something no unit test
@@ -218,11 +220,11 @@ three Tasks confirm and their Verifiers pass seven of eight checks, failing only
 because a single-Trace Task has none until the k re-runs of D78 exist. The third live build is the
 first with the stage in it; its numbers go below when it finishes.
 
-## Builds 7 and 8 (2026-08-29 and 2026-09-02): the first Tasks with a Verdict
+## The first Tasks with a Verdict (2026-08-29 and 2026-09-02)
 
-Build 7 was the last on the old layout, build 8 the first on the rebuilt one (`kullback build --iterate --workers 8`, same corpus, same model, runner frozen first). Build 8 took 44 minutes. The two builds answer the same question, "how many of the 205 Tasks can be graded", and the second is the first with an answer above zero.
+The third build of 2026-08-29 was the last on the old layout, the build of 2026-09-02 the first on the rebuilt one (`kullback build --iterate --workers 8`, same corpus, same model, runner frozen first). It took 44 minutes. The two builds answer the same question, "how many of the 205 Tasks can be graded", and the second is the first with an answer above zero.
 
-| | build 7 | build 8 |
+| | 2026-08-29 | 2026-09-02 |
 |---|---:|---:|
 | Traces that confirm their Reference | 316 of 456 | 343 of 456 |
 | Tasks with a confirmed Reference | 151 | 164 |
@@ -237,17 +239,17 @@ The scorecard gate passes for the first time. Coverage is 9.8% of Tasks and 12.3
 
 **Float noise is the largest fidelity miss.** Of the 102 write results that differed from the recording across the 36 Tasks blocked on `modify_pending_order_items`, 74 differ only past the sixth decimal: a refund of `30.180000000000007` recorded against `30.180000000000064` from our body, the same sum added in a different order. The canonicalization rules carry a `number_precision` knob and the canon stage left it null, so writes compare exactly and the gate calls the Trace unconfirmed. The remaining 28 are real: the body picks a different item variant (the options and the price differ, so the refund does), and `calculate` raises `NameError: name 'decimal' is not defined` on four Tasks because the body uses a module it never imports and the `executes_on_s0` gate never reached that branch.
 
-**The policy gate has never run a predicate.** `compile_policy` fails on every compiled constraint with `check() missing 2 required positional arguments: 'write_call' and 'transcript'`, in build 7 and in build 8. The compiled predicates take `(pre_state, write_call, transcript)`, as the stage's prompt and its own static check require; `gates/artifacts.py`'s `_run_predicate` calls `func(case)` with the whole case dict. The unit test passes because its fixture predicate takes `case`. So the 26 compiled constraints have never been exercised by the gate, only by the stage's own case runner, and the gate's ruling on policy has been a false fail on every live build.
+**The policy gate has never run a predicate.** `compile_policy` fails on every compiled constraint with `check() missing 2 required positional arguments: 'write_call' and 'transcript'`, in both builds. The compiled predicates take `(pre_state, write_call, transcript)`, as the stage's prompt and its own static check require; `gates/artifacts.py`'s `_run_predicate` calls `func(case)` with the whole case dict. The unit test passes because its fixture predicate takes `case`. So the 26 compiled constraints have never been exercised by the gate, only by the stage's own case runner, and the gate's ruling on policy has been a false fail on every live build.
 
 **Sixty-five Verifiers require nothing.** Every Verifier that passes the empty Run has exactly one required atom, "the Run makes at most 0 write calls": the Tasks where the frontier only read and answered. Under D43 the End state of such a Run is what the user was told, and no stage writes that atom yet, so the suite rejects all 65 and the loophole probe passes 58 of them. This is the Examiner's first job (phase 5): atoms over the user-facing effects, judged, so a read-only Task has a pass condition that an empty Run fails.
 
 The suite's failures by check, over the 131 Verifiers: `mutation_flips` 106, `unsolved_state_fails` 75, `empty_fails` 65, `plausible_wrong_fails` 65, `loophole_probe_fails` 58, `second_path_passes` 12, `leak_check_clean` 1. The 65 no-write Verifiers sit inside every one of the first five counts; 41 Verifiers with write atoms still fail `mutation_flips`, which is the next thing to read.
 
-Where the time goes: the re-roll stage is 3 model calls per Task, 7 per Run, with a fresh sample each time, so a rebuild whose Environment did not change still re-rolls every Task. Build 8 wrote 483 re-roll Runs in about 15 minutes at 8 workers. Caching re-rolls by (Task, Environment hash, seed) so `--iterate` reuses them when the Environment is unchanged is on the todo.
+Where the time goes: the re-roll stage is 3 model calls per Task, 7 per Run, with a fresh sample each time, so a rebuild whose Environment did not change still re-rolls every Task. The 2026-09-02 build wrote 483 re-roll Runs in about 15 minutes at 8 workers. Caching re-rolls by (Task, Environment hash, seed) so `--iterate` reuses them when the Environment is unchanged is on the todo.
 
-### Where build 8's Runs failed: the model's errors and ours
+### Where the Runs of 2026-09-02 failed: the model's errors and ours
 
-Every failed Run, replay and re-roll in build 8, read and sorted. The split matters because a model error is evidence and a harness error is noise that hides evidence.
+Every failed Run, replay and re-roll in the 2026-09-02 build, read and sorted. The split matters because a model error is evidence and a harness error is noise that hides evidence.
 
 **Ours, largest first.**
 
@@ -256,7 +258,7 @@ Every failed Run, replay and re-roll in build 8, read and sorted. The split matt
 3. Float noise on 74 of 102 differing writes (above).
 4. Three tool bodies. `calculate` raises `NameError: decimal` on 49 results and 33 replayed reads. `modify_pending_order_address` refuses with "Order is not pending" after an item modification on the same order, 11 writes, where the recording accepted; the corpus is the truth here, whatever rule the body inferred. `get_order_details` raises a bare `KeyError` on an unknown id, 155 results, where the corpus shows "Error: Order not found"; the miner recorded that error shape and the body ignored it.
 5. The policy gate's arity bug (above).
-6. Stale files. 111 re-roll files dated 2026-08-29 sit under `runs/` with a provider HTTP 400 ("messages: empty array") from a build that seeded re-rolls without a confirmed recording. Build 8 did not write them and its gate did not count them, but anything that globs `runs/` does.
+6. Stale files. 111 re-roll files dated 2026-08-29 sit under `runs/` with a provider HTTP 400 ("messages: empty array") from a build that seeded re-rolls without a confirmed recording. The 2026-09-02 build did not write them and its gate did not count them, but anything that globs `runs/` does.
 
 **The model's own, in the re-rolls.** The re-roll model drops the `#` from order ids: 132 lookups where the user had said "#W…" and the call went out as "W…", 1,204 recorded calls that never did, and 102 re-rolls that never recovered. It also calls the name lookup with empty names instead of asking, 122 of 410 calls. Both are what this model does with a tool schema that carries no description of the id format, so the second half of each belongs to us: the traces declare the descriptions and the sigs carry none.
 
@@ -264,19 +266,19 @@ Every failed Run, replay and re-roll in build 8, read and sorted. The split matt
 
 In short: the Environment replays the customer's own Runs well (2,556 of 2,561 reads agree, 458 of 575 writes agree exactly and 74 more agree past the sixth decimal), and nearly every failure on the way to a Verdict is on our side of the line, in the Simulated user and the judge, before the model gets to make its own.
 
-## Builds 9 and 10 (2026-09-03): a crash and a stall, found on 2026-09-06
+## A crash and a stall (2026-09-03), found on 2026-09-06
 
 Neither was written up when it ran; both were found in worktrees under `/private/tmp` three days later, which is the reason for D139 (one table per build, printed by a script, into this file every time).
 
-Build 9, retail, `opencode-go/glm-5.3-flash`, 14:17. Crashed in `compile_tools` after five attempts each ended in a read timeout on the provider (`RetryExhausted`). Eight calls, no tool body written, the intent gate red with 0 of 86 Tasks grounded because nothing downstream ran. It says nothing about the harness beyond the fact that a provider timeout kills a build instead of marking the tool assisted.
+Retail, `opencode-go/glm-5.3-flash`, 14:17. Crashed in `compile_tools` after five attempts each ended in a read timeout on the provider (`RetryExhausted`). Eight calls, no tool body written, the intent gate red with 0 of 86 Tasks grounded because nothing downstream ran. It says nothing about the harness beyond the fact that a provider timeout kills a build instead of marking the tool assisted.
 
-Build 10, airline, `openai/gpt-5.6-luna`, 18:18, 200 traces, 86 Tasks, two rounds. 1,899 calls, 0.65 dollars after repricing (the file `budget.json.mispriced` beside it is the same ledger at the reseller's rate). Round 1: 32 Tasks with a Reference, 2 trusted Verifiers, 41 fidelity rulings. Round 2 moved no count and the loop exited stalled. The red lights are build 8's: one tool body crashes on 20 of 24 calls, one answers every call the same way, three tools miss the replay bar (`payment_methods` and `available_seats, prices` differ; one write tool at 0 of 33), the tau2 export finds 86 overlay conflicts, `compile_policy` still fails every predicate (the arity was fixed on 3 September; the gate then raised `NameError: called_before` because it ran the rule without the helpers the compiler's sandbox prepends, fixed 6 September; the 118 stored constraints now pass the gate with 78 compiled), and the D79 suite passes 2 of 32 Verifiers. Nothing in the loop could act on any of it: round 2 was the same build again. That is the evidence behind D135 and D136.
+Airline, `openai/gpt-5.6-luna`, 18:18, 200 traces, 86 Tasks, two rounds. 1,899 calls, 0.65 dollars after repricing (the file `budget.json.mispriced` beside it is the same ledger at the reseller's rate). Round 1: 32 Tasks with a Reference, 2 trusted Verifiers, 41 fidelity rulings. Round 2 moved no count and the loop exited stalled. The red lights are those of 2026-09-02: one tool body crashes on 20 of 24 calls, one answers every call the same way, three tools miss the replay bar (`payment_methods` and `available_seats, prices` differ; one write tool at 0 of 33), the tau2 export finds 86 overlay conflicts, `compile_policy` still fails every predicate (the arity was fixed on 3 September; the gate then raised `NameError: called_before` because it ran the rule without the helpers the compiler's sandbox prepends, fixed 6 September; the 118 stored constraints now pass the gate with 78 compiled), and the D79 suite passes 2 of 32 Verifiers. Nothing in the loop could act on any of it: round 2 was the same build again. That is the evidence behind D135 and D136.
 
-## Build 11 (2026-09-06): the D135 experiment, code driver against the model driving
+## The D135 experiment (2026-09-06): code driver against the model driving
 
-D135 to D138 call this "build 9"; the number moved once the worktree builds of 3 September above were found and written up as 9 and 10. Both arms ran on retail with `openai/gpt-5.6-luna`, on two copies of build 8's workdir (`.work-b9-code`, `.work-b9-agent`), so the caches were equally warm, under a 25 dollar ceiling with eight workers, on commit a011af6 with the Runner re-frozen (runner version 28d8274). Both tables were printed by `scripts/build_table.py` and the numbers below are copied from them; dollars are this build's spend on top of build 8's 6.49.
+D135 to D138 refer to this build by an older internal number. Both arms ran on retail with `openai/gpt-5.6-luna`, on two copies of the 2026-09-02 workdir (`.work-b9-code`, `.work-b9-agent`), so the caches were equally warm, under a 25 dollar ceiling with eight workers, on commit a011af6 with the Runner re-frozen (runner version 28d8274). Both tables were printed by `scripts/build_table.py` and the numbers below are copied from them; dollars are this build's spend on top of the 6.49 spent on 2026-09-02.
 
-| | build 8 (code driver) | build 11, code driver | build 11, model driving |
+| | 2026-09-02 (code driver) | 2026-09-06, code driver | 2026-09-06, model driving |
 |---|---:|---:|---:|
 | Tasks covered | 20 of 205 (9.8%) | 48 of 205 (23.4%) | 61 of 205 (29.8%) |
 | Traces confirming their Reference | 343 of 456 (75.2%) | 347 of 456 (76.1%) | 423 of 456 (92.8%) |
@@ -288,13 +290,13 @@ D135 to D138 call this "build 9"; the number moved once the worktree builds of 3
 
 **What moved coverage from 20 to 48 on the same driver** is the three hand fixes of D136 (the policy gate running predicates like the sandbox, the Simulated user answering confirmations and known facts from the recording, the judge abstaining on evidence it was not given): `compile_policy` went green, and the Tasks with a confirmed Reference more than doubled. None of that is the driver.
 
-**What the model driving bought on top** is one tool body. Both arms recompiled every tool (the compiler module hash changed, so the cache did not serve build 8's bodies). The compiler's fourth attempt at `exchange_delivered_order_items` in the code arm crashed on all 67 calls (`AttributeError: 'dict' object has no attribute 'available'`), and the compiler kept it anyway: `compile_env.compile_tool` keeps the last attempt's body when none passes, not the best one, and the third attempt had passed 44 of 44 replayed writes. That one body cost the code arm 94 replay misses and 38 Tasks whose seed Trace calls it ("an assisted tool whose body..." in `task_status.json`). The model arm's compiler got a passing body on its fourth attempt, and the tool replays 95 of 95. The 13 point gap between the arms is that body, not the mechanic: every one of the mechanic's 48 repair requests changed nothing (below).
+**What the model driving bought on top** is one tool body. Both arms recompiled every tool (the compiler module hash changed, so the cache did not serve the bodies of 2026-09-02). The compiler's fourth attempt at `exchange_delivered_order_items` in the code arm crashed on all 67 calls (`AttributeError: 'dict' object has no attribute 'available'`), and the compiler kept it anyway: `compile_env.compile_tool` keeps the last attempt's body when none passes, not the best one, and the third attempt had passed 44 of 44 replayed writes. That one body cost the code arm 94 replay misses and 38 Tasks whose seed Trace calls it ("an assisted tool whose body..." in `task_status.json`). The model arm's compiler got a passing body on its fourth attempt, and the tool replays 95 of 95. The 13 point gap between the arms is that body, not the mechanic: every one of the mechanic's 48 repair requests changed nothing (below).
 
 **Why both arms stalled after two rounds.** Five things on our side, none of them a gate being wrong:
 
 1. The recompile hint goes nowhere. `repair_recompile(name, hint)` writes the hint to `tool_lessons.json` and reruns `compile_tools` narrowed to the tool, but nothing reads the lesson into the compiler prompt (`memory.lesson_for` has no caller) and the stage's cache identity does not include it, so all seven recompiles printed "5 stages, 5 from cache".
 2. The refuse verb is inert. `repair_refuse_task` appends to `repairs/repair_refuse_task.jsonl` and nothing reads that file; `rounds.json` ends with `"refused": {}`. The status tool suggested it for every `intent` red light, so the mechanic called it 41 times.
-3. Intents are one shot. 160 of 205 Tasks fail the intent gate in build 8 and in both arms (145 "noun phrases with no span", 22 "not evidenced in every Run"), and an ungrounded Intent is a Task with no Verdict. `write_intent` queries once and records the ungrounded phrases as the reason; nothing feeds them back for a second try.
+3. Intents are one shot. 160 of 205 Tasks fail the intent gate on 2026-09-02 and in both arms (145 "noun phrases with no span", 22 "not evidenced in every Run"), and an ungrounded Intent is a Task with no Verdict. `write_intent` queries once and records the ungrounded phrases as the reason; nothing feeds them back for a second try.
 4. The Examiner's round 2 nudge says "read the rulings and act" while the code requires a derive call every round. The model did what the nudge said (read the rulings, filed one finding, answered), so round 2 was recorded as "examiner failed: the model never called derive('all')".
 5. The compiler keeps the last failing attempt instead of the best one (the exchange body above).
 
@@ -308,7 +310,7 @@ Read from `.work-b9-agent/builder/session.jsonl` and `examiner/session.jsonl`. T
 
 | when | who | what | what came back |
 |---:|---|---|---|
-| 3s | Builder | `status` | 380 red lights over 30 tools and 184 Tasks (build 8's rulings, copied in); the first 25 shown: `calculate` NameError on every call, `exchange_delivered_order_items` accepts an unknown payment method, `get_user_details` and `modify_pending_order_items` differ on hard columns, 13 intent lines |
+| 3s | Builder | `status` | 380 red lights over 30 tools and 184 Tasks (the rulings of 2026-09-02, copied in); the first 25 shown: `calculate` NameError on every call, `exchange_delivered_order_items` accepts an unknown payment method, `get_user_details` and `modify_pending_order_items` differ on hard columns, 13 intent lines |
 | 5s | Builder | `repair_recompile` x4 (calculate, exchange, get_user_details, modify_pending_order_items), each with a hint | compile_tools ran (first compile in this workdir), the hint reached nothing |
 | 83s | Builder | `status` | 372 red lights |
 | 91s | Builder | `build environment` and 25 `repair_refuse_task` in one batch | the build ran the pipeline (intent, replay, rerolls); every refuse: "recorded (request in repair_refuse_task.jsonl)" |
@@ -327,24 +329,24 @@ Read from `.work-b9-agent/builder/session.jsonl` and `examiner/session.jsonl`. T
 
 Nothing the mechanic did could change an artifact: the recompile hint never reached the compiler, refusing a Task reached no gate, the intent red lights pointed at refusing, the Examiner's finding vocabulary had no word for "rewrite the Intent", and the round-2 steer to the Examiner did not ask for the one call the code required. The model read the lights right every time.
 
-### Before build 12: what the grill of the same evening changed (2026-09-06)
+### What the grill of the same evening changed (2026-09-06)
 
 Read back from the session above, six harness changes, all on our side (D136), none a model wrote:
 
-1. `status` shows every red light, grouped by gate and failure kind, with a zoom (D140). The build 11 mechanic saw 25 lines of 380.
+1. `status` shows every red light, grouped by gate and failure kind, with a zoom (D140). The mechanic of the D135 experiment saw 25 lines of 380.
 2. The Examiner's finding names the Builder verb and carries the hint, `repair_intent` and `repair_recompile` included (D141). The Runner is re-frozen for it.
 3. The stall rule counts artifact changes and repair effects, not gate counts alone; a repair that changes nothing says so, with the reason (D142).
-4. The Intent splitter keeps numbers, money and ids whole and grounds in two steps; `write_intent` gets three tries with feedback (D143). On build 8's stored Intents: 37 grounded before, 137 after, of 205.
+4. The Intent splitter keeps numbers, money and ids whole and grounds in two steps; `write_intent` gets three tries with feedback (D143). On the stored Intents of 2026-09-02: 37 grounded before, 137 after, of 205.
 5. The Builder and Examiner prompts are in the GEPA order with general examples (D144).
 6. The table's three blind spots have records now: round timestamps for the duration, the context fill per round, and a `difference` record on every replay miss, so "unreadable" is gone from the causes (D139: the record first, then the number).
 
-Build 12 runs both arms again on fresh copies of build 8's workdir.
+The ten round comparison runs both arms again on fresh copies of the 2026-09-02 workdir.
 
-## Build 12, the model arm (2026-09-06 to 2026-09-07): ten rounds, stalled at trusted 64
+## The ten round comparison, model arm (2026-09-06 to 2026-09-07): stalled at trusted 64
 
-The other half of the D135 experiment: the same retail corpus and code as build 12's code driver, `openai/gpt-5.6-luna` driving the Builder and the Examiner with `--agent`, eight workers, a 25 dollar ceiling. It ran 19h 29m over ten rounds and left on the stalled exit.
+The other half of the D135 experiment: the same retail corpus and code as the code driver of the same comparison, `openai/gpt-5.6-luna` driving the Builder and the Examiner with `--agent`, eight workers, a 25 dollar ceiling. It ran 19h 29m over ten rounds and left on the stalled exit.
 
-| | build 12, code driver | build 12, model driving | build 13, model driving |
+| | ten rounds, code driver | ten rounds, model driving | triage build, model driving |
 |---|---:|---:|---:|
 | Tasks covered (trusted) | 75 of 205 (36.6%) | 65 of 205 (31.7%) | 73 of 205 (35.6%) |
 | Traces confirming their Reference | 432 of 456 (94.7%) | 421 of 456 (92.3%) | 334 of 456 (73.2%) |
@@ -355,15 +357,15 @@ The other half of the D135 experiment: the same retail corpus and code as build 
 | Build duration | 49m 27s | 19h 29m 7s | 16h 0m 21s |
 | Mechanic calls | none | 59: repair_intent 30, repair_recompile 14, build 10, status 4, repair_escalate 1 | 127 |
 
-**The rounds.** Fidelity sat at 153 for six rounds while the model repaired Intents (rounds 2, 4, 5) and bodies (round 3, which cost one trusted Task, and round 6, five repairs). Round 7 built on those five repairs and jumped to fidelity 196 of 205 and trusted 63 with no repair of its own; round 8 spent 16 repairs to move nothing, round 9 gained one trusted Task, round 10 moved nothing and the stalled exit fired. The model driving reached the code driver's fidelity (196 against the code arm's 432 confirming Traces read as 196 Tasks) but not its trusted count, and took 24 times the clock to get there: the D150 triage habits were written from this session before it ended (repairs from the grouped line, the assisted tool named as "existing" and never recompiled), and build 13 ran with them.
+**The rounds.** Fidelity sat at 153 for six rounds while the model repaired Intents (rounds 2, 4, 5) and bodies (round 3, which cost one trusted Task, and round 6, five repairs). Round 7 built on those five repairs and jumped to fidelity 196 of 205 and trusted 63 with no repair of its own; round 8 spent 16 repairs to move nothing, round 9 gained one trusted Task, round 10 moved nothing and the stalled exit fired. The model driving reached the code driver's fidelity (196 against the code arm's 432 confirming Traces read as 196 Tasks) but not its trusted count, and took 24 times the clock to get there: the D150 triage habits were written from this session before it ended (repairs from the grouped line, the assisted tool named as "existing" and never recompiled), and the triage build ran with them.
 
-**What it says about the goal.** Trusted 64 to 65 at fidelity 196 is the same shape as build 13's funnel: fidelity is not the gap any more, the Reference and the D79 suite are (build 13 below, "the trust funnel"). The path to 200 runs through the corpus-disagreement rule and the answer atom for read-only Tasks, not through more rounds of the model repairing bodies.
+**What it says about the goal.** Trusted 64 to 65 at fidelity 196 is the same shape as the triage build's funnel: fidelity is not the gap any more, the Reference and the D79 suite are (the triage build below, "the trust funnel"). The path to 200 runs through the corpus-disagreement rule and the answer atom for read-only Tasks, not through more rounds of the model repairing bodies.
 
-## Build 13 (2026-09-06 to 2026-09-07): the model driving on the D145 to D153 code, 16 hours, dead in round 2
+## The triage build (2026-09-06 to 2026-09-07): the model driving on the D145 to D153 code, 16 hours, dead in round 2
 
-Launched on a fresh copy of the retail workdir with `--agent`, `openai/gpt-5.6-luna` driving both sessions, eight workers, a 25 dollar ceiling, on the working tree after D153 (the triage skill, the fact miner, the cache effect, the driver's build) and before D154. D154 to D158 were committed while it ran; the process kept its imports, so what follows is the D153 code. Build 12's code arm is the comparison, the model arm of build 12 was still running when this was written.
+Launched on a fresh copy of the retail workdir with `--agent`, `openai/gpt-5.6-luna` driving both sessions, eight workers, a 25 dollar ceiling, on the working tree after D153 (the triage skill, the fact miner, the cache effect, the driver's build) and before D154. D154 to D158 were committed while it ran; the process kept its imports, so what follows is the D153 code. The code arm of the ten round comparison is the comparison; its model arm was still running when this was written.
 
-| | build 12, code driver | build 13, model driving |
+| | ten rounds, code driver | triage build, model driving |
 |---|---:|---:|
 | Tasks covered (trusted) | 75 of 205 (36.6%) | 73 of 205 (35.6%) |
 | Traces confirming their Reference | 432 of 456 (94.7%) | 334 of 456 (73.2%) |
@@ -376,13 +378,13 @@ Launched on a fresh copy of the retail workdir with `--agent`, `openai/gpt-5.6-l
 
 **The trust funnel, round 1.** 205 Tasks, 156 with every replayed Trace matching its recording, 142 with a confirmed Reference, 73 past the D79 suite, 73 trusted. The three stages lose Tasks for different reasons and only the first is the model's:
 
-- Fidelity, 150 differing calls of 2,977 replayed: 126 are one `KeyError` in the body of the tool that replaces items on an order, 22 more are the same failure read back later in the Trace (the order still holding the old item), one is a balance off by 72 downstream of the same missed write, and none is float noise. The body memorised three literal item ids from the recorded calls into a dict instead of reading the products table. The mechanic asked for 19 recompiles of that one tool and none converged. Build 12's compiler drew a body that reads the table, which is the whole gap in the fidelity rows above: the same coin flip as build 11's exchange body. D162 makes it a gate: a body may not hold a literal that matches an id pattern, a Starting state row id, or a recorded argument value.
+- Fidelity, 150 differing calls of 2,977 replayed: 126 are one `KeyError` in the body of the tool that replaces items on an order, 22 more are the same failure read back later in the Trace (the order still holding the old item), one is a balance off by 72 downstream of the same missed write, and none is float noise. The body memorised three literal item ids from the recorded calls into a dict instead of reading the products table. The mechanic asked for 19 recompiles of that one tool and none converged. The ten round comparison's compiler drew a body that reads the table, which is the whole gap in the fidelity rows above: the same coin flip as the exchange body of the D135 experiment. D162 makes it a gate: a body may not hold a literal that matches an id pattern, a Starting state row id, or a recorded argument value.
 - Reference confirmation, 63 Tasks without one: 29 where the recordings disagree on the End state, 16 where the judge failed every candidate, 9 blocked by the crash above, 8 stale rows (the replays confirm on disk, `task_status.json` was not refreshed after the repair that fixed the read), one with every recording breaking a Hard constraint.
 - The suite, 69 confirmed and not trusted: `mutation_flips` 30, `leak_check_clean` 26, `second_path_passes` 21 (never run: every re-roll failed, the D158 closing rule is not in this build), `unsolved_state_fails` 17, and 8 read-only Tasks failing five checks at once because their Verifier says only "no writes" and mines no answer atom. D156 and D157 address the state and the leak; the answer atom for a read-only Task is still open.
 
 **Where 16 hours went.** The Builder's round 1 beat took 25 minutes (280 seconds of status and repairs, then a 20 minute build). The Examiner's `derive` took 3 hours 6 minutes on its first call and 10 hours 36 minutes on its second, the same `derive all` over the same artifacts: `derive_all` runs the Tasks one after another, the suite's loophole probe is one model Run per Task (173 probe Runs on disk) and nothing is memoised between two calls in the same round. That is 13.7 of the 16 hours in one serial function while eight workers sat idle; the fix is per-Task derivation in parallel under `--workers` with a cache keyed by the Verifier's inputs, listed in the todo.
 
-**What the triage skill changed.** Build 12's model arm called `status` 4 times in 59 calls and repaired blind; this mechanic called it 75 times in 127, once per Task before every repair, zooming on the tool or Task the finding named (D150). The repairs it then asked for were the right ones (`repair_recompile` on the tools with red replay lights, `repair_intent` on the Tasks the intent gate named) and two Intents grounded in round 2 (`task_03d78b3f5cea` after four tries, `task_b72a88c48881` on the first). The other 27 repairs changed nothing they were asked to change, 19 of them the one body above: a right diagnosis and a verb whose only lever is another sample from the same model, which is what D162 replaces with a rule. The fact miner's effect on re-rolls cannot be read from this build: 438 of 468 re-rolls finished (93.6%) against 564 of 582 (96.9%) in build 12's model arm, but the runs ended on the D77 closing rule and the D151 name facts are not what stopped them.
+**What the triage skill changed.** The model arm of the ten round comparison called `status` 4 times in 59 calls and repaired blind; this mechanic called it 75 times in 127, once per Task before every repair, zooming on the tool or Task the finding named (D150). The repairs it then asked for were the right ones (`repair_recompile` on the tools with red replay lights, `repair_intent` on the Tasks the intent gate named) and two Intents grounded in round 2 (`task_03d78b3f5cea` after four tries, `task_b72a88c48881` on the first). The other 27 repairs changed nothing they were asked to change, 19 of them the one body above: a right diagnosis and a verb whose only lever is another sample from the same model, which is what D162 replaces with a rule. The fact miner's effect on re-rolls cannot be read from this build: 438 of 468 re-rolls finished (93.6%) against 564 of 582 (96.9%) in the model arm of the ten round comparison, but the runs ended on the D77 closing rule and the D151 name facts are not what stopped them.
 
 **How it died.** Round 2's Builder beat built the target, then acted on the follow-up findings with narrowed recompiles and answered. `execute` replaces the store with the last run's artifacts, so the Examiner's handover lacked the Constraints and `derive` raised `KeyError: 'constraints'`; the round is recorded as failed and the loop exited "stalled". D153 had covered the beat with no build call; this is the beat with a build followed by repairs. D161 has the driver build the target whenever the last run was narrowed or aimed elsewhere.
 
@@ -391,38 +393,38 @@ Launched on a fresh copy of the retail workdir with `--agent`, `openai/gpt-5.6-l
 **Read as an experiment.** The model driving cost 3.31 dollars and 15 hours more than the code driver for two fewer trusted Tasks, and none of the difference is the driver: one memorised body, one serial stage, one partial store. What the mechanic did right, the triage before every repair and the Intent repairs, is now the harness's; what it could not do, write a body that generalises when its own model keeps memorising, becomes a gate. The next build runs on D155 to D162 and the parallel derive.
 
 
-## Builds 14, airline and telecom (2026-09-07): the generalisation test, first rounds
+## Retail, airline and telecom (2026-09-07): the generalisation test, first rounds
 
 Founder: "can you start building other environments as well please? like the telecom and the airline one as well?" and, launched, "lovely, now we will be able to see how well it generalizes." Three builds started together around 12:07 local on the D159 to D163 code, each with `--iterate --workers 8 --model openai/gpt-5.6-luna --ceiling-usd 25 --agent`: `.work-b14` (retail, 456 traces, 205 Tasks, a copy of `.work-retail`), `.work-airline` (200 traces, 119 Tasks), `.work-telecom` (456 traces, 183 Tasks). Retail was still in its first Examiner beat when this was written; the other two had said what they had to say.
 
 **Telecom: dead in compile_tools, exit "done" at fidelity 0 of 183.** 36 of 42 tools assisted. Not a model failure: the simulated user in those traces runs a toolkit of its own (5,287 user calls beside 2,445 assistant calls), 27 tools were answered only for the user, and 21 names were the recorded agent's inventions (`$DEVICE_ACTION`, `$SYNTHETIC_TOOL_CALL`), refused on every call and none a Python identifier. The miner built ToolSigs from the assistant's refusals, the skeleton `def $DEVICE_ACTION(...)` did not parse, the classifier had filed those refusals as not_found_entity because a `$` broke its tool name token, the compile stage handed the bodies the user's calls anyway, four argument-free device tools failed non_trivial for answering one world one way, and the round closed "done" because no Task had a Reference and the model's first `status` on the fresh workdir read "the gates are green". Five decisions from one build: D164 (callers and unknown tools), D165 (state-driven non_trivial), D166 (not done until built, status says unbuilt), D168 (the body skill). The Builder spent 1.03 dollars, the Examiner nothing.
 
-**Airline: round 1, trusted 1 of 119.** Every stage ran. The funnel: 119 Tasks, 47 with every replayed Trace matching (73 of 200 Traces), 33 with a confirmed Reference, 1 trusted. Writes replaying exactly: 14 of 152. Eight of thirteen tools assisted, and five of them on the memorised_values gate alone: the reservation ids had been given the shape `^.{6}$`, so 'amount', 'landed' and 'Dallas' were refused as memorised ids on four attempts each (D167). Under that, the world's shape: 122 flight rows keyed by flight number with `date: null` from 226 distinct (flight number, date) pairs the recorded searches listed, so a search answers [] for a date the world lost and a status lookup answers one status for every date (Pending, rows whose identity is more than one column). The Examiner's context fill reached 764 percent of the window on the unclamped `read` (the build 13 todo item, still open). Spend 0.83 dollars.
+**Airline: round 1, trusted 1 of 119.** Every stage ran. The funnel: 119 Tasks, 47 with every replayed Trace matching (73 of 200 Traces), 33 with a confirmed Reference, 1 trusted. Writes replaying exactly: 14 of 152. Eight of thirteen tools assisted, and five of them on the memorised_values gate alone: the reservation ids had been given the shape `^.{6}$`, so 'amount', 'landed' and 'Dallas' were refused as memorised ids on four attempts each (D167). Under that, the world's shape: 122 flight rows keyed by flight number with `date: null` from 226 distinct (flight number, date) pairs the recorded searches listed, so a search answers [] for a date the world lost and a status lookup answers one status for every date (Pending, rows whose identity is more than one column). The Examiner's context fill reached 764 percent of the window on the unclamped `read` (the triage build's todo item, still open). Spend 0.83 dollars.
 
-**Retail, build 14: round 1, trusted 99 of 205.** The funnel: 205 Tasks, 188 with every replayed Trace matching, 135 with a confirmed Reference, 99 trusted, against build 13's 156, 142, 73. The 70 Tasks without a Reference: 69 wait on an assisted seed tool (get_user_details on 42 of them alone, on one differing call out of 240, a gift-card balance the body reads as 86.0 where the recording holds 14.04; modify_pending_order_items on 19 more, list_all_product_types on 8), and 1 is a corpus disagreement. The 36 References not trusted, by the D79 check that failed: mutation_flips 22, second_path_passes 16, unsolved_state_fails 8, leak_check_clean 2, the other three 1 each. The Examiner's context fill reached 899 percent of its window through `read`.
+**Retail: round 1, trusted 99 of 205.** The funnel: 205 Tasks, 188 with every replayed Trace matching, 135 with a confirmed Reference, 99 trusted, against the triage build's 156, 142, 73. The 70 Tasks without a Reference: 69 wait on an assisted seed tool (get_user_details on 42 of them alone, on one differing call out of 240, a gift-card balance the body reads as 86.0 where the recording holds 14.04; modify_pending_order_items on 19 more, list_all_product_types on 8), and 1 is a corpus disagreement. The 36 References not trusted, by the D79 check that failed: mutation_flips 22, second_path_passes 16, unsolved_state_fails 8, leak_check_clean 2, the other three 1 each. The Examiner's context fill reached 899 percent of its window through `read`.
 
 **The feedback loop, watched (`scripts/feedback_loop.py`).** The script reads findings.json, rounds.json, both session records and task_status.json and prints, per round, what the Examiner filed, whether the Builder called the suggested verb on that Task in a later round, whether the Task then moved, each agent's tool mix, and the losses ranked beside the findings that name them. Over the three model-driven builds:
 
 | build | rounds | findings filed | acted on by the Builder | Task trusted afterwards | Examiner calls | of them `finding` | of them `read` |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| build 12, model arm | 10 | 6 | 4 | 0 | 59 | 6 | 37 |
-| build 14, round 1 | 1 (2 open) | 7 | 7 | 0 | 30 | 24 | 5 |
+| ten round comparison, model arm | 10 | 6 | 4 | 0 | 59 | 6 | 37 |
+| retail 2026-09-07, round 1 | 1 (2 open) | 7 | 7 | 0 | 30 | 24 | 5 |
 | airline | 2 (3 open) | 0 | 0 | 0 | 29 | 0 | 19 |
 
-What the findings say: every one of build 14's seven is "Intent phrase X is not evidenced in every Run" with `repair_intent` suggested; build 12's six are four of the same kind, one "the required atoms reject the held-out recordings" and one assisted-tool finding that the Builder never acted on. None of the thirteen names the largest loss of its build: the assisted tool that blocks 42 Tasks (build 14) or 52 (build 12), the D79 check that fails most, the 79 Tasks with false rejection 1.0, or a corpus disagreement. Build 14's Examiner made 24 `finding` calls to file 7 (the other 17 were refused as duplicates or malformed), and airline's Examiner read 19 times, repaired 7 times and filed nothing in two rounds while 80 of 119 Tasks had no Reference. The Builder acts on what it is given (11 of 13 findings were followed by the suggested verb on that Task) and no acted-on finding has yet moved a Task to trusted: the Intent repairs confirm the Reference and the Verifier then fails the suite. So the loop's feedback is narrow (one kind, one verb), the Examiner spends its beat reading rather than filing, and the losses that decide the number are never put in front of the Builder. The fix belongs in the Examiner's stage, not its prompt: file the ranked losses as findings by rule (an assisted tool with the Tasks it blocks and the differing call, a D79 check with the Tasks it failed, a false rejection with the held-out Run the atoms reject), and let the model's `finding` add to that list rather than be the whole of it. Listed in `docs/todo.md`.
+What the findings say: every one of the seven retail findings of 2026-09-07 is "Intent phrase X is not evidenced in every Run" with `repair_intent` suggested; the ten round comparison's six are four of the same kind, one "the required atoms reject the held-out recordings" and one assisted-tool finding that the Builder never acted on. None of the thirteen names the largest loss of its build: the assisted tool that blocks 42 Tasks (2026-09-07) or 52 (the ten round comparison), the D79 check that fails most, the 79 Tasks with false rejection 1.0, or a corpus disagreement. The retail Examiner of 2026-09-07 made 24 `finding` calls to file 7 (the other 17 were refused as duplicates or malformed), and airline's Examiner read 19 times, repaired 7 times and filed nothing in two rounds while 80 of 119 Tasks had no Reference. The Builder acts on what it is given (11 of 13 findings were followed by the suggested verb on that Task) and no acted-on finding has yet moved a Task to trusted: the Intent repairs confirm the Reference and the Verifier then fails the suite. So the loop's feedback is narrow (one kind, one verb), the Examiner spends its beat reading rather than filing, and the losses that decide the number are never put in front of the Builder. The fix belongs in the Examiner's stage, not its prompt: file the ranked losses as findings by rule (an assisted tool with the Tasks it blocks and the differing call, a D79 check with the Tasks it failed, a false rejection with the held-out Run the atoms reject), and let the model's `finding` add to that list rather than be the whole of it. Listed in `docs/todo.md`.
 
 **Telecom, relaunched (2026-09-07 evening) on D164 to D169.** Runner re-frozen, the loop restarted from round 1 over the same workdir. The miner now gives 36 ToolSigs, 27 with the user as their only caller and 9 the assistant's, and reports the 21 invented names in `unknown_tools.json` (every one refused as not a tool name); compile_tools started two minutes in. Round 1 closed in 12 minutes at $0.48 on the exit "done", again at fidelity 0 of 183, this time with every stage run and 36 bodies compiled: every tool assisted at the corpus level, no Task with a Reference, the Examiner filing nothing, the Builder having made 27 Intent repairs and 11 recompiles. The vacuous done is D172. The bodies themselves: best replay per tool runs from 94 percent (the permission grant) and 90 (the VPN status check) through 84 to 89 for four tools, under 50 for most of the device toggles and checks, and 0 for three (the MMS check raises the recorded refusal on all 406 calls, so its world says the device cannot send where the recording's could). That is the Pending item on the user's own tools: they act on a device state the Starting state does not hold, so the body answers from a world that is not the recorded one. No rule of D164 to D169 addresses it; it is the next decision for telecom.
 
-**Retail, build 14, round 2.** Fidelity 188, References 140, trusted 95 (down from 99: four Verifiers re-derived after Intent repairs failed the suite). **Round 3: fidelity 147, trusted 66.** Seven recompiles, and one write tool went from 65 percent of its recorded calls matched to none (its new body refused writes the recording accepted, on 49 Tasks); the narrowed compile took whatever its attempts produced. That is D174: a recompile replaces the kept body only by beating it on the compiler's own score. **Airline, rounds 5 to 8.** Fidelity 64, 64, 56, 56; trusted 8, 8, 5, 5; the same regression in small, ten recompiles over rounds 7 and 8. All three builds died at about 12:50 local with the session process that had launched them; nothing was relaunched until the fixes below were in.
+**Retail, round 2.** Fidelity 188, References 140, trusted 95 (down from 99: four Verifiers re-derived after Intent repairs failed the suite). **Round 3: fidelity 147, trusted 66.** Seven recompiles, and one write tool went from 65 percent of its recorded calls matched to none (its new body refused writes the recording accepted, on 49 Tasks); the narrowed compile took whatever its attempts produced. That is D174: a recompile replaces the kept body only by beating it on the compiler's own score. **Airline, rounds 5 to 8.** Fidelity 64, 64, 56, 56; trusted 8, 8, 5, 5; the same regression in small, ten recompiles over rounds 7 and 8. All three builds died at about 12:50 local with the session process that had launched them; nothing was relaunched until the fixes below were in.
 
 **Fixed before the relaunch (2026-09-07 evening).** D170 findings filed by rule (assisted tools by the Tasks they block, suite checks, false rejection, disagreements, ranked; the Builder's round prompt leads with the costliest), D171 tool fidelity per Task beside the corpus number (51 of 64 retail Tasks named as blocked by an assisted tool make no call it answers wrongly), D172 a Task with no Reference is unfinished (telecom's vacuous "done"), D173 the three suite checks that were wrong about a Verifier that never writes plus the false-rejection pool (retail's suite failures 64 to 47 in the reproduction, false rejection 46 Tasks to 15), D174 the recompile rule, D175 the Examiner's read clamped and indexed (fill 899 percent).
 
 **What generalised and what did not.** The stages, the gates, the round and the agents ran unchanged on three corpora. What broke was every place the code had assumed the first corpus's shape without saying so: one requestor, tool names that are identifiers, ids that mix letters and digits at no position, rows with one key column, a workdir that always has a ruling. Each is now a rule with a test that names no domain. The number to watch is the second round of each: telecom rebuilt on D164 to D168, airline once the id shape rule lands.
 
-## Smoke 7 (2026-09-23): retail and airline on gpt-6-sol, killed at 13:44 UTC
+## Retail and airline on gpt-6-sol, killed (2026-09-23)
 
 Two builds with `openai/gpt-6-sol` as the Builder and no ceiling, harness at commit 92d3f28, workdirs
-`.work-retail` and `.work-airline` in the overhaul-0922-smoke7 worktree. Both were killed on the founder's request
+`.work-retail` and `.work-airline` in the `overhaul-0922-smoke7` worktree. Both were killed on the founder's request
 at 13:44 UTC, in their second session, in the Examiner stage. Two luna arms beside them were killed at 13:22 UTC.
 
 | Environment | Confirmed References | Reference fidelity | Call fidelity | Trusted | Turns | Spend USD |
@@ -431,7 +433,7 @@ at 13:44 UTC, in their second session, in the Examiner stage. Two luna arms besi
 | airline | 100 of 119 | 0.9687 | 0.9564 over 1513 calls | 22 (97 open, 89 no Verifier yet) | 105 | 5.11 |
 | telecom | telecom: not in this round | | | | | |
 
-Beside them, the luna arms of the same smoke (killed 13:22 UTC): retail 15 of 205 confirmed at 0.7509, 0 trusted,
+Beside them, the luna arms of the same day (killed 13:22 UTC): retail 15 of 205 confirmed at 0.7509, 0 trusted,
 15 turns, 0.27 USD; airline 10 of 119 at 0.6183, 0 trusted, 271 turns, 0.51 USD.
 
 Fidelity is the share of recorded calls whose replay agrees with the recording; a confirmed Reference is a Task with at
@@ -453,20 +455,20 @@ Earlier the same day, before publish counted from the workdir status: retail wen
 round-unknown (dataset commit f1613092) with 20 References and 0 trusted, and airline was refused as a release at
 84.0% over Tasks.
 
-Readings: `.claude/reports/smoke-luna-observations-2026-09-23.md` (section "Smoke 7 final numbers"),
+Readings: `.claude/reports/smoke-luna-observations-2026-09-23.md` (the section on the final numbers of the killed sol builds),
 `.claude/reports/sol-behaviour-2026-09-23.md` and `.claude/reports/env-quality-vs-tau2-2026-09-23.md`.
 
-## Smoke 8 (2026-09-23): retail and airline on gpt-6-sol, both finished
+## build-20260923: retail and airline on gpt-6-sol, both finished
 
 Two builds with `openai/gpt-6-sol` as the Builder on commit f913cd6 (the wave 2 integration head), a 1M window,
 compaction at 40 percent (none happened), no ceiling, both corpora in parallel, launched about 15:30 UTC. Workdirs
-`.work-retail` and `.work-airline` in the smoke 8 worktree, launcher `.claude/scripts/smoke8.sh`, logs
+`.work-retail` and `.work-airline` in that build's worktree, launcher `.claude/scripts/smoke8.sh`, logs
 `.claude/logs/smoke-<corpus>-0923-sol8.log`.
 
 | Environment | Confirmed References | Call fidelity | Verifiers | Trusted | Open | Turns | Spend USD |
 |---|---|---|---|---|---|---|---|
-| retail | 205 of 205 | 1.0000 over 3220 calls | 205 | 133 (smoke 7: 14) | 72 | 80 | 27.28 |
-| airline | 95 of 119 | 0.9603 over 1513 calls | 95 | 53 (smoke 7: 22) | 66 | 69 | 13.23 |
+| retail | 205 of 205 | 1.0000 over 3220 calls | 205 | 133 (killed sol build: 14) | 72 | 80 | 27.28 |
+| airline | 95 of 119 | 0.9603 over 1513 calls | 95 | 53 (killed sol build: 22) | 66 | 69 | 13.23 |
 | telecom | telecom: not in this round | | | | | | |
 
 The trusted counts are under review, because 49 retail and 27 airline of them rest on a second-path seed read
@@ -490,7 +492,7 @@ outside my accessible root." The airline build was stopped by the stop rule afte
 one-stop search body.
 
 Spend per stage (retail, then airline): runner 22.91 and 8.49 USD, Builder session 1.67 and 1.93, Examiner 2.69 and
-2.81, of 27.28 and 13.23 in total. The cache saved 74.78 and 46.31 USD. Smoke 7 cost about 4 and 5 USD.
+2.81, of 27.28 and 13.23 in total. The cache saved 74.78 and 46.31 USD. The killed sol builds cost about 4 and 5 USD.
 
 Hugging Face, tag build-20260923. No round closed, so the cards count from the workdir status.
 - retail: release, 100.0% over Tasks, 133 trusted, content hash dbc33f1bb23adf8d, built 2026-09-23T18:42:15Z,
@@ -500,10 +502,10 @@ Hugging Face, tag build-20260923. No round closed, so the cards count from the w
 - telecom: not rebuilt; its card is still round 5 from 2026-09-09 (9.3% over Tasks, 17 of 183; 18.5% over Runs, 27
   of 146; 7 References, 14 Verifiers, 0 trusted).
 
-An investigation into the open Tasks, the spend and the Builder's failures is running (three read-only Workers);
-its findings will be added here.
+An investigation into the open Tasks, the spend and the Builder's failures was started the same day (three
+read-only Workers); its findings were not written up here.
 
-# Smoke 9 (2026-09-24): retail and airline on Opus 5.5 on Amazon Bedrock
+## build-20260924: retail and airline on Opus 5.5 on Amazon Bedrock
 
 Both builds ran on the overhaul branch after D290 and D291, with the Builder, the Examiner and the runner on
 Opus 5.5 through Bedrock's global profile. Every Reference Trace replayed and confirmed in both corpora.
@@ -527,4 +529,4 @@ Building and examining are cheap. Replaying and running Candidates is most of th
 The first export's leak scan refused both packages: in 13 Verifiers (1 retail, 12 airline) an atom's `target.raw`
 held a whole recorded agent message of 60 to 110 words. D292 keeps the agent's own prose out of Verifiers and
 packages, and both Environments were then published on 2026-09-24 as releases under the tag build-20260924.
-Workdirs: `.work-retail` and `.work-airline` in the smoke 9 worktree. What comes next is in `docs/todo.md`.
+Workdirs: `.work-retail` and `.work-airline` in the `overhaul-0922-smoke9` worktree. What comes next is in `docs/todo.md`.

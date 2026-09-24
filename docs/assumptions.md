@@ -71,4 +71,4 @@ Evidence grades: **measured** (I or a cited source measured it on comparable dat
 
 ## Links to validation hypotheses
 
-A1 (heavy-tail traffic) restates the shape behind H1 in docs/validation/hypotheses.md; the axes differ (calls per Run here, spend share there). A3 (customer shape) connects to H7 (buyer) and H9 (spend threshold). A20 (frontier bar) connects to H6 (default to frontier) and H11 (frontier plus context). A12 (audit rate) connects to H12 (evaluations are the bottleneck). No new claims are added by these links.
+A1 (heavy-tail traffic) restates the shape behind H1 in the validation ledger (brain repo, `gtm/validation/hypotheses.md`); the axes differ (calls per Run here, spend share there). A3 (customer shape) connects to H7 (buyer) and H9 (spend threshold). A20 (frontier bar) connects to H6 (default to frontier) and H11 (frontier plus context). A12 (audit rate) connects to H12 (evaluations are the bottleneck). No new claims are added by these links.

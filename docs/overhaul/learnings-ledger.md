@@ -1,5 +1,7 @@
 # The learnings ledger of the 2026-09-22 overhaul
 
+> Record of 2026-09-22: the index the overhaul was judged against. On 2026-09-24 two module paths were corrected to where the code now lives.
+
 Every decision (D01 to D278), every learning in `docs/learnings.md` without a decision of its own (L<section>.<n>) and every standing founder word (F<n>) has a row here, and each row says where that learning lives in the shape of ADR-0011 or why it is dropped. Two counts, so the next reader does not re-derive them: the table has 264 decision rows, one for every decision the log ever carried, and after the prune of 2026-09-22 `docs/decision-log.md` holds 212 of them, 155 as headed entries from D69 on and 57 as earlier bold entries in the same file. The 52 that were removed are the ones the log's own "Removed on 2026-09-22" list names, and every one of their rows says so in its reason column: 27 are dropped and the other 25 keep the place that carries what they taught.
 How to use it: a brief cites the rows its stream owns, and it may not carry a learning that no row points at its package.
 A stream's acceptance re-checks its own rows: for each one, the module named is present at the named path, the gate named rules, the prompt section named exists, or the drop is still true.
@@ -112,7 +114,7 @@ Locations use the vocabulary of the brief (carried module, gate, hook, prompt se
 | D57 | Confirming a Reference passes several gates, with a judge that marks pass or fail and hands unsure to a person | carried module kullback/examiner/reference.py | |
 | D93 | A disputed Reference sets the Task aside until a person resolves it | carried module kullback/examiner/reference.py | The decision entry was removed from the log on 2026-09-22, learning in learnings.md section 2 |
 | D111 | A Run is a Reference when its End state is what the Intent plus the policy say should have happened | carried module kullback/examiner/reference.py | the benchmark reward is read only by the report |
-| D123 | Two agents on one core: one builds the Environment, one writes the Verifiers and the probes | carried module kullback/examiner/extension.py | the separation stands (ADR-0007); the queue messaging is replaced by the Builder's examine tool over one bus |
+| D123 | Two agents on one core: one builds the Environment, one writes the Verifiers and the probes | carried module kullback/examiner/session.py | the separation stands (ADR-0007); the queue messaging is replaced by the Builder's examine tool over one bus |
 | D156 | A no-write recording has an outcome: whether its answer stated facts it read | carried module kullback/examiner/reference.py | |
 | D163 | The Examiner derives per Task, in parallel, from a cache | carried module kullback/examiner/derive.py | The decision entry was removed from the log on 2026-09-22, no learning |
 | D170 | Findings are filed by rule off the records, ranked by the Tasks they cost | carried module kullback/examiner/findings.py | the finding now carries per-call rows |
@@ -155,7 +157,7 @@ Locations use the vocabulary of the brief (carried module, gate, hook, prompt se
 | D45 | Hallucinated tool calls are counted, not failed; a fabricated result always fails | runner tool (route and Verdict) | |
 | D46 | A failure is explained by its failing atom, computed by code | runner tool (Verdict) | |
 | D61 | The Runner is frozen and the Builder improves | runner tool (version hash) | the hash now covers the runner's code and the core loop it ran on |
-| D74 | One world per customer, with the starting state per Task as an overlay | runner tool (the world, from kullback/episode/loading.py) | |
+| D74 | One world per customer, with the starting state per Task as an overlay | runner tool (the world, from kullback/runner/world/loading.py) | |
 | D78 | The re-run count is decided by experiment, not by design | runner tool (reroll) | |
 | D81 | The held-out anchor is a share of every Task's Runs | runner tool (holdout, in the workdir outside every agent's root) | |
 | D84 | A semantic column is settled by the judge only when the canonical strings differ, with a cached equivalence table | carried module kullback/runner/judge.py | |
@@ -318,7 +320,7 @@ Locations use the vocabulary of the brief (carried module, gate, hook, prompt se
 | D131 | Research on the context manager: dependency guards, protected tool output, capped loaded tools | dropped | removed from the decision log on 2026-09-22: learning kept in learnings.md section 4 |
 | D135 | The model is the driver and the graph refreshes stale inputs | standing rule (ADR-0011: the model is the driver) | the Builder reads the rulings and decides what to call next; there is no scheduler and no stage graph |
 | D136 | The mechanic repairs what the model wrote | standing rule (ADR-0011: the boundary) | the agent repairs only what a model wrote; gates, the runner, the Verifiers and the user rules live outside every agent root and are fixed by people |
-| D137 | Build 9 measures the mechanic on the Tasks that write | dropped | removed from the decision log on 2026-09-22: no learning |
+| D137 | The 2026-09-06 build measures the mechanic on the Tasks that write | dropped | removed from the decision log on 2026-09-22: no learning |
 | D141 | The Examiner's finding names the Builder verb and carries a hint | dropped | removed from the decision log on 2026-09-22: learning kept in learnings.md section 7 |
 | D142 | A round has moved when a gate count, an artifact or a ruling changed | dropped | removed from the decision log on 2026-09-22: learning kept in learnings.md section 5 |
 | D145 | A repair result opens with its own target's ruling | dropped | removed from the decision log on 2026-09-22: learning kept in learnings.md section 7 |

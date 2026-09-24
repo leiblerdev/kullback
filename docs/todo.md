@@ -1,11 +1,11 @@
 # Deferred work
 
 What the old builds taught is in learnings.md. The papers and repos the founder sent are in papers.md. The
-list was cleared on 2026-09-22 for the overhaul and rebuilt on 2026-09-24 after smoke 9.
+list was cleared on 2026-09-22 for the overhaul and rebuilt on 2026-09-24 after the build published as build-20260924.
 
 ## Next
 
-- Deep search over the smoke 9 failures in both builds: Examiner findings, refused tool calls, repeated failing
+- Deep search over the failures of both build-20260924 builds: Examiner findings, refused tool calls, repeated failing
   calls, turns per repair and stop reasons. Find where the model struggles and propose tools, skills and prompts
   that raise the Verifier and trusted counts. Workdirs:
   /Users/krishuagarwal/.herdr/worktrees/kullback/overhaul-0922-smoke9/.work-retail and .work-airline.
@@ -16,7 +16,10 @@ list was cleared on 2026-09-22 for the overhaul and rebuilt on 2026-09-24 after 
   kullback/runner. Verdicts from before and after the re-freeze are not comparable (D61). The patches still waiting
   in docs/frozen-patches (safe-write, speed-1, speed-3, confinement-holes and the others tests name) land in the
   same re-freeze, including the speed-1 variant gate that examiner/stage.py keeps serial until then.
-- The two commits on overhaul-0922/pr2 after PR #121 merged (1d9203b, de52f22) are not on main yet.
+- Two Runner version labels. `kullback run` puts the live `runner/tool.py:version()` hash (runner/ plus two agent
+  core files) on a Run and its first Verdict, while `kullback verdict` and `regrade` put the frozen hash from
+  runner_version.json on later Verdicts of the same Run, and the two never match. Founder to decide which one a
+  Verdict carries, or whether run should refuse when the live code differs from the frozen record.
 - Re-roll batches. One Builder run call plays at most RUNS_PER_CALL = 20 fresh Runs, which is why builds re-roll
   10 to 20 Tasks at a time. Measure whether a larger cap or parallel Runs helps.
 - Cheaper runner model experiment. Record the Run kind in the ledger first, since second-path Runs dominate the
@@ -25,7 +28,7 @@ list was cleared on 2026-09-22 for the overhaul and rebuilt on 2026-09-24 after 
 
 ## Priority order after the overhaul (founder, 2026-09-23)
 
-Item 1, every trace passes, is met by smoke 9 (replay fidelity 1.00 on retail and airline). Synthetic Tasks moved
+Item 1, every trace passes, is met by build-20260924 (replay fidelity 1.00 on retail and airline). Synthetic Tasks moved
 to Next. What remains:
 
 1. Kitaru (ZenML), https://www.zenml.io/product/kitaru: build evals on top of the built Environment. From the page,

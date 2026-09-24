@@ -1,9 +1,11 @@
-# Todo
+# Company todo
+
+The company's go to market list as of 2026-09-10. The harness's own deferred work is in todo.md.
 
 ## GTM system (focus now)
 
-- [x] Build the GTM loop: `prospects.csv` + scripts + `gtm/docs/system.md`
-- [x] Build the learning loop: `validation/docs/loop.md` + `hypotheses.md`
+- [x] Build the GTM loop: `prospects.csv` + scripts + `gtm/docs/system.md` (brain repo)
+- [x] Build the learning loop: `gtm/validation/loop.md` + `hypotheses.md` (brain repo)
 - [x] Confirm Jan = Jan-Hendrik Rüttinger (Dataleap)
 - [x] Inject booking link + Stanford credibility into messaging
 - [x] Install `pi-web-access` + `pi-mcp-adapter`; add RocketReach server
@@ -26,5 +28,5 @@
 
 ## Tech (after 6 partial customers)
 
-- [x] Website with sharp value prop (`tech/docs/website.md` + `website/index.html`) — started 2026-08-24, eval-first
-- [ ] SDK wrapper / log-drain (`tech/docs/sdk-wrapper.md`) (2026-09-10)
+- [x] Website with sharp value prop (`gtm/tech/website.md` in the brain repo, `index.html` in the website repo), started 2026-08-24, eval-first
+- [ ] SDK wrapper / log-drain (`gtm/tech/sdk-wrapper.md` in the brain repo) (2026-09-10)

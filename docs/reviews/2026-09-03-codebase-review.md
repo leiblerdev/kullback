@@ -1,3 +1,5 @@
+> Historical record, 2026-09-03: a review of the codebase as it stood that day, before the overhaul of 2026-09-22. Paths and line numbers name that tree, not today's.
+
 <!-- Written 2026-09-03 by a review fleet: 40 agents over the union of every open branch, each finding then put to a skeptic who tried to refute it and, where the claim allowed, proved or killed it by changing the code and running the suite. Working payloads for the confinement bypasses are described rather than reproduced, since this repository is public and the gate is fixed in a later change than the one that adds this file. -->
 
 # Kullback codebase review
