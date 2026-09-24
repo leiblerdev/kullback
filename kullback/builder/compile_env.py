@@ -2421,11 +2421,13 @@ def render_tools(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict,
 # The world records such a call as a row of its own: the compile step writes the row ahead of
 # the body, the tool is a write, and the ordinary write atom covers it. The answer the body gives
 # is untouched, so replay fidelity is what it was.
-# A read takes the world as input: its arguments name values the world holds, an id or key that an
-# earlier result of the same Trace showed. A tool that ends the Run consumes nothing of the world:
-# its arguments are free text or empty. So a final status, total or availability lookup that
-# closes most of its Traces stays a read, because on its calls an argument names a row already
-# seen (D288); and a tool the miner classified as a read (not its unclassified default) never moves.
+# A read takes the world as input: its arguments name values the world holds, an id or key of the
+# Starting state or of an earlier result of the same Trace. A tool that ends the Run consumes
+# nothing of the world: its arguments are free text or empty. So a final status, total or
+# availability lookup that closes most of its Traces stays a read, because on its calls an argument
+# names a row of the world (D288); and a tool the miner classified as a read (not its unclassified
+# default) never moves. The mine step runs before the Starting state is inverted, so the world is
+# then the rows the corpus's results show, the sightings the Starting state is built from.
 ACTIONS_TABLE = "actions"
 # The share of a tool's successful recorded calls that closed their Trace (no tool call after it)
 # for the tool to read as one that ends the Run. Below one because a corpus has stray orderings:
@@ -2449,20 +2451,26 @@ def _world_values(value: Any, out: Optional[set] = None) -> set:
     return out
 
 
-def ending_tools(traces: Iterable[Trace], sigs: Iterable[ToolSig]) -> list[str]:
+def ending_tools(traces: Iterable[Trace], sigs: Iterable[ToolSig], world: Optional[dict] = None) -> list[str]:
     """The tools the recording shows ending the Run and writing nothing.
 
     Not a write by its mined kind nor a classified read, answered with a scalar on every successful
     call (no row came back), called at least `ENDS_RUN_MIN_CALLS` times, the last tool call of its
     Trace on at least `ENDS_RUN_SHARE` of them, and on every call no argument value equals a value
-    an earlier result of the same Trace showed (D288).
+    of the world's rows or of an earlier result of the same Trace (D288). `world` is the Starting
+    state's rows; without it, the rows every successful result of the corpus shows.
     """
+    traces = list(traces)
     candidates = {sig.name for sig in sigs
                   if sig.kind != "write" and not (sig.kind == "read" and not sig.unclassified)}
+    rows_of = ([world] if world is not None else
+               [call.result for trace in traces for call in trace.tool_calls
+                if call.error is None and isinstance(call.result, (dict, list, tuple))])
+    start = _world_values(rows_of)
     counts: dict[str, list[int]] = {}
     for trace in traces:
         calls = [call for call in trace.tool_calls if call.error is None]
-        seen: set = set()
+        seen: set = set(start)
         for at, call in enumerate(calls):
             tally = counts.setdefault(call.name, [0, 0, 0, 0])
             tally[0] += 1
