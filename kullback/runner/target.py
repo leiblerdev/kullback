@@ -538,6 +538,19 @@ def _verifier_of(atom: Atom) -> Any:
     return _One()
 
 
+# The canonical keys of a written value that holds nothing (write_effects keys values by _key).
+_BLANK_KEYS = frozenset({canonical_json(None), canonical_json(""), canonical_json([]), canonical_json({})})
+
+
+def _value_missing(payload: dict, values: set) -> bool:
+    """A write_value atom whose value no write shows; a `filled` one asks only that the field holds
+    something on the row, because it is the agent's own prose and is never pinned (D292)."""
+    target = (payload.get("tool"), payload.get("entity"), payload.get("field"))
+    if payload.get("filled"):
+        return not any(value[:3] == target and value[3] not in _BLANK_KEYS for value in values)
+    return target + (payload.get("value"),) not in values
+
+
 def _effect_sets(effects: dict) -> tuple[set, set, set]:
     present = {(e["tool"], e["entity"]) for e in effects.values()}
     wrote_with = {e["tool"] for e in effects.values()}
@@ -553,7 +566,7 @@ def _one_atom(atom: Atom, payload: dict, kind: Any, effects: dict, asked: set, s
     if kind == "write" and (payload.get("tool") not in wrote_with if names_no_row(payload)
                             else target not in present):
         return False
-    if kind == "write_value" and target + (payload.get("field"), payload.get("value")) not in values:
+    if kind == "write_value" and _value_missing(payload, values):
         return False
     if kind == "entity_count" and len(effects) > payload.get("count", 0):
         return False
@@ -594,7 +607,7 @@ def _write_missing(kind: Any, payload: dict, present: set, wrote_with: set, valu
         return (payload.get("tool") not in wrote_with if names_no_row(payload)
                 else target not in present)
     if kind == "write_value":
-        return target + (payload.get("field"), payload.get("value")) not in values
+        return _value_missing(payload, values)
     return False
 
 

@@ -12,6 +12,7 @@ Atom payloads: every atom carries a small structured object in `Atom.target`, re
 verdict.py evaluates it without importing anything from here (D89). The `kind` key of the target is:
   write          {tool, entity, entity_raw, id_field, at, requestor}  the write effect happened
   write_value    {..., field, value, raw}                one value of that write (D42 provenance on the Atom)
+                 {..., field, filled}                    the agent's own prose there: only "filled in" (D292)
   question       {key, tool, field}                       the agent asked the user for this (D43)
   communicate    {value, text}                            the final answer states this fact
   entity_count   {count}                                  the Run makes at most this many write calls
@@ -438,7 +439,7 @@ def _write_fields(payload: dict) -> dict:
     fields: dict = {}
     if payload.get("id_field"):
         fields[payload["id_field"]] = payload.get("entity_raw")
-    if payload.get("kind") == "write_value":
+    if payload.get("kind") == "write_value" and not payload.get("filled"):
         fields[payload["field"]] = payload.get("raw")
     return fields
 
@@ -453,6 +454,8 @@ def _predicate(payload: dict, helpers: str = "") -> str:
     passed by the derivation); a gate that only needs a rule that never holds passes none.
     """
     kind = payload.get("kind")
+    if kind == "write_value" and payload.get("filled"):
+        return f"filled({payload['tool']!r}, {payload['field']!r}, **{_write_fields(payload)!r})"
     if kind in ("write", "write_value"):
         fields = _write_fields(payload)
         return f"wrote({payload['tool']!r}, **{fields!r})" if fields else f"wrote({payload['tool']!r})"
@@ -483,6 +486,50 @@ def _predicate(payload: dict, helpers: str = "") -> str:
 def make_atom(atom_id: str, kind: str, payload: dict, *, helpers: str = "", **fields: Any) -> Atom:
     """One atom: the structured target for the checks here, the predicate source for the Runner."""
     return Atom(id=atom_id, kind=kind, target=payload, predicate_src=_predicate(payload, helpers), **fields)
+
+
+# --- prose the agent chose (D292) ---
+
+# Where a written value stops being a value and starts being prose: the leak scan's own line
+# (hub/package.py CONTENT_MIN_LENGTH reads this one), or a string of this many words or more.
+PROSE_MIN_LENGTH = 80
+PROSE_MIN_WORDS = 6
+
+
+def is_prose(value: Any) -> bool:
+    """Is this written value free text rather than a value (an id, an amount, a date, a name)?"""
+    return isinstance(value, str) and (len(value) >= PROSE_MIN_LENGTH or len(value.split()) >= PROSE_MIN_WORDS)
+
+
+def pins_agent_prose(atom: Atom) -> bool:
+    """Does this atom pin, word for word, free text the recorded agent wrote into a tool argument?"""
+    payload = atom_payload(atom)
+    return (payload.get("kind") == "write_value" and atom.provenance == "agent_chosen"
+            and (is_prose(payload.get("raw")) or is_prose(payload.get("value"))))
+
+
+def elide_agent_prose(atom: Atom) -> Atom:
+    """The atom with the recorded agent's prose taken out: only "the field was filled in" is kept.
+
+    D292: another agent's free text is never byte-equal to the recorded one, so pinning it grades
+    nothing, and it carries a recording into the package. The atom keeps the tool, the row and the
+    field, marked `filled`, and neither its description nor its predicate quotes the text. Any other
+    atom comes back unchanged, so this is safe to run over a whole Verifier and over one already done.
+    """
+    if not pins_agent_prose(atom):
+        return atom
+    payload = {key: value for key, value in atom_payload(atom).items() if key not in ("value", "raw")}
+    payload["filled"] = True
+    return atom.model_copy(update={"target": payload, "predicate_src": _predicate(payload),
+                                   "description": f"{payload.get('tool')} {payload.get('field')} is filled in"})
+
+
+def elide_verifier_prose(verifier: Verifier) -> tuple[Verifier, int]:
+    """The Verifier with every agent-prose atom elided (above), and how many atoms that changed."""
+    changed = sum(1 for atom in verifier.atoms if pins_agent_prose(atom))
+    if not changed:
+        return verifier, 0
+    return verifier.model_copy(update={"atoms": [elide_agent_prose(atom) for atom in verifier.atoms]}), changed
 
 
 # --- scoring a Run against the atoms (the gates' side; verdict.py has its own, D91) ---

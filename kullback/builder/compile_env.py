@@ -4195,7 +4195,7 @@ def _action(atom: Atom) -> dict:
         except ValueError:
             call = {}
     arguments = call.get("arguments") or (
-        {call["field"]: call.get("raw")} if call.get("kind") == "write_value" else {})
+        {call["field"]: call.get("raw")} if call.get("kind") == "write_value" and not call.get("filled") else {})
     return {"action_id": atom.id, "name": call.get("name") or call.get("tool") or atom.description,
             "arguments": arguments, "info": None}
 

@@ -40,6 +40,7 @@ from kullback.gates.verifier_suite import (
     canon_fn,
     classify_provenance,
     communicate_values,
+    elide_agent_prose,
     fact_source,
     generic_reason,
     hard_holds,
@@ -608,10 +609,11 @@ def _value_atoms(atom_id: str, base: dict, run: Run, effect: dict, tools: set[st
                 continue
             atoms.append(shape)
             continue
-        atoms.append(_atom(f"{atom_id}.{field}", _demand_kind(demanded),
-                           dict(base, kind="write_value", field=field, value=canon_key, raw=value),
-                           provenance=provenance, spans=[span] if span else [],
-                           description=f"{effect['tool']} {field} is {text_of(value)}"))
+        # D292: free text the agent chose is never pinned word for word, only the field kept filled.
+        atoms.append(elide_agent_prose(_atom(f"{atom_id}.{field}", _demand_kind(demanded),
+                                             dict(base, kind="write_value", field=field, value=canon_key, raw=value),
+                                             provenance=provenance, spans=[span] if span else [],
+                                             description=f"{effect['tool']} {field} is {text_of(value)}")))
     return atoms, sorted(self_rejected)
 
 
@@ -827,7 +829,7 @@ def export_tau2_actions(verifier: Verifier, *, include_allowed: bool = True) -> 
         if payload.get("kind") == "write" and atom.kind in wanted:
             order.append((atom.id, payload["tool"], payload.get("requestor") or "assistant"))
             arguments.setdefault(atom.id, {})
-        elif payload.get("kind") == "write_value":
+        elif payload.get("kind") == "write_value" and not payload.get("filled"):
             arguments.setdefault(atom.id.rsplit(".", 1)[0], {})[payload["field"]] = payload.get("raw")
     return [{"action_id": f"{verifier.task_id}_{number}", "requestor": requestor, "name": tool,
              "arguments": arguments.get(atom_id, {}), "info": None}

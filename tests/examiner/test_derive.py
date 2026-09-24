@@ -37,7 +37,7 @@ from gates.verifier_fixtures import (
 from kullback.examiner import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules, canon_value
-from kullback.runner.records import Constraint, ForeignRunError, Task, Verifier, as_dict, content_hash
+from kullback.runner.records import Constraint, ForeignRunError, Run, Task, Verifier, as_dict, content_hash
 
 # The derivation over verifier_fixtures.derive(tmp_path): seven atoms, seeds ref, alt and rr2. It was
 # pinned at the commit the phase 5 move started from (a40812c, 77d497a99ac9e8c1) to hold that the
@@ -131,6 +131,67 @@ def test_system_derived_and_agent_chosen_provenance(tmp_path):
     assert order.kind == "hard" and S.atom_payload(order)["derived_as"] == V.SHAPE_ATOM
     assert reason.provenance == "agent_chosen"
     assert reason.kind == "allowed"
+
+
+# D292: the agent's own prose in a tool argument is kept as "filled", never pinned word for word.
+AGENT_PROSE = ("Customer asked to cancel after a delay; confirmed the order was still pending and "
+               "processed the cancellation with a full refund to the original payment method.")
+
+
+def _prose_run(note: str) -> Run:
+    return make_run("p", [
+        user("Please cancel my order #W123."),
+        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        result(ORDER, cid="c0"),
+        call("cancel_pending_order", {"order_id": "#W123", "reason": note}, cid="c1"),
+        result({"status": "cancelled"}, cid="c1"),
+        assistant("Cancelled."),
+    ])
+
+
+def test_an_agent_chosen_prose_argument_is_derived_as_filled_and_quoted_nowhere_in_the_atom():
+    run = _prose_run(AGENT_PROSE)
+    verifier = V.derive_verifier(TASK, run, [], CanonRules(), write_tools=WRITE_TOOLS)
+    reason = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "reason"][0]
+    assert reason.provenance == "agent_chosen" and reason.kind == "allowed"
+    assert S.atom_payload(reason)["filled"] is True
+    assert "raw" not in S.atom_payload(reason) and "value" not in S.atom_payload(reason)
+    text = json.dumps(as_dict(verifier)).lower()
+    assert AGENT_PROSE.lower()[:30] not in text, "no field of any atom quotes the agent's prose"
+    assert S.check_run(verifier, run, CanonRules(), write_tools=WRITE_TOOLS) == (True, None)
+
+
+def test_a_short_agent_chosen_value_is_still_pinned():
+    verifier = V.derive_verifier(TASK, _prose_run("goodwill"), [], CanonRules(), write_tools=WRITE_TOOLS)
+    reason = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "reason"][0]
+    assert reason.provenance == "agent_chosen"
+    assert S.atom_payload(reason)["raw"] == "goodwill" and "filled" not in S.atom_payload(reason)
+    assert "goodwill" in reason.predicate_src
+
+
+def test_an_old_prose_atom_elided_grades_every_run_as_before_and_its_predicate_asks_for_a_filled_field():
+    """A pre-D292 atom, reduced after the fact, changes no verdict: an allowed atom is never scored."""
+    run = _prose_run(AGENT_PROSE)
+    derived = V.derive_verifier(TASK, run, [], CanonRules(), write_tools=WRITE_TOOLS)
+    old_payload = {"kind": "write_value", "tool": "cancel_pending_order", "entity": canon_value("#W123"),
+                   "entity_raw": "#W123", "id_field": "order_id", "field": "reason",
+                   "value": canon_value(AGENT_PROSE), "raw": AGENT_PROSE}
+    old = Verifier(task_id=TASK.id, atoms=[a for a in derived.atoms if S.atom_payload(a).get("field") != "reason"]
+                   + [S.make_atom("w0.reason", "allowed", old_payload, provenance="agent_chosen",
+                                  description=f"cancel_pending_order reason is {AGENT_PROSE}")])
+    elided, changed = S.elide_verifier_prose(old)
+    assert changed == 1 and S.elide_verifier_prose(elided)[1] == 0
+    assert AGENT_PROSE[:30] not in json.dumps(as_dict(elided))
+    for candidate in (run, _prose_run("Other words entirely, but a full note all the same."), empty_run()):
+        assert S.check_run(elided, candidate, CanonRules(), write_tools=WRITE_TOOLS) == \
+            S.check_run(old, candidate, CanonRules(), write_tools=WRITE_TOOLS)
+    atom = atom_by_id(elided, "w0.reason")
+    assert atom.predicate_src.startswith("filled('cancel_pending_order', 'reason'")
+    assert S._target.atom_holds(atom.model_copy(update={"kind": "required"}), run,
+                                S.canon_fn(CanonRules()), WRITE_TOOLS) is True
+    blank = _prose_run("  ")
+    assert S._target.atom_holds(atom.model_copy(update={"kind": "required"}), blank,
+                                S.canon_fn(CanonRules()), WRITE_TOOLS) is False
 
 
 def test_a_write_only_a_failed_rerun_made_is_not_an_atom(tmp_path):
