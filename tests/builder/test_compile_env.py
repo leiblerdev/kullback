@@ -1583,20 +1583,25 @@ def test_a_row_read_before_any_write_stays_in_the_shared_db(workdir):
     assert not any("absent at start" in line for line in state.assumptions)
 
 
-def test_a_row_another_trace_read_without_creating_it_stays_for_that_trace(workdir):
+def test_a_row_another_trace_read_without_creating_it_is_in_that_tasks_overlay_only(workdir):
     schema = _mooring_schema()
     reader = _trace("B", [_call("find_mooring", {"mooring_id": "M1"},
                                 result={"mooring_id": "M1", "skipper_id": "SK2", "berth": "south"}, idx=0)])
     tasks = [Task(id="t_reserve", run_ids=["A"]), Task(id="t_read", run_ids=["B"])]
     state = ce.build_starting_state([_reserving_trace("A"), reader], schema, workdir, tasks=tasks,
-                                    tool_sigs=MOORING_SIGS, synthetic=False)
-    assert state.db["moorings"]["M1"]["berth"] == "south"  # the reader's sighting, never the creator's
-    read_overlay, read_values = ce.load_overlay(workdir, "t_read")
-    assert read_values[read_overlay.rows[0].version_hash]["skipper_id"] == "SK2"
+                                    tool_sigs=MOORING_SIGS)
+    # The creator's replay starts without M1: the shared world lacks it and so does its overlay.
+    assert "M1" not in state.db["moorings"]
+    assert "M1" not in json.loads((workdir / ce.DB_FILE).read_text())["moorings"]
     reserve_overlay, _ = ce.load_overlay(workdir, "t_reserve")
     assert ("moorings", "M1") not in {(row.table, row.id) for row in reserve_overlay.rows}
-    assert any(line.startswith("moorings row M1 was created by A") and "kept shared" in line
-               for line in state.assumptions)
+    # The reader is served M1 by its own overlay, with the values that Trace read.
+    read_overlay, read_values = ce.load_overlay(workdir, "t_read")
+    [pinned] = [row for row in read_overlay.rows if (row.table, row.id) == ("moorings", "M1")]
+    assert read_values[pinned.version_hash] == {"mooring_id": "M1", "skipper_id": "SK2", "berth": "south"}
+    assert "M1" not in state.synthetic_rows
+    assert ("moorings row M1 was created by A, reserve_mooring: absent at start; absent from the shared "
+            "world; in the overlay of t_read which read it") in state.assumptions
 
 
 def test_a_row_a_write_answers_nested_inside_the_row_it_changed_is_not_a_creation(workdir):

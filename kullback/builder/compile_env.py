@@ -845,16 +845,43 @@ def _without_creations(sightings: list[_Obs], created: dict) -> list[_Obs]:
             if obs.trace_id not in created.get((obs.table, obs.row_id), ())]
 
 
-def _creation_assumptions(created: dict, kept: set) -> list[str]:
-    """One sentence per row a Trace created; a row another Trace read stays shared and says so."""
+def _creation_assumptions(created: dict, readers: dict) -> list[str]:
+    """One sentence per row a Trace created; a row another Task read is in that Task's overlay only."""
     lines = []
     for (table, row_id), by_trace in sorted(created.items()):
         made = "; ".join(f"created by {trace_id}, {tool}: absent at start"
                          for trace_id, tool in sorted(by_trace.items()))
-        shared = (" for the creating Tasks, and kept shared because another trace read it "
-                  "without creating it") if (table, row_id) in kept else ""
-        lines.append(f"{table} row {row_id} was {made}{shared}")
+        tasks = readers.get((table, row_id)) or ()
+        where = ("; absent from the shared world; in the overlay of "
+                 f"{', '.join(tasks)} which read it") if tasks else ""
+        lines.append(f"{table} row {row_id} was {made}{where}")
     return lines
+
+
+def _shared_rows(observations: list[_Obs], created: dict) -> dict[tuple[str, str], list[_Obs]]:
+    """(table, row id) to its sightings, for every row the shared db may hold.
+
+    A row any Trace created is never one (D290): the overlay can only add rows, so a created row in
+    the shared db would occupy its id when the creating Trace replays. A Task that read it without
+    creating it is served it by its own overlay, from its own sightings.
+    """
+    by_row: dict[tuple[str, str], list[_Obs]] = {}
+    for obs in observations:
+        if (obs.table, obs.row_id) not in created:
+            by_row.setdefault((obs.table, obs.row_id), []).append(obs)
+    return by_row
+
+
+def _reading_tasks(created: dict, observations: list[_Obs],
+                   tasks: list[Task]) -> dict[tuple[str, str], list[str]]:
+    """(table, row id) to the Tasks whose Runs sighted a created row without creating it (D290)."""
+    out: dict[tuple[str, str], list[str]] = {}
+    for key in created:
+        traces = {obs.trace_id for obs in observations if (obs.table, obs.row_id) == key}
+        names = sorted(task.id for task in tasks if traces & set(task.run_ids))
+        if names:
+            out[key] = names
+    return out
 
 
 def build_starting_state(
@@ -880,8 +907,9 @@ def build_starting_state(
     observed write is undone. Where a trace shows only the post-state, that state is kept and the
     assumption is recorded, except for a row the trace's own write created (D290, `created_rows`):
     its pre-state is absence, so that trace's sightings of it leave the shared world and the Task
-    overlays, and it is never filled with a synthetic row. Order is the order the traces are passed in, then call order; nothing is
-    keyed by wall-clock time (design section 8). Ids the traces asked for but never showed are then
+    overlays, and it is never filled with a synthetic row. No created row is in the shared world:
+    a Task that read it without creating it holds it in its own overlay. Order is the order the
+    traces are passed in, then call order; nothing is keyed by wall-clock time (design section 8). Ids the traces asked for but never showed are then
     filled with tagged synthetic rows (D40), unless `synthetic` is off. `grow` names a row count per
     table to reach with rows composed from the observed ones (D107, `synth.grow`); what was added,
     the rules it followed and the checks it passed are written to synthetic.json. `revealed_rows`
@@ -901,21 +929,21 @@ def build_starting_state(
     and a sighting nobody read is exactly what the inversion is allowed to move.
     What the pinner did is written to `overlay_pins.json` beside the overlays.
     """
-    traces, workdir = list(traces), Path(workdir)
+    traces, workdir, tasks = list(traces), Path(workdir), list(tasks or [])
     workdir.mkdir(parents=True, exist_ok=True)
     write_tools = {s.name for s in (tool_sigs or []) if s.kind == "write"}
     stats: dict = {}
     sightings = _observations(traces, schema, write_tools, revealed_rows, stats, read_result)
     # D290: a row a Trace's own write created was absent when that Trace began, so none of that
     # Trace's sightings of it is a starting fact, for the shared world or for the Task's overlay.
+    # The overlay can only add rows, so a created row is never in the shared world at all: a Task
+    # whose Runs read it without creating it is served it by its own overlay, from those sightings.
     created = created_rows(traces, sightings, schema, write_tools)
     sightings = _without_creations(sightings, created)
     # What pins: every sighting but the nested one of a row something states on its own. `sightings`
     # keeps those too, because what one Run saw is read from every result that Run recorded (D213).
     observations = [obs for obs in sightings if not obs.shadowed]
-    by_row: dict[tuple[str, str], list[_Obs]] = {}
-    for obs in observations:
-        by_row.setdefault((obs.table, obs.row_id), []).append(obs)
+    by_row = _shared_rows(observations, created)
 
     db: dict[str, dict] = {table: {} for table in sorted(schema.tables)}
     witnesses: dict[str, dict[str, dict[str, list[str]]]] = {}
@@ -938,7 +966,7 @@ def build_starting_state(
                                "its post-state is kept as the starting value")
         db.setdefault(table, {})[row_id] = row
         witnesses.setdefault(table, {})[row_id] = _witnesses_of(row, pool)
-    assumptions += _creation_assumptions(created, set(by_row))
+    assumptions += _creation_assumptions(created, _reading_tasks(created, observations, tasks))
     # A row every sighting of which was partial is a row the corpus mentioned and never stated.
     in_part = {key for key, seen in by_row.items() if all(o.partial for o in seen)}
 
@@ -951,7 +979,7 @@ def build_starting_state(
     assumptions += [f"{table} row {row_id} was seen without every part of its key; it was folded "
                     f"into the {count} rows whose known key columns match and is not a row of its own"
                     for table, row_id, count in fold_partial_rows(db, schema)]
-    added = add_synthetic_rows(db, schema, traces, absent=set(created) - set(by_row)) if synthetic else []
+    added = add_synthetic_rows(db, schema, traces, absent=set(created)) if synthetic else []
     assumptions += [f"{table_of} row {row_id} was never shown by a trace; it is a synthetic row "
                     "shaped from the observed rows and a Run that reads it is assisted"
                     for table_of, row_id in added]
@@ -966,7 +994,7 @@ def build_starting_state(
     inverter = (PreWriteInverter(traces, observations, schema, db, tool_sigs or [], bodies, workdir,
                                  rules=rules, readers=readers, guessed=guessed_columns)
                 if bodies else None)
-    overlays = _build_overlays(observations, tasks or [], workdir, assumptions, stats, inverter,
+    overlays = _build_overlays(observations, tasks, workdir, assumptions, stats, inverter,
                                schema=schema, sightings=sightings)
     assumptions += [f"{table_of} row {row_id} is stored under {home}; the standalone copy was folded "
                     "into it and a Task overlay that pins it re-adds the standalone copy"
