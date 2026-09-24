@@ -1,4 +1,4 @@
-"""A Verifier has to demand something of its own Task (D291), and every demanded value is swapped (D292).
+"""A Verifier has to demand something of its own Task (D285), and every demanded value is swapped (D286).
 
 Invented world: a desk that looks bookings up and moves seats. Every row shares a status, every date
 the same year and the same midnight, so a Verifier that demands only those passes any Run that

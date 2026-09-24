@@ -45,7 +45,7 @@ from kullback.runner.records import Constraint, ForeignRunError, Task, Verifier,
 # request never asked about stopped being a demand, when the write cap moved to the end of the atom
 # list so the rule on a cap of 0 could see what else the Verifier demands, and at D190, when a
 # demanded fact took the provenance of the value it carries and a reported one stopped carrying any,
-# and at D291, when a stated fact started recording the tool and field it was read from.
+# and at D285, when a stated fact started recording the tool and field it was read from.
 # A change to this value is a change to every Verifier of every build, so it is moved deliberately
 # or not at all.
 DERIVATION_HASH = "f25957f0f6323e180b079207699cec3f7e8c0a7396fd781c5d10652f21825be9"
@@ -536,4 +536,4 @@ def test_derivation_refuses_a_seed_file_of_another_task_by_name(tmp_path):
     """D281: the seeds load through the Run loader, so another Task's Run is never derived from."""
     foreign = write_events_jsonl(alt_path_run().model_copy(update={"task_id": "t_other"}), tmp_path / "alt.jsonl")
     with pytest.raises(ForeignRunError, match=f"t_other, not of Task {TASK.id}"):
-        V.derive_verifier(TASK, reference_run(), [foreign], None, write_tools=WRITE_TOOLS)
+        V.derive_verifier(TASK, reference_run(), [foreign], CanonRules(), write_tools=WRITE_TOOLS)

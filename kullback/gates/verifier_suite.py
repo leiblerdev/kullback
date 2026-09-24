@@ -246,10 +246,10 @@ question_keys = _target.question_keys  # moved to kullback/runner/target.py (G3)
 communicate_values = _target.communicate_values  # moved to kullback/runner/target.py (G3), imported here
 
 
-fact_source = _target.fact_source  # what a stated fact was read from, keyed by meaning (D291)
+fact_source = _target.fact_source  # what a stated fact was read from, keyed by meaning (D285)
 
 
-field_of_value = _target.field_of_value  # the field a whole value sits under in a Run's results (D291)
+field_of_value = _target.field_of_value  # the field a whole value sits under in a Run's results (D285)
 
 
 # --- atoms: the payload and the predicate vocabulary -----------------------
@@ -855,7 +855,7 @@ def _mutant(atom: Atom, fn: Callable) -> Optional[Atom]:
     return None
 
 
-# --- specificity: what a demand says about this Task and no other (D291, D292) ---
+# --- specificity: what a demand says about this Task and no other (D285, D286) ---
 
 # A field is generic when most of the world holds the same value under it. Every Task of an
 # Environment is about some rows of one world, so a value most rows carry under a column is a value
@@ -952,7 +952,7 @@ def demand_specificity(verifier: Verifier, reference: Run, fn: Callable,
 
 
 def specific_gate(verifier: Verifier, reference: Run, fn: Callable, rows: list[dict]) -> GateResult:
-    """Check 10: the Verifier demands at least one thing specific to its Task (D291).
+    """Check 10: the Verifier demands at least one thing specific to its Task (D285).
 
     A Verifier whose demands are all generic (a value most of the world holds, a fragment of one, a
     write count of zero) passes any Run that states a common value and writes nothing, whatever Task
@@ -1011,7 +1011,7 @@ def _said_instead(text: str, old: str, new: str) -> str:
 
 def swapped_runs(verifier: Verifier, reference: Any, fn: Callable,
                  rows: list[dict]) -> list[tuple[str, str, Run]]:
-    """The mandatory swap probe (D292): one wrong Run per demanded value, from the Reference itself.
+    """The mandatory swap probe (D286): one wrong Run per demanded value, from the Reference itself.
 
     Each Run is the Reference with one demanded value (a written id or value, the shape of a written
     column, a fact the answer states) replaced by another value of the same field from the same
@@ -1047,7 +1047,7 @@ def swapped_runs(verifier: Verifier, reference: Any, fn: Callable,
 
 def _wrong_gate(verifier: Verifier, reference: Run, wrong: Any, scored: Callable, fn: Callable,
                 rows: list[dict]) -> GateResult:
-    """Check 4, the plausible wrong End state: the caller's wrong Run and every swap must fail (D292).
+    """Check 4, the plausible wrong End state: the caller's wrong Run and every swap must fail (D286).
 
     The swap probe extends `wrong_run`: that Run aims the first required write at another entity or
     silences the conversation, and it is one Run; the probe builds one Run per demanded value, the
@@ -1084,7 +1084,7 @@ def _user_rule_text(user_rules: Optional[UserRules]) -> str:
     """What the Simulated user rules say, as text: the values and the words, never a span or an index.
 
     Matching the whole record matched the message positions its spans carry, so a day of the month
-    read as leaked because a span pointed at turn 17 (D293).
+    read as leaked because a span pointed at turn 17 (D287).
     """
     if user_rules is None:
         return ""
@@ -1110,7 +1110,7 @@ def _leak_gate(verifier: Verifier, reference: Run, intent_text: Optional[str],
                intent: Any = None, *, fn: Callable) -> GateResult:
     """Check 7: constants only the Verifier should know, found in the Intent or the Simulated user rules.
 
-    Every comparison is canonical, through the Environment's one canonicaliser (D290, D293): a user
+    Every comparison is canonical, through the Environment's one canonicaliser (D284, D287): a user
     who said an id without its prefix said the id. A value is only a secret when no user said it,
     and the users who count are the users of every seed recording of the Task plus the facts the
     user rules record out of a user turn, not the one recording that happens to be the Reference

@@ -12,6 +12,7 @@ from pathlib import Path
 from kullback.builder import compile_env, env_files, mine
 from kullback.examiner import derive
 from kullback.runner import route
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import Event, RawPtr, Run, ToolCall, Trace, as_dict, write_json
 from kullback.runner.target import check_run
 from kullback.runner.world import BuiltEnvironment, clock
@@ -132,7 +133,7 @@ def test_an_empty_run_fails_a_verifier_derived_from_a_reference_that_handed_off(
         {"type": "user_turn", "payload": {"content": "My printer ticket T1 is stuck, I need a person."}},
         {"type": "model_call", "payload": {"reply": {"content": "Sorry to hear that."}}},
     ])
-    verifier = derive.derive_verifier("t1", reference, [], None, write_tools=writes)
+    verifier = derive.derive_verifier("t1", reference, [], CanonRules(), write_tools=writes)
     assert any(a.kind == "required" and (a.target or {}).get("tool") == HANDOFF for a in verifier.atoms)
-    assert check_run(verifier, reference, write_tools=writes)[0]
-    assert not check_run(verifier, empty, write_tools=writes)[0]
+    assert check_run(verifier, reference, CanonRules(), write_tools=writes)[0]
+    assert not check_run(verifier, empty, CanonRules(), write_tools=writes)[0]

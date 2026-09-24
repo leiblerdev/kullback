@@ -104,7 +104,7 @@ def test_the_leak_check_passes_over_a_shape_atom_whose_value_the_intent_spells_o
 
 def test_the_leak_check_passes_a_value_a_user_said_or_a_row_the_run_read_holds_and_flags_the_rest():
     """`user_said` is one half of what the leak check forgives; a value of a row the Run read is the
-    other (D293), so the badge code the roster answered is no secret although no user said it."""
+    other (D287), so the badge code the roster answered is no secret although no user said it."""
     reference = run("ref", assignment_events())
     spoken = V.spoken_text([reference])
     expected = {"L9": True, "QX41": True, "locker": True, "true": True, "9": True, "12": False,

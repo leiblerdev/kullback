@@ -105,10 +105,10 @@ def test_the_round_snapshot_and_the_status_agree_on_a_task_whose_seeds_are_anoth
 
 
 def _cased_workdir(tmp_path, rules):
-    """A workdir whose one Verifier was derived under case-keeping rules, with one held-out Run beside its seeds."""
+    """A workdir whose Verifier was derived under case-keeping rules, its seeds on disk, a held-out Run beside them."""
     from gates.examiner_fixtures import SIGS, history, replay_row, reroll_row, status, version
     from gates.verifier_fixtures import TASK as FIXTURE_TASK
-    from gates.verifier_fixtures import alt_path_run, derive, other_reason_run, reference_run
+    from gates.verifier_fixtures import alt_path_run, derive, other_reason_run, reference_run, write_events_jsonl
     from kullback.runner.canon import save_rules
     from kullback.runner.records import exam_task_runs_path
 
@@ -123,6 +123,9 @@ def _cased_workdir(tmp_path, rules):
     write_json(exam_history_path(tmp_path), {k: as_dict(v) for k, v in history(version(verifier)).items()})
     write_json(exam_task_runs_path(tmp_path),
                {task_id: [as_dict(run) for run in (reference_run(), alt_path_run(), other_reason_run())]})
+    for seed in (reference_run(), alt_path_run()):
+        (tmp_path / "runs" / task_id).mkdir(parents=True, exist_ok=True)
+        write_events_jsonl(seed, tmp_path / "runs" / task_id / f"{seed.run_id}.jsonl")
     save_rules(rules, tmp_path / "canon-rules.json")
     return tmp_path, task_id
 

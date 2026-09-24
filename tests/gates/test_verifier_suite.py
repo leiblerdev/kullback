@@ -526,7 +526,7 @@ def _refund_run():
 ])
 def test_the_leak_check_finds_a_constant_only_the_verifier_holds_and_never_a_world_value_or_the_users_own_words(
         tmp_path, tool, reference, amount, intent_text, user_rules, expected_pass, leaked):
-    """D293: the comparison is canonical, and a value a row of the world holds is not a secret even
+    """D287: the comparison is canonical, and a value a row of the world holds is not a secret even
     when the Intent says it; a value no row holds (the agent's own number) is."""
     verifier = literal_value_atom(tool, "#W123", "order_id", "amount", amount, provenance="agent_chosen")
     gates = {g.stage: g for g in S.validate_verifier(
@@ -576,7 +576,7 @@ def _garage_events(said: str) -> list[dict]:
 
 def _garage_verifier() -> Verifier:
     """The price with tax kept as a literal: no row holds it and the driver was never told it, so check 7
-    rules on it (D190, D293)."""
+    rules on it (D190, D287)."""
     return literal_value_atom("book_service", "KP19TRX", "plate", "quote", 264.0, provenance="agent_chosen")
 
 

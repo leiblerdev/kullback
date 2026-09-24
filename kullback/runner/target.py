@@ -81,7 +81,7 @@ def _user_text(event: Event) -> str:
 
 
 class CanonMissing(TypeError):
-    """A scorer was asked to canonicalise without the Environment's rules (D290)."""
+    """A scorer was asked to canonicalise without the Environment's rules (D284)."""
 
 
 def _caller() -> str:
@@ -95,7 +95,7 @@ def _caller() -> str:
 
 
 def canon_fn(canon: Any) -> Callable[[Any], Any]:
-    """The one canonicaliser of an Environment, bound from its CanonRules (D39, D290).
+    """The one canonicaliser of an Environment, bound from its CanonRules (D39, D284).
 
     The rules are built once per Environment (`canon.load_rules`, `canon.rules_of`) and passed to
     every scorer. A callable already bound from them passes through. Anything else, None or the
@@ -333,7 +333,7 @@ def leaves(value: Any, path: str = "") -> list[tuple[str, Any]]:
 def whole_field(result: Any, key: str, fn: Callable) -> Optional[str]:
     """The field whose whole value is this canonical key, or None when the key is only part of a value.
 
-    A fact is keyed by meaning (D291): the column it came from plus the value. A token that is a
+    A fact is keyed by meaning (D285): the column it came from plus the value. A token that is a
     piece of a longer value (a year or a day out of a date, the digits of an id with a prefix) names
     no column and is a fragment, never a fact of its own.
     """

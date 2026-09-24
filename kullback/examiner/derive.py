@@ -307,7 +307,7 @@ def shape_atom(atom_id: str, tool: str, field: str, id_field: str, tools: Iterab
                                        sources=tuple(sources))
     atom = _rule_atom(atom_id, payload_source, tools, SHAPE_ATOM,
                       f"{tool} writes under {field} a value this Run read for itself")
-    # The column the shape is about, so the swap probe (D292) knows which value of the Reference to
+    # The column the shape is about, so the swap probe (D286) knows which value of the Reference to
     # replace; the rule itself reads the same names out of its source.
     atom.target.update(tool=tool, field=field, id_field=id_field)
     if source:
@@ -640,7 +640,7 @@ def _stated_facts(said: list[dict], atoms: list[Atom]) -> set[str]:
     the user is then the evidence of the work, and the facts of it the request asked for are demanded;
     the ones it did not ask for stay reported, as D182 says.
 
-    D291: agreement is over meaning (the field a fact was read from and its value), and only a fact
+    D285: agreement is over meaning (the field a fact was read from and its value), and only a fact
     specific to the Task counts as agreement. Good Runs that share nothing but generic values (a year,
     the zeros of a time) agree on nothing, which is also what a seed that answered another Task looks
     like, so the Reference's own facts are what the answer is derived from.
@@ -655,7 +655,7 @@ def meant_facts(run: Run, fn: Any, rows: list[dict]) -> dict[str, dict]:
     """The facts a Run's answers state, keyed by meaning: the field the fact was read from and its value.
 
     Each fact records the tool and field of the result it was read from, and whether it is generic
-    (a fragment of a value, or a value most of the world holds under its field, D291).
+    (a fragment of a value, or a value most of the world holds under its field, D285).
     """
     out: dict[str, dict] = {}
     for key, fact in communicate_values(run, fn).items():
@@ -675,7 +675,7 @@ def _redemand_reported(atoms: list[Atom], reported: list[int], spoken: str) -> N
     """
     for at in reported:
         if atoms[at].target.get("generic"):
-            continue  # a generic value is never demanded, whatever else the Verifier lacks (D291)
+            continue  # a generic value is never demanded, whatever else the Verifier lacks (D285)
         payload = dict(atoms[at].target, kind="communicate")
         atoms[at] = _demanded_fact(atoms[at].id, payload,
                                    atoms[at].spans[0] if atoms[at].spans else None,
