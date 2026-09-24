@@ -123,8 +123,10 @@ _LEDGER_LOCK = threading.RLock()
 # sent, so nothing is known about what it would have cost.
 # cache_write_1h: the part of cache_write written at the one-hour TTL, kept so reprice can bill it
 # at its own rate from the ledger alone (D291); a ledger written before the field reads it as 0.
+# direct_usd, direct_calls: charges made through Ceiling.add rather than a priced call. They carry
+# dollars and no tokens, so reprice carries them over as they are instead of pricing them from tokens.
 BUCKET_FIELDS = ("calls", "input", "output", "cache_read", "cache_write", "cache_write_1h", "usd", "wall_ms",
-                 "unpriced_calls", "memo_hits", "models_dev_calls", "cache_saved_usd")
+                 "unpriced_calls", "memo_hits", "models_dev_calls", "cache_saved_usd", "direct_usd", "direct_calls")
 CONTEXT_CAP_FRACTION = 0.40
 # Tokens are estimated from characters before a call, because the count endpoint is itself a
 # call. Four characters per token is the usual English ratio and errs on the low side.
@@ -528,6 +530,7 @@ def reprice(workdir: str | Path, model_id: Optional[str] = None) -> dict:
         for stage, bucket in totals["stages"].items():
             priced = _price_stage(bucket, seen.get(stage) or _empty_part(), model_id)
             if priced is not None:
+                priced["usd"] += float(bucket["direct_usd"])
                 bucket.update(priced)
         for field in PRICED_FIELDS:
             totals["total"][field] = sum(bucket[field] for bucket in totals["stages"].values())
@@ -590,7 +593,8 @@ def _beyond(bucket: dict, parts: list[dict]) -> tuple[Usage, int]:
     rest = {field: max(0, int(bucket[field]) - sum(int(part.get(field) or 0) for part in parts))
             for field in LEDGER_TOKEN_FIELDS}
     rest["cache_write_1h"] = min(rest["cache_write_1h"], rest["cache_write"])
-    calls = max(0, int(bucket["calls"]) - sum(int(part.get("calls") or 0) for part in parts))
+    calls = max(0, int(bucket["calls"]) - int(bucket["direct_calls"])
+                - sum(int(part.get("calls") or 0) for part in parts))
     return Usage(**rest), calls
 
 
@@ -787,6 +791,8 @@ class Ceiling:
         for target in (bucket, totals["total"]):
             target["calls"] += 1
             target["usd"] += usd
+            target["direct_calls"] += 1
+            target["direct_usd"] += usd
         save_totals(self.workdir, totals)
 
 
