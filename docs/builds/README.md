@@ -452,3 +452,44 @@ round-unknown (dataset commit f1613092) with 20 References and 0 trusted, and ai
 
 Readings: `.claude/reports/smoke-luna-observations-2026-09-23.md` (section "Smoke 7 final numbers"),
 `.claude/reports/sol-behaviour-2026-09-23.md` and `.claude/reports/env-quality-vs-tau2-2026-09-23.md`.
+
+## Smoke 8 (2026-09-23): retail and airline on gpt-6-sol, both finished
+
+Two builds with `openai/gpt-6-sol` as the Builder on commit f913cd6 (the wave 2 integration head), a 1M window,
+compaction at 40 percent (none happened), no ceiling, both corpora in parallel, launched about 15:30 UTC. Workdirs
+`.work-retail` and `.work-airline` in the smoke 8 worktree, launcher `.claude/scripts/smoke8.sh`, logs
+`.claude/logs/smoke-<corpus>-0923-sol8.log`.
+
+| Environment | Confirmed References | Call fidelity | Verifiers | Trusted | Open | Turns | Spend USD |
+|---|---|---|---|---|---|---|---|
+| retail | 205 of 205 | 1.0000 over 3220 calls | 205 | 133 (smoke 7: 14) | 72 | 80 | 27.28 |
+| airline | 95 of 119 | 0.9603 over 1513 calls | 95 | 53 (smoke 7: 22) | 66 | 69 | 13.23 |
+| telecom | telecom: not in this round | | | | | | |
+
+Retail replays every recorded call, all 16 tools at 1.0, and finished at 18:40 UTC. Airline confirms 79.8% of its
+Tasks and 78.5% of its Runs (157 of 200). Its tool walls: book_reservation agrees on 3 of 29 calls,
+update_reservation_baggages 12 of 20, search_onestop_flight 63 of 78, update_reservation_flights 49 of 59,
+cancel_reservation 46 of 47.
+
+Open Tasks. Retail, 72: 52 false_rejection over a held-out pool of one Run, 12 second_path_passes, 4
+leak_check_clean, 3 empty_fails, 1 loophole_probe_fails. Airline, 66: 24 Tasks with no confirmed replay and no
+Verifier, 17 false_rejection, 10 second_path_passes, 8 other suite checks, 5 leak_check_clean, 1 loophole, 1 second
+path plus leak.
+
+The stops. The retail Builder stopped itself: "the remaining 72 Tasks require Verifier edits, but the Verifiers are
+outside my accessible root." The airline build was stopped by the stop rule after two unchanged edits of the
+one-stop search body.
+
+Spend per stage (retail, then airline): runner 22.91 and 8.49 USD, Builder session 1.67 and 1.93, Examiner 2.69 and
+2.81, of 27.28 and 13.23 in total. The cache saved 74.78 and 46.31 USD. Smoke 7 cost about 4 and 5 USD.
+
+Hugging Face, tag build-20260923. No round closed, so the cards count from the workdir status.
+- retail: release, 100.0% over Tasks, 133 trusted, content hash dbc33f1bb23adf8d, built 2026-09-23T18:42:15Z,
+  https://huggingface.co/datasets/leibler/retail
+- airline: preview, published 2026-09-24, 79.8% over Tasks, 53 trusted, content hash 18b5e2953c508468, built
+  2026-09-23T20:04:17Z, https://huggingface.co/datasets/leibler/airline
+- telecom: not rebuilt; its card is still round 5 from 2026-09-09 (9.3% over Tasks, 17 of 183; 18.5% over Runs, 27
+  of 146; 7 References, 14 Verifiers, 0 trusted).
+
+An investigation into the open Tasks, the spend and the Builder's failures is running (three read-only Workers);
+its findings will be added here.
