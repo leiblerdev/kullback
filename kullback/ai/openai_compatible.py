@@ -138,11 +138,13 @@ class OpenAICompatibleProvider:
         return payload
 
     def _post_stream(self, payload: dict, signal: Optional[CancellationToken]) -> AsyncIterator[ProviderEvent]:
+        content = self.handle.encode_body(payload)
         return stream_sse_events(
             client=self._get_client,
             url=self.handle.base_url + self.handle.path,
-            headers=self.handle.headers(),
+            headers=self.handle.headers(content),
             payload=payload,
+            content=content,
             parser_factory=ResponsesStreamParser if self.responses else ChatStreamParser,
             parser_name=self.handle.name,
             model=self.handle.name,

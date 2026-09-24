@@ -345,7 +345,7 @@ class AgenticJudge:
         checks = self.checks_for(use, dict(material or {}))
         messages: list[dict] = [
             {"role": "system", "content": self._system(use, verdicts, abstain, checks)},
-            {"role": "user", "content": prompt + "\n\n" + checks_text(checks)},
+            {"role": "user", "content": prompt + "\n\n" + checks_text(checks) + self._verifier_tail()},
         ]
         tools_run: list[str] = []
         results: list[dict] = []
@@ -410,7 +410,7 @@ class AgenticJudge:
                 "description": _first_line(tool.__doc__) or "read-only check over the state",
                 "input_schema": {"type": "object", "additionalProperties": True},
             }
-            for name, tool in self.tools.items()
+            for name, tool in sorted(self.tools.items())
         ]
 
     def _system(self, use: str, verdicts: tuple[str, ...], abstain: str,
@@ -421,7 +421,9 @@ class AgenticJudge:
             "Your tools are read-only views of the Task's Starting state and the Run's End state.",
             # D222: the check the question needs has already been run, so answering straight away is
             # right and is not a refusal. Whether you call a tool decides nothing about your verdict.
-            f"The {len(checks or [])} check(s) this question needs have already been run for you and "
+            # The count of checks is not said here: it differs per question and would make every
+            # question its own system prompt; the list in the message carries it.
+            "The checks this question needs have already been run for you and "
             "their results are in the message below. Read them and answer. You may call a tool for "
             "anything more you want, and answering with no further tool call is a complete answer.",
             "The sources you have for this question, and the only ones your verdict may rest on: "
@@ -452,12 +454,15 @@ class AgenticJudge:
         ]
         if self.persona:
             lines.append(f"Your persona for this judgement: {self.persona}")
-        if self.verifier_output is not None:
-            lines.append(
-                "The deterministic verifier already ran; do not re-decide what it decided:\n"
-                + _render(self.verifier_output)
-            )
         return "\n".join(lines)
+
+    def _verifier_tail(self) -> str:
+        """The Verifier's output on the judge, said after the checks: it is one Run's fact, and in the
+        system prompt it made each Run's system prompt its own (prompt-caching.md)."""
+        if self.verifier_output is None:
+            return ""
+        return ("\n\nThe deterministic verifier already ran; do not re-decide what it decided:\n"
+                + _render(self.verifier_output))
 
     # --- reading the answer ---
 

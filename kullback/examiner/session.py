@@ -23,7 +23,7 @@ from kullback.examiner import findings as findings_mod
 from kullback.examiner import prompt as prompt_mod
 from kullback.examiner import runners as runners_mod
 from kullback.examiner import stage as stage_mod
-from kullback.examiner.domain_tools import domain_tools
+from kullback.examiner.domain_tools import domain_tools, note_line, notes_of
 from kullback.examiner.exam_files import (
     DERIVED_DIR,
     SPOKEN_DIR,
@@ -35,6 +35,7 @@ from kullback.examiner.exam_files import (
     save_history,
     seeded_history,
 )
+from kullback.examiner.plan import merged_rerolls
 from kullback.gates import names_protected_path
 from kullback.gates.hook import WRITE_TOOLS
 from kullback.gates.ledger import GateLedger
@@ -83,7 +84,7 @@ def _refuse_forbidden_paths() -> Callable:
     return refuse
 
 
-EXAMINER_WRITES = ("the Examiner writes Verifiers through propose_verifier and probes through probe, "
+EXAMINER_WRITES = ("the Examiner writes Verifiers through edit_verifier and probes through probe, "
                    "not with write or edit")
 
 
@@ -187,18 +188,33 @@ def root_listing(folder: Path) -> list[str]:
     return sorted(f"{p.name}/" if p.is_dir() else p.name for p in folder.iterdir())
 
 
+def session_opening(root: ExamRoot, task_ids: Optional[Iterable[str]] = None) -> str:
+    """The Examiner's opening message: the ask, what its root holds, the rulings to answer (F25),
+    and the Builder's notes on these Tasks, each open or with its ruling."""
+    return prompt_mod.opening(EXAMINE_MESSAGE, rulings_line(root, task_ids), root_listing(root.exam_dir),
+                              notes_line(root, task_ids))
+
+
+def notes_line(root: ExamRoot, task_ids: Optional[Iterable[str]] = None) -> str:
+    """One line per Builder note on the Tasks the session examines, open or with its ruling."""
+    wanted = set(task_ids) if task_ids is not None else None
+    return "\n".join(note_line(task_id, note, ruling) for task_id, (note, ruling) in sorted(notes_of(root.workdir).items())
+                     if wanted is None or task_id in wanted)
+
+
 def examiner_extension(root: ExamRoot,
                        task_ids: Optional[Iterable[str]] = None) -> Callable[[ExtensionAPI], None]:
     """The setup the harness loads: base tools over exam/, domain tools, prompt, hooks.
 
-    The prompt names the root as "." and lists what it holds, computed once here (F18, F25).
+    The prompt names the root as "." (F18); what the root holds and the rulings (F25) are this
+    session's own facts, so `examine` says them in the opening message (`session_opening`).
     """
 
     def setup(api: ExtensionAPI) -> None:
         register_base_tools(api, root.exam_dir, only=BASE_ONLY)
         for tool in domain_tools(root):
             api.register_tool(tool)
-        for name, text in prompt_mod.sections(rulings_line(root, task_ids), root_listing(root.exam_dir)):
+        for name, text in prompt_mod.sections():
             api.add_prompt_section(f"examiner_{name}", prompt_block(name, text))
         api.tool_call(refuse_paths(
             names_protected_path, "under the gates or the Runner, which no agent writes (D122)",
@@ -547,11 +563,12 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
         harness.subscribe(subscriber)
     harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
     load_extensions(harness, [examiner_extension(exam_root, selected)])
+    opening_message = session_opening(exam_root, selected)
 
     capped: list[bool] = []
 
     async def go() -> None:
-        async for event in harness.prompt(EXAMINE_MESSAGE):
+        async for event in harness.prompt(opening_message):
             if getattr(event, "type", None) == "turn_end" and _stopped_on_cap(event.message):
                 capped.append(True)
 
@@ -584,7 +601,7 @@ def turns_ran_out(max_turns: int, task_id: Optional[str] = None,
 
 
 # The tools whose task_id says which Task a session is working on (F36).
-TASK_TOOLS = ("propose_verifier", "probe")
+TASK_TOOLS = ("edit_verifier", "propose_verifier", "probe")
 
 
 def _last_task(messages: Iterable[Any], selected: list[str]) -> Optional[str]:
@@ -612,6 +629,7 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     """The session root: live Verifiers, signatures, rules, rows, task status and version history.
 
     Task status is what derive_all wrote to task_status.json in this same examine call, and the
+    re-roll rows join the derivation's own (the second path Runs it bought) to the workdir's, and the
     history is the exam history.json with every live Verifier seeded as version 1 by derive and
     saved. The trusted gate reads each derived file as the current accepted version from that
     seed, and the loosening gate compares each proposal against the version before it (D127).
@@ -630,7 +648,9 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     status = read_json(root / "task_status.json", None)
     exam_root = ExamRoot(workdir=root, verifiers=verifiers, sigs=list(store.get("sigs") or []),
                          canon_rules=rules_of({"canon_rules": store.get("canon_rules")}),
-                         replays=store.get("replays") or {}, rerolls=store.get("rerolls") or {},
+                         replays=store.get("replays") or {},
+                         rerolls=merged_rerolls(store.get("rerolls") or {},
+                                                read_json(stage_mod.extra_rerolls_path(root), {}) or {}),
                          task_status=status if isinstance(status, dict) else {},
                          findings=list(findings), reroll_model=reroll_model,
                          probe_model=probe_model, run_probe=run_probe,
@@ -641,6 +661,6 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     exam_root.history = history
     save_history(exam_root, history)
     return exam_root
-__all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "derive_findings", "examine", "examiner_extension",
-           "finding_from_row", "left_out_finding", "load_store", "root_listing", "rulings_line",
+__all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "derive_findings", "examine", "examiner_extension", "session_opening",
+           "finding_from_row", "left_out_finding", "load_store", "notes_line", "root_listing", "rulings_line",
            "select_for_session", "task_runs_of", "turns_ran_out"]

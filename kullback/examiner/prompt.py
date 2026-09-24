@@ -13,14 +13,14 @@ from typing import Iterable
 WRITABLE_DIRS = ("verifiers", "probes")
 
 
-def receives_section(rulings: str, entries: Iterable[str] = (),
-                     writable: Iterable[str] = WRITABLE_DIRS) -> str:
-    """What the session receives: the rulings per Task with their paths, and its root as ".".
+def receives_section(writable: Iterable[str] = WRITABLE_DIRS) -> str:
+    """What the session receives, the part that is the same in every session: its root as ".".
 
-    The root is never named by a host path: every path the session passes is relative to it,
-    and `entries` is what the root held when the session opened (directories end with "/").
+    The root is never named by a host path: every path the session passes is relative to it. What
+    the root holds and the rulings differ per session, so they arrive in the opening message
+    (`received`), after the system prompt, where they leave the cached prefix of tools and system
+    intact from one session to the next (prompt-caching.md: keep the system prompt frozen).
     """
-    listed = ", ".join(entries) or "nothing yet"
     later = ", ".join(f"{name}/" for name in writable)
     return ("You receive the rulings of a derivation: one Verifier per Task from its References "
             "through the suite, with the rows that still differ on each ruling. "
@@ -29,19 +29,38 @@ def receives_section(rulings: str, entries: Iterable[str] = (),
             "and re-roll rows, the References, the task status, the Verifiers, the probe pools, "
             "the task, intent and user-rule records, and one spoken file per Task with the user "
             "turns of its References.\n"
-            f"The root holds: {listed}.\n"
             f"These appear on your first write under them: {later}.\n"
+            "What the root holds and the rulings to answer are in the opening message.")
+
+
+def received(rulings: str, entries: Iterable[str] = (), notes: str = "") -> str:
+    """This session's own facts: what the root held when it opened (directories end with "/"),
+    the rulings per Task with their paths, and the Builder's notes. Said in the opening message,
+    never the system prompt."""
+    listed = ", ".join(entries) or "nothing yet"
+    text = (f"The root holds: {listed}.\n"
             "The rulings to answer, each Task with the paths of its Runs and its Verifier; open "
             f"those paths rather than searching for them:\n{rulings}")
+    if notes:
+        text += ("\nThe Builder's notes, each saying a Task is not verifiable as written; rule on "
+                 f"every open one:\n{notes}")
+    return text
+
+
+def opening(ask: str, rulings: str, entries: Iterable[str] = (), notes: str = "") -> str:
+    """The opening message: the ask, then this session's facts."""
+    return f"{ask}\n\n{received(rulings, entries, notes)}"
 
 
 def tools_section() -> str:
     """The tools with one example call each."""
     return ("Tools, one example call each.\n"
-            "propose_verifier: propose a new Verifier version off the current one, "
-            'e.g. {"task_id": "t1", "drop": ["atom-3"], "add": [], '
-            '"reason": "the atom rejects the second path"}; the suite, the pool and the '
-            "loosening gate rule on the write.\n"
+            "edit_verifier: write a new Verifier version off the current one, "
+            'e.g. {"task_id": "t1", "edit": [{"id": "atom-2", "payload": {"count": 2}}], '
+            '"drop": ["atom-3"], "add": [], "reason": "the atom rejects the second path"}; '
+            "use edit for a change to an existing atom (only the fields that change, the kind "
+            "stays) and drop with add only to remove an atom or bring a new one; the suite, "
+            "the pool and the loosening gate rule on the write.\n"
             "probe: score a hand-written Run against the current Verifier, "
             'e.g. {"task_id": "t1", "bug_class": "loose check", "note": "what it changes", '
             '"events": [...]}; the Run stays in the pool.\n'
@@ -55,8 +74,8 @@ def tools_section() -> str:
 def examples_section() -> str:
     """General examples of a ruling and the call that answers it."""
     return ("Examples of a ruling and the call that answers it.\n"
-            "A Verifier that failed the suite on one check is answered with propose_verifier "
-            "dropping or loosening the atom the ruling names, with the reason saying why.\n"
+            "A Verifier that failed the suite on one check is answered with edit_verifier "
+            "changing the atom the ruling names in place, with the reason saying why.\n"
             "A body whose replay differs on recorded calls is answered with a finding naming "
             "env/tools/<name>.py in path and the differing columns in change, with the replay "
             "rows in rows.\n"
@@ -70,7 +89,10 @@ def choice_section() -> str:
             "suite, then on Tasks with no Verdict. Search before reading: ground a claim about "
             "many Tasks with a search, then read the records it names. A finding names the file "
             "and what differs, never a verb. Two rejected proposals on one check end with a "
-            "finding, not a third.")
+            "finding, not a third. A Builder note says a Task is not verifiable as written: rule "
+            "on it before anything else on that Task, with edit_verifier when you agree, a probe, "
+            "or a finding with note_ruling saying whether the Builder is right and why. The Task "
+            "cannot be refused while its note is open; the ruling goes back to the Builder.")
 
 
 def feedback_section() -> str:
@@ -85,12 +107,12 @@ def stop_section() -> str:
     """The stop rule, last: one line and no tool call when nothing is left to do."""
     return ("Stopping. Answer with one line and no tool call when every Task is trusted or "
             "refused, or when the rulings after your proposals are the ones you already "
-            "answered. Say which Tasks remain and what you filed for each.")
+            "answered, and every Builder note is ruled. Say which Tasks remain and what you filed for each.")
 
 
-def sections(rulings: str, entries: Iterable[str] = ()) -> list[tuple[str, str]]:
-    """Every prompt section in GEPA order, the stop rule last."""
-    return [("receives", receives_section(rulings, entries)),
+def sections() -> list[tuple[str, str]]:
+    """Every prompt section in GEPA order, the stop rule last. The same text in every session."""
+    return [("receives", receives_section()),
             ("tools", tools_section()),
             ("examples", examples_section()),
             ("choice", choice_section()),
@@ -103,5 +125,5 @@ def render(sections_list: list[tuple[str, str]]) -> str:
     return "\n\n".join(text for _, text in sections_list)
 
 
-__all__ = ["WRITABLE_DIRS", "choice_section", "examples_section", "feedback_section", "receives_section",
-           "render", "sections", "stop_section", "tools_section"]
+__all__ = ["WRITABLE_DIRS", "choice_section", "examples_section", "feedback_section", "opening", "receives_section",
+           "received", "render", "sections", "stop_section", "tools_section"]

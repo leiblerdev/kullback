@@ -1,11 +1,11 @@
-"""The Builder's domain tools: ingest, derive_world, grow, replay, rulings, run, status, examine.
+"""The Builder's domain tools: ingest, derive_world, grow, replay, rulings, run, status, examine, note_task.
 
 Each tool wraps a pure, measured module the way the Examiner's tools do (pydantic args in,
 a short rendered result out): `ingest_files` and `derive_world` for the first pass, the
 runner tool for replay and reroll, `trusted_gate` for the per-Task status, and the function
 the session passes in for examine (stream 6 delivers it as `kullback.examiner.session.examine`;
-the session resolves it lazily, so this module never imports the examiner). Every result
-carries rows, never a count alone.
+the session resolves it lazily, so this module imports the examiner only inside the calls that
+need it: the note channel the two agents share). Every result carries rows, never a count alone.
 
 Carried: D155 (the recording is the standard a replay row measures against), D171
 (per-call rows in every answer), D224 (growing the world never lands in a trusted Task).
@@ -21,6 +21,7 @@ from typing import Any, Callable, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.tools import AgentTool
+from kullback.ai.provider import MemoModel
 from kullback.builder import env_files, world_tools
 from kullback.builder.replay_evidence import (
     HOLDOUT_ANSWERS_FILE,
@@ -468,8 +469,15 @@ def priced_model(model: Any, workdir: Any, stage: str, *, cap_context: bool = Tr
 
 
 def reader_model(model: Any, workdir: Any) -> Any:
-    """The session model as the readers step takes it, priced under its own stage (F12, F23)."""
-    return priced_model(model, workdir, "readers")
+    """The session model as the readers step takes it, priced under its own stage (F12, F23).
+
+    Memoised on disk (provider.MemoModel): a reader proposal is a deterministic re-ask of the same
+    recording, so a rebuild or a resumed build in the same workdir asks nothing it asked before and
+    the ledger counts the hit under memo_hits. A model already priced is taken as it is.
+    """
+    if model is None or isinstance(model, budget.BudgetedModel):
+        return model
+    return priced_model(MemoModel(model, workdir), workdir, "readers")
 
 
 def runner_model(model: Any, workdir: Any) -> Any:
@@ -557,7 +565,40 @@ def opening_for(workdir: Any, default: str) -> str:
     elif stage["world_derived"] and stage["tools"] and stage["stubs"] == stage["tools"]:
         lines.append(f"The world is derived and every body is a stub ({stage['stubs']} of {stage['tools']}): "
                      f"write each body from its calls, then replay.")
-    return "\n".join(lines + [root_line(workdir), default])
+    return "\n".join(lines + notes_lines(workdir) + [root_line(workdir), default])
+
+
+def notes_lines(workdir: Any) -> list[str]:
+    """Your notes on Tasks with the Examiner's ruling on each, or open while it has not ruled."""
+    from kullback.examiner.domain_tools import note_line, notes_of
+
+    notes = notes_of(workdir)
+    if not notes:
+        return []
+    return ["Your notes and the Examiner's rulings on them:"] + [
+        note_line(task_id, note, ruling) for task_id, (note, ruling) in sorted(notes.items())]
+
+
+class NoteArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    reason: str = Field(description="One of: outcome_not_in_state, intent_contradicts_reference, "
+                                    "fact_unavailable_to_user, needs_action_record.")
+    sentence: str = Field(description="One sentence saying why the Task is not verifiable as written; "
+                                      "never an atom or Verifier text.")
+
+
+class NoteResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    task_id: str
+    note: dict = Field(default_factory=dict)
+
+
+def _render_note(result: NoteResult) -> str:
+    return result.summary
 
 
 def status_of(workdir: Any) -> dict[str, Any]:
@@ -720,7 +761,7 @@ def call_arguments(env: Any) -> dict[str, Any]:
 def domain_tools(*, workdir: Any, model: Any = None,
                  examine_fn: Optional[Callable[[Any, Any], Any]] = None, judge_model: Any = None,
                  probe_model: Any = None, reroll_model: Any = None, env: Any = None) -> list[AgentTool]:
-    """The eight domain tools bound to one workdir and the Builder's root `env` (workdir/env by default).
+    """The nine domain tools bound to one workdir and the Builder's root `env` (workdir/env by default).
 
     `model` drives the fresh Runs `run` buys and the Examiner session the default
     `examine` runs; `examine_fn(workdir, task_ids)` answers `examine` and defaults to
@@ -927,6 +968,16 @@ def domain_tools(*, workdir: Any, model: Any = None,
         return RunResult(summary=summary, task_id=task_ids[0] if len(task_ids) == 1 else "",
                          runs=rows, not_run=not_run, reasons=reasons, no_verifier=no_verifier)
 
+    async def note_task(args: NoteArgs) -> NoteResult:
+        from kullback.examiner.domain_tools import write_note
+
+        if not (root / "tasks" / f"{args.task_id}.json").is_file():
+            raise ValueError(f"there is no Task {args.task_id!r} under tasks/")
+        note = write_note(root, args.task_id, args.reason, args.sentence)
+        return NoteResult(summary=f"note on task {args.task_id} ({args.reason}) written; the Examiner "
+                                  "rules on it before the Task can be refused",
+                          task_id=args.task_id, note=note)
+
     async def examine(args: ExamineArgs) -> ExamineResult:
         # The Examiner session owns its own event loop, so it runs off the Builder's, on a thread.
         result = _coerce_examine(await asyncio.to_thread(examine_call, root, args.task_ids))
@@ -968,8 +1019,11 @@ def domain_tools(*, workdir: Any, model: Any = None,
                   StatusArgs, StatusResult, status, render=_render_status),
         AgentTool("examine", "Examine Tasks when the Environment looks ready and file the findings.",
                   ExamineArgs, ExamineResult, examine, render=_render_examine),
+        AgentTool("note_task", "Say a Task is not verifiable as written: one reason off the fixed list "
+                  "and one sentence, never an atom. The Examiner rules on it next.",
+                  NoteArgs, NoteResult, note_task, render=_render_note),
     ]
 
 
 __all__ = ["HELD_SHOWN", "ROWS_SHOWN", "RUNS_PER_CALL", "call_arguments", "default_examine_fn", "domain_tools",
-           "fidelity_index", "held_tasks", "opening_for", "root_line", "stage_line", "stage_of", "status_of"]
+           "fidelity_index", "held_tasks", "notes_lines", "opening_for", "root_line", "stage_line", "stage_of", "status_of"]

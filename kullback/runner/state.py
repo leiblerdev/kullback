@@ -3,10 +3,11 @@ generated toolkit's own db (D74, D46)."""
 
 from __future__ import annotations
 
-from typing import Any, Optional, get_args
+from typing import Any, Optional
 
 from kullback.runner.records import content_hash
 from kullback.runner.records import plain as _plain
+from kullback.runner.transaction import row_model as _row_model
 
 
 class StateView:
@@ -112,11 +113,3 @@ def _db_put(db: Any, table: str, row_id: str, row: Any) -> None:
     model = type(current) if hasattr(current, "model_validate") else _row_model(db, table)
     rows[row_id] = model.model_validate(merged) if model is not None else merged
 
-
-def _row_model(db: Any, table: str) -> Any:
-    """The row class of one table of a pydantic db, so a row written into it stays that class."""
-    field = getattr(type(db), "model_fields", {}).get(table)
-    for arg in (get_args(field.annotation) if field is not None else ()):
-        if isinstance(arg, type) and hasattr(arg, "model_validate"):
-            return arg
-    return None

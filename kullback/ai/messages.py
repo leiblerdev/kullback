@@ -57,6 +57,11 @@ class AssistantMessage(BaseModel):
     # existed, the same rule `Usage` keeps for an unreported reasoning count. Readers must use
     # attribute access, which always answers, never key access on a dumped dict.
     thinking: Optional[str] = None
+    # The provider's own signed thinking blocks, exactly as they came. Unlike `thinking` these are
+    # sent back: the Messages API asks for them unchanged on the next request of the conversation
+    # (preserved thinking) and signs them so nothing else can be passed off as one. Omitted from a
+    # dump when absent, by the same rule as `thinking`.
+    thinking_blocks: Optional[list[dict[str, Any]]] = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: Usage = Field(default_factory=Usage)
     stop_reason: StopReason = "stop"
@@ -68,6 +73,8 @@ class AssistantMessage(BaseModel):
         data = handler(self)
         if self.thinking is None:
             data.pop("thinking", None)
+        if self.thinking_blocks is None:
+            data.pop("thinking_blocks", None)
         return data
 
 
@@ -104,16 +111,18 @@ def to_wire(messages: Sequence[Message], system: Optional[str] = None) -> list[d
         elif isinstance(message, AssistantMessage):
             if message.stop_reason == "error" and not message.content and not message.tool_calls:
                 continue
-            wire.append(
-                {
-                    "role": "assistant",
-                    "content": message.content or "",
-                    "tool_calls": [
-                        {"id": call.id, "name": call.name, "arguments": dict(call.arguments)}
-                        for call in message.tool_calls
-                    ],
-                }
-            )
+            entry = {
+                "role": "assistant",
+                "content": message.content or "",
+                "tool_calls": [
+                    {"id": call.id, "name": call.name, "arguments": dict(call.arguments)}
+                    for call in message.tool_calls
+                ],
+            }
+            if message.thinking_blocks:
+                # Only the Messages API shape reads this key; the OpenAI shapes drop it.
+                entry["thinking_blocks"] = [dict(block) for block in message.thinking_blocks]
+            wire.append(entry)
         elif isinstance(message, ToolResultMessage):
             wire.append(
                 {

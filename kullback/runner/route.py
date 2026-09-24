@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import copy
 import inspect
 import json
 import traceback
 from typing import Any, Iterable, NamedTuple, Optional
 
-from pydantic import BaseModel
-
 from kullback.runner.canon import canonical_args
 from kullback.runner.real_tools import RealTool, limit_kept_export
 from kullback.runner.records import ToolCallError, ToolSig, content_hash
 from kullback.runner.records import plain as _plain
-from kullback.runner.state import StateView, _db_put, _row_model
+from kullback.runner.state import StateView, _db_put
+from kullback.runner.transaction import freeze, restore_db, snapshot_db, thaw
 
 # The default cap on one real tool's kept workspace export: 64 MiB, overridable per
 # Router through `real_export_limit` (D262).
@@ -390,30 +388,6 @@ class Router:
         return RouteResult(payload, route, False, error, self._misses())
 
 
-def _freeze(value: Any) -> tuple[str, Any]:
-    """Snapshot one store as bytes when it round trips through JSON, else as plain objects.
-
-    The success path pays only the serialise; the bytes are parsed back solely on rollback, which
-    almost never happens. A pydantic db serialises through its own Rust encoder. Where serialising
-    fails (a value JSON cannot carry, like a set), the snapshot falls back to a deep copy, which
-    restores by replacement with no aliases back into the live world.
-    """
-    try:
-        if hasattr(value, "model_dump_json"):
-            return ("json", value.model_dump_json().encode("utf-8"))
-        return ("json", json.dumps(value).encode("utf-8"))
-    except (TypeError, ValueError):
-        return ("deepcopy", copy.deepcopy(value))
-
-
-def _thaw(snapshot: Any) -> Any:
-    """Parse a frozen snapshot back to plain data. Runs only on rollback, never per call."""
-    if snapshot is None:
-        return None
-    kind, payload = snapshot
-    return json.loads(payload) if kind == "json" else payload
-
-
 def _snapshot_world(tools: Any, state: StateView) -> tuple[Any, Any, Any, Any]:
     """The world before one body runs, frozen: the toolkit db and the whole StateView.
 
@@ -422,9 +396,7 @@ def _snapshot_world(tools: Any, state: StateView) -> tuple[Any, Any, Any, Any]:
     both. Frozen, not aliased: a snapshot that shared objects with the live world would move with
     it and restore nothing. No mined tool kind is trusted to skip the snapshot.
     """
-    db = getattr(tools, "db", None)
-    return (_freeze(db) if db is not None else None, _freeze(state.shared),
-            _freeze(state.overlay), _freeze(state.overlay_misses))
+    return (snapshot_db(tools), freeze(state.shared), freeze(state.overlay), freeze(state.overlay_misses))
 
 
 def _restore_world(tools: Any, state: StateView, snapshot: tuple[Any, Any, Any, Any]) -> None:
@@ -437,88 +409,11 @@ def _restore_world(tools: Any, state: StateView, snapshot: tuple[Any, Any, Any, 
     """
     db_snapshot, shared_snapshot, overlay_snapshot, misses_snapshot = snapshot
     state.shared.clear()
-    state.shared.update(_thaw(shared_snapshot))
+    state.shared.update(thaw(shared_snapshot))
     state.overlay.clear()
-    state.overlay.update(_thaw(overlay_snapshot))
-    state.overlay_misses[:] = _thaw(misses_snapshot)
-    _restore_db(getattr(tools, "db", None), _thaw(db_snapshot))
-
-
-def _prune_added(current: dict, snapshot: dict) -> None:
-    """Drop the rows a body added: everything the snapshot never held."""
-    for key in [key for key in current if key not in snapshot]:
-        del current[key]
-
-
-def _restore_plain_db(db: dict, snapshot: dict) -> None:
-    """Put a plain dict db back: added tables removed, added rows dropped, kept rows reset."""
-    for table in [key for key in db if key not in snapshot]:
-        del db[table]
-    for table, rows in snapshot.items():
-        current = db.get(table)
-        if isinstance(current, dict) and isinstance(rows, dict):
-            _prune_added(current, rows)
-            current.update(rows)
-        else:
-            db[table] = rows
-
-
-def _restore_model_table(db: Any, table: str, rows: Any) -> None:
-    """Put one table of a pydantic db back, its row classes rebuilt as `_db_put` builds them.
-
-    A body that replaced the table with a plain value or deleted it gets a fresh dict, so the
-    corruption does not survive the rollback and later bodies read rows by attribute again.
-    """
-    if not isinstance(rows, dict):
-        return
-    current = getattr(db, table, None)
-    if not isinstance(current, dict):
-        current = {}
-        setattr(db, table, current)
-    _prune_added(current, rows)
-    model = _row_model(db, table)
-    for row_id, row in rows.items():
-        current[row_id] = model.model_validate(_plain(row)) if model is not None else row
-
-
-def _restore_db(db: Any, snapshot: Any) -> None:
-    """Put a toolkit db back to its snapshot: added rows go, removed rows return, changed rows reset.
-
-    A pydantic db gets its row classes back through the same model lookup `_db_put` uses, so a
-    later body still reads rows by attribute. A plain dict db already holds plain rows, so its
-    snapshot values land as they are and tables the snapshot never held are removed outright.
-    """
-    if isinstance(db, BaseModel) and isinstance(snapshot, type(db)):
-        db.__setstate__(copy.deepcopy(snapshot.__getstate__()))
-        return
-    if db is None or snapshot is None or not isinstance(snapshot, dict):
-        return
-    if isinstance(db, dict):
-        _restore_plain_db(db, snapshot)
-        return
-    for table, rows in snapshot.items():
-        _restore_model_table(db, table, rows)
-    _clear_added_tables(db, snapshot)
-
-
-def _clear_added_tables(db: Any, snapshot: dict) -> None:
-    """Drop what a body added past the snapshot: unknown tables emptied, unknown attrs removed."""
-    for table in (getattr(type(db), "model_fields", {}) or {}):
-        current = getattr(db, table, None)
-        if table not in snapshot and isinstance(current, dict):
-            current.clear()
-    _drop_unknown_attrs(db, snapshot)
-
-
-def _drop_unknown_attrs(db: Any, snapshot: dict) -> None:
-    """Remove the non field attributes a body set past the snapshot."""
-    fields = set(getattr(type(db), "model_fields", {}) or {})
-    for name in [key for key in vars(db) if key not in snapshot and key not in fields
-                 and not key.startswith("_")]:
-        try:
-            delattr(db, name)
-        except AttributeError:
-            pass
+    state.overlay.update(thaw(overlay_snapshot))
+    state.overlay_misses[:] = thaw(misses_snapshot)
+    restore_db(tools, db_snapshot)
 
 
 def refuse_stand_in(router: Any) -> None:

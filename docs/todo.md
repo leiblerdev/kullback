@@ -35,3 +35,7 @@ Cleared on 2026-09-22. The harness is being rebuilt around one event bus, a Buil
   they give up (terminations) and what they want that the tools cannot do (off-path requests).
 - Reported in aggregate only, with personal data stripped; never a view of one customer.
 - Not built before fidelity, the quality pass and synthetic Tasks.
+
+## Environment comparison
+
+Right output by a wrong method is scored as a pass by design: the Verifier scores the End state and what the user was told, never the route. An Environment that scores the route gives a different refusal rate, so a comparison across Environments is fair only once every Environment scores the same thing. Forbidden routes are Hard atoms written per Task.

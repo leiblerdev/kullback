@@ -104,6 +104,26 @@ def test_a_prefix_call_that_raises_is_skipped_and_the_gated_call_still_runs(tmp_
     assert _status(results[0]) == "done"
 
 
+# A write that moves the row and only then refuses: its write must not survive the refusal.
+WRITE_THEN_RAISE_BODY = ("row = self.db.widgets[widget_id]\n"
+                         "row.status = new_status\n"
+                         "if new_status == \"broken\":\n"
+                         "    raise ValueError(\"refused after writing\")\n"
+                         "return {\"widget_id\": row.widget_id, \"status\": row.status}\n")
+
+
+def test_a_prefix_call_that_writes_and_then_raises_leaves_no_write_while_the_earlier_write_stays(tmp_path):
+    first = _call("p1", "t3", 1, "set_status", {"widget_id": "W-1", "new_status": "done"},
+                  {"widget_id": "W-1", "status": "done"})
+    second = _call("p2", "t3", 2, "set_status", {"widget_id": "W-2", "new_status": "broken"},
+                   {"widget_id": "W-2", "status": "broken"})
+    read_first = _call("p3", "t3", 3, "get_widget", {"widget_id": "W-1"}, {"widget_id": "W-1", "status": "done"})
+    read_second = _call("p4", "t3", 4, "get_widget", {"widget_id": "W-2"}, {"widget_id": "W-2", "status": "new"})
+    table = sb.calls_by_trace([first, second, read_first, read_second])
+    box = sb.Sandbox(_source(WRITE_THEN_RAISE_BODY), DB, tmp_path, trace_calls=table)
+    assert [_status(result) for result in box.run([read_first, read_second])] == ["done", "new"]
+
+
 def test_a_call_the_recording_refused_is_left_out_of_the_prefix(tmp_path):
     refused = _call("w1", "t1", 1, "set_status", {"widget_id": "W-1", "new_status": "done"},
                     error=ToolCallError(**{"class": "invalid_arguments", "payload": "no"}))

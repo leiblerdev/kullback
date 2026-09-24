@@ -9,7 +9,9 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from kullback.ai import cache as cache_module
 from kullback.ai import pricing as pricing_module
+from kullback.ai.model_limits import without_profile
 from kullback.ai.provider import Model, ModelConfig, ModelReply
 from kullback.runner import feed
 from kullback.runner.records import Cost, Event, Usage
@@ -35,6 +37,20 @@ PRICES: dict[str, dict[str, float]] = {
     "anthropic/claude-opus-5": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
     "anthropic/claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
     "anthropic/claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
+    # First-party Opus 5.5: the claude-api reference, model-migration.md line 2021 (4 / 20, cache
+    # reads 0.20, five-minute cache writes 5.00).
+    "anthropic/claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0},
+    # Claude in Amazon Bedrock (provider.BedrockAnthropicModel). AWS's price list for us-east-2
+    # (pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrockFoundationModels/current/
+    # us-east-2/index.json, published 2026-09-22, read 2026-09-24), the "Standard, Global" rows,
+    # cache_write at the five-minute TTL. The same list prices the in-region rows ten percent
+    # higher, which is why a bare id goes out on the global. profile; a us. or eu. profile is
+    # looked up through the same row (without_profile) and so priced a little low. models.dev lists the provider as amazon-bedrock, not bedrock, and its
+    # bare-id match already answers for anthropic.claude-opus-5 and -sonnet-5 at these same rates.
+    "bedrock/anthropic.claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0},
+    "bedrock/anthropic.claude-opus-5": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
+    "bedrock/anthropic.claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
+    "bedrock/anthropic.claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
     # The first slice's Candidates (design section 11 step 6). OpenAI has no cache-write
     # charge, so cache_write is 0 and cached input is billed at cache_read.
     "openai/gpt-4.1-mini": {"input": 0.40, "output": 1.60, "cache_read": 0.10, "cache_write": 0.0},
@@ -44,7 +60,7 @@ PRICES: dict[str, dict[str, float]] = {
     # cannot see the model at all.
     "opencode-go/muse-spark-1.3-contributor": {"input": 0.10, "output": 0.20, "cache_read": 0.002,
                                                 "cache_write": 0.0},
-    # The harness default model (provider.DEFAULT_MODEL). OpenRouter's catalogue
+    # The harness default model until 2026-09-24, still a choice. OpenRouter's catalogue
     # (api/v1/models, read 2026-09-23), per-token prices times 1M, the tier below 272,000 prompt
     # tokens; a longer prompt is billed at twice the input and one and a half times the output,
     # so prompt_tier_limit keeps the D65 cap inside the priced tier (window_for).
@@ -62,6 +78,12 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "anthropic/claude-opus-5": 1_000_000,
     "anthropic/claude-sonnet-5": 1_000_000,
     "anthropic/claude-haiku-4-5": 200_000,
+    "anthropic/claude-opus-5-5": 1_000_000,
+    # The same models on Bedrock; Haiku 4.5 keeps its 200,000 there too (models.dev, amazon-bedrock).
+    "bedrock/anthropic.claude-opus-5-5": 1_000_000,
+    "bedrock/anthropic.claude-opus-5": 1_000_000,
+    "bedrock/anthropic.claude-sonnet-5": 1_000_000,
+    "bedrock/anthropic.claude-haiku-4-5": 200_000,
     "openai/gpt-4.1-mini": 1_000_000,
     "openai/o4-mini": 200_000,
     # Measured, not read off a page: a 500,000 token prompt was accepted, so this is a floor and
@@ -186,17 +208,21 @@ def _price_from_models_dev(model_id: Optional[str]) -> Optional[dict[str, float]
 
 
 def price_for(model_id: Optional[str]) -> Optional[dict[str, float]]:
-    """Prices for a full 'provider/model' id, or for the wire id alone.
+    """Prices for a full 'provider/model' id, or for the wire id alone, with any inference
+    profile geography taken off first (model_limits.without_profile): one row per model serves
+    `bedrock/global.anthropic.claude-opus-5-5` and `bedrock/us.anthropic.claude-opus-5-5` alike.
 
     models.dev's live snapshot is asked first, since a vendor's list price changes without
     warning; PRICES below is the offline fallback for a model or a machine without one.
     """
+    model_id = without_profile(model_id)
     return _price_from_models_dev(model_id) or _lookup(PRICES, model_id)
 
 
 def price_source(model_id: Optional[str]) -> Optional[str]:
     """Where price_for's answer for this model came from: "models.dev" or "table". None when
     neither source prices the model."""
+    model_id = without_profile(model_id)
     if _price_from_models_dev(model_id) is not None:
         return "models.dev"
     if _lookup(PRICES, model_id) is not None:
@@ -219,6 +245,7 @@ def window_for(model_id: Optional[str]) -> int:
     tokens, so the window is cut to the limit over CONTEXT_CAP_FRACTION: the D65 cap never lets
     a prompt past the priced tier, where the ledger would bill it at the lower rate.
     """
+    model_id = without_profile(model_id)
     window = (_lookup(CONTEXT_WINDOWS, model_id)
               or pricing_module.window_from_catalog(_price_catalog(), model_id)
               or DEFAULT_CONTEXT_WINDOW)
@@ -243,13 +270,31 @@ def priced_model_id(cost: Any) -> Optional[str]:
     return model
 
 
+# A one-hour cache write costs twice the input price where a five-minute one costs one and a
+# quarter times (prompt-caching.md, Economics; cost-optimization.md). A price row may carry its own
+# `cache_write_1h`; a row without one is priced at this multiple of its input rate.
+CACHE_WRITE_1H_INPUT_MULTIPLE = 2.0
+
+
+def write_1h_rate(price: dict[str, float]) -> float:
+    """The price per 1M tokens of a one-hour cache write under one price row."""
+    return float(price.get("cache_write_1h", price["input"] * CACHE_WRITE_1H_INPUT_MULTIPLE))
+
+
+def _write_cost(usage: Usage, price: dict[str, float]) -> float:
+    """The cache writes of one call at their rates: five-minute at cache_write, one-hour at its own."""
+    return ((usage.cache_write - usage.cache_write_1h) * price["cache_write"]
+            + usage.cache_write_1h * write_1h_rate(price))
+
+
 def call_cost(usage: Usage, model_id: Optional[str]) -> float:
     """What one call cost.
 
-    Each of the four counts is billed at its own rate, with no arithmetic between them:
-    Usage.input is the uncached input everywhere in the Harness, which is what Anthropic
-    reports directly and what the OpenAI adapter subtracts down to. Subtracting the cached
-    counts from input again under-billed every cached call.
+    Each count is billed at its own rate, with no arithmetic between them: Usage.input is the
+    input neither read from nor written to the cache everywhere in the Harness, which is what
+    Anthropic reports directly and what the OpenAI adapter subtracts down to. Subtracting the
+    cached counts from input again under-billed every cached call. The one-hour part of the
+    writes is billed at the one-hour rate.
     """
     price = price_for(model_id)
     if price is None:
@@ -258,7 +303,7 @@ def call_cost(usage: Usage, model_id: Optional[str]) -> float:
         usage.input * price["input"]
         + usage.output * price["output"]
         + usage.cache_read * price["cache_read"]
-        + usage.cache_write * price["cache_write"]
+        + _write_cost(usage, price)
     ) / 1_000_000
 
 
@@ -266,16 +311,16 @@ def cache_effect(usage: Usage, model_id: Optional[str]) -> float:
     """What the cache changed on this call's bill, in dollars, positive when it saved money.
 
     Cache-read tokens are billed at the cache rate instead of the input rate; cache-write tokens
-    are billed at the write rate, which some vendors set above input. The two together are the
-    cache's effect, so a call that wrote a cache nobody read shows as a cost, not a saving.
-    An unpriced model has no rates, so its effect is 0.0 like its cost.
+    are billed at the write rate, which some vendors set above input, and a one-hour write at its
+    own higher rate. The two together are the cache's effect, so a call that wrote a cache nobody
+    read shows as a cost, not a saving. An unpriced model has no rates, so its effect is 0.0.
     """
     price = price_for(model_id)
     if price is None:
         return 0.0
     return (
         usage.cache_read * (price["input"] - price["cache_read"])
-        - usage.cache_write * (price["cache_write"] - price["input"])
+        - (_write_cost(usage, price) - usage.cache_write * price["input"])
     ) / 1_000_000
 
 
@@ -329,12 +374,15 @@ def record_call(
     item: str = "",
     items_left: int = 0,
     memo_hit: bool = False,
+    request: Optional[dict] = None,
 ) -> Event:
     """Price one model-call Event, write the cost back onto it, and add it to the stage and build totals.
 
     With a ceiling, the same write charges it: the file is the one ledger, so the ceiling's
     spend and the report's cost so far cannot drift apart. `memo_hit` only adds to the count in
     `memo_hits`; a hit already carries zeroed usage, so it prices at 0.00 through the usual fields.
+    `request` is the call's cache fingerprint (kullback.ai.cache.fingerprint); it rides the feed line
+    so a miss on an unchanged prefix is a row anyone can count (`kullback budget cache`).
     """
     if event.cost is None:
         return event
@@ -346,12 +394,12 @@ def record_call(
     saved = cache_effect(usage, priced_id)
     with _LEDGER_LOCK:
         return _record_locked(event, usage, source, stage, workdir, ceiling, item, items_left, memo_hit,
-                              saved)
+                              saved, request)
 
 
 def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str, workdir: str | Path,
                    ceiling: Optional["Ceiling"], item: str, items_left: int, memo_hit: bool,
-                   saved: float = 0.0) -> Event:
+                   saved: float = 0.0, request: Optional[dict] = None) -> Event:
     totals = load_totals(workdir)
     bucket = totals["stages"].setdefault(stage, empty_bucket())
     for target in (bucket, totals["total"]):
@@ -374,14 +422,29 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
     # the feed says what it just did. Written here, under the ledger lock, so the feed's order is
     # the order the calls were recorded in and a watcher can never read a call the ledger has not
     # counted. feed.append never raises (see feed.py).
+    cache_fields = {"cache_write": usage.cache_write, **_request_fields(request, memo_hit)}
+    if usage.cache_write_1h:
+        cache_fields["cache_write_1h"] = usage.cache_write_1h
     feed.append(workdir, "model_call", stage=stage, model=priced_model_id(event.cost),
                 input=usage.input, output=usage.output, cache_read=usage.cache_read,
                 usd=event.cost.usd, wall_ms=event.cost.wall_ms, item=item or None,
                 calls=totals["total"]["calls"], spend_usd=totals["total"]["usd"],
-                cache_saved_usd=totals["total"]["cache_saved_usd"])
+                cache_saved_usd=totals["total"]["cache_saved_usd"], **cache_fields)
     if ceiling is not None:
         ceiling.charge_recorded(totals, stage, item or str(event.idx), items_left)
     return event
+
+
+# The fingerprint keys a feed line carries, as kullback.ai.cache.fingerprint names them.
+REQUEST_FIELDS = ("prefix_hash", "history_hash", "parent_hash", "n_messages")
+
+
+def _request_fields(request: Optional[dict], memo_hit: bool) -> dict:
+    """The fingerprint as feed fields; a memo hit is marked, since it sent nothing to cache."""
+    fields = {key: request[key] for key in REQUEST_FIELDS if request and request.get(key) is not None}
+    if memo_hit:
+        fields["memo_hit"] = True
+    return fields
 
 
 def subscriber(workdir: str | Path, stage: str, model_id: Optional[str],
@@ -416,7 +479,8 @@ def subscriber(workdir: str | Path, stage: str, model_id: Optional[str],
                        cost=Cost(provider=provider, model=getattr(message, "model", None) or name,
                                  usage=usage, wall_ms=0.0))
         try:
-            record_call(record, stage, workdir, ceiling=ceiling, item=name)
+            record_call(record, stage, workdir, ceiling=ceiling, item=name,
+                        request=getattr(event, "request", None))
         except BudgetExceeded:
             return
 
@@ -588,6 +652,8 @@ class BudgetedModel(Model):
         # OpenAI routes by this key when the caller's own config does not already set one
         # (build.py sets one per build and stage); the Anthropic adapter ignores it.
         self.prompt_cache_key = prompt_cache_key
+        # How long this stage's cache points live when the caller's config names no TTL (cache.py).
+        self.cache_ttl = cache_module.ttl_for(stage)
         self.calls = 0
         if ceiling is not None:
             ceiling.require_priced(self.model_id)
@@ -607,6 +673,9 @@ class BudgetedModel(Model):
             self.ceiling._refuse_if_reached(self.stage, self.model_id, 0)
         if self.prompt_cache_key and (config is None or config.prompt_cache_key is None):
             config = (config or ModelConfig()).model_copy(update={"prompt_cache_key": self.prompt_cache_key})
+        if self.cache_ttl != cache_module.DEFAULT_CACHE_TTL and (config is None or config.cache_ttl is None):
+            config = (config or ModelConfig()).model_copy(update={"cache_ttl": self.cache_ttl})
+        request = cache_module.fingerprint(messages, tools)
         started = time.monotonic()
         reply = self.inner.query(messages, tools=tools, config=config)
         wall_ms = (time.monotonic() - started) * 1000.0
@@ -628,5 +697,5 @@ class BudgetedModel(Model):
             ),
         )
         record_call(event, self.stage, self.workdir, ceiling=self.ceiling, item=self.model_id,
-                   memo_hit=memo_hit)
+                   memo_hit=memo_hit, request=request)
         return reply

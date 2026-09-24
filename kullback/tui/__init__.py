@@ -95,14 +95,16 @@ FEED_LINES = 12
 # GET of its own model list, 2026-09-10); the OpenRouter default is the cheapest tool-capable model
 # in the registry snapshot at a whole megatoken of context, and its nested id is deliberate, since
 # an id with a second slash is the shape OpenRouter mostly speaks. Providers the local registry
-# adds are appended to this in _login_defaults, never repeated here. OpenAI starts at the harness
-# default model, so a login lands on the model the builds run on.
+# adds are appended to this in _login_defaults, never repeated here. Bedrock starts at the harness
+# default model, so a login lands on the model the builds run on; OpenAI at gpt-6-luna, the
+# default before it.
 LOGIN_DEFAULT_MODELS = {
     "anthropic": "anthropic/claude-opus-5",
-    "openai": DEFAULT_MODEL,
+    "openai": "openai/gpt-6-luna",
     "opencode-go": "opencode-go/glm-5.3-flash",
     "deepseek": "deepseek/deepseek-flash",
     "openrouter": "openrouter/qwen/qwen3.7-flash",
+    "bedrock": DEFAULT_MODEL,
 }
 
 
@@ -1229,10 +1231,12 @@ class Screen:
             return Text("no model: /login provider/model to use one", style="dim")
         out.append(f"model {self.model}\n", style="bold")
         provider_name, _ = pv.split_model_id(self.model)
-        key_var, host = "", self.base_url or ""
+        groups: tuple[tuple[str, ...], ...] = ()
+        host = self.base_url or ""
         adapter_cls = pv.ADAPTERS.get(provider_name)
         if adapter_cls is not None:
-            key_var = adapter_cls.key_env_var
+            # The adapter names its own variables; one that signs requests reads several.
+            groups = adapter_cls.credential_vars()
             host = host or "built-in adapter"
         else:
             try:
@@ -1240,15 +1244,18 @@ class Screen:
             except Exception:
                 endpoint = None
             if endpoint is not None:
-                key_var = endpoint.key_env_var
+                groups = ((endpoint.key_env_var,),) if endpoint.key_env_var else ()
                 host = host or endpoint.base_url
         if host:
             out.append(f"host {host}\n", style="dim")
-        if key_var:
-            out.append(f"{key_var:<32}", style="dim")
-            out.append("set\n" if os.environ.get(key_var) else "missing\n",
-                         style="green" if os.environ.get(key_var) else "red")
-        else:
+        for index, group in enumerate(groups):
+            if index:
+                out.append("or\n", style="dim")
+            for key_var in group:
+                out.append(f"{key_var:<32}", style="dim")
+                out.append("set\n" if os.environ.get(key_var) else "missing\n",
+                             style="green" if os.environ.get(key_var) else "red")
+        if not groups:
             out.append("no key variable: this endpoint takes none\n", style="dim")
         try:
             live = pv.enable_live_calls_from_env()

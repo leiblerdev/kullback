@@ -1,19 +1,25 @@
-"""The Examiner's domain tools over its root: propose_verifier, probe, finding, reroll.
+"""The Examiner's domain tools over its root: edit_verifier, probe, finding, reroll.
 
-`propose_verifier` writes the next Verifier version off the current one; the D79 suite,
+`edit_verifier` writes the next Verifier version off the current one (edit, then drop and
+add; `propose_verifier` is its alias for one release); the D79 suite,
 the pool and the loosening gate rule on the write through `gate_writes`, never here
 (D79). `probe` scores a hand-written Run against the current Verifier and keeps it in
 the pool. `finding` files what is wrong on the Builder's side with the file to edit
 and what should differ, never a verb. `reroll` buys frontier Runs through the Runner
 tool, refused at or below the remaining allowance (D112, D133). Every result carries
 rows, never a count alone.
+
+The Builder's notes (one per Task under the workdir's notes/, a reason from NOTE_REASONS and one
+sentence) are read here too: an accepted edit, a probe, or a finding with `note_ruling` on the
+Task rules the note, and the ruling is written next to it for the Builder's next round.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Iterable, Optional
+from pathlib import Path
+from typing import Any, Iterable, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,7 +50,17 @@ from kullback.gates.verifier_suite import (
 )
 from kullback.runner import budget
 from kullback.runner import tool as runner_tool
-from kullback.runner.records import Atom, Event, GateResult, Run, Verifier, VerifierVersion, as_dict, write_json
+from kullback.runner.records import (
+    Atom,
+    Event,
+    GateResult,
+    Run,
+    Verifier,
+    VerifierVersion,
+    as_dict,
+    read_json,
+    write_json,
+)
 from kullback.runner.target import SCORED_KINDS, atom_payload
 
 PRODUCED_VERIFIERS = ["verifiers"]
@@ -69,6 +85,10 @@ class ProposeArgs(BaseModel):
 
     task_id: str
     reason: str = Field(description="Why the current version is wrong and what the new one changes.")
+    edit: list[dict] = Field(default_factory=list, description="Atoms to change in place: each names "
+                             "an existing atom `id` and only the fields that change; `payload` keys "
+                             "replace the same keys of the atom's payload, and `kind` stays. Applied "
+                             "before drop and add.")
     drop: list[str] = Field(default_factory=list, description="Atom ids to remove.")
     add: list[dict] = Field(default_factory=list, description="Atoms to add: id, kind and payload. "
                             + SCORABLE + "; any other atom is refused.")
@@ -120,6 +140,9 @@ class FindingArgs(BaseModel):
     rows: list[dict] = Field(default_factory=list, description="The evidence, one record per call or Task.")
     path: str = Field(default="", description="The Environment file the Builder should edit, or empty.")
     change: str = Field(default="", description="One line saying what should differ.")
+    note_ruling: Optional[Literal["builder_right", "builder_wrong"]] = Field(
+        default=None, description="Set to rule on the Builder's open note on this Task: whether the "
+                                  "Builder is right, with the why in text.")
 
 
 class FindingResult(BaseModel):
@@ -156,7 +179,7 @@ FINDING_KINDS = ("assisted_tool", "fidelity", "reference_disagreement", "suite",
 ATOM_SHAPE = ("an atom is an object with `id`, `kind` (required, allowed, question, communicate, hard) "
               "and `payload`, an object naming the atom's target")
 _SHAPE_ASK = ("Your proposal was refused for the shape of one atom, not for what it says. Call "
-              "propose_verifier again with the same reason and that atom written as: {shape}")
+              "edit_verifier again with the same reason and that atom written as: {shape}")
 
 
 def payload_shape(atoms: Iterable[Any], kind: Any) -> dict:
@@ -230,11 +253,51 @@ def scored(atom: Atom) -> bool:
     return payload.get("kind") in SCORED_KINDS
 
 
-def _candidate_atoms(current: Verifier, drop: Iterable[str], add: Iterable[Any]) -> list:
-    """The atoms of the next version, carried from kullback/examiner/tools.py (`_repair`)."""
+def _edited_atom(atom: Atom, row: dict) -> Atom:
+    """One existing atom with the fields an `edit` row changes; its id and kind stay."""
+    if row.get("kind") not in (None, atom.kind):
+        raise RetryableToolError(
+            f"the edit of atom {atom.id!r} changes its kind from {atom.kind} to {row['kind']}; an edit "
+            "keeps the kind: drop the atom and add one of the new kind instead",
+            ask="Edit again without kind, or drop and add the atom.")
+    unknown = sorted(key for key in row if key not in SET_BY_TOOL and key not in ROW_FIELDS)
+    if unknown:
+        raise RetryableToolError(
+            f"the edit of atom {atom.id!r} carries fields an atom does not have: {', '.join(unknown)}. "
+            f"{ATOM_SHAPE}", ask="Edit again naming only the id and the fields that change.")
+    changes = row.get("payload") or row.get("target") or {}
+    if not isinstance(changes, dict):
+        raise RetryableToolError(
+            f"the edit of atom {atom.id!r} carries its payload as a {type(changes).__name__}, not an "
+            f"object: {ATOM_SHAPE}", ask="Edit again with payload as an object of the keys that change.")
+    fields = {name: getattr(atom, name) for name in ROW_FIELDS}
+    fields.update({key: value for key, value in row.items() if key in ROW_FIELDS})
+    return _atom_of({"id": atom.id, "kind": atom.kind, "payload": {**atom_payload(atom), **changes},
+                     **({"predicate_src": row["predicate_src"]} if row.get("predicate_src") else {}),
+                     **fields}, ())
+
+
+def _edited_atoms(atoms: list, edit: Iterable[dict]) -> list:
+    """The atoms with each `edit` row applied in place, an unknown atom id refused by name."""
+    by_id = {atom.id: number for number, atom in enumerate(atoms)}
+    out = list(atoms)
+    for row in edit:
+        atom_id = row.get("id") if isinstance(row, dict) else None
+        if atom_id not in by_id:
+            raise RetryableToolError(
+                f"the edit names atom {atom_id!r}, which the current Verifier does not hold; its atoms "
+                f"are {', '.join(sorted(by_id)) or 'none'}",
+                ask="Edit again naming one of the current atom ids, or add the atom instead.")
+        out[by_id[atom_id]] = _edited_atom(out[by_id[atom_id]], row)
+    return out
+
+
+def _candidate_atoms(current: Verifier, drop: Iterable[str], add: Iterable[Any],
+                     edit: Iterable[dict] = ()) -> list:
+    """The atoms of the next version: edits first, then drop and add (`_repair`, carried)."""
     dropped = set(drop)
     added = [row if hasattr(row, "kind") else _atom_of(row, current.atoms) for row in add]
-    atoms = [a for a in current.atoms if a.id not in dropped] + added
+    atoms = [a for a in _edited_atoms(list(current.atoms), edit) if a.id not in dropped] + added
     if not atoms:
         raise ValueError("a proposal cannot leave the Verifier without atoms")
     return atoms
@@ -326,6 +389,7 @@ def _rule(root: ExamRoot, task_id: str, candidate: Verifier) -> list[dict]:
     is no refusal of the proposal (F45), so when the ruling stopped on one, the D79 checks run again
     here in full and the gates after them rule on the write, over the same evidence.
     """
+    _merge_bought(root, task_id)
     evidence = evidence_of(root, task_id=task_id)
     records = _ruling_records(rulings_for(root.exam_dir, f"verifiers/{task_id}.json", root.workdir,
                                           evidence=evidence))
@@ -357,17 +421,41 @@ def _rule(root: ExamRoot, task_id: str, candidate: Verifier) -> list[dict]:
     return out
 
 
-def _keep_suite_status(root: ExamRoot, task_id: str, records: list[dict]) -> None:
-    """An accepted proposal's D79 suite as the Task's status row, in the exposed exam/task_status.json.
+def _merge_bought(root: ExamRoot, task_id: str) -> None:
+    """Every second path Run bought for the Task joins its re-roll rows before a ruling.
 
-    Never the workdir's file: that one is derive_all's. A ruling with no suite leaves the row as it was.
+    The derivation keeps those rows in its own re-roll file, not the workdir's, so a ruling that
+    read only the workdir's rows never saw a second path and left that check not run.
     """
-    base = root.task_status.get(task_id) or {}
-    row = _suite_row(records, base)
+    from kullback.examiner.plan import merged_rerolls
+    from kullback.examiner.stage import second_path_rows
+
+    bought = second_path_rows(Path(root.workdir), task_id)
+    if bought:
+        root.rerolls = merged_rerolls(root.rerolls or {}, {task_id: bought})
+
+
+def _status_row(root: ExamRoot, task_id: str, records: list[dict], version: str) -> Optional[dict]:
+    """The Task's status row after an accepted ruling: the suite it passed and the version it holds."""
+    row = _suite_row(records, root.task_status.get(task_id) or {})
+    return None if row is None else {**row, "verifier_version": version}
+
+
+def _keep_suite_status(root: ExamRoot, task_id: str, row: Optional[dict]) -> None:
+    """An accepted proposal's suite and version as the Task's status row, in both status files.
+
+    The exposed exam/task_status.json the session reads, and the workdir's task_status.json the
+    Builder's status reads, the rest of each row kept. A ruling with no suite leaves the rows as they were.
+    """
     if row is None:
         return
-    root.task_status[task_id] = {**base, **row}
+    root.task_status[task_id] = {**(root.task_status.get(task_id) or {}), **row}
     write_json(root.exam_dir / "task_status.json", root.task_status)
+    path = Path(root.workdir) / "task_status.json"
+    status = read_json(path, {}) if path.is_file() else {}
+    status = status if isinstance(status, dict) else {}
+    status[task_id] = {**(status.get(task_id) or {}), **row}
+    write_json(path, status)
 
 
 # The D79 checks a Run should fail or pass, where the atom the rows name is the one to change.
@@ -421,23 +509,26 @@ def atoms_hash(atoms: Iterable[Any]) -> str:
     return hashlib.sha256(body.encode()).hexdigest()
 
 
-def _propose_verifier(root: ExamRoot):
+def _propose_verifier(root: ExamRoot, alias: bool = False):
     """One proposal as a transaction (D201): ruled on the write, kept only when every ruling passed.
 
     The candidate joins the Task's history as an accepted trial version before the ruling, so
     the trusted gate reads it as the current accepted version and the loosening gate compares
     it against the version before it (D127). A refused proposal keeps its row, rewritten as
     rejected with the gates that rejected it: the history is the record, never dropped (D201).
+    An accepted one writes the Task's status rows in the same transaction as the Verifier file:
+    a status write that fails restores the file and both status files. `alias` marks the old
+    name, whose result carries one deprecation line.
     """
     # Per Task in this session: each refused candidate's atoms hash, with its version and the gates
     # that refused it, and how many refusals the Task has had (F32).
     refused: dict[str, dict[str, tuple[str, list[str]]]] = {}
     refusals: dict[str, int] = {}
 
-    async def propose_verifier(args: ProposeArgs) -> ProposeResult:
+    async def edit_verifier(args: ProposeArgs) -> ProposeResult:
         current = _current(root, args.task_id)
         candidate = current.model_copy(deep=True, update={
-            "atoms": _candidate_atoms(current, args.drop, args.add),
+            "atoms": _candidate_atoms(current, args.drop, args.add, args.edit),
             "verifier_version": _next_version(current)})
         atoms_digest = atoms_hash(candidate.atoms)
         if atoms_digest == atoms_hash(current.atoms):
@@ -445,7 +536,7 @@ def _propose_verifier(root: ExamRoot):
             refusals[args.task_id] = refusals.get(args.task_id, 0) + 1
             raise RetryableToolError(
                 f"the proposal changes nothing: version {current.verifier_version} already holds these "
-                f"atoms; drop or add an atom, or move on to another Task"
+                f"atoms; edit, drop or add an atom, or move on to another Task"
                 + (_STOP if refusals[args.task_id] > REFUSALS_PER_TASK else ""))
         seen = refused.setdefault(args.task_id, {}).get(atoms_digest)
         if seen is not None:
@@ -465,15 +556,39 @@ def _propose_verifier(root: ExamRoot):
         target = root.exam_dir / "verifiers" / f"{args.task_id}.json"
         previous = target.read_bytes() if target.is_file() else None
         previous_verifier = root.verifiers.get(args.task_id)
+        status_files = (root.exam_dir / "task_status.json", Path(root.workdir) / "task_status.json")
+        previous_status = [path.read_bytes() if path.is_file() else None for path in status_files]
+        previous_row = root.task_status.get(args.task_id)
         root.verifiers[args.task_id] = candidate
         write_json(target, as_dict(candidate))
         save_ruling_files(root)
         records = _rule(root, args.task_id, candidate)
         # F45: a check that did not run is no refusal; only a ruling that ran and failed refuses.
-        if records and all(record["accepted"] is not False for record in records):
-            _keep_suite_status(root, args.task_id, records)
+        accepted = bool(records) and all(record["accepted"] is not False for record in records)
+        if accepted:
+            try:
+                _keep_suite_status(root, args.task_id,
+                                   _status_row(root, args.task_id, records, candidate.verifier_version))
+            except (OSError, ValueError, TypeError):
+                for path, body in zip(status_files, previous_status, strict=True):
+                    _restore(path, body)
+                if previous_row is None:
+                    root.task_status.pop(args.task_id, None)
+                else:
+                    root.task_status[args.task_id] = previous_row
+                records = records + [{"name": "status_write", "accepted": False,
+                                      "line": "status_write failed: the status rows could not be written",
+                                      "rows": []}]
+                accepted = False
+        if accepted:
             summary = (f"proposal version {candidate.verifier_version} for task {args.task_id} "
                        f"({digest[:12]}) accepted: " + "; ".join(record["line"] for record in records))
+            ruled = rule_note(root.workdir, args.task_id, "edit_verifier", "agrees",
+                              f"version {candidate.verifier_version} accepted: {args.reason}")
+            if ruled is not None:
+                summary += f"; the Builder's note on task {args.task_id} is ruled: agrees"
+            if alias:
+                summary += f"; {DEPRECATED_ALIAS}"
             return ProposeResult(summary=summary, task_id=args.task_id, content_hash=digest,
                                 verifier_version=candidate.verifier_version,
                                 atoms=len(candidate.atoms), rulings=records)
@@ -485,16 +600,146 @@ def _propose_verifier(root: ExamRoot):
         hist.versions[-1] = hist.versions[-1].model_copy(update={"accepted": False, "rejected_by": gates})
         root.history[args.task_id] = hist
         save_ruling_files(root)
-        if previous is None:
-            target.unlink(missing_ok=True)
-        else:
-            target.write_bytes(previous)
+        _restore(target, previous)
         refused[args.task_id][atoms_digest] = (candidate.verifier_version, gates)
         refusals[args.task_id] = refusals.get(args.task_id, 0) + 1
         raise _refuse_proposal(args.task_id, candidate.verifier_version, records,
                                stop=refusals[args.task_id] > REFUSALS_PER_TASK)
 
-    return propose_verifier
+    return edit_verifier
+
+
+def _restore(path: Path, body: Optional[bytes]) -> None:
+    """A file back to the bytes it held before a transaction, or gone when it held none."""
+    if body is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_bytes(body)
+
+
+# The line the old tool name's result carries for the one release it stays (Finding B).
+DEPRECATED_ALIAS = "propose_verifier is deprecated and goes after this release: call edit_verifier"
+
+
+# --- the Builder's notes: one per Task, ruled by the Examiner (D280) ---
+
+#: Where the Builder's notes live under the workdir, one file per Task, the ruling next to it.
+NOTES_DIR = "notes"
+RULING_SUFFIX = ".ruling.json"
+#: Why a Task is not verifiable as written: the only reasons a note may give.
+NOTE_REASONS = ("outcome_not_in_state", "intent_contradicts_reference", "fact_unavailable_to_user",
+                "needs_action_record")
+NoteReason = Literal["outcome_not_in_state", "intent_contradicts_reference", "fact_unavailable_to_user",
+                     "needs_action_record"]
+NOTE_SENTENCE_CHARS = 300
+# What a note's sentence may not carry: structure or check source, which is an atom or Verifier text.
+_NOTE_FORBIDDEN = ("{", "}", "[", "]", "predicate", "atom", "def ", "lambda", "return ")
+
+
+def notes_dir(workdir: Any) -> Path:
+    return Path(workdir) / NOTES_DIR
+
+
+def note_path(workdir: Any, task_id: str) -> Path:
+    return notes_dir(workdir) / f"{task_id}.json"
+
+
+def ruling_path(workdir: Any, task_id: str) -> Path:
+    return notes_dir(workdir) / f"{task_id}{RULING_SUFFIX}"
+
+
+def note_refusal(reason: Any, sentence: Any) -> Optional[str]:
+    """Why a note is refused, or None: a reason off the fixed list and one plain sentence only."""
+    if reason not in NOTE_REASONS:
+        return f"the reason {reason!r} is not one of {', '.join(NOTE_REASONS)}"
+    text = str(sentence or "").strip()
+    if not text:
+        return "the note carries no sentence"
+    if "\n" in text or len(text) > NOTE_SENTENCE_CHARS:
+        return f"the note is one sentence on one line, at most {NOTE_SENTENCE_CHARS} characters"
+    lowered = text.lower()
+    carried = [mark for mark in _NOTE_FORBIDDEN if mark in lowered]
+    if carried:
+        return (f"the note carries {', '.join(repr(mark) for mark in carried)}: a note says why the Task "
+                "is not verifiable as written, never an atom or Verifier text")
+    return None
+
+
+def note_hash(note: dict) -> str:
+    body = json.dumps({key: note.get(key) for key in ("task_id", "reason", "sentence")}, sort_keys=True)
+    return hashlib.sha256(body.encode()).hexdigest()[:16]
+
+
+def write_note(workdir: Any, task_id: str, reason: str, sentence: str) -> dict:
+    """The Builder's note on one Task, written over any earlier note; refused as a ValueError."""
+    why = note_refusal(reason, sentence)
+    if why is not None:
+        raise ValueError(why)
+    note = {"task_id": task_id, "reason": reason, "sentence": str(sentence).strip()}
+    note["note_hash"] = note_hash(note)
+    write_json(note_path(workdir, task_id), note)
+    return note
+
+
+def _read_dict(path: Path) -> Optional[dict]:
+    try:
+        body = read_json(path, None)
+    except (OSError, ValueError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def read_note(workdir: Any, task_id: str) -> Optional[dict]:
+    return _read_dict(note_path(workdir, task_id))
+
+
+def read_ruling(workdir: Any, task_id: str) -> Optional[dict]:
+    """The Examiner's ruling on the Task's note as it stands now; a ruling on an older note is none."""
+    note, ruling = read_note(workdir, task_id), _read_dict(ruling_path(workdir, task_id))
+    if note is None or ruling is None or ruling.get("note_hash") != note.get("note_hash"):
+        return None
+    return ruling
+
+
+def notes_of(workdir: Any) -> dict[str, tuple[dict, Optional[dict]]]:
+    """Every note by Task with its ruling, None while the note is open."""
+    folder = notes_dir(workdir)
+    out: dict[str, tuple[dict, Optional[dict]]] = {}
+    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        if path.name.endswith(RULING_SUFFIX):
+            continue
+        note = _read_dict(path)
+        if note is not None:
+            out[path.stem] = (note, read_ruling(workdir, path.stem))
+    return out
+
+
+def open_note(workdir: Any, task_id: str) -> Optional[dict]:
+    """The Task's note while no ruling answers it, else None."""
+    note = read_note(workdir, task_id)
+    return note if note is not None and read_ruling(workdir, task_id) is None else None
+
+
+def rule_note(workdir: Any, task_id: Optional[str], move: str, verdict: str, text: str) -> Optional[dict]:
+    """Rule on the Task's open note with one of the Examiner's moves, written next to the note.
+
+    Returns the ruling, or None when the Task has no open note.
+    """
+    note = open_note(workdir, task_id) if task_id else None
+    if note is None:
+        return None
+    ruling = {"task_id": task_id, "note_hash": note["note_hash"], "move": move, "verdict": verdict,
+              "text": text}
+    write_json(ruling_path(workdir, task_id), ruling)
+    return ruling
+
+
+def note_line(task_id: str, note: dict, ruling: Optional[dict]) -> str:
+    """One note as a line of an opening message: the reason, the sentence, and its ruling or open."""
+    head = f"{task_id}: {note.get('reason')}: {note.get('sentence')}"
+    if ruling is None:
+        return f"{head} (open)"
+    return f"{head} (ruled by {ruling.get('move')}, {ruling.get('verdict')}: {ruling.get('text')})"
 
 
 def _probe(root: ExamRoot):
@@ -514,6 +759,9 @@ def _probe(root: ExamRoot):
                    if passed else f"rejected at {failing}")
         summary = (f"probe {probe_id} ({args.bug_class or 'no class'}) on task {args.task_id}: "
                    f"{verdict}; pool holds {len(pool)}")
+        if rule_note(root.workdir, args.task_id, "probe", "builder_right" if passed else "builder_wrong",
+                     f"{verdict}" + (f"; {args.note}" if args.note else "")) is not None:
+            summary += f"; the Builder's note on task {args.task_id} is ruled by this probe"
         return ProbeResult(summary=summary, probe_id=probe_id, task_id=args.task_id,
                            scored_pass=bool(passed),
                            failing_atom=failing if not passed else None, pool_size=len(pool))
@@ -527,6 +775,9 @@ def _finding(root: ExamRoot):
         if kind not in FINDING_KINDS:
             raise ValueError(f"{args.kind!r} is not a finding kind. The kinds are: "
                              f"{', '.join(FINDING_KINDS)}.")
+        if args.note_ruling is not None and open_note(root.workdir, args.task_id or "") is None:
+            raise ValueError(f"task {args.task_id} has no open note from the Builder to rule on; "
+                             "file the finding without note_ruling")
         record = Finding(task_id=args.task_id, kind=kind, text=args.text, rows=list(args.rows),
                          path=args.path, change=args.change, source="model")
         key = finding_key(kind, record.path or record.change, args.task_id or "")
@@ -544,6 +795,9 @@ def _finding(root: ExamRoot):
         summary = f"finding {body['finding_id']} ({kind}) filed" + \
             (f" on task {args.task_id}" if args.task_id else "") + \
             (f", naming {args.path}" if args.path else "")
+        if args.note_ruling is not None:
+            rule_note(root.workdir, args.task_id, "finding", args.note_ruling, args.text)
+            summary += f"; the Builder's note on task {args.task_id} is ruled: {args.note_ruling}"
         return FindingResult(summary=summary, finding_id=body["finding_id"], finding=body)
 
     return finding
@@ -600,10 +854,11 @@ def _reroll(root: ExamRoot):
 
 
 def domain_tools(root: ExamRoot) -> list[AgentTool]:
-    """The four domain tools over one ExamRoot."""
+    """The four domain tools over one ExamRoot, and propose_verifier as edit_verifier's alias for one release."""
     return [
-        AgentTool("propose_verifier", "Propose a new Verifier version by dropping and adding atoms; "
-                  "the D79 suite, the pool and the loosening gate rule on the write.",
+        AgentTool("edit_verifier", "Write a new Verifier version: edit atoms in place (a change to an "
+                  "existing atom), then drop and add; the D79 suite, the pool and the loosening gate "
+                  "rule on the write.",
                   ProposeArgs, ProposeResult, _propose_verifier(root), render=render),
         AgentTool("probe", "Score a hand-written Run against a Task's current Verifier and keep it "
                   "in the Task's pool.",
@@ -613,13 +868,16 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
                   FindingArgs, FindingResult, _finding(root), render=render),
         AgentTool("reroll", "Buy more frontier Runs of a Task through the Runner (D112, D133).",
                   RerollArgs, RerollResult, _reroll(root), render=render),
+        AgentTool("propose_verifier", "Deprecated alias of edit_verifier, kept for one release.",
+                  ProposeArgs, ProposeResult, _propose_verifier(root, alias=True), render=render),
     ]
 
 
 def tool_names() -> tuple[str, ...]:
     """The domain tool names, so tests pin the Builder-called surface."""
-    return ("propose_verifier", "probe", "finding", "reroll")
+    return ("edit_verifier", "probe", "finding", "reroll", "propose_verifier")
 
 
-__all__ = ["REFUSALS_PER_TASK", "ROW_FIELDS", "SET_BY_TOOL", "FindingArgs", "FindingResult", "ProbeArgs", "ProbeResult", "ProposeArgs",
+__all__ = ["DEPRECATED_ALIAS", "NOTES_DIR", "NOTE_REASONS", "note_line", "note_refusal", "notes_of",
+           "open_note", "read_note", "read_ruling", "rule_note", "ruling_path", "write_note", "REFUSALS_PER_TASK", "ROW_FIELDS", "SET_BY_TOOL", "FindingArgs", "FindingResult", "ProbeArgs", "ProbeResult", "ProposeArgs",
            "ProposeResult", "RerollArgs", "RerollResult", "atoms_hash", "domain_tools", "render", "tool_names"]

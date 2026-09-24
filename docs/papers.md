@@ -55,6 +55,7 @@ Rows are sorted by date sent or read, newest first. "Taken as" names the decisio
 | 2026-09-23 | badlogic/pi-mono (pi coding agent): compaction, session tree, skills | https://github.com/badlogic/pi-mono | deferred 2026-09-23, founder: memory is totally different now, revisit later (docs/todo.md) | .claude/reports/memory-management-2026-09-23.md |
 | 2026-09-23 | huggingface/tau, reread for context, memory and skills | https://github.com/huggingface/tau (local vendor/tau) | deferred 2026-09-23, founder: memory is totally different now, revisit later (docs/todo.md) | .claude/reports/memory-management-2026-09-23.md |
 | 2026-09-23 | Kitaru (ZenML) product page. From the page: a replay-based evaluation tool, record, replay and evaluate agents against frozen production sessions before shipping a change | https://www.zenml.io/product/kitaru | founder, 2026-09-23: build evals on top of the built Environment | docs/todo.md ("Priority order after the overhaul (founder, 2026-09-23)") |
+| 2026-09-24 | models.dev page for Claude Opus 5.5, the founder's pricing reference for Opus 5.5 | https://models.dev/models/anthropic/claude-opus-5-5/ | founder, 2026-09-24: price Opus 5.5; Bedrock builds go on the global profile, the cheaper one | kullback/runner/budget.py (PRICES) |
 
 ## How to add one
 

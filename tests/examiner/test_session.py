@@ -10,7 +10,9 @@ from kullback.agent.events import ToolExecutionEnd
 from kullback.agent.extensions import load_extensions
 from kullback.agent.harness import AgentHarness, drive_tool
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
+from kullback.examiner import domain_tools as exam_tools
 from kullback.examiner import session as S
+from kullback.examiner import stage as stage_mod
 from kullback.examiner.exam_files import ExamRoot
 from kullback.gates.probes import version_hash
 from kullback.runner import budget, tool
@@ -107,7 +109,7 @@ def test_a_model_write_or_edit_under_verifiers_is_refused_and_names_the_tools_th
     refused = _ends(events, "write") + _ends(events, "edit")
     assert [end.is_error for end in refused] == [True, True]
     for end in refused:
-        assert ("the Examiner writes Verifiers through propose_verifier and probes through probe, "
+        assert ("the Examiner writes Verifiers through edit_verifier and probes through probe, "
                 "not with write or edit") in end.result.content
     assert read_json(world.workdir / "exam" / "verifiers" / "t1.json") == before
 
@@ -141,7 +143,7 @@ def test_bash_write_and_edit_are_not_registered_and_base_tools_are_scoped_to_exa
     names = harness.registry.names()
     assert not {"bash", "write", "edit"} & set(names)
     assert {"read", "grep", "find", "ls", "web_search",
-            "propose_verifier", "probe", "finding", "reroll"} <= set(names)
+            "edit_verifier", "propose_verifier", "probe", "finding", "reroll"} <= set(names)
     S.expose(world.workdir)
     refused = drive_tool(harness, "write", {"path": "runs/x.jsonl", "content": "{}"})
     assert refused.is_error is True
@@ -469,3 +471,21 @@ def test_a_task_left_unconfirmed_is_picked_again_once_its_replay_is_confirmed(tm
     replays["t1"]["ref"].update(confirmed=True, reasons=[])
     write_json(world.workdir / "replays.json", replays)
     assert S.derive_pick(world.workdir, S.load_store(world.workdir), None) == ["t1"]
+
+
+def test_the_session_root_holds_the_second_path_runs_the_derivation_bought(world):
+    alt = [row for row in world.inputs["rerolls"]["t1"] if row.get("run_id") == "alt"]
+    store = {**world.inputs, "rerolls": {"t1": [r for r in world.inputs["rerolls"]["t1"] if r.get("run_id") != "alt"]}}
+    write_json(stage_mod.extra_rerolls_path(world.workdir),
+               {"t1": [{**row, "reason": stage_mod.SECOND_PATH_REASON} for row in alt]})
+    root = S._exam_root(world.workdir, store, [])
+    assert "alt" in [row.get("run_id") for row in root.rerolls["t1"]]
+
+
+def test_the_examiners_opening_lists_the_builders_open_notes_on_its_tasks(world):
+    exam_tools.write_note(world.workdir, "t1", "fact_unavailable_to_user", "the user never learns the code.")
+    exam_tools.write_note(world.workdir, "t9", "outcome_not_in_state", "only said, never written.")
+    opening = S.session_opening(ExamRoot(workdir=world.workdir), ["t1"])
+    assert "The Builder's notes" in opening
+    assert "t1: fact_unavailable_to_user: the user never learns the code. (open)" in opening
+    assert "t9:" not in opening

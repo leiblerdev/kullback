@@ -105,6 +105,7 @@ def assemble(reply: Any, call_id_prefix: str = "call") -> AssistantMessage:
         usage=reply.usage,
         stop_reason=normalize_stop_reason(reply.stop_reason, bool(calls)),
         model=reply.model,
+        thinking_blocks=getattr(reply, "thinking_blocks", None),
     )
 
 
@@ -217,10 +218,12 @@ async def canonicalize_provider_stream(
             active_index = None
             active_kind = None
             # What the deltas said is the content; the adapter's final message is authoritative
-            # for usage, the model name and the stop reason, and for nothing else.
+            # for usage, the model name, the stop reason and the signed thinking blocks (which no
+            # delta carries whole), and for nothing else.
             final = snapshot()
             final.usage = event.message.usage
             final.model = event.message.model or partial.model
+            final.thinking_blocks = event.message.thinking_blocks
             final.error_message = event.message.error_message
             # An adapter that reported no delta but ended with content keeps it, and an answer of
             # empty text stays empty text rather than becoming no text: a reply that said nothing

@@ -1054,12 +1054,15 @@ def test_an_explicit_base_url_does_not_change_a_responses_model_shape(tmp_path, 
 
 
 @pytest.mark.parametrize("details,prompt,expected", [
-    ({"cached_tokens": 0, "cache_write_tokens": 1339}, 1342, (1342, 0, 1339)),
+    ({"cached_tokens": 0, "cache_write_tokens": 1339}, 1342, (3, 0, 1339)),
     ({"cached_tokens": 400}, 900, (500, 400, 0)),
-], ids=["reported", "not_reported"])
-def test_the_chat_adapter_records_the_cache_write_tokens_the_endpoint_reports(details, prompt, expected):
-    """A reply with cached_tokens 0 still carried cache_write_tokens 1339, billed at the model's
-    own cache_write rate; dropping it billed a build for less than it cost. None reported is 0."""
+    ({"cached_tokens": 600, "cache_write_tokens": 250}, 900, (50, 600, 250)),
+], ids=["reported", "not_reported", "read_and_written"])
+def test_the_chat_adapter_takes_the_written_tokens_out_of_input_and_records_them_as_writes(details, prompt,
+                                                                                          expected):
+    """A reply with cached_tokens 0 still carried cache_write_tokens 1339 inside a prompt of 1342,
+    billed at the model's own cache_write rate; dropping it billed a build for less than it cost,
+    and leaving it inside input billed the same tokens twice. None reported is 0."""
     model = pv.OpenAIModel(model_id="openai/gpt-5.6-luna", api_key="k", env={})
     reply = model.parse_reply({
         "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
@@ -1080,17 +1083,17 @@ def test_the_exchange_names_the_sampling_sent_the_wire_id_the_endpoint_and_the_p
         seen["body"] = pv.json_body(request)
         return httpx.Response(200, json={"content": [], "usage": {}})
 
-    model = anthropic_model(handler, sleeps, model_id="anthropic/opus", wire_id="claude-opus-5")
+    model = anthropic_model(handler, sleeps, model_id="anthropic/opus", wire_id="claude-haiku-4-5")
     reply = model.query(
         [{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}],
         tools=[{"name": "get_order", "description": "d", "input_schema": {"type": "object"}}],
         config=pv.ModelConfig(max_tokens=64, temperature=0.0, stop=["END"]),
     )
     exchange = reply.exchange
-    assert exchange.provider == "anthropic" and exchange.wire_id == "claude-opus-5"
+    assert exchange.provider == "anthropic" and exchange.wire_id == "claude-haiku-4-5"
     assert exchange.endpoint == "https://api.anthropic.com/v1/messages"
     # The sampling is the body minus the prompt itself, so a field no one enumerated is still recorded.
-    assert exchange.sampling == {"model": "claude-opus-5", "max_tokens": 64, "temperature": 0.0,
+    assert exchange.sampling == {"model": "claude-haiku-4-5", "max_tokens": 64, "temperature": 0.0,
                                  "stop_sequences": ["END"]}
     assert exchange.n_messages == len(seen["body"]["messages"])
     assert exchange.messages_hash == pv.body_hash(seen["body"]["messages"])

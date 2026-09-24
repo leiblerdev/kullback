@@ -59,6 +59,16 @@ INSPECT_MAX_CHARS = 4_000
 INSPECT_ROW_CHARS = 200
 INSPECT_MAX_ROWS = 5
 INSPECT_MAX_FIELDS = 60
+# The input cap: a file at most this size is parsed whole, one over it never is. 8 MiB clears every
+# file a Builder reads to learn the corpus with room to spare (on the smoke 8 retail workdir the world
+# is 0.5 MB, the largest call log 1.8 MB, the run digest 4.7 MB, the Builder session 5 MB), while the
+# files that grow with trace volume (the event bus, the raw corpus, the exam's run store, 32 MB to
+# 660 MB there) are past it, and parsing one of those whole could exhaust memory or stall the loop.
+INSPECT_MAX_BYTES = 8 * 1024 * 1024
+# Over the input cap a JSONL file is summarised from its head: at most this many lines, and never more
+# than INSPECT_MAX_BYTES read. A thousand rows is enough to see every key, result type and error class
+# a log carries, and the summary says the counts are over those lines only.
+INSPECT_SAMPLE_LINES = 1_000
 
 TOOL_NAMES = ("read", "write", "edit", "grep", "find", "ls", "inspect", "web_search", "bash")
 
@@ -883,7 +893,8 @@ def _counted(label: str, counts: Counter[str]) -> list[str]:
         f"  {name}: {count}" for name, count in counts.most_common()]
 
 
-def _describe_lines(text: str, rows: int) -> list[str]:
+def _describe_lines(text: str, rows: int, of_bytes: Optional[int] = None) -> list[str]:
+    """A JSONL summary; with `of_bytes`, `text` is the head of a file that size and the header says so."""
     records: list[Any] = []
     broken = 0
     lines = [line for line in text.split("\n") if line.strip()]
@@ -893,7 +904,11 @@ def _describe_lines(text: str, rows: int) -> list[str]:
         except json.JSONDecodeError:
             broken += 1
     objects = [record for record in records if isinstance(record, dict)]
-    out = [f"jsonl: {len(lines)} lines" + (f", {broken} not JSON" if broken else "")]
+    head = f"jsonl: {len(lines)} lines"
+    if of_bytes is not None:
+        head = (f"jsonl: the file is {of_bytes} bytes, over the {INSPECT_MAX_BYTES} byte inspect cap, so every "
+                f"count below is over its first {len(lines)} lines only")
+    out = [head + (f", {broken} not JSON" if broken else "")]
     if len(objects) < len(records):
         out.append(f"{len(records) - len(objects)} lines are not objects")
     if objects:
@@ -922,6 +937,52 @@ def _capped(lines: list[str]) -> tuple[str, bool]:
     return "\n".join(kept), False
 
 
+def _head_lines(path: Path) -> str:
+    """The first INSPECT_SAMPLE_LINES lines of a file, reading no more than INSPECT_MAX_BYTES in all.
+
+    A line the byte budget cuts short is dropped rather than parsed as a broken row.
+    """
+    kept: list[str] = []
+    budget = INSPECT_MAX_BYTES
+    with path.open("rb") as handle:
+        while len(kept) < INSPECT_SAMPLE_LINES and budget > 0:
+            raw = handle.readline(budget)
+            if not raw:
+                break
+            budget -= len(raw)
+            if not raw.endswith(b"\n") and budget <= 0:
+                break
+            kept.append(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+    return "\n".join(kept)
+
+
+def _first_line_is_json(text: str) -> bool:
+    first = next((line for line in text.split("\n") if line.strip()), None)
+    if first is None:
+        return False
+    try:
+        json.loads(first)
+    except json.JSONDecodeError:
+        return False
+    return True
+
+
+def _inspect_large(path: Path, shown: str, size: int, args: InspectArgs) -> list[str]:
+    """A file over INSPECT_MAX_BYTES: JSONL from a bounded head, one JSON document refused.
+
+    Whether it is JSONL is read off its head: a first line that parses on its own is a row. A
+    document spread over lines, or one line longer than the whole budget, never does.
+    """
+    head = _head_lines(path)
+    if not _first_line_is_json(head):
+        raise ValueError(f"{shown} is {size} bytes, over the {INSPECT_MAX_BYTES} byte inspect cap, and is one "
+                         "JSON document, so inspect does not parse it; read it with offset and limit, or grep "
+                         "it for the key you are after")
+    if args.key:
+        raise ValueError(f"{shown} is not one JSON document, so key does not apply; inspect it without key")
+    return _describe_lines(head, args.rows, of_bytes=size)
+
+
 def _inspect_tool(config: BaseToolConfig) -> AgentTool:
     async def execute(args: InspectArgs) -> InspectResult:
         path = resolve_in_root(config.root, args.path)
@@ -930,6 +991,10 @@ def _inspect_tool(config: BaseToolConfig) -> AgentTool:
                               + _siblings_note(config.root, path))
         if not 0 <= args.rows <= INSPECT_MAX_ROWS:
             raise ValueError(f"rows must be 0 to {INSPECT_MAX_ROWS}")
+        size = path.stat().st_size
+        if size > INSPECT_MAX_BYTES:
+            summary, truncated = _capped(_inspect_large(path, args.path, size, args))
+            return InspectResult(path=_relative(config.root, path), summary=summary, truncated=truncated)
         text = path.read_text(encoding="utf-8", errors="replace")
         try:
             document = json.loads(text)

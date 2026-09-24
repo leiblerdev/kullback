@@ -277,7 +277,9 @@ def _tool_definitions(sigs: list, vocab: Any = None) -> list[dict]:
     tool descriptions of their own.
     """
     out = []
-    for sig in sigs:
+    # By name, not by the order the signatures were mined in: an added trace can move a tool's first
+    # appearance, and the tool list is the head of every cached prefix (prompt-caching.md).
+    for sig in sorted(sigs, key=lambda sig: sig.name):
         schema = sig.args_schema if isinstance(sig.args_schema, dict) and "properties" in sig.args_schema else {
             "type": "object", "properties": {name: {"type": "string"} for name in (sig.args_schema or {})}}
         parameters = _json_schema(schema)
