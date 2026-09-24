@@ -310,7 +310,7 @@ Applied and green:
 
 Read and verified but not applied:
 
-- Delete `gates/artifacts.py`'s `parses_gate`, `executes_gate`, `deterministic_gate`, `non_trivial_gate`, `compile_tools_gates` and only the two `compile_tools` spec rows at `gates/__init__.py:247-251`. About 120 lines. Production runs `tool_runs`' `body_*` family through `builder/sandbox.py`. Keep the `body_*` specs at 237-246; deleting those would delete the live path. The two implementations disagree on constant tools, which is a live divergence, not only duplication. `docs/tech/phase-4-builder-extension.md` already records this call and why it was deferred.
+- Delete `gates/artifacts.py`'s `parses_gate`, `executes_gate`, `deterministic_gate`, `non_trivial_gate`, `compile_tools_gates` and only the two `compile_tools` spec rows at `gates/__init__.py:247-251`. About 120 lines. Production runs `tool_runs`' `body_*` family through `builder/sandbox.py`. Keep the `body_*` specs at 237-246; deleting those would delete the live path. The two implementations disagree on constant tools, which is a live divergence, not only duplication. The phase 4 note (since deleted, see git history) already recorded this call and why it was deferred.
 - Delete `artifacts.leak_gate` and the other four registered-but-uncalled rulings there, or move their "belongs in X" docstrings to `docs/todo.md`. About 90 lines. `oracle_replay_gate` is registered and says in its own docstring it is not wired.
 - Delete `canon.record_hash` (no caller outside its own tests, no `__all__`, not reachable through `cli._entry`). 12 lines plus three tests.
 - Delete `mine.reconstruct_truncated`, `exempt_from_reruns` and their five private helpers, or wire them. About 90 lines. D95's reconstruction is unkept by any build today.
