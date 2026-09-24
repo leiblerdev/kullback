@@ -48,6 +48,8 @@ from kullback.gates.tool_runs import (
 from kullback.runner import arith, transaction
 from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_hash
 from kullback.runner.world.loading import DB_CLASS, HELPERS, SandboxError
+from kullback.runner.world.recorded import MISSING_MSG_INDEX, context_feed_key
+from kullback.runner.world.recorded import recorded_call_parts as recorded_call_parts
 
 # The child runs under `python -I` with the environment cleared, so it cannot be relied on to import
 # kullback at all. It gets the evaluator's own bytes instead, prepended to the runner script, and the
@@ -316,10 +318,6 @@ main()
 _RUNNER = _ARITH_SOURCE + "\n" + _TRANSACTION_SOURCE + _RUNNER_BODY
 
 
-# Calls without a recorded position order after positioned calls, by call id, so the result never depends on input order.
-_MISSING_MSG_INDEX = 1 << 62
-
-
 def calls_by_trace(calls: Iterable[ToolCall]) -> dict[str, list[ToolCall]]:
     """Recorded calls grouped by the trace that made them, for `Sandbox(trace_calls=...)`."""
     out: dict[str, list[ToolCall]] = {}
@@ -327,29 +325,6 @@ def calls_by_trace(calls: Iterable[ToolCall]) -> dict[str, list[ToolCall]]:
         if call.trace_id:
             out.setdefault(call.trace_id, []).append(call)
     return out
-
-
-def recorded_call_parts(call: Any) -> tuple:
-    """The five parts of a recorded call, for a ToolCall or a dict."""
-    if isinstance(call, ToolCall):
-        return (call.id, call.trace_id, call.raw_ptr, call.args or {}, call.result)
-    node = call or {}
-    return (node.get("id"), node.get("trace_id"), node.get("raw_ptr"), node.get("args") or {}, node.get("result"))
-
-
-def context_feed_key(call: Any) -> tuple:
-    """The identity of one recorded call for its tool context feed: trace, position, id.
-
-    A call id alone does not name a call: ingestion permits an id issued again after the
-    earlier call resolved, and several traces travel in one list. The triple tells those
-    apart; a missing trace or id reads as "" and a missing position orders last. Two calls
-    sharing the whole triple cannot be told apart and are never fed.
-    """
-    call_id, trace_id, raw, _, _ = recorded_call_parts(call)
-    position = raw.get("msg_index") if isinstance(raw, dict) else getattr(raw, "msg_index", None)
-    if not isinstance(position, int):
-        position = _MISSING_MSG_INDEX
-    return (trace_id or "", position, call_id or "")
 
 
 class Sandbox:
@@ -413,7 +388,7 @@ class Sandbox:
     def prefix_of(self, call: ToolCall) -> list[ToolCall]:
         """The calls this call's trace made before it, in order; none without a trace or a position."""
         trace_id, position, _ = context_feed_key(call)
-        if not trace_id or position == _MISSING_MSG_INDEX:
+        if not trace_id or position == MISSING_MSG_INDEX:
             return []
         return [earlier for earlier in self.trace_calls.get(trace_id, ())
                 if context_feed_key(earlier)[1] < position and earlier.error is None]

@@ -20,10 +20,11 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from kullback import sampling
-from kullback.runner import loop, route
+from kullback.gates import tool_runs
+from kullback.runner import canon, loop, route
 from kullback.runner import replay as replay_mod
 from kullback.runner.real_tools import default_world_factory, real_tools_from
 from kullback.runner.records import (
@@ -40,11 +41,14 @@ from kullback.runner.records import (
 from kullback.runner.replay import AGREES
 from kullback.runner.target import load_run
 from kullback.runner.verdict import verdict as score_verdict
-from kullback.runner.world import clock, loading
+from kullback.runner.world import clock, loading, recorded
 from kullback.runner.world.environment import BuiltEnvironment
 from kullback.runner.world.loading import RUN_SEED_KIND, EnvironmentError
 
 RUNS_DIR = "runs"
+# Written by the Builder's replay judging (D219) and its Starting state (D220 rule 2), read here.
+EQUIVALENCE_FILE = "equivalence.json"
+WORLD_PROVENANCE_FILE = "world_provenance.json"
 PROBES_DIR = "probes"
 MAX_TURNS = 30
 PROBE_TURNS = 6
@@ -308,6 +312,42 @@ def _held_out(env: BuiltEnvironment, task_id: str) -> set[str]:
     return {str(run_id) for run_id in held.get(task_id) or ()} if isinstance(held, dict) else set()
 
 
+def _context_feeder(router: Any, trace: Trace, schema: Any) -> Optional[Callable[[Any], None]]:
+    """What each recorded call feeds the tool context before its body runs (D290).
+
+    Carried from the deleted build.py replay stage: a body that asks `new_id` or `now` is
+    answered what the recording showed for that call, else the seeded draw answers. A call
+    the feeds hold nothing for, or no recorded call at all, is fed nothing. A toolkit
+    rendered without a context is fed nothing either.
+    """
+    feed_call = getattr(getattr(getattr(router, "tools", None), "ctx", None), "feed_call", None)
+    if feed_call is None:
+        return None
+    feeds = recorded.recorded_call_contexts(trace.tool_calls, schema)
+
+    def before_call(call: Any) -> None:
+        feed_call(feeds.get(recorded.context_feed_key(call), {}) if call is not None else {})
+
+    return before_call
+
+
+def _comparer(env: BuiltEnvironment) -> Any:
+    """The schema's column classes and the readers' columns, so a replayed answer is compared by
+    column (D187). No judge is configured on the runner path, so a semantic pair the
+    equivalence table has not settled stays unresolved (D219)."""
+    readers = tool_runs.load_readers(read_json(env.root / "readers.json", {}) or {})
+    return tool_runs.ReplayComparer(env.schema, readers, env.canon_rules,
+                                    equivalence=canon.load_table(env.root / EQUIVALENCE_FILE))
+
+
+def _holdout_values(env: BuiltEnvironment) -> dict[str, str]:
+    """What the world holds only on a held-out Run's word (D220 rule 2c), from the Starting
+    state's own provenance record; a workdir without one withholds nothing."""
+    provenance = read_json(env.root / WORLD_PROVENANCE_FILE, {}) or {}
+    columns = provenance.get("holdout_columns") if isinstance(provenance, dict) else None
+    return recorded.holdout_values(env.db, columns or {})
+
+
 def _replay_one(env: BuiltEnvironment, task_id: str, trace: Trace, *, workdir: Any,
                 held_out: set[str], reference: Optional[Trace]) -> ReplayReport:
     """One Trace replayed in a fresh world on its own overlay layer (D213), and reported."""
@@ -315,9 +355,13 @@ def _replay_one(env: BuiltEnvironment, task_id: str, trace: Trace, *, workdir: A
     _refuse_stand_in(router)
     runs_dir = Path(workdir) / RUNS_DIR / task_id
     runs_dir.mkdir(parents=True, exist_ok=True)
+    # D215's effect evidence is not passed: it is read by builder/effects through the
+    # Builder's result reader, and the runner cannot import either.
     out = replay_mod.replay_trace(
         trace, router, workdir=runs_dir, task_id=task_id, env_id=env.env_id,
-        write_tools=env.write_tools(), canon_rules=env.canon_rules)
+        write_tools=env.write_tools(), canon_rules=env.canon_rules,
+        comparer=_comparer(env), holdout_values=_holdout_values(env),
+        before_call=_context_feeder(router, trace, env.schema))
     report = _replay_report(task_id, out, workdir)
     report.held_out = trace.trace_id in held_out
     report.reference = reference is not None and trace.trace_id == reference.trace_id
