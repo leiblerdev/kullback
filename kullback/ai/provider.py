@@ -62,7 +62,7 @@ from kullback.ai.http_errors import (
     is_context_overflow,
 )
 from kullback.ai.messages import Message
-from kullback.ai.model_limits import RequestRules, request_rules_for
+from kullback.ai.model_limits import RequestRules, request_rules_for, split_vendor
 from kullback.ai.retry import (
     RetryPolicy,
     backoff_delay,
@@ -757,6 +757,11 @@ class HttpModel(Model):
         self.shape_fixes: set[str] = set()
 
     @classmethod
+    def for_model(cls, model_id: str) -> type:
+        """The adapter class that serves this id; a provider serving several shapes picks here."""
+        return cls
+
+    @classmethod
     def credential_vars(cls) -> tuple[tuple[str, ...], ...]:
         """The environment variables that authenticate this adapter: any one group, fully set, is enough.
 
@@ -1069,26 +1074,25 @@ def _anthropic_thinking(requested: Optional[dict], rules: RequestRules) -> dict:
     return thinking
 
 
-class BedrockAnthropicModel(AnthropicModel):
-    """Claude through Amazon Bedrock's Messages endpoint: the Anthropic body, AWS authentication.
+class BedrockAuth:
+    """What every vendor on Bedrock shares: the runtime host of a region, the wire id, the keys.
 
-    The body, the cache points and the model rules are AnthropicModel's unchanged. The wire id is
-    whatever follows `bedrock/`, sent as is: an inference profile id such as
-    `global.anthropic.claude-opus-5-5` or `us.anthropic.claude-opus-5-5`. A bare
-    `anthropic.<model>` is refused on demand, so it gets the `global.` profile in every region.
-    Two ways in, in the SDK's order for keys read from
-    the environment: a Bedrock API key (AWS_BEARER_TOKEN_BEDROCK) goes as a bearer token, else the
-    access key pair signs every request with SigV4 over the exact body bytes. Keys come from the
-    environment or .env only: no profile files, no instance metadata, no STS.
+    Mixed in front of a vendor's own adapter, which keeps its body, its parsing and its stream. The
+    vendor's route on the host is `bedrock_route`; the wire id is whatever follows `bedrock/`, a
+    profile id sent as is and a bare `vendor.model` put on the `global.` profile, which is the one
+    served on demand. Two ways in, in the SDK's order for keys read from the environment: a Bedrock
+    API key (AWS_BEARER_TOKEN_BEDROCK) goes as a bearer token, else the access key pair signs every
+    request with SigV4 over the exact body bytes. Keys come from the environment or .env only: no
+    profile files, no instance metadata, no STS.
     """
 
     key_env_var = BEDROCK_BEARER_VARS[0]
-    path = "/v1/messages"
+    bedrock_route = ""
 
     def __init__(self, model_id: str, base_url: Optional[str] = None, **kwargs):
         env = dict(os.environ) if kwargs.get("env") is None else dict(kwargs["env"])
         self.region = bedrock_region(env)
-        default = f"https://bedrock-runtime.{self.region}.amazonaws.com/anthropic"
+        default = f"https://bedrock-runtime.{self.region}.amazonaws.com/{self.bedrock_route}"
         super().__init__(model_id, base_url=base_url or default, **kwargs)
         self.wire_id = bedrock_wire_id(self.wire_id)
         self.api_key = self.api_key or next((self.env[v] for v in BEDROCK_BEARER_VARS if self.env.get(v)), None)
@@ -1108,8 +1112,8 @@ class BedrockAnthropicModel(AnthropicModel):
                 f"{' and '.join(BEDROCK_KEY_VARS)} (plus {BEDROCK_SESSION_VAR} for temporary keys), "
                 f"and AWS_REGION if not {BEDROCK_DEFAULT_REGION}")
 
-    def headers(self, body: Optional[bytes] = None) -> dict:
-        headers = {"anthropic-version": self.api_version, "content-type": "application/json"}
+    def authorized(self, headers: dict, body: Optional[bytes]) -> dict:
+        """The vendor's headers with the bearer token on, or signed with SigV4 over the body."""
         if self.api_key:
             return {**headers, "authorization": f"Bearer {self.api_key}"}
         if not (self.access_key and self.secret_key):
@@ -1119,6 +1123,27 @@ class BedrockAnthropicModel(AnthropicModel):
         return sigv4.sign("POST", self.base_url + self.path, headers, body or b"",
                           access_key=self.access_key, secret_key=self.secret_key,
                           session_token=self.session_token, region=self.region, service=BEDROCK_SERVICE)
+
+
+class BedrockAnthropicModel(BedrockAuth, AnthropicModel):
+    """Claude through Amazon Bedrock's Messages endpoint: the Anthropic body, AWS authentication.
+
+    The body, the cache points and the model rules are AnthropicModel's unchanged; the host, the
+    wire id and the keys are BedrockAuth's. The adapter `bedrock/` ids resolve to (ADAPTERS): a
+    model of another vendor is handed to that vendor's Bedrock adapter (for_model).
+    """
+
+    bedrock_route = "anthropic"
+    path = "/v1/messages"
+
+    @classmethod
+    def for_model(cls, model_id: str) -> type:
+        """The Bedrock adapter for this id's vendor: OpenAI's models speak Chat Completions there."""
+        vendor = split_vendor(split_model_id(model_id)[1])
+        return BEDROCK_VENDOR_ADAPTERS.get(vendor[0] if vendor else "", cls)
+
+    def headers(self, body: Optional[bytes] = None) -> dict:
+        return self.authorized({"anthropic-version": self.api_version, "content-type": "application/json"}, body)
 
 
 # gpt-<major> or o<digit>, after an optional gateway prefix such as 'openai/'.
@@ -1244,6 +1269,30 @@ class OpenAIModel(HttpModel):
             stop_reason=(choices[0] or {}).get("finish_reason"),
             raw=data,
         )
+
+
+class BedrockOpenAIModel(BedrockAuth, OpenAIModel):
+    """OpenAI's models through Amazon Bedrock: the Chat Completions body and stream, AWS authentication.
+
+    Bedrock serves them at `/openai/v1/chat/completions` on the same runtime host, in OpenAI's own
+    shape: choices, tool calls with JSON string arguments, usage with prompt_tokens_details carrying
+    cached_tokens and cache_write_tokens (reviewer's live probe, us-east-2, 2026-09-24). So the body,
+    the parsing and the stream are OpenAIModel's; the host, the wire id and the keys are BedrockAuth's.
+    """
+
+    bedrock_route = "openai/v1"
+
+    def headers(self, body: Optional[bytes] = None) -> dict:
+        return self.authorized({"content-type": "application/json"}, body)
+
+    def _reasoning_family(self) -> bool:
+        """The shape test on the model alone: `<profile>.openai.gpt-<n>` is a gpt-<n>."""
+        vendor = split_vendor(self.wire_id)
+        return reasoning_family(vendor[1] if vendor else self.wire_id or "")
+
+
+# The Bedrock adapter per vendor segment of the wire id; a vendor with no row speaks the Messages API.
+BEDROCK_VENDOR_ADAPTERS: dict[str, type] = {"openai": BedrockOpenAIModel}
 
 
 # One session id per process for OpenCode's prompt-cache optimization. Stable across the whole
@@ -1510,7 +1559,7 @@ def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     provider, _ = split_model_id(model_id)
     adapter = ADAPTERS.get(provider)
     if adapter is not None:
-        return adapter(model_id, base_url=base_url, **kwargs)
+        return adapter.for_model(model_id)(model_id, base_url=base_url, **kwargs)
     if model_id in RESPONSES_API_MODELS and base_url:
         # An explicit endpoint never changes the wire shape: a Responses model speaks
         # Responses wherever it lives, so this check sits before the base_url branch.
