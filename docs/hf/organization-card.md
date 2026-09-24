@@ -16,7 +16,7 @@ The trusted counts are under review because some rest on a seed file several Tas
 - Run and Trace: a Run is an agent's conversation with the tools; a Trace is a recorded one.
 - Reference: the Trace a Task's user context comes from.
 - Replay and agree: a replay re-drives a Trace's turns; a call agrees when its verdict is same, cosmetic or both refused.
-- Confirmed: a replay where every call agrees and nothing is missing, reordered or crashed.
+- Confirmed: a replay where every call agrees, none was answered by the stand-in, and nothing is missing, reordered or crashed.
 - Fidelity over Tasks: Tasks with a confirmed replay, over all Tasks.
 - Fidelity over Runs: confirmed replays over all replays.
 - Call fidelity: agreeing calls over all recorded calls.
@@ -24,7 +24,7 @@ The trusted counts are under review because some rest on a seed file several Tas
 - Atom: one Verifier check: required, allowed, forbidden, question, communicate or hard.
 - Gates: oracle replay, suite, loosening, false rejection, trusted.
 - Trusted: suite passed, probes fail, last version, no loosening, not over strict, not refused.
-- Open: not yet trusted.
+- Open: neither trusted nor refused.
 - Refused: a Task the Builder showed nobody can finish.
 - Release and preview: a release replays at least 90% of its Tasks; a preview is below that.
 
