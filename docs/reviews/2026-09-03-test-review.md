@@ -1,3 +1,5 @@
+> Historical record, 2026-09-03: a review of the test suite as it stood that day, before the overhaul of 2026-09-22. Paths and line numbers name that tree, not today's.
+
 <!-- Written 2026-09-03 by a review fleet: 28 agents over the union of every open branch. A finding that a test proves nothing was only kept when a verifier broke the behaviour the test names, in a private copy of the tree, and the test still passed. -->
 
 # Kullback test suite review
@@ -276,7 +278,7 @@ prescribes (`tests/<package>/<name>_fixtures.py`, honoured in nine places).
 - `a_constraint` at `tests/gates/test_artifacts.py:226` and `tests/gates/test_confinement.py:17`.
   The two disagree about the case shape: artifacts wraps in `pre_state`, confinement does not, and
   `gates/artifacts.py:246` runs a case as `func(case.get("pre_state") or {}, ...)` with a comment
-  recording that build 8 failed every compiled constraint over exactly this. The confinement copy's
+  recording that the 2026-09-02 build failed every compiled constraint over exactly this. The confinement copy's
   cases would raise `KeyError`; they never do, because all three uses either override
   `predicate_src` with an escape refused before it runs or read `.predicate_src` alone. Delete the
   copy or replace it with a `PREDICATE_SRC` constant.
