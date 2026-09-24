@@ -45,7 +45,9 @@ TOOLS = (
     'rulings: {"path": "tools/lookup.py"}\n'
     'run: {"task_ids": ["task-1"], "count": 2}, or {} for every open Task with a confirmed Reference\n'
     'status: {}\n'
-    'examine: {"task_ids": null}'
+    'examine: {"task_ids": null}\n'
+    'note_task: {"task_id": "task-1", "reason": "outcome_not_in_state", '
+    '"sentence": "the answer the user needs is only said, never written to any row"}'
 )
 
 EXAMPLES = (
@@ -63,7 +65,12 @@ EXAMPLES = (
     "with the rows behind it. Answer it with an edit to that path, then replay the Task "
     "it names. A finding never names a verb; the path is the whole address.\n"
     "A Task with no finished Run cannot be trusted yet. Run it first; only when no "
-    "frontier Run finished may you refuse it, with the reason in refusals/<task>.json."
+    "frontier Run finished may you refuse it, with the reason in refusals/<task>.json.\n"
+    "A Task you cannot make verifiable as written gets a note: note_task with one reason "
+    "(outcome_not_in_state, intent_contradicts_reference, fact_unavailable_to_user, "
+    "needs_action_record) and one sentence. The note carries no atom and no Verifier text. "
+    "The Examiner rules on it; the ruling is in your opening message next round, and the "
+    "Task cannot be refused while its note is open."
 )
 
 CHOICE = (

@@ -13,6 +13,7 @@ from kullback.agent.bus import Bus
 from kullback.agent.tools import RetryableToolError
 from kullback.examiner import domain_tools as D
 from kullback.examiner import prompt as P
+from kullback.examiner import stage
 from kullback.examiner.exam_files import ExamRoot
 from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES
 from kullback.runner.records import as_dict, read_json, write_json
@@ -149,14 +150,15 @@ def test_reroll_without_a_model_is_refused_before_touching_the_runner(tmp_path):
         _run(tool.execute(D.RerollArgs(task_id="t1", count=1)))
 
 
-def test_domain_tools_are_exactly_the_four_named_in_the_prompt(tmp_path):
+def test_domain_tools_are_the_four_named_in_the_prompt_and_the_deprecated_alias(tmp_path):
     root, _, _ = _root(tmp_path)
     names = [t.name for t in D.domain_tools(root)]
     assert names == list(D.tool_names())
-    assert set(names) == {"propose_verifier", "probe", "finding", "reroll"}
+    assert set(names) == {"edit_verifier", "probe", "finding", "reroll", "propose_verifier"}
     text = P.tools_section()
-    for name in names:
+    for name in names[:-1]:
         assert name in text, name
+    assert "propose_verifier" not in text, "the prompt teaches only the new name"
 
 
 def test_accepted_proposal_rules_trusted_when_status_and_history_are_present(tmp_path):
@@ -175,11 +177,13 @@ def test_accepted_proposal_rules_trusted_when_status_and_history_are_present(tmp
     assert (verifiers_dir.parent / "task_runs.json").is_file()
 
 
-def test_accepted_proposal_on_a_task_with_a_reference_carries_the_suite_and_keeps_its_status(tmp_path):
+def test_an_accepted_proposal_writes_the_new_suite_and_version_into_the_status_row_the_builder_reads(tmp_path):
     root, world, current = _root(tmp_path, probe_model=object(), run_probe=probe_runner_over(),
                                  task_status={"t1": {"verifier_passed": False, "references": 1}})
     _with_reference(world)
-    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    write_json(world.workdir / "task_status.json", {"t1": {"verifier_passed": False, "references": 1,
+                                                           "reference_confirmed": True}})
+    [tool] = [t for t in D.domain_tools(root) if t.name == "edit_verifier"]
     result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[_WIDE_CAP_PROPOSAL])))
     names = [record["name"] for record in result.rulings]
     assert [name for name in names if name in D79_STAGES] == list(D79_STAGES)
@@ -188,7 +192,10 @@ def test_accepted_proposal_on_a_task_with_a_reference_carries_the_suite_and_keep
     assert row["verifier_passed"] is True and row["not_run"] == []
     assert row["checks"] == {name: True for name in D79_STAGES.values()}
     assert row["references"] == 1, "the rest of the derivation's row stands"
-    assert not (world.workdir / "task_status.json").exists(), "the workdir's file is derive_all's"
+    assert row["verifier_version"] == result.verifier_version
+    on_disk = read_json(world.workdir / "task_status.json")["t1"]
+    assert on_disk["verifier_passed"] is True and on_disk["verifier_version"] == result.verifier_version
+    assert on_disk["checks"] == row["checks"] and on_disk["reference_confirmed"] is True
 
 
 def test_proposal_on_a_single_reference_task_with_a_waived_row_is_accepted_and_keeps_the_waiver(tmp_path):
@@ -393,7 +400,7 @@ def test_a_proposal_that_changes_nothing_is_refused_without_the_suite_and_leaves
     with pytest.raises(RetryableToolError) as excinfo:
         _run(tool.execute(D.ProposeArgs(task_id="t1", reason="again", drop=[], add=[])))
     assert str(excinfo.value) == (f"the proposal changes nothing: version {current.verifier_version} already "
-                                  "holds these atoms; drop or add an atom, or move on to another Task")
+                                  "holds these atoms; edit, drop or add an atom, or move on to another Task")
     assert _history_proposal(world) == before and root.history == rows, "no history row for no change"
     assert not (world.workdir / "exam" / "verifiers" / "t1.json").exists(), "nothing was written"
 
@@ -477,3 +484,115 @@ def test_an_allowance_that_covers_one_run_buys_one_run_of_a_count_of_three(tmp_p
     assert result.spent_usd == pytest.approx(one_run)
     assert "stopped after 1 of 3 Runs: the allowance is spent" in result.summary
     assert root.allowance_remaining <= 0
+
+
+def test_a_refused_proposal_leaves_the_status_row_the_builder_reads_as_it_was(tmp_path):
+    root, world, current = _root(tmp_path)
+    _with_reference(world)
+    write_json(world.workdir / "task_status.json", {"t1": {"verifier_passed": False}})
+    before = (world.workdir / "task_status.json").read_bytes()
+    [tool] = [t for t in D.domain_tools(root) if t.name == "edit_verifier"]
+    drop = [a.id for a in current.atoms if a.id != "w0.reason"]
+    with pytest.raises(RetryableToolError):
+        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="loosen", drop=drop)))
+    assert (world.workdir / "task_status.json").read_bytes() == before
+
+
+def test_the_ruling_reads_a_second_path_run_the_derivation_bought_for_the_task(tmp_path):
+    root, world, _ = _root(tmp_path, probe_model=object(), run_probe=probe_runner_over())
+    rows = dict(world.inputs["rerolls"])
+    alt = [row for row in rows["t1"] if row.get("run_id") == "alt"]
+    assert alt, "the world holds a second path Run"
+    root.rerolls = {"t1": [row for row in rows["t1"] if row.get("run_id") != "alt"]}
+    write_json(stage.extra_rerolls_path(world.workdir),
+               {"t1": [{**row, "reason": stage.SECOND_PATH_REASON, "batch": 1} for row in alt]})
+    _with_reference(world)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "edit_verifier"]
+    result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[_WIDE_CAP_PROPOSAL])))
+    [alt_path] = [r for r in result.rulings if r["name"] == "verifier_alt_path"]
+    assert alt_path["accepted"] is True, alt_path
+    assert "alt" in [row.get("run_id") for row in root.rerolls["t1"]]
+
+
+def _edit_tool(root):
+    [tool] = [t for t in D.domain_tools(root) if t.name == "edit_verifier"]
+    return tool
+
+
+def test_an_edit_of_one_payload_field_writes_a_new_version_with_the_other_atoms_untouched(tmp_path):
+    root, world, current = _root(tmp_path)
+    count = next(a for a in current.atoms if (a.target or {}).get("kind") == "entity_count")
+    others = [as_dict(a) for a in current.atoms if a.id != count.id]
+    result = _run(_edit_tool(root).execute(D.ProposeArgs(
+        task_id="t1", reason="widen the cap", edit=[{"id": count.id, "payload": {"count": 1000}}])))
+    body = read_json(world.workdir / "exam" / "verifiers" / "t1.json")
+    assert body["verifier_version"] == result.verifier_version != current.verifier_version
+    [edited] = [a for a in body["atoms"] if a["id"] == count.id]
+    assert edited["target"] == {**count.target, "count": 1000} and edited["kind"] == count.kind
+    assert [a for a in body["atoms"] if a["id"] != count.id] == others
+    assert [a["id"] for a in body["atoms"]] == [a.id for a in current.atoms], "the order stands"
+    assert len(root.history["t1"].versions) == 2, "one new version per call"
+
+
+def test_an_edit_of_an_unknown_atom_id_is_refused_by_name(tmp_path):
+    root, world, _ = _root(tmp_path)
+    with pytest.raises(RetryableToolError, match="'no-such-atom'"):
+        _run(_edit_tool(root).execute(D.ProposeArgs(
+            task_id="t1", reason="x", edit=[{"id": "no-such-atom", "payload": {"count": 2}}])))
+    assert not (world.workdir / "exam" / "verifiers" / "t1.json").exists()
+
+
+def test_an_edit_that_changes_an_atoms_kind_is_refused(tmp_path):
+    root, _, current = _root(tmp_path)
+    atom = current.atoms[0]
+    other = "hard" if atom.kind != "hard" else "required"
+    with pytest.raises(RetryableToolError, match="keeps the kind"):
+        _run(_edit_tool(root).execute(D.ProposeArgs(task_id="t1", reason="x",
+                                                    edit=[{"id": atom.id, "kind": other}])))
+
+
+def test_the_old_tool_name_still_works_and_its_result_says_it_is_deprecated(tmp_path):
+    root, _, _ = _root(tmp_path)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[_WIDE_CAP_PROPOSAL])))
+    assert result.summary.endswith(D.DEPRECATED_ALIAS)
+
+
+def test_a_note_carrying_an_atom_or_verifier_text_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="never an atom"):
+        D.write_note(tmp_path, "t1", "outcome_not_in_state", '{"id": "w0", "kind": "required"}')
+    with pytest.raises(ValueError, match="never an atom"):
+        D.write_note(tmp_path, "t1", "outcome_not_in_state", "add an atom demanding the count")
+    with pytest.raises(ValueError, match="not one of"):
+        D.write_note(tmp_path, "t1", "some other reason", "the outcome is only said")
+    assert not (tmp_path / D.NOTES_DIR).exists()
+
+
+def test_an_accepted_edit_rules_the_open_note_next_to_it(tmp_path):
+    root, world, _ = _root(tmp_path)
+    D.write_note(world.workdir, "t1", "outcome_not_in_state", "the outcome is only said to the user.")
+    assert D.open_note(world.workdir, "t1") is not None
+    result = _run(_edit_tool(root).execute(D.ProposeArgs(task_id="t1", reason="agree",
+                                                         add=[_WIDE_CAP_PROPOSAL])))
+    assert "note on task t1 is ruled" in result.summary
+    assert D.open_note(world.workdir, "t1") is None
+    ruling = read_json(D.ruling_path(world.workdir, "t1"))
+    assert ruling["move"] == "edit_verifier" and ruling["verdict"] == "agrees"
+
+
+def test_a_probe_and_a_finding_with_note_ruling_each_rule_an_open_note(tmp_path):
+    root, world, _ = _root(tmp_path)
+    [probe] = [t for t in D.domain_tools(root) if t.name == "probe"]
+    D.write_note(world.workdir, "t1", "needs_action_record", "the hand off leaves no row to check.")
+    _run(probe.execute(D.ProbeArgs(task_id="t1", events=[])))
+    assert read_json(D.ruling_path(world.workdir, "t1"))["move"] == "probe"
+    D.write_note(world.workdir, "t1", "fact_unavailable_to_user", "the user never learns the code.")
+    assert D.open_note(world.workdir, "t1") is not None, "a new note is open again"
+    [finding] = [t for t in D.domain_tools(root) if t.name == "finding"]
+    _run(finding.execute(D.FindingArgs(task_id="t1", kind="other", text="the code is in the first turn",
+                                       note_ruling="builder_wrong")))
+    ruling = read_json(D.ruling_path(world.workdir, "t1"))
+    assert ruling["move"] == "finding" and ruling["verdict"] == "builder_wrong"
+    with pytest.raises(ValueError, match="no open note"):
+        _run(finding.execute(D.FindingArgs(task_id="t1", kind="other", text="again",
+                                           note_ruling="builder_right")))
