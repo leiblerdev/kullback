@@ -1,6 +1,6 @@
 # Harness design (historical proposal, 2026-08-27): Builder and Runner
 
-> Status (2026-09-10): historical proposal. Superseded by ADR-0007 (docs/adr/0007-two-agents-and-gates-no-agent-can-write.md) and docs/architecture.md; kept for the record. Read those first.
+> Status (2026-09-10, checked 2026-09-24): historical proposal, kept for the record. Superseded by ADR-0007 (docs/adr/0007-two-agents-and-gates-no-agent-can-write.md), ADR-0011 (docs/adr/0011-one-core-one-bus-autonomous-builder.md) and docs/architecture.md; read those first. Module names below (`build.py`, `data_model.py`, `report.py`, `verifier.py`) are those of 2026-08-27 and no longer exist under those names.
 
 Status: proposal for grilling, 2026-08-27, revised after R25 (principles re-derived from environment-generation pipelines, D61). Terms (Harness, Builder, Runner, Environment, Run, Verifier, Verdict, Simulated user, Provenance, Assisted) are used as the decision log defines them. Decisions are cited as D-numbers from `decision-log.md`. Research is cited as R-numbers from `../research/`. This document answers "get back to me with design recommendations." Every section is open to challenge.
 
