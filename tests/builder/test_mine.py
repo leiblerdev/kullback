@@ -665,7 +665,7 @@ def retail_tool_names() -> set[str]:
 
 @pytest.mark.slow
 def test_mining_the_whole_corpus_finds_every_tool_table_id_pattern_and_column_class(retail_raw_files, raw_dir, tau2_retail_dir):
-    # Retail only: raw_dir also holds airline and telecom traces, checked separately.
+    # One corpus only: raw_dir also holds other corpora's traces, checked separately.
     traces: list[Trace] = []
     for path in retail_raw_files:
         traces += traces_from_raw(json.loads(path.read_text(encoding="utf-8")), file_hash=path.name)
@@ -1216,7 +1216,7 @@ def test_a_position_that_mixes_letters_and_digits_is_that_class_and_not_any_char
 
 
 # --- kind and table naming, against the domains the retail rules missed ------
-# docs/cross-domain-check.md: every case below is a tool or a table that airline or telecom got
+# docs/cross-domain-check.md: every case below is a tool or a table that another corpus got
 # wrong and retail never exercised. The retail-shaped cases at the end must keep their old answer.
 
 
@@ -1242,7 +1242,7 @@ def test_a_tool_that_returns_what_it_was_sent_is_a_write():
 
 
 def test_a_tool_that_answers_with_a_message_about_a_row_it_was_handed_is_a_write():
-    """Airline's `send_certificate` and telecom's `send_payment_request`, which return a sentence.
+    """A `send_certificate` and a `send_payment_request`, which return a sentence.
 
     Neither matches a write verb, neither returns a row, and neither was ever bracketed by two
     identical reads of the thing it touched, so the two stronger signals say nothing about them.
@@ -1301,7 +1301,7 @@ def test_quiet_evidence_needs_a_read_that_asked_about_what_the_call_named():
 
 
 def test_the_table_is_the_noun_before_the_preposition_not_after_it():
-    """Telecom filed every Bill under `customers`: `customer` is a token of the tool name, `bill` is not."""
+    """Every Bill was filed under `customers`: `customer` is a token of the tool name, `bill` is not."""
     row = '{"bill_id": "B1", "customer_id": "C1", "total_due": 10.0, "status": "Draft"}'
     traces = [one_trace("t1", [
         {"name": "get_bills_for_customer", "args": {"customer_id": "C1"}, "result": f"[{row}]"},

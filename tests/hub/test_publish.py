@@ -184,15 +184,15 @@ def test_a_release_is_refused_below_the_fidelity_bar_saying_the_number_and_passe
     assert manifest["preview"] is False
 
 
-def test_preview_passes_below_the_bar_and_the_card_opens_with_the_banner(nursery, tmp_path):
+def test_preview_passes_below_the_bar_and_the_card_says_it_is_a_preview_above_its_numbers(nursery, tmp_path):
     out = tmp_path / "package"
     manifest = publish_mod.stage(nursery, out, "leibler/nursery", preview=True,
                                  corpus="nursery traces", corpus_license="MIT")
     assert manifest["preview"] is True
     assert manifest["status"] == "preview"
     body = (out / package_mod.CARD_NAME).read_text(encoding="utf-8")
-    assert "> **Preview.**" in body
-    assert "66.7%" in body
+    status, table = body.index("Preview: below the 90% replay fidelity"), body.index("| Fidelity over Tasks | 66.7%")
+    assert status < table
 
 
 def test_an_environment_whose_replays_were_never_scored_cannot_be_a_release():
@@ -224,7 +224,7 @@ def test_a_card_states_the_corpus_licence_the_numbers_and_the_untrusted_count(nu
     assert "nursery traces" in body
     assert "MIT" in body
     assert str(manifest["content_hash"])[:16] in body
-    assert "2 of 3 Tasks are not trusted" in body
+    assert "| Not trusted | 2 of 3" in body
     assert "uv run kullback fetch leibler/nursery" in body
 
 
@@ -319,10 +319,14 @@ def test_the_environment_name_comes_from_the_flag_and_not_from_the_environment_r
 # --- the organisation card ------------------------------------------------------------
 
 
-def test_the_organisation_card_lists_every_environment_with_its_numbers_and_status(nursery, tmp_path):
+def test_the_organisation_card_has_a_row_only_for_each_environment_passed_with_its_numbers_and_status(
+        nursery, tmp_path):
     manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
     body = card_mod.organisation_card([{"name": "nursery", "repo_id": "leibler/nursery", "manifest": manifest}])
-    assert "| [nursery](https://huggingface.co/datasets/leibler/nursery) | 66.7% | 1 of 3 | 2 | preview |" in body
+    row = (f"| [leibler/nursery](https://huggingface.co/datasets/leibler/nursery) | 66.7% (2 of 3) | not measured | "
+           f"{manifest['verifier_derived']} | 1 of 3 | preview |")
+    assert row in body
+    assert [line for line in body.splitlines() if line.startswith("| [")] == [row]
     assert "kullback fetch leibler/<environment>" in body
 
 

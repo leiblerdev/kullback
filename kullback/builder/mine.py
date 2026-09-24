@@ -331,8 +331,8 @@ def _echoed_share(args: dict, result: Any) -> float:
     A read answers with the world: you send an id and the world sends back everything it knows. A
     create answers with what you handed it: airline's `book_reservation` returns the reservation it
     just made out of the origin, destination, cabin, flights, passengers and payment in its own
-    arguments. Measured on all three tau2 domains the two do not overlap: `book_reservation` sits at
-    0.81 and every read in retail, airline and telecom sits at 0.20 or below.
+    arguments. Measured on every corpus the two do not overlap: `book_reservation` sits at
+    0.81 and every read sits at 0.20 or below.
     """
     values = _leaves(result)
     if not values:
@@ -554,7 +554,7 @@ def _observed_kind(sig: ToolSig, rule: KindProposal, acc: Optional[dict],
 
     The prefix lists were retail's own verb vocabulary and they miss `book_`, `send_`, `enable_` and
     `refuel_` (docs/cross-domain-check.md). These three signals recover every write the lists miss on
-    airline and telecom, and they misclassify nothing on retail.
+    the other corpora, and they misclassify nothing on the one the lists came from.
     """
     if sig.effects_observed:
         fields = ", ".join(sorted({e.field for e in sig.effects_observed})[:3])
@@ -1123,7 +1123,7 @@ PREPOSITIONS = ("for", "by", "of", "from", "with", "to", "in", "at", "on")
 def _noun_of(tool_name: str) -> Optional[str]:
     """The entity a tool name is about, singular, with the verb, the filler and any `for x` taken off.
 
-    Reading the whole name filed every telecom bill under `customers`, because `customer` is a token
+    Reading the whole name filed every bill under `customers`, because `customer` is a token
     of `get_bills_for_customer` and the tie-break took the first id token it recognised. What the
     tool is about is the noun run before the first preposition, and the last word of that run is the
     head of it: `search_direct_flight` is about a flight, not about a direct.

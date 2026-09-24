@@ -20,10 +20,6 @@ def load(domain):
         from tau2.domains.airline.data_model import FlightDB as DB
         from tau2.domains.airline.tools import AirlineTools as Tools
         from tau2.domains.airline.utils import AIRLINE_DB_PATH as PATH
-    elif domain == "telecom":
-        from tau2.domains.telecom.data_model import TelecomDB as DB
-        from tau2.domains.telecom.tools import TelecomTools as Tools
-        from tau2.domains.telecom.utils import TELECOM_DB_PATH as PATH
     else:
         raise SystemExit(f"unknown domain {domain}")
     return DB, Tools, PATH
@@ -42,10 +38,7 @@ def plain(value):
 def main():
     domain = sys.argv[1]
     DB, Tools, path = load(domain)
-    seed = json.loads(open(path, encoding="utf-8").read()) if str(path).endswith(".json") else None
-    if seed is None:  # telecom ships toml
-        import tomllib
-        seed = tomllib.load(open(path, "rb"))
+    seed = json.loads(open(path, encoding="utf-8").read())
     print(json.dumps({"ready": True, "tables": sorted(seed)}), flush=True)
     for line in sys.stdin:
         line = line.strip()

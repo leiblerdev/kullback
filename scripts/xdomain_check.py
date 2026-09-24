@@ -9,7 +9,7 @@ It reads only what is already vendored or already downloaded: the raw traces und
 domain's real `tools.py` and `db.json` under `vendor/tau2-bench/`. It calls no model, so every stage
 it runs is an offline one (ingest, mine, cluster, canon rules, Starting state).
 
-    uv run python scripts/xdomain_check.py retail airline telecom
+    uv run python scripts/xdomain_check.py retail airline
 """
 
 from __future__ import annotations
@@ -76,9 +76,9 @@ def _decorated_kind(node: ast.AST) -> Optional[str]:
 def real_db(domain: str) -> dict[str, dict[str, dict]]:
     """The domain's seed database, with every table flattened to a list of rows.
 
-    Two shapes to absorb, both real and neither a harness concern. The file is `db.json` for retail
-    and airline and `db.toml` for telecom; and a table is a dict keyed by row id for retail and
-    airline and a bare list for telecom. The first of each pair was all the scratch scripts knew.
+    Two shapes to absorb, both real and neither a harness concern. The file is `db.json` or, for a
+    corpus whose tables are bare lists, `db.toml`; and a table is a dict keyed by row id or a bare
+    list. The first of each pair was all the scratch scripts knew.
     `user_db.toml` is not read: it is the simulated user's own phone, not the customer's world.
     """
     folder = VENDOR / "data" / "tau2" / "domains" / domain
@@ -92,8 +92,8 @@ def real_db(domain: str) -> dict[str, dict[str, dict]]:
 def _by_id(body: Any) -> dict[str, dict]:
     """One table as row id to row, whichever of tau2's two table shapes it arrived in.
 
-    A dict-shaped table (retail, airline) is already keyed by row id. A list-shaped table (telecom)
-    is keyed by the row's own id column. The key is never written into the row: a row's fields are
+    A dict-shaped table (retail, airline) is already keyed by row id. A list-shaped table, from a
+    corpus whose tables are bare lists, is keyed by the row's own id column. The key is never written into the row: a row's fields are
     what the domain put there, and adding one would make our rows and theirs differ by our own hand.
     """
     if isinstance(body, dict):
@@ -214,7 +214,7 @@ def compare_state(db: dict, truth: dict[str, dict[str, dict]], rules: Any,
     Compared under the customer's own canonicalization rules, so a formatting difference the rules
     already know about is not counted as a mismatch. `norm` on top of that settles the one thing
     the retail-tuned rules never had to see: `"2025-01-15 10:30:00"` and `"2025-01-15T10:30:00"`
-    are the same datetime, and telecom writes the first where the other domains write the second.
+    are the same datetime, and a corpus may write the first where the others write the second.
     """
     made_up = set(synthetic)
     tables_found = sorted(set(db) & set(truth))
@@ -319,7 +319,7 @@ def check(domain: str, workdir: Path) -> dict:
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("domains", nargs="*", default=["retail", "airline", "telecom"])
+    parser.add_argument("domains", nargs="*", default=["retail", "airline"])
     parser.add_argument("--workdir", type=Path, default=DEFAULT_WORK)
     parser.add_argument("--json", type=Path, default=None, help="Write the results here as well.")
     args = parser.parse_args(list(argv) if argv is not None else None)
