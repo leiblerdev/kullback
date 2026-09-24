@@ -563,8 +563,15 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
         harness.subscribe(subscriber)
     harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
     load_extensions(harness, [examiner_extension(exam_root, selected)])
-    opening_message = session_opening(exam_root, selected)
+    cap_notes = _run_session(harness, session_opening(exam_root, selected), max_turns, selected)
+    out = list(exam_root.findings) + note + cap_notes
+    write_json(root / "findings.json", [f.as_dict() for f in out])
+    return out
 
+
+def _run_session(harness: AgentHarness, opening_message: str, max_turns: int,
+                 selected: list[str]) -> list[Finding]:
+    """Play the session on its opening message; the one cap note when it stopped on the turn cap, else none."""
     capped: list[bool] = []
 
     async def go() -> None:
@@ -573,11 +580,10 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
                 capped.append(True)
 
     asyncio.run(go())
-    cap_note = turns_ran_out(max_turns, task_id=_last_task(harness.messages, selected),
-                             refusal=_last_refusal(harness.messages)) if capped else None
-    out = list(exam_root.findings) + note + ([cap_note] if cap_note else [])
-    write_json(root / "findings.json", [f.as_dict() for f in out])
-    return out
+    if not capped:
+        return []
+    return [turns_ran_out(max_turns, task_id=_last_task(harness.messages, selected),
+                          refusal=_last_refusal(harness.messages))]
 
 
 def _stopped_on_cap(message: Any) -> bool:

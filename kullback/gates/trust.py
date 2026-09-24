@@ -214,6 +214,27 @@ def unattributed_seeds(verifier: Verifier, workdir: Any, files: dict[str, dict[s
     return bad
 
 
+def _passing_probes(verifier: Verifier, pool: Any, canon_rules: Any, write_tools: Any) -> list[str]:
+    """The probes of the Task's pool the Verifier scores a pass, none without a pool."""
+    scores = probe_scores(verifier, as_pool(pool), canon_rules, write_tools) if pool is not None else {}
+    return [probe_id for probe_id, ok in scores.items() if ok]
+
+
+def _pool_ruling(held: dict) -> str:
+    """The false-rejection number in words, or NO_POOL when no held-out Run was scored."""
+    return NO_POOL if not held["held_out"] else f"{held['fraction']:.2f} of {held['held_out']} held-out Runs"
+
+
+def _skipped_stages(row: Any) -> list[str]:
+    """The checks the Task's status row says did not run, by their D79 names."""
+    return [D79_STAGES.get(stage, stage) for stage in (_get(row, "not_run", None) or [])]
+
+
+def _unattributed_seeds(verifier: Verifier, workdir: Any, files: dict) -> list[str]:
+    """The seeds that are not Runs of the Task, none without a workdir to check them in."""
+    return unattributed_seeds(verifier, workdir, files) if workdir is not None else []
+
+
 def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str, ProbePool],
                  history: dict[str, VerifierHistory], refusals: dict[str, dict], task_runs: dict[str, list[Run]],
                  replays: dict, rerolls: dict, canon_rules: Any, sigs: list, *,
@@ -241,18 +262,15 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     failures: list[str] = []
     for verifier in sorted(map(as_verifier, verifiers or ()), key=lambda v: v.task_id):
         task_id = verifier.task_id
-        pool = (probes or {}).get(task_id)
-        scores = probe_scores(verifier, as_pool(pool), canon_rules, write_tools) if pool is not None else {}
-        passing = [probe_id for probe_id, ok in scores.items() if ok]
+        passing = _passing_probes(verifier, (probes or {}).get(task_id), canon_rules, write_tools)
         probes_passing += len(passing)
         held = false_rejection(verifier, (task_runs or {}).get(task_id, []), legitimate.get(task_id, set()),
                                canon_rules, write_tools)
         fractions[task_id] = held["fraction"]
         pool_sizes[task_id] = held["held_out"]
-        pool_says[task_id] = NO_POOL if not held["held_out"] else \
-            f"{held['fraction']:.2f} of {held['held_out']} held-out Runs"
+        pool_says[task_id] = _pool_ruling(held)
         row = (task_status or {}).get(task_id) or {}
-        skipped = [D79_STAGES.get(stage, stage) for stage in (_get(row, "not_run", None) or [])]
+        skipped = _skipped_stages(row)
         if skipped:
             not_run[task_id] = skipped
         suite_passed = bool(_get(row, "verifier_passed", False))
@@ -263,7 +281,7 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
             reason = f"probe {passing[0]} scores a pass"
         elif not _is_accepted_version(verifier, (history or {}).get(task_id)):
             reason = f"version {version_hash(verifier)} is not an accepted version"
-        elif workdir is not None and (unattributed := unattributed_seeds(verifier, workdir, files)):
+        elif unattributed := _unattributed_seeds(verifier, workdir, files):
             foreign_seeds[task_id] = unattributed
             reason = (f"version {version_hash(verifier)} was derived from seeds that are not Runs of this Task: "
                       f"{', '.join(unattributed)}")
