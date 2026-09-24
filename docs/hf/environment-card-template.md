@@ -1,6 +1,6 @@
 # Environment card fields
 
-Every card under the organisation is rendered by `kullback/hub/card.py` from the package's `manifest.json` and from nothing else, so a number on a page is a number the package carries. This is what each field means and which record it is read from. Nothing on a card is written by hand, and nothing on it quotes a Task, a tool result or a status row: every reason a card gives is one of the harness's fixed phrases.
+`kullback/hub/card.py` renders every card from the package's `manifest.json` alone, and this is what each field means and where it is read from.
 
 | Field | Meaning | Read from |
 | --- | --- | --- |
@@ -10,9 +10,12 @@ Every card under the organisation is rendered by `kullback/hub/card.py` from the
 | tasks_total | Tasks on the frozen list | `tasks_frozen.json`, or the newest round snapshot |
 | replay_fidelity.tasks_rate | Share of Tasks with at least one confirmed replay | `replays.json` |
 | replay_fidelity.runs_rate | Share of replayed Runs that were confirmed | `replays.json` |
-| reference_confirmed | Tasks whose recordings agreed on an End state | `task_status.json` |
+| replay_fidelity.calls_rate | Share of recorded calls that agree, over `calls_total` | `replays.json` |
+| tag | The tag this publish carries | `round-<n>`, else `build-<YYYYMMDD>` of the newest session write |
+| counts_source | Where the counts came from | the last round record, else the workdir status |
+| reference_confirmed | Tasks with at least one confirmed replay | `replays.json` |
 | verifier_derived | Tasks with a Verifier on disk | `verifiers/` |
-| trusted | Tasks whose Verifier passed the whole suite | the last round's trusted ruling |
+| trusted | Tasks whose Verifier passed the whole suite | the last round's trusted ruling, else the Builder's status rule |
 | refused | Tasks the harness ruled nobody finished | the last round's refuse ruling |
 | funnel | How many Tasks stopped at each rung | the per-Task index the export writes |
 | buckets | Tasks and trusted Tasks per difficulty bucket | `difficulty.json` (D209), else computed |
@@ -27,9 +30,9 @@ Every card under the organisation is rendered by `kullback/hub/card.py` from the
 
 ## Front matter
 
-`license` is the source corpus's licence, lowercased to the id a dataset host indexes, or `other` where the publisher named none. `tags` is always `kullback`, `environment`, `agent-evaluation`, `rl-environment` followed by the Environment's own name, which is the domain.
+`license` is the corpus licence as the host's id, or `other` when none was named; `tags` is `kullback`, `environment`, `agent-evaluation`, `rl-environment` and the Environment's name.
 
 ## Preview and release
 
-A release requires replay fidelity over Tasks at or above 90%. Below that, `publish --preview` is the only form that is allowed, it sets `preview: true` in the manifest, and the card opens with a banner naming the bar and the Environment's own numbers.
+A release needs fidelity over Tasks of at least 90%; below that only `publish --preview` is allowed, and the card says so above its table.
 

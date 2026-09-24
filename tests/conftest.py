@@ -99,7 +99,7 @@ def raw_dir() -> Path:
     pytest.skip("raw traces not present")
 
 
-# The full raw_dir corpus also holds airline and telecom traces (fetched for a separate,
+# The full raw_dir corpus also holds other corpora's traces (fetched for a separate,
 # cross-domain check); tools mined from the whole folder would be gated against retail-only
 # thresholds, so tests scoped to retail read just these two files by name.
 RETAIL_RAW_FILES = (
@@ -110,7 +110,7 @@ RETAIL_RAW_FILES = (
 
 @pytest.fixture
 def retail_raw_files(raw_dir: Path) -> list[Path]:
-    """The two retail trace files in raw_dir; airline and telecom traces are checked elsewhere."""
+    """The two trace files named above, in raw_dir; other corpora's traces are checked elsewhere."""
     return [raw_dir / name for name in RETAIL_RAW_FILES]
 
 
