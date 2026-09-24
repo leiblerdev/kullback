@@ -640,7 +640,7 @@ def status_of(workdir: Any) -> dict[str, Any]:
                           read_json(root / "replays.json", None) or {},
                           read_json(root / "rerolls.json", None) or {},
                           read_json(root / "canon-rules.json", None),
-                          read_json(root / "tool_sigs.json", None) or [])
+                          read_json(root / "tool_sigs.json", None) or [], workdir=root)
     trusted = set(ruling.metrics.get("trusted") or [])
     refused = ruling.metrics.get("refused") or {}
     untrusted = ruling.metrics.get("untrusted") or {}
