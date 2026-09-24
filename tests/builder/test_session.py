@@ -337,6 +337,17 @@ def test_the_note_tool_refuses_a_note_carrying_an_atom_and_writes_a_plain_one(tm
     assert exam_tools.open_note(root, "t1") == result.note
 
 
+@pytest.mark.parametrize("task_id", ["../replays", "t1/../../replays", "/tmp/replays", "t2"])
+def test_the_note_tool_refuses_an_id_that_is_not_a_task_and_leaves_the_file_it_aimed_at(tmp_path, task_id):
+    root = _task_workdir(tmp_path)
+    (root / "replays.json").write_text('{"kept": true}', encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown Task"):
+        asyncio.run(_note_tool(root).execute(NoteArgs(task_id=task_id, reason="outcome_not_in_state",
+                                                      sentence="the answer is only said, never written.")))
+    assert (root / "replays.json").read_text(encoding="utf-8") == '{"kept": true}'
+    assert not (root / exam_tools.NOTES_DIR).exists()
+
+
 def test_a_task_with_an_open_note_cannot_be_refused_until_the_examiner_rules(tmp_path):
 
     root = _task_workdir(tmp_path)
@@ -353,7 +364,7 @@ def test_a_task_with_an_open_note_cannot_be_refused_until_the_examiner_rules(tmp
 
 
 def test_the_builders_opening_shows_the_examiners_ruling_on_its_note(tmp_path):
-    root = _workdir(tmp_path)
+    root = _task_workdir(tmp_path)
     exam_tools.write_note(root, "t1", "needs_action_record", "the hand off leaves no row to check.")
     assert "t1: needs_action_record: the hand off leaves no row to check. (open)" in session_mod.opening(root)
     exam_tools.rule_note(root, "t1", "finding", "builder_wrong", "the hand off writes a ticket row")

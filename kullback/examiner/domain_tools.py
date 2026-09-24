@@ -643,7 +643,7 @@ def _propose_verifier(root: ExamRoot, alias: bool = False):
     refusals: dict[str, int] = {}
 
     async def edit_verifier(args: ProposeArgs) -> ProposeResult:
-        current = _current(root, args.task_id)
+        current = _current(root, known_task(root.workdir, args.task_id))
         candidate = current.model_copy(deep=True, update={
             "atoms": _candidate_atoms(current, args.drop, args.add, args.edit),
             "verifier_version": _next_version(current)})
@@ -655,7 +655,7 @@ def _propose_verifier(root: ExamRoot, alias: bool = False):
             raise RetryableToolError(why + (_STOP if refusals[args.task_id] > REFUSALS_PER_TASK else ""))
         digest = version_hash(candidate)
         hist = _trial_history(root, args.task_id, current, candidate, digest, args.reason)
-        target = root.exam_dir / "verifiers" / f"{args.task_id}.json"
+        target = task_path(root.workdir, args.task_id, root.exam_dir / "verifiers")
         previous = target.read_bytes() if target.is_file() else None
         previous_verifier = root.verifiers.get(args.task_id)
         before = _status_snapshot(root, args.task_id)
@@ -707,6 +707,26 @@ NOTE_SENTENCE_CHARS = 300
 _NOTE_FORBIDDEN = ("{", "}", "[", "]", "predicate", "atom", "def ", "lambda", "return ")
 
 
+def task_ids_of(workdir: Any) -> list[str]:
+    """The workdir's Task ids, the stems of tasks/<id>.json: the one set a model-named id is checked against."""
+    return [path.stem for path in sorted((Path(workdir) / "tasks").glob("*.json")) if path.name != "tasks.json"]
+
+
+def known_task(workdir: Any, task_id: Any) -> str:
+    """The id when it is one of the workdir's Tasks, else a ValueError naming it unknown.
+
+    Membership, never a path check: an id with a separator, `..` or an absolute path is not a Task.
+    """
+    if not isinstance(task_id, str) or task_id not in task_ids_of(workdir):
+        raise ValueError(f"unknown Task {task_id!r}: it is not one of the Tasks under tasks/")
+    return task_id
+
+
+def task_path(workdir: Any, task_id: Any, folder: Any, suffix: str = ".json") -> Path:
+    """Where a Task's file lives under `folder`, resolved only for a known Task id."""
+    return Path(folder) / f"{known_task(workdir, task_id)}{suffix}"
+
+
 def notes_dir(workdir: Any) -> Path:
     return Path(workdir) / NOTES_DIR
 
@@ -748,7 +768,7 @@ def write_note(workdir: Any, task_id: str, reason: str, sentence: str) -> dict:
         raise ValueError(why)
     note = {"task_id": task_id, "reason": reason, "sentence": str(sentence).strip()}
     note["note_hash"] = note_hash(note)
-    write_json(note_path(workdir, task_id), note)
+    write_json(task_path(workdir, task_id, notes_dir(workdir)), note)
     return note
 
 
@@ -801,7 +821,7 @@ def rule_note(workdir: Any, task_id: Optional[str], move: str, verdict: str, tex
         return None
     ruling = {"task_id": task_id, "note_hash": note["note_hash"], "move": move, "verdict": verdict,
               "text": text}
-    write_json(ruling_path(workdir, task_id), ruling)
+    write_json(task_path(workdir, task_id, notes_dir(workdir), RULING_SUFFIX), ruling)
     return ruling
 
 
@@ -815,7 +835,7 @@ def note_line(task_id: str, note: dict, ruling: Optional[dict]) -> str:
 
 def _probe(root: ExamRoot):
     async def probe(args: ProbeArgs) -> ProbeResult:
-        verifier = _current(root, args.task_id)
+        verifier = _current(root, known_task(root.workdir, args.task_id))
         pool = root.probes.setdefault(args.task_id, [])
         probe_id = f"probe-{args.task_id}-{len(pool) + 1}"
         run = Run(run_id=probe_id, task_id=args.task_id, model="probe:examiner",
@@ -846,6 +866,8 @@ def _finding(root: ExamRoot):
         if kind not in FINDING_KINDS:
             raise ValueError(f"{args.kind!r} is not a finding kind. The kinds are: "
                              f"{', '.join(FINDING_KINDS)}.")
+        if args.task_id is not None:
+            known_task(root.workdir, args.task_id)
         if args.note_ruling is not None and open_note(root.workdir, args.task_id or "") is None:
             raise ValueError(f"task {args.task_id} has no open note from the Builder to rule on; "
                              "file the finding without note_ruling")
@@ -890,6 +912,7 @@ def _reroll(root: ExamRoot):
     from kullback.examiner.runners import _priced  # imported here: this closure is the only user
 
     async def reroll(args: RerollArgs) -> RerollResult:
+        known_task(root.workdir, args.task_id)
         if root.allowance_remaining is not None and root.allowance_remaining <= 0:
             raise RuntimeError(f"the allowance is spent ({root.allowance_remaining:.2f} left)")
         if root.reroll_model is None:
@@ -950,5 +973,5 @@ def tool_names() -> tuple[str, ...]:
 
 
 __all__ = ["DEPRECATED_ALIAS", "NOTES_DIR", "NOTE_REASONS", "note_line", "note_refusal", "notes_of",
-           "open_note", "read_note", "read_ruling", "rule_note", "ruling_path", "write_note", "REFUSALS_PER_TASK", "ROW_FIELDS", "SET_BY_TOOL", "FindingArgs", "FindingResult", "ProbeArgs", "ProbeResult", "ProposeArgs",
+           "known_task", "open_note", "read_note", "read_ruling", "rule_note", "ruling_path", "task_ids_of", "task_path", "write_note", "REFUSALS_PER_TASK", "ROW_FIELDS", "SET_BY_TOOL", "FindingArgs", "FindingResult", "ProbeArgs", "ProbeResult", "ProposeArgs",
            "ProposeResult", "RerollArgs", "RerollResult", "atoms_hash", "domain_tools", "render", "tool_names"]

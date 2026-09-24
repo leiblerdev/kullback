@@ -616,6 +616,25 @@ def test_a_note_carrying_an_atom_or_verifier_text_is_refused(tmp_path):
     assert not (tmp_path / D.NOTES_DIR).exists()
 
 
+def test_the_examiners_tools_refuse_an_id_that_is_not_a_task_and_write_nothing(tmp_path):
+    root, world, _ = _root(tmp_path)
+    aimed = world.workdir / "replays.json"
+    before = aimed.read_bytes()
+    tools = {t.name: t for t in D.domain_tools(root)}
+    calls = [tools["edit_verifier"].execute(D.ProposeArgs(task_id="../../replays", reason="x",
+                                                          add=[_WIDE_CAP_PROPOSAL])),
+             tools["probe"].execute(D.ProbeArgs(task_id="../t1", events=[])),
+             tools["finding"].execute(D.FindingArgs(task_id="../replays", kind="other", text="x"))]
+    for call in calls:
+        with pytest.raises(ValueError, match="unknown Task"):
+            _run(call)
+    with pytest.raises(ValueError, match="unknown Task"):
+        D.write_note(world.workdir, "../replays", "outcome_not_in_state", "the outcome is only said.")
+    assert aimed.read_bytes() == before
+    assert not (world.workdir / D.NOTES_DIR).exists() and not root.findings
+    assert D.known_task(world.workdir, "t1") == "t1"
+
+
 def test_an_accepted_edit_rules_the_open_note_next_to_it(tmp_path):
     root, world, _ = _root(tmp_path)
     D.write_note(world.workdir, "t1", "outcome_not_in_state", "the outcome is only said to the user.")
