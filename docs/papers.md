@@ -6,6 +6,12 @@ Rows are sorted by date sent or read, newest first. "Taken as" names the decisio
 
 | Date | Reference | Link | Taken as | Reading |
 | --- | --- | --- | --- | --- |
+| 2026-09-24 | Exgentic/agent-llm-traces-v2, multi-benchmark agent trace corpus (AppWorld, SWE-bench, BrowseCompPlus, tau2) | https://huggingface.co/datasets/Exgentic/agent-llm-traces-v2 | reading | docs/trace-sources/exgentic-agent-llm-traces-v2.md |
+| 2026-09-24 | ITBench-Trajectories, IBM SRE agent trajectories over live Kubernetes fault injection | https://huggingface.co/datasets/ibm-research/ITBench-Trajectories | reading | docs/trace-sources/itbench-trajectories.md |
+| 2026-09-24 | terminalbench-trajectories, Terminal-Bench 2.0 public leaderboard scrape | https://huggingface.co/datasets/yoonholee/terminalbench-trajectories | reading | docs/trace-sources/terminalbench-trajectories.md |
+| 2026-09-24 | Toolathlon-Verified Trajectories, agent runs over 32 real apps via MCP | https://huggingface.co/datasets/hkust-nlp/Toolathlon-Verified_Trajectories | reading | docs/trace-sources/toolathlon.md |
+| 2026-09-24 | AppWorld, trace sources across the native format, the HALO MCP redistribution and the Exgentic share | https://github.com/StonyBrookNLP/appworld | third-world candidate, ingest spike pending founder go | docs/trace-sources/appworld.md |
+| 2026-09-24 | Real-world trace candidates, four tiers from customer exports to look-real-but-are-not corpora | https://www.gharchive.org/ (tier 2 anchor; full list of sources in the file) | reading | docs/trace-sources/real-world-candidates.md |
 | 2026-09-22 | huggingface/Repo2RLEnv, re-read for the overhaul | https://github.com/huggingface/Repo2RLEnv | reading for the overhaul briefs (streams 5 to 8) | .claude/reports/repo2rlenv-overhaul-2026-09-22.md |
 | 2026-09-22 | huggingface/Repo2RLEnv (third reading, the auto-verification loop) | https://github.com/huggingface/Repo2RLEnv | pending founder decision (intermediate examined status, probe identity across repairs, rows cap per ruling) | .claude/reports/repo2rlenv-verification-loop-2026-09-22.md |
 | 2026-09-22 | huggingface/tau, taken as the shape of the overhaul (kullback/ai mirrors tau_ai, kullback/agent mirrors tau_agent) | https://github.com/huggingface/tau | ADR-0011 | vendor/tau (read-only clone), docs/adr/0011-one-core-one-bus-autonomous-builder.md |
