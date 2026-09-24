@@ -890,6 +890,9 @@ def domain_tools(*, workdir: Any, model: Any = None,
     async def replay(args: ReplayArgs) -> ReplayResult:
         if args.task_id is None:
             return replay_every_task()
+        from kullback.examiner.domain_tools import known_task
+
+        known_task(root, args.task_id)
         reports = runner_tool.replay_all(root, args.task_id, workdir=root)
         if not reports:
             raise ValueError(f"task {args.task_id} holds no recorded Trace to replay")
@@ -927,6 +930,9 @@ def domain_tools(*, workdir: Any, model: Any = None,
         named = args.task_ids if args.task_ids is not None else [args.task_id] if args.task_id else None
         runnable, no_verifier = _runnable_tasks(root) if named is None else ([], 0)
         task_ids = list(named) if named is not None else runnable
+        from kullback.examiner.domain_tools import known_task
+
+        task_ids = [known_task(root, task_id) for task_id in task_ids]
         # A Task without user rules would be played against no Simulated user: the candidate
         # gets its system prompt alone and invents a customer. It is named, never played (F34).
         env = BuiltEnvironment(root)
@@ -952,10 +958,9 @@ def domain_tools(*, workdir: Any, model: Any = None,
                          runs=rows, not_run=not_run, reasons=reasons, no_verifier=no_verifier)
 
     async def note_task(args: NoteArgs) -> NoteResult:
-        from kullback.examiner.domain_tools import write_note
+        from kullback.examiner.domain_tools import known_task, write_note
 
-        if not (root / "tasks" / f"{args.task_id}.json").is_file():
-            raise ValueError(f"there is no Task {args.task_id!r} under tasks/")
+        known_task(root, args.task_id)
         note = write_note(root, args.task_id, args.reason, args.sentence)
         return NoteResult(summary=f"note on task {args.task_id} ({args.reason}) written; the Examiner "
                                   "rules on it before the Task can be refused",

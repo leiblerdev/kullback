@@ -485,6 +485,7 @@ def test_the_session_root_holds_the_second_path_runs_the_derivation_bought(world
 
 def test_the_examiners_opening_lists_the_builders_open_notes_on_its_tasks(world):
     exam_tools.write_note(world.workdir, "t1", "fact_unavailable_to_user", "the user never learns the code.")
+    exam_tools.write_json(world.workdir / "tasks" / "t9.json", {"id": "t9"})
     exam_tools.write_note(world.workdir, "t9", "outcome_not_in_state", "only said, never written.")
     opening = S.session_opening(ExamRoot(workdir=world.workdir), ["t1"])
     assert "The Builder's notes" in opening
