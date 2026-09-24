@@ -26,6 +26,7 @@ baseline is the package's own world files, and the manifest also carries the str
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import shutil
@@ -35,7 +36,8 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from kullback import difficulty, domain
-from kullback.runner.records import content_hash, read_json, write_json
+from kullback.gates.verifier_suite import PROSE_MIN_LENGTH, elide_verifier_prose
+from kullback.runner.records import Verifier, as_dict, content_hash, read_json, write_json
 
 # 2: the manifest carries what the domain reading attests and what this Environment cannot execute
 # of it, so a card's numbers say how much of the domain the package covers (D225).
@@ -81,7 +83,7 @@ LEAK_MIN_LENGTH = 6
 # address, a date) is shorter than a sentence on any corpus; a recorded turn, a system prompt or a
 # quoted policy is longer. The two are treated differently because a grader has to carry values and
 # must never carry a transcript.
-CONTENT_MIN_LENGTH = 80
+CONTENT_MIN_LENGTH = PROSE_MIN_LENGTH  # the one line, shared with the derivation's prose check (D292)
 LEAK_BASELINE = ("the package's world files, the harness's own source, and, for a Verifier, the Task "
                  "instruction the candidate is handed")
 
@@ -411,10 +413,32 @@ def _lay_out(workdir: Path, out: Path, task_ids: list[str]) -> list[str]:
             written.append(f"tasks/{task_id}.json")
         verifier = workdir / "verifiers" / f"{task_id}.json"
         if verifier.is_file():
-            _copy(verifier, out / "verifiers" / f"{task_id}.json")
+            _copy_verifier(verifier, out / "verifiers" / f"{task_id}.json")
             written.append(f"verifiers/{task_id}.json")
     _refuse_forbidden(written)
     return written
+
+
+def _copy_verifier(source: Path, target: Path) -> int:
+    """Copy one Verifier, with the recorded agent's own prose taken out of it (D292), and count the atoms.
+
+    A Verifier derived before D292 can pin free text the recorded agent wrote into a tool argument.
+    The atom is reduced here exactly as the derivation now reduces it, so a finished build packages
+    without a rebuild, and the workdir is left as it is: its Verifier versions are named by content
+    hash in the exam history, the probe pools and the rulings, and a rewrite there would orphan them.
+    The reduced atom was an allowed one, which no check scores, so the package grades as the workdir.
+    A Verifier with nothing to reduce is copied byte for byte.
+    """
+    body = read_json(source, None)
+    if not isinstance(body, dict):
+        _copy(source, target)
+        return 0
+    verifier, changed = elide_verifier_prose(Verifier.model_validate(body))
+    if not changed:
+        _copy(source, target)
+        return 0
+    write_json(target, as_dict(verifier))
+    return changed
 
 
 def _refuse_forbidden(written: Iterable[str]) -> None:
@@ -489,6 +513,48 @@ def _baseline(package: Path, names: Iterable[str], min_length: int) -> tuple[set
     return values, "\n".join(text)
 
 
+def _literals(text: str) -> list[str]:
+    """The string constants of a string that parses as Python source (a predicate), else none.
+
+    A predicate quotes a value through repr, which escapes quotes and line breaks, so the value is
+    read back as the constant it is rather than searched for in the escaped text.
+    """
+    if "(" not in text:
+        return []
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return []
+    return [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+
+
+def _prose_index(corpus: set[str], content_min_length: int) -> dict[str, list[str]]:
+    """The corpus's prose strings keyed by their opening window, to find one quoted inside another string."""
+    index: dict[str, list[str]] = {}
+    for value in corpus:
+        if len(value) >= content_min_length:
+            index.setdefault(value[:content_min_length], []).append(value)
+    return index
+
+
+def embedded_prose(found: Iterable[str], index: dict[str, list[str]], width: int) -> set[str]:
+    """Corpus prose a string quotes inside itself: a description or a predicate that repeats a turn (D292).
+
+    The whole-string reading only sees a leaf that is itself a corpus string; a sentence that says
+    "the field is <a recorded paragraph>" is not one, and neither is a predicate that passes it as an
+    argument. Each window of the string is looked up by the prose's opening, so the cost is the length
+    of what is scanned and not the size of the corpus.
+    """
+    out: set[str] = set()
+    for value in found:
+        for text in [value, *_literals(value)]:
+            for start in range(len(text) - width + 1):
+                for prose in index.get(text[start:start + width], ()):
+                    if prose != value and text.startswith(prose, start):
+                        out.add(prose)
+    return out
+
+
 def harness_text() -> str:
     """The harness's own source, as one blob.
 
@@ -528,6 +594,7 @@ def leak_scan(package: Path, raw_dir: Path, *, min_length: int = LEAK_MIN_LENGTH
     env_values, env_text = _baseline(package, ("env",), min_length)
     task_values, task_text = _baseline(package, ("tasks",), min_length)
     harness = harness_text()
+    index = _prose_index(corpus, content_min_length)
 
     def accounted(value: str, values: set[str], text: str) -> bool:
         return value in values or value in text or value in harness
@@ -547,6 +614,7 @@ def leak_scan(package: Path, raw_dir: Path, *, min_length: int = LEAK_MIN_LENGTH
     for path, values, text in scanned:
         found = _file_strings(path, min_length)
         checked += len(found)
+        found |= embedded_prose(found, index, content_min_length)
         unaccounted = {value for value in found if value in corpus and not accounted(value, values, text)}
         leaks = {value for value in unaccounted if len(value) >= content_min_length}
         echoes = unaccounted - leaks
