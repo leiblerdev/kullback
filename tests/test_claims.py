@@ -12,6 +12,7 @@ from pathlib import Path
 from kullback import claims, difficulty, report
 from kullback.examiner import findings
 from kullback.report.render import _claims_table
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import Atom, Event, Run, ToolSig, Verifier, as_dict, write_json
 
 FIRE = "fire_kiln"
@@ -65,7 +66,7 @@ GENERAL = claims.general_stems()
 
 
 def _rows(run: Run, verifier=None):
-    return claims.rows_for([run], verifier, None, WRITE_TOOLS, VOCABULARY, GENERAL)[0]
+    return claims.rows_for([run], verifier, CanonRules(), WRITE_TOOLS, VOCABULARY, GENERAL)[0]
 
 
 # --- the vocabulary ------------------------------------------------------------
@@ -199,7 +200,7 @@ def _workdir(tmp_path: Path, said: list[str], calls: list[tuple[str, dict, dict]
                       "verifiers": [_verifier(_fire_atom())],
                       "task_runs": {"task_1": [run]},
                       "replays": {"task_1": {"t-a": {"run_id": "run-a", "confirmed": True}}},
-                      "rerolls": {}, "task_status": {}}
+                      "rerolls": {}, "task_status": {}, "canon_rules": CanonRules()}
 
 
 def test_a_workdir_reads_back_a_row_per_run_a_row_per_task_and_one_corpus_line(tmp_path):

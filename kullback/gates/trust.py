@@ -56,6 +56,7 @@ from kullback.gates.probes import (
     write_tools_of,
 )
 from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES
+from kullback.runner.canon import load_rules
 from kullback.runner.gate_support import _get, gate
 from kullback.runner.records import (
     GateResult,
@@ -325,5 +326,5 @@ def workdir_trusted_ruling(workdir: Any) -> GateResult:
     return trusted_gate(task_status if isinstance(task_status, dict) else {}, _live_verifiers(root),
                         load_probe_pools(root), load_exam_history(root), _refusal_files(root),
                         load_exam_task_runs(root), read_json(root / "replays.json", None) or {},
-                        read_json(root / "rerolls.json", None) or {}, read_json(root / "canon-rules.json", None),
+                        read_json(root / "rerolls.json", None) or {}, load_rules(root / "canon-rules.json"),
                         read_json(root / "tool_sigs.json", None) or [], workdir=root)

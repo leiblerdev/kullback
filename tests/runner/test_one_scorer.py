@@ -59,7 +59,7 @@ def make_run(run_id: str, events: list[dict]) -> Run:
 
 
 def _key(value) -> str:
-    return T._key(T.canon_fn(None), value)
+    return T._key(T.canon_fn(CanonRules()), value)
 
 
 def test_a_fact_stated_but_never_read_fails_the_one_scorer():
@@ -75,8 +75,8 @@ def test_a_fact_stated_but_never_read_fails_the_one_scorer():
         result({"entry_id": "E-100", "archived": True}, cid="c1"),
         assistant("Done, entry E-999 is archived."),
     ])
-    assert T.communicate_values(run, T.canon_fn(None)) == {}
-    assert S.check_run(verifier, run, write_tools=WRITE_TOOLS) == (False, "c0")
+    assert T.communicate_values(run, T.canon_fn(CanonRules())) == {}
+    assert S.check_run(verifier, run, CanonRules(), write_tools=WRITE_TOOLS) == (False, "c0")
     out = verdict(run, verifier, write_tools=WRITE_TOOLS)
     assert out.passed is False and out.failing_atom == "c0"
 
@@ -92,7 +92,7 @@ def test_a_value_hidden_inside_a_longer_word_fails_the_one_scorer():
         result({"entry_id": "XE-123", "title": "ledger"}, cid="c0"),
         assistant("Done, entry XE-123 is archived."),
     ])
-    assert S.check_run(verifier, run, write_tools=WRITE_TOOLS) == (False, "c0")
+    assert S.check_run(verifier, run, CanonRules(), write_tools=WRITE_TOOLS) == (False, "c0")
     out = verdict(run, verifier, write_tools=WRITE_TOOLS)
     assert out.passed is False and out.failing_atom == "c0"
 
@@ -109,7 +109,7 @@ def test_a_fact_stated_in_a_tool_call_turn_fails_the_one_scorer():
         assistant_with_call("Entry E-441 is archived.", "archive_entry", {"entry_id": "E-441"}, "c1"),
         result({"entry_id": "E-441", "archived": True}, cid="c1"),
     ])
-    assert S.check_run(verifier, run, write_tools=WRITE_TOOLS) == (False, "c0")
+    assert S.check_run(verifier, run, CanonRules(), write_tools=WRITE_TOOLS) == (False, "c0")
     out = verdict(run, verifier, write_tools=WRITE_TOOLS)
     assert out.passed is False and out.failing_atom == "c0"
 
@@ -128,25 +128,25 @@ def test_a_raising_hard_rule_is_a_defect_on_both_sides_and_fails_admission_not_t
         assistant("Done."),
     ])
     assert T.hard_holds(atom, run, WRITE_TOOLS) is None
-    assert S.check_run(verifier, run, write_tools=None) == (True, None)
+    assert S.check_run(verifier, run, CanonRules(), write_tools=None) == (True, None)
     out = verdict(run, verifier, write_tools=None)
     assert out.passed is False and out.class_ == "not_verdicted"
     # D79 admits no Verifier whose policy rule cannot run; the Candidate Run still passes.
-    entity = T.text_of(T.canon_fn(None)("E-100"))
+    entity = T.text_of(T.canon_fn(CanonRules())("E-100"))
     write = S.make_atom("w0", "required", {"kind": "write", "tool": "archive_entry",
                                               "entity": entity, "entity_raw": "E-100",
                                               "id_field": "entry_id"})
     admitted = Verifier(task_id="t9", verifier_version="v1", atoms=[write, atom])
     assert T.hard_defect(atom, run, WRITE_TOOLS) is True
-    assert S.check_run(admitted, run, write_tools=WRITE_TOOLS) == (True, None)
-    gates = {g.stage: g for g in S.validate_verifier(admitted, run, write_tools=WRITE_TOOLS)}
+    assert S.check_run(admitted, run, CanonRules(), write_tools=WRITE_TOOLS) == (True, None)
+    gates = {g.stage: g for g in S.validate_verifier(admitted, run, write_tools=WRITE_TOOLS, canon=CanonRules())}
     assert gates["verifier_oracle"].passed is False
 
 
 def test_customer_canon_rules_change_the_answer_where_the_default_would_not():
     """With case kept, ABC and abc differ; under the module default they are the same."""
     rules = CanonRules(lowercase=False)
-    fn_rules, fn_default = T.canon_fn(rules), T.canon_fn(None)
+    fn_rules, fn_default = T.canon_fn(rules), T.canon_fn(CanonRules())
     assert fn_rules("AB12") != fn_rules("ab12")
     assert fn_default("AB12") == fn_default("ab12")
     key = T._key(fn_rules, "AB12")
@@ -159,14 +159,14 @@ def test_customer_canon_rules_change_the_answer_where_the_default_would_not():
         assistant("The tag is AB12."),
     ])
     assert S.check_run(verifier, run, rules, write_tools=WRITE_TOOLS) == (True, None)
-    assert S.check_run(verifier, run, None, write_tools=WRITE_TOOLS) == (False, "c0")
+    assert S.check_run(verifier, run, CanonRules(), write_tools=WRITE_TOOLS) == (False, "c0")
     out = verdict(run, verifier, rules=rules, write_tools=WRITE_TOOLS)
     assert out.passed is True
 
 
 def test_the_gates_answers_on_plain_write_atoms_are_unchanged():
     """No Hard defect and no grounding gap: the moved scorer answers as the suite always did."""
-    fn = T.canon_fn(None)
+    fn = T.canon_fn(CanonRules())
     entity = T.text_of(fn("E-100"))
     atom = S.make_atom("w0", "required", {"kind": "write", "tool": "archive_entry",
                                           "entity": entity, "entity_raw": "E-100",
@@ -184,8 +184,8 @@ def test_the_gates_answers_on_plain_write_atoms_are_unchanged():
         result({"entry_id": "E-777", "archived": True}, cid="c1"),
         assistant("Done."),
     ])
-    assert S.check_run(verifier, good, write_tools=WRITE_TOOLS) == (True, None)
-    assert S.check_run(verifier, bad, write_tools=WRITE_TOOLS) == (False, "w0")
+    assert S.check_run(verifier, good, CanonRules(), write_tools=WRITE_TOOLS) == (True, None)
+    assert S.check_run(verifier, bad, CanonRules(), write_tools=WRITE_TOOLS) == (False, "w0")
     assert verdict(good, verifier, write_tools=WRITE_TOOLS).passed is True
     assert verdict(bad, verifier, write_tools=WRITE_TOOLS).passed is False
     assert _evaluate(atom.predicate_src, {"__builtins__": {}, "wrote": lambda *a, **k: True}) is True
@@ -220,3 +220,13 @@ def test_a_judged_run_still_names_and_records_its_unsettled_semantic_pair(tmp_pa
     assert out.notes.index("judge_abstained:j_tone") < out.notes.index(unresolved[0])
     uses = (tmp_path / "equivalence_uses.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(uses) == 1
+
+
+@pytest.mark.parametrize("given", [None, {}, {"lowercase": False}], ids=["none", "empty_dict", "raw_rules_dict"])
+def test_scoring_without_the_environments_rules_raises_and_names_the_caller(given):
+    verifier = Verifier(task_id="t1", atoms=[])
+    run = Run(run_id="r", task_id="t1", events=[])
+    with pytest.raises(T.CanonMissing, match="test_scoring_without_the_environments_rules_raises_and_names_the_caller"):
+        S.check_run(verifier, run, given)
+    with pytest.raises(T.CanonMissing, match="test_one_scorer.py"):
+        T.canon_fn(given)

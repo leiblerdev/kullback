@@ -37,6 +37,7 @@ from kullback.gates import verifier_suite as S
 from kullback.gates.bindings import BINDINGS, binding_for, load_trace_calls, rows_for, rulings_for
 from kullback.gates.loosening import false_rejection_gate, loosening_gate
 from kullback.gates.tool_runs import MEMORISED_STAGE, SensitivityPair
+from kullback.runner.canon import CanonRules
 from kullback.runner.records import (
     Column,
     Constraint,
@@ -325,7 +326,7 @@ def test_the_verifier_suite_refusal_names_the_check_and_the_atom(tmp_path):
                       predicate_src=("def check(pre_state, write_call, transcript):\n"
                                      "    return pre_state['orders']['#W123']['status'] == 'pending'\n"))
     verifier = derive(tmp_path, constraints=[rule])
-    results = S.validate_verifier(verifier, reference_run())
+    results = S.validate_verifier(verifier, reference_run(), canon=CanonRules())
     oracle = next(result for result in results if result.stage == "verifier_oracle")
     assert not oracle.passed
     rows = rows_for(oracle, {"verifier": verifier})
@@ -388,7 +389,7 @@ def test_loosening_and_false_rejection_refusals_name_their_runs(tmp_path):
     replays = {TASK: {"tr1": replay_row("tr1", True, run_id="ref")}}
     unfinished = {TASK: [reroll_row("rr2", "max_steps")]}
     hist = history(version(strict), version(plain, 2, by="repair", accepted=False))
-    out = loosening_gate(hist, runs, replays, unfinished, None, SIGS)
+    out = loosening_gate(hist, runs, replays, unfinished, CanonRules(), SIGS)
     assert not out.passed
     rows = rows_for(out, {})
     assert rows and rows[0] == {"task": TASK, "run": "rr2"}
@@ -396,7 +397,7 @@ def test_loosening_and_false_rejection_refusals_name_their_runs(tmp_path):
     strict = tighten(base(tmp_path)).model_copy(update={"seed_run_ids": ["ref"]})
     out = false_rejection_gate([strict], {TASK: [reference_run(), other_reason_run()]},
                                {TASK: {"tr1": replay_row("tr1", True, run_id="ref")}},
-                               {TASK: [reroll_row("rr2", "success")]}, None, SIGS, task_status={})
+                               {TASK: [reroll_row("rr2", "success")]}, CanonRules(), SIGS, task_status={})
     assert not out.passed
     rows = rows_for(out, {})
     assert rows and {row["run"] for row in rows if "run" in row} == {"rr2"}

@@ -22,6 +22,7 @@ from gates.examiner_fixtures import (
 from gates.verifier_fixtures import alt_path_run, other_reason_run, reference_run, write_events_jsonl, wrong_run
 from kullback.gates import trust as T
 from kullback.gates.probes import version_hash
+from kullback.runner.canon import CanonRules
 
 REFUSAL = {TASK: {"task_id": TASK, "reason": "no frontier Run reaches the End state", "round": 1}}
 NOTHING_FINISHED = ({TASK: {"tr1": replay_row("tr1", False)}}, {TASK: [reroll_row("reroll-t1-0", "max_steps")]})
@@ -61,7 +62,7 @@ def _world(tmp_path, verifier=None):
     return dict(task_status={TASK: status()}, verifiers=[verifier],
                 probes={TASK: pool(probe("probe-t1-1", wrong_run(), verifier))},
                 history=history(version(verifier)), refusals={}, task_runs=runs, replays=replays, rerolls=rerolls,
-                canon_rules=None, sigs=SIGS)
+                canon_rules=CanonRules(), sigs=SIGS)
 
 
 def test_a_verifier_meeting_every_trust_condition_is_trusted(tmp_path):
