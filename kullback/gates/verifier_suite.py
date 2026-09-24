@@ -454,33 +454,51 @@ def _predicate(payload: dict, helpers: str = "") -> str:
     passed by the derivation); a gate that only needs a rule that never holds passes none.
     """
     kind = payload.get("kind")
-    if kind == "write_value" and payload.get("filled"):
-        return f"filled({payload['tool']!r}, {payload['field']!r}, **{_write_fields(payload)!r})"
     if kind in ("write", "write_value"):
-        fields = _write_fields(payload)
-        return f"wrote({payload['tool']!r}, **{fields!r})" if fields else f"wrote({payload['tool']!r})"
+        return _write_predicate(payload)
     if kind == "entity_count":
         return f"writes_count() <= {int(payload['count'])}"
     if kind == "question":
-        # question_keys() is the only producer of a "question" payload, and both of its shapes
-        # ("confirm:{tool}" and "field:{field}", always with tool and field set) land in one of
-        # these two branches, so there is no third shape left for a predicate to fall back to.
-        head, _, rest = str(payload.get("key") or "").partition(":")
-        if head == "confirm":
-            return _CONFIRM_WRAPPER.format(words=repr(tuple(AFFIRMATIONS)), tool=repr(rest))
-        if payload.get("tool") and payload.get("field"):
-            return _FIELD_QUESTION_WRAPPER.format(spans=_SPANS_SRC, tool=repr(payload["tool"]),
-                                                  field=repr(payload["field"]))
+        return _question_predicate(payload)
     if kind == "communicate":
         return f"communicated({str(payload.get('text') or payload.get('value'))!r})"
     if kind == "hard":
-        rule = payload.get("predicate_src")
-        if not rule or payload.get("judge"):
-            return ""  # a judge atom is answered by judge.py, never by code (D76)
-        return _HARD_WRAPPER.format(helpers=helpers, spans=_SPANS_SRC, rule=rule,
-                                    write_tools=repr(sorted(payload.get("write_tools") or [])),
-                                    read_tools=repr(sorted(payload.get("read_tools") or [])))
+        return _hard_predicate(payload, helpers)
     return ""
+
+
+def _write_predicate(payload: dict) -> str:
+    """A write or write_value target: the field kept filled (D292), or the write with its fields."""
+    fields = _write_fields(payload)
+    if payload.get("kind") == "write_value" and payload.get("filled"):
+        return f"filled({payload['tool']!r}, {payload['field']!r}, **{fields!r})"
+    return f"wrote({payload['tool']!r}, **{fields!r})" if fields else f"wrote({payload['tool']!r})"
+
+
+def _question_predicate(payload: dict) -> str:
+    """A question target.
+
+    question_keys() is the only producer of a "question" payload, and both of its shapes
+    ("confirm:{tool}" and "field:{field}", always with tool and field set) land in one of
+    these two branches, so there is no third shape left for a predicate to fall back to.
+    """
+    head, _, rest = str(payload.get("key") or "").partition(":")
+    if head == "confirm":
+        return _CONFIRM_WRAPPER.format(words=repr(tuple(AFFIRMATIONS)), tool=repr(rest))
+    if payload.get("tool") and payload.get("field"):
+        return _FIELD_QUESTION_WRAPPER.format(spans=_SPANS_SRC, tool=repr(payload["tool"]),
+                                              field=repr(payload["field"]))
+    return ""
+
+
+def _hard_predicate(payload: dict, helpers: str) -> str:
+    """A Hard rule compiled with its helpers; a judge atom is answered by judge.py, never by code (D76)."""
+    rule = payload.get("predicate_src")
+    if not rule or payload.get("judge"):
+        return ""
+    return _HARD_WRAPPER.format(helpers=helpers, spans=_SPANS_SRC, rule=rule,
+                                write_tools=repr(sorted(payload.get("write_tools") or [])),
+                                read_tools=repr(sorted(payload.get("read_tools") or [])))
 
 
 def make_atom(atom_id: str, kind: str, payload: dict, *, helpers: str = "", **fields: Any) -> Atom:
