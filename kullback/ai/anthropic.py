@@ -86,11 +86,15 @@ class AnthropicProvider:
                                    config or ModelConfig())
         )
         payload["stream"] = True
+        # Encoded once, here: a handle that signs its requests signs these bytes, and these are
+        # the bytes posted.
+        content = self.handle.encode_body(payload)
         return stream_sse_events(
             client=self._get_client,
             url=self.handle.base_url + self.handle.path,
-            headers=self.handle.headers(),
+            headers=self.handle.headers(content),
             payload=payload,
+            content=content,
             parser_factory=MessagesStreamParser,
             parser_name=self.handle.name,
             model=self.handle.name,
@@ -115,6 +119,8 @@ class MessagesStreamParser:
         self._text: list[str] = []
         self._thinking: list[str] = []
         self._builders: dict[int, _ToolUseBuilder] = {}
+        # Thinking blocks by index, signature and all, for the next request to send back unchanged.
+        self._thinking_blocks: dict[int, dict] = {}
         self._finish_reason: Optional[str] = None
         self._usage = Usage()
 
@@ -131,7 +137,9 @@ class MessagesStreamParser:
                 self._usage = usage_from_anthropic(message.get("usage"))
         elif kind == "content_block_start":
             block = data.get("content_block")
-            if isinstance(block, dict) and block.get("type") == "tool_use":
+            if isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking"):
+                self._thinking_blocks[int(data.get("index", 0) or 0)] = dict(block)
+            elif isinstance(block, dict) and block.get("type") == "tool_use":
                 builder = self._builders.setdefault(int(data.get("index", 0) or 0), _ToolUseBuilder())
                 builder.id = str(block.get("id") or "")
                 builder.name = str(block.get("name") or "")
@@ -165,8 +173,13 @@ class MessagesStreamParser:
                 self.emitted_content = True
                 self._text.append(text)
                 return [ProviderTextDelta(delta=text)], False
+        elif kind == "signature_delta":
+            block = self._thinking_blocks.setdefault(int(data.get("index", 0) or 0), {"type": "thinking"})
+            block["signature"] = str(block.get("signature") or "") + str(delta.get("signature") or "")
         elif kind == "thinking_delta":
             thinking = str(delta.get("thinking") or "")
+            block = self._thinking_blocks.setdefault(int(data.get("index", 0) or 0), {"type": "thinking"})
+            block["thinking"] = str(block.get("thinking") or "") + thinking
             if thinking:
                 self.emitted_content = True
                 self._thinking.append(thinking)
@@ -187,6 +200,10 @@ class MessagesStreamParser:
                     thinking="".join(self._thinking) or None,
                     tool_calls=calls,
                     usage=self._usage,
+                    # An unsigned block (a stream cut before its signature) would be refused if
+                    # sent back, so only signed or redacted ones are kept.
+                    thinking_blocks=[block for _, block in sorted(self._thinking_blocks.items())
+                                     if block.get("signature") or block.get("data")] or None,
                 ),
                 finish_reason=self._finish_reason,
             )

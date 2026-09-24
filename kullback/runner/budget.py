@@ -35,6 +35,20 @@ PRICES: dict[str, dict[str, float]] = {
     "anthropic/claude-opus-5": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
     "anthropic/claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
     "anthropic/claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
+    # First-party Opus 5.5: the claude-api reference, model-migration.md line 2021 (4 / 20, cache
+    # reads 0.20, five-minute cache writes 5.00).
+    "anthropic/claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0},
+    # Claude in Amazon Bedrock (provider.BedrockAnthropicModel). AWS's price list for us-east-2
+    # (pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrockFoundationModels/current/
+    # us-east-2/index.json, published 2026-09-22, read 2026-09-24), the "Standard, Global" rows,
+    # cache_write at the five-minute TTL. The same list prices the in-region rows ten percent
+    # higher; which of the two a plain id on bedrock-mantle.<region> is billed at is not stated, so
+    # check the first bill. models.dev lists the provider as amazon-bedrock, not bedrock, and its
+    # bare-id match already answers for anthropic.claude-opus-5 and -sonnet-5 at these same rates.
+    "bedrock/anthropic.claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0},
+    "bedrock/anthropic.claude-opus-5": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
+    "bedrock/anthropic.claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
+    "bedrock/anthropic.claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
     # The first slice's Candidates (design section 11 step 6). OpenAI has no cache-write
     # charge, so cache_write is 0 and cached input is billed at cache_read.
     "openai/gpt-4.1-mini": {"input": 0.40, "output": 1.60, "cache_read": 0.10, "cache_write": 0.0},
@@ -62,6 +76,12 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "anthropic/claude-opus-5": 1_000_000,
     "anthropic/claude-sonnet-5": 1_000_000,
     "anthropic/claude-haiku-4-5": 200_000,
+    "anthropic/claude-opus-5-5": 1_000_000,
+    # The same models on Bedrock; Haiku 4.5 keeps its 200,000 there too (models.dev, amazon-bedrock).
+    "bedrock/anthropic.claude-opus-5-5": 1_000_000,
+    "bedrock/anthropic.claude-opus-5": 1_000_000,
+    "bedrock/anthropic.claude-sonnet-5": 1_000_000,
+    "bedrock/anthropic.claude-haiku-4-5": 200_000,
     "openai/gpt-4.1-mini": 1_000_000,
     "openai/o4-mini": 200_000,
     # Measured, not read off a page: a 500,000 token prompt was accepted, so this is a floor and

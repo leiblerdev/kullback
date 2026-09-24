@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import re
 import threading
 
 import pytest
@@ -857,7 +858,9 @@ def test_the_login_menu_starts_each_provider_at_a_model_the_key_variable_rule_ca
     screen = Screen(tmp_path, console=_console())
     for name, model in LOGIN_DEFAULT_MODELS.items():
         assert model.startswith(f"{name}/") and model.count("/") >= 1
-        assert screen._key_var_for(name, model).endswith("_API_KEY")
+        # PROVIDER_API_KEY by the rule, or the variable an adapter of its own names
+        # (Bedrock's AWS_BEARER_TOKEN_BEDROCK).
+        assert re.fullmatch(r"[A-Z][A-Z0-9_]*", screen._key_var_for(name, model))
 
 
 def test_help_keeps_the_bracketed_arguments_a_command_takes(tmp_path):
