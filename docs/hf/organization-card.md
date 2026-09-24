@@ -6,12 +6,10 @@
 
 | Environment | Fidelity over Tasks | Call fidelity | Verifiers | Trusted | Status |
 | --- | --- | --- | --- | --- | --- |
-| [leibler/retail](https://huggingface.co/datasets/leibler/retail) | 100.0% (205 of 205) | 100.00% of 3220 | 205 | 133 of 205 | release |
-| [leibler/airline](https://huggingface.co/datasets/leibler/airline) | 79.8% (95 of 119) | 96.03% of 1513 | 95 | 53 of 119 | preview |
+| [leibler/retail](https://huggingface.co/datasets/leibler/retail) | 100.0% (223 of 223) | 100.00% of 3220 | 222 | 193 of 223 | release |
+| [leibler/airline](https://huggingface.co/datasets/leibler/airline) | 100.0% (130 of 130) | 99.93% of 1513 | 128 | 82 of 130 | release |
 
-A newer build finished on 2026-09-24 (Claude Opus 5.5 on Amazon Bedrock) and replays every Task: retail 223 of 223 with 193 trusted, airline 130 of 130 with 82 trusted. It is not published yet because the export's leak scan found Verifiers that quote a recorded agent message word for word; the table above is the published 2026-09-23 build until that is fixed.
-
-The trusted counts are under review because some rest on a seed file several Tasks shared. Both come from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora (MIT); no package carries the recordings.
+Both are the 2026-09-24 build (tag `build-20260924`), built and examined with Claude Opus 5.5 on Amazon Bedrock. Both come from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora (MIT); no package carries the recordings, and the export's leak scan found none.
 
 ## Words
 

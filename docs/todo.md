@@ -12,8 +12,6 @@ list was cleared on 2026-09-22 for the overhaul and rebuilt on 2026-09-24 after 
 - Synthetic Task generation, on the D224 to D226 path: grounded scenarios, augmented seeds and traps, then
   generated Tasks hardened the way TauForge augments, validates and hardens. Every generated Task needs concise
   instructions and a high quality Verifier (founder, 2026-09-23).
-- Leak in Verifiers. In 13 Verifiers (1 retail, 12 airline) an atom's `target.raw` holds a whole recorded agent
-  message of 60 to 110 words, so the export's leak scan refuses to publish. Fix it generally, for every corpus.
 - Re-freeze the runner under the new hash before the next build, because the recorded tool-context feed changed
   kullback/runner. Verdicts from before and after the re-freeze are not comparable (D61). The patches still waiting
   in docs/frozen-patches (safe-write, speed-1, speed-3, confinement-holes and the others tests name) land in the
@@ -21,8 +19,6 @@ list was cleared on 2026-09-22 for the overhaul and rebuilt on 2026-09-24 after 
 - The two commits on overhaul-0922/pr2 after PR #121 merged (1d9203b, de52f22) are not on main yet.
 - Re-roll batches. One Builder run call plays at most RUNS_PER_CALL = 20 fresh Runs, which is why builds re-roll
   10 to 20 Tasks at a time. Measure whether a larger cap or parallel Runs helps.
-- Call fidelity shows calls_total 0 in the export manifest for both builds since the unrecorded-call change.
-  Check the count.
 - Cheaper runner model experiment. Record the Run kind in the ledger first, since second-path Runs dominate the
   runner's spend.
 - The airline body's hand-rolled id rule should go back to the context's new_id in the next build.
