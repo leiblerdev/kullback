@@ -225,7 +225,8 @@ def test_only_the_task_whose_intent_or_rerolls_changed_is_derived_again(tmp_path
     first = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=_counted_probe(calls), workers=2)
     assert first["task_status"]["t3"]["rerolls"] == 1
     rerolls = {task_id: [dict(row) for row in rows] for task_id, rows in world.inputs["rerolls"].items()}
-    rerolls["t3"].append({"run_id": "ref2", "path": world.paths["ref"], "termination_reason": "success"})
+    own_ref = world.inputs["replays"]["t3"]["ref"]["path"]
+    rerolls["t3"].append({"run_id": "ref2", "path": own_ref, "termination_reason": "success"})
     out = _derive(world.workdir, dict(world.inputs, rerolls=rerolls), probe_model=object(),
                   run_probe=_counted_probe(calls), workers=2)
     assert out["ran"] == 1 and out["cached"] == 2 and calls[3:] == ["t3"]
