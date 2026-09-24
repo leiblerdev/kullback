@@ -56,6 +56,7 @@ Rows are sorted by date sent or read, newest first. "Taken as" names the decisio
 | 2026-09-23 | huggingface/tau, reread for context, memory and skills | https://github.com/huggingface/tau (local vendor/tau) | deferred 2026-09-23, founder: memory is totally different now, revisit later (docs/todo.md) | .claude/reports/memory-management-2026-09-23.md |
 | 2026-09-23 | Kitaru (ZenML) product page. From the page: a replay-based evaluation tool, record, replay and evaluate agents against frozen production sessions before shipping a change | https://www.zenml.io/product/kitaru | founder, 2026-09-23: build evals on top of the built Environment | docs/todo.md ("Priority order after the overhaul (founder, 2026-09-23)") |
 | 2026-09-24 | models.dev page for Claude Opus 5.5, the founder's pricing reference for Opus 5.5 | https://models.dev/models/anthropic/claude-opus-5-5/ | founder, 2026-09-24: price Opus 5.5; Bedrock builds go on the global profile, the cheaper one | kullback/runner/budget.py (PRICES) |
+| 2026-09-24 | models.dev page for GPT-6 Sol on Amazon Bedrock's global profile: 1.05M context, 2 and 10 USD per million under 272k, cache and tools supported | https://models.dev/models/amazon-bedrock/global.openai.gpt-6-sol | founder, 2026-09-24: OpenAI models ride Bedrock too; price every call under its exact catalog row | kullback/ai/provider.py (BedrockOpenAIModel), kullback/runner/budget.py (PRICES, D289) |
 
 ## How to add one
 
