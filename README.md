@@ -24,9 +24,11 @@ Built 2026-09-24 with Claude Opus 5.5, published on Hugging Face as `build-20260
 | | [Retail](https://huggingface.co/datasets/leibler/retail) | [Airline](https://huggingface.co/datasets/leibler/airline) |
 |---|---|---|
 | Tasks | 223 | 130 |
-| Tasks replayed faithfully | 100% | 100% |
+| Tasks with a faithful replay | 100% | 100% |
 | Tool calls that match the recording | 100% | 99.9% |
 | Trusted Tasks (graded by a checked Verifier) | 193 | 82 |
+
+Every Task has at least one faithful replay. Over all recorded Runs, 456 of 456 retail and 199 of 200 airline replay faithfully.
 
 Both Environments come from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora (MIT); no package carries the recordings.
 
