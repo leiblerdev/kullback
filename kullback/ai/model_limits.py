@@ -8,6 +8,7 @@ Compaction at 40 percent of the window (the overhaul's rule, ADR-0011) reads
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional, Protocol, runtime_checkable
 
@@ -114,3 +115,23 @@ def request_rules_for(wire_id: Optional[str]) -> RequestRules:
     """
     name = str(wire_id or "").rpartition("/")[2].rpartition(".")[2]
     return REQUEST_RULES.get(name, DEFAULT_REQUEST_RULES)
+
+
+# An AWS inference profile names a model with a geography in front of Bedrock's own id:
+# `us.anthropic.claude-opus-5-5` and `global.anthropic.claude-opus-5-5` both answer as
+# `claude-opus-5-5` (live probe, us-east-2, 2026-09-24). The geography is a rule on the prefix,
+# not a list of models, so one price row and one rules row serve every profile of a model.
+_PROFILE_PREFIX = re.compile(r"^(?:us|eu|apac|ap|jp|au|us-gov|global)\.(?=[^.]+\.)")
+
+
+def without_profile(model_id: Optional[str]) -> Optional[str]:
+    """The id with any leading inference profile geography taken off its wire part.
+
+    `bedrock/us.anthropic.claude-opus-5-5` becomes `bedrock/anthropic.claude-opus-5-5`; an id with
+    no profile, or no Bedrock-shaped `vendor.model` after the geography, comes back unchanged.
+    """
+    if not model_id:
+        return model_id
+    head, slash, wire = model_id.rpartition("/")
+    return head + slash + _PROFILE_PREFIX.sub("", wire)
+

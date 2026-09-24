@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from kullback.ai import cache as cache_module
 from kullback.ai import pricing as pricing_module
+from kullback.ai.model_limits import without_profile
 from kullback.ai.provider import Model, ModelConfig, ModelReply
 from kullback.runner import feed
 from kullback.runner.records import Cost, Event, Usage
@@ -43,8 +44,8 @@ PRICES: dict[str, dict[str, float]] = {
     # (pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrockFoundationModels/current/
     # us-east-2/index.json, published 2026-09-22, read 2026-09-24), the "Standard, Global" rows,
     # cache_write at the five-minute TTL. The same list prices the in-region rows ten percent
-    # higher; which of the two a plain id on bedrock-mantle.<region> is billed at is not stated, so
-    # check the first bill. models.dev lists the provider as amazon-bedrock, not bedrock, and its
+    # higher, which is why a bare id goes out on the global. profile; a us. or eu. profile is
+    # looked up through the same row (without_profile) and so priced a little low. models.dev lists the provider as amazon-bedrock, not bedrock, and its
     # bare-id match already answers for anthropic.claude-opus-5 and -sonnet-5 at these same rates.
     "bedrock/anthropic.claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0},
     "bedrock/anthropic.claude-opus-5": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
@@ -59,7 +60,7 @@ PRICES: dict[str, dict[str, float]] = {
     # cannot see the model at all.
     "opencode-go/muse-spark-1.3-contributor": {"input": 0.10, "output": 0.20, "cache_read": 0.002,
                                                 "cache_write": 0.0},
-    # The harness default model (provider.DEFAULT_MODEL). OpenRouter's catalogue
+    # The harness default model until 2026-09-24, still a choice. OpenRouter's catalogue
     # (api/v1/models, read 2026-09-23), per-token prices times 1M, the tier below 272,000 prompt
     # tokens; a longer prompt is billed at twice the input and one and a half times the output,
     # so prompt_tier_limit keeps the D65 cap inside the priced tier (window_for).
@@ -207,17 +208,21 @@ def _price_from_models_dev(model_id: Optional[str]) -> Optional[dict[str, float]
 
 
 def price_for(model_id: Optional[str]) -> Optional[dict[str, float]]:
-    """Prices for a full 'provider/model' id, or for the wire id alone.
+    """Prices for a full 'provider/model' id, or for the wire id alone, with any inference
+    profile geography taken off first (model_limits.without_profile): one row per model serves
+    `bedrock/global.anthropic.claude-opus-5-5` and `bedrock/us.anthropic.claude-opus-5-5` alike.
 
     models.dev's live snapshot is asked first, since a vendor's list price changes without
     warning; PRICES below is the offline fallback for a model or a machine without one.
     """
+    model_id = without_profile(model_id)
     return _price_from_models_dev(model_id) or _lookup(PRICES, model_id)
 
 
 def price_source(model_id: Optional[str]) -> Optional[str]:
     """Where price_for's answer for this model came from: "models.dev" or "table". None when
     neither source prices the model."""
+    model_id = without_profile(model_id)
     if _price_from_models_dev(model_id) is not None:
         return "models.dev"
     if _lookup(PRICES, model_id) is not None:
@@ -240,6 +245,7 @@ def window_for(model_id: Optional[str]) -> int:
     tokens, so the window is cut to the limit over CONTEXT_CAP_FRACTION: the D65 cap never lets
     a prompt past the priced tier, where the ledger would bill it at the lower rate.
     """
+    model_id = without_profile(model_id)
     window = (_lookup(CONTEXT_WINDOWS, model_id)
               or pricing_module.window_from_catalog(_price_catalog(), model_id)
               or DEFAULT_CONTEXT_WINDOW)

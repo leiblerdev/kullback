@@ -976,11 +976,13 @@ def test_the_spend_since_the_last_close_counts_every_closed_round_not_only_the_l
     assert "round 3 running" in said and "$0.2500 since round 2 closed" in said
 
 
-def test_the_login_menu_starts_openai_at_the_harness_default_model():
+def test_the_login_menu_starts_bedrock_at_the_harness_default_model():
     from kullback.ai.provider import DEFAULT_MODEL
     from kullback.tui import LOGIN_DEFAULT_MODELS
 
-    assert LOGIN_DEFAULT_MODELS["openai"] == DEFAULT_MODEL
+    assert DEFAULT_MODEL == "bedrock/global.anthropic.claude-opus-5-5"
+    assert LOGIN_DEFAULT_MODELS["bedrock"] == DEFAULT_MODEL
+    assert LOGIN_DEFAULT_MODELS["openai"] == "openai/gpt-6-luna"
 
 
 # --- the live transcript ------------------------------------------------------

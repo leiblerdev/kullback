@@ -23,7 +23,7 @@ from kullback.ai.model_limits import request_rules_for
 from kullback.ai.usage import Usage
 from kullback.runner import budget
 
-MODEL = "bedrock/anthropic.claude-opus-5-5"
+MODEL = "bedrock/global.anthropic.claude-opus-5-5"
 KEYS = {"AWS_ACCESS_KEY_ID": "AKIDEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-real-secret"}
 TOOL = {"name": "look_up", "description": "d", "input_schema": {"type": "object"}}
 SIGNED_THINKING = {"type": "thinking", "thinking": "", "signature": "sig-abc"}
@@ -37,7 +37,7 @@ def live():
 def ok_reply(content=None, usage=None):
     return httpx.Response(200, json={
         "content": content or [{"type": "text", "text": "done"}],
-        "model": "anthropic.claude-opus-5-5", "stop_reason": "end_turn",
+        "model": "claude-opus-5-5", "stop_reason": "end_turn",
         "usage": usage or {"input_tokens": 10, "output_tokens": 2},
     })
 
@@ -61,7 +61,7 @@ def signature_holds(request, region, secret=KEYS["AWS_SECRET_ACCESS_KEY"]):
     given = {name: request.headers[name] for name in ("anthropic-version", "content-type")}
     again = sigv4.sign("POST", str(request.url), given, request.content, access_key="AKIDEXAMPLE",
                        secret_key=secret, session_token=request.headers.get("x-amz-security-token"),
-                       region=region, service="bedrock-mantle", now=when)
+                       region=region, service="bedrock", now=when)
     return again["authorization"] == request.headers["authorization"]
 
 
@@ -72,9 +72,9 @@ def test_the_endpoint_is_the_messages_path_on_the_region_from_the_environment_el
     bedrock(capture(seen), env={**KEYS, "AWS_DEFAULT_REGION": "ap-northeast-1"}).query(
         [{"role": "user", "content": "hi"}])
     assert [str(r.url) for r in seen] == [
-        "https://bedrock-mantle.us-east-2.api.aws/anthropic/v1/messages",
-        "https://bedrock-mantle.eu-west-1.api.aws/anthropic/v1/messages",
-        "https://bedrock-mantle.ap-northeast-1.api.aws/anthropic/v1/messages",
+        "https://bedrock-runtime.us-east-2.amazonaws.com/anthropic/v1/messages",
+        "https://bedrock-runtime.eu-west-1.amazonaws.com/anthropic/v1/messages",
+        "https://bedrock-runtime.ap-northeast-1.amazonaws.com/anthropic/v1/messages",
     ]
 
 
@@ -89,10 +89,10 @@ def test_access_keys_sign_the_exact_body_sent_with_no_api_key_header(live):
     request = seen[0]
     assert "x-api-key" not in request.headers
     assert request.headers["anthropic-version"] == "2023-06-01"
-    assert request.headers["host"] == "bedrock-mantle.us-east-2.api.aws"
+    assert request.headers["host"] == "bedrock-runtime.us-east-2.amazonaws.com"
     assert request.headers["authorization"].startswith(
         "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/" + request.headers["x-amz-date"][:8]
-        + "/us-east-2/bedrock-mantle/aws4_request, SignedHeaders=anthropic-version;content-type;host;x-amz-date,")
+        + "/us-east-2/bedrock/aws4_request, SignedHeaders=anthropic-version;content-type;host;x-amz-date,")
     assert "x-amz-security-token" not in request.headers
     assert signature_holds(request, "us-east-2")
 
@@ -121,17 +121,32 @@ def test_the_wire_id_goes_unchanged_and_cache_points_sit_on_blocks_never_top_lev
     bedrock(capture(seen)).query(
         [{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}], tools=[TOOL])
     body = json.loads(seen[0].content)
-    assert body["model"] == "anthropic.claude-opus-5-5"
+    assert body["model"] == "global.anthropic.claude-opus-5-5"
     assert "cache_control" not in body
     assert body["system"][-1]["cache_control"] == {"type": "ephemeral"}
     assert body["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
 
 
+def test_a_profile_id_or_an_arn_goes_as_given_and_a_bare_id_goes_on_the_global_profile_in_every_region():
+    arn = "arn:aws:bedrock:us-east-2:111122223333:application-inference-profile/abc123"
+    for env in (KEYS, {**KEYS, "AWS_REGION": "eu-west-1"}, {**KEYS, "AWS_REGION": "ap-northeast-1"}):
+        def wire(model_id, env=env):
+            return pv.BedrockAnthropicModel(model_id, env=env).wire_id
+        assert wire("bedrock/us.anthropic.claude-opus-5-5") == "us.anthropic.claude-opus-5-5"
+        assert wire("bedrock/global.anthropic.claude-opus-5-5") == "global.anthropic.claude-opus-5-5"
+        assert wire("bedrock/anthropic.claude-opus-5-5") == "global.anthropic.claude-opus-5-5"
+        assert wire("bedrock/anthropic.claude-haiku-4-5-20251001-v1:0") == (
+            "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+        assert wire("bedrock/" + arn) == arn
+
+
 def test_no_keys_at_all_is_refused_by_naming_the_aws_variables(live):
+    assert pv.DEFAULT_MODEL.startswith("bedrock/")
     with pytest.raises(pv.ProviderError) as refused:
-        bedrock(capture([]), env={}).query([{"role": "user", "content": "hi"}])
+        bedrock(capture([]), env={}, model_id=pv.DEFAULT_MODEL).query([{"role": "user", "content": "hi"}])
     text = str(refused.value)
-    for name in ("AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+    for name in ("AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+                 "AWS_REGION"):
         assert name in text
 
 
@@ -178,6 +193,8 @@ def test_the_rules_are_read_by_model_whatever_prefix_the_host_puts_on_the_id():
     rules = request_rules_for("claude-opus-5-5")
     assert request_rules_for("anthropic.claude-opus-5-5") == rules
     assert request_rules_for("us.anthropic.claude-opus-5-5") == rules
+    assert request_rules_for("global.anthropic.claude-opus-5-5") == rules
+    assert request_rules_for("bedrock/global.anthropic.claude-opus-5-5") == rules
     assert rules.thinking_always_on and not rules.forced_tool_choice and not rules.sampling
     assert request_rules_for("anthropic.claude-haiku-4-5") == request_rules_for(None)
 
@@ -247,7 +264,7 @@ def test_the_stream_is_signed_over_the_bytes_it_posts_and_keeps_the_signed_think
 
     events = asyncio.run(run())
     request = seen[0]
-    assert str(request.url) == "https://bedrock-mantle.eu-west-1.api.aws/anthropic/v1/messages"
+    assert str(request.url) == "https://bedrock-runtime.eu-west-1.amazonaws.com/anthropic/v1/messages"
     assert json.loads(request.content)["stream"] is True
     assert signature_holds(request, "eu-west-1")
     done = events[-1].message
@@ -268,3 +285,13 @@ def test_a_bedrock_call_is_priced_and_its_window_is_known():
     for model in ("bedrock/anthropic.claude-opus-5", "bedrock/anthropic.claude-sonnet-5",
                   "bedrock/anthropic.claude-haiku-4-5"):
         assert budget.is_priced(model)
+
+
+def test_every_inference_profile_of_a_model_is_priced_and_windowed_by_the_one_row():
+    usage = Usage(input=1_000_000, output=1_000_000, cache_read=1_000_000, cache_write=1_000_000)
+    for profile in ("global.", "us.", "eu.", "apac.", ""):
+        model = f"bedrock/{profile}anthropic.claude-opus-5-5"
+        assert budget.call_cost(usage, model) == pytest.approx(29.2)
+        assert budget.window_for(model) == 1_000_000
+    assert budget.window_for("bedrock/us.anthropic.claude-haiku-4-5") == 200_000
+    assert budget.price_source("bedrock/global.anthropic.claude-sonnet-5") is not None
