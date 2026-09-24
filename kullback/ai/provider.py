@@ -34,7 +34,7 @@ from typing import Any, AsyncIterator, Iterable, Optional, Protocol, Sequence, r
 from urllib.parse import urlparse
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
 # ruff: noqa: F401 - the imports below that this module does not itself use are the re-exports
 # named in the note under them: the rest of the Harness spells them kullback.ai.provider.X.
@@ -61,6 +61,7 @@ from kullback.ai.http_errors import (
     is_context_overflow,
 )
 from kullback.ai.messages import Message
+from kullback.ai.model_limits import request_rules_for
 from kullback.ai.retry import (
     RetryPolicy,
     backoff_delay,
@@ -147,6 +148,17 @@ class ModelReply(BaseModel):
     # What the adapter sent to get this reply. None on the three offline models: TestModel and
     # RecordedModel never touch a wire, and a MemoModel hit carries the original call's exchange.
     exchange: Optional[Exchange] = None
+    # The Messages API's signed thinking blocks, exactly as they came, for the next request of the
+    # conversation to send back unchanged (see AnthropicModel.parse_reply). A reply without them
+    # omits the key when dumped, so a memo or recording written before the field is unchanged.
+    thinking_blocks: Optional[list[dict]] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_thinking_blocks(self, handler):
+        data = handler(self)
+        if self.thinking_blocks is None:
+            data.pop("thinking_blocks", None)
+        return data
 
 
 class ModelConfig(BaseModel):
@@ -538,6 +550,14 @@ def _read_assistant_replies(path: Path) -> list[ModelReply]:
 ENV_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 CACHE_CONTROL = {"type": "ephemeral"}
 TEXT_BLOCK_TYPES = ("text", "reasoning", "thinking")
+# The Messages API's reasoning blocks, which a later request sends back byte for byte.
+THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
+# A wire assistant message may carry the reply's thinking blocks under this key; only the Messages
+# API shape reads it, and the OpenAI shapes' key whitelist drops it.
+THINKING_BLOCKS_KEY = "thinking_blocks"
+# Said in the system prompt when a caller asks for a tool call from a model that refuses a forced
+# tool_choice (model_limits.RequestRules.forced_tool_choice): `auto` goes on the wire instead.
+FORCED_TOOL_LINE = "Answer this turn with a tool call."
 # The keys of a request body that are the prompt itself rather than the sampling: each adapter
 # builds a different body, so the sampling is what is left after these come out, never a list of
 # the fields worth keeping (a field nobody enumerated is a field a Run would not record).
@@ -586,6 +606,10 @@ def strip_surrogates_deep(value: Any) -> Any:
 def _is_empty_block(block: Any) -> bool:
     if not isinstance(block, dict):
         return not block
+    if block.get("type") in THINKING_BLOCK_TYPES and (block.get("signature") or block.get("data")):
+        # A signed thinking block comes back with empty text under the default display and still
+        # has to be echoed; only the signature (or the redacted payload) says it is real.
+        return False
     if block.get("type") in TEXT_BLOCK_TYPES:
         text = block.get("text") or block.get("thinking") or ""
         return not str(text).strip()
@@ -643,8 +667,13 @@ def cache_last_two(messages: list[dict]) -> list[dict]:
         if marked >= 2 or message.get("role") == "system":
             continue
         blocks = message.get("content")
-        if isinstance(blocks, list) and blocks and isinstance(blocks[-1], dict):
-            blocks[-1] = {**blocks[-1], "cache_control": CACHE_CONTROL}
+        if not isinstance(blocks, list):
+            continue
+        # A thinking block cannot carry a cache point, so the point goes on the last block that can.
+        last = next((i for i in range(len(blocks) - 1, -1, -1) if isinstance(blocks[i], dict)
+                     and blocks[i].get("type") not in THINKING_BLOCK_TYPES), None)
+        if last is not None:
+            blocks[last] = {**blocks[last], "cache_control": CACHE_CONTROL}
             marked += 1
     return out
 
@@ -689,6 +718,25 @@ class HttpModel(Model):
         # Request-shape fields an endpoint's 400 taught this instance (see `shape_adjustment`).
         self.shape_fixes: set[str] = set()
 
+    @classmethod
+    def credential_vars(cls) -> tuple[tuple[str, ...], ...]:
+        """The environment variables that authenticate this adapter: any one group, fully set, is enough.
+
+        One place for the names, so the missing-key error and the TUI's /login status say the same
+        thing. Most adapters read one key; an adapter that signs requests reads several.
+        """
+        return ((cls.key_env_var,),) if cls.key_env_var else ()
+
+    def has_credentials(self) -> bool:
+        return bool(self.api_key)
+
+    def missing_key_message(self) -> str:
+        return f"no API key for {self.name}; set {self.key_env_var} or pass api_key"
+
+    def encode_body(self, body: dict) -> bytes:
+        """The exact bytes posted: httpx's own JSON encoding, spelled here so a signer sees them."""
+        return json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
     def client(self) -> Any:
         # httpx.Client is safe to share across threads; creating it is the one step that is
         # not, so the first caller makes it and the rest wait (D118).
@@ -705,8 +753,8 @@ class HttpModel(Model):
         config: Optional[ModelConfig] = None,
     ) -> ModelReply:
         require_live_calls_enabled()
-        if self.key_required and not self.api_key:
-            raise ProviderError(f"no API key for {self.name}; set {self.key_env_var} or pass api_key")
+        if self.key_required and not self.has_credentials():
+            raise ProviderError(self.missing_key_message())
         config = config or ModelConfig()
         body = self.build_body(messages, tools, config)
         started = time.monotonic()
@@ -758,11 +806,14 @@ class HttpModel(Model):
         # builds a body and posts it must not reach the transport while live calls are off.
         require_live_calls_enabled()
         url = self.base_url + self.path
-        headers = self.headers()
+        content = self.encode_body(body)
         for attempt in range(1, self.retry.attempts + 1):
             last_attempt = attempt == self.retry.attempts
+            # Per attempt: a signed request carries its time, and a retry after a long wait
+            # would otherwise send a signature the endpoint has stopped accepting.
+            headers = self.headers(content)
             try:
-                response = self.client().post(url, headers=headers, json=body, timeout=self.request_timeout)
+                response = self.client().post(url, headers=headers, content=content, timeout=self.request_timeout)
             except httpx.HTTPError as exc:
                 if last_attempt:
                     # A timeout names the budget that was in force, so the log line that lands
@@ -830,7 +881,9 @@ class HttpModel(Model):
             return ContextOverflowError(text, status=response.status_code, body=body)
         return ProviderError(text, status=response.status_code, body=body)
 
-    def headers(self) -> dict:
+    def headers(self, body: Optional[bytes] = None) -> dict:
+        """The headers of one request. `body` is the exact bytes that will be posted, for an adapter
+        that signs them; the others ignore it."""
         raise NotImplementedError
 
     def build_body(self, messages: list[dict], tools: Optional[list[dict]], config: ModelConfig) -> dict:
@@ -849,7 +902,7 @@ class AnthropicModel(HttpModel):
     api_version = "2023-06-01"
     default_max_tokens = 4096
 
-    def headers(self) -> dict:
+    def headers(self, body: Optional[bytes] = None) -> dict:
         return {
             "x-api-key": self.api_key or "",
             "anthropic-version": self.api_version,
@@ -857,6 +910,9 @@ class AnthropicModel(HttpModel):
         }
 
     def build_body(self, messages: list[dict], tools: Optional[list[dict]], config: ModelConfig) -> dict:
+        # What this model refuses, read from one table by capability (model_limits.REQUEST_RULES),
+        # so the same model is asked the same way on every host that serves it.
+        rules = request_rules_for(self.wire_id)
         system, converted = _to_anthropic(messages)
         body: dict[str, Any] = {
             "model": self.wire_id,
@@ -867,16 +923,28 @@ class AnthropicModel(HttpModel):
             body["system"] = cache_system(system)
         if tools:
             body["tools"] = [_anthropic_tool(t) for t in tools]
-            if config.tool_choice:
-                body["tool_choice"] = dict(ANTHROPIC_TOOL_CHOICE[config.tool_choice])
-        if config.temperature is not None:
+            choice = config.tool_choice
+            if choice == "required" and not rules.forced_tool_choice:
+                # A forced choice is a 400 on this model: `auto` goes on the wire and the demand
+                # moves into the prompt, after the cache point so the cached system stays reusable.
+                choice = "auto"
+                body["system"] = list(body.get("system") or []) + [{"type": "text", "text": FORCED_TOOL_LINE}]
+            if choice:
+                body["tool_choice"] = dict(ANTHROPIC_TOOL_CHOICE[choice])
+        if config.temperature is not None and rules.sampling:
             body["temperature"] = config.temperature
         if config.stop:
             body["stop_sequences"] = list(config.stop)
         # Reasoning branch one of three: Anthropic takes thinking as its own block and the
         # depth as output_config.effort. budget_tokens is not sent: the current models reject it.
-        if config.thinking:
-            body["thinking"] = dict(config.thinking)
+        thinking = dict(config.thinking or {})
+        if rules.thinking_always_on:
+            # Disabled or budgeted thinking is a 400 here; leaving the field out is adaptive.
+            thinking.pop("budget_tokens", None)
+            if thinking.get("type") != "adaptive":
+                thinking = {}
+        if thinking:
+            body["thinking"] = thinking
         if config.effort:
             body["output_config"] = {"effort": config.effort}
         # config.logprobs and config.top_logprobs are deliberately not sent: the Messages API has
@@ -886,10 +954,16 @@ class AnthropicModel(HttpModel):
     def parse_reply(self, data: dict) -> ModelReply:
         text: list[str] = []
         calls: list[ToolCallRequest] = []
+        thinking: list[dict] = []
         for block in data.get("content") or []:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "text":
+            if block.get("type") in THINKING_BLOCK_TYPES:
+                # Kept whole, signature and all: the next request of a tool loop sends them back
+                # unchanged (preserved thinking), and an edited block is a 400.
+                if block.get("signature") or block.get("data"):
+                    thinking.append(copy.deepcopy(block))
+            elif block.get("type") == "text":
                 text.append(block.get("text") or "")
             elif block.get("type") == "tool_use":
                 calls.append(
@@ -906,7 +980,73 @@ class AnthropicModel(HttpModel):
             model=data.get("model") or self.wire_id,
             stop_reason=data.get("stop_reason"),
             raw=data,
+            thinking_blocks=thinking or None,
         )
+
+
+# Claude in Amazon Bedrock: the Messages API on AWS, read 2026-09-24 from
+# platform.claude.com/docs/en/build-with-claude/claude-in-amazon-bedrock.md (the endpoint, line 144;
+# the SigV4 service in its curl example, line 152; the regions, line 378 on) and from the anthropic
+# SDK's src/anthropic/lib/bedrock/_mantle.py (the service name, line 36; the bearer variables,
+# line 38; the base URL, line 143; the bearer header, line 234; anthropic-version, line 242).
+BEDROCK_SERVICE = "bedrock-mantle"
+BEDROCK_DEFAULT_REGION = "us-east-2"
+BEDROCK_BEARER_VARS = ("AWS_BEARER_TOKEN_BEDROCK", "ANTHROPIC_AWS_API_KEY")
+BEDROCK_KEY_VARS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
+BEDROCK_SESSION_VAR = "AWS_SESSION_TOKEN"
+
+
+def bedrock_region(env: dict[str, str]) -> str:
+    """AWS_REGION, then AWS_DEFAULT_REGION (the SDK's order), else the Harness default."""
+    return env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION") or BEDROCK_DEFAULT_REGION
+
+
+class BedrockAnthropicModel(AnthropicModel):
+    """Claude through Amazon Bedrock's Messages endpoint: the Anthropic body, AWS authentication.
+
+    The body, the cache points and the model rules are AnthropicModel's unchanged; the wire id is
+    Bedrock's own (`anthropic.claude-opus-5-5`). Two ways in, in the SDK's order for keys read from
+    the environment: a Bedrock API key (AWS_BEARER_TOKEN_BEDROCK) goes as a bearer token, else the
+    access key pair signs every request with SigV4 over the exact body bytes. Keys come from the
+    environment or .env only: no profile files, no instance metadata, no STS.
+    """
+
+    key_env_var = BEDROCK_BEARER_VARS[0]
+    path = "/v1/messages"
+
+    def __init__(self, model_id: str, base_url: Optional[str] = None, **kwargs):
+        env = dict(os.environ) if kwargs.get("env") is None else dict(kwargs["env"])
+        self.region = bedrock_region(env)
+        default = f"https://bedrock-mantle.{self.region}.api.aws/anthropic"
+        super().__init__(model_id, base_url=base_url or default, **kwargs)
+        self.api_key = self.api_key or next((self.env[v] for v in BEDROCK_BEARER_VARS if self.env.get(v)), None)
+        self.access_key = self.env.get(BEDROCK_KEY_VARS[0]) or None
+        self.secret_key = self.env.get(BEDROCK_KEY_VARS[1]) or None
+        self.session_token = self.env.get(BEDROCK_SESSION_VAR) or None
+
+    @classmethod
+    def credential_vars(cls) -> tuple[tuple[str, ...], ...]:
+        return ((BEDROCK_BEARER_VARS[0],), BEDROCK_KEY_VARS)
+
+    def has_credentials(self) -> bool:
+        return bool(self.api_key or (self.access_key and self.secret_key))
+
+    def missing_key_message(self) -> str:
+        return (f"no AWS credentials for {self.name}; set {BEDROCK_BEARER_VARS[0]}, or "
+                f"{' and '.join(BEDROCK_KEY_VARS)} (plus {BEDROCK_SESSION_VAR} for temporary keys), "
+                f"and AWS_REGION if not {BEDROCK_DEFAULT_REGION}")
+
+    def headers(self, body: Optional[bytes] = None) -> dict:
+        headers = {"anthropic-version": self.api_version, "content-type": "application/json"}
+        if self.api_key:
+            return {**headers, "authorization": f"Bearer {self.api_key}"}
+        if not (self.access_key and self.secret_key):
+            raise ProviderError(self.missing_key_message())
+        from kullback.ai import sigv4
+
+        return sigv4.sign("POST", self.base_url + self.path, headers, body or b"",
+                          access_key=self.access_key, secret_key=self.secret_key,
+                          session_token=self.session_token, region=self.region, service=BEDROCK_SERVICE)
 
 
 # gpt-<major> or o<digit>, after an optional gateway prefix such as 'openai/'.
@@ -942,7 +1082,7 @@ class OpenAIModel(HttpModel):
     default_base_url = "https://api.openai.com/v1"
     path = "/chat/completions"
 
-    def headers(self) -> dict:
+    def headers(self, body: Optional[bytes] = None) -> dict:
         headers = {"content-type": "application/json"}
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
@@ -1057,8 +1197,12 @@ def key_var_for_provider(provider: str) -> str:
     """The variable a provider's key is read from when nothing else names one: PROVIDER_API_KEY.
 
     One rule, spelled once: the TUI's /login menu shows the person typing the same name this
-    reads, so what they are asked to set is what the adapter later looks for.
+    reads, so what they are asked to set is what the adapter later looks for. A provider with an
+    adapter of its own answers with that adapter's variable (Bedrock's is AWS_BEARER_TOKEN_BEDROCK).
     """
+    adapter = ADAPTERS.get(provider)
+    if adapter is not None and adapter.key_env_var:
+        return adapter.key_env_var
     return f"{provider.upper().replace('-', '_')}_API_KEY" if provider else ""
 
 
@@ -1077,8 +1221,8 @@ class OpenAICompatibleModel(OpenAIModel):
             if key_env_var is None else key_env_var
         super().__init__(model_id, base_url=base_url, **kwargs)
 
-    def headers(self) -> dict:
-        return opencode_headers(self.base_url, super().headers())
+    def headers(self, body: Optional[bytes] = None) -> dict:
+        return opencode_headers(self.base_url, super().headers(body))
 
     def reasoning_fields(self, config: ModelConfig) -> dict:
         """Reasoning branch three of three: a local endpoint gets none of it. Servers that do
@@ -1145,7 +1289,7 @@ class OpenAIResponsesModel(HttpModel):
         self.key_required = bool(key_env_var)
         super().__init__(model_id, base_url=base_url, **kwargs)
 
-    def headers(self) -> dict:
+    def headers(self, body: Optional[bytes] = None) -> dict:
         headers = {"content-type": "application/json"}
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
@@ -1262,7 +1406,7 @@ def _responses_text(content: Any) -> str:
     return str(content)
 
 
-ADAPTERS: dict[str, type] = {"anthropic": AnthropicModel, "openai": OpenAIModel}
+ADAPTERS: dict[str, type] = {"anthropic": AnthropicModel, "openai": OpenAIModel, "bedrock": BedrockAnthropicModel}
 
 # The registry snapshot unknown providers are resolved against. None is the real default
 # (kullback.ai.pricing.snapshot_path()); tests point it at a tmp file, so no test reads the real one.
@@ -1480,12 +1624,15 @@ def _to_anthropic(messages: list[dict]) -> tuple[list[dict], list[dict]]:
             continue
         in_tool_group = False
         content = message.get("content")
+        # The reply's own thinking blocks lead its turn, unchanged: the Messages API reads them
+        # before the text and tool calls they preceded, and refuses an edited one.
+        thinking = [copy.deepcopy(b) for b in message.get(THINKING_BLOCKS_KEY) or [] if isinstance(b, dict)]
         if isinstance(content, list) and all(isinstance(b, dict) and "type" in b for b in content):
-            blocks = list(content)
+            blocks = thinking + list(content)
         elif content:
-            blocks = [{"type": "text", "text": _text_of(message)}]
+            blocks = thinking + [{"type": "text", "text": _text_of(message)}]
         else:
-            blocks = []
+            blocks = thinking
         for call in message.get("tool_calls") or []:
             blocks.append(
                 {

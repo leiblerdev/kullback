@@ -44,7 +44,7 @@ class FakeClient:
         self.script = list(script)
         self.timeouts = []
 
-    def post(self, url, headers=None, json=None, timeout=None):
+    def post(self, url, headers=None, content=None, timeout=None):
         self.timeouts.append(timeout)
         action = self.script[min(len(self.timeouts) - 1, len(self.script) - 1)]
         if isinstance(action, Exception):

@@ -66,3 +66,51 @@ def limits_for(model_id: Optional[str], *, path: Optional[str] = None,
     catalog = pricing.refresh(path=path, env=env)
     window = pricing.window_from_catalog(catalog, model_id)
     return ModelLimits(context_window=window or DEFAULT_CONTEXT_WINDOW)
+
+
+@dataclass(frozen=True)
+class RequestRules:
+    """What one Messages API model refuses in a request body, so the handle never sends it.
+
+    Keyed by capability, not by provider: the same model answers the same way on the first-party
+    API and on a cloud that serves the Messages API shape (Bedrock's included), so a rule is a
+    property of the model and one handle applies it wherever the model lives.
+    """
+
+    # `thinking: {type: "disabled"}` and `{type: "enabled", budget_tokens: N}` are a 400; only
+    # adaptive thinking (or no thinking field) is accepted, and effort is the control.
+    thinking_always_on: bool = False
+    # `tool_choice` `any` or a named tool is a 400; `auto` and `none` still work.
+    forced_tool_choice: bool = True
+    # `temperature`, `top_p` and `top_k` are a 400.
+    sampling: bool = True
+
+
+# The model-migration guide in the claude-api reference (.claude/herdr/overhaul-0922/reference):
+# sampling parameters stop being accepted at Opus 4.7 ("Sampling parameters", line 613) and the
+# later sections carry that forward; thinking is always on for Fable 5 and later (line 1322)
+# and for Opus 5.5 (line 1870); forced tool choice is refused on Fable 5.1, Mythos 5.1 (line 1557)
+# and Opus 5.5 (line 1905). The next model is a row here, not a branch in an adapter.
+_ALWAYS_ON = RequestRules(thinking_always_on=True, forced_tool_choice=False, sampling=False)
+REQUEST_RULES: dict[str, RequestRules] = {
+    "claude-opus-5-5": _ALWAYS_ON,
+    "claude-fable-5-1": _ALWAYS_ON,
+    "claude-mythos-5-1": _ALWAYS_ON,
+    "claude-fable-5": RequestRules(thinking_always_on=True, sampling=False),
+    "claude-opus-5": RequestRules(sampling=False),
+    "claude-opus-4-8": RequestRules(sampling=False),
+    "claude-opus-4-7": RequestRules(sampling=False),
+    "claude-sonnet-5": RequestRules(sampling=False),
+}
+DEFAULT_REQUEST_RULES = RequestRules()
+
+
+def request_rules_for(wire_id: Optional[str]) -> RequestRules:
+    """The rules for a wire id, with any gateway path or cloud prefix taken off first.
+
+    `anthropic.claude-opus-5-5` (Bedrock) and `us.anthropic.claude-opus-5-5` (a cross-region
+    profile) name the same model as `claude-opus-5-5`: a Claude id carries no dot, so the part
+    after the last slash and the last dot is the model.
+    """
+    name = str(wire_id or "").rpartition("/")[2].rpartition(".")[2]
+    return REQUEST_RULES.get(name, DEFAULT_REQUEST_RULES)

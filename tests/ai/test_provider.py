@@ -1080,17 +1080,17 @@ def test_the_exchange_names_the_sampling_sent_the_wire_id_the_endpoint_and_the_p
         seen["body"] = pv.json_body(request)
         return httpx.Response(200, json={"content": [], "usage": {}})
 
-    model = anthropic_model(handler, sleeps, model_id="anthropic/opus", wire_id="claude-opus-5")
+    model = anthropic_model(handler, sleeps, model_id="anthropic/opus", wire_id="claude-haiku-4-5")
     reply = model.query(
         [{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}],
         tools=[{"name": "get_order", "description": "d", "input_schema": {"type": "object"}}],
         config=pv.ModelConfig(max_tokens=64, temperature=0.0, stop=["END"]),
     )
     exchange = reply.exchange
-    assert exchange.provider == "anthropic" and exchange.wire_id == "claude-opus-5"
+    assert exchange.provider == "anthropic" and exchange.wire_id == "claude-haiku-4-5"
     assert exchange.endpoint == "https://api.anthropic.com/v1/messages"
     # The sampling is the body minus the prompt itself, so a field no one enumerated is still recorded.
-    assert exchange.sampling == {"model": "claude-opus-5", "max_tokens": 64, "temperature": 0.0,
+    assert exchange.sampling == {"model": "claude-haiku-4-5", "max_tokens": 64, "temperature": 0.0,
                                  "stop_sequences": ["END"]}
     assert exchange.n_messages == len(seen["body"]["messages"])
     assert exchange.messages_hash == pv.body_hash(seen["body"]["messages"])

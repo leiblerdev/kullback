@@ -70,6 +70,7 @@ def stream_sse_events(
     url: str,
     headers: dict,
     payload: dict,
+    content: Optional[bytes] = None,
     parser_factory: Callable[[], StreamParser],
     parser_name: str,
     model: Optional[str] = None,
@@ -82,14 +83,18 @@ def stream_sse_events(
 
     A retry is only offered while the parser has said nothing: once a delta has been yielded the
     consumer has seen part of an answer, and a second attempt would give it a second one.
+
+    `content`, when given, is `payload` already encoded: the exact bytes the headers were signed
+    over, posted as they are rather than encoded a second time.
     """
+    sent = {"content": content} if content is not None else {"json": payload}
 
     async def iterator() -> AsyncIterator[ProviderEvent]:
         attempt = 0
         while True:
             parser = parser_factory()
             try:
-                async with client().stream("POST", url, json=payload, headers=headers) as response:
+                async with client().stream("POST", url, headers=headers, **sent) as response:
                     if response.status_code >= 400:
                         body = (await response.aread()).decode(errors="replace")
                         if attempt < max_retries and retryable_status(response.status_code):
