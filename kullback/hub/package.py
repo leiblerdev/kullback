@@ -218,10 +218,13 @@ def _recorded_calls(row: Any) -> tuple[int, int]:
     recording never made (verdict `unrecorded`) is not counted, and a recorded call the replay never
     made (`counts.unmade`, the calls left on the recording when the replay ended) counts as one
     that did not agree. A record written before `unmade` was kept is counted from its checks alone.
+    replays.json holds ReplayReport rows, whose checks sit under `calls` (`counts.calls` is only
+    their number); a Runner ReplayResult keeps the same checks under `checks`, so either is read.
     """
     if not isinstance(row, dict):
         return 0, 0
-    checks = [check for check in row.get("checks") or ()
+    listed = row.get("calls") if isinstance(row.get("calls"), list) else row.get("checks")
+    checks = [check for check in listed or ()
               if isinstance(check, dict) and check.get("verdict") != UNRECORDED_VERDICT]
     counts = row.get("counts") if isinstance(row.get("counts"), dict) else {}
     unmade = int(counts.get("unmade") or 0)

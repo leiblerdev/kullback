@@ -16,6 +16,7 @@ from kullback.hub import card as card_mod
 from kullback.hub import package as package_mod
 from kullback.hub import publish as publish_mod
 from kullback.runner.records import read_json, write_json
+from kullback.runner.tool import ReplayReport
 
 
 def _export(workdir: Path, out: Path, **kwargs):
@@ -473,6 +474,21 @@ def test_a_replay_record_without_counts_is_counted_from_its_checks(nursery, tmp_
     fidelity = manifest["replay_fidelity"]
     assert (fidelity["calls"], fidelity["calls_total"], fidelity["calls_rate"]) == (1, 2, 0.5)
     assert "| Call fidelity | 50.00% of 2 |" in card_mod.card_markdown(manifest, "leibler/nursery")
+
+
+def test_call_fidelity_counts_the_calls_a_replay_report_writes_to_replays_json(nursery, tmp_path):
+    replays = read_json(nursery / "replays.json")
+    report = ReplayReport(
+        task_id="task_one", trace_id="trace-task_one", run_id="run-1", path="runs/run-1.json", confirmed=True,
+        fidelity=1.0, counts={"calls": 3, "unmade": 1},
+        calls=[{"call_id": "c1", "kind": "read", "tool": "get_user", "verdict": "same"},
+               {"call_id": "c2", "kind": "write", "tool": "cancel", "verdict": "both_refused"},
+               {"call_id": "c3", "kind": "read", "tool": "get_order", "verdict": "differs"},
+               {"call_id": "c4", "kind": "read", "tool": "get_order", "verdict": "unrecorded"}])
+    replays["task_one"]["trace-task_one"] = report.as_dict()
+    write_json(nursery / "replays.json", replays)
+    fidelity = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)["replay_fidelity"]
+    assert (fidelity["calls"], fidelity["calls_total"], fidelity["calls_rate"]) == (2, 4, 0.5)
 
 
 def test_a_pipe_or_a_line_break_in_corpus_text_stays_inside_its_table_cell(nursery, tmp_path):
