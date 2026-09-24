@@ -45,7 +45,7 @@ from kullback.gates.tool_runs import (
     body_sensitivity_gate,
     column_differences,
 )
-from kullback.runner import arith
+from kullback.runner import arith, transaction
 from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_hash
 from kullback.runner.world.loading import DB_CLASS, HELPERS, SandboxError
 
@@ -54,6 +54,9 @@ from kullback.runner.world.loading import DB_CLASS, HELPERS, SandboxError
 # job names which of them to bind, so the body in the subprocess calls exactly the function the body
 # in the Runner's process calls.
 _ARITH_SOURCE = Path(arith.__file__).read_text(encoding="utf-8")
+# The same way, the Router's own snapshot and restore (runner/transaction.py), so a prefix call that
+# raises is rolled back by the code that rolls back a body in a real Run, not by a second copy of it.
+_TRANSACTION_SOURCE = Path(transaction.__file__).read_text(encoding="utf-8")
 
 
 # The row helpers moved with the rulings (the replay ruling compares rows column by column); they
@@ -132,14 +135,21 @@ def _feed(instance, feed):
 def _run_prefix(instance, entries):
     # The calls the same trace made before the gated one, each with its own recorded feed, on
     # the same toolkit and world. Their answers are thrown away: they are here only for the
-    # state they leave. One that raises, or names a tool the module does not hold, is skipped,
-    # the way the recording's own refusal left no state either.
+    # state they leave. Each one is a transaction the way the Router makes every body one: the
+    # toolkit's db is frozen before the call and put back if it raises, so a call that wrote and
+    # then raised leaves nothing, as in a real Run. The instance holds its world as `db` only
+    # (no StateView in the child), so that is the whole snapshot. A tool the module does not hold
+    # is skipped, the way the recording's own refusal left no state either.
     for entry in entries:
         _feed(instance, entry.get("feed"))
-        try:
-            getattr(instance, entry["name"])(**entry["args"])
-        except Exception:
+        function = getattr(instance, entry["name"], None)
+        if function is None:
             continue
+        snapshot = snapshot_db(instance)
+        try:
+            function(**entry["args"])
+        except Exception:
+            restore_db(instance, snapshot)
 
 
 def _plain(value):
@@ -301,8 +311,9 @@ def main():
 main()
 '''
 
-# What the child actually runs: the evaluator's own source, then the runner above.
-_RUNNER = _ARITH_SOURCE + _RUNNER_BODY
+# What the child actually runs: the evaluator's own source, the transaction source, then the runner above.
+# The evaluator comes first because its `from __future__` line must open the file.
+_RUNNER = _ARITH_SOURCE + "\n" + _TRANSACTION_SOURCE + _RUNNER_BODY
 
 
 # Calls without a recorded position order after positioned calls, by call id, so the result never depends on input order.
