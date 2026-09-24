@@ -190,7 +190,7 @@ def classify_error_llm(model: Model, error: ToolCallError) -> ToolCallError:
     """The second pass of D67 for string-only sources: rules first, the model only on what they left unknown."""
     reply = model.query([
         {"role": "system", "content": ERROR_SYSTEM},
-        {"role": "user", "content": json.dumps({"payload": error.payload}, default=str)},
+        {"role": "user", "content": json.dumps({"payload": error.payload}, default=str, sort_keys=True)},
     ])
     proposed = str(_reply_json(reply).get("class") or "")
     if proposed not in ERROR_CLASSES or proposed == "unknown":

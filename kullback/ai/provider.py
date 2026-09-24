@@ -1430,7 +1430,7 @@ def _responses_input(messages: list[dict]) -> list[dict]:
             items.append({"type": "function_call",
                           "call_id": clean_tool_call_id(call.get("id")),
                           "name": function.get("name", call.get("name", "")),
-                          "arguments": args if isinstance(args, str) else json.dumps(args or {})})
+                          "arguments": args if isinstance(args, str) else json.dumps(args or {}, sort_keys=True)})
         if text or not calls:
             items.append({"role": role if role in ("user", "assistant", "system", "developer") else "user",
                           "content": text})
