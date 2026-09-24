@@ -21,7 +21,7 @@ The machine generated tables of builds 8 to 13 were deleted on 2026-09-24; git h
 | 14 | prose below | Retail, airline and telecom generalisation test |
 | smoke 7 | prose below | Retail and airline on gpt-6-sol, killed 13:44 UTC 2026-09-23 |
 | smoke 8 | prose below | Retail and airline on gpt-6-sol, published as build-20260923 |
-| smoke 9 | prose below | Retail and airline on Opus 5.5 (Bedrock), held back by the leak scan |
+| smoke 9 | prose below | Retail and airline on Opus 5.5 (Bedrock), published as releases, build-20260924 |
 
 # The first live build (2026-08-29)
 
@@ -524,6 +524,7 @@ Opus 5.5 through Bedrock's global profile. Every Reference Trace replayed and co
 
 Building and examining are cheap. Replaying and running Candidates is most of the cost.
 
-Nothing was published. The export's leak scan refused both packages: in 13 Verifiers (1 retail, 12 airline) an
-atom's `target.raw` holds a whole recorded agent message of 60 to 110 words. The Hub still carries build-20260923.
+The first export's leak scan refused both packages: in 13 Verifiers (1 retail, 12 airline) an atom's `target.raw`
+held a whole recorded agent message of 60 to 110 words. D292 keeps the agent's own prose out of Verifiers and
+packages, and both Environments were then published on 2026-09-24 as releases under the tag build-20260924.
 Workdirs: `.work-retail` and `.work-airline` in the smoke 9 worktree. What comes next is in `docs/todo.md`.
