@@ -187,18 +187,24 @@ def root_listing(folder: Path) -> list[str]:
     return sorted(f"{p.name}/" if p.is_dir() else p.name for p in folder.iterdir())
 
 
+def session_opening(root: ExamRoot, task_ids: Optional[Iterable[str]] = None) -> str:
+    """The Examiner's opening message: the ask, what its root holds and the rulings to answer (F25)."""
+    return prompt_mod.opening(EXAMINE_MESSAGE, rulings_line(root, task_ids), root_listing(root.exam_dir))
+
+
 def examiner_extension(root: ExamRoot,
                        task_ids: Optional[Iterable[str]] = None) -> Callable[[ExtensionAPI], None]:
     """The setup the harness loads: base tools over exam/, domain tools, prompt, hooks.
 
-    The prompt names the root as "." and lists what it holds, computed once here (F18, F25).
+    The prompt names the root as "." (F18); what the root holds and the rulings (F25) are this
+    session's own facts, so `examine` says them in the opening message (`session_opening`).
     """
 
     def setup(api: ExtensionAPI) -> None:
         register_base_tools(api, root.exam_dir, only=BASE_ONLY)
         for tool in domain_tools(root):
             api.register_tool(tool)
-        for name, text in prompt_mod.sections(rulings_line(root, task_ids), root_listing(root.exam_dir)):
+        for name, text in prompt_mod.sections():
             api.add_prompt_section(f"examiner_{name}", prompt_block(name, text))
         api.tool_call(refuse_paths(
             names_protected_path, "under the gates or the Runner, which no agent writes (D122)",
@@ -547,11 +553,12 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
         harness.subscribe(subscriber)
     harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
     load_extensions(harness, [examiner_extension(exam_root, selected)])
+    opening_message = session_opening(exam_root, selected)
 
     capped: list[bool] = []
 
     async def go() -> None:
-        async for event in harness.prompt(EXAMINE_MESSAGE):
+        async for event in harness.prompt(opening_message):
             if getattr(event, "type", None) == "turn_end" and _stopped_on_cap(event.message):
                 capped.append(True)
 
@@ -641,6 +648,6 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     exam_root.history = history
     save_history(exam_root, history)
     return exam_root
-__all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "derive_findings", "examine", "examiner_extension",
+__all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "derive_findings", "examine", "examiner_extension", "session_opening",
            "finding_from_row", "left_out_finding", "load_store", "root_listing", "rulings_line",
            "select_for_session", "task_runs_of", "turns_ran_out"]

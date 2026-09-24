@@ -40,6 +40,10 @@ class Usage(BaseModel):
     cache_read: int = Field(default=0, ge=0)
     cache_write: int = Field(default=0, ge=0)
     reasoning: int = Field(default=0, ge=0)
+    # The part of cache_write written with the one-hour TTL, which is billed at its own, higher
+    # rate (budget.call_cost). A part of cache_write, never an addition to it, and omitted from the
+    # stored form at zero like reasoning, so a record written before it existed reads the same.
+    cache_write_1h: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _reasoning_within_output(self) -> "Usage":
@@ -48,6 +52,11 @@ class Usage(BaseModel):
                 f"reasoning tokens ({self.reasoning}) are a part of output "
                 f"({self.output}), so they cannot exceed it"
             )
+        if self.cache_write_1h > self.cache_write:
+            raise ValueError(
+                f"one-hour cache writes ({self.cache_write_1h}) are a part of cache_write "
+                f"({self.cache_write}), so they cannot exceed it"
+            )
         return self
 
     @model_serializer(mode="wrap")
@@ -55,6 +64,8 @@ class Usage(BaseModel):
         data = handler(self)
         if self.reasoning == 0:
             data.pop("reasoning", None)
+        if self.cache_write_1h == 0:
+            data.pop("cache_write_1h", None)
         return data
 
 
@@ -100,10 +111,12 @@ def reasoning_share(usage: Any, output: int) -> int:
 def usage_from_openai_chat(usage: Any) -> Usage:
     """One chat completions usage payload as ours.
 
-    `Usage.input` means uncached input everywhere in the Harness, which is what Anthropic already
-    reports. OpenAI's prompt_tokens includes the cached ones, so the subtraction happens here and
-    budget.py bills each count at its own rate with no arithmetic. Endpoints that charge to write
-    the cache report what they wrote, and dropping that billed a build for less than it cost.
+    `Usage.input` means the input neither read from nor written to the cache everywhere in the
+    Harness, which is what Anthropic already reports (its three counts add up to the prompt).
+    OpenAI's prompt_tokens includes the cached ones and, on endpoints that charge to write the cache,
+    the written ones too, so both come off here and budget.py bills each count at its own rate with
+    no arithmetic. Leaving the written tokens inside input billed them twice, once at the input rate
+    and once at the write rate (smoke 8: every one of 1726 writes was at most its call's input).
     """
     usage = usage if isinstance(usage, dict) else {}
     details = usage.get("prompt_tokens_details") or {}
@@ -113,7 +126,7 @@ def usage_from_openai_chat(usage: Any) -> Usage:
     written = int(details.get("cache_write_tokens", 0) or 0)
     output = int(usage.get("completion_tokens", 0) or 0)
     return Usage(
-        input=max(0, int(usage.get("prompt_tokens", 0) or 0) - cached),
+        input=max(0, int(usage.get("prompt_tokens", 0) or 0) - cached - written),
         output=output,
         cache_read=cached,
         cache_write=written,
@@ -122,7 +135,7 @@ def usage_from_openai_chat(usage: Any) -> Usage:
 
 
 def usage_from_openai_responses(usage: Any) -> Usage:
-    """One Responses API usage payload as ours, on the same uncached-input convention."""
+    """One Responses API usage payload as ours, on the same convention: cached and written come off input."""
     usage = usage if isinstance(usage, dict) else {}
     details = usage.get("input_tokens_details") or {}
     if not isinstance(details, dict):
@@ -131,7 +144,7 @@ def usage_from_openai_responses(usage: Any) -> Usage:
     written = int(details.get("cache_write_tokens", 0) or 0)
     output = int(usage.get("output_tokens", 0) or 0)
     return Usage(
-        input=max(0, int(usage.get("input_tokens", 0) or 0) - cached),
+        input=max(0, int(usage.get("input_tokens", 0) or 0) - cached - written),
         output=output,
         cache_read=cached,
         cache_write=written,
@@ -147,10 +160,14 @@ def usage_from_anthropic(usage: Any) -> Usage:
     """
     usage = usage if isinstance(usage, dict) else {}
     output = int(usage.get("output_tokens", 0) or 0)
+    written = int(usage.get("cache_creation_input_tokens", 0) or 0)
+    # The write split by TTL, when the payload carries it; the one-hour part is billed higher.
+    split = usage.get("cache_creation") if isinstance(usage.get("cache_creation"), dict) else {}
     return Usage(
         input=int(usage.get("input_tokens", 0) or 0),
         output=output,
         cache_read=int(usage.get("cache_read_input_tokens", 0) or 0),
-        cache_write=int(usage.get("cache_creation_input_tokens", 0) or 0),
+        cache_write=written,
         reasoning=reasoning_share(usage, output),
+        cache_write_1h=min(written, int(split.get("ephemeral_1h_input_tokens", 0) or 0)),
     )

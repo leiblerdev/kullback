@@ -13,14 +13,14 @@ from typing import Iterable
 WRITABLE_DIRS = ("verifiers", "probes")
 
 
-def receives_section(rulings: str, entries: Iterable[str] = (),
-                     writable: Iterable[str] = WRITABLE_DIRS) -> str:
-    """What the session receives: the rulings per Task with their paths, and its root as ".".
+def receives_section(writable: Iterable[str] = WRITABLE_DIRS) -> str:
+    """What the session receives, the part that is the same in every session: its root as ".".
 
-    The root is never named by a host path: every path the session passes is relative to it,
-    and `entries` is what the root held when the session opened (directories end with "/").
+    The root is never named by a host path: every path the session passes is relative to it. What
+    the root holds and the rulings differ per session, so they arrive in the opening message
+    (`received`), after the system prompt, where they leave the cached prefix of tools and system
+    intact from one session to the next (prompt-caching.md: keep the system prompt frozen).
     """
-    listed = ", ".join(entries) or "nothing yet"
     later = ", ".join(f"{name}/" for name in writable)
     return ("You receive the rulings of a derivation: one Verifier per Task from its References "
             "through the suite, with the rows that still differ on each ruling. "
@@ -29,10 +29,22 @@ def receives_section(rulings: str, entries: Iterable[str] = (),
             "and re-roll rows, the References, the task status, the Verifiers, the probe pools, "
             "the task, intent and user-rule records, and one spoken file per Task with the user "
             "turns of its References.\n"
-            f"The root holds: {listed}.\n"
             f"These appear on your first write under them: {later}.\n"
+            "What the root holds and the rulings to answer are in the opening message.")
+
+
+def received(rulings: str, entries: Iterable[str] = ()) -> str:
+    """This session's own facts: what the root held when it opened (directories end with "/") and
+    the rulings per Task with their paths. Said in the opening message, never the system prompt."""
+    listed = ", ".join(entries) or "nothing yet"
+    return (f"The root holds: {listed}.\n"
             "The rulings to answer, each Task with the paths of its Runs and its Verifier; open "
             f"those paths rather than searching for them:\n{rulings}")
+
+
+def opening(ask: str, rulings: str, entries: Iterable[str] = ()) -> str:
+    """The opening message: the ask, then this session's facts."""
+    return f"{ask}\n\n{received(rulings, entries)}"
 
 
 def tools_section() -> str:
@@ -88,9 +100,9 @@ def stop_section() -> str:
             "answered. Say which Tasks remain and what you filed for each.")
 
 
-def sections(rulings: str, entries: Iterable[str] = ()) -> list[tuple[str, str]]:
-    """Every prompt section in GEPA order, the stop rule last."""
-    return [("receives", receives_section(rulings, entries)),
+def sections() -> list[tuple[str, str]]:
+    """Every prompt section in GEPA order, the stop rule last. The same text in every session."""
+    return [("receives", receives_section()),
             ("tools", tools_section()),
             ("examples", examples_section()),
             ("choice", choice_section()),
@@ -103,5 +115,5 @@ def render(sections_list: list[tuple[str, str]]) -> str:
     return "\n\n".join(text for _, text in sections_list)
 
 
-__all__ = ["WRITABLE_DIRS", "choice_section", "examples_section", "feedback_section", "receives_section",
-           "render", "sections", "stop_section", "tools_section"]
+__all__ = ["WRITABLE_DIRS", "choice_section", "examples_section", "feedback_section", "opening", "receives_section",
+           "received", "render", "sections", "stop_section", "tools_section"]

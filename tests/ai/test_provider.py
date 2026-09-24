@@ -1054,12 +1054,15 @@ def test_an_explicit_base_url_does_not_change_a_responses_model_shape(tmp_path, 
 
 
 @pytest.mark.parametrize("details,prompt,expected", [
-    ({"cached_tokens": 0, "cache_write_tokens": 1339}, 1342, (1342, 0, 1339)),
+    ({"cached_tokens": 0, "cache_write_tokens": 1339}, 1342, (3, 0, 1339)),
     ({"cached_tokens": 400}, 900, (500, 400, 0)),
-], ids=["reported", "not_reported"])
-def test_the_chat_adapter_records_the_cache_write_tokens_the_endpoint_reports(details, prompt, expected):
-    """A reply with cached_tokens 0 still carried cache_write_tokens 1339, billed at the model's
-    own cache_write rate; dropping it billed a build for less than it cost. None reported is 0."""
+    ({"cached_tokens": 600, "cache_write_tokens": 250}, 900, (50, 600, 250)),
+], ids=["reported", "not_reported", "read_and_written"])
+def test_the_chat_adapter_takes_the_written_tokens_out_of_input_and_records_them_as_writes(details, prompt,
+                                                                                          expected):
+    """A reply with cached_tokens 0 still carried cache_write_tokens 1339 inside a prompt of 1342,
+    billed at the model's own cache_write rate; dropping it billed a build for less than it cost,
+    and leaving it inside input billed the same tokens twice. None reported is 0."""
     model = pv.OpenAIModel(model_id="openai/gpt-5.6-luna", api_key="k", env={})
     reply = model.parse_reply({
         "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
