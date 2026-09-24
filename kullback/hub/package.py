@@ -47,6 +47,9 @@ TASKS_INDEX_NAME = "tasks_index.json"
 TASKS_ROWS_NAME = "tasks.jsonl"
 # The card publish.py writes beside the package. Named here because the hashes have to leave it out.
 CARD_NAME = "README.md"
+# The call verdicts that count as agreement, the same three the Runner and the README name.
+AGREEING_VERDICTS = ("same", "cosmetic", "both_refused")
+UNRECORDED_VERDICT = "unrecorded"  # a call the replay made and the recording never did
 
 # The rebuilt world: the Environment package the Builder compiled, the per-Task Starting states, and
 # the records the Runner needs to load a toolkit over them. These are also the leak scan's baseline,
@@ -184,22 +187,45 @@ def _task_ids_of(body: Any) -> list[str]:
 
 
 def replay_fidelity(replays: dict, task_ids: Iterable[str]) -> dict:
-    """Replay fidelity over Tasks and over Runs, both over the frozen list.
+    """Replay fidelity over Tasks, over Runs and over calls, all over the frozen list.
 
     A Task clears fidelity when any replay of it was confirmed, which is the count round_end reports;
     the Run number is every replay of every Task on the list, which is the finer of the two and the
-    one a reader should look at when a Task holds many recordings.
+    one a reader should look at when a Task holds many recordings. The call number is every recorded
+    call of those replays, agreeing when its verdict is one of AGREEING_VERDICTS (`_recorded_calls`).
     """
     ids = list(task_ids)
-    tasks_confirmed, runs_total, runs_confirmed = 0, 0, 0
+    tasks_confirmed, runs_total, runs_confirmed, calls_total, calls_agreeing = 0, 0, 0, 0, 0
     for task_id in ids:
         per_task = (replays or {}).get(task_id) or {}
         confirmed = [run_id for run_id, row in per_task.items() if _confirmed(row)]
         runs_total += len(per_task)
         runs_confirmed += len(confirmed)
         tasks_confirmed += 1 if confirmed else 0
+        for row in per_task.values():
+            recorded, agreeing = _recorded_calls(row)
+            calls_total += recorded
+            calls_agreeing += agreeing
     return {"tasks": tasks_confirmed, "tasks_total": len(ids), "tasks_rate": _share(tasks_confirmed, len(ids)),
-            "runs": runs_confirmed, "runs_total": runs_total, "runs_rate": _share(runs_confirmed, runs_total)}
+            "runs": runs_confirmed, "runs_total": runs_total, "runs_rate": _share(runs_confirmed, runs_total),
+            "calls": calls_agreeing, "calls_total": calls_total, "calls_rate": _share(calls_agreeing, calls_total)}
+
+
+def _recorded_calls(row: Any) -> tuple[int, int]:
+    """How many calls one replayed Trace recorded, and how many of them the replay agreed on.
+
+    The whole is the recording's, never the replay's: a check the replay made for a call the
+    recording never made (verdict `unrecorded`) is not counted, and a recorded call the replay never
+    made (`counts.unmade`, the calls left on the recording when the replay ended) counts as one
+    that did not agree. A record written before `unmade` was kept is counted from its checks alone.
+    """
+    if not isinstance(row, dict):
+        return 0, 0
+    checks = [check for check in row.get("checks") or ()
+              if isinstance(check, dict) and check.get("verdict") != UNRECORDED_VERDICT]
+    counts = row.get("counts") if isinstance(row.get("counts"), dict) else {}
+    unmade = int(counts.get("unmade") or 0)
+    return len(checks) + unmade, sum(1 for check in checks if check.get("verdict") in AGREEING_VERDICTS)
 
 
 def _confirmed(row: Any) -> bool:

@@ -8,7 +8,7 @@ That is the loop. Everything else in this repo is downstream of whether a model 
 
 ## The benchmark
 
-tau2 retail first, because it is the one place with a real `tools.py` and `db.json` beside public traces, so a model trained in the rebuilt environment can be scored on the real environment, and the same training run can be repeated on the real environment as the ceiling. Airline second, telecom after the five retail-shaped assumptions in `cross-domain-check.md` are fixed. A domain that is not tau2 at all comes after that.
+tau2 retail first, because it is the one place with a real `tools.py` and `db.json` beside public traces, so a model trained in the rebuilt environment can be scored on the real environment, and the same training run can be repeated on the real environment as the ceiling. Airline second. A domain that is not tau2 at all comes after that.
 
 ## Step 1: baselines on the real environment
 

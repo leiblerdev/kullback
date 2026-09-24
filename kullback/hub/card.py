@@ -1,12 +1,8 @@
 """The cards: one per Environment, one for the organisation, and the template that documents both (D221).
 
-A card is rendered from a manifest and from nothing else, so a number on a page is a number a
-package actually carries and the two cannot drift. The front matter is what a dataset host indexes
-on; the body is what a person reads before deciding whether to trust the Environment, which is why
-the funnel and the untrusted count are on the page rather than in a file nobody opens.
-
-Nothing here quotes a status row, a Task, a tool result or any other record: every reason a card
-gives is one of the harness's own fixed phrases, chosen in package.py for that reason.
+A card is rendered from a manifest and nothing else, so a number on a page is a number the package
+carries. Every reason a card gives is one of the harness's fixed phrases from package.py, never a
+quoted record.
 """
 
 from __future__ import annotations
@@ -48,36 +44,84 @@ def _pct(value: Any) -> str:
     return "not measured" if value is None else f"{float(value):.1%}"
 
 
+def _cell(value: Any) -> str:
+    """A table cell safe for publisher or corpus text: a pipe escaped, a line break folded to a space."""
+    return " ".join(str(value).splitlines()).replace("|", "\\|")
+
+
+def _share(fidelity: dict, key: str) -> str:
+    return f"{_pct(fidelity.get(key + '_rate'))} ({fidelity.get(key, 0)} of {fidelity.get(key + '_total', 0)})"
+
+
 def _numbers_table(manifest: dict) -> list[str]:
+    """Every number the manifest carries, in one table; a value nobody recorded gets no row."""
     fidelity = manifest.get("replay_fidelity") or {}
     rows = [
-        ("Tasks", str(int(manifest.get("tasks_total") or 0))),
-        ("Replay fidelity, Tasks", f"{_pct(fidelity.get('tasks_rate'))} "
-                                   f"({fidelity.get('tasks', 0)} of {fidelity.get('tasks_total', 0)})"),
-        ("Replay fidelity, Runs", f"{_pct(fidelity.get('runs_rate'))} "
-                                  f"({fidelity.get('runs', 0)} of {fidelity.get('runs_total', 0)})"),
+        ("Fidelity over Tasks", _share(fidelity, "tasks")),
+        ("Fidelity over Runs", _share(fidelity, "runs")),
+        ("Call fidelity", _call_fidelity(fidelity)),
         ("Reference confirmed", str(manifest.get("reference_confirmed", 0))),
         ("Verifier derived", str(manifest.get("verifier_derived", 0))),
-        ("Trusted Tasks", str(manifest.get("trusted", 0))),
-        ("Refused Tasks", str(manifest.get("refused", 0))),
-        ("Round", str(manifest.get("round") if manifest.get("round") is not None else "not recorded")),
-        ("Tag", str(manifest.get("tag") or "not recorded")),
-        ("Counts from", str(manifest.get("counts_source") or "the last round record")),
-        ("Content hash", _short(manifest.get("content_hash"))),
+        ("Trusted", str(manifest.get("trusted", 0))),
+        ("Refused", str(manifest.get("refused", 0))),
+        _untrusted_row(manifest),
     ]
-    rows += _domain_rows(manifest)
+    rows += _coverage_rows(manifest) + _provenance_rows(manifest)
     lines = ["| | |", "| --- | --- |"]
-    lines += [f"| {name} | {value} |" for name, value in rows]
+    lines += [f"| {name} | {_cell(value)} |" for name, value in rows]
     return lines
+
+
+def _untrusted_row(manifest: dict) -> tuple[str, str]:
+    untrusted = manifest.get("untrusted") or {}
+    reasons = "".join(f"; {entry.get('tasks', 0)} {entry.get('reason', '')}" for entry in untrusted.get("reasons") or ())
+    return "Not trusted", f"{untrusted.get('count', 0)} of {int(manifest.get('tasks_total') or 0)}{reasons}"
+
+
+def _coverage_rows(manifest: dict) -> list[tuple[str, str]]:
+    """Difficulty, the domain reading, stand-in tools and late Tasks, each only where there is one."""
+    rows = []
+    buckets = list(manifest.get("buckets") or ())
+    if buckets:
+        rows.append(("Tasks and trusted by difficulty", ", ".join(
+            f"{row.get('bucket', '')} {row.get('tasks', 0)} and {row.get('trusted', 0)}" for row in buckets)))
+    rows += _domain_rows(manifest)
+    assisted = sorted(manifest.get("assisted_tools") or ())
+    if assisted:
+        rows.append(("Tools served by a stand-in", f"{len(assisted)} ({', '.join(assisted)})"))
+    added = int(manifest.get("tasks_added_later") or 0)
+    if added:
+        rows.append(("Tasks added after the freeze, not counted", str(added)))
+    return rows
+
+
+def _provenance_rows(manifest: dict) -> list[tuple[str, str]]:
+    """The leak scan, where the counts came from, the corpus and the build that made the package."""
+    leaks = manifest.get("leak_scan") or {}
+    rows = [("Leak scan", f"{leaks.get('leaks', 0)} recorded strings, {leaks.get('value_echoes', 0)} short "
+                          f"values, {leaks.get('values_checked', 0)} checked in {leaks.get('files_scanned', 0)} "
+                          f"files against {leaks.get('corpus_strings', 0)}")]
+    if manifest.get("round") is not None:
+        rows.append(("Round", str(manifest["round"])))
+    rows.append(("Tag", f"{manifest.get('tag') or 'not recorded'}, "
+                        f"{manifest.get('counts_source') or 'counts from the last round record'}"))
+    source = manifest.get("source") or {}
+    corpus = f"{source.get('corpus') or 'not stated'} ({source.get('license') or 'not stated'})"
+    rows.append(("Corpus", f"{corpus}, {source['url']}" if source.get("url") else corpus))
+    build = [f"kullback {manifest.get('kullback_version', 'unknown')}", f"git {_short(manifest.get('git_sha'))}"]
+    build += [f"{label} {_short(manifest[key])}" for label, key in
+              (("runner", "runner_version"), ("gates", "gates_version"), ("Environment", "env_id"))
+              if manifest.get(key)]
+    rows += [("Built", f"{manifest.get('created_at', 'not recorded')} by {', '.join(build)}"),
+             ("Content hash", _short(manifest.get("content_hash")))]
+    return rows
 
 
 def _domain_rows(manifest: dict) -> list[tuple[str, str]]:
     """What the domain's own public material attests, and how much of it this package covers (D225).
 
-    Two rows, and only where a domain was read: how many task archetypes came off the material, and
-    how many of them no tool of this Environment realises. Someone deciding whether to use this
-    package wants that second number, because it says what the Environment cannot be asked to do,
-    and nothing else on the card says it. Neither row is a Task count and neither is added to one.
+    Only where a domain was read. The second row says what the Environment cannot be asked to do.
+    Neither row is a Task count and neither is added to one.
     """
     counts = manifest.get("domain") or {}
     if not isinstance(counts, dict) or not counts:
@@ -93,163 +137,95 @@ def _short(value: Any) -> str:
     return (text[:16] if len(text) > 16 else text) or "not recorded"
 
 
-def _bucket_table(manifest: dict) -> list[str]:
-    rows = list(manifest.get("buckets") or ())
-    if not rows:
-        return []
-    lines = ["", "### By difficulty", "",
-             "A bucket is the number of writes a Task makes, the tools its Reference called and the "
-             "paths to its End state, each banded. The same bucket means the same thing in every "
-             "Environment.", "",
-             "| Bucket | Tasks | Trusted |", "| --- | --- | --- |"]
-    lines += [f"| {row.get('bucket', '')} | {row.get('tasks', 0)} | {row.get('trusted', 0)} |" for row in rows]
-    return lines
-
-
-def _limits(manifest: dict) -> list[str]:
-    untrusted = manifest.get("untrusted") or {}
-    lines = ["", "## What it cannot do yet", ""]
-    lines.append(f"- {untrusted.get('count', 0)} of {manifest.get('tasks_total', 0)} Tasks are not trusted. "
-                 "Their Verifier has not passed the suite, so the harness will not grade a candidate on them.")
-    for entry in untrusted.get("reasons") or ():
-        lines.append(f"- {entry.get('tasks', 0)} Tasks: {entry.get('reason', '')}.")
-    assisted = list(manifest.get("assisted_tools") or ())
-    if assisted:
-        lines.append(f"- {len(assisted)} tools were served by a stand-in at some point in the build "
-                     f"({', '.join(sorted(assisted))}). A Run that touches one is reported and never counted.")
-    added = int(manifest.get("tasks_added_later") or 0)
-    if added:
-        lines.append(f"- {added} more Tasks appeared after the Task list was frozen. They are outside every "
-                     "number on this page, because the denominator is fixed once and never moved.")
-    lines.append("- The simulated user does not ship. Its facts come from the recordings, which stay private, "
-                 "so a Task whose answer the user only gives mid conversation cannot be finished here, even "
-                 "though its Verifier still grades it.")
-    leaks = manifest.get("leak_scan") or {}
-    lines.append(f"- The export checked {leaks.get('values_checked', 0)} strings across "
-                 f"{leaks.get('files_scanned', 0)} graded files against the {leaks.get('corpus_strings', 0)} "
-                 f"strings in the source corpus. It found {leaks.get('leaks', 0)} recorded strings (any would "
-                 f"have stopped the export) and {leaks.get('value_echoes', 0)} short values that only a "
-                 "Verifier's answer key accounts for.")
-    return lines
-
-
-def _banner(manifest: dict) -> list[str]:
-    if not manifest.get("preview"):
-        return []
-    fidelity = (manifest.get("replay_fidelity") or {}).get("tasks_rate")
-    return ["", f"> **Preview.** This Environment is below the {FIDELITY_BAR:.0%} replay fidelity bar for a "
-                f"release. It replays {_pct(fidelity)} of its Tasks and has {manifest.get('trusted', 0)} "
-                f"trusted Tasks of {manifest.get('tasks_total', 0)}. It is published so the numbers are "
-                "public while it improves. Read them before you use it.", ""]
-
-
-FUNNEL_PROSE = (
-    "Every Task climbs a funnel, and every rung is a code check. A Task clears replay fidelity when the "
-    "rebuilt tools answer its recorded calls the way the real ones did. It keeps a Reference when the "
-    "recordings agree on an End state, and gets a Verifier derived from that Reference. It counts as "
-    "trusted once that Verifier rejects an empty Run, a plausible wrong Run and a mutated Run, passes no "
-    "loophole probe, accepts a second route to the same End state, and turns away few enough held-out Runs "
-    "that did reach the Reference. The table above is that funnel, rung by rung, so a Task that stops early "
-    "stays visible instead of dropping out of the denominator."
-)
-
-DEVELOPMENT_NOTE = (
-    "This Environment is under active development. Each build round republishes it with new numbers, "
-    "and earlier rounds stay reachable by their tags. The next stage is to raise the trusted count, "
-    "then to generate Tasks synthetically over the rebuilt world, on top of the recorded ones."
-)
+def _status(manifest: dict) -> str:
+    if manifest.get("preview"):
+        return f"Preview: below the {FIDELITY_BAR:.0%} replay fidelity a release needs."
+    return f"Release: replays at least {FIDELITY_BAR:.0%} of its Tasks."
 
 
 def card_markdown(manifest: dict, repo_id: str, *, github_url: str = "https://github.com/leiblerdev/kullback",
                   site_url: str = "https://leibler.dev") -> str:
     """The dataset card of one Environment, every number read off its manifest."""
     name = manifest.get("name") or repo_id.rsplit("/", 1)[-1]
-    source = manifest.get("source") or {}
-    corpus = source.get("corpus") or "not stated"
-    license_name = source.get("license") or "not stated"
     lines = [front_matter(manifest, tags=[str(name)]), ""]
     lines += [f"# {name}", ""]
-    lines += [f"An executable Environment for evaluating and training tool-using agents. [Kullback]({github_url}) "
-              f"built it from recorded traces of a working agent, and [Leibler]({site_url}) publishes it.", ""]
-    lines += ["The package holds the rebuilt world: a database, one function per tool that behaves the way the "
-              "real tool was observed to behave, the compiled policy, and the Starting state each Task begins "
-              "from. It also holds the Task list with the instruction a candidate gets, and a code-only "
-              "Verifier per Task that grades the candidate on what it changed. It holds none of the "
-              "recordings it was built from.", ""]
-    lines += [f"`{TASKS_ROWS_NAME}` is the Task list as one row per line, which is what the viewer shows: "
-              "the id, the instruction, how far the Task got up the funnel and its difficulty bucket. "
-              "Everything else in the package is the world and the graders, and only the harness reads "
-              "those.", ""]
-    lines += [DEVELOPMENT_NOTE, ""]
-    lines += _banner(manifest)
-    lines += ["## Numbers", ""]
+    lines += [f"An executable Environment for tool-using agents, rebuilt from traces by [Kullback]({github_url}) "
+              f"and published by [Leibler]({site_url}): the world, the Tasks and a code Verifier per Task, no "
+              f"recordings. `{TASKS_ROWS_NAME}` lists the Tasks.", ""]
+    lines += [_status(manifest), ""]
     lines += _numbers_table(manifest)
-    lines += _bucket_table(manifest)
-    lines += ["", "## How a Task becomes trusted", "", FUNNEL_PROSE, ""]
-    lines += ["## Fetch and run", "", "```bash", f"uv run kullback fetch {repo_id} --out env-{name}",
+    lines += ["", "Untrusted Tasks are not graded, and the simulated user does not ship, so a fetched package "
+              "cannot finish a Task that needs a fact the user gives mid conversation, though the Task "
+              "still carries a Verifier.", ""]
+    lines += ["```bash", f"uv run kullback fetch {repo_id} --out env-{name}",
               f"uv run kullback run --workdir env-{name} --task <task id> --model provider/model",
               f"uv run kullback verdict --workdir env-{name}",
               f"uv run kullback report --workdir env-{name}", "```", "",
-              "`fetch` checks the package against the content hash above before laying it out, and refuses "
-              "one that does not match. `--revision round-<n>` fetches an earlier round.", ""]
-    lines += ["## Source", "",
-              f"- Corpus: {corpus}", f"- Corpus licence: {license_name}"]
-    if source.get("url"):
-        lines.append(f"- Corpus source: {source['url']}")
-    lines += [f"- Harness: kullback {manifest.get('kullback_version', 'unknown')}, "
-              f"git {_short(manifest.get('git_sha'))}, runner {_short(manifest.get('runner_version'))}, "
-              f"gates {_short(manifest.get('gates_version'))}",
-              f"- Environment id: {_short(manifest.get('env_id'))}",
-              f"- Built at: {manifest.get('created_at', 'not recorded')}"]
-    lines += _limits(manifest)
-    lines += ["", "## Licence", "",
-              f"The harness and this package are Apache-2.0. The source corpus keeps its own licence "
-              f"({license_name}).", ""]
+              "`fetch` checks the content hash; `--revision round-<n>` fetches an earlier round.", ""]
     return "\n".join(lines) + "\n"
+
+
+# The harness's own words, one line each, the same lines the README carries.
+WORDS: tuple[str, ...] = (
+    "Run and Trace: a Run is an agent's conversation with the tools; a Trace is a recorded one.",
+    "Reference: the Trace a Task's user context comes from.",
+    "Replay and agree: a replay re-drives a Trace's turns; a call agrees when its verdict is same, cosmetic or "
+    "both refused.",
+    "Confirmed: a replay where every call agrees, none was answered by the stand-in, and nothing is "
+    "missing, reordered or crashed.",
+    "Fidelity over Tasks: Tasks with a confirmed replay, over all Tasks.",
+    "Fidelity over Runs: confirmed replays over all replays.",
+    "Call fidelity: agreeing calls over all recorded calls.",
+    "Verifier: a Task's End-state check, written only by the Examiner, never by the Builder.",
+    "Atom: one Verifier check: required, allowed, forbidden, question, communicate or hard.",
+    "Gates: oracle replay, suite, loosening, false rejection, trusted.",
+    "Trusted: suite passed, probes fail, last version, no loosening, not over strict, not refused.",
+    "Open: neither trusted nor refused.",
+    "Refused: a Task the Builder showed nobody can finish.",
+    "Release and preview: a release replays at least 90% of its Tasks; a preview is below that.",
+)
+
+
+def _call_fidelity(fidelity: dict) -> str:
+    """Agreeing calls over every recorded call, read from the manifest's replay_fidelity."""
+    if fidelity.get("calls_rate") is None:
+        return "not measured"
+    return f"{float(fidelity['calls_rate']):.2%} of {fidelity.get('calls_total', 0)}"
 
 
 def organisation_card(rows: Iterable[dict], *, organisation: str = "leibler",
                       github_url: str = "https://github.com/leiblerdev/kullback",
                       site_url: str = "https://leibler.dev") -> str:
-    """The organisation profile: what Leibler is, what Kullback is, and every Environment with its numbers.
+    """The organisation profile: what Leibler and Kullback are, and one row per Environment passed.
 
     A row is `{name, repo_id, manifest}`, so this page and each Environment's own card cannot
     disagree about a number.
     """
     lines = [f"# {organisation}", ""]
-    lines += ["Leibler turns the traces a working agent already produced into an executable copy of the "
-              "system it worked in, then grades other models on what they change in that copy. The graders "
-              f"are code, so they are cheap and have no opinions. [leibler.dev]({site_url})", ""]
-    lines += [f"[Kullback]({github_url}) is the open-source Builder and Runner behind it, under Apache-2.0. "
-              "It rebuilds the world from traces, checks the rebuild by replaying them, derives a Verifier "
-              "per Task from the recorded runs, and puts every artifact through a code gate no model may "
-              "touch. The Environments below came out of it. Each one carries its own numbers and says what "
-              "it cannot do yet.", ""]
-    lines += ["Everything here is under active development. Environments are republished after each build "
-              "round, and earlier rounds stay reachable by their tags. The next stage is to raise the trusted "
-              "count on each Environment, then to generate Tasks synthetically over the rebuilt world.", ""]
+    lines += [f"[Leibler]({site_url}) rebuilds the system a working agent ran in from its traces, then grades "
+              f"other models in code on what they change there. [Kullback]({github_url}) is the open-source "
+              "Builder and Runner behind it, under Apache-2.0.", ""]
     lines += ["## Environments", "",
-              "| Environment | Replay fidelity | Trusted Tasks | Round | Status |",
-              "| --- | --- | --- | --- | --- |"]
+              "| Environment | Fidelity over Tasks | Call fidelity | Verifiers | Trusted | Status |",
+              "| --- | --- | --- | --- | --- | --- |"]
     for row in rows:
         manifest = row.get("manifest") or {}
-        fidelity = (manifest.get("replay_fidelity") or {}).get("tasks_rate")
+        fidelity = manifest.get("replay_fidelity") or {}
         repo_id = row.get("repo_id", "")
         status = "preview" if manifest.get("preview") else "release"
-        lines.append(f"| [{row.get('name', repo_id)}](https://huggingface.co/datasets/{repo_id}) | "
-                     f"{_pct(fidelity)} | {manifest.get('trusted', 0)} of {manifest.get('tasks_total', 0)} | "
-                     f"{manifest.get('round', 'not recorded')} | {status} |")
-    lines += ["", "A release replays at least 90% of its Tasks. A preview is below that bar. It is published "
-                  "anyway, with its numbers on its card, so the work stays visible while it improves.", ""]
-    lines += ["## Fetch and run", "", "```bash",
+        lines.append(f"| [{_cell(repo_id)}](https://huggingface.co/datasets/{_cell(repo_id)}) | "
+                     f"{_share(fidelity, 'tasks')} | {_call_fidelity(fidelity)} | {manifest.get('verifier_derived', 0)} | "
+                     f"{manifest.get('trusted', 0)} of {manifest.get('tasks_total', 0)} | {status} |")
+    lines += ["", "## Words", ""]
+    lines += [f"- {word}" for word in WORDS]
+    lines += ["", "## Fetch and run", "", "```bash",
               "uv pip install git+" + github_url + ".git",
               f"uv run kullback fetch {organisation}/<environment> --out env",
               "uv run kullback run --workdir env --task <task id> --model provider/model",
               "uv run kullback verdict --workdir env",
               "uv run kullback report --workdir env", "```", ""]
     lines += ["## Links", "", f"- Harness: {github_url}", f"- Site: {site_url}",
-              "- Licence: Apache-2.0 for the harness and every package here. Each source corpus keeps its "
-              "own licence, named on the Environment's card.", ""]
+              "- Licence: Apache-2.0 for the harness and every package; each corpus keeps its own.", ""]
     return "\n".join(lines) + "\n"
 
 
@@ -257,23 +233,16 @@ def environment_card_template(fields: Optional[Iterable[tuple[str, str]]] = None
     """What every field of an Environment card means and where its value comes from."""
     rows = list(fields) if fields is not None else CARD_FIELDS
     lines = ["# Environment card fields", "",
-             "Every card under the organisation is rendered by `kullback/hub/card.py` from the package's "
-             "`manifest.json` and from nothing else, so a number on a page is a number the package carries. "
-             "This is what each field means and which record it is read from. Nothing on a card is written "
-             "by hand, and nothing on it quotes a Task, a tool result or a status row: every reason a card "
-             "gives is one of the harness's fixed phrases.", "",
+             "`kullback/hub/card.py` renders every card from the package's `manifest.json` alone, "
+             "and this is what each field means and where it is read from.", "",
              "| Field | Meaning | Read from |", "| --- | --- | --- |"]
     lines += [f"| {name} | {meaning} | {source} |" for name, meaning, source in rows]
     lines += ["", "## Front matter", "",
-              "`license` is the source corpus's licence, lowercased to the id a dataset host indexes, or "
-              f"`{UNKNOWN_LICENSE}` where the publisher named none. `tags` is always "
-              f"{', '.join('`' + tag + '`' for tag in BASE_TAGS)} followed by the Environment's own name, "
-              "which is the domain.", "",
+              f"`license` is the corpus licence as the host's id, or `{UNKNOWN_LICENSE}` when none was named; "
+              f"`tags` is {', '.join('`' + tag + '`' for tag in BASE_TAGS)} and the Environment's name.", "",
               "## Preview and release", "",
-              f"A release requires replay fidelity over Tasks at or above {FIDELITY_BAR:.0%}. Below that, "
-              "`publish --preview` is the only form that is allowed, it sets `preview: true` in the "
-              "manifest, and the card opens with a banner naming the bar and the Environment's own "
-              "numbers.", ""]
+              f"A release needs fidelity over Tasks of at least {FIDELITY_BAR:.0%}; below that only "
+              "`publish --preview` is allowed, and the card says so above its table.", ""]
     return "\n".join(lines) + "\n"
 
 
@@ -284,6 +253,7 @@ CARD_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("tasks_total", "Tasks on the frozen list", "`tasks_frozen.json`, or the newest round snapshot"),
     ("replay_fidelity.tasks_rate", "Share of Tasks with at least one confirmed replay", "`replays.json`"),
     ("replay_fidelity.runs_rate", "Share of replayed Runs that were confirmed", "`replays.json`"),
+    ("replay_fidelity.calls_rate", "Share of recorded calls that agree, over `calls_total`", "`replays.json`"),
     ("tag", "The tag this publish carries", "`round-<n>`, else `build-<YYYYMMDD>` of the newest session write"),
     ("counts_source", "Where the counts came from", "the last round record, else the workdir status"),
     ("reference_confirmed", "Tasks with at least one confirmed replay", "`replays.json`"),

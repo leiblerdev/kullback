@@ -357,7 +357,7 @@ def report(result: dict) -> str:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workdir", type=Path)
-    parser.add_argument("domain", choices=["retail", "airline", "telecom"])
+    parser.add_argument("domain", choices=["retail", "airline"])
     parser.add_argument("--per-tool", type=int, default=25)
     parser.add_argument("--venv", type=Path, required=True,
                         help="Python of a venv with tau2's dependencies installed.")
