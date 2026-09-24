@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
+
+import pytest
+from pydantic import ValidationError
 
 from kullback.agent.events import ToolExecutionEnd as ToolEnd
 from kullback.ai.provider import TestModel
+from kullback.builder import domain_tools as domain_tools_mod
 from kullback.builder import session as session_mod
+from kullback.builder.domain_tools import NoteArgs
+from kullback.examiner import domain_tools as exam_tools
 from kullback.runner import budget
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
 from tests.builder.session_fixtures import error, priced, reply
@@ -302,3 +310,55 @@ def test_a_stop_at_the_ceiling_draws_no_follow_up():
     status = {"tasks": [{"task_id": "t", "state": "open", "reason": ""}]}
     assert session_mod.continuation(status, 5.0, 5.0) is None
     assert session_mod.continuation(status, 1.0, None).startswith("1 Tasks are open")
+
+
+def _note_tool(root):
+    (tool,) = [t for t in domain_tools_mod.domain_tools(workdir=root) if t.name == "note_task"]
+    return tool
+
+
+def _task_workdir(tmp_path):
+    (tmp_path / "tasks").mkdir(parents=True)
+    (tmp_path / "tasks" / "t1.json").write_text("{}", encoding="utf-8")
+    return tmp_path
+
+
+def test_the_note_tool_refuses_a_note_carrying_an_atom_and_writes_a_plain_one(tmp_path):
+    root = _task_workdir(tmp_path)
+    tool = _note_tool(root)
+    with pytest.raises(ValidationError):
+        NoteArgs(task_id="t1", reason="outcome_not_in_state", sentence="x", atom={"id": "w0"})
+    with pytest.raises(ValueError, match="never an atom"):
+        asyncio.run(tool.execute(NoteArgs(task_id="t1", reason="outcome_not_in_state",
+                                          sentence='demand {"kind": "write"} instead')))
+    result = asyncio.run(tool.execute(NoteArgs(task_id="t1", reason="outcome_not_in_state",
+                                               sentence="the answer is only said, never written.")))
+    assert result.note["reason"] == "outcome_not_in_state"
+    assert exam_tools.open_note(root, "t1") == result.note
+
+
+def test_a_task_with_an_open_note_cannot_be_refused_until_the_examiner_rules(tmp_path):
+
+    root = _task_workdir(tmp_path)
+    hook = session_mod.refusal_waits_for_note(root)
+    refusal = SimpleNamespace(name="write", arguments={"path": "refusals/t1.json", "content": "{}"})
+    other = SimpleNamespace(name="write", arguments={"path": "refusals/t2.json", "content": "{}"})
+    assert hook(refusal) is None, "no note, no block"
+    exam_tools.write_note(root, "t1", "intent_contradicts_reference", "the Intent asks for another item.")
+    with pytest.raises(PermissionError, match="open note"):
+        hook(refusal)
+    assert hook(other) is None, "an open note blocks only its own Task"
+    exam_tools.rule_note(root, "t1", "finding", "builder_right", "the Reference answered another Intent")
+    assert hook(refusal) is None
+
+
+def test_the_builders_opening_shows_the_examiners_ruling_on_its_note(tmp_path):
+    root = _workdir(tmp_path)
+    exam_tools.write_note(root, "t1", "needs_action_record", "the hand off leaves no row to check.")
+    assert "t1: needs_action_record: the hand off leaves no row to check. (open)" in session_mod.opening(root)
+    exam_tools.rule_note(root, "t1", "finding", "builder_wrong", "the hand off writes a ticket row")
+    ruled = exam_tools.read_json(exam_tools.ruling_path(root, "t1"))
+    assert ruled["verdict"] == "builder_wrong"
+    assert ("t1: needs_action_record: the hand off leaves no row to check. (ruled by finding, builder_wrong: "
+            "the hand off writes a ticket row)") in session_mod.opening(root)
+    assert session_mod.opening(root).endswith(session_mod.OPENING)
