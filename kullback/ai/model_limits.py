@@ -135,3 +135,42 @@ def without_profile(model_id: Optional[str]) -> Optional[str]:
     head, slash, wire = model_id.rpartition("/")
     return head + slash + _PROFILE_PREFIX.sub("", wire)
 
+
+
+# Our provider name where models.dev spells it another way. The catalog keys Bedrock's rows by the
+# full wire id, profile included (`global.anthropic.claude-opus-5-5` and `us.anthropic.claude-opus-5-5`
+# are two rows at two prices), under `amazon-bedrock`.
+PROVIDER_CATALOG_NAMES: dict[str, str] = {"bedrock": "amazon-bedrock"}
+
+
+def split_vendor(wire_id: Optional[str]) -> Optional[tuple[str, str]]:
+    """A cloud id's vendor and model, `global.a-vendor.model-1` to (`a-vendor`, `model-1`).
+
+    The profile geography comes off first; what is left is `vendor.model`, split at the first dot,
+    since a model name may carry dots of its own. None when the id has no vendor segment.
+    """
+    bare = without_profile(str(wire_id or "").rpartition("/")[2]) or ""
+    vendor, dot, model = bare.partition(".")
+    return (vendor, model) if dot and vendor and model else None
+
+
+def catalog_candidates(model_id: Optional[str]) -> list[tuple[str, str]]:
+    """The catalog ids a model is looked up under, in order, each with the name of its step.
+
+    `exact`: the wire id as sent, under the provider's models.dev name. `without-profile`: the same
+    with the inference profile geography taken off. `vendor`: for a provider that renames itself in
+    the catalog (a cloud serving other vendors' models), the vendor's own row for the model alone.
+    Whoever asks (a price, a window) takes the first candidate that answers.
+    """
+    if not model_id or "/" not in model_id:
+        return [("exact", model_id)] if model_id else []
+    provider, _, wire = model_id.partition("/")
+    listed = PROVIDER_CATALOG_NAMES.get(provider, provider)
+    found: list[tuple[str, str]] = [("exact", f"{listed}/{wire}")]
+    stripped = without_profile(wire) or wire
+    if stripped != wire:
+        found.append(("without-profile", f"{listed}/{stripped}"))
+    vendor = split_vendor(wire) if provider in PROVIDER_CATALOG_NAMES else None
+    if vendor is not None:
+        found.append(("vendor", f"{vendor[0]}/{vendor[1]}"))
+    return found

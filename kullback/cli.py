@@ -1002,6 +1002,18 @@ def budget_cache(workdir: Path = WORKDIR,
         typer.echo(line)
 
 
+@budget_app.command("reprice")
+def budget_reprice(workdir: Path = WORKDIR,
+                   model: Optional[str] = typer.Option(None, "--model",
+                                                       help="Price every call under this provider/model id "
+                                                            "instead of the id its feed line recorded.")):
+    """Price the calls in the feed again and rewrite the dollars in budget.json; nothing is called."""
+    budget = importlib.import_module("kullback.runner.budget")
+    total = budget.reprice(workdir, model_id=model)["total"]
+    typer.echo(f"{int(total['calls'])} calls, ${total['usd']:,.4f}, "
+               f"{int(total['unpriced_calls'])} unpriced; {budget.cache_line(total)}")
+
+
 user_app = typer.Typer(add_completion=False,
                        help="The Simulated user: how close its turns are to the recorded ones, and how "
                             "often it runs out of scenario (D214).")

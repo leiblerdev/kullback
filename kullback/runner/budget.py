@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from kullback.ai import cache as cache_module
 from kullback.ai import pricing as pricing_module
-from kullback.ai.model_limits import without_profile
+from kullback.ai.model_limits import catalog_candidates, without_profile
 from kullback.ai.provider import Model, ModelConfig, ModelReply
 from kullback.runner import feed
 from kullback.runner.records import Cost, Event, Usage
@@ -44,13 +44,18 @@ PRICES: dict[str, dict[str, float]] = {
     # (pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrockFoundationModels/current/
     # us-east-2/index.json, published 2026-09-22, read 2026-09-24), the "Standard, Global" rows,
     # cache_write at the five-minute TTL. The same list prices the in-region rows ten percent
-    # higher, which is why a bare id goes out on the global. profile; a us. or eu. profile is
-    # looked up through the same row (without_profile) and so priced a little low. models.dev lists the provider as amazon-bedrock, not bedrock, and its
-    # bare-id match already answers for anthropic.claude-opus-5 and -sonnet-5 at these same rates.
+    # higher. models.dev lists each profile as its own row under amazon-bedrock, and price_for asks
+    # it for the exact id first; these rows are the offline fallback, looked up without the profile
+    # (without_profile), so a us. or eu. call priced from here is priced a little low.
     "bedrock/anthropic.claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0},
     "bedrock/anthropic.claude-opus-5": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
     "bedrock/anthropic.claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
     "bedrock/anthropic.claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
+    # GPT-6 Sol on Bedrock's Chat Completions path (provider.BedrockOpenAIModel): models.dev,
+    # amazon-bedrock/global.openai.gpt-6-sol (read 2026-09-24), the tier under 272,000 prompt tokens
+    # (4 and 15 above it, which prompt_tier_limit keeps the D65 cap out of).
+    "bedrock/openai.gpt-6-sol": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5,
+                                 "prompt_tier_limit": 272_000},
     # The first slice's Candidates (design section 11 step 6). OpenAI has no cache-write
     # charge, so cache_write is 0 and cached input is billed at cache_read.
     "openai/gpt-4.1-mini": {"input": 0.40, "output": 1.60, "cache_read": 0.10, "cache_write": 0.0},
@@ -84,6 +89,8 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "bedrock/anthropic.claude-opus-5": 1_000_000,
     "bedrock/anthropic.claude-sonnet-5": 1_000_000,
     "bedrock/anthropic.claude-haiku-4-5": 200_000,
+    # models.dev, amazon-bedrock/global.openai.gpt-6-sol, limit.context (read 2026-09-24).
+    "bedrock/openai.gpt-6-sol": 1_050_000,
     "openai/gpt-4.1-mini": 1_000_000,
     "openai/o4-mini": 200_000,
     # Measured, not read off a page: a 500,000 token prompt was accepted, so this is a floor and
@@ -203,53 +210,80 @@ def _price_catalog() -> Optional[dict]:
     return _CATALOG
 
 
-def _price_from_models_dev(model_id: Optional[str]) -> Optional[dict[str, float]]:
-    return pricing_module.price_from_catalog(_price_catalog(), model_id)
+# What price_source says for a catalog price; a fallback step is appended (`models.dev:vendor`).
+MODELS_DEV_SOURCE = "models.dev"
+
+
+def _price_from_models_dev(model_id: Optional[str]) -> tuple[Optional[dict[str, float]], Optional[str]]:
+    """The first catalog candidate (model_limits.catalog_candidates) that prices the model, and
+    the step that answered."""
+    catalog = _price_catalog()
+    for step, candidate in catalog_candidates(model_id):
+        price = pricing_module.price_from_catalog(catalog, candidate)
+        if price is not None:
+            return price, step
+    return None, None
+
+
+def _price_from_table(model_id: Optional[str]) -> Optional[dict[str, float]]:
+    return _lookup(PRICES, model_id) or _lookup(PRICES, without_profile(model_id))
+
+
+def _resolve_price(model_id: Optional[str]) -> tuple[Optional[dict[str, float]], Optional[str]]:
+    """A price and where it came from, in the one order every lookup follows.
+
+    models.dev first, since a vendor's list price changes without warning: the exact wire id under
+    the provider's catalog name (a Bedrock profile row carries its own price, the us. one ten
+    percent over the global. one), then the id without its profile, then the vendor's own row.
+    PRICES is the offline fallback for a model or a machine without a snapshot.
+    """
+    price, step = _price_from_models_dev(model_id)
+    if price is not None:
+        return price, MODELS_DEV_SOURCE if step == "exact" else f"{MODELS_DEV_SOURCE}:{step}"
+    price = _price_from_table(model_id)
+    return (price, "table") if price is not None else (None, None)
 
 
 def price_for(model_id: Optional[str]) -> Optional[dict[str, float]]:
-    """Prices for a full 'provider/model' id, or for the wire id alone, with any inference
-    profile geography taken off first (model_limits.without_profile): one row per model serves
-    `bedrock/global.anthropic.claude-opus-5-5` and `bedrock/us.anthropic.claude-opus-5-5` alike.
-
-    models.dev's live snapshot is asked first, since a vendor's list price changes without
-    warning; PRICES below is the offline fallback for a model or a machine without one.
-    """
-    model_id = without_profile(model_id)
-    return _price_from_models_dev(model_id) or _lookup(PRICES, model_id)
+    """Prices for a full 'provider/model' id, or for the wire id alone (see _resolve_price)."""
+    return _resolve_price(model_id)[0]
 
 
 def price_source(model_id: Optional[str]) -> Optional[str]:
-    """Where price_for's answer for this model came from: "models.dev" or "table". None when
-    neither source prices the model."""
-    model_id = without_profile(model_id)
-    if _price_from_models_dev(model_id) is not None:
-        return "models.dev"
-    if _lookup(PRICES, model_id) is not None:
-        return "table"
-    return None
+    """Which lookup answered price_for: "models.dev", "models.dev:without-profile",
+    "models.dev:vendor" or "table". None when nothing prices the model."""
+    return _resolve_price(model_id)[1]
 
 
 def is_priced(model_id: Optional[str]) -> bool:
     return price_for(model_id) is not None
 
 
+def _window_from_models_dev(model_id: Optional[str]) -> Optional[int]:
+    catalog = _price_catalog()
+    for _step, candidate in catalog_candidates(model_id):
+        window = pricing_module.window_from_catalog(catalog, candidate)
+        if window:
+            return window
+    return None
+
+
 def window_for(model_id: Optional[str]) -> int:
     """The context window of a model, for the D65 cap.
 
     The hand table first, since two of its rows were measured against a live endpoint rather than
-    read off a page, then models.dev, then the default. A model the registry knows no longer takes
-    the 200,000 default and a cap four fifths smaller than the one it could have had.
+    read off a page, then models.dev in the order prices follow (_resolve_price), then the default.
+    A model the registry knows no longer takes the 200,000 default and a cap four fifths smaller
+    than the one it could have had.
 
     A price row that carries `prompt_tier_limit` is priced only for prompts under that many
     tokens, so the window is cut to the limit over CONTEXT_CAP_FRACTION: the D65 cap never lets
     a prompt past the priced tier, where the ledger would bill it at the lower rate.
     """
-    model_id = without_profile(model_id)
-    window = (_lookup(CONTEXT_WINDOWS, model_id)
-              or pricing_module.window_from_catalog(_price_catalog(), model_id)
+    window = (_lookup(CONTEXT_WINDOWS, model_id) or _lookup(CONTEXT_WINDOWS, without_profile(model_id))
+              or _window_from_models_dev(model_id)
               or DEFAULT_CONTEXT_WINDOW)
-    tier_limit = (_lookup(PRICES, model_id) or {}).get("prompt_tier_limit")
+    tier_limit = (_price_from_table(model_id) or {}).get("prompt_tier_limit")
     if tier_limit:
         return min(window, int(tier_limit / CONTEXT_CAP_FRACTION))
     return window
@@ -268,6 +302,19 @@ def priced_model_id(cost: Any) -> Optional[str]:
     if model and provider and "/" not in model:
         return f"{provider}/{model}"
     return model
+
+
+def sent_wire_id(model_id: Optional[str], echoed: Optional[str]) -> Optional[str]:
+    """The wire id a call is priced and recorded under: the one it was sent with.
+
+    An endpoint echoes a shorter name than it was called by (Bedrock answers
+    `global.anthropic.claude-opus-5-5` with `claude-opus-5-5`), and the profile is what picks the
+    catalog row, so the configured id wins whenever it names its provider; the echo is used only
+    when nothing else names the model.
+    """
+    if model_id and "/" in model_id:
+        return model_id.split("/", 1)[1]
+    return echoed or model_id
 
 
 # A one-hour cache write costs twice the input price where a five-minute one costs one and a
@@ -413,7 +460,7 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
         target["wall_ms"] += event.cost.wall_ms
         if source is None:
             target["unpriced_calls"] += 1
-        elif source == "models.dev":
+        elif source.startswith(MODELS_DEV_SOURCE):
             target["models_dev_calls"] += 1
         if memo_hit:
             target["memo_hits"] += 1
@@ -433,6 +480,43 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
     if ceiling is not None:
         ceiling.charge_recorded(totals, stage, item or str(event.idx), items_left)
     return event
+
+
+# The ledger fields a price decides; reprice rewrites these and leaves counts and tokens alone.
+PRICED_FIELDS = ("usd", "cache_saved_usd", "unpriced_calls", "models_dev_calls")
+
+
+def reprice(workdir: str | Path, model_id: Optional[str] = None) -> dict:
+    """Price a workdir's calls again from its feed and write the result into budget.json.
+
+    Each model_call line carries its tokens and the id it was recorded under, so a round that ran
+    unpriced (a price row missing, a catalog name wrong) has its cost recovered after the fact.
+    `model_id` prices every line under one id instead, for a feed whose lines recorded a stripped id
+    no catalog row answers to. Only the priced fields change; a stage with no feed line keeps its.
+    """
+    rows, _ = feed.read_since(workdir)
+    priced: dict[str, dict[str, float]] = {}
+    for row in rows:
+        if row.get("kind") != "model_call":
+            continue
+        usage = Usage(input=int(row.get("input") or 0), output=int(row.get("output") or 0),
+                      cache_read=int(row.get("cache_read") or 0), cache_write=int(row.get("cache_write") or 0),
+                      cache_write_1h=int(row.get("cache_write_1h") or 0))
+        name = model_id or row.get("model")
+        source = price_source(name)
+        bucket = priced.setdefault(str(row.get("stage") or ""), dict.fromkeys(PRICED_FIELDS, 0))
+        bucket["usd"] += call_cost(usage, name)
+        bucket["cache_saved_usd"] += cache_effect(usage, name)
+        bucket["unpriced_calls"] += source is None
+        bucket["models_dev_calls"] += bool(source and source.startswith(MODELS_DEV_SOURCE))
+    with _LEDGER_LOCK:
+        totals = load_totals(workdir)
+        for stage, fields in priced.items():
+            totals["stages"].setdefault(stage, empty_bucket()).update(fields)
+        for field in PRICED_FIELDS:
+            totals["total"][field] = sum(bucket[field] for bucket in totals["stages"].values())
+        save_totals(workdir, totals)
+    return totals
 
 
 # The fingerprint keys a feed line carries, as kullback.ai.cache.fingerprint names them.
@@ -476,7 +560,7 @@ def subscriber(workdir: str | Path, stage: str, model_id: Optional[str],
             calls += 1
             idx = calls - 1
         record = Event(idx=idx, type="model_call",
-                       cost=Cost(provider=provider, model=getattr(message, "model", None) or name,
+                       cost=Cost(provider=provider, model=sent_wire_id(model_id, getattr(message, "model", None)) or name,
                                  usage=usage, wall_ms=0.0))
         try:
             record_call(record, stage, workdir, ceiling=ceiling, item=name,
@@ -691,7 +775,7 @@ class BudgetedModel(Model):
             type="model_call",
             cost=Cost(
                 provider=self.model_id.split("/", 1)[0] if "/" in self.model_id else None,
-                model=reply.model or self.model_id,
+                model=sent_wire_id(self.model_id, reply.model),
                 usage=reply.usage,
                 wall_ms=wall_ms,
             ),

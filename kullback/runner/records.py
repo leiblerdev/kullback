@@ -541,8 +541,8 @@ class Cost(Record):
     usage: Usage = Field(default_factory=Usage)
     usd: float = Field(default=0.0, ge=0)
     wall_ms: float = Field(default=0.0, ge=0)
-    # Where usd's price came from: "models.dev" or "table" (budget.PRICES), or None for an
-    # unpriced model. Set by budget.record_call; nothing else writes it.
+    # Where usd's price came from: "models.dev" (a fallback step appended, "models.dev:vendor"),
+    # "table" (budget.PRICES), or None for an unpriced model. Set by budget.record_call; nothing else writes it.
     price_source: Optional[str] = None
 
 
