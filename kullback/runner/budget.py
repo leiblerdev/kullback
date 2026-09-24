@@ -121,8 +121,12 @@ _LEDGER_LOCK = threading.RLock()
 # over plain input where a vendor charges one. usd is what was paid; usd + cache_saved_usd is
 # what the same calls would have cost with no cache. A memo hit is a count only: nothing was
 # sent, so nothing is known about what it would have cost.
-BUCKET_FIELDS = ("calls", "input", "output", "cache_read", "cache_write", "usd", "wall_ms",
-                 "unpriced_calls", "memo_hits", "models_dev_calls", "cache_saved_usd")
+# cache_write_1h: the part of cache_write written at the one-hour TTL, kept so reprice can bill it
+# at its own rate from the ledger alone (D291); a ledger written before the field reads it as 0.
+# direct_usd, direct_calls: charges made through Ceiling.add rather than a priced call. They carry
+# dollars and no tokens, so reprice carries them over as they are instead of pricing them from tokens.
+BUCKET_FIELDS = ("calls", "input", "output", "cache_read", "cache_write", "cache_write_1h", "usd", "wall_ms",
+                 "unpriced_calls", "memo_hits", "models_dev_calls", "cache_saved_usd", "direct_usd", "direct_calls")
 CONTEXT_CAP_FRACTION = 0.40
 # Tokens are estimated from characters before a call, because the count endpoint is itself a
 # call. Four characters per token is the usual English ratio and errs on the low side.
@@ -456,6 +460,7 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
         target["output"] += usage.output
         target["cache_read"] += usage.cache_read
         target["cache_write"] += usage.cache_write
+        target["cache_write_1h"] += usage.cache_write_1h
         target["usd"] += event.cost.usd
         target["cache_saved_usd"] += saved
         target["wall_ms"] += event.cost.wall_ms
@@ -465,6 +470,7 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
             target["models_dev_calls"] += 1
         if memo_hit:
             target["memo_hits"] += 1
+    _count_by_model(bucket, priced_model_id(event.cost), usage)
     save_totals(workdir, totals)
     # The same numbers, once as state and once as story: the ledger says what the build has spent,
     # the feed says what it just did. Written here, under the ledger lock, so the feed's order is
@@ -483,41 +489,126 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
     return event
 
 
+def _count_by_model(bucket: dict, model_id: Optional[str], usage: Usage) -> None:
+    """Keep the stage's calls and tokens per model too, so a build resumed on another model is
+    repriced at each model's own row, not all at the latest one."""
+    counts = bucket.setdefault("models", {}).setdefault(model_id or "", _empty_counts())
+    counts["calls"] += 1
+    for field in LEDGER_TOKEN_FIELDS:
+        counts[field] += getattr(usage, field)
+
+
+def _empty_counts() -> dict[str, int]:
+    return dict.fromkeys(("calls", *LEDGER_TOKEN_FIELDS), 0)
+
+
 # The ledger fields a price decides; reprice rewrites these and leaves counts and tokens alone.
 PRICED_FIELDS = ("usd", "cache_saved_usd", "unpriced_calls", "models_dev_calls")
 
 
 def reprice(workdir: str | Path, model_id: Optional[str] = None) -> dict:
-    """Price a workdir's calls again from its feed and write the result into budget.json.
+    """Price a workdir's calls again from the ledger's own counters and write the result into budget.json.
 
-    Each model_call line carries its tokens and the id it was recorded under, so a round that ran
-    unpriced (a price row missing, a catalog name wrong) has its cost recovered after the fact.
-    `model_id` prices every line under one id instead, for a feed whose lines recorded a stripped id
-    no catalog row answers to. Only the priced fields change; a stage with no feed line keeps its.
+    The token and call counts in budget.json are cumulative over every session built in the
+    workdir, while the feed holds only the last one (feed.start truncates it, D291), so the counters
+    are what is priced. The feed adds only what the counters cannot say: the model a stage's calls
+    were recorded under when `model_id` is not given, and which cache writes were one-hour ones in a
+    ledger written before it kept `cache_write_1h`. Each surviving feed line is priced as its own
+    call; whatever the counters hold beyond the feed's lines is priced under `model_id`, or else
+    under the model of the stage's last feed line, with its one-hour writes taken from the ledger's
+    count past the feed's. An old ledger's earlier sessions therefore price their one-hour writes at
+    the plain write rate, a small under-count, never a loss. A stage that no feed line and no
+    `model_id` names keeps its priced fields. A ledger that keeps each stage's calls per model
+    (every one recorded since) prices each model's share at its own row, so a build resumed on another
+    model is not charged the latest model's rate for its earlier calls. Only the priced fields change.
     """
-    rows, _ = feed.read_since(workdir)
-    priced: dict[str, dict[str, float]] = {}
-    for row in rows:
-        if row.get("kind") != "model_call":
-            continue
-        usage = Usage(input=int(row.get("input") or 0), output=int(row.get("output") or 0),
-                      cache_read=int(row.get("cache_read") or 0), cache_write=int(row.get("cache_write") or 0),
-                      cache_write_1h=int(row.get("cache_write_1h") or 0))
-        name = model_id or row.get("model")
-        source = price_source(name)
-        bucket = priced.setdefault(str(row.get("stage") or ""), dict.fromkeys(PRICED_FIELDS, 0))
-        bucket["usd"] += call_cost(usage, name)
-        bucket["cache_saved_usd"] += cache_effect(usage, name)
-        bucket["unpriced_calls"] += source is None
-        bucket["models_dev_calls"] += bool(source and source.startswith(MODELS_DEV_SOURCE))
+    seen = _feed_parts(feed.read_since(workdir)[0], model_id)
     with _LEDGER_LOCK:
         totals = load_totals(workdir)
-        for stage, fields in priced.items():
-            totals["stages"].setdefault(stage, empty_bucket()).update(fields)
+        for stage in seen:
+            totals["stages"].setdefault(stage, empty_bucket())
+        for stage, bucket in totals["stages"].items():
+            priced = _price_stage(bucket, seen.get(stage) or _empty_part(), model_id)
+            if priced is not None:
+                priced["usd"] += float(bucket["direct_usd"])
+                bucket.update(priced)
         for field in PRICED_FIELDS:
             totals["total"][field] = sum(bucket[field] for bucket in totals["stages"].values())
         save_totals(workdir, totals)
     return totals
+
+
+def _empty_part() -> dict[str, Any]:
+    return {"priced": dict.fromkeys(PRICED_FIELDS, 0), "calls": 0, "model": None,
+            **dict.fromkeys(LEDGER_TOKEN_FIELDS, 0)}
+
+
+def _feed_parts(rows: list[dict], model_id: Optional[str]) -> dict[str, dict[str, Any]]:
+    """Per stage, the feed's model_call lines each priced as its own call, their counts summed, and
+    the model of the last one."""
+    seen: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row.get("kind") != "model_call":
+            continue
+        usage = Usage(**{field: int(row.get(field) or 0) for field in LEDGER_TOKEN_FIELDS})
+        name = model_id or row.get("model")
+        part = seen.setdefault(str(row.get("stage") or ""), _empty_part())
+        _price_into(part["priced"], usage, name, 1)
+        part["calls"] += 1
+        for field in LEDGER_TOKEN_FIELDS:
+            part[field] += getattr(usage, field)
+        part["model"] = name
+    return seen
+
+
+def _price_stage(bucket: dict, part: dict[str, Any], model_id: Optional[str]) -> Optional[dict]:
+    """A stage's priced fields. A ledger that keeps its calls per model prices each model's tokens at
+    that model's row (or all under `model_id` when given); one written before that prices its feed
+    lines, then what the ledger counted beyond them under one id. None when nothing names the model
+    of calls that need one."""
+    split = bucket.get("models") or {}
+    if not split:
+        name = model_id or part["model"]
+        if name is None:
+            return None
+        priced = dict(part["priced"])
+        rest, calls = _beyond(bucket, [part])
+        _price_into(priced, rest, name, calls)
+        return priced
+    priced = dict.fromkeys(PRICED_FIELDS, 0)
+    for name, counts in split.items():
+        _price_into(priced, Usage(**{field: int(counts.get(field) or 0) for field in LEDGER_TOKEN_FIELDS}),
+                    model_id or name or None, int(counts.get("calls") or 0))
+    rest, calls = _beyond(bucket, list(split.values()))
+    if calls or rest.input + rest.output + rest.cache_read + rest.cache_write:
+        name = model_id or part["model"]
+        if name is None:
+            return None
+        _price_into(priced, rest, name, calls)
+    return priced
+
+
+def _beyond(bucket: dict, parts: list[dict]) -> tuple[Usage, int]:
+    """The tokens and calls the stage's counters hold beyond these parts, as one Usage and a call count."""
+    rest = {field: max(0, int(bucket[field]) - sum(int(part.get(field) or 0) for part in parts))
+            for field in LEDGER_TOKEN_FIELDS}
+    rest["cache_write_1h"] = min(rest["cache_write_1h"], rest["cache_write"])
+    calls = max(0, int(bucket["calls"]) - int(bucket["direct_calls"])
+                - sum(int(part.get("calls") or 0) for part in parts))
+    return Usage(**rest), calls
+
+
+# The token counts a ledger bucket and a feed line both carry, as Usage names them.
+LEDGER_TOKEN_FIELDS = ("input", "output", "cache_read", "cache_write", "cache_write_1h")
+
+
+def _price_into(fields: dict, usage: Usage, model_id: Optional[str], calls: int) -> None:
+    """Add `calls` calls with these tokens between them, priced under one id, to the priced fields."""
+    source = price_source(model_id)
+    fields["usd"] += call_cost(usage, model_id)
+    fields["cache_saved_usd"] += cache_effect(usage, model_id)
+    fields["unpriced_calls"] += calls if source is None else 0
+    fields["models_dev_calls"] += calls if source and source.startswith(MODELS_DEV_SOURCE) else 0
 
 
 # The fingerprint keys a feed line carries, as kullback.ai.cache.fingerprint names them.
@@ -700,6 +791,8 @@ class Ceiling:
         for target in (bucket, totals["total"]):
             target["calls"] += 1
             target["usd"] += usd
+            target["direct_calls"] += 1
+            target["direct_usd"] += usd
         save_totals(self.workdir, totals)
 
 

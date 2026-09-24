@@ -251,7 +251,7 @@ Locations use the vocabulary of the brief (carried module, gate, hook, prompt se
 | L5.4 | A report carries task ids, tool names and column names only | carried module kullback/report/ | customer data reached reports twice and was scrubbed |
 | **standing rules (people, not code)** | | | |
 | D17 | Simplicity by default, and complexity where it is worth it | standing rule (docs/design-philosophy.md) | |
-| D18 | Study real environments first, so the generator has a reference set | standing rule (docs/eval-design.md) | build order of the first build, kept as history; the decision entry was removed from the log on 2026-09-22, no learning |
+| D18 | Study real environments first, so the generator has a reference set | standing rule (docs/design-philosophy.md) | build order of the first build, kept as history; the decision entry was removed from the log on 2026-09-22, no learning |
 | D21 | A good Task is one where two domain experts would independently reach the same verdict | standing rule (docs/decision-log.md principles) | |
 | D23 | Unbiased reporting: say where the sources disagree and where coverage is thin | standing rule | |
 | D24 | Build for the hardest case | standing rule | |

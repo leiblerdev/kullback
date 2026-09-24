@@ -44,6 +44,7 @@ from kullback.gates.verifier_suite import (
     HELPERS_SRC,
     NO_ATOM_CHECKED,
     check_run,
+    elide_agent_prose,
     make_atom,
     not_run_reason,
     validate_verifier,
@@ -229,7 +230,8 @@ def _atom_of(row: dict, atoms: Iterable[Any] = ()):
         # F51: the rule the model wrote is the Hard atom's check; make_atom wraps it off the payload.
         payload = {"kind": "hard", **payload, "predicate_src": row["predicate_src"]}
     fields = {key: value for key, value in row.items() if key in ROW_FIELDS}
-    atom = make_atom(row["id"], row["kind"], payload, helpers=HELPERS_SRC, **fields)
+    # D292: an atom the model wrote pins the recorded agent's prose no more than a derived one does.
+    atom = elide_agent_prose(make_atom(row["id"], row["kind"], payload, helpers=HELPERS_SRC, **fields))
     if not scored(atom):
         raise RetryableToolError(
             f"the atom {row['id']!r} is not scored, so no Run could fail it: {SCORABLE}.",

@@ -90,6 +90,55 @@ def test_reprice_recovers_the_cost_of_a_round_that_ran_unpriced(catalog, tmp_pat
     assert budget.load_totals(workdir) == after
 
 
+SESSION_CALLS = (
+    Usage(input=1_000, output=200_000, cache_read=3_000_000, cache_write=400_000, cache_write_1h=300_000),
+    Usage(input=50_000, output=10_000, cache_read=900_000, cache_write=20_000),
+    Usage(),
+    Usage(input=2_000, output=70_000, cache_read=1_500_000, cache_write=90_000, cache_write_1h=90_000),
+)
+
+
+def _record(workdir, usage, stage="solve"):
+    cost = Cost(provider="bedrock", model="global.a-vendor.big-1", usage=usage)
+    budget.record_call(Event(idx=0, type="model_call", cost=cost), stage=stage, workdir=workdir)
+
+
+def test_reprice_of_a_workdir_built_across_two_sessions_prices_every_call_not_only_the_last_session(
+        catalog, tmp_path):
+    """feed.start truncates the feed on each session; the ledger's counters keep every call (D291)."""
+    workdir = tmp_path / "w"
+    feed.start(workdir)
+    for usage in SESSION_CALLS[:3]:
+        _record(workdir, usage)
+    feed.start(workdir)
+    _record(workdir, SESSION_CALLS[3])
+
+    after = budget.reprice(workdir, model_id="bedrock/global.a-vendor.big-1")
+    every_call = sum(budget.call_cost(usage, "bedrock/global.a-vendor.big-1") for usage in SESSION_CALLS)
+    saved = sum(budget.cache_effect(usage, "bedrock/global.a-vendor.big-1") for usage in SESSION_CALLS)
+    assert after["total"]["usd"] == pytest.approx(every_call)
+    assert after["total"]["cache_saved_usd"] == pytest.approx(saved)
+    assert after["total"]["calls"] == 4 and after["total"]["models_dev_calls"] == 4
+    assert budget.reprice(workdir)["total"]["usd"] == pytest.approx(every_call)
+
+
+def test_reprice_of_a_single_session_workdir_gives_the_numbers_its_feed_lines_price_to(catalog, tmp_path):
+    """Guard: when the feed holds every call, pricing the counters changes nothing (D291)."""
+    workdir = tmp_path / "w"
+    feed.start(workdir)
+    for stage, usage in zip(("solve", "solve", "check", "check"), SESSION_CALLS, strict=True):
+        _record(workdir, usage, stage)
+    rows = [row for row in feed.read_since(workdir)[0] if row["kind"] == "model_call"]
+    by_line: dict[str, float] = {}
+    for row in rows:
+        usage = Usage(**{field: row.get(field, 0) for field in ("input", "output", "cache_read", "cache_write", "cache_write_1h")})
+        by_line[row["stage"]] = by_line.get(row["stage"], 0.0) + budget.call_cost(usage, "bedrock/us.a-vendor.big-1")
+
+    after = budget.reprice(workdir, model_id="bedrock/us.a-vendor.big-1")
+    assert {stage: bucket["usd"] for stage, bucket in after["stages"].items()} == pytest.approx(by_line)
+    assert after["total"]["usd"] == pytest.approx(sum(by_line.values()))
+
+
 def test_a_bare_bedrock_id_is_priced_under_the_global_row_it_is_sent_on(catalog, tmp_path):
     """The adapter puts a bare id on the `global.` profile, so the ledger prices that row, not the bare one."""
     from kullback.agent.events import MessageEndEvent
@@ -101,3 +150,51 @@ def test_a_bare_bedrock_id_is_priced_under_the_global_row_it_is_sent_on(catalog,
     assert budget.load_totals(workdir)["total"]["usd"] == pytest.approx(1.0)
     rows = [json.loads(line) for line in feed.path_for(workdir).read_text(encoding="utf-8").splitlines()]
     assert [row["model"] for row in rows] == ["bedrock/global.a-vendor.small-1"]
+
+
+def test_reprice_of_a_build_resumed_on_another_model_prices_each_session_at_its_own_model(catalog, tmp_path):
+    """The ledger keeps each stage's calls per model, so the earlier session is not priced at the later rate."""
+    workdir = tmp_path / "w"
+    first, second = Usage(input=1_000_000, output=100_000), Usage(input=500_000, output=50_000)
+    feed.start(workdir)
+    budget.record_call(Event(idx=0, type="model_call", cost=Cost(
+        provider="bedrock", model="global.a-vendor.big-1", usage=first)), stage="solve", workdir=workdir)
+    feed.start(workdir)
+    budget.record_call(Event(idx=0, type="model_call", cost=Cost(
+        provider="bedrock", model="global.a-vendor.small-1", usage=second)), stage="solve", workdir=workdir)
+
+    after = budget.reprice(workdir)
+    expected = (budget.call_cost(first, "bedrock/global.a-vendor.big-1")
+                + budget.call_cost(second, "bedrock/global.a-vendor.small-1"))
+    assert after["total"]["usd"] == pytest.approx(expected)
+    assert after["stages"]["solve"]["usd"] == pytest.approx(expected)
+    assert after["total"]["calls"] == 2 and after["total"]["models_dev_calls"] == 2
+
+
+def test_reprice_of_a_ledger_without_a_per_model_split_prices_as_before(catalog, tmp_path):
+    """A budget.json written before the split prices its feed lines and the rest under the last model."""
+    workdir = tmp_path / "w"
+    feed.start(workdir)
+    for usage in SESSION_CALLS:
+        _record(workdir, usage)
+    totals = budget.load_totals(workdir)
+    del totals["stages"]["solve"]["models"]
+    budget.save_totals(workdir, totals)
+
+    after = budget.reprice(workdir)
+    assert after["total"]["usd"] == pytest.approx(
+        sum(budget.call_cost(usage, "bedrock/global.a-vendor.big-1") for usage in SESSION_CALLS))
+
+
+def test_reprice_keeps_a_direct_charge_the_ceiling_recorded_without_tokens(catalog, tmp_path):
+    """A charge made through Ceiling.add has dollars and no tokens; reprice carries it over."""
+    workdir = tmp_path / "w"
+    feed.start(workdir)
+    _record(workdir, SESSION_CALLS[0])
+    budget.Ceiling(usd=100.0, workdir=workdir).add(2.5, stage="solve", item="a")
+
+    after = budget.reprice(workdir)
+    called = budget.call_cost(SESSION_CALLS[0], "bedrock/global.a-vendor.big-1")
+    assert after["stages"]["solve"]["usd"] == pytest.approx(called + 2.5)
+    assert after["total"]["usd"] == pytest.approx(called + 2.5)
+    assert after["total"]["calls"] == 2 and after["total"]["models_dev_calls"] == 1

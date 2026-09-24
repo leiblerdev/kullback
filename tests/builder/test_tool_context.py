@@ -13,6 +13,7 @@ from kullback.builder import compile_env as ce
 from kullback.gates import confinement as confinement_module
 from kullback.gates.confinement import gate_confined, source_confinement
 from kullback.runner.records import Column, EntitySchema, FieldStat, RawPtr, ToolCall, ToolSig
+from kullback.runner.world.recorded import TIME_RE
 
 
 def _patch_applied() -> bool:
@@ -558,7 +559,7 @@ def test_generated_context_agrees_with_module_time_pattern(value):
         {"loans": {"L100": {"loan_id": "L100", "opened": value}}})
     toolkit.ctx.feed_call({"now": value, "new_ids": {}})
     got = toolkit.ctx.now()
-    if ce._TIME_RE.match(value.strip()):
+    if TIME_RE.match(value.strip()):
         assert got != value
         assert toolkit.ctx.usage() == {"recorded": 0, "seeded": 1}
     else:

@@ -12,6 +12,7 @@ Atom payloads: every atom carries a small structured object in `Atom.target`, re
 verdict.py evaluates it without importing anything from here (D89). The `kind` key of the target is:
   write          {tool, entity, entity_raw, id_field, at, requestor}  the write effect happened
   write_value    {..., field, value, raw}                one value of that write (D42 provenance on the Atom)
+                 {..., field, filled}                    the agent's own prose there: only "filled in" (D292)
   question       {key, tool, field}                       the agent asked the user for this (D43)
   communicate    {value, text}                            the final answer states this fact
   entity_count   {count}                                  the Run makes at most this many write calls
@@ -438,7 +439,7 @@ def _write_fields(payload: dict) -> dict:
     fields: dict = {}
     if payload.get("id_field"):
         fields[payload["id_field"]] = payload.get("entity_raw")
-    if payload.get("kind") == "write_value":
+    if payload.get("kind") == "write_value" and not payload.get("filled"):
         fields[payload["field"]] = payload.get("raw")
     return fields
 
@@ -454,35 +455,106 @@ def _predicate(payload: dict, helpers: str = "") -> str:
     """
     kind = payload.get("kind")
     if kind in ("write", "write_value"):
-        fields = _write_fields(payload)
-        return f"wrote({payload['tool']!r}, **{fields!r})" if fields else f"wrote({payload['tool']!r})"
+        return _write_predicate(payload)
     if kind == "entity_count":
         return f"writes_count() <= {int(payload['count'])}"
     if kind == "question":
-        # question_keys() is the only producer of a "question" payload, and both of its shapes
-        # ("confirm:{tool}" and "field:{field}", always with tool and field set) land in one of
-        # these two branches, so there is no third shape left for a predicate to fall back to.
-        head, _, rest = str(payload.get("key") or "").partition(":")
-        if head == "confirm":
-            return _CONFIRM_WRAPPER.format(words=repr(tuple(AFFIRMATIONS)), tool=repr(rest))
-        if payload.get("tool") and payload.get("field"):
-            return _FIELD_QUESTION_WRAPPER.format(spans=_SPANS_SRC, tool=repr(payload["tool"]),
-                                                  field=repr(payload["field"]))
+        return _question_predicate(payload)
     if kind == "communicate":
         return f"communicated({str(payload.get('text') or payload.get('value'))!r})"
     if kind == "hard":
-        rule = payload.get("predicate_src")
-        if not rule or payload.get("judge"):
-            return ""  # a judge atom is answered by judge.py, never by code (D76)
-        return _HARD_WRAPPER.format(helpers=helpers, spans=_SPANS_SRC, rule=rule,
-                                    write_tools=repr(sorted(payload.get("write_tools") or [])),
-                                    read_tools=repr(sorted(payload.get("read_tools") or [])))
+        return _hard_predicate(payload, helpers)
     return ""
+
+
+def _write_predicate(payload: dict) -> str:
+    """A write or write_value target: the field kept filled (D292), or the write with its fields."""
+    fields = _write_fields(payload)
+    if payload.get("kind") == "write_value" and payload.get("filled"):
+        return f"filled({payload['tool']!r}, {payload['field']!r}, **{fields!r})"
+    return f"wrote({payload['tool']!r}, **{fields!r})" if fields else f"wrote({payload['tool']!r})"
+
+
+def _question_predicate(payload: dict) -> str:
+    """A question target.
+
+    question_keys() is the only producer of a "question" payload, and both of its shapes
+    ("confirm:{tool}" and "field:{field}", always with tool and field set) land in one of
+    these two branches, so there is no third shape left for a predicate to fall back to.
+    """
+    head, _, rest = str(payload.get("key") or "").partition(":")
+    if head == "confirm":
+        return _CONFIRM_WRAPPER.format(words=repr(tuple(AFFIRMATIONS)), tool=repr(rest))
+    if payload.get("tool") and payload.get("field"):
+        return _FIELD_QUESTION_WRAPPER.format(spans=_SPANS_SRC, tool=repr(payload["tool"]),
+                                              field=repr(payload["field"]))
+    return ""
+
+
+def _hard_predicate(payload: dict, helpers: str) -> str:
+    """A Hard rule compiled with its helpers; a judge atom is answered by judge.py, never by code (D76)."""
+    rule = payload.get("predicate_src")
+    if not rule or payload.get("judge"):
+        return ""
+    return _HARD_WRAPPER.format(helpers=helpers, spans=_SPANS_SRC, rule=rule,
+                                write_tools=repr(sorted(payload.get("write_tools") or [])),
+                                read_tools=repr(sorted(payload.get("read_tools") or [])))
 
 
 def make_atom(atom_id: str, kind: str, payload: dict, *, helpers: str = "", **fields: Any) -> Atom:
     """One atom: the structured target for the checks here, the predicate source for the Runner."""
     return Atom(id=atom_id, kind=kind, target=payload, predicate_src=_predicate(payload, helpers), **fields)
+
+
+# --- prose the agent chose (D292) ---
+
+# Where a written value stops being a value and starts being prose: the leak scan's own line
+# (hub/package.py CONTENT_MIN_LENGTH reads this one), or a string of this many words or more.
+PROSE_MIN_LENGTH = 80
+PROSE_MIN_WORDS = 6
+
+
+def is_prose(value: Any) -> bool:
+    """Is this written value free text rather than a value (an id, an amount, a date, a name)?"""
+    return isinstance(value, str) and (len(value) >= PROSE_MIN_LENGTH or len(value.split()) >= PROSE_MIN_WORDS)
+
+
+def pins_agent_prose(atom: Atom) -> bool:
+    """Does this atom pin, word for word, free text the recorded agent wrote into a tool argument?"""
+    payload = atom_payload(atom)
+    return (payload.get("kind") == "write_value" and atom.provenance == "agent_chosen"
+            and (is_prose(payload.get("raw")) or is_prose(payload.get("value"))))
+
+
+def _elided(atom: Atom) -> bool:
+    """Is this an atom elide_agent_prose reduces: agent prose that the Candidate may, not must, write?"""
+    return atom.kind == "allowed" and pins_agent_prose(atom)
+
+
+def elide_agent_prose(atom: Atom) -> Atom:
+    """The atom with the recorded agent's prose taken out: only "the field was filled in" is kept.
+
+    D292: another agent's free text is never byte-equal to the recorded one, so pinning it grades
+    nothing, and it carries a recording into the package. The atom keeps the tool, the row and the
+    field, marked `filled`, and neither its description nor its predicate quotes the text. Any other
+    atom comes back unchanged, so this is safe to run over a whole Verifier and over one already done.
+    Only an allowed atom is reduced: one the Candidate is required to make is left as it is, so the
+    leak scan decides on it and refuses the package loudly if it quotes a recording.
+    """
+    if not _elided(atom):
+        return atom
+    payload = {key: value for key, value in atom_payload(atom).items() if key not in ("value", "raw")}
+    payload["filled"] = True
+    return atom.model_copy(update={"target": payload, "predicate_src": _predicate(payload),
+                                   "description": f"{payload.get('tool')} {payload.get('field')} is filled in"})
+
+
+def elide_verifier_prose(verifier: Verifier) -> tuple[Verifier, int]:
+    """The Verifier with every agent-prose atom elided (above), and how many atoms that changed."""
+    changed = sum(1 for atom in verifier.atoms if _elided(atom))
+    if not changed:
+        return verifier, 0
+    return verifier.model_copy(update={"atoms": [elide_agent_prose(atom) for atom in verifier.atoms]}), changed
 
 
 # --- scoring a Run against the atoms (the gates' side; verdict.py has its own, D91) ---

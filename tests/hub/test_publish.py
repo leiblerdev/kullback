@@ -11,11 +11,15 @@ import pytest
 from nursery_domain import ELICITED_VALUE, RECORDED_TURN, build_unclosed_workdir
 from typer.testing import CliRunner
 
+from gates.verifier_fixtures import call, make_run, result
 from kullback import cli
+from kullback.gates import verifier_suite as S
 from kullback.hub import card as card_mod
 from kullback.hub import package as package_mod
 from kullback.hub import publish as publish_mod
-from kullback.runner.records import read_json, write_json
+from kullback.runner.canon import CanonRules
+from kullback.runner.records import Verifier, as_dict, read_json, write_json
+from kullback.runner.tool import ReplayReport
 
 
 def _export(workdir: Path, out: Path, **kwargs):
@@ -143,6 +147,66 @@ def test_the_leak_scan_fails_an_export_that_copies_a_recorded_turn_into_a_grader
     with pytest.raises(package_mod.ExportError, match="leak scan found 1"):
         _export(nursery, out)
     assert not out.exists()
+
+
+def test_the_leak_scan_finds_a_recorded_turn_quoted_inside_a_description_or_a_predicate(nursery, tmp_path):
+    verifier = read_json(nursery / "verifiers" / "task_one.json")
+    verifier["atoms"][1]["description"] = f"the desk notes {RECORDED_TURN} and waters"
+    verifier["atoms"][1]["predicate_src"] = f"wrote('water_plot', **{{'note': {RECORDED_TURN!r}}})"
+    write_json(nursery / "verifiers" / "task_one.json", verifier)
+    with pytest.raises(package_mod.ExportError, match="leak scan found 1"):
+        _export(nursery, tmp_path / "package")
+
+
+def test_an_old_verifier_pinning_agent_prose_exports_through_the_leak_scan_and_grades_its_reference_as_before(
+        nursery, tmp_path):
+    """D292: a Verifier derived before the fix is reduced as it is packaged, and the workdir is left alone."""
+    source = nursery / "verifiers" / "task_one.json"
+    verifier = read_json(source)
+    fn = S.canon_fn(CanonRules())
+    verifier["atoms"][0]["target"]["entity"] = fn("P-1")  # keyed the way a derivation keys it
+    payload = {"kind": "write_value", "tool": "water_plot", "entity": fn("P-1"), "entity_raw": "P-1",
+               "id_field": "plot_id", "field": "note", "value": S._key(fn, RECORDED_TURN), "raw": RECORDED_TURN}
+    # the write the reference makes, and the old atom pinning the note the recorded agent wrote on it
+    verifier["atoms"] = [verifier["atoms"][0], as_dict(S.make_atom(
+        "w0.note", "allowed", payload, provenance="agent_chosen", description=f"water_plot note is {RECORDED_TURN}"))]
+    write_json(source, verifier)
+    before = source.read_bytes()
+
+    manifest = _export(nursery, tmp_path / "package")
+    assert manifest["leak_scan"]["leaks"] == 0
+    assert source.read_bytes() == before, "the workdir's Verifier is never rewritten by an export"
+    exported = (tmp_path / "package" / "verifiers" / "task_one.json").read_text(encoding="utf-8")
+    assert RECORDED_TURN[:40] not in exported
+    assert (tmp_path / "package" / "verifiers" / "task_two.json").read_bytes() == \
+        (nursery / "verifiers" / "task_two.json").read_bytes(), "a Verifier with nothing to reduce ships as is"
+
+    reference = make_run("reference", [call("water_plot", {"plot_id": "P-1", "note": RECORDED_TURN}),
+                                       result({"status": "watered"})])
+    old, new = Verifier.model_validate(verifier), Verifier.model_validate_json(exported)
+    for run in (reference, make_run("empty", [])):
+        assert S.check_run(new, run, CanonRules(), write_tools={"water_plot"}) == \
+            S.check_run(old, run, CanonRules(), write_tools={"water_plot"})
+    assert S.check_run(new, reference, CanonRules(), write_tools={"water_plot"}) == (True, None)
+
+
+def test_a_required_atom_pinning_recorded_agent_prose_is_never_reduced_and_the_leak_scan_refuses_it(
+        nursery, tmp_path):
+    """Only an allowed prose atom is reduced; a required one ships as it is, so the scan fails loud."""
+    source = nursery / "verifiers" / "task_one.json"
+    verifier = read_json(source)
+    fn = S.canon_fn(CanonRules())
+    payload = {"kind": "write_value", "tool": "water_plot", "entity": fn("P-1"), "entity_raw": "P-1",
+               "id_field": "plot_id", "field": "note", "value": S._key(fn, RECORDED_TURN), "raw": RECORDED_TURN}
+    required = S.make_atom("w0.note", "required", payload, provenance="agent_chosen",
+                           description=f"water_plot note is {RECORDED_TURN}")
+    assert S.elide_agent_prose(required) == required
+    verifier["atoms"] = [verifier["atoms"][0], as_dict(required)]
+    write_json(source, verifier)
+    assert S.elide_verifier_prose(Verifier.model_validate(verifier))[1] == 0
+
+    with pytest.raises(package_mod.ExportError, match="leak scan found"):
+        _export(nursery, tmp_path / "package")
 
 
 def test_a_value_the_caller_gave_mid_conversation_is_an_echo_unless_the_task_states_it_and_never_stops_the_export(
@@ -473,6 +537,21 @@ def test_a_replay_record_without_counts_is_counted_from_its_checks(nursery, tmp_
     fidelity = manifest["replay_fidelity"]
     assert (fidelity["calls"], fidelity["calls_total"], fidelity["calls_rate"]) == (1, 2, 0.5)
     assert "| Call fidelity | 50.00% of 2 |" in card_mod.card_markdown(manifest, "leibler/nursery")
+
+
+def test_call_fidelity_counts_the_calls_a_replay_report_writes_to_replays_json(nursery, tmp_path):
+    replays = read_json(nursery / "replays.json")
+    report = ReplayReport(
+        task_id="task_one", trace_id="trace-task_one", run_id="run-1", path="runs/run-1.json", confirmed=True,
+        fidelity=1.0, counts={"calls": 3, "unmade": 1},
+        calls=[{"call_id": "c1", "kind": "read", "tool": "get_user", "verdict": "same"},
+               {"call_id": "c2", "kind": "write", "tool": "cancel", "verdict": "both_refused"},
+               {"call_id": "c3", "kind": "read", "tool": "get_order", "verdict": "differs"},
+               {"call_id": "c4", "kind": "read", "tool": "get_order", "verdict": "unrecorded"}])
+    replays["task_one"]["trace-task_one"] = report.as_dict()
+    write_json(nursery / "replays.json", replays)
+    fidelity = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)["replay_fidelity"]
+    assert (fidelity["calls"], fidelity["calls_total"], fidelity["calls_rate"]) == (2, 4, 0.5)
 
 
 def test_a_pipe_or_a_line_break_in_corpus_text_stays_inside_its_table_cell(nursery, tmp_path):
