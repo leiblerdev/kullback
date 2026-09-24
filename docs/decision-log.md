@@ -2031,3 +2031,31 @@ ruling (`workdir_trusted_ruling`), and bindings and the counts pass the workdir,
 workdir from before D281 drops a second-path row whose file the loader refuses for that Task, logged once per file. On the smoke 8 workdirs, read only, this withdraws trust
 from 48 of 133 retail and 25 of 53 airline Verifiers, the eight airline Verifiers with the seed signal among them
 (`.claude/herdr/overhaul-0922/reports/ov-fix-runs/report.md`). Status: decided 2026-09-24, built on overhaul-0922/fix-runs.
+
+## Smoke 8 fixes: the world records hand-offs and keeps the time (D282, D283)
+
+### D282. A tool that ends the Run and writes nothing leaves a row, so a write atom can demand it (2026-09-24)
+
+A mined tool that is not a write, answers every successful call with a scalar, is called at least three times and is the
+last tool call of its Trace on at least nine in ten of them is read as ending the Run (it hands the conversation on).
+`compile_env.record_ending_actions` runs in the mine step: it adds one actions table to the schema (action_id, tool, args,
+turn; suffixed where the customer already has that name), makes the tool a write, and the compile step writes two harness
+lines ahead of its body that record each call as a row (the tool name, the arguments, the call's turn as the Router counts
+it). The body the model writes only returns the recorded answer, so replay is unchanged, and the ordinary write atom
+demands the call, so an empty Run fails the Verifier of a Reference that handed off. The tool file and the Builder prompt
+say so in one paragraph. Stored Verifiers derived before this rule treat such a call as no write and need re-deriving.
+Evidence: the ov-inv-verifier report (section 2.3, 10 Tasks whose Verifier an empty Run passed); tests in
+`tests/builder/test_ending_actions.py`; the airline smoke 8 replay stays at 112 of 119 Tasks with the rule applied.
+Status: decided 2026-09-24, built on overhaul-0922/fix-world.
+
+### D283. A body reads the world clock, never the machine's (2026-09-24)
+
+Every Run has one clock: the recording's time for the Task, read off the recording by `runner/world/clock.py` (the moment
+the first row creating write stamped, preferring one no earlier call showed). The Runner sets it on the tool context at
+every reset (replay per Trace, a live Run and an Episode per Task), and `self.ctx.now()` serves it wherever no witnessed
+time answers, without the start state check, because in a world with one clock a stored row carries the same time. A
+recording with no creating write keeps the seeded draw. The Builder's confined gate and the Runner's loader refuse a
+body that imports a clock module or calls a clock reading other than the context's, naming the body line and its text.
+Evidence: the airline smoke 8 replay went from 99 to 112 of 119 Tasks (163 to 184 of 200 Traces); the 21 Traces that
+first differed on a creation stamp all confirm, none that confirmed before is lost; retail stays at 205 of 205. Tests in
+`tests/runner/test_world_clock.py`. Status: decided 2026-09-24, built on overhaul-0922/fix-world.
