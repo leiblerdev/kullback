@@ -2421,6 +2421,11 @@ def render_tools(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict,
 # The world records such a call as a row of its own: the compile step writes the row ahead of
 # the body, the tool is a write, and the ordinary write atom covers it. The answer the body gives
 # is untouched, so replay fidelity is what it was.
+# A read takes the world as input: its arguments name values the world holds, an id or key that an
+# earlier result of the same Trace showed. A tool that ends the Run consumes nothing of the world:
+# its arguments are free text or empty. So a final status, total or availability lookup that
+# closes most of its Traces stays a read, because on its calls an argument names a row already
+# seen (D288); and a tool the miner classified as a read (not its unclassified default) never moves.
 ACTIONS_TABLE = "actions"
 # The share of a tool's successful recorded calls that closed their Trace (no tool call after it)
 # for the tool to read as one that ends the Run. Below one because a corpus has stray orderings:
@@ -2430,25 +2435,44 @@ ENDS_RUN_MIN_CALLS = 3
 ACTION_COLUMNS = {"action_id": "exempt", "tool": "hard", "args": "exempt", "turn": "exempt"}
 
 
+def _world_values(value: Any, out: Optional[set] = None) -> set:
+    """Every scalar a result shows, canonical, a flag or an empty text aside: what an argument may name."""
+    out = set() if out is None else out
+    if isinstance(value, dict):
+        for item in value.values():
+            _world_values(item, out)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _world_values(item, out)
+    elif value is not None and not isinstance(value, bool) and str(value).strip():
+        out.add(canon(value))
+    return out
+
+
 def ending_tools(traces: Iterable[Trace], sigs: Iterable[ToolSig]) -> list[str]:
     """The tools the recording shows ending the Run and writing nothing.
 
-    Not a write by its mined kind, answered with a scalar on every successful call (no row came
-    back), called at least `ENDS_RUN_MIN_CALLS` times, and the last tool call of its Trace on at
-    least `ENDS_RUN_SHARE` of them.
+    Not a write by its mined kind nor a classified read, answered with a scalar on every successful
+    call (no row came back), called at least `ENDS_RUN_MIN_CALLS` times, the last tool call of its
+    Trace on at least `ENDS_RUN_SHARE` of them, and on every call no argument value equals a value
+    an earlier result of the same Trace showed (D288).
     """
-    kinds = {sig.name: sig.kind for sig in sigs}
+    candidates = {sig.name for sig in sigs
+                  if sig.kind != "write" and not (sig.kind == "read" and not sig.unclassified)}
     counts: dict[str, list[int]] = {}
     for trace in traces:
         calls = [call for call in trace.tool_calls if call.error is None]
+        seen: set = set()
         for at, call in enumerate(calls):
-            tally = counts.setdefault(call.name, [0, 0, 0])
+            tally = counts.setdefault(call.name, [0, 0, 0, 0])
             tally[0] += 1
             tally[1] += at == len(calls) - 1
             tally[2] += isinstance(call.result, (dict, list, tuple))
-    return sorted(name for name, (total, last, rows) in counts.items()
-                  if name in kinds and kinds[name] != "write" and total >= ENDS_RUN_MIN_CALLS
-                  and not rows and last >= ENDS_RUN_SHARE * total)
+            tally[3] += bool(_world_values(call.args) & seen)
+            _world_values(call.result, seen)
+    return sorted(name for name, (total, last, rows, named) in counts.items()
+                  if name in candidates and total >= ENDS_RUN_MIN_CALLS
+                  and not rows and not named and last >= ENDS_RUN_SHARE * total)
 
 
 def action_tools(schema: EntitySchema) -> dict[str, str]:
