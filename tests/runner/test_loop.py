@@ -278,7 +278,7 @@ def test_a_raising_model_or_user_ends_the_run_with_an_error_event(workdir, model
         assert event["payload"]["class"] == "env_error"
         if "message" in error:
             assert error["message"] in event["payload"]["message"]
-            assert len([line for line in state.path.read_text(encoding="utf-8").splitlines() if line.strip()]) == 3
+            assert len([line for line in state.path.read_text(encoding="utf-8").splitlines() if line.strip()]) == 4
         else:
             assert {key: event["payload"][key] for key in error} == error
 
@@ -392,3 +392,21 @@ def test_the_stop_event_carries_the_system_prompt_and_the_tool_specs_the_candida
     stop = [e for e in lines_of(bare.path) if e["type"] == "stop"][-1]
     assert stop["payload"]["system_prompt"] is None
     assert stop["payload"]["tools"] == []
+
+
+def test_a_run_file_opens_with_its_run_and_task_and_a_second_write_to_its_path_raises(workdir):
+    """D281: the first line names the Run and its Task, and a path that exists is never rewritten."""
+    state = new_run_state("r1", workdir=workdir, task_id="t1")
+    assert json.loads(state.path.read_text(encoding="utf-8").splitlines()[0]) == {"run_id": "r1", "task_id": "t1"}
+    with pytest.raises(FileExistsError, match=str(state.path)):
+        new_run_state("r1", workdir=workdir, task_id="t2")
+    assert json.loads(state.path.read_text(encoding="utf-8").splitlines()[0])["task_id"] == "t1"
+
+
+def test_a_superseding_run_replaces_only_its_own_file(workdir):
+    """A replay of the same Run replaces its file; a file of another Task under that name is refused."""
+    new_run_state("r1", workdir=workdir, task_id="t1")
+    again = new_run_state("r1", workdir=workdir, task_id="t1", supersedes=True)
+    assert again.path.read_text(encoding="utf-8").count("\n") == 1
+    with pytest.raises(FileExistsError, match="Task t1"):
+        new_run_state("r1", workdir=workdir, task_id="t2", supersedes=True)

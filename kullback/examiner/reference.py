@@ -61,7 +61,7 @@ from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite
 from kullback.gates.verifier_suite import _key
 from kullback.runner.judge import sources_not_given
-from kullback.runner.records import Atom, Constraint
+from kullback.runner.records import Atom, Constraint, load_task_run
 from kullback.runner.verdict import TRANSFER_HINTS
 
 RECORDING = "recording"
@@ -366,8 +366,10 @@ def transferred(run: Any) -> bool:
 
 
 def load(path: str, kind: str, *, run_id: Optional[str] = None, trace_id: Optional[str] = None,
-         write_tools: Iterable[str], fn: Callable, atoms: Iterable[Atom] = ()) -> Recording:
-    run = verifier_suite.as_run(path)
+         write_tools: Iterable[str], fn: Callable, atoms: Iterable[Atom] = (),
+         task_id: Optional[str] = None) -> Recording:
+    """One Run as a Recording; given the Task, a file of another Task is refused by the loader (D281)."""
+    run = load_task_run(path, task_id) if task_id is not None else verifier_suite.as_run(path)
     return Recording(run_id=run_id or run.run_id, path=str(path), kind=kind, trace_id=trace_id,
                      end_state=end_state(run, write_tools, fn),
                      violated=violations(run, atoms, write_tools, fn),

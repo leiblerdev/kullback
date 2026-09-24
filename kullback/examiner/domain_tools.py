@@ -413,7 +413,8 @@ def _rule(root: ExamRoot, task_id: str, candidate: Verifier) -> list[dict]:
              lambda: false_rejection_gate(evidence["verifiers"], runs, replays, rerolls, rules, sigs,
                                           task_status=evidence.get("task_status")),
              lambda: trusted_gate(base, evidence["verifiers"], evidence.get("probes") or {},
-                                  evidence.get("history") or {}, {}, runs, replays, rerolls, rules, sigs))
+                                  evidence.get("history") or {}, {}, runs, replays, rerolls, rules, sigs,
+                                  workdir=root.workdir))
     for run_gate in gates:
         out.append(_gate_record(run_gate(), candidate))
         if out[-1]["accepted"] is False:

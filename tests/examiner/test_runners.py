@@ -60,7 +60,7 @@ def test_run_rerolls_buys_prefixed_rows_that_carry_user_end(tmp_path):
     root = _exam_env(tmp_path / "env")
     runners = R.runners_for(root, reroll_model=_rename_script())
     rows = runners["run_rerolls"]("widget_task", 2, "second-path-r0-b0")
-    assert [row["run_id"] for row in rows] == ["second-path-r0-b0-0", "second-path-r0-b0-1"]
+    assert [row["run_id"] for row in rows] == ["second-path-r0-b0-widget_task-0", "second-path-r0-b0-widget_task-1"]
     assert all(Path(row["path"]).is_file() for row in rows)
     assert all(set(row) >= {"run_id", "path", "termination_reason", "user_end"} for row in rows)
     assert all(row["user_end"] is not None for row in rows)

@@ -225,7 +225,8 @@ def test_only_the_task_whose_intent_or_rerolls_changed_is_derived_again(tmp_path
     first = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=_counted_probe(calls), workers=2)
     assert first["task_status"]["t3"]["rerolls"] == 1
     rerolls = {task_id: [dict(row) for row in rows] for task_id, rows in world.inputs["rerolls"].items()}
-    rerolls["t3"].append({"run_id": "ref2", "path": world.paths["ref"], "termination_reason": "success"})
+    own_ref = world.inputs["replays"]["t3"]["ref"]["path"]
+    rerolls["t3"].append({"run_id": "ref2", "path": own_ref, "termination_reason": "success"})
     out = _derive(world.workdir, dict(world.inputs, rerolls=rerolls), probe_model=object(),
                   run_probe=_counted_probe(calls), workers=2)
     assert out["ran"] == 1 and out["cached"] == 2 and calls[3:] == ["t3"]
@@ -986,3 +987,23 @@ def test_a_task_the_probe_limit_left_out_says_the_limit_and_never_no_model(tmp_p
     assert len(skipped) == 2
     assert all(reason.startswith("the probe limit of 1 Tasks was spent") for reason in skipped)
     assert not any("no model" in reason for reason in skipped)
+
+
+def test_a_workdir_from_before_d281_with_one_shared_second_path_file_derives_for_its_owner_and_skips_it_for_the_other(
+        tmp_path, caplog):
+    """D281: an old round wrote two Tasks' second paths to one file whose footer names the last writer.
+    Resuming, the owner keeps the row, the other Task's row is dropped and said once, and both derive."""
+    world = make_world(tmp_path, tasks=2)
+    shared = world.workdir / "runs" / "second-path-r0-b1-0.jsonl"
+    VF.write_events_jsonl(VF.alt_path_run().model_copy(update={"run_id": "second-path-r0-b1-0"}), shared)
+    row = {"run_id": "second-path-r0-b1-0", "path": str(shared), "termination_reason": "success"}
+    for task_id in ("t1", "t2"):
+        stage.record_second_path(world.workdir, task_id, [row], 1)
+    with caplog.at_level("WARNING", logger=stage.__name__):
+        assert [r["run_id"] for r in stage.second_path_rows(world.workdir, "t1")] == ["second-path-r0-b1-0"]
+        assert stage.second_path_rows(world.workdir, "t2") == []
+        out = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=probe_runner_over())
+        assert stage.second_path_rows(world.workdir, "t2") == []
+    assert out["ran"] == 2 and {v.task_id for v in out["verifiers"]} == {"t1", "t2"}
+    dropped = [r for r in caplog.records if "second-path row of task t2 dropped" in r.getMessage()]
+    assert len(dropped) == 1 and "is a Run of Task t1, not of Task t2" in dropped[0].getMessage()

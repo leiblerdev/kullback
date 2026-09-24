@@ -29,7 +29,6 @@ Nothing here calls a model, reads a body or executes a Run: it is pure over the 
 from __future__ import annotations
 
 import hashlib
-import json
 import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -186,30 +185,11 @@ def buckets_by_task(body: Optional[dict]) -> dict[str, str]:
             for record in ((body or {}).get("tasks") or []) if isinstance(record, dict)}
 
 
-def _trusted_ruling(task_status: dict, replays: dict, root: Path) -> Any:
-    """The trusted ruling over the live workdir files, the way the status tool reads it."""
-    from kullback.gates.trust import trusted_gate
+def _trusted_ruling(root: Path) -> Any:
+    """The trusted ruling over the live workdir files: the one the status tool reads (D281)."""
+    from kullback.gates.trust import workdir_trusted_ruling
 
-    verifiers = []
-    folder = root / "verifiers"
-    if folder.is_dir():
-        for path in sorted(folder.glob("*.json")):
-            try:
-                verifiers.append(json.loads(path.read_text(encoding="utf-8")))
-            except (OSError, ValueError):
-                continue
-    refusals: dict = {}
-    for folder in (root / "refusals", root / "env" / "refusals"):
-        if folder.is_dir():
-            for path in sorted(folder.glob("*.json")):
-                try:
-                    refusals.setdefault(path.stem, json.loads(path.read_text(encoding="utf-8")))
-                except (OSError, ValueError):
-                    continue
-    return trusted_gate(task_status, verifiers, {}, {}, refusals, {},
-                        replays, read_json(root / "rerolls.json", None) or {},
-                        read_json(root / "canon-rules.json", None),
-                        read_json(root / "tool_sigs.json", None) or [])
+    return workdir_trusted_ruling(root)
 
 
 def snapshot_rows(workdir: Any, round_number: int) -> list[dict]:
@@ -223,7 +203,7 @@ def snapshot_rows(workdir: Any, round_number: int) -> list[dict]:
     task_status = read_json(root / "task_status.json", None) or {}
     replays = read_json(root / "replays.json", None) or {}
     return task_rows(round_number, task_status=task_status, replays=replays,
-                     trusted=_trusted_ruling(task_status, replays, root),
+                     trusted=_trusted_ruling(root),
                      bodies=read_json(root / "bodies.json", None) or {},
                      buckets=buckets_by_task(read_json(root / "difficulty.json", None) or {}))
 

@@ -608,7 +608,8 @@ def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_i
     scored = ScoredRouter(router, model.expected, write_tools, canon_rules, comparer, effects,
                           holdout_values=holdout_values, before_call=before_call)
     run_id = run_id or f"replay-{trace.trace_id}"
-    state = loop.new_run_state(run_id, workdir=workdir, env_id=env_id, task_id=task_id,
+    # A replay of one recording after a repair is the same Run again, so it replaces its own file (D281).
+    state = loop.new_run_state(run_id, workdir=workdir, env_id=env_id, task_id=task_id, supersedes=True,
                                trace_id=trace.trace_id, model=RECORDED, user=user,
                                max_turns=len(trace.turns) + 2, system_prompt=trace.system_prompt)
     user.state, user.router = state, scored

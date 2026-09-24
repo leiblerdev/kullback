@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from gates.verifier_fixtures import (
     ORDER,
     TASK,
@@ -35,7 +37,7 @@ from gates.verifier_fixtures import (
 from kullback.examiner import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules, canon_value
-from kullback.runner.records import Constraint, Task, Verifier, as_dict, content_hash
+from kullback.runner.records import Constraint, ForeignRunError, Task, Verifier, as_dict, content_hash
 
 # The derivation over verifier_fixtures.derive(tmp_path): seven atoms, seeds ref, alt and rr2. It was
 # pinned at the commit the phase 5 move started from (a40812c, 77d497a99ac9e8c1) to hold that the
@@ -527,3 +529,10 @@ def test_the_cap_stays_when_the_verifier_asks_for_something_else(tmp_path):
                                  pump_run(), [], None, write_tools=SHOP_TOOLS, writes_elsewhere=True)
     assert cap_atoms(verifier) == ["entity_count"]
     assert [a.id for a in verifier.atoms if a.kind == "communicate"] == ["c1", "c2"]
+
+
+def test_derivation_refuses_a_seed_file_of_another_task_by_name(tmp_path):
+    """D281: the seeds load through the Run loader, so another Task's Run is never derived from."""
+    foreign = write_events_jsonl(alt_path_run().model_copy(update={"task_id": "t_other"}), tmp_path / "alt.jsonl")
+    with pytest.raises(ForeignRunError, match=f"t_other, not of Task {TASK.id}"):
+        V.derive_verifier(TASK, reference_run(), [foreign], None, write_tools=WRITE_TOOLS)

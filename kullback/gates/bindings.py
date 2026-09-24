@@ -469,7 +469,8 @@ def _gate_loosening(evidence: dict) -> Optional[list[GateResult]]:
     if evidence.get("history") is None:
         return None
     return [loosening_gate(evidence["history"], evidence.get("task_runs") or {}, evidence.get("replays") or {},
-                           evidence.get("rerolls") or {}, evidence.get("rules"), evidence.get("sigs") or [])]
+                           evidence.get("rerolls") or {}, evidence.get("rules"), evidence.get("sigs") or [],
+                         workdir=evidence.get("workdir"))]
 
 
 def _gate_false_rejection(evidence: dict) -> Optional[list[GateResult]]:
@@ -520,7 +521,8 @@ def _gate_trusted(evidence: dict) -> Optional[list[GateResult]]:
     return [trusted_gate(task_status, evidence["verifiers"], evidence.get("probes") or {},
                          evidence.get("history") or {}, evidence.get("refusals") or {},
                          evidence.get("task_runs") or {}, evidence.get("replays") or {},
-                         evidence.get("rerolls") or {}, evidence.get("rules"), evidence.get("sigs") or [])]
+                         evidence.get("rerolls") or {}, evidence.get("rules"), evidence.get("sigs") or [],
+                         workdir=evidence.get("workdir"))]
 
 
 def _gate_refuse(evidence: dict) -> Optional[list[GateResult]]:
@@ -839,7 +841,8 @@ def rulings_for(root: Any, written_path: str, workdir: Any, *, execute: Any = No
     except OSError:
         return []
     workdir_path = Path(workdir)
-    merged: dict[str, Any] = {"path": rel, "stem": PurePosixPath(rel).stem}
+    # The workdir is evidence too: the trusted gate's provenance step opens seed Runs under it (D281).
+    merged: dict[str, Any] = {"path": rel, "stem": PurePosixPath(rel).stem, "workdir": workdir_path}
     if rel.endswith(".py"):
         merged["source"] = text
     if rel.endswith(".json"):

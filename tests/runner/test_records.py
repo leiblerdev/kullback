@@ -327,3 +327,26 @@ def test_token_counts_and_costs_are_never_negative():
     with pytest.raises(ValueError):
         Cost(wall_ms=-1.0)
     assert Usage(input=0).input == 0
+
+
+def _run_file(path: Path, *headers: dict) -> Path:
+    lines = [json.dumps(headers[0]), json.dumps({"idx": 0, "type": "stop", "payload": {}})]
+    lines += [json.dumps(header) for header in headers[1:]]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_the_run_loader_refuses_a_file_of_another_task_by_both_names(tmp_path):
+    """D281: asked for one Task, a file whose records name another is refused, naming both."""
+    path = _run_file(tmp_path / "r1.jsonl", {"run_id": "r1", "task_id": "t_other"})
+    assert records_module.load_run_jsonl(path, task_id="t_other").task_id == "t_other"
+    with pytest.raises(records_module.ForeignRunError, match="t_other.*t_asked"):
+        records_module.load_run_jsonl(path, task_id="t_asked")
+
+
+def test_the_run_loader_refuses_a_file_that_holds_two_runs_instead_of_splicing_them(tmp_path):
+    """Two footers of two Tasks in one file were spliced into one Run; now the file is refused."""
+    path = _run_file(tmp_path / "shared.jsonl", {"run_id": "shared", "task_id": "t1"},
+                     {"run_id": "shared", "task_id": "t2"})
+    with pytest.raises(records_module.ForeignRunError, match="more than one Run: task_id t1 and t2"):
+        records_module.load_run_jsonl(path)

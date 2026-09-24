@@ -40,6 +40,7 @@ from kullback.runner.records import (
     Verifier,
     as_dict,
     canonical_json,
+    load_task_run,
 )
 
 # loop.py's own stop reasons are in here: a re-run that ran to the end without a Simulated user
@@ -536,7 +537,11 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
     the column of anything it missed.
     """
     reference = as_run(reference_run)
-    runs = {r.trace_id or r.run_id: r for r in [as_run(s) for s in (seed_runs or [])] + [reference]}
+    # D281: the seeds and the second path are Runs of this Task, through the loader that refuses another's.
+    own = [load_task_run(s, verifier.task_id) for s in (seed_runs or [])]
+    runs = {r.trace_id or r.run_id: r for r in own + [reference]}
+    if alt_path_run is not None:
+        alt_path_run = load_task_run(alt_path_run, verifier.task_id)
 
     def score(atoms_of: Verifier, run):
         return check_run(atoms_of, run, canon, write_tools=write_tools)

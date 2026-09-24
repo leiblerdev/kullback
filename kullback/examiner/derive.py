@@ -49,7 +49,7 @@ from kullback.gates.verifier_suite import (
     text_of,
     write_effects,
 )
-from kullback.runner.records import Atom, Constraint, Run, Task, Verifier
+from kullback.runner.records import Atom, Constraint, Run, Task, Verifier, load_task_run
 
 # A write value is required only when it is agreed across the good Runs *and* the customer or their
 # world is where it came from; a value the Candidate invented is never required of it.
@@ -68,8 +68,11 @@ NEVER_SECRET = ("true", "false", "null")
 _WORDS = re.compile(r"[A-Za-z0-9]+")
 
 
-def load_runs(paths: Iterable[Any]) -> list[Run]:
-    return [as_run(p) for p in paths]
+def load_runs(paths: Iterable[Any], task_id: Optional[str] = None) -> list[Run]:
+    """The seed Runs, each through the Run loader; given a Task, another Task's Run is refused (D281)."""
+    if task_id is None:
+        return [as_run(p) for p in paths]
+    return [load_task_run(p, task_id) for p in paths]
 
 
 def successful(run: Run, successful_run_ids: Optional[Iterable[str]]) -> bool:
@@ -472,8 +475,9 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
     not one of these References, wrote something; it decides whether a cap of 0 is written (below).
     """
     fn = canon_fn(canon)
-    reference = as_run(reference_run)
-    reruns = load_runs(rerun_paths or [])
+    task_id = _task_id(task)
+    reference = load_task_run(reference_run, task_id)
+    reruns = load_runs(rerun_paths or [], task_id)
     tools = resolve_write_tools([reference] + reruns, write_tools)
     good = [reference] + [r for r in reruns if successful(r, successful_run_ids)]
     good_effects = [write_effects(r, tools, fn) for r in good]
@@ -496,7 +500,7 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
         # says something a Run can contradict.
         atoms.append(no_write_atom(tools))
 
-    return Verifier(task_id=_task_id(task), atoms=atoms, verifier_version=verifier_version,
+    return Verifier(task_id=task_id, atoms=atoms, verifier_version=verifier_version,
                     seed_run_ids=[r.run_id for r in good])
 
 

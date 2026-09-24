@@ -84,3 +84,21 @@ def test_a_probe_the_examiner_wrote_that_scores_a_pass_keeps_the_task_open(tmp_p
     row = _state(tools)
     assert row["state"] == "open"
     assert row["reason"] == "probe probe-widget_task-1 scores a pass"
+
+
+def test_the_round_snapshot_and_the_status_agree_on_a_task_whose_seeds_are_another_tasks_runs(tmp_path):
+    """D281: one trusted ruling, so the round's trusted count and the status name the same Tasks."""
+    from kullback.round_snapshot import counts_of, snapshot_rows
+
+    root, tools = _examined(tmp_path)
+    assert _state(tools)["state"] == "trusted" and counts_of(snapshot_rows(root, 1))["trusted"] == 1
+    verifier = Verifier.model_validate(read_json(root / "verifiers" / f"{TASK}.json"))
+    seed = verifier.seed_run_ids[0]
+    path = root / "runs" / TASK / f"{seed}.jsonl"
+    assert load_run_jsonl(path, task_id=TASK).run_id == seed
+    path.write_text(path.read_text(encoding="utf-8").replace(f'"task_id": "{TASK}"', '"task_id": "another_task"'),
+                    encoding="utf-8")
+    row = _state(tools)
+    assert row["state"] == "open" and seed in row["reason"] and "not Runs of this Task" in row["reason"]
+    [snapshot] = [r for r in snapshot_rows(root, 2) if r["task_id"] == TASK]
+    assert snapshot["trusted"] is False and snapshot["trusted_reason"] == row["reason"]

@@ -33,7 +33,7 @@ from kullback.gates.fidelity import reference_replay_gate
 from kullback.gates.hook import compact, ruled, ruling_line
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import legitimate_runs
-from kullback.gates.trust import trusted_gate
+from kullback.gates.trust import workdir_trusted_ruling
 from kullback.runner import budget
 from kullback.runner import tool as runner_tool
 from kullback.runner.records import EXAM_DIR, read_json, run_path, write_json
@@ -604,43 +604,14 @@ def _render_note(result: NoteResult) -> str:
 def status_of(workdir: Any) -> dict[str, Any]:
     """One row per Task (trusted, refused or open, with its reason) and per tool (last replay fidelity).
 
-    Read off the workdir files through `trusted_gate`, the way the Examiner's summary does;
-    the reading is carried here, not the import, since that module is going away. The Examiner's
-    artefacts (its proposed Verifiers, the version histories, the task runs, the probe pools) are
-    read where the Examiner wrote them, through the path functions in records (F22). Files not
-    there yet read as empty, so a Task with no Verifier is open with its reason.
+    Read off the workdir files through `workdir_trusted_ruling`, the one trusted ruling the round's
+    snapshot reads as well (D281). The Examiner's artefacts (its proposed Verifiers, the version
+    histories, the task runs, the probe pools) are read where the Examiner wrote them (F22). Files
+    not there yet read as empty, so a Task with no Verifier is open with its reason.
     """
     root = Path(workdir)
     task_ids = [path.stem for path in sorted((root / "tasks").glob("*.json")) if path.name != "tasks.json"]
-    task_status = read_json(root / "task_status.json", None) or {}
-    # The Examiner's artefacts, named where the Examiner writes them (F22); imported here so the
-    # module's shared import block stays untouched by this region.
-    from kullback.runner.records import exam_verifier_path, load_exam_history, load_exam_task_runs, load_probe_pools
-
-    verifiers: list[dict] = []
-    for path in sorted((root / "verifiers").glob("*.json")) if (root / "verifiers").is_dir() else []:
-        # Each Task's live Verifier: the Examiner's proposal where it wrote one, else the derived file.
-        proposal = exam_verifier_path(root, path.stem)
-        for source in (proposal, path) if proposal.is_file() else (path,):
-            try:
-                verifiers.append(json.loads(source.read_text(encoding="utf-8")))
-                break
-            except (OSError, ValueError):
-                continue
-    refusals: dict[str, Any] = {}
-    for folder in (root / "refusals", root / "env" / "refusals"):
-        if folder.is_dir():
-            for path in sorted(folder.glob("*.json")):
-                try:
-                    refusals.setdefault(path.stem, json.loads(path.read_text(encoding="utf-8")))
-                except (OSError, ValueError):
-                    continue
-    ruling = trusted_gate(task_status if isinstance(task_status, dict) else {}, verifiers,
-                          load_probe_pools(root), load_exam_history(root), refusals, load_exam_task_runs(root),
-                          read_json(root / "replays.json", None) or {},
-                          read_json(root / "rerolls.json", None) or {},
-                          read_json(root / "canon-rules.json", None),
-                          read_json(root / "tool_sigs.json", None) or [])
+    ruling = workdir_trusted_ruling(root)
     trusted = set(ruling.metrics.get("trusted") or [])
     refused = ruling.metrics.get("refused") or {}
     untrusted = ruling.metrics.get("untrusted") or {}

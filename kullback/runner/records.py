@@ -596,13 +596,26 @@ def read_jsonl(path: Any) -> list[dict]:
     return [json.loads(line) for line in file.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def load_run_jsonl(path: Any) -> Run:
+# The keys that name which Run a file holds. A second value of either in one file is a second Run.
+RUN_IDENTITY = ("run_id", "task_id")
+
+
+class ForeignRunError(ValueError):
+    """A Run file that holds another Task's Run, or more than one Run (D281)."""
+
+
+def load_run_jsonl(path: Any, task_id: Optional[str] = None) -> Run:
     """Read one Run from a JSONL file: header lines, event lines and a footer all work.
 
     An event-typed line is an event; anything else updates the header, and a footer's own bundled
     `events` list is spliced in. Header keys the Run model does not recognize become one final
     `stop` event's payload instead of being dropped, which is where loop.py's Start and End state
     land. verdict.py calls this directly, and gates/verifier_suite.py reads its Runs through it.
+
+    D281: a file is one Run. Two header lines naming different Runs or different Tasks are refused
+    rather than spliced into one, and given `task_id` a file whose records name another Task is
+    refused, with both Task ids in the error, so a Run is never read as evidence about a Task it
+    did not play. A file that names no Task at all (written before D281) names no other Task either.
     """
     file = Path(path)
     header: dict = {}
@@ -614,9 +627,14 @@ def load_run_jsonl(path: Any) -> Run:
         obj = json.loads(line)
         if obj.get("type") in _RUN_EVENT_TYPES:
             events.append(obj)
-        else:
-            events.extend(obj.pop("events", None) or [])
-            header.update(obj)
+            continue
+        for key in RUN_IDENTITY:
+            if obj.get(key) is not None and header.get(key) is not None and obj[key] != header[key]:
+                raise ForeignRunError(f"{file} holds more than one Run: {key} {header[key]} and {obj[key]}")
+        events.extend(obj.pop("events", None) or [])
+        header.update(obj)
+    if task_id is not None and header.get("task_id") not in (None, task_id):
+        raise ForeignRunError(f"{file} is a Run of Task {header.get('task_id')}, not of Task {task_id}")
     extra = {key: value for key, value in header.items() if key not in Run.model_fields}
     if extra:
         events.append({"type": "stop", "payload": extra})
@@ -624,6 +642,16 @@ def load_run_jsonl(path: Any) -> Run:
     header.setdefault("run_id", file.stem)
     header["events"] = [dict(event, idx=event.get("idx", pos)) for pos, event in enumerate(events)]
     return Run.model_validate(header)
+
+
+def load_task_run(source: Any, task_id: str) -> Run:
+    """One Run of the named Task from a path, a dict or a Run; another Task's Run is refused (D281)."""
+    if isinstance(source, (Run, dict)):
+        run = source if isinstance(source, Run) else Run.model_validate(source)
+        if run.task_id is not None and run.task_id != task_id:
+            raise ForeignRunError(f"Run {run.run_id} is a Run of Task {run.task_id}, not of Task {task_id}")
+        return run
+    return load_run_jsonl(source, task_id=task_id)
 
 
 def plain(value: Any) -> Any:
