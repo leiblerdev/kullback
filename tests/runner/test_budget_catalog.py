@@ -184,3 +184,17 @@ def test_reprice_of_a_ledger_without_a_per_model_split_prices_as_before(catalog,
     after = budget.reprice(workdir)
     assert after["total"]["usd"] == pytest.approx(
         sum(budget.call_cost(usage, "bedrock/global.a-vendor.big-1") for usage in SESSION_CALLS))
+
+
+def test_reprice_keeps_a_direct_charge_the_ceiling_recorded_without_tokens(catalog, tmp_path):
+    """A charge made through Ceiling.add has dollars and no tokens; reprice carries it over."""
+    workdir = tmp_path / "w"
+    feed.start(workdir)
+    _record(workdir, SESSION_CALLS[0])
+    budget.Ceiling(usd=100.0, workdir=workdir).add(2.5, stage="solve", item="a")
+
+    after = budget.reprice(workdir)
+    called = budget.call_cost(SESSION_CALLS[0], "bedrock/global.a-vendor.big-1")
+    assert after["stages"]["solve"]["usd"] == pytest.approx(called + 2.5)
+    assert after["total"]["usd"] == pytest.approx(called + 2.5)
+    assert after["total"]["calls"] == 2 and after["total"]["models_dev_calls"] == 1
