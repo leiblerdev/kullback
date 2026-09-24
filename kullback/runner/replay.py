@@ -641,6 +641,29 @@ def _label(check: dict) -> str:
     return "user_call" if check.get("requestor") == "user" else check["kind"]
 
 
+def _replay_reasons(writes_off: list[dict], effect_off: list[dict], reads_off: list[dict], unmade: list[str],
+                    counts: dict, crashed: Optional[str], state: Any) -> list[str]:
+    """Why a replay is not confirmed, one line per call or condition that parted from the recording."""
+    # The route is part of the reason: "differs" alone does not say whether the two answers were
+    # made of different domain tokens, held different columns, or simply parted at a value (D217).
+    # A write that agreed on its own answer and failed on the rows it moved is named by its effects
+    # instead, and the read that saw the stale value carries the write it came from (D215).
+    reasons = [f"{c['tool']} {_label(c)}: {c['verdict']} ({c.get('verdict_route') or BY_VALUE})"
+               for c in writes_off if c["verdict"] not in AGREES]
+    reasons += [line for c in effect_off for line in effect_reasons(c)]
+    reasons += [f"{c['tool']} {_label(c)}: {c['verdict']} ({c.get('verdict_route') or BY_VALUE})"
+                + (f", {DOWNSTREAM} {c['downstream_tool']}" if c.get(DOWNSTREAM) else "")
+                for c in reads_off]
+    reasons += [f"{name} was recorded and never called" for name in unmade]
+    if counts["gaps"]:
+        reasons.append(f"{counts['gaps']} turn(s) out of order")
+    if crashed:
+        reasons.append(f"replay crashed: {crashed}")
+    if int(state.run.route_counts.get("llm") or 0):
+        reasons.append("a call was answered by the stand-in")
+    return reasons
+
+
 def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, model: TraceModel,
            user: TraceUser, crashed: Optional[str]) -> Replay:
     writes = [c for c in scored.checks if c["kind"] == "write"]
@@ -687,23 +710,7 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
         "differs_by_judge": _by_route(scored.checks, DIFFERS, BY_JUDGE),
         "differs_unresolved": _by_route(scored.checks, DIFFERS, BY_UNRESOLVED),
     }
-    # The route is part of the reason: "differs" alone does not say whether the two answers were
-    # made of different domain tokens, held different columns, or simply parted at a value (D217).
-    # A write that agreed on its own answer and failed on the rows it moved is named by its effects
-    # instead, and the read that saw the stale value carries the write it came from (D215).
-    reasons = [f"{c['tool']} {_label(c)}: {c['verdict']} ({c.get('verdict_route') or BY_VALUE})"
-               for c in writes_off if c["verdict"] not in AGREES]
-    reasons += [line for c in effect_off for line in effect_reasons(c)]
-    reasons += [f"{c['tool']} {_label(c)}: {c['verdict']} ({c.get('verdict_route') or BY_VALUE})"
-                + (f", {DOWNSTREAM} {c['downstream_tool']}" if c.get(DOWNSTREAM) else "")
-                for c in reads_off]
-    reasons += [f"{name} was recorded and never called" for name in unmade]
-    if counts["gaps"]:
-        reasons.append(f"{counts['gaps']} turn(s) out of order")
-    if crashed:
-        reasons.append(f"replay crashed: {crashed}")
-    if int(state.run.route_counts.get("llm") or 0):
-        reasons.append("a call was answered by the stand-in")
+    reasons = _replay_reasons(writes_off, effect_off, reads_off, unmade, counts, crashed, state)
     return Replay(run_id=state.run.run_id, trace_id=trace.trace_id, task_id=state.run.task_id or "",
                   path=str(state.path) if state.path else "", confirmed=not reasons,
                   termination_reason=state.run.termination_reason, counts=counts, reasons=reasons,

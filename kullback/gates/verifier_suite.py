@@ -910,6 +910,16 @@ def generic_reason(field: Optional[str], key: str, rows: list[dict], fn: Callabl
     return None
 
 
+def _value_generic_reason(payload: dict, kind: str, reference: Run, fn: Callable,
+                          rows: list[dict]) -> Optional[str]:
+    """Why a written value or a stated fact is generic, headed by the value, or None when it is specific."""
+    key = str(payload.get("value"))
+    field = payload.get("field") if kind == "write_value" else (
+        payload.get("field") or field_of_value(reference, key, fn))
+    reason = generic_reason(field, key, rows, fn)
+    return None if reason is None else f"{payload.get('text') or payload.get('raw')}: {reason}"
+
+
 def demand_specificity(verifier: Verifier, reference: Run, fn: Callable,
                        rows: list[dict]) -> tuple[list[str], dict[str, str]]:
     """The atoms that demand something of this Task alone, and every other demand with why it is not.
@@ -938,14 +948,11 @@ def demand_specificity(verifier: Verifier, reference: Run, fn: Callable,
         elif kind in ("write", "question"):
             specific.append(atom.id)
         elif kind in ("write_value", "communicate"):
-            key = str(payload.get("value"))
-            field = payload.get("field") if kind == "write_value" else (
-                payload.get("field") or field_of_value(reference, key, fn))
-            reason = generic_reason(field, key, rows, fn)
+            reason = _value_generic_reason(payload, kind, reference, fn, rows)
             if reason is None:
                 specific.append(atom.id)
             else:
-                generic[atom.id] = f"{payload.get('text') or payload.get('raw')}: {reason}"
+                generic[atom.id] = reason
         else:
             generic[atom.id] = f"kind {kind} names no value of this Task"
     return specific, generic
@@ -973,19 +980,24 @@ def _shape_call(run: Run, payload: dict) -> Optional[Any]:
                  and payload.get("field") in _args(e)), None)
 
 
+def _write_swap_target(payload: dict, kind: str, run: Run, fn: Callable) -> Optional[tuple[str, Any, Any]]:
+    """What swapping a required write changes: the written field, its value, and the call that wrote it."""
+    calls = {e.idx: e for e in run.events if e.type == "tool_call"}
+    event = calls.get(payload.get("at"))
+    if event is None:
+        return None
+    args = _args(event)
+    field = payload.get("field") if kind == "write_value" else (
+        payload.get("id_field") or _target._entity(args, fn)[0])
+    return (field, args.get(field), event) if field and field in args else None
+
+
 def _swap_target(atom: Atom, run: Run, fn: Callable) -> Optional[tuple[str, Any, Any]]:
     """What swapping this demand changes in the Reference: (field, the value, the call or None for the answer)."""
     payload = atom_payload(atom)
     kind = payload.get("kind")
-    calls = {e.idx: e for e in run.events if e.type == "tool_call"}
     if atom.kind == "required" and kind in ("write", "write_value"):
-        event = calls.get(payload.get("at"))
-        if event is None:
-            return None
-        args = _args(event)
-        field = payload.get("field") if kind == "write_value" else (
-            payload.get("id_field") or _target._entity(args, fn)[0])
-        return (field, args.get(field), event) if field and field in args else None
+        return _write_swap_target(payload, kind, run, fn)
     if atom.kind == "hard" and payload.get("derived_as") == "shape":
         event = _shape_call(run, payload)
         return (payload["field"], _args(event)[payload["field"]], event) if event is not None else None
@@ -1105,6 +1117,12 @@ def _said_by_users(runs: Iterable[Run], user_rules: Optional[UserRules]) -> str:
     return " ".join(turns + facts)
 
 
+def _world_keys(seeds: list[Run], fn: Callable) -> set[str]:
+    """The canonical key of every scalar value in a row of the world the seed Runs read."""
+    return {_key(fn, value) for row in world_rows(seeds, read_only=True) for value in row.values()
+            if not isinstance(value, (dict, list, tuple))}
+
+
 def _leak_gate(verifier: Verifier, reference: Run, intent_text: Optional[str],
                user_rules: Optional[UserRules], runs: Iterable[Run] = (),
                intent: Any = None, *, fn: Callable) -> GateResult:
@@ -1125,8 +1143,7 @@ def _leak_gate(verifier: Verifier, reference: Run, intent_text: Optional[str],
     """
     seeds = [reference, *runs]
     said_by_user = _said_by_users(seeds, user_rules)
-    world = {_key(fn, value) for row in world_rows(seeds, read_only=True) for value in row.values()
-             if not isinstance(value, (dict, list, tuple))}
+    world = _world_keys(seeds, fn)
     secrets: dict[str, str] = {}
     for atom in verifier.atoms:
         payload = atom_payload(atom)

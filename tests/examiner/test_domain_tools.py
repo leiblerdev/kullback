@@ -178,22 +178,37 @@ def test_accepted_proposal_rules_trusted_when_status_and_history_are_present(tmp
     assert (verifiers_dir.parent / "task_runs.json").is_file()
 
 
-def test_an_accepted_proposal_writes_the_new_suite_and_version_into_the_status_row_the_builder_reads(tmp_path):
-    root, world, current = _root(tmp_path, probe_model=object(), run_probe=probe_runner_over(),
-                                 task_status={"t1": {"verifier_passed": False, "references": 1}})
+def _accepted_over_status_rows(tmp_path):
+    """An accepted edit on a Task whose derivation left a status row in both status files."""
+    root, world, _ = _root(tmp_path, probe_model=object(), run_probe=probe_runner_over(),
+                           task_status={"t1": {"verifier_passed": False, "references": 1}})
     _with_reference(world)
     write_json(world.workdir / "task_status.json", {"t1": {"verifier_passed": False, "references": 1,
                                                            "reference_confirmed": True}})
     [tool] = [t for t in D.domain_tools(root) if t.name == "edit_verifier"]
     result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[_WIDE_CAP_PROPOSAL])))
+    return world, result
+
+
+def test_an_accepted_proposal_is_ruled_by_every_d79_check_and_passes_the_trusted_gate(tmp_path):
+    _, result = _accepted_over_status_rows(tmp_path)
     names = [record["name"] for record in result.rulings]
     assert [name for name in names if name in D79_STAGES] == list(D79_STAGES)
     assert "trusted" in names and all(record["accepted"] for record in result.rulings)
+
+
+def test_an_accepted_proposal_writes_the_new_suite_and_version_into_the_exam_status_row(tmp_path):
+    world, result = _accepted_over_status_rows(tmp_path)
     row = read_json(world.workdir / "exam" / "task_status.json")["t1"]
     assert row["verifier_passed"] is True and row["not_run"] == []
     assert row["checks"] == {name: True for name in D79_STAGES.values()}
     assert row["references"] == 1, "the rest of the derivation's row stands"
     assert row["verifier_version"] == result.verifier_version
+
+
+def test_an_accepted_proposal_writes_the_same_suite_and_version_into_the_status_row_the_builder_reads(tmp_path):
+    world, result = _accepted_over_status_rows(tmp_path)
+    row = read_json(world.workdir / "exam" / "task_status.json")["t1"]
     on_disk = read_json(world.workdir / "task_status.json")["t1"]
     assert on_disk["verifier_passed"] is True and on_disk["verifier_version"] == result.verifier_version
     assert on_disk["checks"] == row["checks"] and on_disk["reference_confirmed"] is True
@@ -214,23 +229,41 @@ def test_proposal_on_a_single_reference_task_with_a_waived_row_is_accepted_and_k
     assert row["checks"] == {name: name != "second_path_passes" for name in D79_STAGES.values()}
 
 
-def test_proposal_whose_loophole_probe_cannot_run_lands_and_the_task_stays_untrusted(tmp_path):
+def _proposal_without_a_probe_model(tmp_path):
     """F45: a check nobody could run is no refusal of the proposal. The gates after it still rule,
     the file is kept, and the Task's row holds it untrusted with the check named and why."""
     root, world, _ = _root(tmp_path, task_status={"t1": {"verifier_passed": True}})
     _with_reference(world)
     [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
     result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[_WIDE_CAP_PROPOSAL])))
-    by_name = {record["name"]: record for record in result.rulings}
+    return root, world, result.rulings
+
+
+def test_proposal_whose_loophole_probe_cannot_run_is_still_ruled_by_every_check_and_every_gate_after(tmp_path):
+    _, _, rulings = _proposal_without_a_probe_model(tmp_path)
+    by_name = {record["name"]: record for record in rulings}
     assert [name for name in by_name if name in D79_STAGES] == list(D79_STAGES), "every check ruled"
     assert {"loosening", "false_rejection", "trusted"} <= set(by_name), "the gates after the suite ruled"
+
+
+def test_proposal_whose_loophole_probe_cannot_run_reads_that_check_as_not_run_for_want_of_a_model(tmp_path):
+    _, _, rulings = _proposal_without_a_probe_model(tmp_path)
+    by_name = {record["name"]: record for record in rulings}
     assert by_name["verifier_loophole"]["accepted"] is None
     assert by_name["verifier_loophole"]["not_run"].startswith("no model")
     assert by_name["trusted"]["accepted"] is None
     assert "loophole_probe_fails not run (no model" in by_name["trusted"]["line"]
-    assert not any(record["accepted"] is False for record in result.rulings)
+
+
+def test_proposal_whose_loophole_probe_cannot_run_lands_as_the_accepted_version_and_file(tmp_path):
+    root, world, rulings = _proposal_without_a_probe_model(tmp_path)
+    assert not any(record["accepted"] is False for record in rulings)
     assert root.history["t1"].versions[-1].accepted is True
     assert (world.workdir / "exam" / "verifiers" / "t1.json").is_file()
+
+
+def test_proposal_whose_loophole_probe_cannot_run_leaves_the_task_untrusted_naming_the_check_and_why(tmp_path):
+    _, world, _ = _proposal_without_a_probe_model(tmp_path)
     row = read_json(world.workdir / "exam" / "task_status.json")["t1"]
     assert row["verifier_passed"] is False and row["not_run"] == ["verifier_loophole"]
     assert row["not_run_reasons"]["loophole_probe_fails"].startswith("no model")
@@ -520,19 +553,33 @@ def _edit_tool(root):
     return tool
 
 
-def test_an_edit_of_one_payload_field_writes_a_new_version_with_the_other_atoms_untouched(tmp_path):
+def _edit_of_the_count_cap(tmp_path):
+    """An edit of the entity-count atom's count alone; the other atoms as they were before it."""
     root, world, current = _root(tmp_path)
     count = next(a for a in current.atoms if (a.target or {}).get("kind") == "entity_count")
     others = [as_dict(a) for a in current.atoms if a.id != count.id]
     result = _run(_edit_tool(root).execute(D.ProposeArgs(
         task_id="t1", reason="widen the cap", edit=[{"id": count.id, "payload": {"count": 1000}}])))
     body = read_json(world.workdir / "exam" / "verifiers" / "t1.json")
+    return root, current, count, others, result, body
+
+
+def test_an_edit_of_one_payload_field_writes_one_new_version(tmp_path):
+    root, current, _, _, result, body = _edit_of_the_count_cap(tmp_path)
     assert body["verifier_version"] == result.verifier_version != current.verifier_version
+    assert len(root.history["t1"].versions) == 2, "one new version per call"
+
+
+def test_an_edit_of_one_payload_field_changes_that_field_alone_on_that_atom(tmp_path):
+    _, _, count, _, _, body = _edit_of_the_count_cap(tmp_path)
     [edited] = [a for a in body["atoms"] if a["id"] == count.id]
     assert edited["target"] == {**count.target, "count": 1000} and edited["kind"] == count.kind
+
+
+def test_an_edit_of_one_payload_field_leaves_the_other_atoms_and_their_order_untouched(tmp_path):
+    _, current, count, others, _, body = _edit_of_the_count_cap(tmp_path)
     assert [a for a in body["atoms"] if a["id"] != count.id] == others
     assert [a["id"] for a in body["atoms"]] == [a.id for a in current.atoms], "the order stands"
-    assert len(root.history["t1"].versions) == 2, "one new version per call"
 
 
 def test_an_edit_of_an_unknown_atom_id_is_refused_by_name(tmp_path):

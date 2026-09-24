@@ -587,6 +587,17 @@ def unscored(atom: Atom) -> str:
     return f"atom {atom.id}: kind {atom_payload(atom).get('kind')} is not scored"
 
 
+def _write_missing(kind: Any, payload: dict, present: set, wrote_with: set, values: set) -> bool:
+    """A write or write_value atom whose row, tool or field value no write of the Run shows."""
+    target = (payload.get("tool"), payload.get("entity"))
+    if kind == "write":
+        return (payload.get("tool") not in wrote_with if names_no_row(payload)
+                else target not in present)
+    if kind == "write_value":
+        return target + (payload.get("field"), payload.get("value")) not in values
+    return False
+
+
 def check_run(verifier: Any, run: Any, canon: Any = None, *,
               write_tools: Optional[Iterable[str]] = None) -> tuple[bool, Optional[str]]:
     """Does this Run satisfy the atoms? Called by the D79 checks and, through them, the gates."""
@@ -601,7 +612,6 @@ def check_run(verifier: Any, run: Any, canon: Any = None, *,
     for atom in evaluated_atoms(verifier.atoms):
         payload = atom_payload(atom)
         kind = payload.get("kind")
-        target = (payload.get("tool"), payload.get("entity"))
         if atom.kind == "forbidden" and kind == "write":
             if atom_holds(atom, run, fn, tools, effects=effects, asked=asked, said=said):
                 return False, atom.id
@@ -614,10 +624,7 @@ def check_run(verifier: Any, run: Any, canon: Any = None, *,
         if atom.kind == "required" and kind not in SCORED_KINDS:
             # A required atom nothing here can score is a failure, never a vacuous pass (F51).
             return False, unscored(atom)
-        if kind == "write" and (payload.get("tool") not in wrote_with if names_no_row(payload)
-                                else target not in present):
-            return False, atom.id
-        if kind == "write_value" and target + (payload.get("field"), payload.get("value")) not in values:
+        if _write_missing(kind, payload, present, wrote_with, values):
             return False, atom.id
         if kind == "entity_count" and len(effects) > payload.get("count", 0):
             return False, atom.id

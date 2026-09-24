@@ -76,17 +76,22 @@ def _row_text(row: dict) -> str:
     return f"{head}: ours {compact(row.get('ours'))} recorded {compact(row.get('recorded'))}"
 
 
+def _row_groups(rows: list[dict]) -> list[tuple[str, list[dict]]]:
+    """The rows grouped by the differing column or error class, the largest group first."""
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        groups.setdefault(_group_of(row), []).append(row)
+    return sorted(groups.items(), key=lambda item: -len(item[1]))
+
+
 def rows_text(rows: Any, shown_failure: str = "") -> list[str]:
     """Every failing row, grouped by the differing column or error class, each group headed by its
     count, capped at ROWS_SHOWN rows and TEXT_CAP characters with the rest counted."""
     rest = sum(int(row.get("rest") or 0) for row in rows if "rest" in row)
     listed = [row for row in rows if "rest" not in row and row.get("failure") != shown_failure]
-    groups: dict[str, list[dict]] = {}
-    for row in listed:
-        groups.setdefault(_group_of(row), []).append(row)
     lines: list[str] = []
     size, shown = 0, 0
-    for group, members in sorted(groups.items(), key=lambda item: -len(item[1])):
+    for group, members in _row_groups(listed):
         header = f"{len(members)} rows {group}:"
         for index, row in enumerate(members):
             text = f"  {_row_text(row)}"

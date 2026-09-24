@@ -729,6 +729,59 @@ def call_arguments(env: Any) -> dict[str, Any]:
     return out
 
 
+def _replay_rows(reference: Any, arguments: dict[str, Any]) -> list[ReplayRow]:
+    """The reference's calls as rows: the arguments off the record, else the calls files (F42)."""
+    rows = []
+    for call in reference.calls:
+        args = getattr(call, "args", None)
+        if args is None:
+            args = arguments.get(str(call.call_id or ""))
+        error = (str(call.ours) if call.verdict == OURS_REFUSED
+                 else str(call.recorded) if call.verdict == THEIRS_REFUSED else None)
+        rows.append(ReplayRow(call_id=str(call.call_id or ""), task_id=str(reference.task_id),
+                              tool=str(call.tool), arguments=compact(args) if args is not None else "",
+                              verdict=str(call.verdict),
+                              first_differing_column=call.first_differing_column,
+                              recorded=str(call.recorded), ours=str(call.ours), error=error))
+    return rows
+
+
+def _runnable_tasks(root: Path) -> tuple[list[str], int]:
+    """Every open Task whose reference Trace replayed confirmed and that has a Verifier file, in
+    Task order, and how many confirmed open Tasks were left out for no Verifier (F54)."""
+    replays = read_json(root / REPLAYS_FILE, None) or {}
+    open_ids = [row["task_id"] for row in status_of(root)["tasks"] if row["state"] == "open"]
+    confirmed = [task_id for task_id in open_ids
+                 if any(isinstance(trace, dict) and trace.get("reference") and trace.get("confirmed")
+                        for trace in ((replays.get(task_id) or {}) if isinstance(replays, dict)
+                                      else {}).values())]
+    verified = [task_id for task_id in confirmed if (root / "verifiers" / f"{task_id}.json").is_file()]
+    return verified, len(confirmed) - len(verified)
+
+
+def _run_row(root: Path, task_id: str, item: Any) -> RunRow:
+    """One fresh Run of `task_id` as the row `run` reports."""
+    return RunRow(run_id=item.run_id, verdict=item.verdict,
+                  routes=[dict(route) for route in item.routes],
+                  world_diff=dict(item.world_diff or {}),
+                  spend=_run_spend(root, item),
+                  termination_reason=str(item.termination_reason or ""),
+                  user_end=item.user_end, task_id=task_id)
+
+
+def _run_summary(task_ids: list[str], named: Any, *, played: list[str], runs: int, finished: int,
+                 reasons: list[str], not_run: list[str], no_verifier: int) -> str:
+    """The summary line of one `run` call: one named Task played or not, else the batch counts."""
+    if len(task_ids) == 1 and named is not None and played:
+        return f"reroll of task {task_ids[0]}: {runs} Runs, {finished} finished"
+    if len(task_ids) == 1 and named is not None:
+        return f"task {task_ids[0]} not run: {reasons[0].format(cap=RUNS_PER_CALL)}"
+    return (f"reroll of {len(played)} Tasks: {runs} Runs, {finished} finished, "
+            f"{len(not_run)} Tasks left not run"
+            + ("" if task_ids or named is not None or no_verifier
+               else "; no open Task has a confirmed Reference, replay first"))
+
+
 def domain_tools(*, workdir: Any, model: Any = None,
                  examine_fn: Optional[Callable[[Any, Any], Any]] = None, judge_model: Any = None,
                  probe_model: Any = None, reroll_model: Any = None, env: Any = None) -> list[AgentTool]:
@@ -788,22 +841,6 @@ def domain_tools(*, workdir: Any, model: Any = None,
             stage=stage_of(root), tasks=body["tasks"], tools=body["tools"])
 
 
-    def replay_rows(reference: Any, arguments: dict[str, Any]) -> list[ReplayRow]:
-        """The reference's calls as rows: the arguments off the record, else the calls files (F42)."""
-        rows = []
-        for call in reference.calls:
-            args = getattr(call, "args", None)
-            if args is None:
-                args = arguments.get(str(call.call_id or ""))
-            error = (str(call.ours) if call.verdict == OURS_REFUSED
-                     else str(call.recorded) if call.verdict == THEIRS_REFUSED else None)
-            rows.append(ReplayRow(call_id=str(call.call_id or ""), task_id=str(reference.task_id),
-                                  tool=str(call.tool), arguments=compact(args) if args is not None else "",
-                                  verdict=str(call.verdict),
-                                  first_differing_column=call.first_differing_column,
-                                  recorded=str(call.recorded), ours=str(call.ours), error=error))
-        return rows
-
     def store_replays(replayed: dict[str, list]) -> Any:
         replays = read_json(root / REPLAYS_FILE, None) or {}
         if not isinstance(replays, dict):
@@ -836,7 +873,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
             replayed[task_id] = reports
             reference = reports[0]
             first = next((call for call in reference.calls if call.verdict not in AGREES), None)
-            rows += replay_rows(reference, arguments)
+            rows += _replay_rows(reference, arguments)
             tasks.append(ReplayTask(task_id=task_id, fidelity=reference.fidelity,
                                     confirmed=reference.confirmed, traces=len(reports),
                                     first_differing_tool=str(first.tool) if first else None,
@@ -858,7 +895,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
             raise ValueError(f"task {args.task_id} holds no recorded Trace to replay")
         ruling = store_replays({args.task_id: reports})
         reference = reports[0]
-        rows = replay_rows(reference, call_arguments(env_root))
+        rows = _replay_rows(reference, call_arguments(env_root))
         traces = [ReplayTrace(trace_id=report.trace_id, reference=report.reference,
                               held_out=report.held_out,
                               confirmed=report.confirmed, fidelity=report.fidelity,
@@ -884,23 +921,11 @@ def domain_tools(*, workdir: Any, model: Any = None,
                                                               else f"{len(drawn)} passed")),
                              path=path, rulings=[_ruling_record(ruling) for ruling in drawn])
 
-    def runnable_tasks() -> tuple[list[str], int]:
-        """Every open Task whose reference Trace replayed confirmed and that has a Verifier file, in
-        Task order, and how many confirmed open Tasks were left out for no Verifier (F54)."""
-        replays = read_json(root / REPLAYS_FILE, None) or {}
-        open_ids = [row["task_id"] for row in status_of(root)["tasks"] if row["state"] == "open"]
-        confirmed = [task_id for task_id in open_ids
-                     if any(isinstance(trace, dict) and trace.get("reference") and trace.get("confirmed")
-                            for trace in ((replays.get(task_id) or {}) if isinstance(replays, dict)
-                                          else {}).values())]
-        verified = [task_id for task_id in confirmed if (root / "verifiers" / f"{task_id}.json").is_file()]
-        return verified, len(confirmed) - len(verified)
-
     async def run(args: RunArgs) -> RunResult:
         if model is None:
             raise ValueError("run needs the session model to play fresh Runs with")
         named = args.task_ids if args.task_ids is not None else [args.task_id] if args.task_id else None
-        runnable, no_verifier = runnable_tasks() if named is None else ([], 0)
+        runnable, no_verifier = _runnable_tasks(root) if named is None else ([], 0)
         task_ids = list(named) if named is not None else runnable
         # A Task without user rules would be played against no Simulated user: the candidate
         # gets its system prompt alone and invents a customer. It is named, never played (F34).
@@ -917,25 +942,12 @@ def domain_tools(*, workdir: Any, model: Any = None,
         for task_id in played:
             reports = runner_tool.reroll(root, task_id, priced, count=args.count, workdir=root,
                                          make_user=lambda router, task_id=task_id: rule_user(root, task_id, router))
-            rows += [RunRow(run_id=item.run_id, verdict=item.verdict,
-                            routes=[dict(route) for route in item.routes],
-                            world_diff=dict(item.world_diff or {}),
-                            spend=_run_spend(root, item),
-                            termination_reason=str(item.termination_reason or ""),
-                            user_end=item.user_end, task_id=task_id)
-                     for item in reports]
+            rows += [_run_row(root, task_id, item) for item in reports]
             # A Run is finished when its Simulated user ended it with the goal met (D210); the loop's
             # own end reason says only who stopped, never whether the goal was reached.
             finished += sum(1 for item in reports if item.user_end == GOAL_SATISFIED)
-        if len(task_ids) == 1 and named is not None and played:
-            summary = f"reroll of task {task_ids[0]}: {len(rows)} Runs, {finished} finished"
-        elif len(task_ids) == 1 and named is not None:
-            summary = f"task {task_ids[0]} not run: {reasons[0].format(cap=RUNS_PER_CALL)}"
-        else:
-            summary = (f"reroll of {len(played)} Tasks: {len(rows)} Runs, {finished} finished, "
-                       f"{len(not_run)} Tasks left not run"
-                       + ("" if task_ids or named is not None or no_verifier
-                          else "; no open Task has a confirmed Reference, replay first"))
+        summary = _run_summary(task_ids, named, played=played, runs=len(rows), finished=finished,
+                               reasons=reasons, not_run=not_run, no_verifier=no_verifier)
         return RunResult(summary=summary, task_id=task_ids[0] if len(task_ids) == 1 else "",
                          runs=rows, not_run=not_run, reasons=reasons, no_verifier=no_verifier)
 

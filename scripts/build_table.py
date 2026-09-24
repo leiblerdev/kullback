@@ -474,18 +474,23 @@ def check_cause(check: dict) -> str:
         return fidelity_cause("only_theirs_errored", {}, {"error": detail.get("theirs_error") or theirs})
     if verdict == "refused_differently":
         return fidelity_cause("both_error_other_message",
-                              {"error": str(detail.get("ours_error") or "") or _message(ours)},
-                              {"error": str(detail.get("theirs_error") or "") or _message(theirs)})
+                              {"error": _side_error(detail, "ours", ours)},
+                              {"error": _side_error(detail, "theirs", theirs)})
     if verdict == "body_fault":
         return fidelity_cause("only_ours_errored", {"error": _fault_message(detail, ours)}, {"result": theirs})
     if verdict == "ours_refused":
         return fidelity_cause("only_ours_errored",
-                              {"error": str(detail.get("ours_error") or "") or _message(ours)},
+                              {"error": _side_error(detail, "ours", ours)},
                               {"result": theirs})
     mine, real = _whole(detail, "ours", ours), _whole(detail, "theirs", theirs)
     if mine is None or real is None:
         return _shape_cause(detail)
     return fidelity_cause("result_differs", {"result": mine}, {"result": real})
+
+
+def _side_error(detail: dict, side: str, preview: str) -> str:
+    """One side's error message: the difference record's, else the one read off its preview."""
+    return str(detail.get(f"{side}_error") or "") or _message(preview)
 
 
 def _whole(detail: dict, side: str, preview: str) -> Any:
@@ -516,7 +521,7 @@ def _fault_message(detail: dict, preview: str) -> str:
             continue
         if isinstance(fault, dict) and fault.get("message"):
             return str(fault["message"])
-    return str(detail.get("ours_error") or "") or _message(preview)
+    return _side_error(detail, "ours", preview)
 
 
 def _message(preview: str) -> str:

@@ -70,15 +70,23 @@ def trace_clock(trace: Trace, write_tools: Iterable[str]) -> Optional[str]:
         args, result = call.args or {}, call.result
         own = _strings(args)
         if call.name in writes and call.error is None and isinstance(result, (dict, list)):
-            leaves = list(_leaves(result))
-            created = any(_is_id_key(key) and isinstance(value, str) and value
-                          and value not in own and value not in seen for key, value in leaves)
-            moments = {value for _, value in leaves if isinstance(value, str)
-                       and MOMENT.match(value.strip()) and value not in own}
-            fresh = moments - seen
-            if created and len(fresh if fresh else moments) == 1:
-                return next(iter(fresh if fresh else moments))
+            moment = _creation_moment(result, own, seen)
+            if moment is not None:
+                return moment
         seen |= own | _strings(result)
+    return None
+
+
+def _creation_moment(result: Any, own: set[str], seen: set[str]) -> Optional[str]:
+    """The one moment a write's result stamped, when the write created a row; None otherwise."""
+    leaves = list(_leaves(result))
+    created = any(_is_id_key(key) and isinstance(value, str) and value
+                  and value not in own and value not in seen for key, value in leaves)
+    moments = {value for _, value in leaves if isinstance(value, str)
+               and MOMENT.match(value.strip()) and value not in own}
+    fresh = moments - seen
+    if created and len(fresh if fresh else moments) == 1:
+        return next(iter(fresh if fresh else moments))
     return None
 
 

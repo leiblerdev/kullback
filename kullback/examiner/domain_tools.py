@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Iterable, Literal, Optional
+from typing import Any, Callable, Iterable, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -358,6 +358,21 @@ def _gate_record(result: GateResult, verifier: Verifier) -> dict:
     return _record(ruling, held)
 
 
+def _ran_and_held(suite: list[dict]) -> tuple[dict, dict]:
+    """The suite's checks that ran, with whether each passed, and those that did not, with why."""
+    ran = {record["name"]: record["accepted"] for record in suite if record["accepted"] is not None}
+    held = {record["name"]: record["not_run"] for record in suite if record["accepted"] is None}
+    return ran, held
+
+
+def _alt_path_waived(suite: list[dict], base: dict, held: dict) -> bool:
+    """Whether the alt-path check is waived (D199): by its passed ruling's row, or by the Task's
+    row when the check did not run."""
+    return any(record["name"] == ALT_PATH_STAGE and record["accepted"]
+               and any(WAIVED_ROW in row for row in record["rows"]) for record in suite) \
+        or bool(base.get("second_path_waived") and ALT_PATH_STAGE in held)
+
+
 def _suite_row(records: list[dict], base: dict) -> Optional[dict]:
     """The status row the D79 checks among these records give the Task, in the derivation's shape.
 
@@ -368,11 +383,8 @@ def _suite_row(records: list[dict], base: dict) -> Optional[dict]:
     suite = [record for record in records if record["name"] in D79_STAGES]
     if not suite:
         return None
-    ran = {record["name"]: record["accepted"] for record in suite if record["accepted"] is not None}
-    held = {record["name"]: record["not_run"] for record in suite if record["accepted"] is None}
-    waived = any(record["name"] == ALT_PATH_STAGE and record["accepted"]
-                 and any(WAIVED_ROW in row for row in record["rows"]) for record in suite) \
-        or bool(base.get("second_path_waived") and ALT_PATH_STAGE in held)
+    ran, held = _ran_and_held(suite)
+    waived = _alt_path_waived(suite, base, held)
     passed = all(ran.values()) and set(held) <= ({ALT_PATH_STAGE} if waived else set())
     if waived:
         ran[ALT_PATH_STAGE] = False
@@ -401,25 +413,40 @@ def _rule(root: ExamRoot, task_id: str, candidate: Verifier) -> list[dict]:
                                 evidence.get("alt_path_run"), canon=evidence.get("rules"),
                                 write_tools=evidence.get("write_tools"), seed_runs=evidence.get("seed_runs"),
                                 model=evidence.get("probe_model"), run_probe=evidence.get("run_probe"))
+    if _append_until_refused(out, results, candidate):
+        return out
+    gates = _write_gates(root, evidence, _suite_status(evidence, task_id, out))
+    _append_until_refused(out, (run_gate() for run_gate in gates), candidate)
+    return out
+
+
+def _append_until_refused(out: list[dict], results: Iterable[GateResult], candidate: Verifier) -> bool:
+    """Each gate result as a record onto `out`, in order, up to the first that ran and failed;
+    whether one did. `results` is read lazily, so no gate after that refusal runs."""
     for result in results:
         out.append(_gate_record(result, candidate))
         if out[-1]["accepted"] is False:
-            return out
+            return True
+    return False
+
+
+def _suite_status(evidence: dict, task_id: str, out: list[dict]) -> dict:
+    """The task status the trusted gate reads, with the Task's row carrying the suite just run."""
     base = dict(evidence.get("task_status") or {})
     base[task_id] = {**(base.get(task_id) or {}), **(_suite_row(out, base.get(task_id) or {}) or {})}
+    return base
+
+
+def _write_gates(root: ExamRoot, evidence: dict, base: dict) -> tuple[Callable[[], GateResult], ...]:
+    """The gates after the D79 suite that rule on the write, in order, each run only when called."""
     runs, replays, rerolls = evidence.get("task_runs") or {}, evidence.get("replays") or {}, evidence.get("rerolls") or {}
     rules, sigs = evidence.get("rules"), root.sigs or []
-    gates = (lambda: loosening_gate(evidence.get("history") or {}, runs, replays, rerolls, rules, sigs),
-             lambda: false_rejection_gate(evidence["verifiers"], runs, replays, rerolls, rules, sigs,
-                                          task_status=evidence.get("task_status")),
-             lambda: trusted_gate(base, evidence["verifiers"], evidence.get("probes") or {},
-                                  evidence.get("history") or {}, {}, runs, replays, rerolls, rules, sigs,
-                                  workdir=root.workdir))
-    for run_gate in gates:
-        out.append(_gate_record(run_gate(), candidate))
-        if out[-1]["accepted"] is False:
-            break
-    return out
+    return (lambda: loosening_gate(evidence.get("history") or {}, runs, replays, rerolls, rules, sigs),
+            lambda: false_rejection_gate(evidence["verifiers"], runs, replays, rerolls, rules, sigs,
+                                         task_status=evidence.get("task_status")),
+            lambda: trusted_gate(base, evidence["verifiers"], evidence.get("probes") or {},
+                                 evidence.get("history") or {}, {}, runs, replays, rerolls, rules, sigs,
+                                 workdir=root.workdir))
 
 
 def _merge_bought(root: ExamRoot, task_id: str) -> None:
@@ -510,6 +537,95 @@ def atoms_hash(atoms: Iterable[Any]) -> str:
     return hashlib.sha256(body.encode()).hexdigest()
 
 
+def _needs_no_ruling(current: Verifier, atoms_digest: str,
+                     refused_here: dict[str, tuple[str, list[str]]]) -> Optional[str]:
+    """Why a candidate is answered without the suite, else None: its atoms are the current ones
+    (F37), or the same atoms were refused before in this session (F32)."""
+    if atoms_digest == atoms_hash(current.atoms):
+        return (f"the proposal changes nothing: version {current.verifier_version} already holds these "
+                f"atoms; edit, drop or add an atom, or move on to another Task")
+    seen = refused_here.get(atoms_digest)
+    if seen is None:
+        return None
+    version, gates = seen
+    return (f"already refused at version {version} for {', '.join(gates) or 'no gate'}: change the "
+            f"atoms or move on to another Task")
+
+
+def _trial_history(root: ExamRoot, task_id: str, current: Verifier, candidate: Verifier, digest: str,
+                   reason: str) -> Any:
+    """The Task's history with the candidate joined as an accepted trial version (D127), kept on the root."""
+    hist = seeded_history(root.history, task_id, current)
+    hist.versions.append(VerifierVersion(
+        task_id=task_id, content_hash=digest, verifier_version=str(len(hist.versions) + 1),
+        parent_hash=next((v.content_hash for v in reversed(hist.versions) if v.accepted), None),
+        by="repair", reason=reason, accepted=True, verifier=candidate))
+    root.history[task_id] = hist
+    return hist
+
+
+def _status_snapshot(root: ExamRoot, task_id: str) -> tuple[tuple[Path, ...], list[Optional[bytes]], Optional[dict]]:
+    """Both status files' bytes and the Task's in-memory status row, before a transaction."""
+    status_files = (root.exam_dir / "task_status.json", Path(root.workdir) / "task_status.json")
+    previous_status = [path.read_bytes() if path.is_file() else None for path in status_files]
+    return status_files, previous_status, root.task_status.get(task_id)
+
+
+def _keep_status_or_restore(root: ExamRoot, task_id: str, records: list[dict], version: str,
+                            before: tuple[tuple[Path, ...], list[Optional[bytes]], Optional[dict]],
+                            ) -> tuple[list[dict], bool]:
+    """The accepted suite and version written as the Task's status rows, and whether they were.
+
+    A write that fails puts both status files and the row back as `before` held them and adds a
+    failed status_write record, which refuses the proposal.
+    """
+    try:
+        _keep_suite_status(root, task_id, _status_row(root, task_id, records, version))
+    except (OSError, ValueError, TypeError):
+        status_files, previous_status, previous_row = before
+        for path, body in zip(status_files, previous_status, strict=True):
+            _restore(path, body)
+        if previous_row is None:
+            root.task_status.pop(task_id, None)
+        else:
+            root.task_status[task_id] = previous_row
+        return records + [{"name": "status_write", "accepted": False,
+                           "line": "status_write failed: the status rows could not be written",
+                           "rows": []}], False
+    return records, True
+
+
+def _accepted_result(root: ExamRoot, args: ProposeArgs, candidate: Verifier, digest: str,
+                     records: list[dict], alias: bool) -> ProposeResult:
+    """An accepted proposal's result; the Builder's open note on the Task is ruled agrees."""
+    summary = (f"proposal version {candidate.verifier_version} for task {args.task_id} "
+               f"({digest[:12]}) accepted: " + "; ".join(record["line"] for record in records))
+    ruled = rule_note(root.workdir, args.task_id, "edit_verifier", "agrees",
+                      f"version {candidate.verifier_version} accepted: {args.reason}")
+    if ruled is not None:
+        summary += f"; the Builder's note on task {args.task_id} is ruled: agrees"
+    if alias:
+        summary += f"; {DEPRECATED_ALIAS}"
+    return ProposeResult(summary=summary, task_id=args.task_id, content_hash=digest,
+                         verifier_version=candidate.verifier_version,
+                         atoms=len(candidate.atoms), rulings=records)
+
+
+def _roll_back(root: ExamRoot, task_id: str, previous_verifier: Optional[Verifier], hist: Any,
+               records: list[dict]) -> list[str]:
+    """A refused proposal undone in memory and in the ruling files: the previous Verifier back,
+    the trial version kept as rejected by the gates that refused it (D201); those gates."""
+    if previous_verifier is None:
+        root.verifiers.pop(task_id, None)
+    else:
+        root.verifiers[task_id] = previous_verifier
+    gates = [record["name"] for record in records if record["accepted"] is False]
+    hist.versions[-1] = hist.versions[-1].model_copy(update={"accepted": False, "rejected_by": gates})
+    root.history[task_id] = hist
+    save_ruling_files(root)
+    return gates
+
+
 def _propose_verifier(root: ExamRoot, alias: bool = False):
     """One proposal as a transaction (D201): ruled on the write, kept only when every ruling passed.
 
@@ -532,34 +648,17 @@ def _propose_verifier(root: ExamRoot, alias: bool = False):
             "atoms": _candidate_atoms(current, args.drop, args.add, args.edit),
             "verifier_version": _next_version(current)})
         atoms_digest = atoms_hash(candidate.atoms)
-        if atoms_digest == atoms_hash(current.atoms):
-            # F37: a proposal that changes nothing is answered without the suite, and counts as a refusal.
+        why = _needs_no_ruling(current, atoms_digest, refused.setdefault(args.task_id, {}))
+        if why is not None:
+            # F37, F32: answered without the suite, and counted as a refusal.
             refusals[args.task_id] = refusals.get(args.task_id, 0) + 1
-            raise RetryableToolError(
-                f"the proposal changes nothing: version {current.verifier_version} already holds these "
-                f"atoms; edit, drop or add an atom, or move on to another Task"
-                + (_STOP if refusals[args.task_id] > REFUSALS_PER_TASK else ""))
-        seen = refused.setdefault(args.task_id, {}).get(atoms_digest)
-        if seen is not None:
-            refusals[args.task_id] = refusals.get(args.task_id, 0) + 1
-            version, gates = seen
-            raise RetryableToolError(
-                f"already refused at version {version} for {', '.join(gates) or 'no gate'}: change the "
-                f"atoms or move on to another Task"
-                + (_STOP if refusals[args.task_id] > REFUSALS_PER_TASK else ""))
+            raise RetryableToolError(why + (_STOP if refusals[args.task_id] > REFUSALS_PER_TASK else ""))
         digest = version_hash(candidate)
-        hist = seeded_history(root.history, args.task_id, current)
-        hist.versions.append(VerifierVersion(
-            task_id=args.task_id, content_hash=digest, verifier_version=str(len(hist.versions) + 1),
-            parent_hash=next((v.content_hash for v in reversed(hist.versions) if v.accepted), None),
-            by="repair", reason=args.reason, accepted=True, verifier=candidate))
-        root.history[args.task_id] = hist
+        hist = _trial_history(root, args.task_id, current, candidate, digest, args.reason)
         target = root.exam_dir / "verifiers" / f"{args.task_id}.json"
         previous = target.read_bytes() if target.is_file() else None
         previous_verifier = root.verifiers.get(args.task_id)
-        status_files = (root.exam_dir / "task_status.json", Path(root.workdir) / "task_status.json")
-        previous_status = [path.read_bytes() if path.is_file() else None for path in status_files]
-        previous_row = root.task_status.get(args.task_id)
+        before = _status_snapshot(root, args.task_id)
         root.verifiers[args.task_id] = candidate
         write_json(target, as_dict(candidate))
         save_ruling_files(root)
@@ -567,40 +666,11 @@ def _propose_verifier(root: ExamRoot, alias: bool = False):
         # F45: a check that did not run is no refusal; only a ruling that ran and failed refuses.
         accepted = bool(records) and all(record["accepted"] is not False for record in records)
         if accepted:
-            try:
-                _keep_suite_status(root, args.task_id,
-                                   _status_row(root, args.task_id, records, candidate.verifier_version))
-            except (OSError, ValueError, TypeError):
-                for path, body in zip(status_files, previous_status, strict=True):
-                    _restore(path, body)
-                if previous_row is None:
-                    root.task_status.pop(args.task_id, None)
-                else:
-                    root.task_status[args.task_id] = previous_row
-                records = records + [{"name": "status_write", "accepted": False,
-                                      "line": "status_write failed: the status rows could not be written",
-                                      "rows": []}]
-                accepted = False
+            records, accepted = _keep_status_or_restore(root, args.task_id, records,
+                                                        candidate.verifier_version, before)
         if accepted:
-            summary = (f"proposal version {candidate.verifier_version} for task {args.task_id} "
-                       f"({digest[:12]}) accepted: " + "; ".join(record["line"] for record in records))
-            ruled = rule_note(root.workdir, args.task_id, "edit_verifier", "agrees",
-                              f"version {candidate.verifier_version} accepted: {args.reason}")
-            if ruled is not None:
-                summary += f"; the Builder's note on task {args.task_id} is ruled: agrees"
-            if alias:
-                summary += f"; {DEPRECATED_ALIAS}"
-            return ProposeResult(summary=summary, task_id=args.task_id, content_hash=digest,
-                                verifier_version=candidate.verifier_version,
-                                atoms=len(candidate.atoms), rulings=records)
-        if previous_verifier is None:
-            root.verifiers.pop(args.task_id, None)
-        else:
-            root.verifiers[args.task_id] = previous_verifier
-        gates = [record["name"] for record in records if record["accepted"] is False]
-        hist.versions[-1] = hist.versions[-1].model_copy(update={"accepted": False, "rejected_by": gates})
-        root.history[args.task_id] = hist
-        save_ruling_files(root)
+            return _accepted_result(root, args, candidate, digest, records, alias)
+        gates = _roll_back(root, args.task_id, previous_verifier, hist, records)
         _restore(target, previous)
         refused[args.task_id][atoms_digest] = (candidate.verifier_version, gates)
         refusals[args.task_id] = refusals.get(args.task_id, 0) + 1

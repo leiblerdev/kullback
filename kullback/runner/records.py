@@ -604,6 +604,13 @@ class ForeignRunError(ValueError):
     """A Run file that holds another Task's Run, or more than one Run (D281)."""
 
 
+def _refuse_second_run(file: Path, header: dict, obj: dict) -> None:
+    """Refuse a header line naming another Run or Task than the header read so far (D281)."""
+    for key in RUN_IDENTITY:
+        if obj.get(key) is not None and header.get(key) is not None and obj[key] != header[key]:
+            raise ForeignRunError(f"{file} holds more than one Run: {key} {header[key]} and {obj[key]}")
+
+
 def load_run_jsonl(path: Any, task_id: Optional[str] = None) -> Run:
     """Read one Run from a JSONL file: header lines, event lines and a footer all work.
 
@@ -628,9 +635,7 @@ def load_run_jsonl(path: Any, task_id: Optional[str] = None) -> Run:
         if obj.get("type") in _RUN_EVENT_TYPES:
             events.append(obj)
             continue
-        for key in RUN_IDENTITY:
-            if obj.get(key) is not None and header.get(key) is not None and obj[key] != header[key]:
-                raise ForeignRunError(f"{file} holds more than one Run: {key} {header[key]} and {obj[key]}")
+        _refuse_second_run(file, header, obj)
         events.extend(obj.pop("events", None) or [])
         header.update(obj)
     if task_id is not None and header.get("task_id") not in (None, task_id):

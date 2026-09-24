@@ -62,7 +62,7 @@ from kullback.ai.http_errors import (
     is_context_overflow,
 )
 from kullback.ai.messages import Message
-from kullback.ai.model_limits import request_rules_for
+from kullback.ai.model_limits import RequestRules, request_rules_for
 from kullback.ai.retry import (
     RetryPolicy,
     backoff_delay,
@@ -964,26 +964,14 @@ class AnthropicModel(HttpModel):
             body["system"] = cache_system(system, ttl)
         if tools:
             body["tools"] = cache_tools([_anthropic_tool(t) for t in tools], ttl)
-            choice = config.tool_choice
-            if choice == "required" and not rules.forced_tool_choice:
-                # A forced choice is a 400 on this model: `auto` goes on the wire and the demand
-                # moves into the prompt, after the cache point so the cached system stays reusable.
-                choice = "auto"
-                body["system"] = list(body.get("system") or []) + [{"type": "text", "text": FORCED_TOOL_LINE}]
-            if choice:
-                body["tool_choice"] = dict(ANTHROPIC_TOOL_CHOICE[choice])
+            _put_anthropic_tool_choice(body, config.tool_choice, rules)
         if config.temperature is not None and rules.sampling:
             body["temperature"] = config.temperature
         if config.stop:
             body["stop_sequences"] = list(config.stop)
         # Reasoning branch one of three: Anthropic takes thinking as its own block and the
         # depth as output_config.effort. budget_tokens is not sent: the current models reject it.
-        thinking = dict(config.thinking or {})
-        if rules.thinking_always_on:
-            # Disabled or budgeted thinking is a 400 here; leaving the field out is adaptive.
-            thinking.pop("budget_tokens", None)
-            if thinking.get("type") != "adaptive":
-                thinking = {}
+        thinking = _anthropic_thinking(config.thinking, rules)
         if thinking:
             body["thinking"] = thinking
         if config.effort:
@@ -1057,6 +1045,28 @@ _BARE_BEDROCK_ID = re.compile(r"[a-z0-9-]+\.[a-z0-9:-]+")
 def bedrock_wire_id(wire_id: str) -> str:
     """The id Bedrock is sent: a profile id or an ARN unchanged, a bare id on the global profile."""
     return BEDROCK_DEFAULT_PROFILE + wire_id if _BARE_BEDROCK_ID.fullmatch(wire_id) else wire_id
+
+
+def _put_anthropic_tool_choice(body: dict[str, Any], choice: Optional[str], rules: RequestRules) -> None:
+    """Set the Messages API tool_choice, moving a forced choice into the prompt where it is refused."""
+    if choice == "required" and not rules.forced_tool_choice:
+        # A forced choice is a 400 on this model: `auto` goes on the wire and the demand
+        # moves into the prompt, after the cache point so the cached system stays reusable.
+        choice = "auto"
+        body["system"] = list(body.get("system") or []) + [{"type": "text", "text": FORCED_TOOL_LINE}]
+    if choice:
+        body["tool_choice"] = dict(ANTHROPIC_TOOL_CHOICE[choice])
+
+
+def _anthropic_thinking(requested: Optional[dict], rules: RequestRules) -> dict:
+    """The thinking block to send, empty when the model's rules leave the field out."""
+    thinking = dict(requested or {})
+    if rules.thinking_always_on:
+        # Disabled or budgeted thinking is a 400 here; leaving the field out is adaptive.
+        thinking.pop("budget_tokens", None)
+        if thinking.get("type") != "adaptive":
+            thinking = {}
+    return thinking
 
 
 class BedrockAnthropicModel(AnthropicModel):
@@ -1655,6 +1665,30 @@ def _text_of(message: dict) -> str:
     return str(content or "")
 
 
+def _anthropic_blocks(message: dict) -> list[dict]:
+    """One user or assistant message's content blocks: its thinking, its content, then its tool calls."""
+    content = message.get("content")
+    # The reply's own thinking blocks lead its turn, unchanged: the Messages API reads them
+    # before the text and tool calls they preceded, and refuses an edited one.
+    thinking = [copy.deepcopy(b) for b in message.get(THINKING_BLOCKS_KEY) or [] if isinstance(b, dict)]
+    if isinstance(content, list) and all(isinstance(b, dict) and "type" in b for b in content):
+        blocks = thinking + list(content)
+    elif content:
+        blocks = thinking + [{"type": "text", "text": _text_of(message)}]
+    else:
+        blocks = thinking
+    for call in message.get("tool_calls") or []:
+        blocks.append(
+            {
+                "type": "tool_use",
+                "id": call.get("id"),
+                "name": call.get("name") or (call.get("function") or {}).get("name") or "",
+                "input": _arguments_of(call),
+            }
+        )
+    return blocks
+
+
 def _to_anthropic(messages: list[dict]) -> tuple[list[dict], list[dict]]:
     """Our canonical messages into Anthropic's: system pulled out, tool calls and results as blocks.
 
@@ -1685,24 +1719,6 @@ def _to_anthropic(messages: list[dict]) -> tuple[list[dict], list[dict]]:
                 in_tool_group = True
             continue
         in_tool_group = False
-        content = message.get("content")
-        # The reply's own thinking blocks lead its turn, unchanged: the Messages API reads them
-        # before the text and tool calls they preceded, and refuses an edited one.
-        thinking = [copy.deepcopy(b) for b in message.get(THINKING_BLOCKS_KEY) or [] if isinstance(b, dict)]
-        if isinstance(content, list) and all(isinstance(b, dict) and "type" in b for b in content):
-            blocks = thinking + list(content)
-        elif content:
-            blocks = thinking + [{"type": "text", "text": _text_of(message)}]
-        else:
-            blocks = thinking
-        for call in message.get("tool_calls") or []:
-            blocks.append(
-                {
-                    "type": "tool_use",
-                    "id": call.get("id"),
-                    "name": call.get("name") or (call.get("function") or {}).get("name") or "",
-                    "input": _arguments_of(call),
-                }
-            )
+        blocks = _anthropic_blocks(message)
         out.append({"role": "assistant" if role == "assistant" else "user", "content": blocks})
     return system, out
