@@ -2426,8 +2426,9 @@ def render_tools(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict,
 # nothing of the world: its arguments are free text or empty. So a final status, total or
 # availability lookup that closes most of its Traces stays a read, because on its calls an argument
 # names a row of the world (D288); and a tool the miner classified as a read (not its unclassified
-# default) never moves. The mine step runs before the Starting state is inverted, so the world is
-# then the rows the corpus's results show, the sightings the Starting state is built from.
+# default) never moves. The world of a call is its own Trace's: that Trace's Starting state and its
+# earlier results, never another Trace's. The mine step runs before the Starting state is
+# inverted, so there only the Trace's earlier results count.
 ACTIONS_TABLE = "actions"
 # The share of a tool's successful recorded calls that closed their Trace (no tool call after it)
 # for the tool to read as one that ends the Run. Below one because a corpus has stray orderings:
@@ -2451,36 +2452,52 @@ def _world_values(value: Any, out: Optional[set] = None) -> set:
     return out
 
 
-def ending_tools(traces: Iterable[Trace], sigs: Iterable[ToolSig], world: Optional[dict] = None) -> list[str]:
+def _ending_candidates(sigs: Iterable[ToolSig]) -> set[str]:
+    """The tools that may end the Run: neither a mined write nor a classified read."""
+    return {sig.name for sig in sigs
+            if sig.kind != "write" and not (sig.kind == "read" and not sig.unclassified)}
+
+
+def _tally_trace(trace: Trace, seed: set, counts: dict[str, list[int]]) -> None:
+    """Add one Trace's successful calls to `counts`: calls, last calls, row answers, calls naming the world.
+
+    An argument names the world when it equals a value of `seed` (the Trace's own Starting state)
+    or of an earlier result of the same Trace.
+    """
+    calls = [call for call in trace.tool_calls if call.error is None]
+    seen = set(seed)
+    for at, call in enumerate(calls):
+        tally = counts.setdefault(call.name, [0, 0, 0, 0])
+        tally[0] += 1
+        tally[1] += at == len(calls) - 1
+        tally[2] += isinstance(call.result, (dict, list, tuple))
+        tally[3] += bool(_world_values(call.args) & seen)
+        _world_values(call.result, seen)
+
+
+def _ends_runs(tally: list[int]) -> bool:
+    """Enough calls, none answering rows or naming the world, and nearly all of them last in their Trace."""
+    total, last, rows, named = tally
+    return total >= ENDS_RUN_MIN_CALLS and not rows and not named and last >= ENDS_RUN_SHARE * total
+
+
+def ending_tools(traces: Iterable[Trace], sigs: Iterable[ToolSig],
+                 starts: Optional[dict[str, Any]] = None) -> list[str]:
     """The tools the recording shows ending the Run and writing nothing.
 
     Not a write by its mined kind nor a classified read, answered with a scalar on every successful
     call (no row came back), called at least `ENDS_RUN_MIN_CALLS` times, the last tool call of its
     Trace on at least `ENDS_RUN_SHARE` of them, and on every call no argument value equals a value
-    of the world's rows or of an earlier result of the same Trace (D288). `world` is the Starting
-    state's rows; without it, the rows every successful result of the corpus shows.
+    of that Trace's own Starting state or of an earlier result of the same Trace (D288). Nothing
+    of another Trace counts. `starts` maps a Trace id to its Starting state; the mine step runs
+    before the Starting state is inverted, so there the seed is empty and only the Trace's earlier
+    results count.
     """
-    traces = list(traces)
-    candidates = {sig.name for sig in sigs
-                  if sig.kind != "write" and not (sig.kind == "read" and not sig.unclassified)}
-    rows_of = ([world] if world is not None else
-               [call.result for trace in traces for call in trace.tool_calls
-                if call.error is None and isinstance(call.result, (dict, list, tuple))])
-    start = _world_values(rows_of)
+    candidates = _ending_candidates(sigs)
     counts: dict[str, list[int]] = {}
     for trace in traces:
-        calls = [call for call in trace.tool_calls if call.error is None]
-        seen: set = set(start)
-        for at, call in enumerate(calls):
-            tally = counts.setdefault(call.name, [0, 0, 0, 0])
-            tally[0] += 1
-            tally[1] += at == len(calls) - 1
-            tally[2] += isinstance(call.result, (dict, list, tuple))
-            tally[3] += bool(_world_values(call.args) & seen)
-            _world_values(call.result, seen)
-    return sorted(name for name, (total, last, rows, named) in counts.items()
-                  if name in candidates and total >= ENDS_RUN_MIN_CALLS
-                  and not rows and not named and last >= ENDS_RUN_SHARE * total)
+        _tally_trace(trace, _world_values((starts or {}).get(trace.trace_id)), counts)
+    return sorted(name for name, tally in counts.items() if name in candidates and _ends_runs(tally))
 
 
 def action_tools(schema: EntitySchema) -> dict[str, str]:
