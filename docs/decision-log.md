@@ -2026,6 +2026,8 @@ name replaces its own file. The loader refuses a file holding two Runs, and give
 Task with both ids in the error; derivation and the suite's seeds and second path load through it. The trusted gate,
 given the workdir, resolves every seed of the accepted version through the replay, re-roll and Examiner rows (then the
 Task's runs folder) and the loader; a seed that is not a Run of the same Task fails the gate with the seeds named and
-leaves the history in place for the next round to derive again. On the smoke 8 workdirs, read only, this withdraws trust
+leaves the history in place for the next round to derive again. The Builder's status and the round's snapshot read one
+ruling (`workdir_trusted_ruling`), and bindings and the counts pass the workdir, so there is one trusted number. A resumed
+workdir from before D281 drops a second-path row whose file the loader refuses for that Task, logged once per file. On the smoke 8 workdirs, read only, this withdraws trust
 from 48 of 133 retail and 25 of 53 airline Verifiers, the eight airline Verifiers with the seed signal among them
 (`.claude/herdr/overhaul-0922/reports/ov-fix-runs/report.md`). Status: decided 2026-09-24, built on overhaul-0922/fix-runs.
