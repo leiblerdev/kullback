@@ -54,7 +54,8 @@ def test_the_manifest_carries_the_numbers_the_artifacts_hold(nursery, tmp_path):
     assert manifest["round"] == 2
     assert manifest["tasks_total"] == 3
     assert manifest["replay_fidelity"] == {"tasks": 2, "tasks_total": 3, "tasks_rate": pytest.approx(0.6667, abs=1e-3),
-                                           "runs": 2, "runs_total": 3, "runs_rate": pytest.approx(0.6667, abs=1e-3)}
+                                           "runs": 2, "runs_total": 3, "runs_rate": pytest.approx(0.6667, abs=1e-3),
+                                           "calls": 0, "calls_total": 0, "calls_rate": None}
     assert manifest["reference_confirmed"] == 2
     assert manifest["verifier_derived"] == 2
     assert manifest["trusted"] == 1
@@ -426,3 +427,51 @@ def test_the_card_says_how_many_domain_archetypes_were_read_and_how_many_no_tool
     assert "| Domain archetypes read | 2 (1 a tool of this Environment realises) |" in body
     assert "| Domain archetypes with no tool | 1 |" in body
 
+
+# --- call fidelity, table cells and the words (PR #121) --------------------------------
+
+
+def test_call_fidelity_counts_same_cosmetic_and_both_refused_as_agreeing_and_both_cards_show_it(nursery, tmp_path):
+    replays = read_json(nursery / "replays.json")
+    replays["task_one"]["trace-task_one"]["checks"] = [
+        {"verdict": "same"}, {"verdict": "cosmetic"}, {"verdict": "both_refused"}, {"verdict": "differs"}]
+    replays["task_two"]["trace-task_two"]["checks"] = [{"verdict": "ours_refused"}]
+    write_json(nursery / "replays.json", replays)
+    manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
+    assert "call_fidelity" not in manifest
+    fidelity = manifest["replay_fidelity"]
+    assert (fidelity["calls"], fidelity["calls_total"], fidelity["calls_rate"]) == (3, 5, 0.6)
+    org = card_mod.organisation_card([{"name": "nursery", "repo_id": "leibler/nursery", "manifest": manifest}])
+    assert "| 66.7% (2 of 3) | 60.00% of 5 |" in org
+    assert "| Call fidelity | 60.00% of 5 |" in card_mod.card_markdown(manifest, "leibler/nursery")
+
+
+def test_a_pipe_or_a_line_break_in_corpus_text_stays_inside_its_table_cell(nursery, tmp_path):
+    manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True,
+                                  corpus="nursery | traces\nsecond line", corpus_license="MIT")
+    corpus_row = next(line for line in card_mod.card_markdown(manifest, "leibler/nursery").splitlines()
+                      if line.startswith("| Corpus |"))
+    assert corpus_row == "| Corpus | nursery \\| traces second line (MIT) |"
+    org = card_mod.organisation_card([{"name": "n", "repo_id": "leibler/a|b", "manifest": manifest}])
+    row = next(line for line in org.splitlines() if line.startswith("| ["))
+    assert row.replace("\\|", "").count("|") == 7
+
+
+def test_a_replay_answered_by_the_stand_in_is_not_confirmed_in_the_card_and_the_readme():
+    confirmed = next(word for word in card_mod.WORDS if word.startswith("Confirmed:"))
+    assert "none was answered by the stand-in" in confirmed
+    assert f"- {confirmed}" in (Path(__file__).parents[2] / "README.md").read_text(encoding="utf-8")
+
+
+def test_an_open_task_is_neither_trusted_nor_refused_in_the_card_and_the_readme():
+    assert "Open: neither trusted nor refused." in card_mod.WORDS
+    assert "- Open: neither trusted nor refused." in (Path(__file__).parents[2] / "README.md").read_text(
+        encoding="utf-8")
+
+
+def test_the_card_says_a_fetched_package_cannot_finish_a_task_that_needs_a_fact_the_user_gives(nursery, tmp_path):
+    manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
+    note = next(line for line in card_mod.card_markdown(manifest, "leibler/nursery").splitlines()
+                if "simulated user does not ship" in line)
+    assert "cannot finish a Task that needs a fact the user gives mid conversation" in note
+    assert "still carries a Verifier" in note

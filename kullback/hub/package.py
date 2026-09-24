@@ -47,6 +47,8 @@ TASKS_INDEX_NAME = "tasks_index.json"
 TASKS_ROWS_NAME = "tasks.jsonl"
 # The card publish.py writes beside the package. Named here because the hashes have to leave it out.
 CARD_NAME = "README.md"
+# The call verdicts that count as agreement, the same three the Runner and the README name.
+AGREEING_VERDICTS = ("same", "cosmetic", "both_refused")
 
 # The rebuilt world: the Environment package the Builder compiled, the per-Task Starting states, and
 # the records the Runner needs to load a toolkit over them. These are also the leak scan's baseline,
@@ -184,22 +186,28 @@ def _task_ids_of(body: Any) -> list[str]:
 
 
 def replay_fidelity(replays: dict, task_ids: Iterable[str]) -> dict:
-    """Replay fidelity over Tasks and over Runs, both over the frozen list.
+    """Replay fidelity over Tasks, over Runs and over calls, all over the frozen list.
 
     A Task clears fidelity when any replay of it was confirmed, which is the count round_end reports;
     the Run number is every replay of every Task on the list, which is the finer of the two and the
-    one a reader should look at when a Task holds many recordings.
+    one a reader should look at when a Task holds many recordings. The call number is every recorded
+    call of those replays, agreeing when its verdict is one of AGREEING_VERDICTS.
     """
     ids = list(task_ids)
-    tasks_confirmed, runs_total, runs_confirmed = 0, 0, 0
+    tasks_confirmed, runs_total, runs_confirmed, calls_total, calls_agreeing = 0, 0, 0, 0, 0
     for task_id in ids:
         per_task = (replays or {}).get(task_id) or {}
         confirmed = [run_id for run_id, row in per_task.items() if _confirmed(row)]
         runs_total += len(per_task)
         runs_confirmed += len(confirmed)
         tasks_confirmed += 1 if confirmed else 0
+        checks = [check for row in per_task.values() if isinstance(row, dict)
+                  for check in row.get("checks") or () if isinstance(check, dict)]
+        calls_total += len(checks)
+        calls_agreeing += sum(1 for check in checks if check.get("verdict") in AGREEING_VERDICTS)
     return {"tasks": tasks_confirmed, "tasks_total": len(ids), "tasks_rate": _share(tasks_confirmed, len(ids)),
-            "runs": runs_confirmed, "runs_total": runs_total, "runs_rate": _share(runs_confirmed, runs_total)}
+            "runs": runs_confirmed, "runs_total": runs_total, "runs_rate": _share(runs_confirmed, runs_total),
+            "calls": calls_agreeing, "calls_total": calls_total, "calls_rate": _share(calls_agreeing, calls_total)}
 
 
 def _confirmed(row: Any) -> bool:
