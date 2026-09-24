@@ -491,8 +491,9 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
             if row:
                 out.append(_Obs(table, row_id, dict(row), trace.trace_id, (trace_index, -1), False))
         for call_index, call in enumerate(trace.tool_calls):
-            # A call the simulated user made through its own tools (telecom's phone tools) is not a
-            # sighting of the customer's system; only the assistant's calls describe it (R33).
+            # A call the simulated user made through its own tools (a corpus whose simulated user calls
+            # its own phone tools) is not a sighting of the customer's system; only the assistant's calls
+            # describe it (R33).
             if call.error is not None or not is_assistant_call(call):
                 continue
             is_write = call.name in write_tools

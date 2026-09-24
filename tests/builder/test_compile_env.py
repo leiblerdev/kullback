@@ -948,8 +948,8 @@ def test_the_code_owned_skeleton_is_confined_as_it_stands(schema, sigs, db0):
 
 
 def test_a_user_requestor_call_is_not_a_row_sighting(sample, schema):
-    """Telecom's simulated user calls its own phone tools inside the trace (R33); those results
-    describe the user's device, not the customer's system, so they never enter the Starting state."""
+    """A corpus whose simulated user calls its own phone tools does so inside the trace (R33); those
+    results describe the user's device, not the customer's system, so they never enter the Starting state."""
     order = next(iter(sample["orders"].values()))
     seen = ToolCall(id="c1", name="get_order_details", args={"order_id": order["order_id"]}, result=order,
                     raw_ptr=PTR)
