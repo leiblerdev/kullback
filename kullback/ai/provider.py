@@ -91,9 +91,10 @@ _reasoning_of = reasoning_of
 # the model it wraps.
 ALLOW_MODEL_REQUESTS = False
 
-# The harness default for the Builder, the Examiner, the judges, the probe and the re-rolls;
-# founder decision 2026-09-22.
-DEFAULT_MODEL = "openai/gpt-6-luna"
+# The harness default for the Builder, the Examiner, the judges, the probe and the re-rolls:
+# Opus 5.5 on Bedrock's global profile, the experiment model (founder decision 2026-09-24;
+# openai/gpt-6-luna, the default from 2026-09-22, stays a valid choice).
+DEFAULT_MODEL = "bedrock/global.anthropic.claude-opus-5-5"
 
 # The one way to turn live calls on: a person exports this before running the CLI. There is
 # no flag a module can set by accident, and the default above stays False.
@@ -1027,12 +1028,17 @@ class AnthropicModel(HttpModel):
         )
 
 
-# Claude in Amazon Bedrock: the Messages API on AWS, read 2026-09-24 from
-# platform.claude.com/docs/en/build-with-claude/claude-in-amazon-bedrock.md (the endpoint, line 144;
-# the SigV4 service in its curl example, line 152; the regions, line 378 on) and from the anthropic
-# SDK's src/anthropic/lib/bedrock/_mantle.py (the service name, line 36; the bearer variables,
-# line 38; the base URL, line 143; the bearer header, line 234; anthropic-version, line 242).
-BEDROCK_SERVICE = "bedrock-mantle"
+# Claude in Amazon Bedrock: the Messages API on AWS. The anthropic SDK's
+# src/anthropic/lib/bedrock/_mantle.py gave the bearer variables (line 38), the bearer header
+# (line 234) and anthropic-version (line 242). The host and the ids are the founder's live probes
+# of 2026-09-24 in us-east-2: bedrock-mantle.<region>.api.aws answers 404 "The model does not
+# exist" for every id, while bedrock-runtime.<region>.amazonaws.com/anthropic/v1/messages answers
+# 200 with the same headers, and only for an inference profile id (us. or global.): the bare
+# anthropic.<model> is refused, on-demand throughput is not supported for it.
+BEDROCK_SERVICE = "bedrock"
+# Global profiles are billed at the list price, a regional one about ten percent over it (the
+# founder, 2026-09-24), so a bare id goes out on the global profile in every region.
+BEDROCK_DEFAULT_PROFILE = "global."
 BEDROCK_DEFAULT_REGION = "us-east-2"
 BEDROCK_BEARER_VARS = ("AWS_BEARER_TOKEN_BEDROCK", "ANTHROPIC_AWS_API_KEY")
 BEDROCK_KEY_VARS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
@@ -1044,11 +1050,23 @@ def bedrock_region(env: dict[str, str]) -> str:
     return env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION") or BEDROCK_DEFAULT_REGION
 
 
+# A bare Bedrock model id, `vendor.model` with no profile in front: one dot, no ARN.
+_BARE_BEDROCK_ID = re.compile(r"[a-z0-9-]+\.[a-z0-9:-]+")
+
+
+def bedrock_wire_id(wire_id: str) -> str:
+    """The id Bedrock is sent: a profile id or an ARN unchanged, a bare id on the global profile."""
+    return BEDROCK_DEFAULT_PROFILE + wire_id if _BARE_BEDROCK_ID.fullmatch(wire_id) else wire_id
+
+
 class BedrockAnthropicModel(AnthropicModel):
     """Claude through Amazon Bedrock's Messages endpoint: the Anthropic body, AWS authentication.
 
-    The body, the cache points and the model rules are AnthropicModel's unchanged; the wire id is
-    Bedrock's own (`anthropic.claude-opus-5-5`). Two ways in, in the SDK's order for keys read from
+    The body, the cache points and the model rules are AnthropicModel's unchanged. The wire id is
+    whatever follows `bedrock/`, sent as is: an inference profile id such as
+    `global.anthropic.claude-opus-5-5` or `us.anthropic.claude-opus-5-5`. A bare
+    `anthropic.<model>` is refused on demand, so it gets the `global.` profile in every region.
+    Two ways in, in the SDK's order for keys read from
     the environment: a Bedrock API key (AWS_BEARER_TOKEN_BEDROCK) goes as a bearer token, else the
     access key pair signs every request with SigV4 over the exact body bytes. Keys come from the
     environment or .env only: no profile files, no instance metadata, no STS.
@@ -1060,8 +1078,9 @@ class BedrockAnthropicModel(AnthropicModel):
     def __init__(self, model_id: str, base_url: Optional[str] = None, **kwargs):
         env = dict(os.environ) if kwargs.get("env") is None else dict(kwargs["env"])
         self.region = bedrock_region(env)
-        default = f"https://bedrock-mantle.{self.region}.api.aws/anthropic"
+        default = f"https://bedrock-runtime.{self.region}.amazonaws.com/anthropic"
         super().__init__(model_id, base_url=base_url or default, **kwargs)
+        self.wire_id = bedrock_wire_id(self.wire_id)
         self.api_key = self.api_key or next((self.env[v] for v in BEDROCK_BEARER_VARS if self.env.get(v)), None)
         self.access_key = self.env.get(BEDROCK_KEY_VARS[0]) or None
         self.secret_key = self.env.get(BEDROCK_KEY_VARS[1]) or None

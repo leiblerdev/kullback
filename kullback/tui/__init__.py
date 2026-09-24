@@ -95,15 +95,16 @@ FEED_LINES = 12
 # GET of its own model list, 2026-09-10); the OpenRouter default is the cheapest tool-capable model
 # in the registry snapshot at a whole megatoken of context, and its nested id is deliberate, since
 # an id with a second slash is the shape OpenRouter mostly speaks. Providers the local registry
-# adds are appended to this in _login_defaults, never repeated here. OpenAI starts at the harness
-# default model, so a login lands on the model the builds run on.
+# adds are appended to this in _login_defaults, never repeated here. Bedrock starts at the harness
+# default model, so a login lands on the model the builds run on; OpenAI at gpt-6-luna, the
+# default before it.
 LOGIN_DEFAULT_MODELS = {
     "anthropic": "anthropic/claude-opus-5",
-    "openai": DEFAULT_MODEL,
+    "openai": "openai/gpt-6-luna",
     "opencode-go": "opencode-go/glm-5.3-flash",
     "deepseek": "deepseek/deepseek-flash",
     "openrouter": "openrouter/qwen/qwen3.7-flash",
-    "bedrock": "bedrock/anthropic.claude-opus-5-5",
+    "bedrock": DEFAULT_MODEL,
 }
 
 
