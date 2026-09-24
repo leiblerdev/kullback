@@ -18,7 +18,7 @@ from typing import Any, Iterable, Optional
 from kullback import sampling
 from kullback.runner import canon
 from kullback.runner.records import EntitySchema, Task, ToolSig, Trace, UserRules, Verifier
-from kullback.runner.world import loading
+from kullback.runner.world import clock, loading
 from kullback.runner.world.loading import EnvironmentError, _record, _shaped_json
 
 # Every name the old kullback.episode.environment exported, privates included: the old module
@@ -199,6 +199,19 @@ class BuiltEnvironment:
         """The Task's own recordings, which are the evidence its answers are stripped against."""
         traces = self.traces()
         return [traces[run_id] for run_id in self._seed_task(task).run_ids if run_id in traces]
+
+    def clock(self, task_id: str, trace_id: Optional[str] = None) -> Optional[str]:
+        """The world clock a Run of the Task is served (D283): its recording's own time.
+
+        A named Trace of the Task answers first, so a replay reads the time that Trace wrote; then
+        the Task's Reference and its other recordings; None where none of them shows one.
+        """
+        task = self.task(task_id)
+        traces = self.traces()
+        order = [trace_id] if trace_id in task.run_ids else []
+        reference = self._reference_id(task)
+        order += [run_id for run_id in [reference, *task.run_ids] if run_id and run_id not in order]
+        return clock.task_clock((traces.get(run_id) for run_id in order), self.write_tools())
 
     def reference(self, task: Task) -> Optional[Trace]:
         """The recording the Task's user context comes from: the first of its Runs with rules."""

@@ -108,6 +108,7 @@ class Router:
                                   else getattr(overlay, "steps", None))
         self.steps_served = 0  # how many of them this Run laid in the world, for the Run's record
         self._calls_seen: dict[str, int] = {}
+        self.calls_routed = 0  # every call this Run asked for, so a body can know its own turn (D282)
         self._lay_overlay_in_db()
         self.start_world = self.world()
 
@@ -144,6 +145,7 @@ class Router:
 
     def route(self, name: str, args: Optional[dict] = None, requestor: str = "assistant") -> RouteResult:
         args = dict(args or {})
+        self.calls_routed += 1
         if not self._may_call(name, requestor):
             # D164: the recording answered this tool for other callers and refused this one, so the
             # Run refuses it too, in the same class, before any code, recording or stand-in is asked
@@ -291,6 +293,9 @@ class Router:
         return limit_kept_export(self.real_end_states.get(name, b""), limit_bytes)
 
     def _code(self, name: str, function: Any, args: dict) -> RouteResult:
+        begin_call = getattr(getattr(self.tools, "ctx", None), "begin_call", None)
+        if begin_call is not None:
+            begin_call(self.calls_routed)
         try:
             _bind(function, self.state, args)
         except TypeError as exc:

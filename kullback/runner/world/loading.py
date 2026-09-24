@@ -25,6 +25,7 @@ from kullback.runner.records import (
     TaskOverlay,
     UserRules,
 )
+from kullback.runner.world.clock import wall_clock_reads
 
 # Every name the old kullback.episode.loading exported, privates included: the old module path
 # is a star-import shim, and only names listed here travel through it.
@@ -230,7 +231,9 @@ def load_toolkit(source: str, db: dict, class_name: str = TOOLS_CLASS, db_class:
     """
     if overlay is not None:
         db = merge_overlays(db, [overlay], overlay_values or {})
-    refused = source_confinement(source, class_name)
+    # D283: the world clock is the only time a body sees, so a body reading the machine's is
+    # refused here as well as at the Builder's gate.
+    refused = source_confinement(source, class_name) + wall_clock_reads(source, class_name)
     if refused:
         raise SandboxError("the generated module is not confined and would run in this process: "
                            + "; ".join(refused))

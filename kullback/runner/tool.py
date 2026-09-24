@@ -40,7 +40,7 @@ from kullback.runner.records import (
 from kullback.runner.replay import AGREES
 from kullback.runner.target import load_run
 from kullback.runner.verdict import verdict as score_verdict
-from kullback.runner.world import loading
+from kullback.runner.world import clock, loading
 from kullback.runner.world.environment import BuiltEnvironment
 from kullback.runner.world.loading import RUN_SEED_KIND, EnvironmentError
 
@@ -159,9 +159,7 @@ def _router_for(env: BuiltEnvironment, task_id: str, seed: int,
     source = env.toolkit_source()
     db = copy.deepcopy(env.db)
     toolkit = loading.load_toolkit(source, db, overlay=overlay, overlay_values=overlay_rows)
-    context = getattr(toolkit, "ctx", None)
-    if context is not None:
-        context.reseed(seed)
+    clock.start_context(toolkit, seed, env.clock(task_id, trace_id))
     return route.Router(
         env_tools_module=toolkit, starting_state=copy.deepcopy(env.db),
         overlay=overlay, overlay_rows=overlay_rows, tool_sigs=env.sigs,
