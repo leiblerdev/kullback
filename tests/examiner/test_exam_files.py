@@ -110,6 +110,27 @@ def test_evidence_of_carries_the_binding_reads_and_task_status(tmp_path):
     assert isinstance(evidence["probes"]["t1"], ProbePool)
 
 
+def test_evidence_of_a_task_hands_the_gates_that_task_only(tmp_path):
+    """F47: with a task_id the gates see one Task's Verifier, probes, Runs, rows and history, so
+    another Task's failure cannot refuse the write; without one (the status pass) they see all."""
+    world = make_world(tmp_path)
+    verifier = _verifier(tmp_path)
+    other = verifier.model_copy(update={"task_id": "t2"})
+    root = F.ExamRoot(workdir=world.workdir, verifiers={"t1": verifier, "t2": other},
+                      replays=world.inputs["replays"], rerolls=world.inputs["rerolls"],
+                      task_status={"t1": {"verifier_passed": True}, "t2": {"verifier_passed": False}},
+                      probes={"t2": [VF.reference_run()]},
+                      history={"t1": F.seeded_history({}, "t1", verifier), "t2": F.seeded_history({}, "t2", other)})
+    own = F.evidence_of(root, "t1")
+    assert own["verifiers"] == [verifier]
+    assert own["probes"] == {}, "an empty mapping, so no loader fills in the other Tasks' pools"
+    assert set(own["history"]) == {"t1"} and set(own["task_status"]) == {"t1"}
+    assert set(own["task_runs"]) <= {"t1"} and set(own["replays"]) <= {"t1"} and set(own["rerolls"]) <= {"t1"}
+    every = F.evidence_of(root)
+    assert {v.task_id for v in every["verifiers"]} == {"t1", "t2"}
+    assert set(every["probes"]) == {"t2"} and set(every["history"]) == {"t1", "t2"}
+
+
 def test_evidence_of_a_referenced_task_hands_the_probe_model_and_runner_to_the_suite(tmp_path):
     world = make_world(tmp_path)
     refs = [{"run_id": row["run_id"]} for row in world.inputs["replays"]["t1"].values()]

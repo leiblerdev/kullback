@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from kullback.agent.base_tools import DEFAULT_ALLOWLIST, register_base_tools
+from kullback.agent.base_tools import DEFAULT_ALLOWLIST, TOOL_NAMES, register_base_tools
 from kullback.agent.bus import Bus
 from kullback.agent.context import ContextConfig
 from kullback.agent.events import ToolExecutionEnd
@@ -43,6 +43,9 @@ from kullback.runner import budget
 #: The directories under env/ the model may write; everything else there is read-only for it.
 WRITABLE_PREFIXES = ("tools/", "intents/", "refusals/", "policy/")
 WRITABLE_NAMES = ("tools", "intents", "refusals", "policy")
+
+#: The base tools the Builder gets: every one but web_search, withdrawn while search is unconfigured.
+BUILDER_BASE_TOOLS = tuple(name for name in TOOL_NAMES if name != "web_search")
 
 #: The tool_call hook (D122): the rule and the walk are the gates' own, the refusal is the core's.
 no_agent_writes_gates_or_runner = refuse_paths(
@@ -207,11 +210,11 @@ def builder_extension(root: BuilderRoot) -> Callable[[ExtensionAPI], None]:
     def setup(api: ExtensionAPI) -> None:
         env = root.env
         env.mkdir(parents=True, exist_ok=True)
-        register_base_tools(api, env, allowlist=DEFAULT_ALLOWLIST)
+        register_base_tools(api, env, allowlist=DEFAULT_ALLOWLIST, only=BUILDER_BASE_TOOLS)
         model = getattr(getattr(api, "harness", None), "model", None)
         for tool in domain_tools(workdir=root.workdir, model=model, examine_fn=root.examine_fn,
                                  judge_model=root.judge_model, probe_model=root.probe_model,
-                                 reroll_model=root.reroll_model):
+                                 reroll_model=root.reroll_model, env=env):
             api.register_tool(tool)
         for name, text in prompt_mod.sections():
             api.add_prompt_section(f"builder_{name}", text)
@@ -336,6 +339,6 @@ def continuation(status: dict, spent: float, ceiling_usd: Optional[float]) -> Op
             "Replay every Task, examine the confirmed ones, run them, "
             "or state in one sentence why you cannot go further.")
 
-__all__ = ["BuilderRoot", "CEILING_STAGE", "CONTINUATIONS", "OPENING", "WRITABLE_NAMES", "WRITABLE_PREFIXES", "build",
+__all__ = ["BUILDER_BASE_TOOLS", "BuilderRoot", "CEILING_STAGE", "CONTINUATIONS", "OPENING", "WRITABLE_NAMES", "WRITABLE_PREFIXES", "build",
            "builder_extension", "ceiling_guard", "continuation", "no_agent_writes_gates_or_runner", "opening", "regenerate_and_guard",
            "spent_in", "write_fence"]

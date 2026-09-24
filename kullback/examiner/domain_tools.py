@@ -27,13 +27,25 @@ from kullback.examiner.exam_files import (
     save_ruling_files,
     seeded_history,
 )
-from kullback.gates.bindings import ALT_PATH_STAGE, WAIVED_ROW, rulings_for
+from kullback.gates import Ruling
+from kullback.gates.bindings import ALT_PATH_STAGE, WAIVED_ROW, rows_for, rulings_for
 from kullback.gates.hook import ruling_line
+from kullback.gates.loosening import false_rejection_gate, loosening_gate
 from kullback.gates.probes import version_hash, write_tools_of
-from kullback.gates.verifier_suite import D79_STAGES, HELPERS_SRC, NO_ATOM_CHECKED, check_run, make_atom
+from kullback.gates.trust import trusted_gate
+from kullback.gates.verifier_suite import (
+    D79_STAGES,
+    HELPERS_SRC,
+    NO_ATOM_CHECKED,
+    check_run,
+    make_atom,
+    not_run_reason,
+    validate_verifier,
+)
 from kullback.runner import budget
 from kullback.runner import tool as runner_tool
-from kullback.runner.records import Atom, Event, Run, Verifier, VerifierVersion, as_dict, write_json
+from kullback.runner.records import Atom, Event, GateResult, Run, Verifier, VerifierVersion, as_dict, write_json
+from kullback.runner.target import SCORED_KINDS, atom_payload
 
 PRODUCED_VERIFIERS = ["verifiers"]
 PRODUCED_PROBES = ["probes"]
@@ -46,13 +58,20 @@ def render(result: BaseModel) -> str:
     return getattr(result, "summary", None) or getattr(result, "text", "") or ""
 
 
+# The atoms check_run scores, in the words the tool description and the refusal both use (F51).
+SCORABLE = ("check_run scores an atom whose payload kind is one of " + ", ".join(SCORED_KINDS)
+            + "; a `hard` atom needs `predicate_src`, Python source defining "
+            "check(pre_state, write_call, transcript) that returns True when a call keeps the rule")
+
+
 class ProposeArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task_id: str
     reason: str = Field(description="Why the current version is wrong and what the new one changes.")
     drop: list[str] = Field(default_factory=list, description="Atom ids to remove.")
-    add: list[dict] = Field(default_factory=list, description="Atoms to add: id, kind and payload.")
+    add: list[dict] = Field(default_factory=list, description="Atoms to add: id, kind and payload. "
+                            + SCORABLE + "; any other atom is refused.")
 
 
 class ProposeResult(BaseModel):
@@ -183,8 +202,32 @@ def _atom_of(row: dict, atoms: Iterable[Any] = ()):
             f"the atom {row['id']!r} carries its payload as a {type(payload).__name__}, not an object: "
             f"{ATOM_SHAPE}. The same atom with every field it needs: {corrected_atom(row, atoms)}",
             ask=_SHAPE_ASK.format(shape=corrected_atom(row, atoms)))
+    if row.get("predicate_src"):
+        # F51: the rule the model wrote is the Hard atom's check; make_atom wraps it off the payload.
+        payload = {"kind": "hard", **payload, "predicate_src": row["predicate_src"]}
     fields = {key: value for key, value in row.items() if key in ROW_FIELDS}
-    return make_atom(row["id"], row["kind"], payload, helpers=HELPERS_SRC, **fields)
+    atom = make_atom(row["id"], row["kind"], payload, helpers=HELPERS_SRC, **fields)
+    if not scored(atom):
+        raise RetryableToolError(
+            f"the atom {row['id']!r} is not scored, so no Run could fail it: {SCORABLE}.",
+            ask="Propose again with every added atom one check_run scores, or drop it.")
+    return atom
+
+
+def scored(atom: Atom) -> bool:
+    """Whether check_run knows this atom's payload, or the judge answers it (F51).
+
+    An empty payload or a payload kind check_run has no branch for would pass every Run, and a Hard
+    atom with no rule answers nothing.
+    """
+    payload = atom_payload(atom)
+    if atom.judge:
+        return True
+    if not payload:
+        return False
+    if atom.kind == "hard":
+        return bool(payload.get("predicate_src"))
+    return payload.get("kind") in SCORED_KINDS
 
 
 def _candidate_atoms(current: Verifier, drop: Iterable[str], add: Iterable[Any]) -> list:
@@ -221,10 +264,97 @@ def _next_version(current: Verifier) -> str:
         return f"{current.verifier_version or 1}+1"
 
 
+def _record(ruling: Any, held: Optional[str] = None) -> dict:
+    """One ruling in the shape attach_ruling uses: name, accepted, line, rows.
+
+    A check that did not run has `accepted` None and says why in `not_run` (F45): it is not a
+    failure of the proposal. `held` is that reason for a gate that says so in its metrics.
+    """
+    rows = [dict(row) for row in (ruling.rows or [])]
+    why = held if held is not None else (None if ruling.passed else not_run_reason(ruling.failures))
+    if why is None:
+        return {"name": ruling.stage, "accepted": bool(ruling.passed), "line": ruling_line(ruling), "rows": rows}
+    return {"name": ruling.stage, "accepted": None, "not_run": why, "line": f"{ruling.stage} not run ({why})",
+            "rows": rows}
+
+
 def _ruling_records(rulings: Iterable[Any]) -> list[dict]:
-    """One record per ruling in the shape attach_ruling uses: name, accepted, line, rows."""
-    return [{"name": ruling.stage, "accepted": bool(ruling.passed), "line": ruling_line(ruling),
-             "rows": [dict(row) for row in (ruling.rows or [])]} for ruling in rulings]
+    return [_record(ruling) for ruling in rulings]
+
+
+def _gate_record(result: GateResult, verifier: Verifier) -> dict:
+    """A gate this tool ran itself, as a record; a trusted ruling that holds the Task only for
+    checks nobody could run is not run, with the gate's reason (F45)."""
+    ruling = Ruling(stage=result.stage, passed=bool(result.passed), failures=list(result.failures),
+                    rows=rows_for(result, {"verifier": verifier}))
+    metrics = result.metrics or {}
+    untrusted = metrics.get("untrusted") or {}
+    held = None
+    if result.stage == "trusted" and untrusted and set(untrusted) <= set(metrics.get("not_run_only") or ()):
+        held = "; ".join(f"task {task_id}: {reason}" for task_id, reason in sorted(untrusted.items()))
+    return _record(ruling, held)
+
+
+def _suite_row(records: list[dict], base: dict) -> Optional[dict]:
+    """The status row the D79 checks among these records give the Task, in the derivation's shape.
+
+    A check that did not run is `not_run` with its reason and not passed, so the Task stays
+    untrusted (F45). A waived alt-path check (D199), by its ruling's row or by the Task's row when
+    the check did not run, is the check not passed and the Verifier passed.
+    """
+    suite = [record for record in records if record["name"] in D79_STAGES]
+    if not suite:
+        return None
+    ran = {record["name"]: record["accepted"] for record in suite if record["accepted"] is not None}
+    held = {record["name"]: record["not_run"] for record in suite if record["accepted"] is None}
+    waived = any(record["name"] == ALT_PATH_STAGE and record["accepted"]
+                 and any(WAIVED_ROW in row for row in record["rows"]) for record in suite) \
+        or bool(base.get("second_path_waived") and ALT_PATH_STAGE in held)
+    passed = all(ran.values()) and set(held) <= ({ALT_PATH_STAGE} if waived else set())
+    if waived:
+        ran[ALT_PATH_STAGE] = False
+    return {"verifier_passed": passed, "second_path_waived": waived,
+            "checks": {D79_STAGES[stage]: bool(ran.get(stage)) for stage in D79_STAGES if stage in ran or stage in held},
+            "not_run": [stage for stage in D79_STAGES if stage not in ran],
+            "not_run_reasons": {D79_STAGES[stage]: why for stage, why in held.items()}}
+
+
+def _rule(root: ExamRoot, task_id: str, candidate: Verifier) -> list[dict]:
+    """Every ruling on the proposal, judged by its own Task only (F47).
+
+    The binding stops at its first refusal, and a check that did not run reads as one there. That
+    is no refusal of the proposal (F45), so when the ruling stopped on one, the D79 checks run again
+    here in full and the gates after them rule on the write, over the same evidence.
+    """
+    evidence = evidence_of(root, task_id=task_id)
+    records = _ruling_records(rulings_for(root.exam_dir, f"verifiers/{task_id}.json", root.workdir,
+                                          evidence=evidence))
+    if not records or records[-1]["accepted"] is not None or records[-1]["name"] not in D79_STAGES \
+            or evidence.get("reference") is None:
+        return records
+    out = [record for record in records if record["name"] not in D79_STAGES]
+    results = validate_verifier(candidate, evidence["reference"], None, evidence.get("wrong_run"),
+                                evidence.get("alt_path_run"), canon=evidence.get("rules"),
+                                write_tools=evidence.get("write_tools"), seed_runs=evidence.get("seed_runs"),
+                                model=evidence.get("probe_model"), run_probe=evidence.get("run_probe"))
+    for result in results:
+        out.append(_gate_record(result, candidate))
+        if out[-1]["accepted"] is False:
+            return out
+    base = dict(evidence.get("task_status") or {})
+    base[task_id] = {**(base.get(task_id) or {}), **(_suite_row(out, base.get(task_id) or {}) or {})}
+    runs, replays, rerolls = evidence.get("task_runs") or {}, evidence.get("replays") or {}, evidence.get("rerolls") or {}
+    rules, sigs = evidence.get("rules"), root.sigs or []
+    gates = (lambda: loosening_gate(evidence.get("history") or {}, runs, replays, rerolls, rules, sigs),
+             lambda: false_rejection_gate(evidence["verifiers"], runs, replays, rerolls, rules, sigs,
+                                          task_status=evidence.get("task_status")),
+             lambda: trusted_gate(base, evidence["verifiers"], evidence.get("probes") or {},
+                                  evidence.get("history") or {}, {}, runs, replays, rerolls, rules, sigs))
+    for run_gate in gates:
+        out.append(_gate_record(run_gate(), candidate))
+        if out[-1]["accepted"] is False:
+            break
+    return out
 
 
 def _keep_suite_status(root: ExamRoot, task_id: str, records: list[dict]) -> None:
@@ -232,20 +362,11 @@ def _keep_suite_status(root: ExamRoot, task_id: str, records: list[dict]) -> Non
 
     Never the workdir's file: that one is derive_all's. A ruling with no suite leaves the row as it was.
     """
-    ran = {record["name"]: record["accepted"] for record in records if record["name"] in D79_STAGES}
-    if not ran:
+    base = root.task_status.get(task_id) or {}
+    row = _suite_row(records, base)
+    if row is None:
         return
-    # D199: a waived alt-path check passed the ruling on the waiver its row names; the row keeps the
-    # check as not passed and the waiver beside it, as the derivation writes them.
-    waived = any(record["name"] == ALT_PATH_STAGE and record["accepted"]
-                 and any(WAIVED_ROW in row for row in record["rows"]) for record in records)
-    passed = all(ran.values())
-    if waived:
-        ran[ALT_PATH_STAGE] = False
-    root.task_status[task_id] = {**(root.task_status.get(task_id) or {}), "verifier_passed": passed,
-                                 "second_path_waived": waived,
-                                 "checks": {D79_STAGES[stage]: passed for stage, passed in ran.items()},
-                                 "not_run": [stage for stage in D79_STAGES if stage not in ran]}
+    root.task_status[task_id] = {**base, **row}
     write_json(root.exam_dir / "task_status.json", root.task_status)
 
 
@@ -267,7 +388,7 @@ def _atoms_named(records: list[dict]) -> str:
     """The atom ids the empty-run and alt-path failures turn on, off their rows, when the rows carry them."""
     lines = []
     for record in records:
-        if record["accepted"] or record["name"] not in _ATOM_CHECKS:
+        if record["accepted"] is not False or record["name"] not in _ATOM_CHECKS:
             continue
         for row in record["rows"]:
             if isinstance(row, dict) and row.get("atom"):
@@ -284,7 +405,7 @@ def _refuse_proposal(task_id: str, version: str, records: list[dict], stop: bool
     """A refused proposal as a retryable error: every ruling line, and the rows behind each failure."""
     lines = "\n".join(record["line"] for record in records) or "no gate ruled on the proposal"
     rows = "; ".join(f"{record['name']}: {record['rows']!r}"
-                     for record in records if not record["accepted"])
+                     for record in records if record["accepted"] is False)
     atoms = _atoms_named(records)
     return RetryableToolError(
         f"proposal version {version} for task {task_id} refused, the previous file stands:\n"
@@ -347,10 +468,9 @@ def _propose_verifier(root: ExamRoot):
         root.verifiers[args.task_id] = candidate
         write_json(target, as_dict(candidate))
         save_ruling_files(root)
-        records = _ruling_records(rulings_for(
-            root.exam_dir, f"verifiers/{args.task_id}.json", root.workdir,
-            evidence=evidence_of(root, task_id=args.task_id)))
-        if records and all(record["accepted"] for record in records):
+        records = _rule(root, args.task_id, candidate)
+        # F45: a check that did not run is no refusal; only a ruling that ran and failed refuses.
+        if records and all(record["accepted"] is not False for record in records):
             _keep_suite_status(root, args.task_id, records)
             summary = (f"proposal version {candidate.verifier_version} for task {args.task_id} "
                        f"({digest[:12]}) accepted: " + "; ".join(record["line"] for record in records))
@@ -361,7 +481,7 @@ def _propose_verifier(root: ExamRoot):
             root.verifiers.pop(args.task_id, None)
         else:
             root.verifiers[args.task_id] = previous_verifier
-        gates = [record["name"] for record in records if not record["accepted"]]
+        gates = [record["name"] for record in records if record["accepted"] is False]
         hist.versions[-1] = hist.versions[-1].model_copy(update={"accepted": False, "rejected_by": gates})
         root.history[args.task_id] = hist
         save_ruling_files(root)

@@ -95,6 +95,35 @@ def test_a_cut_preview_is_read_off_the_difference_the_check_recorded_instead():
     assert B.check_cause(both_cut) == B.UNREADABLE, "nothing in the record names this one"
 
 
+def test_a_refused_differently_row_and_a_body_fault_row_each_get_their_cause_and_their_column(tmp_path):
+    """F56, F57: neither is agreement, so each is named like the four other misses and counted in a column."""
+    workdir = tmp_path / "refusals"
+    workdir.mkdir()
+    fault = {"tool": "refund", "fault": "NameError", "message": "NameError: name 'decimal' is not defined",
+             "line": 4, "code": "return decimal.Decimal(total)"}
+    checks = [
+        {"tool": "cancel", "kind": "write", "verdict": "refused_differently",
+         "ours": '{"payload": "ValueError: Payment amount does not add up"}',
+         "recorded": '{"payload": "Error: Order is not pending"}',
+         "difference": {"ours_error": "ValueError: Payment amount does not add up",
+                        "theirs_error": "Error: Order is not pending"}},
+        {"tool": "refund", "kind": "write", "verdict": "body_fault",
+         "ours": json.dumps({"class_": "body_fault", "payload": fault}),
+         "recorded": '{"payload": "Error: Order is not pending"}',
+         "difference": {"ours_error": str(fault), "theirs_error": "Error: Order is not pending"}},
+    ]
+    assert [B.check_cause(check) for check in checks] == ["error_message", "missing_import"]
+    (workdir / "replays.json").write_text(json.dumps({"t1": {"tr1": {"checks": checks}}}), encoding="utf-8")
+    text = B.render(B.Build(workdir))
+    section = text.split("# Per tool, over the replayed calls\n", 1)[1]
+    header = cells(next(line for line in section.splitlines() if line.startswith("|")))
+    rows = {cells(row)[0]: dict(zip(header, cells(row), strict=True)) for row in rows_of(text, "Per tool, over the replayed calls")}
+    assert rows["`cancel`"]["refused differently"] == "1" and rows["`cancel`"]["body faults"] == "0"
+    assert rows["`cancel`"]["agrees"] == "0" and rows["`cancel`"]["top cause"] == "error_message"
+    assert rows["`refund`"]["body faults"] == "1" and rows["`refund`"]["refused differently"] == "0"
+    assert rows["`refund`"]["agrees"] == "0" and rows["`refund`"]["top cause"] == "missing_import"
+
+
 def test_a_task_whose_verifier_the_suite_refused_carries_the_checks_that_failed_and_its_atoms(tmp_path):
     workdir = tmp_path / "graded"
     (workdir / "verifiers").mkdir(parents=True)

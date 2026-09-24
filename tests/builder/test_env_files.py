@@ -234,3 +234,12 @@ def test_every_stub_header_names_the_gate_s_allowed_imports_helpers_and_context_
     refused = next(line for line in header.splitlines() if line.startswith("# Names refused: "))
     assert refused == f"# Names refused: {', '.join(sorted(DENIED_BUILTINS))}."
     assert len(header.splitlines()) <= 8
+
+
+def test_every_stub_header_says_a_refusal_is_a_plain_value_error_and_anything_else_a_body_fault(tmp_path):
+    root = write_env(tmp_path / "work")
+    env_files.explode(root)
+    header = (root / "env" / "tools" / "describe_widget.py").read_text(encoding="utf-8").split("from typing")[0]
+    refuse = next(line for line in header.splitlines() if line.startswith("# Refuse with "))
+    assert 'raise ValueError("<the message the customer would see>")' in refuse
+    assert "any other exception is a body fault, never a refusal" in refuse

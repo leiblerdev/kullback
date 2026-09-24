@@ -211,3 +211,32 @@ def test_a_task_with_nothing_held_out_says_no_pool_and_is_trusted_on_the_other_g
     world["task_status"] = {TASK: status(verifier_passed=False)}
     denied = T.trusted_gate(**world)
     assert denied.metrics["trusted"] == [] and denied.metrics["false_rejection_ruling"] == {TASK: "no_pool"}
+
+
+def test_a_task_held_only_by_checks_that_did_not_run_is_untrusted_and_named_in_not_run_only(tmp_path):
+    """F45: every check that ran passed, so the Task is held by the checks nobody could run. It stays
+    untrusted with each one named and why, and `not_run_only` lets a proposal ruling tell that apart
+    from a Task whose atoms something failed."""
+    world = _world(tmp_path)
+    checks = {name: True for name in T.D79_STAGES.values()}
+    checks["second_path_passes"] = False
+    world["task_status"] = {TASK: status(verifier_passed=False, checks=checks, not_run=["verifier_alt_path"])}
+    ruling = T.trusted_gate(**world)
+    assert ruling.metrics["trusted"] == [] and ruling.metrics["not_run_only"] == [TASK]
+    assert ruling.metrics["untrusted"] == {
+        TASK: "the D79 suite did not pass: second_path_passes not run (one Reference, so there is no "
+              "second path to score)"}
+    checks["mutation_flips"] = False
+    world["task_status"] = {TASK: status(verifier_passed=False, checks=checks, not_run=["verifier_alt_path"])}
+    assert T.trusted_gate(**world).metrics["not_run_only"] == [], "a check that ran and failed holds it"
+
+
+def test_a_task_held_by_not_run_checks_is_still_ruled_on_its_other_steps_first(tmp_path):
+    world = _world(tmp_path)
+    verifier = world["verifiers"][0]
+    world["probes"] = {TASK: pool(probe("probe-t1-2", reference_run(), verifier))}
+    world["task_status"] = {TASK: status(verifier_passed=False, checks={"second_path_passes": False},
+                                         not_run=["verifier_alt_path"])}
+    ruling = T.trusted_gate(**world)
+    assert ruling.metrics["untrusted"] == {TASK: "probe probe-t1-2 scores a pass"}
+    assert ruling.metrics["not_run_only"] == []

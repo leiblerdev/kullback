@@ -1,5 +1,6 @@
 # Builds
-Latest documented build: retail build 14 with airline and telecom first rounds (2026-09-07).
+Latest documented build: smoke 7, retail and airline on `openai/gpt-6-sol` (2026-09-23), section at the end.
+Previous latest: retail build 14 with airline and telecom first rounds (2026-09-07).
 Builds 14 (retail, three arms), airline and telecom are running under workdirs that are not yet documented.
 Placeholder rows below mark builds 9, 10, 12-agent and 14; rows only, no retroactive tables.
 Machine generated tables in this directory are frozen; each carries an archived flag at the top.
@@ -17,6 +18,7 @@ Machine generated tables in this directory are frozen; each carries an archived 
 | 12 model driving | build-12-model-driving.md | Ten round comparison, model arm |
 | 13 model driving | build-13-model-driving.md | D145 to D153 code, died in round 2 |
 | 14 | none, prose below | Retail, airline and telecom generalisation test |
+| smoke 7 | none, prose below | Retail and airline on gpt-6-sol, killed 13:44 UTC 2026-09-23 |
 
 # The first live build (2026-08-29)
 
@@ -413,3 +415,40 @@ What the findings say: every one of build 14's seven is "Intent phrase X is not 
 **Fixed before the relaunch (2026-09-07 evening).** D170 findings filed by rule (assisted tools by the Tasks they block, suite checks, false rejection, disagreements, ranked; the Builder's round prompt leads with the costliest), D171 tool fidelity per Task beside the corpus number (51 of 64 retail Tasks named as blocked by an assisted tool make no call it answers wrongly), D172 a Task with no Reference is unfinished (telecom's vacuous "done"), D173 the three suite checks that were wrong about a Verifier that never writes plus the false-rejection pool (retail's suite failures 64 to 47 in the reproduction, false rejection 46 Tasks to 15), D174 the recompile rule, D175 the Examiner's read clamped and indexed (fill 899 percent).
 
 **What generalised and what did not.** The stages, the gates, the round and the agents ran unchanged on three corpora. What broke was every place the code had assumed the first corpus's shape without saying so: one requestor, tool names that are identifiers, ids that mix letters and digits at no position, rows with one key column, a workdir that always has a ruling. Each is now a rule with a test that names no domain. The number to watch is the second round of each: telecom rebuilt on D164 to D168, airline once the id shape rule lands.
+
+## Smoke 7 (2026-09-23): retail and airline on gpt-6-sol, killed at 13:44 UTC
+
+Two builds with `openai/gpt-6-sol` as the Builder and no ceiling, harness at commit 92d3f28, workdirs
+`.work-retail` and `.work-airline` in the overhaul-0922-smoke7 worktree. Both were killed on the founder's request
+at 13:44 UTC, in their second session, in the Examiner stage. Two luna arms beside them were killed at 13:22 UTC.
+
+| Environment | Confirmed References | Reference fidelity | Call fidelity | Trusted | Turns | Spend USD |
+|---|---|---|---|---|---|---|
+| retail | 202 of 205 | 0.9982 | 0.9953 over 3220 calls | 14 (191 open, 185 no Verifier yet) | 118 | 4.15 |
+| airline | 100 of 119 | 0.9687 | 0.9564 over 1513 calls | 22 (97 open, 89 no Verifier yet) | 105 | 5.11 |
+| telecom | telecom: not in this round | | | | | |
+
+Beside them, the luna arms of the same smoke (killed 13:22 UTC): retail 15 of 205 confirmed at 0.7509, 0 trusted,
+15 turns, 0.27 USD; airline 10 of 119 at 0.6183, 0 trusted, 271 turns, 0.51 USD.
+
+Fidelity is the share of recorded calls whose replay agrees with the recording; a confirmed Reference is a whole
+recorded trace that replays with every call agreeing; trusted is a Task whose Verifier survived the whole suite plus
+fresh Runs. Replay is near complete: the remaining walls are three body rules and the write gate replaying on the
+Starting state. Trusted is low because the Examiner derived ten Tasks per examine call and was killed early, not
+because Verifiers failed: 195 retail and 79 airline Tasks were never derived. Both sol Builders tried to stop once
+and were sent back by the stop rule guard.
+
+Hugging Face, 2026-09-23. The cards count from the workdir status, since no round closed; fidelity over Tasks
+there is the Tasks whose Reference replays confirmed, where the table above gives the Reference fidelity and the
+share of every recorded call that agrees.
+- retail: release, tag build-20260923, 98.5% over Tasks (202 of 205), 96.7% over Runs, 20 Verifiers, 14 trusted,
+  https://huggingface.co/datasets/leibler/retail
+- airline: preview, tag build-20260923, 84.0% over Tasks (100 of 119), 84.5% over Runs, 30 Verifiers, 22 trusted,
+  https://huggingface.co/datasets/leibler/airline
+
+Earlier the same day, before publish counted from the workdir status: retail went out as a release under the tag
+round-unknown (dataset commit f1613092) with 20 References and 0 trusted, and airline was refused as a release at
+84.0% over Tasks.
+
+Readings: `.claude/reports/smoke-luna-observations-2026-09-23.md` (section "Smoke 7 final numbers"),
+`.claude/reports/sol-behaviour-2026-09-23.md` and `.claude/reports/env-quality-vs-tau2-2026-09-23.md`.

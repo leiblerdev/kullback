@@ -4,6 +4,7 @@ segment, the truncation, the exact-match edit, and the subset an extension is re
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 
 import pytest
@@ -51,6 +52,7 @@ def root(tmp_path):
         ("grep", {"pattern": "a", "path": "PATH"}),
         ("find", {"glob": "*", "path": "PATH"}),
         ("ls", {"path": "PATH"}),
+        ("inspect", {"path": "PATH"}),
     ],
 )
 @pytest.mark.parametrize("outside", ["/etc/passwd", "../outside.txt", "sub/../../outside.txt"])
@@ -355,6 +357,90 @@ def test_read_of_a_line_over_the_limit_shows_its_head_and_names_the_cut(root):
 def test_web_search_says_it_is_not_configured_when_the_provider_layer_has_no_search(root):
     result = run(tools(root)["web_search"], query="anything")
     assert result.is_error is True and "not configured" in result.content
+
+
+# --- inspect ---
+
+
+@pytest.fixture
+def world(root):
+    rows = {f"r{n}": {"id": f"r{n}", "size": n, "tags": ["a"] if n % 2 else None} for n in range(12)}
+    rows["r0"]["note"] = "x" * 400
+    (root / "db.json").write_text(json.dumps({"things": rows, "meta": {"version": 3}, "names": ["p", "q"]}),
+                                  encoding="utf-8")
+    return root
+
+
+def test_inspect_lists_each_top_level_key_with_its_type_and_size(world):
+    result = run(tools(world)["inspect"], path="db.json")
+    assert result.is_error is False
+    assert "document: object with 3 keys" in result.content
+    assert "things: object, table of 12 rows" in result.content
+    assert "meta: object, 1 keys" in result.content
+    assert "names: list, 2 items" in result.content
+
+
+def test_inspect_of_a_table_names_its_columns_their_types_counts_and_compacted_samples(world):
+    result = run(tools(world)["inspect"], path="db.json", key="things", rows=3)
+    text = result.content
+    assert "things: table: 12 rows" in text
+    assert "id: string (12 of 12 rows)" in text
+    assert "size: integer (12 of 12 rows)" in text
+    assert "tags: null|list (12 of 12 rows)" in text or "tags: list|null (12 of 12 rows)" in text
+    assert "note: string (1 of 12 rows)" in text
+    assert "sample rows (3):" in text and "  r2: " in text and "  r3: " not in text
+    sample = next(line for line in text.split("\n") if line.startswith("  r0: "))
+    assert sample.endswith("...") and len(sample) < 220
+
+
+def test_inspect_reads_an_object_of_differently_shaped_objects_as_keys_not_as_a_table(root):
+    parts = {"left": {f"a{n}": {"v": n} for n in range(3)}, "right": {"b": {"w": 1}}, "top": {"c": 1, "d": 2}}
+    (root / "mixed.json").write_text(json.dumps(parts), encoding="utf-8")
+    text = run(tools(root)["inspect"], path="mixed.json").content
+    assert "document: object with 3 keys" in text
+    assert "left: object, table of 3 rows" in text and "top: object, 2 keys" in text
+
+
+def test_inspect_follows_a_dotted_key_and_names_what_is_there_when_it_is_missing(world):
+    assert "meta.version: integer: 3" in run(tools(world)["inspect"], path="db.json", key="meta.version").content
+    missing = run(tools(world)["inspect"], path="db.json", key="meta.nope")
+    assert missing.is_error is True and "no 'nope' under meta" in missing.content and "version" in missing.content
+
+
+def test_inspect_of_jsonl_counts_lines_key_types_result_types_and_error_classes(root):
+    records = [{"args": {"n": 1}, "result": {"ok": True, "id": "a"}},
+               {"args": {"n": 2}, "result": {"ok": True, "id": "b"}},
+               {"args": {"n": 3}, "result": [1, 2]},
+               {"args": {"n": 4}, "error": "ValueError: bad n", "result": None},
+               {"args": {"n": 5}, "error": {"type": "Missing", "message": "gone"}}]
+    (root / "calls.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    text = run(tools(root)["inspect"], path="calls.jsonl", rows=1).content
+    assert "jsonl: 5 lines" in text
+    assert "args: object (5 of 5 rows)" in text
+    assert "error: string|object (2 of 5 rows)" in text
+    assert "object{id,ok}: 2" in text and "list[integer]: 1" in text and "null: 1" in text
+    assert "ValueError: 1" in text and "Missing: 1" in text
+    assert "sample lines (1):" in text and '"n":1' in text and '"n":2' not in text
+
+
+def test_inspect_caps_its_output_and_says_how_much_more_there_is(root):
+    wide = {f"column_{n}_" + "w" * 80: n for n in range(400)}
+    (root / "wide.json").write_text(json.dumps(wide), encoding="utf-8")
+    result = run(tools(root)["inspect"], path="wide.json")
+    assert len(result.content) <= 4_100
+    assert "more lines; pass key to look inside one value]" in result.content
+
+
+def test_inspect_names_how_many_keys_it_left_out_of_a_wide_object(root):
+    (root / "wide.json").write_text(json.dumps({f"c{n}": n for n in range(100)}), encoding="utf-8")
+    text = run(tools(root)["inspect"], path="wide.json").content
+    assert "  c59: integer" in text and "  c60: integer" not in text
+    assert "[and 40 more keys]" in text
+
+
+def test_inspect_refuses_more_than_five_sample_rows(world):
+    result = run(tools(world)["inspect"], path="db.json", rows=6)
+    assert result.is_error is True and "rows must be 0 to 5" in result.content
 
 
 # --- registration ---

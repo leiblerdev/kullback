@@ -74,6 +74,50 @@ def test_compare_call_names_every_way_two_answers_part():
     assert replay.compare_call(refused, None, ToolCallError(**{"class": "unknown"})) == replay.BOTH_REFUSED
 
 
+class Refusing(Toolkit):
+    def cancel_order(self, order_id, reason="requested"):
+        raise ValueError("Payment amount 25.00 does not add up")
+
+
+def _refused_row(toolkit_class, recorded_message: str) -> dict:
+    """One cancel_order call the recording refused with `recorded_message`, routed through a body."""
+    recorded = call("c2", "cancel_order", {"order_id": "123"}, None,
+                    error=ToolCallError(**{"class": "not_found_entity"}, payload=recorded_message))
+    scored = replay.ScoredRouter(router(toolkit_class), deque([recorded]), write_tools={"cancel_order"})
+    scored.route("cancel_order", {"order_id": "123"})
+    return scored.checks[0]
+
+
+def test_two_refusals_with_different_messages_disagree_and_the_row_keeps_both_messages():
+    """F56: both sides refusing is not agreement when they refuse for different reasons."""
+    row = _refused_row(Refusing, "Error: Order is not pending")
+    assert row["verdict"] == replay.REFUSED_DIFFERENTLY
+    assert row["verdict"] not in replay.AGREES
+    assert "Payment amount 25.00 does not add up" in row["difference"]["ours_error"]
+    assert row["difference"]["theirs_error"] == "Error: Order is not pending"
+
+
+def test_the_same_refusal_message_agrees_across_prefix_case_spacing_and_number_spelling():
+    """F56: the "ValueError: " our body adds and the "Error: " the recording carries are not a difference."""
+    row = _refused_row(Refusing, "Error: payment  amount 25 does NOT add up.")
+    assert row["verdict"] == replay.BOTH_REFUSED
+    assert row["verdict"] in replay.AGREES
+
+
+def test_a_body_fault_is_never_both_refused_and_its_row_names_the_fault():
+    """F56: a body that crashed did not refuse, whatever the recording refused with."""
+
+    class Crashing(Toolkit):
+        def cancel_order(self, order_id, reason="requested"):
+            raise RuntimeError("Payment amount 25.00 does not add up")
+
+    row = _refused_row(Crashing, "Error: Payment amount 25.00 does not add up")
+    assert row["verdict"] == replay.BODY_FAULT
+    assert row["verdict"] not in replay.AGREES
+    assert "RuntimeError: Payment amount 25.00 does not add up" in row["difference"]["ours_error"]
+    assert '"class_": "body_fault"' in row["ours"]
+
+
 def _checks(out, verdict: str) -> list[dict]:
     return [check for check in out.checks if check["verdict"] == verdict]
 

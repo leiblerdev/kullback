@@ -37,11 +37,12 @@ TOOLS = (
     'grep: {"pattern": "label"}\n'
     'find: {"glob": "tools/*.py"}\n'
     'ls: {"path": "tools"}\n'
-    'web_search: {"query": "how the client words a label"}\n'
+    'inspect: {"path": "calls/lookup.jsonl"}\n'
     'ingest: {"files": ["batch.json"]}\n'
     'derive_world: {"grow": null}\n'
     'grow: {"table": "a-table", "count": 2}\n'
     'replay: {"task_id": "task-1"}, or {} to replay every Task\n'
+    'rulings: {"path": "tools/lookup.py"}\n'
     'run: {"task_ids": ["task-1"], "count": 2}, or {} for every open Task with a confirmed Reference\n'
     'status: {}\n'
     'examine: {"task_ids": null}'
@@ -52,6 +53,12 @@ EXAMPLES = (
     "A ruling names two rows where the recording answers alike and your body answers "
     "otherwise, with the recorded value and yours on each. Read the rows, form one "
     "hypothesis about what the body misreads, and edit the kept body in place to test it.\n"
+    "A recorded call was refused with a message. The body refuses it the same way: raise "
+    "ValueError(\"<the message the customer saw, word for word>\"), and the replay compares "
+    "that message. A KeyError or an IndexError is a body fault at its line, never a refusal.\n"
+    "A ruling has many rows, or a calls file or the database is large. Call rulings on the "
+    "tool file to see every failing row grouped, and inspect the large file for its shape "
+    "before reading it; then form one hypothesis and make one edit.\n"
     "A finding names the Environment file to edit and one line saying what should differ, "
     "with the rows behind it. Answer it with an edit to that path, then replay the Task "
     "it names. A finding never names a verb; the path is the whole address.\n"
@@ -66,6 +73,9 @@ CHOICE = (
     "calls agree with each other and against the description, the body reproduces what "
     "the recording does: the recording is the standard. Never write world rows, Verifiers "
     "or probes. Refuse a Task only when no frontier Run of it finished. "
+    "A body refuses a call only with ValueError and the recorded message. "
+    "Use inspect for the shape of a large file before you read it whole. "
+    "Use rulings to see every failing row at once instead of one write per guess. "
     "The order of the loop: derive the world first, write the bodies from the calls, replay "
     "until the Reference is confirmed, examine to derive the Verifier, run to play the Task "
     "against it, then examine again for findings. A Run before its Verifier has no verdict."
@@ -73,7 +83,9 @@ CHOICE = (
 
 FEEDBACK = (
     "Feedback. A write result carries its rulings, each with the per-call rows behind it: "
-    "call id, tool, recorded value, your value, first differing column. A finding carries "
+    "call id, tool, recorded value, your value, first differing column. It also names each "
+    "body fault with its line and each refusal whose message differs from the recorded one. "
+    "A finding carries "
     "the path of the Environment file to edit and the change, one line saying what should "
     "differ, with the rows. Both stay in front of you until the next write of the same path "
     "answers them."

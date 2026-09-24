@@ -61,6 +61,8 @@ def _numbers_table(manifest: dict) -> list[str]:
         ("Trusted Tasks", str(manifest.get("trusted", 0))),
         ("Refused Tasks", str(manifest.get("refused", 0))),
         ("Round", str(manifest.get("round") if manifest.get("round") is not None else "not recorded")),
+        ("Tag", str(manifest.get("tag") or "not recorded")),
+        ("Counts from", str(manifest.get("counts_source") or "the last round record")),
         ("Content hash", _short(manifest.get("content_hash"))),
     ]
     rows += _domain_rows(manifest)
@@ -282,9 +284,12 @@ CARD_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("tasks_total", "Tasks on the frozen list", "`tasks_frozen.json`, or the newest round snapshot"),
     ("replay_fidelity.tasks_rate", "Share of Tasks with at least one confirmed replay", "`replays.json`"),
     ("replay_fidelity.runs_rate", "Share of replayed Runs that were confirmed", "`replays.json`"),
-    ("reference_confirmed", "Tasks whose recordings agreed on an End state", "`task_status.json`"),
+    ("tag", "The tag this publish carries", "`round-<n>`, else `build-<YYYYMMDD>` of the newest session write"),
+    ("counts_source", "Where the counts came from", "the last round record, else the workdir status"),
+    ("reference_confirmed", "Tasks with at least one confirmed replay", "`replays.json`"),
     ("verifier_derived", "Tasks with a Verifier on disk", "`verifiers/`"),
-    ("trusted", "Tasks whose Verifier passed the whole suite", "the last round's trusted ruling"),
+    ("trusted", "Tasks whose Verifier passed the whole suite",
+     "the last round's trusted ruling, else the Builder's status rule"),
     ("refused", "Tasks the harness ruled nobody finished", "the last round's refuse ruling"),
     ("funnel", "How many Tasks stopped at each rung", "the per-Task index the export writes"),
     ("buckets", "Tasks and trusted Tasks per difficulty bucket", "`difficulty.json` (D209), else computed"),

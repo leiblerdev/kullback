@@ -1,4 +1,4 @@
-"""The Builder's domain tools: ingest, derive_world, grow, replay, run, status, examine.
+"""The Builder's domain tools: ingest, derive_world, grow, replay, rulings, run, status, examine.
 
 Each tool wraps a pure, measured module the way the Examiner's tools do (pydantic args in,
 a short rendered result out): `ingest_files` and `derive_world` for the first pass, the
@@ -29,14 +29,14 @@ from kullback.builder.replay_evidence import (
     holdout_answers,
 )
 from kullback.gates.fidelity import reference_replay_gate
-from kullback.gates.hook import ruling_line
+from kullback.gates.hook import compact, ruled, ruling_line
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import legitimate_runs
 from kullback.gates.trust import trusted_gate
 from kullback.runner import budget
 from kullback.runner import tool as runner_tool
-from kullback.runner.records import read_json, run_path, write_json
-from kullback.runner.replay import AGREES
+from kullback.runner.records import EXAM_DIR, read_json, run_path, write_json
+from kullback.runner.replay import AGREES, OURS_REFUSED, THEIRS_REFUSED
 from kullback.runner.target import as_run
 from kullback.runner.world.environment import BuiltEnvironment
 from kullback.user import fidelity as user_fidelity
@@ -48,10 +48,14 @@ from kullback.user.value_strip import value_strip
 ROWS_SHOWN = 20
 
 
-def _row_line(row: dict[str, Any]) -> str:
-    column = row.get("first_differing_column") or "agrees"
-    return (f"{row.get('call_id')} {row.get('tool')}: recorded {row.get('recorded')} "
-            f"against ours {row.get('ours')} [{column}]")
+def _row_line(row: "ReplayRow") -> str:
+    """One replayed call as the Builder reads it: the Task, the call, the arguments, then the error
+    or both answers under the leaf column that parted them (F42)."""
+    head = (f"task {row.task_id} call {row.call_id} {row.tool}"
+            + (f" args {row.arguments}" if row.arguments else ""))
+    if row.error:
+        return f"{head}: {row.verdict} {row.error}"
+    return f"{head}: recorded {row.recorded} against ours {row.ours} [{row.first_differing_column or 'agrees'}]"
 
 
 class IngestArgs(BaseModel):
@@ -123,11 +127,15 @@ class ReplayRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     call_id: str = ""
+    task_id: str = ""
     tool: str = ""
+    arguments: str = Field(default="", description="The call's arguments, compact JSON cut at 160 characters.")
     verdict: str = ""
     first_differing_column: Optional[str] = None
     recorded: str = ""
     ours: str = ""
+    error: Optional[str] = Field(default=None, description="Where one side refused: the error class "
+                                 "and message that side answered.")
 
 
 class ReplayTrace(BaseModel):
@@ -208,14 +216,34 @@ def _render_replay(result: ReplayResult) -> str:
         grain = "reference" if trace.reference else "held out" if trace.held_out else "seed"
         lines.append(f"trace {trace.trace_id} ({grain}): fidelity {trace.fidelity:.4f}, "
                      f"{trace.differing} differing of {trace.calls} calls")
-    lines += [f"{row.call_id} {row.tool}: recorded {row.recorded} against ours {row.ours} "
-              f"[{row.first_differing_column or 'agrees'}]" for row in result.rows[:ROWS_SHOWN]]
+    lines += [_row_line(row) for row in result.rows[:ROWS_SHOWN]]
     rest = result.total - len(result.rows[:ROWS_SHOWN])
     if rest > 0:
         lines.append(f"and {rest} more of {result.total}")
     lines.append(f"fidelity: {result.fidelity:.4f} over {result.total} recorded calls")
     lines += [ruling["line"] for ruling in result.rulings]
     return "\n".join(lines)
+
+
+class RulingsArgs(BaseModel):
+    """The tool file to re-run the write rulings on, as it is on disk."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(description="A tool file under your root, e.g. tools/<name>.py.")
+
+
+class RulingsResult(BaseModel):
+    """The rulings a write of the file would draw, drawn without a write."""
+
+    summary: str = ""
+    path: str = ""
+    rulings: list[dict] = Field(default_factory=list, description="One record per ruling in the "
+                                "shape attach_ruling uses: name, accepted, line, rows.")
+
+
+def _render_rulings(result: RulingsResult) -> str:
+    return "\n".join([result.summary, *(ruling["line"] for ruling in result.rulings)])
 
 
 def _ruling_record(ruling: Any) -> dict:
@@ -305,6 +333,8 @@ class RunResult(BaseModel):
     not_run: list[str] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list, description="Why each not_run Task was not played, "
                                "in the same order.")
+    no_verifier: int = Field(default=0, description="Open Tasks with a confirmed Reference left out "
+                             "because no Verifier is derived for them yet.")
 
 
 # Why a named Task was not played: past the per-call cap, or no Simulated user to answer it (F34).
@@ -343,6 +373,8 @@ def _render_run(result: RunResult) -> str:
         more = len(task_ids) - len(task_ids[:ROWS_SHOWN])
         reason = reason.format(cap=RUNS_PER_CALL)
         lines.append(f"not run, {reason}: {shown}" + (f" and {more} more" if more > 0 else ""))
+    if result.no_verifier:
+        lines.append(f"{result.no_verifier} open Tasks skipped for no Verifier: examine derives them first")
     return "\n".join(lines)
 
 
@@ -355,19 +387,56 @@ class ExamineArgs(BaseModel):
 
 
 class ExamineResult(BaseModel):
-    """What the examination said: the summary and one record per finding."""
+    """What the examination said: the summary, one record per finding, and the Tasks held."""
 
     summary: str = ""
     findings: list[dict] = Field(default_factory=list)
+    held: list[str] = Field(default_factory=list, description="One line per Task the exam status "
+                            "holds: the Task id and the check that holds it.")
+
+
+#: The most held Tasks the examine result names before counting the rest.
+HELD_SHOWN = 40
+
+
+def _one_line(text: Any) -> str:
+    """A finding's change on one line, cut at the row field cap."""
+    return compact(" ".join(str(text or "").split()))
 
 
 def _render_examine(result: ExamineResult) -> str:
     lines = [result.summary]
     for finding in result.findings:
         rows = finding.get("rows") or []
-        lines.append(f"{finding.get('kind')} on {finding.get('task_id')}: {finding.get('path')}: "
-                     f"{finding.get('change')} [{len(rows)} rows]")
+        lines.append(f"{finding.get('task_id') or 'no task'}: {finding.get('kind')}: "
+                     f"{_one_line(finding.get('change') or finding.get('text'))}"
+                     + (f" ({finding.get('path')})" if finding.get("path") else "") + f" [{len(rows)} rows]")
+    lines += result.held[:HELD_SHOWN]
+    if len(result.held) > HELD_SHOWN:
+        lines.append(f"and {len(result.held) - HELD_SHOWN} more held Tasks")
     return "\n".join(lines)
+
+
+def held_tasks(workdir: Any) -> list[str]:
+    """One line per Task exam/task_status.json holds, naming the check that holds it (F59).
+
+    A Task is held where its Verifier did not pass (a waived check on a passed Verifier holds
+    nothing). A check the Examiner could not run reads "not run", one it ran and failed "failed";
+    a Verifier not passed with no check named reads "verifier not passed". Read only.
+    """
+    status = read_json(Path(workdir) / EXAM_DIR / "task_status.json", None) or {}
+    lines = []
+    for task_id, row in sorted(status.items()) if isinstance(status, dict) else ():
+        if not isinstance(row, dict):
+            continue
+        not_run = row.get("not_run_reasons") or {}
+        failed = [check for check, ok in (row.get("checks") or {}).items() if not ok]
+        passed = row.get("verifier_passed")
+        if passed is True or (passed is None and not failed):
+            continue
+        reasons = [f"{check} {'not run' if check in not_run else 'failed'}" for check in failed]
+        lines.append(f"{task_id}: {', '.join(reasons) or 'verifier not passed'}")
+    return lines
 
 
 def default_examine_fn(workdir: Any, task_ids: Any, *, model: Any = None, judge_model: Any = None,
@@ -633,10 +702,25 @@ def rule_user(workdir: Any, task_id: str, router: Any) -> Optional[SimulatedUser
         answer_strip=value_strip(members) if members else None)
 
 
+def call_arguments(env: Any) -> dict[str, Any]:
+    """The arguments of every shown recorded call, by call id, off the calls files under env/."""
+    folder = Path(env) / env_files.CALLS_DIR
+    out: dict[str, Any] = {}
+    for path in sorted(folder.glob("*.jsonl")) if folder.is_dir() else ():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("id"):
+                out[str(row["id"])] = row.get("args")
+    return out
+
+
 def domain_tools(*, workdir: Any, model: Any = None,
                  examine_fn: Optional[Callable[[Any, Any], Any]] = None, judge_model: Any = None,
-                 probe_model: Any = None, reroll_model: Any = None) -> list[AgentTool]:
-    """The seven domain tools bound to one workdir.
+                 probe_model: Any = None, reroll_model: Any = None, env: Any = None) -> list[AgentTool]:
+    """The eight domain tools bound to one workdir and the Builder's root `env` (workdir/env by default).
 
     `model` drives the fresh Runs `run` buys and the Examiner session the default
     `examine` runs; `examine_fn(workdir, task_ids)` answers `examine` and defaults to
@@ -644,6 +728,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
     and the re-rolls their own models (each `model` when not named).
     """
     root = Path(workdir)
+    env_root = Path(env) if env is not None else root / "env"
     if examine_fn is not None:
         examine_call = examine_fn
     else:
@@ -691,12 +776,21 @@ def domain_tools(*, workdir: Any, model: Any = None,
             stage=stage_of(root), tasks=body["tasks"], tools=body["tools"])
 
 
-    def replay_rows(reference: Any) -> list[ReplayRow]:
-        return [ReplayRow(call_id=str(call.call_id or ""), tool=str(call.tool),
-                          verdict=str(call.verdict),
-                          first_differing_column=call.first_differing_column,
-                          recorded=str(call.recorded), ours=str(call.ours))
-                for call in reference.calls]
+    def replay_rows(reference: Any, arguments: dict[str, Any]) -> list[ReplayRow]:
+        """The reference's calls as rows: the arguments off the record, else the calls files (F42)."""
+        rows = []
+        for call in reference.calls:
+            args = getattr(call, "args", None)
+            if args is None:
+                args = arguments.get(str(call.call_id or ""))
+            error = (str(call.ours) if call.verdict == OURS_REFUSED
+                     else str(call.recorded) if call.verdict == THEIRS_REFUSED else None)
+            rows.append(ReplayRow(call_id=str(call.call_id or ""), task_id=str(reference.task_id),
+                                  tool=str(call.tool), arguments=compact(args) if args is not None else "",
+                                  verdict=str(call.verdict),
+                                  first_differing_column=call.first_differing_column,
+                                  recorded=str(call.recorded), ours=str(call.ours), error=error))
+        return rows
 
     def store_replays(replayed: dict[str, list]) -> Any:
         replays = read_json(root / REPLAYS_FILE, None) or {}
@@ -717,6 +811,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
         replayed: dict[str, list] = {}
         tasks: list[ReplayTask] = []
         rows: list[ReplayRow] = []
+        arguments = call_arguments(env_root)
         for task_id in task_ids:
             try:
                 reports = runner_tool.replay_all(root, task_id, workdir=root)
@@ -729,7 +824,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
             replayed[task_id] = reports
             reference = reports[0]
             first = next((call for call in reference.calls if call.verdict not in AGREES), None)
-            rows += replay_rows(reference)
+            rows += replay_rows(reference, arguments)
             tasks.append(ReplayTask(task_id=task_id, fidelity=reference.fidelity,
                                     confirmed=reference.confirmed, traces=len(reports),
                                     first_differing_tool=str(first.tool) if first else None,
@@ -751,7 +846,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
             raise ValueError(f"task {args.task_id} holds no recorded Trace to replay")
         ruling = store_replays({args.task_id: reports})
         reference = reports[0]
-        rows = replay_rows(reference)
+        rows = replay_rows(reference, call_arguments(env_root))
         traces = [ReplayTrace(trace_id=report.trace_id, reference=report.reference,
                               held_out=report.held_out,
                               confirmed=report.confirmed, fidelity=report.fidelity,
@@ -764,20 +859,37 @@ def domain_tools(*, workdir: Any, model: Any = None,
             task_id=args.task_id, fidelity=reference.fidelity, traces=traces, rows=rows,
             total=len(rows), rulings=[_ruling_record(ruling)])
 
-    def runnable_tasks() -> list[str]:
-        """Every open Task whose reference Trace replayed confirmed, in Task order."""
+    async def rulings(args: RulingsArgs) -> RulingsResult:
+        # The same rulings a write draws, on the file as it is on disk; nothing is written (F43).
+        path = args.path.replace("\\", "/").lstrip("/")
+        if not (env_root / path).is_file():
+            raise ValueError(f"{args.path} is not a file under your root")
+        drawn = ruled(env_root, path, root, execute=env_files.executor(root, env_root))
+        if not drawn:
+            raise ValueError(f"{args.path} is bound to no ruling: name a tool file, e.g. tools/<name>.py")
+        failed = [ruling.stage for ruling in drawn if not ruling.passed]
+        return RulingsResult(summary=(f"rulings on {path}: " + (f"fails {', '.join(failed)}" if failed
+                                                              else f"{len(drawn)} passed")),
+                             path=path, rulings=[_ruling_record(ruling) for ruling in drawn])
+
+    def runnable_tasks() -> tuple[list[str], int]:
+        """Every open Task whose reference Trace replayed confirmed and that has a Verifier file, in
+        Task order, and how many confirmed open Tasks were left out for no Verifier (F54)."""
         replays = read_json(root / REPLAYS_FILE, None) or {}
         open_ids = [row["task_id"] for row in status_of(root)["tasks"] if row["state"] == "open"]
-        return [task_id for task_id in open_ids
-                if any(isinstance(trace, dict) and trace.get("reference") and trace.get("confirmed")
-                       for trace in ((replays.get(task_id) or {}) if isinstance(replays, dict)
-                                     else {}).values())]
+        confirmed = [task_id for task_id in open_ids
+                     if any(isinstance(trace, dict) and trace.get("reference") and trace.get("confirmed")
+                            for trace in ((replays.get(task_id) or {}) if isinstance(replays, dict)
+                                          else {}).values())]
+        verified = [task_id for task_id in confirmed if (root / "verifiers" / f"{task_id}.json").is_file()]
+        return verified, len(confirmed) - len(verified)
 
     async def run(args: RunArgs) -> RunResult:
         if model is None:
             raise ValueError("run needs the session model to play fresh Runs with")
         named = args.task_ids if args.task_ids is not None else [args.task_id] if args.task_id else None
-        task_ids = list(named) if named is not None else runnable_tasks()
+        runnable, no_verifier = runnable_tasks() if named is None else ([], 0)
+        task_ids = list(named) if named is not None else runnable
         # A Task without user rules would be played against no Simulated user: the candidate
         # gets its system prompt alone and invents a customer. It is named, never played (F34).
         env = BuiltEnvironment(root)
@@ -810,10 +922,10 @@ def domain_tools(*, workdir: Any, model: Any = None,
         else:
             summary = (f"reroll of {len(played)} Tasks: {len(rows)} Runs, {finished} finished, "
                        f"{len(not_run)} Tasks left not run"
-                       + ("" if task_ids or named is not None
+                       + ("" if task_ids or named is not None or no_verifier
                           else "; no open Task has a confirmed Reference, replay first"))
         return RunResult(summary=summary, task_id=task_ids[0] if len(task_ids) == 1 else "",
-                         runs=rows, not_run=not_run, reasons=reasons)
+                         runs=rows, not_run=not_run, reasons=reasons, no_verifier=no_verifier)
 
     async def examine(args: ExamineArgs) -> ExamineResult:
         # The Examiner session owns its own event loop, so it runs off the Builder's, on a thread.
@@ -832,6 +944,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
             if not stage["finished"]:
                 why += ", so there is nothing to examine yet: replay or run the Tasks first"
             result.summary = f"{result.summary}: {why}" if result.summary else why
+        result.held = held_tasks(root)
         return result
 
     return [
@@ -845,6 +958,9 @@ def domain_tools(*, workdir: Any, model: Any = None,
         AgentTool("replay", "Replay every recorded Trace of one Task through the built tools, "
                   "call by call, or of every Task when no task_id is given.",
                   ReplayArgs, ReplayResult, replay, render=_render_replay),
+        AgentTool("rulings", "Re-run the rulings on a tool file without editing it: every failing row, "
+                  "grouped, the way a write of the file would draw them.",
+                  RulingsArgs, RulingsResult, rulings, render=_render_rulings),
         AgentTool("run", "Play fresh Runs of the Tasks named, or of every open Task with a confirmed "
                   "Reference, through the runner and report each one.",
                   RunArgs, RunResult, run, render=_render_run),
@@ -855,5 +971,5 @@ def domain_tools(*, workdir: Any, model: Any = None,
     ]
 
 
-__all__ = ["ROWS_SHOWN", "RUNS_PER_CALL", "default_examine_fn", "domain_tools", "fidelity_index", "opening_for", "root_line", "stage_line",
-           "stage_of", "status_of"]
+__all__ = ["HELD_SHOWN", "ROWS_SHOWN", "RUNS_PER_CALL", "call_arguments", "default_examine_fn", "domain_tools",
+           "fidelity_index", "held_tasks", "opening_for", "root_line", "stage_line", "stage_of", "status_of"]
