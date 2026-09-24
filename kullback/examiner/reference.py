@@ -74,7 +74,7 @@ ANSWERED = (("answer", "", (("stated", "facts read from the world"),)),)
 # the second retail build against tau2's reward (D112 scaffolding, D114): the recordings failed by
 # rules firing at 2.7% and up carried reward 1 at 82 to 93%, above the corpus rate of 72%, so those
 # rules were eating the good recordings; the two rules at 1.4% carried 60%, consistent with real
-# violations. Re-check on airline and telecom before the scaffold is deleted.
+# violations. Re-check on the other corpora before the scaffold is deleted.
 MISCOMPILED_SHARE = 0.02
 MIN_RUNS_TO_DEMOTE = 3
 MAX_POLICY_LINES = 40  # D65: the judge prompt is bounded whatever the policy's length
