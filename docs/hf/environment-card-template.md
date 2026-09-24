@@ -10,6 +10,7 @@
 | tasks_total | Tasks on the frozen list | `tasks_frozen.json`, or the newest round snapshot |
 | replay_fidelity.tasks_rate | Share of Tasks with at least one confirmed replay | `replays.json` |
 | replay_fidelity.runs_rate | Share of replayed Runs that were confirmed | `replays.json` |
+| replay_fidelity.calls_rate | Share of recorded calls that agree, over `calls_total` | `replays.json` |
 | tag | The tag this publish carries | `round-<n>`, else `build-<YYYYMMDD>` of the newest session write |
 | counts_source | Where the counts came from | the last round record, else the workdir status |
 | reference_confirmed | Tasks with at least one confirmed replay | `replays.json` |

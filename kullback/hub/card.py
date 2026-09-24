@@ -44,6 +44,11 @@ def _pct(value: Any) -> str:
     return "not measured" if value is None else f"{float(value):.1%}"
 
 
+def _cell(value: Any) -> str:
+    """A table cell safe for publisher or corpus text: a pipe escaped, a line break folded to a space."""
+    return " ".join(str(value).splitlines()).replace("|", "\\|")
+
+
 def _share(fidelity: dict, key: str) -> str:
     return f"{_pct(fidelity.get(key + '_rate'))} ({fidelity.get(key, 0)} of {fidelity.get(key + '_total', 0)})"
 
@@ -54,6 +59,7 @@ def _numbers_table(manifest: dict) -> list[str]:
     rows = [
         ("Fidelity over Tasks", _share(fidelity, "tasks")),
         ("Fidelity over Runs", _share(fidelity, "runs")),
+        ("Call fidelity", _call_fidelity(fidelity)),
         ("Reference confirmed", str(manifest.get("reference_confirmed", 0))),
         ("Verifier derived", str(manifest.get("verifier_derived", 0))),
         ("Trusted", str(manifest.get("trusted", 0))),
@@ -62,7 +68,7 @@ def _numbers_table(manifest: dict) -> list[str]:
     ]
     rows += _coverage_rows(manifest) + _provenance_rows(manifest)
     lines = ["| | |", "| --- | --- |"]
-    lines += [f"| {name} | {value} |" for name, value in rows]
+    lines += [f"| {name} | {_cell(value)} |" for name, value in rows]
     return lines
 
 
@@ -148,7 +154,9 @@ def card_markdown(manifest: dict, repo_id: str, *, github_url: str = "https://gi
               f"recordings. `{TASKS_ROWS_NAME}` lists the Tasks.", ""]
     lines += [_status(manifest), ""]
     lines += _numbers_table(manifest)
-    lines += ["", "Untrusted Tasks are not graded, and the simulated user does not ship.", ""]
+    lines += ["", "Untrusted Tasks are not graded, and the simulated user does not ship, so a fetched package "
+              "cannot finish a Task that needs a fact the user gives mid conversation, though the Task "
+              "still carries a Verifier.", ""]
     lines += ["```bash", f"uv run kullback fetch {repo_id} --out env-{name}",
               f"uv run kullback run --workdir env-{name} --task <task id> --model provider/model",
               f"uv run kullback verdict --workdir env-{name}",
@@ -163,7 +171,8 @@ WORDS: tuple[str, ...] = (
     "Reference: the Trace a Task's user context comes from.",
     "Replay and agree: a replay re-drives a Trace's turns; a call agrees when its verdict is same, cosmetic or "
     "both refused.",
-    "Confirmed: a replay where every call agrees and nothing is missing, reordered or crashed.",
+    "Confirmed: a replay where every call agrees, none was answered by the stand-in, and nothing is "
+    "missing, reordered or crashed.",
     "Fidelity over Tasks: Tasks with a confirmed replay, over all Tasks.",
     "Fidelity over Runs: confirmed replays over all replays.",
     "Call fidelity: agreeing calls over all recorded calls.",
@@ -171,17 +180,17 @@ WORDS: tuple[str, ...] = (
     "Atom: one Verifier check: required, allowed, forbidden, question, communicate or hard.",
     "Gates: oracle replay, suite, loosening, false rejection, trusted.",
     "Trusted: suite passed, probes fail, last version, no loosening, not over strict, not refused.",
-    "Open: not yet trusted.",
+    "Open: neither trusted nor refused.",
     "Refused: a Task the Builder showed nobody can finish.",
     "Release and preview: a release replays at least 90% of its Tasks; a preview is below that.",
 )
 
 
-def _call_fidelity(manifest: dict) -> str:
-    calls = manifest.get("call_fidelity") or {}
-    if not isinstance(calls, dict) or calls.get("rate") is None:
+def _call_fidelity(fidelity: dict) -> str:
+    """Agreeing calls over every recorded call, read from the manifest's replay_fidelity."""
+    if fidelity.get("calls_rate") is None:
         return "not measured"
-    return f"{float(calls['rate']):.2%} of {calls.get('calls', 0)}"
+    return f"{float(fidelity['calls_rate']):.2%} of {fidelity.get('calls_total', 0)}"
 
 
 def organisation_card(rows: Iterable[dict], *, organisation: str = "leibler",
@@ -204,8 +213,8 @@ def organisation_card(rows: Iterable[dict], *, organisation: str = "leibler",
         fidelity = manifest.get("replay_fidelity") or {}
         repo_id = row.get("repo_id", "")
         status = "preview" if manifest.get("preview") else "release"
-        lines.append(f"| [{repo_id}](https://huggingface.co/datasets/{repo_id}) | {_share(fidelity, 'tasks')} | "
-                     f"{_call_fidelity(manifest)} | {manifest.get('verifier_derived', 0)} | "
+        lines.append(f"| [{_cell(repo_id)}](https://huggingface.co/datasets/{_cell(repo_id)}) | "
+                     f"{_share(fidelity, 'tasks')} | {_call_fidelity(fidelity)} | {manifest.get('verifier_derived', 0)} | "
                      f"{manifest.get('trusted', 0)} of {manifest.get('tasks_total', 0)} | {status} |")
     lines += ["", "## Words", ""]
     lines += [f"- {word}" for word in WORDS]
@@ -244,6 +253,7 @@ CARD_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("tasks_total", "Tasks on the frozen list", "`tasks_frozen.json`, or the newest round snapshot"),
     ("replay_fidelity.tasks_rate", "Share of Tasks with at least one confirmed replay", "`replays.json`"),
     ("replay_fidelity.runs_rate", "Share of replayed Runs that were confirmed", "`replays.json`"),
+    ("replay_fidelity.calls_rate", "Share of recorded calls that agree, over `calls_total`", "`replays.json`"),
     ("tag", "The tag this publish carries", "`round-<n>`, else `build-<YYYYMMDD>` of the newest session write"),
     ("counts_source", "Where the counts came from", "the last round record, else the workdir status"),
     ("reference_confirmed", "Tasks with at least one confirmed replay", "`replays.json`"),
