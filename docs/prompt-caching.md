@@ -46,4 +46,4 @@ What not to do: cache across customers or across builds with a shared key (the p
 
 ## Measuring it (2026-08-28)
 
-The first live build on tau2 retail with one model records `cache_read`, `cache_write`, `input` and `memo_hits` per stage in `budget.json`. Before changes 1 and 2 the Builder's read share should be close to zero, which is the number to beat. After them the per-stage read share should sit above 0.7 for `compile_tools` and `compile_policy`, and a second `--iterate` build with one added trace should show most calls as memo hits.
+Corrected 2026-09-24: the `--iterate` flag named here and in change 3 no longer exists on `kullback build`. The first live build on tau2 retail with one model records `cache_read`, `cache_write`, `input` and `memo_hits` per stage in `budget.json`. Before changes 1 and 2 the Builder's read share should be close to zero, which is the number to beat. After them the per-stage read share should sit above 0.7 for `compile_tools` and `compile_policy`, and a second `--iterate` build with one added trace should show most calls as memo hits.
