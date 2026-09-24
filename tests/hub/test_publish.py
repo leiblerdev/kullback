@@ -190,6 +190,25 @@ def test_an_old_verifier_pinning_agent_prose_exports_through_the_leak_scan_and_g
     assert S.check_run(new, reference, CanonRules(), write_tools={"water_plot"}) == (True, None)
 
 
+def test_a_required_atom_pinning_recorded_agent_prose_is_never_reduced_and_the_leak_scan_refuses_it(
+        nursery, tmp_path):
+    """Only an allowed prose atom is reduced; a required one ships as it is, so the scan fails loud."""
+    source = nursery / "verifiers" / "task_one.json"
+    verifier = read_json(source)
+    fn = S.canon_fn(CanonRules())
+    payload = {"kind": "write_value", "tool": "water_plot", "entity": fn("P-1"), "entity_raw": "P-1",
+               "id_field": "plot_id", "field": "note", "value": S._key(fn, RECORDED_TURN), "raw": RECORDED_TURN}
+    required = S.make_atom("w0.note", "required", payload, provenance="agent_chosen",
+                           description=f"water_plot note is {RECORDED_TURN}")
+    assert S.elide_agent_prose(required) == required
+    verifier["atoms"] = [verifier["atoms"][0], as_dict(required)]
+    write_json(source, verifier)
+    assert S.elide_verifier_prose(Verifier.model_validate(verifier))[1] == 0
+
+    with pytest.raises(package_mod.ExportError, match="leak scan found"):
+        _export(nursery, tmp_path / "package")
+
+
 def test_a_value_the_caller_gave_mid_conversation_is_an_echo_unless_the_task_states_it_and_never_stops_the_export(
         nursery, tmp_path):
     verifier = read_json(nursery / "verifiers" / "task_one.json")

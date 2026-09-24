@@ -508,6 +508,11 @@ def pins_agent_prose(atom: Atom) -> bool:
             and (is_prose(payload.get("raw")) or is_prose(payload.get("value"))))
 
 
+def _elided(atom: Atom) -> bool:
+    """Is this an atom elide_agent_prose reduces: agent prose that the Candidate may, not must, write?"""
+    return atom.kind == "allowed" and pins_agent_prose(atom)
+
+
 def elide_agent_prose(atom: Atom) -> Atom:
     """The atom with the recorded agent's prose taken out: only "the field was filled in" is kept.
 
@@ -515,8 +520,10 @@ def elide_agent_prose(atom: Atom) -> Atom:
     nothing, and it carries a recording into the package. The atom keeps the tool, the row and the
     field, marked `filled`, and neither its description nor its predicate quotes the text. Any other
     atom comes back unchanged, so this is safe to run over a whole Verifier and over one already done.
+    Only an allowed atom is reduced: one the Candidate is required to make is left as it is, so the
+    leak scan decides on it and refuses the package loudly if it quotes a recording.
     """
-    if not pins_agent_prose(atom):
+    if not _elided(atom):
         return atom
     payload = {key: value for key, value in atom_payload(atom).items() if key not in ("value", "raw")}
     payload["filled"] = True
@@ -526,7 +533,7 @@ def elide_agent_prose(atom: Atom) -> Atom:
 
 def elide_verifier_prose(verifier: Verifier) -> tuple[Verifier, int]:
     """The Verifier with every agent-prose atom elided (above), and how many atoms that changed."""
-    changed = sum(1 for atom in verifier.atoms if pins_agent_prose(atom))
+    changed = sum(1 for atom in verifier.atoms if _elided(atom))
     if not changed:
         return verifier, 0
     return verifier.model_copy(update={"atoms": [elide_agent_prose(atom) for atom in verifier.atoms]}), changed
