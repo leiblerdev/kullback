@@ -468,6 +468,7 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
             target["models_dev_calls"] += 1
         if memo_hit:
             target["memo_hits"] += 1
+    _count_by_model(bucket, priced_model_id(event.cost), usage)
     save_totals(workdir, totals)
     # The same numbers, once as state and once as story: the ledger says what the build has spent,
     # the feed says what it just did. Written here, under the ledger lock, so the feed's order is
@@ -486,6 +487,19 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
     return event
 
 
+def _count_by_model(bucket: dict, model_id: Optional[str], usage: Usage) -> None:
+    """Keep the stage's calls and tokens per model too, so a build resumed on another model is
+    repriced at each model's own row, not all at the latest one."""
+    counts = bucket.setdefault("models", {}).setdefault(model_id or "", _empty_counts())
+    counts["calls"] += 1
+    for field in LEDGER_TOKEN_FIELDS:
+        counts[field] += getattr(usage, field)
+
+
+def _empty_counts() -> dict[str, int]:
+    return dict.fromkeys(("calls", *LEDGER_TOKEN_FIELDS), 0)
+
+
 # The ledger fields a price decides; reprice rewrites these and leaves counts and tokens alone.
 PRICED_FIELDS = ("usd", "cache_saved_usd", "unpriced_calls", "models_dev_calls")
 
@@ -502,7 +516,9 @@ def reprice(workdir: str | Path, model_id: Optional[str] = None) -> dict:
     under the model of the stage's last feed line, with its one-hour writes taken from the ledger's
     count past the feed's. An old ledger's earlier sessions therefore price their one-hour writes at
     the plain write rate, a small under-count, never a loss. A stage that no feed line and no
-    `model_id` names keeps its priced fields. Only the priced fields change.
+    `model_id` names keeps its priced fields. A ledger that keeps each stage's calls per model
+    (every one recorded since) prices each model's share at its own row, so a build resumed on another
+    model is not charged the latest model's rate for its earlier calls. Only the priced fields change.
     """
     seen = _feed_parts(feed.read_since(workdir)[0], model_id)
     with _LEDGER_LOCK:
@@ -543,16 +559,39 @@ def _feed_parts(rows: list[dict], model_id: Optional[str]) -> dict[str, dict[str
 
 
 def _price_stage(bucket: dict, part: dict[str, Any], model_id: Optional[str]) -> Optional[dict]:
-    """A stage's priced fields: its feed lines, plus what the ledger counted beyond them priced under
-    one id. None when nothing names the stage's model."""
-    name = model_id or part["model"]
-    if name is None:
-        return None
-    rest = {field: max(0, int(bucket[field]) - part[field]) for field in LEDGER_TOKEN_FIELDS}
-    rest["cache_write_1h"] = min(rest["cache_write_1h"], rest["cache_write"])
-    priced = dict(part["priced"])
-    _price_into(priced, Usage(**rest), name, max(0, int(bucket["calls"]) - part["calls"]))
+    """A stage's priced fields. A ledger that keeps its calls per model prices each model's tokens at
+    that model's row (or all under `model_id` when given); one written before that prices its feed
+    lines, then what the ledger counted beyond them under one id. None when nothing names the model
+    of calls that need one."""
+    split = bucket.get("models") or {}
+    if not split:
+        name = model_id or part["model"]
+        if name is None:
+            return None
+        priced = dict(part["priced"])
+        rest, calls = _beyond(bucket, [part])
+        _price_into(priced, rest, name, calls)
+        return priced
+    priced = dict.fromkeys(PRICED_FIELDS, 0)
+    for name, counts in split.items():
+        _price_into(priced, Usage(**{field: int(counts.get(field) or 0) for field in LEDGER_TOKEN_FIELDS}),
+                    model_id or name or None, int(counts.get("calls") or 0))
+    rest, calls = _beyond(bucket, list(split.values()))
+    if calls or rest.input + rest.output + rest.cache_read + rest.cache_write:
+        name = model_id or part["model"]
+        if name is None:
+            return None
+        _price_into(priced, rest, name, calls)
     return priced
+
+
+def _beyond(bucket: dict, parts: list[dict]) -> tuple[Usage, int]:
+    """The tokens and calls the stage's counters hold beyond these parts, as one Usage and a call count."""
+    rest = {field: max(0, int(bucket[field]) - sum(int(part.get(field) or 0) for part in parts))
+            for field in LEDGER_TOKEN_FIELDS}
+    rest["cache_write_1h"] = min(rest["cache_write_1h"], rest["cache_write"])
+    calls = max(0, int(bucket["calls"]) - sum(int(part.get("calls") or 0) for part in parts))
+    return Usage(**rest), calls
 
 
 # The token counts a ledger bucket and a feed line both carry, as Usage names them.

@@ -150,3 +150,37 @@ def test_a_bare_bedrock_id_is_priced_under_the_global_row_it_is_sent_on(catalog,
     assert budget.load_totals(workdir)["total"]["usd"] == pytest.approx(1.0)
     rows = [json.loads(line) for line in feed.path_for(workdir).read_text(encoding="utf-8").splitlines()]
     assert [row["model"] for row in rows] == ["bedrock/global.a-vendor.small-1"]
+
+
+def test_reprice_of_a_build_resumed_on_another_model_prices_each_session_at_its_own_model(catalog, tmp_path):
+    """The ledger keeps each stage's calls per model, so the earlier session is not priced at the later rate."""
+    workdir = tmp_path / "w"
+    first, second = Usage(input=1_000_000, output=100_000), Usage(input=500_000, output=50_000)
+    feed.start(workdir)
+    budget.record_call(Event(idx=0, type="model_call", cost=Cost(
+        provider="bedrock", model="global.a-vendor.big-1", usage=first)), stage="solve", workdir=workdir)
+    feed.start(workdir)
+    budget.record_call(Event(idx=0, type="model_call", cost=Cost(
+        provider="bedrock", model="global.a-vendor.small-1", usage=second)), stage="solve", workdir=workdir)
+
+    after = budget.reprice(workdir)
+    expected = (budget.call_cost(first, "bedrock/global.a-vendor.big-1")
+                + budget.call_cost(second, "bedrock/global.a-vendor.small-1"))
+    assert after["total"]["usd"] == pytest.approx(expected)
+    assert after["stages"]["solve"]["usd"] == pytest.approx(expected)
+    assert after["total"]["calls"] == 2 and after["total"]["models_dev_calls"] == 2
+
+
+def test_reprice_of_a_ledger_without_a_per_model_split_prices_as_before(catalog, tmp_path):
+    """A budget.json written before the split prices its feed lines and the rest under the last model."""
+    workdir = tmp_path / "w"
+    feed.start(workdir)
+    for usage in SESSION_CALLS:
+        _record(workdir, usage)
+    totals = budget.load_totals(workdir)
+    del totals["stages"]["solve"]["models"]
+    budget.save_totals(workdir, totals)
+
+    after = budget.reprice(workdir)
+    assert after["total"]["usd"] == pytest.approx(
+        sum(budget.call_cost(usage, "bedrock/global.a-vendor.big-1") for usage in SESSION_CALLS))
