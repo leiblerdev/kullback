@@ -247,7 +247,11 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | Module | What it does |
 |---|---|
 | `kullback/tui/__init__.py` | The terminal screen: a live board, transcript and commands for one build. |
+| `kullback/tui/app.py` | The Textual app shell: header, tab routing, palette, sessions, keys, quit. |
+| `kullback/tui/build_view.py` | Start a capped build as a detached child, refusing first in plain sentences. |
 | `kullback/tui/diagrams.py` | Pure text rendering of the pipeline, the loop and the layering. |
+| `kullback/tui/home.py` | Where the workdir stands: the checklist, the next step, recent builds here. |
+| `kullback/tui/watch.py` | Follow a build live: transcript, sidebar numbers, steer input, stop check. |
 | `kullback/tui/views/__init__.py` | The views palette: keys, titles and classes in screen order. |
 | `kullback/tui/views/traces.py` | Dry-run a trace file: format, counts and shape, never file values. |
 | `kullback/tui/views/tasks.py` | Browse Tasks: filter, detail, nudge; values hidden until v. |
