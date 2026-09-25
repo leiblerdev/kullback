@@ -19,7 +19,15 @@ from gates.examiner_fixtures import (
     tighten,
     version,
 )
-from gates.verifier_fixtures import alt_path_run, other_reason_run, reference_run, write_events_jsonl, wrong_run
+from gates.verifier_fixtures import (
+    alt_path_run,
+    make_run,
+    other_reason_run,
+    reference_events,
+    reference_run,
+    write_events_jsonl,
+    wrong_run,
+)
 from kullback.gates import trust as T
 from kullback.gates.probes import version_hash
 from kullback.runner.canon import CanonRules
@@ -73,10 +81,16 @@ def test_a_verifier_meeting_every_trust_condition_is_trusted(tmp_path):
     assert T.trusted_gate({}, [], {}, {}, {}, {}, {}, {}, None, []).passed
 
 
-def test_a_verifier_with_a_passing_probe_is_not_trusted_and_the_reason_names_the_probe(tmp_path):
+def _skipping_the_read():
+    """The seeds' write and answer without the read every seed made before writing."""
+    return make_run("skip", [e for e in reference_events() if e["payload"].get("id") != "c0"])
+
+
+def test_a_verifier_with_a_passing_probe_that_skipped_a_step_is_not_trusted_and_the_reason_names_the_probe(tmp_path):
     world = _world(tmp_path)
     verifier = world["verifiers"][0]
-    world["probes"] = {TASK: pool(probe("probe-t1-1", wrong_run(), verifier), probe("probe-t1-2", reference_run(), verifier))}
+    world["probes"] = {TASK: pool(probe("probe-t1-1", wrong_run(), verifier),
+                                  probe("probe-t1-2", _skipping_the_read(), verifier))}
     ruling = T.trusted_gate(**world)
     assert not ruling.passed
     assert ruling.failures == ["task t1: probe probe-t1-2 scores a pass"]
@@ -235,7 +249,7 @@ def test_a_task_held_only_by_checks_that_did_not_run_is_untrusted_and_named_in_n
 def test_a_task_held_by_not_run_checks_is_still_ruled_on_its_other_steps_first(tmp_path):
     world = _world(tmp_path)
     verifier = world["verifiers"][0]
-    world["probes"] = {TASK: pool(probe("probe-t1-2", reference_run(), verifier))}
+    world["probes"] = {TASK: pool(probe("probe-t1-2", _skipping_the_read(), verifier))}
     world["task_status"] = {TASK: status(verifier_passed=False, checks={"second_path_passes": False},
                                          not_run=["verifier_alt_path"])}
     ruling = T.trusted_gate(**world)

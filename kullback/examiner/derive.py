@@ -25,7 +25,7 @@ something false.
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, NamedTuple, Optional
 
 from kullback.gates.verifier_suite import (
     HELPERS_SRC,
@@ -267,6 +267,34 @@ SHAPE_LADDER = (_ROW_SOURCES, _ROW_SOURCES + ("prior_result",),
 _RUNG_OF = {source: min(i for i, rung in enumerate(SHAPE_LADDER) if source in rung)
             for source in SHAPE_SOURCES}
 
+
+class ShapeRungs(NamedTuple):
+    """One way to pick the stored rung: the order sources are asked in, the rung each answer stores,
+    the ladder a Run satisfied only by mixed sources climbs, and whether a rung that accepts any value
+    (`no_column`) may be stored while a tighter source also holds on the Reference."""
+    order: tuple[str, ...]
+    rung_of: dict[str, tuple[str, ...]]
+    ladder: tuple[tuple[str, ...], ...]
+    strict: bool = False
+
+
+_TIGHT = (("own_row", "prior_result"), ("own_row", "prior_result", "result_text"))
+# Why the orders differ: `no_column` holds on any row that lacks the column and then accepts any
+# non-empty value, so asked second it answers before `prior_result` is reached, and the stored rule
+# passes a value swapped for another the Run never read (36 swaps on one build). The tightest-first
+# orders ask it last; the strict one also refuses to store it while a tighter source holds.
+SHAPE_RUNG_ORDERS = {
+    "row_first": ShapeRungs(SHAPE_SOURCES, {s: SHAPE_LADDER[_RUNG_OF[s]] for s in SHAPE_SOURCES},
+                            SHAPE_LADDER),
+    "tightest_first": ShapeRungs(("own_row", "prior_result", "result_text", "no_column"),
+                                 {"own_row": _ROW_SOURCES, "prior_result": _TIGHT[0],
+                                  "result_text": _TIGHT[1], "no_column": _ROW_SOURCES},
+                                 _TIGHT + (SHAPE_SOURCES,)),
+}
+SHAPE_RUNG_ORDERS["tightest_first_strict"] = SHAPE_RUNG_ORDERS["tightest_first"]._replace(strict=True)
+# Which order the derivation uses. Today's until the founder picks between the measured variants.
+SHAPE_RUNG_ORDER = "row_first"
+
 # The claim a Task whose Reference wrote nothing still makes about its End state: on the tables these
 # tools touch, the End state is the Starting state. A Run that wrote fails it, which is what the
 # wrong and unsolved checks need, and because the rule is asked about every call the Run made it
@@ -332,12 +360,21 @@ def shape_for(atom_id: str, tool: str, field: str, id_field: str, tools: Iterabl
     is one Run writing the same column twice from two different sources.
     """
     tools = sorted(tools)
-    for source in SHAPE_SOURCES:
+    rungs = SHAPE_RUNG_ORDERS[SHAPE_RUNG_ORDER]
+
+    def holds(source: str) -> bool:
         one = shape_atom(atom_id, tool, field, id_field, tools, sources=(source,))
-        if hard_holds(one, run, set(tools), fn) is not False:
-            rung = SHAPE_LADDER[_RUNG_OF[source]]
+        return hard_holds(one, run, set(tools), fn) is not False
+
+    for source in rungs.order:
+        if holds(source):
+            rung = rungs.rung_of[source]
+            if rungs.strict and "no_column" in rung:
+                # A rung that accepts any value is stored only where nothing tighter holds.
+                tighter = next((s for s in rungs.order if "no_column" not in rungs.rung_of[s] and holds(s)), None)
+                rung = rungs.rung_of[tighter] if tighter else rung
             return shape_atom(atom_id, tool, field, id_field, tools, sources=rung, source=source), source
-    for rung in SHAPE_LADDER:
+    for rung in rungs.ladder:
         whole = shape_atom(atom_id, tool, field, id_field, tools, sources=rung, source="mixed")
         if hard_holds(whole, run, set(tools), fn) is not False:
             return whole, "mixed"

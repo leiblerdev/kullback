@@ -218,8 +218,18 @@ def test_session_proposal_runs_the_loophole_probe_through_the_runner_and_is_trus
     assert list((root / "probes").glob("*.jsonl")), "the probe is a Run the runner played"
 
 
-def test_session_proposal_whose_probe_reaches_the_end_state_is_refused_at_the_loophole(tmp_path):
-    root, proposed = _proposed_over_a_runner_world(tmp_path, _rename_loop())
+def _rename_without_reading() -> TestModel:
+    """A probe model that writes the striped label without the read every seed made first."""
+    return TestModel([
+        ModelReply(content=None, model="test", tool_calls=[
+            ToolCallRequest(id="m2", name="rename_widget",
+                            arguments={"widget_id": "w1", "label": "striped"})]),
+        ModelReply(content="Done.", model="test"),
+    ], loop=True)
+
+
+def test_session_proposal_whose_probe_skips_the_read_and_reaches_the_end_state_is_refused_at_the_loophole(tmp_path):
+    root, proposed = _proposed_over_a_runner_world(tmp_path, _rename_without_reading())
     assert proposed.is_error is True
     assert "verifier_loophole fail" in proposed.result.content
     written = read_json(root / "exam" / "history.json")

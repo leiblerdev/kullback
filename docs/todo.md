@@ -26,6 +26,18 @@ list was cleared on 2026-09-22 for the overhaul and rebuilt on 2026-09-24 after 
   runner's spend.
 - The airline body's hand-rolled id rule should go back to the context's new_id in the next build.
 
+## From the failure research of build-20260924 (2026-09-25)
+
+- Route checks. A Verifier may demand an ordering ("identity looked up before the first read of that user's data"),
+  derived from what every seed did, as a Hard atom over `called_before`. Deferred by the founder on 2026-09-25: the
+  Verifier scores results only for now. Evidence: 6 Tasks where the loophole probe skipped the lookup every seed made
+  (report group G3, retail 1c8acd, 559243, 67c669, d81010, a53732, airline 3d9770).
+- Ending action feedback. When every re-roll fails only on the ending action and ends in the same End state as the
+  Reference, loosen the ending action from required to allowed. Evidence: airline 3b00d4, where 9 of 9 correct
+  declines failed on the transfer the recording made (report, "The ending action").
+- Hand-off summary text. 32 retail re-rolls differ from the Reference only in a free summary field. Measure what
+  fails them before choosing a fix.
+
 ## Priority order after the overhaul (founder, 2026-09-23)
 
 Item 1, every trace passes, is met by build-20260924 (replay fidelity 1.00 on retail and airline). Synthetic Tasks moved
