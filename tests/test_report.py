@@ -72,7 +72,7 @@ def data() -> ReportData:
             schema_version="s1",
             tools_version="t2",
             policy_version="p3",
-            assisted_tools=["search_products"],
+            assisted_tools=["search_items"],
         ),
         gates=[
             GateResult(stage="ingest", **{"pass": True}, metrics={"traces": 3}),
@@ -110,7 +110,7 @@ def data() -> ReportData:
         ],
         frontier_models=["frontier-model"],
         overlays=[TaskOverlay(task_id="t1", rows=[
-            OverlayRow(table="orders", id="W1", version_hash="h1"),
+            OverlayRow(table="loans", id="W1", version_hash="h1"),
             OverlayRow(table="users", id="U1", version_hash="h2"),
         ])],
         policy_items=[
@@ -120,7 +120,7 @@ def data() -> ReportData:
         ],
         policy_exercised=["p1"],
         task_coverage=[
-            TaskCoverage(task_id="t1", covered=False, reason="1 Run assisted on search_products", run_count=5)
+            TaskCoverage(task_id="t1", covered=False, reason="1 Run assisted on search_items", run_count=5)
         ],
         judge_disagreement={"pairs": 8, "disagreements": 2, "rate": 0.25},
         disagreement_queue=[
@@ -157,7 +157,7 @@ def test_the_title_leads_and_the_sections_run_environment_tasks_queue_lessons_in
 def test_built_or_not_built_is_the_first_thing_said(data):
     assert "Environment built: yes" in render(data)
     data.built = False
-    data.stopped_reason = "spend ceiling reached in compile_tools on search_products"
+    data.stopped_reason = "spend ceiling reached in compile_tools on search_items"
     text = render(data)
     assert "Environment built: no" in text
     assert "spend ceiling reached" in text
@@ -184,7 +184,7 @@ def block_of(text: str, heading: str) -> str:
 def test_the_environment_section_names_assisted_tools_unguarded_tasks_and_counts_overlay_rows(data):
     data.tasks[0].unguarded = True
     text = render(data)
-    assert "search_products" in block_of(text, "### Assisted tools")
+    assert "search_items" in block_of(text, "### Assisted tools")
     assert "t1" in block_of(text, "### Unguarded Tasks")
     assert "Overlay rows: 2" in text
     assert "Tasks with an overlay: 1" in text
@@ -194,16 +194,16 @@ def test_the_environment_section_names_assisted_tools_unguarded_tasks_and_counts
     assert "t1" not in guarded
     assert "No unguarded Tasks" in guarded
 
-    data.assisted_share = {"search_products": 0.12}
-    assert "- search_products: 12% of its calls stood in" in render(data)
+    data.assisted_share = {"search_items": 0.12}
+    assert "- search_items: 12% of its calls stood in" in render(data)
 
     # D171: the two numbers part company. A body can miss one call of the corpus and cost one Task
     # a Reference while every other Task that calls it is answered the way the recording did.
     data.tool_fidelity = {
-        "tools": {"search_products": {"calls": 40, "replayed": 39, "differing": 1, "assisted": True}},
-        "tasks": {"t1": {"search_products": {"replayed": 7, "differing": 0, "reasons": []}},
-                  "t2": {"search_products": {"replayed": 5, "differing": 1, "reasons": ["price differs"]}},
-                  "t3": {"search_products": {"replayed": 2, "differing": 0, "reasons": []}}},
+        "tools": {"search_items": {"calls": 40, "replayed": 39, "differing": 1, "assisted": True}},
+        "tasks": {"t1": {"search_items": {"replayed": 7, "differing": 0, "reasons": []}},
+                  "t2": {"search_items": {"replayed": 5, "differing": 1, "reasons": ["price differs"]}},
+                  "t3": {"search_items": {"replayed": 2, "differing": 0, "reasons": []}}},
     }
     line = block_of(render(data), "### Assisted tools")
     assert "39 of 40 recorded calls replayed" in line
@@ -213,7 +213,7 @@ def test_the_environment_section_names_assisted_tools_unguarded_tasks_and_counts
 def test_task_coverage_gives_both_numbers(data):
     text = render(data)
     assert "0 of 1 Tasks" in text
-    assert "1 Run assisted on search_products" in text
+    assert "1 Run assisted on search_items" in text
 
     from kullback.report import coverage_rows
 
@@ -350,8 +350,8 @@ def test_an_empty_section_says_so_rather_than_vanishing(data):
     assert "nothing in the queue" in render(data).split("## Disagreement queue", 1)[1]
 
     # The sentence only holds when every mined ToolSig is confirmed read or write (D70).
-    data.tool_sigs = [ToolSig(name="cancel_order", kind="write", unclassified=False),
-                      ToolSig(name="get_order_details", kind="read", unclassified=False)]
+    data.tool_sigs = [ToolSig(name="cancel_item", kind="write", unclassified=False),
+                      ToolSig(name="get_loan_details", kind="read", unclassified=False)]
     assert flagged_tool_verdicts(data) == {}
     assert "No flagged tools" in render(data)
     data.tool_sigs.append(ToolSig(name="mystery_tool", unclassified=True))
@@ -484,16 +484,16 @@ def test_the_report_counts_verdicts_that_rest_on_a_flagged_tool(data):
     from kullback.report import flagged_tool_verdicts
     from kullback.runner.records import Event, ToolSig
 
-    call = Event(idx=0, type="tool_call", payload={"name": "search_products"})
-    other = Event(idx=0, type="tool_call", payload={"name": "get_order_details"})
+    call = Event(idx=0, type="tool_call", payload={"name": "search_items"})
+    other = Event(idx=0, type="tool_call", payload={"name": "get_loan_details"})
     data.runs[0].events = [call]
     data.runs[1].events = [call]
     data.runs[2].events = [other]
-    data.tool_sigs = [ToolSig(name="search_products", unclassified=True),
-                      ToolSig(name="get_order_details", unclassified=False, kind="read")]
-    assert flagged_tool_verdicts(data) == {"search_products": 2}
+    data.tool_sigs = [ToolSig(name="search_items", unclassified=True),
+                      ToolSig(name="get_loan_details", unclassified=False, kind="read")]
+    assert flagged_tool_verdicts(data) == {"search_items": 2}
     text = render(data)
-    assert "search_products: 2 Verdicts rest on a Run that called it" in text
+    assert "search_items: 2 Verdicts rest on a Run that called it" in text
 
     data.environment.flags = ["charge_card: 7 of 10 observed errors are unknown (70%)"]
     text = render(data)
@@ -510,15 +510,15 @@ def test_each_task_states_how_many_of_its_rows_are_overlay_rows(data):
 
 def test_a_spend_ceiling_stop_names_the_stage_the_cost_and_what_is_left(workdir: Path):
     """D86: report as is, with where it stopped, what it spent and what finishing costs."""
-    stopped = {"stage": "compile_tools", "item": "search_products", "spent": 1.3, "ceiling_usd": 1.0,
+    stopped = {"stage": "compile_tools", "item": "search_items", "spent": 1.3, "ceiling_usd": 1.0,
                "estimate_to_finish": 0.8, "items_left": 1,
-               "reason": "spend ceiling reached in stage compile_tools on search_products"}
+               "reason": "spend ceiling reached in stage compile_tools on search_items"}
     (workdir / "environment.json").write_text(
         json.dumps(as_dict(Environment(env_id="env-1"))), encoding="utf-8")
     loaded = load(workdir)
     loaded = loaded.model_copy(update={"stopped": stopped})
     text = render(loaded).split("## Tasks")[0]
-    assert "Stopped in stage compile_tools on search_products" in text
+    assert "Stopped in stage compile_tools on search_items" in text
     assert "$1.30" in text and "$1.00" in text and "$0.80" in text
     assert "permission" in text
 
@@ -621,10 +621,10 @@ def test_the_verdicts_left_out_are_listed_with_what_excluded_them(data):
     """D49: an assisted or environment-suspected Verdict is shown underneath, not silently dropped."""
     from kullback.runner.records import Event
 
-    data.runs[4].events = [Event(idx=0, type="tool_result", payload={"name": "search_products"}, assisted=True)]
+    data.runs[4].events = [Event(idx=0, type="tool_result", payload={"name": "search_items"}, assisted=True)]
     block = render(data).split("### Task t1", 1)[1]
     assert "- Verdicts not counted, and what excluded them:" in block
-    assert "r5: environment suspected, cause environment; assisted Run, search_products stood in" in block
+    assert "r5: environment suspected, cause environment; assisted Run, search_items stood in" in block
 
 
 def test_the_queue_shows_the_spans_each_judge_cited(data):

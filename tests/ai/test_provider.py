@@ -216,7 +216,7 @@ def test_anthropic_reply_carries_content_tool_calls_and_usage(live, sleeps):
     payload = {
         "content": [
             {"type": "text", "text": "sure"},
-            {"type": "tool_use", "id": "t1", "name": "get_order", "input": {"id": "7"}},
+            {"type": "tool_use", "id": "t1", "name": "get_item", "input": {"id": "7"}},
         ],
         "model": "model-a",
         "stop_reason": "tool_use",
@@ -230,7 +230,7 @@ def test_anthropic_reply_carries_content_tool_calls_and_usage(live, sleeps):
     model = anthropic_model(lambda request: httpx.Response(200, json=payload), sleeps)
     reply = model.query([{"role": "user", "content": "hi"}])
     assert reply.content == "sure"
-    assert reply.tool_calls[0].name == "get_order"
+    assert reply.tool_calls[0].name == "get_item"
     assert reply.tool_calls[0].arguments == {"id": "7"}
     assert reply.stop_reason == "tool_use"
     assert reply.usage.input == 11
@@ -395,7 +395,7 @@ def test_the_openai_adapter_sends_bearer_and_function_tools_and_subtracts_cached
                 "message": {
                     "content": "on it",
                     "tool_calls": [
-                        {"id": "call 1", "function": {"name": "get_order", "arguments": '{"id": "7"}'}}
+                        {"id": "call 1", "function": {"name": "get_item", "arguments": '{"id": "7"}'}}
                     ],
                 },
             }
@@ -416,14 +416,14 @@ def test_the_openai_adapter_sends_bearer_and_function_tools_and_subtracts_cached
     model = openai_model(handler, sleeps)
     reply = model.query(
         [{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}],
-        tools=[{"name": "get_order", "description": "d", "input_schema": {"type": "object"}}],
+        tools=[{"name": "get_item", "description": "d", "input_schema": {"type": "object"}}],
         config=pv.ModelConfig(max_tokens=32, temperature=0.2),
     )
     assert seen["url"].endswith("/chat/completions")
     assert seen["headers"]["authorization"] == "Bearer k"
     assert seen["body"]["model"] == "model-a"
     assert seen["body"]["messages"][0]["role"] == "system"
-    assert seen["body"]["tools"][0]["function"]["name"] == "get_order"
+    assert seen["body"]["tools"][0]["function"]["name"] == "get_item"
     assert reply.content == "on it"
     assert reply.tool_calls[0].id == pv.clean_tool_call_id("call 1")
     assert reply.tool_calls[0].arguments == {"id": "7"}
@@ -626,7 +626,7 @@ def test_a_local_endpoint_or_a_registry_gateway_is_sent_no_reasoning_fields(slee
 @pytest.mark.parametrize("adapter", ["anthropic", "openai"])
 def test_a_structured_tool_result_goes_as_json_not_a_python_repr(adapter):
     """D65: the Candidate sees what production gave it, and production never sent repr()."""
-    result = {"order_id": "#W1", "status": "pending", "expedited": True, "note": None}
+    result = {"loan_id": "#W1", "status": "pending", "expedited": True, "note": None}
     tool = {"role": "tool", "tool_call_id": "c1", "content": result}
     if adapter == "anthropic":
         _, out = pv._to_anthropic(
@@ -653,7 +653,7 @@ def test_two_tool_results_from_one_turn_group_into_one_user_message():
                 "role": "assistant",
                 "content": None,
                 "tool_calls": [
-                    {"id": "c1", "name": "get_order", "arguments": {}},
+                    {"id": "c1", "name": "get_item", "arguments": {}},
                     {"id": "c2", "name": "get_user", "arguments": {}},
                 ],
             },
@@ -672,8 +672,8 @@ def test_an_assistant_message_without_tool_calls_goes_without_the_key():
     plain = pv._openai_message({"role": "assistant", "content": "Which order?", "tool_calls": []})
     assert "tool_calls" not in plain and plain["content"] == "Which order?"
     calling = pv._openai_message({"role": "assistant", "content": None,
-                                  "tool_calls": [{"id": "c1", "name": "get_order", "arguments": {"id": "1"}}]})
-    assert calling["tool_calls"][0]["function"]["name"] == "get_order"
+                                  "tool_calls": [{"id": "c1", "name": "get_item", "arguments": {"id": "1"}}]})
+    assert calling["tool_calls"][0]["function"]["name"] == "get_item"
 
 
 def test_a_recorded_assistant_message_of_blocks_replays(make_recorded_model):
@@ -685,14 +685,14 @@ def test_a_recorded_assistant_message_of_blocks_replays(make_recorded_model):
                 "content": [
                     {"type": "thinking", "thinking": "let me look"},
                     {"type": "text", "text": "one moment"},
-                    {"type": "tool_use", "id": "c1", "name": "get_order", "input": {"id": "#W1"}},
+                    {"type": "tool_use", "id": "c1", "name": "get_item", "input": {"id": "#W1"}},
                 ],
             }
         ]
     )
     reply = model.query([])
     assert "one moment" in (reply.content or "")
-    assert reply.tool_calls[0].name == "get_order"
+    assert reply.tool_calls[0].name == "get_item"
     assert reply.tool_calls[0].arguments == {"id": "#W1"}
 
 
@@ -821,7 +821,7 @@ def test_a_memo_hit_carries_zeroed_usage(tmp_path):
 
 @pytest.mark.parametrize("first_kwargs,second_kwargs", [
     ({"config": pv.ModelConfig(temperature=0.1)}, {"config": pv.ModelConfig(temperature=0.9)}),
-    ({"tools": [{"name": "get_order"}]}, {"tools": [{"name": "get_refund"}]}),
+    ({"tools": [{"name": "get_item"}]}, {"tools": [{"name": "get_refund"}]}),
 ], ids=["config", "tool_list"])
 def test_a_different_config_or_tool_list_is_a_miss(tmp_path, first_kwargs, second_kwargs):
     inner = pv.TestModel(["a", "b"])
@@ -883,7 +883,7 @@ def test_the_reasoning_family_is_not_sent_a_temperature_it_will_refuse(monkeypat
     assert _body("openai/bright-4-mini", temperature=0)["temperature"] == 0
 
 
-TOOLS = [{"name": "get_order", "input_schema": {"type": "object"}}]
+TOOLS = [{"name": "get_item", "input_schema": {"type": "object"}}]
 
 
 @pytest.mark.parametrize("model_id,tools,config,expected", [
@@ -1108,7 +1108,7 @@ def test_the_exchange_names_the_sampling_sent_the_wire_id_the_endpoint_and_the_p
     model = anthropic_model(handler, sleeps, model_id="anthropic/model-a", wire_id="model-b")
     reply = model.query(
         [{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}],
-        tools=[{"name": "get_order", "description": "d", "input_schema": {"type": "object"}}],
+        tools=[{"name": "get_item", "description": "d", "input_schema": {"type": "object"}}],
         config=pv.ModelConfig(max_tokens=64, temperature=0.0, stop=["END"]),
     )
     exchange = reply.exchange

@@ -639,8 +639,8 @@ def seed_tool_sigs(workdir: Path) -> None:
     from kullback.runner.records import ToolSig
 
     (workdir / "tool_sigs.json").write_text(json.dumps([
-        as_dict(ToolSig(name="cancel_order", kind="write", unclassified=False)),
-        as_dict(ToolSig(name="get_order_details", kind="read", unclassified=False)),
+        as_dict(ToolSig(name="cancel_item", kind="write", unclassified=False)),
+        as_dict(ToolSig(name="get_loan_details", kind="read", unclassified=False)),
         as_dict(ToolSig(name="mystery_tool", kind="read", unclassified=True)),
     ]), encoding="utf-8")
 
@@ -650,7 +650,7 @@ def test_verdict_passes_the_write_tools_and_the_flagged_tools(workdir):
     seed_task(workdir)
     seed_tool_sigs(workdir)
     lines = [{"run_id": "r1", "env_id": "env-1", "task_id": "t1"},
-             {"idx": 0, "type": "tool_call", "payload": {"id": "c1", "name": "cancel_order", "args": {}}},
+             {"idx": 0, "type": "tool_call", "payload": {"id": "c1", "name": "cancel_item", "args": {}}},
              {"idx": 1, "type": "tool_result", "payload": {"id": "c1", "result": {"ok": True}}},
              {"idx": 2, "type": "tool_call", "payload": {"id": "c2", "name": "mystery_tool", "args": {}}},
              {"idx": 3, "type": "tool_result", "payload": {"id": "c2", "result": {"ok": True}}},
@@ -659,7 +659,7 @@ def test_verdict_passes_the_write_tools_and_the_flagged_tools(workdir):
         "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
     (body,) = stored_verdicts(workdir)
-    assert body["pass"] is False and body["failing_atom"] == "extra_write:cancel_order"
+    assert body["pass"] is False and body["failing_atom"] == "extra_write:cancel_item"
     assert "env_mark:flagged_tool:mystery_tool" in body["notes"]
     assert "side_effect_check_skipped" not in body["notes"]
 
@@ -703,11 +703,11 @@ def test_verdict_passes_the_entity_schema_so_exempt_columns_are_dropped(workdir)
         task_id="t1", verifier_version="v1",
         atoms=[Atom(id="a_nothing_moves", kind="forbidden", predicate_src="diff()")]))), encoding="utf-8")
     stop = {"idx": 0, "type": "stop", "payload": {
-        "run_id": "r1", "start_state": {"orders": {"o1": {"updated_at": "t0"}}},
-        "end_state": {"orders": {"o1": {"updated_at": "t1"}}}}}
+        "run_id": "r1", "start_state": {"loans": {"o1": {"updated_at": "t0"}}},
+        "end_state": {"loans": {"o1": {"updated_at": "t1"}}}}}
     (workdir / "runs" / "t1" / "r1.jsonl").write_text(json.dumps(stop) + "\n", encoding="utf-8")
-    schema = EntitySchema(tables=["orders"], columns=[
-        Column(table="orders", name="updated_at", **{"class": "exempt"})])
+    schema = EntitySchema(tables=["loans"], columns=[
+        Column(table="loans", name="updated_at", **{"class": "exempt"})])
     (workdir / "schema.json").write_text(json.dumps(as_dict(schema)), encoding="utf-8")
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
     (body,) = stored_verdicts(workdir)
@@ -824,16 +824,16 @@ def _judge(name: str, verdict: str):
     from kullback.ai.provider import TestModel
     from kullback.runner.judge import AgenticJudge
 
-    def read_order(order_id: str = "o1") -> dict:
+    def read_item(loan_id: str = "o1") -> dict:
         """Read one order out of the End state."""
-        return {"order_id": order_id, "status": "cancelled"}
+        return {"loan_id": loan_id, "status": "cancelled"}
 
     replies = [
-        {"tool_calls": [{"id": "c1", "name": "read_order", "arguments": {}}]},
+        {"tool_calls": [{"id": "c1", "name": "read_item", "arguments": {}}]},
         {"content": json.dumps({"verdict": verdict, "cited_spans": [f"by {name}"],
                                 "sub_answers": [{"question": "q", "answer": "yes", "cited_span": "s"}]})},
     ]
-    return AgenticJudge(TestModel(replies, name=name, loop=True), {"read_order": read_order}, name=name)
+    return AgenticJudge(TestModel(replies, name=name, loop=True), {"read_item": read_item}, name=name)
 
 
 def _run_jsonl(folder: Path, run_id: str, wrote: bool) -> Path:
@@ -841,7 +841,7 @@ def _run_jsonl(folder: Path, run_id: str, wrote: bool) -> Path:
              {"idx": 0, "type": "user_turn", "payload": {"content": "stop order W123"}}]
     if wrote:
         lines += [{"idx": 1, "type": "tool_call",
-                   "payload": {"id": "c5", "name": "cancel_pending_order", "args": {"order_id": "W123"}}},
+                   "payload": {"id": "c5", "name": "cancel_hold", "args": {"loan_id": "W123"}}},
                   {"idx": 2, "type": "tool_result", "payload": {"id": "c5", "result": {"ok": True}}}]
     lines.append({"idx": 9, "type": "stop", "payload": {"termination_reason": "done"}})
     path = folder / f"{run_id}.jsonl"
@@ -855,7 +855,7 @@ def _judge_verifier() -> Verifier:
 
     return Verifier(task_id="t1", atoms=[
         Atom(id="a_write", kind="required",
-             predicate_src='wrote("cancel_pending_order", order_id="W123")'),
+             predicate_src='wrote("cancel_hold", loan_id="W123")'),
         Atom(id="a_polite", kind="required", judge=True, description="the tone matched the policy"),
     ])
 
@@ -906,7 +906,7 @@ def test_a_failure_code_left_unmarked_gets_a_cause_and_one_verdict_file(tmp_path
     verifier = _judge_verifier()
     paths = [_run_jsonl(tmp_path, "r1", True), _run_jsonl(tmp_path, "r2", False)]
     out_dir = tmp_path / "verdicts"
-    common = {"write_tools": {"cancel_pending_order"}}
+    common = {"write_tools": {"cancel_hold"}}
     answers = cli._judged_atoms(verifier, paths, (_judge("a", "pass"), _judge("b", "pass")), tmp_path)
     verdicts = regrade(paths, verifier, None, out_dir=out_dir, judge_results=answers,
                        judge_version="1", **common)
