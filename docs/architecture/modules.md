@@ -19,6 +19,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/domain.py` | Reads a domain's public material into task archetypes and coverage gaps, with a guarded fetcher (D225). |
 | `kullback/graph.py` | The tool-call dependency graph the recordings show, and walks over it (D224). |
 | `kullback/laws.py` | Laws that hold for any tool, checked by generated call sequences with no model (D258). |
+| `kullback/live_counts.py` | One live count of a workdir, and one row per Task, for every frontend. |
 | `kullback/round_snapshot.py` | One round's Task table, written once and never rewritten (D218). |
 | `kullback/sampling.py` | One keyed draw for every per-Task or per-Run sample, stable when counts move (D212). |
 | `kullback/store.py` | `WorkdirStore`: the durable, locked read and write of a declared workdir artifact. |

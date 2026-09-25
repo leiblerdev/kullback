@@ -659,45 +659,25 @@ def _session_subscriber(workdir: Path):
 
 def _counts_line(workdir: Path) -> str:
     """The workdir counts as one line: trusted, refused and fidelity off the gate rulings."""
-    from kullback.gates import counts as counts_mod
+    from kullback import live_counts
 
-    root = Path(workdir)
-    task_status = _json_at(root, "task_status.json")
-    verifiers = _verifier_dicts(root)
-    replays = _json_at(root, "replays.json")
-    result = counts_mod.round_counts(
-        task_status, verifiers, {}, {}, _refusal_dicts(root), {}, replays,
-        _json_at(root, "rerolls.json"), _entry("kullback.runner.canon", "load_rules")(root / "canon-rules.json"),
-        (_json_at(root, "tool_sigs.json") or {}).get("sigs", []), workdir=root)
-    return (f"trusted {result['trusted']}, refused {result['refused_count']}, "
-            f"fidelity {result['fidelity']}/{result['tasks']}")
+    counts = live_counts.workdir_counts(workdir, max_age=0.0)
+    return (f"trusted {counts['trusted']}, refused {counts['refused']}, "
+            f"fidelity {counts['fidelity']}/{counts['tasks']}")
 
 
 def _verifier_dicts(root: Path) -> list:
     """The stored Verifiers as dicts; a workdir with none yet reads as empty."""
-    folder = root / "verifiers"
-    if not folder.is_dir():
-        return []
-    out = []
-    for path in sorted(folder.glob("*.json")):
-        try:
-            out.append(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, ValueError):
-            continue
-    return out
+    from kullback import live_counts
+
+    return live_counts.verifier_dicts(root)
 
 
 def _refusal_dicts(root: Path) -> dict:
     """The stored refusals keyed by Task; a workdir with none yet reads as empty."""
-    out: dict = {}
-    for folder in (root / "refusals", root / "env" / "refusals"):
-        if folder.is_dir():
-            for path in sorted(folder.glob("*.json")):
-                try:
-                    out.setdefault(path.stem, json.loads(path.read_text(encoding="utf-8")))
-                except (OSError, ValueError):
-                    continue
-    return out
+    from kullback import live_counts
+
+    return live_counts.refusal_dicts(root)
 
 
 @app.command("freeze-runner")
@@ -1197,16 +1177,80 @@ def status(
         typer.echo(f"moved: {row['task_id']} at {row['stage']}")
 
 
+@app.command("tasks")
+def tasks(
+    workdir: Path = WORKDIR,
+    status: Optional[str] = typer.Option(None, "--status",
+                                         help="Show only Tasks standing in this word: open, refused, trusted or drifted."),
+    as_json: bool = typer.Option(False, "--json", help="Print the rows as JSON."),
+    task: Optional[str] = typer.Option(None, "--task", help="Print one Task's detail instead of the rows."),
+):
+    """List every Task with why it stands where it stands: status, replay, suite, probes, drift, last finding."""
+    from kullback import live_counts
+
+    root = Path(workdir)
+    if task is not None:
+        try:
+            detail = live_counts.task_detail(root, task)
+        except KeyError:
+            typer.echo(f"no such task: {task}")
+            raise typer.Exit(1) from None
+        if as_json:
+            typer.echo(json.dumps(detail, indent=2, sort_keys=True, default=str))
+        else:
+            for line in _task_detail_lines(detail):
+                typer.echo(line)
+        return
+    rows = live_counts.task_rows(root)
+    if status is not None:
+        if status == "drifted":
+            rows = [row for row in rows if row["drift"] is not None]
+        elif status in ("open", "refused", "trusted"):
+            rows = [row for row in rows if row["status"] == status]
+        else:
+            typer.echo("status is open, refused, trusted or drifted")
+            raise typer.Exit(2)
+    if as_json:
+        typer.echo(json.dumps(rows, indent=2, sort_keys=True, default=str))
+        return
+    typer.echo("id status replay suite probes drift last finding")
+    for row in rows:
+        typer.echo(_task_row_line(row))
+
+
+def _task_row_line(row: dict) -> str:
+    """One Task's row as text: every cell, with a dash where the workdir holds nothing."""
+    finding = " ".join(part for part in (row["last_finding_kind"], row["last_finding_path"]) if part)
+    cells = [row["task_id"], row["status"], row["replay"] or "-", row["suite"] or "-",
+             row["probes"] or "-", row["drift"] or "-", finding or "-"]
+    return " ".join(cells)
+
+
+def _task_detail_lines(detail: dict) -> list[str]:
+    """One Task's detail as text: the row, the gate that failed, findings, atoms and replay calls."""
+    finding = " ".join(part for part in (detail["last_finding_kind"], detail["last_finding_path"]) if part)
+    lines = [f"task {detail['task_id']}", f"status: {detail['status']}",
+             f"replay: {detail['replay'] or '-'}", f"suite: {detail['suite'] or '-'}",
+             f"probes: {detail['probes'] or '-'}", f"drift: {detail['drift'] or '-'}",
+             f"last finding: {finding or '-'}", f"failing gate: {detail['failing_gate'] or 'none'}"]
+    for row in detail["open_findings"]:
+        lines.append("finding: " + " ".join(part for part in (row["kind"], row["path"]) if part))
+    atoms = detail["atom_counts"]
+    lines.append("atoms: " + (", ".join(f"{kind} {count}" for kind, count in sorted(atoms.items()))
+                              if atoms else "none"))
+    matched, total = detail["replay_matched"], detail["replay_total"]
+    lines.append(f"replay calls: {(matched if matched is not None else '-')}/"
+                 f"{(total if total is not None else '-')} matched/total")
+    return lines
+
+
 def _json_at(root: Path, name: str) -> dict:
     """One JSON record of a workdir, or nothing where the file is missing or half-written."""
-    path = root / name
-    if not path.is_file():
-        return {}
-    try:
-        body = json.loads(path.read_text(encoding="utf-8"))
-    except ValueError:
-        return {}
-    return body if isinstance(body, dict) else {}
+    from kullback import live_counts
+
+    return live_counts.json_at(root, name)
+
+
 @app.command("judge-smoke")
 def judge_smoke(
     model: str = typer.Option(..., "--model", help="Candidate judge model id, as provider/model."),
