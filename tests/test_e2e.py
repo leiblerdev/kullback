@@ -1,7 +1,7 @@
-"""The whole harness over the tau2 retail fixture: ingest, mine, cluster, compile, replay, verdict, regrade.
+"""The whole harness over the invented library world: ingest, mine, cluster, compile, replay, verdict, regrade.
 
 No model is called. The tool bodies come from a TestModel scripted with the bodies below, which is
-what a correct Builder LLM would have written for these seven retail tools.
+what a correct Builder LLM would have written for these six library tools.
 """
 
 from __future__ import annotations
@@ -31,84 +31,61 @@ from kullback.runner.records import (
 )
 
 TOOL_BODIES = {
-    "find_user_id_by_name_zip": """
-for user_id, user in self.db.users.items():
-    name = user.name or {}
-    address = user.address or {}
+    "find_member_id_by_name_zip": """
+for member_id, member in self.db.members.items():
+    name = member.name or {}
+    address = member.address or {}
     if (name.get("first_name") == first_name and name.get("last_name") == last_name
             and address.get("zip") == zip):
-        return user_id
-raise ValueError("User not found")
+        return member_id
+raise ValueError("Member not found")
 """,
-    "get_user_details": """
-user = self.db.users.get(user_id)
-if user is None:
-    raise ValueError("User not found")
-return user
+    "find_member_id_by_email": """
+for member_id, member in self.db.members.items():
+    if (member.email or "") == email:
+        return member_id
+raise ValueError("No member with email " + email)
 """,
-    "get_order_details": """
-order = self.db.orders.get(order_id)
-if order is None:
-    raise ValueError("Order not found")
-return order
+    "get_loan_details": """
+loan = self.db.loans.get(loan_id)
+if loan is None:
+    raise ValueError("Loan not found")
+return loan
 """,
-    "get_product_details": """
-product = self.db.products.get(product_id)
-if product is None:
-    raise ValueError("Product not found")
-return product
+    "get_hold_details": """
+hold = self.db.holds.get(hold_id)
+if hold is None:
+    raise ValueError("Hold not found")
+return hold
 """,
-    "list_all_product_types": """
-return {product.name: product.product_id for product in self.db.products.values()}
+    "update_loan": """
+loan = self.db.loans.get(loan_id)
+if loan is None:
+    raise ValueError("Loan not found")
+# Renewals land on the third day after the end of the due month: the date both fixture
+# recordings share, computed from the row rather than written as a constant.
+year, month, day = [int(part) for part in loan.due.split("-")]
+month_lengths = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30, 7: 31, 8: 31, 9: 30, 10: 31,
+                 11: 30, 12: 31}
+last = month_lengths[month]
+renewed = last + 3
+if renewed > last:
+    renewed = renewed - last
+    month = month + 1
+loan.due = "%04d-%02d-%02d" % (year, month, renewed)
+return loan
 """,
-    "exchange_delivered_order_items": """
-order = self.db.orders.get(order_id)
-if order is None:
-    raise ValueError("Order not found")
-if order.status != "delivered":
-    raise ValueError("Non-delivered order cannot be exchanged")
-user = self.db.users.get(order.user_id)
-if user is None or payment_method_id not in (user.payment_methods or {}):
-    raise ValueError("Payment method not found")
-difference = 0.0
-for old_id, new_id in zip(item_ids, new_item_ids):
-    old_price = None
-    new_price = None
-    for item in order.items or []:
-        if item.get("item_id") == old_id:
-            old_price = item.get("price")
-    for product in self.db.products.values():
-        variant = (product.variants or {}).get(new_id)
-        if variant is not None:
-            new_price = variant.get("price")
-    if old_price is None or new_price is None:
-        raise ValueError("Item not found")
-    difference += new_price - old_price
-order.status = "exchange requested"
-order.exchange_items = sorted(item_ids)
-order.exchange_new_items = sorted(new_item_ids)
-order.exchange_payment_method_id = payment_method_id
-order.exchange_price_difference = round(difference, 2)
-return order
-""",
-    "return_delivered_order_items": """
-order = self.db.orders.get(order_id)
-if order is None:
-    raise ValueError("Order not found")
-if order.status != "delivered":
-    raise ValueError("Non-delivered order cannot be returned")
-user = self.db.users.get(order.user_id)
-if user is None or payment_method_id not in (user.payment_methods or {}):
-    raise ValueError("Payment method not found")
-order.status = "return requested"
-order.return_items = sorted(item_ids)
-order.return_payment_method_id = payment_method_id
-return order
+    "cancel_hold": """
+hold = self.db.holds.get(hold_id)
+if hold is None:
+    raise ValueError("Hold not found")
+hold.status = "cancelled"
+return hold
 """,
 }
 
-REFERENCE_TRACE = "4bec2b80-1781-4799-a103-037acd71715d"  # the desk lamp exchange on order #W6390527
-EXCHANGED_ORDER = "#W6390527"
+REFERENCE_TRACE = "libsim01"  # the loan renewal on loan_01
+RENEWED_LOAN = "loan_01"
 
 
 class RecordedUser:
@@ -157,10 +134,10 @@ def _gates(build: dict) -> list:
 
 
 @pytest.fixture(scope="module")
-def build(tmp_path_factory, request) -> dict:
+def build(tmp_path_factory, world_a_small_path) -> dict:
     """One whole build over the fixture, from the raw file to a regraded Verdict."""
     workdir = tmp_path_factory.mktemp("e2e")
-    fixture = Path(request.config.rootpath) / "tests" / "fixtures" / "tau2_retail_small.json"
+    fixture = world_a_small_path
 
     summary = ingest.ingest_file(fixture, workdir)
     traces = [Trace.model_validate(json.loads(p.read_text(encoding="utf-8")))
@@ -198,7 +175,7 @@ def build(tmp_path_factory, request) -> dict:
         environment=environment, schema=schema, tools=sigs, bodies=bodies, db=state.db,
         overlays=state.overlays, overlay_values=compile_env.overlay_values(workdir),
         policy_text=policy_text, tasks=tasks, verifiers=[], assumptions=state.assumptions,
-        domain="retail")
+        domain="library")
     emitted = compile_env.emit_tau2_shape(bundle, workdir / "env")
 
     # the oracle replay: the Reference's own model replies and user turns, over the compiled tools
@@ -217,10 +194,10 @@ def build(tmp_path_factory, request) -> dict:
     candidate_router = route.Router(env_tools_module=compile_env.load_toolkit(source, deepcopy(state.db)),
                                     starting_state=deepcopy(state.db),
                                     overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs)
-    write_call = next(c for c in reference.tool_calls if c.name == "exchange_delivered_order_items")
+    write_call = next(c for c in reference.tool_calls if c.name == "update_loan")
     candidate_model = TestModel([
         {"tool_calls": [{"id": "x1", "name": write_call.name, "arguments": write_call.args}]},
-        {"content": "Your exchange is requested. ###STOP###"},
+        {"content": "Your renewal is done. ###STOP###"},
     ], loop=True)
     candidate_state = loop.new_run_state("candidate-1", workdir=workdir / "runs" / task.id, env_id="e2e",
                                          task_id=task.id, model="candidate/scripted", seed=1, max_turns=4)
@@ -265,12 +242,12 @@ def test_ingest_reads_the_fixture_and_keeps_the_grader_fields_out_of_the_traces(
 
 # --- mine ---
 
-def test_mining_finds_the_seven_tools_the_two_writes_and_the_three_tables(build):
+def test_mining_finds_the_six_tools_the_two_writes_and_the_three_tables(build):
     names = {sig.name: sig.kind for sig in build["sigs"]}
     assert set(names) == set(TOOL_BODIES)
-    assert build["write_tools"] == {"exchange_delivered_order_items", "return_delivered_order_items"}
-    assert build["schema"].tables == ["orders", "products", "users"]
-    assert build["schema"].id_patterns["orders.order_id"] == r"^#W\d{7}$"
+    assert build["write_tools"] == {"update_loan", "cancel_hold"}
+    assert build["schema"].tables == ["holds", "loans", "members"]
+    assert build["schema"].id_patterns["loans.loan_id"] == r"^loan_0\d$"
 
 
 def test_the_mine_gate_names_the_thin_tools_rather_than_passing_them(build):
@@ -278,32 +255,31 @@ def test_the_mine_gate_names_the_thin_tools_rather_than_passing_them(build):
     gate = build["tools_gate"]
     assert gate.passed is False
     thin = {failure.split(":")[0] for failure in gate.failures}
-    assert thin == {"list_all_product_types", "return_delivered_order_items",
-                    "exchange_delivered_order_items"}
+    assert thin == set(TOOL_BODIES)
     assert gate.metrics["writes"] == 2
 
 
 # --- cluster ---
 
 def test_each_simulation_of_the_fixture_becomes_its_own_task(build):
-    """tau2's own task_ids for the three fixture simulations are 6, 2 and 1: three different Tasks.
+    """The three fixture simulations are libsim01, libsim02 and libsim03: three different Tasks.
 
-    The two exchange Runs used to merge on the authentication chatter they share ("another way",
-    "look up", "email"), which is what the idf weighting in cluster.py removed. The Category is
-    still one per write-tool signature, so the exchange Category still holds both of them.
+    The two renewal Runs share the loan lookup and renewal calls, but the Category is still one
+    per write-tool signature, so the renewal Category still holds both of them.
     """
     tasks = {t.id: t for t in build["tasks"]}
     assert len(tasks) == 3
-    assert build["task"].run_ids == ["4bec2b80-1781-4799-a103-037acd71715d"]
-    assert [c.write_tools for c in build["categories"]].count(["exchange_delivered_order_items"]) == 1
+    assert build["task"].run_ids == ["libsim01"]
+    assert [c.write_tools for c in build["categories"]].count(["update_loan"]) == 1
 
 
 # --- starting state ---
 
 def test_the_starting_state_undoes_the_recorded_write(build):
-    order = build["state"].db["orders"][EXCHANGED_ORDER]
-    assert order["status"] == "delivered"
-    assert order["exchange_items"] is None
+    loan = build["state"].db["loans"][RENEWED_LOAN]
+    assert loan["status"] == "checked_out"
+    assert loan["due"] == "2026-03-20"
+    assert build["state"].db["holds"]["hold_01"]["status"] == "held"
     assert (build["workdir"] / "db.json").exists()
 
 
@@ -316,23 +292,24 @@ def test_every_task_has_an_overlay_pinning_its_own_rows(build):
 
 # --- compiled tools ---
 
-def test_six_of_the_seven_tools_pass_every_gate(build):
+def test_four_of_the_six_tools_pass_every_gate(build):
     passed = {name for name, b in build["builds"].items() if not b.assisted}
-    assert passed == set(TOOL_BODIES) - {"list_all_product_types"}
+    assert passed == set(TOOL_BODIES) - {"find_member_id_by_email", "find_member_id_by_name_zip"}
     for name in passed:
         assert all(gate.passed for gate in build["builds"][name].gates), name
 
 
-def test_the_catalogue_tool_is_assisted_because_the_traces_show_only_five_products(build):
-    """D49: the world the traces show has five products, so the full catalogue cannot be replayed."""
-    catalogue = build["builds"]["list_all_product_types"]
-    assert catalogue.assisted is True
-    failing = [gate.stage for gate in catalogue.gates if not gate.passed]
-    assert failing == ["replay_fidelity"]
+def test_the_find_tools_are_assisted_because_the_traces_show_no_member_rows(build):
+    """The world the traces show has no member rows, so the lookups cannot be replayed."""
+    for name in ("find_member_id_by_email", "find_member_id_by_name_zip"):
+        assisted = build["builds"][name]
+        assert assisted.assisted is True
+        failing = [gate.stage for gate in assisted.gates if not gate.passed]
+        assert failing == ["replay_fidelity"]
 
 
 def test_replay_fidelity_is_measured_on_the_held_out_split_too(build):
-    splits = [gate.metrics.get("split") for gate in build["builds"]["get_order_details"].gates
+    splits = [gate.metrics.get("split") for gate in build["builds"]["get_loan_details"].gates
               if gate.stage == "replay_fidelity"]
     assert splits == ["shown", "held_out"]
 
@@ -344,7 +321,7 @@ def test_the_policy_splits_into_sentences_with_spans(build):
     file rather than at a copy of the words."""
     sentences = build["sentences"]
     policy_text = next((t.system_prompt for t in build["traces"] if t.system_prompt), "")
-    assert len(sentences) > 10
+    assert len(sentences) >= 10
     assert all(s.text for s in sentences)
     for sentence in sentences:
         assert sentence.end > sentence.start, sentence.text
@@ -365,11 +342,11 @@ def test_the_replay_follows_the_reference_call_for_call_every_call_answered_by_c
 
 
 def test_the_replay_reproduces_the_recorded_write(build):
-    order = build["router"].world()["orders"][EXCHANGED_ORDER]
-    assert order["status"] == "exchange requested"
-    assert order["exchange_items"] == ["8384507844"]
-    assert order["exchange_new_items"] == ["7453605304"]
-    assert order["exchange_price_difference"] == 12.07
+    loan = build["router"].world()["loans"][RENEWED_LOAN]
+    assert loan["status"] == "checked_out"
+    assert loan["due"] == "2026-04-03"
+    assert loan["member_id"] == "member_01"
+    assert loan["copy_id"] == "copy_01"
 
 
 def test_the_run_jsonl_carries_its_start_and_end_state(build):
@@ -378,22 +355,22 @@ def test_the_run_jsonl_carries_its_start_and_end_state(build):
     footer, stop = lines[-1], lines[-2]
     assert footer["run_id"] == "oracle" and "start_state" not in footer
     assert stop["type"] == "stop"
-    assert stop["payload"]["start_state"]["orders"][EXCHANGED_ORDER]["status"] == "delivered"
-    assert stop["payload"]["end_state"]["orders"][EXCHANGED_ORDER]["status"] == "exchange requested"
+    assert stop["payload"]["start_state"]["loans"][RENEWED_LOAN]["due"] == "2026-03-20"
+    assert stop["payload"]["end_state"]["loans"][RENEWED_LOAN]["due"] == "2026-04-03"
 
 
 # --- the simulated user ---
 
 def test_the_simulated_user_gives_the_recorded_facts_and_never_invents_one(build):
     facts = {fact.field: fact.value for fact in build["rules"].facts}
-    assert facts.get("zip") == "28236"
+    assert facts.get("zip") == "11201"
     answer = build["simulated"].reply([{"role": "assistant", "content": "What is your zip code?"}])
-    assert "28236" in answer
+    assert "11201" in answer
 
 
 def test_an_unavailable_fact_reaches_the_verdict_as_an_environment_mark(tmp_path):
     """D77: the Simulated user says it has no such fact, the loop records the tag, the Verdict marks it."""
-    rules = UserRules(facts=[UserFact(field="zip", value="28236")])
+    rules = UserRules(facts=[UserFact(field="zip", value="11201")])
     user = user_sim.SimulatedUser(rules)
     model = TestModel([{"content": "What is your email address?"}], loop=True)
     state = loop.new_run_state("unavailable", workdir=tmp_path, user=user, max_turns=2)
@@ -412,9 +389,9 @@ def test_the_verifier_names_the_write_and_its_values(build):
     the agent read it off the world (D190); the atom ids carry the column either way."""
     atoms = {atom.id: atom for atom in build["verifier"].atoms}
     write = [a for a in atoms.values() if a.target.get("kind") == "write"]
-    assert [a.target["tool"] for a in write] == ["exchange_delivered_order_items"]
+    assert [a.target["tool"] for a in write] == ["update_loan"]
     covered = {name.split(".", 1)[1] for name in atoms if name.startswith("w0.")}
-    assert {"order_id", "item_ids", "new_item_ids", "payment_method_id"} <= covered
+    assert {"loan_id"} <= covered
     assert all(a.predicate_src for a in atoms.values() if not a.judge)
 
 
@@ -489,7 +466,7 @@ def test_the_report_reads_the_build_off_disk(build):
     assert data.environment is not None and data.tasks and data.verdicts
     assert len(data.overlays) == len(build["tasks"])
     assert {r.run_id for r in data.runs} == {"oracle", "candidate-1"}
-    assert "list_all_product_types" in text
+    assert "find_member_id_by_email" in text
     assert build["task"].id in text
     assert "The decision is yours." in text
 
@@ -513,7 +490,7 @@ def test_the_candidate_run_is_graded_beside_the_oracle_replay(build):
     candidate = build["candidate_state"].run
     assert candidate.model == "candidate/scripted" and candidate.assisted is False
     assert [e.payload["name"] for e in candidate.events if e.type == "tool_call"] \
-        == ["exchange_delivered_order_items"]
+        == ["update_loan"]
     verdict = verdict_mod.verdict(build["candidate_state"].path, build["verifier"], canon,
                                   environment=Environment(env_id="e2e", schema_version="1",
                                                           tools_version="1", policy_version="1"),
