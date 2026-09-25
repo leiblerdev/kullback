@@ -151,12 +151,13 @@ def test_a_re_derive_after_a_rejection_picks_the_other_recording_and_not_the_cac
 
 
 
-def test_a_builder_right_ruling_then_an_accepted_edit_in_the_same_session_keeps_the_derive_again_mark(tmp_path):
+
+def _repicked_session(tmp_path):
+    """A session whose builder_right ruling on an outcome note re-picked the Reference to ref and alt."""
     world = make_world(tmp_path)
     (tmp_path / "v").mkdir()
-    verifier = VF.derive(tmp_path / "v")
     root = _root(world)
-    root.verifiers = {"t1": verifier}
+    root.verifiers = {"t1": VF.derive(tmp_path / "v")}
     root.probe_model, root.run_probe = object(), probe_runner_over()
     root.task_status = {"t1": {"verifier_passed": True, "references": 1}}
     write_json(world.workdir / "task_status.json", {"t1": {"verifier_passed": True, "references": 1}})
@@ -168,10 +169,29 @@ def test_a_builder_right_ruling_then_an_accepted_edit_in_the_same_session_keeps_
         task_id="t1", kind="reference_disagreement", text="the Reference wrote one entity more",
         note_ruling="builder_right")))
     assert _references(world) == ["ref", "alt"]
+    return world, root
+
+
+def _status_rows(world) -> list[dict]:
+    return [read_json(world.workdir / "exam" / "task_status.json")["t1"],
+            read_json(world.workdir / "task_status.json")["t1"]]
+
+
+def test_a_rejection_with_no_edit_after_it_leaves_the_task_marked_and_untrusted(tmp_path):
+    world, root = _repicked_session(tmp_path)
+    assert all(row[RC.DERIVE_AGAIN] == RC.REPICKED and row["verifier_passed"] is False
+               for row in _status_rows(world))
     assert root.task_status["t1"][RC.DERIVE_AGAIN] == RC.REPICKED
+    ruling = T.trusted_gate(root.task_status, list(root.verifiers.values()), {}, {}, {}, {}, root.replays,
+                            root.rerolls, root.canon_rules, root.sigs)
+    assert ruling.metrics["untrusted"] == {"t1": RC.REPICKED}
+
+
+def test_an_accepted_edit_after_a_rejection_clears_the_mark_and_the_task_is_trusted(tmp_path):
+    world, root = _repicked_session(tmp_path)
     result = asyncio.run(_tool(root, "edit_verifier").execute(D.ProposeArgs(
         task_id="t1", reason="widen the cap",
         add=[{"id": "wide_cap", "kind": "allowed", "payload": {"kind": "entity_count", "count": 1000}}])))
-    assert result.rulings and all(record["accepted"] for record in result.rulings)
-    row = read_json(world.workdir / "exam" / "task_status.json")["t1"]
-    assert row[RC.DERIVE_AGAIN] == RC.REPICKED
+    by_name = {record["name"]: record for record in result.rulings}
+    assert by_name["trusted"]["accepted"] is True
+    assert all(RC.DERIVE_AGAIN not in row and row["verifier_passed"] is True for row in _status_rows(world))

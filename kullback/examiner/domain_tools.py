@@ -476,16 +476,26 @@ def _keep_suite_status(root: ExamRoot, task_id: str, row: Optional[dict]) -> Non
 
     The exposed exam/task_status.json the session reads, and the workdir's task_status.json the
     Builder's status reads, the rest of each row kept. A ruling with no suite leaves the rows as they were.
+    A suite passed now was ruled against the Reference the Task holds now, which is the evidence a
+    re-picked Reference's `derive_again` mark waits for (reference_check), so a pass clears the mark.
     """
     if row is None:
         return
-    root.task_status[task_id] = {**(root.task_status.get(task_id) or {}), **row}
+    root.task_status[task_id] = _merged_status(root.task_status.get(task_id), row)
     write_json(root.exam_dir / "task_status.json", root.task_status)
     path = Path(root.workdir) / "task_status.json"
     status = read_json(path, {}) if path.is_file() else {}
     status = status if isinstance(status, dict) else {}
-    status[task_id] = {**(status.get(task_id) or {}), **row}
+    status[task_id] = _merged_status(status.get(task_id), row)
     write_json(path, status)
+
+
+def _merged_status(old: Optional[dict], row: dict) -> dict:
+    """The status row with `row` over it, and without the re-pick mark once the suite passed."""
+    merged = {**(old or {}), **row}
+    if merged.get("verifier_passed") is True and "derive_again" not in row:
+        merged.pop("derive_again", None)
+    return merged
 
 
 # The D79 checks a Run should fail or pass, where the atom the rows name is the one to change.
@@ -603,7 +613,7 @@ def _accepted_result(root: ExamRoot, args: ProposeArgs, candidate: Verifier, dig
     summary = (f"proposal version {candidate.verifier_version} for task {args.task_id} "
                f"({digest[:12]}) accepted: " + "; ".join(record["line"] for record in records))
     ruled = rule_note(root.workdir, args.task_id, "edit_verifier", "agrees",
-                      f"version {candidate.verifier_version} accepted: {args.reason}")
+                      f"version {candidate.verifier_version} accepted: {args.reason}", root=root)
     if ruled is not None:
         summary += f"; the Builder's note on task {args.task_id} is ruled: agrees"
     if alias:
