@@ -34,7 +34,7 @@ def sleeps():
 
 def anthropic_model(handler, sleeps, **kwargs):
     return pv.AnthropicModel(
-        model_id=kwargs.pop("model_id", "anthropic/claude-opus-5"),
+        model_id=kwargs.pop("model_id", "anthropic/model-a"),
         api_key="k",
         client=transport_of(handler),
         sleep=sleeps.append,
@@ -46,7 +46,7 @@ def anthropic_model(handler, sleeps, **kwargs):
 def ok_anthropic(body=None):
     payload = body or {
         "content": [{"type": "text", "text": "hello"}],
-        "model": "claude-opus-5",
+        "model": "model-a",
         "stop_reason": "end_turn",
         "usage": {
             "input_tokens": 10,
@@ -66,9 +66,9 @@ def ok_anthropic(body=None):
 
 
 @pytest.mark.parametrize("model_id,expected", [
-    ("anthropic/claude-opus-5", ("anthropic", "claude-opus-5")),
-    ("openai/gpt-4o-mini", ("openai", "gpt-4o-mini")),
-    ("local/meta/llama-3.1", ("local", "meta/llama-3.1")),
+    ("anthropic/model-a", ("anthropic", "model-a")),
+    ("openai/model-a", ("openai", "model-a")),
+    ("local/acme/model-1", ("local", "acme/model-1")),
 ], ids=["anthropic", "openai", "slash_in_wire_id"])
 def test_split_model_id_gives_provider_and_wire_id(model_id, expected):
     assert pv.split_model_id(model_id) == expected
@@ -76,14 +76,14 @@ def test_split_model_id_gives_provider_and_wire_id(model_id, expected):
 
 def test_split_model_id_needs_a_provider():
     with pytest.raises(ValueError):
-        pv.split_model_id("claude-opus-5")
+        pv.split_model_id("model-a")
 
 
 def test_wire_id_can_differ_from_the_model_id(sleeps):
-    model = anthropic_model(ok_anthropic(), sleeps, model_id="anthropic/opus", wire_id="claude-opus-5")
-    assert model.name == "anthropic/opus"
+    model = anthropic_model(ok_anthropic(), sleeps, model_id="anthropic/model-a", wire_id="model-b")
+    assert model.name == "anthropic/model-a"
     body = model.build_body([{"role": "user", "content": "hi"}], None, pv.ModelConfig())
-    assert body["model"] == "claude-opus-5"
+    assert body["model"] == "model-b"
 
 
 def test_substitute_env_fills_dollar_brace_vars_and_raises_on_a_missing_one():
@@ -218,7 +218,7 @@ def test_anthropic_reply_carries_content_tool_calls_and_usage(live, sleeps):
             {"type": "text", "text": "sure"},
             {"type": "tool_use", "id": "t1", "name": "get_order", "input": {"id": "7"}},
         ],
-        "model": "claude-opus-5",
+        "model": "model-a",
         "stop_reason": "tool_use",
         "usage": {
             "input_tokens": 11,
@@ -258,7 +258,7 @@ def test_adapters_refuse_while_live_calls_are_off(sleeps, path):
         elif path == "post":
             model.post({"model": "x"})
         else:
-            pv.AnthropicModel(model_id="anthropic/claude-opus-5", api_key="k", env={}).client()
+            pv.AnthropicModel(model_id="anthropic/model-a", api_key="k", env={}).client()
     assert "ALLOW_MODEL_REQUESTS" in str(excinfo.value)
     assert hits == []
 
@@ -376,7 +376,7 @@ def ok_openai(body=None):
 def openai_model(handler, sleeps, cls=None, **kwargs):
     cls = cls or pv.OpenAIModel
     return cls(
-        model_id=kwargs.pop("model_id", "openai/gpt-4o-mini"),
+        model_id=kwargs.pop("model_id", "openai/model-a"),
         api_key="k",
         client=transport_of(handler),
         sleep=sleeps.append,
@@ -388,7 +388,7 @@ def openai_model(handler, sleeps, cls=None, **kwargs):
 def test_the_openai_adapter_sends_bearer_and_function_tools_and_subtracts_cached_tokens_from_input(live, sleeps):
     seen = {}
     payload = {
-        "model": "gpt-4o-mini",
+        "model": "model-a",
         "choices": [
             {
                 "finish_reason": "tool_calls",
@@ -421,7 +421,7 @@ def test_the_openai_adapter_sends_bearer_and_function_tools_and_subtracts_cached
     )
     assert seen["url"].endswith("/chat/completions")
     assert seen["headers"]["authorization"] == "Bearer k"
-    assert seen["body"]["model"] == "gpt-4o-mini"
+    assert seen["body"]["model"] == "model-a"
     assert seen["body"]["messages"][0]["role"] == "system"
     assert seen["body"]["tools"][0]["function"]["name"] == "get_order"
     assert reply.content == "on it"
@@ -440,8 +440,8 @@ def test_openai_compatible_substitutes_the_base_url(live, sleeps):
         return httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}], "usage": {}})
 
     model = pv.OpenAICompatibleModel(
-        model_id="local/llama",
-        wire_id="llama-3.1-8b-instruct",
+        model_id="local/model-a",
+        wire_id="model-1",
         base_url="${OLLAMA_HOST}/v1",
         env={"OLLAMA_HOST": "http://127.0.0.1:11434"},
         client=transport_of(handler),
@@ -458,7 +458,7 @@ def test_openai_compatible_needs_no_key(live, sleeps):
         return httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}], "usage": {}})
 
     model = pv.OpenAICompatibleModel(
-        model_id="local/llama",
+        model_id="local/model-a",
         base_url="http://127.0.0.1:11434/v1",
         client=transport_of(handler),
         sleep=sleeps.append,
@@ -467,7 +467,7 @@ def test_openai_compatible_needs_no_key(live, sleeps):
     assert model.query([{"role": "user", "content": "hi"}]).content == "hi"
     # A local endpoint reached through model_for, with no key anywhere, still runs: the rule that
     # a hand-passed endpoint takes PROVIDER_API_KEY must not make a key required.
-    local = pv.model_for("local/llama", base_url="http://127.0.0.1:11434/v1", env={},
+    local = pv.model_for("local/model-a", base_url="http://127.0.0.1:11434/v1", env={},
                          client=transport_of(ok_openai()), sleep=sleeps.append)
     assert local.api_key is None and local.key_required is False
     assert "authorization" not in local.headers()
@@ -476,7 +476,7 @@ def test_openai_compatible_needs_no_key(live, sleeps):
 
 def test_a_missing_key_is_reported_before_the_request(live, sleeps):
     model = pv.AnthropicModel(
-        model_id="anthropic/claude-opus-5",
+        model_id="anthropic/model-a",
         client=transport_of(ok_anthropic()),
         sleep=sleeps.append,
         env={},
@@ -512,30 +512,30 @@ def registry_snapshot(tmp_path, monkeypatch, catalog):
 REGISTRY = {
     "opencode-go": {"id": "opencode-go", "name": "OpenCode Go", "npm": "@ai-sdk/openai-compatible",
                     "api": "https://opencode.ai/zen/go/v1", "env": ["OPENCODE_API_KEY"],
-                    "models": {"kimi-k3": {"limit": {"context": 1048576, "output": 131072},
+                    "models": {"model-a": {"limit": {"context": 1048576, "output": 131072},
                                            "cost": {"input": 3, "output": 15}}}},
     "google": {"id": "google", "name": "Google", "npm": "@ai-sdk/google", "env": ["GEMINI_API_KEY"],
-               "models": {"gemini-3-pro": {}}},
+               "models": {"model-b": {}}},
     "vertex": {"id": "vertex", "name": "Vertex", "npm": "@ai-sdk/google-vertex",
                "api": "https://aiplatform.googleapis.com/v1", "env": ["GOOGLE_VERTEX_PROJECT"],
-               "models": {"gemini-3-pro": {}}},
+               "models": {"model-b": {}}},
 }
 
 
 def test_a_provider_the_registry_names_needs_no_adapter_and_no_base_url(tmp_path, monkeypatch):
     """The founder's ask: choose any model, the way OpenCode does, without code per provider."""
     registry_snapshot(tmp_path, monkeypatch, REGISTRY)
-    model = pv.model_for("opencode-go/kimi-k3", env={"OPENCODE_API_KEY": "sk-zen"})
+    model = pv.model_for("opencode-go/model-a", env={"OPENCODE_API_KEY": "sk-zen"})
     assert isinstance(model, pv.RegistryModel)
     assert model.base_url == "https://opencode.ai/zen/go/v1"
-    assert model.wire_id == "kimi-k3"
+    assert model.wire_id == "model-a"
     assert model.api_key == "sk-zen"
     assert model.headers()["authorization"] == "Bearer sk-zen"
 
 
 def test_the_registry_model_asks_for_the_key_variable_the_registry_names(tmp_path, monkeypatch, live):
     registry_snapshot(tmp_path, monkeypatch, REGISTRY)
-    model = pv.model_for("opencode-go/kimi-k3", env={})
+    model = pv.model_for("opencode-go/model-a", env={})
     with pytest.raises(pv.ProviderError) as raised:
         model.query([{"role": "user", "content": "hi"}])
     assert "OPENCODE_API_KEY" in str(raised.value)
@@ -543,14 +543,14 @@ def test_the_registry_model_asks_for_the_key_variable_the_registry_names(tmp_pat
 
 def test_a_base_url_the_caller_passes_wins_over_the_registry(tmp_path, monkeypatch):
     registry_snapshot(tmp_path, monkeypatch, REGISTRY)
-    model = pv.model_for("opencode-go/kimi-k3", base_url="http://127.0.0.1:8080/v1", env={})
+    model = pv.model_for("opencode-go/model-a", base_url="http://127.0.0.1:8080/v1", env={})
     assert isinstance(model, pv.OpenAICompatibleModel)
     assert model.base_url == "http://127.0.0.1:8080/v1"
 
 
 @pytest.mark.parametrize("model_id,needles", [
-    ("vertex/gemini-3-pro", ("@ai-sdk/google-vertex", "base_url")),
-    ("google/gemini-3-pro", ("no host",)),
+    ("vertex/model-b", ("@ai-sdk/google-vertex", "base_url")),
+    ("google/model-b", ("no host",)),
     ("nowhere/model-1", ("no host",)),
 ], ids=["another_request_shape", "no_host_in_registry", "unknown_provider"])
 def test_a_provider_the_registry_cannot_serve_is_refused_by_name(tmp_path, monkeypatch, model_id, needles):
@@ -565,17 +565,17 @@ def test_the_registry_is_read_from_disk_and_never_from_the_network_with_live_cal
     """With no snapshot on disk the lookup refuses; the live gate keeps it off the network."""
     monkeypatch.setattr(pv, "REGISTRY_SNAPSHOT_PATH", str(tmp_path / "absent.json"))
     with pytest.raises(ValueError):
-        pv.model_for("opencode-go/kimi-k3", env={})
+        pv.model_for("opencode-go/model-a", env={})
 
 
 def test_model_for_builds_one_adapter_per_provider():
-    anthropic = pv.model_for("anthropic/claude-opus-5", api_key="k", env={})
-    assert isinstance(anthropic, pv.AnthropicModel) and anthropic.wire_id == "claude-opus-5"
-    assert isinstance(pv.model_for("openai/o4-mini", api_key="k", env={}), pv.OpenAIModel)
-    local = pv.model_for("local/llama", base_url="http://127.0.0.1:11434/v1", env={})
+    anthropic = pv.model_for("anthropic/model-a", api_key="k", env={})
+    assert isinstance(anthropic, pv.AnthropicModel) and anthropic.wire_id == "model-a"
+    assert isinstance(pv.model_for("openai/model-a", api_key="k", env={}), pv.OpenAIModel)
+    local = pv.model_for("local/model-a", base_url="http://127.0.0.1:11434/v1", env={})
     assert isinstance(local, pv.OpenAICompatibleModel)
     with pytest.raises(ValueError):
-        pv.model_for("local/llama", env={})
+        pv.model_for("local/model-a", env={})
 
 
 # --- the three reasoning branches ---
@@ -596,7 +596,7 @@ def test_anthropic_sends_thinking_and_effort(sleeps):
 
 
 def test_openai_sends_reasoning_effort(sleeps):
-    model = openai_model(ok_anthropic(), sleeps, model_id="openai/o4-mini")
+    model = openai_model(ok_anthropic(), sleeps, model_id="openai/model-a")
     body = model.build_body(HI, None, pv.ModelConfig(reasoning_effort="low"))
     assert body["reasoning_effort"] == "low"
 
@@ -604,7 +604,7 @@ def test_openai_sends_reasoning_effort(sleeps):
 def test_a_local_endpoint_or_a_registry_gateway_is_sent_no_reasoning_fields(sleeps, tmp_path, monkeypatch):
     """Branch three: a server that does not know the field rejects the whole request."""
     model = pv.OpenAICompatibleModel(
-        model_id="local/llama",
+        model_id="local/model-a",
         base_url="http://127.0.0.1:11434/v1",
         client=transport_of(ok_anthropic()),
         env={},
@@ -614,10 +614,10 @@ def test_a_local_endpoint_or_a_registry_gateway_is_sent_no_reasoning_fields(slee
     assert "reasoning_effort" not in body
     assert "thinking" not in body
     registry_snapshot(tmp_path, monkeypatch, REGISTRY)
-    gateway = pv.model_for("opencode-go/kimi-k3", env={"OPENCODE_API_KEY": "sk-zen"})
+    gateway = pv.model_for("opencode-go/model-a", env={"OPENCODE_API_KEY": "sk-zen"})
     body = gateway.build_body(HI, None, pv.ModelConfig(reasoning_effort="high"))
     assert "reasoning_effort" not in body
-    assert body["model"] == "kimi-k3"
+    assert body["model"] == "model-a"
 
 
 # --- what the model is actually shown ---
@@ -776,9 +776,9 @@ def test_load_dotenv_adds_keys_without_overriding(tmp_path):
 
 
 @pytest.mark.parametrize("model_id,config_kwargs,expected", [
-    ("openai/gpt-4o-mini", {"prompt_cache_key": "kullback-abc-compile_tools"}, "kullback-abc-compile_tools"),
-    ("openai/gpt-4o-mini", {}, None),
-    ("anthropic/claude-opus-5", {"prompt_cache_key": "kullback-abc-compile_tools"}, None),
+    ("openai/model-a", {"prompt_cache_key": "kullback-abc-compile_tools"}, "kullback-abc-compile_tools"),
+    ("openai/model-a", {}, None),
+    ("anthropic/model-a", {"prompt_cache_key": "kullback-abc-compile_tools"}, None),
 ], ids=["openai_set", "openai_unset", "anthropic_ignores"])
 def test_only_the_openai_body_carries_the_prompt_cache_key_and_only_when_one_was_set(
         sleeps, model_id, config_kwargs, expected):
@@ -895,14 +895,14 @@ def test_a_responses_model_posts_input_items_to_the_responses_path(live, sleeps)
         seen["body"] = json.loads(request.content.decode())
         seen["ua"] = request.headers.get("user-agent")
         seen["session"] = request.headers.get("x-opencode-session")
-        return httpx.Response(200, json={"status": "completed", "model": "muse-spark-1.3-contributor",
+        return httpx.Response(200, json={"status": "completed", "model": "model-a",
                                          "output": [{"type": "message", "content": [
                                              {"type": "output_text", "text": "hi"}]}],
                                          "usage": {"input_tokens": 5, "completion_tokens": 0,
                                                    "output_tokens": 3}})
 
     model = pv.OpenAIResponsesModel(
-        model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
+        model_id="opencode-go/model-a", base_url="https://opencode.ai/zen/go/v1",
         key_env_var="OPENCODE_API_KEY", client=transport_of(handler),
         sleep=sleeps.append, env={"OPENCODE_API_KEY": "sk-zen"},
     )
@@ -911,7 +911,7 @@ def test_a_responses_model_posts_input_items_to_the_responses_path(live, sleeps)
                                 "parameters": {"type": "object"}}],
                         config=pv.ModelConfig(max_tokens=16))
     assert seen["url"] == "https://opencode.ai/zen/go/v1/responses"
-    assert seen["body"]["model"] == "muse-spark-1.3-contributor"
+    assert seen["body"]["model"] == "model-a"
     assert seen["body"]["input"] == [{"role": "user", "content": "hi"}]
     assert seen["body"]["tools"] == [{"type": "function", "name": "lookup",
                                       "description": "look things up",
@@ -928,7 +928,7 @@ def test_a_responses_reply_parses_calls_and_skips_reasoning(live, sleeps):
 
     def handler(request):
         return httpx.Response(200, json={
-            "status": "completed", "model": "muse-spark-1.3-contributor",
+            "status": "completed", "model": "model-a",
             "output": [{"type": "reasoning", "encrypted_content": "Q-PaD"},
                        {"type": "message", "content": [
                            {"type": "output_text", "text": "looking it up"}]},
@@ -938,7 +938,7 @@ def test_a_responses_reply_parses_calls_and_skips_reasoning(live, sleeps):
                       "input_tokens_details": {"cached_tokens": 6}}})
 
     model = pv.OpenAIResponsesModel(
-        model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
+        model_id="opencode-go/model-a", base_url="https://opencode.ai/zen/go/v1",
         client=transport_of(handler), sleep=sleeps.append, env={},
     )
     reply = model.query([{"role": "user", "content": "hi"}])
@@ -958,7 +958,7 @@ def test_a_responses_history_round_trips_tool_traffic(live, sleeps):
         return httpx.Response(200, json={"status": "completed", "output": [], "usage": {}})
 
     model = pv.OpenAIResponsesModel(
-        model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
+        model_id="opencode-go/model-a", base_url="https://opencode.ai/zen/go/v1",
         client=transport_of(handler), sleep=sleeps.append, env={},
     )
     model.query([{"role": "user", "content": "hi"},
@@ -979,7 +979,7 @@ def test_a_failed_responses_call_raises_instead_of_parsing(live, sleeps):
                                          "error": {"message": "the model errored"}})
 
     model = pv.OpenAIResponsesModel(
-        model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
+        model_id="opencode-go/model-a", base_url="https://opencode.ai/zen/go/v1",
         client=transport_of(handler), sleep=sleeps.append, env={},
     )
     with pytest.raises(pv.ProviderError) as raised:
@@ -998,14 +998,14 @@ def test_a_docs_named_responses_model_resolves_to_the_responses_adapter(tmp_path
 
 
 def test_a_model_row_overriding_to_another_shape_is_refused_by_name(tmp_path, monkeypatch):
-    """minimax-m3 rides opencode-go but speaks the Anthropic shape; chat bodies must never go
+    """A model that rides opencode-go but speaks the Anthropic shape; chat bodies must never go
     at it (previously the provider-level npm sent exactly those)."""
     catalog = dict(REGISTRY)
     catalog["opencode-go"] = dict(REGISTRY["opencode-go"])
-    catalog["opencode-go"]["models"] = {"minimax-m3": {"provider": {"npm": "@ai-sdk/anthropic"}}}
+    catalog["opencode-go"]["models"] = {"model-c": {"provider": {"npm": "@ai-sdk/anthropic"}}}
     registry_snapshot(tmp_path, monkeypatch, catalog)
     with pytest.raises(ValueError) as raised:
-        pv.model_for("opencode-go/minimax-m3", env={})
+        pv.model_for("opencode-go/model-c", env={})
     assert "@ai-sdk/anthropic" in str(raised.value)
 
 
@@ -1019,7 +1019,7 @@ def test_opencode_hosts_get_session_and_identity_headers(live, sleeps):
         return httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}], "usage": {}})
 
     model = pv.OpenAICompatibleModel(
-        model_id="opencode-go/kimi-k3", base_url="https://opencode.ai/zen/go/v1",
+        model_id="opencode-go/model-a", base_url="https://opencode.ai/zen/go/v1",
         client=transport_of(handler), sleep=sleeps.append, env={},
     )
     assert model.query([{"role": "user", "content": "hi"}]).content == "hi"
@@ -1035,7 +1035,7 @@ def test_opencode_hosts_get_session_and_identity_headers(live, sleeps):
         return httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}], "usage": {}})
 
     local = pv.OpenAICompatibleModel(
-        model_id="local/llama", base_url="http://127.0.0.1:11434/v1",
+        model_id="local/model-a", base_url="http://127.0.0.1:11434/v1",
         client=transport_of(other_handler), sleep=sleeps.append, env={},
     )
     assert local.query([{"role": "user", "content": "hi"}]).content == "hi"
@@ -1063,7 +1063,7 @@ def test_the_chat_adapter_takes_the_written_tokens_out_of_input_and_records_them
     """A reply with cached_tokens 0 still carried cache_write_tokens 1339 inside a prompt of 1342,
     billed at the model's own cache_write rate; dropping it billed a build for less than it cost,
     and leaving it inside input billed the same tokens twice. None reported is 0."""
-    model = pv.OpenAIModel(model_id="openai/gpt-5.6-luna", api_key="k", env={})
+    model = pv.OpenAIModel(model_id="openai/model-a", api_key="k", env={})
     reply = model.parse_reply({
         "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": prompt, "completion_tokens": 286, "prompt_tokens_details": details},
@@ -1083,17 +1083,17 @@ def test_the_exchange_names_the_sampling_sent_the_wire_id_the_endpoint_and_the_p
         seen["body"] = pv.json_body(request)
         return httpx.Response(200, json={"content": [], "usage": {}})
 
-    model = anthropic_model(handler, sleeps, model_id="anthropic/opus", wire_id="claude-haiku-4-5")
+    model = anthropic_model(handler, sleeps, model_id="anthropic/model-a", wire_id="model-b")
     reply = model.query(
         [{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}],
         tools=[{"name": "get_order", "description": "d", "input_schema": {"type": "object"}}],
         config=pv.ModelConfig(max_tokens=64, temperature=0.0, stop=["END"]),
     )
     exchange = reply.exchange
-    assert exchange.provider == "anthropic" and exchange.wire_id == "claude-haiku-4-5"
+    assert exchange.provider == "anthropic" and exchange.wire_id == "model-b"
     assert exchange.endpoint == "https://api.anthropic.com/v1/messages"
     # The sampling is the body minus the prompt itself, so a field no one enumerated is still recorded.
-    assert exchange.sampling == {"model": "claude-haiku-4-5", "max_tokens": 64, "temperature": 0.0,
+    assert exchange.sampling == {"model": "model-b", "max_tokens": 64, "temperature": 0.0,
                                  "stop_sequences": ["END"]}
     assert exchange.n_messages == len(seen["body"]["messages"])
     assert exchange.messages_hash == pv.body_hash(seen["body"]["messages"])
@@ -1148,13 +1148,13 @@ def test_an_offline_model_records_no_exchange(make_recorded_model):
 @pytest.mark.parametrize("adapter", ["openai_chat", "responses", "anthropic"])
 def test_a_body_carries_logprobs_only_when_they_were_asked_for_and_the_endpoint_takes_them(sleeps, adapter):
     if adapter == "openai_chat":
-        body = _body("openai/gpt-4.1-mini", logprobs=True, top_logprobs=5)
+        body = _body("openai/model-a", logprobs=True, top_logprobs=5)
         assert body["logprobs"] is True and body["top_logprobs"] == 5
-        plain = _body("openai/gpt-4.1-mini")
+        plain = _body("openai/model-a")
         assert "logprobs" not in plain and "top_logprobs" not in plain
     elif adapter == "responses":
         model = pv.OpenAIResponsesModel(
-            model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
+            model_id="opencode-go/model-a", base_url="https://opencode.ai/zen/go/v1",
             client=transport_of(ok_anthropic()), sleep=sleeps.append, env={},
         )
         body = model.build_body(HI, None, pv.ModelConfig(logprobs=True, top_logprobs=3))
@@ -1263,8 +1263,8 @@ def test_an_endpoint_passed_by_hand_does_not_borrow_the_openai_key(monkeypatch):
 
 # The usage block a vendor's own reference prints for a chat completion: the cache hit and miss
 # counts beside a prompt_tokens_details that repeats the hit count under the name the OpenAI shape
-# uses. Copied field for field from api-docs.deepseek.com/api/create-chat-completion (2026-09-10),
-# and confirmed against a live reply the same day.
+# uses. Copied field for field from that reference (2026-09-10), and confirmed against a live
+# reply the same day.
 DOCUMENTED_USAGE = {
     "completion_tokens": 10,
     "prompt_tokens": 16,
@@ -1335,5 +1335,5 @@ def test_the_adapters_with_a_provider_of_their_own_still_report_what_the_endpoin
     """Only the endpoints reached by the registry or by a base URL are renamed: an adapter written
     for one vendor already knows the name it gets back is that vendor's."""
     echoed = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
-              "model": "gpt-4o-mini-dated", "usage": {}}
-    assert openai_model(ok_openai(echoed), sleeps).query(HI).model == "gpt-4o-mini-dated"
+              "model": "model-a-dated", "usage": {}}
+    assert openai_model(ok_openai(echoed), sleeps).query(HI).model == "model-a-dated"

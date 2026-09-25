@@ -23,7 +23,10 @@ from kullback.ai.model_limits import request_rules_for
 from kullback.ai.usage import Usage
 from kullback.runner import budget
 
-MODEL = "bedrock/global.anthropic.claude-opus-5-5"
+MODEL = "bedrock/global.a-vendor.big-1"
+# A model whose request rules the code keys on by name (model_limits.REQUEST_RULES): the tests
+# below that prove those rules spell it, because a neutral handle would take the default rules.
+ALWAYS_ON = "bedrock/global.anthropic.claude-opus-5-5"
 KEYS = {"AWS_ACCESS_KEY_ID": "AKIDEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-real-secret"}
 TOOL = {"name": "look_up", "description": "d", "input_schema": {"type": "object"}}
 SIGNED_THINKING = {"type": "thinking", "thinking": "", "signature": "sig-abc"}
@@ -37,7 +40,7 @@ def live():
 def ok_reply(content=None, usage=None):
     return httpx.Response(200, json={
         "content": content or [{"type": "text", "text": "done"}],
-        "model": "claude-opus-5-5", "stop_reason": "end_turn",
+        "model": "big-1", "stop_reason": "end_turn",
         "usage": usage or {"input_tokens": 10, "output_tokens": 2},
     })
 
@@ -121,7 +124,7 @@ def test_the_wire_id_goes_unchanged_and_cache_points_sit_on_blocks_never_top_lev
     bedrock(capture(seen)).query(
         [{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}], tools=[TOOL])
     body = json.loads(seen[0].content)
-    assert body["model"] == "global.anthropic.claude-opus-5-5"
+    assert body["model"] == "global.a-vendor.big-1"
     assert "cache_control" not in body
     assert body["system"][-1]["cache_control"] == {"type": "ephemeral"}
     assert body["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
@@ -132,11 +135,11 @@ def test_a_profile_id_or_an_arn_goes_as_given_and_a_bare_id_goes_on_the_global_p
     for env in (KEYS, {**KEYS, "AWS_REGION": "eu-west-1"}, {**KEYS, "AWS_REGION": "ap-northeast-1"}):
         def wire(model_id, env=env):
             return pv.BedrockAnthropicModel(model_id, env=env).wire_id
-        assert wire("bedrock/us.anthropic.claude-opus-5-5") == "us.anthropic.claude-opus-5-5"
-        assert wire("bedrock/global.anthropic.claude-opus-5-5") == "global.anthropic.claude-opus-5-5"
-        assert wire("bedrock/anthropic.claude-opus-5-5") == "global.anthropic.claude-opus-5-5"
-        assert wire("bedrock/anthropic.claude-haiku-4-5-20251001-v1:0") == (
-            "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+        assert wire("bedrock/us.a-vendor.big-1") == "us.a-vendor.big-1"
+        assert wire("bedrock/global.a-vendor.big-1") == "global.a-vendor.big-1"
+        assert wire("bedrock/a-vendor.big-1") == "global.a-vendor.big-1"
+        assert wire("bedrock/a-vendor.small-1-20251001-v1:0") == (
+            "global.a-vendor.small-1-20251001-v1:0")
         assert wire("bedrock/" + arn) == arn
 
 
@@ -168,14 +171,16 @@ def body_for(config, model_id=MODEL, messages=None, tools=(TOOL,)):
 
 
 def test_thinking_is_never_sent_disabled_or_budgeted_to_a_model_where_it_is_always_on():
-    assert "thinking" not in body_for(pv.ModelConfig(thinking={"type": "disabled"}))
-    assert "thinking" not in body_for(pv.ModelConfig(thinking={"type": "enabled", "budget_tokens": 2048}))
-    assert body_for(pv.ModelConfig(thinking={"type": "adaptive"}))["thinking"] == {"type": "adaptive"}
-    assert body_for(pv.ModelConfig(effort="low"))["output_config"] == {"effort": "low"}
+    assert "thinking" not in body_for(pv.ModelConfig(thinking={"type": "disabled"}), model_id=ALWAYS_ON)
+    assert "thinking" not in body_for(pv.ModelConfig(thinking={"type": "enabled", "budget_tokens": 2048}),
+                                      model_id=ALWAYS_ON)
+    assert body_for(pv.ModelConfig(thinking={"type": "adaptive"}),
+                    model_id=ALWAYS_ON)["thinking"] == {"type": "adaptive"}
+    assert body_for(pv.ModelConfig(effort="low"), model_id=ALWAYS_ON)["output_config"] == {"effort": "low"}
 
 
 def test_a_required_tool_call_goes_as_auto_with_the_demand_in_the_prompt_after_the_cache_point():
-    body = body_for(pv.ModelConfig(tool_choice="required"),
+    body = body_for(pv.ModelConfig(tool_choice="required"), model_id=ALWAYS_ON,
                     messages=[{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}])
     assert body["tool_choice"] == {"type": "auto"}
     assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
@@ -185,7 +190,7 @@ def test_a_required_tool_call_goes_as_auto_with_the_demand_in_the_prompt_after_t
 
 
 def test_sampling_parameters_are_left_out_for_a_model_that_refuses_them():
-    assert "temperature" not in body_for(pv.ModelConfig(temperature=0.0))
+    assert "temperature" not in body_for(pv.ModelConfig(temperature=0.0), model_id=ALWAYS_ON)
     assert body_for(pv.ModelConfig(temperature=0.0), model_id="bedrock/anthropic.claude-haiku-4-5")["temperature"] == 0.0
 
 
@@ -278,20 +283,24 @@ def test_the_stream_is_signed_over_the_bytes_it_posts_and_keeps_the_signed_think
 
 def test_a_bedrock_call_is_priced_and_its_window_is_known():
     usage = Usage(input=1_000_000, output=1_000_000, cache_read=1_000_000, cache_write=1_000_000)
-    assert budget.call_cost(usage, MODEL) == pytest.approx(4.0 + 20.0 + 0.2 + 5.0)
-    assert budget.call_cost(usage, "anthropic/claude-opus-5-5") == pytest.approx(29.2)
-    assert budget.window_for(MODEL) == 1_000_000
-    assert budget.window_for("bedrock/anthropic.claude-haiku-4-5") == 200_000
-    for model in ("bedrock/anthropic.claude-opus-5", "bedrock/anthropic.claude-sonnet-5",
-                  "bedrock/anthropic.claude-haiku-4-5"):
-        assert budget.is_priced(model)
+    model = pv.DEFAULT_MODEL
+    assert budget.call_cost(usage, model) == pytest.approx(4.0 + 20.0 + 0.2 + 5.0)
+    assert budget.window_for(model) == 1_000_000
+    small = next(m for m in budget.CONTEXT_WINDOWS
+                 if m.startswith("bedrock/") and budget.CONTEXT_WINDOWS[m] == 200_000)
+    assert budget.window_for(small) == 200_000
+    for priced in budget.PRICES:
+        if priced.startswith("bedrock/"):
+            assert budget.is_priced(priced)
 
 
-def test_every_inference_profile_of_a_model_is_priced_and_windowed_by_the_one_row():
+def test_every_inference_profile_of_a_model_is_priced_and_windowed_by_the_one_row(monkeypatch):
+    monkeypatch.setitem(budget.PRICES, "bedrock/a-vendor.big-1",
+                        {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0})
+    monkeypatch.setitem(budget.CONTEXT_WINDOWS, "bedrock/a-vendor.big-1", 1_000_000)
     usage = Usage(input=1_000_000, output=1_000_000, cache_read=1_000_000, cache_write=1_000_000)
     for profile in ("global.", "us.", "eu.", "apac.", ""):
-        model = f"bedrock/{profile}anthropic.claude-opus-5-5"
+        model = f"bedrock/{profile}a-vendor.big-1"
         assert budget.call_cost(usage, model) == pytest.approx(29.2)
         assert budget.window_for(model) == 1_000_000
-    assert budget.window_for("bedrock/us.anthropic.claude-haiku-4-5") == 200_000
-    assert budget.price_source("bedrock/global.anthropic.claude-sonnet-5") is not None
+    assert budget.price_source("bedrock/global.a-vendor.big-1") == "table"
