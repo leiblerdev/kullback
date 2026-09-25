@@ -663,3 +663,14 @@ def test_a_probe_and_a_finding_with_note_ruling_each_rule_an_open_note(tmp_path)
     with pytest.raises(ValueError, match="no open note"):
         _run(finding.execute(D.FindingArgs(task_id="t1", kind="other", text="again",
                                            note_ruling="builder_right")))
+
+
+def test_a_stop_before_a_reroll_buys_no_run_and_says_the_build_was_stopped(tmp_path):
+    from tests.examiner.test_runners import _exam_env, _priced_script
+
+    root = ExamRoot(workdir=_exam_env(tmp_path / "env"), reroll_model=_priced_script(),
+                    canon_rules=CanonRules(), should_stop=lambda: True)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "reroll"]
+    result = _run(tool.execute(D.RerollArgs(task_id="widget_task", count=3)))
+    assert result.runs == [] and result.spent_usd == 0
+    assert "stopped after 0 of 3 Runs: the build was stopped" in result.summary

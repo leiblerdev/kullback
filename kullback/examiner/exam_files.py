@@ -137,6 +137,7 @@ class ExamRoot:
     reroll_model: Any = None
     probe_model: Any = None
     run_probe: Any = None
+    should_stop: Any = None  # a person's stop, asked before each re-roll Run is bought
 
     @property
     def exam_dir(self) -> Path:
