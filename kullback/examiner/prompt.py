@@ -70,7 +70,13 @@ def tools_section() -> str:
             'e.g. {"task_id": "t1", "kind": "fidelity", "text": "what differs", '
             '"rows": [...], "path": "env/tools/<name>.py", "change": "what should differ"}.\n'
             "reroll: buy more frontier Runs of a Task, "
-            'e.g. {"task_id": "t1", "count": 2}.')
+            'e.g. {"task_id": "t1", "count": 2}.\n'
+            "check_reference: the evidence on a Task's Reference in one view, "
+            'e.g. {"task_id": "t1"}.\n'
+            "reject_reference: reject a Reference whose End state is wrong for the Intent, "
+            'e.g. {"task_id": "t1", "run_id": "r1", "why": "the user asked for a change and it wrote nothing"}; '
+            "every Run of that End state goes with it and the Reference is chosen again; a Task with "
+            "none left waits in the Reference pool for a later Run.")
 
 
 def examples_section() -> str:
@@ -94,7 +100,11 @@ def choice_section() -> str:
             "finding, not a third. A Builder note says a Task is not verifiable as written: rule "
             "on it before anything else on that Task, with edit_verifier when you agree, a probe, "
             "or a finding with note_ruling saying whether the Builder is right and why. The Task "
-            "cannot be refused while its note is open; the ruling goes back to the Builder.")
+            "cannot be refused while its note is open; the ruling goes back to the Builder. "
+            "Call check_reference before editing atoms when most re-rolls disagree with the "
+            "Reference, when the Reference wrote nothing, or when a note is open. Judge the view "
+            "against the Intent and the policy; when the End state is not what they ask for, "
+            "reject_reference instead of fitting the atoms to it.")
 
 
 def feedback_section() -> str:

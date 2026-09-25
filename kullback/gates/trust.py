@@ -59,6 +59,7 @@ from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES, skipped_
 from kullback.runner.canon import load_rules
 from kullback.runner.gate_support import _get, gate
 from kullback.runner.records import (
+    EXAM_DIR,
     GateResult,
     ProbePool,
     Run,
@@ -82,6 +83,19 @@ NO_POOL = "no_pool"
 # The Examiner's own re-roll rows (second-path batches), beside the workdir's re-roll file (D133).
 EXAMINER_REROLLS = ("examiner", "rerolls.json")
 RUNS_DIR = "runs"
+#: Why a Task waiting in the Reference pool is untrusted: no recording left standing to derive from.
+NEEDS_REFERENCE = "needs a Reference"
+#: The pool file under the exam folder, written by examiner.reference and read here; the name is
+#: owned here since gates never reach into the examiner.
+POOL_FILE = "reference_pool.json"
+
+
+def pooled_tasks(workdir: Any) -> list[str]:
+    """The sorted ids of the Tasks waiting on a Reference, or empty without a workdir."""
+    if workdir is None:
+        return []
+    body = read_json(Path(workdir) / EXAM_DIR / POOL_FILE, {}) or {}
+    return sorted(body) if isinstance(body, dict) else []
 
 
 def finished_runs(task_id: str, replays: dict, rerolls: dict) -> list[str]:
@@ -125,6 +139,9 @@ def _suite_reason(row: Any, skipped: list[str]) -> str:
     gate that skipped it is the only thing that knows; `NOT_RUN_REASON` is the fallback for a row
     written before those words were recorded.
     """
+    if _get(row, "derive_again", None):
+        # The Reference was re-picked after the suite ran (reference_check), so the reason is that.
+        return str(_get(row, "derive_again", ""))
     checks = _get(row, "checks", None) or {}
     given = _get(row, "not_run_reasons", None) or {}
     named = []
@@ -254,7 +271,8 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
                  workdir: Any = None) -> GateResult:
     """A failure per Task with a Verifier that is not trusted, with the first reason that holds.
 
-    Given the workdir, the seeds of each accepted version are checked for provenance (D281).
+    Given the workdir, the seeds of each accepted version are checked for provenance (D281), and a
+    Task waiting in the Reference pool is untrusted for want of a Reference.
     """
     write_tools = write_tools_of(sigs)
     files = seed_files(workdir, replays, rerolls) if workdir is not None else {}
@@ -264,6 +282,7 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     legitimate = legitimate_runs(replays, rerolls, discarded_runs(task_status))
     admitted = refuse_gate(refusals, replays, rerolls).metrics["refused"]
     refused = {task_id: _reason_of((refusals or {})[task_id]) for task_id in admitted}
+    pooled = {task_id: NEEDS_REFERENCE for task_id in pooled_tasks(workdir)}
     trusted: list[str] = []
     untrusted: dict[str, str] = {}
     fractions: dict[str, Optional[float]] = {}
@@ -289,7 +308,9 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
             not_run[task_id] = skipped
         suite_passed = bool(_get(row, "verifier_passed", False))
         only_not_run = not suite_passed and _held_by_not_run(row, skipped)
-        if not suite_passed and not only_not_run:
+        if task_id in pooled:
+            reason = pooled[task_id]
+        elif not suite_passed and not only_not_run:
             reason = _suite_reason(row, skipped)
         elif passing:
             reason = f"probe {passing[0]} scores a pass"

@@ -498,16 +498,26 @@ def _keep_suite_status(root: ExamRoot, task_id: str, row: Optional[dict]) -> Non
 
     The exposed exam/task_status.json the session reads, and the workdir's task_status.json the
     Builder's status reads, the rest of each row kept. A ruling with no suite leaves the rows as they were.
+    A suite passed now was ruled against the Reference the Task holds now, which is the evidence a
+    re-picked Reference's `derive_again` mark waits for (reference_check), so a pass clears the mark.
     """
     if row is None:
         return
-    root.task_status[task_id] = {**(root.task_status.get(task_id) or {}), **row}
+    root.task_status[task_id] = _merged_status(root.task_status.get(task_id), row)
     write_json(root.exam_dir / "task_status.json", root.task_status)
     path = Path(root.workdir) / "task_status.json"
     status = read_json(path, {}) if path.is_file() else {}
     status = status if isinstance(status, dict) else {}
-    status[task_id] = {**(status.get(task_id) or {}), **row}
+    status[task_id] = _merged_status(status.get(task_id), row)
     write_json(path, status)
+
+
+def _merged_status(old: Optional[dict], row: dict) -> dict:
+    """The status row with `row` over it, and without the re-pick mark once the suite passed."""
+    merged = {**(old or {}), **row}
+    if merged.get("verifier_passed") is True and "derive_again" not in row:
+        merged.pop("derive_again", None)
+    return merged
 
 
 # The D79 checks a Run should fail or pass, where the atom the rows name is the one to change.
@@ -627,7 +637,7 @@ def _accepted_result(root: ExamRoot, args: ProposeArgs, candidate: Verifier, dig
     summary = (f"proposal version {candidate.verifier_version} for task {args.task_id} "
                f"({digest[:12]}) accepted: " + "; ".join(record["line"] for record in records))
     ruled = rule_note(root.workdir, args.task_id, "edit_verifier", "agrees",
-                      f"version {candidate.verifier_version} accepted: {args.reason}")
+                      f"version {candidate.verifier_version} accepted: {args.reason}", root=root)
     if ruled is not None:
         summary += f"; the Builder's note on task {args.task_id} is ruled: agrees"
     if alias:
@@ -924,17 +934,26 @@ def open_note(workdir: Any, task_id: str) -> Optional[dict]:
     return note if note is not None and read_ruling(workdir, task_id) is None else None
 
 
-def rule_note(workdir: Any, task_id: Optional[str], move: str, verdict: str, text: str) -> Optional[dict]:
+def rule_note(workdir: Any, task_id: Optional[str], move: str, verdict: str, text: str,
+              root: Optional[ExamRoot] = None) -> Optional[dict]:
     """Rule on the Task's open note with one of the Examiner's moves, written next to the note.
 
-    Returns the ruling, or None when the Task has no open note.
+    Returns the ruling, or None when the Task has no open note. Agreeing with a note that says the
+    Reference's outcome is wrong also rejects that Reference (reference_check), so the ruling acts.
+    The session's `root` carries the status mark into what the session holds, so a later accepted
+    write in the same session keeps it.
     """
+    from kullback.examiner.reference_check import reject_on_note  # it reads notes through this module
+
     note = open_note(workdir, task_id) if task_id else None
     if note is None:
         return None
     ruling = {"task_id": task_id, "note_hash": note["note_hash"], "move": move, "verdict": verdict,
               "text": text}
     write_json(task_path(workdir, task_id, notes_dir(workdir), RULING_SUFFIX), ruling)
+    rejected = reject_on_note(workdir, task_id, note, verdict, text, root=root)
+    if rejected is not None:
+        ruling["reference_rejected"] = rejected
     return ruling
 
 
@@ -964,7 +983,7 @@ def _probe(root: ExamRoot):
         summary = (f"probe {probe_id} ({args.bug_class or 'no class'}) on task {args.task_id}: "
                    f"{verdict}; pool holds {len(pool)}")
         if rule_note(root.workdir, args.task_id, "probe", "builder_right" if passed else "builder_wrong",
-                     f"{verdict}" + (f"; {args.note}" if args.note else "")) is not None:
+                     f"{verdict}" + (f"; {args.note}" if args.note else ""), root=root) is not None:
             summary += f"; the Builder's note on task {args.task_id} is ruled by this probe"
         return ProbeResult(summary=summary, probe_id=probe_id, task_id=args.task_id,
                            scored_pass=bool(passed),
@@ -1017,7 +1036,7 @@ def _finding(root: ExamRoot):
         summary = (f"finding {body['finding_id']} ({kind}) filed" + _on_task(args.task_id)
                    + (f", naming {args.path}" if args.path else ""))
         if args.note_ruling is not None:
-            rule_note(root.workdir, args.task_id, "finding", args.note_ruling, args.text)
+            rule_note(root.workdir, args.task_id, "finding", args.note_ruling, args.text, root=root)
             summary += f"; the Builder's note on task {args.task_id} is ruled: {args.note_ruling}"
         return FindingResult(summary=summary, finding_id=body["finding_id"], finding=body)
 
@@ -1076,7 +1095,8 @@ def _reroll(root: ExamRoot):
 
 
 def domain_tools(root: ExamRoot) -> list[AgentTool]:
-    """The five domain tools over one ExamRoot, and propose_verifier as edit_verifier's alias for one release."""
+    """The domain tools over one ExamRoot, and propose_verifier as edit_verifier's alias for one release."""
+    from kullback.examiner import reference_check as RC  # it imports this module's note readers
     return [
         AgentTool("edit_verifier", "Write a new Verifier version: edit atoms in place (a change to an "
                   "existing atom), then drop and add; the D79 suite, the pool and the loosening gate "
@@ -1093,6 +1113,14 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
                   FindingArgs, FindingResult, _finding(root), render=render),
         AgentTool("reroll", "Buy more frontier Runs of a Task through the Runner (D112, D133).",
                   RerollArgs, RerollResult, _reroll(root), render=render),
+        AgentTool("check_reference", "Show the evidence on a Task's Reference: the Intent, each write with "
+                  "the reads before it, whether it wrote nothing, whether the recordings agree, the "
+                  "re-rolls against it, and any Builder note. Code only, no model call.",
+                  RC.CheckReferenceArgs, RC.CheckReferenceResult, RC._check_reference(root), render=render),
+        AgentTool("reject_reference", "Reject a Reference whose End state the Intent and the policy say is "
+                  "wrong: its End state is excluded, the Reference is chosen again, and a Task with none "
+                  "left waits in the Reference pool for a later Run.",
+                  RC.RejectReferenceArgs, RC.RejectReferenceResult, RC._reject_reference(root), render=render),
         AgentTool("propose_verifier", "Deprecated alias of edit_verifier, kept for one release.",
                   ProposeArgs, ProposeResult, _propose_verifier(root, alias=True), render=render),
     ]
@@ -1100,7 +1128,8 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
 
 def tool_names() -> tuple[str, ...]:
     """The domain tool names, so tests pin the Builder-called surface."""
-    return ("edit_verifier", "try_atoms", "probe", "finding", "reroll", "propose_verifier")
+    return ("edit_verifier", "try_atoms", "probe", "finding", "reroll", "check_reference", "reject_reference",
+            "propose_verifier")
 
 
 __all__ = ["DEPRECATED_ALIAS", "NOTES_DIR", "NOTE_REASONS", "note_line", "note_refusal", "notes_of",

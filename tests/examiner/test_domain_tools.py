@@ -155,7 +155,8 @@ def test_domain_tools_are_the_five_named_in_the_prompt_and_the_deprecated_alias(
     root, _, _ = _root(tmp_path)
     names = [t.name for t in D.domain_tools(root)]
     assert names == list(D.tool_names())
-    assert set(names) == {"edit_verifier", "try_atoms", "probe", "finding", "reroll", "propose_verifier"}
+    assert set(names) == {"edit_verifier", "try_atoms", "probe", "finding", "reroll", "check_reference",
+                          "reject_reference", "propose_verifier"}
     text = P.tools_section()
     for name in names[:-1]:
         assert name in text, name

@@ -132,6 +132,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/gates/stages.py` | Rulings over each Builder stage's artifact: cluster, compile, intent, readers, rerolls, export, vocabulary. |
 | `kullback/gates/tool_runs.py` | The eight rulings over what a generated tool body did in the sandbox. |
 | `kullback/gates/trust.py` | The refuse ruling (D128) and what a trusted Verifier is (D126). |
+| `kullback/gates/trust.py` | The Reference pool: Tasks waiting on a Reference, untrusted until a later Run earns one. |
 | `kullback/gates/verifier_suite.py` | The nine D79 checks over a Verifier. |
 
 ## kullback/user
@@ -163,7 +164,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 |---|---|
 | `kullback/examiner/__init__.py` | The Examiner: one Verifier per Task, probes, repairs, refusals, findings. |
 | `kullback/examiner/derive.py` | Derives one Task's Verifier from its Reference and stored re-runs (D42, D43, D91). |
-| `kullback/examiner/domain_tools.py` | The Examiner's tools: edit_verifier, try_atoms (edit_verifier's rulings, nothing written), probe, finding, reroll. |
+| `kullback/examiner/domain_tools.py` | The Examiner's tools: edit_verifier, try_atoms (edit_verifier's rulings, nothing written), probe, finding, reroll, check_reference, reject_reference. |
 | `kullback/examiner/exam_files.py` | The Examiner's root `exam/`: the read surface it is given and its findings file. |
 | `kullback/examiner/findings.py` | Findings the round's records file by themselves before the model speaks (D170). |
 | `kullback/examiner/judge.py` | The reference judge as a bounded agent, one-shot judge as fallback (D12, D92). |
@@ -172,6 +173,8 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/examiner/plan.py` | `ExaminerPlan`: what one Examiner session is given and the store its gates rule over. |
 | `kullback/examiner/prompt.py` | The Examiner's prompt sections in GEPA order. |
 | `kullback/examiner/reference.py` | Chooses References by the D111 rule and checks constraints against them. |
+| `kullback/examiner/reference_check.py` | `check_reference`: the evidence on a Task's Reference in one view, code only, for the Examiner to judge. |
+| `kullback/examiner/reference_check.py` | `reject_reference`: excludes a wrong Reference's End state, re-picks, and pools the Task in `exam/reference_pool.json` when none is left. |
 | `kullback/examiner/runners.py` | Builds the probe, re-roll and variant runners over the runner tool (D120). |
 | `kullback/examiner/session.py` | The Examiner extension and `examine`, called by the Builder. |
 | `kullback/examiner/skills.py` | The probe skill: the eight Verifier bug classes (D127, D133). |
