@@ -85,7 +85,7 @@ def test_a_message_end_without_a_request_serialises_as_it_did_before_the_field_e
 
 
 def anthropic_body(messages, tools=TOOLS, **config):
-    model = pv.AnthropicModel(model_id="anthropic/claude-opus-5", api_key="k", env={})
+    model = pv.AnthropicModel(model_id="anthropic/model-a", api_key="k", env={})
     return model.build_body(messages, tools, ModelConfig(**config))
 
 

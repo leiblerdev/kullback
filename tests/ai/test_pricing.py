@@ -41,19 +41,20 @@ def from_models_dev(result):
 CATALOG = {
     "openai": {
         "models": {
-            "gpt-5.6-luna": {
+            "model-a": {
                 "cost": {"input": 0.2, "output": 1.2, "cache_read": 0.02, "cache_write": 0.25}
             },
-            # Deliberately different from budget.PRICES["openai/gpt-4.1-mini"] (0.40/1.60/0.10),
-            # so a test that reads this value proves the snapshot won, not that the two agree.
-            "gpt-4.1-mini": {
+            # Deliberately different from the hand-kept table's row for the same id
+            # (0.40/1.60/0.10), so a test that reads this value proves the snapshot won,
+            # not that the two agree.
+            "model-b": {
                 "cost": {"input": 0.35, "output": 1.55, "cache_read": 0.09}
             },
         }
     },
     "anthropic": {
         "models": {
-            "claude-opus-5": {
+            "model-c": {
                 "cost": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25}
             }
         }
@@ -65,7 +66,7 @@ CATALOG = {
 
 
 def test_price_from_catalog_reads_the_full_provider_slash_model_id():
-    price = pricing.price_from_catalog(CATALOG, "openai/gpt-5.6-luna")
+    price = pricing.price_from_catalog(CATALOG, "openai/model-a")
     assert price == {"input": 0.2, "output": 1.2, "cache_read": 0.02, "cache_write": 0.25}
 
 
@@ -74,14 +75,14 @@ def test_price_from_catalog_missing_cache_read_defaults_to_input_and_missing_cac
     price = pricing.price_from_catalog(catalog, "x/m")
     assert price["cache_read"] == 3.0
     assert price["cache_write"] == 0.0
-    assert pricing.price_from_catalog(CATALOG, "openai/gpt-4.1-mini")["cache_write"] == 0.0
+    assert pricing.price_from_catalog(CATALOG, "openai/model-b")["cache_write"] == 0.0
 
 
 def test_price_from_catalog_unknown_model_or_missing_catalog_is_none():
     assert pricing.price_from_catalog(CATALOG, "openai/does-not-exist") is None
     assert pricing.price_from_catalog(CATALOG, "nobody/nothing") is None
-    assert pricing.price_from_catalog(None, "openai/gpt-5.6-luna") is None
-    assert pricing.price_from_catalog({}, "openai/gpt-5.6-luna") is None
+    assert pricing.price_from_catalog(None, "openai/model-a") is None
+    assert pricing.price_from_catalog({}, "openai/model-a") is None
     assert pricing.price_from_catalog(CATALOG, None) is None
 
 
@@ -157,7 +158,7 @@ def test_refresh_live_on_does_not_refetch_a_fresh_snapshot(tmp_path):
 
 
 def test_refresh_live_on_refetches_a_stale_snapshot(tmp_path):
-    newer_catalog = {"openai": {"models": {"gpt-5.6-luna": {"cost": {"input": 0.1, "output": 0.5}}}}}
+    newer_catalog = {"openai": {"models": {"model-a": {"cost": {"input": 0.1, "output": 0.5}}}}}
 
     def handler(request):
         return httpx.Response(200, json=newer_catalog)
@@ -196,12 +197,16 @@ def test_refresh_network_failure_falls_back_to_the_existing_snapshot(tmp_path):
 
 # --- budget.price_for and budget.price_source: models.dev first, then the table ---
 
+# A model the hand-kept table prices and the test snapshot does not name, so the id and the
+# expected row both come from the code and keep passing when the shipped list changes.
+TABLE_MODEL = next(iter(budget.PRICES))
+
 
 @pytest.mark.parametrize("model_id,price,source", [
-    ("openai/gpt-4.1-mini",
+    ("openai/model-b",
      {"input": 0.35, "output": 1.55, "cache_read": 0.09, "cache_write": 0.0}, "models.dev"),
-    # CATALOG has no entry for claude-haiku-4-5, so the hand-kept table answers instead.
-    ("anthropic/claude-haiku-4-5", budget.PRICES["anthropic/claude-haiku-4-5"], "table"),
+    # CATALOG names no such model, so the hand-kept table answers instead.
+    (TABLE_MODEL, budget.PRICES[TABLE_MODEL], "table"),
 ])
 def test_budget_prices_from_the_snapshot_when_it_has_a_row_and_from_the_table_otherwise(
         tmp_path, model_id, price, source):
@@ -226,7 +231,7 @@ def test_record_call_writes_price_source_onto_the_event_and_the_totals(tmp_path,
     event = Event(
         idx=0,
         type="model_call",
-        cost=Cost(provider="openai", model="openai/gpt-4.1-mini", usage=Usage(input=1_000_000), wall_ms=1.0),
+        cost=Cost(provider="openai", model="openai/model-b", usage=Usage(input=1_000_000), wall_ms=1.0),
     )
     out = budget.record_call(event, stage="mine", workdir=workdir)
     assert out.cost.price_source == "models.dev"
@@ -241,36 +246,36 @@ def test_model_adapter_prefers_the_model_row_over_the_provider_entry():
     from kullback.ai import pricing
 
     catalog = {"opencode-go": {"npm": "@ai-sdk/openai-compatible",
-                               "models": {"minimax-m3": {"provider": {"npm": "@ai-sdk/anthropic"}},
-                                          "kimi-k3": {}}}}
-    assert pricing.model_adapter_for(catalog, "opencode-go/minimax-m3") == "@ai-sdk/anthropic"
-    assert pricing.model_adapter_for(catalog, "opencode-go/kimi-k3") == "@ai-sdk/openai-compatible"
+                               "models": {"model-b": {"provider": {"npm": "@ai-sdk/anthropic"}},
+                                          "model-a": {}}}}
+    assert pricing.model_adapter_for(catalog, "opencode-go/model-b") == "@ai-sdk/anthropic"
+    assert pricing.model_adapter_for(catalog, "opencode-go/model-a") == "@ai-sdk/openai-compatible"
     assert pricing.model_adapter_for(catalog, "opencode-go/absent") == "@ai-sdk/openai-compatible"
     assert pricing.model_adapter_for(catalog, "nope/none") == ""
-    assert pricing.model_adapter_for(None, "opencode-go/kimi-k3") == ""
+    assert pricing.model_adapter_for(None, "opencode-go/model-a") == ""
 
 
 def test_a_bare_wire_id_several_providers_price_differently_is_unpriced():
-    """models.dev carries 'gpt-5.6-luna' under OpenAI and under a dozen resellers at their own
+    """models.dev carries 'model-a' under OpenAI and under a dozen resellers at their own
     rates. Taking whichever came first billed a real build at five times OpenAI's price, so a
     disagreement is no price at all; the ledger counts that as an unpriced call."""
     catalog = {
-        "openai": {"models": {"gpt-5.6-luna": {"cost": {"input": 0.2, "output": 1.2}}}},
-        "a-reseller": {"models": {"gpt-5.6-luna": {"cost": {"input": 1.0, "output": 6.0}}}},
+        "openai": {"models": {"model-a": {"cost": {"input": 0.2, "output": 1.2}}}},
+        "a-reseller": {"models": {"model-a": {"cost": {"input": 1.0, "output": 6.0}}}},
     }
-    assert pricing.price_from_catalog(catalog, "gpt-5.6-luna") is None
-    assert pricing.price_from_catalog(catalog, "openai/gpt-5.6-luna")["input"] == 0.2
-    assert pricing.price_from_catalog(catalog, "a-reseller/gpt-5.6-luna")["input"] == 1.0
+    assert pricing.price_from_catalog(catalog, "model-a") is None
+    assert pricing.price_from_catalog(catalog, "openai/model-a")["input"] == 0.2
+    assert pricing.price_from_catalog(catalog, "a-reseller/model-a")["input"] == 1.0
 
 
 def test_a_bare_wire_id_every_provider_prices_the_same_still_prices():
     catalog = {
-        "openai": {"models": {"gpt-5.6-luna": {"cost": {"input": 0.2, "output": 1.2}}}},
-        "a-mirror": {"models": {"gpt-5.6-luna": {"cost": {"input": 0.2, "output": 1.2}}}},
+        "openai": {"models": {"model-a": {"cost": {"input": 0.2, "output": 1.2}}}},
+        "a-mirror": {"models": {"model-a": {"cost": {"input": 0.2, "output": 1.2}}}},
     }
-    assert pricing.price_from_catalog(catalog, "gpt-5.6-luna")["input"] == 0.2
-    assert pricing.price_from_catalog(CATALOG, "gpt-5.6-luna") == pricing.price_from_catalog(
-        CATALOG, "openai/gpt-5.6-luna"
+    assert pricing.price_from_catalog(catalog, "model-a")["input"] == 0.2
+    assert pricing.price_from_catalog(CATALOG, "model-a") == pricing.price_from_catalog(
+        CATALOG, "openai/model-a"
     )
 
 
