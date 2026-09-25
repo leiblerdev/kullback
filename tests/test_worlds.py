@@ -93,8 +93,9 @@ def test_world_b_nests_records_and_arguments_where_world_a_stays_flat(
     )
 
 
-def test_world_bs_transcript_rows_carry_tool_calls_with_results(world_dir):
-    """The second shipped format is detected, and it holds every call with its answer."""
+def test_world_bs_transcript_rows_carry_tool_calls_with_results(world_dir, tmp_path):
+    """The second shipped format is detected, it holds every call with its answer,
+    and it passes the intake gate."""
     from kullback.builder.sources import detect_format
 
     rows = [
@@ -110,3 +111,6 @@ def test_world_bs_transcript_rows_carry_tool_calls_with_results(world_dir):
     assert len(uses) == len(results) > 0
     assert {block["tool_use_id"] for block in results} == {
         block["id"] for block in uses}
+    result = ingest.dry_run(world_dir("world_b") / "traces_small.jsonl", tmp_path)
+    assert result["passed"] is True, result["failures"]
+    assert result["traces"] == 3
