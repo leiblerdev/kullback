@@ -10,28 +10,28 @@ from kullback.runner.canon import canon_value
 from kullback.runner.records import Atom, Environment, Verifier
 from kullback.runner.regrade import cache_key, regrade, verdict_path
 
-CANCEL = "cancel_pending_order"
-READ = "get_order_details"
-WRITE_TOOLS = {CANCEL, "delete_order", "modify_order"}
+CANCEL = "cancel_item"
+READ = "get_item_details"
+WRITE_TOOLS = {CANCEL, "delete_item", "modify_item"}
 
 
-def oracle_lines(run_id="r1", order_id="W123"):
+def oracle_lines(run_id="r1", item_id="W123"):
     return [
         {"run_id": run_id, "env_id": "e1", "task_id": "t1"},
-        {"idx": 0, "type": "user_turn", "payload": {"content": "I want to stop order W123"}},
+        {"idx": 0, "type": "user_turn", "payload": {"content": "I want to stop item W123"}},
         {"idx": 1, "type": "model_call", "payload": {"content": "Why?"}},
         {"idx": 2, "type": "user_turn", "payload": {"content": "Yes, go ahead."}},
-        {"idx": 3, "type": "tool_call", "payload": {"id": "c3", "name": READ, "args": {"order_id": "W123"}}},
+        {"idx": 3, "type": "tool_call", "payload": {"id": "c3", "name": READ, "args": {"item_id": "W123"}}},
         {"idx": 4, "type": "tool_result", "payload": {"id": "c3", "result": {"status": "pending"}}},
         {"idx": 5, "type": "tool_call",
-         "payload": {"id": "c5", "name": CANCEL, "args": {"order_id": order_id, "reason": "late"}}},
+         "payload": {"id": "c5", "name": CANCEL, "args": {"item_id": item_id, "reason": "late"}}},
         {"idx": 6, "type": "tool_result", "payload": {"id": "c5", "result": {"status": "cancelled"}}},
         {"idx": 7, "type": "model_call", "payload": {"content": "Refunded to your original card."}},
         {"idx": 8, "type": "stop", "payload": {"termination_reason": "done"}},
     ]
 
 
-def _verifier(version="v1", order_id="W123"):
+def _verifier(version="v1", item_id="W123"):
     return Verifier(
         task_id="t1",
         verifier_version=version,
@@ -40,7 +40,7 @@ def _verifier(version="v1", order_id="W123"):
                 id="a_cancel",
                 kind="required",
                 provenance="user_stated",
-                predicate_src=f'wrote("cancel_pending_order", order_id="{order_id}")',
+                predicate_src=f'wrote("cancel_item", item_id="{item_id}")',
             )
         ],
     )
@@ -66,8 +66,8 @@ def _canon_upper_same_name():
 def runs(tmp_path):
     """Two stored Runs: one cancels W123, one cancels W999."""
     paths = []
-    for name, order_id in (("r1", "W123"), ("r2", "W999")):
-        lines = oracle_lines(run_id=name, order_id=order_id)
+    for name, item_id in (("r1", "W123"), ("r2", "W999")):
+        lines = oracle_lines(run_id=name, item_id=item_id)
         path = tmp_path / f"{name}.jsonl"
         with path.open("w", encoding="utf-8") as handle:
             for line in lines:
@@ -151,7 +151,7 @@ def test_a_cached_verdict_is_served_until_a_version_or_the_write_tool_set_change
 
     lines = oracle_lines()
     lines.insert(-1, {"idx": 7, "type": "tool_call",
-                      "payload": {"id": "c7", "name": "modify_order", "args": {"order_id": "W900"}}})
+                      "payload": {"id": "c7", "name": "modify_item", "args": {"item_id": "W900"}}})
     lines.insert(-1, {"idx": 8, "type": "tool_result", "payload": {"id": "c7", "result": {"ok": True}}})
     extra_write = tmp_path / "extra" / "r1.jsonl"
     extra_write.parent.mkdir()
@@ -160,7 +160,7 @@ def test_a_cached_verdict_is_served_until_a_version_or_the_write_tool_set_change
     strict = regrade([extra_write], verifier, canon_value, out_dir=out_dir / "extra", write_tools=WRITE_TOOLS)[0]
     assert loose.passed is True
     assert strict.passed is False
-    assert strict.failing_atom == "extra_write:modify_order"
+    assert strict.failing_atom == "extra_write:modify_item"
 
 
 @pytest.mark.parametrize(
@@ -230,7 +230,7 @@ def test_judge_results_are_looked_up_per_run(runs, tmp_path):
         task_id="t1",
         verifier_version="v1",
         atoms=[
-            Atom(id="a_cancel", kind="allowed", predicate_src='wrote("cancel_pending_order")'),
+            Atom(id="a_cancel", kind="allowed", predicate_src='wrote("cancel_item")'),
             Atom(id="a_polite", kind="required", judge=True),
         ],
     )
