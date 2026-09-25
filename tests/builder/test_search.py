@@ -17,8 +17,8 @@ def _client(handler):
 
 
 TINYFISH_SEARCH = {"query": "q", "results": [
-    {"position": 1, "site_name": "docs.example", "title": "Booking help", "snippet": "your booking reference",
-     "url": "https://docs.example/booking"},
+    {"position": 1, "site_name": "docs.example", "title": "Loan help", "snippet": "your loan renewal",
+     "url": "https://docs.example/loan"},
     {"position": 2, "site_name": "blog.example", "title": "Other", "snippet": "", "url": "https://blog.example/x"},
 ], "total_results": 2, "page": 1}
 
@@ -29,18 +29,18 @@ def test_tinyfish_search_and_fetch_take_the_key_header_and_the_documented_shapes
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         if request.url.host == "api.search.tinyfish.ai":
-            assert request.method == "GET" and request.url.params["query"] == "airline booking reference"
+            assert request.method == "GET" and request.url.params["query"] == "library loan renewal"
             return httpx.Response(200, json=TINYFISH_SEARCH)
-        assert request.method == "POST" and json.loads(request.content)["urls"] == ["https://docs.example/booking"]
-        return httpx.Response(200, json={"results": [{"url": "https://docs.example/booking", "title": "Booking help",
-                                                       "text": "# Booking\nGive the agent your booking reference."}],
+        assert request.method == "POST" and json.loads(request.content)["urls"] == ["https://docs.example/loan"]
+        return httpx.Response(200, json={"results": [{"url": "https://docs.example/loan", "title": "Loan help",
+                                                       "text": "# Loan\nGive the agent your loan renewal."}],
                                          "errors": []})
 
     tiny = sx.TinyFish("k1", client=_client(handler))
-    hits = tiny.search("airline booking reference", limit=1)
-    assert [h.url for h in hits] == ["https://docs.example/booking"] and hits[0].site == "docs.example"
+    hits = tiny.search("library loan renewal", limit=1)
+    assert [h.url for h in hits] == ["https://docs.example/loan"] and hits[0].site == "docs.example"
     pages = tiny.fetch([h.url for h in hits])
-    assert pages[0].text.startswith("# Booking") and pages[0].error is None
+    assert pages[0].text.startswith("# Loan") and pages[0].error is None
     assert all(r.headers["X-API-Key"] == "k1" for r in seen)
 
 
@@ -60,14 +60,14 @@ def test_firecrawl_is_keyless_and_reads_the_v2_shapes():
         if request.url.path.endswith("/search"):
             return httpx.Response(200, json={"success": True, "data": {"web": [
                 {"title": "T", "description": "D", "url": "https://a.example/p"}]}})
-        return httpx.Response(200, json={"success": True, "data": {"markdown": "# P\nbooking reference",
+        return httpx.Response(200, json={"success": True, "data": {"markdown": "# P\nloan renewal",
                                                                     "metadata": {"title": "P"}}})
 
     fire = sx.Firecrawl(client=_client(handler))
     hits = fire.search("anything")
     assert hits[0].url == "https://a.example/p" and hits[0].site == "a.example"
     pages = fire.fetch([hits[0].url])
-    assert pages[0].title == "P" and "booking reference" in pages[0].text
+    assert pages[0].title == "P" and "loan renewal" in pages[0].text
     assert all("Authorization" not in r.headers for r in seen)
 
 
@@ -99,11 +99,11 @@ def test_the_chain_is_tinyfish_then_keyless_firecrawl_and_names_every_failure_it
 
 
 def test_the_memo_answers_a_repeat_from_disk_and_records_the_provider(tmp_path):
-    inner = ScriptedSearch(hits={"booking": [{"url": "https://a/", "title": "A"}]}, pages={"https://a/": "text"})
+    inner = ScriptedSearch(hits={"loan": [{"url": "https://a/", "title": "A"}]}, pages={"https://a/": "text"})
     memo = sx.MemoSearch(inner, tmp_path)
-    first = memo.search("airline booking")
-    again = memo.search("airline booking")
-    assert first == again and inner.queries == ["airline booking"] and memo.hits == 1
+    first = memo.search("loan renewal")
+    again = memo.search("loan renewal")
+    assert first == again and inner.queries == ["loan renewal"] and memo.hits == 1
     pages = memo.fetch(["https://a/"])
     assert pages[0].text == "text" and memo.fetch(["https://a/"]) == pages and inner.fetched == ["https://a/"]
     stored = [json.loads(p.read_text()) for p in (tmp_path / "web_cache").glob("*.json")]
