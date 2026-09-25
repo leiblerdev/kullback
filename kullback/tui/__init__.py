@@ -689,6 +689,38 @@ def _append_key_lines(out: Text, groups: tuple[tuple[str, ...], ...]) -> None:
         out.append("no key variable: this endpoint takes none\n", style="dim")
 
 
+def _key_source(name: str, session: dict[str, Any]) -> str:
+    """Where one key variable's value comes from: this session, .env, the remembered
+    store, the environment, or nowhere.
+
+    A session key wins because _apply_key overwrote the environment with it. Otherwise
+    the first store that names it in provider order (exported environment, then .env,
+    then the remembered store) is its source, unless the shell overrode that store
+    with another value, in which case the environment is. Names only, never values."""
+    value = os.environ.get(name)
+    if name in session and value is not None:
+        return "this session"
+    if not value:
+        return "missing"
+    try:
+        from kullback.ai.provider import load_dotenv
+
+        dotted = load_dotenv(env={})
+    except Exception:
+        dotted = {}
+    if name in dotted:
+        return ".env" if dotted[name] == value else "environment"
+    try:
+        from kullback.ai import credentials
+
+        stored = credentials.load_credentials({})
+    except Exception:
+        stored = {}
+    if name in stored:
+        return "auth.json" if stored[name] == value else "environment"
+    return "environment"
+
+
 class Screen:
     """One console, one Board, and the small set of commands that drive the pipeline."""
 
@@ -792,7 +824,7 @@ class Screen:
         elif verb == "watch":
             self._watch(rest)
         elif verb == "logout":
-            self._logout()
+            self._logout(rest)
         elif verb == "status":
             self._status()
         elif verb == "map":
@@ -1023,6 +1055,7 @@ class Screen:
             self.console.print(Text(str(exc), style="red"))
             return
         self.model = model
+        self._offer_to_remember([(key_var, secret)])
         self.console.print(self._login_status())
 
     def _ask(self, prompt: str) -> str:
@@ -1043,6 +1076,24 @@ class Screen:
         if name not in self.session_keys:
             self.session_keys[name] = os.environ.get(name)
         os.environ[name] = value
+
+    def _offer_to_remember(self, pairs: list[tuple[str, str]]) -> None:
+        """Ask once whether the keys just held should outlive the session, and store them.
+
+        Yes or an empty answer remembers every key in the remembered store at 0600; no
+        keeps today's session-only behaviour. Names are printed, values never."""
+        from kullback.ai import credentials
+
+        answer = self._ask("remember this key in ~/.kullback/auth.json? [Y/n] ").strip().lower()
+        if answer not in ("", "y", "yes"):
+            return
+        for name, value in pairs:
+            try:
+                credentials.remember(name, value)
+            except ValueError as exc:
+                self.console.print(Text(f"{exc}: kept for this session only", style="red"))
+                continue
+            self.console.print(Text(f"remembered {name} in ~/.kullback/auth.json", style="dim"))
 
     @staticmethod
     def _login_defaults() -> dict[str, str]:
@@ -1333,7 +1384,7 @@ class Screen:
         on_event({"kind": "pipeline", "state": "complete"})
 
     def _login(self, rest: list[str]) -> None:
-        """Use this model from here on, with keys held in memory only.
+        """Use this model from here on, holding keys for the session and offering to remember them.
 
         `/login` alone inspects: the current model, where its calls go, which variable
         holds its key and whether that variable is set. `/login provider/model` resolves
@@ -1342,6 +1393,7 @@ class Screen:
         reaches it. `--set KEY=VALUE` puts keys into this process's environment so a
         pasted key works without touching .env or the shell; values are never printed
         and never written to the workdir, and /logout restores what the shell held.
+        Answering yes to the remember question stores them in the remembered store too.
         """
         sets = _values(rest, "--set")
         base_urls = _values(rest, "--base-url")
@@ -1353,7 +1405,7 @@ class Screen:
                 if not sep or not name:
                     raise ValueError(f"--set takes KEY=VALUE, not {item!r}")
                 self._apply_key(name, value)
-                applied.append(name)
+                applied.append((name, value))
             if model:
                 self._resolve(model, base_urls[-1] if base_urls else None)
                 self.model = model
@@ -1363,7 +1415,8 @@ class Screen:
             self.console.print(Text(str(exc), style="red"))
             return
         if applied:
-            self.console.print(Text(f"keys held for this session: {', '.join(applied)}", style="dim"))
+            self.console.print(Text(f"keys held for this session: {', '.join(name for name, _ in applied)}", style="dim"))
+            self._offer_to_remember(applied)
         self.console.print(self._login_status())
 
     def _resolve(self, model: str, base_url: Optional[str]) -> None:
@@ -1383,7 +1436,10 @@ class Screen:
             raise ValueError(refusal)
 
     def _login_status(self) -> Text:
-        """The current model, where its calls go, and whether its key is set. Names only, never values."""
+        """The current model, where its calls go, and where each key comes from.
+
+        One line per key variable: set in this session, in .env, in the remembered store,
+        in the environment, or missing. Names only, never values."""
         from kullback.ai import provider as pv
 
         out = Text()
@@ -1393,7 +1449,15 @@ class Screen:
         groups, host = _credential_source(self.model, self.base_url or "")
         if host:
             out.append(f"host {host}\n", style="dim")
-        _append_key_lines(out, groups)
+        for index, group in enumerate(groups):
+            if index:
+                out.append("or\n", style="dim")
+            for key_var in group:
+                source = _key_source(key_var, self.session_keys)
+                out.append(f"{key_var:<32}", style="dim")
+                out.append(f"{source}\n", style="green" if source != "missing" else "red")
+        if not groups:
+            out.append("no key variable: this endpoint takes none\n", style="dim")
         try:
             live = pv.enable_live_calls_from_env()
         except Exception:
@@ -1402,8 +1466,13 @@ class Screen:
                    style="green" if live else "yellow")
         return out
 
-    def _logout(self) -> None:
-        """Forget the keys set with /login: the shell gets back exactly what it held."""
+    def _logout(self, rest: Optional[list[str]] = None) -> None:
+        """Forget the keys set with /login: the shell gets back exactly what it held.
+
+        A name given as `/logout NAME` is also dropped from the remembered store, and the
+        screen says whether a remembered key was removed. Names only, never values."""
+        from kullback.ai import credentials
+
         for name, previous in self.session_keys.items():
             if previous is None:
                 os.environ.pop(name, None)
@@ -1412,6 +1481,15 @@ class Screen:
         count = len(self.session_keys)
         self.session_keys.clear()
         self.console.print(Text(f"cleared {count} session key(s)" + (f"; model still {self.model}" if self.model else ""), style="dim"))
+        for name in rest or []:
+            if name.startswith("--"):
+                continue
+            try:
+                removed = credentials.forget(name)
+            except ValueError as exc:
+                self.console.print(Text(str(exc), style="red"))
+                continue
+            self.console.print(Text(f"forgot remembered {name}" if removed else f"no remembered key {name}", style="dim"))
 
     def _adapter(self) -> Any:
         """No model means no model. The screen refuses to guess one, the same as the CLI."""
