@@ -231,7 +231,7 @@ def test_a_replayed_call_parts_by_the_column_classes_the_schema_names(ours, verd
 # --- D204: a run of consecutive turns of one role is one logical turn ---
 
 def _replay_of(tmp_path, turns, calls=()):
-    """One invented Trace replayed over the item world, so a test can shape its turn item."""
+    """One invented Trace replayed over the item world, so a test can shape its turn order."""
     recording = Trace(trace_id="tr1", raw_hash="r" * 64, ingest_version="1", source="test",
                       turns=turns, tool_calls=list(calls), raw_ptr=PTR, system_prompt="You are the agent.")
     return replay.replay_trace(recording, router(), workdir=tmp_path / "runs" / "t1", task_id="t1",
