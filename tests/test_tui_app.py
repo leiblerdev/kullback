@@ -71,6 +71,44 @@ async def test_build_starts_a_detached_child_with_the_typed_ceiling(tmp_path, mo
         assert isinstance(app.current, WatchView)
 
 
+@pytest.mark.anyio
+async def test_build_passes_the_endpoint_to_the_child(tmp_path, monkeypatch):
+    _live_env(monkeypatch)
+    launched: list = []
+    app = KullbackApp(workdir=tmp_path, base_url="http://localhost:9")
+    async with app.run_test() as pilot:
+        await pilot.press("3")
+        view = app.query_one(BuildView)
+        view.launcher = launched.append
+        view.ceiling_input.value = "25"
+        await pilot.click("#start")
+        await pilot.pause(0.3)
+        assert len(launched) == 1
+        assert launched[0][launched[0].index("--base-url") + 1] == "http://localhost:9"
+
+
+@pytest.mark.anyio
+async def test_each_view_key_and_palette_entry_mounts_its_view(tmp_path):
+    from kullback.tui.views import PublishView, RunsView, SynthesiseView, TasksView, TracesView
+
+    app = KullbackApp(workdir=tmp_path)
+    async with app.run_test() as pilot:
+        for key, cls in (("2", TracesView), ("5", TasksView), ("6", RunsView)):
+            await pilot.press(key)
+            await pilot.pause(0.8)
+            assert isinstance(app.current, cls)
+        for name, cls in (("traces", TracesView), ("tasks", TasksView), ("runs", RunsView),
+                          ("publish", PublishView), ("synthesise", SynthesiseView)):
+            # A view's input eats ctrl+k for editing, so focus leaves it first.
+            app.screen.set_focus(None)
+            await pilot.pause(0.3)
+            await pilot.press("ctrl+k")
+            await pilot.pause(0.8)
+            await pilot.click(f"#view-{name}")
+            await pilot.pause(0.8)
+            assert isinstance(app.current, cls)
+
+
 def test_tui_plain_opens_the_line_screen(tmp_path):
     from kullback import cli
 

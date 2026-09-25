@@ -117,3 +117,37 @@ async def test_esc_asks_before_stopping_and_y_sends_a_stop(tmp_path):
             assert harness.cancelled == 1
     finally:
         bridge.close()
+
+
+@pytest.mark.anyio
+async def test_a_steer_that_cannot_write_shows_a_line_and_the_app_keeps_running(tmp_path):
+    (tmp_path / "bus.jsonl").mkdir()
+    app = KullbackApp(workdir=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("4")
+        await pilot.pause(0.5)
+        assert isinstance(app.current, WatchView)
+        steer = app.query_one("#steer", Input)
+        steer.value = "push harder"
+        steer.focus()
+        await pilot.pause(0.2)
+        await pilot.press("enter")
+        await pilot.pause(1.5)
+        assert "failed" in app.current.log_text()
+        assert isinstance(app.current, WatchView)
+        assert app.query_one("#steer", Input).is_mounted
+
+
+@pytest.mark.anyio
+async def test_the_nothing_running_note_clears_once_a_heartbeat_appears(tmp_path):
+    from kullback.runner import heartbeat
+
+    app = KullbackApp(workdir=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("4")
+        await pilot.pause(1.0)
+        assert "nothing is running" in str(app.query_one("#watch-note").content)
+        heartbeat.beat(tmp_path, "somemodel", "running")
+        app.current.refresh_sidebar()
+        await pilot.pause(1.5)
+        assert str(app.query_one("#watch-note").content) == ""
