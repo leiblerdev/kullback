@@ -496,7 +496,8 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
             judge_model: Any = None, probe_model: Any = None, reroll_model: Any = None,
             allowance_usd: Optional[float] = None, session_path: Any = None,
             subscribers: Iterable[Callable] = (), max_turns: int = EXAMINE_MAX_TURNS,
-            workers: Optional[int] = None, limit: Optional[int] = None) -> list[Finding]:
+            workers: Optional[int] = None, limit: Optional[int] = None,
+            user_model: Any = None) -> list[Finding]:
     """Derive the Verifiers by code, file what the records say, then run one model session.
 
     With `model=None` the session is code only: the derivation and its findings. With a model,
@@ -507,7 +508,9 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     trusted and loosening gates rule on proposals (D127).
 
     The probe, re-roll and variant runners come from the runner tool over the workdir (D120):
-    without a re-roll model the derivation stays code only and buys no Runs.
+    without a re-roll model the derivation stays code only and buys no Runs. A `user_model`
+    switches the re-rolls' users to the agent user over the rule floor; without one they are the
+    rule-driven user, unchanged.
 
     Every Task derive_pick returns is derived in this call, `workers` at a time (default: the
     cores, at most eight); `limit`, when given, derives only the first that many and files one
@@ -522,7 +525,8 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     store = load_store(workdir)
     anchor = _load_anchor(root)
     ctx = stage_mod.ExamContext(root, GateLedger(root), anchor=anchor)
-    runners = runners_mod.runners_for(root, reroll_model=reroll_model, anchor=anchor)
+    runners = runners_mod.runners_for(root, reroll_model=reroll_model, anchor=anchor,
+                                      user_model=user_model)
     picked = derive_pick(root, store, task_ids)
     now, later = (picked, []) if limit is None else (picked[:limit], picked[limit:])
     if now:

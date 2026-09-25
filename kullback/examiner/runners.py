@@ -17,10 +17,14 @@ from kullback.runner import tool as runner_tool
 from kullback.runner.records import UserRules, read_json, run_path
 from kullback.runner.target import as_run
 from kullback.runner.world.environment import BuiltEnvironment
+from kullback.user import account as account_mod
+from kullback.user import context as context_mod
 from kullback.user import ends as user_ends
+from kullback.user import factory as user_factory
 from kullback.user.rules import goal_write_set
 from kullback.user.simulated import SimulatedUser
 from kullback.user.value_strip import value_strip
+from kullback.user.vocabulary import GENERIC
 
 
 def _seed_ids(anchor: Any, task_id: str, run_ids: Iterable[str]) -> list[str]:
@@ -81,12 +85,17 @@ def _rules_for(workdir: Any, reference_id: Optional[str]) -> Optional[UserRules]
         return None
 
 
-def _make_user(workdir: Any, task_id: str, anchor: Any, router: Any) -> Optional[SimulatedUser]:
+def _make_user(workdir: Any, task_id: str, anchor: Any, router: Any, user_model: Any = None,
+               corpus: Optional["_Corpus"] = None) -> Any:
     """The Simulated user of the Task's confirmed Reference, or nothing without rules.
 
     Built from the derivation's own inputs, the replay rows, the rules and the recordings, over
     the state reader of the Router the runner built: the Examiner never opens the compiled side
     itself (D123). The vocabulary is the generic core, the way a Run without a mined one reads.
+
+    With a `user_model` the rule-driven user built here is the floor under the agent user (D214),
+    which answers the questions the rules' cues miss instead of restating the goal. Without one
+    this is the rule-driven user alone, exactly as before the switch existed.
     """
     env = BuiltEnvironment(workdir)
     task = env.task(task_id)
@@ -98,28 +107,60 @@ def _make_user(workdir: Any, task_id: str, anchor: Any, router: Any) -> Optional
     traces = env.traces()
     reference = traces.get(reference_id) if reference_id is not None else None
     members = [traces[run_id] for run_id in task.run_ids if run_id in traces]
-    return SimulatedUser(
+    goal_writes = goal_write_set(reference, writes) if reference is not None else None
+    answer_strip = value_strip(members) if members else None
+    floor = SimulatedUser(
         rules, starting_state_reader=router.state, write_tools=writes,
-        goal_writes=goal_write_set(reference, writes) if reference is not None else None,
-        answer_strip=value_strip(members) if members else None)
+        goal_writes=goal_writes, answer_strip=answer_strip)
+    if user_model is None:
+        return floor
+    corpus = corpus if corpus is not None else _Corpus(env)
+    record = context_mod.mine_record_values(reference)
+    ctx = context_mod.curate(task_id, rules, reference, vocab=GENERIC, write_tools=writes,
+                             record_fields=sorted(record))
+    identity_fields = GENERIC.by_kind("identity")
+    choices = account_mod.choice_book(
+        reference, writes, customer=account_mod.customer_keys(rules, identity_fields),
+        traces=corpus.traces, rules=corpus.rules, identity_fields=identity_fields)
+    state = getattr(router, "state", None)
+    account = account_mod.account_view(getattr(state, "shared", {}) or {}, floor.identity,
+                                       corpus.columns)
+    return user_factory.build_user(
+        workdir, task_id, user_model, user_factory.PURPOSE_RUN, ctx=ctx, fallback=floor,
+        record_values=record, vocab=GENERIC, write_tools=writes, goal_writes=goal_writes,
+        answer_strip=answer_strip, trace=reference, choices=choices, account=account)
+
+
+class _Corpus:
+    """The workdir's recordings, their rules and the columns their users stated, mined once per
+    `runners_for` and only when the agent user is switched on."""
+
+    def __init__(self, env: BuiltEnvironment):
+        self.traces = dict(env.traces())
+        self.rules = {trace_id: rules for trace_id in self.traces
+                      if (rules := _rules_for(env.root, trace_id)) is not None}
+        self.columns = account_mod.stated_columns(self.traces)
 
 
 # Every model call of a Run is priced under this stage, the Builder's and the Examiner's alike (F29).
 RUNNER_STAGE = "runner"
+# The agent user's calls are its own spend, never the candidate's.
+USER_STAGE = "user"
 
 
-def _priced(model: Any, workdir: Path) -> Any:
-    """The model a Run plays, priced into budget.json under the runner stage, never twice.
+def _priced(model: Any, workdir: Path, stage: str = RUNNER_STAGE) -> Any:
+    """The model a Run plays, priced into budget.json under its stage, never twice.
 
     The candidate is tested under the production setting, so its context is never capped (D65).
     """
     if model is None or isinstance(model, budget.BudgetedModel):
         return model
-    return budget.BudgetedModel(model, stage=RUNNER_STAGE, workdir=workdir,
+    return budget.BudgetedModel(model, stage=stage, workdir=workdir,
                                 model_id=getattr(model, "name", None), cap_context=False)
 
 
-def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None) -> dict:
+def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None,
+                user_model: Any = None) -> dict:
     """The derivation's three runners over the runner tool, with the workdir as environment (D120).
 
     Returns `run_probe(model, verifier)`, `run_rerolls(task_id, count, prefix)` and
@@ -128,9 +169,22 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None) -
     gather. Every row's path is resolved against the workdir, so it opens from any cwd; the
     Examiner's re-roll file stores it relative again. Nothing here opens the compiled side; the runner reads it, the Examiner does not
     (D123).
+
+    `user_model` switches the re-rolls' users to the agent user over the rule floor, priced under
+    the user stage; without it every user is the rule-driven one, unchanged. The probe keeps the
+    rule-driven user either way.
     """
     root = Path(workdir)
     reroll_model = _priced(reroll_model, root)
+    user_model = _priced(user_model, root, USER_STAGE)
+    mined: dict = {}
+
+    def make_user(task_id: str) -> Any:
+        def build(router: Any) -> Any:
+            if user_model is not None and "corpus" not in mined:
+                mined["corpus"] = _Corpus(BuiltEnvironment(root))
+            return _make_user(root, task_id, anchor, router, user_model, mined.get("corpus"))
+        return build
 
     def run_probe(model: Any, verifier: Any) -> Any:
         """Check 6's loophole probe as the derivation takes it: `run_probe(model, verifier)` (D79).
@@ -156,7 +210,7 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None) -
             raise ValueError("the Examiner has no model to re-roll with: pass reroll_model")
         reports = runner_tool.reroll(
             root, task_id, reroll_model, count=count, prefix=prefix, workdir=root,
-            make_user=lambda router: _make_user(root, task_id, anchor, router))
+            make_user=make_user(task_id))
         rows = []
         for report in reports:
             path = str(run_path(root, report.path))

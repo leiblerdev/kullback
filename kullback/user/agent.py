@@ -33,6 +33,7 @@ from kullback.runner.records import Event
 from kullback.user import ends as ends_mod
 from kullback.user import guards as guards_mod
 from kullback.user import rules as rules_mod
+from kullback.user.account import ACCOUNT, AccountView, ChoiceBook
 from kullback.user.context import TaskContext, volunteer_allowance
 from kullback.user.extension import user_extension
 from kullback.user.tools import Toolbox
@@ -73,7 +74,8 @@ class AgentUser:
                  goal_writes: Optional[Iterable[str]] = None,
                  answer_strip: Optional[Callable[[str], tuple[str, list]]] = None,
                  record_values: Optional[dict] = None, trace: Any = None,
-                 max_tool_turns: int = MAX_TURNS_PER_REPLY, bus: Optional[Bus] = None):
+                 max_tool_turns: int = MAX_TURNS_PER_REPLY, bus: Optional[Bus] = None,
+                 choices: Optional[ChoiceBook] = None, account: Optional[AccountView] = None):
         self.ctx = ctx
         self.fallback = fallback
         self.model = model
@@ -86,7 +88,7 @@ class AgentUser:
             record_values=record_values, strip=answer_strip)
         self.protocol = guards_mod.EndProtocol(goal_writes, write_tools)
         self.write_tools = frozenset(write_tools or ())
-        self.box = Toolbox(ctx)
+        self.box = Toolbox(ctx, choices=choices, account=account)
         self.events: list[Event] = []
         self.done = False
         self.end_reason: Optional[str] = None
@@ -109,9 +111,16 @@ class AgentUser:
         text = self._model_turn(transcript)
         if text is None:
             return self._from_fallback(transcript)
+        from_account, unasked = guards_mod.account_leak(
+            text, self.box.account_given, self.guards.grounding, question, asked)
+        if unasked:
+            self.guards.counts[guards_mod.ACCOUNT_UNASKED] = (
+                self.guards.counts.get(guards_mod.ACCOUNT_UNASKED, 0) + 1)
+            return self._from_fallback(transcript, dropped=guards_mod.ACCOUNT_UNASKED)
         outcome = self.guards.check(
             text, facts_allowed=volunteer_allowance(self.trace, _rules_of(self.fallback), self._turn),
-            facts_said=self._facts_said, asked=asked)
+            facts_said=self._facts_said, asked=asked,
+            granted=[*from_account, *self.box.chosen])
         if outcome.dropped:
             return self._from_fallback(transcript, dropped=outcome.reason)
         return self._speak(outcome.text, question, transcript, outcome.changed, asked)
@@ -183,9 +192,25 @@ class AgentUser:
             if not self._end_tagged:
                 tags.append(kind)
                 self._end_tagged = True
-        self._record({"text": text, "driver": "agent", "facts": carried, "tags": tags,
-                      "requested_end": self.box.requested, "user_end": kind}, assisted=False)
+        payload = {"text": text, "driver": "agent", "facts": carried, "tags": tags,
+                   "requested_end": self.box.requested, "user_end": kind}
+        sources = self._sources(text)
+        if sources:
+            payload["sources"] = sources
+        self._record(payload, assisted=False)
         return text
+
+    def _sources(self, text: str) -> dict[str, str]:
+        """Where each value this turn took from a tool came from, so derivation can tell a mined
+        value from one the recorded user said: an account column is tagged `account`, a choice
+        with the layer that answered it."""
+        out: dict[str, str] = {}
+        for value, (kind, source) in self.box.chosen.items():
+            if rules_mod._said_in(text, value):
+                out[kind] = source
+        for column in guards_mod.account_said(text, self.box.account_given, self.guards.grounding).values():
+            out[column] = ACCOUNT
+        return out
 
     def _had_nothing(self, text: str, question: str) -> bool:
         """This turn answered a question with no fact of its own, which is the scenario running out."""

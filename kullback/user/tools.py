@@ -7,11 +7,17 @@ why it called. `what_i_said` is its own earlier turns, which is the cheapest way
 contradicting itself two turns later. `end_run` is the only way to ask for an ending, and code
 decides whether the ending holds (guards.EndProtocol). `consult` exists only on a Task whose
 recording shows this user going and looking something up between its own turns, and where the
-recording shows none the tool is not registered at all.
+recording shows none the tool is not registered at all. `my_choices` answers a choice from what was
+recorded, nearest first, and says which source answered (account.py).
 
-No tool here reads the Environment's tables. That is the whole design: the user sees what a person
-on the phone sees, so a Verifier cannot be passed by a user that reads the world and hands the
-Candidate the row it was supposed to look up itself.
+`my_account` reads its own account, under these rules, all enforced in code and none in the prompt:
+read only, over the Starting state as the Run opened; only this customer's rows; only the columns
+some recorded user ever stated; and a value it read may be spoken only on a turn whose question
+asked for it (guards.account_leak), else the turn goes to the floor. Beyond that no tool reads the
+Environment's tables: the user sees what a person on the phone sees, so a Verifier cannot be passed
+by a user that reads the world and hands the Candidate the row it was supposed to look up itself.
+Both tools are registered only where the caller built them, so a user without them is the user it
+was.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.tools import AgentTool, NoArgs
 from kullback.user import rules as rules_mod
+from kullback.user.account import AccountView, ChoiceBook
 from kullback.user.context import TaskContext
 
 NO_FACT = "You have no record of that."
@@ -47,6 +54,18 @@ class ConsultArgs(BaseModel):
     field: str = Field(description="The field you go and look up.")
 
 
+class ChoiceArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(description="The kind of option you are asked to choose, in its own words.")
+
+
+class AccountArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    what: str = Field(default="", description="What you look for on your account. Empty is all of it.")
+
+
 class TextOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -68,11 +87,18 @@ class Toolbox:
     the start of each turn by the caller (agent.py).
     """
 
-    def __init__(self, ctx: TaskContext, said: Optional[list[str]] = None):
+    def __init__(self, ctx: TaskContext, said: Optional[list[str]] = None, *,
+                 choices: Optional[ChoiceBook] = None, account: Optional[AccountView] = None):
         self.ctx = ctx
         self.said: list[str] = list(said or [])
         self.requested: Optional[str] = None
         self.consulted: list[str] = []
+        self.choices = choices
+        self.account = account
+        # What the two readings handed out this Run, by value: a choice with its kind and source,
+        # an account value with its column. The guards and the turn record read these (agent.py).
+        self.chosen: dict[str, tuple[str, str]] = {}
+        self.account_given: dict[str, str] = {}
 
     def facts(self, asked: list[str]) -> str:
         wanted = [field for field in asked if field]
@@ -103,6 +129,21 @@ class Toolbox:
                       note="recorded; whether the conversation ends is decided in code from what has "
                            "actually happened, so answer this turn as if it continues")
 
+    def my_choices(self, kind: str) -> str:
+        if self.choices is None:
+            return NO_FACT
+        value, source, line = self.choices.answer(kind)
+        if value is not None and source is not None:
+            self.chosen[value] = (kind, source)
+        return line
+
+    def my_account(self, what: str = "") -> str:
+        if self.account is None:
+            return NO_FACT
+        text, given = self.account.read(what)
+        self.account_given.update(given)
+        return text
+
     def consult(self, field: str) -> str:
         """Look one field up where the recording shows this user looking things up, else nothing."""
         if field not in self.ctx.consultations:
@@ -132,6 +173,12 @@ def user_tools(box: Toolbox) -> list[AgentTool]:
     async def consult(args: ConsultArgs) -> TextOut:
         return TextOut(text=box.consult(args.field))
 
+    async def choices(args: ChoiceArgs) -> TextOut:
+        return TextOut(text=box.my_choices(args.kind))
+
+    async def account(args: AccountArgs) -> TextOut:
+        return TextOut(text=box.my_account(args.what))
+
     tools = [
         AgentTool("my_facts", "What you know about yourself. Pass the fields the other side asked for; "
                               "pass nothing to see everything you hold.",
@@ -149,6 +196,16 @@ def user_tools(box: Toolbox) -> list[AgentTool]:
             "consult", "Go and look one field up, the way you did in this conversation before: "
                        + ", ".join(box.ctx.consultations) + ".",
             ConsultArgs, TextOut, consult, render=_text))
+    if box.choices is not None:
+        tools.append(AgentTool(
+            "my_choices", "What you chose, or would choose, when offered this kind of option, and "
+                          "where that comes from. No record means you have no preference on file.",
+            ChoiceArgs, TextOut, choices, render=_text))
+    if box.account is not None:
+        tools.append(AgentTool(
+            "my_account", "Read your own account, the way you would on your own screen. Say a value "
+                          "from it only when the other side asks for it.",
+            AccountArgs, TextOut, account, render=_text))
     return tools
 
 

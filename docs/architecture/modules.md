@@ -139,6 +139,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | Module | What it does |
 |---|---|
 | `kullback/user/__init__.py` | The Simulated user as an agent beside the Builder and the Examiner (D214). |
+| `kullback/user/account.py` | The agent user's two readings: choices from recordings, tagged by source, and its own account, read only, cut to its rows and to columns recorded users stated. |
 | `kullback/user/agent.py` | `AgentUser`: a model-driven Simulated user, one turn per call, the rules as its floor. |
 | `kullback/user/context.py` | The mined, per-Task context the agent user is given: persona, facts, consultations. |
 | `kullback/user/ends.py` | How a Run ended and whether a write moved the world. |
@@ -146,14 +147,14 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/user/extension.py` | The agent user as an extension on the core. |
 | `kullback/user/factory.py` | The one place a Simulated user is built, for every caller (G5). |
 | `kullback/user/fidelity.py` | User fidelity: how close a driver's turns are to the recorded ones (D214 rule 5). |
-| `kullback/user/guards.py` | Code guards after every model turn: grounding, no invented values, end protocol (D214 rule 4). |
+| `kullback/user/guards.py` | Code guards after every model turn: grounding, no invented values, account values only when asked, end protocol (D214 rule 4). |
 | `kullback/user/lesson.py` | What the fidelity score teaches the next round's user context (D214 rule 6). |
 | `kullback/user/population.py` | Which recordings of a Task may seed a user, and a seeded pick among them. Not yet called from the package. |
 | `kullback/user/rules.py` | Derives the rule-driven user's rules from one trace (D44, D77). |
 | `kullback/user/signals.py` | Mines how a recording ended from its turns, with model labels accepted or dropped. Not yet called from the package. |
 | `kullback/user/simulated.py` | `SimulatedUser`: replies as the recorded user from the rules and the world. |
 | `kullback/user/skills.py` | The agent user's system prompt, in the harness's section order. |
-| `kullback/user/tools.py` | The agent user's own tools: my_facts, my_goal, what_i_said, end_run, and consult where the recording looked something up. |
+| `kullback/user/tools.py` | The agent user's own tools: my_facts, my_goal, what_i_said, end_run, consult where the recording looked something up, and my_choices and my_account where the caller built them. |
 | `kullback/user/value_strip.py` | Takes system-known values out of an Intent or a user answer, so the user says only what a user said (D196, D210). |
 | `kullback/user/vocabulary.py` | `FieldSpec` and `Vocabulary`: how a fact is stated, asked for and stored (D115). |
 
@@ -172,7 +173,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/examiner/plan.py` | `ExaminerPlan`: what one Examiner session is given and the store its gates rule over. |
 | `kullback/examiner/prompt.py` | The Examiner's prompt sections in GEPA order. |
 | `kullback/examiner/reference.py` | Chooses References by the D111 rule and checks constraints against them. |
-| `kullback/examiner/runners.py` | Builds the probe, re-roll and variant runners over the runner tool (D120). |
+| `kullback/examiner/runners.py` | Builds the probe, re-roll and variant runners over the runner tool (D120); `user_model` switches re-roll users to the agent user, priced under the user stage. |
 | `kullback/examiner/session.py` | The Examiner extension and `examine`, called by the Builder. |
 | `kullback/examiner/skills.py` | The probe skill: the eight Verifier bug classes (D127, D133). |
 | `kullback/examiner/stage.py` | The derive_verifier stage body and its helpers, writing `verifiers/`, `task_status.json`, `references.json`. |
