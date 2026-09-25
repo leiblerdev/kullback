@@ -1,9 +1,9 @@
 """The Textual app shell: header, tab routing, palette, sessions, keys, quit.
 
 One full-screen app over a workdir. It opens on Home, or on Watch when a build
-is live in this workdir. Keys 2, 5 and 6 and the palette entries the other
-views own stay routed to a placeholder until those views land. Quitting never
-touches the build child, which runs detached.
+is live in this workdir. Keys 2, 5 and 6 and the palette entries traces, tasks,
+runs, publish and synthesise mount those views from kullback.tui.views.
+Quitting never touches the build child, which runs detached.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from textual.widgets import Button, Static
 from kullback.tui import live_heartbeats, status_segments
 from kullback.tui.build_view import BuildView
 from kullback.tui.home import HomeView
+from kullback.tui.views import VIEWS
 from kullback.tui.watch import WatchView
 
 APP_CSS = """
@@ -35,21 +36,13 @@ APP_CSS = """
 # Line-screen commands the palette lists beside the views.
 PALETTE_COMMANDS = ("status", "sessions", "watch", "build", "keys", "login", "logout", "help",
                     "quit")
+KEYS_HELP = """keys: 1 home, 2 traces, 3 build, 4 watch, 5 tasks, 6 runs. ctrl+k commands \
+(publish, synthesise), ctrl+r machine sessions, ? keys, ctrl+d quit. In watch: enter nudges, \
+alt+enter tells, esc asks before stopping."""
 
-KEYS_HELP = """keys: 1 home, 3 build, 4 watch. 2, 5, 6 are not built yet. ctrl+k commands, \
-ctrl+r machine sessions, ? keys, ctrl+d quit. In watch: enter nudges, alt+enter tells, \
-esc asks before stopping."""
 
-
-class PlaceholderView(Vertical):
-    """A view not built yet, named so the later note can wire it."""
-
-    def __init__(self, name: str) -> None:
-        super().__init__(id=f"placeholder-{name}")
-        self.view_name = name
-
-    def compose(self):  # type: ignore[override]
-        yield Static(f"{self.view_name} is not built yet", id="placeholder-body")
+# The views by their palette name, off the registry the views package owns.
+VIEW_CLASSES = {title.lower(): cls for _, title, cls in VIEWS}
 
 
 class PaletteModal(ModalScreen[Optional[str]]):
@@ -61,16 +54,20 @@ class PaletteModal(ModalScreen[Optional[str]]):
 
     def compose(self):  # type: ignore[override]
         yield Vertical(
-            *[Button(name, id=f"palette-{name}")
+            *[Button(name, id=f"view-{name}")
               for name in ("home", "traces", "build", "watch", "tasks", "runs", "publish",
-                           "synthesise") + PALETTE_COMMANDS],
+                           "synthesise")],
+            *[Button(name, id=f"command-{name}") for name in PALETTE_COMMANDS],
             id="palette-list")
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
-        name = str(event.button.label)
+        button_id = str(event.button.id or "")
+        if button_id.startswith(("view-", "command-")):
+            name = button_id.split("-", 1)[1]
+        else:
+            name = str(event.button.label)
         self.dismiss(None)
         self.choose(name)
-
 
 class SessionsModal(ModalScreen[None]):
     """The machine's sessions off the heartbeats, newest first."""
@@ -126,10 +123,12 @@ class KullbackApp(App):
         Binding("4", "show_watch", "Watch"),
         Binding("5", "show_tasks", "Tasks"),
         Binding("6", "show_runs", "Runs"),
-        Binding("ctrl+k", "palette", "Commands"),
-        Binding("ctrl+r", "sessions", "Sessions"),
+        # Priority chords: an Input eats ctrl+k and ctrl+d for editing, so the app
+        # takes them first. Escape stays unprioritised so a modal keeps it.
+        Binding("ctrl+k", "palette", "Commands", priority=True),
+        Binding("ctrl+r", "sessions", "Sessions", priority=True),
         Binding("question_mark", "keys", "Keys"),
-        Binding("ctrl+d", "quit_app", "Quit"),
+        Binding("ctrl+d", "quit_app", "Quit", priority=True),
         Binding("escape", "confirm_stop", "Stop"),
     ]
 
@@ -189,14 +188,15 @@ class KullbackApp(App):
     def show_watch(self) -> None:
         self._show(WatchView(self.workdir, self.ceiling_usd))
 
-    def show_placeholder(self, name: str) -> None:
-        self._show(PlaceholderView(name))
+    def show_view(self, name: str) -> None:
+        """Mount a registry view by palette name, over this workdir."""
+        self._show(VIEW_CLASSES[name](self.workdir))
 
     def action_show_home(self) -> None:
         self.show_home()
 
     def action_show_traces(self) -> None:
-        self.show_placeholder("traces")
+        self.show_view("traces")
 
     def action_show_build(self) -> None:
         self.show_build()
@@ -205,10 +205,10 @@ class KullbackApp(App):
         self.show_watch()
 
     def action_show_tasks(self) -> None:
-        self.show_placeholder("tasks")
+        self.show_view("tasks")
 
     def action_show_runs(self) -> None:
-        self.show_placeholder("runs")
+        self.show_view("runs")
 
     def action_palette(self) -> None:
         self.push_screen(PaletteModal(self._palette_chosen))
@@ -217,8 +217,8 @@ class KullbackApp(App):
         if name in ("home", "build", "watch"):
             {"home": self.show_home, "build": self.show_build,
              "watch": self.show_watch}[name]()
-        elif name in ("traces", "tasks", "runs", "publish", "synthesise"):
-            self.show_placeholder(str(name))
+        elif name in VIEW_CLASSES:
+            self.show_view(str(name))
         elif name == "sessions":
             self.action_sessions()
         elif name == "quit":

@@ -131,6 +131,8 @@ class BuildView(Vertical):
         judge = self.judge_value()
         if judge is not None:
             argv += ["--judge-model", judge]
+        if self.base_url:
+            argv += ["--base-url", self.base_url]
         return argv
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
