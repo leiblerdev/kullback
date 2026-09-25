@@ -67,6 +67,7 @@ class SteerBridge:
         self.poll_seconds = poll_seconds
         self._acks = Bus(self.bus_path, agent="steer")
         self._stop = threading.Event()
+        self._stop_asked = threading.Event()
         self._started = threading.Event()
         self._thread = threading.Thread(target=self._run, name="kullback-steer", daemon=True)
 
@@ -76,6 +77,12 @@ class SteerBridge:
         self._thread.start()
         self._started.wait(5)
         return self
+
+    @property
+    def stop_asked(self) -> bool:
+        """A stop request came in. The harness only cancels a run that is going, so a caller that
+        starts runs one after another reads this before starting the next."""
+        return self._stop_asked.is_set()
 
     def close(self) -> None:
         self._stop.set()
@@ -96,6 +103,7 @@ class SteerBridge:
             return SteerAckEvent(id=event.id, kind=event.kind, outcome=outcome, reason=reason)
 
         if event.kind == "stop":
+            self._stop_asked.set()
             self.harness.cancel()
             return ack("cancel_asked", "the run stops before its next step")
         if not event.text.strip():
