@@ -27,14 +27,14 @@ from kullback.runner.judge import (
 # --- read-only tools the judge is given (design 13b: Starting state and End state) ---
 
 
-def read_order(order_id: str = "o1") -> dict:
-    """Read one order out of the End state."""
-    return {"order_id": order_id, "status": "cancelled", "reason": "no longer needed"}
+def read_item(item_id: str = "i1") -> dict:
+    """Read one item out of the End state."""
+    return {"item_id": item_id, "status": "cancelled", "reason": "no longer needed"}
 
 
 def list_writes() -> list:
     """Every write the Run made."""
-    return [{"table": "orders", "id": "o1", "status": "cancelled"}]
+    return [{"table": "items", "id": "i1", "status": "cancelled"}]
 
 
 def read_row(table: str) -> dict:
@@ -42,7 +42,7 @@ def read_row(table: str) -> dict:
     return {"table": table, "rows": 1}
 
 
-TOOLS = {"read_order": read_order, "list_writes": list_writes}
+TOOLS = {"read_item": read_item, "list_writes": list_writes}
 
 
 class RefusesToolChoice:
@@ -60,7 +60,7 @@ class RefusesToolChoice:
         return self.inner.query(messages, tools=tools, config=config)
 
 
-def call(name: str = "read_order", **args) -> dict:
+def call(name: str = "read_item", **args) -> dict:
     """A scripted model reply that calls one tool."""
     return {"tool_calls": [{"id": "c1", "name": name, "arguments": args}]}
 
@@ -71,10 +71,10 @@ def answer(**payload) -> dict:
 
 
 def yes(question: str = "did the agent state the action first") -> dict:
-    return {"question": question, "answer": "yes", "cited_span": "I will cancel order o1"}
+    return {"question": question, "answer": "yes", "cited_span": "I will cancel item i1"}
 
 
-TRANSCRIPT = "agent: I will cancel order o1\nuser: yes please\nagent: cancelled it"
+TRANSCRIPT = "agent: I will cancel item i1\nuser: yes please\nagent: cancelled it"
 
 
 # --- policy atoms (D76, R27 section 8b: atomic yes or no sub-questions) ---
@@ -98,14 +98,14 @@ def test_the_policy_atom_passes_only_when_every_sub_answer_reads_as_yes(make_tes
     """Every row scripts the model's own verdict word as "pass", so the verdict can only come from
     the sub-answers, however they are spelled (D76, R27 section 8b)."""
     model = make_test_model(
-        [call(order_id="o1"),
-         answer(verdict="pass", cited_spans=["I will cancel order o1"], sub_answers=sub_answers)]
+        [call(item_id="i1"),
+         answer(verdict="pass", cited_spans=["I will cancel item i1"], sub_answers=sub_answers)]
     )
     result = judge_of(model).judge_policy_atom("confirm before cancelling", TRANSCRIPT)
     assert result.verdict == expected
     assert result.use == "policy_atom"
-    assert result.tools_run == ["read_order"]
-    assert result.cited_spans == ["I will cancel order o1"]
+    assert result.tools_run == ["read_item"]
+    assert result.cited_spans == ["I will cancel item i1"]
     assert result.judge_version == JUDGE_VERSION
     assert result.refused is False
     assert result.abstained is (expected == "abstain")
@@ -130,7 +130,7 @@ def test_a_verdict_with_no_tool_call_stands_when_the_harness_prefilled_the_check
     assert result.tools_run == []
     assert result.extra_tool_calls == 0
     assert [check["tool"] for check in result.checks] == ["policy_rule", "transcript",
-                                                          "read_order", "list_writes"]
+                                                          "read_item", "list_writes"]
 
 
 def test_a_tool_whose_argument_only_the_model_can_choose_is_left_out_of_the_prefilled_checks(
@@ -139,7 +139,7 @@ def test_a_tool_whose_argument_only_the_model_can_choose_is_left_out_of_the_pref
     """A view that needs something chosen is the model's to open; rule 2 forces that first turn."""
     model = make_test_model([answer(verdict="acceptable", cited_spans=["x"])])
     judge = judge_of(model, tools={"read_row": read_row, "list_writes": list_writes})
-    result = judge.judge_dispute({"orders": {}}, [], [])
+    result = judge.judge_dispute({"items": {}}, [], [])
     assert "read_row" not in [check["tool"] for check in result.checks]
     assert "list_writes" in [check["tool"] for check in result.checks]
     assert model.calls[0]["config"].tool_choice == "required"
@@ -161,7 +161,7 @@ def test_a_provider_that_refuses_tool_choice_is_asked_again_without_it_and_the_r
     inner = make_test_model([answer(verdict="acceptable", cited_spans=["x"])])
     model = RefusesToolChoice(inner)
     judge = AgenticJudge(model, {"read_row": read_row, "list_writes": list_writes}, name="a")
-    result = judge.judge_dispute({"orders": {}}, [], [])
+    result = judge.judge_dispute({"items": {}}, [], [])
     assert result.verdict == "acceptable"
     assert result.tool_choice_rejected is True
     assert result.tool_choice_forced is False
@@ -191,9 +191,9 @@ def test_a_call_to_an_unknown_or_failing_tool_is_not_counted_and_its_error_goes_
         """Always fails."""
         raise ValueError("no such table")
 
-    model = make_test_model([call(name="boom"), call(order_id="o1"), answer(verdict="pass", sub_answers=[yes()])])
-    result = AgenticJudge(model, {"boom": boom, "read_order": read_order}).judge_policy_atom("rule", TRANSCRIPT)
-    assert result.tools_run == ["read_order"]
+    model = make_test_model([call(name="boom"), call(item_id="i1"), answer(verdict="pass", sub_answers=[yes()])])
+    result = AgenticJudge(model, {"boom": boom, "read_item": read_item}).judge_policy_atom("rule", TRANSCRIPT)
+    assert result.tools_run == ["read_item"]
     assert result.verdict == "pass"
     # TestModel keeps the live messages list, so read the final state of the conversation.
     assert any("no such table" in str(m.get("content")) for m in model.calls[-1]["messages"])
@@ -202,16 +202,16 @@ def test_a_call_to_an_unknown_or_failing_tool_is_not_counted_and_its_error_goes_
 def test_the_judge_gives_up_after_max_steps_of_tool_calls(make_test_model):
     model = make_test_model([call()], loop=True)
     judge = AgenticJudge(model, TOOLS, max_steps=2)
-    result = judge.judge_dispute({"orders": {"o1": "cancelled"}}, ["cancel o1"], [])
+    result = judge.judge_dispute({"items": {"i1": "cancelled"}}, ["cancel i1"], [])
     assert result.verdict == "abstain"
     assert result.refused is True
-    assert result.tools_run == ["read_order", "read_order"]
+    assert result.tools_run == ["read_item", "read_item"]
 
 
 def test_the_model_is_given_the_read_only_tools(make_test_model):
     model = make_test_model([call(), answer(verdict="pass", sub_answers=[yes()])])
     judge_of(model).judge_policy_atom("rule", TRANSCRIPT)
-    assert {spec["name"] for spec in model.calls[0]["tools"]} == {"read_order", "list_writes"}
+    assert {spec["name"] for spec in model.calls[0]["tools"]} == {"read_item", "list_writes"}
 
 
 # --- semantic equivalence (D84, R27 section 8a) ---
@@ -221,7 +221,7 @@ def test_equivalence_abstains_when_the_judge_flags_a_number_or_unit_mismatch(mak
     model = make_test_model(
         [call(), answer(verdict="equivalent", flags=["number mismatch"], cited_spans=["25", "25.5"])]
     )
-    result = judge_of(model).judge_equivalence("orders.total", "25", "25.5", field_type="currency amount")
+    result = judge_of(model).judge_equivalence("items.total", "25", "25.5", field_type="currency amount")
     assert result.verdict == "abstain"
     assert "mismatch" in (result.reason or "")
 
@@ -232,7 +232,7 @@ def test_equivalence_abstains_when_the_judge_flags_a_number_or_unit_mismatch(mak
 ], ids=["not_json", "an_unknown_verdict_word"])
 def test_a_judge_reply_that_cannot_be_read_abstains(make_test_model, reply, reason_part):
     model = make_test_model([call(), reply])
-    result = judge_of(model).judge_equivalence("orders.reason", "a", "b")
+    result = judge_of(model).judge_equivalence("items.reason", "a", "b")
     assert result.verdict == "abstain"
     assert result.refused is False
     if reason_part is not None:
@@ -243,7 +243,7 @@ def test_json_wrapped_in_prose_is_still_read(make_test_model):
     reply = ('Here is my answer:\n{"verdict": "equivalent", "evidence": ["value_a", "value_b"]}\n'
              "That is all.")
     model = make_test_model([call(), {"content": reply}])
-    assert judge_of(model).judge_equivalence("orders.reason", "a", "b").verdict == "equivalent"
+    assert judge_of(model).judge_equivalence("items.reason", "a", "b").verdict == "equivalent"
 
 
 @pytest.mark.parametrize("reply, value_b, expected, uncited", [
@@ -257,7 +257,7 @@ def test_an_equal_answer_that_names_no_check_is_unresolved_rather_than_agreement
 ):
     """D222 rule 3: an agreement rests on a named check, or nobody settled the pair (D219)."""
     model = make_test_model([reply])
-    result = judge_of(model).judge_equivalence("orders.reason", "a", value_b)
+    result = judge_of(model).judge_equivalence("items.reason", "a", value_b)
     assert result.verdict == expected
     assert (result.reason or "").startswith("uncited") is uncited
 
@@ -279,7 +279,7 @@ _NO_AUTH = "no evidence of the required authentication and explicit confirmation
     ("policy", dict(verdict="pass", evidence=["crm_export"], sub_answers=[yes(), yes()]),
      "abstain", None, ["crm_export"], []),
     ("reference", dict(verdict="bad_reference", evidence=["Intent", "End states"],
-                       reason="an order the Intent never names was exchanged"),
+                       reason="an item the Intent never names was exchanged"),
      "bad_reference", ["Intent", "End states"], [], []),
     ("policy", dict(verdict="pass", evidence=["transcript", "state_tools"], sub_answers=[yes()]),
      "pass", None, [], ["transcript"]),
@@ -296,7 +296,7 @@ def test_a_ruling_resting_on_a_source_the_judge_was_not_given_abstains(
     confirmation" by a judge that was handed no transcript, where D93 says a person decides."""
     model = make_test_model([call(), answer(**reply)])
     if use == "reference":
-        result = AgenticJudge(model, TOOLS).judge_reference({"run_id": "r1"}, "cancel order o1")
+        result = AgenticJudge(model, TOOLS).judge_reference({"run_id": "r1"}, "cancel item i1")
     else:
         result = judge_of(model).judge_policy_atom("confirm before cancelling", TRANSCRIPT)
     assert result.verdict == expected
@@ -620,7 +620,7 @@ def test_judge_atom_results_answers_every_judge_atom_of_a_verifier(make_test_mod
     from kullback.runner.records import Atom, Verifier
 
     verifier = Verifier(task_id="t1", atoms=[
-        Atom(id="a_write", kind="required", predicate_src='wrote("cancel_pending_order")'),
+        Atom(id="a_write", kind="required", predicate_src='wrote("cancel_item")'),
         Atom(id="a_polite", kind="required", judge=True, description="the tone matched the policy"),
     ])
     a = named_judge(make_test_model, "a", "pass")

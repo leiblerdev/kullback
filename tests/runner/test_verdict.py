@@ -11,9 +11,9 @@ from kullback.runner.canon import canon_value
 from kullback.runner.records import Atom, Column, EntitySchema, Environment, Verifier
 from kullback.runner.verdict import VERDICT_VERSION, load_run, verdict
 
-CANCEL = "cancel_pending_order"
-READ = "get_order_details"
-WRITE_TOOLS = {CANCEL, "delete_order", "modify_order"}
+CANCEL = "cancel_item"
+READ = "get_item_details"
+WRITE_TOOLS = {CANCEL, "delete_item", "modify_item"}
 
 
 # --- run JSONL builders ---
@@ -48,15 +48,15 @@ def header(run_id="r1", **extra):
     return body
 
 
-def oracle_lines(reason="no longer needed", order_id="W123"):
+def oracle_lines(reason="no longer needed", item_id="W123"):
     return [
         header(),
-        user(0, "I want to stop order W123"),
+        user(0, "I want to stop item W123"),
         say(1, "Sure. May I ask why you want to stop it?"),
         user(2, "It arrived late elsewhere. Yes, go ahead."),
-        call(3, READ, {"order_id": "W123"}, cid="c3"),
+        call(3, READ, {"item_id": "W123"}, cid="c3"),
         result(4, "c3", {"status": "pending"}),
-        call(5, CANCEL, {"order_id": order_id, "reason": reason}, cid="c5"),
+        call(5, CANCEL, {"item_id": item_id, "reason": reason}, cid="c5"),
         result(6, "c5", {"status": "cancelled"}),
         say(7, "Done. The refund goes back to your original card in 5 days."),
         stop(8),
@@ -75,15 +75,15 @@ def verifier():
                 id="a_cancel",
                 kind="required",
                 provenance="user_stated",
-                description="order W123 is cancelled",
-                predicate_src='wrote("cancel_pending_order", order_id="W123")',
+                description="item W123 is cancelled",
+                predicate_src='wrote("cancel_item", item_id="W123")',
             ),
             Atom(
                 id="a_reason",
                 kind="allowed",
                 provenance="user_elicited",
                 description="any reason the user gave is fine",
-                predicate_src='wrote("cancel_pending_order")',
+                predicate_src='wrote("cancel_item")',
             ),
             Atom(
                 id="a_ask_why",
@@ -100,14 +100,14 @@ def verifier():
             Atom(
                 id="a_no_delete",
                 kind="forbidden",
-                description="an order is never deleted",
-                predicate_src='called("delete_order")',
+                description="an item is never deleted",
+                predicate_src='called("delete_item")',
             ),
             Atom(
                 id="a_confirm_first",
                 kind="hard",
                 description="no cancel without a prior confirmation",
-                predicate_src='user_confirmed_before("cancel_pending_order", "yes", "confirm")',
+                predicate_src='user_confirmed_before("cancel_item", "yes", "confirm")',
             ),
         ],
     )
@@ -138,7 +138,7 @@ def test_oracle_run_passes(verifier, write_run):
 
 
 def test_empty_run_fails(verifier, write_run):
-    lines = [header(), user(0, "I want to stop order W123"), say(1, "Noted."), stop(2)]
+    lines = [header(), user(0, "I want to stop item W123"), say(1, "Noted."), stop(2)]
     out = verdict(write_run(lines), verifier, canon_value, write_tools=WRITE_TOOLS)
     assert out.passed is False
     assert out.failing_atom == "a_cancel"
@@ -146,8 +146,8 @@ def test_empty_run_fails(verifier, write_run):
 
 
 def test_plausible_wrong_run_fails(verifier, write_run):
-    """The right shape, the wrong order id: a user-stated value is required (D42)."""
-    out = verdict(write_run(oracle_lines(order_id="W999")), verifier, canon_value, write_tools=WRITE_TOOLS)
+    """The right shape, the wrong item id: a user-stated value is required (D42)."""
+    out = verdict(write_run(oracle_lines(item_id="W999")), verifier, canon_value, write_tools=WRITE_TOOLS)
     assert out.passed is False
     assert out.failing_atom == "a_cancel"
     assert out.class_ == "fail"
@@ -157,24 +157,24 @@ def test_two_valid_orders_both_pass(verifier, write_run):
     """Reads and their order are path, never End state (D94)."""
     first = [
         header(),
-        user(0, "I want to stop order W123"),
-        call(1, READ, {"order_id": "W123"}, cid="c1"),
+        user(0, "I want to stop item W123"),
+        call(1, READ, {"item_id": "W123"}, cid="c1"),
         result(2, "c1", {"status": "pending"}),
         say(3, "Why do you want to stop it?"),
         user(4, "Yes, cancel it, it came late."),
-        call(5, CANCEL, {"order_id": "W123", "reason": "late"}, cid="c5"),
+        call(5, CANCEL, {"item_id": "W123", "reason": "late"}, cid="c5"),
         result(6, "c5", {"status": "cancelled"}),
         say(7, "Refunded to your original card."),
         stop(8),
     ]
     second = [
         header(run_id="r2"),
-        user(0, "I want to stop order W123"),
+        user(0, "I want to stop item W123"),
         say(1, "Why?"),
         user(2, "Yes please, it came late."),
-        call(3, READ, {"order_id": "W123"}, cid="c3"),
+        call(3, READ, {"item_id": "W123"}, cid="c3"),
         result(4, "c3", {"status": "pending"}),
-        call(5, CANCEL, {"order_id": "W123", "reason": "came late"}, cid="c5"),
+        call(5, CANCEL, {"item_id": "W123", "reason": "came late"}, cid="c5"),
         result(6, "c5", {"status": "cancelled"}),
         say(7, "The money returns to your original card."),
         stop(8),
@@ -196,7 +196,7 @@ def test_skipped_required_question_fails(verifier, write_run):
 
 @pytest.mark.parametrize("lines", [
     oracle_lines(reason="I simply changed my mind"),
-    oracle_lines(order_id="  w123 "),
+    oracle_lines(item_id="  w123 "),
 ])
 def test_different_wording_of_an_allowed_value_or_a_write_argument_passes(verifier, write_run, lines):
     """The reason is user-elicited, so any plausible wording passes (D42), and the write
@@ -209,7 +209,7 @@ def test_different_wording_of_an_allowed_value_or_a_write_argument_passes(verifi
 
 def test_forbidden_write_fails(verifier, write_run):
     lines = oracle_lines()
-    lines.insert(-1, call(75, "delete_order", {"order_id": "W123"}, cid="c75"))
+    lines.insert(-1, call(75, "delete_item", {"item_id": "W123"}, cid="c75"))
     lines.insert(-1, result(76, "c75", {"ok": True}))
     out = verdict(write_run(lines), verifier, canon_value, write_tools=WRITE_TOOLS)
     assert out.passed is False
@@ -220,10 +220,10 @@ def test_hard_constraint_on_the_transcript_fails(verifier, write_run):
     """D43 case 3: a write with no prior confirmation in the transcript."""
     lines = [
         header(),
-        user(0, "I want to stop order W123"),
+        user(0, "I want to stop item W123"),
         say(1, "Why do you want that?"),
         user(2, "It came late."),
-        call(3, CANCEL, {"order_id": "W123", "reason": "late"}, cid="c3"),
+        call(3, CANCEL, {"item_id": "W123", "reason": "late"}, cid="c3"),
         result(4, "c3", {"status": "cancelled"}),
         say(5, "Refunded to your original card."),
         stop(6),
@@ -235,11 +235,11 @@ def test_hard_constraint_on_the_transcript_fails(verifier, write_run):
 
 def test_extra_write_is_a_spurious_side_effect_and_side_effects_are_counted(verifier, write_run):
     lines = oracle_lines()
-    lines.insert(-1, call(70, "modify_order", {"order_id": "W900", "note": "x"}, cid="c70"))
+    lines.insert(-1, call(70, "modify_item", {"item_id": "W900", "note": "x"}, cid="c70"))
     lines.insert(-1, result(71, "c70", {"ok": True}))
     out = verdict(write_run(lines), verifier, canon_value, write_tools=WRITE_TOOLS)
     assert out.passed is False
-    assert out.failing_atom.startswith("extra_write:modify_order")
+    assert out.failing_atom.startswith("extra_write:modify_item")
     out = verdict(write_run(oracle_lines()), verifier, canon_value, write_tools=WRITE_TOOLS)
     assert "side_effects=1" in out.notes
     assert "tool_calls=2" in out.notes
@@ -248,7 +248,7 @@ def test_extra_write_is_a_spurious_side_effect_and_side_effects_are_counted(veri
 def test_extra_write_check_is_skipped_without_a_write_tool_set(verifier, write_run):
     """Without ToolSig kinds the Verifier says nothing about other writes, so nothing is invented."""
     lines = oracle_lines()
-    lines.insert(-1, call(70, "modify_order", {"order_id": "W900"}, cid="c70"))
+    lines.insert(-1, call(70, "modify_item", {"item_id": "W900"}, cid="c70"))
     lines.insert(-1, result(71, "c70", {"ok": True}))
     out = verdict(write_run(lines), verifier, canon_value)
     assert out.passed is True
@@ -264,7 +264,7 @@ def test_transferred_without_acting_is_its_own_class(verifier, write_run, write_
     """D46: mine.py may class the transfer tool as a write, and it still changed nothing."""
     lines = [
         header(),
-        user(0, "I want to stop order W123"),
+        user(0, "I want to stop item W123"),
         say(1, "Let me pass you to a person."),
         call(2, "transfer_to_human_agents", {"summary": "cancel"}, cid="c2"),
         result(3, "c2", {"ok": True}),
@@ -281,7 +281,7 @@ def test_an_environment_error_event_classes_the_run_env_error_and_names_the_envi
 ):
     lines = [
         header(),
-        user(0, "I want to stop order W123"),
+        user(0, "I want to stop item W123"),
         {"idx": 1, "type": "error", "payload": {"environment": True, "message": "tool crashed"}},
         stop(2, reason="env_error"),
     ]
@@ -295,7 +295,7 @@ def test_an_environment_error_event_classes_the_run_env_error_and_names_the_envi
 # --- D88 code-first cause marks ---
 
 def _wrong_run_with(extra_event):
-    lines = oracle_lines(order_id="W999")
+    lines = oracle_lines(item_id="W999")
     lines.insert(-1, extra_event)
     return lines
 
@@ -315,12 +315,12 @@ def _wrong_run_with(extra_event):
         ),
         ({"idx": 60, "type": "tool_call", "payload": {"name": "lookup", "args": {}, "overlay_miss": True}},
          "env_mark:overlay_miss"),
-        (None, "env_mark:flagged_tool:get_order_details"),
+        (None, "env_mark:flagged_tool:get_item_details"),
     ],
 )
 def test_code_marks_environment_suspected(verifier, write_run, event, mark):
     """An event mark, or a flagged tool the Run read, suspects the Environment."""
-    lines = oracle_lines(order_id="W999") if event is None else _wrong_run_with(event)
+    lines = oracle_lines(item_id="W999") if event is None else _wrong_run_with(event)
     flagged = {READ} if event is None else None
     out = verdict(write_run(lines), verifier, canon_value, write_tools=WRITE_TOOLS, flagged_tools=flagged)
     assert out.passed is False
@@ -330,7 +330,7 @@ def test_code_marks_environment_suspected(verifier, write_run, event, mark):
 
 
 def test_unmarked_failure_waits_for_the_judge(verifier, write_run):
-    out = verdict(write_run(oracle_lines(order_id="W999")), verifier, canon_value, write_tools=WRITE_TOOLS)
+    out = verdict(write_run(oracle_lines(item_id="W999")), verifier, canon_value, write_tools=WRITE_TOOLS)
     assert out.environment_suspected is False
     assert out.cause is None
     assert "cause_pending_judge" in out.notes
@@ -422,21 +422,21 @@ def test_end_state_diff_ignores_exempt_columns(verifier, write_run):
     lines = oracle_lines()
     lines[-1] = stop(
         8,
-        start_state={"orders": {"W123": {"status": "pending", "updated_at": "1", "id": "W123"}}},
-        end_state={"orders": {"W123": {"status": "cancelled", "updated_at": "2", "id": "W123"}}},
+        start_state={"items": {"W123": {"status": "pending", "updated_at": "1", "id": "W123"}}},
+        end_state={"items": {"W123": {"status": "cancelled", "updated_at": "2", "id": "W123"}}},
     )
     schema = EntitySchema(
-        tables=["orders"],
+        tables=["items"],
         columns=[
-            Column(table="orders", name="status", **{"class": "hard"}),
-            Column(table="orders", name="updated_at", **{"class": "exempt"}),
-            Column(table="orders", name="id", **{"class": "exempt"}),
+            Column(table="items", name="status", **{"class": "hard"}),
+            Column(table="items", name="updated_at", **{"class": "exempt"}),
+            Column(table="items", name="id", **{"class": "exempt"}),
         ],
     )
     extra = Atom(
         id="a_status",
         kind="required",
-        predicate_src='value("orders", "W123", "status") == "cancelled" and list(diff()) == ["orders.W123"]',
+        predicate_src='value("items", "W123", "status") == "cancelled" and list(diff()) == ["items.W123"]',
     )
     with_state = Verifier(task_id="t1", verifier_version="v1", atoms=list(verifier.atoms) + [extra])
     out = verdict(write_run(lines), with_state, canon_value, write_tools=WRITE_TOOLS, schema=schema)
@@ -448,15 +448,15 @@ def _semantic_setup(write_run):
     lines = oracle_lines()
     lines[-1] = stop(
         8,
-        start_state={"orders": {"W123": {"status": "pending", "note": "cancelled by the user"}}},
-        end_state={"orders": {"W123": {"status": "cancelled", "note": "cancelled by user"}}},
+        start_state={"items": {"W123": {"status": "pending", "note": "cancelled by the user"}}},
+        end_state={"items": {"W123": {"status": "cancelled", "note": "cancelled by user"}}},
     )
-    schema = EntitySchema(tables=["orders"], columns=[
-        Column(table="orders", name="status", **{"class": "hard"}),
-        Column(table="orders", name="note", **{"class": "semantic"}),
+    schema = EntitySchema(tables=["items"], columns=[
+        Column(table="items", name="status", **{"class": "hard"}),
+        Column(table="items", name="note", **{"class": "semantic"}),
     ])
     atom = Atom(id="a_note", kind="required",
-                predicate_src='"note" not in diff()["orders.W123"]["fields"]')
+                predicate_src='"note" not in diff()["items.W123"]["fields"]')
     return write_run(lines), Verifier(task_id="t1", atoms=[atom]), schema
 
 
@@ -466,7 +466,7 @@ def test_a_semantic_column_is_settled_by_the_equivalence_table_not_by_string_equ
 
     path, semantic, schema = _semantic_setup(write_run)
     table = canon_module.EquivalenceTable()
-    canon_module.put(table, "orders.note",
+    canon_module.put(table, "items.note",
                      canon_module.canon_value("cancelled by the user"),
                      canon_module.canon_value("cancelled by user"),
                      True, classified_by="human")
@@ -487,17 +487,17 @@ def test_a_semantic_pair_nobody_settled_is_named_never_read_as_equal_and_never_p
     # an unsettled pair as "not there" and pass. It is now its own outcome: the Run is not verdicted,
     # the atom is named, and the count of them is on the Verdict.
     lines = oracle_lines()
-    lines[-1] = stop(8, start_state={"orders": {"W123": {"status": "pending", "note": "open"}}},
-                     end_state={"orders": {"W123": {"status": "cancelled", "note": "cancelled by user"}}})
-    schema = EntitySchema(tables=["orders"], columns=[
-        Column(table="orders", name="status", **{"class": "hard"}),
-        Column(table="orders", name="note", **{"class": "semantic"})])
+    lines[-1] = stop(8, start_state={"items": {"W123": {"status": "pending", "note": "open"}}},
+                     end_state={"items": {"W123": {"status": "cancelled", "note": "cancelled by user"}}})
+    schema = EntitySchema(tables=["items"], columns=[
+        Column(table="items", name="status", **{"class": "hard"}),
+        Column(table="items", name="note", **{"class": "semantic"})])
     forbidden = Atom(id="a_forbidden_note", kind="forbidden",
-                     predicate_src='same("orders.note", "cancelled by the user", value("orders", "W123", "note"))')
+                     predicate_src='same("items.note", "cancelled by the user", value("items", "W123", "note"))')
     out = verdict(write_run(lines), Verifier(task_id="t1", atoms=[forbidden]), schema=schema)
     assert out.passed is False and out.class_ == "not_verdicted"
     assert out.failing_atom == "a_forbidden_note"
-    assert any(note.startswith("atom_unresolved:a_forbidden_note:orders.note") for note in out.notes)
+    assert any(note.startswith("atom_unresolved:a_forbidden_note:items.note") for note in out.notes)
     assert "atoms_unresolved=1" in out.notes
 
 
@@ -505,15 +505,15 @@ def test_the_same_atom_passes_or_fails_once_the_table_settles_the_pair(write_run
     from kullback.runner import canon as canon_module
 
     lines = oracle_lines()
-    lines[-1] = stop(8, start_state={"orders": {"W123": {"status": "pending", "note": "open"}}},
-                     end_state={"orders": {"W123": {"status": "cancelled", "note": "cancelled by user"}}})
-    schema = EntitySchema(tables=["orders"], columns=[
-        Column(table="orders", name="status", **{"class": "hard"}),
-        Column(table="orders", name="note", **{"class": "semantic"})])
+    lines[-1] = stop(8, start_state={"items": {"W123": {"status": "pending", "note": "open"}}},
+                     end_state={"items": {"W123": {"status": "cancelled", "note": "cancelled by user"}}})
+    schema = EntitySchema(tables=["items"], columns=[
+        Column(table="items", name="status", **{"class": "hard"}),
+        Column(table="items", name="note", **{"class": "semantic"})])
     forbidden = Atom(id="a_forbidden_note", kind="forbidden",
-                     predicate_src='same("orders.note", "cancelled by the user", value("orders", "W123", "note"))')
+                     predicate_src='same("items.note", "cancelled by the user", value("items", "W123", "note"))')
     table = canon_module.EquivalenceTable()
-    canon_module.put(table, "orders.note", canon_module.canon_value("cancelled by the user"),
+    canon_module.put(table, "items.note", canon_module.canon_value("cancelled by the user"),
                      canon_module.canon_value("cancelled by user"), True, classified_by="human")
     out = verdict(write_run(lines), Verifier(task_id="t1", atoms=[forbidden]), schema=schema,
                   equivalence=table)
@@ -691,7 +691,7 @@ def test_an_abstaining_judge_atom_leaves_the_run_not_verdicted(verifier, write_r
 def test_a_write_on_a_task_whose_verifier_wants_none_is_an_extra_write(write_run, wants_none):
     out = verdict(write_run(oracle_lines()), wants_none, canon_value, write_tools=WRITE_TOOLS)
     assert out.passed is False
-    assert out.failing_atom == "extra_write:cancel_pending_order"
+    assert out.failing_atom == "extra_write:cancel_item"
     assert "side_effect_check_skipped" not in out.notes
 
 
@@ -726,7 +726,7 @@ def test_a_required_atom_that_cannot_be_evaluated_is_not_a_pass(write_run):
 def test_a_definite_failure_wins_over_an_unevaluable_atom(write_run):
     holed = Verifier(task_id="t1", atoms=[
         Atom(id="a_cancel", kind="required",
-             predicate_src='wrote("cancel_pending_order", order_id="W999")'),
+             predicate_src='wrote("cancel_item", item_id="W999")'),
         Atom(id="j", kind="required", judge=True),
     ])
     out = verdict(write_run(oracle_lines()), holed, canon_value, write_tools=WRITE_TOOLS)
@@ -741,13 +741,13 @@ def test_value_returns_the_raw_value_and_eq_canonicalizes(write_run):
     """The default canonicalizer turns every value into a string, so a literal must compare raw."""
     lines = oracle_lines()
     lines[-1] = stop(8,
-                     start_state={"orders": {"W123": {"status": "pending", "total": 25, "paid": False}}},
-                     end_state={"orders": {"W123": {"status": "cancelled", "total": 25, "paid": True}}})
+                     start_state={"items": {"W123": {"status": "pending", "total": 25, "paid": False}}},
+                     end_state={"items": {"W123": {"status": "cancelled", "total": 25, "paid": True}}})
     typed = Verifier(task_id="t1", atoms=[
-        Atom(id="total", kind="required", predicate_src='value("orders", "W123", "total") == 25'),
-        Atom(id="paid", kind="required", predicate_src='value("orders", "W123", "paid") is True'),
+        Atom(id="total", kind="required", predicate_src='value("items", "W123", "total") == 25'),
+        Atom(id="paid", kind="required", predicate_src='value("items", "W123", "paid") is True'),
         Atom(id="same", kind="required",
-             predicate_src='eq(value("orders", "W123", "status"), " Cancelled ")'),
+             predicate_src='eq(value("items", "W123", "status"), " Cancelled ")'),
     ])
     out = verdict(write_run(lines), typed)  # the default canon is canon.canon_value
     assert out.passed is True, out.notes
@@ -761,18 +761,18 @@ def test_inline_tool_calls_keep_their_position_and_are_read_from_a_nested_reply(
         user(0, "Cancel W123"),
         user(1, "yes go ahead"),
         {"idx": 2, "type": "model_call", "payload": {"content": "", "tool_calls": [
-            {"id": "c2", "name": CANCEL, "args": {"order_id": "W123"}}]}},
+            {"id": "c2", "name": CANCEL, "args": {"item_id": "W123"}}]}},
         stop(3),
     ]
     confirmed = Verifier(task_id="t1", atoms=[Atom(
-        id="h", kind="hard", predicate_src='user_confirmed_before("cancel_pending_order")')])
+        id="h", kind="hard", predicate_src='user_confirmed_before("cancel_item")')])
     out = verdict(write_run(lines), confirmed, canon_value)
     assert out.passed is True
     # loop.py always nests the reply (and its tool_calls) under payload["reply"] (D90).
     lines[3] = {"idx": 2, "type": "model_call", "payload": {"reply": {"content": "", "tool_calls": [
-        {"id": "c2", "name": CANCEL, "arguments": {"order_id": "W123"}}]}}}
+        {"id": "c2", "name": CANCEL, "arguments": {"item_id": "W123"}}]}}}
     confirmed = Verifier(task_id="t1", atoms=[Atom(
-        id="h", kind="hard", predicate_src='wrote("cancel_pending_order", order_id="W123")')])
+        id="h", kind="hard", predicate_src='wrote("cancel_item", item_id="W123")')])
     out = verdict(write_run(lines), confirmed, canon_value)
     assert out.passed is True, out.notes
 
@@ -780,7 +780,7 @@ def test_inline_tool_calls_keep_their_position_and_are_read_from_a_nested_reply(
 def test_a_call_that_errored_is_not_a_call_that_happened(verifier, write_run):
     """D45: a rejected call had no effect, so a forbidden atom must not fire on it."""
     lines = oracle_lines()
-    lines.insert(-1, call(70, "delete_order", {"order_id": "W123"}, cid="c70"))
+    lines.insert(-1, call(70, "delete_item", {"item_id": "W123"}, cid="c70"))
     lines.insert(-1, result(71, "c70", None, error={"class": "invalid_arguments", "payload": "bad"}))
     out = verdict(write_run(lines), verifier, canon_value, write_tools=WRITE_TOOLS)
     assert out.passed is True
@@ -792,14 +792,14 @@ def test_a_hard_atom_sees_every_write_whatever_its_place_in_the_verifier(write_r
     lines = [
         header(),
         user(0, "Cancel W123"),
-        call(1, CANCEL, {"order_id": "W123"}, cid="c1"),
+        call(1, CANCEL, {"item_id": "W123"}, cid="c1"),
         result(2, "c1", {"status": "cancelled"}),
         stop(3),
     ]
     ordered = Verifier(task_id="t1", atoms=[
         Atom(id="h", kind="hard", predicate_src="def check():\n    return all(False for _ in write_calls())\n"),
         Atom(id="a_cancel", kind="required",
-             predicate_src='wrote("cancel_pending_order", order_id="W123")'),
+             predicate_src='wrote("cancel_item", item_id="W123")'),
     ])
     out = verdict(write_run(lines), ordered, canon_value)
     assert out.passed is False
@@ -809,7 +809,7 @@ def test_a_hard_atom_sees_every_write_whatever_its_place_in_the_verifier(write_r
 # --- the judge names the cause of a failure (D88) ---
 
 def test_a_judge_cause_lands_on_the_verdict(verifier, write_run):
-    out = verdict(write_run(oracle_lines(order_id="W999")), verifier, canon_value,
+    out = verdict(write_run(oracle_lines(item_id="W999")), verifier, canon_value,
                   write_tools=WRITE_TOOLS,
                   cause_result={"use": "cause", "verdict": "simulated_user",
                                 "cited_spans": ["the user gave the wrong id"]})
@@ -820,7 +820,7 @@ def test_a_judge_cause_lands_on_the_verdict(verifier, write_run):
 
 
 def test_an_undetermined_cause_leaves_the_failure_for_a_person(verifier, write_run):
-    out = verdict(write_run(oracle_lines(order_id="W999")), verifier, canon_value,
+    out = verdict(write_run(oracle_lines(item_id="W999")), verifier, canon_value,
                   write_tools=WRITE_TOOLS, cause_result={"use": "cause", "verdict": "undetermined"})
     assert out.cause == "undetermined"
 

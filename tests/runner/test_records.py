@@ -75,11 +75,11 @@ def _full_run() -> Run:
         model="anthropic/claude",
         seed=7,
         events=[
-            Event(idx=0, type="user_turn", payload={"content": "cancel my order"}, route=None),
+            Event(idx=0, type="user_turn", payload={"content": "cancel my item"}, route=None),
             Event(
                 idx=1,
                 type="tool_call",
-                payload={"name": "cancel_pending_order", "args": {"order_id": "#W1"}},
+                payload={"name": "cancel_item", "args": {"item_id": "#W1"}},
                 route="recording",
                 cache_key="k1",
             ),
@@ -93,7 +93,7 @@ def _full_run() -> Run:
 def _examiner_records() -> list[Record]:
     run = Run(run_id="probe-t1-1", task_id="t1", events=[Event(idx=0, type="stop", payload={"reason": "success"})])
     verifier = Verifier(task_id="t1", atoms=[Atom(id="w0", kind="required", provenance="user_stated",
-                                                  target={"tool": "cancel", "entity": "order", "field": "status",
+                                                  target={"tool": "cancel", "entity": "item", "field": "status",
                                                           "value": "cancelled"})])
     probe = Probe(probe_id="probe-t1-1", task_id="t1", bug_class="extra_field_acceptance", verifier_hash="v1",
                   round=1, scored_pass=False, run=run)
@@ -105,7 +105,7 @@ def _examiner_records() -> list[Record]:
             Finding(finding_id="f1", task_id="t1", kind="assisted_tool", text="the tool never fails", run_id="probe-t1-1",
                     tool="cancel", suggested="compile_tool", round=1),
             Finding(finding_id="f2", task_id="t1", kind="fidelity", text="the Intent names what no Run says",
-                    suggested="repair_intent", hint="the Runs only cancel one order and never mention a refund",
+                    suggested="repair_intent", hint="the Runs only cancel one item and never mention a refund",
                     round=1),
             RoundRecord(round=1, counts={"trusted": 1, "fidelity": 1}, exit="done")]
 
@@ -154,11 +154,11 @@ def test_reserved_word_aliases_survive_json():
     gate = GateResult(stage="ingest", **{"pass": True})
     assert as_dict(gate)["pass"] is True
 
-    error = ToolCallError(**{"class": "not_found_entity"}, payload="no such order", encoding="text")
+    error = ToolCallError(**{"class": "not_found_entity"}, payload="no such item", encoding="text")
     assert as_dict(error)["class"] == "not_found_entity"
     assert ToolCallError.model_validate(as_dict(error)).class_ == "not_found_entity"
 
-    column = Column(table="orders", name="status", **{"class": "hard"})
+    column = Column(table="items", name="status", **{"class": "hard"})
     assert as_dict(column)["class"] == "hard"
 
     # The field name works too, so module code can write Verdict(passed=..., class_=...).
@@ -166,8 +166,8 @@ def test_reserved_word_aliases_survive_json():
 
 
 def test_content_hash_is_stable_and_order_independent_for_mappings_and_sets():
-    a = Task(id="t1", category_id="c1", run_ids=["r1", "r2"], intent="cancel a late order")
-    b = Task.model_validate({"category_id": "c1", "id": "t1", "intent": "cancel a late order", "run_ids": ["r1", "r2"]})
+    a = Task(id="t1", category_id="c1", run_ids=["r1", "r2"], intent="cancel a late item")
+    b = Task.model_validate({"category_id": "c1", "id": "t1", "intent": "cancel a late item", "run_ids": ["r1", "r2"]})
     assert content_hash(a) == content_hash(b)
     assert content_hash({"a": 1, "b": 2}) == content_hash({"b": 2, "a": 1})
     assert content_hash(a) != content_hash(a.model_copy(update={"unguarded": True}))
@@ -183,12 +183,12 @@ def test_content_hash_is_stable_and_order_independent_for_mappings_and_sets():
 
 def test_defaults_carry_the_decisions_they_encode():
     # D70: a tool with no evidence is read, and flagged unclassified.
-    sig = ToolSig(name="get_order_details")
+    sig = ToolSig(name="get_item_details")
     assert sig.kind == "read" and sig.unclassified is True and sig.kind_confidence == "low"
     # D164: a tool answers the assistant unless the mining says otherwise, so a tool_sigs.json
     # written before the decision loads as the assistant-only surface it was.
     assert sig.callers == ["assistant"] and sig.refused_callers == []
-    old_row = {"name": "get_order_details", "kind": "read", "args_schema": {}, "source": "observed"}
+    old_row = {"name": "get_item_details", "kind": "read", "args_schema": {}, "source": "observed"}
     assert ToolSig.model_validate(old_row).callers == ["assistant"]
     # D97: the three sub-versions sit on Environment and are copied onto Verdict.
     env = Environment(env_id="e1", schema_version="s1", tools_version="t1", policy_version="p1")
@@ -270,7 +270,7 @@ def test_an_unknown_field_fails_at_load_instead_of_being_dropped():
     assert good.failing_atom is None
     # The Start and End state live on the stop event now, so Run forbids extras like every record.
     with pytest.raises(ValueError):
-        Run.model_validate({"run_id": "r1", "start_state": {"orders": {}}, "end_state": {"orders": {}}})
+        Run.model_validate({"run_id": "r1", "start_state": {"items": {}}, "end_state": {"items": {}}})
     assert Run.model_validate({"run_id": "r1"}).run_id == "r1"
     with pytest.raises(ValueError):
         ProbePool.model_validate({"task_id": "t1", "probes": [], "closed": True})
@@ -294,8 +294,8 @@ def test_an_error_carries_its_pointer_and_a_binary_payload_survives():
     assert base64.b64decode(payload["payload"]) == b"\xff\xfe raw"
     assert ToolCallError.model_validate(payload) == error
     # Text payloads are left exactly as the customer wrote them.
-    text = ToolCallError(**{"class": "not_found_entity"}, payload="Error: no such order")
-    assert as_dict(text)["payload"] == "Error: no such order"
+    text = ToolCallError(**{"class": "not_found_entity"}, payload="Error: no such item")
+    assert as_dict(text)["payload"] == "Error: no such item"
     assert as_dict(text)["encoding"] == "text"
 
 

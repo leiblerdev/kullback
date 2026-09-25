@@ -623,20 +623,7 @@ def test_an_unusable_llm_reply_leaves_the_rule_class_standing(workdir, tmp_path)
         assert (error.class_, error.classified_by) == ("unknown", "rule")
 
 
-# --- formats we have not mapped yet (ingest-8) -----------------------------
-
-
-def test_claude_code_jsonl_is_labelled_and_says_it_is_not_mapped(workdir, tmp_path):
-    path = tmp_path / "cc.jsonl"
-    path.write_text(
-        '{"type":"user","message":{"role":"user","content":"hi"}}\n'
-        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1"}]}}\n',
-        encoding="utf-8",
-    )
-    raw = ingest.store_raw(path, workdir)
-    assert raw.format_detected == "claude_code_jsonl"
-    with pytest.raises(NotImplementedError, match="claude_code_jsonl"):
-        ingest.derive_traces(raw.raw_hash, workdir)
+# --- a JSON array is one document, not JSONL ---------------------------------
 
 
 def test_a_json_array_of_records_is_not_read_as_jsonl():

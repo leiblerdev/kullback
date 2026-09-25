@@ -18,39 +18,39 @@ def tools_module() -> types.ModuleType:
     """A stand-in for the compiled tools.py: functions taking the state view first."""
     module = types.ModuleType("tools_module")
 
-    def get_order_details(state, order_id):
-        row = state.row("orders", order_id)
+    def get_item_details(state, item_id):
+        row = state.row("items", item_id)
         if row is None:
-            raise KeyError(order_id)
+            raise KeyError(item_id)
         return row
 
-    def cancel_order(state, order_id, reason="requested"):
-        row = dict(state.row("orders", order_id) or {})
+    def cancel_item(state, item_id, reason="requested"):
+        row = dict(state.row("items", item_id) or {})
         row["status"] = "cancelled"
         row["reason"] = reason
-        state.shared.setdefault("orders", {})[str(order_id)] = row
+        state.shared.setdefault("items", {})[str(item_id)] = row
         return row
 
-    module.get_order_details = get_order_details
-    module.cancel_order = cancel_order
+    module.get_item_details = get_item_details
+    module.cancel_item = cancel_item
     return module
 
 
-SHARED = {"orders": {"123": {"id": "123", "status": "delivered", "total": 25}}}
+SHARED = {"items": {"123": {"id": "123", "status": "delivered", "total": 25}}}
 
 
 def shared() -> dict:
     return json.loads(json.dumps(SHARED))
 
 
-class Order(BaseModel):
+class Item(BaseModel):
     id: str
     status: str
     total: int = 0
 
 
 class DB(BaseModel):
-    orders: dict[str, Order] = {}
+    items: dict[str, Item] = {}
 
 
 class Toolkit:
@@ -59,24 +59,24 @@ class Toolkit:
     def __init__(self, db: dict):
         self.db = DB.model_validate(db)
 
-    def get_order_details(self, order_id):
-        row = self.db.orders.get(order_id)
+    def get_item_details(self, item_id):
+        row = self.db.items.get(item_id)
         if row is None:
-            raise KeyError(order_id)
+            raise KeyError(item_id)
         return row.model_dump()
 
-    def cancel_order(self, order_id, reason="requested"):
-        self.db.orders[order_id].status = "cancelled"
-        return self.db.orders[order_id].model_dump()
+    def cancel_item(self, item_id, reason="requested"):
+        self.db.items[item_id].status = "cancelled"
+        return self.db.items[item_id].model_dump()
 
     def get_db_hash(self):
-        """A public helper the way tau2's ToolKitBase has one; it is not one of the customer's tools."""
+        """A public helper the way a compiled toolkit base has one; it is not one of the environment's tools."""
         return "hash"
 
 
 def pinned_overlay() -> tuple[TaskOverlay, dict]:
-    """The Task's own row: order 123 as its Runs saw it, still pending (D74)."""
-    overlay = TaskOverlay(task_id="t1", rows=[OverlayRow(table="orders", id="123", version_hash="v1")])
+    """The Task's own row: item 123 as its Runs saw it, still pending (D74)."""
+    overlay = TaskOverlay(task_id="t1", rows=[OverlayRow(table="items", id="123", version_hash="v1")])
     return overlay, {"v1": {"id": "123", "status": "pending", "total": 25}}
 
 
@@ -84,14 +84,14 @@ def sigs() -> list[ToolSig]:
     """The mined tool surface; the first one's observed errors came back as JSON, so ours must too (D45)."""
     return [
         ToolSig(
-            name="get_order_details",
+            name="get_item_details",
             error_shapes=[
                 ErrorShape(
-                    class_="not_found_entity", count=2, sample_payload={"error": "no such order"}, encoding="json"
+                    class_="not_found_entity", count=2, sample_payload={"error": "no such item"}, encoding="json"
                 ),
             ],
         ),
-        ToolSig(name="cancel_order"),
+        ToolSig(name="cancel_item"),
     ]
 
 
@@ -106,7 +106,7 @@ def make_router(**kwargs) -> Router:
 
 def test_code_route_calls_the_tool():
     router = make_router()
-    out = router.route("get_order_details", {"order_id": "123"})
+    out = router.route("get_item_details", {"item_id": "123"})
     assert out.route == "code"
     assert out.error is None
     assert out.result["status"] == "delivered"
@@ -117,36 +117,36 @@ def test_overlay_is_read_before_the_shared_world():
     """D74: the Task's own rows win over the shared db.json, on both kinds of tool."""
     overlay, rows = pinned_overlay()
     state = StateView(shared=shared(), overlay=overlay, overlay_rows=rows)
-    out = make_router(state=state).route("get_order_details", {"order_id": "123"})
+    out = make_router(state=state).route("get_item_details", {"item_id": "123"})
     assert out.result["status"] == "pending"
-    assert make_router().route("get_order_details", {"order_id": "123"}).result["status"] == "delivered"
+    assert make_router().route("get_item_details", {"item_id": "123"}).result["status"] == "delivered"
 
     # the compiled toolkit reads its own db, so the overlay has to reach that db as well
     toolkit = Router(env_tools_module=Toolkit(shared()), starting_state=shared(),
                      overlay=overlay, overlay_rows=rows, tool_sigs=sigs())
-    assert toolkit.route("get_order_details", {"order_id": "123"}).result["status"] == "pending"
+    assert toolkit.route("get_item_details", {"item_id": "123"}).result["status"] == "pending"
     assert Router(env_tools_module=Toolkit(shared()), starting_state=shared(), tool_sigs=sigs()).route(
-        "get_order_details", {"order_id": "123"}).result["status"] == "delivered"
+        "get_item_details", {"item_id": "123"}).result["status"] == "delivered"
     # D46: the Starting state a Verdict compares against is the overlay over the shared world
-    assert toolkit.start_world["orders"]["123"]["status"] == "pending"
-    assert toolkit.world()["orders"]["123"]["status"] == "pending"
+    assert toolkit.start_world["items"]["123"]["status"] == "pending"
+    assert toolkit.world()["items"]["123"]["status"] == "pending"
 
 
 def test_the_start_state_is_not_moved_by_a_tool_that_edits_the_row_it_was_handed():
     """D46: the Start state is a snapshot; a write moves the End state and leaves the Start alone."""
     module = types.ModuleType("in_place_tools")
 
-    def cancel_in_place(state, order_id):
-        row = state.row("orders", order_id)
+    def cancel_in_place(state, item_id):
+        row = state.row("items", item_id)
         row["status"] = "cancelled"  # a body that edits the row it was handed
         return row
 
     module.cancel_in_place = cancel_in_place
     router = Router(env_tools_module=module, starting_state=shared(),
                     tool_sigs=[ToolSig(name="cancel_in_place")])
-    router.route("cancel_in_place", {"order_id": "123"})
-    assert router.world()["orders"]["123"]["status"] == "cancelled"
-    assert router.start_world["orders"]["123"]["status"] == "delivered"
+    router.route("cancel_in_place", {"item_id": "123"})
+    assert router.world()["items"]["123"]["status"] == "cancelled"
+    assert router.start_world["items"]["123"]["status"] == "delivered"
 
 
 def test_a_write_to_an_overlaid_row_reaches_the_end_state():
@@ -154,27 +154,27 @@ def test_a_write_to_an_overlaid_row_reaches_the_end_state():
     overlay, rows = pinned_overlay()
     state = StateView(shared=shared(), overlay=overlay, overlay_rows=rows)
     router = make_router(state=state)
-    assert router.route("get_order_details", {"order_id": "123"}).result["status"] == "pending"
-    router.route("cancel_order", {"order_id": "123"})
-    assert router.route("get_order_details", {"order_id": "123"}).result["status"] == "cancelled"
-    assert router.world()["orders"]["123"]["status"] == "cancelled"
+    assert router.route("get_item_details", {"item_id": "123"}).result["status"] == "pending"
+    router.route("cancel_item", {"item_id": "123"})
+    assert router.route("get_item_details", {"item_id": "123"}).result["status"] == "cancelled"
+    assert router.world()["items"]["123"]["status"] == "cancelled"
     # the view's own write path: one row put through it reads back merged
     view = StateView(shared=shared())
-    view.put("orders", "123", {"status": "shipped"})
-    assert view.row("orders", "123") == {"id": "123", "status": "shipped", "total": 25}
+    view.put("items", "123", {"status": "shipped"})
+    assert view.row("items", "123") == {"id": "123", "status": "shipped", "total": 25}
 
 
 def test_only_an_overlay_row_with_no_stored_value_is_recorded_as_a_miss():
     """D74, D88: a missing overlay value is an env mark on the Run, never a silent fallback."""
-    overlay = TaskOverlay(task_id="t1", rows=[OverlayRow(table="orders", id="123", version_hash="gone")])
+    overlay = TaskOverlay(task_id="t1", rows=[OverlayRow(table="items", id="123", version_hash="gone")])
     router = make_router(state=StateView(shared=shared(), overlay=overlay, overlay_rows={}))
-    assert router.state.overlay_misses == [{"table": "orders", "id": "123", "version_hash": "gone"}]
-    out = router.route("get_order_details", {"order_id": "123"})
+    assert router.state.overlay_misses == [{"table": "items", "id": "123", "version_hash": "gone"}]
+    out = router.route("get_item_details", {"item_id": "123"})
     assert out.overlay_miss == router.state.overlay_misses
     overlay, rows = pinned_overlay()
     whole = make_router(state=StateView(shared=shared(), overlay=overlay, overlay_rows=rows))
     assert whole.state.overlay_misses == []
-    assert whole.route("get_order_details", {"order_id": "123"}).overlay_miss is None
+    assert whole.route("get_item_details", {"item_id": "123"}).overlay_miss is None
 
 
 def test_an_overlay_given_beside_a_state_view_is_not_dropped():
@@ -182,7 +182,7 @@ def test_an_overlay_given_beside_a_state_view_is_not_dropped():
     overlay, rows = pinned_overlay()
     router = Router(env_tools_module=tools_module(), starting_state=StateView(shared=shared()),
                     overlay=overlay, overlay_rows=rows, tool_sigs=sigs())
-    assert router.route("get_order_details", {"order_id": "123"}).result["status"] == "pending"
+    assert router.route("get_item_details", {"item_id": "123"}).result["status"] == "pending"
 
 
 def test_a_public_helper_on_the_toolkit_is_not_a_tool():
@@ -196,14 +196,14 @@ def test_a_public_helper_on_the_toolkit_is_not_a_tool():
 def test_a_write_tool_changes_the_state_hash():
     router = make_router()
     before = router.state_hash()
-    router.route("cancel_order", {"order_id": "123"})
+    router.route("cancel_item", {"item_id": "123"})
     assert router.state_hash() != before
 
 
 # --- bad calls, answered in the customer's encoding (D45) ---
 
 def test_unknown_tool_is_answered_not_raised():
-    out = make_router().route("teleport_order", {"order_id": "123"})
+    out = make_router().route("teleport_item", {"item_id": "123"})
     assert out.error is not None
     assert out.error.class_ == "tool_not_found"
     assert out.route == "code"
@@ -211,24 +211,24 @@ def test_unknown_tool_is_answered_not_raised():
 
 
 def test_a_caller_the_tool_never_answered_is_refused_before_anything_runs_and_its_own_callers_are_answered():
-    """D164: the recording answered `cancel_order` for the assistant and never for the simulated
+    """D164: the recording answered `cancel_item` for the assistant and never for the simulated
     user, so a call from the user is refused in the same class, before any code or real world runs;
     a tool of the user's own toolkit answers the user."""
-    router = make_router(tool_sigs=[ToolSig(name="get_order_details"),
-                                    ToolSig(name="cancel_order", callers=["assistant"],
+    router = make_router(tool_sigs=[ToolSig(name="get_item_details"),
+                                    ToolSig(name="cancel_item", callers=["assistant"],
                                             refused_callers=["user"])])
     before = router.state_hash()
-    out = router.route("cancel_order", {"order_id": "123"}, requestor="user")
+    out = router.route("cancel_item", {"item_id": "123"}, requestor="user")
     assert out.error is not None and out.error.class_ == "tool_not_found"
     assert "for the user" in str(out.error.payload)
     assert router.state_hash() == before
-    assert router.world()["orders"]["123"]["status"] == "delivered"
+    assert router.world()["items"]["123"]["status"] == "delivered"
 
-    own = make_router(tool_sigs=[ToolSig(name="get_order_details", callers=["user"])])
-    answered = own.route("get_order_details", {"order_id": "123"}, requestor="user")
+    own = make_router(tool_sigs=[ToolSig(name="get_item_details", callers=["user"])])
+    answered = own.route("get_item_details", {"item_id": "123"}, requestor="user")
     assert answered.error is None and answered.route == "code"
     assert answered.result["status"] == "delivered"
-    assert own.route("get_order_details", {"order_id": "123"}).error.class_ == "tool_not_found"
+    assert own.route("get_item_details", {"item_id": "123"}).error.class_ == "tool_not_found"
 
     from test_real_tools import FakeWorld
 
@@ -244,33 +244,33 @@ def test_a_caller_the_tool_never_answered_is_refused_before_anything_runs_and_it
 
 
 def test_invalid_arguments_keep_the_customers_encoding():
-    out = make_router().route("get_order_details", {"nope": 1})
+    out = make_router().route("get_item_details", {"nope": 1})
     assert out.error.class_ == "invalid_arguments"
     assert out.error.encoding == "json"
     assert isinstance(out.result, dict)
 
 
 def test_a_missing_entity_is_classed_not_found_entity_by_code():
-    out = make_router().route("get_order_details", {"order_id": "999"})
+    out = make_router().route("get_item_details", {"item_id": "999"})
     assert out.error.class_ == "not_found_entity"
     assert out.error.classified_by == "code"
 
 
 def test_an_exception_is_answered_in_the_corpus_words_for_its_class():
-    """Build 8: 155 unknown-id lookups came back as `KeyError: '#W...'` beside recordings that said 'Order not found'.
+    """Build 8: 155 unknown-id lookups came back as `KeyError: '#W...'` beside recordings that said 'Item not found'.
     A JSON corpus error comes back as JSON, a class the corpus never showed keeps the exception text, and
     an error the body raised in its own words keeps them."""
-    router = make_router(tool_sigs=[ToolSig(name="get_order_details", error_shapes=[
-        ErrorShape(class_="not_found_entity", sample_payload="Error: Order not found", encoding="text"),
+    router = make_router(tool_sigs=[ToolSig(name="get_item_details", error_shapes=[
+        ErrorShape(class_="not_found_entity", sample_payload="Error: Item not found", encoding="text"),
     ])])
-    out = router.route("get_order_details", {"order_id": "999"})
-    assert out.result == "Error: Order not found"
-    assert out.error.payload == "Error: Order not found"
+    out = router.route("get_item_details", {"item_id": "999"})
+    assert out.result == "Error: Item not found"
+    assert out.error.payload == "Error: Item not found"
     assert out.error.class_ == "not_found_entity"
 
-    assert make_router().route("get_order_details", {"order_id": "999"}).result == {"error": "no such order"}
+    assert make_router().route("get_item_details", {"item_id": "999"}).result == {"error": "no such item"}
 
-    unshown = make_router().route("get_order_details", {"nope": 1})
+    unshown = make_router().route("get_item_details", {"nope": 1})
     assert unshown.error.class_ == "invalid_arguments"
     assert "TypeError" in unshown.result["error"]
 
@@ -278,24 +278,24 @@ def test_an_exception_is_answered_in_the_corpus_words_for_its_class():
         def __init__(self, db):
             self.db = db
 
-        def cancel_order(self, order_id):
-            raise ValueError("Order is not pending")
+        def cancel_item(self, item_id):
+            raise ValueError("Item is not pending")
 
-    raising = make_router(env_tools_module=RaisingToolkit({}), tool_sigs=[ToolSig(name="cancel_order", error_shapes=[
+    raising = make_router(env_tools_module=RaisingToolkit({}), tool_sigs=[ToolSig(name="cancel_item", error_shapes=[
         ErrorShape(class_="business_error", sample_payload="Error: Item not found", encoding="text"),
     ])])
-    own_words = raising.route("cancel_order", {"order_id": "123"})
+    own_words = raising.route("cancel_item", {"item_id": "123"})
     assert own_words.error.class_ == "business_error"
-    assert own_words.result == "ValueError: Order is not pending"
+    assert own_words.result == "ValueError: Item is not pending"
 
 
 def test_arguments_the_signature_cannot_take_are_invalid_arguments_and_the_body_never_runs():
     """F57: the signature is bound before the body runs, so a bad call is the caller's and the world is untouched."""
     router = make_router()
-    out = router.route("cancel_order", {"order_id": "123", "colour": "red"})
+    out = router.route("cancel_item", {"item_id": "123", "colour": "red"})
     assert out.error.class_ == "invalid_arguments"
     assert "colour" in out.result
-    assert router.state.row("orders", "123")["status"] == "delivered"
+    assert router.state.row("items", "123")["status"] == "delivered"
 
 
 def test_a_type_error_inside_the_body_is_a_body_fault_that_keeps_its_message_and_line():
@@ -305,12 +305,12 @@ def test_a_type_error_inside_the_body_is_a_body_fault_that_keeps_its_message_and
         def __init__(self, db):
             self.db = db
 
-        def refund(self, order_id):
+        def refund(self, item_id):
             total = "25"
             return total + 1
 
     out = make_router(env_tools_module=AddingToolkit({}), tool_sigs=[ToolSig(name="refund")]).route(
-        "refund", {"order_id": "123"})
+        "refund", {"item_id": "123"})
     assert out.error.class_ == "body_fault"
     assert out.result == "unavailable"
     assert out.error.payload["fault"] == "TypeError"
@@ -320,12 +320,12 @@ def test_a_type_error_inside_the_body_is_a_body_fault_that_keeps_its_message_and
 
 
 def test_the_error_encoding_follows_the_traces_and_falls_back_to_text():
-    out = make_router(tool_sigs=[ToolSig(name="get_order_details")]).route("get_order_details", {"order_id": "999"})
+    out = make_router(tool_sigs=[ToolSig(name="get_item_details")]).route("get_item_details", {"item_id": "999"})
     assert out.error.encoding == "text"
-    router = make_router(tool_sigs=[ToolSig(name="get_order_details", error_shapes=[
-        ErrorShape(class_="not_found_entity", sample_payload="no such order", encoding="text"),
+    router = make_router(tool_sigs=[ToolSig(name="get_item_details", error_shapes=[
+        ErrorShape(class_="not_found_entity", sample_payload="no such item", encoding="text"),
     ])])
-    shown = router.route("get_order_details", {"order_id": "999"})
+    shown = router.route("get_item_details", {"item_id": "999"})
     assert shown.error.encoding == "text"
     assert isinstance(shown.result, str)
 
@@ -349,7 +349,7 @@ def test_a_stale_recording_cannot_answer_a_changed_state():
     state = StateView(shared=json.loads(json.dumps(SHARED)))
     entry = recording("lookup_user", {"email": "a@b.com"}, state.hash(), {"name": "Ada"})
     router = make_router(state=state, recordings=[entry])
-    router.route("cancel_order", {"order_id": "123"})
+    router.route("cancel_item", {"item_id": "123"})
     out = router.route("lookup_user", {"email": "a@b.com"})
     assert out.route != "recording"
     assert out.error.class_ == "tool_not_found"
@@ -365,46 +365,46 @@ def test_a_recorded_error_comes_back_as_an_error_and_writes_nothing():
     out = make_router(state=state, recordings=[entry]).route("lookup_user", {"email": "x"})
     assert out.route == "recording"
     assert out.error.class_ == "business_error"
-    entry = recording("refund_order", {"order_id": "123"}, state.hash(), None,
+    entry = recording("refund_item", {"item_id": "123"}, state.hash(), None,
                       error={"class": "business_error", "payload": "already shipped", "encoding": "text"},
-                      writes={"orders": {"123": {"id": "123", "status": "refunded"}}})
+                      writes={"items": {"123": {"id": "123", "status": "refunded"}}})
     router = make_router(state=StateView(shared=shared()), recordings=[entry])
-    router.route("refund_order", {"order_id": "123"})
-    assert router.world()["orders"]["123"]["status"] == "delivered"
+    router.route("refund_item", {"item_id": "123"})
+    assert router.world()["items"]["123"]["status"] == "delivered"
 
 
 def test_a_write_answered_from_the_recording_lands_in_the_world():
     """A recorded write changes the world, so a later read is not stale and the End state shows it,
     on the state view and on a compiled toolkit that reads self.db."""
     state = StateView(shared=json.loads(json.dumps(SHARED)))
-    entry = recording("refund_order", {"order_id": "123"}, state.hash(), {"status": "refunded"},
-                      writes={"orders": {"123": {"id": "123", "status": "refunded", "total": 25}}})
+    entry = recording("refund_item", {"item_id": "123"}, state.hash(), {"status": "refunded"},
+                      writes={"items": {"123": {"id": "123", "status": "refunded", "total": 25}}})
     router = make_router(state=state, recordings=[entry])
-    before = router.world()["orders"]["123"]["status"]
-    out = router.route("refund_order", {"order_id": "123"})
+    before = router.world()["items"]["123"]["status"]
+    out = router.route("refund_item", {"item_id": "123"})
     assert out.route == "recording"
     assert before == "delivered"
-    assert router.world()["orders"]["123"]["status"] == "refunded"
-    assert router.route("get_order_details", {"order_id": "123"}).result["status"] == "refunded"
+    assert router.world()["items"]["123"]["status"] == "refunded"
+    assert router.route("get_item_details", {"item_id": "123"}).result["status"] == "refunded"
 
     toolkit = Router(env_tools_module=Toolkit(shared()), starting_state=shared(), tool_sigs=sigs())
-    entry = recording("refund_order", {"order_id": "123"}, toolkit.state_hash(), {"status": "refunded"},
-                      writes={"orders": {"123": {"id": "123", "status": "refunded", "total": 25}}})
-    toolkit.recordings = {recording_key("refund_order", {"order_id": "123"}, toolkit.state_hash()): entry}
-    assert toolkit.route("refund_order", {"order_id": "123"}).route == "recording"
-    assert toolkit.world()["orders"]["123"]["status"] == "refunded"
-    assert toolkit.route("get_order_details", {"order_id": "123"}).result["status"] == "refunded"
+    entry = recording("refund_item", {"item_id": "123"}, toolkit.state_hash(), {"status": "refunded"},
+                      writes={"items": {"123": {"id": "123", "status": "refunded", "total": 25}}})
+    toolkit.recordings = {recording_key("refund_item", {"item_id": "123"}, toolkit.state_hash()): entry}
+    assert toolkit.route("refund_item", {"item_id": "123"}).route == "recording"
+    assert toolkit.world()["items"]["123"]["status"] == "refunded"
+    assert toolkit.route("get_item_details", {"item_id": "123"}).result["status"] == "refunded"
 
 
 def test_a_code_write_after_a_recorded_write_is_the_one_the_end_state_shows():
     """D46: the End state is the world as it stands, so the later write wins, not the recorded one."""
     router = Router(env_tools_module=Toolkit(shared()), starting_state=shared(), tool_sigs=sigs())
-    entry = recording("refund_order", {"order_id": "123"}, router.state_hash(), {"status": "refunded"},
-                      writes={"orders": {"123": {"id": "123", "status": "refunded", "total": 25}}})
-    router.recordings = {recording_key("refund_order", {"order_id": "123"}, router.state_hash()): entry}
-    assert router.route("refund_order", {"order_id": "123"}).route == "recording"
-    assert router.route("cancel_order", {"order_id": "123"}).result["status"] == "cancelled"
-    assert router.world()["orders"]["123"]["status"] == "cancelled"
+    entry = recording("refund_item", {"item_id": "123"}, router.state_hash(), {"status": "refunded"},
+                      writes={"items": {"123": {"id": "123", "status": "refunded", "total": 25}}})
+    router.recordings = {recording_key("refund_item", {"item_id": "123"}, router.state_hash()): entry}
+    assert router.route("refund_item", {"item_id": "123"}).route == "recording"
+    assert router.route("cancel_item", {"item_id": "123"}).result["status"] == "cancelled"
+    assert router.world()["items"]["123"]["status"] == "cancelled"
 
 
 # --- stand-in route ---
@@ -418,14 +418,14 @@ def test_the_stand_in_answers_last_only_and_marks_the_run_assisted():
     assert out.result == {"name": "Ada"}
     assert len(model.calls) == 1
     unused = TestModel(["never used"])
-    coded = make_router(stand_in_model=unused).route("get_order_details", {"order_id": "123"})
+    coded = make_router(stand_in_model=unused).route("get_item_details", {"item_id": "123"})
     assert coded.route == "code"
     assert unused.calls == []
 
 
 def test_a_non_json_stand_in_reply_comes_back_as_text():
-    out = make_router(stand_in_model=TestModel(["the order is pending"])).route("lookup_user", {})
-    assert out.result == "the order is pending"
+    out = make_router(stand_in_model=TestModel(["the item is pending"])).route("lookup_user", {})
+    assert out.result == "the item is pending"
     assert out.assisted is True
 
 
@@ -448,21 +448,21 @@ def test_the_recording_key_folds_the_way_the_customers_rules_fold():
     """D39: keyed under the module defaults, a call the customer's rules call the same is missed."""
     from kullback.runner.canon import CanonRules
 
-    rules = CanonRules(id_patterns={"order_id": r"#?W\d+"}, id_strip_chars="#")
-    assert recording_key("t", {"order_id": "#W123"}, "s") != recording_key("t", {"order_id": "W123"}, "s")
-    assert recording_key("t", {"order_id": "#W123"}, "s", rules) == \
-        recording_key("t", {"order_id": "W123"}, "s", rules)
+    rules = CanonRules(id_patterns={"item_id": r"#?W\d+"}, id_strip_chars="#")
+    assert recording_key("t", {"item_id": "#W123"}, "s") != recording_key("t", {"item_id": "W123"}, "s")
+    assert recording_key("t", {"item_id": "#W123"}, "s", rules) == \
+        recording_key("t", {"item_id": "W123"}, "s", rules)
 
 
 # --- a synthetic row read through a tool makes the Run assisted (D40, D49, D107) ---
 
 def test_only_a_code_route_that_returns_a_synthetic_row_is_assisted():
     router = make_router(synthetic_rows=["123"])
-    out = router.route("get_order_details", {"order_id": "123"})
+    out = router.route("get_item_details", {"item_id": "123"})
     assert out.route == "code" and out.error is None
     assert out.assisted is True
-    assert make_router(synthetic_rows=["999"]).route("get_order_details", {"order_id": "123"}).assisted is False
-    assert make_router().route("get_order_details", {"order_id": "123"}).assisted is False
+    assert make_router(synthetic_rows=["999"]).route("get_item_details", {"item_id": "123"}).assisted is False
+    assert make_router().route("get_item_details", {"item_id": "123"}).assisted is False
 
 
 # --- a Real tool runs for real before any imitation (D262) ---
