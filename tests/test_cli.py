@@ -280,6 +280,45 @@ def test_logout_forgets_the_named_key(tmp_path, monkeypatch):
     assert "no remembered key OPENAI_API_KEY" in again.output
 
 
+def test_the_screen_opens_with_the_remembered_keys_loaded(tmp_path, monkeypatch):
+    """A key only in the store is in the environment the screen loop sees, for both entries."""
+    import os
+
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    credentials.remember("OPENAI_API_KEY", "sk-remembered")
+    seen = []
+    real_entry = cli._entry
+
+    def entry(path, name):
+        if path == "kullback.tui":
+            return lambda **kwargs: seen.append(dict(os.environ))
+        return real_entry(path, name)
+
+    monkeypatch.setattr(cli, "_entry", entry)
+    try:
+        assert invoke("tui", "--workdir", str(tmp_path)).exit_code == 0
+        assert invoke("attach", str(tmp_path)).exit_code == 0
+    finally:
+        os.environ.pop("OPENAI_API_KEY", None)
+    assert len(seen) == 2
+    assert all(env.get("OPENAI_API_KEY") == "sk-remembered" for env in seen)
+
+
+def test_loading_keys_for_the_screen_never_overrides_an_exported_one(tmp_path, monkeypatch):
+    import os
+
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-exported")
+    credentials.remember("OPENAI_API_KEY", "sk-remembered")
+    cli._load_keys()
+    assert os.environ["OPENAI_API_KEY"] == "sk-exported"
+
+
 def test_a_routing_config_changes_the_version(workdir, tmp_path):
     config = tmp_path / "routing.json"
     config.write_text('{"llm_standin": false}', encoding="utf-8")

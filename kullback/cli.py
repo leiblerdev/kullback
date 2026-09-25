@@ -508,6 +508,15 @@ def rescue(
     typer.echo(line + (" (dry run: nothing written)" if dry_run else ""))
 
 
+def _load_keys() -> None:
+    """Keys the screen reads from the environment: exported env, then .env, then remembered.
+
+    The screen and its guards read os.environ before any model call, so both entries that
+    open it load every store first, in the same precedence live_model uses. Values never print."""
+    _entry("kullback.ai.provider", "load_dotenv")()
+    _entry("kullback.ai.credentials", "load_credentials")()
+
+
 def _live_model(model_id: str, base_url: Optional[str]):
     """One live adapter, or the refusal in words. provider.live_model is the single place the
     live-call flag is ever set, so the screen and the CLI refuse for the same reason."""
@@ -1507,6 +1516,7 @@ def attach(
 
     With no live build there, the screen says so and shows the build's status instead.
     """
+    _load_keys()
     _entry("kullback.tui", "loop")(workdir=_default_workdir(workdir), attach=True)
 
 
@@ -1518,6 +1528,7 @@ def tui(
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
 ):
     """Open the kullback screen: one build, its stages, its gates and its spend, while it runs."""
+    _load_keys()
     _entry("kullback.tui", "loop")(workdir=_default_workdir(workdir), model=model, base_url=base_url,
                                        ceiling_usd=ceiling_usd)
 
