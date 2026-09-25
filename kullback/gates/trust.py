@@ -82,6 +82,8 @@ NO_POOL = "no_pool"
 # The Examiner's own re-roll rows (second-path batches), beside the workdir's re-roll file (D133).
 EXAMINER_REROLLS = ("examiner", "rerolls.json")
 RUNS_DIR = "runs"
+# The one refusal reason a finished Run does not overturn (reference_check.REFERENCE_WRONG).
+REFERENCE_WRONG = "reference_wrong"
 
 
 def finished_runs(task_id: str, replays: dict, rerolls: dict) -> list[str]:
@@ -90,13 +92,20 @@ def finished_runs(task_id: str, replays: dict, rerolls: dict) -> list[str]:
 
 
 def refuse_gate(refusals: dict[str, dict], replays: dict, rerolls: dict) -> GateResult:
-    """A refusal is admitted only when no frontier Run of the Task finished; a failure names the Runs."""
+    """A refusal is admitted only when no frontier Run of the Task finished; a failure names the Runs.
+
+    One reason is admitted whatever finished: `reference_wrong`, written when the Examiner rejected
+    every End state the Task's Runs reached (reference_check). The finished-Run rule exists because a
+    Run that finished is an answer the Task can be verified against, and here every such answer was
+    judged wrong, so a finished Run cannot rescue a Task whose only answer is wrong; keeping it would
+    leave a Verifier that encodes the wrong End state in the trusted count.
+    """
     refused: list[str] = []
     rejected: list[str] = []
     failures: list[str] = []
     for task_id in sorted(refusals or {}):
         finished = finished_runs(task_id, replays, rerolls)
-        if finished:
+        if finished and _reason_of(refusals[task_id]) != REFERENCE_WRONG:
             rejected.append(task_id)
             failures.append(f"task {task_id}: the frontier finished it: {', '.join(finished)}")
         else:

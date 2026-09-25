@@ -816,14 +816,20 @@ def open_note(workdir: Any, task_id: str) -> Optional[dict]:
 def rule_note(workdir: Any, task_id: Optional[str], move: str, verdict: str, text: str) -> Optional[dict]:
     """Rule on the Task's open note with one of the Examiner's moves, written next to the note.
 
-    Returns the ruling, or None when the Task has no open note.
+    Returns the ruling, or None when the Task has no open note. Agreeing with a note that says the
+    Reference's outcome is wrong also rejects that Reference (reference_check), so the ruling acts.
     """
+    from kullback.examiner.reference_check import reject_on_note  # it reads notes through this module
+
     note = open_note(workdir, task_id) if task_id else None
     if note is None:
         return None
     ruling = {"task_id": task_id, "note_hash": note["note_hash"], "move": move, "verdict": verdict,
               "text": text}
     write_json(task_path(workdir, task_id, notes_dir(workdir), RULING_SUFFIX), ruling)
+    rejected = reject_on_note(workdir, task_id, note, verdict, text)
+    if rejected is not None:
+        ruling["reference_rejected"] = rejected
     return ruling
 
 
@@ -965,7 +971,9 @@ def _reroll(root: ExamRoot):
 
 
 def domain_tools(root: ExamRoot) -> list[AgentTool]:
-    """The four domain tools over one ExamRoot, and propose_verifier as edit_verifier's alias for one release."""
+    """The domain tools over one ExamRoot, and propose_verifier as edit_verifier's alias for one release."""
+    from kullback.examiner import reference_check as RC  # it imports this module's note readers
+
     return [
         AgentTool("edit_verifier", "Write a new Verifier version: edit atoms in place (a change to an "
                   "existing atom), then drop and add; the D79 suite, the pool and the loosening gate "
@@ -979,6 +987,14 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
                   FindingArgs, FindingResult, _finding(root), render=render),
         AgentTool("reroll", "Buy more frontier Runs of a Task through the Runner (D112, D133).",
                   RerollArgs, RerollResult, _reroll(root), render=render),
+        AgentTool("check_reference", "Show the evidence on a Task's Reference: the Intent, each write with "
+                  "the reads before it, whether it wrote nothing, whether the recordings agree, the "
+                  "re-rolls against it, and any Builder note. Code only, no model call.",
+                  RC.CheckReferenceArgs, RC.CheckReferenceResult, RC._check_reference(root), render=render),
+        AgentTool("reject_reference", "Reject a Reference whose End state the Intent and the policy say is "
+                  "wrong: its End state is excluded, the Reference is chosen again, and a Task with none "
+                  "left is refused as reference_wrong.",
+                  RC.RejectReferenceArgs, RC.RejectReferenceResult, RC._reject_reference(root), render=render),
         AgentTool("propose_verifier", "Deprecated alias of edit_verifier, kept for one release.",
                   ProposeArgs, ProposeResult, _propose_verifier(root, alias=True), render=render),
     ]
@@ -986,7 +1002,8 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
 
 def tool_names() -> tuple[str, ...]:
     """The domain tool names, so tests pin the Builder-called surface."""
-    return ("edit_verifier", "probe", "finding", "reroll", "propose_verifier")
+    return ("edit_verifier", "probe", "finding", "reroll", "check_reference", "reject_reference",
+            "propose_verifier")
 
 
 __all__ = ["DEPRECATED_ALIAS", "NOTES_DIR", "NOTE_REASONS", "note_line", "note_refusal", "notes_of",

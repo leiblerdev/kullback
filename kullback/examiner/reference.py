@@ -545,7 +545,8 @@ def required_of_all(citations: dict[str, dict]) -> Optional[tuple[str, str]]:
 
 
 def confirm(recordings: Iterable[Recording], *, intent: str = "", policy_lines: Iterable[str] = (),
-            judge: Any = None, phrases: Iterable[str] = ()) -> Confirmation:
+            judge: Any = None, phrases: Iterable[str] = (),
+            excluded: Optional[dict[str, str]] = None) -> Confirmation:
     """D111 over one Task's Runs: constraint violations out, then one agreeing End state, judge as residue.
 
     The judge is fail-only (D110), so one pass over three or more states may drop some and leave two
@@ -553,19 +554,26 @@ def confirm(recordings: Iterable[Recording], *, intent: str = "", policy_lines: 
     them may remain (D193); what that pass leaves is the answer, and anything but one state left is
     an abstention naming the keys the survivors were not told apart on. A judgement that fails every
     state is read once more too, through what its failures cited.
+
+    `excluded` names the recordings the Examiner rejected as a Reference, with why (reference_check):
+    they are failed before grouping, so the rule picks among the rest and never picks them again.
     """
     out = Confirmation()
     recordings = list(recordings)
     out.recordings = list(recordings)
+    rejected = dict(excluded or {})
     for rec in recordings:
         if rec.violated:
             out.failed[rec.run_id] = "violates " + ", ".join(rec.violated)
-    live = [r for r in recordings if not r.violated]
+        elif rec.run_id in rejected:
+            out.failed[rec.run_id] = f"rejected: {rejected[rec.run_id]}"
+    live = [r for r in recordings if not r.violated and r.run_id not in rejected]
     if not recordings:
         out.reason = "no Run to confirm"
         return out
     if not live:
-        out.reason = "every recording broke a Hard constraint"
+        out.reason = ("every recording broke a Hard constraint" if not rejected
+                      else "every recording broke a Hard constraint or was rejected")
         return out
     groups = group(live)
     out.groups = [{k: v for k, v in g.items() if k != "members"} for g in groups]
