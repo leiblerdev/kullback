@@ -388,6 +388,24 @@ def _live_model(model_id: str, base_url: Optional[str]):
         typer.echo(str(error))
         raise typer.Exit(2) from None
 
+def _user_switch(adapter: Any, judge_adapter: Any, user_adapter: Any) -> dict:
+    """The Builder's examine call with the agent user switched on, or nothing where it is off.
+
+    Off, the Builder's own default examine runs exactly as before. On, examine is called the way
+    that default calls it, with the user model added: the Builder's session never learns of it.
+    """
+    if user_adapter is None:
+        return {}
+    examine = _entry("kullback.examiner.session", "examine")
+
+    def examine_fn(workdir: Any, task_ids: Any) -> Any:
+        return examine(Path(workdir), task_ids=task_ids, model=adapter,
+                       judge_model=judge_adapter or adapter, probe_model=adapter,
+                       reroll_model=adapter, user_model=user_adapter)
+
+    return {"examine_fn": examine_fn}
+
+
 @app.command()
 def build(
     workdir: Path = WORKDIR,
@@ -398,6 +416,10 @@ def build(
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
     files: Optional[list[Path]] = typer.Option(None, "--file", help="Customer export to ingest first."),  # noqa: B008
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
+    user_model: Optional[str] = typer.Option(
+        None, "--user-model",
+        help="Model id for the agent user in the Examiner's re-rolls (D214); off by default, "
+             "which keeps the rule-driven user."),
 ):
     """Run the autonomous Builder session over the ingested Traces and write the Environment.
 
@@ -406,10 +428,12 @@ def build(
     findings, and stops when every Task is trusted or refused, when the spend ceiling is reached,
     or when it states why it cannot go further. `--model` drives the session and, unless named
     otherwise, the Examiner, the judges, the loophole probe and the re-rolls; `--judge-model`
-    puts the judges on a model of their own.
+    puts the judges on a model of their own. `--user-model` switches the re-rolls' users to the
+    agent user over the rule floor, priced under the user stage.
     """
     adapter = _live_model(model, base_url)
     judge_adapter = _live_model(judge_model, base_url) if judge_model else None
+    user_adapter = _live_model(user_model, base_url) if user_model else None
     # The screen lists running builds from these heartbeats; the pid tells it who is alive. The
     # pulse keeps beating while the build runs so a screen watching from another directory sees
     # the spend move, rather than a stale $0.0000 until the build is over.
@@ -421,7 +445,8 @@ def build(
         result = _entry("kullback.builder.session", "build")(
             workdir, adapter, files=list(files or []), ceiling_usd=ceiling_usd,
             subscribers=[_session_subscriber(workdir)], judge_model=judge_adapter,
-            probe_model=adapter, reroll_model=adapter)
+            probe_model=adapter, reroll_model=adapter,
+            **_user_switch(adapter, judge_adapter, user_adapter))
     except Exception:
         pulse.stop()
         heartbeat.beat(workdir, model, "failed")

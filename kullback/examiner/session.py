@@ -496,7 +496,8 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
             judge_model: Any = None, probe_model: Any = None, reroll_model: Any = None,
             allowance_usd: Optional[float] = None, session_path: Any = None,
             subscribers: Iterable[Callable] = (), max_turns: int = EXAMINE_MAX_TURNS,
-            workers: Optional[int] = None, limit: Optional[int] = None) -> list[Finding]:
+            workers: Optional[int] = None, limit: Optional[int] = None,
+            user_model: Any = None) -> list[Finding]:
     """Derive the Verifiers by code, file what the records say, then run one model session.
 
     With `model=None` the session is code only: the derivation and its findings. With a model,
@@ -507,7 +508,9 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     trusted and loosening gates rule on proposals (D127).
 
     The probe, re-roll and variant runners come from the runner tool over the workdir (D120):
-    without a re-roll model the derivation stays code only and buys no Runs.
+    without a re-roll model the derivation stays code only and buys no Runs. A `user_model`
+    switches the re-rolls' users to the agent user over the rule floor; without one they are the
+    rule-driven user, unchanged.
 
     Every Task derive_pick returns is derived in this call, `workers` at a time (default: the
     cores, at most eight); `limit`, when given, derives only the first that many and files one
@@ -522,7 +525,8 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     store = load_store(workdir)
     anchor = _load_anchor(root)
     ctx = stage_mod.ExamContext(root, GateLedger(root), anchor=anchor)
-    runners = runners_mod.runners_for(root, reroll_model=reroll_model, anchor=anchor)
+    runners = runners_mod.runners_for(root, reroll_model=reroll_model, anchor=anchor,
+                                      user_model=user_model)
     picked = derive_pick(root, store, task_ids)
     now, later = (picked, []) if limit is None else (picked[:limit], picked[limit:])
     if now:
@@ -554,7 +558,7 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
         return out
     exam_root = _exam_root(workdir, store, findings, reroll_model=reroll_model,
                            probe_model=probe_model, run_probe=runners["run_probe"],
-                           allowance_usd=allowance_usd)
+                           allowance_usd=allowance_usd, reroll_user=runners.get("reroll_user"))
     harness = AgentHarness(model=model, max_turns=max_turns,
                            session=SessionStore.load(session_path) if session_path is not None else None,
                            context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
@@ -631,7 +635,7 @@ def _last_refusal(messages: Iterable[Any]) -> Optional[str]:
 
 def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model: Any = None,
                probe_model: Any = None, run_probe: Any = None,
-               allowance_usd: Optional[float] = None) -> ExamRoot:
+               allowance_usd: Optional[float] = None, reroll_user: Any = None) -> ExamRoot:
     """The session root: live Verifiers, signatures, rules, rows, task status and version history.
 
     Task status is what derive_all wrote to task_status.json in this same examine call, and the
@@ -640,7 +644,7 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     saved. The trusted gate reads each derived file as the current accepted version from that
     seed, and the loosening gate compares each proposal against the version before it (D127).
     The probe model and the probe runner examine built let the suite run its loophole check on
-    each proposal (D79).
+    each proposal (D79). `reroll_user` is the re-roll user factory for the reroll tool.
     """
     root = Path(workdir)
     verifiers: dict[str, Verifier] = {}
@@ -660,7 +664,7 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
                          task_status=status if isinstance(status, dict) else {},
                          findings=list(findings), reroll_model=reroll_model,
                          probe_model=probe_model, run_probe=run_probe,
-                         allowance_remaining=allowance_usd)
+                         allowance_remaining=allowance_usd, reroll_user=reroll_user)
     history = load_history(exam_root)
     for task_id, verifier in verifiers.items():
         seeded_history(history, task_id, verifier)
