@@ -1,8 +1,8 @@
-"""The real retail data as a smoke tier: each builder stage over the real thing.
+"""The real recorded export as a smoke tier: each builder stage over the real thing.
 
 Unit tests elsewhere prove the pipeline on the invented worlds. This tier keeps the
 real-data checks they used to carry: ingest, mining, policy, one tool compile and one
-played user task. Fast and offline: no keys, no network, no raw corpus needed.
+played user task. Fast and offline: no keys, no network, no raw export needed.
 """
 
 import json
@@ -19,7 +19,7 @@ from kullback.runner.records import Trace, Turn
 
 
 def _derived_traces(tau2_small_path, workdir):
-    """Traces off the small retail file, stored and derived in a scratch workdir."""
+    """Traces off the small recorded file, stored and derived in a scratch workdir."""
     summary = ingest.ingest_file(tau2_small_path, workdir)
     assert summary["gate"]["pass"] is True
     return summary, ingest.derive_traces(summary["raw_hash"], workdir)
@@ -75,7 +75,7 @@ def test_retail_plays_one_recorded_user_task(tau2_small):
         trace_id=sim["id"],
         raw_hash="rawhash",
         ingest_version="0",
-        source="tau2",
+        source="recorded",
         turns=[Turn(idx=idx, role=role, content=content, raw_ptr=PTR)
                for idx, (role, content) in enumerate(pairs)],
         raw_ptr=PTR,

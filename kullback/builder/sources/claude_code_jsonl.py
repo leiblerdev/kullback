@@ -114,31 +114,47 @@ def _map_row(row: dict, here: RawPtr, trace_id: str, pending: dict,
     calls a tool_result block resolves. `pending` carries the calls still
     waiting for their answer. A row with no dialogue role is transcript
     metadata and maps to no turn."""
-    from kullback.runner.records import Turn
-
     message = row.get("message") if isinstance(row.get("message"), dict) else {}
     role = message.get("role") or _DIALOGUE_TYPES.get(row.get("type"))
     if role is None:
         return (None, [])
     texts, uses, results = _split_content(message.get("content"))
     calls = [_requested_call(block, role, trace_id, here) for block in uses]
+    _remember_requests(calls, pending, row)
+    _answer_ready(results, pending, row, here, classify_error, detect_truncation)
+    return (_row_turn(role, texts, uses, results, here), calls)
+
+
+def _remember_requests(calls: list[ToolCall], pending: dict, row: dict) -> None:
+    """Keep every requested call by id, so the row carrying its answer finds it."""
     for call in calls:
         if call.id:
             pending[call.id] = (call, row.get("timestamp"))
-    answered = [block.get("tool_use_id") for block in results if block.get("tool_use_id")]
+
+
+def _answer_ready(results: list[dict], pending: dict, row: dict, here: RawPtr,
+                  classify_error: Any, detect_truncation: Any) -> None:
+    """Attach each answer block to the call still waiting for it, if any."""
     for block in results:
         waiting = pending.pop(block.get("tool_use_id"), None)
         if waiting is not None:
             _attach_result(waiting[0], block, waiting[1], row.get("timestamp"), here,
                            classify_error, detect_truncation)
+
+
+def _row_turn(role: str, texts: list[str], uses: list[dict], results: list[dict],
+              here: RawPtr) -> Any:
+    """One row's turn: the tool role when the row carries answers, else its own role."""
+    from kullback.runner.records import Turn
+
+    answered = [block.get("tool_use_id") for block in results if block.get("tool_use_id")]
     # A row carrying answers reads as the tool's turn, the way the tool
     # message of the first mapped export does, so orphan results surface.
     turn_role = "tool" if results else role
     call_ids = ([block.get("id") for block in uses if block.get("id")] +
                 [answer for answer in answered])
-    turn = Turn(idx=here.msg_index if here.msg_index is not None else 0, role=turn_role,
+    return Turn(idx=here.msg_index if here.msg_index is not None else 0, role=turn_role,
                 content="\n".join(texts) or None, tool_call_ids=call_ids, raw_ptr=here)
-    return (turn, calls)
 
 
 def _split_content(content: Any) -> tuple[list[str], list[dict], list[dict]]:
