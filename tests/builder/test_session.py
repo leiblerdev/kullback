@@ -392,3 +392,22 @@ def test_a_build_is_steerable_through_its_bus_from_outside_the_caller(tmp_path):
     session_mod.build(root, model, subscribers=[on_event])
     assert acks[0] is not None and acks[0].outcome == "queued"
     assert any("Read the schema next." in str(message.get("content")) for message in model.calls[1]["messages"])
+
+
+def test_a_stop_through_the_bus_after_a_run_ended_starts_no_continuation(tmp_path):
+    """The first run ends with no tool call while Tasks are open, so a continuation would follow.
+    The stop lands as that run ends, when there is no run left to cancel, and the session ends."""
+    from kullback.agent import steer
+
+    root = _workdir(tmp_path)
+    model = TestModel([reply("Done."), reply(STOP_LINE)])
+    acks = []
+
+    def on_event(event):
+        if event.type == "agent_end" and not acks:
+            acks.append(steer.wait_for_ack(root, steer.request(root, "stop"), 5))
+
+    result = session_mod.build(root, model, subscribers=[on_event])
+    assert acks[0] is not None and acks[0].outcome == "cancel_asked"
+    assert len(model.calls) == 1
+    assert result["stopped"] == "cancelled" and result["continued"] == 0

@@ -181,8 +181,8 @@ class Bus:
         # not miss what lands between this call and its first read.
         seq = since_seq
         if from_end:
-            offset = self._whole_size()
-            seq = max(seq, self.last_seq())
+            offset, last = self._end()
+            seq = max(seq, last)
         else:
             cached, seen = self._reader
             offset = cached if since_seq >= seen and self._size() >= cached else 0
@@ -211,13 +211,13 @@ class Bus:
         except OSError:
             return 0
 
-    def _whole_size(self) -> int:
-        """The file's length at a record boundary: taken under the writers' lock, so no append is
-        half done."""
+    def _end(self) -> tuple[int, int]:
+        """The file's length and its last seq at one moment: both read under the writers' lock, so
+        no append is half done and none lands between the two."""
         if not self.path.is_file():
-            return 0
+            return 0, 0
         with self._locked():
-            return self._size()
+            return self._size(), self.last_seq()
 
     def _read_from(self, offset: int, since_seq: int) -> tuple[list[BusRecord], int]:
         """The records after `since_seq` in the whole lines from `offset` on, and the offset after

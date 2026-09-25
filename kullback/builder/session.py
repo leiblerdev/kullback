@@ -335,6 +335,10 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
                       if stopped == "no tool call" and answered_with_work else None)
             if follow is None or continued >= CONTINUATIONS:
                 break
+            # A stop that came in between runs found no run to cancel; it ends the session here.
+            if bridge.stop_asked:
+                stopped = "cancelled"
+                break
             continued += 1
             message = follow
         last_line = str(getattr(last_message, "content", None) or "")
