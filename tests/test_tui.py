@@ -96,7 +96,7 @@ def test_the_screen_builds_through_the_session_entry_the_cli_uses(tmp_path, monk
     screen = Screen(tmp_path, console=_console())
     assert screen.command("/build") is True
     screen.wait()
-    assert seen["workdir"] == tmp_path and seen["model"] is None
+    assert seen["workdir"] == tmp_path and seen["model"] is not None
     assert seen["files"] == [] and "subscribers" in seen
 
 
@@ -232,6 +232,18 @@ def _screen(tmp_path, **kwargs):
     return Screen(tmp_path, console=_console(), runner=_Runner(), **kwargs)
 
 
+@pytest.fixture(autouse=True)
+def live_calls_and_a_key_for_the_default_model(tmp_path, monkeypatch):
+    """Most screen tests start builds, which now refuse with live calls off or with no key.
+
+    Live calls on and a key for the default model, from the environment, in a
+    directory of their own, so /build reaches the injected runner. The refusal
+    tests below clear what they refuse on."""
+    monkeypatch.setenv("HARNESS_ALLOW_MODEL_REQUESTS", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bearer-key")
+    monkeypatch.chdir(tmp_path)
+
+
 def test_quit_closes_the_screen_and_everything_else_keeps_it_open(tmp_path):
     screen = _screen(tmp_path)
     assert screen.command("/quit") is False
@@ -250,13 +262,13 @@ def test_an_unknown_command_says_so_rather_than_doing_something(tmp_path):
     ("/build --file traces.json", ["traces.json"]),
     ("/build", []),
 ])
-def test_build_passes_the_flags_it_was_typed_and_no_model_by_default(tmp_path, line, files):
+def test_build_passes_the_flags_it_was_typed_with_the_default_model(tmp_path, line, files):
     screen = _screen(tmp_path)
     screen.command(line)
     screen.wait()
     call = screen.runner.calls[0]
     assert [p.name for p in call["files"]] == files
-    assert call["model"] is None
+    assert call["model"] is not None
 
 
 def test_the_ceiling_the_screen_was_opened_with_reaches_the_build(tmp_path):
@@ -328,10 +340,12 @@ def test_status_before_any_build_says_there_is_none(tmp_path):
 
 
 def test_keys_says_which_are_set_and_never_what_they_are():
-    out = _keys({"OPENAI_API_KEY": "sk-secret-value", "HARNESS_ALLOW_MODEL_REQUESTS": "1"}).plain
+    out = _keys({"OPENAI_API_KEY": "sk-secret-value", "HARNESS_ALLOW_MODEL_REQUESTS": "1"},
+                model="bedrock/global.anthropic.claude-opus-5-5").plain
     assert "sk-secret-value" not in out
+    assert "AWS_BEARER_TOKEN_BEDROCK" in out and "missing" in out
     assert "OPENAI_API_KEY" in out and "set" in out
-    assert "ANTHROPIC_API_KEY" in out and "missing" in out
+    assert out.index("AWS_BEARER_TOKEN_BEDROCK") < out.index("OPENAI_API_KEY")
 
 
 # --- a flag typed without its value is a usage message, not an IndexError (Greptile, PR 1) ---
@@ -454,17 +468,21 @@ def test_login_with_no_args_inspects_the_current_model(tmp_path, monkeypatch):
     assert "opencode-go/muse-spark" in out and "OPENCODE_API_KEY" in out and "missing" in out
 
 
-def test_login_with_no_model_says_so(tmp_path):
+def test_login_with_no_args_inspects_the_default_model(tmp_path):
+    from kullback.ai.provider import DEFAULT_MODEL
+
     console = _console()
     assert Screen(tmp_path, console=console).command("/login") is True
-    assert "no model" in _text(console)
+    assert DEFAULT_MODEL in _text(console)
 
 
 def test_login_to_an_id_without_a_slash_is_told_in_words(tmp_path):
+    from kullback.ai.provider import DEFAULT_MODEL
+
     console = _console()
     screen = Screen(tmp_path, console=console)
     assert screen.command("/login kthumb") is True
-    assert "provider/model" in _text(console) and screen.model is None
+    assert "provider/model" in _text(console) and screen.model == DEFAULT_MODEL
 
 
 def test_login_to_an_unknown_provider_refuses_and_keeps_the_old_model(tmp_path, monkeypatch):
@@ -486,12 +504,14 @@ def test_login_set_holds_the_key_in_memory_and_logout_forgets_it(tmp_path, monke
     import os
 
     _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
     console = _console()
     screen = Screen(tmp_path, console=console)
+    screen._ask = lambda prompt: "n"
     assert screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123") is True
     assert os.environ.get("OPENCODE_API_KEY") == "sk-zen-123"
     out = _text(console)
-    assert "sk-zen-123" not in out and "set" in out
+    assert "sk-zen-123" not in out and "this session" in out
     assert screen.command("/logout") is True
     assert "OPENCODE_API_KEY" not in os.environ
 
@@ -500,20 +520,21 @@ def test_logout_restores_what_the_shell_held(tmp_path, monkeypatch):
     import os
 
     _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
     monkeypatch.setenv("OPENCODE_API_KEY", "old-key")
     screen = Screen(tmp_path, console=_console())
+    screen._ask = lambda prompt: "n"
     screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=new-key")
-    assert os.environ["OPENCODE_API_KEY"] == "new-key"
     screen.command("/logout")
     assert os.environ["OPENCODE_API_KEY"] == "old-key"
 
-
 def test_keys_marks_the_keys_this_session_set(tmp_path, monkeypatch):
     _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
     console = _console()
     screen = Screen(tmp_path, console=console)
+    screen._ask = lambda prompt: "n"
     screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123")
-    screen.command("/keys")
     out = _text(console)
     assert "OPENCODE_API_KEY" in out and "this session" in out and "sk-zen-123" not in out
     screen.command("/logout")
@@ -521,8 +542,10 @@ def test_keys_marks_the_keys_this_session_set(tmp_path, monkeypatch):
 
 def test_a_login_secret_reaches_no_file_and_no_line(tmp_path, monkeypatch):
     _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
     console = _console()
     screen = Screen(tmp_path, console=console)
+    screen._ask = lambda prompt: "n"
     screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=topsecret-value-9")
     screen.command("/keys")
     screen.command("/status")
@@ -534,6 +557,39 @@ def test_a_login_secret_reaches_no_file_and_no_line(tmp_path, monkeypatch):
         if path.is_file():
             assert "topsecret-value-9" not in path.read_text(encoding="utf-8", errors="replace")
     screen.command("/logout")
+
+
+def test_a_screen_login_answered_yes_remembers_the_key(tmp_path, monkeypatch):
+    from kullback.ai import credentials
+
+    _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    screen._ask = lambda prompt: "y"
+    assert screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123") is True
+    out = _text(console)
+    assert "sk-zen-123" not in out and "remembered OPENCODE_API_KEY" in out
+    assert credentials.stored_names() == ["OPENCODE_API_KEY"]
+    assert credentials.load_credentials({}) == {"OPENCODE_API_KEY": "sk-zen-123"}
+    screen.command("/logout")
+
+
+def test_logout_forgets_a_remembered_key(tmp_path, monkeypatch):
+    from kullback.ai import credentials
+
+    _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    credentials.remember("OPENCODE_API_KEY", "sk-zen-123")
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    assert screen.command("/logout OPENCODE_API_KEY") is True
+    out = _text(console)
+    assert "forgot remembered OPENCODE_API_KEY" in out and "sk-zen-123" not in out
+    assert credentials.stored_names() == []
+    screen.command("/logout OPENAI_API_KEY")
+    assert "no remembered key OPENAI_API_KEY" in _text(console)
 
 
 def test_the_banner_is_a_gradient_styles_vary_plain_does_not(tmp_path):
@@ -588,13 +644,14 @@ def test_the_gradient_is_the_brand_white_into_gray():
     assert tui_mod.GRADIENT == sorted(tui_mod.GRADIENT, reverse=True)
 
 
-def test_open_says_what_kullback_is_and_lists_commands_and_sessions(tmp_path, monkeypatch):
+def test_open_says_what_kullback_is_and_names_the_next_step_and_sessions(tmp_path, monkeypatch):
     monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
     console = _console()
     Screen(tmp_path, console=console).open()
     out = _text(console)
     assert "Rebuilds your environment from traces" in out
-    assert "01 commands" in out and "/status" in out
+    assert "where this workdir stands" in out and "next:" in out
+    assert "01 commands" not in out
     assert "02 sessions" in out and "none yet" in out
 
 
@@ -728,10 +785,11 @@ def test_login_menu_walks_to_a_key_without_printing_it(tmp_path, monkeypatch):
 
     _snapshot(monkeypatch, tmp_path)
     monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
     monkeypatch.setattr(getpass, "getpass", lambda prompt: "sk-menu-secret")
     console = _console()
     screen = Screen(tmp_path, console=console)
-    answers = iter(["3", ""])
+    answers = iter(["3", "", "n"])
     screen._ask = lambda prompt: next(answers)
     screen.command("/login")
     out = _text(console)
@@ -1357,3 +1415,113 @@ def test_follow_ends_when_the_heartbeat_says_done_though_the_pid_is_alive(tmp_pa
     watch.join(5)
     assert done == [True], "following a finished build never ends while its pid lives"
     assert "build done" in _text(screen.console)
+
+
+# --- a newcomer's first ten minutes: the checklist, the guard, the next step ---
+
+def test_build_without_live_calls_says_how_to_turn_them_on_and_starts_nothing(tmp_path, monkeypatch):
+    monkeypatch.delenv("HARNESS_ALLOW_MODEL_REQUESTS", raising=False)
+    screen = _screen(tmp_path)
+    screen.command("/build")
+    screen.wait()
+    out = _text(screen.console)
+    assert "HARNESS_ALLOW_MODEL_REQUESTS=1" in out and ".env" in out and "export" in out
+    assert screen.runner.calls == [] and screen._session is None
+    assert "build started" not in out
+
+
+def test_build_with_no_key_for_the_model_names_the_variables_and_starts_nothing(tmp_path, monkeypatch):
+    for name in ("AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    screen = _screen(tmp_path)
+    screen.command("/build")
+    screen.wait()
+    out = _text(screen.console)
+    assert "AWS_BEARER_TOKEN_BEDROCK" in out and "/login" in out
+    assert screen.runner.calls == [] and screen._session is None
+    assert "build started" not in out
+
+
+def test_the_screen_starts_at_the_cli_default_model(tmp_path):
+    from kullback.ai.provider import DEFAULT_MODEL
+
+    assert Screen(tmp_path, console=_console()).model == DEFAULT_MODEL
+    assert Screen(tmp_path, model="openai/gpt-6-luna", console=_console()).model == "openai/gpt-6-luna"
+
+
+def test_home_names_ingest_as_the_next_step_in_an_empty_workdir(tmp_path):
+    console = _console()
+    Screen(tmp_path, console=console).open()
+    out = _text(console)
+    assert "where this workdir stands" in out
+    assert "kullback ingest" in out.split("next:")[1]
+
+
+def test_the_checklist_never_contains_a_secret_value(tmp_path, monkeypatch):
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "marker-secret-value-4")
+    console = _console()
+    screen = Screen(tmp_path, model="bedrock/global.anthropic.claude-opus-5-5", console=console)
+    screen.command("/doctor")
+    screen.command("/keys")
+    out = _text(console)
+    assert "marker-secret-value-4" not in out
+    assert "AWS_BEARER_TOKEN_BEDROCK" in out and "set" in out
+
+
+def test_the_entry_screen_lists_only_sessions_of_this_workdir(tmp_path):
+    from kullback.runner import heartbeat
+
+    other = tmp_path / "other"
+    other.mkdir()
+    heartbeat.beat(other, "openai/gpt-6-luna", "running")
+    heartbeat.beat(tmp_path, "openai/gpt-6-luna", "running")
+    console = Console(file=io.StringIO(), width=300, force_terminal=False, no_color=True)
+    Screen(tmp_path, console=console).open()
+    out = _text(console)
+    assert str(tmp_path) in out and str(other) not in out
+
+
+def test_keys_lists_the_models_own_variables_first(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "marker-secret-value-5")
+    console = _console()
+    screen = Screen(tmp_path, model="bedrock/global.anthropic.claude-opus-5-5", console=console)
+    screen.command("/keys")
+    out = _text(console)
+    assert "marker-secret-value-5" not in out
+    assert out.index("AWS_BEARER_TOKEN_BEDROCK") < out.index("OPENAI_API_KEY")
+
+
+def test_the_money_line_shows_a_rate_and_time_to_the_ceiling(tmp_path):
+    (tmp_path / "budget.json").write_text(json.dumps(
+        {"total": {"usd": 0.10, "calls": 12, "input": 100, "output": 50}}), encoding="utf-8")
+    board = Board(tmp_path, ceiling=2.80)
+    board.money()
+    at, value = board.spend_samples[0]
+    board.spend_samples[0] = (at - 240.0, value)
+    (tmp_path / "budget.json").write_text(json.dumps(
+        {"total": {"usd": 0.16, "calls": 18, "input": 150, "output": 70}}), encoding="utf-8")
+    out = board.money().plain
+    assert "$0.0150/min" in out and "ceiling in ~2h56" in out
+
+
+def test_a_unique_prefix_runs_its_command(tmp_path):
+    screen = _screen(tmp_path)
+    assert screen.command("/do") is True
+    assert "where this workdir stands" in _text(screen.console)
+
+
+def test_a_slash_answer_at_a_menu_question_is_run_after_the_menu(tmp_path):
+    screen = _screen(tmp_path)
+    screen.console.input = lambda prompt="": "/status"
+    assert screen._ask("    provider [1-6 or name]: ") == ""
+    assert screen._pending_command == "/status"
+
+
+def test_the_loop_runs_a_pending_command_next(tmp_path, monkeypatch):
+    from rich.console import Console
+
+    from kullback.tui import loop
+
+    answers = iter(["/doctor", "/quit"])
+    monkeypatch.setattr(Console, "input", lambda self, prompt="": next(answers))
+    loop(tmp_path)

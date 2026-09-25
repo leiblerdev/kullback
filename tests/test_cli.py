@@ -115,6 +115,96 @@ def test_ingest_refuses_a_floor_outside_unit_interval(tmp_path, workdir):
     assert refused.exit_code != 0 and "within [0, 1]" in refused.output
 
 
+def test_ingest_dry_run_prints_one_row_per_file(tmp_path, workdir):
+    """Two tiny complete recordings dry run for real: one ready row each, and nothing stored."""
+    paths = []
+    for name in ("a", "b"):
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps({"simulations": [{
+            "id": f"sim-{name}",
+            "messages": [{"role": "assistant", "content": "hello", "turn_idx": 0},
+                         {"role": "user", "content": "hi", "turn_idx": 1}],
+        }]}), encoding="utf-8")
+        paths.append(path)
+    result = invoke("ingest", *[str(path) for path in paths],
+                    "--workdir", str(workdir), "--dry-run")
+    assert result.exit_code == 0, result.output
+    rows = [line for line in result.output.strip().splitlines() if line.strip()]
+    assert len(rows) == 2
+    for path, row in zip(paths, rows, strict=True):
+        assert str(path) in row and "tau2_native" in row and row.rstrip().endswith("ready")
+    assert list(workdir.iterdir()) == []
+
+
+# --- sources map and draft ----------------------------------------------------
+
+def _neutral_toy(path):
+    """One neutral toy file: two recordings with a role and content each."""
+    path.write_text(json.dumps({"entries": [
+        {"id": "rec-1", "role": "user", "content": "first neutral note"},
+        {"id": "rec-2", "role": "assistant", "content": "second neutral note"},
+    ]}), encoding="utf-8")
+    return path
+
+
+def test_sources_help_lists_shape_check_map_and_draft():
+    listed = invoke("sources", "--help")
+    assert listed.exit_code == 0, listed.output
+    for command in ("shape", "check", "map", "draft"):
+        assert command in listed.output
+
+
+def test_map_writes_a_reader_that_passes_and_ingest_uses_it(tmp_path, workdir):
+    """A hand mapped neutral file passes the isolated check and ingests under its name."""
+    from kullback.builder import ingest
+    from kullback.builder import sources as _sources
+
+    toy = _neutral_toy(tmp_path / "neutral.json")
+    result = invoke("sources", "map", str(toy), "--name", "mapped",
+                    "--recordings", "entries", "--role", "entries[].role",
+                    "--content", "entries[].content", "--workdir", str(workdir))
+    assert result.exit_code == 0, result.output
+    assert f"passes; `kullback ingest {toy}` will use it" in result.output
+    try:
+        summary = ingest.ingest_file(toy, workdir)
+    finally:
+        _sources.unregister("mapped")
+    assert summary["format"] == "mapped"
+    assert summary["runs"] == 2
+
+
+def test_map_refuses_to_overwrite_a_reader_without_force(tmp_path, workdir):
+    """A second map onto the same name refuses, then replaces it with --force."""
+    toy = _neutral_toy(tmp_path / "neutral.json")
+    args = ["sources", "map", str(toy), "--name", "mapped", "--recordings", "entries",
+            "--role", "entries[].role", "--content", "entries[].content",
+            "--workdir", str(workdir)]
+    assert invoke(*args).exit_code == 0
+    target = workdir / "sources" / "mapped.py"
+    sentinel = "sentinel text"
+    target.write_text(sentinel, encoding="utf-8")
+    refused = invoke(*args)
+    assert refused.exit_code == 1, refused.output
+    assert "refusing to overwrite" in refused.output
+    assert target.read_text(encoding="utf-8") == sentinel
+    assert invoke(*args, "--force").exit_code == 0
+    assert target.read_text(encoding="utf-8") != sentinel
+
+
+def test_a_failing_map_leaves_the_sources_folder_unchanged(tmp_path, workdir):
+    """A map whose reader fails the isolated check writes nothing under sources."""
+    toy = _neutral_toy(tmp_path / "neutral.json")
+    folder = workdir / "sources"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "kept.py").write_text("sentinel text", encoding="utf-8")
+    refused = invoke("sources", "map", str(toy), "--name", "broken",
+                     "--recordings", "nope", "--role", "nope[].role",
+                     "--content", "nope[].content", "--workdir", str(workdir))
+    assert refused.exit_code == 1, refused.output
+    assert sorted(path.name for path in folder.iterdir()) == ["kept.py"]
+    assert (folder / "kept.py").read_text(encoding="utf-8") == "sentinel text"
+
+
 def test_build_passes_files_and_the_ceiling_through_to_the_session(workdir, fake_modules, tmp_path):
     target = tmp_path / "traces.json"
     target.write_text("[]", encoding="utf-8")
@@ -218,6 +308,86 @@ def test_freeze_runner_writes_nothing_on_a_no(workdir):
     assert "not frozen" in result.output
 
 
+def test_login_reads_the_value_with_getpass_and_remembers_it(tmp_path, monkeypatch):
+    """The value never travels as an argument, so it never lands in shell history."""
+    import getpass
+
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: "sk-typed-once")
+    result = invoke("login", "OPENAI_API_KEY")
+    assert result.exit_code == 0, result.output
+    assert "remembered OPENAI_API_KEY" in result.output
+    assert "sk-typed-once" not in result.output
+    assert credentials.stored_names() == ["OPENAI_API_KEY"]
+
+
+def test_login_list_prints_names_never_values(tmp_path, monkeypatch):
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    credentials.remember("OPENAI_API_KEY", "sk-secret-one")
+    credentials.remember("ANTHROPIC_API_KEY", "sk-secret-two")
+    result = invoke("login", "--list")
+    assert result.exit_code == 0, result.output
+    assert "OPENAI_API_KEY" in result.output and "ANTHROPIC_API_KEY" in result.output
+    assert "sk-secret-one" not in result.output and "sk-secret-two" not in result.output
+
+
+def test_logout_forgets_the_named_key(tmp_path, monkeypatch):
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    credentials.remember("OPENAI_API_KEY", "sk-secret-one")
+    result = invoke("logout", "OPENAI_API_KEY")
+    assert result.exit_code == 0, result.output
+    assert "forgot remembered OPENAI_API_KEY" in result.output
+    assert credentials.stored_names() == []
+    again = invoke("logout", "OPENAI_API_KEY")
+    assert again.exit_code == 0, again.output
+    assert "no remembered key OPENAI_API_KEY" in again.output
+
+
+def test_the_screen_opens_with_the_remembered_keys_loaded(tmp_path, monkeypatch):
+    """A key only in the store is in the environment the screen loop sees, for both entries."""
+    import os
+
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    credentials.remember("OPENAI_API_KEY", "sk-remembered")
+    seen = []
+    real_entry = cli._entry
+
+    def entry(path, name):
+        if path == "kullback.tui":
+            return lambda **kwargs: seen.append(dict(os.environ))
+        return real_entry(path, name)
+
+    monkeypatch.setattr(cli, "_entry", entry)
+    try:
+        assert invoke("tui", "--workdir", str(tmp_path), "--plain").exit_code == 0
+        assert invoke("attach", str(tmp_path), "--plain").exit_code == 0
+    finally:
+        os.environ.pop("OPENAI_API_KEY", None)
+    assert len(seen) == 2
+    assert all(env.get("OPENAI_API_KEY") == "sk-remembered" for env in seen)
+
+
+def test_loading_keys_for_the_screen_never_overrides_an_exported_one(tmp_path, monkeypatch):
+    import os
+
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-exported")
+    credentials.remember("OPENAI_API_KEY", "sk-remembered")
+    cli._load_keys()
+    assert os.environ["OPENAI_API_KEY"] == "sk-exported"
+
+
 def test_a_routing_config_changes_the_version(workdir, tmp_path):
     config = tmp_path / "routing.json"
     config.write_text('{"llm_standin": false}', encoding="utf-8")
@@ -270,6 +440,105 @@ def test_run_asks_the_runner_for_that_many_rerolls(workdir, fake_modules):
     assert call["kwargs"]["task_id"] == "t1"
     assert call["kwargs"]["count"] == 2
     assert [row["run_id"] for row in json.loads(result.output)] == ["r0", "r1"]
+
+
+def _seed_playable_tasks(workdir: Path, task_ids=("t1", "t2")) -> None:
+    """Invented Tasks with Verifiers, a frozen Runner and a round trusting each one, for run --tasks."""
+    from tests.episode.invented import write_env
+
+    for task_id in task_ids:
+        write_env(workdir, task_id=task_id)
+    (workdir / "runner_version.json").write_text(json.dumps({"runner_version": "rv-1"}), encoding="utf-8")
+    (workdir / "rounds.json").write_text(
+        json.dumps([{"round": 1, "counts": {"round": 1, "trusted_ids": list(task_ids)}}]),
+        encoding="utf-8")
+
+
+def _scripted_candidate(monkeypatch, replies, name="test", loop=False):
+    """Route the run command's model lookup to a scripted offline model, at the provider boundary."""
+    from kullback.ai.provider import TestModel
+
+    monkeypatch.setattr("kullback.ai.provider.live_model",
+                        lambda model_id, base_url=None: TestModel(replies, name=name, loop=loop))
+
+
+def test_run_with_one_task_prints_the_same_json_as_before(workdir, fake_modules):
+    seed_task(workdir)
+    result = invoke("run", "--workdir", str(workdir), "--task", "t1", "--model", "candidate-model")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == [{"run_id": "r0", "task_id": "t1"}]
+
+
+def test_run_over_trusted_tasks_prints_a_line_per_task_and_the_totals(workdir, monkeypatch):
+    from tests.episode.invented import SCRIPTED_RENAME
+
+    _seed_playable_tasks(workdir)
+    _scripted_candidate(monkeypatch, [dict(reply) for reply in SCRIPTED_RENAME], loop=True)
+    result = invoke("run", "--workdir", str(workdir), "--tasks", "trusted", "--model", "test/model",
+                    "--count", "2")
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0] == "only trusted Tasks are graded by a checked Verifier"
+    assert "t1 pass pass" in lines and "t2 pass pass" in lines
+    assert "pass@1 1.00 pass^2 1.00" in lines
+    assert "runs 4/4" in result.output and "spend $0.00" in result.output
+    assert "failing most: none" in result.output
+
+
+def test_run_names_the_task_that_failed_most(workdir, monkeypatch):
+    from tests.episode.invented import SCRIPTED_RENAME
+
+    _seed_playable_tasks(workdir)
+    look = {"content": None, "tool_calls": [
+        {"id": "c1", "name": "describe_widget", "arguments": {"widget_id": "w1"}}]}
+    replies = [dict(reply) for reply in SCRIPTED_RENAME] + [look, {"content": "done", "tool_calls": []}]
+    _scripted_candidate(monkeypatch, replies)
+    result = invoke("run", "--workdir", str(workdir), "--tasks", "trusted", "--model", "test/model",
+                    "--count", "1")
+    assert result.exit_code == 0, result.output
+    assert "t1 pass" in result.output.splitlines()
+    assert "t2 fail" in result.output.splitlines()
+    assert "pass@1 0.50" in result.output
+    assert "failing most: t2 (1)" in result.output
+
+
+def test_run_stops_at_the_ceiling_and_says_so(workdir, monkeypatch):
+    from tests.episode.invented import SCRIPTED_RENAME
+
+    _seed_playable_tasks(workdir)
+    priced = [dict(reply, usage={"input": 5000, "output": 0}) for reply in SCRIPTED_RENAME]
+    _scripted_candidate(monkeypatch, priced, name="openai/gpt-4.1-mini", loop=True)
+    result = invoke("run", "--workdir", str(workdir), "--tasks", "trusted",
+                    "--model", "openai/gpt-4.1-mini", "--count", "1", "--ceiling-usd", "0.007")
+    assert result.exit_code == 0, result.output
+    assert "t1 pass" in result.output.splitlines()
+    assert "ceiling $0.007 reached, stopped where it stood" in result.output
+    assert "runs 2/2" in result.output
+
+
+def test_scoring_without_a_frozen_runner_warns_once(workdir):
+    seed_task(workdir)
+    (workdir / "runner_version.json").unlink()
+    result = invoke("verdict", "--workdir", str(workdir), "--task", "t1")
+    assert result.stderr.count("the Verdicts carry no Runner version, run `kullback freeze-runner`") == 1
+
+
+def test_publish_check_uploads_nothing_and_names_what_is_missing(workdir, monkeypatch):
+    from tests.episode.invented import write_env
+
+    write_env(workdir, task_id="t1")
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr("huggingface_hub.get_token", lambda: None)
+
+    def bomb(*args, **kwargs):
+        raise AssertionError("publish --check must not reach the upload")
+
+    monkeypatch.setattr("kullback.hub.publish.publish", bomb)
+    result = invoke("publish", "--workdir", str(workdir), "--repo", "org/name", "--check")
+    assert result.exit_code == 1, result.output
+    assert "not ready" in result.output
+    assert "HF token" in result.output and "runner frozen" in result.output
+    assert "fidelity over Tasks" in result.output
 
 
 def stored_verdicts(workdir: Path, task_id: str = "t1") -> list[dict]:
@@ -338,6 +607,26 @@ def test_a_batch_report_counts_only_the_runs_of_that_model(workdir):
     text = (workdir / "report.md").read_text(encoding="utf-8")
     assert text.splitlines()[0] == "# Run batch report"
     assert "These are the numbers for one Run batch" in text
+
+
+# --- tasks --------------------------------------------------------------------
+
+def test_tasks_lists_each_task_with_the_word_it_stands_in(workdir):
+    """The tasks command prints one row per Task of the workdir, and --status keeps one word."""
+    (workdir / "task_status.json").write_text(json.dumps({
+        "t1": {"reference_confirmed": True, "verifier_passed": True},
+        "t2": {"reference_confirmed": False, "verifier_passed": False}}), encoding="utf-8")
+    result = invoke("tasks", "--workdir", str(workdir))
+    assert result.exit_code == 0, result.output
+    assert "t1 open" in result.output and "t2 open" in result.output
+    opened = invoke("tasks", "--workdir", str(workdir), "--status", "open", "--json")
+    assert opened.exit_code == 0, opened.output
+    assert [(row["task_id"], row["status"]) for row in json.loads(opened.output)] == [
+        ("t1", "open"), ("t2", "open")]
+    assert invoke("tasks", "--workdir", str(workdir), "--status", "trusted").exit_code == 0
+    detail = invoke("tasks", "--workdir", str(workdir), "--task", "t1")
+    assert detail.exit_code == 0, detail.output
+    assert "task t1" in detail.output and "status: open" in detail.output
 
 
 # --- the ToolSigs a Verdict needs (D70, side effects) -----------------------
@@ -495,6 +784,33 @@ def test_a_replayed_run_covers_the_trace_it_replays(workdir):
     text = (workdir / "report.md").read_text(encoding="utf-8")
     assert "Task coverage: 1 of 1 Tasks covered" in text
     assert "not covered" not in text
+
+
+def test_kullback_doctor_prints_the_checklist_and_the_next_step(tmp_path):
+    """Doctor reads the workdir, not a model: six rows and the next step on an empty dir."""
+    result = invoke("doctor", "--workdir", str(tmp_path))
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert len(lines) == 7
+    for name in ("model", "live calls", "traces", "build", "runner", "publish"):
+        assert sum(name in line for line in lines[:6]) == 1, name
+        assert all(line.startswith(("[x] ", "[ ] ")) for line in lines[:6])
+    assert lines[6].startswith("next: ")
+
+
+def test_doctor_counts_a_remembered_key_and_names_auth_json(tmp_path, monkeypatch):
+    """A key remembered in auth.json counts for doctor, named as from auth.json, never its value."""
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    credentials.remember("OPENAI_API_KEY", "marker-secret-value-6")
+    result = invoke("doctor", "--workdir", str(tmp_path), "--model", "openai/gpt-6-luna")
+    assert result.exit_code == 0, result.output
+    model_line = next(line for line in result.output.splitlines() if " model " in line)
+    assert model_line.startswith("[x]") and "auth.json" in model_line
+    assert "marker-secret-value-6" not in result.output
+
 
 
 # --- the judges the CLI puts between a Run and its Verdict (D76, D88) -------

@@ -19,6 +19,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/domain.py` | Reads a domain's public material into task archetypes and coverage gaps, with a guarded fetcher (D225). |
 | `kullback/graph.py` | The tool-call dependency graph the recordings show, and walks over it (D224). |
 | `kullback/laws.py` | Laws that hold for any tool, checked by generated call sequences with no model (D258). |
+| `kullback/live_counts.py` | One live count of a workdir, and one row per Task, for every frontend. |
 | `kullback/round_snapshot.py` | One round's Task table, written once and never rewritten (D218). |
 | `kullback/sampling.py` | One keyed draw for every per-Task or per-Run sample, stable when counts move (D212). |
 | `kullback/store.py` | `WorkdirStore`: the durable, locked read and write of a declared workdir artifact. |
@@ -246,4 +247,14 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | Module | What it does |
 |---|---|
 | `kullback/tui/__init__.py` | The terminal screen: a live board, transcript and commands for one build. |
+| `kullback/tui/app.py` | The Textual app shell: header, tab routing, palette, sessions, keys, quit. |
+| `kullback/tui/build_view.py` | Start a capped build as a detached child, refusing first in plain sentences. |
 | `kullback/tui/diagrams.py` | Pure text rendering of the pipeline, the loop and the layering. |
+| `kullback/tui/home.py` | Where the workdir stands: the checklist, the next step, recent builds here. |
+| `kullback/tui/watch.py` | Follow a build live: transcript, sidebar numbers, steer input, stop check. |
+| `kullback/tui/views/__init__.py` | The views palette: keys, titles and classes in screen order. |
+| `kullback/tui/views/traces.py` | Dry-run a trace file: format, counts and shape, never file values. |
+| `kullback/tui/views/tasks.py` | Browse Tasks: filter, detail, nudge; values hidden until v. |
+| `kullback/tui/views/runs.py` | Run a Candidate detached and score it as a table. |
+| `kullback/tui/views/publish.py` | Publish checklist rows and the word, never an upload. |
+| `kullback/tui/views/synthesise.py` | Synthesis modes, a detached start, and the command log as it grows. |

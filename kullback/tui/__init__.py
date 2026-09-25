@@ -31,8 +31,10 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from kullback.ai.provider import DEFAULT_MODEL
+from kullback.ai.provider import DEFAULT_MODEL, LIVE_ENV_VAR
 from kullback.tui import diagrams
+from kullback.tui.checklist import key_source as _key_source
+from kullback.tui.checklist import next_step, where_it_stands
 
 GLYPHS = {
     "k": ("#  #", "# # ", "##  ", "# # ", "#  #"),
@@ -61,6 +63,7 @@ HELP = """\
 /compact                           compact the running session's context when its turn ends
 /run TASK [--count N]              run the Candidate against the built Environment
 /status                            the last build's stages, gates, rounds and spend
+/doctor                            where this workdir stands and the next step
 /map                               the pipeline as a diagram: stages, states, hashes
 /loop                              the loop as beats: Builder, gates, Examiner, round ends
 /layers                            the kullback layering as a diagram
@@ -135,8 +138,8 @@ def registry_refusal(catalog: Optional[dict], model: str) -> Optional[str]:
                 f"shape this Harness builds; pass --base-url for one that is")
     return None
 
-# Every command in one table: name, usage, what it does. The entry screen and the / menu
-# are rendered from this, so a command added here appears in both; HELP stays a literal
+# Every command in one table: name, usage, what it does. The / menu and /help are
+# rendered from this, so a command added here appears in both; HELP stays a literal
 # beside it, and a test fails when a table name is missing from HELP, so the two cannot drift.
 COMMANDS = [
     ("build", "/build [--file PATH]", "run the Builder over the ingested traces, in the background"),
@@ -147,6 +150,7 @@ COMMANDS = [
     ("compact", "/compact", "compact the running session's context when its turn ends"),
     ("run", "/run TASK [--count N]", "run the Candidate against the built Environment"),
     ("status", "/status", "the last build's stages, gates, rounds and spend"),
+    ("doctor", "/doctor", "where this workdir stands and the next step"),
     ("map", "/map", "the pipeline as a diagram: stages, states, hashes"),
     ("loop", "/loop", "the loop as beats: Builder, gates, Examiner, round ends"),
     ("layers", "/layers", "the kullback layering as a diagram"),
@@ -320,6 +324,16 @@ def _as_dict_event(event: Any) -> Optional[dict]:
     return None
 
 
+def _format_minutes(minutes: float) -> str:
+    """A duration in minutes as a short count: 176 minutes is 2h56."""
+    total = int(round(minutes * 60))
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m"
+    return f"{total // 3600}h{(total % 3600) // 60:02d}"
+
+
 @dataclass
 class Board:
     """What the screen knows. Every field is filled from an event or from a file on disk."""
@@ -337,6 +351,9 @@ class Board:
     round: int = 0
     agent: str = ""
     rounds: list[dict] = field(default_factory=list)
+    # (wall time, spend) of each money reading, for the burn rate. Kept on the board
+    # rather than in a file because it is a view of this screen's own readings.
+    spend_samples: list[tuple[float, float]] = field(default_factory=list)
 
     def event(self, event: Any) -> None:
         if not isinstance(event, dict):
@@ -408,9 +425,17 @@ class Board:
         return table
 
     def money(self) -> Text:
-        """Spend, from the file budget.py writes on every priced call."""
+        """Spend, from the file budget.py writes on every priced call, with the burn rate.
+
+        Each reading leaves a (wall time, spend) sample on the board; the rate is dollars
+        per minute over the last five minutes of samples, and the time left to the ceiling
+        at that rate. Fewer than two samples is no rate, because one point has no slope.
+        """
         totals = _read(self.workdir / "budget.json", {}).get("total") or {}
         spent = float(totals.get("usd") or 0.0)
+        now = time.time()
+        self.spend_samples.append((now, spent))
+        self.spend_samples = [(at, value) for at, value in self.spend_samples if at >= now - 300.0]
         out = Text(f"${spent:,.4f}", style="bold")
         if self.ceiling:
             out.append(f" of ${self.ceiling:,.2f} ceiling", style="dim")
@@ -419,7 +444,17 @@ class Board:
                    style="dim")
         if totals.get("unpriced_calls"):
             out.append(f"   {int(totals['unpriced_calls'])} unpriced", style="yellow")
+        if len(self.spend_samples) >= 2:
+            first_at, first_spent = self.spend_samples[0]
+            elapsed = now - first_at
+            if elapsed > 0:
+                rate = (spent - first_spent) / (elapsed / 60.0)
+                out.append(f"   ${rate:,.4f}/min", style="dim")
+                if self.ceiling and rate > 0 and spent < self.ceiling:
+                    out.append(f"   ceiling in ~{_format_minutes((self.ceiling - spent) / rate)}",
+                               style="dim")
         return out
+
 
     def verdict(self) -> Text:
         failed = [g for g in self.gates if not g.get("passed")]
@@ -640,21 +675,58 @@ def _read(path: Path, fallback: Any) -> Any:
         return fallback
 
 
-def _keys(env: dict[str, str], session: set[str] = frozenset()) -> Text:
-    """Which keys are visible, never what they are. A live run fails here first, so it is asked here."""
+def _known_key_vars() -> set[str]:
+    """Every provider key variable the harness knows by name: each adapter's own,
+    the Bedrock session variable beside its credential groups, and the live switch
+    the old screen listed here. Names only, read for /keys, never values."""
+    from kullback.ai import provider as pv
+
+    names = {pv.LIVE_ENV_VAR}
+    for adapter_cls in pv.ADAPTERS.values():
+        for group in adapter_cls.credential_vars():
+            names.update(group)
+    for name in (getattr(pv, "BEDROCK_SESSION_VAR", ""),):
+        if name:
+            names.add(name)
+    return names
+
+
+def _keys(env: dict[str, str], session: set[str] = frozenset(), model: Optional[str] = None,
+          host: str = "") -> Text:
+    """Which keys are visible, never what they are. A live run fails here first, so it is asked here.
+
+    The current model's own variables come first, marked set or missing, then any
+    other provider key variable that is set. An id no resolver reaches still lists
+    what is set rather than refusing, because /keys is the way out of that state.
+    """
     out = Text()
-    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HARNESS_ALLOW_MODEL_REQUESTS"):
-        value = env.get(name)
-        shown = "set" if value else "missing"
-        if name in session and value:
-            shown += " (this session)"
-        out.append(f"{name:<32}", style="dim")
-        out.append(f"{shown}\n", style="green" if value else "red")
-    extra = sorted(session - {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HARNESS_ALLOW_MODEL_REQUESTS"})
-    for name in extra:
-        out.append(f"{name:<32}", style="dim")
-        out.append("set (this session)\n", style="green")
+    own: list[str] = []
+    if model:
+        try:
+            groups, _ = _credential_source(model, host)
+        except ValueError:
+            groups = ()
+        for group in groups:
+            for name in group:
+                if name not in own:
+                    own.append(name)
+    for name in own:
+        _key_line(out, name, env.get(name), name in session)
+    known = set(own) | _known_key_vars()
+    others = sorted(name for name in known | set(session)
+                    if name not in own and env.get(name))
+    for name in others:
+        _key_line(out, name, env.get(name), name in session)
     return out
+
+
+def _key_line(out: Text, name: str, value: Optional[str], held: bool) -> None:
+    """One variable saying set or missing, and whether /login holds it for this session."""
+    shown = "set" if value else "missing"
+    if held and value:
+        shown += " (this session)"
+    out.append(f"{name:<32}", style="dim")
+    out.append(f"{shown}\n", style="green" if value else "red")
 
 
 def _credential_source(model: str, host: str) -> tuple[tuple[tuple[str, ...], ...], str]:
@@ -695,7 +767,9 @@ class Screen:
     def __init__(self, workdir: Path, model: Optional[str] = None, base_url: Optional[str] = None,
                  console: Optional[Console] = None, runner: Any = None,
                  ceiling_usd: Optional[float] = None):
-        self.workdir, self.model, self.base_url = Path(workdir), model, base_url
+        # No --model means the harness default, the same one `kullback build` runs on, so a
+        # newcomer can start a build without first hunting for a model id.
+        self.workdir, self.model, self.base_url = Path(workdir), model or DEFAULT_MODEL, base_url
         self.ceiling_usd = ceiling_usd
         self.console = console or Console()
         self.runner = runner  # injected in tests; nothing here builds a live adapter
@@ -705,6 +779,9 @@ class Screen:
         # The / menu's numbered list, waiting for a bare number: (kind, rows). Kind is
         # "commands" (rows are COMMANDS entries) or "sessions" (rows are heartbeat dicts).
         self._pending: Optional[tuple[str, list]] = None
+        # A slash command typed at a menu question: _ask records it here and answers "", so
+        # the menu ends as if cancelled and the main loop runs this next.
+        self._pending_command: Optional[str] = None
         # The Builder session /build started here: its thread, its harness once session.build
         # hands it over, the board and transcript its events feed, and the last harness, which
         # /context reads after the session ends. Nothing else about a session is kept here.
@@ -729,10 +806,12 @@ class Screen:
         self._watch(["1"], rows=live[:1])
 
     def open(self) -> None:
-        """The entry screen: what this is, how it stands, what you can do, what is running.
+        """The entry screen: what this is, where the workdir stands, the next step, what is running.
 
         Brand order, leibler.dev style: the word, one line saying what it is, the live
-        numbers, then numbered sections (commands, sessions) in dim labels and white values."""
+        numbers, then the checklist and the next step where the command list used to be.
+        The list itself moved to /help, and the sessions here are only this workdir's;
+        the full machine list stays on /sessions."""
         self.console.print(banner())
         self.console.print(Text(f"  {TAGLINE}", style="dim"))
         segments = status_segments(self.workdir, self.model)
@@ -742,14 +821,21 @@ class Screen:
         # is cut rather than folded; the whole path is on the panel border of every build anyway.
         self.console.print(Text(f"  workdir {self.workdir}", style="dim"),
                                 no_wrap=True, overflow="ellipsis")
-        self.console.print(Text("\n  01 commands", style="bold"))
-        for name, _, blurb in COMMANDS:
-            line = Text(f"    /{name:<10}", style="white")
-            line.append(blurb, style="dim")
-            self.console.print(line)
-        self.console.print(Text("    type / to filter", style="dim"))
-        self._print_sessions(limit=5)
+        self._doctor()
+        self.console.print(Text("    /help lists every command, type / to filter", style="dim"))
+        self._print_sessions(limit=5, only_here=True)
         self.console.print()
+
+    def _doctor(self) -> None:
+        """Where this workdir stands and the next step: the entry screen and /doctor share it."""
+        rows = where_it_stands(self.workdir, dict(os.environ), self.model or DEFAULT_MODEL,
+                               self.session_keys)
+        self.console.print(Text("\n  where this workdir stands", style="bold"))
+        for row in rows:
+            mark = Text(f"    [{'x' if row.done else ' '}] {row.name:<10}", style="white")
+            mark.append(row.detail, style="dim")
+            self.console.print(mark)
+        self.console.print(Text(f"\n  next: {next_step(rows)}", style="white"))
 
     def command(self, line: str) -> bool:
         """One typed line. Returns False when the screen should close.
@@ -782,7 +868,8 @@ class Screen:
             # [provider/model] was swallowed and the help said less than the command takes.
             self.console.print(HELP, markup=False)
         elif verb == "keys":
-            self.console.print(_keys(dict(os.environ), set(self.session_keys)))
+            self.console.print(_keys(dict(os.environ), set(self.session_keys),
+                                     model=self.model, host=self.base_url or ""))
         elif verb == "login":
             self._login(rest)
             if not rest:
@@ -792,9 +879,11 @@ class Screen:
         elif verb == "watch":
             self._watch(rest)
         elif verb == "logout":
-            self._logout()
+            self._logout(rest)
         elif verb == "status":
             self._status()
+        elif verb == "doctor":
+            self._doctor()
         elif verb == "map":
             self._map()
         elif verb == "loop":
@@ -810,32 +899,46 @@ class Screen:
         elif verb == "compact":
             self._compact()
         elif verb == "run":
-            if not rest or rest[0].startswith("--"):
-                self.console.print(Text("run needs a task id: /run TASK [--count N]", style="red"))
-            else:
-                self._live(f"run {rest[0]}", lambda emit: self._run(emit, rest))
+            self._command_run(rest)
         else:
             self.console.print(Text(f"no command {verb}; /help", style="red"))
         return True
+
+    def _command_run(self, rest: list[str]) -> None:
+        """Run one Task live: it needs a task id, never a bare flag first."""
+        if not rest or rest[0].startswith("--"):
+            self.console.print(Text("run needs a task id: /run TASK [--count N]", style="red"))
+        else:
+            self._live(f"run {rest[0]}", lambda emit: self._run(emit, rest))
+
 
     @staticmethod
     def _verbs() -> set[str]:
         return {name for name, _, _ in COMMANDS}
 
     def _menu(self, fragment: str) -> bool:
-        """Type / and pick: one match runs now, several wait for a bare number."""
+        """Type / and pick: one match runs now, several wait for a bare number.
+
+        Names that start with what was typed rank before names that only hold it,
+        so /s offers stop, status and sessions first; when exactly one command
+        starts with it, that one runs, so /do runs /doctor without asking which."""
         matches = filter_commands(fragment)
         if not matches:
             self.console.print(Text(f"no command matches /{fragment}; /help", style="red"))
             return True
+        needle = fragment.strip().lower().lstrip("/")
+        prefixed = [row for row in matches if row[0].lower().startswith(needle)]
+        if len(prefixed) == 1:
+            return self.command("/" + prefixed[0][0])
+        ordered = prefixed + [row for row in matches if row not in prefixed]
         if len(matches) == 1:
             return self.command("/" + matches[0][0])
         self.console.print(Text("  pick a number:", style="dim"))
-        for i, (name, _, blurb) in enumerate(matches, 1):
+        for i, (name, _, blurb) in enumerate(ordered, 1):
             line = Text(f"    {i}  /{name:<10}", style="white")
             line.append(blurb, style="dim")
             self.console.print(line)
-        self._pending = ("commands", matches)
+        self._pending = ("commands", ordered)
         return True
 
     def _pick(self, number: int) -> bool:
@@ -849,14 +952,43 @@ class Screen:
             return self.command("/" + rows[number - 1][0])
         return self._watch([str(number)], rows=rows)
 
-    def _print_sessions(self, limit: Optional[int]) -> None:
-        """Builds running now and before, newest first. Alive means its pid still runs."""
+    @staticmethod
+    def _here_records(records: list, workdir: Any) -> list:
+        """This workdir's records, comparing the absolute form heartbeat.beat writes.
+
+        Absolute on both sides, so a screen opened with a relative --workdir still
+        matches its own builds.
+        """
+        here = str(Path(workdir).expanduser().absolute())
+        return [record for record in records
+                if str(Path(str(record.get("workdir") or "")).expanduser().absolute()) == here]
+
+    @staticmethod
+    def _session_rest(record: dict) -> str:
+        """One record's model, exit, spend and cache saving as dim words."""
+        return " ".join(part for part in (
+            str(record.get("model") or "no model"),
+            str(record.get("exit") or record.get("status") or ""),
+            f"${float(record.get('spend_usd') or 0):,.4f}",
+            (f"cache saved ${float(record.get('cache_saved_usd') or 0):,.4f}"
+             if record.get("cache_saved_usd") is not None else ""),
+        ) if part)
+
+    def _print_sessions(self, limit: Optional[int], only_here: bool = False) -> None:
+        """Builds running now and before, newest first. Alive means its pid still runs.
+
+        The entry screen passes only_here, so a newcomer sees this workdir's builds
+        rather than every worktree on the machine; /sessions keeps the full list."""
         from kullback.runner import heartbeat
 
         records = heartbeat.read_all()
+        if only_here:
+            records = self._here_records(records, self.workdir)
         self.console.print(Text("\n  02 sessions", style="bold"))
         if not records:
             self.console.print(Text("    none yet: /build starts one here", style="dim"))
+            if only_here:
+                self.console.print(Text("    /sessions lists every workdir", style="dim"))
             return
         shown = records if limit is None else records[:limit]
         for i, record in enumerate(shown, 1):
@@ -864,14 +996,7 @@ class Screen:
             colour = "green" if heartbeat.alive(record.get("pid")) else "dim"
             line = Text(f"    {i}  {mark} ", style=colour)
             line.append(str(record.get("workdir") or "?"), style="white")
-            rest = " ".join(part for part in (
-                str(record.get("model") or "no model"),
-                str(record.get("exit") or record.get("status") or ""),
-                f"${float(record.get('spend_usd') or 0):,.4f}",
-                (f"cache saved ${float(record.get('cache_saved_usd') or 0):,.4f}"
-                 if record.get("cache_saved_usd") is not None else ""),
-            ) if part)
-            line.append(f"  {rest}", style="dim")
+            line.append(f"  {self._session_rest(record)}", style="dim")
             self.console.print(line, no_wrap=True, overflow="ellipsis")
         self.console.print(Text("    /watch N to watch one here", style="dim"))
         self._pending = ("sessions", shown)
@@ -1023,19 +1148,28 @@ class Screen:
             self.console.print(Text(str(exc), style="red"))
             return
         self.model = model
+        self._offer_to_remember([(key_var, secret)])
         self.console.print(self._login_status())
 
     def _ask(self, prompt: str) -> str:
         """One question to the person typing. A method so tests can answer without stdin.
 
         Escaped, because rich reads the bracketed hint ("[1-6 or name]", "[default model]") as a
-        style tag and the person was asked "model :" with the default gone."""
+        style tag and the person was asked "model :" with the default gone. An answer that
+        starts with "/" is not an answer: the menu ate the person's next command, the way
+        /status typed at the provider question was lost. It is recorded as a pending
+        command and "" is returned, so the menu ends as if cancelled and the main loop
+        runs that command next."""
         from rich.markup import escape
 
         try:
-            return self.console.input(escape(prompt))
+            answer = self.console.input(escape(prompt))
         except (EOFError, KeyboardInterrupt, OSError):
             return ""
+        if answer.strip().startswith("/"):
+            self._pending_command = answer.strip()
+            return ""
+        return answer
 
     def _apply_key(self, name: str, value: str) -> None:
         """Hold one key for this session: first sighting remembers what the shell held
@@ -1043,6 +1177,24 @@ class Screen:
         if name not in self.session_keys:
             self.session_keys[name] = os.environ.get(name)
         os.environ[name] = value
+
+    def _offer_to_remember(self, pairs: list[tuple[str, str]]) -> None:
+        """Ask once whether the keys just held should outlive the session, and store them.
+
+        Yes or an empty answer remembers every key in the remembered store at 0600; no
+        keeps today's session-only behaviour. Names are printed, values never."""
+        from kullback.ai import credentials
+
+        answer = self._ask("remember this key in ~/.kullback/auth.json? [Y/n] ").strip().lower()
+        if answer not in ("", "y", "yes"):
+            return
+        for name, value in pairs:
+            try:
+                credentials.remember(name, value)
+            except ValueError as exc:
+                self.console.print(Text(f"{exc}: kept for this session only", style="red"))
+                continue
+            self.console.print(Text(f"remembered {name} in ~/.kullback/auth.json", style="dim"))
 
     @staticmethod
     def _login_defaults() -> dict[str, str]:
@@ -1132,6 +1284,30 @@ class Screen:
                 self.harness.cancel()
             self.wait(30)
 
+    def _build_refusal(self) -> Optional[str]:
+        """Why /build will not start, or None when it may. One plain sentence, before any thread.
+
+        A build with live calls off, or with none of its model's key variables set,
+        cannot work: the trial showed it running a turn and ending on error with no
+        reason. The same two rows the checklist reads decide here, so the guard and
+        the entry screen never disagree. Nothing starts and nothing is spent.
+        """
+        rows = where_it_stands(self.workdir, dict(os.environ), self.model or DEFAULT_MODEL)
+        if not rows[1].done:
+            return f"live model requests are off; put {LIVE_ENV_VAR}=1 in .env or export it"
+        if not rows[0].done:
+            model = self.model or DEFAULT_MODEL
+            try:
+                groups, _ = _credential_source(model, self.base_url or "")
+            except ValueError:
+                groups = ()
+            names = " or ".join(" and ".join(group) for group in groups)
+            if names:
+                return (f"no key for {model} is set: set {names}, "
+                        "or run /login to hold one for this session")
+            return f"no key for {model} is set: run /login to choose a model and set its key"
+        return None
+
     def _start_build(self, rest: list[str]) -> None:
         """Start the Builder session on its own thread; this screen keeps taking commands.
 
@@ -1148,6 +1324,10 @@ class Screen:
             files = [Path(value) for value in _values(rest, "--file")]
         except ValueError as exc:
             self.console.print(Text(f"{exc}   (/help for usage)", style="red"))
+            return
+        refusal = self._build_refusal()
+        if refusal is not None:
+            self.console.print(Text(refusal, style="red"))
             return
         runner = self.runner
         if runner is None:
@@ -1333,7 +1513,7 @@ class Screen:
         on_event({"kind": "pipeline", "state": "complete"})
 
     def _login(self, rest: list[str]) -> None:
-        """Use this model from here on, with keys held in memory only.
+        """Use this model from here on, holding keys for the session and offering to remember them.
 
         `/login` alone inspects: the current model, where its calls go, which variable
         holds its key and whether that variable is set. `/login provider/model` resolves
@@ -1342,6 +1522,7 @@ class Screen:
         reaches it. `--set KEY=VALUE` puts keys into this process's environment so a
         pasted key works without touching .env or the shell; values are never printed
         and never written to the workdir, and /logout restores what the shell held.
+        Answering yes to the remember question stores them in the remembered store too.
         """
         sets = _values(rest, "--set")
         base_urls = _values(rest, "--base-url")
@@ -1353,7 +1534,7 @@ class Screen:
                 if not sep or not name:
                     raise ValueError(f"--set takes KEY=VALUE, not {item!r}")
                 self._apply_key(name, value)
-                applied.append(name)
+                applied.append((name, value))
             if model:
                 self._resolve(model, base_urls[-1] if base_urls else None)
                 self.model = model
@@ -1363,7 +1544,8 @@ class Screen:
             self.console.print(Text(str(exc), style="red"))
             return
         if applied:
-            self.console.print(Text(f"keys held for this session: {', '.join(applied)}", style="dim"))
+            self.console.print(Text(f"keys held for this session: {', '.join(name for name, _ in applied)}", style="dim"))
+            self._offer_to_remember(applied)
         self.console.print(self._login_status())
 
     def _resolve(self, model: str, base_url: Optional[str]) -> None:
@@ -1383,7 +1565,10 @@ class Screen:
             raise ValueError(refusal)
 
     def _login_status(self) -> Text:
-        """The current model, where its calls go, and whether its key is set. Names only, never values."""
+        """The current model, where its calls go, and where each key comes from.
+
+        One line per key variable: set in this session, in .env, in the remembered store,
+        in the environment, or missing. Names only, never values."""
         from kullback.ai import provider as pv
 
         out = Text()
@@ -1393,7 +1578,15 @@ class Screen:
         groups, host = _credential_source(self.model, self.base_url or "")
         if host:
             out.append(f"host {host}\n", style="dim")
-        _append_key_lines(out, groups)
+        for index, group in enumerate(groups):
+            if index:
+                out.append("or\n", style="dim")
+            for key_var in group:
+                source = _key_source(key_var, self.session_keys)
+                out.append(f"{key_var:<32}", style="dim")
+                out.append(f"{source}\n", style="green" if source != "missing" else "red")
+        if not groups:
+            out.append("no key variable: this endpoint takes none\n", style="dim")
         try:
             live = pv.enable_live_calls_from_env()
         except Exception:
@@ -1402,8 +1595,13 @@ class Screen:
                    style="green" if live else "yellow")
         return out
 
-    def _logout(self) -> None:
-        """Forget the keys set with /login: the shell gets back exactly what it held."""
+    def _logout(self, rest: Optional[list[str]] = None) -> None:
+        """Forget the keys set with /login: the shell gets back exactly what it held.
+
+        A name given as `/logout NAME` is also dropped from the remembered store, and the
+        screen says whether a remembered key was removed. Names only, never values."""
+        from kullback.ai import credentials
+
         for name, previous in self.session_keys.items():
             if previous is None:
                 os.environ.pop(name, None)
@@ -1412,6 +1610,15 @@ class Screen:
         count = len(self.session_keys)
         self.session_keys.clear()
         self.console.print(Text(f"cleared {count} session key(s)" + (f"; model still {self.model}" if self.model else ""), style="dim"))
+        for name in rest or []:
+            if name.startswith("--"):
+                continue
+            try:
+                removed = credentials.forget(name)
+            except ValueError as exc:
+                self.console.print(Text(str(exc), style="red"))
+                continue
+            self.console.print(Text(f"forgot remembered {name}" if removed else f"no remembered key {name}", style="dim"))
 
     def _adapter(self) -> Any:
         """No model means no model. The screen refuses to guess one, the same as the CLI."""
@@ -1563,4 +1770,9 @@ def loop(workdir: Path, model: Optional[str] = None, base_url: Optional[str] = N
             screen.close()
             return
         if not screen.command(line):
+            return
+        # A slash command typed at a menu question waits here: _ask recorded it and
+        # ended the menu, so it runs now, before the next prompt.
+        pending, screen._pending_command = screen._pending_command, None
+        if pending and not screen.command(pending):
             return

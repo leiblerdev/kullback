@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -171,6 +172,21 @@ def _rescorer(score_one, verifier: Verifier, canon, out_dir: Path, judge_version
 
     return rescore
 
+def _warn_unfrozen_runner() -> None:
+    """One stderr line saying the Verdicts carry no Runner version, and the command that freezes one."""
+    typer.echo("warning: the Verdicts carry no Runner version, run `kullback freeze-runner`", err=True)
+
+
+def _score_tool_sigs(sigs) -> tuple:
+    """The write and unclassified tool names, saying out loud when side effects go unchecked."""
+    write_tools = {sig.name for sig in sigs if sig.kind == "write"}
+    if sigs and not write_tools:
+        typer.echo("no write tools among the mined ToolSigs: side effects are not checked")
+    elif not sigs:
+        typer.echo("no ToolSigs on disk: side effects are not checked")
+    flagged_tools = {sig.name for sig in sigs if sig.unclassified}
+    return write_tools or None, flagged_tools
+
 
 def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = False,
            judge_model: Optional[str] = None, base_url: Optional[str] = None,
@@ -194,16 +210,13 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
     env_path, version_path = Path(workdir) / "environment.json", Path(workdir) / "runner_version.json"
     environment = _load(env_path, Environment) if env_path.is_file() else None
     version = _load(version_path, RunnerVersion).runner_version if version_path.is_file() else None
+    if not version_path.is_file():
+        _warn_unfrozen_runner()
     schema = _schema(workdir)
     if schema is None:
         typer.echo("no EntitySchema on disk (schema.json): exempt columns are not dropped from the diff (D73)")
     sigs = load_tool_sigs(workdir)  # without these the extra-write and D70 checks never fire
-    write_tools = {sig.name for sig in sigs if sig.kind == "write"}
-    flagged_tools = {sig.name for sig in sigs if sig.unclassified}
-    if sigs and not write_tools:
-        typer.echo("no write tools among the mined ToolSigs: side effects are not checked")
-    elif not sigs:
-        typer.echo("no ToolSigs on disk: side effects are not checked")
+    write_tools, flagged_tools = _score_tool_sigs(sigs)
     queued = set(_entry("kullback.runner.canon", "queued_regrades")(workdir)) if use_queue else set()
     scored = 0
     for task in _tasks(workdir, task_id):
@@ -265,16 +278,259 @@ def ingest(files: list[Path] = typer.Argument(..., help="The customer's export f
           intake_floor: Optional[float] = typer.Option(
               None, "--intake-floor",
               help="Task-eligible share each file must keep (default: the intake floor); "
-                   "refused outside [0, 1].")):
+                   "refused outside [0, 1]."),
+          dry_run: bool = typer.Option(
+              False, "--dry-run",
+              help="Say whether each file would ingest and what it would give, without writing anything.")):
     """Store the customer's files byte for byte and derive Traces from them (D66)."""
     if intake_floor is not None and not 0.0 <= intake_floor <= 1.0:
         raise typer.BadParameter("--intake-floor must lie within [0, 1]")
+    if dry_run:
+        _ingest_dry_run(files, workdir, intake_floor)
+        return
     ingest_file = _entry("kullback.builder.ingest", "ingest_file")
-    if intake_floor is None:
-        summaries = [ingest_file(path, workdir) for path in files]
-    else:
-        summaries = [ingest_file(path, workdir, intake_floor=intake_floor) for path in files]
+    gate_error = _entry("kullback.builder.ingest", "IntakeGateError")
+    summaries = []
+    for path in files:
+        try:
+            if intake_floor is None:
+                summary = ingest_file(path, workdir)
+            else:
+                summary = ingest_file(path, workdir, intake_floor=intake_floor)
+        except gate_error as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(1) from None
+        summaries.append(summary)
+        typer.echo(_ingest_row(str(path), summary["format"], _detect_confidence(path),
+                              summary["runs"], summary["gate"]["metrics"]["eligible_share"],
+                              summary["gate"]["metrics"]["floor"],
+                              _ingested_tools(Path(workdir), summary["raw_hash"]), "ready"))
     _write(Path(workdir) / "ingest_summary.json", summaries)
+
+
+def _ingest_dry_run(files: list[Path], workdir: Path, intake_floor: Optional[float]) -> None:
+    """One dry-run row per file: whether it would ingest and what it would give."""
+    dry = _entry("kullback.builder.ingest", "dry_run")
+    for path in files:
+        result = dry(path, workdir, intake_floor=intake_floor)
+        if result["passed"]:
+            status = "ready"
+        else:
+            first = (result["failures"] or result["reasons"] or ["no reason given"])[0]
+            status = f"not read: {first}"
+        typer.echo(_ingest_row(str(path), result["format"], result["confidence"], result["traces"],
+                              result["eligible_share"], result["floor"], result["tools"], status))
+
+
+def _ingest_row(path: str, format: str, confidence: float, traces: int, share: float,
+                floor: float, tools: int, status: str) -> str:
+    """One ingest line: the file, what it is, and whether it is ready to build on."""
+    return (f"{path} format {format} confidence {confidence:.2f} traces {traces} "
+            f"eligible {share:.2f} vs {floor:.2f} tools {tools} {status}")
+
+
+def _detect_confidence(path: Path) -> float:
+    """The winning adapter's vote on a file, for the row after a successful ingest.
+
+    Confidence is a display concern, so it is re-voted here instead of riding the summary.
+    """
+    decode = _entry("kullback.builder.ingest", "_decode")
+    detect = _entry("kullback.builder.sources", "detect_format")
+    document, jsonl = decode(Path(path).read_bytes())
+    decision = detect(document, jsonl)
+    if decision.winner == "unknown":
+        return 0.0
+    vote = decision.votes.get(decision.winner, (0.0, []))[0]
+    return float(vote) if isinstance(vote, (int, float)) and vote > 0 else 0.0
+
+
+def _ingested_tools(workdir: Path, raw_hash: str) -> int:
+    """How many distinct tool names one ingested file's traces call, eligible and set aside."""
+    names: set[str] = set()
+    for folder in ("traces", "evidence_traces"):
+        root = workdir / folder
+        if not root.is_dir():
+            continue
+        for cand in root.glob("*.json"):
+            try:
+                body = json.loads(cand.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(body, dict) or body.get("raw_hash") != raw_hash:
+                continue
+            for call in body.get("tool_calls") or []:
+                if isinstance(call, dict) and call.get("name"):
+                    names.add(call["name"])
+    return len(names)
+
+
+sources_app = typer.Typer(add_completion=False,
+                          help="Shape a file and check a reader for a format the harness "
+                               "does not map yet.")
+app.add_typer(sources_app, name="sources")
+
+
+@sources_app.command("shape")
+def sources_shape(file: Path = typer.Argument(..., help="The customer's export file."),  # noqa: B008
+                  as_json: bool = typer.Option(False, "--json",
+                                               help="Print the summary as JSON.")):
+    """Print the structure-only summary of a file, keeping no customer string."""
+    shape_summary = _entry("kullback.builder.sources.shape", "shape_summary")
+    summary = shape_summary(file)
+    if as_json:
+        typer.echo(json.dumps(summary, indent=2, sort_keys=True))
+        return
+    for line in _shape_lines(summary):
+        typer.echo(line)
+
+
+def _shape_lines(summary: dict) -> list[str]:
+    """One line per key path: the types, the count, length ranges, hints, kept words."""
+    lines = [f"{summary.get('file')} jsonl={summary.get('jsonl')} records={summary.get('records')}"]
+    for path, info in sorted(summary.get("paths", {}).items()):
+        line = f"{path}: {','.join(info.get('types', []))} x{info.get('count', 0)}"
+        if "min_len" in info:
+            line += f" len {info['min_len']}..{info['max_len']}"
+        for hint in info.get("hints", []):
+            line += f" {hint}"
+        if "values" in info:
+            line += f" ={'|'.join(info['values'])}"
+        lines.append(line)
+    return lines
+
+
+@sources_app.command("check")
+def sources_check(file: Path = typer.Argument(..., help="The raw file the reader was written for."),  # noqa: B008
+                  reader: Path = typer.Option(..., "--reader",  # noqa: B008
+                                              help="The workdir reader file defining ADAPTER.")):
+    """Check a reader against a file, printing the problems or passes."""
+    load = _entry("kullback.builder.sources.workdir_readers", "adapter_from_path")
+    check = _entry("kullback.builder.sources.workdir_readers", "check_reader")
+    try:
+        adapter = load(reader)
+    except (ValueError, ImportError) as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from None
+    problems = check(adapter, file)
+    if problems:
+        for problem in problems:
+            typer.echo(problem)
+        raise typer.Exit(1)
+    typer.echo("passes")
+
+
+@sources_app.command("map")
+def sources_map(
+    file: Path = typer.Argument(..., help="The raw file the reader is written for."),  # noqa: B008
+    name: str = typer.Option(..., "--name", help="Reader name, saved as workdir/sources/NAME.py."),
+    recordings: str = typer.Option(..., "--recordings", help="Dotted path of the list holding one recording each, or . where each JSONL line is one."),
+    role: str = typer.Option(..., "--role", help="Dotted path of the role field."),
+    content: str = typer.Option(..., "--content", help="Dotted path of the content field."),
+    tool_calls: Optional[str] = typer.Option(None, "--tool-calls", help="Dotted path of the tool calls list."),
+    tool_name: Optional[str] = typer.Option(None, "--tool-name", help="Dotted path of the tool name."),
+    tool_arguments: Optional[str] = typer.Option(None, "--tool-arguments", help="Dotted path of the tool arguments."),
+    tool_call_id: Optional[str] = typer.Option(None, "--tool-call-id", help="Dotted path of the tool call id."),
+    tool_results: Optional[str] = typer.Option(None, "--tool-results", help="Dotted path of the tool results list."),
+    tool_result_id: Optional[str] = typer.Option(None, "--tool-result-id", help="Dotted path of the tool result id."),
+    tool_result_content: Optional[str] = typer.Option(None, "--tool-result-content", help="Dotted path of the tool result content."),
+    timestamp: Optional[str] = typer.Option(None, "--timestamp", help="Dotted path of the timestamp field."),
+    role_map: Optional[list[str]] = typer.Option(None, "--role-map", help="Role word to role, as WORD=role; repeatable."),  # noqa: B008
+    workdir: Path = WORKDIR,
+    force: bool = typer.Option(False, "--force", help="Overwrite workdir/sources/NAME.py when it exists."),
+):
+    """Map the fields by hand: write a reader from named paths with no model call."""
+    import hashlib
+    import re
+    import tempfile
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        typer.echo(f"refusing reader name {name!r}: use letters, numbers, dash or underscore")
+        raise typer.Exit(2)
+    render = _entry("kullback.builder.sources.reader_template", "render_reader")
+    check = _entry("kullback.builder.sources.workdir_readers", "check_reader_isolated")
+    mapping: dict = {"recordings": recordings, "role": role, "content": content}
+    for key, value in (("tool_calls", tool_calls), ("tool_name", tool_name),
+                       ("tool_arguments", tool_arguments), ("tool_call_id", tool_call_id),
+                       ("tool_results", tool_results), ("tool_result_id", tool_result_id),
+                       ("tool_result_content", tool_result_content), ("timestamp", timestamp)):
+        if value:
+            mapping[key] = value
+    roles = _parsed_role_map(role_map)
+    if roles:
+        mapping["roles"] = roles
+    digest = hashlib.sha256(Path(file).read_bytes()).hexdigest()
+    try:
+        source = render(name, digest, mapping)
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(2) from None
+    folder = Path(workdir) / "sources"
+    target = folder / f"{name}.py"
+    if target.exists() and not force:
+        typer.echo(f"refusing to overwrite {target}: pass --force to replace it")
+        raise typer.Exit(1)
+    handle = tempfile.NamedTemporaryFile(mode="w", suffix=".py", prefix="kullback-map-",
+                                         delete=False, encoding="utf-8")
+    try:
+        handle.write(source)
+        handle.close()
+        problems = check(Path(handle.name), file)
+    finally:
+        Path(handle.name).unlink(missing_ok=True)
+    if problems:
+        for problem in problems:
+            typer.echo(problem)
+        raise typer.Exit(1)
+    folder.mkdir(parents=True, exist_ok=True)
+    target.write_text(source, encoding="utf-8")
+    typer.echo(f"passes; `kullback ingest {file}` will use it")
+
+
+def _parsed_role_map(entries: Optional[list[str]]) -> dict[str, str]:
+    """--role-map WORD=role entries as a word to role dict, refused unless exact."""
+    roles: dict[str, str] = {}
+    for entry in entries or []:
+        word, sep, role = entry.partition("=")
+        if not sep or not word or role not in ("user", "assistant", "system", "tool"):
+            typer.echo(f"refusing role map {entry!r}: spell it WORD=role with role one of "
+                       "user, assistant, system, tool")
+            raise typer.Exit(2)
+        roles[word] = role
+    return roles
+
+
+@sources_app.command("draft")
+def sources_draft(
+    file: Path = typer.Argument(..., help="The raw file the reader is drafted for."),  # noqa: B008
+    name: str = typer.Option(..., "--name", help="Reader name, saved as workdir/sources/NAME.py."),
+    model: str = typer.Option(..., "--model", help="Model id for the draft, as provider/model."),
+    workdir: Path = WORKDIR,
+    show_values: bool = typer.Option(False, "--show-values", help="Send the first recordings verbatim to the model."),
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Spend ceiling for the draft calls."),
+):
+    """Draft a reader from the file structure, repairing it against the isolated check."""
+    import re
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        typer.echo(f"refusing reader name {name!r}: use letters, numbers, dash or underscore")
+        raise typer.Exit(2)
+    if show_values:
+        typer.echo("warning: sending file contents to the model (--show-values)")
+    writer = _live_model(model, None)
+    writer = _wrapped_model(writer, "draft_reader", Path(workdir), ceiling_usd, model_id=model)
+    draft = _entry("kullback.builder.sources.draft", "draft_reader")
+    result = draft(file, workdir, writer, name, show_values=show_values)
+    for attempt, attempt_problems in enumerate(result.get("attempts", []), start=1):
+        if attempt_problems:
+            typer.echo(f"attempt {attempt}:")
+            for problem in attempt_problems:
+                typer.echo(problem)
+    if result.get("passed"):
+        typer.echo(f"passes; `kullback ingest {file}` will use it")
+        return
+    for problem in result.get("problems", []):
+        typer.echo(problem)
+    raise typer.Exit(1)
 
 
 def _rescue_candidates(workdir: Path, raw_hash: Optional[str]) -> list:
@@ -379,6 +635,15 @@ def rescue(
     typer.echo(line + (" (dry run: nothing written)" if dry_run else ""))
 
 
+def _load_keys() -> None:
+    """Keys the screen reads from the environment: exported env, then .env, then remembered.
+
+    The screen and its guards read os.environ before any model call, so both entries that
+    open it load every store first, in the same precedence live_model uses. Values never print."""
+    _entry("kullback.ai.provider", "load_dotenv")()
+    _entry("kullback.ai.credentials", "load_credentials")()
+
+
 def _live_model(model_id: str, base_url: Optional[str]):
     """One live adapter, or the refusal in words. provider.live_model is the single place the
     live-call flag is ever set, so the screen and the CLI refuse for the same reason."""
@@ -387,6 +652,58 @@ def _live_model(model_id: str, base_url: Optional[str]):
     except RuntimeError as error:
         typer.echo(str(error))
         raise typer.Exit(2) from None
+
+@app.command()
+def login(
+    name: Optional[str] = typer.Argument(None, help="Key variable to remember, as OPENAI_API_KEY."),
+    list_keys: bool = typer.Option(False, "--list", help="Print the remembered key names, never values."),
+):
+    """Remember a provider key for every later launch, or list what is remembered.
+
+    The value is read with getpass so it never lands in shell history, and it is stored
+    in ~/.kullback/auth.json at mode 0600, never in a workdir or a package. Names are
+    printed, values never."""
+    from kullback.ai import credentials
+
+    if list_keys:
+        for stored in credentials.stored_names():
+            typer.echo(stored)
+        if not credentials.stored_names():
+            typer.echo("no remembered keys")
+        return
+    if not name:
+        typer.echo("kullback login takes a key name, as `kullback login OPENAI_API_KEY`, or --list")
+        raise typer.Exit(2)
+    import getpass
+
+    try:
+        secret = getpass.getpass(f"{name}: ")
+    except (EOFError, KeyboardInterrupt):
+        typer.echo("")
+        raise typer.Exit(1) from None
+    if not secret:
+        typer.echo("empty key: nothing remembered")
+        raise typer.Exit(1)
+    try:
+        path = credentials.remember(name, secret)
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from None
+    typer.echo(f"remembered {name} in {path}")
+
+
+@app.command()
+def logout(name: str = typer.Argument(..., help="Key variable to forget, as OPENAI_API_KEY.")):
+    """Forget a remembered provider key. The live key store is ~/.kullback/auth.json."""
+    from kullback.ai import credentials
+
+    try:
+        removed = credentials.forget(name)
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from None
+    typer.echo(f"forgot remembered {name}" if removed else f"no remembered key {name}")
+
 
 @app.command()
 def build(
@@ -463,45 +780,25 @@ def _session_subscriber(workdir: Path):
 
 def _counts_line(workdir: Path) -> str:
     """The workdir counts as one line: trusted, refused and fidelity off the gate rulings."""
-    from kullback.gates import counts as counts_mod
+    from kullback import live_counts
 
-    root = Path(workdir)
-    task_status = _json_at(root, "task_status.json")
-    verifiers = _verifier_dicts(root)
-    replays = _json_at(root, "replays.json")
-    result = counts_mod.round_counts(
-        task_status, verifiers, {}, {}, _refusal_dicts(root), {}, replays,
-        _json_at(root, "rerolls.json"), _entry("kullback.runner.canon", "load_rules")(root / "canon-rules.json"),
-        (_json_at(root, "tool_sigs.json") or {}).get("sigs", []), workdir=root)
-    return (f"trusted {result['trusted']}, refused {result['refused_count']}, "
-            f"fidelity {result['fidelity']}/{result['tasks']}")
+    counts = live_counts.workdir_counts(workdir, max_age=0.0)
+    return (f"trusted {counts['trusted']}, refused {counts['refused']}, "
+            f"fidelity {counts['fidelity']}/{counts['tasks']}")
 
 
 def _verifier_dicts(root: Path) -> list:
     """The stored Verifiers as dicts; a workdir with none yet reads as empty."""
-    folder = root / "verifiers"
-    if not folder.is_dir():
-        return []
-    out = []
-    for path in sorted(folder.glob("*.json")):
-        try:
-            out.append(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, ValueError):
-            continue
-    return out
+    from kullback import live_counts
+
+    return live_counts.verifier_dicts(root)
 
 
 def _refusal_dicts(root: Path) -> dict:
     """The stored refusals keyed by Task; a workdir with none yet reads as empty."""
-    out: dict = {}
-    for folder in (root / "refusals", root / "env" / "refusals"):
-        if folder.is_dir():
-            for path in sorted(folder.glob("*.json")):
-                try:
-                    out.setdefault(path.stem, json.loads(path.read_text(encoding="utf-8")))
-                except (OSError, ValueError):
-                    continue
-    return out
+    from kullback import live_counts
+
+    return live_counts.refusal_dicts(root)
 
 
 @app.command("freeze-runner")
@@ -523,19 +820,295 @@ def freeze_runner(
     typer.echo(str(path))
 
 
-@app.command()
-def run(
-    workdir: Path = WORKDIR,
-    task: str = typer.Option(..., "--task", help="Task id to run."),
-    model: str = typer.Option(..., "--model", help="Candidate model id, as provider/model."),
-    count: int = typer.Option(1, "--count", help="Runs per Task."),
-    base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
-):
-    """Run a Candidate against the built Environment and write one JSONL per Run."""
+def _on_disk_task_ids(workdir: Path) -> list[str]:
+    """Every Task id with a file, in on-disk order, without the tasks.json index."""
+    folder = Path(workdir) / "tasks"
+    on_disk = sorted(path.stem for path in folder.glob("*.json")) if folder.is_dir() else []
+    return [task_id for task_id in on_disk if task_id != "tasks.json"]
+
+
+def _all_task_ids(on_disk: list[str]) -> list[str]:
+    """Every Task id, refusing an empty workdir instead of running nothing."""
+    if not on_disk:
+        typer.echo("no Tasks with a file: nothing was run")
+        raise typer.Exit(1)
+    return on_disk
+
+
+def _trusted_task_ids(workdir: Path, on_disk: list[str]) -> list[str]:
+    """The on-disk Task ids the live ruling trusts, refusing when none do."""
+    trusted = set(_entry("kullback.hub.package", "trusted_ids")(workdir))
+    picked = [task_id for task_id in on_disk if task_id in trusted]
+    if not picked:
+        typer.echo("no trusted Tasks: nothing was run")
+        raise typer.Exit(1)
+    return picked
+
+
+def _named_task_ids(on_disk: list[str], selector: str) -> list[str]:
+    """The on-disk Task ids a comma separated selector names, in on-disk order."""
+    wanted = [part.strip() for part in selector.split(",") if part.strip()]
+    if not wanted:
+        typer.echo("--tasks names no Tasks")
+        raise typer.Exit(2)
+    unknown = sorted(set(wanted) - set(on_disk))
+    if unknown:
+        typer.echo(f"no Task named {', '.join(unknown)}")
+        raise typer.Exit(2)
+    return [task_id for task_id in on_disk if task_id in set(wanted)]
+
+
+def _run_task_ids(workdir: Path, selector: str) -> list[str]:
+    """The Task ids `--tasks` names: trusted, all, or comma separated ids, in on-disk order.
+
+    Trusted is the live ruling the hub publishes from, so a graded Run always has a checked
+    Verifier behind it.
+    """
+    on_disk = _on_disk_task_ids(workdir)
+    if selector == "all":
+        return _all_task_ids(on_disk)
+    if selector == "trusted":
+        return _trusted_task_ids(workdir, on_disk)
+    return _named_task_ids(on_disk, selector)
+
+
+def _run_scoring(workdir: Path) -> dict:
+    """The verdict path's inputs for Runs played by `run --tasks`, loaded once for every Task.
+
+    The same regrade `_score` calls, over the Run files just played rather than the per-Task
+    folders, so each Task is scored as soon as its Runs land.
+    """
+    load_rules = _entry("kullback.runner.canon", "load_rules")
+    canon = load_rules(Path(workdir) / "canon-rules.json")
+    env_path, version_path = Path(workdir) / "environment.json", Path(workdir) / "runner_version.json"
+    if not version_path.is_file():
+        _warn_unfrozen_runner()
+    sigs = load_tool_sigs(workdir)
+    return {
+        "canon": canon,
+        "environment": _load(env_path, Environment) if env_path.is_file() else None,
+        "runner_version": _load(version_path, RunnerVersion).runner_version if version_path.is_file() else None,
+        "schema": _schema(workdir),
+        "write_tools": {sig.name for sig in sigs if sig.kind == "write"} or None,
+        "flagged_tools": {sig.name for sig in sigs if sig.unclassified},
+    }
+
+
+def _score_played_runs(workdir: Path, task_id: str, played: list, scoring: dict):
+    """Score just-played Runs through regrade and answer pass per Run, or the refusal in words.
+
+    `played` is (run id, Run file) in play order; the Verdicts land where `verdict` writes them.
+    """
+    score = _entry("kullback.runner.regrade", "regrade")
+    gate = _entry("kullback.gates.artifacts", "regrade_gate")
+    verifier = _load(Path(workdir) / "verifiers" / f"{task_id}.json", Verifier)
+    verdicts = score([path for _, path in played], verifier, scoring["canon"],
+                     out_dir=Path(workdir) / "verdicts" / task_id, judge_results={},
+                     environment=scoring["environment"], runner_version=scoring["runner_version"],
+                     schema=scoring["schema"], write_tools=scoring["write_tools"],
+                     flagged_tools=scoring["flagged_tools"], rules=scoring["canon"])
+    failures = getattr(gate(verdicts), "failures", [])
+    if failures:
+        return None, "; ".join(str(failure) for failure in failures)
+    passed = {verdict.run_id: bool(verdict.passed) for verdict in verdicts}
+    return [passed.get(run_id, False) for run_id, _ in played], None
+
+
+def _played_runs(workdir: Path, paths: set) -> list:
+    """(run id, Run file) in filename order for Run files the verdict path can open."""
+    load_run = _entry("kullback.runner.verdict", "load_run")
+    return [(load_run(path).run_id, path) for path in sorted(paths, key=lambda path: path.name)]
+
+
+def _scored_run_rows(rows: list) -> list:
+    """The rows with Runs behind them: scored, not refused, with a Verifier."""
+    return [row for row in rows if row["runs"] and not row["refused"] and not row["no_verifier"]]
+
+
+def _mean_pass_rate(scored: list) -> Optional[float]:
+    """The mean of the per-Task pass rates, or nothing where no Task was scored."""
+    rates = [row["passes"] / row["runs"] for row in scored]
+    return sum(rates) / len(rates) if rates else None
+
+
+def _full_pass_rate(scored: list, count: int) -> Optional[float]:
+    """The share of Tasks that passed every Run, over Tasks with the full count."""
+    full = [row for row in scored if row["runs"] == count]
+    if full and count > 1:
+        return sum(1 for row in full if row["passes"] == row["runs"]) / len(full)
+    return None
+
+
+def _failing_run_row(scored: list) -> Optional[dict]:
+    """The scored row with the most failures, or nothing where every Run passed."""
+    failing = max(scored, key=lambda row: row["runs"] - row["passes"], default=None)
+    if failing is not None and failing["runs"] - failing["passes"] == 0:
+        return None
+    return failing
+
+
+def _run_totals(rows: list, count: int, planned: int, spend_usd: float, ceiling_usd,
+                ceiling_stopped: bool) -> dict:
+    """One dict under the per-Task lines: pass@1, pass^k, Runs done, spend, the Task that failed most."""
+    scored = _scored_run_rows(rows)
+    failing = _failing_run_row(scored)
+    return {
+        "pass_at_1": _mean_pass_rate(scored),
+        "pass_k": _full_pass_rate(scored, count),
+        "k": count,
+        "runs_done": sum(row["runs"] for row in rows),
+        "runs_planned": planned,
+        "spend_usd": spend_usd,
+        "failing_most": failing["task"] if failing else None,
+        "failing_most_fails": failing["runs"] - failing["passes"] if failing else 0,
+        "ceiling_stopped": ceiling_stopped,
+        "ceiling_usd": ceiling_usd,
+    }
+
+
+def _rate_or_na(value) -> str:
+    """One rate with two decimals, or n/a where no scored Run stands behind it."""
+    return "n/a" if value is None else f"{value:.2f}"
+
+
+def _echo_run_totals(totals: dict, count: int) -> None:
+    """The pass table's last lines: pass@1, pass^k, Runs done, spend, the Task that failed most."""
+    head = f"pass@1 {_rate_or_na(totals['pass_at_1'])}"
+    if count > 1:
+        head += f" pass^{count} {_rate_or_na(totals['pass_k'])}"
+    typer.echo(head)
+    failing = (f"{totals['failing_most']} ({totals['failing_most_fails']})"
+               if totals["failing_most"] else "none")
+    typer.echo(f"runs {totals['runs_done']}/{totals['runs_planned']} "
+               f"spend ${totals['spend_usd']:.2f} failing most: {failing}")
+
+
+def _run_single_task_reports(workdir: Path, task: Optional[str], model: str,
+                             base_url: Optional[str], count: int) -> None:
+    """The --task answer as it always was: the Run reports as JSON."""
+    if task is None:
+        typer.echo("run takes --task or --tasks")
+        raise typer.Exit(2)
     reports = _entry("kullback.runner.tool", "reroll")(
         environment_dir=workdir, task_id=task, model=_live_model(model, base_url), count=count,
         workdir=workdir)
     typer.echo(json.dumps([report.as_dict() for report in reports], default=str))
+
+
+def _run_ceiling(workdir: Path, ceiling_usd: Optional[float], budget) -> tuple:
+    """The spend ceiling and whether it already stopped the run before it began."""
+    if ceiling_usd is None:
+        return None, False
+    try:
+        return budget.Ceiling.from_totals(workdir, ceiling_usd), False
+    except budget.BudgetExceeded:
+        return None, True
+
+
+def _play_task_runs(workdir: Path, task_id: str, candidate, count: int, reroll, budget) -> tuple:
+    """(played, ceiling_hit): one Task's Runs, or the files that landed before the ceiling."""
+    runs_dir = Path(workdir) / "runs"
+    before = set(runs_dir.glob("*.jsonl")) if runs_dir.is_dir() else set()
+    try:
+        reports = reroll(environment_dir=workdir, task_id=task_id, model=candidate, count=count,
+                         workdir=workdir)
+        return [(report.run_id, Path(workdir) / report.path) for report in reports], False
+    except budget.BudgetExceeded:
+        after = set(runs_dir.glob("*.jsonl")) if runs_dir.is_dir() else set()
+        return _played_runs(workdir, after - before), True
+
+
+def _played_task_row(task_id: str, played: list, outcomes: list, refusal: Optional[str]) -> tuple:
+    """One Task's row and its line: refused, missing Runs, or the pass/fail words."""
+    if refusal:
+        row = {"task": task_id, "runs": len(played), "passes": 0, "outcomes": [],
+               "refused": True, "no_verifier": False}
+        return row, f"{task_id} refused, {refusal}"
+    if not played:
+        row = {"task": task_id, "runs": 0, "passes": 0, "outcomes": [],
+               "refused": False, "no_verifier": False}
+        return row, f"{task_id} no stored Runs"
+    words = ["pass" if passed else "fail" for passed in outcomes]
+    row = {"task": task_id, "runs": len(words), "passes": sum(outcomes),
+           "outcomes": words, "refused": False, "no_verifier": False}
+    return row, f"{task_id} {' '.join(words)}"
+
+
+def _run_one_task(workdir: Path, task_id: str, candidate, count: int, scoring: dict,
+                  reroll, budget) -> tuple:
+    """One Task's row, its line, and whether the ceiling stopped the run mid-Task."""
+    if not (Path(workdir) / "verifiers" / f"{task_id}.json").is_file():
+        row = {"task": task_id, "runs": 0, "passes": 0, "outcomes": [],
+               "refused": False, "no_verifier": True}
+        return row, f"{task_id} no Verifier yet, not scored", False
+    played, ceiling_hit = _play_task_runs(workdir, task_id, candidate, count, reroll, budget)
+    if played:
+        outcomes, refusal = _score_played_runs(workdir, task_id, played, scoring)
+    else:
+        outcomes, refusal = [], None
+    row, line = _played_task_row(task_id, played, outcomes, refusal)
+    return row, line, ceiling_hit
+
+
+@app.command()
+def run(
+    workdir: Path = WORKDIR,
+    task: Optional[str] = typer.Option(None, "--task", help="Task id to run."),
+    tasks: Optional[str] = typer.Option(None, "--tasks", help="Tasks to run: trusted, all, or comma "
+                                                              "separated ids."),
+    model: str = typer.Option(..., "--model", help="Candidate model id, as provider/model."),
+    count: int = typer.Option(1, "--count", help="Runs per Task."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Spend ceiling (D86): "
+                                                                            "the run stops where it stands."),
+    as_json: bool = typer.Option(False, "--json", help="Print the rows and the totals as one JSON document."),
+):
+    """Run a Candidate against the built Environment and write one JSONL per Run.
+
+    With --task the command answers as it always did: the Run reports as JSON. With --tasks it
+    runs every named Task --count times, scores each Task as its Runs land, and prints one line
+    per Task plus the pass table underneath.
+    """
+    if tasks is not None and task is not None:
+        typer.echo("run takes --task or --tasks, not both")
+        raise typer.Exit(2)
+    if tasks is None:
+        _run_single_task_reports(workdir, task, model, base_url, count)
+        return
+    task_ids = _run_task_ids(workdir, tasks)
+    trusted_only = tasks.strip() == "trusted"
+    if trusted_only and not as_json:
+        typer.echo("only trusted Tasks are graded by a checked Verifier")
+    budget = importlib.import_module("kullback.runner.budget")
+    candidate = _live_model(model, base_url)
+    ceiling, ceiling_stopped = _run_ceiling(workdir, ceiling_usd, budget)
+    # The Candidate is priced into the workdir ledger like every other model call, but never
+    # memoized: a Candidate's answer has to be a fresh sample, and a memoized one would turn a
+    # sample into a replay. It is never context capped either: it runs under production settings.
+    candidate = budget.BudgetedModel(candidate, stage="run", workdir=workdir, model_id=model,
+                                     ceiling=ceiling, cap_context=False)
+    scoring = _run_scoring(workdir)
+    reroll = _entry("kullback.runner.tool", "reroll")
+    rows: list = []
+    for task_id in task_ids:
+        if ceiling_stopped:
+            break
+        row, line, ceiling_hit = _run_one_task(workdir, task_id, candidate, count, scoring,
+                                               reroll, budget)
+        if ceiling_hit:
+            ceiling_stopped = True
+        rows.append(row)
+        if not as_json:
+            typer.echo(line)
+    spend_usd = float(budget.load_totals(workdir)["total"]["usd"])
+    totals = _run_totals(rows, count, len(task_ids) * count, spend_usd, ceiling_usd, ceiling_stopped)
+    if as_json:
+        typer.echo(json.dumps({"rows": rows, "totals": totals, "trusted_only": trusted_only},
+                               default=str))
+        return
+    if ceiling_stopped:
+        typer.echo(f"ceiling ${ceiling_usd:g} reached, stopped where it stood")
+    _echo_run_totals(totals, count)
 
 
 @app.command("solve-rate")
@@ -794,16 +1367,110 @@ def status(
         typer.echo(f"moved: {row['task_id']} at {row['stage']}")
 
 
+@app.command("tasks")
+def tasks(
+    workdir: Path = WORKDIR,
+    status: Optional[str] = typer.Option(None, "--status",
+                                         help="Show only Tasks standing in this word: open, refused, trusted or drifted."),
+    as_json: bool = typer.Option(False, "--json", help="Print the rows as JSON."),
+    task: Optional[str] = typer.Option(None, "--task", help="Print one Task's detail instead of the rows."),
+):
+    """List every Task with why it stands where it stands: status, replay, suite, probes, drift, last finding."""
+    from kullback import live_counts
+
+    root = Path(workdir)
+    if task is not None:
+        try:
+            detail = live_counts.task_detail(root, task)
+        except KeyError:
+            typer.echo(f"no such task: {task}")
+            raise typer.Exit(1) from None
+        if as_json:
+            typer.echo(json.dumps(detail, indent=2, sort_keys=True, default=str))
+        else:
+            for line in _task_detail_lines(detail):
+                typer.echo(line)
+        return
+    rows = live_counts.task_rows(root)
+    if status is not None:
+        if status == "drifted":
+            rows = [row for row in rows if row["drift"] is not None]
+        elif status in ("open", "refused", "trusted"):
+            rows = [row for row in rows if row["status"] == status]
+        else:
+            typer.echo("status is open, refused, trusted or drifted")
+            raise typer.Exit(2)
+    if as_json:
+        typer.echo(json.dumps(rows, indent=2, sort_keys=True, default=str))
+        return
+    typer.echo("id status replay suite probes drift last finding")
+    for row in rows:
+        typer.echo(_task_row_line(row))
+
+
+def _finding_words(kind: Optional[str], path: Optional[str]) -> str:
+    """The kind and path of one finding as words, for a row or a detail line."""
+    return " ".join(part for part in (kind, path) if part)
+
+
+def _task_row_line(row: dict) -> str:
+    """One Task's row as text: every cell, with a dash where the workdir holds nothing."""
+    finding = " ".join(part for part in (row["last_finding_kind"], row["last_finding_path"]) if part)
+    cells = [row["task_id"], row["status"], row["replay"] or "-", row["suite"] or "-",
+             row["probes"] or "-", row["drift"] or "-", finding or "-"]
+    return " ".join(cells)
+
+
+def _replay_calls_line(matched: Optional[int], total: Optional[int]) -> str:
+    """The replayed calls as matched/total, with a dash where the workdir holds nothing."""
+    return (f"replay calls: {(matched if matched is not None else '-')}/"
+            f"{(total if total is not None else '-')} matched/total")
+
+
+def _task_detail_lines(detail: dict) -> list[str]:
+    """One Task's detail as text: the row, the gate that failed, findings, atoms and replay calls."""
+    finding = _finding_words(detail["last_finding_kind"], detail["last_finding_path"])
+    lines = [f"task {detail['task_id']}", f"status: {detail['status']}",
+             f"replay: {detail['replay'] or '-'}", f"suite: {detail['suite'] or '-'}",
+             f"probes: {detail['probes'] or '-'}", f"drift: {detail['drift'] or '-'}",
+             f"last finding: {finding or '-'}", f"failing gate: {detail['failing_gate'] or 'none'}"]
+    for row in detail["open_findings"]:
+        lines.append("finding: " + _finding_words(row["kind"], row["path"]))
+    atoms = detail["atom_counts"]
+    lines.append("atoms: " + (", ".join(f"{kind} {count}" for kind, count in sorted(atoms.items()))
+                              if atoms else "none"))
+    lines.append(_replay_calls_line(detail["replay_matched"], detail["replay_total"]))
+    return lines
+@app.command()
+def doctor(
+    workdir: Path = WORKDIR,
+    model: str = typer.Option(DEFAULT_MODEL, "--model",
+                              help=f"Model the checklist reads keys for, as provider/model; "
+                              f"the default is {DEFAULT_MODEL}."),
+):
+    """Say where this workdir stands and name the next step: the entry screen's checklist as text.
+
+    Six rows off the workdir's files and the key variables in the environment, one
+    per line as [x] or [ ] with the name and the detail, and the next step last.
+    Reads files and names only, never secret values, and never calls a model.
+    Remembered keys load first, like the screen: a key from auth.json counts.
+    """
+    _load_keys()
+    from kullback.tui.checklist import next_step, where_it_stands
+
+    rows = where_it_stands(Path(workdir), dict(os.environ), model)
+    for row in rows:
+        typer.echo(f"[{'x' if row.done else ' '}] {row.name} {row.detail}".rstrip())
+    typer.echo(f"next: {next_step(rows)}")
+
+
 def _json_at(root: Path, name: str) -> dict:
     """One JSON record of a workdir, or nothing where the file is missing or half-written."""
-    path = root / name
-    if not path.is_file():
-        return {}
-    try:
-        body = json.loads(path.read_text(encoding="utf-8"))
-    except ValueError:
-        return {}
-    return body if isinstance(body, dict) else {}
+    from kullback import live_counts
+
+    return live_counts.json_at(root, name)
+
+
 @app.command("judge-smoke")
 def judge_smoke(
     model: str = typer.Option(..., "--model", help="Candidate judge model id, as provider/model."),
@@ -1136,6 +1803,16 @@ def export(
     typer.echo(str(Path(out) / "manifest.json"))
 
 
+def _echo_checklist(workdir: Path, repo: str) -> str:
+    """Print the publish checklist rows and their readiness, and answer the readiness."""
+    checklist = _entry("kullback.hub.checklist", "publish_checklist")(workdir, repo)
+    readiness = _entry("kullback.hub.checklist", "readiness")(checklist)
+    for row in checklist:
+        typer.echo(f"[{'x' if row.done else ' '}] {row.name}: {row.detail}")
+    typer.echo(readiness)
+    return readiness
+
+
 @app.command()
 def publish(
     workdir: Path = WORKDIR,
@@ -1149,13 +1826,20 @@ def publish(
                                                           "on the card saying so."),
     keep: Optional[Path] = typer.Option(None, "--keep", help="Keep the staged package here instead of a "  # noqa: B008
                                                              "temporary directory."),
+    check: bool = typer.Option(False, "--check", help="Print the release checklist and upload nothing."),
 ):
     """Export the Environment, write its card and upload it as one commit, tagged with its round (D221).
 
     A release needs replay fidelity at or above 0.90 over Tasks; below that only --preview is
     allowed. Publishing again writes a new commit on the same repository and rewrites the card's
-    numbers; older rounds stay reachable by their tags.
+    numbers; older rounds stay reachable by their tags. With --check the command prints the
+    checklist and uploads nothing.
     """
+    readiness = _echo_checklist(workdir, repo)
+    if check:
+        if readiness == "not ready":
+            raise typer.Exit(1)
+        return
     push = _entry("kullback.hub.publish", "publish")
     hosted, manifest = push(workdir, repo, name=name, preview=preview, corpus=corpus,
                             corpus_license=corpus_license, corpus_url=corpus_url, keep=keep)
@@ -1318,15 +2002,28 @@ def events(
         pass
 
 
+def _open_textual(workdir: Path, model: Optional[str] = None, base_url: Optional[str] = None,
+                  ceiling_usd: Optional[float] = None) -> None:
+    """Open the Textual app over a workdir; the line screen stays behind --plain."""
+    from kullback.tui.app import KullbackApp
+
+    KullbackApp(workdir=workdir, model=model, base_url=base_url, ceiling_usd=ceiling_usd).run()
+
+
 @app.command()
 def attach(
     workdir: Path = typer.Argument(Path("."), help="The workdir of the build to follow."),  # noqa: B008
+    plain: bool = typer.Option(False, "--plain", help="Use the line screen instead of the app."),
 ):
     """Open the screen on a workdir and follow its live build at once, wherever it was started.
 
     With no live build there, the screen says so and shows the build's status instead.
     """
-    _entry("kullback.tui", "loop")(workdir=_default_workdir(workdir), attach=True)
+    _load_keys()
+    if plain:
+        _entry("kullback.tui", "loop")(workdir=_default_workdir(workdir), attach=True)
+        return
+    _open_textual(workdir=_default_workdir(workdir))
 
 
 @app.command()
@@ -1335,10 +2032,16 @@ def tui(
     model: Optional[str] = typer.Option(None, "--model", help="Builder model id, as provider/model."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
+    plain: bool = typer.Option(False, "--plain", help="Use the line screen instead of the app."),
 ):
     """Open the kullback screen: one build, its stages, its gates and its spend, while it runs."""
-    _entry("kullback.tui", "loop")(workdir=_default_workdir(workdir), model=model, base_url=base_url,
+    _load_keys()
+    if plain:
+        _entry("kullback.tui", "loop")(workdir=_default_workdir(workdir), model=model, base_url=base_url,
                                        ceiling_usd=ceiling_usd)
+        return
+    _open_textual(workdir=_default_workdir(workdir), model=model, base_url=base_url,
+                   ceiling_usd=ceiling_usd)
 
 
 # A directory counts as a build's workdir when it holds any record a build writes. The screen

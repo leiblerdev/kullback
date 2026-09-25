@@ -882,3 +882,31 @@ def test_stricter_reingest_withdraws_only_that_hash(workdir, tmp_path):
     ruling = ingest.read_intake_ruling(workdir, gone)
     assert ruling["withdrawn"] is True
     assert (workdir / "traces" / (other["trace_hashes"][0] + ".json")).is_file()
+
+# --- dry runs store nothing --------------------------------------------------
+
+
+def _tree(workdir):
+    """Every file under the workdir with its bytes, for a before and after comparison."""
+    return {path.relative_to(workdir).as_posix(): path.read_bytes()
+            for path in sorted(workdir.rglob("*")) if path.is_file()}
+
+
+def test_a_dry_run_leaves_the_workdir_untouched(small_file, workdir):
+    before = _tree(workdir)
+    result = ingest.dry_run(small_file, workdir)
+    assert result["passed"] is True
+    assert result["format"] == "tau2_native"
+    assert result["traces"] == 1
+    assert _tree(workdir) == before
+
+
+def test_a_dry_run_reports_a_gate_failure_as_a_result_not_an_exception(workdir, tmp_path):
+    broken = write_json(tmp_path / "broken.json", tau2_file(["not a recording"]))
+    before = _tree(workdir)
+    result = ingest.dry_run(broken, workdir)
+    assert result["passed"] is False
+    assert "under the floor" in (result["message"] or "")
+    assert result["eligible_share"] == 0.0
+    assert sum(result["rejected"].values()) == 1
+    assert _tree(workdir) == before
