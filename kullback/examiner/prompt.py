@@ -73,7 +73,8 @@ def tools_section() -> str:
             'e.g. {"task_id": "t1"}.\n'
             "reject_reference: reject a Reference whose End state is wrong for the Intent, "
             'e.g. {"task_id": "t1", "run_id": "r1", "why": "the user asked for a change and it wrote nothing"}; '
-            "every Run of that End state goes with it and the Reference is chosen again.")
+            "every Run of that End state goes with it and the Reference is chosen again; a Task with "
+            "none left waits in the Reference pool for a later Run.")
 
 
 def examples_section() -> str:

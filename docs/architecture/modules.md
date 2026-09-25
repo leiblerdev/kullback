@@ -132,6 +132,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/gates/stages.py` | Rulings over each Builder stage's artifact: cluster, compile, intent, readers, rerolls, export, vocabulary. |
 | `kullback/gates/tool_runs.py` | The eight rulings over what a generated tool body did in the sandbox. |
 | `kullback/gates/trust.py` | The refuse ruling (D128) and what a trusted Verifier is (D126). |
+| `kullback/gates/trust.py` | The Reference pool: Tasks waiting on a Reference, untrusted until a later Run earns one. |
 | `kullback/gates/verifier_suite.py` | The nine D79 checks over a Verifier. |
 
 ## kullback/user
@@ -173,7 +174,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/examiner/prompt.py` | The Examiner's prompt sections in GEPA order. |
 | `kullback/examiner/reference.py` | Chooses References by the D111 rule and checks constraints against them. |
 | `kullback/examiner/reference_check.py` | `check_reference`: the evidence on a Task's Reference in one view, code only, for the Examiner to judge. |
-| `kullback/examiner/reference_check.py` | `reject_reference`: excludes a wrong Reference's End state, re-picks, and refuses as `reference_wrong` when none is left. |
+| `kullback/examiner/reference_check.py` | `reject_reference`: excludes a wrong Reference's End state, re-picks, and pools the Task in `exam/reference_pool.json` when none is left. |
 | `kullback/examiner/runners.py` | Builds the probe, re-roll and variant runners over the runner tool (D120). |
 | `kullback/examiner/session.py` | The Examiner extension and `examine`, called by the Builder. |
 | `kullback/examiner/skills.py` | The probe skill: the eight Verifier bug classes (D127, D133). |

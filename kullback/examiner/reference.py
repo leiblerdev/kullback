@@ -62,6 +62,7 @@ from typing import Any, Callable, Iterable, Optional
 from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite
 from kullback.gates.trust import POOL_FILE
+from kullback.gates.trust import pooled_tasks as _pooled_tasks
 from kullback.gates.verifier_suite import _key
 from kullback.runner.judge import sources_not_given
 from kullback.runner.records import EXAM_DIR, Atom, Constraint, load_task_run, read_json, write_json
@@ -265,8 +266,8 @@ def pool(workdir: Any) -> dict[str, dict]:
 
 
 def pooled_tasks(workdir: Any) -> list[str]:
-    """The sorted ids of the Tasks waiting on a Reference."""
-    return sorted(pool(workdir))
+    """The sorted ids of the Tasks waiting on a Reference, read the one way the gates read them."""
+    return _pooled_tasks(workdir)
 
 
 def join_pool(workdir: Any, task_id: str, why: str, excluded: Iterable[str]) -> None:

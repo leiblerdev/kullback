@@ -1006,7 +1006,7 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
                   RC.CheckReferenceArgs, RC.CheckReferenceResult, RC._check_reference(root), render=render),
         AgentTool("reject_reference", "Reject a Reference whose End state the Intent and the policy say is "
                   "wrong: its End state is excluded, the Reference is chosen again, and a Task with none "
-                  "left is refused as reference_wrong.",
+                  "left waits in the Reference pool for a later Run.",
                   RC.RejectReferenceArgs, RC.RejectReferenceResult, RC._reject_reference(root), render=render),
         AgentTool("propose_verifier", "Deprecated alias of edit_verifier, kept for one release.",
                   ProposeArgs, ProposeResult, _propose_verifier(root, alias=True), render=render),
