@@ -125,8 +125,10 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None) -
     Returns `run_probe(model, verifier)`, `run_rerolls(task_id, count, prefix)` and
     `run_variant(task_id, calls, run_id, transcript=())` with the exact signatures and return
     shapes the derivation consumes, plus `run_variant.write_runs_index` for the caller after its
-    gather. Every row's path is resolved against the workdir, so it opens from any cwd; the
-    Examiner's re-roll file stores it relative again. Nothing here opens the compiled side; the runner reads it, the Examiner does not
+    gather, plus `reroll_user(task_id)(router)`, the re-rolls' own user for the Examiner's reroll
+    tool, so its Runs meet the user the derivation's re-rolls meet. Every row's path is resolved
+    against the workdir, so it opens from any cwd; the Examiner's re-roll file stores it relative
+    again. Nothing here opens the compiled side; the runner reads it, the Examiner does not
     (D123).
     """
     root = Path(workdir)
@@ -195,7 +197,13 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None) -
         return runner_tool.write_runs_index(root)
 
     run_variant.write_runs_index = write_runs_index  # type: ignore[attr-defined]
-    return {"run_probe": run_probe, "run_rerolls": run_rerolls, "run_variant": run_variant}
+
+    def reroll_user(task_id: str) -> Any:
+        """The re-rolls' rule-driven user as a `router` factory, for the Examiner's reroll tool."""
+        return lambda router: _make_user(root, task_id, anchor, router)
+
+    return {"run_probe": run_probe, "run_rerolls": run_rerolls, "run_variant": run_variant,
+            "reroll_user": reroll_user}
 
 
 __all__ = ["runners_for"]
