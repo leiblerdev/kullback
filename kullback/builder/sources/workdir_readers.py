@@ -126,6 +126,100 @@ def check_reader(adapter: Any, path: str | Path, fixtures: Optional[list] = None
     return problems
 
 
+def check_reader_isolated(reader_path: str | Path, file_path: str | Path,
+                          timeout: float = 60) -> list[str]:
+    """The problems check_reader finds, computed in a child process with no network.
+
+    New readers run before anyone trusts them, and a drafted one is model
+    written, so the check itself runs under python -I with a cleared
+    environment and the network import block installed first, the way the
+    tool sandbox runs a generated body. A timeout or a crash reads back as
+    one problem saying so.
+    """
+    import subprocess
+    import sys
+    import tempfile
+
+    reader = Path(reader_path)
+    target = Path(file_path)
+    repo = Path(__file__).resolve().parents[2]
+    with tempfile.TemporaryDirectory(prefix="kullback-reader-check-") as tmp:
+        runner = Path(tmp) / "run_check.py"
+        out_path = Path(tmp) / "out.json"
+        runner.write_text(_ISOLATED_RUNNER, encoding="utf-8")
+        try:
+            done = subprocess.run(
+                [sys.executable, "-I", str(runner), str(reader), str(target), str(out_path),
+                 str(repo)],
+                input="", env={}, cwd=str(repo), capture_output=True, text=True,
+                timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return [f"the isolated check timed out after {timeout} seconds, so the reader is refused"]
+        if done.returncode != 0 or not out_path.is_file():
+            detail = (done.stderr or done.stdout or "").strip()[-400:]
+            return [f"the isolated check crashed, so the reader is refused: {detail}"]
+        try:
+            problems = json.loads(out_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            return [f"the isolated check crashed, so the reader is refused: {exc}"]
+        return [str(item) for item in problems] if isinstance(problems, list) else [
+            f"the isolated check crashed, so the reader is refused: {problems!r}"]
+
+# The network import block the child installs around the reader import. Socket
+# joins the sandbox blocklist because a reader never needs the network at
+# all, so even importing it is a refusal.
+_ISOLATED_BLOCKED = ("urllib", "urllib3", "requests", "httpx", "ftplib", "smtplib",
+                      "telnetlib", "subprocess", "multiprocessing", "webbrowser", "socket")
+
+_ISOLATED_RUNNER = (
+    "import importlib.abc\n"
+    "import importlib.util\n"
+    "import json\n"
+    "import sys\n"
+    "reader_path, file_arg, out_arg, repo_root = sys.argv[1:5]\n"
+    "sys.path.insert(0, repo_root)\n"
+    "from kullback.builder.sources.workdir_readers import check_reader\n"
+    "from kullback.builder.ingest import INGEST_VERSION, _decode\n"
+    "from kullback.runner.records import Trace, as_dict\n"
+    "import kullback.ai.provider\n"
+    "import socket\n"
+    "BLOCKED = " + repr(_ISOLATED_BLOCKED) + "\n"
+    "kept = dict(sys.modules)\n"
+    "class _NoNetwork(importlib.abc.MetaPathFinder):\n"
+    "    def find_spec(self, name, path=None, target=None):\n"
+    "        if name.split('.')[0] in BLOCKED:\n"
+    "            raise ImportError('blocked in the reader check: ' + name)\n"
+    "        return None\n"
+    "sys.meta_path.insert(0, _NoNetwork())\n"
+    "for _name in list(sys.modules):\n"
+    "    if _name.split('.')[0] in BLOCKED:\n"
+    "        del sys.modules[_name]\n"
+    "spec = importlib.util.spec_from_file_location('kullback_isolated_reader', reader_path)\n"
+    "module = importlib.util.module_from_spec(spec)\n"
+    "try:\n"
+    "    spec.loader.exec_module(module)\n"
+    "except Exception as exc:\n"
+    "    json.dump(['the reader does not import: ' + type(exc).__name__ + ': ' + str(exc)], open(out_arg, 'w'))\n"
+    "    raise SystemExit(0)\n"
+    "finally:\n"
+    "    for _name, _mod in kept.items():\n"
+    "        sys.modules.setdefault(_name, _mod)\n"
+    "adapter = getattr(module, 'ADAPTER', None)\n"
+    "if adapter is None:\n"
+    "    json.dump(['the reader defines no module-level ADAPTER, so there is no reader to check'], open(out_arg, 'w'))\n"
+    "    raise SystemExit(0)\n"
+    "def _cut(*args, **kwargs):\n"
+    "    raise OSError('the network is blocked in the reader check')\n"
+    "socket.socket.connect = socket.socket.connect_ex = socket.socket.bind = _cut\n"
+    "socket.create_connection = _cut\n"
+    "try:\n"
+    "    found = check_reader(adapter, file_arg)\n"
+    "except Exception as exc:\n"
+    "    found = ['the check itself fails: ' + type(exc).__name__ + ': ' + str(exc)]\n"
+    "json.dump(list(found), open(out_arg, 'w'))\n"
+)
+
+
 def _check_recording(adapter: Any, recording: Any, index: int, environment: Any, raw_hash: str,
                      ingest_version: str, trace_model: Any, as_dict: Any) -> list[str]:
     """Map one recording twice: it must validate, repeat byte-identical, and pair by id."""
