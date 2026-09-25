@@ -136,6 +136,61 @@ def test_ingest_dry_run_prints_one_row_per_file(tmp_path, workdir):
     assert list(workdir.iterdir()) == []
 
 
+# --- sources map and draft ----------------------------------------------------
+
+def _neutral_toy(path):
+    """One neutral toy file: two recordings with a role and content each."""
+    path.write_text(json.dumps({"entries": [
+        {"id": "rec-1", "role": "user", "content": "first neutral note"},
+        {"id": "rec-2", "role": "assistant", "content": "second neutral note"},
+    ]}), encoding="utf-8")
+    return path
+
+
+def test_sources_help_lists_shape_check_map_and_draft():
+    listed = invoke("sources", "--help")
+    assert listed.exit_code == 0, listed.output
+    for command in ("shape", "check", "map", "draft"):
+        assert command in listed.output
+
+
+def test_map_writes_a_reader_that_passes_and_ingest_uses_it(tmp_path, workdir):
+    """A hand mapped neutral file passes the isolated check and ingests under its name."""
+    from kullback.builder import ingest
+    from kullback.builder import sources as _sources
+
+    toy = _neutral_toy(tmp_path / "neutral.json")
+    result = invoke("sources", "map", str(toy), "--name", "mapped",
+                    "--recordings", "entries", "--role", "entries[].role",
+                    "--content", "entries[].content", "--workdir", str(workdir))
+    assert result.exit_code == 0, result.output
+    assert f"passes; `kullback ingest {toy}` will use it" in result.output
+    try:
+        summary = ingest.ingest_file(toy, workdir)
+    finally:
+        _sources.unregister("mapped")
+    assert summary["format"] == "mapped"
+    assert summary["runs"] == 2
+
+
+def test_map_refuses_to_overwrite_a_reader_without_force(tmp_path, workdir):
+    """A second map onto the same name refuses, then replaces it with --force."""
+    toy = _neutral_toy(tmp_path / "neutral.json")
+    args = ["sources", "map", str(toy), "--name", "mapped", "--recordings", "entries",
+            "--role", "entries[].role", "--content", "entries[].content",
+            "--workdir", str(workdir)]
+    assert invoke(*args).exit_code == 0
+    target = workdir / "sources" / "mapped.py"
+    sentinel = "sentinel text"
+    target.write_text(sentinel, encoding="utf-8")
+    refused = invoke(*args)
+    assert refused.exit_code == 1, refused.output
+    assert "refusing to overwrite" in refused.output
+    assert target.read_text(encoding="utf-8") == sentinel
+    assert invoke(*args, "--force").exit_code == 0
+    assert target.read_text(encoding="utf-8") != sentinel
+
+
 def test_build_passes_files_and_the_ceiling_through_to_the_session(workdir, fake_modules, tmp_path):
     target = tmp_path / "traces.json"
     target.write_text("[]", encoding="utf-8")
