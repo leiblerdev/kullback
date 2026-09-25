@@ -1357,3 +1357,32 @@ def test_follow_ends_when_the_heartbeat_says_done_though_the_pid_is_alive(tmp_pa
     watch.join(5)
     assert done == [True], "following a finished build never ends while its pid lives"
     assert "build done" in _text(screen.console)
+
+
+def test_follow_returns_once_the_direct_build_closes_its_bridge(tmp_path, monkeypatch):
+    import os
+    import time
+
+    from kullback.agent.harness import AgentHarness
+    from kullback.agent.steer import SteerBridge
+    from kullback.ai.provider import TestModel
+    from kullback.tui import live_heartbeats
+
+    # A direct build in this live host process: no heartbeat, only the bridge's record, and the
+    # pid outlives the build by definition.
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    harness = AgentHarness(TestModel(["done"]))
+    bridge = SteerBridge(harness, tmp_path / "bus.jsonl", poll_seconds=0.02).start()
+    screen = _screen(tmp_path)
+    deadline = time.time() + 10
+    while not live_heartbeats(tmp_path) and time.time() < deadline:
+        time.sleep(0.01)
+    assert live_heartbeats(tmp_path), "the bridge never registered a live record"
+    done = []
+    watch = threading.Thread(target=lambda: (screen._follow(os.getpid(), every_seconds=0.01),
+                                             done.append(True)),
+                             daemon=True)
+    watch.start()
+    bridge.close()
+    watch.join(5)
+    assert done == [True], "following a closed direct build never returns"

@@ -233,6 +233,11 @@ def live_heartbeats(workdir: Any) -> list[dict]:
     return live
 
 
+def _still_listed(workdir: Any, pid: Any) -> bool:
+    """The build is still listed live: its pid names a live heartbeat or bridge record."""
+    return any(str(record.get("pid")) == str(pid) for record in live_heartbeats(workdir))
+
+
 #: Heartbeat statuses after which a build runs no more steps (heartbeat.beat writes them).
 TERMINAL_STATUSES = ("done", "failed")
 
@@ -951,8 +956,11 @@ class Screen:
         with Live(shown(recent), console=self.console, refresh_per_second=4) as live:
             try:
                 # The pid alone never ends this: a build another screen started carries that
-                # screen's pid, which outlives the build. Its final beat says done or failed.
-                while heartbeat.alive(pid) and _build_end(self.workdir, pid) is None:
+                # screen's pid, which outlives the build. Its final beat says done or failed, a
+                # direct build's bridge record simply goes when the bridge closes; either way the
+                # build leaves the live list, which ends this with the pid and heartbeat exits.
+                while (heartbeat.alive(pid) and _build_end(self.workdir, pid) is None
+                       and _still_listed(self.workdir, pid)):
                     time.sleep(every_seconds)
                     lines, offset, mtime = since(offset, mtime, False)
                     recent = (recent + lines)[-FEED_LINES:]
