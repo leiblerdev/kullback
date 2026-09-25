@@ -1,0 +1,106 @@
+{
+  "copies": {
+    "copy_01": {
+      "available": false,
+      "branch": "north",
+      "copy_id": "copy_01",
+      "title": "A Field Guide to Backyard Birds"
+    },
+    "copy_02": {
+      "available": true,
+      "branch": "north",
+      "copy_id": "copy_02",
+      "title": "Riverside Walks"
+    },
+    "copy_03": {
+      "available": false,
+      "branch": "south",
+      "copy_id": "copy_03",
+      "title": "The Night Train"
+    },
+    "copy_04": {
+      "available": true,
+      "branch": "north",
+      "copy_id": "copy_04",
+      "title": "The Night Train"
+    },
+    "copy_05": {
+      "available": false,
+      "branch": "south",
+      "copy_id": "copy_05",
+      "title": "Riverside Walks"
+    },
+    "copy_06": {
+      "available": true,
+      "branch": "south",
+      "copy_id": "copy_06",
+      "title": "A Field Guide to Backyard Birds"
+    }
+  },
+  "holds": {
+    "hold_01": {
+      "copy_id": "copy_04",
+      "hold_id": "hold_01",
+      "member_id": "member_02",
+      "status": "held",
+      "title": "The Night Train"
+    }
+  },
+  "loans": {
+    "loan_01": {
+      "copy_id": "copy_01",
+      "due": "2026-03-20",
+      "loan_id": "loan_01",
+      "member_id": "member_01",
+      "status": "checked_out",
+      "title": "A Field Guide to Backyard Birds"
+    },
+    "loan_02": {
+      "copy_id": "copy_03",
+      "due": "2026-03-22",
+      "loan_id": "loan_02",
+      "member_id": "member_02",
+      "status": "checked_out",
+      "title": "The Night Train"
+    },
+    "loan_03": {
+      "copy_id": "copy_05",
+      "due": "2026-03-24",
+      "loan_id": "loan_03",
+      "member_id": "member_03",
+      "status": "checked_out",
+      "title": "Riverside Walks"
+    },
+    "loan_04": {
+      "copy_id": "copy_02",
+      "due": "2026-02-10",
+      "loan_id": "loan_04",
+      "member_id": "member_01",
+      "status": "returned",
+      "title": "Riverside Walks"
+    }
+  },
+  "members": {
+    "member_01": {
+      "email": "robin.alder@example.org",
+      "first_name": "Robin",
+      "last_name": "Alder",
+      "member_id": "member_01",
+      "zip": "11201"
+    },
+    "member_02": {
+      "email": "casey.birch@example.org",
+      "first_name": "Casey",
+      "last_name": "Birch",
+      "member_id": "member_02",
+      "zip": "11202"
+    },
+    "member_03": {
+      "email": "jamie.cedar@example.org",
+      "first_name": "Jamie",
+      "last_name": "Cedar",
+      "member_id": "member_03",
+      "zip": "11203"
+    }
+  }
+}

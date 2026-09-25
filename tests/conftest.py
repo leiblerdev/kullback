@@ -92,6 +92,64 @@ def tau2_retail_dir() -> Path:
     """tau2-bench's own retail domain files: db.json, policy.md, tasks.json."""
     return FIXTURES / "tau2_retail"
 
+WORLD_TRACE_FILES = {"world_a": "traces_small.json", "world_b": "traces_small_tau2.json"}
+
+
+@pytest.fixture(scope="session")
+def worlds_dir() -> Path:
+    """The invented worlds every module's tests share, beside the retail fixtures."""
+    return FIXTURES / "worlds"
+
+
+@pytest.fixture(scope="session")
+def world_dir(worlds_dir):
+    """Factory: world_dir("world_a") is the library folder, world_dir("world_b") the nursery."""
+    def _get(name: str) -> Path:
+        if name not in WORLD_TRACE_FILES:
+            raise ValueError(f"unknown world: {name}")
+        return worlds_dir / name
+    return _get
+
+
+@pytest.fixture(scope="session")
+def world_traces_path(world_dir):
+    """Factory: the ingestible traces file of a world; world_b's is its tau2 twin."""
+    def _get(name: str) -> Path:
+        return world_dir(name) / WORLD_TRACE_FILES[name]
+    return _get
+
+
+@pytest.fixture(scope="session")
+def world_traces(world_traces_path):
+    """Factory: the parsed ingestible traces of a world, grader fields still in."""
+    def _get(name: str) -> dict:
+        return json.loads(world_traces_path(name).read_text(encoding="utf-8"))
+    return _get
+
+
+@pytest.fixture(scope="session", params=["world_a", "world_b"])
+def world(request, world_dir, world_traces_path, world_traces) -> dict:
+    """Each invented world in turn, so a test written once runs on both."""
+    name = request.param
+    return {
+        "name": name,
+        "dir": world_dir(name),
+        "traces_path": world_traces_path(name),
+        "traces": world_traces(name),
+    }
+
+
+@pytest.fixture(scope="session")
+def world_a_small_path(world_traces_path) -> Path:
+    """The 3-simulation library file, the drop-in replacement for tau2_small_path."""
+    return world_traces_path("world_a")
+
+
+@pytest.fixture(scope="session")
+def world_a_small(world_traces) -> dict:
+    """The parsed library file, the drop-in replacement for tau2_small."""
+    return world_traces("world_a")
+
 
 @pytest.fixture(scope="session")
 def raw_dir() -> Path:

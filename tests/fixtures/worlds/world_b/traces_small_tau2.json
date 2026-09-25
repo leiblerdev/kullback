@@ -1,0 +1,998 @@
+{
+  "info": {
+    "agent_info": {
+      "implementation": "scripted_agent",
+      "llm": "fixture-agent",
+      "llm_args": {
+        "temperature": 0.0
+      }
+    },
+    "environment_info": {
+      "domain_name": "nursery",
+      "policy": "# Nursery agent policy\n\nAs a nursery agent, you can help customers:\n\n- **book a repotting visit for a batch**\n- **change a nursery order for batches**\n- **set a care plan for a batch the customer keeps**\n\nBefore helping a customer, find their customer id through their email address.\n\nA booking, an order change or a care plan changes the nursery record, so the customer\nmust confirm it in this conversation before the change is made.\n\nNever sell or move a batch that is under quarantine. Refuse such requests and offer\na healthy batch of the same kind instead.\n\nDo not invent batch counts or delivery days. Only report what the nursery tools return.\n",
+      "tool_defs": null
+    },
+    "git_commit": "invented",
+    "max_errors": 5,
+    "max_steps": 30,
+    "num_trials": 1,
+    "seed": 7,
+    "user_info": {
+      "implementation": "scripted_user",
+      "llm": "fixture-user",
+      "llm_args": {
+        "temperature": 0.0
+      }
+    }
+  },
+  "simulations": [
+    {
+      "agent_cost": 0.01,
+      "duration": 600.0,
+      "end_time": "2026-03-10T09:20:00",
+      "id": "nursim01",
+      "messages": [
+        {
+          "content": "Hello! What do you need today?",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:10:00",
+          "tool_calls": [],
+          "turn_idx": 0
+        },
+        {
+          "content": "Hi. Need repots for my basil batch, plus an order and a care plan.",
+          "role": "user",
+          "timestamp": "2026-03-10T09:10:01",
+          "turn_idx": 1
+        },
+        {
+          "content": "Got it. What is your email for the booking?",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:10:02",
+          "tool_calls": [],
+          "turn_idx": 2
+        },
+        {
+          "content": "morgan.ash@example.org",
+          "role": "user",
+          "timestamp": "2026-03-10T09:10:03",
+          "turn_idx": 3
+        },
+        {
+          "content": "Thanks, looking that up.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:10:04",
+          "tool_calls": [
+            {
+              "arguments": {
+                "email": "morgan.ash@example.org"
+              },
+              "id": "call_b1_01",
+              "name": "find_customer_id_by_email",
+              "requestor": "assistant"
+            }
+          ],
+          "turn_idx": 4
+        },
+        {
+          "content": "{\"customer_id\": \"cust_01\"}",
+          "error": false,
+          "id": "call_b1_01",
+          "requestor": "assistant",
+          "role": "tool",
+          "timestamp": "2026-03-10T09:10:05",
+          "turn_idx": 5
+        },
+        {
+          "content": "Found you. Checking the batch now.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:10:06",
+          "tool_calls": [
+            {
+              "arguments": {
+                "batch_id": "batch_01"
+              },
+              "id": "call_b1_02",
+              "name": "get_batch_details",
+              "requestor": "assistant"
+            }
+          ],
+          "turn_idx": 6
+        },
+        {
+          "content": "{\"batch_id\": \"batch_01\", \"count\": 40, \"kind\": \"herb\", \"quarantine\": false, \"species\": \"sweet basil\"}",
+          "error": false,
+          "id": "call_b1_02",
+          "requestor": "assistant",
+          "role": "tool",
+          "timestamp": "2026-03-10T09:10:07",
+          "turn_idx": 7
+        },
+        {
+          "content": "Batch batch_01 looks good. Which day suits you?",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:10:08",
+          "tool_calls": [],
+          "turn_idx": 8
+        },
+        {
+          "content": "Tue morning.",
+          "role": "user",
+          "timestamp": "2026-03-10T09:10:09",
+          "turn_idx": 9
+        },
+        {
+          "content": "Booking that.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:10:10",
+          "tool_calls": [
+            {
+              "arguments": {
+                "batches": [
+                  {
+                    "batch_id": "batch_01",
+                    "pots": 6
+                  }
+                ],
+                "customer_id": "cust_01",
+                "window": {
+                  "day": "Tue",
+                  "slot": "morning"
+                }
+              },
+              "id": "call_b1_03",
+              "name": "update_repot_visit",
+              "requestor": "assistant"
+            }
+          ],
+          "turn_idx": 10
+        },
+        {
+          "content": "{\"booking_id\": \"booking_01\", \"customer_id\": \"cust_01\", \"window\": {\"day\": \"Tue\", \"slot\": \"morning\"}}",
+          "error": false,
+          "id": "call_b1_03",
+          "requestor": "assistant",
+          "role": "tool",
+          "timestamp": "2026-03-10T09:10:11",
+          "turn_idx": 11
+        },
+        {
+          "content": "Booked. Want to add anything to the order?",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:10:12",
+          "tool_calls": [],
+          "turn_idx": 12
+        },
+        {
+          "content": "Add six basil.",
+          "role": "user",
+          "timestamp": "2026-03-10T09:10:13",
+          "turn_idx": 13
+        },
+        {
+          "content": "Placing that order.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:10:14",
+          "tool_calls": [
+            {
+              "arguments": {
+                "customer_id": "cust_01",
+                "delivery": {
+                  "day": "Tue",
+                  "note": "with repot"
+                },
+                "items": [
+                  {
+                    "batch_id": "batch_01",
+                    "quantity": 6
+                  }
+                ]
+              },
+              "id": "call_b1_04",
+              "name": "modify_nursery_order",
+              "requestor": "assistant"
+            }
+          ],
+          "turn_idx": 14
+        },
+        {
+          "content": "{\"customer_id\": \"cust_01\", \"items\": [{\"batch_id\": \"batch_01\", \"quantity\": 6}], \"order_id\": \"order_01\"}",
+          "error": false,
+          "id": "call_b1_04",
+          "requestor": "assistant",
+          "role": "tool",
+          "timestamp": "2026-03-10T09:10:15",
+          "turn_idx": 15
+        },
+        {
+          "content": "Added. Want a care plan for it?",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:10:16",
+          "tool_calls": [],
+          "turn_idx": 16
+        },
+        {
+          "content": "Yes please.",
+          "role": "user",
+          "timestamp": "2026-03-10T09:10:17",
+          "turn_idx": 17
+        },
+        {
+          "content": "Setting that plan.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:10:18",
+          "tool_calls": [
+            {
+              "arguments": {
+                "customer_id": "cust_01",
+                "plan": {
+                  "batch_id": "batch_01",
+                  "steps": [
+                    {
+                      "action": "water",
+                      "day": "Tue"
+                    },
+                    {
+                      "action": "feed",
+                      "day": "Fri"
+                    }
+                  ]
+                }
+              },
+              "id": "call_b1_05",
+              "name": "update_care_plan",
+              "requestor": "assistant"
+            }
+          ],
+          "turn_idx": 18
+        },
+        {
+          "content": "{\"batch_id\": \"batch_01\", \"customer_id\": \"cust_01\", \"plan_id\": \"plan_01\"}",
+          "error": false,
+          "id": "call_b1_05",
+          "requestor": "assistant",
+          "role": "tool",
+          "timestamp": "2026-03-10T09:10:19",
+          "turn_idx": 19
+        },
+        {
+          "content": "Done. All set for Tuesday.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:10:20",
+          "tool_calls": [],
+          "turn_idx": 20
+        }
+      ],
+      "reward_info": {
+        "action_checks": [
+          {
+            "action": {
+              "action_id": "1_0",
+              "arguments": {
+                "email": "morgan.ash@example.org"
+              },
+              "name": "find_customer_id_by_email",
+              "requestor": "assistant"
+            },
+            "action_match": true,
+            "action_reward": 1.0
+          },
+          {
+            "action": {
+              "action_id": "1_1",
+              "arguments": {
+                "batch_id": "batch_01"
+              },
+              "name": "get_batch_details",
+              "requestor": "assistant"
+            },
+            "action_match": true,
+            "action_reward": 1.0
+          },
+          {
+            "action": {
+              "action_id": "1_2",
+              "arguments": {
+                "batches": [
+                  {
+                    "batch_id": "batch_01",
+                    "pots": 6
+                  }
+                ],
+                "customer_id": "cust_01",
+                "window": {
+                  "day": "Tue",
+                  "slot": "morning"
+                }
+              },
+              "name": "update_repot_visit",
+              "requestor": "assistant"
+            },
+            "action_match": true,
+            "action_reward": 1.0
+          },
+          {
+            "action": {
+              "action_id": "1_3",
+              "arguments": {
+                "customer_id": "cust_01",
+                "delivery": {
+                  "day": "Tue",
+                  "note": "with repot"
+                },
+                "items": [
+                  {
+                    "batch_id": "batch_01",
+                    "quantity": 6
+                  }
+                ]
+              },
+              "name": "modify_nursery_order",
+              "requestor": "assistant"
+            },
+            "action_match": true,
+            "action_reward": 1.0
+          },
+          {
+            "action": {
+              "action_id": "1_4",
+              "arguments": {
+                "customer_id": "cust_01",
+                "plan": {
+                  "batch_id": "batch_01",
+                  "steps": [
+                    {
+                      "action": "water",
+                      "day": "Tue"
+                    },
+                    {
+                      "action": "feed",
+                      "day": "Fri"
+                    }
+                  ]
+                }
+              },
+              "name": "update_care_plan",
+              "requestor": "assistant"
+            },
+            "action_match": true,
+            "action_reward": 1.0
+          }
+        ],
+        "db_check": {
+          "db_match": true,
+          "db_reward": 1.0
+        },
+        "env_assertions": [],
+        "reward": 1.0
+      },
+      "seed": 7,
+      "start_time": "2026-03-10T09:00:00",
+      "task_id": "1",
+      "termination_reason": "completed",
+      "timestamp": "2026-03-10T09:00:00",
+      "trial": 0,
+      "user_cost": 0.005
+    },
+    {
+      "agent_cost": 0.01,
+      "duration": 600.0,
+      "end_time": "2026-03-10T09:20:00",
+      "id": "nursim02",
+      "messages": [
+        {
+          "content": "Hello! What do you need today?",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:12:00",
+          "tool_calls": [],
+          "turn_idx": 0
+        },
+        {
+          "content": "Want batch_02.",
+          "role": "user",
+          "timestamp": "2026-03-10T09:12:01",
+          "turn_idx": 1
+        },
+        {
+          "content": "Sure. What is your email?",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:12:02",
+          "tool_calls": [],
+          "turn_idx": 2
+        },
+        {
+          "content": "taylor.reed@example.org",
+          "role": "user",
+          "timestamp": "2026-03-10T09:12:03",
+          "turn_idx": 3
+        },
+        {
+          "content": "Thanks, looking that up.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:12:04",
+          "tool_calls": [
+            {
+              "arguments": {
+                "email": "taylor.reed@example.org"
+              },
+              "id": "call_b2_01",
+              "name": "find_customer_id_by_email",
+              "requestor": "assistant"
+            }
+          ],
+          "turn_idx": 4
+        },
+        {
+          "content": "{\"customer_id\": \"cust_02\"}",
+          "error": false,
+          "id": "call_b2_01",
+          "requestor": "assistant",
+          "role": "tool",
+          "timestamp": "2026-03-10T09:12:05",
+          "turn_idx": 5
+        },
+        {
+          "content": "Found you. Checking the batch now.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:12:06",
+          "tool_calls": [
+            {
+              "arguments": {
+                "batch_id": "batch_02"
+              },
+              "id": "call_b2_02",
+              "name": "get_batch_details",
+              "requestor": "assistant"
+            }
+          ],
+          "turn_idx": 6
+        },
+        {
+          "content": "{\"batch_id\": \"batch_02\", \"count\": 12, \"kind\": \"herb\", \"quarantine\": true, \"species\": \"sweet basil\"}",
+          "error": false,
+          "id": "call_b2_02",
+          "requestor": "assistant",
+          "role": "tool",
+          "timestamp": "2026-03-10T09:12:07",
+          "turn_idx": 7
+        },
+        {
+          "content": "Batch batch_02 is under quarantine, so I cannot sell it. Batch batch_01 is the same kind and healthy. Want that instead?",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:12:08",
+          "tool_calls": [],
+          "turn_idx": 8
+        },
+        {
+          "content": "Fine. Six of batch_01.",
+          "role": "user",
+          "timestamp": "2026-03-10T09:12:09",
+          "turn_idx": 9
+        },
+        {
+          "content": "Placing that order.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:12:10",
+          "tool_calls": [
+            {
+              "arguments": {
+                "customer_id": "cust_02",
+                "delivery": {
+                  "day": "Wed",
+                  "note": "leave at door"
+                },
+                "items": [
+                  {
+                    "batch_id": "batch_01",
+                    "quantity": 6
+                  }
+                ]
+              },
+              "id": "call_b2_03",
+              "name": "modify_nursery_order",
+              "requestor": "assistant"
+            }
+          ],
+          "turn_idx": 10
+        },
+        {
+          "content": "{\"customer_id\": \"cust_02\", \"items\": [{\"batch_id\": \"batch_01\", \"quantity\": 6}], \"order_id\": \"order_02\"}",
+          "error": false,
+          "id": "call_b2_03",
+          "requestor": "assistant",
+          "role": "tool",
+          "timestamp": "2026-03-10T09:12:11",
+          "turn_idx": 11
+        },
+        {
+          "content": "Done. Six of batch_01 arrive Wednesday.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:12:12",
+          "tool_calls": [],
+          "turn_idx": 12
+        }
+      ],
+      "reward_info": {
+        "action_checks": [
+          {
+            "action": {
+              "action_id": "2_0",
+              "arguments": {
+                "email": "taylor.reed@example.org"
+              },
+              "name": "find_customer_id_by_email",
+              "requestor": "assistant"
+            },
+            "action_match": true,
+            "action_reward": 1.0
+          },
+          {
+            "action": {
+              "action_id": "2_1",
+              "arguments": {
+                "batch_id": "batch_02"
+              },
+              "name": "get_batch_details",
+              "requestor": "assistant"
+            },
+            "action_match": true,
+            "action_reward": 1.0
+          },
+          {
+            "action": {
+              "action_id": "2_2",
+              "arguments": {
+                "customer_id": "cust_02",
+                "delivery": {
+                  "day": "Wed",
+                  "note": "leave at door"
+                },
+                "items": [
+                  {
+                    "batch_id": "batch_01",
+                    "quantity": 6
+                  }
+                ]
+              },
+              "name": "modify_nursery_order",
+              "requestor": "assistant"
+            },
+            "action_match": true,
+            "action_reward": 1.0
+          }
+        ],
+        "db_check": {
+          "db_match": true,
+          "db_reward": 1.0
+        },
+        "env_assertions": [],
+        "reward": 1.0
+      },
+      "seed": 7,
+      "start_time": "2026-03-10T09:00:00",
+      "task_id": "2",
+      "termination_reason": "completed",
+      "timestamp": "2026-03-10T09:00:00",
+      "trial": 0,
+      "user_cost": 0.005
+    },
+    {
+      "agent_cost": 0.01,
+      "duration": 600.0,
+      "end_time": "2026-03-10T09:20:00",
+      "id": "nursim03",
+      "messages": [
+        {
+          "content": "Hello! What do you need today?",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:14:00",
+          "tool_calls": [],
+          "turn_idx": 0
+        },
+        {
+          "content": "Repot booking for batch_03.",
+          "role": "user",
+          "timestamp": "2026-03-10T09:14:01",
+          "turn_idx": 1
+        },
+        {
+          "content": "Sure. What is your email?",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:14:02",
+          "tool_calls": [],
+          "turn_idx": 2
+        },
+        {
+          "content": "jordan.vale@example.org",
+          "role": "user",
+          "timestamp": "2026-03-10T09:14:03",
+          "turn_idx": 3
+        },
+        {
+          "content": "Thanks, looking that up.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:14:04",
+          "tool_calls": [
+            {
+              "arguments": {
+                "email": "jordan.vale@example.org"
+              },
+              "id": "call_b3_01",
+              "name": "find_customer_id_by_email",
+              "requestor": "assistant"
+            }
+          ],
+          "turn_idx": 4
+        },
+        {
+          "content": "{\"customer_id\": \"cust_03\"}",
+          "error": false,
+          "id": "call_b3_01",
+          "requestor": "assistant",
+          "role": "tool",
+          "timestamp": "2026-03-10T09:14:05",
+          "turn_idx": 5
+        },
+        {
+          "content": "Found you. Checking the batch now.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:14:06",
+          "tool_calls": [
+            {
+              "arguments": {
+                "batch_id": "batch_03"
+              },
+              "id": "call_b3_02",
+              "name": "get_batch_details",
+              "requestor": "assistant"
+            }
+          ],
+          "turn_idx": 6
+        },
+        {
+          "content": "{\"batch_id\": \"batch_03\", \"count\": 25, \"kind\": \"vegetable\", \"quarantine\": false, \"species\": \"cherry tomato\"}",
+          "error": false,
+          "id": "call_b3_02",
+          "requestor": "assistant",
+          "role": "tool",
+          "timestamp": "2026-03-10T09:14:07",
+          "turn_idx": 7
+        },
+        {
+          "content": "Batch batch_03 looks good. Which day suits you?",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:14:08",
+          "tool_calls": [],
+          "turn_idx": 8
+        },
+        {
+          "content": "Fri afternoon.",
+          "role": "user",
+          "timestamp": "2026-03-10T09:14:09",
+          "turn_idx": 9
+        },
+        {
+          "content": "Booking that.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:14:10",
+          "tool_calls": [
+            {
+              "arguments": {
+                "batches": [
+                  {
+                    "batch_id": "batch_03",
+                    "pots": 4
+                  }
+                ],
+                "customer_id": "cust_03",
+                "window": {
+                  "day": "Fri",
+                  "slot": "afternoon"
+                }
+              },
+              "id": "call_b3_03",
+              "name": "update_repot_visit",
+              "requestor": "assistant"
+            }
+          ],
+          "turn_idx": 10
+        },
+        {
+          "content": "{\"booking_id\": \"booking_02\", \"customer_id\": \"cust_03\", \"window\": {\"day\": \"Fri\", \"slot\": \"afternoon\"}}",
+          "error": false,
+          "id": "call_b3_03",
+          "requestor": "assistant",
+          "role": "tool",
+          "timestamp": "2026-03-10T09:14:11",
+          "turn_idx": 11
+        },
+        {
+          "content": "Done. See you Friday afternoon.",
+          "role": "assistant",
+          "timestamp": "2026-03-10T09:14:12",
+          "tool_calls": [],
+          "turn_idx": 12
+        }
+      ],
+      "reward_info": {
+        "action_checks": [
+          {
+            "action": {
+              "action_id": "3_0",
+              "arguments": {
+                "email": "jordan.vale@example.org"
+              },
+              "name": "find_customer_id_by_email",
+              "requestor": "assistant"
+            },
+            "action_match": true,
+            "action_reward": 1.0
+          },
+          {
+            "action": {
+              "action_id": "3_1",
+              "arguments": {
+                "batch_id": "batch_03"
+              },
+              "name": "get_batch_details",
+              "requestor": "assistant"
+            },
+            "action_match": true,
+            "action_reward": 1.0
+          },
+          {
+            "action": {
+              "action_id": "3_2",
+              "arguments": {
+                "batches": [
+                  {
+                    "batch_id": "batch_03",
+                    "pots": 4
+                  }
+                ],
+                "customer_id": "cust_03",
+                "window": {
+                  "day": "Fri",
+                  "slot": "afternoon"
+                }
+              },
+              "name": "update_repot_visit",
+              "requestor": "assistant"
+            },
+            "action_match": true,
+            "action_reward": 1.0
+          }
+        ],
+        "db_check": {
+          "db_match": true,
+          "db_reward": 1.0
+        },
+        "env_assertions": [],
+        "reward": 1.0
+      },
+      "seed": 7,
+      "start_time": "2026-03-10T09:00:00",
+      "task_id": "3",
+      "termination_reason": "completed",
+      "timestamp": "2026-03-10T09:00:00",
+      "trial": 0,
+      "user_cost": 0.005
+    }
+  ],
+  "tasks": [
+    {
+      "description": {
+        "notes": null,
+        "purpose": null,
+        "relevant_policies": null
+      },
+      "evaluation_criteria": {
+        "actions": [
+          {
+            "action_id": "1_0",
+            "arguments": {
+              "email": "morgan.ash@example.org"
+            },
+            "info": null,
+            "name": "find_customer_id_by_email"
+          },
+          {
+            "action_id": "1_1",
+            "arguments": {
+              "batch_id": "batch_01"
+            },
+            "info": null,
+            "name": "get_batch_details"
+          },
+          {
+            "action_id": "1_2",
+            "arguments": {
+              "batches": [
+                {
+                  "batch_id": "batch_01",
+                  "pots": 6
+                }
+              ],
+              "customer_id": "cust_01",
+              "window": {
+                "day": "Tue",
+                "slot": "morning"
+              }
+            },
+            "info": null,
+            "name": "update_repot_visit"
+          },
+          {
+            "action_id": "1_3",
+            "arguments": {
+              "customer_id": "cust_01",
+              "delivery": {
+                "day": "Tue",
+                "note": "with repot"
+              },
+              "items": [
+                {
+                  "batch_id": "batch_01",
+                  "quantity": 6
+                }
+              ]
+            },
+            "info": null,
+            "name": "modify_nursery_order"
+          },
+          {
+            "action_id": "1_4",
+            "arguments": {
+              "customer_id": "cust_01",
+              "plan": {
+                "batch_id": "batch_01",
+                "steps": [
+                  {
+                    "action": "water",
+                    "day": "Tue"
+                  },
+                  {
+                    "action": "feed",
+                    "day": "Fri"
+                  }
+                ]
+              }
+            },
+            "info": null,
+            "name": "update_care_plan"
+          }
+        ]
+      },
+      "id": "1",
+      "initial_state": null,
+      "ticket": null,
+      "user_scenario": {
+        "instructions": {
+          "domain": "nursery",
+          "known_info": "You are Morgan Ash and your email is morgan.ash@example.org.",
+          "reason_for_call": "You keep a multi-step visit in one call: book a repot for batch_01, order six more of it, and set its care plan.",
+          "task_instructions": "Answer in short turns and confirm each step when asked.",
+          "unknown_info": "You do not know the booking or order numbers."
+        },
+        "persona": null
+      }
+    },
+    {
+      "description": {
+        "notes": null,
+        "purpose": null,
+        "relevant_policies": null
+      },
+      "evaluation_criteria": {
+        "actions": [
+          {
+            "action_id": "2_0",
+            "arguments": {
+              "email": "taylor.reed@example.org"
+            },
+            "info": null,
+            "name": "find_customer_id_by_email"
+          },
+          {
+            "action_id": "2_1",
+            "arguments": {
+              "batch_id": "batch_02"
+            },
+            "info": null,
+            "name": "get_batch_details"
+          },
+          {
+            "action_id": "2_2",
+            "arguments": {
+              "customer_id": "cust_02",
+              "delivery": {
+                "day": "Wed",
+                "note": "leave at door"
+              },
+              "items": [
+                {
+                  "batch_id": "batch_01",
+                  "quantity": 6
+                }
+              ]
+            },
+            "info": null,
+            "name": "modify_nursery_order"
+          }
+        ]
+      },
+      "id": "2",
+      "initial_state": null,
+      "ticket": null,
+      "user_scenario": {
+        "instructions": {
+          "domain": "nursery",
+          "known_info": "You are Taylor Reed and your email is taylor.reed@example.org.",
+          "reason_for_call": "You ask for batch_02, learn it is quarantined, and take batch_01 instead.",
+          "task_instructions": "Answer in short turns and accept the healthy batch.",
+          "unknown_info": "You do not know which batches are quarantined."
+        },
+        "persona": null
+      }
+    },
+    {
+      "description": {
+        "notes": null,
+        "purpose": null,
+        "relevant_policies": null
+      },
+      "evaluation_criteria": {
+        "actions": [
+          {
+            "action_id": "3_0",
+            "arguments": {
+              "email": "jordan.vale@example.org"
+            },
+            "info": null,
+            "name": "find_customer_id_by_email"
+          },
+          {
+            "action_id": "3_1",
+            "arguments": {
+              "batch_id": "batch_03"
+            },
+            "info": null,
+            "name": "get_batch_details"
+          },
+          {
+            "action_id": "3_2",
+            "arguments": {
+              "batches": [
+                {
+                  "batch_id": "batch_03",
+                  "pots": 4
+                }
+              ],
+              "customer_id": "cust_03",
+              "window": {
+                "day": "Fri",
+                "slot": "afternoon"
+              }
+            },
+            "info": null,
+            "name": "update_repot_visit"
+          }
+        ]
+      },
+      "id": "3",
+      "initial_state": null,
+      "ticket": null,
+      "user_scenario": {
+        "instructions": {
+          "domain": "nursery",
+          "known_info": "You are Jordan Vale and your email is jordan.vale@example.org.",
+          "reason_for_call": "You only need a repot booking for batch_03 on Friday afternoon.",
+          "task_instructions": "Answer in short turns and confirm when asked.",
+          "unknown_info": "You do not know the booking numbers."
+        },
+        "persona": null
+      }
+    }
+  ],
+  "timestamp": "2026-03-10T09:00:00"
+}
