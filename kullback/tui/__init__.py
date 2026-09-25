@@ -217,7 +217,30 @@ def live_heartbeats(workdir: Any) -> list[dict]:
     enough. Paths are compared absolute, the form heartbeat.beat writes."""
     from kullback.runner import heartbeat
 
-    return heartbeat.live(workdir)
+    here = Path(workdir).expanduser().absolute()
+    return [r for r in heartbeat.read_all()
+            if Path(str(r.get("workdir"))).expanduser().absolute() == here
+            and r.get("status") == "running" and heartbeat.alive(r.get("pid"))]
+
+
+#: Heartbeat statuses after which a build runs no more steps (heartbeat.beat writes them).
+TERMINAL_STATUSES = ("done", "failed")
+
+
+def _build_end(workdir: Any, pid: Any) -> Optional[str]:
+    """This build's terminal heartbeat status, or None while it may still run.
+
+    Watchers follow the pid, which outlives the build when another screen started it; the final
+    beat says done or failed instead."""
+    from kullback.runner import heartbeat
+
+    here = Path(workdir).expanduser().absolute()
+    for record in heartbeat.read_all():
+        if (Path(str(record.get("workdir"))).expanduser().absolute() == here
+                and str(record.get("pid")) == str(pid)
+                and record.get("status") in TERMINAL_STATUSES):
+            return str(record.get("status"))
+    return None
 
 
 def in_flight(workdir: Any) -> Optional[str]:
@@ -919,7 +942,7 @@ class Screen:
             try:
                 # The pid alone never ends this: a build another screen started carries that
                 # screen's pid, which outlives the build. Its final beat says done or failed.
-                while heartbeat.alive(pid) and heartbeat.terminal_status(self.workdir, pid) is None:
+                while heartbeat.alive(pid) and _build_end(self.workdir, pid) is None:
                     time.sleep(every_seconds)
                     lines, offset, mtime = since(offset, mtime, False)
                     recent = (recent + lines)[-FEED_LINES:]
@@ -929,7 +952,7 @@ class Screen:
                 live.update(shown(recent))
             except KeyboardInterrupt:
                 pass
-        end = heartbeat.terminal_status(self.workdir, pid)
+        end = _build_end(self.workdir, pid)
         if end is not None:
             self.console.print(Text(f"  build {end}; the build is untouched", style="dim"))
         else:

@@ -966,9 +966,9 @@ def test_steer_prints_the_ack_of_the_live_build_that_took_the_request(tmp_path):
 
 
 def test_steer_with_several_live_builds_and_no_session_refuses_and_lists_them(tmp_path, monkeypatch):
-    from kullback.runner import heartbeat
+    import kullback.tui as tui
 
-    monkeypatch.setattr(heartbeat, "live", lambda workdir: [
+    monkeypatch.setattr(tui, "live_heartbeats", lambda workdir: [
         {"pid": 41, "model": "m/one", "status": "running"},
         {"pid": 42, "model": "m/two", "status": "running"}])
     result = runner.invoke(cli.app, ["steer", str(tmp_path), "stop"])

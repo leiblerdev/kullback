@@ -68,34 +68,6 @@ def beat(workdir: Any, model: Optional[str], status: str, **extra: Any) -> Path:
     return path
 
 
-#: A heartbeat status after which the build runs no more steps. Watchers follow the pid, which
-#: outlives the build when another screen started it, so they end on these instead.
-TERMINAL_STATUSES = ("done", "failed")
-
-
-def terminal_status(workdir: Any, pid: Any) -> Optional[str]:
-    """This build's terminal status, or None while it may still run."""
-    here = Path(workdir).expanduser().absolute()
-    for record in read_all():
-        if (Path(str(record.get("workdir"))).expanduser().absolute() == here
-                and str(record.get("pid")) == str(pid)
-                and record.get("status") in TERMINAL_STATUSES):
-            return str(record.get("status"))
-    return None
-
-
-def live(workdir: Any) -> list[dict[str, Any]]:
-    """The heartbeats of builds running now on this workdir, newest first.
-
-    Running means the pid is alive and the heartbeat still says running: a build its screen ran
-    leaves a heartbeat whose pid (the screen's own) outlives the build, so the pid alone is not
-    enough. Paths are compared absolute, the form heartbeat.beat writes."""
-    here = Path(workdir).expanduser().absolute()
-    return [record for record in read_all()
-            if Path(str(record.get("workdir"))).expanduser().absolute() == here
-            and record.get("status") == "running" and alive(record.get("pid"))]
-
-
 class Pulse:
     """Rewrites one build's heartbeat every few seconds for as long as the build runs.
 

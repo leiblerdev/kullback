@@ -1274,8 +1274,10 @@ def steer(
         typer.echo(f"steer takes nudge, tell or stop, not {kind}")
         raise typer.Exit(2)
     steer_mod = importlib.import_module("kullback.agent.steer")
+    from kullback.tui import live_heartbeats
+
     try:
-        target = steer_mod.target_session(heartbeat.live(workdir), session)
+        target = steer_mod.target_session(live_heartbeats(workdir), session)
     except ValueError as exc:
         typer.echo(str(exc))
         raise typer.Exit(1) from None
