@@ -34,6 +34,14 @@ def isolated_sessions_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_auth_file(tmp_path, monkeypatch):
+    """No test reads or writes the real ~/.kullback/auth.json. Remembered keys are loaded by
+    live_model and by both entries that open the screen, so without this a developer's own
+    remembered keys leak into any test that reaches them."""
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+
+
+@pytest.fixture(autouse=True)
 def isolated_price_catalog(tmp_path, monkeypatch):
     """No test reads or writes the real ~/.cache/harness/models.dev.json snapshot, for prices or
     for the provider registry, and every test starts with budget's price-catalog cache unloaded
