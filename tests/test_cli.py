@@ -953,7 +953,9 @@ def test_steer_prints_the_ack_of_the_live_build_that_took_the_request(tmp_path):
     from kullback.agent.harness import AgentHarness
     from kullback.agent.steer import SteerBridge
     from kullback.ai.provider import TestModel
+    from kullback.runner import heartbeat
 
+    heartbeat.beat(tmp_path, "m/one", "running")
     bridge = SteerBridge(AgentHarness(TestModel([])), tmp_path / "bus.jsonl", poll_seconds=0.02).start()
     try:
         result = runner.invoke(cli.app, ["steer", str(tmp_path), "tell", "then report", "--timeout", "3"])
@@ -961,6 +963,17 @@ def test_steer_prints_the_ack_of_the_live_build_that_took_the_request(tmp_path):
         bridge.close()
     assert result.exit_code == 0, result.output
     assert result.output.strip() == "tell queued: delivered when the run would otherwise stop"
+
+
+def test_steer_with_several_live_builds_and_no_session_refuses_and_lists_them(tmp_path, monkeypatch):
+    from kullback.runner import heartbeat
+
+    monkeypatch.setattr(heartbeat, "live", lambda workdir: [
+        {"pid": 41, "model": "m/one", "status": "running"},
+        {"pid": 42, "model": "m/two", "status": "running"}])
+    result = runner.invoke(cli.app, ["steer", str(tmp_path), "stop"])
+    assert result.exit_code == 1
+    assert "pid 41" in result.output and "pid 42" in result.output
 
 
 def test_steer_names_the_kinds_it_takes_when_given_another(tmp_path):

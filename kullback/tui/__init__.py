@@ -217,10 +217,7 @@ def live_heartbeats(workdir: Any) -> list[dict]:
     enough. Paths are compared absolute, the form heartbeat.beat writes."""
     from kullback.runner import heartbeat
 
-    here = Path(workdir).expanduser().absolute()
-    return [r for r in heartbeat.read_all()
-            if Path(str(r.get("workdir"))).expanduser().absolute() == here
-            and r.get("status") == "running" and heartbeat.alive(r.get("pid"))]
+    return heartbeat.live(workdir)
 
 
 def in_flight(workdir: Any) -> Optional[str]:
@@ -1192,13 +1189,23 @@ class Screen:
     def _steer_remote(self, kind: str, text: str = "") -> bool:
         """Steer a live build on this workdir that another process runs, through its bus.
 
-        False when there is none, so the caller refuses as before. The screen waits for the
-        build's ack, up to `steer_timeout` seconds, and prints what it said."""
-        if self.running() or not live_heartbeats(self.workdir):
+        False when there is none, so the caller refuses as before. The request names the live
+        build's session, so a second build on the same workdir never acts on it; with several
+        live the refusal lists them. The screen waits for the build's ack, up to `steer_timeout`
+        seconds, and prints what it said."""
+        if self.running():
+            return False
+        live = live_heartbeats(self.workdir)
+        if not live:
             return False
         from kullback.agent import steer
 
-        request_id = steer.request(self.workdir, kind, text, sender="screen")
+        try:
+            session = steer.target_session(live)
+        except ValueError as exc:
+            self.console.print(Text(str(exc), style="red"))
+            return True
+        request_id = steer.request(self.workdir, kind, text, sender="screen", session=session)
         ack = steer.wait_for_ack(self.workdir, request_id, self.steer_timeout)
         if ack is None:
             self.console.print(Text(f"sent {kind} to the live build; no answer within "

@@ -1260,18 +1260,26 @@ def steer(
                                         "stop) or stop (at the next step)."),
     text: str = typer.Argument("", help="What to tell the Builder; stop takes none."),
     timeout: float = typer.Option(30.0, "--timeout", help="Seconds to wait for the build's answer."),
+    session: str = typer.Option("", "--session", help="The session to steer (its pid) when several "
+                                "builds share the workdir; names the only live build itself."),
 ):
     """Steer a live build from any process: the request goes on the workdir's bus and the build answers.
 
     The build, wherever it was started, reads the request, queues it on its harness and writes an
     ack beside it; this command prints that ack. No ack within the timeout means no live build is
-    reading that bus.
+    reading that bus. The request names the live build's session, so a second build on the same
+    workdir never acts on it; with several live and no session named, this refuses and lists them.
     """
     if kind not in STEER_KINDS:
         typer.echo(f"steer takes nudge, tell or stop, not {kind}")
         raise typer.Exit(2)
     steer_mod = importlib.import_module("kullback.agent.steer")
-    request_id = steer_mod.request(workdir, kind, text, sender="kullback steer")
+    try:
+        target = steer_mod.target_session(heartbeat.live(workdir), session)
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from None
+    request_id = steer_mod.request(workdir, kind, text, sender="kullback steer", session=target)
     ack = steer_mod.wait_for_ack(workdir, request_id, timeout)
     if ack is None:
         typer.echo(f"No live build answered in {workdir} within {timeout:g} seconds, so nothing was "
@@ -1280,7 +1288,6 @@ def steer(
     typer.echo(f"{kind} {STEER_OUTCOMES[ack.outcome]}" + (f": {ack.reason}" if ack.reason else ""))
     if ack.outcome == "refused":
         raise typer.Exit(1)
-
 
 @app.command()
 def events(

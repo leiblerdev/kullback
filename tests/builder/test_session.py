@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -387,7 +388,8 @@ def test_a_build_is_steerable_through_its_bus_from_outside_the_caller(tmp_path):
 
     def on_event(event):
         if event.type == "tool_execution_start" and not acks:
-            acks.append(steer.wait_for_ack(root, steer.request(root, "nudge", "Read the schema next."), 5))
+            acks.append(steer.wait_for_ack(root, steer.request(root, "nudge", "Read the schema next.",
+                                                               session=str(os.getpid())), 5))
 
     session_mod.build(root, model, subscribers=[on_event])
     assert acks[0] is not None and acks[0].outcome == "queued"
@@ -405,7 +407,8 @@ def test_a_stop_through_the_bus_after_a_run_ended_starts_no_continuation(tmp_pat
 
     def on_event(event):
         if event.type == "agent_end" and not acks:
-            acks.append(steer.wait_for_ack(root, steer.request(root, "stop"), 5))
+            acks.append(steer.wait_for_ack(root, steer.request(root, "stop",
+                                                               session=str(os.getpid())), 5))
 
     result = session_mod.build(root, model, subscribers=[on_event])
     assert acks[0] is not None and acks[0].outcome == "cancel_asked"

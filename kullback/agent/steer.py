@@ -12,6 +12,7 @@ and needs no port. This module imports only the agent core and the standard libr
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -21,7 +22,7 @@ from typing import Any, Optional, Union
 from kullback.agent.bus import Bus
 from kullback.agent.events import SteerAckEvent, SteerRequestEvent
 
-__all__ = ["BUS_FILE", "SteerBridge", "request", "wait_for_ack"]
+__all__ = ["BUS_FILE", "SteerBridge", "request", "target_session", "wait_for_ack"]
 
 BUS_FILE = "bus.jsonl"
 
@@ -29,14 +30,34 @@ BUS_FILE = "bus.jsonl"
 # what was appended after the request instead of the whole log.
 _SENT: dict[str, tuple[Bus, int]] = {}
 
-
-def request(workdir: Union[str, Path], kind: str, text: str = "", sender: str = "") -> str:
+def request(workdir: Union[str, Path], kind: str, text: str = "", sender: str = "",
+            session: str = "") -> str:
     """Append one steer request to the workdir's bus and return its id."""
     request_id = uuid.uuid4().hex[:12]
     bus = Bus(Path(workdir) / BUS_FILE, agent=sender or "steer")
-    record = bus.append(SteerRequestEvent(id=request_id, kind=kind, text=text, sender=sender))
+    record = bus.append(SteerRequestEvent(id=request_id, kind=kind, text=text, sender=sender,
+                                          session=session))
     _SENT[request_id] = (bus, record.seq)
     return request_id
+
+
+def target_session(live: list[dict], session: str = "") -> str:
+    """The session a sender's request names: the named one, or the only live build's pid.
+
+    A build is steered through the bus it shares with any other build on its workdir, so an
+    unnamed request with several live builds names no one build; refuse, listing them, rather
+    than steering every build. With none live the request goes unnamed, and the wait for its
+    ack says no live build answered.
+    """
+    if session:
+        return session
+    if len(live) == 1:
+        return str(live[0].get("pid"))
+    if not live:
+        return ""
+    listing = ", ".join(f"pid {record.get('pid')} ({record.get('model') or 'no model'})"
+                        for record in live)
+    raise ValueError(f"more than one live build ({listing}): name the session to steer")
 
 
 def wait_for_ack(workdir: Union[str, Path], request_id: str, timeout: float,
@@ -58,13 +79,18 @@ class SteerBridge:
 
     It follows the bus from its end when started, so a request left on the log by an earlier build
     is never replayed into this one. An empty nudge or tell is refused rather than queued, because
-    an empty user turn would only confuse the model.
+    an empty user turn would only confuse the model. The bridge acts only on requests naming its
+    own session (its pid by default): two builds on one workdir share one bus, and one stop must
+    never cancel both. Anything for another session is left for that build's own bridge, silently,
+    so the sender waits on the one ack of the build it named.
     """
 
-    def __init__(self, harness: Any, bus_path: Union[str, Path], poll_seconds: float = 0.25):
+    def __init__(self, harness: Any, bus_path: Union[str, Path], poll_seconds: float = 0.25,
+                 session: Optional[str] = None):
         self.harness = harness
         self.bus_path = Path(bus_path)
         self.poll_seconds = poll_seconds
+        self.session = session if session is not None else str(os.getpid())
         self._acks = Bus(self.bus_path, agent="steer")
         self._stop = threading.Event()
         self._stop_asked = threading.Event()
@@ -96,12 +122,17 @@ class SteerBridge:
         for record in records:
             event = record.event
             if isinstance(event, SteerRequestEvent):
-                self._acks.append(self._take(event))
+                ack = self._take(event)
+                if ack is not None:
+                    self._acks.append(ack)
 
-    def _take(self, event: SteerRequestEvent) -> SteerAckEvent:
+    def _take(self, event: SteerRequestEvent) -> Optional[SteerAckEvent]:
         def ack(outcome: str, reason: str = "") -> SteerAckEvent:
-            return SteerAckEvent(id=event.id, kind=event.kind, outcome=outcome, reason=reason)
+            return SteerAckEvent(id=event.id, kind=event.kind, outcome=outcome, reason=reason,
+                                 session=self.session)
 
+        if event.session != self.session:
+            return None
         if event.kind == "stop":
             self._stop_asked.set()
             self.harness.cancel()

@@ -84,6 +84,18 @@ def terminal_status(workdir: Any, pid: Any) -> Optional[str]:
     return None
 
 
+def live(workdir: Any) -> list[dict[str, Any]]:
+    """The heartbeats of builds running now on this workdir, newest first.
+
+    Running means the pid is alive and the heartbeat still says running: a build its screen ran
+    leaves a heartbeat whose pid (the screen's own) outlives the build, so the pid alone is not
+    enough. Paths are compared absolute, the form heartbeat.beat writes."""
+    here = Path(workdir).expanduser().absolute()
+    return [record for record in read_all()
+            if Path(str(record.get("workdir"))).expanduser().absolute() == here
+            and record.get("status") == "running" and alive(record.get("pid"))]
+
+
 class Pulse:
     """Rewrites one build's heartbeat every few seconds for as long as the build runs.
 

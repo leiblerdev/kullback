@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from pydantic import BaseModel, ConfigDict
 
 import kullback
@@ -76,7 +77,8 @@ def test_a_nudge_sent_from_another_process_reaches_the_running_harness_before_th
     bridge = steer.SteerBridge(harness, tmp_path / "bus.jsonl", poll_seconds=0.02).start()
     text = "nudge from another process"
     code = ("import sys; from kullback.agent import steer; "
-            f"rid = steer.request({str(tmp_path)!r}, 'nudge', {text!r}, sender='second screen'); "
+            f"rid = steer.request({str(tmp_path)!r}, 'nudge', {text!r}, sender='second screen', "
+            f"session={str(os.getpid())!r}); "
             "ack = steer.wait_for_ack(" f"{str(tmp_path)!r}" ", rid, 4); "
             "sys.exit(0 if ack is not None and ack.outcome == 'queued' else 1)")
     env = {**os.environ, "PYTHONPATH": str(Path(kullback.__file__).parents[1])}
@@ -97,7 +99,8 @@ def test_a_tell_is_delivered_only_when_the_run_would_stop_and_is_acked(tmp_path)
     harness, model = _harness(tmp_path, 2, "done", "done after the tell")
     bridge = steer.SteerBridge(harness, tmp_path / "bus.jsonl", poll_seconds=0.02).start()
     text = "then write the report"
-    _on_first_tool(harness, lambda: steer.wait_for_ack(tmp_path, steer.request(tmp_path, "tell", text), 3))
+    _on_first_tool(harness, lambda: steer.wait_for_ack(tmp_path, steer.request(tmp_path, "tell", text,
+                                                                               session=str(os.getpid())), 3))
     try:
         collect(harness.prompt("build it"))
     finally:
@@ -111,7 +114,8 @@ def test_a_tell_is_delivered_only_when_the_run_would_stop_and_is_acked(tmp_path)
 def test_a_stop_cancels_the_run_at_its_next_step_and_is_acked(tmp_path):
     harness, model = _harness(tmp_path, 6, "done")
     bridge = steer.SteerBridge(harness, tmp_path / "bus.jsonl", poll_seconds=0.02).start()
-    _on_first_tool(harness, lambda: steer.wait_for_ack(tmp_path, steer.request(tmp_path, "stop"), 3))
+    _on_first_tool(harness, lambda: steer.wait_for_ack(tmp_path, steer.request(tmp_path, "stop",
+                                                                               session=str(os.getpid())), 3))
     try:
         collect(harness.prompt("build it"))
     finally:
@@ -121,11 +125,11 @@ def test_a_stop_cancels_the_run_at_its_next_step_and_is_acked(tmp_path):
 
 
 def test_a_request_already_on_the_bus_when_the_bridge_starts_is_not_replayed(tmp_path):
-    old = steer.request(tmp_path, "nudge", "left over from an earlier build")
+    old = steer.request(tmp_path, "nudge", "left over from an earlier build", session=str(os.getpid()))
     harness, model = _harness(tmp_path, 0, "done")
     bridge = steer.SteerBridge(harness, tmp_path / "bus.jsonl", poll_seconds=0.02).start()
     try:
-        fresh = steer.request(tmp_path, "nudge", "this build's own nudge")
+        fresh = steer.request(tmp_path, "nudge", "this build's own nudge", session=str(os.getpid()))
         assert steer.wait_for_ack(tmp_path, fresh, 3) is not None
         collect(harness.prompt("build it"))
     finally:
@@ -139,7 +143,8 @@ def test_an_empty_nudge_is_refused_with_a_reason_and_nothing_is_queued(tmp_path)
     harness, model = _harness(tmp_path, 0, "done")
     bridge = steer.SteerBridge(harness, tmp_path / "bus.jsonl", poll_seconds=0.02).start()
     try:
-        ack = steer.wait_for_ack(tmp_path, steer.request(tmp_path, "nudge", "  "), 3)
+        ack = steer.wait_for_ack(tmp_path, steer.request(tmp_path, "nudge", "  ",
+                                                         session=str(os.getpid())), 3)
     finally:
         bridge.close()
     assert ack is not None and ack.outcome == "refused" and ack.reason == "a nudge needs text"
@@ -148,3 +153,29 @@ def test_an_empty_nudge_is_refused_with_a_reason_and_nothing_is_queued(tmp_path)
 def test_waiting_for_an_ack_nobody_writes_gives_none_after_the_timeout(tmp_path):
     request_id = steer.request(tmp_path, "nudge", "anyone there")
     assert steer.wait_for_ack(tmp_path, request_id, 0.1) is None
+
+
+def test_a_request_for_another_session_is_ignored_by_this_bridge(tmp_path):
+    harness, model = _harness(tmp_path, 0, "done")
+    bridge = steer.SteerBridge(harness, tmp_path / "bus.jsonl", poll_seconds=0.02,
+                               session="s-one").start()
+    try:
+        other = steer.request(tmp_path, "nudge", "for the other build", session="s-two")
+        assert steer.wait_for_ack(tmp_path, other, 0.3) is None
+        own = steer.request(tmp_path, "nudge", "for this build", session="s-one")
+        assert steer.wait_for_ack(tmp_path, own, 3) is not None
+    finally:
+        bridge.close()
+    collect(harness.prompt("build it"))
+    assert _first_call_with(model, "for this build") == 0
+    assert _first_call_with(model, "for the other build") == -1
+    assert [(a.id, a.outcome) for a in _acks(tmp_path)] == [(own, "queued")]
+
+
+def test_target_session_names_the_only_live_build_and_refuses_on_several():
+    live = [{"pid": 41, "model": "m/one"}]
+    assert steer.target_session(live) == "41"
+    assert steer.target_session(live, session="7") == "7"
+    assert steer.target_session([]) == ""
+    with pytest.raises(ValueError, match="pid 41.*pid 42"):
+        steer.target_session([{"pid": 41, "model": "m/one"}, {"pid": 42, "model": "m/two"}])
