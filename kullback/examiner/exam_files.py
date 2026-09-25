@@ -137,6 +137,7 @@ class ExamRoot:
     reroll_model: Any = None
     probe_model: Any = None
     run_probe: Any = None
+    reroll_user: Any = None   # runners_for's agent-user factory, set only with --user-model
 
     @property
     def exam_dir(self) -> Path:

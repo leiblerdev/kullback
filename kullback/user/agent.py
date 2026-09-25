@@ -19,6 +19,7 @@ The object presents exactly the interface the Runner's loop asks of a Simulated 
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any, Callable, Iterable, Optional, Sequence
 
 from kullback.agent.bus import Bus
@@ -269,8 +270,36 @@ def _last_text(harness: AgentHarness) -> str:
                 if text:
                     said.append(text)
 
-    asyncio.run(go())
+    _run_to_end(go)
     return said[-1] if said else ""
+
+
+def _run_to_end(go: Callable[[], Any]) -> None:
+    """Run one turn's coroutine to its end, from sync code whether or not a loop is running.
+
+    The Runner's loop is sync and asks a turn of this user from inside whatever called it; the
+    Examiner's reroll tool is a coroutine, so there a loop is already running and `asyncio.run` would
+    refuse, every turn would fail, and every beat would go to the floor unseen. The turn then runs on
+    a thread of its own, which the caller waits for.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(go())
+        return
+    failed: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            asyncio.run(go())
+        except BaseException as error:  # handed back to the caller's thread
+            failed.append(error)
+
+    thread = threading.Thread(target=worker, name="agent-user-turn")
+    thread.start()
+    thread.join()
+    if failed:
+        raise failed[0]
 
 
 def run_user(ctx: TaskContext, fallback: Any, model: Optional[Model] = None, **kwargs) -> AgentUser:

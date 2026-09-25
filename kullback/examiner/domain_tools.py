@@ -947,8 +947,12 @@ def _reroll(root: ExamRoot):
                 stopped = True
                 break
             before = _ledger_usd(root.workdir)
+            # With --user-model the same agent user the derivation's re-rolls meet; off, no
+            # make_user is passed and the Run is the one it always was.
+            extra = ({"make_user": root.reroll_user(args.task_id)}
+                     if root.reroll_user is not None else {})
             reports = runner_tool.reroll(root.workdir, args.task_id, model, count=1,
-                                         workdir=root.workdir, first_seed=seed)
+                                         workdir=root.workdir, first_seed=seed, **extra)
             rows.extend(_reroll_row(report) for report in reports or [])
             price = max(_ledger_usd(root.workdir) - before, 0.0)
             spent += price

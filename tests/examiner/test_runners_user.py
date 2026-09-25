@@ -4,6 +4,7 @@ over that floor, priced under its own stage (D214)."""
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.examiner import runners as R
@@ -45,7 +46,7 @@ class _Router:
         self.state = StateView(BuiltEnvironment(root).db)
 
 
-def _user_turns(path: str) -> list[str]:
+def _user_turns(path: Any) -> list[str]:
     run = load_run_jsonl(path)
     return [str(event.payload.get("text")) for event in run.events if event.type == "user_turn"]
 
@@ -96,3 +97,44 @@ def test_the_agent_users_calls_are_priced_under_the_user_stage_and_never_the_run
     stages = budget.load_totals(root)["stages"]
     assert stages[R.USER_STAGE]["calls"] == len(user.calls)
     assert stages[R.RUNNER_STAGE]["calls"] - seeded == len(candidate.calls)
+
+
+# --- the Examiner's own reroll tool ----------------------------------------------------------------
+
+def _examiner_reroll(root: Path, user_model: Any) -> Any:
+    import asyncio
+
+    from kullback.examiner import domain_tools as D
+    from kullback.examiner.exam_files import ExamRoot
+    from kullback.runner.canon import CanonRules
+
+    runners = R.runners_for(root, reroll_model=_asking_candidate(), user_model=user_model)
+    exam = ExamRoot(workdir=root, reroll_model=_asking_candidate(), canon_rules=CanonRules(),
+                    reroll_user=runners["reroll_user"])
+    [tool] = [t for t in D.domain_tools(exam) if t.name == "reroll"]
+    return asyncio.run(tool.execute(D.RerollArgs(task_id="widget_task", count=1)))
+
+
+def _run_file(root: Path, run_id: str) -> Path:
+    return root / "runs" / f"{run_id}.jsonl"
+
+
+def test_with_the_switch_on_the_examiners_reroll_tool_meets_the_agent_user(tmp_path):
+    root = _exam_env(tmp_path / "env")
+    user = _user_model()
+    result = _examiner_reroll(root, user)
+    assert _user_turns(_run_file(root, result.runs[0]["run_id"]))[1] == ANSWER
+    assert budget.load_totals(root)["stages"][R.USER_STAGE]["calls"] == len(user.calls) > 0
+
+
+def test_with_the_switch_off_the_examiners_reroll_tool_is_the_run_it_always_was(tmp_path):
+    from kullback.runner import tool as runner_tool
+
+    root = _exam_env(tmp_path / "env")
+    assert R.runners_for(root, reroll_model=_asking_candidate())["reroll_user"] is None
+    result = _examiner_reroll(root, None)
+    before = _exam_env(tmp_path / "before")
+    [plain] = runner_tool.reroll(before, "widget_task", _asking_candidate(), count=1, workdir=before)
+    assert _user_turns(_run_file(root, result.runs[0]["run_id"])) == _user_turns(
+        _run_file(before, plain.run_id))
+    assert R.USER_STAGE not in budget.load_totals(root)["stages"]

@@ -171,8 +171,10 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None,
     (D123).
 
     `user_model` switches the re-rolls' users to the agent user over the rule floor, priced under
-    the user stage; without it every user is the rule-driven one, unchanged. The probe keeps the
-    rule-driven user either way.
+    the user stage; without it every user is the rule-driven one, unchanged. `reroll_user` is that
+    switch as a `reroll_user(task_id)(router)` factory for the Examiner's own reroll tool, None when
+    off. The probe keeps the rule-driven user either way: it tests the Verifier, and a model user
+    would add noise and spend there.
     """
     root = Path(workdir)
     reroll_model = _priced(reroll_model, root)
@@ -249,7 +251,8 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None,
         return runner_tool.write_runs_index(root)
 
     run_variant.write_runs_index = write_runs_index  # type: ignore[attr-defined]
-    return {"run_probe": run_probe, "run_rerolls": run_rerolls, "run_variant": run_variant}
+    return {"run_probe": run_probe, "run_rerolls": run_rerolls, "run_variant": run_variant,
+            "reroll_user": make_user if user_model is not None else None}
 
 
 __all__ = ["runners_for"]
