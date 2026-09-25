@@ -191,6 +191,20 @@ def test_map_refuses_to_overwrite_a_reader_without_force(tmp_path, workdir):
     assert target.read_text(encoding="utf-8") != sentinel
 
 
+def test_a_failing_map_leaves_the_sources_folder_unchanged(tmp_path, workdir):
+    """A map whose reader fails the isolated check writes nothing under sources."""
+    toy = _neutral_toy(tmp_path / "neutral.json")
+    folder = workdir / "sources"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "kept.py").write_text("sentinel text", encoding="utf-8")
+    refused = invoke("sources", "map", str(toy), "--name", "broken",
+                     "--recordings", "nope", "--role", "nope[].role",
+                     "--content", "nope[].content", "--workdir", str(workdir))
+    assert refused.exit_code == 1, refused.output
+    assert sorted(path.name for path in folder.iterdir()) == ["kept.py"]
+    assert (folder / "kept.py").read_text(encoding="utf-8") == "sentinel text"
+
+
 def test_build_passes_files_and_the_ceiling_through_to_the_session(workdir, fake_modules, tmp_path):
     target = tmp_path / "traces.json"
     target.write_text("[]", encoding="utf-8")

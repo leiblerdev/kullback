@@ -33,6 +33,8 @@ def draft_reader(file_path: str | Path, workdir: str | Path, model: Any, name: s
     written on a pass. Answers name, path (or None), passed, problems and
     calls made.
     """
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        raise ValueError(f"refusing reader name {name!r}: use letters, numbers, dash or underscore")
     target = Path(file_path)
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     summary = shape_summary(target)
@@ -104,11 +106,14 @@ def _contract() -> str:
         "name (a short format name), maps True, display, and methods detect, "
         "recordings, to_trace, environment and sidecar. Detect takes (document, "
         "jsonl) and returns (confidence, reasons), voting above zero only on files "
-        "with the mapped paths. Recordings yields one recording per entry. To_trace "
-        "takes (recording, ctx) with ctx.raw_hash, ctx.index, ctx.environment and "
         "ctx.ingest_version and returns a Trace whose turns carry role, content and "
         "a raw pointer into the file, and whose tool calls pair with their results "
-        "by id. Environment returns a dict and sidecar returns a dict. Every derived "
+        "by id, or by position where neither side carries ids and the counts match. "
+        "A call with no mapped result carries no result. Every role word must map "
+        "explicitly: a word equal to user, assistant, system or tool maps to itself, "
+        "any other word comes from an explicit map the reader carries, and to_trace "
+        "raises ValueError naming a word with no mapping. Environment returns a dict "
+        "and sidecar returns a dict. Every derived "
         "field cites the raw file through RawPtr, two runs map byte-identical, and "
         "no already mapped fixture file may change hands."
     )
