@@ -59,6 +59,7 @@ from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES
 from kullback.runner.canon import load_rules
 from kullback.runner.gate_support import _get, gate
 from kullback.runner.records import (
+    EXAM_DIR,
     GateResult,
     ProbePool,
     Run,
@@ -82,8 +83,19 @@ NO_POOL = "no_pool"
 # The Examiner's own re-roll rows (second-path batches), beside the workdir's re-roll file (D133).
 EXAMINER_REROLLS = ("examiner", "rerolls.json")
 RUNS_DIR = "runs"
-# The one refusal reason a finished Run does not overturn (reference_check.REFERENCE_WRONG).
-REFERENCE_WRONG = "reference_wrong"
+#: Why a Task waiting in the Reference pool is untrusted: no recording left standing to derive from.
+NEEDS_REFERENCE = "needs a Reference"
+#: The pool file under the exam folder, written by examiner.reference and read here; the name is
+#: owned here since gates never reach into the examiner.
+POOL_FILE = "reference_pool.json"
+
+
+def pooled_tasks(workdir: Any) -> list[str]:
+    """The sorted ids of the Tasks waiting on a Reference, or empty without a workdir."""
+    if workdir is None:
+        return []
+    body = read_json(Path(workdir) / EXAM_DIR / POOL_FILE, {}) or {}
+    return sorted(body) if isinstance(body, dict) else []
 
 
 def finished_runs(task_id: str, replays: dict, rerolls: dict) -> list[str]:
@@ -92,20 +104,13 @@ def finished_runs(task_id: str, replays: dict, rerolls: dict) -> list[str]:
 
 
 def refuse_gate(refusals: dict[str, dict], replays: dict, rerolls: dict) -> GateResult:
-    """A refusal is admitted only when no frontier Run of the Task finished; a failure names the Runs.
-
-    One reason is admitted whatever finished: `reference_wrong`, written when the Examiner rejected
-    every End state the Task's Runs reached (reference_check). The finished-Run rule exists because a
-    Run that finished is an answer the Task can be verified against, and here every such answer was
-    judged wrong, so a finished Run cannot rescue a Task whose only answer is wrong; keeping it would
-    leave a Verifier that encodes the wrong End state in the trusted count.
-    """
+    """A refusal is admitted only when no frontier Run of the Task finished; a failure names the Runs."""
     refused: list[str] = []
     rejected: list[str] = []
     failures: list[str] = []
     for task_id in sorted(refusals or {}):
         finished = finished_runs(task_id, replays, rerolls)
-        if finished and _reason_of(refusals[task_id]) != REFERENCE_WRONG:
+        if finished:
             rejected.append(task_id)
             failures.append(f"task {task_id}: the frontier finished it: {', '.join(finished)}")
         else:
@@ -253,7 +258,8 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
                  workdir: Any = None) -> GateResult:
     """A failure per Task with a Verifier that is not trusted, with the first reason that holds.
 
-    Given the workdir, the seeds of each accepted version are checked for provenance (D281).
+    Given the workdir, the seeds of each accepted version are checked for provenance (D281), and a
+    Task waiting in the Reference pool is untrusted for want of a Reference.
     """
     write_tools = write_tools_of(sigs)
     files = seed_files(workdir, replays, rerolls) if workdir is not None else {}
@@ -263,6 +269,7 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     legitimate = legitimate_runs(replays, rerolls, discarded_runs(task_status))
     admitted = refuse_gate(refusals, replays, rerolls).metrics["refused"]
     refused = {task_id: _reason_of((refusals or {})[task_id]) for task_id in admitted}
+    pooled = {task_id: NEEDS_REFERENCE for task_id in pooled_tasks(workdir)}
     trusted: list[str] = []
     untrusted: dict[str, str] = {}
     fractions: dict[str, Optional[float]] = {}
@@ -287,7 +294,9 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
             not_run[task_id] = skipped
         suite_passed = bool(_get(row, "verifier_passed", False))
         only_not_run = not suite_passed and _held_by_not_run(row, skipped)
-        if not suite_passed and not only_not_run:
+        if task_id in pooled:
+            reason = pooled[task_id]
+        elif not suite_passed and not only_not_run:
             reason = _suite_reason(row, skipped)
         elif passing:
             reason = f"probe {passing[0]} scores a pass"

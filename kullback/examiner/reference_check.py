@@ -14,9 +14,9 @@ whether the recordings agree, how the re-rolls fared against it, and the Builder
 to one exclusion file in the exam folder with the reason and the evidence line, and Reference
 choice runs again over the references.json row without it: the End state the recording reached is
 the answer being rejected, so every Run that reached the same End state goes with it, and the D111
-rule re-picks among what is left. A Task left with no End state to stand on is refused with
-`reference_wrong`, which the refuse gate admits even though frontier Runs finished, since a finished
-Run cannot rescue a Task whose only answer is wrong.
+rule re-picks among what is left. A Task left with no End state to stand on waits in the pool: it
+stays in the Environment, untrusted for want of a Reference, until a later Run reaches an End
+state nobody rejected, which the normal rule picks and which takes the Task out of the pool.
 
 A `builder_right` ruling on a note whose reason says the Reference's outcome is wrong calls the same
 move (domain_tools.rule_note), so a note the Examiner agrees with changes the Reference instead of
@@ -35,7 +35,6 @@ from kullback.examiner.exam_files import ExamRoot, reference_runs
 from kullback.examiner.reference import EXCLUSIONS_FILE, excluded_runs, exclusions, exclusions_path
 from kullback.gates import verifier_suite
 from kullback.gates.probes import write_tools_of
-from kullback.gates.trust import REFERENCE_WRONG
 from kullback.runner.canon import load_rules
 from kullback.runner.records import EXAM_DIR, read_json, write_json
 
@@ -80,7 +79,7 @@ class RejectReferenceResult(BaseModel):
     task_id: str
     excluded: list[str] = Field(default_factory=list)
     references: list[str] = Field(default_factory=list)
-    refused: bool = False
+    pooled: bool = False
 
 
 # --- re-picking over a references.json row ----------------------------------------
@@ -127,11 +126,6 @@ def _same_state(row: dict, run_id: str) -> list[str]:
     return [run_id]
 
 
-def _write_refusal(workdir: Path, task_id: str, why: str) -> None:
-    write_json(workdir / "refusals" / f"{task_id}.json",
-               {"task_id": task_id, "reason": REFERENCE_WRONG, "text": why})
-
-
 def _mark_derive_again(workdir: Path, task_id: str, root: Optional[ExamRoot]) -> None:
     """The Task's status row says its suite no longer passes, until the derivation runs again.
 
@@ -156,11 +150,11 @@ def _mark_derive_again(workdir: Path, task_id: str, root: Optional[ExamRoot]) ->
 
 def reject_reference(workdir: Any, task_id: str, run_id: str, why: str, evidence: str = "",
                      root: Optional[ExamRoot] = None) -> dict:
-    """Exclude the recording and every Run of its End state, re-pick, and refuse when nothing is left.
+    """Exclude the recording and every Run of its End state, re-pick, and pool when nothing is left.
 
-    Returns what happened: the run ids excluded, the References now, and whether the Task was refused.
-    The row in the exposed exam copy is written too, so the Examiner reads the Reference it now has,
-    and the Task's status row leaves the trusted count until the Task is derived again.
+    Returns what happened: the run ids excluded, the References now, and whether the Task now waits
+    in the pool. The row in the exposed exam copy is written too, so the Examiner reads the Reference
+    it now has, and the Task's status row leaves the trusted count until the Task is derived again.
     """
     root_dir = Path(workdir)
     references = read_json(root_dir / "references.json", {}) or {}
@@ -182,11 +176,11 @@ def reject_reference(workdir: Any, task_id: str, run_id: str, why: str, evidence
         copy[task_id] = new_row
         write_json(exposed, copy)
     picked = [str(r.get("run_id")) for r in new_row["references"]]
-    refused = not picked and new_row["reason"] == ALL_REJECTED
-    if refused:
-        _write_refusal(root_dir, task_id, why)
+    pooled = not picked and new_row["reason"] == ALL_REJECTED
+    if pooled:
+        reference_mod.join_pool(root_dir, task_id, why, targets)
     _mark_derive_again(root_dir, task_id, root)
-    return {"excluded": targets, "references": picked, "refused": refused}
+    return {"excluded": targets, "references": picked, "pooled": pooled}
 
 
 def reject_on_note(workdir: Any, task_id: str, note: dict, verdict: str, text: str,
@@ -322,16 +316,16 @@ def _reject_reference(root: ExamRoot):
             raise ValueError("say in `why` what the Intent and the policy needed that this End state lacks")
         done = reject_reference(root.workdir, task_id, args.run_id, why, root=root)
         now = (f"the Reference is now {done['references'][0]}" if done["references"] else
-               f"no Reference is left, so the Task is refused ({REFERENCE_WRONG})" if done["refused"] else
+               "no Reference is left, so the Task waits in the pool for a later Run" if done["pooled"] else
                "the End states left disagree, so the Task keeps no Reference")
         summary = f"rejected {', '.join(done['excluded'])} on task {task_id}; {now}"
         return RejectReferenceResult(summary=summary, task_id=task_id, excluded=done["excluded"],
-                                     references=done["references"], refused=done["refused"])
+                                     references=done["references"], pooled=done["pooled"])
 
     return reject
 
 
-__all__ = ["EXCLUSIONS_FILE", "REFERENCE_WRONG", "REFERENCE_WRONG_NOTES", "CheckReferenceArgs",
+__all__ = ["EXCLUSIONS_FILE", "REFERENCE_WRONG_NOTES", "CheckReferenceArgs",
            "CheckReferenceResult", "RejectReferenceArgs", "RejectReferenceResult", "excluded_runs",
            "exclusions", "exclusions_path", "reference_view", "reject_on_note", "reject_reference", "repick",
            "view_line"]

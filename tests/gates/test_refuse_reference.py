@@ -1,5 +1,4 @@
-"""A refusal for a wrong Reference stands even when a frontier Run finished; every other refusal keeps D128.
-A Task whose Reference was re-picked leaves the trusted count until it is derived again."""
+"""Every refusal is admitted only when no frontier Run finished; a re-picked Task stays untrusted until derived again."""
 
 from __future__ import annotations
 
@@ -15,13 +14,9 @@ from kullback.runner.records import read_json, write_json
 FINISHED = ({TASK: {"tr1": replay_row("tr1", True)}}, {TASK: [reroll_row("reroll-t1-0", "success")]})
 
 
-def test_a_reference_wrong_refusal_is_admitted_although_a_frontier_run_finished():
-    ruling = T.refuse_gate({TASK: {"task_id": TASK, "reason": T.REFERENCE_WRONG}}, *FINISHED)
-    assert ruling.passed and ruling.metrics == {"refused": [TASK], "rejected": []}
-
-
-@pytest.mark.parametrize("reason", ["no frontier Run reaches the End state", "outcome_not_in_state", ""])
-def test_a_refusal_with_any_other_reason_and_a_finished_run_is_still_rejected(reason):
+@pytest.mark.parametrize("reason", ["no frontier Run reaches the End state", "outcome_not_in_state",
+                                    "reference_wrong", ""])
+def test_a_refusal_with_a_finished_run_is_rejected_whatever_its_reason(reason):
     ruling = T.refuse_gate({TASK: {"task_id": TASK, "reason": reason}}, *FINISHED)
     assert not ruling.passed and ruling.metrics == {"refused": [], "rejected": [TASK]}
 
@@ -46,7 +41,7 @@ def test_a_trusted_task_is_not_trusted_after_its_reference_is_rejected(tmp_path)
     assert T.trusted_gate(**_trusted_world(tmp_path, read_json(workdir / "task_status.json"))).metrics[
         "trusted"] == [TASK]
     done = RC.reject_reference(workdir, TASK, "ref", "the End state is not what the Intent asks")
-    assert done["references"] == ["alt"] and not done["refused"]
+    assert done["references"] == ["alt"] and not done["pooled"]
     ruling = T.trusted_gate(**_trusted_world(tmp_path, read_json(workdir / "task_status.json")))
     assert ruling.metrics["trusted"] == []
     assert ruling.metrics["untrusted"] == {TASK: RC.REPICKED}

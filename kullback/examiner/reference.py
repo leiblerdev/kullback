@@ -54,15 +54,17 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite
+from kullback.gates.trust import POOL_FILE
 from kullback.gates.verifier_suite import _key
 from kullback.runner.judge import sources_not_given
-from kullback.runner.records import EXAM_DIR, Atom, Constraint, load_task_run, read_json
+from kullback.runner.records import EXAM_DIR, Atom, Constraint, load_task_run, read_json, write_json
 from kullback.runner.verdict import TRANSFER_HINTS
 
 RECORDING = "recording"
@@ -243,6 +245,49 @@ def excluded_runs(workdir: Any, task_id: str) -> dict[str, str]:
     """
     return {str(row.get("run_id")): str(row.get("why") or "")
             for row in exclusions(workdir).get(task_id) or [] if row.get("run_id")}
+
+
+# --- the Tasks waiting on a Reference -----------------------------------------
+
+#: The pool file moves under parallel derivations, so every read and write here holds it.
+_POOL_LOCK = threading.Lock()
+
+
+def pool_path(workdir: Any) -> Path:
+    return Path(workdir) / EXAM_DIR / POOL_FILE
+
+
+def pool(workdir: Any) -> dict[str, dict]:
+    """Every Task waiting on a Reference, with why and the excluded runs, or empty."""
+    with _POOL_LOCK:
+        body = read_json(pool_path(workdir), {}) or {}
+    return body if isinstance(body, dict) else {}
+
+
+def pooled_tasks(workdir: Any) -> list[str]:
+    """The sorted ids of the Tasks waiting on a Reference."""
+    return sorted(pool(workdir))
+
+
+def join_pool(workdir: Any, task_id: str, why: str, excluded: Iterable[str]) -> None:
+    """Keep the Task for a later Run to rescue: the reason and the runs rejected so far."""
+    with _POOL_LOCK:
+        body = read_json(pool_path(workdir), {}) or {}
+        if not isinstance(body, dict):
+            body = {}
+        body[task_id] = {"why": why, "excluded": sorted(set(excluded))}
+        write_json(pool_path(workdir), body)
+
+
+def leave_pool(workdir: Any, task_id: str) -> bool:
+    """Drop the Task from the pool, True when it was waiting."""
+    with _POOL_LOCK:
+        body = read_json(pool_path(workdir), {}) or {}
+        if not isinstance(body, dict) or task_id not in body:
+            return False
+        del body[task_id]
+        write_json(pool_path(workdir), body)
+        return True
 
 
 # --- what a Run wrote -------------------------------------------------------
@@ -594,7 +639,16 @@ def confirm(recordings: Iterable[Recording], *, intent: str = "", policy_lines: 
             out.failed[rec.run_id] = "violates " + ", ".join(rec.violated)
         elif rec.run_id in rejected:
             out.failed[rec.run_id] = f"rejected: {rejected[rec.run_id]}"
-    live = [r for r in recordings if not r.violated and r.run_id not in rejected]
+    # A rejected answer stays rejected: a later Run that reached an excluded End state fails with
+    # it, so only an End state nobody rejected can rescue a Task waiting on a Reference.
+    rejected_states: dict = {}
+    for rec in recordings:
+        if rec.run_id in rejected:
+            rejected_states.setdefault(rec.end_state, rec.run_id)
+    for rec in recordings:
+        if rec.run_id not in out.failed and rec.end_state in rejected_states:
+            out.failed[rec.run_id] = f"rejected: same End state as {rejected_states[rec.end_state]}"
+    live = [r for r in recordings if r.run_id not in out.failed]
     if not recordings:
         out.reason = "no Run to confirm"
         return out

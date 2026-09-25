@@ -462,7 +462,8 @@ def _session_subscriber(workdir: Path):
 
 
 def _counts_line(workdir: Path) -> str:
-    """The workdir counts as one line: trusted, refused and fidelity off the gate rulings."""
+    """The workdir counts as one line: trusted, refused, the pool and fidelity off the gate rulings."""
+    from kullback.examiner.reference import pooled_tasks
     from kullback.gates import counts as counts_mod
 
     root = Path(workdir)
@@ -473,8 +474,11 @@ def _counts_line(workdir: Path) -> str:
         task_status, verifiers, {}, {}, _refusal_dicts(root), {}, replays,
         _json_at(root, "rerolls.json"), _entry("kullback.runner.canon", "load_rules")(root / "canon-rules.json"),
         (_json_at(root, "tool_sigs.json") or {}).get("sigs", []), workdir=root)
-    return (f"trusted {result['trusted']}, refused {result['refused_count']}, "
+    line = (f"trusted {result['trusted']}, refused {result['refused_count']}, "
             f"fidelity {result['fidelity']}/{result['tasks']}")
+    if waiting := pooled_tasks(root):
+        line += f", needs a Reference: {', '.join(waiting)}"
+    return line
 
 
 def _verifier_dicts(root: Path) -> list:

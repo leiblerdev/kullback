@@ -1433,6 +1433,11 @@ def _prepare_one(task: Task, state: _DeriveState) -> _Job:
                                          policy_lines=state.policy_lines, judge=state.judge,
                                          phrases=grounded_phrases(state.intents.get(task.id)),
                                          excluded=excluded)
+    if confirmation.references:
+        # A later Run reached an End state nobody rejected and the normal rule picked again, so the
+        # Task leaves the pool and is derived as usual. The pool helpers lock, so parallel Tasks
+        # never lose each other's rows.
+        reference_mod.leave_pool(state.ctx.workdir, task.id)
     return _Job(task=task, key=key, confirmation=confirmation,
                 recordings=recordings + extra, extra=extra)
 

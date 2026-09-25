@@ -48,7 +48,7 @@ def test_rejecting_one_of_two_recordings_repicks_the_other_as_reference(tmp_path
         {"A": ["ref"], "B": ["rr2"]}, ["ref"], {"rr2": "survivor B was not chosen: A stood up better"})})
     result = asyncio.run(_tool(root, "reject_reference").execute(
         RC.RejectReferenceArgs(task_id="t1", run_id="ref", why="the End state is not what the Intent asks")))
-    assert result.excluded == ["ref"] and result.references == ["rr2"] and not result.refused
+    assert result.excluded == ["ref"] and result.references == ["rr2"] and not result.pooled
     row = read_json(world.workdir / "references.json")["t1"]
     assert [r["run_id"] for r in row["references"]] == ["rr2"]
     assert row["failed"]["ref"].startswith("rejected:")
@@ -65,19 +65,61 @@ def test_reference_choice_skips_an_excluded_recording_and_picks_among_the_rest()
     assert out.failed == {"a": "rejected: wrote the wrong entity"}
 
 
-def test_rejecting_the_only_recording_refuses_the_task_and_the_refusal_stands_though_a_run_finished(tmp_path):
+def test_rejecting_the_only_recording_pools_the_task_and_writes_no_refusal(tmp_path):
     world = make_world(tmp_path)
     root = _root(world)
     write_json(world.workdir / "references.json", {"t1": _row({"A": ["ref", "alt"]}, ["ref", "alt"])})
     result = asyncio.run(_tool(root, "reject_reference").execute(
         RC.RejectReferenceArgs(task_id="t1", run_id="ref", why="the user asked for no change")))
     assert sorted(result.excluded) == ["alt", "ref"], "every Run of the rejected End state goes"
-    assert result.references == [] and result.refused
-    refusal = read_json(world.workdir / "refusals" / "t1.json")
-    assert refusal["reason"] == RC.REFERENCE_WRONG
-    ruling = T.refuse_gate({"t1": refusal}, world.inputs["replays"], world.inputs["rerolls"])
-    assert T.finished_runs("t1", world.inputs["replays"], world.inputs["rerolls"])
-    assert ruling.passed and ruling.metrics["refused"] == ["t1"]
+    assert result.references == [] and result.pooled
+    assert read_json(R.pool_path(world.workdir)) == {
+        "t1": {"why": "the user asked for no change", "excluded": ["alt", "ref"]}}
+    assert not (world.workdir / "refusals" / "t1.json").exists()
+
+
+def test_a_pooled_task_is_untrusted_for_want_of_a_reference(tmp_path):
+    world = make_world(tmp_path)
+    (tmp_path / "v").mkdir()
+    verifier = VF.derive(tmp_path / "v")
+    write_json(world.workdir / "references.json", {"t1": _row({"A": ["ref", "alt"]}, ["ref", "alt"])})
+    done = RC.reject_reference(world.workdir, "t1", "ref", "the user asked for no change")
+    assert done["pooled"]
+    ruling = T.trusted_gate({"t1": {"verifier_passed": True, "references": 1}}, [verifier],
+                            {}, {}, {}, {}, world.inputs["replays"], world.inputs["rerolls"],
+                            CanonRules(), list(SIGS), workdir=world.workdir)
+    assert ruling.metrics["trusted"] == []
+    assert ruling.metrics["untrusted"] == {"t1": T.NEEDS_REFERENCE}
+
+
+def _pool_t1(world) -> None:
+    """Reject the one End state the world's Runs share, so t1 waits in the pool."""
+    write_json(world.workdir / "references.json", {"t1": _row({"A": ["ref", "alt"]}, ["ref", "alt"])})
+    done = RC.reject_reference(world.workdir, "t1", "ref", "the user asked for no change")
+    assert done["pooled"]
+
+
+def test_a_new_finished_run_with_another_end_state_takes_the_task_out_of_the_pool(tmp_path):
+    world = make_world(tmp_path, rerolls=("alt",))
+    _pool_t1(world)
+    world.inputs["rerolls"]["t1"].append({
+        "run_id": "rr2", "path": world.paths["rr2"],
+        "termination_reason": VF.other_reason_run().termination_reason})
+    _derive(world)
+    assert _references(world) == ["rr2"]
+    assert R.pool(world.workdir) == {}
+
+
+def test_a_new_finished_run_with_an_excluded_end_state_leaves_the_task_in_the_pool(tmp_path):
+    world = make_world(tmp_path, rerolls=("alt",))
+    _pool_t1(world)
+    rerun = VF.alt_path_run().model_copy(update={"run_id": "alt2"})
+    path = VF.write_events_jsonl(rerun, world.workdir / "runs" / "t1" / "alt2.jsonl")
+    [alt_row] = [row for row in world.inputs["rerolls"]["t1"] if row["run_id"] == "alt"]
+    world.inputs["rerolls"]["t1"].append(dict(alt_row, run_id="alt2", path=path))
+    _derive(world)
+    assert _references(world) == []
+    assert R.pooled_tasks(world.workdir) == ["t1"]
 
 
 def test_a_builder_right_ruling_on_an_outcome_note_excludes_the_reference(tmp_path):
