@@ -1,4 +1,4 @@
-"""Fixtures every module's tests share: the small tau2 file, a tmp workdir, and the offline models."""
+"""Fixtures every module's tests share: the invented worlds, a tmp workdir, and the offline models."""
 
 from __future__ import annotations
 
@@ -76,22 +76,6 @@ def fixtures_dir() -> Path:
     return FIXTURES
 
 
-@pytest.fixture(scope="session")
-def tau2_small_path() -> Path:
-    """The 3-simulation tau2 retail file, grader fields still in it."""
-    return FIXTURES / "tau2_retail_small.json"
-
-
-@pytest.fixture(scope="session")
-def tau2_small(tau2_small_path: Path) -> dict:
-    return json.loads(tau2_small_path.read_text(encoding="utf-8"))
-
-
-@pytest.fixture(scope="session")
-def tau2_retail_dir() -> Path:
-    """tau2-bench's own retail domain files: db.json, policy.md, tasks.json."""
-    return FIXTURES / "tau2_retail"
-
 WORLD_TRACE_FILES = {"world_a": "traces_small.json", "world_b": "traces_small_tau2.json"}
 
 
@@ -163,21 +147,6 @@ def raw_dir() -> Path:
         if candidate.is_dir():
             return candidate
     pytest.skip("raw traces not present")
-
-
-# The full raw_dir corpus also holds other corpora's traces (fetched for a separate,
-# cross-domain check); tools mined from the whole folder would be gated against retail-only
-# thresholds, so tests scoped to retail read just these two files by name.
-RETAIL_RAW_FILES = (
-    "claude-3-7-sonnet-20250219_retail_default_gpt-4.1-2025-04-14_4trials.json",
-    "claude-sonnet-4-5_enabled_retail_gpt-5.2_4trials.json",
-)
-
-
-@pytest.fixture
-def retail_raw_files(raw_dir: Path) -> list[Path]:
-    """The two trace files named above, in raw_dir; other corpora's traces are checked elsewhere."""
-    return [raw_dir / name for name in RETAIL_RAW_FILES]
 
 
 @pytest.fixture
