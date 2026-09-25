@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any, Callable, Iterable, Optional
 
 from kullback.runner.records import Event, UserFact, UserRules
-from kullback.user.ends import FactLookup, _field_of, _row_value, writes_made
+from kullback.user.ends import FactLookup, _field_of, _row_value, goal_done, tool_called, writes_made
 from kullback.user.rules import (
     ASKABLE,
     CHOICE,
@@ -89,6 +89,7 @@ class SimulatedUser:
         self._silent = 0
         self._refused = 0
         self._restated = False
+        self._acted = False  # the Candidate has used a tool in this Run (p3)
         # Turns this user had nothing at all for what was asked on: the scenario running out,
         # counted (D210). One turn, however many fields it named: the rule is a Candidate asking
         # twice, so a single turn naming two unknown fields is one ask and not two.
@@ -100,6 +101,7 @@ class SimulatedUser:
         for message in transcript:
             if _field_of(message, "role") == "assistant":
                 question = _field_of(message, "content")
+        self._acted = tool_called(transcript)
         answers: dict[str, Any] = {}
         sources: dict[str, str] = {}
         spoken: list[str] = []
@@ -235,9 +237,11 @@ class SimulatedUser:
                 unavailable.append(field)
                 sources[field] = "unavailable"
             return
-        satisfied = self._goal_done(made or set())
+        satisfied = self._goal_done(made or set(), question)
         goal = self._fact(GOAL)
-        if goal is not None and not self._restated and not satisfied:
+        # A goal naming no writes has nothing left to restate once the Candidate closes (p3).
+        no_write_close = self.goal_writes is not None and not self.goal_writes and _closes(question)
+        if goal is not None and not self._restated and not satisfied and not no_write_close:
             spoken.append(str(goal.value))
             sources[GOAL] = GOAL_RESTATED
             self._restated = True
@@ -250,7 +254,7 @@ class SimulatedUser:
         The one place a Run ends, so the protocol reads the same whether the turn asked for fields
         this user has no record of or asked nothing by name at all.
         """
-        kind = self._end_kind(question, self._goal_done(made))
+        kind = self._end_kind(question, self._goal_done(made, question))
         if kind is None:
             return
         closing = self._fact(CLOSING)
@@ -280,16 +284,15 @@ class SimulatedUser:
             return HANDED_OFF
         return SCENARIO_EXHAUSTED if (self._restated or self._silent >= SILENCE_LIMIT) else None
 
-    def _goal_done(self, made: set) -> bool:
-        """Every write the Task's goal implies has been made in this Run (D210).
+    def _goal_done(self, made: set, question: str = "") -> bool:
+        """The Task's goal is done in this Run, through the one predicate both users read (D210).
 
-        `made` is the write-kind tools this transcript shows called. A caller that named the goal's
-        own writes is answered against them; one that named none falls back to D158's reading, that
-        a Run which wrote at all has acted, so a caller passing nothing gets the user it had.
+        `made` is the write-kind tools this transcript shows made. A goal naming no writes is done
+        only when the Candidate has used a tool and its latest turn closes; D158's reading holds
+        where the caller named no goal writes at all.
         """
-        if self.goal_writes is not None:
-            return self.goal_writes <= made
-        return bool(self.write_tools) and bool(made)
+        return goal_done(self.goal_writes, self.write_tools, made,
+                         acted=self._acted, closed=_closes(question))
 
     def _writes_made(self, transcript: list) -> set[str]:
         """The write-kind tools this Run has made so far, so the user can tell a Run that has done
