@@ -137,6 +137,11 @@ class AgentHarness:
         return self._state is not None
 
     @property
+    def cancel_requested(self) -> bool:
+        """True while a run is going and a stop was asked of it, so a long tool can end early."""
+        return self._state is not None and self._state.cancel.cancelled
+
+    @property
     def context_stats(self) -> ContextStats:
         """The context counters (D131): tool calls, refusals, fallback compactions, fill per turn."""
         return self.context.stats

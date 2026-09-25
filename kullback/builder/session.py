@@ -238,10 +238,13 @@ def builder_extension(root: BuilderRoot) -> Callable[[ExtensionAPI], None]:
         env = root.env
         env.mkdir(parents=True, exist_ok=True)
         register_base_tools(api, env, allowlist=DEFAULT_ALLOWLIST, only=BUILDER_BASE_TOOLS)
-        model = getattr(getattr(api, "harness", None), "model", None)
+        harness = getattr(api, "harness", None)
+        model = getattr(harness, "model", None)
+        # A stop on the screen sets the harness's cancel token; examine reads it at its safe points.
+        should_stop = (lambda: bool(getattr(harness, "cancel_requested", False))) if harness is not None else None
         for tool in domain_tools(workdir=root.workdir, model=model, examine_fn=root.examine_fn,
                                  judge_model=root.judge_model, probe_model=root.probe_model,
-                                 reroll_model=root.reroll_model, env=env):
+                                 reroll_model=root.reroll_model, env=env, should_stop=should_stop):
             api.register_tool(tool)
         for name, text in prompt_mod.sections():
             api.add_prompt_section(f"builder_{name}", text)

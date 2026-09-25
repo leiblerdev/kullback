@@ -939,12 +939,15 @@ def _reroll(root: ExamRoot):
         model = _priced(root.reroll_model, root.workdir)
         rows = []
         spent = 0.0
-        stopped = False
-        # One Run at a time, the allowance checked before each and deducted after each, so a
-        # batch never spends past what is left.
+        stopped = ""
+        # One Run at a time, the allowance and a person's stop checked before each and the price
+        # deducted after each, so a batch never spends past what is left or past a stop.
         for seed in range(args.count):
             if root.allowance_remaining is not None and root.allowance_remaining <= 0:
-                stopped = True
+                stopped = "the allowance is spent"
+                break
+            if root.should_stop is not None and root.should_stop():
+                stopped = "the build was stopped"
                 break
             before = _ledger_usd(root.workdir)
             reports = runner_tool.reroll(root.workdir, args.task_id, model, count=1,
@@ -958,7 +961,7 @@ def _reroll(root: ExamRoot):
                    f"{sum(1 for r in rows if r['termination_reason'] == 'success')} finished, "
                    f"{spent:.4f} USD")
         if stopped:
-            summary += f"; stopped after {len(rows)} of {args.count} Runs: the allowance is spent"
+            summary += f"; stopped after {len(rows)} of {args.count} Runs: {stopped}"
         return RerollResult(summary=summary, task_id=args.task_id, runs=rows, spent_usd=spent)
 
     return reroll

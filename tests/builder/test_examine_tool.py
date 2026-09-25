@@ -63,3 +63,16 @@ def test_grow_hands_the_session_model_to_the_readers_step_and_prices_it(tmp_path
     assert "check_panel" in json.dumps(model.calls[0]["messages"])
     ledger = json.loads((root / "budget.json").read_text(encoding="utf-8"))
     assert "readers" in json.dumps(ledger)
+
+
+def test_a_stopped_examine_says_so_in_its_first_line_and_its_details(tmp_path):
+    world = make_world(tmp_path, tasks=2)
+    materialize(world)
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(
+        workdir=world.workdir, should_stop=lambda: True)}
+    result = _run(tools["examine"], {})
+    assert not result.is_error, result.content
+    first = result.content.splitlines()[0]
+    assert first.startswith("examine stopped early: 0 of 2 Tasks derived, Examiner session not opened")
+    assert result.details["stopped"] is True
+    assert not (world.workdir / "verifiers").is_dir() or not list((world.workdir / "verifiers").glob("*.json"))

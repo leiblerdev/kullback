@@ -496,7 +496,8 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
             judge_model: Any = None, probe_model: Any = None, reroll_model: Any = None,
             allowance_usd: Optional[float] = None, session_path: Any = None,
             subscribers: Iterable[Callable] = (), max_turns: int = EXAMINE_MAX_TURNS,
-            workers: Optional[int] = None, limit: Optional[int] = None) -> list[Finding]:
+            workers: Optional[int] = None, limit: Optional[int] = None,
+            should_stop: Callable[[], bool] = stage_mod.never_stop) -> list[Finding]:
     """Derive the Verifiers by code, file what the records say, then run one model session.
 
     With `model=None` the session is code only: the derivation and its findings. With a model,
@@ -516,6 +517,11 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
 
     The session sees only the Tasks with a finished Run and a confirmed Reference; one finding
     of kind other names the rest and why, and when none is left no session opens at all (F24).
+
+    `should_stop` is a person's stop from the Builder's screen, asked at the safe points only:
+    before each Task's derivation starts, before each re-roll Run is bought, and on every event of
+    the Examiner session, which it cancels at its next step. A stopped call opens no session it had
+    not opened yet, files one note saying how far it got, and writes findings.json whole.
     """
     root = Path(workdir)
     task_ids = list(task_ids) if task_ids is not None else None
@@ -525,20 +531,25 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     runners = runners_mod.runners_for(root, reroll_model=reroll_model, anchor=anchor)
     picked = derive_pick(root, store, task_ids)
     now, later = (picked, []) if limit is None else (picked[:limit], picked[limit:])
+    derived = len(now)
     if now:
-        stage_mod.derive_all(ctx, store, probe_model=probe_model, judge_model=judge_model,
-                             run_probe=runners["run_probe"],
-                             run_rerolls=runners["run_rerolls"] if reroll_model is not None else None,
-                             run_variant=runners["run_variant"], round_number=0, only=now,
-                             workers=workers if workers is not None else default_workers())
+        result = stage_mod.derive_all(
+            ctx, store, probe_model=probe_model, judge_model=judge_model,
+            run_probe=runners["run_probe"],
+            run_rerolls=runners["run_rerolls"] if reroll_model is not None else None,
+            run_variant=runners["run_variant"], round_number=0, only=now,
+            workers=workers if workers is not None else default_workers(), should_stop=should_stop)
+        derived = result["derived"]
     expose(workdir)
     findings = derive_findings(workdir, store) + ([not_derived_finding(later, limit)] if later else [])
     if task_ids is not None:
         wanted = set(task_ids)
         findings = [f for f in findings if f.task_id in wanted or
                     any(str(r.get("task_id")) in wanted for r in f.rows)]
+    if should_stop():
+        findings = findings + [stopped_finding(derived, len(now), session="not opened")]
     write_json(root / "findings.json", [f.as_dict() for f in findings])
-    if model is None:
+    if model is None or should_stop():
         return findings
     candidates = task_ids if task_ids is not None else {
         *(t.id for t in store.get("tasks") or []), *(store.get("replays") or {}),
@@ -555,6 +566,7 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     exam_root = _exam_root(workdir, store, findings, reroll_model=reroll_model,
                            probe_model=probe_model, run_probe=runners["run_probe"],
                            allowance_usd=allowance_usd)
+    exam_root.should_stop = should_stop
     harness = AgentHarness(model=model, max_turns=max_turns,
                            session=SessionStore.load(session_path) if session_path is not None else None,
                            context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
@@ -562,11 +574,43 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     for subscriber in subscribers:
         harness.subscribe(subscriber)
     harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
+    cancelled = _cancel_on_stop(harness, should_stop)
     load_extensions(harness, [examiner_extension(exam_root, selected)])
     cap_notes = _run_session(harness, session_opening(exam_root, selected), max_turns, selected)
-    out = list(exam_root.findings) + note + cap_notes
+    stop_note = [stopped_finding(derived, len(now), session="cancelled")] if cancelled else []
+    out = list(exam_root.findings) + note + cap_notes + stop_note
     write_json(root / "findings.json", [f.as_dict() for f in out])
     return out
+
+
+def _cancel_on_stop(harness: AgentHarness, should_stop: Callable[[], bool]) -> list[bool]:
+    """Cancel the Examiner session on its first event after a stop; the list says whether it did.
+
+    The loop reads its cancel token between steps, so the session ends at its next step and the
+    tool already running finishes. A subscriber is enough: the events come on the session's own
+    loop, so no thread watches the flag.
+    """
+    cancelled: list[bool] = []
+
+    def watch(event: Any) -> None:
+        if not cancelled and should_stop():
+            cancelled.append(True)
+            harness.cancel()
+
+    harness.subscribe(watch)
+    return cancelled
+
+
+def stopped_finding(derived: int, tasks: int, *, session: str) -> Finding:
+    """The note a stopped examine files: how far the derivation got and what became of the session.
+
+    Its one row carries `stopped`, so the Builder's examine tool leads its result with it. The Tasks
+    not reached are left as they were, open, for the next call.
+    """
+    text = f"examine stopped early: {derived} of {tasks} Tasks derived, Examiner session {session}"
+    return Finding(kind="other", source="derive", text=text,
+                   rows=[{"stopped": True, "derived": derived, "tasks": tasks, "session": session}],
+                   change=f"{text}; call examine again to continue")
 
 
 def _run_session(harness: AgentHarness, opening_message: str, max_turns: int,
@@ -669,4 +713,4 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     return exam_root
 __all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "derive_findings", "examine", "examiner_extension", "session_opening",
            "finding_from_row", "left_out_finding", "load_store", "notes_line", "root_listing", "rulings_line",
-           "select_for_session", "task_runs_of", "turns_ran_out"]
+           "select_for_session", "stopped_finding", "task_runs_of", "turns_ran_out"]
