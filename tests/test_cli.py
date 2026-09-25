@@ -373,6 +373,105 @@ def test_run_asks_the_runner_for_that_many_rerolls(workdir, fake_modules):
     assert [row["run_id"] for row in json.loads(result.output)] == ["r0", "r1"]
 
 
+def _seed_playable_tasks(workdir: Path, task_ids=("t1", "t2")) -> None:
+    """Invented Tasks with Verifiers, a frozen Runner and a round trusting each one, for run --tasks."""
+    from tests.episode.invented import write_env
+
+    for task_id in task_ids:
+        write_env(workdir, task_id=task_id)
+    (workdir / "runner_version.json").write_text(json.dumps({"runner_version": "rv-1"}), encoding="utf-8")
+    (workdir / "rounds.json").write_text(
+        json.dumps([{"round": 1, "counts": {"round": 1, "trusted_ids": list(task_ids)}}]),
+        encoding="utf-8")
+
+
+def _scripted_candidate(monkeypatch, replies, name="test", loop=False):
+    """Route the run command's model lookup to a scripted offline model, at the provider boundary."""
+    from kullback.ai.provider import TestModel
+
+    monkeypatch.setattr("kullback.ai.provider.live_model",
+                        lambda model_id, base_url=None: TestModel(replies, name=name, loop=loop))
+
+
+def test_run_with_one_task_prints_the_same_json_as_before(workdir, fake_modules):
+    seed_task(workdir)
+    result = invoke("run", "--workdir", str(workdir), "--task", "t1", "--model", "candidate-model")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == [{"run_id": "r0", "task_id": "t1"}]
+
+
+def test_run_over_trusted_tasks_prints_a_line_per_task_and_the_totals(workdir, monkeypatch):
+    from tests.episode.invented import SCRIPTED_RENAME
+
+    _seed_playable_tasks(workdir)
+    _scripted_candidate(monkeypatch, [dict(reply) for reply in SCRIPTED_RENAME], loop=True)
+    result = invoke("run", "--workdir", str(workdir), "--tasks", "trusted", "--model", "test/model",
+                    "--count", "2")
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0] == "only trusted Tasks are graded by a checked Verifier"
+    assert "t1 pass pass" in lines and "t2 pass pass" in lines
+    assert "pass@1 1.00 pass^2 1.00" in lines
+    assert "runs 4/4" in result.output and "spend $0.00" in result.output
+    assert "failing most: none" in result.output
+
+
+def test_run_names_the_task_that_failed_most(workdir, monkeypatch):
+    from tests.episode.invented import SCRIPTED_RENAME
+
+    _seed_playable_tasks(workdir)
+    look = {"content": None, "tool_calls": [
+        {"id": "c1", "name": "describe_widget", "arguments": {"widget_id": "w1"}}]}
+    replies = [dict(reply) for reply in SCRIPTED_RENAME] + [look, {"content": "done", "tool_calls": []}]
+    _scripted_candidate(monkeypatch, replies)
+    result = invoke("run", "--workdir", str(workdir), "--tasks", "trusted", "--model", "test/model",
+                    "--count", "1")
+    assert result.exit_code == 0, result.output
+    assert "t1 pass" in result.output.splitlines()
+    assert "t2 fail" in result.output.splitlines()
+    assert "pass@1 0.50" in result.output
+    assert "failing most: t2 (1)" in result.output
+
+
+def test_run_stops_at_the_ceiling_and_says_so(workdir, monkeypatch):
+    from tests.episode.invented import SCRIPTED_RENAME
+
+    _seed_playable_tasks(workdir)
+    priced = [dict(reply, usage={"input": 5000, "output": 0}) for reply in SCRIPTED_RENAME]
+    _scripted_candidate(monkeypatch, priced, name="openai/gpt-4.1-mini", loop=True)
+    result = invoke("run", "--workdir", str(workdir), "--tasks", "trusted",
+                    "--model", "openai/gpt-4.1-mini", "--count", "1", "--ceiling-usd", "0.007")
+    assert result.exit_code == 0, result.output
+    assert "t1 pass" in result.output.splitlines()
+    assert "ceiling $0.007 reached, stopped where it stood" in result.output
+    assert "runs 2/2" in result.output
+
+
+def test_scoring_without_a_frozen_runner_warns_once(workdir):
+    seed_task(workdir)
+    (workdir / "runner_version.json").unlink()
+    result = invoke("verdict", "--workdir", str(workdir), "--task", "t1")
+    assert result.stderr.count("the Verdicts carry no Runner version, run `kullback freeze-runner`") == 1
+
+
+def test_publish_check_uploads_nothing_and_names_what_is_missing(workdir, monkeypatch):
+    from tests.episode.invented import write_env
+
+    write_env(workdir, task_id="t1")
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr("huggingface_hub.get_token", lambda: None)
+
+    def bomb(*args, **kwargs):
+        raise AssertionError("publish --check must not reach the upload")
+
+    monkeypatch.setattr("kullback.hub.publish.publish", bomb)
+    result = invoke("publish", "--workdir", str(workdir), "--repo", "org/name", "--check")
+    assert result.exit_code == 1, result.output
+    assert "not ready" in result.output
+    assert "HF token" in result.output and "runner frozen" in result.output
+    assert "fidelity over Tasks" in result.output
+
+
 def stored_verdicts(workdir: Path, task_id: str = "t1") -> list[dict]:
     folder = workdir / "verdicts" / task_id
     return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(folder.glob("*.json"))]
