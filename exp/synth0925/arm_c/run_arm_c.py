@@ -386,13 +386,11 @@ def build_task(world, synth: Priced, judge: Priced, share: Share, scen: dict,
                 continue
             if outcome == "retry":
                 feedback = str(done)
-                history = ""
                 break
             done["cost_usd"] = round(share.model_usd - usd0, 6)
             return done
         else:
-            feedback = "FEEDBACK: too many read rounds. Send the final blueprint or unservable now. "
-            history = ""
+            feedback = "FEEDBACK: round limit hit. Send the final blueprint or unservable now. "
     return {"status": "rejected", "revisions": MAX_REVISIONS,
             "reasons": ["revisions_exhausted"],
             "cost_usd": round(share.model_usd - usd0, 6),
