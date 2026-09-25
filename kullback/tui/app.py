@@ -38,8 +38,14 @@ APP_CSS = """
 #cmdline { height: auto; }
 #cmd-input { border: solid #8a8a8a; }
 #cmd-menu { height: auto; max-height: 10; border: none; }
-#home-checklist { height: auto; max-height: 8; }
-#output-form { width: 80%; height: auto; max-height: 80%; }
+#login-form { width: 60; height: auto; border: solid #8a8a8a; padding: 1 2; }
+#login-title { height: 1; }
+#login-provider { border: none; margin: 1 0; }
+#login-provider SelectCurrent { border: solid #8a8a8a; }
+#login-key { border: solid #8a8a8a; margin: 1 0; }
+#login-message { height: 1; }
+#login-buttons { height: auto; align: right middle; }
+#login-save, #login-cancel { width: auto; margin-left: 2; }
 #transcript { width: 1fr; }
 #sidebar { width: 30%; min-width: 68; }
 #watch-main { height: 1fr; }

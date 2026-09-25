@@ -241,3 +241,34 @@ async def test_screenshots_capture_the_login_modal(tmp_path):
         app.save_screenshot("/tmp/kb-shell-login.svg")
         await pilot.press("escape")
     assert Path("/tmp/kb-shell-login.svg").is_file()
+
+
+@pytest.mark.anyio
+async def test_enter_in_the_key_field_saves_and_escape_cancels(tmp_path):
+    """Enter in the modal key field saves like the save button; esc leaves nothing."""
+    from textual.widgets import Input, Select
+
+    app = KullbackApp(workdir=tmp_path)
+    async with app.run_test() as pilot:
+        app.run_command("/login")
+        await pilot.pause(0.5)
+        modal = app.screen
+        assert isinstance(modal, LoginModal)
+        provider = next(iter(modal.providers))
+        expected_var = Screen._key_var_for(provider, modal.providers[provider])
+        modal.query_one("#login-provider", Select).value = provider
+        key = modal.query_one("#login-key", Input)
+        key.value = "marker-test-key-10"
+        key.focus()
+        await pilot.pause(0.3)
+        await pilot.press("enter")
+        await pilot.pause(0.5)
+        assert not isinstance(app.screen, LoginModal)
+        body = json.loads(Path(os.environ["KULLBACK_AUTH_FILE"]).read_text(encoding="utf-8"))
+        assert body.get("keys", {}).get(expected_var) == "marker-test-key-10"
+        app.run_command("/login")
+        await pilot.pause(0.5)
+        assert isinstance(app.screen, LoginModal)
+        await pilot.press("escape")
+        await pilot.pause(0.3)
+        assert not isinstance(app.screen, LoginModal)

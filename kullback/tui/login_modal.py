@@ -14,13 +14,19 @@ from typing import Any, Optional
 
 from textual import on
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Select, Static
 
 
 class LoginModal(ModalScreen[Optional[dict]]):
     """One provider, one masked key field, save or cancel."""
+
+    DEFAULT_CSS = """
+    LoginModal {
+        align: center middle;
+    }
+    """
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
@@ -54,8 +60,11 @@ class LoginModal(ModalScreen[Optional[dict]]):
             self.provider_select,
             self.key_input,
             self.message,
-            Button("save", id="login-save"),
-            Button("cancel", id="login-cancel"),
+            Horizontal(
+                Button("save", id="login-save"),
+                Button("cancel", id="login-cancel"),
+                id="login-buttons",
+            ),
             id="login-form",
         )
 
@@ -68,6 +77,11 @@ class LoginModal(ModalScreen[Optional[dict]]):
 
     @on(Button.Pressed, "#login-save")
     def _save_pressed(self) -> None:
+        self.save()
+
+    @on(Input.Submitted, "#login-key")
+    def _key_entered(self) -> None:
+        """Enter in the key field saves, the same as the save button."""
         self.save()
 
     def save(self) -> Optional[dict]:

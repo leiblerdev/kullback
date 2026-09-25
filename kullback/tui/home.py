@@ -83,8 +83,12 @@ class HomeView(Vertical):
 
     @staticmethod
     def _row_line(row: Any) -> str:
+        """One checklist row, with its slash fix named while it is not done."""
         mark = "x" if row.done else " "
-        return f"[{mark}] {row.name:<10} {row.detail}"
+        line = f"[{mark}] {row.name:<10} {row.detail}"
+        if not row.done and row.next_key.startswith("/"):
+            line += f" or {row.next_key}"
+        return line
 
     def _row_item(self, index: int, row: Any) -> ListItem:
         # Rich Text, not str: a Label reads "[x]" as markup and drops it, which
@@ -125,8 +129,7 @@ class HomeView(Vertical):
         """The view as plain text, for tests to read without rendering."""
         lines = ["where this workdir stands"]
         for row in self.rows:
-            mark = "x" if row.done else " "
-            lines.append(f"[{mark}] {row.name:<10} {row.detail}")
+            lines.append(self._row_line(row))
         lines.append("")
         lines.append(self.next_line)
         lines.append("")
