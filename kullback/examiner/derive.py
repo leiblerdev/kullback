@@ -31,6 +31,7 @@ from kullback.gates.verifier_suite import (
     HELPERS_SRC,
     SUCCESS_TERMINATIONS,
     _key,
+    _matches,
     _texts,
     _token_in,
     _tokens,
@@ -53,7 +54,7 @@ from kullback.gates.verifier_suite import (
     world_rows,
     write_effects,
 )
-from kullback.runner.records import Atom, Constraint, Run, Task, Verifier, load_task_run
+from kullback.runner.records import Atom, Constraint, Run, Task, Verifier, canonical_json, load_task_run
 
 # A write value is required only when it is agreed across the good Runs *and* the customer or their
 # world is where it came from; a value the Candidate invented is never required of it.
@@ -442,9 +443,12 @@ def asked_facts(intents: Iterable[Any], runs: Iterable[Run], fn: Any) -> tuple[s
     """What this Task's request asks the answer to state: the facts it names, and its words.
 
     The facts are keyed the way `communicate_values` keys them, so a value the user spelled one way
-    and a tool result another are one key (D39). The words are everything the request and the Runs'
-    own user turns are written in, which is how a fact asked for by the name of the field it lives
+    and a tool result another are one key (D39). The words are the request and the Runs' user
+    question turns, which is how a fact asked for by the name of the field it lives
     under ("the total") is recognised without the user having said the number.
+    A user statement names nothing: the user who stated their id already knows
+    it, so an answer that solves without echoing it has done the job, and what
+    every good Run restated beside the asked facts is reported, not demanded.
 
     Only a user names a fact by its own number (D190). The Intent is mined from the recordings (D83),
     so a number in its line may be one the recorded agent found and told the user, and demanding the
@@ -452,7 +456,8 @@ def asked_facts(intents: Iterable[Any], runs: Iterable[Run], fn: Any) -> tuple[s
     already handed it. The Intent's words still count for the field-name half: a request that says
     "the total" names the field without naming the number.
     """
-    said = [_user_text(event) for run in runs for event in run.events if event.type == "user_turn"]
+    said = [_user_text(event) for run in runs for event in run.events
+            if event.type == "user_turn" and "?" in _user_text(event)]
     texts = said + [phrase for intent in intents for phrase in request_phrases(intent)]
     keys = {_key(fn, token) for text in said for token in _tokens(text)}
     return keys, {word for text in texts for word in _words(text)}
@@ -657,12 +662,36 @@ def _value_atoms(atom_id: str, base: dict, run: Run, effect: dict, tools: set[st
 
 # --- questions and facts ----------------------------------------------------
 
+def _world_read_before(run: Run, write_pos: int, value: Any, fn: Any) -> bool:
+    """Did a tool result before this write already hold this value, by the leak check's own rule.
+
+    Any call, any row: the same match classify_provenance reads as system_derived,
+    asked here without asking who the Run got the value from.
+    """
+    for event in run.events[:write_pos]:
+        if event.type == "tool_result" and _matches(
+                canonical_json((event.payload or {}).get("result")), value, fn):
+            return True
+    return False
+
+
 def _question_atoms(good: list[Run], good_effects: list[dict], fn: Any) -> list[Atom]:
-    """One atom per thing every good Run asked the user about before it wrote."""
-    asked = [question_keys(r, e, fn) for r, e in zip(good, good_effects, strict=False)]
+    """One atom per thing every good Run asked the user about before it wrote.
+
+    No atom for a field whose value the world already held where the Run could
+    read it: reading it or asking are both right, and demanding the question
+    grades one model's habit of asking. The demand stands only when some seed
+    could not read the value first.
+    """
+    asked = [question_keys(r, e, fn, elicited_only=True)
+             for r, e in zip(good, good_effects, strict=False)]
     common = set.intersection(*[set(a) for a in asked]) if asked else set()
     atoms: list[Atom] = []
     for key in sorted(common):
+        if key.startswith("field:") and all(
+                _read_before(run, effects, key.split(":", 1)[1], fn)
+                for run, effects in zip(good, good_effects, strict=False)):
+            continue
         seen = asked[0][key]
         atoms.append(_atom(f"q.{key}", "question",
                            {"kind": "question", "key": key, "tool": seen.get("tool"),
@@ -670,6 +699,16 @@ def _question_atoms(good: list[Run], good_effects: list[dict], fn: Any) -> list[
                            spans=[seen["span"]] if seen.get("span") else [],
                            description=f"the agent asks the user about {key.split(':', 1)[-1]}"))
     return atoms
+
+
+def _read_before(run: Run, effects: dict, field: str, fn: Any) -> bool:
+    """Did some write of this Run hold this field at a value a prior result held.
+
+    Any effect with the field counts: one world-readable write is enough to
+    make reading a right route for it.
+    """
+    return any(_world_read_before(run, effect["pos"], effect["args"][field], fn)
+               for effect in effects.values() if field in effect["args"])
 
 
 def _stated_facts(said: list[dict], atoms: list[Atom]) -> set[str]:

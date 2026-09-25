@@ -41,14 +41,14 @@ from kullback.runner.records import Constraint, ForeignRunError, Run, Task, Veri
 
 # The derivation over verifier_fixtures.derive(tmp_path): seven atoms, seeds ref, alt and rr2. It was
 # pinned at the commit the phase 5 move started from (a40812c, 77d497a99ac9e8c1) to hold that the
-# move changed no byte of the artifact (D130). It has moved four times since: when a stated fact the
 # request never asked about stopped being a demand, when the write cap moved to the end of the atom
 # list so the rule on a cap of 0 could see what else the Verifier demands, and at D190, when a
 # demanded fact took the provenance of the value it carries and a reported one stopped carrying any,
-# and at D285, when a stated fact started recording the tool and field it was read from.
+# at D285, when a stated fact started recording the tool and field it was read from, and at G56,
+# when only the Intent and the users' question turns counted as asking for a fact.
 # A change to this value is a change to every Verifier of every build, so it is moved deliberately
 # or not at all.
-DERIVATION_HASH = "f25957f0f6323e180b079207699cec3f7e8c0a7396fd781c5d10652f21825be9"
+DERIVATION_HASH = "224c67717db9129a0e2a52e63cb98c324fbe67d5d7f44d0eee787e3136568e97"
 
 
 def test_the_derivation_never_imports_the_builder_the_runner_internals_or_anything_that_runs(tmp_path):
@@ -368,10 +368,15 @@ def test_communicate_facts_agreed_across_reruns(tmp_path):
 
 
 def test_a_fact_missing_from_one_rerun_is_not_a_communicate_atom(tmp_path):
+    """150.0 is missing from quiet, so it is no atom; #W123 is in every Run but the
+    user stated it without asking, so it is reported, not demanded (G56)."""
     quiet = make_run("quiet", reference_events(final="Your order #W123 is cancelled."))
     verifier = derive(tmp_path, reruns=[quiet])
     stated = sorted(S.atom_payload(a)["text"] for a in verifier.atoms if a.kind == "communicate")
-    assert stated == ["#W123"]
+    assert stated == []
+    reported = sorted(S.atom_payload(a)["text"] for a in verifier.atoms
+                      if S.atom_payload(a).get("kind") == V.REPORTED_COMMUNICATE)
+    assert reported == ["#W123"]
 
 
 def test_entity_count_atom_caps_side_effects(tmp_path):
