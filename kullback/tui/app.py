@@ -27,8 +27,8 @@ from kullback.tui.watch import WatchView
 APP_CSS = """
 #hdr { height: 1; }
 #view { height: 1fr; }
-#transcript { width: 70%; }
-#sidebar { width: 30%; }
+#transcript { width: 1fr; }
+#sidebar { width: 30%; min-width: 68; }
 #watch-main { height: 1fr; }
 #steer { height: 3; }
 """

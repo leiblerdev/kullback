@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from textual.widgets import Input
+from textual.widgets import Input, Static
 
 from kullback.agent.bus import Bus
 from kullback.agent.events import SteerRequestEvent
@@ -151,3 +151,30 @@ async def test_the_nothing_running_note_clears_once_a_heartbeat_appears(tmp_path
         app.current.refresh_sidebar()
         await pilot.pause(1.5)
         assert str(app.query_one("#watch-note").content) == ""
+
+@pytest.mark.anyio
+async def test_the_sidebar_shows_the_rounds_headings_in_full_at_120_columns(tmp_path):
+    """At 120 columns the rounds headings read whole: the sidebar keeps a fitting width."""
+    (tmp_path / "task_status.json").write_text(
+        json.dumps({"task-1": {}, "task-2": {}, "task-3": {}}), encoding="utf-8")
+    (tmp_path / "rounds.json").write_text(json.dumps([{
+        "round": number,
+        "counts": {"fidelity": number, "tasks": 3, "trusted": number, "refused_count": 0,
+                   "probes_passing": number, "spend": {"total": 1.5 * number}},
+    } for number in (1, 2, 3)]), encoding="utf-8")
+    app = KullbackApp(workdir=tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.press("4")
+        assert isinstance(app.current, WatchView)
+        for _ in range(100):
+            await pilot.pause(0.1)
+            if "fidelity" in app.current.sidebar_text():
+                break
+        rounds = app.current.query_one("#watch-rounds", Static)
+        sidebar = app.current.query_one("#sidebar")
+        onscreen = app.screen.size.width - sidebar.region.x
+        shown = "\n".join(
+            rounds.render_line(y).text[:onscreen] for y in range(rounds.size.height))
+        for heading in ("round", "fidelity", "trusted", "refused", "probes passing",
+                        "spend", "exit"):
+            assert heading in shown
