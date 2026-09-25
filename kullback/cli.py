@@ -265,16 +265,145 @@ def ingest(files: list[Path] = typer.Argument(..., help="The customer's export f
           intake_floor: Optional[float] = typer.Option(
               None, "--intake-floor",
               help="Task-eligible share each file must keep (default: the intake floor); "
-                   "refused outside [0, 1].")):
+                   "refused outside [0, 1]."),
+          dry_run: bool = typer.Option(
+              False, "--dry-run",
+              help="Say whether each file would ingest and what it would give, without writing anything.")):
     """Store the customer's files byte for byte and derive Traces from them (D66)."""
     if intake_floor is not None and not 0.0 <= intake_floor <= 1.0:
         raise typer.BadParameter("--intake-floor must lie within [0, 1]")
+    if dry_run:
+        _ingest_dry_run(files, workdir, intake_floor)
+        return
     ingest_file = _entry("kullback.builder.ingest", "ingest_file")
-    if intake_floor is None:
-        summaries = [ingest_file(path, workdir) for path in files]
-    else:
-        summaries = [ingest_file(path, workdir, intake_floor=intake_floor) for path in files]
+    gate_error = _entry("kullback.builder.ingest", "IntakeGateError")
+    summaries = []
+    for path in files:
+        try:
+            if intake_floor is None:
+                summary = ingest_file(path, workdir)
+            else:
+                summary = ingest_file(path, workdir, intake_floor=intake_floor)
+        except gate_error as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(1) from None
+        summaries.append(summary)
+        typer.echo(_ingest_row(str(path), summary["format"], _detect_confidence(path),
+                              summary["runs"], summary["gate"]["metrics"]["eligible_share"],
+                              summary["gate"]["metrics"]["floor"],
+                              _ingested_tools(Path(workdir), summary["raw_hash"]), "ready"))
     _write(Path(workdir) / "ingest_summary.json", summaries)
+
+
+def _ingest_dry_run(files: list[Path], workdir: Path, intake_floor: Optional[float]) -> None:
+    """One dry-run row per file: whether it would ingest and what it would give."""
+    dry = _entry("kullback.builder.ingest", "dry_run")
+    for path in files:
+        result = dry(path, workdir, intake_floor=intake_floor)
+        if result["passed"]:
+            status = "ready"
+        else:
+            first = (result["failures"] or result["reasons"] or ["no reason given"])[0]
+            status = f"not read: {first}"
+        typer.echo(_ingest_row(str(path), result["format"], result["confidence"], result["traces"],
+                              result["eligible_share"], result["floor"], result["tools"], status))
+
+
+def _ingest_row(path: str, format: str, confidence: float, traces: int, share: float,
+                floor: float, tools: int, status: str) -> str:
+    """One ingest line: the file, what it is, and whether it is ready to build on."""
+    return (f"{path} format {format} confidence {confidence:.2f} traces {traces} "
+            f"eligible {share:.2f} vs {floor:.2f} tools {tools} {status}")
+
+
+def _detect_confidence(path: Path) -> float:
+    """The winning adapter's vote on a file, for the row after a successful ingest.
+
+    Confidence is a display concern, so it is re-voted here instead of riding the summary.
+    """
+    decode = _entry("kullback.builder.ingest", "_decode")
+    detect = _entry("kullback.builder.sources", "detect_format")
+    document, jsonl = decode(Path(path).read_bytes())
+    decision = detect(document, jsonl)
+    if decision.winner == "unknown":
+        return 0.0
+    vote = decision.votes.get(decision.winner, (0.0, []))[0]
+    return float(vote) if isinstance(vote, (int, float)) and vote > 0 else 0.0
+
+
+def _ingested_tools(workdir: Path, raw_hash: str) -> int:
+    """How many distinct tool names one ingested file's traces call, eligible and set aside."""
+    names: set[str] = set()
+    for folder in ("traces", "evidence_traces"):
+        root = workdir / folder
+        if not root.is_dir():
+            continue
+        for cand in root.glob("*.json"):
+            try:
+                body = json.loads(cand.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(body, dict) or body.get("raw_hash") != raw_hash:
+                continue
+            for call in body.get("tool_calls") or []:
+                if isinstance(call, dict) and call.get("name"):
+                    names.add(call["name"])
+    return len(names)
+
+
+sources_app = typer.Typer(add_completion=False,
+                          help="Shape a file and check a reader for a format the harness "
+                               "does not map yet.")
+app.add_typer(sources_app, name="sources")
+
+
+@sources_app.command("shape")
+def sources_shape(file: Path = typer.Argument(..., help="The customer's export file."),  # noqa: B008
+                  as_json: bool = typer.Option(False, "--json",
+                                               help="Print the summary as JSON.")):
+    """Print the structure-only summary of a file, keeping no customer string."""
+    shape_summary = _entry("kullback.builder.sources.shape", "shape_summary")
+    summary = shape_summary(file)
+    if as_json:
+        typer.echo(json.dumps(summary, indent=2, sort_keys=True))
+        return
+    for line in _shape_lines(summary):
+        typer.echo(line)
+
+
+def _shape_lines(summary: dict) -> list[str]:
+    """One line per key path: the types, the count, length ranges, hints, kept words."""
+    lines = [f"{summary.get('file')} jsonl={summary.get('jsonl')} records={summary.get('records')}"]
+    for path, info in sorted(summary.get("paths", {}).items()):
+        line = f"{path}: {','.join(info.get('types', []))} x{info.get('count', 0)}"
+        if "min_len" in info:
+            line += f" len {info['min_len']}..{info['max_len']}"
+        for hint in info.get("hints", []):
+            line += f" {hint}"
+        if "values" in info:
+            line += f" ={'|'.join(info['values'])}"
+        lines.append(line)
+    return lines
+
+
+@sources_app.command("check")
+def sources_check(file: Path = typer.Argument(..., help="The raw file the reader was written for."),  # noqa: B008
+                  reader: Path = typer.Option(..., "--reader",  # noqa: B008
+                                              help="The workdir reader file defining ADAPTER.")):
+    """Check a reader against a file, printing the problems or passes."""
+    load = _entry("kullback.builder.sources.workdir_readers", "adapter_from_path")
+    check = _entry("kullback.builder.sources.workdir_readers", "check_reader")
+    try:
+        adapter = load(reader)
+    except (ValueError, ImportError) as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from None
+    problems = check(adapter, file)
+    if problems:
+        for problem in problems:
+            typer.echo(problem)
+        raise typer.Exit(1)
+    typer.echo("passes")
 
 
 def _rescue_candidates(workdir: Path, raw_hash: Optional[str]) -> list:
