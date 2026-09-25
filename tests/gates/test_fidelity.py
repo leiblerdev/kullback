@@ -15,13 +15,13 @@ from runner.replay_fixtures import Toolkit, do_replay
 
 def test_replay_fidelity_reports_success_and_error_separately():
     calls = [
-        {"tool": "get_order", "expected": {"id": "W1", "total": 25}, "actual": {"id": "W1", "total": 25.0},
+        {"tool": "get_item", "expected": {"id": "W1", "total": 25}, "actual": {"id": "W1", "total": 25.0},
          "held_out": True},
-        {"tool": "get_order", "expected": {"id": "W2"}, "actual": {"id": "W3"},
+        {"tool": "get_item", "expected": {"id": "W2"}, "actual": {"id": "W3"},
          "held_out": True, "reason": "our_bug"},
-        {"tool": "get_order", "expected_error": {"class": "not_found_entity"},
+        {"tool": "get_item", "expected_error": {"class": "not_found_entity"},
          "actual_error": {"class": "not_found_entity"}, "held_out": True},
-        {"tool": "get_order", "expected_error": {"class": "not_found_entity"},
+        {"tool": "get_item", "expected_error": {"class": "not_found_entity"},
          "actual_error": {"class": "business_error"}, "held_out": True},
     ]
     out = replay_fidelity_gate(calls)
@@ -33,7 +33,7 @@ def test_replay_fidelity_reports_success_and_error_separately():
     assert success["raw"] == 0.5
     assert success["explained"] == 1.0
     assert error["unexplained"] == 1
-    assert out.metrics["per_tool"]["get_order"]["success"]["total"] == 2
+    assert out.metrics["per_tool"]["get_item"]["success"]["total"] == 2
 
 
 def test_replay_fidelity_fails_an_explained_miss_on_a_recorded_call():
@@ -81,7 +81,7 @@ def test_the_fidelity_gates_compare_under_the_customers_rules_and_equivalence_ta
         classified_by="human")
     assert oracle_replay_gate(replays).passed is False
     assert oracle_replay_gate(replays, equivalence=table).passed is True
-    calls = [{"tool": "get_order", "expected": {"total": 25.4}, "actual": {"total": 25.0},
+    calls = [{"tool": "get_item", "expected": {"total": 25.4}, "actual": {"total": 25.0},
               "held_out": False}]
     assert replay_fidelity_gate(calls).passed is False
     assert replay_fidelity_gate(calls, canon_rules=CanonRules(number_precision=0)).passed is True
@@ -96,10 +96,10 @@ def _replay(confirmed: bool, *reasons: str, writes: int = 1, matched: int = 1) -
 
 
 def test_unconfirmed_reason_is_the_most_common_first_reason():
-    a = _replay(False, "cancel_order write: differs", "get_order read: differs")
-    b = _replay(False, "cancel_order write: differs")
+    a = _replay(False, "cancel_item write: differs", "get_item read: differs")
+    b = _replay(False, "cancel_item write: differs")
     c = _replay(False, "replay crashed: KeyError")
-    assert unconfirmed_reason({"tr1": a, "tr2": b, "tr3": c}) == "cancel_order write: differs"
+    assert unconfirmed_reason({"tr1": a, "tr2": b, "tr3": c}) == "cancel_item write: differs"
     assert unconfirmed_reason({}) == "no Trace of the Task was replayed"
     assert unconfirmed_reason({"tr1": _replay(False)}) == "no Trace of the Task was replayed"
 
@@ -109,14 +109,14 @@ def test_reference_replay_gate_fails_only_the_task_no_trace_confirms():
     the reason its replays agree on; a Task one Trace confirms is fine whatever the others did. No
     Task replayed is no Task rejected; the stage's own gate says how many Tasks there were."""
     replays = {
-        "t1": {"tr1": _replay(True), "tr2": _replay(False, "get_order read: differs")},
-        "t2": {"tr1": _replay(False, "cancel_order write: differs", matched=0)},
+        "t1": {"tr1": _replay(True), "tr2": _replay(False, "get_item read: differs")},
+        "t2": {"tr1": _replay(False, "cancel_item write: differs", matched=0)},
         "t3": {},
     }
     out = reference_replay_gate(replays)
     assert out.stage == "replay_reference"
     assert out.passed is False
-    assert out.failures == ["task t2: cancel_order write: differs",
+    assert out.failures == ["task t2: cancel_item write: differs",
                             "task t3: no Trace of the Task was replayed"]
     assert out.metrics["tasks"] == 3 and out.metrics["tasks_confirmed"] == 1
     assert out.metrics == summarize(replays)
@@ -134,9 +134,9 @@ def test_summarize_counts_traces_tasks_and_calls_and_names_the_common_miss(tmp_p
     assert summary["traces"] == 3 and summary["confirmed"] == 1
     assert summary["tasks"] == 2 and summary["tasks_confirmed"] == 1
     assert summary["writes"] == 3 and summary["writes_matched"] == 1
-    assert unconfirmed_reason({"tr1": bad, "tr2": bad}) == "cancel_order write: differs (value)"
+    assert unconfirmed_reason({"tr1": bad, "tr2": bad}) == "cancel_item write: differs (value)"
     assert unconfirmed_reason({}) == "no Trace of the Task was replayed"
-    built_good, built_bad = _replay(True), _replay(False, "cancel_order write: differs", matched=0)
+    built_good, built_bad = _replay(True), _replay(False, "cancel_item write: differs", matched=0)
     built = summarize({"t1": {"tr1": built_good}, "t2": {"tr1": built_bad, "tr2": built_bad}})
     assert built["traces"] == 3 and built["confirmed"] == 1
     assert built["tasks"] == 2 and built["tasks_confirmed"] == 1
