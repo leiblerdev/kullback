@@ -248,3 +248,9 @@ The top-level modules sit outside the import-linter layers contract. The last co
 |---|---|
 | `kullback/tui/__init__.py` | The terminal screen: a live board, transcript and commands for one build. |
 | `kullback/tui/diagrams.py` | Pure text rendering of the pipeline, the loop and the layering. |
+| `kullback/tui/views/__init__.py` | The views palette: keys, titles and classes in screen order. |
+| `kullback/tui/views/traces.py` | Dry-run a trace file: format, counts and shape, never file values. |
+| `kullback/tui/views/tasks.py` | Browse Tasks: filter, detail, nudge; values hidden until v. |
+| `kullback/tui/views/runs.py` | Run a Candidate detached and score it as a table. |
+| `kullback/tui/views/publish.py` | Publish checklist rows and the word, never an upload. |
+| `kullback/tui/views/synthesise.py` | Synthesis options, a detached start, and the bus as a transcript. |
