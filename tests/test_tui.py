@@ -1518,3 +1518,33 @@ def test_the_loop_runs_a_pending_command_next(tmp_path, monkeypatch):
     answers = iter(["/doctor", "/quit"])
     monkeypatch.setattr(Console, "input", lambda self, prompt="": next(answers))
     loop(tmp_path)
+
+
+# --- the app shell: bare kullback, the shared table, Home fixes ---
+
+def test_ingest_lives_in_the_shared_table_help_and_menu():
+    """The app's / menu reads COMMANDS, so /ingest is listed, helped and filtered."""
+    from kullback import tui as tui_mod
+
+    assert "ingest" in {row[0] for row in tui_mod.COMMANDS}
+    assert "/ingest" in tui_mod.HELP
+    assert "ingest" in [row[0] for row in tui_mod.filter_commands("ing")]
+
+
+def test_home_rows_name_slash_fixes_for_login_and_ingest(tmp_path):
+    """Checklist rows carry the command that fixes them, as the command line takes it."""
+    from kullback.tui.home import HomeView, fix_command
+
+    home = HomeView(tmp_path)
+    assert home.row_command(0) == "/login"
+    assert home.row_command(2) == "/ingest"
+    assert fix_command("kullback freeze-runner") == "/freeze-runner"
+
+
+def test_home_model_row_names_the_default_model_in_plain_words(tmp_path):
+    """With no model chosen Home reads the default model's keys, never 'no model'."""
+    from kullback.tui.home import HomeView
+
+    text = HomeView(tmp_path).text()
+    assert "names no key variable" not in text
+    assert "no model" not in text
