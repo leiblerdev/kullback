@@ -1255,7 +1255,9 @@ def doctor(
     Six rows off the workdir's files and the key variables in the environment, one
     per line as [x] or [ ] with the name and the detail, and the next step last.
     Reads files and names only, never secret values, and never calls a model.
+    Remembered keys load first, like the screen: a key from auth.json counts.
     """
+    _load_keys()
     from kullback.tui.checklist import next_step, where_it_stands
 
     rows = where_it_stands(Path(workdir), dict(os.environ), model)

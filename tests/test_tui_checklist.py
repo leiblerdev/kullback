@@ -102,3 +102,16 @@ def test_next_step_names_the_command_for_each_first_undone_row():
     for at, command in enumerate(commands):
         rows = [Row(name, done=index < at, detail="", next_key="") for index, name in enumerate(names)]
         assert command in next_step(rows)
+
+
+def test_a_live_switch_only_in_the_workdir_env_does_not_count(tmp_path, monkeypatch):
+    """Only the current directory's .env reaches a model call, so only it counts here."""
+    _clean(monkeypatch, tmp_path)
+    (tmp_path / ".env").write_text(
+        "HARNESS_ALLOW_MODEL_REQUESTS=1\nOPENAI_API_KEY=marker-secret-value-3\n", encoding="utf-8")
+    shell = tmp_path / "shell"
+    shell.mkdir()
+    monkeypatch.chdir(shell)
+    rows = where_it_stands(tmp_path, {}, OPENAI_MODEL)
+    assert rows[0].done is False and rows[1].done is False
+    assert "marker-secret-value-3" not in "\n".join(row.detail for row in rows)
