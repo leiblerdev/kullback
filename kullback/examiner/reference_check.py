@@ -138,7 +138,7 @@ def _mark_derive_again(workdir: Path, task_id: str, root: Optional[ExamRoot]) ->
     The Verifier was derived from the Reference just rejected, so it encodes that End state, and a
     suite pass it earned against it is no evidence about the Reference chosen now. The next
     derivation writes the row afresh. With the session's root the existing helper writes both status
-    files from what the session holds; without it (a ruling on a note) both files are merged on disk.
+    files from what the session holds; a caller with no session merges both files on disk.
     """
     from kullback.examiner.domain_tools import _keep_suite_status  # the one status writer of the session
 
@@ -189,7 +189,8 @@ def reject_reference(workdir: Any, task_id: str, run_id: str, why: str, evidence
     return {"excluded": targets, "references": picked, "refused": refused}
 
 
-def reject_on_note(workdir: Any, task_id: str, note: dict, verdict: str, text: str) -> Optional[dict]:
+def reject_on_note(workdir: Any, task_id: str, note: dict, verdict: str, text: str,
+                   root: Optional[ExamRoot] = None) -> Optional[dict]:
     """The move a `builder_right` ruling makes on a note saying the outcome is wrong, else None."""
     if verdict != "builder_right" or note.get("reason") not in REFERENCE_WRONG_NOTES:
         return None
@@ -198,7 +199,8 @@ def reject_on_note(workdir: Any, task_id: str, note: dict, verdict: str, text: s
     if not current:
         return None
     evidence = f"Builder note {note.get('reason')}: {note.get('sentence')}"
-    return reject_reference(workdir, task_id, current[0], text or str(note.get("sentence") or ""), evidence)
+    return reject_reference(workdir, task_id, current[0], text or str(note.get("sentence") or ""), evidence,
+                            root=root)
 
 
 # --- the view --------------------------------------------------------------------

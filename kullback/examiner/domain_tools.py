@@ -813,11 +813,14 @@ def open_note(workdir: Any, task_id: str) -> Optional[dict]:
     return note if note is not None and read_ruling(workdir, task_id) is None else None
 
 
-def rule_note(workdir: Any, task_id: Optional[str], move: str, verdict: str, text: str) -> Optional[dict]:
+def rule_note(workdir: Any, task_id: Optional[str], move: str, verdict: str, text: str,
+              root: Optional[ExamRoot] = None) -> Optional[dict]:
     """Rule on the Task's open note with one of the Examiner's moves, written next to the note.
 
     Returns the ruling, or None when the Task has no open note. Agreeing with a note that says the
     Reference's outcome is wrong also rejects that Reference (reference_check), so the ruling acts.
+    The session's `root` carries the status mark into what the session holds, so a later accepted
+    write in the same session keeps it.
     """
     from kullback.examiner.reference_check import reject_on_note  # it reads notes through this module
 
@@ -827,7 +830,7 @@ def rule_note(workdir: Any, task_id: Optional[str], move: str, verdict: str, tex
     ruling = {"task_id": task_id, "note_hash": note["note_hash"], "move": move, "verdict": verdict,
               "text": text}
     write_json(task_path(workdir, task_id, notes_dir(workdir), RULING_SUFFIX), ruling)
-    rejected = reject_on_note(workdir, task_id, note, verdict, text)
+    rejected = reject_on_note(workdir, task_id, note, verdict, text, root=root)
     if rejected is not None:
         ruling["reference_rejected"] = rejected
     return ruling
@@ -859,7 +862,7 @@ def _probe(root: ExamRoot):
         summary = (f"probe {probe_id} ({args.bug_class or 'no class'}) on task {args.task_id}: "
                    f"{verdict}; pool holds {len(pool)}")
         if rule_note(root.workdir, args.task_id, "probe", "builder_right" if passed else "builder_wrong",
-                     f"{verdict}" + (f"; {args.note}" if args.note else "")) is not None:
+                     f"{verdict}" + (f"; {args.note}" if args.note else ""), root=root) is not None:
             summary += f"; the Builder's note on task {args.task_id} is ruled by this probe"
         return ProbeResult(summary=summary, probe_id=probe_id, task_id=args.task_id,
                            scored_pass=bool(passed),
@@ -912,7 +915,7 @@ def _finding(root: ExamRoot):
         summary = (f"finding {body['finding_id']} ({kind}) filed" + _on_task(args.task_id)
                    + (f", naming {args.path}" if args.path else ""))
         if args.note_ruling is not None:
-            rule_note(root.workdir, args.task_id, "finding", args.note_ruling, args.text)
+            rule_note(root.workdir, args.task_id, "finding", args.note_ruling, args.text, root=root)
             summary += f"; the Builder's note on task {args.task_id} is ruled: {args.note_ruling}"
         return FindingResult(summary=summary, finding_id=body["finding_id"], finding=body)
 

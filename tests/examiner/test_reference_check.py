@@ -149,3 +149,29 @@ def test_a_re_derive_after_a_rejection_picks_the_other_recording_and_not_the_cac
     assert _references(world) == ["rr2"]
     assert read_json(world.workdir / "references.json")["t1"]["failed"]["ref"].startswith("rejected:")
 
+
+
+def test_a_builder_right_ruling_then_an_accepted_edit_in_the_same_session_keeps_the_derive_again_mark(tmp_path):
+    world = make_world(tmp_path)
+    (tmp_path / "v").mkdir()
+    verifier = VF.derive(tmp_path / "v")
+    root = _root(world)
+    root.verifiers = {"t1": verifier}
+    root.probe_model, root.run_probe = object(), probe_runner_over()
+    root.task_status = {"t1": {"verifier_passed": True, "references": 1}}
+    write_json(world.workdir / "task_status.json", {"t1": {"verifier_passed": True, "references": 1}})
+    write_json(world.workdir / "references.json", {"t1": _row(
+        {"A": ["earlier"], "B": ["ref", "alt"]}, ["earlier"],
+        {"ref": "survivor B was not chosen: A stood up better", "alt": "survivor B was not chosen: A stood up better"})})
+    D.write_note(world.workdir, "t1", "outcome_not_in_state", "The Reference wrote one entity more than asked.")
+    asyncio.run(_tool(root, "finding").execute(D.FindingArgs(
+        task_id="t1", kind="reference_disagreement", text="the Reference wrote one entity more",
+        note_ruling="builder_right")))
+    assert _references(world) == ["ref", "alt"]
+    assert root.task_status["t1"][RC.DERIVE_AGAIN] == RC.REPICKED
+    result = asyncio.run(_tool(root, "edit_verifier").execute(D.ProposeArgs(
+        task_id="t1", reason="widen the cap",
+        add=[{"id": "wide_cap", "kind": "allowed", "payload": {"kind": "entity_count", "count": 1000}}])))
+    assert result.rulings and all(record["accepted"] for record in result.rulings)
+    row = read_json(world.workdir / "exam" / "task_status.json")["t1"]
+    assert row[RC.DERIVE_AGAIN] == RC.REPICKED
