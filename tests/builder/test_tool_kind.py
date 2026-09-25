@@ -153,6 +153,19 @@ def test_a_write_shown_only_by_its_own_answer_is_a_write():
     assert sig.classified_by == "observed"
 
 
+def test_a_read_of_another_record_that_names_a_shared_value_is_not_a_write():
+    traces = [one_trace("t1", [
+        {"name": "get_person", "args": {"person_id": "p1"},
+         "result": json.dumps({"person_id": "p1", "status": "active", "item_ids": ["i1"]})},
+        {"name": "get_item", "args": {"item_id": "i1"},
+         "result": json.dumps({"item_id": "i1", "person_id": "p1", "status": "pending"})},
+    ])]
+    sig = sig_by_name(mine_tools(traces), "get_item")
+    assert sig.effects_observed == []
+    assert sig.kind == "read"
+    assert sig.classified_by == "rule"
+
+
 def test_a_read_looking_name_whose_calls_change_state_is_a_write():
     sig = sig_by_name(mine_tools([change_trace("t1", "fetch_widget")]), "fetch_widget")
     assert sig.kind == "write"

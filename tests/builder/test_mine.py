@@ -255,10 +255,14 @@ def test_error_shapes_keep_the_verbatim_payload():
 
 
 def test_the_kind_is_read_from_name_prefixes_and_says_why(fixture_traces):
+    """The code rule reads the first verb: generic English verbs at medium, nothing matched at low."""
     assert propose_kind("search_loans").kind == "read"
-    assert "prefix" in propose_kind("search_loans").reason
+    assert propose_kind("search_loans").confidence == "medium"
+    assert "verb" in propose_kind("search_loans").reason
     assert propose_kind("update_member").kind == "write"
-    assert propose_kind("update_member").confidence == "high"
+    assert propose_kind("update_member").confidence == "medium"
+    assert propose_kind("renew_loan").kind == "write"
+    assert propose_kind("place_hold").kind == "write"
     assert propose_kind("frobnicate").kind == "read"
     assert propose_kind("frobnicate").confidence == "low"
     assert "no name rule matched" in propose_kind("frobnicate").reason
@@ -270,11 +274,12 @@ def test_the_kind_is_read_from_name_prefixes_and_says_why(fixture_traces):
         assert sig.kind == "read"
         assert sig.unclassified is False
         assert sig.classified_by == "rule"
-        assert "prefix" in (sig.kind_reason or "")
+        assert "verb" in (sig.kind_reason or "")
     for name in ["update_loan", "cancel_hold"]:
         sig = sig_by_name(sigs, name)
         assert sig.kind == "write"
         assert sig.unclassified is False
+        assert sig.classified_by == "observed"
 
 
 def test_calculation_and_handoff_names_are_generic():
@@ -755,8 +760,9 @@ def test_a_complete_result_is_never_reconstructed():
 
 
 def test_effect_credit_goes_to_the_tool_that_explains_it_not_the_last_candidate():
-    """D70: a change 'explained only by this tool'. A prefix-less read that merely names the same id
-    after the real write must not become an observed write, and the write must keep its evidence."""
+    """D70: a change 'explained only by this tool'. A verb-less read that merely names the same id
+    after the real write must not become an observed write, and the write must keep its evidence.
+    check_ is a generic read verb, so the read stands classified at medium."""
     traces = [
         one_trace(
             "t1",
@@ -776,8 +782,9 @@ def test_effect_credit_goes_to_the_tool_that_explains_it_not_the_last_candidate(
     cancel = sig_by_name(sigs, "cancel_hold")
     assert check.effects_observed == []
     assert check.kind == "read"
+    assert check.kind_confidence == "medium"
     assert check.classified_by == "rule"
-    assert check.unclassified is True
+    assert check.unclassified is False
     assert [e.field for e in cancel.effects_observed] == ["get_loan_details.status"]
     assert cancel.classified_by == "observed"
 
@@ -805,7 +812,8 @@ def test_two_writes_are_credited_per_field_by_the_value_they_carry():
 
 
 def test_no_actor_when_two_candidates_could_explain_the_same_field():
-    """With nothing to tell two writes apart, the field gets no actor rather than the wrong one."""
+    """return_loan_items matches no generic verb, so the leftover pool narrows to cancel_hold alone
+    and the field is credited there rather than left without an actor."""
     from kullback.builder.mine import observed_effects
 
     traces = [
@@ -821,7 +829,13 @@ def test_no_actor_when_two_candidates_could_explain_the_same_field():
             ],
         )
     ]
-    assert observed_effects(traces) == {}
+    effects = {name: [e.field for e in obs] for name, obs in observed_effects(traces).items()}
+    assert effects["cancel_hold"] == ["get_loan_details.status"]
+    assert "return_loan_items" not in effects
+    sigs = mine_tools(traces)
+    cancel = sig_by_name(sigs, "cancel_hold")
+    assert cancel.kind == "write"
+    assert cancel.classified_by == "observed"
 
 
 def test_a_timestamp_that_moves_on_its_own_is_not_an_effect():
@@ -1022,12 +1036,16 @@ def test_mcp_annotations_are_a_rule_and_reach_the_llm(make_test_model):
 
 
 def test_a_name_rule_that_disagrees_with_the_annotations_says_so():
+    """A declaration outranks a verb guess: the source's write stands over get_'s read."""
     declared = [{"name": "get_thing", "parameters": {"properties": {}},
                  "annotations": {"destructiveHint": True}}]
     traces = [one_trace("t1", [{"name": "get_thing", "args": {}, "result": "ok"}], tools_declared=declared)]
     sig = sig_by_name(mine_tools(traces), "get_thing")
-    assert sig.kind == "read"
-    assert "disagree" in (sig.kind_reason or "")
+    assert sig.kind == "write"
+    assert sig.kind_confidence == "medium"
+    assert sig.unclassified is False
+    assert sig.classified_by == "declared"
+    assert "destructiveHint" in (sig.kind_reason or "")
 
 
 # --- D95: reconstruction keeps what the agent saw ---
@@ -1192,10 +1210,9 @@ def test_a_tool_that_returns_what_it_was_sent_is_a_write():
 
 
 def test_a_tool_that_answers_with_a_message_about_a_row_it_was_handed_is_a_write():
-    """A `send_certificate` and a `send_payment_request`, which return a sentence.
-
-    Neither matches a write verb, neither returns a row, and neither was ever bracketed by two
-    identical reads of the thing it touched, so the two stronger signals say nothing about them.
+    """send_ is a generic write verb, so the name decides at medium and the message signal stays
+    silent where the name speaks. The answers below would also earn the message signal on a
+    verb-less name; here they only confirm the verb is not contradicted by the calls.
     """
     traces = [one_trace(f"t{i}", [
         {"name": "send_payment_request", "args": {"customer_id": "C1", "bill_id": f"B{i}"},
@@ -1203,18 +1220,23 @@ def test_a_tool_that_answers_with_a_message_about_a_row_it_was_handed_is_a_write
     ]) for i in range(3)]
     sig = sig_by_name(mine_tools(traces), "send_payment_request")
     assert sig.kind == "write"
-    assert sig.classified_by == "observed"
+    assert sig.kind_confidence == "medium"
+    assert sig.classified_by == "rule"
+    assert sig.unclassified is False
+    assert "verb" in (sig.kind_reason or "")
 
 
 def test_a_message_tool_the_corpus_barely_shows_stays_unclassified():
-    """The weakest signal is held to the same floor as the mine gate: flag, never synthesize."""
+    """The floor holds the weak signals, not a verb name: one sighting of send_ is a medium write."""
     traces = [one_trace("t1", [
         {"name": "send_payment_request", "args": {"customer_id": "C1", "bill_id": "B1"},
          "result": "Payment request sent."},
     ])]
     sig = sig_by_name(mine_tools(traces), "send_payment_request")
-    assert sig.kind == "read"
-    assert sig.unclassified is True
+    assert sig.kind == "write"
+    assert sig.kind_confidence == "medium"
+    assert sig.unclassified is False
+    assert sig.classified_by == "rule"
 
 
 def test_a_message_tool_an_unchanged_read_brackets_is_not_called_a_write():

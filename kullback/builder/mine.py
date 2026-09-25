@@ -1002,12 +1002,96 @@ def _restated(before: Any, after: Any) -> list[str]:
                   if left[key] != right[key] and not _exempt_field(key))
 
 
+def _same_record(before: Any, after: Any, owned: set) -> bool:
+    """Whether two answers show the same record: a shared field holds an equal value the call named.
+
+    Naming one shared value is not enough; a read of another record can name it too. The equal
+    value says both answers carry the same record, and the call naming it says which one.
+    """
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    left, right = _flat(before), _flat(after)
+    return any(left[key] == right[key] and left[key] in owned
+               for key in set(left) & set(right))
+
+
+def _restating_calls(trace_id: str, calls: list, parsed_all: list, seen: set, out: dict) -> None:
+    """Credit calls whose own answer restates a changed record an earlier read showed (D68).
+
+    The call names the record, both answers carry it, and a shared field holds another value.
+    Same-tool pairs belong to the re-read signal above, where the credit goes to the calls
+    between the reads rather than to the later read itself.
+    """
+    for index, call in enumerate(calls):
+        after = parsed_all[index]
+        if not isinstance(after, dict):
+            continue  # only a record-shaped answer can restate a record an earlier read showed
+        owned = _scalars(call.args or {})
+        for read_index in range(index):
+            read, earlier = calls[read_index], parsed_all[read_index]
+            if earlier is None or read.name == call.name:
+                continue
+            if not owned & (_scalars(read.args or {}) | _scalars(earlier)) & _scalars(after):
+                continue  # the same value names the record in the args and in both answers
+            if not _same_record(earlier, after, owned):
+                continue  # another record that merely names the same value
+            for field in _restated(earlier, after):
+                mark = (call.name, trace_id, f"{read.name}.{field}")
+                if mark in seen:
+                    continue
+                seen.add(mark)
+                out.setdefault(call.name, []).append(EffectObservation(
+                    trace_id=trace_id, field=f"{call.name}.{field}",
+                    note=f"{read.name} showed {field} one way and this call answered it another"))
+
+
+def _reread_effects(trace_id: str, calls: list, seen: set, out: dict) -> None:
+    """Credit calls a later identical read shows changing a field of (D68).
+
+    Two identical reads bracket the change; the credit goes to one call between them that names
+    the same thing the read named, or the new value. One actor per field, none where several
+    candidates could explain it.
+    """
+    last: dict[tuple, tuple[int, Any]] = {}
+    for index, call in enumerate(calls):
+        if call.error is not None or call.result is None or getattr(call, "truncated", False):
+            continue  # a cut result is not evidence of a change (D95)
+        parsed = _parse(call.result)
+        key = (call.name, canonical_json(call.args))
+        previous = last.get(key)
+        last[key] = (index, parsed)
+        if previous is None:
+            continue
+        changed = [f for f in _changed_fields(previous[1], parsed) if not _exempt_field(f)]
+        if not changed:
+            continue
+        after = _flat(parsed)
+        changed_values = set().union(*(_values_at(after, field) for field in changed))
+        candidates = [
+            c for c in calls[previous[0] + 1: index]
+            if c.name != call.name and c.error is None
+            and _explains(c, call.args or {}, changed_values)
+        ]
+        if not candidates:
+            continue
+        for field, actor in sorted(_credit(changed, after, candidates).items()):
+            mark = (actor.name, trace_id, f"{call.name}.{field}")
+            if mark in seen:
+                continue
+            seen.add(mark)
+            out.setdefault(actor.name, []).append(EffectObservation(
+                trace_id=trace_id, field=f"{call.name}.{field}",
+                note=f"changed between two identical {call.name} calls"))
+
+
 def observed_effects(traces: list[Trace]) -> dict[str, list[EffectObservation]]:
     """Calls the traces show changing the world, by two name-blind signals (D68).
 
-    value (a status that moved from delivered to requested): the call names the record and shows
-    it changed, so the call changed it. Same-tool pairs belong to the re-read signal, where the
-    credit goes to the calls between the reads rather than to the later read itself.
+    First, a later identical read shows a changed field, and one earlier call between the reads
+    explains it; the credit goes to that call. Second, a call's own answer restates a record an
+    earlier read showed: both answers carry the same record and another shared field holds a
+    different value, a colour of red restated as blue. The call names the record and shows it
+    changed, so the call changed it.
     """
     out: dict[str, list[EffectObservation]] = {}
     seen: set = set()
@@ -1016,58 +1100,10 @@ def observed_effects(traces: list[Trace]) -> dict[str, list[EffectObservation]]:
         # Environment; the simulated user's own actions must not pollute what the agent is seen to
         # have written (docs/cross-domain-check.md, Judgement).
         calls = [c for c in trace.tool_calls if is_assistant_call(c)]
-        last: dict[tuple, tuple[int, Any]] = {}
-        for index, call in enumerate(calls):
-            if call.error is not None or call.result is None or getattr(call, "truncated", False):
-                continue  # a cut result is not evidence of a change (D95)
-            parsed = _parse(call.result)
-            key = (call.name, canonical_json(call.args))
-            previous = last.get(key)
-            last[key] = (index, parsed)
-            if previous is None:
-                continue
-            changed = [f for f in _changed_fields(previous[1], parsed) if not _exempt_field(f)]
-            if not changed:
-                continue
-            after = _flat(parsed)
-            changed_values = set().union(*(_values_at(after, field) for field in changed))
-            candidates = [
-                c for c in calls[previous[0] + 1: index]
-                if c.name != call.name and c.error is None
-                and _explains(c, call.args or {}, changed_values)
-            ]
-            if not candidates:
-                continue
-            for field, actor in sorted(_credit(changed, after, candidates).items()):
-                mark = (actor.name, trace.trace_id, f"{call.name}.{field}")
-                if mark in seen:
-                    continue
-                seen.add(mark)
-                out.setdefault(actor.name, []).append(EffectObservation(
-                    trace_id=trace.trace_id, field=f"{call.name}.{field}",
-                    note=f"changed between two identical {call.name} calls"))
+        _reread_effects(trace.trace_id, calls, seen, out)
         parsed_all = [None if c.error is not None or c.result is None
                       or getattr(c, "truncated", False) else _parse(c.result) for c in calls]
-        for index, call in enumerate(calls):
-            after = parsed_all[index]
-            if not isinstance(after, dict):
-                continue  # only a record-shaped answer can restate a record an earlier read showed
-            for read_index in range(index):
-                read, earlier = calls[read_index], parsed_all[read_index]
-                if earlier is None or read.name == call.name:
-                    continue
-                named = _scalars(call.args or {}) & (
-                    _scalars(read.args or {}) | _scalars(earlier))
-                if not named & _scalars(after):
-                    continue  # the same value names the record in the args and in both answers
-                for field in _restated(earlier, after):
-                    mark = (call.name, trace.trace_id, f"{read.name}.{field}")
-                    if mark in seen:
-                        continue
-                    seen.add(mark)
-                    out.setdefault(call.name, []).append(EffectObservation(
-                        trace_id=trace.trace_id, field=f"{call.name}.{field}",
-                        note=f"{read.name} showed {field} one way and this call answered it another"))
+        _restating_calls(trace.trace_id, calls, parsed_all, seen, out)
     return out
 
 
