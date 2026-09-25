@@ -218,6 +218,86 @@ def test_freeze_runner_writes_nothing_on_a_no(workdir):
     assert "not frozen" in result.output
 
 
+def test_login_reads_the_value_with_getpass_and_remembers_it(tmp_path, monkeypatch):
+    """The value never travels as an argument, so it never lands in shell history."""
+    import getpass
+
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: "sk-typed-once")
+    result = invoke("login", "OPENAI_API_KEY")
+    assert result.exit_code == 0, result.output
+    assert "remembered OPENAI_API_KEY" in result.output
+    assert "sk-typed-once" not in result.output
+    assert credentials.stored_names() == ["OPENAI_API_KEY"]
+
+
+def test_login_list_prints_names_never_values(tmp_path, monkeypatch):
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    credentials.remember("OPENAI_API_KEY", "sk-secret-one")
+    credentials.remember("ANTHROPIC_API_KEY", "sk-secret-two")
+    result = invoke("login", "--list")
+    assert result.exit_code == 0, result.output
+    assert "OPENAI_API_KEY" in result.output and "ANTHROPIC_API_KEY" in result.output
+    assert "sk-secret-one" not in result.output and "sk-secret-two" not in result.output
+
+
+def test_logout_forgets_the_named_key(tmp_path, monkeypatch):
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    credentials.remember("OPENAI_API_KEY", "sk-secret-one")
+    result = invoke("logout", "OPENAI_API_KEY")
+    assert result.exit_code == 0, result.output
+    assert "forgot remembered OPENAI_API_KEY" in result.output
+    assert credentials.stored_names() == []
+    again = invoke("logout", "OPENAI_API_KEY")
+    assert again.exit_code == 0, again.output
+    assert "no remembered key OPENAI_API_KEY" in again.output
+
+
+def test_the_screen_opens_with_the_remembered_keys_loaded(tmp_path, monkeypatch):
+    """A key only in the store is in the environment the screen loop sees, for both entries."""
+    import os
+
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    credentials.remember("OPENAI_API_KEY", "sk-remembered")
+    seen = []
+    real_entry = cli._entry
+
+    def entry(path, name):
+        if path == "kullback.tui":
+            return lambda **kwargs: seen.append(dict(os.environ))
+        return real_entry(path, name)
+
+    monkeypatch.setattr(cli, "_entry", entry)
+    try:
+        assert invoke("tui", "--workdir", str(tmp_path)).exit_code == 0
+        assert invoke("attach", str(tmp_path)).exit_code == 0
+    finally:
+        os.environ.pop("OPENAI_API_KEY", None)
+    assert len(seen) == 2
+    assert all(env.get("OPENAI_API_KEY") == "sk-remembered" for env in seen)
+
+
+def test_loading_keys_for_the_screen_never_overrides_an_exported_one(tmp_path, monkeypatch):
+    import os
+
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-exported")
+    credentials.remember("OPENAI_API_KEY", "sk-remembered")
+    cli._load_keys()
+    assert os.environ["OPENAI_API_KEY"] == "sk-exported"
+
+
 def test_a_routing_config_changes_the_version(workdir, tmp_path):
     config = tmp_path / "routing.json"
     config.write_text('{"llm_standin": false}', encoding="utf-8")
