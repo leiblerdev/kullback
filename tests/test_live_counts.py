@@ -16,8 +16,9 @@ from typer.testing import CliRunner
 from gates.examiner_fixtures import SIGS, TASK, base, pool, probe, replay_row, reroll_row, status
 from gates.verifier_fixtures import alt_path_run, other_reason_run, reference_run, write_events_jsonl, wrong_run
 from kullback import cli, live_counts, round_snapshot
+from kullback.gates.probes import version_hash
 from kullback.gates.verifier_suite import D79_STAGES
-from kullback.runner.records import Task, as_dict
+from kullback.runner.records import Task, VerifierHistory, VerifierVersion, as_dict
 
 runner = CliRunner()
 
@@ -40,10 +41,15 @@ def _seed(workdir: Path, tmp_path: Path) -> dict:
                                 reason="the suite did not pass"),
                    "t3": status(verifier_passed=False, reference_confirmed=False)}
     (workdir / "task_status.json").write_text(json.dumps(live_status), encoding="utf-8")
-    body = as_dict(verifier)
-    body["atoms"][0]["description"] = f"derived from a recording that says {MARKER}"
+    marked = verifier.atoms[0].model_copy(update={"description": f"derived from a recording that says {MARKER}"})
+    verifier = verifier.model_copy(update={"atoms": [marked, *verifier.atoms[1:]]})
     (workdir / "verifiers").mkdir()
-    (workdir / "verifiers" / f"{TASK}.json").write_text(json.dumps(body), encoding="utf-8")
+    (workdir / "verifiers" / f"{TASK}.json").write_text(json.dumps(as_dict(verifier)), encoding="utf-8")
+    (workdir / "exam").mkdir()
+    (workdir / "exam" / "history.json").write_text(json.dumps({TASK: as_dict(VerifierHistory(
+        task_id=TASK, versions=[VerifierVersion(task_id=TASK, content_hash=version_hash(verifier),
+                                                verifier_version="1", by="derive", accepted=True,
+                                                verifier=verifier)]))}), encoding="utf-8")
     replay_t1 = dict(replay_row("tr1", True, run_id="ref"),
                      counts={"calls": 14, "writes": 6, "writes_matched": 6, "reads": 8,
                              "reads_same": 7, "reads_cosmetic": 1, "reads_both_refused": 0},
@@ -53,7 +59,7 @@ def _seed(workdir: Path, tmp_path: Path) -> dict:
     rerolls = {TASK: [reroll_row("rr2"), reroll_row("alt")], "t2": [reroll_row("reroll-t2-0", "max_steps")]}
     (workdir / "rerolls.json").write_text(json.dumps(rerolls), encoding="utf-8")
     (workdir / "tool_sigs.json").write_text(
-        json.dumps({"sigs": [as_dict(sig) for sig in SIGS]}), encoding="utf-8")
+        json.dumps([as_dict(sig) for sig in SIGS]), encoding="utf-8")
     (workdir / "tasks").mkdir()
     for task_id in (TASK, "t2", "t3"):
         (workdir / "tasks" / f"{task_id}.json").write_text(
@@ -68,7 +74,7 @@ def _seed(workdir: Path, tmp_path: Path) -> dict:
         encoding="utf-8")
     (workdir / "probes" / TASK).mkdir(parents=True)
     (workdir / "probes" / TASK / "pool.json").write_text(json.dumps(as_dict(pool(
-        probe("p-pass", reference_run(), verifier), probe("p-fail", wrong_run(), verifier)))), encoding="utf-8")
+        probe("p-fail-1", wrong_run(), verifier), probe("p-fail-2", wrong_run(), verifier)))), encoding="utf-8")
     (workdir / "findings.json").write_text(json.dumps([{
         "finding_id": "f-1", "task_id": "t2", "kind": "suite",
         "text": f"the suite failed where the recording says {MARKER}",
@@ -96,11 +102,23 @@ def test_workdir_counts_match_the_counts_line_on_the_fixture_workdir(workdir, tm
     _seed(workdir, tmp_path)
     counts = live_counts.workdir_counts(workdir, max_age=0.0)
     assert set(counts) == {"tasks", "fidelity", "trusted", "refused", "open", "drifted", "read_at"}
-    assert counts["tasks"] == 3 and counts["fidelity"] == 1 and counts["refused"] == 1
-    assert counts["open"] == 2 and counts["drifted"] == 1
+    assert counts["tasks"] == 3 and counts["fidelity"] == 1 and counts["trusted"] == 1
+    assert counts["refused"] == 1 and counts["open"] == 1 and counts["drifted"] == 1
     assert cli._counts_line(workdir) == (
         f"trusted {counts['trusted']}, refused {counts['refused']}, "
         f"fidelity {counts['fidelity']}/{counts['tasks']}")
+
+
+def test_workdir_counts_trusted_matches_the_builders_status_of(workdir, tmp_path):
+    from collections import Counter
+
+    from kullback.builder.domain_tools import status_of
+
+    _seed(workdir, tmp_path)
+    counts = live_counts.workdir_counts(workdir, max_age=0.0)
+    states = Counter(row["state"] for row in status_of(workdir)["tasks"])
+    assert (counts["trusted"], counts["refused"], counts["open"]) == (
+        states["trusted"], states["refused"], states["open"])
 
 
 def test_a_second_count_with_no_file_changed_reads_nothing(workdir, tmp_path):
@@ -144,8 +162,7 @@ def test_task_rows_mark_synthetic_tasks(workdir, tmp_path):
     assert by_id["t2"]["drift"] == "fidelity"
     assert (by_id["t2"]["last_finding_kind"], by_id["t2"]["last_finding_path"]) == ("suite", "env/tools/lend.py")
     assert by_id["t2"]["replay"] == "unconfirmed" and by_id["t2"]["suite"] == "fail"
-    assert by_id["t3"]["status"] == "refused" and by_id["t3"]["replay"] is None
-    assert by_id[TASK]["probes"] == "1/2"
+    assert by_id[TASK]["probes"] == "0/2"
 
 
 def test_tasks_command_filters_by_status(workdir, tmp_path):

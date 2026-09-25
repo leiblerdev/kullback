@@ -20,11 +20,16 @@ from typing import Any, Callable, Optional
 from kullback import round_snapshot
 from kullback.gates import counts as counts_mod
 from kullback.gates.probes import as_pool, as_verifier, probe_scores, write_tools_of
+from kullback.gates.trust import workdir_trusted_ruling
 from kullback.runner.canon import CanonRules
 
-# Files workdir_counts reads. The snapshot glob is read too, for the drifted count.
-_FIXED_FILES = ("task_status.json", "replays.json", "rerolls.json", "canon-rules.json", "tool_sigs.json")
-_DIR_GLOBS = ("verifiers/*.json", "refusals/*.json", "env/refusals/*.json", "rounds/*/tasks.json")
+# Files workdir_counts reads: the fidelity inputs, the round snapshot, and every file the trusted
+# ruling reads (the Examiner's history, task runs and re-rolls, both probe pools, the Examiner's
+# Verifier proposals, and the Runs the seed provenance step loads).
+_FIXED_FILES = ("task_status.json", "replays.json", "rerolls.json", "canon-rules.json", "tool_sigs.json",
+                "exam/history.json", "exam/task_runs.json", "examiner/rerolls.json")
+_DIR_GLOBS = ("verifiers/*.json", "refusals/*.json", "env/refusals/*.json", "rounds/*/tasks.json",
+              "probes/*/pool.json", "exam/verifiers/*.json", "exam/probes/*/*.json", "runs/**/*.jsonl")
 
 # A file no reader could parse reads as this, so a caller can tell "no file" from "an empty record".
 _MISSING: Any = object()
@@ -34,9 +39,6 @@ _CACHE: dict[str, dict] = {}
 
 # Statuses a row can stand in. Drift is a separate flag, not a status: a drifted Task keeps its word.
 TRUSTED, REFUSED, OPEN = "trusted", "refused", "open"
-
-# What a probes cell reads when the pool is there and scored, and what an empty cell reads.
-_NO_VALUE = "-"
 
 
 def _read_json(path: Any, default: Any = None) -> Any:
@@ -109,7 +111,9 @@ def _inputs(root: Path, read: Callable) -> dict:
     task_status = json_at(root, "task_status.json", read)
     replays = json_at(root, "replays.json", read)
     rerolls = json_at(root, "rerolls.json", read)
-    sigs = (json_at(root, "tool_sigs.json", read) or {}).get("sigs", [])
+    sigs_body = read(root / "tool_sigs.json", _MISSING)
+    sigs = sigs_body if isinstance(sigs_body, list) else (sigs_body.get("sigs", [])
+                                                          if isinstance(sigs_body, dict) else [])
     canon = _canon_rules(read(root / "canon-rules.json", _MISSING))
     return {"task_status": task_status, "verifiers": verifier_dicts(root, read),
             "refusals": refusal_dicts(root, read), "replays": replays, "rerolls": rerolls,
@@ -125,11 +129,18 @@ def _snapshot(root: Path, read: Callable) -> Optional[dict]:
     return body if isinstance(body, dict) else None
 
 
+def _trust_words(root: Path) -> tuple[set, dict]:
+    """The ruling's trusted ids and refusals, the same words the Builder's status reads."""
+    ruling = workdir_trusted_ruling(root)
+    return set(ruling.metrics.get("trusted") or ()), dict(ruling.metrics.get("refused") or {})
+
+
 def workdir_counts(workdir: Any, max_age: float = 5.0, reader: Optional[Callable] = None) -> dict:
     """The live count of a workdir as data: tasks, fidelity, trusted, refused, open and drifted.
 
-    The numbers match what cli._counts_line prints for the same files. A second call with no file
-    changed returns the cached dict without re-reading or re-counting, and a call younger than
+    Fidelity comes from the gate rulings over the replay rows; trusted, refused and open come from
+    the one trusted ruling the Builder's status and the round snapshot read. A second call with no
+    file changed returns the cached dict without re-reading or re-counting, and a call younger than
     max_age seconds returns it even if files moved, so the screen can call this every few seconds.
     `reader` is the module's JSON reader by default; a caller may pass its own to count the opens.
     """
@@ -146,11 +157,14 @@ def workdir_counts(workdir: Any, max_age: float = 5.0, reader: Optional[Callable
     result = counts_mod.round_counts(
         data["task_status"], data["verifiers"], {}, {}, data["refusals"], {}, data["replays"],
         data["rerolls"], data["canon"], data["sigs"], workdir=root)
+    trusted, refused = _trust_words(root)
     snapshot = _snapshot(root, read)
     drifted = round_snapshot.drift(
         snapshot, task_status=data["task_status"], replays=data["replays"], named=0)["status_drift"]
-    out = {"tasks": result["tasks"], "fidelity": result["fidelity"], "trusted": result["trusted"],
-           "refused": result["refused_count"], "open": len(result["unfinished"]),
+    tasks = result["tasks"]
+    opened = len([task_id for task_id in data["task_status"] if task_id not in trusted and task_id not in refused])
+    out = {"tasks": tasks, "fidelity": result["fidelity"], "trusted": len(trusted & set(data["task_status"])),
+           "refused": len(refused.keys() & set(data["task_status"])), "open": opened,
            "drifted": drifted, "read_at": now}
     _CACHE[str(root)] = {"key": key, "read_at": now, "result": out}
     return out
@@ -245,11 +259,8 @@ def task_rows(workdir: Any) -> list[dict]:
     root = Path(workdir)
     read = _read_json
     data = _inputs(root, read)
-    result = counts_mod.round_counts(
-        data["task_status"], data["verifiers"], {}, {}, data["refusals"], {}, data["replays"],
-        data["rerolls"], data["canon"], data["sigs"], workdir=root)
-    trusted = set(result["trusted_ids"] or ())
-    refused = set((result["refused"] or {}))
+    trusted, refused_map = _trust_words(root)
+    refused = set(refused_map)
     ids = _task_ids(root, data)
     snapshot = _snapshot(root, read)
     drifted = {row["task_id"]: row["stage"]
