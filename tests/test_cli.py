@@ -717,6 +717,18 @@ def test_a_replayed_run_covers_the_trace_it_replays(workdir):
     assert "not covered" not in text
 
 
+def test_kullback_doctor_prints_the_checklist_and_the_next_step(tmp_path):
+    """Doctor reads the workdir, not a model: six rows and the next step on an empty dir."""
+    result = invoke("doctor", "--workdir", str(tmp_path))
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert len(lines) == 7
+    for name in ("model", "live calls", "traces", "build", "runner", "publish"):
+        assert sum(name in line for line in lines[:6]) == 1, name
+        assert all(line.startswith(("[x] ", "[ ] ")) for line in lines[:6])
+    assert lines[6].startswith("next: ")
+
+
 # --- the judges the CLI puts between a Run and its Verdict (D76, D88) -------
 
 def _judge(name: str, verdict: str):
