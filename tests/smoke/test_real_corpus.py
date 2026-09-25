@@ -4,8 +4,8 @@ Unit tests in tests/builder prove the same rules on the invented worlds. This ti
 the checks that only make sense on the real data: clustering pair F1 against each discovered
 export's own task ids over hundreds of runs, at two thresholds, and mining every tool, table,
 id pattern and column class off each discovered export. Discovery finds the exports and the
-vendored domain files; nothing here names one. The clustering floor holds on the export it was
-tuned on and other exports score lower today.
+vendored domain files; nothing here names one. The tuned checks hold on the named export
+and other exports score lower today.
 """
 
 from __future__ import annotations
@@ -21,7 +21,8 @@ import pytest
 from conftest import PTR
 from kullback.builder.cluster import cluster_runs
 from kullback.builder.ingest import dry_run
-from kullback.builder.mine import mine_schema, mine_tools
+from kullback.builder.mine import WRITE_VERBS, mine_schema, mine_tools
+from kullback.builder.mine import gate_tools as mine_gate_tools
 from kullback.runner.records import RawPtr, ToolCall, ToolCallError, Trace, Turn
 
 _MAPPED: dict[str, list[Path]] = {}
@@ -187,22 +188,22 @@ def _mined_writes(traces: list[Trace]) -> tuple[list, set[str]]:
     return sigs, {s.name for s in sigs if s.kind == "write"}
 
 
-def _cluster_exports(raw_dir: Path, workdir: Path) -> list[Path]:
-    """The named exports the clustering floor is tuned on, among the mapped ones, in name order."""
-    wanted = os.environ.get("KULLBACK_SMOKE_CLUSTER_EXPORTS", "")
+def _tuned_exports(raw_dir: Path, workdir: Path) -> list[Path]:
+    """The named exports the tuned checks run on, among the mapped ones, in name order."""
+    wanted = os.environ.get("KULLBACK_SMOKE_TUNED_EXPORTS", "")
     names = [name.strip() for name in wanted.split(",") if name.strip()]
     if not names:
-        pytest.skip("KULLBACK_SMOKE_CLUSTER_EXPORTS is unset; the floor holds only on its tuned export")
+        pytest.skip("KULLBACK_SMOKE_TUNED_EXPORTS is unset; the tuned checks hold only on the named export")
     mapped = {path.name: path for path in _mapped_export_files(raw_dir, workdir)}
     files = [mapped[name] for name in names if name in mapped]
     if not files:
-        pytest.skip("the named cluster exports are not among the mapped exports in raw_dir")
+        pytest.skip("the named tuned exports are not among the mapped exports in raw_dir")
     return files
 
 @pytest.mark.smoke
 def test_the_whole_corpus_clusters_close_to_the_exports_own_tasks(raw_dir, workdir):
     """The rule has to hold on hundreds of Runs, not only on three: pair F1 per discovered export."""
-    files = _cluster_exports(raw_dir, workdir)
+    files = _tuned_exports(raw_dir, workdir)
     for path in files:
         traces, truth = _traces_and_truth(path)
         assert len(traces) > 100
@@ -213,7 +214,7 @@ def test_the_whole_corpus_clusters_close_to_the_exports_own_tasks(raw_dir, workd
 @pytest.mark.smoke
 def test_the_corpus_score_does_not_hang_on_the_exact_threshold(raw_dir, workdir):
     """The shipped rule scored 0.28 at its own default and 0.72 at 0.6; that cliff is what idf removes."""
-    files = _cluster_exports(raw_dir, workdir)
+    files = _tuned_exports(raw_dir, workdir)
     for path in files:
         traces, truth = _traces_and_truth(path)
         _, writes = _mined_writes(traces)
@@ -268,7 +269,7 @@ def _domain_of(mined: set[str], tools_files: list[Path]) -> Path | None:
     return best
 
 
-def _check_export_mining(path: Path, defined: dict[Path, set[str]]) -> list[Trace]:
+def _check_export_mining(path: Path, defined: dict[Path, set[str]]) -> tuple[list[Trace], Path]:
     """One export's traces mine tools with wide evidence, all defined in some domain file."""
     traces, _ = _traces_and_truth(path)
     assert len(traces) > 100
@@ -284,7 +285,7 @@ def _check_export_mining(path: Path, defined: dict[Path, set[str]]) -> list[Trac
     assert not unknown, f"tools mined off {path.name} defined in no domain file: {sorted(unknown)}"
     domain = _domain_of(mined, list(defined))
     assert domain is not None, f"no vendored domain file overlaps the tools mined off {path.name}"
-    return traces
+    return traces, domain
 
 
 def _check_store_schema(traces: list[Trace], db_json_path: Path) -> None:
@@ -315,3 +316,48 @@ def test_mining_the_whole_corpus_finds_every_tool_table_id_pattern_and_column_cl
     for path in files:
         wall += traces_from_raw(json.loads(path.read_text(encoding="utf-8")), file_hash=path.name)
     _check_store_schema(wall, tau2_retail_dir / "db.json")
+
+
+def _domain_groups(files: list[Path], defined: dict[Path, set[str]]) -> dict[Path, list[Trace]]:
+    """Every discovered export's traces under its best-match domain directory."""
+    groups: dict[Path, list[Trace]] = {}
+    for path in files:
+        traces, domain = _check_export_mining(path, defined)
+        groups.setdefault(domain.parent, []).extend(traces)
+    return groups
+
+
+def _vendor_writes(names: set[str]) -> set[str]:
+    """Toolkit names that read as writes by their first verb, the miner's own write list."""
+    return {name for name in names if name.split("_")[0] in WRITE_VERBS}
+
+
+def _check_tuned_union(directory: Path, traces: list[Trace], defined: dict[Path, set[str]]) -> None:
+    """One tuned domain's exports together show every vendored tool, pass the gate, and mine the vendor writes."""
+    names = set().union(*[found for item, found in defined.items() if item.parent == directory])
+    assert names, f"no vendored toolkit parsed under {directory}"
+    sigs, writes = _mined_writes(traces)
+    missing = names - {s.name for s in sigs}
+    assert not missing, f"tools in {directory} never shown by its exports: {sorted(missing)}"
+    assert mine_gate_tools(sigs).passed is True
+    vendor_writes = _vendor_writes(names)
+    assert vendor_writes, f"no write-verbed tool defined under {directory}"
+    assert vendor_writes <= writes, f"vendor writes never mined as writes: {sorted(vendor_writes - writes)}"
+
+
+@pytest.mark.smoke
+@pytest.mark.slow
+def test_tuned_exports_pass_the_strict_vendor_checks(raw_dir, workdir):
+    """The named export's domain shows every vendored tool, passes the gate, and mines the vendor writes."""
+    tuned = _tuned_exports(raw_dir, workdir)
+    tools_files = _domain_tools_files()
+    if not tools_files:
+        pytest.skip("no vendored domain tools found")
+    defined = {item: _tool_names_of(item) for item in tools_files}
+    groups = _domain_groups(_mapped_export_files(raw_dir, workdir), defined)
+    seen: list[Path] = []
+    for path in tuned:
+        _, domain = _check_export_mining(path, defined)
+        if domain.parent not in seen:
+            seen.append(domain.parent)
+            _check_tuned_union(domain.parent, groups[domain.parent], defined)
