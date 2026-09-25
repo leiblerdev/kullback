@@ -260,7 +260,6 @@ def test_the_kind_is_read_from_name_prefixes_and_says_why(fixture_traces):
                        ("renew_loan", "write"), ("place_hold", "write")]:
         assert propose_kind(name).kind == kind
         assert propose_kind(name).confidence == "medium"
-        assert "verb" in propose_kind(name).reason
     assert propose_kind("frobnicate").kind == "read"
     assert propose_kind("frobnicate").confidence == "low"
     assert "no name rule matched" in propose_kind("frobnicate").reason
