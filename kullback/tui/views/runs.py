@@ -26,6 +26,9 @@ class RunsView(Widget):
         super().__init__()
         self.workdir = Path(workdir)
         self.launcher = launcher or _popen_launcher
+        self._result_timer = None
+        self._poll_start = 0.0
+        self._out_path: Optional[Path] = None
 
     def compose(self):  # type: ignore[override]
         yield Input(value="trusted", id="tasks")
@@ -67,17 +70,44 @@ class RunsView(Widget):
         except Exception as exc:
             self.query_one("#status", Static).update(f"Launch failed: {exc}")
             return
-        self.query_one("#status", Static).update(f"Running detached, output to {out_path}.")
-        self._show_result(out_path)
-
-    def _show_result(self, out_path: Path) -> None:
-        """The JSON the child wrote as a table: one line per Task, then the pass table."""
-        try:
-            body = json.loads(Path(out_path).read_text())
-        except (OSError, ValueError):
-            self.query_one("#status", Static).update(
-                f"Running detached, output to {out_path}; no result yet.")
+        self._stop_poll()
+        self._out_path = Path(out_path)
+        self._poll_start = time.monotonic()
+        if self._try_show():
             return
+        self._show_running()
+        self._result_timer = self.set_interval(2.0, self._poll_result)
+
+    def on_unmount(self) -> None:
+        self._stop_poll()
+
+    def _stop_poll(self) -> None:
+        """Stop the result timer, so a new start or unmount leaves no timer behind."""
+        if self._result_timer is not None:
+            self._result_timer.stop()
+            self._result_timer = None
+
+    def _poll_result(self) -> None:
+        """Render once the child's JSON parses; meanwhile show the elapsed seconds."""
+        if self._out_path is None:
+            return
+        if self._try_show():
+            self._stop_poll()
+        else:
+            self._show_running()
+
+    def _show_running(self) -> None:
+        elapsed = int(time.monotonic() - self._poll_start)
+        self.query_one("#status", Static).update(
+            f"Running {elapsed}s, output to {self._out_path}.")
+
+    def _try_show(self) -> bool:
+        """Render the child's JSON as a table; False while it is missing or partial."""
+        assert self._out_path is not None
+        try:
+            body = json.loads(self._out_path.read_text())
+        except (OSError, ValueError):
+            return False
         table = self.query_one("#result", DataTable)
         table.clear()
         for row in body.get("rows", ()):
@@ -98,14 +128,17 @@ class RunsView(Widget):
         self.query_one("#status", Static).update(
             f"{head} runs {totals.get('runs_done')}/{totals.get('runs_planned')} "
             f"spend ${float(totals.get('spend_usd') or 0.0):.2f} failing most: {failing}")
+        return True
 
 
 def _popen_launcher(command: list[str], workdir: Path) -> Path:
-    """Start the CLI detached, writing its JSON to a file in the workdir, and return the path."""
-    out_path = workdir / f"run-{time.strftime('%Y%m%d-%H%M%S')}.json"
-    with open(out_path, "wb") as handle:
-        subprocess.Popen(command, stdout=handle, stderr=subprocess.STDOUT,
-                         start_new_session=True, cwd=str(workdir))
+    """Start the CLI detached: stdout as JSON, stderr beside it, same shell environment."""
+    stem = f"run-{time.strftime('%Y%m%d-%H%M%S')}"
+    out_path = workdir / f"{stem}.json"
+    log_path = workdir / f"{stem}.log"
+    with open(out_path, "wb") as out_handle, open(log_path, "wb") as log_handle:
+        subprocess.Popen(command, stdout=out_handle, stderr=log_handle,
+                         start_new_session=True)
     return out_path
 
 
