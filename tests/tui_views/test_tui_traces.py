@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 from textual.widgets import DataTable, Input, Static
@@ -13,7 +12,31 @@ from kullback.tui.views.traces import TracesView
 
 pytestmark = pytest.mark.anyio
 
-FIXTURE = Path(__file__).parents[2] / "tests" / "fixtures" / "tau2_retail_small.json"
+
+def _otel_spans_file(path):
+    """A small generic telemetry export: invented neutral strings, nothing customer."""
+    payload = {
+        "resourceSpans": [{
+            "resource": {"attributes": [{
+                "key": "service.name",
+                "value": {"stringValue": "harbor lantern surveyor notes number seven"},
+            }]},
+            "scopeSpans": [{
+                "scope": {"name": "mariner compass workshop ledger entry nine"},
+                "spans": [{
+                    "traceId": "5b8efff798038103d269b633c9aec547",
+                    "spanId": "eee19b7ec3c81056",
+                    "name": "gen_ai.harbor lantern surveyor run",
+                    "attributes": {
+                        "gen_ai.request.model": "north meadow field journal volume twelve",
+                    },
+                    "status": {"message": "quiet harbor ledger reconciled at dawn"},
+                }],
+            }],
+        }],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
 
 
 def _long_strings(value, out: set) -> None:
@@ -30,11 +53,12 @@ def _long_strings(value, out: set) -> None:
 
 
 async def test_traces_shows_the_dry_run_table_and_never_a_value_from_the_file(tmp_path):
+    target = _otel_spans_file(tmp_path / "spans.json")
     view = TracesView(tmp_path)
     app = ViewApp(view)
     async with app.run_test() as pilot:
         box = view.query_one("#trace-path", Input)
-        box.value = str(FIXTURE)
+        box.value = str(target)
         box.focus()
         await pilot.pause()
         await pilot.press("enter")
@@ -47,7 +71,7 @@ async def test_traces_shows_the_dry_run_table_and_never_a_value_from_the_file(tm
         assert "records=" in shape
         shown = table_text(table) + "\n" + shape
         values: set = set()
-        _long_strings(json.loads(FIXTURE.read_text()), values)
+        _long_strings(json.loads(target.read_text()), values)
         assert values
         for value in values:
             assert value not in shown

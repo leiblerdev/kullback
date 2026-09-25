@@ -25,6 +25,10 @@ from kullback.tui import STEER_TIMEOUT, Board, Transcript, live_heartbeats
 
 BUS_FILE = "bus.jsonl"
 
+# How many rounds the sidebar table keeps: the panel is short, so only the last
+# rounds are shown, newest last, and the full table stays in rounds.json.
+MAX_ROUNDS_SHOWN = 10
+
 
 class StopModal(ModalScreen[bool]):
     """Ask before stopping: y stops after the current step, n and esc keep it."""
@@ -164,8 +168,9 @@ class WatchView(Vertical):
         if not isinstance(rows, list) or not rows:
             return Text("no rounds yet", style="dim")
         board = Board(self.workdir, title="rounds")
+        kept = [row for row in rows if isinstance(row, dict)][-MAX_ROUNDS_SHOWN:]
         board.rounds = [{"round": row.get("round"), "counts": row.get("counts") or {},
-                         "exit": row.get("exit")} for row in rows if isinstance(row, dict)]
+                         "exit": row.get("exit")} for row in kept]
         board.round = int(board.rounds[-1].get("round") or 0)
         return board.rounds_table()
 
