@@ -55,13 +55,14 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite
 from kullback.gates.verifier_suite import _key
 from kullback.runner.judge import sources_not_given
-from kullback.runner.records import Atom, Constraint, load_task_run
+from kullback.runner.records import EXAM_DIR, Atom, Constraint, load_task_run, read_json
 from kullback.runner.verdict import TRANSFER_HINTS
 
 RECORDING = "recording"
@@ -216,6 +217,32 @@ class Judgement:
     @property
     def abstained(self) -> bool:
         return bool(self.unavailable) or bool(self.uncited)
+
+
+# --- the recordings the Examiner rejected as a Reference --------------------
+
+#: The one exclusion file under the exam folder: per Task, one row per excluded recording.
+EXCLUSIONS_FILE = "reference_exclusions.json"
+
+
+def exclusions_path(workdir: Any) -> Path:
+    return Path(workdir) / EXAM_DIR / EXCLUSIONS_FILE
+
+
+def exclusions(workdir: Any) -> dict[str, list[dict]]:
+    """Every excluded recording by Task, as rows with the run id, the reason and the evidence line."""
+    body = read_json(exclusions_path(workdir), {}) or {}
+    return body if isinstance(body, dict) else {}
+
+
+def excluded_runs(workdir: Any, task_id: str) -> dict[str, str]:
+    """The Task's excluded run ids with the reason each was excluded, which `confirm` honours.
+
+    Read here, beside the rule, so every derivation after a rejection skips the same recordings
+    (reference_check writes the file).
+    """
+    return {str(row.get("run_id")): str(row.get("why") or "")
+            for row in exclusions(workdir).get(task_id) or [] if row.get("run_id")}
 
 
 # --- what a Run wrote -------------------------------------------------------

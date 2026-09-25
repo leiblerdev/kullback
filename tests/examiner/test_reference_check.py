@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import asyncio
 
-from examiner.worlds import make_world
+from examiner.worlds import make_world, probe_runner_over
 from gates import verifier_fixtures as VF
 from gates.examiner_fixtures import SIGS
 from kullback.examiner import domain_tools as D
 from kullback.examiner import reference as R
 from kullback.examiner import reference_check as RC
+from kullback.examiner import stage
 from kullback.examiner.exam_files import ExamRoot
 from kullback.gates import trust as T
+from kullback.gates.ledger import GateLedger
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import read_json, write_json
 
@@ -127,3 +129,23 @@ def test_check_reference_lists_each_write_with_the_reads_before_it(tmp_path):
     [write] = view["writes"]
     assert write["reads_before"] == [READ_TOOL] and not view["wrote_nothing"]
     assert view["rerolls"][RC.REACHED] == ["alt"]
+
+
+def _derive(world) -> None:
+    ctx = stage.ExamContext(world.workdir, GateLedger(world.workdir))
+    stage.derive_all(ctx, world.inputs, probe_model=object(), run_probe=probe_runner_over())
+
+
+def _references(world) -> list[str]:
+    return [r["run_id"] for r in read_json(world.workdir / "references.json")["t1"]["references"]]
+
+
+def test_a_re_derive_after_a_rejection_picks_the_other_recording_and_not_the_cached_answer(tmp_path):
+    world = make_world(tmp_path, rerolls=("rr2",))
+    _derive(world)
+    assert _references(world) == [], "two End states and no judge: no Reference yet"
+    RC.reject_reference(world.workdir, "t1", "ref", "the reason written is not the one the user gave")
+    _derive(world)
+    assert _references(world) == ["rr2"]
+    assert read_json(world.workdir / "references.json")["t1"]["failed"]["ref"].startswith("rejected:")
+

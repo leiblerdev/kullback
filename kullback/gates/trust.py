@@ -134,6 +134,9 @@ def _suite_reason(row: Any, skipped: list[str]) -> str:
     gate that skipped it is the only thing that knows; `NOT_RUN_REASON` is the fallback for a row
     written before those words were recorded.
     """
+    if _get(row, "derive_again", None):
+        # The Reference was re-picked after the suite ran (reference_check), so the reason is that.
+        return str(_get(row, "derive_again", ""))
     checks = _get(row, "checks", None) or {}
     given = _get(row, "not_run_reasons", None) or {}
     named = []

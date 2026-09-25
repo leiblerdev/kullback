@@ -32,14 +32,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.examiner import reference as reference_mod
 from kullback.examiner.exam_files import ExamRoot, reference_runs
+from kullback.examiner.reference import EXCLUSIONS_FILE, excluded_runs, exclusions, exclusions_path
 from kullback.gates import verifier_suite
 from kullback.gates.probes import write_tools_of
 from kullback.gates.trust import REFERENCE_WRONG
 from kullback.runner.canon import load_rules
 from kullback.runner.records import EXAM_DIR, read_json, write_json
 
-#: The one exclusion file under the exam folder: per Task, one row per excluded recording.
-EXCLUSIONS_FILE = "reference_exclusions.json"
 #: The note reasons that say the Reference's outcome is wrong, so agreeing with them rejects it.
 REFERENCE_WRONG_NOTES = ("outcome_not_in_state", "intent_contradicts_reference")
 REACHED = "reached"
@@ -47,6 +46,9 @@ WROTE_ELSE = "wrote something else"
 WROTE_NOTHING = "wrote nothing"
 _NOT_CHOSEN = "survivor "  # a failure that only says a survivor was not chosen, which re-picking reopens
 ALL_REJECTED = "every End state was rejected or failed"
+#: The status field that holds a Task out of the trusted count until it is derived again.
+DERIVE_AGAIN = "derive_again"
+REPICKED = "reference re-picked, derive again"
 
 
 class CheckReferenceArgs(BaseModel):
@@ -79,24 +81,6 @@ class RejectReferenceResult(BaseModel):
     excluded: list[str] = Field(default_factory=list)
     references: list[str] = Field(default_factory=list)
     refused: bool = False
-
-
-# --- the exclusion file --------------------------------------------------------
-
-def exclusions_path(workdir: Any) -> Path:
-    return Path(workdir) / EXAM_DIR / EXCLUSIONS_FILE
-
-
-def exclusions(workdir: Any) -> dict[str, list[dict]]:
-    """Every excluded recording by Task, as rows with the run id, the reason and the evidence line."""
-    body = read_json(exclusions_path(workdir), {}) or {}
-    return body if isinstance(body, dict) else {}
-
-
-def excluded_runs(workdir: Any, task_id: str) -> dict[str, str]:
-    """The Task's excluded run ids with the reason each was excluded, which `confirm` honours."""
-    return {str(row.get("run_id")): str(row.get("why") or "")
-            for row in exclusions(workdir).get(task_id) or [] if row.get("run_id")}
 
 
 # --- re-picking over a references.json row ----------------------------------------
@@ -148,27 +132,51 @@ def _write_refusal(workdir: Path, task_id: str, why: str) -> None:
                {"task_id": task_id, "reason": REFERENCE_WRONG, "text": why})
 
 
-def reject_reference(workdir: Any, task_id: str, run_id: str, why: str, evidence: str = "") -> dict:
+def _mark_derive_again(workdir: Path, task_id: str, root: Optional[ExamRoot]) -> None:
+    """The Task's status row says its suite no longer passes, until the derivation runs again.
+
+    The Verifier was derived from the Reference just rejected, so it encodes that End state, and a
+    suite pass it earned against it is no evidence about the Reference chosen now. The next
+    derivation writes the row afresh. With the session's root the existing helper writes both status
+    files from what the session holds; without it (a ruling on a note) both files are merged on disk.
+    """
+    from kullback.examiner.domain_tools import _keep_suite_status  # the one status writer of the session
+
+    row = {"verifier_passed": False, DERIVE_AGAIN: REPICKED}
+    if root is not None:
+        _keep_suite_status(root, task_id, row)
+        return
+    for path in (workdir / "task_status.json", workdir / EXAM_DIR / "task_status.json"):
+        if not path.is_file():
+            continue
+        status = read_json(path, {}) or {}
+        status[task_id] = {**(status.get(task_id) or {}), **row}
+        write_json(path, status)
+
+
+def reject_reference(workdir: Any, task_id: str, run_id: str, why: str, evidence: str = "",
+                     root: Optional[ExamRoot] = None) -> dict:
     """Exclude the recording and every Run of its End state, re-pick, and refuse when nothing is left.
 
     Returns what happened: the run ids excluded, the References now, and whether the Task was refused.
-    The row in the exposed exam copy is written too, so the Examiner reads the Reference it now has.
+    The row in the exposed exam copy is written too, so the Examiner reads the Reference it now has,
+    and the Task's status row leaves the trusted count until the Task is derived again.
     """
-    root = Path(workdir)
-    references = read_json(root / "references.json", {}) or {}
+    root_dir = Path(workdir)
+    references = read_json(root_dir / "references.json", {}) or {}
     row = references.get(task_id) or {}
     targets = _same_state(row, run_id)
-    body = exclusions(root)
+    body = exclusions(root_dir)
     rows = [r for r in body.get(task_id) or [] if r.get("run_id") not in targets]
     for target in targets:
         line = evidence or (f"same End state as {run_id}" if target != run_id else "")
         rows.append({"run_id": target, "why": why, "evidence": line})
     body[task_id] = rows
-    write_json(exclusions_path(root), body)
-    new_row = repick(row, excluded_runs(root, task_id))
+    write_json(exclusions_path(root_dir), body)
+    new_row = repick(row, excluded_runs(root_dir, task_id))
     references[task_id] = new_row
-    write_json(root / "references.json", references)
-    exposed = root / EXAM_DIR / "references.json"
+    write_json(root_dir / "references.json", references)
+    exposed = root_dir / EXAM_DIR / "references.json"
     if exposed.is_file():
         copy = read_json(exposed, {}) or {}
         copy[task_id] = new_row
@@ -176,7 +184,8 @@ def reject_reference(workdir: Any, task_id: str, run_id: str, why: str, evidence
     picked = [str(r.get("run_id")) for r in new_row["references"]]
     refused = not picked and new_row["reason"] == ALL_REJECTED
     if refused:
-        _write_refusal(root, task_id, why)
+        _write_refusal(root_dir, task_id, why)
+    _mark_derive_again(root_dir, task_id, root)
     return {"excluded": targets, "references": picked, "refused": refused}
 
 
@@ -309,7 +318,7 @@ def _reject_reference(root: ExamRoot):
         why = " ".join(str(args.why or "").split())
         if not why:
             raise ValueError("say in `why` what the Intent and the policy needed that this End state lacks")
-        done = reject_reference(root.workdir, task_id, args.run_id, why)
+        done = reject_reference(root.workdir, task_id, args.run_id, why, root=root)
         now = (f"the Reference is now {done['references'][0]}" if done["references"] else
                f"no Reference is left, so the Task is refused ({REFERENCE_WRONG})" if done["refused"] else
                "the End states left disagree, so the Task keeps no Reference")

@@ -1158,7 +1158,8 @@ def model_name(model: Any) -> Optional[str]:
 
 
 def cache_key(task: Task, recordings: list, common: dict, *, intents: dict, user_rules: dict,
-              traces: dict, fidelity_row: Optional[dict] = None) -> str:
+              traces: dict, fidelity_row: Optional[dict] = None,
+              excluded: Optional[dict] = None) -> str:
     """The content hash of everything this Task's derivation reads.
 
     The Runs are in by id and by the hash of what they wrote, which is what the D111 rule groups on
@@ -1171,7 +1172,9 @@ def cache_key(task: Task, recordings: list, common: dict, *, intents: dict, user
     probe's model and limit, the judge's name, which judge it is (D185's `judge_agent`, so the
     one-shot judge's answer is never read back for the agent's) and the code hash. `fidelity_row` is
     this Task's own replay fidelity (D171): it decides which tools the row names as blocking, so a
-    recompile that moves it has to move the key with it.
+    recompile that moves it has to move the key with it. `excluded` is the recordings the Examiner
+    rejected as a Reference (reference_check, D111): a rejection changes which Reference the rule picks, so
+    it moves the key, and it is in the key only when there is one, so every other Task keeps its entry.
     """
     return content_hash({
         "task": {"id": task.id, "name": task.name, "intent": task.intent, "run_ids": list(task.run_ids)},
@@ -1183,6 +1186,7 @@ def cache_key(task: Task, recordings: list, common: dict, *, intents: dict, user
                  for r in recordings],
         "user_rules": {trace_id: user_rules.get(trace_id)
                        for trace_id in sorted({r.trace_id for r in recordings if r.trace_id})},
+        **({"excluded": sorted(excluded)} if excluded else {}),
         **common,
     })
 
@@ -1411,18 +1415,24 @@ def _prepare_one(task: Task, state: _DeriveState) -> _Job:
     # D189: the extra batches an earlier derivation bought sit outside the D111 rule's evidence,
     # so they are in the key (a batch bought is a different derivation) and are merged onto the
     # Confirmation afterwards rather than being handed to `confirm`.
-    extra = finished_recordings(second_path_rows(state.ctx.workdir, task.id),
-                                write_tools=state.write_tools, fn=state.fn, atoms=state.atoms, task_id=task.id)
+    # The recordings the Examiner rejected as a Reference stay rejected on every derivation after it,
+    # the second path Runs included, so a re-derive never picks one of them back.
+    excluded = reference_mod.excluded_runs(state.ctx.workdir, task.id)
+    extra = [rec for rec in finished_recordings(second_path_rows(state.ctx.workdir, task.id),
+                                                write_tools=state.write_tools, fn=state.fn, atoms=state.atoms,
+                                                task_id=task.id)
+             if rec.run_id not in excluded]
     key = cache_key(task, recordings + extra, state.common, intents=state.intents,
                     user_rules=state.user_rules, traces=state.traces,
-                    fidelity_row=task_fidelity(state.tool_fidelity, task.id))
+                    fidelity_row=task_fidelity(state.tool_fidelity, task.id), excluded=excluded)
     entry = read_entry(state.ctx.workdir, task.id, key)
     if entry is not None:
         return _Job(task=task, key=key, entry=entry)
     confirmation = reference_mod.confirm(recordings, intent=request_text(task, state.intents,
                                                                          state.traces),
                                          policy_lines=state.policy_lines, judge=state.judge,
-                                         phrases=grounded_phrases(state.intents.get(task.id)))
+                                         phrases=grounded_phrases(state.intents.get(task.id)),
+                                         excluded=excluded)
     return _Job(task=task, key=key, confirmation=confirmation,
                 recordings=recordings + extra, extra=extra)
 
