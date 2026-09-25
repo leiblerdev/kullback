@@ -23,8 +23,9 @@ from kullback.runner.records import (
     canonical_json,
 )
 
-READ_PREFIXES = ("get_", "find_", "list_", "search_")
-WRITE_PREFIXES = ("cancel_", "modify_", "update_", "return_", "exchange_")
+READ_VERBS = ("get", "find", "list", "search", "read", "lookup", "check", "show", "fetch", "count")
+WRITE_VERBS = ("create", "add", "update", "set", "delete", "remove", "cancel", "modify", "change",
+               "place", "book", "renew", "submit", "send", "assign", "schedule")
 # A name that reads as a calculation or a handoff to a person: it answers, it does not change the world.
 GENERIC_NAME = re.compile(r"^(calculate|compute|think|reflect|transfer_to_human|escalate_to_human|hand_?off_to_human)")
 MIN_OBSERVED_CALLS = 3
@@ -426,18 +427,38 @@ def is_scalar_result(sig: ToolSig) -> bool:
     return [f.name for f in sig.result_schema] == [SCALAR_RESULT_FIELD]
 
 
-def propose_kind(name: str) -> KindProposal:
-    """The code rule for read, write or generic: name prefixes, with the evidence said out loud (D68)."""
-    for prefix in READ_PREFIXES:
-        if name.startswith(prefix):
-            return KindProposal("read", "high", f"name prefix {prefix!r} reads")
-    for prefix in WRITE_PREFIXES:
-        if name.startswith(prefix):
-            return KindProposal("write", "high", f"name prefix {prefix!r} writes")
+def _verb_of(name: str) -> str:
+    """The first word of a tool name, snake_case or camelCase, in lower case.
+
+    The kind rule matches whole first words only, so `getter` is not `get` and `renewal`
+    is not `renew`: a verb list is a weak fallback and must not overreach.
+    """
+    first = name.split("_")[0]
+    match = re.match(r"[a-z]+", first)
+    return match.group(0) if match else first.lower()
+
+
+def propose_kind(name: str, has_effect: bool = False) -> KindProposal:
+    """The code rule for read, write or generic: recorded effects first, generic verbs after (D68).
+
+    A call the traces show changing the world is a write at high confidence whatever its name
+    says. Otherwise the name is a weak fallback: the verb lists are plain English, never one
+    corpus's vocabulary, so an unseen Environment gets the same fair reading. A verb match is
+    medium confidence, and a name nothing matches is a read at low confidence, unclassified (D70).
+    """
+    if has_effect:
+        return KindProposal("write", "high",
+                            "a later read showed a record this call named with a changed value, "
+                            "so the call changed the world")
     if GENERIC_NAME.match(name):
         return KindProposal("generic", "medium",
                             "the name reads as a calculation or a handoff to a person, which reads nothing "
                             "of the world and changes nothing in it")
+    verb = _verb_of(name)
+    if verb in READ_VERBS:
+        return KindProposal("read", "medium", f"name verb {verb!r} reads")
+    if verb in WRITE_VERBS:
+        return KindProposal("write", "medium", f"name verb {verb!r} writes")
     return KindProposal("read", "low", "no name rule matched, default read and unclassified (D70)")
 
 
@@ -619,20 +640,17 @@ def _decide_kind(sig: ToolSig, model: Optional[Model], samples: list, spec: Opti
                  acc: Optional[dict] = None, quiet: Optional[set] = None) -> None:
     """Settle one tool's kind with one precedence for every source: declared, observed, name.
 
-    What the source declares (the MCP hints) outranks the calls, and the calls outrank the name,
-    except that a high confidence name rule keeps standing over a declaration it disagrees with
-    and says so, which is the behaviour the D68 tests pin. The name stands only where nothing
-    else speaks. Where the calls contradict the name, the calls win and the contradiction is
-    recorded in the reason. The fact says its basis out loud: a name basis carries no calls.
-    The LLM hook sits where it always sat, between the code rules and the calls, and is untouched.
+    What the source declares (the MCP hints) outranks everything but the LLM hook; the calls
+    outrank the name, which is a weak fallback standing only where nothing else speaks. Where
+    the calls contradict the name, the calls win and the contradiction is recorded in the
+    reason. The fact says its basis out loud: a name basis carries no calls. The LLM hook sits
+    where it always sat, between the code rules and the calls, and is untouched.
     """
-    rule = propose_kind(sig.name)
+    rule = propose_kind(sig.name, has_effect=bool(sig.effects_observed))
     annotation = _annotation_kind(spec)
-    declared = annotation is not None and rule.confidence != "high"
+    declared = annotation is not None
     if declared:
         rule = annotation
-    elif annotation is not None and annotation.kind != rule.kind:
-        rule = rule._replace(reason=f"{rule.reason}; the declared annotations disagree: {annotation.reason}")
     sig.kind, sig.kind_confidence, sig.kind_reason = rule.kind, rule.confidence, rule.reason
     # A declaration is its own basis, not a name guess; it needs the frozen patch that adds the
     # value to ClassifiedBy, and rides there (docs/frozen-patches/mined-evidence.patch).
@@ -884,8 +902,8 @@ def _flat(obj: Any, prefix: str = "", out: Optional[dict] = None, depth: int = 0
 def _shared_key(key: str, other: dict[str, str]) -> str:
     """The field a key belongs to, seen from the other side of the comparison.
 
-    A leaf that became a container (null to a list, tau2's exchange_items) shows up on one side as
-    `exchange_items` and on the other as `exchange_items.0`; both are the same changed field.
+    A leaf that became a container (null to a list) shows up on one side as `items`
+    and on the other as `items.0`; both are the same changed field.
     """
     parts = key.split(".")
     for depth in range(1, len(parts) + 1):
@@ -934,10 +952,14 @@ def _scalars(obj: Any, out: Optional[set] = None) -> set:
 
 
 def _explains(call: Any, read_args: dict, changed_values: set) -> bool:
-    """A call can explain a change when it names the same thing the read named, or the new value."""
-    rule = propose_kind(call.name)
-    if rule.kind != "write" and rule.confidence != "low":
-        return False  # a tool the name rule calls a read or generic never takes credit for a write
+    """A call can explain a change when it names the same thing the read named, or the new value.
+
+    The name never votes here, except for a calculation or a handoff to a person: answering is
+    what those do, so they never take credit for a write. A read-looking name must still take
+    credit for a change its calls show, or no unseen verb would ever earn its write.
+    """
+    if propose_kind(call.name).kind == "generic":
+        return False  # a calculation answers, it does not change the world
     values = _scalars(call.args or {})
     return bool(values & _scalars(read_args)) or bool(values & changed_values)
 
@@ -966,8 +988,27 @@ def _credit(changed: list[str], after: dict[str, str], candidates: list) -> dict
     return credited
 
 
+def _restated(before: Any, after: Any) -> list[str]:
+    """Shared fields of two sightings of one record whose values differ: same record, new state.
+
+    Added or missing keys alone say a different view, not a changed world (one read answering
+    wide and another narrow shares nothing here). A field present on both sides with another
+    value says the record moved, which is what credits the call that answered it.
+    """
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return []
+    left, right = _flat(before), _flat(after)
+    return sorted(key for key in set(left) & set(right)
+                  if left[key] != right[key] and not _exempt_field(key))
+
+
 def observed_effects(traces: list[Trace]) -> dict[str, list[EffectObservation]]:
-    """A later read of the same thing shows a changed field, and one earlier call explains it (D68)."""
+    """Calls the traces show changing the world, by two name-blind signals (D68).
+
+    value (a status that moved from delivered to requested): the call names the record and shows
+    it changed, so the call changed it. Same-tool pairs belong to the re-read signal, where the
+    credit goes to the calls between the reads rather than to the later read itself.
+    """
     out: dict[str, list[EffectObservation]] = {}
     seen: set = set()
     for trace in traces:
@@ -1005,6 +1046,28 @@ def observed_effects(traces: list[Trace]) -> dict[str, list[EffectObservation]]:
                 out.setdefault(actor.name, []).append(EffectObservation(
                     trace_id=trace.trace_id, field=f"{call.name}.{field}",
                     note=f"changed between two identical {call.name} calls"))
+        parsed_all = [None if c.error is not None or c.result is None
+                      or getattr(c, "truncated", False) else _parse(c.result) for c in calls]
+        for index, call in enumerate(calls):
+            after = parsed_all[index]
+            if not isinstance(after, dict):
+                continue  # only a record-shaped answer can restate a record an earlier read showed
+            for read_index in range(index):
+                read, earlier = calls[read_index], parsed_all[read_index]
+                if earlier is None or read.name == call.name:
+                    continue
+                named = _scalars(call.args or {}) & (
+                    _scalars(read.args or {}) | _scalars(earlier))
+                if not named & _scalars(after):
+                    continue  # the same value names the record in the args and in both answers
+                for field in _restated(earlier, after):
+                    mark = (call.name, trace.trace_id, f"{read.name}.{field}")
+                    if mark in seen:
+                        continue
+                    seen.add(mark)
+                    out.setdefault(call.name, []).append(EffectObservation(
+                        trace_id=trace.trace_id, field=f"{call.name}.{field}",
+                        note=f"{read.name} showed {field} one way and this call answered it another"))
     return out
 
 
