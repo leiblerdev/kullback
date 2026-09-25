@@ -56,6 +56,8 @@ class Bus:
         self._seq = 0
         self._offset = 0
         self._pending: set[asyncio.Task] = set()
+        # How far replay and tail have read, and the highest seq up to there: (offset, seq).
+        self._reader: tuple[int, int] = (0, 0)
 
     # --- subscribers ---
 
@@ -116,50 +118,137 @@ class Bus:
                 os.close(handle)
             self._seq = record.seq
             self._offset += len(data)
+            # _catch_up read every line up to the old offset, so this writer's seq is the highest
+            # up to the new one: a later replay or tail on this Bus can start from there.
+            if self._offset >= self._reader[0]:
+                self._reader = (self._offset, self._seq)
             return record
 
     # --- reading ---
 
     def replay(self, since_seq: int = 0) -> list[BusRecord]:
-        """Every record after `since_seq`, in order. A line that does not parse is skipped."""
-        return [record for record in self._read_all() if record.seq > since_seq]
+        """Every record after `since_seq`, in order. A line that does not parse is skipped.
+
+        A caller that polls with the last seq it saw reads only the bytes appended since: this
+        Bus remembers how far it has read and the highest seq up to there, and starts from that
+        offset whenever `since_seq` is at or past it. Asking for older records reads from zero.
+        """
+        offset, seen = self._reader
+        start = offset if since_seq >= seen and self._size() >= offset else 0
+        records, _ = self._read_from(start, since_seq)
+        return records
 
     def events(self, since_seq: int = 0) -> list[AgentEvent]:
         return [record.event for record in self.replay(since_seq)]
+
+    def last_seq(self) -> int:
+        """The seq of the last whole record on the log, or 0; read off the end, not the whole file."""
+        size = self._size()
+        chunk = 65536
+        while size:
+            start = max(0, size - chunk)
+            with self.path.open("rb") as handle:
+                handle.seek(start)
+                data = handle.read(size - start)
+            lines = data.split(b"\n")
+            # Without a newline before the first piece, that piece may be the middle of a line.
+            candidates = lines if start == 0 else lines[1:]
+            for line in reversed(candidates):
+                record = _parse_bytes(line)
+                if record is not None:
+                    return record.seq
+            if start == 0:
+                return 0
+            chunk *= 4
+        return 0
 
     def tail(
         self,
         since_seq: int = 0,
         poll_seconds: float = 0.25,
         stop: Optional[Callable[[], bool]] = None,
+        from_end: bool = False,
     ) -> Iterator[BusRecord]:
         """Follow the log: every record after `since_seq`, then whatever appears, until `stop`.
 
+        Each poll reads only the bytes appended since the last one, and a trailing partial line
+        (a writer mid-append) waits for the next poll. `from_end` starts after the last record
+        present now, so a follower that only cares about what happens next never parses the past.
         Without a `stop` the follower runs until the consumer stops asking for records, which is
         what a `break` out of the loop does; with one it also ends on its own.
         """
+        # The starting point is fixed now, not at the first `next`: a follower from the end must
+        # not miss what lands between this call and its first read.
         seq = since_seq
+        if from_end:
+            offset, last = self._end()
+            seq = max(seq, last)
+        else:
+            cached, seen = self._reader
+            offset = cached if since_seq >= seen and self._size() >= cached else 0
+        return self._follow(seq, offset, poll_seconds, stop)
+
+    def _follow(self, seq: int, offset: int, poll_seconds: float,
+                stop: Optional[Callable[[], bool]]) -> Iterator[BusRecord]:
         while True:
-            found = False
-            for record in self.replay(seq):
+            if self._size() < offset:
+                # A log that shrank was replaced under us; read it again from the start.
+                offset = 0
+            records, offset = self._read_from(offset, seq)
+            for record in records:
                 seq = record.seq
-                found = True
                 yield record
             if stop is not None and stop():
                 return
-            if not found:
+            if not records:
                 time.sleep(poll_seconds)
 
     # --- the file ---
 
-    def _read_all(self) -> list[BusRecord]:
+    def _size(self) -> int:
+        try:
+            return self.path.stat().st_size
+        except OSError:
+            return 0
+
+    def _end(self) -> tuple[int, int]:
+        """The file's length and its last seq at one moment: both read under the writers' lock, so
+        no append is half done and none lands between the two."""
         if not self.path.is_file():
-            return []
+            return 0, 0
+        with self._locked():
+            return self._size(), self.last_seq()
+
+    def _read_from(self, offset: int, since_seq: int) -> tuple[list[BusRecord], int]:
+        """The records after `since_seq` in the whole lines from `offset` on, and the offset after
+        the last whole line. The reader cursor moves forward with what was read."""
+        if not self.path.is_file():
+            return [], 0
+        with self.path.open("rb") as handle:
+            handle.seek(offset)
+            data = handle.read()
+        complete, newline, _ = data.rpartition(b"\n")
+        if not newline:
+            return [], offset
         records: list[BusRecord] = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            record = _parse(line)
-            if record is not None:
+        top = 0
+        for line in complete.split(b"\n"):
+            record = _parse_bytes(line)
+            if record is None:
+                continue
+            top = max(top, record.seq)
+            if record.seq > since_seq:
                 records.append(record)
+        end = offset + len(complete) + 1
+        cached, seen = self._reader
+        if offset == 0:
+            self._reader = (end, top)
+        elif offset <= cached < end:
+            self._reader = (end, max(top, seen))
+        return records, end
+
+    def _read_all(self) -> list[BusRecord]:
+        records, _ = self._read_from(0, 0)
         return records
 
     def _catch_up(self) -> None:
@@ -196,6 +285,10 @@ class Bus:
                 yield
             finally:
                 _unlock(handle)
+
+
+def _parse_bytes(line: bytes) -> Optional[BusRecord]:
+    return _parse(line.decode("utf-8", errors="replace"))
 
 
 def _parse(line: str) -> Optional[BusRecord]:

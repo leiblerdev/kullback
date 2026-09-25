@@ -195,3 +195,51 @@ def test_a_write_that_raises_leaves_the_log_at_its_old_length(tmp_path, monkeypa
     assert path.stat().st_size == length
     bus.publish_custom("third", {"n": 3})
     assert [(r.seq, r.event.name) for r in Bus(path, agent="reader").replay()] == [(1, "first"), (2, "third")]
+
+
+def test_a_follower_reads_only_the_lines_appended_since_its_last_poll_and_waits_for_a_whole_line(tmp_path):
+    path = tmp_path / "bus.jsonl"
+    writer = Bus(path, agent="builder")
+    writer.publish_sync(TurnStart(turn=1))
+    writer.publish_sync(TurnStart(turn=2))
+    done = [False]
+    follower = Bus(path)
+    records = follower.tail(poll_seconds=0.01, stop=lambda: done[0])
+    assert [next(records).seq, next(records).seq] == [1, 2]
+    # Line 1 is rewritten in place, same length, to claim seq 9. A reader that parsed the whole
+    # file again would yield it as new; a reader from its byte offset never looks back there.
+    lines = path.read_bytes().split(b"\n")
+    lines[0] = lines[0].replace(b'"seq":1,', b'"seq":9,')
+    third = BusRecord(seq=3, recorded_at=1.0, event=TurnStart(turn=3)).model_dump_json().encode()
+    path.write_bytes(b"\n".join(lines) + third[:20])
+    done[0] = True
+    assert list(records) == []  # the rewritten line is behind the offset, the partial one unfinished
+    with path.open("ab") as handle:
+        handle.write(third[20:] + b"\n")
+    assert [r.seq for r in follower.tail(2, stop=lambda: True)] == [3]
+    assert follower.replay(3) == []  # polling with the last seq seen starts at the offset too
+
+
+def test_a_follower_from_the_end_skips_what_is_there_and_reads_what_appears(tmp_path):
+    path = tmp_path / "bus.jsonl"
+    writer = Bus(path, agent="builder")
+    writer.publish_sync(TurnStart(turn=1))
+    writer.publish_sync(TurnStart(turn=2))
+    assert Bus(path).last_seq() == 2 and Bus(tmp_path / "none.jsonl").last_seq() == 0
+    done = [False]
+    records = Bus(path).tail(poll_seconds=0.01, stop=lambda: done[0], from_end=True)
+    writer.publish_sync(TurnStart(turn=3))
+    done[0] = True
+    assert [r.event.turn for r in records] == [3]
+
+
+def test_a_follower_of_a_log_that_shrank_reads_it_again_from_the_start(tmp_path):
+    path = tmp_path / "bus.jsonl"
+    writer = Bus(path)
+    for turn in (1, 2, 3):
+        writer.publish_sync(TurnStart(turn=turn))
+    follower = Bus(path)
+    assert [r.seq for r in follower.replay()] == [1, 2, 3]
+    path.unlink()
+    Bus(path).publish_sync(TurnStart(turn=7))
+    assert [r.event.turn for r in follower.replay()] == [7]

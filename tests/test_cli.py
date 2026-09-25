@@ -941,3 +941,57 @@ def test_a_build_that_ended_on_a_provider_error_beats_failed_and_exits_one(workd
     assert result.exit_code == 1, result.output
     assert '"stopped": "error"' in result.output
     assert [record["status"] for record in heartbeat.read_all()] == ["failed"]
+
+
+def test_steer_with_no_live_build_on_the_workdir_exits_1_with_a_sentence(tmp_path):
+    result = runner.invoke(cli.app, ["steer", str(tmp_path), "nudge", "read the calls", "--timeout", "0.2"])
+    assert result.exit_code == 1
+    assert "No live build answered" in result.output and "nothing was steered" in result.output
+
+
+def test_steer_prints_the_ack_of_the_live_build_that_took_the_request(tmp_path):
+    from kullback.agent.harness import AgentHarness
+    from kullback.agent.steer import SteerBridge
+    from kullback.ai.provider import TestModel
+
+    bridge = SteerBridge(AgentHarness(TestModel([])), tmp_path / "bus.jsonl", poll_seconds=0.02).start()
+    try:
+        result = runner.invoke(cli.app, ["steer", str(tmp_path), "tell", "then report", "--timeout", "3"])
+    finally:
+        bridge.close()
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "tell queued: delivered when the run would otherwise stop"
+
+
+def test_steer_names_the_kinds_it_takes_when_given_another(tmp_path):
+    result = runner.invoke(cli.app, ["steer", str(tmp_path), "shout", "hi"])
+    assert result.exit_code == 2 and "nudge, tell or stop" in result.output
+
+
+def test_events_json_since_prints_exactly_the_records_after_that_seq(tmp_path):
+    from kullback.agent.bus import Bus
+    from kullback.agent.events import TurnStart
+
+    bus = Bus(tmp_path / "bus.jsonl", agent="builder")
+    written = [bus.append(TurnStart(turn=turn)) for turn in (1, 2, 3)]
+    result = runner.invoke(cli.app, ["events", "--workdir", str(tmp_path), "--json", "--since", "1"])
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == [record.model_dump_json() for record in written[1:]]
+
+
+def test_events_prints_one_readable_line_per_event_the_way_the_screen_does(tmp_path):
+    from kullback.agent.bus import Bus
+    from kullback.agent.events import SteerAckEvent, SteerRequestEvent
+
+    bus = Bus(tmp_path / "bus.jsonl")
+    bus.append(SteerRequestEvent(id="r1", kind="nudge", text="look at t-0412\nand more", sender="screen"))
+    bus.append(SteerAckEvent(id="r1", kind="nudge", outcome="queued", reason="delivered before the next model turn"))
+    result = runner.invoke(cli.app, ["events", "--workdir", str(tmp_path)])
+    assert result.output.splitlines() == ["steer nudge from screen: look at t-0412",
+                                          "steer nudge queued: delivered before the next model turn"]
+
+
+@pytest.mark.parametrize("command", ["steer", "events", "attach"])
+def test_every_steering_command_prints_its_usage(command):
+    result = runner.invoke(cli.app, [command, "--help"])
+    assert result.exit_code == 0 and "Usage" in result.output
