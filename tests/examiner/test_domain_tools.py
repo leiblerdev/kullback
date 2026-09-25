@@ -16,8 +16,9 @@ from kullback.examiner import prompt as P
 from kullback.examiner import stage
 from kullback.examiner.exam_files import ExamRoot
 from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES
+from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules
-from kullback.runner.records import as_dict, read_json, write_json
+from kullback.runner.records import Verifier, as_dict, read_json, write_json
 
 
 def _root(tmp_path, **kwargs):
@@ -670,3 +671,79 @@ def test_a_probe_and_a_finding_with_note_ruling_each_rule_an_open_note(tmp_path)
     with pytest.raises(ValueError, match="no open note"):
         _run(finding.execute(D.FindingArgs(task_id="t1", kind="other", text="again",
                                            note_ruling="builder_right")))
+
+
+# --- every refusal says why: the failing run, its differing call, the whole atom ---
+
+def _wrong_pass_record():
+    """A wrong gate that failed because the wrong Run passed, with evidence behind its rows."""
+    reference = VF.reference_run()
+    verifier = Verifier(task_id="t1", atoms=[S.make_atom("few", "required",
+                                                         {"kind": "entity_count", "count": 5})])
+    wrong = S.wrong_run(verifier, reference, CanonRules())
+    gate = [g for g in S.validate_verifier(verifier, reference, None, wrong, canon=CanonRules())
+            if g.stage == "verifier_wrong_run"][0]
+    assert gate.passed is False, gate.failures
+    evidence = {"verifier": verifier, "reference": reference, "wrong_run": wrong,
+                "rules": CanonRules()}
+    return D._gate_record(gate, verifier, evidence), reference, wrong
+
+
+def _differing_payloads(reference, wrong):
+    """The first event payloads where two Runs part, read off the Runs, not the rows."""
+    for old, new in zip(reference.events, wrong.events):
+        if old.type != new.type or (old.payload or {}) != (new.payload or {}):
+            return old, new
+    raise AssertionError("the Runs match event for event")
+
+
+def test_a_refused_proposal_names_the_failing_run_id_the_differing_call_and_both_values():
+    import json as _json
+
+    record, reference, wrong = _wrong_pass_record()
+    message = str(D._refuse_proposal("t1", "2", [record]))
+    assert wrong.run_id in message, message
+    old, new = _differing_payloads(reference, wrong)
+    assert f"call {new.idx}" in message and (new.payload or {}).get("name", new.type) in message
+    compact = lambda payload: _json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    assert compact(old.payload)[:60] in message and compact(new.payload)[:60] in message
+    assert "rows behind the failures" not in message, "the raw repr dump is gone"
+
+
+def test_a_dry_run_carries_the_same_failing_lines_as_a_refusal(tmp_path):
+    root, world, _ = _root(tmp_path)
+    _with_reference(world)
+    tools = {t.name: t for t in D.domain_tools(root)}
+    tried = _run(tools["try_atoms"].execute(D.ProposeArgs(
+        task_id="t1", reason="tighten",
+        add=[{"id": "tight", "kind": "required",
+              "payload": {"kind": "entity_count", "count": 0}}])))
+    assert tried.accepted is False
+    assert "run ref" in tried.summary and "would pass:" in tried.summary, tried.summary
+    assert "the run itself breaks the atom, so check the run" in tried.summary
+
+
+def test_every_failing_line_ends_with_what_would_pass_or_no_rule_found():
+    import re as _re
+
+    record, _, _ = _wrong_pass_record()
+    lines = D._why_lines([record,
+                          {"name": "other", "accepted": False, "line": "other fail (broke)",
+                           "rows": [{"failure": "broke"}]}])
+    assert lines, "the failing rows spell out"
+    assert all(_re.search(r"would pass: .+", line) for line in lines), lines
+    assert lines[-1].endswith(f"would pass: {D.NO_RULE_FOUND}"), lines
+
+
+def test_the_atom_text_in_a_refusal_is_never_cut(tmp_path):
+    root, world, _ = _root(tmp_path)
+    _with_reference(world)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    with pytest.raises(RetryableToolError) as excinfo:
+        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="a tighter cap",
+                                        add=[{"id": "tight", "kind": "required",
+                                              "payload": {"kind": "entity_count", "count": 0},
+                                              "description": "y" * 500}])))
+    message = str(excinfo.value)
+    assert "verifier_oracle" in message
+    assert "y" * 500 in message, "the whole atom, not a prefix of it"

@@ -113,3 +113,13 @@ def test_dry_runs_do_not_count_toward_the_refusals_that_say_stop(tmp_path):
     message = str(excinfo.value)
     assert not message.startswith("already refused"), "the suite ran: the dry runs were no refusal"
     assert "Stop proposing" not in message and "try_atoms" in message
+
+
+def test_an_undecided_dry_run_says_what_would_decide_it(tmp_path):
+    _, _, _, tools = _root(tmp_path, probe_model=object(), run_probe=probe_runner_over(VF.reference_run()),
+                           task_status={"t1": {"verifier_passed": True}})
+    tried = _run(tools["try_atoms"].execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[_WIDE_CAP])))
+    assert tried.accepted == "not decided"
+    [line] = [line for line in tried.summary.splitlines() if line.startswith("undecided:")]
+    assert "loophole probe" in line and "not run in a dry run" in line, line
+    assert "propose the edit" in line, line

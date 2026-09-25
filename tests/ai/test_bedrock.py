@@ -170,7 +170,8 @@ def body_for(config, model_id=MODEL, messages=None, tools=(TOOL,)):
 def test_thinking_is_never_sent_disabled_or_budgeted_to_a_model_where_it_is_always_on():
     assert "thinking" not in body_for(pv.ModelConfig(thinking={"type": "disabled"}))
     assert "thinking" not in body_for(pv.ModelConfig(thinking={"type": "enabled", "budget_tokens": 2048}))
-    assert body_for(pv.ModelConfig(thinking={"type": "adaptive"}))["thinking"] == {"type": "adaptive"}
+    assert body_for(pv.ModelConfig(thinking={"type": "adaptive"}))["thinking"] == {"type": "adaptive",
+                                                                                   "display": "summarized"}
     assert body_for(pv.ModelConfig(effort="low"))["output_config"] == {"effort": "low"}
 
 
@@ -295,3 +296,10 @@ def test_every_inference_profile_of_a_model_is_priced_and_windowed_by_the_one_ro
         assert budget.window_for(model) == 1_000_000
     assert budget.window_for("bedrock/us.anthropic.claude-haiku-4-5") == 200_000
     assert budget.price_source("bedrock/global.anthropic.claude-sonnet-5") is not None
+
+
+def test_an_always_on_model_asks_for_summarized_display_by_default():
+    """Leaving the thinking field out is adaptive but returns empty text; asking for the
+    summarized display keeps the reasoning readable in the session."""
+    assert body_for(pv.ModelConfig())["thinking"] == {"type": "adaptive",
+                                                      "display": "summarized"}

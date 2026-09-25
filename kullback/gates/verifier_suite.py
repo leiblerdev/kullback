@@ -846,13 +846,74 @@ def _run_gate(stage: str, scored: Callable, run: Any, *, expect_pass: bool,
     passed, failing_atom = scored(run)
     want = "pass" if expect_pass else "fail"
     failures = [] if passed is expect_pass else [f"expected {want}, got {'pass' if passed else 'fail'}"]
-    metrics = {"run_passed": passed, "failing_atom": failing_atom}
+    metrics = {"run_passed": passed, "failing_atom": failing_atom,
+               "run_id": getattr(run, "run_id", None), "expected": want,
+               "got": "pass" if passed else "fail"}
     if passed and not expect_pass:
         checked = _target.evaluated_atoms(atoms)
         metrics["passing_atoms"] = [{"id": atom.id, "kind": atom.kind} for atom in checked]
         if not checked:
             failures.append(NO_ATOM_CHECKED)
     return GateResult(stage=stage, passed=passed is expect_pass, failures=failures, metrics=metrics)
+
+
+def _events_of(run: Any) -> list:
+    """The Run's events in order."""
+    return list(getattr(as_run(run), "events", None) or [])
+
+
+def _event_case(event: Any) -> dict:
+    """One event as its index, kind and arguments: tool calls name their tool and args."""
+    payload = _payload(event) or {}
+    if event.type == "tool_call":
+        return {"call": event.idx, "tool": payload.get("name"), "args": _args(event)}
+    return {"call": event.idx, "tool": event.type, "args": payload}
+
+
+def first_diff(reference: Any, other: Any) -> dict:
+    """The first event where two Runs part, keyed by call, tool, field, old and new.
+
+    Generic over every tool and field: the events are paired in order and the first pair whose
+    kind or payload differs is the case. Two tool calls name the argument that differs with both
+    values; any other pair names the event with both payloads. A side with no more events is a
+    difference with the other side absent. Empty when the Runs match event for event.
+    """
+    try:
+        left, right = _events_of(reference), _events_of(other)
+    except Exception:
+        return {}
+    for pos in range(max(len(left), len(right))):
+        old, new = left[pos] if pos < len(left) else None, right[pos] if pos < len(right) else None
+        if old is None:
+            case = _event_case(new)
+            return {"call": case["call"], "tool": case["tool"], "field": "event",
+                    "old": None, "new": case["args"]}
+        if new is None:
+            case = _event_case(old)
+            return {"call": case["call"], "tool": case["tool"], "field": "event",
+                    "old": case["args"], "new": None}
+        if old.type == new.type == "tool_call":
+            old_args, new_args = _args(old) or {}, _args(new) or {}
+            if _payload(old).get("name") != _payload(new).get("name"):
+                return {"call": new.idx, "tool": f"{_payload(old).get('name')} -> {_payload(new).get('name')}",
+                        "field": "tool", "old": _payload(old).get("name"), "new": _payload(new).get("name")}
+            for field in sorted(set(old_args) | set(new_args)):
+                if old_args.get(field) != new_args.get(field):
+                    return {"call": new.idx, "tool": _payload(new).get("name"), "field": field,
+                            "old": old_args.get(field), "new": new_args.get(field)}
+            continue
+        if old.type != new.type or (_payload(old) or {}) != (_payload(new) or {}):
+            return {"call": new.idx, "tool": new.type, "field": "event",
+                    "old": _payload(old), "new": _payload(new)}
+    return {}
+
+
+def payload_diff(old: dict, new: dict) -> dict:
+    """The first entry where two atom payloads part, keyed by field, old and new."""
+    for field in sorted(set(old) | set(new)):
+        if old.get(field) != new.get(field):
+            return {"field": field, "old": old.get(field), "new": new.get(field)}
+    return {}
 
 
 def _mutation_gate(verifier: Verifier, reference: Run, score: Callable, fn: Callable,
@@ -868,7 +929,7 @@ def _mutation_gate(verifier: Verifier, reference: Run, score: Callable, fn: Call
     in it can be made to say something false about its own Reference.
     """
     tools = scored_write_tools(verifier, reference, write_tools)
-    failures, mutated, inert = [], 0, 0
+    failures, mutated, inert, detail = [], 0, 0, []
     for atom in verifier.atoms:
         mutant = _mutant(atom, fn)
         if mutant is None or _judged_no_call(atom, reference, tools, fn):
@@ -880,11 +941,17 @@ def _mutation_gate(verifier: Verifier, reference: Run, score: Callable, fn: Call
                            atoms=[mutant if a.id == atom.id else a for a in verifier.atoms])
         if score(changed, reference)[0]:
             failures.append(f"{atom.id}: the Reference still passes when this atom is changed")
+            detail.append({"atom": atom.id,
+                           **payload_diff(atom_payload(atom), atom_payload(mutant)),
+                           "run": getattr(reference, "run_id", None)})
     if not mutated:
         failures.append(f"no atom of this Verifier can be mutated ({inert} of them have nothing to "
                         "mutate or judged no call of the Reference), so nothing in it can be falsified")
     return GateResult(stage="verifier_mutation", passed=not failures,
-                      metrics={"atoms_mutated": mutated, "atoms_not_mutable": inert}, failures=failures)
+                      metrics={"atoms_mutated": mutated, "atoms_not_mutable": inert,
+                               "run_id": getattr(reference, "run_id", None),
+                               "expected": "fail", "got": "pass", "mutated": detail},
+                      failures=failures)
 
 
 def _judged_no_call(atom: Atom, run: Run, write_tools: set[str], fn: Callable) -> bool:
@@ -1144,10 +1211,25 @@ def _wrong_gate(verifier: Verifier, reference: Run, wrong: Any, scored: Callable
         return _run_gate("verifier_wrong_run", scored, None, expect_pass=False, atoms=verifier.atoms)
     gate = (_run_gate("verifier_wrong_run", scored, wrong, expect_pass=False, atoms=verifier.atoms)
             if wrong is not None else GateResult(stage="verifier_wrong_run", passed=True, metrics={}, failures=[]))
-    passed_swaps = [(atom_id, swap) for atom_id, swap, run in swaps if scored(run)[0]]
+    by_id = {atom.id: atom for atom in verifier.atoms}
+    passed_swaps, detail = [], []
+    for atom_id, swap, run in swaps:
+        if not scored(run)[0]:
+            continue
+        passed_swaps.append((atom_id, swap))
+        atom = by_id.get(atom_id)
+        target = _swap_target(atom, reference, fn) if atom is not None else None
+        field, call = (target[0], target[2]) if target else (None, None)
+        old = target[1] if target else None
+        new = _other_value(field, old, reference, rows, fn) if field else None
+        detail.append({"atom": atom_id, "swap": swap, "run": getattr(run, "run_id", None),
+                       "field": field, "old": old, "new": new,
+                       "call": getattr(call, "idx", None),
+                       "tool": (_payload(call).get("name") if call is not None else None)})
     failures = list(gate.failures) + [f"swap of {atom_id} ({swap}) scored pass: the Verifier accepts any value "
                                       "of that field" for atom_id, swap in passed_swaps]
-    metrics = dict(gate.metrics, swaps=len(swaps), swaps_passed=[a for a, _ in passed_swaps])
+    metrics = dict(gate.metrics, swaps=len(swaps), swaps_passed=[a for a, _ in passed_swaps],
+                   swap_detail=detail)
     return GateResult(stage="verifier_wrong_run", passed=not failures, metrics=metrics, failures=failures)
 
 

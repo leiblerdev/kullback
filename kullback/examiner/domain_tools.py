@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -365,12 +366,11 @@ def _record(ruling: Any, held: Optional[str] = None) -> dict:
 def _ruling_records(rulings: Iterable[Any]) -> list[dict]:
     return [_record(ruling) for ruling in rulings]
 
-
-def _gate_record(result: GateResult, verifier: Verifier) -> dict:
+def _gate_record(result: GateResult, verifier: Verifier, evidence: Optional[dict] = None) -> dict:
     """A gate this tool ran itself, as a record; a trusted ruling that holds the Task only for
     checks nobody could run is not run, with the gate's reason (F45)."""
     ruling = Ruling(stage=result.stage, passed=bool(result.passed), failures=list(result.failures),
-                    rows=rows_for(result, {"verifier": verifier}))
+                    rows=rows_for(result, {**(evidence or {}), "verifier": verifier}))
     metrics = result.metrics or {}
     untrusted = metrics.get("untrusted") or {}
     held = None
@@ -437,18 +437,19 @@ def _rule(root: ExamRoot, task_id: str, candidate: Verifier, ruled_dir: Optional
                                 evidence.get("alt_path_run"), canon=evidence.get("rules"),
                                 write_tools=evidence.get("write_tools"), seed_runs=evidence.get("seed_runs"),
                                 model=evidence.get("probe_model"), run_probe=evidence.get("run_probe"))
-    if _append_until_refused(out, results, candidate):
+    if _append_until_refused(out, results, candidate, evidence):
         return out
     gates = _write_gates(root, evidence, _suite_status(evidence, task_id, out))
-    _append_until_refused(out, (run_gate() for run_gate in gates), candidate)
+    _append_until_refused(out, (run_gate() for run_gate in gates), candidate, evidence)
     return out
 
 
-def _append_until_refused(out: list[dict], results: Iterable[GateResult], candidate: Verifier) -> bool:
+def _append_until_refused(out: list[dict], results: Iterable[GateResult], candidate: Verifier,
+                          evidence: Optional[dict] = None) -> bool:
     """Each gate result as a record onto `out`, in order, up to the first that ran and failed;
     whether one did. `results` is read lazily, so no gate after that refusal runs."""
     for result in results:
-        out.append(_gate_record(result, candidate))
+        out.append(_gate_record(result, candidate, evidence))
         if out[-1]["accepted"] is False:
             return True
     return False
@@ -553,17 +554,120 @@ def _atoms_named(records: list[dict]) -> str:
     return "\n".join(lines)
 
 
+#: How many failing rows a refusal spells out before counting the rest.
+WHY_CAP = 5
+#: How long one value runs in a why line before it is cut; the atom text is never cut.
+WHY_VALUE_CAP = 120
+#: What a why line ends with when the row cannot say what would pass.
+NO_RULE_FOUND = "no rule found"
+
+
+def _short(value: Any, cap: int = WHY_VALUE_CAP) -> str:
+    """One value as one short line of JSON, cut at `cap` characters."""
+    try:
+        text = value if isinstance(value, str) else json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                                               default=str)
+    except (TypeError, ValueError):
+        text = str(value)
+    text = " ".join(str(text).split())
+    return text if text and len(text) <= cap else ((text[:cap - 3] + "...") if text else "absent")
+
+
+def _flat(text: Any) -> str:
+    """One text as one line: whitespace flattened, the text itself never cut."""
+    return " ".join(str(text).split())
+
+
+def _why_fix(row: dict, expected: Optional[str], got: Optional[str]) -> str:
+    """What would pass this row, derived from the row itself, else NO_RULE_FOUND."""
+    if expected == "fail" and got == "pass":
+        field, old = row.get("field"), row.get("old")
+        if field and field not in ("event", "call", "tool") and old is not None:
+            return f"an atom that pins {field} to {_short(old)}"
+        return "an atom that fails this run"
+    if expected == "pass" and got == "fail":
+        return "the run itself breaks the atom, so check the run"
+    if isinstance(row.get("failure"), str) and NO_ATOM_CHECKED in row["failure"]:
+        return "an atom the run is checked on"
+    return NO_RULE_FOUND
+
+
+def _why_expected_got(record: dict, row: dict) -> tuple[Optional[str], Optional[str]]:
+    """The row's expected and got, else the record line's "expected X, got Y"."""
+    expected, got = row.get("expected"), row.get("got")
+    if expected is not None and got is not None:
+        return expected, got
+    match = re.search(r"expected (\w+), got (\w+)", record.get("line") or "")
+    if match:
+        return expected or match.group(1), got or match.group(2)
+    return expected, got
+
+
+def _why_line(record: dict, row: dict) -> Optional[str]:
+    """One failing row as one plain line: run, call, atom, expected and got, what would pass."""
+    if not isinstance(row, dict) or "rest" in row:
+        return None
+    check = row.get("check") or record.get("name") or "?"
+    head = f"{check}: run {row.get('run') or 'run unknown'}"
+    call, tool = row.get("call"), row.get("tool")
+    if call is not None:
+        detail = f"call {call} {tool or '?'}"
+        if row.get("args") is not None:
+            detail += f" args {_short(row['args'])}"
+        if row.get("field") and row.get("field") not in ("call", "tool"):
+            detail += f" {row['field']} {_short(row.get('old'))} -> {_short(row.get('new'))}"
+        elif row.get("field") in ("call", "tool") or "old" in row or "new" in row:
+            detail += f" {_short(row.get('old'))} -> {_short(row.get('new'))}"
+    elif row.get("swap"):
+        detail = f"swap {_short(row['swap'])}"
+    elif row.get("field"):
+        detail = f"{row['field']} {_short(row.get('old'))} -> {_short(row.get('new'))}"
+    elif check == "verifier_empty_run":
+        detail = "the run made no calls"
+    else:
+        detail = "call not named"
+    if row.get("atom"):
+        text = _flat(row.get("text") or "")
+        middle = f"atom {row['atom']} \"{text}\"" if text else f"atom {row['atom']}"
+    elif row.get("failure"):
+        middle = f"failure \"{_flat(row['failure'])}\""
+    else:
+        middle = "atom unknown"
+    expected, got = _why_expected_got(record, row)
+    if expected is not None and got is not None:
+        outcome = f"expected {expected}, scored {got}" if got == "pass" else f"expected {expected}, failed"
+        if got != "pass" and row.get("atom"):
+            outcome += f" at {row['atom']}"
+    else:
+        outcome = "expected unknown, got unknown"
+    return f"{head} {detail}; {middle}; {outcome}; would pass: {_why_fix(row, expected, got)}"
+
+
+def _why_lines(records: list[dict], cap: int = WHY_CAP) -> list[str]:
+    """Every failing row as one plain line, capped at the first `cap` with the rest counted."""
+    lines = []
+    for record in records:
+        if record.get("accepted") is not False:
+            continue
+        for row in record.get("rows") or []:
+            line = _why_line(record, row)
+            if line is not None:
+                lines.append(line)
+    if len(lines) > cap:
+        return lines[:cap] + [f"and {len(lines) - cap} more failing rows"]
+    return lines
+
+
 def _refuse_proposal(task_id: str, version: str, records: list[dict], stop: bool = False) -> RetryableToolError:
-    """A refused proposal as a retryable error: every ruling line, and the rows behind each failure."""
+    """A refused proposal as a retryable error: every ruling line, and one why line per failing row."""
     lines = "\n".join(record["line"] for record in records) or "no gate ruled on the proposal"
-    rows = "; ".join(f"{record['name']}: {record['rows']!r}"
-                     for record in records if record["accepted"] is False)
     atoms = _atoms_named(records)
+    why = _why_lines(records)
     return RetryableToolError(
         f"proposal version {version} for task {task_id} refused, the previous file stands:\n"
-        f"{lines}" + (f"\nrows behind the failures: {rows}" if rows else "")
-        + (f"\n{atoms}" if atoms else "") + f"\n{_TRY_FIRST}" + (_STOP if stop else ""),
-        ask=("Read the rows behind the failures and propose again with atoms answering them, "
+        f"{lines}" + (f"\n{atoms}" if atoms else "")
+        + (f"\n" + "\n".join(why) if why else "") + f"\n{_TRY_FIRST}" + (_STOP if stop else ""),
+        ask=("Read the failing rows and propose again with atoms answering them, "
              "or file a finding naming the Environment file and what differs after two refusals."))
 
 
@@ -793,9 +897,15 @@ def _try_atoms(root: ExamRoot):
                    "not decided": f"not decided: only the loophole probe is left, {DRY_RUN_NOT_RUN}"}[accepted]
         lines = "; ".join(record["line"] for record in records) or "no gate ruled on the edit"
         atoms = _atoms_named(records)
+        why = _why_lines(records)
         summary = (f"{head} {verdict}, nothing written: {lines}"
                    + (f"; failing atoms: {', '.join(failing)}" if failing else "")
-                   + (f"\n{atoms}" if atoms else ""))
+                   + (f"\n{atoms}" if atoms else "")
+                   + (f"\n" + "\n".join(why) if why else ""))
+        if accepted == "not decided":
+            summary += ("\nundecided: only the loophole probe is left, "
+                        f"{DRY_RUN_NOT_RUN}; what would decide it: propose the edit, "
+                        "and the write path runs the probe")
         return TryResult(summary=summary, task_id=args.task_id, content_hash=digest,
                          verifier_version=candidate.verifier_version, accepted=accepted,
                          rulings=records, failing_atoms=failing)
@@ -965,6 +1075,19 @@ def note_line(task_id: str, note: dict, ruling: Optional[dict]) -> str:
     return f"{head} (ruled by {ruling.get('move')}, {ruling.get('verdict')}: {ruling.get('text')})"
 
 
+def _probe_atom_text(verifier: Verifier, atom_id: Optional[str]) -> str:
+    """The Verifier atom's full text, never cut, or empty when it names none."""
+    for atom in verifier.atoms:
+        if atom.id == atom_id:
+            payload = atom_payload(atom)
+            raw = payload.get("raw") if isinstance(payload, dict) else None
+            if raw is not None:
+                return _flat(raw)
+            text = getattr(atom, "text", None) or getattr(atom, "description", None)
+            return _flat(text) if text else _flat(atom)
+    return ""
+
+
 def _probe(root: ExamRoot):
     async def probe(args: ProbeArgs) -> ProbeResult:
         verifier = _current(root, known_task(root.workdir, args.task_id))
@@ -978,10 +1101,22 @@ def _probe(root: ExamRoot):
         pool.append(run)
         target = root.exam_dir / "probes" / args.task_id / f"{len(pool)}.json"
         write_json(target, as_dict(run))
+        calls = [(event.idx, (event.payload or {}).get("name"),
+                  ((event.payload or {}).get("args") or (event.payload or {}).get("arguments") or {}))
+                 for event in run.events if event.type == "tool_call"]
+        did = (f"call {calls[0][0]} {calls[0][1] or '?'} args {_short(calls[0][2])}" if calls
+               else "the run made no calls")
+        if passed:
+            case, fix = "scored pass", "an atom that fails this run"
+        else:
+            text = _probe_atom_text(verifier, failing)
+            case = f"failed at {failing} \"{text}\"" if text else f"failed at {failing}"
+            fix = NO_RULE_FOUND
         verdict = ("accepted: it scores a pass, so the Verifier is loose"
                    if passed else f"rejected at {failing}")
         summary = (f"probe {probe_id} ({args.bug_class or 'no class'}) on task {args.task_id}: "
-                   f"{verdict}; pool holds {len(pool)}")
+                   f"{verdict}; pool holds {len(pool)}"
+                   f"\nprobe: run {probe_id} {did}; {case}; would pass: {fix}")
         if rule_note(root.workdir, args.task_id, "probe", "builder_right" if passed else "builder_wrong",
                      f"{verdict}" + (f"; {args.note}" if args.note else ""), root=root) is not None:
             summary += f"; the Builder's note on task {args.task_id} is ruled by this probe"
