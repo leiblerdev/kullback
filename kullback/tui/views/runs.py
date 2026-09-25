@@ -13,7 +13,7 @@ from textual import on
 from textual.widget import Widget
 from textual.widgets import Button, DataTable, Input, Static
 
-Launcher = Callable[[list[str], Path], Path]
+Launcher = Callable[[list[str], Path], tuple[Path, Any]]
 
 
 class RunsView(Widget):
@@ -29,6 +29,7 @@ class RunsView(Widget):
         self._result_timer = None
         self._poll_start = 0.0
         self._out_path: Optional[Path] = None
+        self._proc: Any = None
 
     def compose(self):  # type: ignore[override]
         yield Input(value="trusted", id="tasks")
@@ -66,17 +67,16 @@ class RunsView(Widget):
                    "--workdir", str(self.workdir), "--tasks", tasks,
                    "--model", model, "--ceiling-usd", str(ceiling), "--json"]
         try:
-            out_path = self.launcher(command, self.workdir)
+            out_path, proc = self.launcher(command, self.workdir)
         except Exception as exc:
             self.query_one("#status", Static).update(f"Launch failed: {exc}")
             return
         self._stop_poll()
         self._out_path = Path(out_path)
+        self._proc = proc
         self._poll_start = time.monotonic()
-        if self._try_show():
-            return
-        self._show_running()
-        self._result_timer = self.set_interval(2.0, self._poll_result)
+        if not self._refresh():
+            self._result_timer = self.set_interval(2.0, self._poll_result)
 
     def on_unmount(self) -> None:
         self._stop_poll()
@@ -88,13 +88,40 @@ class RunsView(Widget):
             self._result_timer = None
 
     def _poll_result(self) -> None:
-        """Render once the child's JSON parses; meanwhile show the elapsed seconds."""
+        """One timer step: render the result, report a dead child, or keep waiting."""
         if self._out_path is None:
             return
-        if self._try_show():
+        if self._refresh():
             self._stop_poll()
-        else:
-            self._show_running()
+
+    def _refresh(self) -> bool:
+        """Poll once: True when the status is final and the timer can stop."""
+        if self._try_show():
+            return True
+        if self._run_ended():
+            self._show_no_result()
+            return True
+        self._show_running()
+        return False
+
+    def _run_ended(self) -> bool:
+        """True when the child is gone: its poll reports an exit, so no JSON will land."""
+        poll = getattr(self._proc, "poll", None)
+        return poll is not None and poll() is not None
+
+    def _show_no_result(self) -> None:
+        """The child ended and its JSON never parsed: say so with the tail of its log."""
+        assert self._out_path is not None
+        try:
+            text = self._out_path.with_suffix(".log").read_text(encoding="utf-8",
+                                                                errors="replace")
+        except OSError:
+            text = ""
+        lines = text.splitlines()[-5:]
+        message = "the run ended without a result"
+        if lines:
+            message += ":\n" + "\n".join(lines)
+        self.query_one("#status", Static).update(message)
 
     def _show_running(self) -> None:
         elapsed = int(time.monotonic() - self._poll_start)
@@ -131,15 +158,15 @@ class RunsView(Widget):
         return True
 
 
-def _popen_launcher(command: list[str], workdir: Path) -> Path:
+def _popen_launcher(command: list[str], workdir: Path) -> tuple[Path, Any]:
     """Start the CLI detached: stdout as JSON, stderr beside it, same shell environment."""
     stem = f"run-{time.strftime('%Y%m%d-%H%M%S')}"
     out_path = workdir / f"{stem}.json"
     log_path = workdir / f"{stem}.log"
     with open(out_path, "wb") as out_handle, open(log_path, "wb") as log_handle:
-        subprocess.Popen(command, stdout=out_handle, stderr=log_handle,
-                         start_new_session=True)
-    return out_path
+        proc = subprocess.Popen(command, stdout=out_handle, stderr=log_handle,
+                                start_new_session=True)
+    return out_path, proc
 
 
 def _rate(value: Any) -> str:
