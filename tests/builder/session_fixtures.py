@@ -2,7 +2,7 @@
 build tree two workdirs are compared on.
 
 `tests/builder/test_extension.py`, `test_agent.py` and `test_tools.py` all drive one Builder
-session over the same tau2 retail fixture, so the helpers live here rather than in whichever test
+session over the same library world fixture, so the helpers live here rather than in whichever test
 file happened to write them first.
 """
 
@@ -20,8 +20,8 @@ COMPARED = ("bodies.json", "constraints.json", "gates.json", "environment.json",
 
 
 def fixture_path(request) -> Path:
-    """The small tau2 retail export every Builder session test builds from."""
-    return Path(request.config.rootpath) / "tests" / "fixtures" / "tau2_retail_small.json"
+    """The small library world export every Builder session test builds from."""
+    return Path(request.config.rootpath) / "tests" / "fixtures" / "worlds" / "world_a" / "traces_small.json"
 
 
 def reply(content, *calls) -> ModelReply:

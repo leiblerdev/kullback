@@ -29,25 +29,25 @@ from kullback.runner.records import (
 # --- hand-written tool bodies, standing in for what a model would write ---
 
 CORRECT_BODY = """
-if order_id not in self.db.orders:
-    raise ValueError("Order not found")
-return self.db.orders[order_id]
+if loan_id not in self.db.loans:
+    raise ValueError("Loan not found")
+return self.db.loans[loan_id]
 """
 
 WRONG_BODY = """
-return {"order_id": order_id, "status": "delivered"}
+return {"loan_id": loan_id, "status": "delivered"}
 """
 
 CONSTANT_BODY = """
-return {"order_id": "#W0000000", "status": "delivered"}
+return {"loan_id": "loan_9999", "status": "delivered"}
 """
 
 BROKEN_BODY = """
-return self.db.orders[order_id
+return self.db.loans[loan_id
 """
 
 CRASHING_BODY = """
-return self.db.warehouses[order_id]
+return self.db.sheds[loan_id]
 """
 
 SLOW_BODY = """
@@ -56,14 +56,14 @@ while True:
 """
 
 CANCEL_BODY = """
-if order_id not in self.db.orders:
-    raise ValueError("Order not found")
-order = self.db.orders[order_id]
-if order.status != "pending":
-    raise ValueError("Non-pending order cannot be cancelled")
-order.status = "cancelled"
-order.cancel_reason = reason
-return order
+if loan_id not in self.db.loans:
+    raise ValueError("Loan not found")
+loan = self.db.loans[loan_id]
+if loan.status != "pending":
+    raise ValueError("Non-pending loan cannot be cancelled")
+loan.status = "cancelled"
+loan.cancel_reason = reason
+return loan
 """
 
 FORGING_BODY = """
@@ -72,7 +72,7 @@ import os
 import sys
 
 with open(sys.argv[2], "w", encoding="utf-8") as handle:
-    json.dump({"results": [{"ok": True, "value": {"order_id": order_id, "status": "delivered"}}]}, handle)
+    json.dump({"results": [{"ok": True, "value": {"loan_id": loan_id, "status": "delivered"}}]}, handle)
 os._exit(0)
 """
 
@@ -87,39 +87,39 @@ def _schema_for(db, exempt=(), semantic=("address",)):
     return EntitySchema(
         tables=sorted(db),
         columns=columns,
-        id_patterns={"orders": r"^#W\d+$", "users": r"^[a-z]+_[a-z]+_\d+$", "products": r"^\d+$"},
+        id_patterns={"loans": r"^loan_\d+$", "members": r"^member_\d+$", "titles": r"^title_\d+$"},
     )
 
 
-# --- fixtures built from tau2's own retail db ---
+# --- fixtures built from an invented library db, in the shape of world_a ---
 
 
 @pytest.fixture(scope="session")
-def retail_db(tau2_retail_dir):
-    return json.loads((tau2_retail_dir / "db.json").read_text(encoding="utf-8"))
-
-
-@pytest.fixture(scope="session")
-def sample(retail_db):
-    """Three orders with different statuses, plus one user and one product, kept small on purpose."""
-    orders = retail_db["orders"]
-    picked = {}
-    for status in ("pending", "delivered", "processed"):
-        oid = next(k for k in sorted(orders) if orders[k]["status"] == status)
-        picked[status] = orders[oid]
-    user_id = picked["pending"]["user_id"]
-    product_id = picked["pending"]["items"][0]["product_id"]
+def sample():
+    """Three loans with different statuses, plus one member and one title, kept small on purpose."""
+    loans = {}
+    for loan_id, status in (("loan_01", "pending"), ("loan_02", "delivered"), ("loan_03", "processed")):
+        loans[loan_id] = {
+            "loan_id": loan_id,
+            "member_id": "member_01",
+            "titles": [{"title_id": "title_01", "title": "Riverside Walks"}],
+            "status": status,
+            "address": "elm street",
+            "amount": 10,
+        }
+    members = {"member_01": {"member_id": "member_01", "name": "Ava Chen", "zip": "11201"}}
+    titles = {"title_01": {"title_id": "title_01", "title": "Riverside Walks"}}
     return {
-        "orders": {o["order_id"]: o for o in picked.values()},
-        "users": {user_id: retail_db["users"][user_id]},
-        "products": {product_id: retail_db["products"][product_id]},
-        "by_status": picked,
+        "loans": loans,
+        "members": members,
+        "titles": titles,
+        "by_status": {row["status"]: row for row in loans.values()},
     }
 
 
 @pytest.fixture(scope="session")
 def db0(sample):
-    return {"orders": sample["orders"], "users": sample["users"], "products": sample["products"]}
+    return {"loans": sample["loans"], "members": sample["members"], "titles": sample["titles"]}
 
 
 @pytest.fixture(scope="session")
@@ -134,9 +134,9 @@ def schema(db0):
         tables=sorted(db0),
         columns=columns,
         id_patterns={
-            "orders": r"^#W\d+$",
-            "users": r"^[a-z]+_[a-z]+_\d+$",
-            "products": r"^\d+$",
+            "loans": r"^loan_\d+$",
+            "members": r"^member_\d+$",
+            "titles": r"^title_\d+$",
         },
     )
 
@@ -145,13 +145,13 @@ def schema(db0):
 def sigs():
     return [
         ToolSig(
-            name="get_order_details",
-            description="Get the status and details of an order.",
-            args_fields=[FieldStat(name="order_id", types=["str"], optional=False)],
+            name="get_loan_details",
+            description="Get the status and details of a loan.",
+            args_fields=[FieldStat(name="loan_id", types=["str"], optional=False)],
             kind="read",
             unclassified=False,
         ),
-        ToolSig(name="cancel_pending_order", kind="write", unclassified=False),
+        ToolSig(name="update_loan", kind="write", unclassified=False),
     ]
 
 
@@ -171,16 +171,16 @@ def _trace(trace_id, calls):
 
 
 @pytest.fixture
-def order_calls(sample):
-    """Recorded get_order_details calls: three successes and one not-found error."""
+def loan_calls(sample):
+    """Recorded get_loan_details calls: three successes and one not-found error."""
     calls = []
-    for idx, order in enumerate(sample["orders"].values()):
-        calls.append(_call("get_order_details", {"order_id": order["order_id"]}, result=order, idx=idx))
+    for idx, loan in enumerate(sample["loans"].values()):
+        calls.append(_call("get_loan_details", {"loan_id": loan["loan_id"]}, result=loan, idx=idx))
     calls.append(
         _call(
-            "get_order_details",
-            {"order_id": "#W0000000"},
-            error=ToolCallError(**{"class": "not_found_entity"}, payload="Order not found"),
+            "get_loan_details",
+            {"loan_id": "loan_9999"},
+            error=ToolCallError(**{"class": "not_found_entity"}, payload="Loan not found"),
             idx=9,
         )
     )
@@ -192,49 +192,49 @@ def order_calls(sample):
 
 def test_inverse_replay_undoes_an_observed_write(sample, schema, sigs, workdir):
     pending = sample["by_status"]["pending"]
-    oid = pending["order_id"]
+    oid = pending["loan_id"]
     post = dict(pending, status="cancelled", cancel_reason="no longer needed")
     trace = _trace(
         "A",
         [
-            _call("get_order_details", {"order_id": oid}, result=pending, idx=0),
-            _call("cancel_pending_order", {"order_id": oid, "reason": "no longer needed"}, result=post, idx=1),
+            _call("get_loan_details", {"loan_id": oid}, result=pending, idx=0),
+            _call("update_loan", {"loan_id": oid, "reason": "no longer needed"}, result=post, idx=1),
         ],
     )
     state = ce.build_starting_state([trace], schema, workdir, tool_sigs=sigs)
-    assert state.db["orders"][oid]["status"] == "pending"
+    assert state.db["loans"][oid]["status"] == "pending"
     assert json.loads((workdir / ce.DB_FILE).read_text(encoding="utf-8")) == state.db
 
 
 def test_post_state_only_is_kept_and_the_assumption_is_recorded(sample, schema, sigs, workdir):
     pending = sample["by_status"]["pending"]
-    oid = pending["order_id"]
+    oid = pending["loan_id"]
     post = dict(pending, status="cancelled")
-    trace = _trace("B", [_call("cancel_pending_order", {"order_id": oid}, result=post, idx=0)])
+    trace = _trace("B", [_call("update_loan", {"loan_id": oid}, result=post, idx=0)])
     state = ce.build_starting_state([trace], schema, workdir, tool_sigs=sigs)
-    assert state.db["orders"][oid]["status"] == "cancelled"
+    assert state.db["loans"][oid]["status"] == "cancelled"
     assert any(oid in note for note in state.assumptions)
 
 
 def test_latest_observation_wins_in_the_shared_rows(sample, schema, sigs, workdir):
-    order = sample["by_status"]["delivered"]
-    oid = order["order_id"]
-    first = _trace("A", [_call("get_order_details", {"order_id": oid}, result=dict(order, status="processed"))])
-    second = _trace("B", [_call("get_order_details", {"order_id": oid}, result=dict(order, status="delivered"))])
+    loan = sample["by_status"]["delivered"]
+    oid = loan["loan_id"]
+    first = _trace("A", [_call("get_loan_details", {"loan_id": oid}, result=dict(loan, status="processed"))])
+    second = _trace("B", [_call("get_loan_details", {"loan_id": oid}, result=dict(loan, status="delivered"))])
     state = ce.build_starting_state([first, second], schema, workdir, tool_sigs=sigs)
-    assert state.db["orders"][oid]["status"] == "delivered"
+    assert state.db["loans"][oid]["status"] == "delivered"
 
 
 def test_a_json_string_result_is_read_as_a_row(sample, schema, sigs, workdir):
-    order = sample["by_status"]["processed"]
-    trace = _trace("A", [_call("get_order_details", {"order_id": order["order_id"]}, result=json.dumps(order))])
+    loan = sample["by_status"]["processed"]
+    trace = _trace("A", [_call("get_loan_details", {"loan_id": loan["loan_id"]}, result=json.dumps(loan))])
     state = ce.build_starting_state([trace], schema, workdir, tool_sigs=sigs)
-    assert state.db["orders"][order["order_id"]]["status"] == "processed"
+    assert state.db["loans"][loan["loan_id"]]["status"] == "processed"
 
 
 def test_the_shared_db_is_the_same_bytes_on_two_runs(sample, schema, sigs, tmp_path):
-    order = sample["by_status"]["pending"]
-    traces = [_trace("A", [_call("get_order_details", {"order_id": order["order_id"]}, result=order)])]
+    loan = sample["by_status"]["pending"]
+    traces = [_trace("A", [_call("get_loan_details", {"loan_id": loan["loan_id"]}, result=loan)])]
     outputs = []
     for name in ("one", "two"):
         work = tmp_path / name
@@ -248,58 +248,62 @@ def test_the_shared_db_is_the_same_bytes_on_two_runs(sample, schema, sigs, tmp_p
 
 
 def test_each_task_overlay_pins_the_version_its_runs_saw(sample, schema, sigs, workdir):
-    order = sample["by_status"]["pending"]
-    oid = order["order_id"]
-    cancelled = dict(order, status="cancelled")
-    march = _trace("A", [_call("get_order_details", {"order_id": oid}, result=order)])
-    june = _trace("C", [_call("get_order_details", {"order_id": oid}, result=cancelled)])
+    loan = sample["by_status"]["pending"]
+    oid = loan["loan_id"]
+    cancelled = dict(loan, status="cancelled")
+    march = _trace("A", [_call("get_loan_details", {"loan_id": oid}, result=loan)])
+    june = _trace("C", [_call("get_loan_details", {"loan_id": oid}, result=cancelled)])
     tasks = [Task(id="t_cancel", run_ids=["A"]), Task(id="t_after", run_ids=["C"])]
     state = ce.build_starting_state([march, june], schema, workdir, tasks=tasks, tool_sigs=sigs)
 
     assert {o.task_id for o in state.overlays} == {"t_cancel", "t_after"}
     cancel_overlay, cancel_values = ce.load_overlay(workdir, "t_cancel")
     after_overlay, after_values = ce.load_overlay(workdir, "t_after")
-    # The order's own row, and the rows the order mentions inside itself (D188 walks a result to
-    # any depth), the order first because the rows are sorted by table.
-    assert cancel_overlay.rows[0].table == "orders" and cancel_overlay.rows[0].id == oid
-    assert {r.table for r in cancel_overlay.rows} == {"orders", "products"}
-    assert cancel_values[cancel_overlay.rows[0].version_hash]["status"] == "pending"
-    assert after_values[after_overlay.rows[0].version_hash]["status"] == "cancelled"
-    assert cancel_overlay.rows[0].version_hash != after_overlay.rows[0].version_hash
-    assert cancel_overlay.rows[0].trace_id == "A"
+    # The loan's own row, and the rows the loan mentions inside itself (D188 walks a result to
+    # any depth); rows are sorted by table, so the titles row comes before the loan row.
+    cancel_by_table = {r.table: r for r in cancel_overlay.rows}
+    after_by_table = {r.table: r for r in after_overlay.rows}
+    assert set(cancel_by_table) == {"loans", "titles"}
+    assert cancel_by_table["loans"].id == oid
+    assert cancel_by_table["titles"].id == "title_01"
+    assert cancel_values[cancel_by_table["loans"].version_hash]["status"] == "pending"
+    assert after_values[after_by_table["loans"].version_hash]["status"] == "cancelled"
+    assert cancel_by_table["loans"].version_hash != after_by_table["loans"].version_hash
+    assert cancel_by_table["loans"].trace_id == "A"
 
 
 def test_an_overlay_row_carries_the_pre_write_version(sample, schema, sigs, workdir):
-    order = sample["by_status"]["pending"]
-    oid = order["order_id"]
-    post = dict(order, status="cancelled")
+    loan = sample["by_status"]["pending"]
+    oid = loan["loan_id"]
+    post = dict(loan, status="cancelled")
     trace = _trace(
         "A",
         [
-            _call("get_order_details", {"order_id": oid}, result=order, idx=0),
-            _call("cancel_pending_order", {"order_id": oid}, result=post, idx=1),
+            _call("get_loan_details", {"loan_id": oid}, result=loan, idx=0),
+            _call("update_loan", {"loan_id": oid}, result=post, idx=1),
         ],
     )
     tasks = [Task(id="t1", run_ids=["A"])]
     ce.build_starting_state([trace], schema, workdir, tasks=tasks, tool_sigs=sigs)
     overlay, values = ce.load_overlay(workdir, "t1")
-    assert values[overlay.rows[0].version_hash]["status"] == "pending"
+    loan_row = next(r for r in overlay.rows if r.table == "loans")
+    assert values[loan_row.version_hash]["status"] == "pending"
 
 
 # --- the model writes the body, code writes the signature, docstring and schema ---
 
 
 def test_render_tools_writes_the_signature_and_the_docstring(schema, sigs):
-    source = ce.render_tools(schema, sigs[:1], {"get_order_details": CORRECT_BODY})
-    assert "def get_order_details(self, order_id: str)" in source
-    assert "Get the status and details of an order." in source
-    assert "        if order_id not in self.db.orders:" in source
+    source = ce.render_tools(schema, sigs[:1], {"get_loan_details": CORRECT_BODY})
+    assert "def get_loan_details(self, loan_id: str)" in source
+    assert "Get the status and details of a loan." in source
+    assert "        if loan_id not in self.db.loans:" in source
     compile(source, "<rendered>", "exec")
 
 
 def test_render_data_model_has_one_class_per_table_and_a_db(schema):
     source = ce.render_data_model(schema)
-    for name in ("class Order(", "class User(", "class Product(", f"class {ce.DB_CLASS}("):
+    for name in ("class Loan(", "class Member(", "class Title(", f"class {ce.DB_CLASS}("):
         assert name in source
     compile(source, "<rendered>", "exec")
 
@@ -308,21 +312,21 @@ def test_render_data_model_has_one_class_per_table_and_a_db(schema):
 
 
 def _sandbox(schema, sigs, db0, workdir, body, timeout=30):
-    source = ce.module_source(schema, sigs[:1], {"get_order_details": body})
+    source = ce.module_source(schema, sigs[:1], {"get_loan_details": body})
     return source, ce.Sandbox(source, db0, workdir, timeout=timeout)
 
 
 def test_gate_parses_fails_on_a_body_that_is_not_python(schema, sigs, db0, workdir):
-    source = ce.module_source(schema, sigs[:1], {"get_order_details": BROKEN_BODY})
+    source = ce.module_source(schema, sigs[:1], {"get_loan_details": BROKEN_BODY})
     result = ce.gate_parses(source)
     assert result.passed is False
     assert result.stage == "parses"
     assert result.failures
 
 
-def test_a_correct_body_passes_all_five_gates(schema, sigs, db0, workdir, order_calls):
+def test_a_correct_body_passes_all_five_gates(schema, sigs, db0, workdir, loan_calls):
     source, box = _sandbox(schema, sigs, db0, workdir, CORRECT_BODY)
-    shown, held_out = ce.split_calls(order_calls)
+    shown, held_out = ce.split_calls(loan_calls)
     gates = ce.run_gates(source, box, shown, held_out, schema)
     # "confined" is the gate that stands in for the deferred sandbox: the same module is exec'd
     # in the Runner's process by load_toolkit, so a body that reaches past the customer's world
@@ -333,23 +337,23 @@ def test_a_correct_body_passes_all_five_gates(schema, sigs, db0, workdir, order_
     assert all(g.passed for g in gates), [g.failures for g in gates if not g.passed]
 
 
-def test_a_crashing_body_fails_the_executes_gate(schema, sigs, db0, workdir, order_calls):
+def test_a_crashing_body_fails_the_executes_gate(schema, sigs, db0, workdir, loan_calls):
     source, box = _sandbox(schema, sigs, db0, workdir, CRASHING_BODY)
-    result = ce.gate_executes_on_s0(box, order_calls[:1])
+    result = ce.gate_executes_on_s0(box, loan_calls[:1])
     assert result.passed is False
     assert result.stage == "executes_on_s0"
 
 
-def test_a_constant_body_fails_the_non_trivial_gate(schema, sigs, db0, workdir, order_calls):
+def test_a_constant_body_fails_the_non_trivial_gate(schema, sigs, db0, workdir, loan_calls):
     source, box = _sandbox(schema, sigs, db0, workdir, CONSTANT_BODY)
-    result = ce.gate_non_trivial(box, order_calls[:3])
+    result = ce.gate_non_trivial(box, loan_calls[:3])
     assert result.passed is False
     assert result.stage == "non_trivial"
 
 
-def test_replay_fidelity_reports_success_and_error_separately(schema, sigs, db0, workdir, order_calls):
+def test_replay_fidelity_reports_success_and_error_separately(schema, sigs, db0, workdir, loan_calls):
     source, box = _sandbox(schema, sigs, db0, workdir, CORRECT_BODY)
-    result = ce.gate_replay_fidelity(box, order_calls, schema)
+    result = ce.gate_replay_fidelity(box, loan_calls, schema)
     assert result.passed is True
     assert result.metrics["success_calls"] == 3
     assert result.metrics["error_calls"] == 1
@@ -358,27 +362,27 @@ def test_replay_fidelity_reports_success_and_error_separately(schema, sigs, db0,
 
 
 def test_replay_fidelity_fails_a_wrong_body_on_hard_columns_and_on_errors(
-    schema, sigs, db0, workdir, order_calls
+    schema, sigs, db0, workdir, loan_calls
 ):
     source, box = _sandbox(schema, sigs, db0, workdir, WRONG_BODY)
-    result = ce.gate_replay_fidelity(box, order_calls, schema)
+    result = ce.gate_replay_fidelity(box, loan_calls, schema)
     assert result.passed is False
     assert result.metrics["success_fidelity"] < 1.0
     assert result.metrics["error_fidelity"] == 0.0
     assert result.failures
 
 
-def test_the_sandbox_kills_a_body_that_does_not_stop(schema, sigs, db0, workdir, order_calls):
+def test_the_sandbox_kills_a_body_that_does_not_stop(schema, sigs, db0, workdir, loan_calls):
     source, box = _sandbox(schema, sigs, db0, workdir, SLOW_BODY, timeout=2)
-    result = ce.gate_executes_on_s0(box, order_calls[:1])
+    result = ce.gate_executes_on_s0(box, loan_calls[:1])
     assert result.passed is False
     assert any("timeout" in failure for failure in result.failures)
 
 
-def test_split_calls_puts_every_call_in_exactly_one_of_the_shown_and_held_out_splits_and_leaves_neither_empty(order_calls):
-    shown, held_out = ce.split_calls(order_calls)
+def test_split_calls_puts_every_call_in_exactly_one_of_the_shown_and_held_out_splits_and_leaves_neither_empty(loan_calls):
+    shown, held_out = ce.split_calls(loan_calls)
     assert shown and held_out
-    assert len(shown) + len(held_out) == len(order_calls)
+    assert len(shown) + len(held_out) == len(loan_calls)
     assert not set(id(c) for c in shown) & set(id(c) for c in held_out)
 
 
@@ -439,13 +443,13 @@ def test_split_calls_holds_out_a_whole_argument_shape():
     assert plain == other_plain != marked
 
 
-def test_split_calls_falls_back_to_every_third_when_every_call_shares_one_shape(order_calls):
-    shown, held_out = ce.split_calls(order_calls)
-    by_index_shown = [c for i, c in enumerate(order_calls) if i % 3 != 2]
-    by_index_held = [c for i, c in enumerate(order_calls) if i % 3 == 2]
+def test_split_calls_falls_back_to_every_third_when_every_call_shares_one_shape(loan_calls):
+    shown, held_out = ce.split_calls(loan_calls)
+    by_index_shown = [c for i, c in enumerate(loan_calls) if i % 3 != 2]
+    by_index_held = [c for i, c in enumerate(loan_calls) if i % 3 == 2]
     assert [c.id for c in shown] == [c.id for c in by_index_shown]
     assert [c.id for c in held_out] == [c.id for c in by_index_held]
-    assert ce.no_shape_holdout(order_calls) is True
+    assert ce.no_shape_holdout(loan_calls) is True
 
 
 def test_the_shape_of_an_id_generalizes_its_characters_and_keeps_the_rest():
@@ -460,29 +464,29 @@ def test_the_shape_of_an_id_generalizes_its_characters_and_keeps_the_rest():
 
 def _bundle(schema, sigs, db0, overlays=(), tasks=(), verifiers=()):
     return ce.EnvBundle(
-        environment=Environment(env_id="env1", assisted_tools=["cancel_pending_order"]),
+        environment=Environment(env_id="env1", assisted_tools=["update_loan"]),
         schema=schema,
         tools=sigs[:1],
-        bodies={"get_order_details": CORRECT_BODY},
+        bodies={"get_loan_details": CORRECT_BODY},
         db=db0,
         overlays=list(overlays),
-        policy_text="# Retail policy\n\nAuthenticate the user first.\n",
+        policy_text="# Library policy\n\nAuthenticate the member first.\n",
         tasks=list(tasks),
         verifiers=list(verifiers),
-        assumptions=["order #W0000000 was only seen after a write"],
+        assumptions=["loan loan_9999 was only seen after a write"],
     )
 
 
 def test_emit_tau2_shape_writes_the_five_files_and_a_sidecar(schema, sigs, db0, workdir):
-    task = Task(id="t1", intent="cancel a pending order", run_ids=["A"])
+    task = Task(id="t1", intent="cancel a pending loan", run_ids=["A"])
     verifier = Verifier(
         task_id="t1",
         atoms=[
             Atom(
                 id="t1_0",
                 kind="required",
-                description="cancel the order",
-                predicate_src=json.dumps({"name": "cancel_pending_order", "arguments": {"order_id": "#W1"}}),
+                description="cancel the loan",
+                predicate_src=json.dumps({"name": "update_loan", "arguments": {"loan_id": "#W1"}}),
             ),
             Atom(id="t1_1", kind="allowed", description="offer a gift card"),
         ],
@@ -496,20 +500,20 @@ def test_emit_tau2_shape_writes_the_five_files_and_a_sidecar(schema, sigs, db0, 
 
     tasks_json = json.loads(paths["tasks.json"].read_text(encoding="utf-8"))
     assert tasks_json[0]["id"] == "t1"
-    assert tasks_json[0]["evaluation_criteria"]["actions"][0]["name"] == "cancel_pending_order"
+    assert tasks_json[0]["evaluation_criteria"]["actions"][0]["name"] == "update_loan"
 
     sidecar = json.loads(paths["sidecar.json"].read_text(encoding="utf-8"))
-    assert sidecar["assisted_tools"] == ["cancel_pending_order"]
+    assert sidecar["assisted_tools"] == ["update_loan"]
     assert sidecar["assumptions"]
     assert sidecar["atoms"]["t1"][1]["kind"] == "allowed"
     assert set(sidecar["files"]) == {"data_model.py", "tools.py", "db.json", "policy.md", "tasks.json"}
 
 
 def test_emit_merges_overlays_into_one_db(sample, schema, sigs, db0, workdir):
-    order = sample["by_status"]["pending"]
-    oid = order["order_id"]
-    cancelled = dict(order, status="cancelled")
-    trace = _trace("A", [_call("get_order_details", {"order_id": oid}, result=cancelled)])
+    loan = sample["by_status"]["pending"]
+    oid = loan["loan_id"]
+    cancelled = dict(loan, status="cancelled")
+    trace = _trace("A", [_call("get_loan_details", {"loan_id": oid}, result=cancelled)])
     state = ce.build_starting_state(
         [trace], schema, workdir, tasks=[Task(id="t1", run_ids=["A"])], tool_sigs=sigs
     )
@@ -517,16 +521,16 @@ def test_emit_merges_overlays_into_one_db(sample, schema, sigs, db0, workdir):
     bundle.overlay_values = ce.overlay_values(workdir)
     paths = ce.emit_tau2_shape(bundle, workdir / "out")
     merged = json.loads(paths["db.json"].read_text(encoding="utf-8"))
-    assert merged["orders"][oid]["status"] == "cancelled"
+    assert merged["loans"][oid]["status"] == "cancelled"
 
 
 def test_emit_records_two_tasks_that_pin_the_same_row_differently(sample, schema, sigs, db0, workdir):
-    order = sample["by_status"]["pending"]
-    oid = order["order_id"]
-    cancelled = dict(order, status="cancelled")
+    loan = sample["by_status"]["pending"]
+    oid = loan["loan_id"]
+    cancelled = dict(loan, status="cancelled")
     traces = [
-        _trace("A", [_call("get_order_details", {"order_id": oid}, result=order)]),
-        _trace("C", [_call("get_order_details", {"order_id": oid}, result=cancelled)]),
+        _trace("A", [_call("get_loan_details", {"loan_id": oid}, result=loan)]),
+        _trace("C", [_call("get_loan_details", {"loan_id": oid}, result=cancelled)]),
     ]
     tasks = [Task(id="t1", run_ids=["A"]), Task(id="t2", run_ids=["C"])]
     state = ce.build_starting_state(traces, schema, workdir, tasks=tasks, tool_sigs=sigs)
@@ -536,33 +540,33 @@ def test_emit_records_two_tasks_that_pin_the_same_row_differently(sample, schema
     # D74: the export records the conflict and keeps one version; the Runner keeps both overlays.
     assert len(bundle.conflicts) == 1 and oid in bundle.conflicts[0]
     exported = json.loads((workdir / "out" / "db.json").read_text())
-    assert exported["orders"][oid]["status"] == order["status"]
+    assert exported["loans"][oid]["status"] == loan["status"]
     with pytest.raises(ce.OverlayConflict):
         ce.merge_overlays(db0, state.overlays, bundle.overlay_values)
 
 
 def test_the_export_prefers_the_version_seen_before_a_write(tmp_path):
     from kullback.runner.records import OverlayRow, TaskOverlay
-    late = TaskOverlay(task_id="t1", rows=[OverlayRow(table="orders", id="o1", version_hash="v_after",
+    late = TaskOverlay(task_id="t1", rows=[OverlayRow(table="loans", id="o1", version_hash="v_after",
                                                        after_write=True)])
-    early = TaskOverlay(task_id="t2", rows=[OverlayRow(table="orders", id="o1", version_hash="v_before")])
+    early = TaskOverlay(task_id="t2", rows=[OverlayRow(table="loans", id="o1", version_hash="v_before")])
     values = {"v_after": {"status": "cancelled"}, "v_before": {"status": "pending"}}
     conflicts: list[str] = []
-    merged = ce.merge_overlays({"orders": {}}, [late, early], values, conflicts)
-    assert merged["orders"]["o1"]["status"] == "pending"
-    assert conflicts == ["tasks t1 and t2 pin orders row o1 in different versions; the benchmark export keeps t2's"]
+    merged = ce.merge_overlays({"loans": {}}, [late, early], values, conflicts)
+    assert merged["loans"]["o1"]["status"] == "pending"
+    assert conflicts == ["tasks t1 and t2 pin loans row o1 in different versions; the benchmark export keeps t2's"]
 
 
 # --- the Environment record, its sub-versions and its open flags (D67, D70, D97) ---
 
 def test_build_environment_carries_the_sub_versions_the_flags_and_the_assisted_tools(schema, sigs):
     env = ce.build_environment(schema, sigs, {s.name: "pass" for s in sigs}, "policy",
-                               assisted_tools=["cancel_pending_order"])
-    assert env.assisted_tools == ["cancel_pending_order"]
+                               assisted_tools=["update_loan"])
+    assert env.assisted_tools == ["update_loan"]
     from kullback.builder.compile_env import build_environment
     from kullback.runner.records import Column, EntitySchema, ErrorShape, ToolSig
 
-    schema = EntitySchema(tables=["orders"], columns=[Column(table="orders", name="status", class_="hard")])
+    schema = EntitySchema(tables=["loans"], columns=[Column(table="loans", name="status", class_="hard")])
     sigs = [
         ToolSig(name="cancel_order", kind="write", unclassified=False,
                 error_shapes=[ErrorShape(class_="unknown", count=8), ErrorShape(class_="business_error", count=2)]),
@@ -594,10 +598,10 @@ def test_a_changed_policy_only_moves_the_policy_version():
 @pytest.fixture
 def cancel_sig():
     return ToolSig(
-        name="cancel_pending_order",
-        description="Cancel a pending order.",
+        name="update_loan",
+        description="Cancel a pending loan.",
         args_fields=[
-            FieldStat(name="order_id", types=["str"], optional=False),
+            FieldStat(name="loan_id", types=["str"], optional=False),
             FieldStat(name="reason", types=["str"], optional=False),
         ],
         kind="write",
@@ -607,25 +611,25 @@ def cancel_sig():
 
 @pytest.fixture
 def cancel_world(sample):
-    """One pending order with room for a cancel reason, and the schema over it."""
-    order = dict(sample["by_status"]["pending"], cancel_reason=None)
-    db = {"orders": {order["order_id"]: order}, "users": {}, "products": {}}
-    return db, _schema_for(db), order
+    """One pending loan with room for a cancel reason, and the schema over it."""
+    loan = dict(sample["by_status"]["pending"], cancel_reason=None)
+    db = {"loans": {loan["loan_id"]: loan}, "members": {}, "titles": {}}
+    return db, _schema_for(db), loan
 
 
 def test_a_write_tool_passes_all_five_gates_on_calls_two_runs_recorded(cancel_world, cancel_sig, workdir):
-    """Two Runs of one Task each cancel the same pending order; both start from S0, so both replay."""
-    db, schema, order = cancel_world
-    oid = order["order_id"]
-    first = dict(order, status="cancelled", cancel_reason="no longer needed")
-    second = dict(order, status="cancelled", cancel_reason="ordered by mistake")
+    """Two Runs of one Task each cancel the same pending loan; both start from S0, so both replay."""
+    db, schema, loan = cancel_world
+    oid = loan["loan_id"]
+    first = dict(loan, status="cancelled", cancel_reason="no longer needed")
+    second = dict(loan, status="cancelled", cancel_reason="ordered by mistake")
     calls = [
-        _call(cancel_sig.name, {"order_id": oid, "reason": "no longer needed"}, result=first, idx=0),
-        _call(cancel_sig.name, {"order_id": oid, "reason": "ordered by mistake"}, result=second, idx=1),
+        _call(cancel_sig.name, {"loan_id": oid, "reason": "no longer needed"}, result=first, idx=0),
+        _call(cancel_sig.name, {"loan_id": oid, "reason": "ordered by mistake"}, result=second, idx=1),
         _call(
             cancel_sig.name,
-            {"order_id": "#W0000000", "reason": "no longer needed"},
-            error=ToolCallError(**{"class": "not_found_entity"}, payload="Order not found"),
+            {"loan_id": "loan_9999", "reason": "no longer needed"},
+            error=ToolCallError(**{"class": "not_found_entity"}, payload="Loan not found"),
             idx=2,
         ),
     ]
@@ -650,8 +654,8 @@ def test_the_same_write_call_twice_answers_from_the_starting_state_both_times(
     cancel_world, cancel_sig, workdir
 ):
     """The memo may not hand the second call the world the first call left behind."""
-    db, schema, order = cancel_world
-    args = {"order_id": order["order_id"], "reason": "no longer needed"}
+    db, schema, loan = cancel_world
+    args = {"loan_id": loan["loan_id"], "reason": "no longer needed"}
     calls = [_call(cancel_sig.name, args, idx=0), _call(cancel_sig.name, args, idx=1)]
     source = ce.module_source(schema, [cancel_sig], {cancel_sig.name: CANCEL_BODY})
     results = ce.Sandbox(source, db, workdir).run(calls)
@@ -662,28 +666,28 @@ def test_the_same_write_call_twice_answers_from_the_starting_state_both_times(
 def test_a_row_the_corpus_shows_in_two_versions_replays_on_each_tasks_own_world(
     sample, sigs, workdir
 ):
-    """The March Task saw the order pending, the June Task saw it cancelled; one body serves both."""
+    """The March Task saw the loan pending, the June Task saw it cancelled; one body serves both."""
     pending = sample["by_status"]["pending"]
-    oid = pending["order_id"]
+    oid = pending["loan_id"]
     other = sample["by_status"]["delivered"]
-    db = {"orders": {oid: pending, other["order_id"]: other}, "users": {}, "products": {}}
+    db = {"loans": {oid: pending, other["loan_id"]: other}, "members": {}, "titles": {}}
     schema = _schema_for(db)
     march = _trace("A", [
-        _call("get_order_details", {"order_id": oid}, result=pending, idx=0),
-        _call("get_order_details", {"order_id": other["order_id"]}, result=other, idx=2),
+        _call("get_loan_details", {"loan_id": oid}, result=pending, idx=0),
+        _call("get_loan_details", {"loan_id": other["loan_id"]}, result=other, idx=2),
     ])
-    june = _trace("C", [_call("get_order_details", {"order_id": oid},
+    june = _trace("C", [_call("get_loan_details", {"loan_id": oid},
                               result=dict(pending, status="cancelled"), idx=1)])
     tasks = [Task(id="tA", run_ids=["A"]), Task(id="tC", run_ids=["C"])]
     state = ce.build_starting_state([march, june], schema, workdir, tasks=tasks, tool_sigs=sigs)
-    assert state.db["orders"][oid]["status"] == "cancelled"  # latest observation wins in the shared world
+    assert state.db["loans"][oid]["status"] == "cancelled"  # latest observation wins in the shared world
 
     calls = [
         march.tool_calls[0],
         june.tool_calls[0],
         march.tool_calls[1],
-        _call("get_order_details", {"order_id": "#W0000000"},
-              error=ToolCallError(**{"class": "not_found_entity"}, payload="Order not found"), idx=3),
+        _call("get_loan_details", {"loan_id": "loan_9999"},
+              error=ToolCallError(**{"class": "not_found_entity"}, payload="Loan not found"), idx=3),
     ]
     states = ce.call_starting_states(
         state.db, state.overlays, ce.overlay_values(workdir), {"c0": "tA", "c1": "tC", "c2": "tA"}
@@ -697,16 +701,16 @@ def test_a_row_the_corpus_shows_in_two_versions_replays_on_each_tasks_own_world(
 
 
 def test_a_recorded_invalid_arguments_call_does_not_fail_the_executes_gate(sample, sigs, workdir):
-    order = sample["by_status"]["pending"]
-    db = {"orders": {order["order_id"]: order}, "users": {}, "products": {}}
+    loan = sample["by_status"]["pending"]
+    db = {"loans": {loan["loan_id"]: loan}, "members": {}, "titles": {}}
     schema = _schema_for(db)
     calls = [
-        _call("get_order_details", {"order_id": order["order_id"]}, result=order, idx=0),
-        _call("get_order_details", {"order": order["order_id"]},
+        _call("get_loan_details", {"loan_id": loan["loan_id"]}, result=loan, idx=0),
+        _call("get_loan_details", {"loan": loan["loan_id"]},
               error=ToolCallError(**{"class": "invalid_arguments"},
-                                  payload="unexpected keyword argument 'order'"), idx=1),
+                                  payload="unexpected keyword argument 'loan'"), idx=1),
     ]
-    source = ce.module_source(schema, sigs[:1], {"get_order_details": CORRECT_BODY})
+    source = ce.module_source(schema, sigs[:1], {"get_loan_details": CORRECT_BODY})
     box = ce.Sandbox(source, db, workdir)
     executes = ce.gate_executes_on_s0(box, calls)
     assert executes.passed is True, executes.failures
@@ -719,21 +723,23 @@ def test_a_recorded_invalid_arguments_call_does_not_fail_the_executes_gate(sampl
 
 
 def test_a_float_row_and_an_int_row_both_load_under_mined_string_and_int_samples(sigs, workdir):
-    db = {"orders": {"#W1": {"order_id": "#W1", "amount": 10}, "#W2": {"order_id": "#W2", "amount": 10.5}},
-          "users": {"a_b_1": {"user_id": "a_b_1", "zip": "94016"}, "c_d_2": {"user_id": "c_d_2", "zip": 94016}}}
+    db = {"loans": {"loan_01": {"loan_id": "loan_01", "amount": 10},
+               "loan_02": {"loan_id": "loan_02", "amount": 10.5}},
+          "members": {"member_01": {"member_id": "member_01", "zip": "11201"},
+                      "member_02": {"member_id": "member_02", "zip": 11202}}}
     schema = EntitySchema(
-        tables=["orders", "users"],
+        tables=["loans", "members"],
         columns=[
-            Column(table="orders", name="order_id", class_="hard", samples=["#W1"]),
-            Column(table="orders", name="amount", class_="hard", samples=[10, 20]),
-            Column(table="users", name="user_id", class_="hard", samples=["a_b_1"]),
-            Column(table="users", name="zip", class_="hard", samples=["94016", "10001"]),
+            Column(table="loans", name="loan_id", class_="hard", samples=["loan_01"]),
+            Column(table="loans", name="amount", class_="hard", samples=[10, 20]),
+            Column(table="members", name="member_id", class_="hard", samples=["member_01"]),
+            Column(table="members", name="zip", class_="hard", samples=["11201", "11202"]),
         ],
-        id_patterns={"orders": r"^#W\d+$"},
+        id_patterns={"loans": r"^loan_\d+$"},
     )
     assert "Optional[Any]" in ce.render_data_model(schema)
-    calls = [_call("get_order_details", {"order_id": "#W2"}, result=db["orders"]["#W2"], idx=0)]
-    source = ce.module_source(schema, sigs[:1], {"get_order_details": CORRECT_BODY})
+    calls = [_call("get_loan_details", {"loan_id": "loan_02"}, result=db["loans"]["loan_02"], idx=0)]
+    source = ce.module_source(schema, sigs[:1], {"get_loan_details": CORRECT_BODY})
     gate = ce.gate_executes_on_s0(ce.Sandbox(source, db, workdir), calls)
     assert gate.passed is True, gate.failures
 
@@ -742,11 +748,11 @@ def test_a_float_row_and_an_int_row_both_load_under_mined_string_and_int_samples
 
 
 def test_a_body_that_writes_the_result_file_itself_is_refused(sample, sigs, workdir):
-    order = sample["by_status"]["pending"]
-    db = {"orders": {order["order_id"]: order}, "users": {}, "products": {}}
+    loan = sample["by_status"]["pending"]
+    db = {"loans": {loan["loan_id"]: loan}, "members": {}, "titles": {}}
     schema = _schema_for(db)
-    calls = [_call("get_order_details", {"order_id": f"#W000000{i}"}, idx=i) for i in range(3)]
-    source = ce.module_source(schema, sigs[:1], {"get_order_details": FORGING_BODY})
+    calls = [_call("get_loan_details", {"loan_id": f"loan_9900{i}"}, idx=i) for i in range(3)]
+    source = ce.module_source(schema, sigs[:1], {"get_loan_details": FORGING_BODY})
     box = ce.Sandbox(source, db, workdir)
     with pytest.raises(ce.SandboxError) as caught:
         box.run(calls)
@@ -759,28 +765,28 @@ def test_a_body_that_writes_the_result_file_itself_is_refused(sample, sigs, work
 
 
 def test_inside_a_list_result_a_hard_column_fails_a_replay_and_an_exempt_one_cannot(sample, workdir):
-    order = sample["by_status"]["pending"]
-    now = dict(order, last_seen="2026-06-01T00:00:00Z")
-    then = dict(order, last_seen="2026-03-01T00:00:00Z")
-    db = {"orders": {order["order_id"]: now}, "users": {}, "products": {}}
+    loan = sample["by_status"]["pending"]
+    now = dict(loan, last_seen="2026-06-01T00:00:00Z")
+    then = dict(loan, last_seen="2026-03-01T00:00:00Z")
+    db = {"loans": {loan["loan_id"]: now}, "members": {}, "titles": {}}
     schema = _schema_for(db, exempt=("last_seen",))
-    sig = ToolSig(name="list_orders", kind="read", unclassified=False,
-                  args_fields=[FieldStat(name="user_id", types=["str"], optional=False)])
-    calls = [_call(sig.name, {"user_id": order["user_id"]}, result=[then], idx=0)]
-    body = "return [o for o in self.db.orders.values() if o.user_id == user_id]"
+    sig = ToolSig(name="list_loans", kind="read", unclassified=False,
+                  args_fields=[FieldStat(name="member_id", types=["str"], optional=False)])
+    calls = [_call(sig.name, {"member_id": loan["member_id"]}, result=[then], idx=0)]
+    body = "return [o for o in self.db.loans.values() if o.member_id == member_id]"
     source = ce.module_source(schema, [sig], {sig.name: body})
     gate = ce.gate_replay_fidelity(ce.Sandbox(source, db, workdir), calls, schema)
     assert gate.passed is True, gate.failures
     # the same list replay with a hard column that moved fails
     hard = workdir.parent / "hard"
     hard.mkdir()
-    order = sample["by_status"]["pending"]
-    db = {"orders": {order["order_id"]: dict(order, status="cancelled")}, "users": {}, "products": {}}
+    loan = sample["by_status"]["pending"]
+    db = {"loans": {loan["loan_id"]: dict(loan, status="cancelled")}, "members": {}, "titles": {}}
     schema = _schema_for(db)
-    sig = ToolSig(name="list_orders", kind="read", unclassified=False,
-                  args_fields=[FieldStat(name="user_id", types=["str"], optional=False)])
-    calls = [_call(sig.name, {"user_id": order["user_id"]}, result=[order], idx=0)]
-    body = "return [o for o in self.db.orders.values() if o.user_id == user_id]"
+    sig = ToolSig(name="list_loans", kind="read", unclassified=False,
+                  args_fields=[FieldStat(name="member_id", types=["str"], optional=False)])
+    calls = [_call(sig.name, {"member_id": loan["member_id"]}, result=[loan], idx=0)]
+    body = "return [o for o in self.db.loans.values() if o.member_id == member_id]"
     source = ce.module_source(schema, [sig], {sig.name: body})
     gate = ce.gate_replay_fidelity(ce.Sandbox(source, db, hard), calls, schema)
     assert gate.passed is False
@@ -793,25 +799,25 @@ def test_inside_a_list_result_a_hard_column_fails_a_replay_and_an_exempt_one_can
 # --- gate 3 checks every call, not the first two ---
 
 
-def test_a_correct_body_passes_the_deterministic_gate_and_one_nondeterministic_on_a_later_call_fails(sample, sigs, workdir, schema, db0, order_calls):
+def test_a_correct_body_passes_the_deterministic_gate_and_one_nondeterministic_on_a_later_call_fails(sample, sigs, workdir, schema, db0, loan_calls):
     correct = workdir.parent / "correct"
     correct.mkdir()
     source, box = _sandbox(schema, sigs, db0, correct, CORRECT_BODY)
-    result = ce.gate_deterministic(box, order_calls[:1])
+    result = ce.gate_deterministic(box, loan_calls[:1])
     assert result.passed is True
     assert result.metrics["calls"] == 1
-    orders = list(sample["orders"].values())
-    db = {"orders": {o["order_id"]: o for o in orders}, "users": {}, "products": {}}
+    loans = list(sample["loans"].values())
+    db = {"loans": {o["loan_id"]: o for o in loans}, "members": {}, "titles": {}}
     schema = _schema_for(db)
-    third = orders[2]["status"]
+    third = loans[2]["status"]
     # G26 took `random` out of the imports a body may use, so the staged dice is the object's
     # own identity: it answers alike inside one call and differs across the gate's two runs.
-    body = (f"if self.db.orders[order_id].status == {third!r}:\n"
-            "    return {'order_id': order_id, 'status': str(id(order_id))}\n"
-            "return self.db.orders[order_id]\n")
-    calls = [_call("get_order_details", {"order_id": o["order_id"]}, result=o, idx=i)
-             for i, o in enumerate(orders)]
-    source = ce.module_source(schema, sigs[:1], {"get_order_details": body})
+    body = (f"if self.db.loans[loan_id].status == {third!r}:\n"
+            "    return {'loan_id': loan_id, 'status': str(id(loan_id))}\n"
+            "return self.db.loans[loan_id]\n")
+    calls = [_call("get_loan_details", {"loan_id": o["loan_id"]}, result=o, idx=i)
+             for i, o in enumerate(loans)]
+    source = ce.module_source(schema, sigs[:1], {"get_loan_details": body})
     gates = ce.run_gates(source, ce.Sandbox(source, db, workdir), calls, [], schema)
     deterministic = next(g for g in gates if g.stage == "deterministic")
     assert deterministic.passed is False
@@ -828,9 +834,9 @@ def test_tau2_files_are_what_emit_writes_and_what_env_id_can_hash(schema, sigs, 
     paths = ce.emit_tau2_shape(bundle, workdir / "out")
     for name, text in files.items():
         assert paths[name].read_text(encoding="utf-8") == text
-    schema = EntitySchema(tables=["orders"], columns=[Column(table="orders", name="status", class_="hard")])
-    one = {"db.json": '{"orders": {"#W1": {"status": "pending"}}}\n', "policy.md": "p"}
-    two = {"db.json": '{"orders": {"#W1": {"status": "cancelled"}}}\n', "policy.md": "p"}
+    schema = EntitySchema(tables=["loans"], columns=[Column(table="loans", name="status", class_="hard")])
+    one = {"db.json": '{"loans": {"loan_01": {"status": "pending"}}}\n', "policy.md": "p"}
+    two = {"db.json": '{"loans": {"loan_01": {"status": "cancelled"}}}\n', "policy.md": "p"}
     first = ce.build_environment(schema, [], {}, "policy", files=one)
     second = ce.build_environment(schema, [], {}, "policy", files=two)
     assert first.env_id != second.env_id, "two worlds with different rows shared one env_id"
@@ -843,33 +849,33 @@ def test_tau2_files_are_what_emit_writes_and_what_env_id_can_hash(schema, sigs, 
 
 
 def test_an_id_the_traces_only_referenced_gets_a_synthetic_row_shaped_from_the_observed_rows(
-    sample, retail_db, sigs, workdir
+    sample, sigs, workdir
 ):
-    known = next(iter(sample["users"]))
-    unseen = next(k for k in sorted(retail_db["users"]) if k != known)
-    schema = _schema_for({"users": sample["users"], "orders": sample["orders"], "products": {}})
+    known = next(iter(sample["members"]))
+    unseen = "member_09"
+    schema = _schema_for({"members": sample["members"], "loans": sample["loans"], "titles": {}})
     trace = _trace("A", [
-        _call("get_user_details", {"user_id": known}, result=sample["users"][known], idx=0),
-        _call("list_orders", {"user_id": unseen}, result=[], idx=1),
+        _call("get_member_details", {"member_id": known}, result=sample["members"][known], idx=0),
+        _call("list_loans", {"member_id": unseen}, result=[], idx=1),
     ])
     state = ce.build_starting_state([trace], schema, workdir, tool_sigs=sigs)
-    assert unseen in state.db["users"], "a read of a referenced id has nothing to answer it"
-    assert set(state.db["users"][unseen]) == set(sample["users"][known])
-    assert state.db["users"][unseen]["user_id"] == unseen
+    assert unseen in state.db["members"], "a read of a referenced id has nothing to answer it"
+    assert set(state.db["members"][unseen]) == set(sample["members"][known])
+    assert state.db["members"][unseen]["member_id"] == unseen
     assert state.synthetic_rows == [unseen]
     assert unseen in schema.synthetic_rows
     assert any(unseen in note and "synthetic" in note for note in state.assumptions)
 
 
 def test_an_id_only_a_failed_call_named_is_not_invented(sample, schema, sigs, workdir):
-    order = sample["by_status"]["pending"]
+    loan = sample["by_status"]["pending"]
     trace = _trace("A", [
-        _call("get_order_details", {"order_id": order["order_id"]}, result=order, idx=0),
-        _call("get_order_details", {"order_id": "#W0000000"},
-              error=ToolCallError(**{"class": "not_found_entity"}, payload="Order not found"), idx=1),
+        _call("get_loan_details", {"loan_id": loan["loan_id"]}, result=loan, idx=0),
+        _call("get_loan_details", {"loan_id": "loan_9999"},
+              error=ToolCallError(**{"class": "not_found_entity"}, payload="Loan not found"), idx=1),
     ])
     state = ce.build_starting_state([trace], schema, workdir, tool_sigs=sigs)
-    assert "#W0000000" not in state.db["orders"]
+    assert "loan_9999" not in state.db["loans"]
     assert state.synthetic_rows == []
 
 
@@ -877,7 +883,7 @@ def test_an_id_only_a_failed_call_named_is_not_invented(sample, schema, sigs, wo
 
 
 def test_a_description_holding_a_triple_quote_still_parses(schema, sigs):
-    sig = sigs[0].model_copy(update={"description": 'Get """the""" order, path C:\\orders\\'})
+    sig = sigs[0].model_copy(update={"description": 'Get """the""" loan, path C:\\loans\\'})
     source = ce.module_source(schema, [sig], {sig.name: CORRECT_BODY})
     assert ce.gate_parses(source).passed is True
     assert "the" in source
@@ -887,28 +893,28 @@ def test_a_description_holding_a_triple_quote_still_parses(schema, sigs):
 
 
 def test_load_toolkit_puts_the_tasks_overlay_inside_the_toolkit(sample, schema, sigs, workdir):
-    order = sample["by_status"]["pending"]
-    oid = order["order_id"]
+    loan = sample["by_status"]["pending"]
+    oid = loan["loan_id"]
     traces = [
-        _trace("A", [_call("get_order_details", {"order_id": oid}, result=order, idx=0)]),
-        _trace("B", [_call("get_order_details", {"order_id": oid},
-                           result=dict(order, status="cancelled"), idx=1)]),
+        _trace("A", [_call("get_loan_details", {"loan_id": oid}, result=loan, idx=0)]),
+        _trace("B", [_call("get_loan_details", {"loan_id": oid},
+                           result=dict(loan, status="cancelled"), idx=1)]),
     ]
     state = ce.build_starting_state(traces, schema, workdir, tasks=[Task(id="tA", run_ids=["A"])],
                                     tool_sigs=sigs)
-    assert state.db["orders"][oid]["status"] == "cancelled"
+    assert state.db["loans"][oid]["status"] == "cancelled"
     overlay, values = ce.load_overlay(workdir, "tA")
-    source = ce.module_source(schema, sigs[:1], {"get_order_details": CORRECT_BODY})
+    source = ce.module_source(schema, sigs[:1], {"get_loan_details": CORRECT_BODY})
     toolkit = ce.load_toolkit(source, state.db, overlay=overlay, overlay_values=values)
-    assert toolkit.get_order_details(oid).status == "pending"
-    assert ce.load_toolkit(source, state.db).get_order_details(oid).status == "cancelled"
+    assert toolkit.get_loan_details(oid).status == "pending"
+    assert ce.load_toolkit(source, state.db).get_loan_details(oid).status == "cancelled"
 
 
 # --- confinement: the static check that stands in for the deferred sandbox ---
 
 def test_a_body_that_reaches_outside_the_world_is_refused_before_it_runs(schema, sigs, db0, workdir):
     """load_toolkit exec's the module in the Runner's own process, so the body is checked first."""
-    body = "import os\nopen('/tmp/x', 'w').write('hi')\nreturn self.db.orders.get(order_id)\n"
+    body = "import os\nopen('/tmp/x', 'w').write('hi')\nreturn self.db.loans.get(loan_id)\n"
     source = ce.module_source(schema, sigs[:1], {sigs[0].name: body})
     assert ce.source_confinement(source) == [
         f"{sigs[0].name} imports os", f"{sigs[0].name} uses open"]
@@ -950,11 +956,11 @@ def test_the_code_owned_skeleton_is_confined_as_it_stands(schema, sigs, db0):
 def test_a_user_requestor_call_is_not_a_row_sighting(sample, schema):
     """A corpus whose simulated user calls its own phone tools does so inside the trace (R33); those
     results describe the user's device, not the customer's system, so they never enter the Starting state."""
-    order = next(iter(sample["orders"].values()))
-    seen = ToolCall(id="c1", name="get_order_details", args={"order_id": order["order_id"]}, result=order,
+    loan = next(iter(sample["loans"].values()))
+    seen = ToolCall(id="c1", name="get_loan_details", args={"loan_id": loan["loan_id"]}, result=loan,
                     raw_ptr=PTR)
     user_side = ToolCall(id="c2", name="check_status_bar", args={},
-                         result={**order, "status": "on the phone"}, requestor="user", raw_ptr=PTR)
+                         result={**loan, "status": "on the phone"}, requestor="user", raw_ptr=PTR)
     observations = ce._observations([_trace("t1", [seen, user_side])], schema, set())
     assert observations
     assert all(o.order[1] == 0 for o in observations)
@@ -968,34 +974,34 @@ def test_the_mined_id_pattern_actually_guards_referenced_ids():
     every argument through. The regression this test holds is that the guard does something at all.
     """
     schema = EntitySchema(
-        tables=["orders"],
-        columns=[Column(table="orders", name="order_id", **{"class": "hard"}, classified_by="rule")],
-        id_patterns={"orders.order_id": r"^#W\d+$"},
+        tables=["loans"],
+        columns=[Column(table="loans", name="loan_id", **{"class": "hard"}, classified_by="rule")],
+        id_patterns={"loans.loan_id": r"^loan_\d+$"},
     )
     traces = [_trace("t1", [
-        _call("get_order_details", {"order_id": "#W123"}, result='{"order_id": "#W123"}', idx=0),
-        _call("get_order_details", {"order_id": "not-an-order"}, result="{}", idx=1),
+        _call("get_loan_details", {"loan_id": "loan_42"}, result='{"loan_id": "loan_42"}', idx=0),
+        _call("get_loan_details", {"loan_id": "not-a-loan"}, result="{}", idx=1),
     ])]
-    assert ce.referenced_ids(traces, schema) == [("orders", "#W123")]
+    assert ce.referenced_ids(traces, schema) == [("loans", "loan_42")]
     from kullback.builder.sandbox import id_pattern_for
 
-    by_column = EntitySchema(tables=["orders"], id_patterns={"orders.order_id": r"^#W\d+$"})
-    by_table = EntitySchema(tables=["orders"], id_patterns={"orders": r"^#W\d+$"})
-    assert id_pattern_for(by_column, "orders", "order_id") == r"^#W\d+$"
-    assert id_pattern_for(by_table, "orders", "order_id") == r"^#W\d+$"
-    assert id_pattern_for(by_column, "orders", "user_id") is None
+    by_column = EntitySchema(tables=["loans"], id_patterns={"loans.loan_id": r"^loan_\d+$"})
+    by_table = EntitySchema(tables=["loans"], id_patterns={"loans": r"^loan_\d+$"})
+    assert id_pattern_for(by_column, "loans", "loan_id") == r"^loan_\d+$"
+    assert id_pattern_for(by_table, "loans", "loan_id") == r"^loan_\d+$"
+    assert id_pattern_for(by_column, "loans", "member_id") is None
 
 
-def test_a_relative_workdir_still_finds_the_runner_it_just_wrote(tmp_path, monkeypatch, db0, sigs, schema, order_calls):
+def test_a_relative_workdir_still_finds_the_runner_it_just_wrote(tmp_path, monkeypatch, db0, sigs, schema, loan_calls):
     """The sandbox subprocess runs with cwd inside its own directory, so a relative path handed in
-    would be resolved against that directory a second time and every path would double. The first
-    live build failed all sixteen tools this way; every test until now passed an absolute tmp_path."""
+    would be resolved against that directory a second time and every path would double. A relative
+    workdir once failed every tool this way; every test until now passed an absolute tmp_path."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "work").mkdir()
-    source = ce.module_source(schema, sigs[:1], {"get_order_details": "return {}"})
+    source = ce.module_source(schema, sigs[:1], {"get_loan_details": "return {}"})
     box = ce.Sandbox(source, db0, "work")
     assert box.dir.is_absolute() and box.runner.is_file()
-    box.run([order_calls[0]])
+    box.run([loan_calls[0]])
 
 
 # --- the code-owned helpers both loaders bind (runner/arith.py) ---
@@ -1053,135 +1059,136 @@ def test_the_helper_is_the_only_name_the_loaders_add_and_the_gate_knows_that_nam
 # --- what a column holds is a plain list or dict, and the prompt says so ---
 
 
-def _retail_nesting_traces():
-    variants = {"1906487464": {"item_id": "1906487464", "price": 102.02, "available": True},
-                "2820119811": {"item_id": "2820119811", "price": 94.68, "available": False}}
-    product = {"name": "Tea Kettle", "product_id": "9832717871", "variants": variants}
-    item = {"item_id": "1906487464", "price": 102.02, "available": True,
-            "options": {"capacity": "2 liters"}}
-    return [_trace("t1", [_call("get_product_details", {"product_id": "9832717871"}, result=product),
-                          _call("get_item_details", {"item_id": "1906487464"}, result=item, idx=1)])]
+def _nursery_nesting_traces():
+    """Titles nested under their house, in the shape of world_b: one house read, one title read."""
+    titles = {"title_11": {"title_id": "title_11", "count": 6, "available": True},
+              "title_22": {"title_id": "title_22", "count": 2, "available": False}}
+    house = {"name": "North House", "house_id": "house_7", "titles": titles}
+    title = {"title_id": "title_11", "count": 6, "available": True,
+            "light": "full sun"}
+    return [_trace("t1", [_call("get_house_details", {"house_id": "house_7"}, result=house),
+                          _call("get_title_details", {"title_id": "title_11"}, result=title, idx=1)])]
 
 
 def test_mining_reads_a_nested_home_off_the_traces():
-    """items sat under products.variants in every get_product_details result of the first live
-    build, keyed by item_id, and the schema still said items was a top-level table: nine calls
-    out of nine raised 'not found' on the real database (docs/live-build.md, schema_shape)."""
+    """titles sat under houses.titles in every get_house_details result, keyed by title_id,
+    and the schema still said titles was a top-level table: reads answered from the wrong
+    home miss, so the Starting state folds them into the home the traces showed."""
     from kullback.builder import mine
-    schema = mine.mine_schema(_retail_nesting_traces())
-    assert schema.homes == {"items": "products.variants"}
-    assert "items" in schema.tables and "products" in schema.tables
-    names = {c.name for c in schema.columns if c.table == "items"}
-    assert {"item_id", "price", "available", "options"} <= names
+    schema = mine.mine_schema(_nursery_nesting_traces())
+    assert schema.homes == {"titles": "houses.titles"}
+    assert "titles" in schema.tables and "houses" in schema.tables
+    names = {c.name for c in schema.columns if c.table == "titles"}
+    assert {"title_id", "count", "available", "light"} <= names
 
 
 def test_a_nested_collection_never_shown_on_its_own_stays_a_column_of_its_parent():
     from kullback.builder import mine
-    traces = _retail_nesting_traces()
+    traces = _nursery_nesting_traces()
     traces[0].tool_calls = traces[0].tool_calls[:1]
     schema = mine.mine_schema(traces)
     assert schema.homes == {}
-    assert "items" not in schema.tables
+    assert "titles" not in schema.tables
 
 
 def test_the_starting_state_folds_a_standalone_row_into_its_home(workdir):
     from kullback.builder import mine
-    traces = _retail_nesting_traces()
+    traces = _nursery_nesting_traces()
     schema = mine.mine_schema(traces)
     state = ce.build_starting_state(traces, schema, workdir, synthetic=False)
-    assert "1906487464" not in state.db["items"]
-    nested = state.db["products"]["9832717871"]["variants"]["1906487464"]
-    assert nested["options"] == {"capacity": "2 liters"}, "the standalone copy's extra field is kept"
-    assert nested["price"] == 102.02
-    assert any("is stored under products.variants" in a for a in state.assumptions)
+    assert "title_11" not in state.db["titles"]
+    nested = state.db["houses"]["house_7"]["titles"]["title_11"]
+    assert nested["light"] == "full sun", "the standalone title's extra field is kept"
+    assert nested["count"] == 6
+    assert any("is stored under houses.titles" in a for a in state.assumptions)
 
 
 def test_a_row_whose_parent_was_never_shown_stays_in_its_table():
-    db = {"items": {"x1": {"item_id": "x1"}, "y1": {"item_id": "y1"}},
-          "products": {"p": {"product_id": "p", "variants": {"x1": {"item_id": "x1", "price": 1}}}}}
-    schema = EntitySchema(tables=["items", "products"], homes={"items": "products.variants"})
-    assert ce.fold_into_homes(db, schema) == [("items", "x1", "products.variants")]
-    assert list(db["items"]) == ["y1"]
+    db = {"titles": {"c1": {"title_id": "c1"}, "c2": {"title_id": "c2"}},
+          "houses": {"h": {"house_id": "h", "titles": {"c1": {"title_id": "c1", "count": 1}}}}}
+    schema = EntitySchema(tables=["titles", "houses"], homes={"titles": "houses.titles"})
+    assert ce.fold_into_homes(db, schema) == [("titles", "c1", "houses.titles")]
+    assert list(db["titles"]) == ["c2"]
 
 
 # --- the Starting state grows on request, and the ids are tagged (D40, D107) ---
 
-def _twelve_user_traces():
+def _twelve_member_traces():
     first = ["Ava", "Liam", "Mia", "Noah", "Zoe", "Eli", "Ivy", "Max", "Uma", "Kai", "Lea", "Tom"]
     last = ["Chen", "Diaz", "Khan", "Lee", "Moss", "Nair", "Ortiz", "Park", "Quinn", "Reyes", "Sato", "Voss"]
     traces = []
     for n, (f, l_) in enumerate(zip(first, last, strict=True)):
         uid = f"{f.lower()}_{l_.lower()}_{1000 + n}"
-        row = {"user_id": uid, "name": {"first_name": f, "last_name": l_},
+        row = {"member_id": uid, "name": {"first_name": f, "last_name": l_},
                "email": f"{f.lower()}.{l_.lower()}{2000 + n}@example.com", "tier": ["gold", "basic"][n % 2]}
-        traces.append(_trace(f"u{n}", [_call("get_user_details", {"user_id": uid}, result=row, idx=n)]))
+        traces.append(_trace(f"u{n}", [_call("get_member_details", {"member_id": uid}, result=row, idx=n)]))
     return traces
 
 
 def test_the_starting_state_grows_only_when_asked_and_tags_every_grown_row(tmp_path):
     from kullback.builder import mine
-    traces = _twelve_user_traces()
+    traces = _twelve_member_traces()
     schema = mine.mine_schema(traces)
-    state = ce.build_starting_state(traces, schema, tmp_path, grow={"users": 20}, grow_seed=1)
-    assert len(state.db["users"]) == 20
+    state = ce.build_starting_state(traces, schema, tmp_path, grow={"members": 20}, grow_seed=1)
+    assert len(state.db["members"]) == 20
     assert len(state.synthetic_rows) == 8
-    assert set(state.synthetic_rows) <= set(state.db["users"]) and set(state.synthetic_rows) <= set(schema.synthetic_rows)
+    assert set(state.synthetic_rows) <= set(state.db["members"]) and set(state.synthetic_rows) <= set(schema.synthetic_rows)
     assert any("8 synthetic rows" in note and "D107" in note for note in state.assumptions)
     written = json.loads((tmp_path / "synthetic.json").read_text())
-    assert written["added"] == {"users": 8} and written["checks"]["ok"] is True
-    grown = state.db["users"][state.synthetic_rows[0]]
+    assert written["added"] == {"members": 8} and written["checks"]["ok"] is True
+    grown = state.db["members"][state.synthetic_rows[0]]
     first, last = grown["name"]["first_name"], grown["name"]["last_name"]
-    assert grown["user_id"].startswith(f"{first.lower()}_{last.lower()}_")
+    assert grown["member_id"].startswith(f"{first.lower()}_{last.lower()}_")
     assert grown["email"].startswith(f"{first.lower()}.{last.lower()}")
     # without grow nothing is grown and no synthetic file is written
     ungrown = tmp_path / "ungrown"
     ungrown.mkdir()
-    ungrown_traces = _twelve_user_traces()
+    ungrown_traces = _twelve_member_traces()
     state = ce.build_starting_state(ungrown_traces, mine.mine_schema(ungrown_traces), ungrown)
-    assert len(state.db["users"]) == 12 and state.synthetic_rows == []
+    assert len(state.db["members"]) == 12 and state.synthetic_rows == []
     assert not (ungrown / "synthetic.json").exists()
 
 
 # --- gate 4 against the recording, gate 6 the refusal probe ---
 
 STRICT_CANCEL_BODY = """
-if order_id not in self.db.orders:
-    raise ValueError("Order not found")
-order = self.db.orders[order_id]
-order.status = "cancelled"
-return order
+if loan_id not in self.db.loans:
+    raise ValueError("Loan not found")
+loan = self.db.loans[loan_id]
+loan.status = "cancelled"
+return loan
 """
 
 PERMISSIVE_CANCEL_BODY = """
-order = self.db.orders.get(order_id)
-if order is None:
-    return {"order_id": order_id, "status": "cancelled"}
-order.status = "cancelled"
-return order
+loan = self.db.loans.get(loan_id)
+if loan is None:
+    return {"loan_id": loan_id, "status": "cancelled"}
+loan.status = "cancelled"
+return loan
 """
 
 
 def _cancel_calls(sample):
     pending = sample["by_status"]["pending"]
-    return [_call("cancel_pending_order", {"order_id": pending["order_id"], "reason": "no longer needed"},
+    return [_call("update_loan", {"loan_id": pending["loan_id"], "reason": "no longer needed"},
                   result=dict(pending, status="cancelled"), idx=idx) for idx in range(2)]
 
 
-CANCEL_SIG = ToolSig(name="cancel_pending_order", kind="write", unclassified=False,
-                     args_fields=[FieldStat(name="order_id", types=["str"], optional=False),
+CANCEL_SIG = ToolSig(name="update_loan", kind="write", unclassified=False,
+                     args_fields=[FieldStat(name="loan_id", types=["str"], optional=False),
                                   FieldStat(name="reason", types=["str"], optional=False)])
 
 
 def _both_tools(schema, sigs, db0, workdir, cancel_body):
     source = ce.module_source(schema, [sigs[0], CANCEL_SIG],
-                              {"get_order_details": CORRECT_BODY, "cancel_pending_order": cancel_body})
+                              {"get_loan_details": CORRECT_BODY, "update_loan": cancel_body})
     return source, ce.Sandbox(source, db0, workdir)
 
 
-def test_a_constant_body_passes_non_trivial_when_the_recorded_tool_was_constant(schema, sigs, db0, workdir, order_calls):
+def test_a_constant_body_passes_non_trivial_when_the_recorded_tool_was_constant(schema, sigs, db0, workdir, loan_calls):
     """The recording is the standard: a tool that answered every call the same way is faithfully constant."""
-    constant = [c.model_copy(update={"result": {"order_id": "#W0000000", "status": "delivered"}})
-                for c in order_calls[:3]]
+    constant = [c.model_copy(update={"result": {"loan_id": "loan_9999", "status": "delivered"}})
+                for c in loan_calls[:3]]
     source, box = _sandbox(schema, sigs, db0, workdir, CONSTANT_BODY)
     result = ce.gate_non_trivial(box, constant)
     assert result.passed is True and result.metrics["recorded_constant"] is True
@@ -1192,8 +1199,8 @@ def test_a_constant_body_passes_non_trivial_when_the_recorded_tool_was_constant(
 
 
 MEMORISING_BODY = """
-statuses = {"#W1006327": "pending", "#W2611340": "processed"}
-return {"order_id": order_id, "status": statuses[order_id]}
+statuses = {"loan_101": "pending", "loan_202": "processed"}
+return {"loan_id": loan_id, "status": statuses[loan_id]}
 """
 
 
@@ -1204,9 +1211,9 @@ def test_the_refusal_probe_fails_a_body_that_writes_on_an_id_nobody_holds(schema
         result = sandbox_mod.gate_refuses_unknown(box, calls)
         assert result.passed is expected, body
         assert result.metrics["reference_args"] == 1
-    assert "accepted order_id=" in result.failures[0]
+    assert "accepted loan_id=" in result.failures[0]
     source, box = _both_tools(schema, sigs, db0, workdir, STRICT_CANCEL_BODY)
-    assert list(sandbox_mod.reference_args(box, _cancel_calls(sample))) == ["order_id"]  # reason is free text
+    assert list(sandbox_mod.reference_args(box, _cancel_calls(sample))) == ["loan_id"]  # reason is free text
 
 
 def test_the_refusal_probe_runs_on_write_tools_only(schema, sigs, db0, workdir, sample):
@@ -1301,8 +1308,8 @@ def a_dock(dock_id: str, seats: int, shift=None) -> dict:
 
 
 def test_a_composite_key_keeps_both_versions_of_one_id_and_a_single_key_table_is_keyed_as_before(workdir, schema, sample):
-    order = sample["by_status"]["pending"]
-    assert ce.match_table(schema, order, {"anything": "at all"}) == ("orders", order["order_id"])
+    loan = sample["by_status"]["pending"]
+    assert ce.match_table(schema, loan, {"anything": "at all"}) == ("loans", loan["loan_id"])
     schema = dock_schema()
     trace = _trace("A", [
         _call("list_docks", {"shift": "early"}, result=[a_dock("dock_1", 4)], idx=0),

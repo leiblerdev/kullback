@@ -27,7 +27,7 @@ from kullback.builder.intent import (
 )
 from kullback.runner.records import Column, EntitySchema, Task, ToolCall, Trace, Turn
 
-WRITES = {"cancel_order"}
+WRITES = {"cancel_loan"}
 
 
 def make_trace(trace_id: str, user_turns: list[str], calls: list[dict]) -> Trace:
@@ -46,14 +46,14 @@ def make_trace(trace_id: str, user_turns: list[str], calls: list[dict]) -> Trace
     )
 
 
-def cancel_trace(trace_id: str, order: str) -> Trace:
+def cancel_trace(trace_id: str, loan: str) -> Trace:
     return make_trace(
         trace_id,
-        [f"i want to cancel order {order} because the delivery was late"],
+        [f"i want to cancel loan {loan} because the delivery was late"],
         [
             {
-                "name": "cancel_order",
-                "args": {"order_id": order, "reason": "late delivery"},
+                "name": "cancel_loan",
+                "args": {"loan_id": loan, "reason": "late delivery"},
                 "result": {"status": "cancelled"},
             }
         ],
@@ -69,36 +69,36 @@ def two_run_task() -> tuple[Task, list[Trace]]:
 
 
 def test_noun_phrases_are_the_runs_of_non_stopword_tokens_and_none_of_empty_text():
-    assert noun_phrases("cancel the order because the delivery was late") == ["cancel", "order", "delivery", "late"]
+    assert noun_phrases("cancel the loan because the delivery was late") == ["cancel", "loan", "delivery", "late"]
     assert noun_phrases("") == []
 
 
 def test_noun_phrases_keep_multi_word_phrases_and_drop_duplicates():
-    phrases = noun_phrases("cancel a late order, cancel a late order")
-    assert phrases == ["cancel", "late order"]
+    phrases = noun_phrases("cancel a late loan, cancel a late loan")
+    assert phrases == ["cancel", "late loan"]
 
 
 # --- tokenising ---
 
 
-def test_a_price_a_time_a_thousands_separator_and_an_order_code_are_each_one_token():
-    """A live build asked the evidence for "99 price difference": the splitter had cut "$17." away."""
+def test_a_price_a_time_a_thousands_separator_and_a_loan_code_are_each_one_token():
+    """Tokenising keeps prices, times and codes whole: asked for "99 price difference", the evidence must not be a "$17." the splitter cut away."""
     assert noun_phrases("credit the $17.99 price difference") == ["credit", "17.99 price difference"]
     trace = make_trace("t1", ["please credit the $17.99 price difference to me"], [])
     assert ground_phrases(["17.99 price difference"], [trace], set())[1] == []
     trace = make_trace("t1", ["the 1,200 point voucher expired at 09:30 today"], [])
     assert ground_phrases(["1,200 point voucher"], [trace], set())[1] == []
     assert ground_phrases(["09:30"], [trace], set())[1] == []
-    trace = make_trace("t1", ["can you look at order #G4471902 and item 9844888101 for me"], [])
-    assert noun_phrases("check order #G4471902") == ["check", "order", "g4471902"]
-    assert ground_phrases(["order g4471902", "item 9844888101"], [trace], set())[1] == []
+    trace = make_trace("t1", ["can you look at loan #LN44719 and copy 77521 for me"], [])
+    assert noun_phrases("check loan #LN44719") == ["check", "loan", "ln44719"]
+    assert ground_phrases(["loan ln44719", "copy 77521"], [trace], set())[1] == []
 
 
 def test_a_verb_and_its_object_are_separate_phrases():
-    """A customer writes "order change" and "trellis planter" a sentence apart, so asking the
-    evidence for "change trellis planter" in that order in one clause asks for a sentence nobody wrote."""
-    assert noun_phrases("change trellis planter to brass on order W4471902") == [
-        "change", "trellis planter", "brass", "order w4471902"]
+    """A customer writes "loan change" and "trellis planter" a sentence apart, so asking the
+    evidence for "change trellis planter" in that loan in one clause asks for a sentence nobody wrote."""
+    assert noun_phrases("change trellis planter to brass on loan ln44719") == [
+        "change", "trellis planter", "brass", "loan ln44719"]
 
 
 def test_an_ing_word_is_a_modifier_and_does_not_split_its_phrase():
@@ -122,7 +122,7 @@ def test_a_plural_and_its_singular_are_the_same_word():
     assert normalise("addresses") == normalise("address")
     assert normalise("policies") == normalise("policy")
     assert normalise("shipped") == normalise("shipping") == normalise("ship")
-    assert normalise("w4471902") == "w4471902", "an id carries digits and is never stemmed"
+    assert normalise("ln44719") == "ln44719", "an id carries digits and is never stemmed"
     trace = make_trace("t1", ["two trellis planters arrived cracked"], [])
     assert ground_phrases(["trellis planter"], [trace], set())[1] == []
 
@@ -132,7 +132,7 @@ def test_an_underscored_id_is_reached_by_the_words_it_spells():
     because a user of the other run of the Task spoke them."""
     spoken = make_trace("t1", ["cancel the gift card 4471 i bought"], [])
     passed_along = make_trace("t2", ["cancel it"],
-                              [{"name": "cancel_order", "args": {"row": "gift_card_4471"}}])
+                              [{"name": "cancel_loan", "args": {"row": "gift_card_4471"}}])
     spans, ungrounded = ground_phrases(["gift card", "gift_card_4471"], [spoken, passed_along], WRITES)
     assert ungrounded == []
     by_run = {s.trace_id: s for s in spans}
@@ -150,7 +150,7 @@ def test_span_candidates_cover_user_words_tool_arguments_and_written_values():
 
 def test_a_result_of_a_tool_that_is_not_a_write_is_not_a_span():
     trace = make_trace(
-        "t1", ["where is it"], [{"name": "get_order", "args": {"order_id": "W1"}, "result": {"status": "delivered"}}]
+        "t1", ["where is it"], [{"name": "get_loan", "args": {"loan_id": "W1"}, "result": {"status": "delivered"}}]
     )
     texts = [s.text for s in span_candidates(trace, WRITES)]
     assert not any("delivered" in t for t in texts)
@@ -159,36 +159,36 @@ def test_a_result_of_a_tool_that_is_not_a_write_is_not_a_span():
 
 def test_ground_phrases_reports_a_phrase_with_no_span():
     _, traces = two_run_task()
-    spans, ungrounded = ground_phrases(["cancel order", "gift card"], traces, WRITES)
+    spans, ungrounded = ground_phrases(["cancel loan", "gift card"], traces, WRITES)
     assert ungrounded == ["gift card"]
-    assert [s.phrase for s in spans] == ["cancel order"]
+    assert [s.phrase for s in spans] == ["cancel loan"]
 
 
 def test_ground_phrases_spread_across_runs_when_both_runs_evidence_them():
     _, traces = two_run_task()
-    spans, ungrounded = ground_phrases(["cancel order", "late delivery"], traces, WRITES)
+    spans, ungrounded = ground_phrases(["cancel loan", "late delivery"], traces, WRITES)
     assert ungrounded == []
     assert {s.trace_id for s in spans} == {"t1", "t2"}
 
 
 def test_the_tool_name_is_not_part_of_the_evidence():
-    """'delivered items' must not be grounded by the tool called exchange_delivered_order_items (D47)."""
+    """'borrowed copies' must not be grounded by the tool called exchange_borrowed_loan_copies (D47)."""
     trace = make_trace(
         "t1",
-        ["i would like to swap the shirt for a larger one"],
+        ["i would like to swap the book for a larger print"],
         [
             {
-                "name": "exchange_delivered_order_items",
-                "args": {"item_ids": ["4983901480"]},
+                "name": "exchange_borrowed_loan_copies",
+                "args": {"copy_ids": ["copy_451"]},
                 "result": {"status": "exchange requested"},
             }
         ],
     )
-    texts = [s.text for s in span_candidates(trace, {"exchange_delivered_order_items"})]
-    assert not any("delivered" in t for t in texts), texts
-    assert any("4983901480" in t for t in texts)
-    _, ungrounded = ground_phrases(["delivered items"], [trace], {"exchange_delivered_order_items"})
-    assert ungrounded == ["delivered items"]
+    texts = [s.text for s in span_candidates(trace, {"exchange_borrowed_loan_copies"})]
+    assert not any("borrowed" in t for t in texts), texts
+    assert any("copy_451" in t for t in texts)
+    _, ungrounded = ground_phrases(["borrowed copies"], [trace], {"exchange_borrowed_loan_copies"})
+    assert ungrounded == ["borrowed copies"]
 
 
 def test_a_written_value_span_is_what_the_write_changed():
@@ -198,14 +198,14 @@ def test_a_written_value_span_is_what_the_write_changed():
         ["cancel it please"],
         [
             {
-                "name": "get_order",
-                "args": {"order_id": "W1"},
-                "result": {"order_id": "W1", "status": "pending", "address": "elm street"},
+                "name": "get_loan",
+                "args": {"loan_id": "W1"},
+                "result": {"loan_id": "W1", "status": "pending", "address": "elm street"},
             },
             {
-                "name": "cancel_order",
-                "args": {"order_id": "W1"},
-                "result": {"order_id": "W1", "status": "cancelled", "address": "elm street"},
+                "name": "cancel_loan",
+                "args": {"loan_id": "W1"},
+                "result": {"loan_id": "W1", "status": "cancelled", "address": "elm street"},
             },
         ],
     )
@@ -216,7 +216,7 @@ def test_a_written_value_span_is_what_the_write_changed():
 
 
 def test_a_write_with_no_earlier_read_keeps_its_whole_result():
-    trace = make_trace("t1", ["cancel it"], [{"name": "cancel_order", "args": {}, "result": {"status": "cancelled"}}])
+    trace = make_trace("t1", ["cancel it"], [{"name": "cancel_loan", "args": {}, "result": {"status": "cancelled"}}])
     written = [s for s in span_candidates(trace, WRITES) if s.source == "written_value"]
     assert [s.text for s in written] == ['{"status": "cancelled"}']
 
@@ -233,7 +233,7 @@ def test_a_phrase_is_grounded_as_a_phrase_or_by_its_tokens_in_another_order():
 
 
 def test_a_phrase_with_a_word_no_run_says_stays_ungrounded():
-    """Token grounding relaxes the order of the words, never the requirement that they be said (D47)."""
+    """Token grounding relaxes the loan of the words, never the requirement that they be said (D47)."""
     trace = make_trace("t1", ["the delivery was fine but the card was late"], [])
     spans, ungrounded = ground_phrases(["late hamper delivery"], [trace], set())
     assert ungrounded == ["late hamper delivery"]
@@ -250,10 +250,10 @@ def test_the_words_of_a_phrase_have_to_be_evidenced_in_one_run_not_across_two():
 
 def test_a_phrase_or_word_the_user_ruled_out_is_not_evidence():
     """'i do not want a full refund' is not evidence that the user wanted a full refund (D47)."""
-    trace = make_trace("t1", ["i do not want a full refund, just cancel order W1"], [])
-    spans, ungrounded = ground_phrases(["full refund", "cancel order"], [trace], set())
+    trace = make_trace("t1", ["i do not want a full refund, just cancel loan W1"], [])
+    spans, ungrounded = ground_phrases(["full refund", "cancel loan"], [trace], set())
     assert ungrounded == ["full refund"]
-    assert [s.phrase for s in spans] == ["cancel order"]
+    assert [s.phrase for s in spans] == ["cancel loan"]
     trace = make_trace("t1", ["I do not want a voucher, just replace the cracked planter"], [])
     spans, ungrounded = ground_phrases(["voucher planter"], [trace], set())
     assert ungrounded == ["voucher planter"]
@@ -264,8 +264,8 @@ def test_a_span_names_the_run_and_the_text_it_points_at():
     """The first run wrote the status without its user naming it, and the second run's user asked for
     it, so the span the record keeps points at the write."""
     traces = [cancel_trace("t1", "W1"),
-              make_trace("t2", ["cancel order W2 and tell me the status"],
-                         [{"name": "cancel_order", "args": {"order_id": "W2"},
+              make_trace("t2", ["cancel loan W2 and tell me the status"],
+                         [{"name": "cancel_loan", "args": {"loan_id": "W2"},
                            "result": {"status": "cancelled"}}])]
     spans, _ = ground_phrases(["status"], traces, WRITES)
     assert spans[0].trace_id == "t1"
@@ -321,10 +321,10 @@ def test_a_word_only_a_tool_argument_carries_is_named_to_the_rewrite_as_one_no_r
 
 def test_write_intent_is_one_grounded_line(make_test_model):
     task, traces = two_run_task()
-    model = make_test_model(["cancel the order because the delivery was late\nextra line the model added"])
+    model = make_test_model(["cancel the loan because the delivery was late\nextra line the model added"])
     intent = write_intent(model, task, traces, write_tools=WRITES)
     assert isinstance(intent, Intent)
-    assert intent.text == "cancel the order because the delivery was late"
+    assert intent.text == "cancel the loan because the delivery was late"
     assert intent.grounded is True
     assert intent.ungrounded_phrases == []
     assert intent.task_id == "task_1"
@@ -335,23 +335,23 @@ def test_write_intent_is_one_grounded_line(make_test_model):
 
 
 def test_an_intent_with_an_ungrounded_phrase_is_rewritten_with_the_phrases_named(make_test_model):
-    """The first live builds refused 160 of 205 Tasks and never told the model which words were the
+    """The first builds refused whole Tasks and never told the model which words were the
     problem. The second prompt names them and asks for a line the evidence supports."""
     task, traces = two_run_task()
-    model = make_test_model(["refund the order to a gift card",
-                             "cancel the order because the delivery was late"])
+    model = make_test_model(["refund the loan to a gift card",
+                             "cancel the loan because the delivery was late"])
     intent = write_intent(model, task, traces, write_tools=WRITES)
     second = model.calls[1]["messages"][-1]["content"]
     assert "gift card" in second and "no span in the evidence" in second
-    assert 'Your last line was: "refund the order to a gift card"' in second
+    assert 'Your last line was: "refund the loan to a gift card"' in second
     assert "only words that appear in the evidence" in second
-    assert intent.grounded is True and intent.text == "cancel the order because the delivery was late"
+    assert intent.grounded is True and intent.text == "cancel the loan because the delivery was late"
     assert len(model.calls) == 2, "the rewrite grounded, so no third attempt"
 
 
 def test_token_grounding_still_has_to_hold_in_every_run(make_test_model):
     """A Task's Intent is what all its Runs show (D83). Reading a phrase word by word relaxes the
-    order of the words, not the Run that says none of them."""
+    loan of the words, not the Run that says none of them."""
     traces = [make_trace("t1", ["the planter arrived cracked and I want it replaced"], []),
               make_trace("t2", ["I want the cracked planter replaced please"], []),
               make_trace("t3", ["my brass watering can leaks"], [])]
@@ -375,13 +375,13 @@ def test_the_rewrite_prompt_names_the_words_found_and_the_words_missing(make_tes
 def test_the_best_of_three_attempts_is_kept(make_test_model):
     """Three refused lines: the one with the fewest phrases the evidence cannot show is the Intent."""
     task, traces = two_run_task()
-    model = make_test_model(["refund the order to a gift card by paypal",  # gift card, paypal
-                             "cancel the order to a gift card",           # gift card
-                             "refund the order to a gift card by paypal"])
+    model = make_test_model(["refund the loan to a gift card by paypal",  # gift card, paypal
+                             "cancel the loan to a gift card",           # gift card
+                             "refund the loan to a gift card by paypal"])
     intent = write_intent(model, task, traces, write_tools=WRITES)
     assert len(model.calls) == MAX_INTENT_ATTEMPTS
     assert intent.grounded is False
-    assert intent.text == "cancel the order to a gift card"
+    assert intent.text == "cancel the loan to a gift card"
     assert intent.ungrounded_phrases == ["gift card"]
 
 
@@ -405,16 +405,16 @@ def test_a_repair_hint_is_in_every_attempt_of_the_prompt(make_test_model):
 
 def test_the_prompt_shows_the_member_runs_evidence(make_test_model):
     task, traces = two_run_task()
-    model = make_test_model(["cancel the late order"], loop=True)
+    model = make_test_model(["cancel the late loan"], loop=True)
     write_intent(model, task, traces, write_tools=WRITES)
     prompt = model.calls[0]["messages"][-1]["content"]
     assert "t1" in prompt and "t2" in prompt
-    assert "cancel order W1" in prompt
+    assert "cancel loan W1" in prompt
 
 
 def test_an_ungrounded_noun_phrase_refuses_the_intent(make_test_model):
     task, traces = two_run_task()
-    model = make_test_model(["refund the order to a gift card"], loop=True)
+    model = make_test_model(["refund the loan to a gift card"], loop=True)
     intent = write_intent(model, task, traces, write_tools=WRITES)
     assert intent.grounded is False
     assert "gift card" in intent.ungrounded_phrases
@@ -424,7 +424,7 @@ def test_an_ungrounded_noun_phrase_refuses_the_intent(make_test_model):
 def test_a_one_run_task_skips_the_cross_run_check_and_is_unguarded(make_test_model):
     traces = [cancel_trace("t1", "W1")]
     task = Task(id="task_1", run_ids=["t1"])
-    model = make_test_model(["cancel order W1 because of the late delivery"])
+    model = make_test_model(["cancel loan W1 because of the late delivery"])
     intent = write_intent(model, task, traces, write_tools=WRITES)
     assert intent.grounded is True
     assert intent.unguarded is True
@@ -441,29 +441,29 @@ def test_one_phrase_that_every_run_evidences_is_grounded(make_test_model):
 
 def test_an_intent_not_evidenced_in_every_run_is_refused_naming_the_run_that_lacks_it(make_test_model):
     """t1 cancels, t2 changes an address: neither half is the Task's shared intent (D83)."""
-    traces = [cancel_trace("t1", "W1"), make_trace("t2", ["please change shipping address on order W2"], [])]
+    traces = [cancel_trace("t1", "W1"), make_trace("t2", ["please change shipping address on loan W2"], [])]
     task = Task(id="task_1", run_ids=["t1", "t2"])
     intent = write_intent(
-        make_test_model(["cancel order and change shipping address"], loop=True), task, traces, write_tools=WRITES
+        make_test_model(["cancel loan and change shipping address"], loop=True), task, traces, write_tools=WRITES
     )
     assert intent.ungrounded_phrases == []  # each half is evidenced, in one Run each
-    assert intent.run_coverage == {"cancel": ["t1"], "order": ["t1", "t2"],
+    assert intent.run_coverage == {"cancel": ["t1"], "loan": ["t1", "t2"],
                                    "change": ["t2"], "shipping address": ["t2"]}
     assert intent.grounded is False, [(s.phrase, s.trace_id) for s in intent.spans]
     assert intent.reason and "cancel (not in t2)" in intent.reason
-    traces = [cancel_trace("t1", "W1"), make_trace("t2", ["please change shipping address on order W2"], [])]
+    traces = [cancel_trace("t1", "W1"), make_trace("t2", ["please change shipping address on loan W2"], [])]
     task = Task(id="task_1", run_ids=["t1", "t2"])
-    model = make_test_model(["cancel order and change shipping address"], loop=True)
+    model = make_test_model(["cancel loan and change shipping address"], loop=True)
     write_intent(model, task, traces, write_tools=WRITES)
     second = model.calls[1]["messages"][-1]["content"]
     assert "not evidenced in every run" in second
     assert "cancel (not in t2)" in second
     traces = [cancel_trace("t1", "W1"), make_trace("t2", ["hello there"], [])]
     task = Task(id="task_1", run_ids=["t1", "t2"])
-    model = make_test_model(["cancel order W1 because of the late delivery"], loop=True)
+    model = make_test_model(["cancel loan W1 because of the late delivery"], loop=True)
     intent = write_intent(model, task, traces, write_tools=WRITES)
     assert intent.grounded is False
-    assert intent.reason and "order w1" in intent.reason and "t2" in intent.reason
+    assert intent.reason and "loan w1" in intent.reason and "t2" in intent.reason
     assert {s.trace_id for s in intent.spans} == {"t1"}
 
 
@@ -472,7 +472,7 @@ def test_a_task_whose_member_traces_are_missing_or_absent_is_an_error(make_test_
     task = Task(id="task_1", run_ids=["t1", "t2"])
     with pytest.raises(ValueError) as excinfo:
         write_intent(
-            make_test_model(["cancel order W1 because of the late delivery"]),
+            make_test_model(["cancel loan W1 because of the late delivery"]),
             task,
             [cancel_trace("t1", "W1")],
             write_tools=WRITES,
@@ -487,7 +487,7 @@ def test_the_prompt_is_bounded_while_the_grounding_reads_every_run(make_test_mod
     """The Builder's calls obey the 40% context cap (D65), so the prompt samples the member Runs."""
     traces = [cancel_trace(f"t{i}", f"W{i}") for i in range(12)]
     task = Task(id="task_1", run_ids=[t.trace_id for t in traces])
-    model = make_test_model(["cancel the order because the delivery was late"])
+    model = make_test_model(["cancel the loan because the delivery was late"])
     intent = write_intent(model, task, traces, write_tools=WRITES)
     prompt = model.calls[0]["messages"][-1]["content"]
     named = {t.trace_id for t in traces if f"\n{t.trace_id} " in prompt}
@@ -511,7 +511,7 @@ def test_an_empty_model_reply_is_not_grounded(make_test_model):
 def test_a_grounded_intent_still_holds_for_the_runs_it_was_written_over(make_test_model):
     task, traces = two_run_task()
     intent = write_intent(
-        make_test_model(["cancel the order because the delivery was late"]), task, traces, write_tools=WRITES
+        make_test_model(["cancel the loan because the delivery was late"]), task, traces, write_tools=WRITES
     )
     assert intent.grounded
     assert still_grounds(intent, task.run_ids) is True
@@ -523,7 +523,7 @@ def test_an_intent_stops_holding_when_its_task_gains_or_loses_a_run(make_test_mo
     way the line has to be written again rather than kept."""
     task, traces = two_run_task()
     intent = write_intent(
-        make_test_model(["cancel the order because the delivery was late"]), task, traces, write_tools=WRITES
+        make_test_model(["cancel the loan because the delivery was late"]), task, traces, write_tools=WRITES
     )
     assert still_grounds(intent, ["t1", "t2", "t3"]) is False
     assert still_grounds(intent, ["t1"]) is False
@@ -544,16 +544,16 @@ def test_an_ungrounded_intent_never_holds_however_wide_its_coverage():
 def test_apply_intent_sets_the_task_name_intent_and_unguarded_mark(make_test_model):
     task, traces = two_run_task()
     intent = write_intent(
-        make_test_model(["cancel the order because the delivery was late"]), task, traces, write_tools=WRITES
+        make_test_model(["cancel the loan because the delivery was late"]), task, traces, write_tools=WRITES
     )
     updated = apply_intent(task, intent)
-    assert updated.intent == "cancel the order because the delivery was late"
-    assert updated.name == "cancel the order because the delivery was late"
+    assert updated.intent == "cancel the loan because the delivery was late"
+    assert updated.name == "cancel the loan because the delivery was late"
     assert task.intent is None
     traces = [cancel_trace("t1", "W1")]
     task = Task(id="task_1", run_ids=["t1"])
     intent = write_intent(
-        make_test_model(["cancel order W1 because of the late delivery"]), task, traces, write_tools=WRITES
+        make_test_model(["cancel loan W1 because of the late delivery"]), task, traces, write_tools=WRITES
     )
     assert apply_intent(task, intent).unguarded is True
 
@@ -569,10 +569,10 @@ def test_apply_intent_leaves_an_ungrounded_intent_off_the_task(make_test_model):
 def test_the_user_wanted_frame_is_stripped_before_grounding():
     from kullback.builder.intent import strip_frame
 
-    assert strip_frame("The user wanted help to cancel order #W1.") == "cancel order #W1."
+    assert strip_frame("The user wanted help to cancel loan #W1.") == "cancel loan #W1."
     assert strip_frame("Wanted to fix sending picture messages") == "fix sending picture messages"
     assert strip_frame("The customer asked for a refund on #W2") == "a refund on #W2"
-    assert strip_frame("cancel order #W1") == "cancel order #W1"
+    assert strip_frame("cancel loan #W1") == "cancel loan #W1"
     assert strip_frame("The user wanted") == "The user wanted"
 
 
@@ -693,8 +693,8 @@ def test_the_intent_head_is_identical_across_tasks_and_attempts_and_rides_as_sys
     retry = _intent_body(traces_a, WRITES, hint="say it plainly",
                          feedback="Your last line was wrong.")
     assert first != retry, "the hint and the feedback ride in the user turn, never the head"
-    model = make_test_model(["refund the order to a gift card",
-                             "cancel the order because the delivery was late"])
+    model = make_test_model(["refund the loan to a gift card",
+                             "cancel the loan because the delivery was late"])
     task, traces = two_run_task()
     write_intent(model, task, traces, write_tools=WRITES)
     assert len(model.calls) == 2
