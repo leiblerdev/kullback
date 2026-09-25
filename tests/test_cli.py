@@ -941,3 +941,89 @@ def test_a_build_that_ended_on_a_provider_error_beats_failed_and_exits_one(workd
     assert result.exit_code == 1, result.output
     assert '"stopped": "error"' in result.output
     assert [record["status"] for record in heartbeat.read_all()] == ["failed"]
+
+
+# --- the run-model split ---
+
+def _build_start(workdir):
+    from kullback.runner import feed
+
+    rows, _ = feed.read_since(workdir, 0)
+    (row,) = [row for row in rows if row.get("kind") == "build_start"]
+    return row
+
+
+def test_build_without_run_model_runs_the_candidate_on_the_builder_model(workdir, fake_modules,
+                                                                         monkeypatch):
+    from kullback.runner import budget as budget_mod
+
+    built = _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    builder = built["vendor/large"]
+    assert call["kwargs"]["run_model"] is builder
+    assert call["kwargs"]["reroll_model"] is builder
+    assert not isinstance(builder, budget_mod.EffortModel)
+    record = _build_start(workdir)
+    assert (record["model"], record["run_model"]) == ("vendor/large", "vendor/large")
+    assert record["run_effort"] is None and record["user_model"] is None
+
+
+def test_build_with_run_model_and_effort_runs_the_candidate_on_them_not_the_builder(
+        workdir, fake_modules, monkeypatch):
+    from kullback.runner import budget as budget_mod
+
+    built = _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large",
+                    "--run-model", "cheap/small", "--run-effort", "low")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    assert call["kwargs"]["probe_model"] is built["vendor/large"]
+    run = call["kwargs"]["run_model"]
+    assert call["kwargs"]["reroll_model"] is run
+    assert isinstance(run, budget_mod.EffortModel)
+    assert run.inner is built["cheap/small"] and run.effort == "low"
+    assert not isinstance(call["kwargs"]["probe_model"], budget_mod.EffortModel)
+    record = _build_start(workdir)
+    assert (record["run_model"], record["run_effort"]) == ("cheap/small", "low")
+
+
+def test_without_the_user_switch_no_examine_fn_reaches_the_session(workdir, fake_modules, monkeypatch):
+    _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large")
+    assert result.exit_code == 0, result.output
+    assert "examine_fn" not in fake_modules["kullback.builder.session.build"][0]["kwargs"]
+
+
+def test_bare_user_model_switches_the_agent_user_on_with_the_run_model(workdir, fake_modules,
+                                                                       monkeypatch):
+    _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large",
+                    "--run-model", "cheap/small", "--run-effort", "low", "--user-model")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    examine_fn = call["kwargs"]["examine_fn"]
+    examine_fn(workdir, None)
+    seen = fake_modules["kullback.examiner.session.examine"][0]["kwargs"]
+    assert seen["user_model"] is call["kwargs"]["run_model"]
+    assert seen["reroll_model"] is call["kwargs"]["run_model"]
+    assert seen["user_model"].effort == "low"
+    assert _build_start(workdir)["user_model"] == "cheap/small"
+
+
+def test_valued_user_model_names_its_own_model_with_the_run_effort(workdir, fake_modules, monkeypatch):
+    from kullback.runner import budget as budget_mod
+
+    built = _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large",
+                    "--run-model", "cheap/small", "--run-effort", "low",
+                    "--user-model", "other/id")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    call["kwargs"]["examine_fn"](workdir, None)
+    seen = fake_modules["kullback.examiner.session.examine"][0]["kwargs"]
+    user = seen["user_model"]
+    assert isinstance(user, budget_mod.EffortModel)
+    assert user.inner is built["other/id"] and user.effort == "low"
+    assert _build_start(workdir)["user_model"] == "other/id"

@@ -147,3 +147,16 @@ def test_probe_prompt_names_the_end_state_and_refuses_the_policy_step(tmp_path):
     text = prompt(task, verifier, BuiltEnvironment(root).sigs)
     assert "striped" in text and "###STOP###" in text
     assert "Do not ask the user" in text
+
+
+def test_an_effort_wrapped_reroll_model_carries_the_effort_on_every_bought_run(tmp_path):
+    """Every Run the derivation buys, second paths included, shares one runner: the effort on
+    it reaches each Candidate call it makes."""
+    root = _exam_env(tmp_path / "env")
+    candidate = budget.EffortModel(_rename_script(), "low")
+    runners = R.runners_for(root, reroll_model=candidate)
+    runners["run_rerolls"]("widget_task", 2, "second-path-r0-b0")
+    inner = candidate.inner
+    assert len(inner.calls) > 0
+    assert all(call["config"].effort == "low" and call["config"].reasoning_effort == "low"
+               for call in inner.calls)

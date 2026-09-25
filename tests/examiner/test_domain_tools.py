@@ -747,3 +747,18 @@ def test_the_atom_text_in_a_refusal_is_never_cut(tmp_path):
     message = str(excinfo.value)
     assert "verifier_oracle" in message
     assert "y" * 500 in message, "the whole atom, not a prefix of it"
+def test_the_reroll_tool_carries_the_run_effort_on_every_bought_run(tmp_path):
+    """The Examiner's own reroll tool buys through the same runner: the effort on the run
+    model reaches each Candidate call."""
+    from kullback.runner import budget
+    from tests.examiner.test_runners import _exam_env, _rename_script
+
+    workdir = _exam_env(tmp_path / "env")
+    script = _rename_script()
+    root = ExamRoot(workdir=workdir, reroll_model=budget.EffortModel(script, "low"),
+                    canon_rules=CanonRules())
+    [tool] = [t for t in D.domain_tools(root) if t.name == "reroll"]
+    _run(tool.execute(D.RerollArgs(task_id="widget_task", count=1)))
+    assert len(script.calls) > 0
+    assert all(call["config"].effort == "low" and call["config"].reasoning_effort == "low"
+               for call in script.calls)

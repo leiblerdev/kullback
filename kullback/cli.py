@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import typer
+from typer.core import TyperCommand as _TyperCommand
 
 from kullback import difficulty, round_snapshot
 from kullback.ai.provider import DEFAULT_MODEL
@@ -37,6 +38,26 @@ SECOND_JUDGE_MODEL = typer.Option(None, "--second-judge-model",
                                  help="Model id for the second judge, as provider/model (D160). Without it the "
                                       "second judge is --judge-model's own model under a second persona (D97).")
 BASE_URL = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model.")
+
+#: The build command lets --user-model pass bare: the vendored parser has no optional-value
+#: option, so the command answers a bare --user-model with the empty value before parsing,
+#: which reads as the switch on with no model named, exactly like --user-model "".
+def _with_user_model_value(args: list[str]) -> list[str]:
+    """Copy `args` with "" after each bare --user-model, leaving valued forms alone."""
+    out: list[str] = []
+    for index, arg in enumerate(args):
+        out.append(arg)
+        rest = args[index + 1:]
+        if arg == "--user-model" and (not rest or rest[0].startswith("-")):
+            out.append("")
+    return out
+
+
+class _BuildCommand(_TyperCommand):
+    """The build command, answering a bare --user-model before the parser sees it."""
+
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
+        return super().parse_args(ctx, _with_user_model_value(list(args)))
 
 
 def _entry(path: str, name: str):
@@ -388,11 +409,20 @@ def _live_model(model_id: str, base_url: Optional[str]):
         typer.echo(str(error))
         raise typer.Exit(2) from None
 
-def _user_switch(adapter: Any, judge_adapter: Any, user_adapter: Any) -> dict:
+def _effort_model(adapter: Any, effort: Optional[str]) -> Any:
+    """The adapter with one reasoning effort on every call, or itself where no effort was named."""
+    if adapter is None or not effort:
+        return adapter
+    budget = importlib.import_module("kullback.runner.budget")
+    return budget.EffortModel(adapter, effort)
+
+
+def _user_switch(adapter: Any, judge_adapter: Any, user_adapter: Any, reroll_model: Any = None) -> dict:
     """The Builder's examine call with the agent user switched on, or nothing where it is off.
 
     Off, the Builder's own default examine runs exactly as before. On, examine is called the way
     that default calls it, with the user model added: the Builder's session never learns of it.
+    The re-rolls stay the Candidate's model either way, never the Builder's by accident.
     """
     if user_adapter is None:
         return {}
@@ -401,25 +431,34 @@ def _user_switch(adapter: Any, judge_adapter: Any, user_adapter: Any) -> dict:
     def examine_fn(workdir: Any, task_ids: Any) -> Any:
         return examine(Path(workdir), task_ids=task_ids, model=adapter,
                        judge_model=judge_adapter or adapter, probe_model=adapter,
-                       reroll_model=adapter, user_model=user_adapter)
+                       reroll_model=reroll_model or adapter, user_model=user_adapter)
 
     return {"examine_fn": examine_fn}
 
 
-@app.command()
+@app.command(cls=_BuildCommand)
 def build(
     workdir: Path = WORKDIR,
     model: str = typer.Option(DEFAULT_MODEL, "--model",
                               help=f"Builder model id, as provider/model; the default is {DEFAULT_MODEL}."),
     judge_model: Optional[str] = typer.Option(None, "--judge-model",
                                               help="Model id for the judges (D160); the default is --model."),
+    run_model: Optional[str] = typer.Option(
+        None, "--run-model",
+        help="Model id for the Candidate: every fresh Run the build plays, the Examiner's "
+             "re-rolls and second paths included. Without it the Candidate runs on --model."),
+    run_effort: Optional[str] = typer.Option(
+        None, "--run-effort",
+        help="Reasoning effort sent on every Candidate call and every agent-user call, and "
+             "nowhere else. Without it no effort is sent."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
     files: Optional[list[Path]] = typer.Option(None, "--file", help="Customer export to ingest first."),  # noqa: B008
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
     user_model: Optional[str] = typer.Option(
         None, "--user-model",
         help="Model id for the agent user in the Examiner's re-rolls (D214); off by default, "
-             "which keeps the rule-driven user."),
+             "which keeps the rule-driven user. Bare, the switch takes --run-model's model. "
+             "The agent user's effort follows --run-effort."),
 ):
     """Run the autonomous Builder session over the ingested Traces and write the Environment.
 
@@ -427,26 +466,40 @@ def build(
     its Environment with the base tools, calls examine when the Environment is ready, acts on the
     findings, and stops when every Task is trusted or refused, when the spend ceiling is reached,
     or when it states why it cannot go further. `--model` drives the session and, unless named
-    otherwise, the Examiner, the judges, the loophole probe and the re-rolls; `--judge-model`
-    puts the judges on a model of their own. `--user-model` switches the re-rolls' users to the
-    agent user over the rule floor, priced under the user stage.
+    otherwise, the Examiner, the judges and the loophole probe; `--judge-model` puts the judges
+    on a model of their own. `--run-model` puts the Candidate on a model of its own instead of
+    --model, and `--run-effort` sends one reasoning effort on the Candidate's calls and the agent
+    user's, never the Builder's, the Examiner's or the judges'. `--user-model` switches the
+    re-rolls' users to the agent user over the rule floor, priced under the user stage.
     """
     adapter = _live_model(model, base_url)
     judge_adapter = _live_model(judge_model, base_url) if judge_model else None
-    user_adapter = _live_model(user_model, base_url) if user_model else None
+    run_id = run_model or model
+    run_adapter = adapter if run_id == model else _live_model(run_id, base_url)
+    run_adapter = _effort_model(run_adapter, run_effort)
+    user_id = None
+    user_adapter = None
+    if user_model is not None:
+        user_id = run_id if not user_model else user_model
+        if user_id == run_id:
+            user_adapter = run_adapter
+        else:
+            user_adapter = _effort_model(_live_model(user_id, base_url), run_effort)
     # The screen lists running builds from these heartbeats; the pid tells it who is alive. The
     # pulse keeps beating while the build runs so a screen watching from another directory sees
     # the spend move, rather than a stale $0.0000 until the build is over.
     # The feed is this build's story, opened here and appended to as it goes: /watch reads it to
     # show the calls as they happen instead of a board that only moves when the session ends.
-    feed.start(workdir, model=model, ceiling_usd=ceiling_usd)
+    # The build_start row is the build record: which model and effort each role used.
+    feed.start(workdir, model=model, ceiling_usd=ceiling_usd, run_model=run_id,
+               run_effort=run_effort or None, user_model=user_id, judge_model=judge_model)
     pulse = heartbeat.pulse(workdir, model, "running")
     try:
         result = _entry("kullback.builder.session", "build")(
             workdir, adapter, files=list(files or []), ceiling_usd=ceiling_usd,
             subscribers=[_session_subscriber(workdir)], judge_model=judge_adapter,
-            probe_model=adapter, reroll_model=adapter,
-            **_user_switch(adapter, judge_adapter, user_adapter))
+            probe_model=adapter, reroll_model=run_adapter, run_model=run_adapter,
+            **_user_switch(adapter, judge_adapter, user_adapter, reroll_model=run_adapter))
     except Exception:
         pulse.stop()
         heartbeat.beat(workdir, model, "failed")
