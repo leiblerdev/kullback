@@ -39,7 +39,13 @@ from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules
 from kullback.runner.confinement import confine
 from kullback.runner.records import Constraint, Intent, StrippedValue, Task, UserRules, Verifier
+from runner import replay_fixtures as replay_fixtures
 from runner.replay_fixtures import Toolkit, do_replay
+
+# The shared replay helper is moving to item vocabulary on another stream; these names follow
+_HELPER_READ = next(s.name for s in replay_fixtures.sigs() if s.kind == "read" and s.callers == ["assistant"])
+_HELPER_WRITE = next(s.name for s in replay_fixtures.sigs() if s.kind == "write")
+_HELPER_ID = next(k for k, v in replay_fixtures.trace().tool_calls[1].args.items() if v == "123")
 
 # --- reading re-runs from disk (D91) --------------------------------------
 
@@ -59,12 +65,12 @@ def test_load_run_keeps_the_state_the_loop_footer_carries(tmp_path):
     path = write_run_with_footer(
         reference_run(), tmp_path / "footer.jsonl",
         run_id="delivered", task_id="t1", termination_reason="user_stop",
-        start_state={"orders": {"#W123": {"status": "delivered"}}},
-        end_state={"orders": {"#W123": {"status": "cancelled"}}})
+        start_state={"loans": {"#W123": {"status": "delivered"}}},
+        end_state={"loans": {"#W123": {"status": "cancelled"}}})
     run = S.load_run(path)
     assert run.run_id == "delivered"
     assert run.termination_reason == "user_stop"
-    assert S.start_state(run) == {"orders": {"#W123": {"status": "delivered"}}}
+    assert S.start_state(run) == {"loans": {"#W123": {"status": "delivered"}}}
     assert [e.type for e in run.events][-1] == "stop"
 
 
@@ -76,7 +82,7 @@ def test_a_state_reading_hard_rule_fails_the_run_it_cannot_hold_on(tmp_path):
     """
     rule = Constraint(id="k1", text="never cancel an order that is not pending", compiled=True,
                       predicate_src=("def check(pre_state, write_call, transcript):\n"
-                                     "    order = pre_state['orders'][write_call['arguments']['order_id']]\n"
+                                     "    order = pre_state['loans'][write_call['arguments']['loan_id']]\n"
                                      "    return order['status'] == 'pending'\n"))
     verifier = derive(tmp_path, constraints=[rule])
     assert confine(rule.predicate_src) == []
@@ -84,7 +90,7 @@ def test_a_state_reading_hard_rule_fails_the_run_it_cannot_hold_on(tmp_path):
     def with_state(status: str) -> Path:
         return write_run_with_footer(reference_run(), tmp_path / f"{status}.jsonl", run_id=status,
                                      task_id="t1", termination_reason="user_stop",
-                                     start_state={"orders": {"#W123": {"status": status}}})
+                                     start_state={"loans": {"#W123": {"status": status}}})
 
     assert S.check_run(verifier, with_state("pending"), CanonRules()) == (True, None)
     assert S.check_run(verifier, with_state("delivered"), CanonRules()) == (False, "hard.k1")
@@ -94,7 +100,7 @@ def test_a_hard_rule_that_raises_is_a_defect_and_not_a_candidate_failure(tmp_pat
     """A predicate that blows up decided nothing: a Verifier defect, never a Candidate failure (G3)."""
     rule = Constraint(id="k1", text="never cancel an order that is not pending", compiled=True,
                       predicate_src=("def check(pre_state, write_call, transcript):\n"
-                                     "    return pre_state['orders']['#W123']['status'] == 'pending'\n"))
+                                     "    return pre_state['loans']['#W123']['status'] == 'pending'\n"))
     verifier = derive(tmp_path, constraints=[rule])
     assert S.hard_holds(atom_by_id(verifier, "hard.k1"), reference_run(), WRITE_TOOLS) is None
     assert S.check_run(verifier, reference_run(), CanonRules()) == (True, None)
@@ -148,11 +154,11 @@ def test_a_hard_rule_is_not_asked_about_a_tool_the_seed_runs_only_read_with(tmp_
     """A before-write predicate judges writes and unknown tools, not the reads it was never written for."""
     rule = Constraint(id="k1", text="never touch a delivered order", compiled=True,
                       predicate_src=("def check(pre_state, write_call, transcript):\n"
-                                     "    return write_call['arguments'].get('order_id') != '#W123'\n"))
+                                     "    return write_call['arguments'].get('loan_id') != '#W123'\n"))
     verifier = derive(tmp_path, constraints=[rule])
     reading = make_run("reading", [
         user("What is the status of #W123?"),
-        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        call("get_loan_details", {"loan_id": "#W123"}, kind="read", cid="c0"),
         result(ORDER, cid="c0"),
         assistant("It is pending."),
     ])
@@ -172,7 +178,7 @@ def test_a_write_no_successful_run_made_still_fails_on_the_write_cap(tmp_path):
     """The stray write of a failed re-run is not an atom (D43); the cap is what stops a Candidate."""
     verifier = derive(tmp_path, reruns=[alt_path_run(), failed_run()])
     over = make_run("over", reference_events() + [
-        call("cancel_pending_order", {"order_id": "#W999", "reason": "no longer needed"}, cid="c2"),
+        call("cancel_hold", {"loan_id": "#W999", "reason": "no longer needed"}, cid="c2"),
         result({"status": "cancelled"}, cid="c2"),
     ])
     passed, failing = S.check_run(verifier, over, CanonRules())
@@ -185,15 +191,15 @@ def test_an_extra_write_on_an_uncovered_tool_fails_given_write_tools(tmp_path):
     so the extra-write safety net (_extra_write) had no coverage of that shape."""
     verifier = derive(tmp_path, reruns=[alt_path_run(), extra_write_run()])
     sneaky = make_run("sneaky", reference_events() + [
-        call("refund_order", {"order_id": "#W123", "amount": 25.0}, kind="read", cid="c2"),
+        call("update_loan", {"loan_id": "#W123", "amount": 25.0}, kind="read", cid="c2"),
         result({"ok": True}, cid="c2"),
     ])
     # With no write_tools, the extra call is invisible: nothing marked it as a write, so it slips
     # through as a full pass.
     assert S.check_run(verifier, sneaky, CanonRules()) == (True, None)
     # The same Run, scored the way production scores it, is caught.
-    assert S.check_run(verifier, sneaky, CanonRules(), write_tools={"cancel_pending_order", "refund_order"}) == (
-        False, "extra_write:refund_order")
+    assert S.check_run(verifier, sneaky, CanonRules(), write_tools={"cancel_hold", "update_loan"}) == (
+        False, "extra_write:update_loan")
 
 # --- D79 validation -------------------------------------------------------
 
@@ -218,7 +224,7 @@ def test_the_unfinished_run_stops_just_before_the_required_write_and_must_fail(t
     unfinished = S.unfinished_run(verifier, reference_run(), CanonRules())
     assert unfinished.run_id == "ref.unfinished" and unfinished.termination_reason == "max_turns"
     assert [e.type for e in unfinished.events][-2:] == ["tool_call", "tool_result"]  # the read, not the cancel
-    assert not any(e.type == "tool_call" and e.payload.get("name") == "cancel_pending_order"
+    assert not any(e.type == "tool_call" and e.payload.get("name") == "cancel_hold"
                    for e in unfinished.events)
     assert S.check_run(verifier, unfinished, CanonRules())[0] is False
     gates = {g.stage: g for g in S.validate_verifier(verifier, reference_run(), canon=CanonRules())}
@@ -240,7 +246,7 @@ def _answering_events(final: str = "That is all, have a good day.") -> list[dict
     """A Task whose outcome is the answer: the agent reads the order and states its status, twice."""
     return [
         user("What is the status of order #W123?"),
-        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        call("get_loan_details", {"loan_id": "#W123"}, kind="read", cid="c0"),
         result(ORDER, cid="c0"),
         assistant("Order #W123 is pending."),
         user("Thanks, anything else I should know?"),
@@ -386,10 +392,10 @@ def test_the_spans_gate_reads_a_rerun_span_in_the_run_it_names(tmp_path):
         user("Please cancel my orders #W123 and #W888."),
         assistant("Sure. Why do you want to cancel them?"),
         user("moving abroad"),
-        call("cancel_pending_order", {"order_id": "#W123", "reason": "moving abroad"}, cid="c1"),
-        result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
-        call("cancel_pending_order", {"order_id": "#W888", "reason": "moving abroad"}, cid="c2"),
-        result({"order_id": "#W888", "status": "cancelled"}, cid="c2"),
+        call("cancel_hold", {"loan_id": "#W123", "reason": "moving abroad"}, cid="c1"),
+        result({"loan_id": "#W123", "status": "cancelled"}, cid="c1"),
+        call("cancel_hold", {"loan_id": "#W888", "reason": "moving abroad"}, cid="c2"),
+        result({"loan_id": "#W888", "status": "cancelled"}, cid="c2"),
         assistant("Your order #W123 is cancelled and 150.0 is refunded."),
     ])
     verifier = derive(tmp_path, reruns=[extra])
@@ -406,9 +412,9 @@ def test_the_spans_gate_reads_a_rerun_span_in_the_run_it_names(tmp_path):
 
 def test_the_mutation_check_flags_an_atom_the_reference_cannot_fail(tmp_path):
     """D79 check 8: an atom whose mutation changes nothing is an atom that is not being checked."""
-    rule = Constraint(id="k1", text="never call delete_order", compiled=True,
+    rule = Constraint(id="k1", text="never call delete_item", compiled=True,
                       predicate_src=("def check(pre_state, write_call, transcript):\n"
-                                     "    return write_call['name'] != 'delete_order'\n"))
+                                     "    return write_call['name'] != 'delete_item'\n"))
     # A re-run wrote twice, so the cap is 2 while the Reference writes once: asking for at most 1
     # write is a smaller demand the Reference still meets, so the cap is checking nothing here.
     loose = derive(tmp_path, reruns=[alt_path_run(), extra_write_run()], constraints=[rule])
@@ -427,7 +433,7 @@ def test_a_zero_cap_has_no_mutant_and_is_not_counted_as_a_failed_flip(tmp_path):
     failed 27 read-only Tasks of one build and 28 of another (D173)."""
     asked = make_run("asked", [
         user("What is the status of order #W123?"),
-        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        call("get_loan_details", {"loan_id": "#W123"}, kind="read", cid="c0"),
         result(ORDER, cid="c0"),
         assistant("Order #W123 is pending."),
         user("Thanks."),
@@ -449,12 +455,12 @@ def test_a_hard_atom_that_judged_no_call_does_not_read_as_held(tmp_path):
     made the mutation check report a Verifier defect where no rule had ever run (D173)."""
     rule = Constraint(id="k1", text="never cancel a delivered order", compiled=True,
                       predicate_src=("def check(pre_state, write_call, transcript):\n"
-                                     "    return write_call['arguments'].get('order_id') != '#W123'\n"))
+                                     "    return write_call['arguments'].get('loan_id') != '#W123'\n"))
     verifier = derive(tmp_path, constraints=[rule])
     hard = atom_by_id(verifier, "hard.k1")
     reading = make_run("reading", [
         user("What is the status of #W123?"),
-        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        call("get_loan_details", {"loan_id": "#W123"}, kind="read", cid="c0"),
         result(ORDER, cid="c0"),
         assistant("It is pending."),
     ])
@@ -467,9 +473,9 @@ def test_a_hard_atom_that_judged_no_call_does_not_read_as_held(tmp_path):
 def test_a_verifier_with_no_mutable_atom_fails_the_mutation_check_and_the_text_says_so(tmp_path):
     """The cap of 0 plus Hard atoms of a read-only Task: nothing in it can be made to say something
     false about its own Reference, which is the one thing check 8 is there to catch."""
-    rule = Constraint(id="k1", text="never call delete_order", compiled=True,
+    rule = Constraint(id="k1", text="never call delete_item", compiled=True,
                       predicate_src=("def check(pre_state, write_call, transcript):\n"
-                                     "    return write_call['name'] != 'delete_order'\n"))
+                                     "    return write_call['name'] != 'delete_item'\n"))
     talking = make_run("talking", [user("Hello?"), assistant("Hello, how can I help?")])
     verifier = V.derive_verifier(TASK, talking, [], CanonRules(), write_tools=WRITE_TOOLS, constraints=[rule])
     assert {S.atom_payload(a).get("kind") for a in verifier.atoms} == {"entity_count", "hard"}
@@ -503,32 +509,32 @@ def _refund_run():
     Verifier should know, whether or not they are strings."""
     return make_run("ref", [
         user("Please refund my order #W123."),
-        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        call("get_loan_details", {"loan_id": "#W123"}, kind="read", cid="c0"),
         result(ORDER, cid="c0"),
-        call("refund_order", {"order_id": "#W123", "amount": 150.0}, cid="c1"),
+        call("update_loan", {"loan_id": "#W123", "amount": 150.0}, cid="c1"),
         result({"ok": True}, cid="c1"),
         assistant("Refunded."),
     ])
 
 
 @pytest.mark.parametrize("tool, reference, amount, intent_text, user_rules, expected_pass, leaked", [
-    pytest.param("cancel_pending_order", reference_run, 175.0, "cancel #W123 and refund exactly 175.0", UserRules(),
+    pytest.param("cancel_hold", reference_run, 175.0, "cancel #W123 and refund exactly 175.0", UserRules(),
                  False, "intent leaks 175.0", id="intent"),
-    pytest.param("cancel_pending_order", reference_run, 175.0, "",
+    pytest.param("cancel_hold", reference_run, 175.0, "",
                  UserRules(refusals=["do not accept less than 175.0"]), False, "user_rules leaks 175.0",
                  id="user_rules"),
-    pytest.param("cancel_pending_order", reference_run, 175.0, "cancel order #W123 and record the reason",
+    pytest.param("cancel_hold", reference_run, 175.0, "cancel order #W123 and record the reason",
                  UserRules(), True, None, id="own_words"),
-    pytest.param("refund_order", _refund_run, 150.0, "refund exactly 150.0 on #W123", UserRules(),
+    pytest.param("update_loan", _refund_run, 150.0, "refund exactly 150.0 on #W123", UserRules(),
                  True, None, id="world_value_read_off_a_tool_result"),
-    pytest.param("cancel_pending_order", reference_run, 175.0, "refund $175 on #W123", UserRules(),
+    pytest.param("cancel_hold", reference_run, 175.0, "refund $175 on #W123", UserRules(),
                  False, "intent leaks 175.0", id="another_spelling_of_the_value"),
 ])
 def test_the_leak_check_finds_a_constant_only_the_verifier_holds_and_never_a_world_value_or_the_users_own_words(
         tmp_path, tool, reference, amount, intent_text, user_rules, expected_pass, leaked):
     """D287: the comparison is canonical, and a value a row of the world holds is not a secret even
     when the Intent says it; a value no row holds (the agent's own number) is."""
-    verifier = literal_value_atom(tool, "#W123", "order_id", "amount", amount, provenance="agent_chosen")
+    verifier = literal_value_atom(tool, "#W123", "loan_id", "amount", amount, provenance="agent_chosen")
     gates = {g.stage: g for g in S.validate_verifier(
         verifier, reference(), empty_run(), wrong_run(), alt_path_run(),
         intent_text=intent_text, user_rules=user_rules, canon=CanonRules())}
@@ -543,19 +549,19 @@ def test_the_leak_check_names_the_column_the_strip_missed_and_says_whether_it_au
     A caller that holds no record still gets the check, and says on the ruling that it audited
     nothing: a strip that never ran must not read as a strip that found nothing."""
     record = Intent(task_id="t1", text="cancel #W123 and refund exactly 175.0", grounded=True,
-                    stripped=[StrippedValue(column="order_id", table="orders", shape="last4",
+                    stripped=[StrippedValue(column="loan_id", table="loans", shape="last4",
                                             replacement="ending 0123")])
     gate = {g.stage: g for g in S.validate_verifier(
-        literal_value_atom("cancel_pending_order", "#W123", "order_id", "amount", 175.0),
+        literal_value_atom("cancel_hold", "#W123", "loan_id", "amount", 175.0),
         reference_run(), intent_text=record.text, user_rules=UserRules(),
         intent=record, canon=CanonRules())}["verifier_leak"]
     assert gate.passed is False
-    assert "column cancel_pending_order.amount" in " ".join(gate.failures)
-    assert gate.metrics["columns"] == ["cancel_pending_order.amount"]
+    assert "column cancel_hold.amount" in " ".join(gate.failures)
+    assert gate.metrics["columns"] == ["cancel_hold.amount"]
     assert gate.metrics["stripped"] == 1 and gate.metrics["audited"] is True
 
     gate = {g.stage: g for g in S.validate_verifier(
-        literal_value_atom("cancel_pending_order", "#W123", "order_id", "amount", 175.0),
+        literal_value_atom("cancel_hold", "#W123", "loan_id", "amount", 175.0),
         reference_run(), intent_text="cancel #W123 and refund exactly 175.0",
         user_rules=UserRules(), canon=CanonRules())}["verifier_leak"]
     assert gate.passed is False
@@ -624,7 +630,7 @@ def test_a_loophole_probe_run_that_passes_the_verifier_fails_check_6(tmp_path, t
 def test_a_fact_stated_before_the_farewell_is_a_communicate_fact():
     run = make_run("r", [
         user("What is the status of order #W123?"),
-        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        call("get_loan_details", {"loan_id": "#W123"}, kind="read", cid="c0"),
         result(ORDER, cid="c0"),
         assistant("Order #W123 is pending."),
         user("Thanks, that is all."),
@@ -639,38 +645,38 @@ def test_a_fact_stated_before_the_farewell_is_a_communicate_fact():
 def test_the_wrong_run_aims_every_required_write_at_another_entity_and_needs_a_required_write(tmp_path):
     out = do_replay(tmp_path)
     task = Task(id="t1", run_ids=["tr1"])
-    verifier = V.derive_verifier(task, out.path, write_tools={"cancel_order"}, canon=CanonRules())
+    verifier = V.derive_verifier(task, out.path, write_tools={_HELPER_WRITE}, canon=CanonRules())
     wrong = S.wrong_run(verifier, out.path, CanonRules())
     assert wrong is not None and wrong.run_id.endswith(".wrong")
-    call_event = next(e for e in wrong.events if e.type == "tool_call" and e.payload["name"] == "cancel_order")
-    assert call_event.payload["args"]["order_id"] != "123"
-    passed, failing = S.check_run(verifier, wrong, CanonRules(), write_tools={"cancel_order"})
+    call_event = next(e for e in wrong.events if e.type == "tool_call" and e.payload["name"] == _HELPER_WRITE)
+    assert call_event.payload["args"][_HELPER_ID] != "123"
+    passed, failing = S.check_run(verifier, wrong, CanonRules(), write_tools={_HELPER_WRITE})
     assert passed is False and failing == "w0"
     # the Reference itself is untouched
-    assert S.check_run(verifier, out.path, CanonRules(), write_tools={"cancel_order"})[0] is True
+    assert S.check_run(verifier, out.path, CanonRules(), write_tools={_HELPER_WRITE})[0] is True
     # a Verifier that requires nothing has no wrong Run
     assert S.wrong_run(Verifier(task_id="t1", atoms=[]), out.path, CanonRules()) is None
 
 
 def test_the_wrong_run_prefers_an_id_the_reference_showed(tmp_path):
-    class TwoOrders(Toolkit):
-        def get_order_details(self, order_id):
-            return {"id": order_id, "status": "delivered", "total": 25, "other": {"order_id": "456"}}
-
-    out = do_replay(tmp_path, TwoOrders)
-    verifier = V.derive_verifier(Task(id="t1", run_ids=["tr1"]), out.path, write_tools={"cancel_order"}, canon=CanonRules())
+    def _read_with_extra_id(self, **args):
+        _id = args[_HELPER_ID]
+        return {"id": _id, "status": "delivered", "total": 25, "other": {_HELPER_ID: "456"}}
+    two_items = type("TwoItems", (Toolkit,), {_HELPER_READ: _read_with_extra_id})
+    out = do_replay(tmp_path, two_items)
+    verifier = V.derive_verifier(Task(id="t1", run_ids=["tr1"]), out.path, write_tools={_HELPER_WRITE}, canon=CanonRules())
     wrong = S.wrong_run(verifier, out.path, CanonRules())
-    call_event = next(e for e in wrong.events if e.type == "tool_call" and e.payload["name"] == "cancel_order")
-    assert call_event.payload["args"]["order_id"] == "456"
+    call_event = next(e for e in wrong.events if e.type == "tool_call" and e.payload["name"] == _HELPER_WRITE)
+    assert call_event.payload["args"][_HELPER_ID] == "456"
 
 
 def test_the_suite_runs_the_wrong_run_and_the_second_path(tmp_path):
     first = do_replay(tmp_path / "a")
     second = do_replay(tmp_path / "b")
     verifier = V.derive_verifier(Task(id="t1", run_ids=["tr1"]), first.path, [second.path],
-                                 write_tools={"cancel_order"}, canon=CanonRules())
+                                 write_tools={_HELPER_WRITE}, canon=CanonRules())
     gates = {g.stage: g for g in S.validate_verifier(
-        verifier, first.path, write_tools={"cancel_order"}, wrong_run=S.wrong_run(verifier, first.path, CanonRules()),
+        verifier, first.path, write_tools={_HELPER_WRITE}, wrong_run=S.wrong_run(verifier, first.path, CanonRules()),
         alt_path_run=second.path, canon=CanonRules())}
     assert gates["verifier_wrong_run"].passed and gates["verifier_alt_path"].passed
     assert gates["verifier_loophole"].metrics.get("skipped")  # no model, so not known to be tight
@@ -692,7 +698,7 @@ def test_the_transcript_helpers_are_one_text_the_derivation_and_the_policy_compi
         assert callable(namespace[helper]), helper
     transcript = [{"role": "assistant", "content": "Shall I cancel the order?"}, {"role": "user", "content": "yes please"}]
     assert namespace["user_confirmed"](transcript) and namespace["said_before"](transcript, "cancel")
-    assert not namespace["called_before"](transcript, "cancel_order")
+    assert not namespace["called_before"](transcript, _HELPER_WRITE)
 
 
 # --- an expected-fail Run that passed names the atoms it passed on (F37) ---

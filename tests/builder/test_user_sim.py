@@ -44,10 +44,10 @@ from kullback.runner.records import (
     UserRules,
 )
 
-# What the retail build derives (D115): the generic core plus the fields retail's users state.
-RETAIL = Vocabulary(domain="retail", fields=[f.model_copy(deep=True) for f in GENERIC_FIELDS] + [
-    FieldSpec(field="order_id", kind="reference", pattern=r"(?:\#)?\bW\d{7}\b", prefix="#",
-              cues=[r"\border (?:id|number|no\.?|#|reference|code)\b", r"\bwhich order\b"], aliases=["order id"]),
+# What the library build derives (D115): the generic core plus the fields the library's users state.
+LIB = Vocabulary(domain="library", fields=[f.model_copy(deep=True) for f in GENERIC_FIELDS] + [
+    FieldSpec(field="loan_id", kind="reference", pattern=r"(?:\#)?\bL\d{7}\b", prefix="#",
+              cues=[r"\bloan (?:id|number|no\.?|#|reference|code)\b", r"\bwhich loan\b"], aliases=["loan id"]),
     FieldSpec(field="card_last4", pattern=r"(?i:(?:last four|last 4|ending in)\D{0,12})(\d{4})\b",
               cues=[r"\blast four\b", r"\blast 4\b", r"\bcard ending\b"], aliases=["last four"]),
     FieldSpec(field="payment_method", pattern=r"\b(?i:gift card|credit card|debit card|paypal|mastercard|visa|amex|american express)\b",
@@ -77,7 +77,7 @@ def make_trace(pairs, trace_id: str = "t1", calls=()) -> Trace:
         trace_id=trace_id,
         raw_hash="rawhash",
         ingest_version="0",
-        source="tau2",
+        source="test",
         turns=turns,
         tool_calls=tool_calls,
         raw_ptr=RawPtr(file_hash="rawhash", sim_index=0),
@@ -109,15 +109,15 @@ def test_facts_come_from_user_turns_with_a_span():
             [
                 ("assistant", "Hi! What is your email address?"),
                 ("user", "It is yusuf.rossi@example.com, thanks."),
-                ("assistant", "Which order id is this about? my email is agent@shop.com"),
-                ("user", "Order #W2378156 please."),
+                ("assistant", "Which loan id is this about? my email is agent@shop.com"),
+                ("user", "Loan #L2378156 please."),
             ]
         ),
-        vocab=RETAIL,
+        vocab=LIB,
     )
     assert facts_by_field(rules) == {
         "email": "yusuf.rossi@example.com",
-        "order_id": "#W2378156",
+        "loan_id": "#L2378156",
     }
     email = rules.facts[0]
     assert isinstance(email, UserFact)
@@ -128,7 +128,7 @@ def test_assistant_turns_are_not_a_source_of_facts():
     rules = derive_user_rules(
         make_trace(
             [
-                ("assistant", "I have you as mei@example.com, order #W1234567."),
+                ("assistant", "I have you as mei@example.com, loan #L1234567."),
                 ("user", "Sounds right."),
             ]
         )
@@ -142,18 +142,18 @@ def test_disclosure_marks_asked_facts_on_request_and_volunteered_facts_not():
         make_trace(
             [
                 ("assistant", "Hi! How can I help?"),
-                ("user", "I want to cancel order #W2378156."),
+                ("user", "I want to renew loan #L2378156."),
                 ("assistant", "Sure. Could you give me your zip code?"),
-                ("user", "It is 19122."),
+                ("user", "It is 11201."),
             ]
         ),
-        vocab=RETAIL,
+        vocab=LIB,
     )
     rules_by_field = disclosure_by_field(rules)
     assert isinstance(rules_by_field["zip"], DisclosureRule)
     assert rules_by_field["zip"].on_request is True
-    assert rules_by_field["order_id"].on_request is False
-    assert rules_by_field["order_id"].condition == "volunteered"
+    assert rules_by_field["loan_id"].on_request is False
+    assert rules_by_field["loan_id"].condition == "volunteered"
 
 
 def test_refusal_is_recorded_against_the_field_the_agent_asked_for():
@@ -163,14 +163,14 @@ def test_refusal_is_recorded_against_the_field_the_agent_asked_for():
                 ("assistant", "Could you please provide your email address?"),
                 ("user", "I am sorry, but I do not remember the email address I used."),
                 ("assistant", "No problem, what is your name and zip code?"),
-                ("user", "Mei Kovacs, 28236."),
+                ("user", "Robin Alder, 11201."),
             ]
         )
     )
     assert rules.refusals == ["email"]
     # The bare answer to a name and zip ask holds both, and neither is a refusal or a goal.
-    assert facts_by_field(rules)["zip"] == "28236"
-    assert facts_by_field(rules)["name"] == "Mei Kovacs"
+    assert facts_by_field(rules)["zip"] == "11201"
+    assert facts_by_field(rules)["name"] == "Robin Alder"
     assert rules.incomplete_reasons == []
 
 
@@ -192,9 +192,9 @@ def test_the_rules_name_the_one_trace_they_came_from():
         make_trace(
             [
                 ("assistant", "Hi! How can I help?"),
-                ("user", "My name is Mei Kovacs and I want to return a lamp."),
+                ("user", "My name is Robin Alder and I want to renew a loan."),
                 ("assistant", "What is your zip code?"),
-                ("user", "28236."),
+                ("user", "11201."),
             ],
             trace_id="sim-7",
         )
@@ -230,35 +230,34 @@ def test_the_rules_are_incomplete_only_when_an_asked_field_went_unanswered_or_no
     assert rules.incomplete_reasons == ["no user turns in the trace"]
 
 
-def rules_from_fixture(tau2_small, index: int) -> UserRules:
-    sim = tau2_small["simulations"][index]
+def rules_from_world(world_a_small, index: int) -> UserRules:
+    sim = world_a_small["simulations"][index]
     pairs = [
         (message["role"], message.get("content"))
         for message in sim["messages"]
         if message["role"] in ("user", "assistant")
     ]
-    return derive_user_rules(make_trace(pairs, trace_id=sim["id"]), vocab=RETAIL)
+    return derive_user_rules(make_trace(pairs, trace_id=sim["id"]), vocab=LIB)
 
 
-def test_derive_over_the_fixture_finds_the_recorded_zip_and_name_and_complete_rules(tau2_small):
-    sim = tau2_small["simulations"][0]
-    rules = rules_from_fixture(tau2_small, 0)
-    assert facts_by_field(rules)["zip"] == "28236"
-    # The same user turn states the name, which the rules have to hold as well (D44 facts exact).
-    assert facts_by_field(rules)["name"] == "Mei Kovacs"
+def test_derive_over_the_world_finds_the_recorded_zip_and_refusal_and_complete_rules(world_a_small):
+    sim = world_a_small["simulations"][0]
+    rules = rules_from_world(world_a_small, 0)
+    assert facts_by_field(rules)["zip"] == "11201"
     assert "email" in rules.refusals
     assert rules.style_sample == [sim["id"]]
-    assert facts_by_field(rules)[GOAL].startswith("Hi!")
-    assert "water bottle" in facts_by_field(rules)[GOAL]
-    assert "I confirm" in " ".join(field_values(rules, CONFIRMATION))
-    assert facts_by_field(rules)[CLOSING].startswith("No, that")
+    assert facts_by_field(rules)[GOAL].startswith("Hi,")
+    assert "backyard birds" in facts_by_field(rules)[GOAL]
+    assert "loan_01" in facts_by_field(rules)[GOAL]
+    assert "Yes, please renew it." in " ".join(field_values(rules, CONFIRMATION))
+    assert facts_by_field(rules_from_world(world_a_small, 1))["email"] == "casey.birch@example.org"
     for index in range(3):
-        rules = rules_from_fixture(tau2_small, index)
+        rules = rules_from_world(world_a_small, index)
         assert rules.incomplete_reasons == [], index
         assert rules.walk_away == [], index
 
 
-def test_a_turn_asks_for_exactly_the_fields_its_wording_requests(tau2_small):
+def test_a_turn_asks_for_exactly_the_fields_its_wording_requests(world_a_small):
     """Build 8: 'please provide me with: - your first name - your last name - your zip code' read as no ask
     at all, and the Simulated user answered 'I do not have my name' on 63 re-rolls."""
     listed = "Could you please provide me with:\n- Your first name\n- Your last name\n- Your ZIP code"
@@ -267,45 +266,46 @@ def test_a_turn_asks_for_exactly_the_fields_its_wording_requests(tau2_small):
     assert facts_by_field(rules)["name"] == "Olivia Lopez"
     assert facts_by_field(rules)["zip"] == "76171"
     assert field_values(rules, CHOICE) == []
-    assert asked_fields("Your order holds:\n- a lamp\n- a name tag with your name on it") == []
-    vocab = Vocabulary(domain="retail", fields=[f.model_copy(deep=True) for f in RETAIL.fields] + [
+    assert asked_fields("Your hold slip:\n- a novel\n- a name tag with your name on it") == []
+    vocab = Vocabulary(domain="library", fields=[f.model_copy(deep=True) for f in LIB.fields] + [
         FieldSpec(field="address1", kind="value", asked_only=r"\b(?=[A-Za-z0-9]*\d)[A-Za-z0-9 ]+\b",
                   cues=[r"\baddress\b"]),
     ])
-    values = extracted_values("For order #W5056519, please update it to 380 Maple Drive.",
+    values = extracted_values("For loan #L5056519, please update it to 380 Maple Drive.",
                               asked=["address1"], vocab=vocab)
-    assert ("order_id", "#W5056519") in values
+    assert ("loan_id", "#L5056519") in values
     assert ("address1", "380 Maple Drive") in values
     for said in (
-        "I see the order with the headphones. Shall I start the return?",
-        "I found your order. How would you like to proceed?",
+        "I see the hold with the novel. Shall I start the renewal?",
+        "I found your hold. How would you like to proceed?",
         "Thank you. Now let me address your questions one by one.",
-        "You will receive an email with the return instructions shortly.",
+        "You will receive an email with the renewal instructions shortly.",
         "I have located your account using your name and zip code.",
     ):
         assert asked_fields(said) == [], said
     user = SimulatedUser(UserRules(), starting_state_reader=dict_reader({}))
-    text = user.reply(ask("I see the order with the headphones. Shall I start the return?"))
+    text = user.reply(ask("I see the hold with the novel. Shall I start the renewal?"))
     assert "do not have my phone" not in text
     assert user.events[-1].payload["unavailable_fields"] == []
     assert user.events[-1].payload["sources"] == {CONFIRMATION: "generic_confirm"}
-    assert ("name", "Mei Kovacs") in extracted_values("my name is Mei Kovacs and my zip is 28236.")
-    assert ("name", "Mei Kovacs") in extracted_values("My name is Mei Kovacs and my zip is 28236.")
-    assert asked_fields("What is the name of the product you want to return?") == []
-    user = SimulatedUser(UserRules(facts=[UserFact(field="name", value="Mei Kovacs")]))
-    assert "Mei Kovacs" not in user.reply(ask("What is the name of the product you want to return?"))
-    user = SimulatedUser(rules_from_fixture(tau2_small, 2), vocab=RETAIL)
+    assert ("name", "Robin Alder") in extracted_values("my name is Robin Alder and my zip is 11201.")
+    assert ("name", "Robin Alder") in extracted_values("My name is Robin Alder and my zip is 11201.")
+    assert asked_fields("What is the name of the novel you want to renew?") == []
+    user = SimulatedUser(UserRules(facts=[UserFact(field="name", value="Robin Alder")]))
+    assert "Robin Alder" not in user.reply(ask("What is the name of the novel you want to renew?"))
+    user = SimulatedUser(UserRules(facts=[UserFact(field="name", value="Robin Alder")],
+                                   style_sample=["t9"]))
     user.reply(ask("Hi! How can I help you today?"))
-    assert "Yusuf Rossi" not in user.reply(ask("What is the name of the product you want to exchange?"))
+    assert "Robin Alder" not in user.reply(ask("What is the name of the novel you want to renew?"))
     # However the agent words the question, a fact the recording holds is given.
     for question, expected in [
-        ("What is the name on the account?", "Yusuf Rossi"),
-        ("Just so I have it right, what name is on file?", "Yusuf Rossi"),
-        ("May I take a name and a zip code, please?", "Yusuf Rossi"),
-        ("May I take a name and a zip code, please?", "19122"),
-        ("Could you give me the order id this is about?", "#W2378156"),
+        ("What is the zip on the account?", "11201"),
+        ("Just so I have it right, what zip is on file?", "11201"),
+        ("May I take a name and a zip code, please?", "11201"),
+        ("Could you confirm your zip code?", "11201"),
+        ("What zip code should I use?", "11201"),
     ]:
-        user = SimulatedUser(rules_from_fixture(tau2_small, 2), vocab=RETAIL)
+        user = SimulatedUser(rules_from_world(world_a_small, 0), vocab=LIB)
         user.reply(ask("Hi! How can I help you today?"))
         text = user.reply(ask(question))
         assert expected in text
@@ -332,15 +332,15 @@ def test_a_fact_given_after_a_refusal_is_no_longer_refused():
             [
                 ("assistant", "What is your email address?"),
                 ("user", "I do not remember the email address I used."),
-                ("assistant", "Found you. Is your email mei.kovacs8232@example.com?"),
-                ("user", "Oh yes, that is right, mei.kovacs8232@example.com."),
+                ("assistant", "Found you. Is your email robin.alder11201@example.com?"),
+                ("user", "Oh yes, that is right, robin.alder11201@example.com."),
             ]
         )
     )
-    assert facts_by_field(rules)["email"] == "mei.kovacs8232@example.com"
+    assert facts_by_field(rules)["email"] == "robin.alder11201@example.com"
     assert rules.refusals == []
     user = SimulatedUser(rules)
-    assert "mei.kovacs8232@example.com" in user.reply(ask("What is your email address?"))
+    assert "robin.alder11201@example.com" in user.reply(ask("What is your email address?"))
 
 
 # --- SimulatedUser ---
@@ -430,7 +430,7 @@ def test_a_world_answer_from_a_synthetic_row_marks_the_turn_assisted():
 
 
 def test_a_fact_neither_the_rules_nor_the_world_hold_is_unavailable():
-    user = SimulatedUser(UserRules(), starting_state_reader=dict_reader({}), vocab=RETAIL)
+    user = SimulatedUser(UserRules(), starting_state_reader=dict_reader({}), vocab=LIB)
     text = user.reply(ask("Could you give me the last four digits of your card?"))
     assert "do not have" in text
     event = user.events[-1]
@@ -458,18 +458,18 @@ def test_events_are_one_user_turn_per_reply_with_rising_indexes(rules_with_zip):
 
 def test_a_volunteered_fact_is_offered_once_without_being_asked():
     rules = UserRules(
-        facts=[UserFact(field="order_id", value="#W2378156")],
-        disclosure=[DisclosureRule(field="order_id", on_request=False, condition="volunteered")],
+        facts=[UserFact(field="loan_id", value="#L2378156")],
+        disclosure=[DisclosureRule(field="loan_id", on_request=False, condition="volunteered")],
     )
     user = SimulatedUser(rules)
     first = user.reply(ask("Hi! How can I help you today?"))
     second = user.reply(ask("Thanks, one moment."))
-    assert "#W2378156" in first
-    assert "#W2378156" not in second
-    assert user.events[0].payload["sources"] == {"order_id": "volunteered"}
+    assert "#L2378156" in first
+    assert "#L2378156" not in second
+    assert user.events[0].payload["sources"] == {"loan_id": "volunteered"}
 
 
-def test_the_world_is_read_as_this_or_the_named_user_and_not_as_the_first_row(tau2_retail_dir):
+def test_the_world_is_read_as_this_or_the_named_user_and_not_as_the_first_row(world_dir):
     """D77: the Starting state is read as the user the rules describe, never as any other row.
 
     D210: the row it finds is a record fact and no row's value is spoken, so what the lookup decides
@@ -477,33 +477,33 @@ def test_the_world_is_read_as_this_or_the_named_user_and_not_as_the_first_row(ta
     """
     from kullback.runner.route import StateView
 
-    db = json.loads((tau2_retail_dir / "db.json").read_text(encoding="utf-8"))
+    db = json.loads((world_dir("world_a") / "db.json").read_text(encoding="utf-8"))
     rules = UserRules(facts=[
-        UserFact(field="name", value="Mei Kovacs"),
-        UserFact(field="zip", value="28236"),
+        UserFact(field="name", value="Robin Alder"),
+        UserFact(field="zip", value="11201"),
     ])
     user = SimulatedUser(rules, starting_state_reader=StateView(shared=db))
     text = user.reply(ask("Could you confirm the email address on the account?"))
-    assert "mei.kovacs8232@example.com" not in text
-    assert db["users"]["noah_brown_6181"]["email"] not in text
+    assert "robin.alder@example.org" not in text
+    assert db["members"]["member_02"]["email"] not in text
     assert user.events[-1].payload["sources"] == {"email": "record"}
     from kullback.runner.route import StateView
 
-    db = json.loads((tau2_retail_dir / "db.json").read_text(encoding="utf-8"))
+    db = json.loads((world_dir("world_a") / "db.json").read_text(encoding="utf-8"))
     user = SimulatedUser(UserRules(), starting_state_reader=StateView(shared=db),
-                         identity={"user_id": "mei_kovacs_8020"})
+                         identity={"member_id": "member_01"})
     user.reply(ask("What is your email address?"))
     assert user.events[-1].payload["record_fields"] == ["email"]
     stranger = SimulatedUser(UserRules(), starting_state_reader=StateView(shared=db),
-                             identity={"user_id": "nobody_at_all_0000"})
+                             identity={"member_id": "nobody_at_all"})
     stranger.reply(ask("What is your email address?"))
     assert stranger.events[-1].payload["unavailable_fields"] == ["email"]
 
 
-def test_a_user_the_world_does_not_hold_gets_no_row_at_all(tau2_retail_dir):
+def test_a_user_the_world_does_not_hold_gets_no_row_at_all(world_dir):
     from kullback.runner.route import StateView
 
-    db = json.loads((tau2_retail_dir / "db.json").read_text(encoding="utf-8"))
+    db = json.loads((world_dir("world_a") / "db.json").read_text(encoding="utf-8"))
     rules = UserRules(facts=[
         UserFact(field="name", value="Nobody Here"),
         UserFact(field="zip", value="00000"),
@@ -515,7 +515,7 @@ def test_a_user_the_world_does_not_hold_gets_no_row_at_all(tau2_retail_dir):
     assert "fact_unavailable" in user.events[-1].payload["tags"]
 
 
-def test_the_overlay_row_wins_over_the_shared_world(tau2_retail_dir):
+def test_the_overlay_row_wins_over_the_shared_world(world_dir):
     """D74: the Task's own rows are read before the shared world.
 
     The overlay row carries a field the shared row does not, so which of the two the user read is
@@ -523,16 +523,16 @@ def test_the_overlay_row_wins_over_the_shared_world(tau2_retail_dir):
     """
     from kullback.runner.route import StateView
 
-    db = json.loads((tau2_retail_dir / "db.json").read_text(encoding="utf-8"))
+    db = json.loads((world_dir("world_a") / "db.json").read_text(encoding="utf-8"))
     shared = json.loads(json.dumps(db))
-    shared["users"]["mei_kovacs_8020"].pop("email", None)
-    pinned = dict(db["users"]["mei_kovacs_8020"], email="mei.pinned@example.com")
+    shared["members"]["member_01"].pop("email", None)
+    pinned = dict(db["members"]["member_01"], email="robin.pinned@example.com")
     rules = UserRules(facts=[
-        UserFact(field="name", value="Mei Kovacs"),
-        UserFact(field="zip", value="28236"),
+        UserFact(field="name", value="Robin Alder"),
+        UserFact(field="zip", value="11201"),
     ])
     user = SimulatedUser(rules, starting_state_reader=StateView(
-        shared=shared, overlay={"users": {"mei_kovacs_8020": pinned}}))
+        shared=shared, overlay={"members": {"member_01": pinned}}))
     user.reply(ask("What is your email address?"))
     assert user.events[-1].payload["record_fields"] == ["email"]
     without = SimulatedUser(rules, starting_state_reader=StateView(shared=shared))
@@ -540,34 +540,33 @@ def test_the_overlay_row_wins_over_the_shared_world(tau2_retail_dir):
     assert without.events[-1].payload["unavailable_fields"] == ["email"]
 
 
-def test_a_row_with_two_payment_methods_reports_the_field_unavailable_not_a_pick(tau2_retail_dir):
-    """Row 11: noah_brown_6181 carries a paypal and a credit card. Answering from whichever one a
+def test_a_row_with_two_payment_methods_reports_the_field_unavailable_not_a_pick(world_dir):
+    """A member row carrying a gift card and a credit card. Answering from whichever one a
     dict happened to iterate to first means the answer depends on key order; the field must be
     reported unavailable instead, in either order."""
     from kullback.runner.route import StateView
 
-    db = json.loads((tau2_retail_dir / "db.json").read_text(encoding="utf-8"))
-    assert len(db["users"]["noah_brown_6181"]["payment_methods"]) == 2
+    db = json.loads((world_dir("world_a") / "db.json").read_text(encoding="utf-8"))
+    methods = {"gift_card_1": {"id": "gift_card_1", "source": "gift card"},
+               "credit_card_2": {"id": "credit_card_2", "source": "credit card"}}
 
-    def reply_for(methods: dict) -> str:
-        row = dict(db["users"]["noah_brown_6181"], payment_methods=methods)
-        view = StateView(shared=db, overlay={"users": {"noah_brown_6181": row}})
-        user = SimulatedUser(UserRules(), starting_state_reader=view, identity={"user_id": "noah_brown_6181"},
-                             vocab=RETAIL)
+    def reply_for(ordered: dict) -> str:
+        row = dict(db["members"]["member_01"], payment_methods=ordered)
+        view = StateView(shared=db, overlay={"members": {"member_01": row}})
+        user = SimulatedUser(UserRules(), starting_state_reader=view, identity={"member_id": "member_01"},
+                             vocab=LIB)
         return user.reply(ask("What is your payment method?")), user
 
-    forward, user_forward = reply_for(dict(db["users"]["noah_brown_6181"]["payment_methods"]))
-    backward, user_backward = reply_for(
-        dict(reversed(list(db["users"]["noah_brown_6181"]["payment_methods"].items())))
-    )
+    forward, user_forward = reply_for(dict(methods))
+    backward, user_backward = reply_for(dict(reversed(list(methods.items()))))
     for text, user in ((forward, user_forward), (backward, user_backward)):
-        assert "paypal" not in text.lower() and "credit_card" not in text.lower()
+        assert "gift card" not in text.lower() and "credit card" not in text.lower()
         assert "fact_unavailable" in user.events[-1].payload["tags"]
         assert user.events[-1].payload["unavailable_fields"] == ["payment_method"]
 
 
 def test_the_model_is_not_asked_to_word_an_empty_reply_or_an_unavailable_fact(make_test_model):
-    model = make_test_model(["My order is #W9999999 and my card ends in 1234."])
+    model = make_test_model(["My loan is #L9999999 and my card ends in 1234."])
     user = SimulatedUser(UserRules(), model=model)
     text = user.reply(ask("Thanks, one moment."))
     assert text == "Okay, thank you."
@@ -591,80 +590,80 @@ def test_the_model_cannot_word_its_way_past_a_refusal(make_test_model):
     assert "rather not share my email" in text
 
 
-def test_the_goal_the_recorded_user_opened_with_is_spoken_first(tau2_small):
-    rules = rules_from_fixture(tau2_small, 0)
+def test_the_goal_the_recorded_user_opened_with_is_spoken_first(world_a_small):
+    rules = rules_from_world(world_a_small, 0)
     user = SimulatedUser(rules)
     first = user.reply([{"role": "assistant", "content": "Hi! How can I help you today?"}])
-    assert "water bottle" in first and "desk lamp" in first
+    assert "backyard birds" in first and "loan_01" in first
     assert user.events[0].payload["sources"][GOAL] == "rules"
     # A turn that asks for nothing gets the goal a second time, said as a restatement and marked as
     # one, and never a third: the turn after that closes the Run.
     second = user.reply(ask("One moment please."))
     assert user.events[-1].payload["sources"] == {GOAL: "goal_restated"}
     third = user.reply(ask("Still one moment please."))
-    assert "water bottle" in second and "desk lamp" in second
-    assert "water bottle" not in third
+    assert "backyard birds" in second and "loan_01" in second
+    assert "backyard birds" not in third
 
 
-def test_a_confirmation_question_is_answered_with_the_recorded_confirmation(tau2_small):
-    rules = rules_from_fixture(tau2_small, 0)
+def test_a_confirmation_question_is_answered_with_the_recorded_confirmation(world_a_small):
+    rules = rules_from_world(world_a_small, 0)
     user = SimulatedUser(rules)
     user.reply(ask("Hi! How can I help you today?"))
-    text = user.reply(ask("Do you confirm the exchange of the desk lamp? Please reply yes to proceed."))
+    text = user.reply(ask("Do you confirm the renewal of the backyard birds loan? Please reply yes to proceed."))
     assert text in field_values(rules, CONFIRMATION)
-    assert "proceed" in text.lower()
+    assert "11201" in text
     assert user.events[-1].payload["sources"] == {CONFIRMATION: "rules"}
-    yes = "Yes, please cancel order #W5995614 and refund it to the same card."
+    yes = "Yes, please renew loan #L5995614 and extend it by three weeks."
     rules = derive_user_rules(make_trace([
         ("assistant", "Hi! How can I help you today?"),
-        ("user", "I want to cancel an order."),
-        ("assistant", "I see two pending orders. Shall I cancel #W5995614? Please confirm."),
+        ("user", "I want to renew a loan."),
+        ("assistant", "I see two overdue loans. Shall I renew #L5995614? Please confirm."),
         ("user", yes),
-    ]), RETAIL)
+    ]), LIB)
     assert field_values(rules, CONFIRMATION) == [yes]
-    assert facts_by_field(rules)["order_id"] == "#W5995614"
+    assert facts_by_field(rules)["loan_id"] == "#L5995614"
     rules = derive_user_rules(make_trace([
         ("assistant", "Hi! How can I help you today?"),
-        ("user", "I need help with an order."),
+        ("user", "I need help with a loan."),
         ("assistant", "Could you give me your zip code?"),
         ("user", "Yes, my zip is 19122."),
     ]))
     assert facts_by_field(rules)["zip"] == "19122"
     assert field_values(rules, CONFIRMATION) == []
-    rules = rules_from_fixture(tau2_small, 2)
-    said = [message.get("content") for message in tau2_small["simulations"][2]["messages"]
+    rules = rules_from_world(world_a_small, 2)
+    said = [message.get("content") for message in world_a_small["simulations"][2]["messages"]
             if message["role"] == "user"]
-    user = SimulatedUser(rules, vocab=RETAIL)
+    user = SimulatedUser(rules, vocab=LIB)
     user.reply(ask("Hi! How can I help you today?"))
-    text = user.reply(ask("Is this correct? Please confirm and I will process the exchange."))
+    text = user.reply(ask("Is this correct? Please confirm and I will renew the loan."))
     assert text in said
     assert user.events[-1].payload["sources"] == {CONFIRMATION: "rules"}
     rules = derive_user_rules(make_trace([
         ("assistant", "Hi! How can I help you today?"),
-        ("user", "I need to cancel my order."),
-        ("assistant", "I can cancel it for you. Shall I proceed?"),
+        ("user", "I need to renew my loan."),
+        ("assistant", "I can renew it for you. Shall I proceed?"),
         ("user", "Please do that now, the sooner the better."),
-    ]), RETAIL)
+    ]), LIB)
     assert field_values(rules, CONFIRMATION) == ["Please do that now, the sooner the better."]
-    user = SimulatedUser(rules, vocab=RETAIL)
+    user = SimulatedUser(rules, vocab=LIB)
     user.reply(ask("Hi! How can I help you today?"))
     assert user.reply(ask("Do you confirm?")) == "Please do that now, the sooner the better."
     rules = derive_user_rules(make_trace([
         ("assistant", "Hi! How can I help you today?"),
-        ("user", "I want to cancel my order."),
+        ("user", "I want to renew my loan."),
         ("assistant", "Anything else today?"),
         ("user", "No, that is it for today."),
-    ]), RETAIL)
+    ]), LIB)
     assert field_values(rules, CHOICE) == []
-    user = SimulatedUser(rules, vocab=RETAIL)
+    user = SimulatedUser(rules, vocab=LIB)
     user.reply(ask("Hi! How can I help you today?"))
-    text = user.reply(ask("Shall I cancel order #W1234567? Please confirm."))
+    text = user.reply(ask("Shall I renew loan #L1234567? Please confirm."))
     assert text == GENERIC_CONFIRM
     assert user.events[-1].payload["unavailable_fields"] == []
-    user = SimulatedUser(rules_from_fixture(tau2_small, 2), vocab=RETAIL)
+    user = SimulatedUser(rules_from_world(world_a_small, 0), vocab=LIB)
     user.reply(ask("Hi! How can I help you today?"))
-    text = user.reply(ask("I will exchange the thermostat on order #W2378156. Do you confirm?"))
-    assert "#W2378156" not in text
+    text = user.reply(ask("I will renew loan loan_01 on the backyard birds guide. Do you confirm?"))
+    assert "loan_01" not in text
     assert user.events[-1].payload["sources"] == {CONFIRMATION: "rules"}
 
 
@@ -672,44 +671,54 @@ def test_a_confirmation_the_trace_never_gave_gets_the_representative_yes():
     """D44: the recorded user was never asked; a user who asked for the action says yes to doing it, and
     the source names the yes as generic so a report can tell it from a recorded one."""
     user = SimulatedUser(UserRules(facts=[UserFact(field="zip", value="19122")]))
-    text = user.reply(ask("Do you confirm the exchange? Please reply yes to proceed."))
+    text = user.reply(ask("Do you confirm the renewal? Please reply yes to proceed."))
     assert text == "Yes, please go ahead."
     assert user.events[-1].payload["sources"] == {CONFIRMATION: "generic_confirm"}
     assert user.events[-1].payload["unavailable_fields"] == []
 
 
 def test_a_recorded_no_keeps_the_simulated_user_from_saying_yes():
-    user = SimulatedUser(UserRules(facts=[UserFact(field=CHOICE, value="No, do not cancel it yet.")]))
-    text = user.reply(ask("Shall I cancel the order? Please confirm."))
+    user = SimulatedUser(UserRules(facts=[UserFact(field=CHOICE, value="No, do not renew it yet.")]))
+    text = user.reply(ask("Shall I renew the loan? Please confirm."))
     assert "yes" not in text.lower()
     assert user.events[-1].payload["unavailable_fields"] == [CONFIRMATION]
 
 
-def test_an_open_question_is_answered_with_the_choice_the_recorded_user_stated(tau2_small):
-    rules = rules_from_fixture(tau2_small, 2)
+def test_an_open_question_is_answered_with_the_choice_the_recorded_user_stated():
+    rules = derive_user_rules(make_trace([
+        ("assistant", "Hi! How can I help you today?"),
+        ("user", "I need help with my loans."),
+        ("assistant", "Which title would you like to renew, and for how long?"),
+        ("user", "Riverside Walks, for three more weeks."),
+    ]))
     user = SimulatedUser(rules)
     user.reply(ask("Hi! How can I help you today?"))
-    text = user.reply(ask("Which items would you like to exchange, and for which options?"))
+    text = user.reply(ask("Which titles would you like to renew, and for which options?"))
     assert text == facts_by_field(rules)[CHOICE]
-    assert "thermostat" in text
+    assert "Riverside Walks" in text
 
 
-def test_the_simulated_user_closes_the_run_with_the_recorded_closing_line(tau2_small):
-    rules = rules_from_fixture(tau2_small, 1)
+def test_the_simulated_user_closes_the_run_with_the_recorded_closing_line():
+    rules = derive_user_rules(make_trace([
+        ("assistant", "Hi! How can I help you today?"),
+        ("user", "Hi, please renew my loan loan_03 on Riverside Walks."),
+        ("assistant", "Done, it is renewed. Is there anything else I can help you with?"),
+        ("user", "No, that is all. Thanks, goodbye!"),
+    ]))
     user = SimulatedUser(rules)
     user.reply(ask("Hi! How can I help you today?"))
     # Nothing in this transcript wrote, so the first "anything else" gets the goal again; the
     # second one is the close.
-    user.reply(ask("Your return is processed. Is there anything else I can help you with?"))
+    user.reply(ask("Your renewal is done. Is there anything else I can help you with?"))
     text = user.reply(ask("Is there anything else I can help you with?"))
     assert text == facts_by_field(rules)[CLOSING]
     assert user.done is True
 
 
-def test_a_run_against_the_simulated_user_stops_instead_of_burning_its_turns(tau2_small, make_test_model):
+def test_a_run_against_the_simulated_user_stops_instead_of_burning_its_turns(world_a_small, make_test_model):
     from kullback.runner import loop
 
-    user = SimulatedUser(rules_from_fixture(tau2_small, 1))
+    user = SimulatedUser(rules_from_world(world_a_small, 1))
     model = make_test_model([{"content": "Is there anything else I can help you with today?"}], loop=True)
     state = loop.new_run_state("ends", user=user, max_turns=8)
     loop.run(state, model)
@@ -736,86 +745,94 @@ def test_the_reader_is_only_asked_for_fields_the_rules_lack(rules_with_zip):
 
 
 def test_the_write_the_recording_made_after_the_confirmation_question_is_the_users_agreement(
-        tau2_small_path, workdir):
+        world_a_small_path, workdir):
     """The recorded Run went on to the write, so the recorded user agreed; a read is not agreement."""
     from kullback.builder import ingest
 
-    raw = ingest.store_raw(tau2_small_path, workdir)
-    trace = ingest.derive_traces(raw.raw_hash, workdir)[0]
-    agreed = derive_user_rules(trace, RETAIL, writes={"exchange_delivered_order_items"})
+    raw = ingest.store_raw(world_a_small_path, workdir)
+    trace = ingest.derive_traces(raw.raw_hash, workdir)[1]
+    agreed = derive_user_rules(trace, LIB, writes={"cancel_hold"})
     assert agreed.confirmed_by_write is True
-    read_only = derive_user_rules(trace, RETAIL, writes={"get_order_details"})
-    assert read_only.confirmed_by_write is False
+    look_first = make_trace([
+        ("assistant", "Hi! How can I help you today?"),
+        ("user", "Hello, I need to cancel my hold hold_01 on The Night Train."),
+        ("assistant", None),
+        ("assistant", "I have the hold. Shall I cancel it? Please confirm."),
+        ("user", "Yes, cancel it."),
+        ("assistant", None),
+    ], calls=[(2, "get_hold_details"), (5, "cancel_hold")])
+    assert derive_user_rules(look_first, LIB, writes={"get_hold_details"}).confirmed_by_write is False
+    assert derive_user_rules(look_first, LIB, writes={"cancel_hold"}).confirmed_by_write is True
     trace = make_trace([
         ("assistant", "Hi! How can I help you today?"),
-        ("user", "I want to cancel my order."),
-        ("assistant", "Which order id should I cancel? Please confirm the order id."),
-        ("user", "Order #W1234567."),
+        ("user", "I want to renew my loan."),
+        ("assistant", "Which loan id should I renew? Please confirm the loan id."),
+        ("user", "Loan #L1234567."),
         ("assistant", None),
-        ("assistant", "That is cancelled. Would you like a replacement ordered as well?"),
-        ("user", "No, do not order a replacement."),
-    ], calls=[(4, "cancel_order")])
-    rules = derive_user_rules(trace, RETAIL, writes={"cancel_order"})
+        ("assistant", "That is renewed. Would you like another loan renewed as well?"),
+        ("user", "No, do not renew another one."),
+    ], calls=[(4, "renew_loan")])
+    rules = derive_user_rules(trace, LIB, writes={"renew_loan"})
     assert rules.confirmed_by_write is True
-    user = SimulatedUser(rules, vocab=RETAIL)
+    user = SimulatedUser(rules, vocab=LIB)
     user.reply(ask("Hi! How can I help you today?"))
-    assert user.reply(ask("Shall I cancel it? Please confirm.")) == GENERIC_CONFIRM
+    assert user.reply(ask("Shall I renew it? Please confirm.")) == GENERIC_CONFIRM
 
 
 def two_zip_rules() -> UserRules:
     """A recorded user that states the zip on the account and then the zip it is moving to."""
     return derive_user_rules(make_trace([
         ("assistant", "Hi! How can I help you today?"),
-        ("user", "I want to change the shipping address on my order."),
+        ("user", "I want to change the pickup branch on my loan."),
         ("assistant", "Sure. What is the zip code on the account?"),
-        ("user", "My zip code is 19122."),
-        ("assistant", "And where should it go instead?"),
-        ("user", "Please send it to my new address, zip code 78701."),
-    ]), RETAIL)
+        ("user", "My zip code is 11201."),
+        ("assistant", "And which branch should hold it instead?"),
+        ("user", "Please send it to the south branch, zip code 78701."),
+    ]), LIB)
 
 
 @pytest.mark.parametrize("question, expected", [
-    ("Could you confirm the zip code on file for the account?", "19122"),
+    ("Could you confirm the zip code on file for the account?", "11201"),
     ("What is the zip code of the new address?", "78701"),
 ])
 def test_the_value_the_question_names_is_the_one_given_when_the_recording_holds_two(question, expected):
     """Build 8: the Simulated user gave the zip of the address it was moving to when the agent
     asked for the one on file (27 re-rolls)."""
     rules = two_zip_rules()
-    assert [fact.value for fact in rules.facts if fact.field == "zip"] == ["19122", "78701"]
-    user = SimulatedUser(rules, vocab=RETAIL)
+    assert [fact.value for fact in rules.facts if fact.field == "zip"] == ["11201", "78701"]
+    user = SimulatedUser(rules, vocab=LIB)
     user.reply(ask("Hi! How can I help you today?"))
     assert expected in user.reply(ask(question))
-    user = SimulatedUser(two_zip_rules(), vocab=RETAIL)
+    user = SimulatedUser(two_zip_rules(), vocab=LIB)
     user.reply(ask("Hi! How can I help you today?"))
-    assert "19122" in user.reply(ask("What zip code should I use?"))
+    assert "11201" in user.reply(ask("What zip code should I use?"))
 
 
 def test_the_value_on_the_account_is_a_record_fact_when_the_recording_holds_only_the_new_one(
-        tau2_retail_dir):
+        world_dir):
     """D210: a user that stated only the value it is moving to never said the one on file, so the
     stored value is the world's and the user points at it rather than reading it out; and the value
     it did state is not offered in the stored one's place either."""
     from kullback.runner.route import StateView
 
-    db = json.loads((tau2_retail_dir / "db.json").read_text(encoding="utf-8"))
+    db = json.loads((world_dir("world_a") / "db.json").read_text(encoding="utf-8"))
     rules = derive_user_rules(make_trace([
         ("assistant", "Hi! How can I help you today?"),
         ("user", "I am moving. Please change my zip code to 78701."),
         ("assistant", "Of course. What is your name?"),
-        ("user", "My name is Yusuf Rossi."),
-    ]), RETAIL)
-    user = SimulatedUser(rules, starting_state_reader=StateView(shared=db), vocab=RETAIL)
+        ("user", "My name is Robin Alder."),
+    ]), LIB)
+    user = SimulatedUser(rules, starting_state_reader=StateView(shared=db), vocab=LIB)
     user.reply(ask("Hi! How can I help you today?"))
     text = user.reply(ask("What is the zip code currently on file for the account?"))
-    assert "19122" not in text and "78701" not in text
+    assert "11201" not in text and "78701" not in text
     assert user.events[-1].payload["sources"] == {"zip": "record"}
 
 
 def test_each_user_turn_counts_the_asks_it_refused_and_the_running_total_for_the_run():
     """The number the report reads: how many asks the Simulated user did not answer, per Run."""
     rules = UserRules(facts=[UserFact(field="zip", value="19122")], refusals=["email"])
-    user = SimulatedUser(rules, starting_state_reader=dict_reader({}), vocab=RETAIL)
+    user = SimulatedUser(rules, starting_state_reader=dict_reader({}), vocab=LIB)
     user.reply(ask("What is your email address and your zip code?"))
     assert (user.events[-1].payload["refused"], user.events[-1].payload["refused_so_far"]) == (1, 1)
     user.reply(ask("What are the last four digits of your card?"))
@@ -852,9 +869,8 @@ def library_trace(pairs, calls=()) -> Trace:
         tool_calls.append(ToolCall(
             id=call_id, name=row["name"], args=row["args"], result=row["result"], error=row["error"],
             raw_ptr=RawPtr(file_hash=PTR.file_hash, sim_index=0, msg_index=row["turn"])))
-    return Trace(trace_id="lib-1", raw_hash=PTR.file_hash, ingest_version="0", source="tau2",
+    return Trace(trace_id="lib-1", raw_hash=PTR.file_hash, ingest_version="0", source="test",
                  turns=turns, tool_calls=tool_calls, raw_ptr=PTR)
-
 
 BOLD_NAME = ("Sure, let's do that. I do not remember the email on the account, but my name is "
              "**Ada Whitfield** and my zip code is 30318 (Atlanta, GA).")
@@ -876,7 +892,7 @@ def bold_name_trace() -> Trace:
     )
 
 
-def test_mined_facts_are_only_values_the_user_gave_to_a_call_that_succeeded(tau2_small):
+def test_mined_facts_are_only_values_the_user_gave_to_a_call_that_succeeded(world_a_small):
     """D77: the member id came back from the lookup, so the recorded user never had it to give."""
     rules = derive_user_rules(
         library_trace(
@@ -897,8 +913,8 @@ def test_mined_facts_are_only_values_the_user_gave_to_a_call_that_succeeded(tau2
     )
     assert "member_id" not in facts_by_field(rules)
     assert "M400318" not in [str(fact.value) for fact in rules.facts]
-    rules = rules_from_fixture(tau2_small, 2)
-    assert facts_by_field(rules)["order_id"] == "#W2378156"
+    rules = rules_from_world(world_a_small, 0)
+    assert facts_by_field(rules)["zip"] == "11201"
     assert extracted_values("I want to return item 12345 please.") == []
     assert extracted_values("My zip code is 19122.") == [("zip", "19122")]
     assert extracted_values("19122.", asked=["zip"]) == [("zip", "19122")]

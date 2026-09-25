@@ -177,12 +177,12 @@ def test_a_reader_that_reads_nothing_falls_back_to_comparing_the_strings():
 
 
 def test_a_returned_rows_exempt_column_cannot_fail_a_replay_and_a_hard_one_does():
-    schema = EntitySchema(tables=["orders"], id_patterns={"orders.order_id": r"^#O\d+$"}, columns=[
-        Column(table="orders", name="order_id", **{"class": "hard"}),
-        Column(table="orders", name="total", **{"class": "hard"}),
-        Column(table="orders", name="created_at", **{"class": "exempt"})])
-    recorded = {"order_id": "#O7", "total": 12, "created_at": "2031-01-01T00:00:00"}
-    later = {"order_id": "#O7", "total": 12, "created_at": "2031-06-02T09:30:00"}
+    schema = EntitySchema(tables=["items"], id_patterns={"items.item_id": r"^#O\d+$"}, columns=[
+        Column(table="items", name="item_id", **{"class": "hard"}),
+        Column(table="items", name="total", **{"class": "hard"}),
+        Column(table="items", name="created_at", **{"class": "exempt"})])
+    recorded = {"item_id": "#O7", "total": 12, "created_at": "2031-01-01T00:00:00"}
+    later = {"item_id": "#O7", "total": 12, "created_at": "2031-06-02T09:30:00"}
     assert compare_results(schema, recorded, later) == (True, ["exempt:created_at"])
     ok, notes = compare_results(schema, recorded, dict(later, total=13))
     assert ok is False
