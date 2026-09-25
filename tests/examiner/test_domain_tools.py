@@ -151,11 +151,11 @@ def test_reroll_without_a_model_is_refused_before_touching_the_runner(tmp_path):
         _run(tool.execute(D.RerollArgs(task_id="t1", count=1)))
 
 
-def test_domain_tools_are_the_four_named_in_the_prompt_and_the_deprecated_alias(tmp_path):
+def test_domain_tools_are_the_five_named_in_the_prompt_and_the_deprecated_alias(tmp_path):
     root, _, _ = _root(tmp_path)
     names = [t.name for t in D.domain_tools(root)]
     assert names == list(D.tool_names())
-    assert set(names) == {"edit_verifier", "probe", "finding", "reroll", "propose_verifier"}
+    assert set(names) == {"edit_verifier", "try_atoms", "probe", "finding", "reroll", "propose_verifier"}
     text = P.tools_section()
     for name in names[:-1]:
         assert name in text, name

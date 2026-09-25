@@ -61,6 +61,8 @@ def tools_section() -> str:
             "use edit for a change to an existing atom (only the fields that change, the kind "
             "stays) and drop with add only to remove an atom or bring a new one; the suite, "
             "the pool and the loosening gate rule on the write.\n"
+            "try_atoms: try an edit before writing it: same arguments as edit_verifier, nothing "
+            "is written, and the answer is the same rulings with the failing atoms named.\n"
             "probe: score a hand-written Run against the current Verifier, "
             'e.g. {"task_id": "t1", "bug_class": "loose check", "note": "what it changes", '
             '"events": [...]}; the Run stays in the pool.\n'
