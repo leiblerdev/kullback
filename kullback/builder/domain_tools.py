@@ -394,6 +394,7 @@ class ExamineResult(BaseModel):
     findings: list[dict] = Field(default_factory=list)
     held: list[str] = Field(default_factory=list, description="One line per Task the exam status "
                             "holds: the Task id and the check that holds it.")
+    stopped: bool = Field(default=False, description="True when a stop ended the examination early.")
 
 
 #: The most held Tasks the examine result names before counting the rest.
@@ -441,18 +442,21 @@ def held_tasks(workdir: Any) -> list[str]:
 
 
 def default_examine_fn(workdir: Any, task_ids: Any, *, model: Any = None, judge_model: Any = None,
-                       probe_model: Any = None, reroll_model: Any = None) -> Any:
+                       probe_model: Any = None, reroll_model: Any = None,
+                       should_stop: Optional[Callable[[], bool]] = None) -> Any:
     """The examination stream 6 delivers, resolved lazily so this module never imports it.
 
     `model` runs the Examiner session; with None the call is derivation only. The judges, the
     loophole probe and the re-rolls run on their own models when named, else on `model`.
     With no finished Run among the named Tasks the examination opens no Examiner session: its
     selection hands the session only Tasks with a finished Run and a confirmed Reference (F24).
+    `should_stop` is the Builder session's stop, handed on so a stop reaches inside examine.
     """
     from kullback.examiner.session import examine
 
+    stop = {"should_stop": should_stop} if should_stop is not None else {}
     return examine(Path(workdir), task_ids=task_ids, model=model, judge_model=judge_model or model,
-                   probe_model=probe_model or model, reroll_model=reroll_model or model)
+                   probe_model=probe_model or model, reroll_model=reroll_model or model, **stop)
 
 
 def priced_model(model: Any, workdir: Any, stage: str, *, cap_context: bool = True) -> Any:
@@ -483,6 +487,19 @@ def reader_model(model: Any, workdir: Any) -> Any:
 def runner_model(model: Any, workdir: Any) -> Any:
     """The model a fresh Run plays, priced under the runner stage (F29)."""
     return priced_model(model, workdir, "runner", cap_context=False)
+
+
+def _stopped_texts(findings: Any) -> list[str]:
+    """The lead texts of findings rows marking a stop, so the summary can lead with them."""
+    return [f.get("text") for f in findings
+            if any(isinstance(r, dict) and r.get("stopped") for r in f.get("rows") or [])]
+
+
+def _mark_stopped(result: ExamineResult, stops: list[str]) -> None:
+    """Lead the result with the stop note and flag it, when a stop ended it early."""
+    if stops:
+        result.stopped = True
+        result.summary = "; ".join(filter(None, [stops[0], result.summary]))
 
 
 def _finding_row(item: Any) -> dict:
@@ -784,13 +801,15 @@ def _run_summary(task_ids: list[str], named: Any, *, played: list[str], runs: in
 
 def domain_tools(*, workdir: Any, model: Any = None,
                  examine_fn: Optional[Callable[[Any, Any], Any]] = None, judge_model: Any = None,
-                 probe_model: Any = None, reroll_model: Any = None, env: Any = None) -> list[AgentTool]:
+                 probe_model: Any = None, reroll_model: Any = None, env: Any = None,
+                 should_stop: Optional[Callable[[], bool]] = None) -> list[AgentTool]:
     """The nine domain tools bound to one workdir and the Builder's root `env` (workdir/env by default).
 
     `model` drives the fresh Runs `run` buys and the Examiner session the default
     `examine` runs; `examine_fn(workdir, task_ids)` answers `examine` and defaults to
     the lazily resolved examination stream 6 delivers, which hands the judges, the probe
-    and the re-rolls their own models (each `model` when not named).
+    and the re-rolls their own models (each `model` when not named). `should_stop` is the
+    session's stop, which the default `examine` reads at its safe points.
     """
     root = Path(workdir)
     env_root = Path(env) if env is not None else root / "env"
@@ -799,7 +818,8 @@ def domain_tools(*, workdir: Any, model: Any = None,
     else:
         def examine_call(workdir: Any, task_ids: Any) -> Any:
             return default_examine_fn(workdir, task_ids, model=model, judge_model=judge_model,
-                                      probe_model=probe_model, reroll_model=reroll_model)
+                                      probe_model=probe_model, reroll_model=reroll_model,
+                                      should_stop=should_stop)
 
     async def ingest(args: IngestArgs) -> IngestResult:
         files = [(root / name if not Path(name).is_absolute() else Path(name)) for name in args.files]
@@ -977,6 +997,8 @@ def domain_tools(*, workdir: Any, model: Any = None,
                        if any(isinstance(r, dict) and "not_derived" in r for r in f.get("rows") or [])]
         if left_out or not_derived:
             result.summary = "; ".join(filter(None, [*not_derived, result.summary, *left_out]))
+        # A stop leads the summary, so the first line says the examination ended early.
+        _mark_stopped(result, _stopped_texts(result.findings))
         stage = stage_of(root)
         if not result.findings or not stage["finished"]:
             why = f"{stage['finished']} of {stage['tasks']} tasks have a finished run"

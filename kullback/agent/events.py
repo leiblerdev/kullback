@@ -196,6 +196,35 @@ class CustomEvent(_Event):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class SteerRequestEvent(_Event):
+    """Someone asks a live run to change course from outside its process (agent/steer.py).
+
+    `nudge` is delivered before the next model turn, `tell` when the run would stop, `stop` cancels
+    at the next step. The request sits on the bus beside the events it answers, so every watcher
+    sees who asked for what, in order; `sender` names the screen or command that asked. `session`
+    names the live build it is for (its pid), so two builds on one workdir never both act on it.
+    """
+
+    type: Literal["steer_request"] = "steer_request"
+    id: str
+    kind: Literal["nudge", "tell", "stop"]
+    text: str = ""
+    sender: str = ""
+    session: str = ""
+
+
+class SteerAckEvent(_Event):
+    """The run's answer to one SteerRequestEvent: queued on the harness, cancel asked, or refused
+    with the reason. `session` names the build that acted, the request's session."""
+
+    type: Literal["steer_ack"] = "steer_ack"
+    id: str
+    kind: Literal["nudge", "tell", "stop"]
+    outcome: Literal["queued", "cancel_asked", "refused"]
+    reason: str = ""
+    session: str = ""
+
+
 AgentEvent = Annotated[
     Union[
         AgentStartEvent,
@@ -218,6 +247,8 @@ AgentEvent = Annotated[
         Compaction,
         CustomMessage,
         CustomEvent,
+        SteerRequestEvent,
+        SteerAckEvent,
     ],
     Field(discriminator="type"),
 ]

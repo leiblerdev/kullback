@@ -491,3 +491,77 @@ def test_the_examiners_opening_lists_the_builders_open_notes_on_its_tasks(world)
     assert "The Builder's notes" in opening
     assert "t1: fact_unavailable_to_user: the user never learns the code. (open)" in opening
     assert "t9:" not in opening
+
+
+def _stop_after(checks: int):
+    """A stop check that answers no `checks` times and yes from then on."""
+    asked: list[int] = []
+
+    def should_stop() -> bool:
+        asked.append(1)
+        return len(asked) > checks
+
+    return should_stop
+
+
+def test_a_stop_while_tasks_derive_starts_no_further_derivation_and_leaves_the_rest_open(tmp_path):
+    world = make_world(tmp_path, tasks=4)
+    materialize(world)
+    findings = S.examine(world.workdir, model=None, workers=1, should_stop=_stop_after(1))
+    assert _derived(world) == ["t1"]
+    assert sorted(read_json(world.workdir / "task_status.json")) == ["t1"]
+    note = findings[-1]
+    assert note.text == "examine stopped early: 1 of 4 Tasks derived, Examiner session not opened"
+    assert note.rows == [{"stopped": True, "derived": 1, "tasks": 4, "session": "not opened"}]
+    assert read_json(world.workdir / "findings.json")[-1]["text"] == note.text
+    assert S.derive_pick(world.workdir, S.load_store(world.workdir), None) == ["t2", "t3", "t4"]
+
+
+def test_a_stop_cancels_the_examiner_session_at_its_next_step(tmp_path):
+    world = make_world(tmp_path)
+    materialize(world)
+    stopped: list[bool] = []
+
+    def stop_after_first_tool(event) -> None:
+        if isinstance(event, ToolExecutionEnd):
+            stopped.append(True)
+
+    reading = TestModel([reply("reading", ("ls", {"path": "."}))], loop=True)
+    findings = S.examine(world.workdir, model=reading, subscribers=[stop_after_first_tool],
+                         should_stop=lambda: bool(stopped))
+    assert len(reading.calls) == 1, "the session asks its model nothing after the stop"
+    assert findings[-1].text == "examine stopped early: 1 of 1 Tasks derived, Examiner session cancelled"
+    assert read_json(world.workdir / "findings.json")[-1]["rows"][0]["session"] == "cancelled"
+
+
+def test_a_task_whose_search_a_stop_cut_short_is_picked_again_by_a_plain_examine(tmp_path):
+    root = _env_with_trace(tmp_path / "env")
+    seed = tool.run(root, "widget_task", _rename_loop(), workdir=root)
+    write_json(root / "replays.json", {"widget_task": {
+        "rec1": {"trace_id": "rec1", "run_id": seed.run_id,
+                 "confirmed": True, "path": seed.path}}})
+    write_json(root / "rerolls.json", {"widget_task": []})
+    write_json(root / "constraints.json", [])
+    S.examine(root, model=None, reroll_model=_rename_loop(), should_stop=_stop_after(1))
+    assert read_json(root / "task_status.json")["widget_task"]["stopped"] is True
+    assert S.derive_pick(root, S.load_store(root), None) == ["widget_task"]
+    S.examine(root, model=None, reroll_model=_rename_loop())
+    assert "stopped" not in read_json(root / "task_status.json")["widget_task"]
+    assert S.derive_pick(root, S.load_store(root), None) == []
+
+
+def test_no_second_path_reroll_is_bought_after_a_stop(tmp_path):
+    """The Task's derivation starts, then the stop comes: the search buys no batch and caches nothing."""
+    root = _env_with_trace(tmp_path / "env")
+    seed = tool.run(root, "widget_task", _rename_loop(), workdir=root)
+    write_json(root / "replays.json", {"widget_task": {
+        "rec1": {"trace_id": "rec1", "run_id": seed.run_id,
+                 "confirmed": True, "path": seed.path}}})
+    write_json(root / "rerolls.json", {"widget_task": []})
+    write_json(root / "constraints.json", [])
+    S.examine(root, model=None, reroll_model=_rename_loop(), should_stop=_stop_after(1))
+    assert not sorted((root / "runs").glob("second-path-*.jsonl"))
+    assert not (read_json(root / "examiner" / "rerolls.json", {}) or {}).get("widget_task")
+    assert not list((root / "examiner" / "cache").glob("widget_task/*.json"))
+    S.examine(root, task_ids=["widget_task"], model=None, reroll_model=_rename_loop())
+    assert sorted((root / "runs").glob("second-path-*.jsonl")), "the next call on it searches again"

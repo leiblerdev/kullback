@@ -506,22 +506,31 @@ def _second_path(row: Any) -> dict:
             "structural": bool(found.get("structural"))}
 
 
+def never_stop() -> bool:
+    """The stop check of a call nobody can stop: it never asks to stop."""
+    return False
+
+
 def second_path_search(task_id: str, confirmation: Any, *, workdir: Path, run_rerolls: Any,
                        round_number: int, write_tools: set, fn: Callable, atoms: Any,
                        cap: int = SECOND_PATH_BATCHES,
-                       count: int = SECOND_PATH_RUNS) -> tuple[dict, list, bool]:
+                       count: int = SECOND_PATH_RUNS,
+                       should_stop: Callable[[], bool] = never_stop) -> tuple[dict, list, bool]:
     """Batches of fresh Runs until one reaches the Reference's End state, or the cap (D189).
 
     Bounded per Task by the cap and per round by the Tasks that have one Reference and no more: at
     most `cap` batches of `count` Runs each, about ten model calls a Run. A batch that finds the
     second path is the last one bought; a Task that exhausts the cap keeps check 5 not run and its
     row says how many batches went into saying so. The Runs of every batch are recorded whatever
-    they reached, so the round can be read for what the search cost.
+    they reached, so the round can be read for what the search cost. `should_stop` is asked before
+    each batch is bought, so a person's stop buys nothing more.
     """
     bought, runs, ceiling = 0, 0, False
     attempt = next_batch(workdir, task_id)
     recordings: list = []
     while run_rerolls is not None and bought < cap and len(confirmation.references) < 2:
+        if should_stop():
+            break
         prefix = f"{SECOND_PATH_PREFIX}-r{round_number}-b{attempt}"
         try:
             rows = [dict(row) for row in run_rerolls(task_id, count, prefix) or []]
@@ -1222,6 +1231,9 @@ class _Job:
     # derivation bought for the second path (D189), which are merged after the rule has settled.
     recordings: list = field(default_factory=list)
     extra: list = field(default_factory=list)
+    # Set when a stop cut the Task's second-path search short: its outputs are kept for this call
+    # but not cached, so the next call searches again rather than reading the short answer back.
+    stopped: bool = False
 
     @property
     def cached(self) -> bool:
@@ -1259,6 +1271,7 @@ class _DeriveState:
     common: dict
     pool: Any
     sem: Any
+    should_stop: Callable[[], bool] = never_stop
 
 
 def _tool_names(sigs: Iterable[Any]) -> tuple[set, set]:
@@ -1359,7 +1372,8 @@ def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
                 probe_limit: Optional[int] = None, judge_model: Any = None,
                 judge_agent: bool = False, run_probe: Any = None, run_rerolls: Any = None,
                 run_variant: Any = None, round_number: int = 0,
-                code_hash: Optional[str] = None, pool: Any = None, sem: Any = None) -> _DeriveState:
+                code_hash: Optional[str] = None, pool: Any = None, sem: Any = None,
+                should_stop: Callable[[], bool] = never_stop) -> _DeriveState:
     """Load the call's shared inputs, demote the broken rules, build the judge and the cache key base.
 
     The demotion writes constraints_check.json and records its gate before anything else reads the
@@ -1394,7 +1408,8 @@ def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
                          tool_fidelity=tool_fidelity, atoms=atoms, judge=judge, probe=probe,
                          probe_model=probe_model, probe_limit=probe_limit,
                          run_rerolls=run_rerolls, run_variant=run_variant,
-                         round_number=round_number, common=common, pool=pool, sem=sem)
+                         round_number=round_number, common=common, pool=pool, sem=sem,
+                         should_stop=should_stop)
 
 
 def _prepare_one(task: Task, state: _DeriveState) -> _Job:
@@ -1428,9 +1443,17 @@ def _prepare_one(task: Task, state: _DeriveState) -> _Job:
 
 
 def _prepare_all(tasks: list, state: _DeriveState, workers: int) -> list[_Job]:
-    """Every Task through its key lookup and, on a miss, the D111 rule, in Task order."""
-    return parallel.each(
-        tasks, lambda task: _guarded(state.sem, lambda: _prepare_one(task, state)), workers)
+    """Every Task through its key lookup and, on a miss, the D111 rule, in Task order.
+
+    The stop check is asked as each Task's turn comes: a Task already started goes on to the end,
+    and one not yet started is left out of the call, its rows on disk as they were.
+    """
+    def one(task: Task) -> Optional[_Job]:
+        if state.should_stop():
+            return None
+        return _guarded(state.sem, lambda: _prepare_one(task, state))
+
+    return [job for job in parallel.each(tasks, one, workers) if job is not None]
 
 
 def _assign_probe_slots(jobs: list[_Job], state: _DeriveState) -> int:
@@ -1503,9 +1526,10 @@ def _second_path_outcome(state: _DeriveState, job: _Job, ceiling: threading.Even
     second, bought, hit = second_path_search(
         task.id, confirmation, workdir=state.ctx.workdir, run_rerolls=state.run_rerolls,
         round_number=state.round_number, write_tools=state.write_tools, fn=state.fn,
-        atoms=state.atoms)
-    if not second["found"] and state.run_variant is not None:
-        # Gated serial until the re-freeze (docs/todo.md "Next re-freeze: flip the speed-1
+        atoms=state.atoms, should_stop=state.should_stop)
+    job.stopped = state.should_stop() and not second["found"]
+    if not second["found"] and state.run_variant is not None and not state.should_stop():
+        # A stop leaves the Task at its safe point: no variant is synthesised or replayed after
         # variant gate"): the shared replay tally these replays count into stays locked only in
         # docs/frozen-patches/speed-1.patch, so pooled variants would count nondeterministically.
         # None runs the variants as a plain loop; survivor derivation above stays pooled.
@@ -1534,11 +1558,12 @@ def _second_path_outcome(state: _DeriveState, job: _Job, ceiling: threading.Even
 
 
 def _write_entry(state: _DeriveState, task_id: str, key: str, row: dict, reference: dict,
-                 verifier: Optional[dict], may_probe: bool) -> dict:
-    """One Task's cache entry, built and written in one place."""
+                 verifier: Optional[dict], may_probe: bool, cache: bool = True) -> dict:
+    """One Task's cache entry, built and written in one place; with `cache` off, built only."""
     entry = {"format": CACHE_FORMAT, "task_id": task_id, "key": key, "status": row,
              "references": reference, "verifier": verifier, "probed": may_probe}
-    write_json(cache_path(state.ctx.workdir, task_id, key), entry)
+    if cache:
+        write_json(cache_path(state.ctx.workdir, task_id, key), entry)
     return entry
 
 
@@ -1556,8 +1581,12 @@ def _derive_and_store(state: _DeriveState, job: _Job, second: dict, bought: list
         probe_skip=job.probe_skip, second_path=second,
         pool_runs=pool_runs_of(task.id, state.replays, state.rerolls) + extra_pool,
         fn=state.fn, user_ends=pool_user_ends(task.id, state.rerolls))
+    if job.stopped:
+        # The row says a stop cut its search short, so a plain examine picks the Task again; a
+        # later derivation that is not stopped writes the row afresh, without the flag.
+        row = {**row, "stopped": True}
     return _write_entry(state, task.id, job.key, row, confirmation.as_dict(), as_dict(record),
-                        job.may_probe)
+                        job.may_probe, cache=not job.stopped)
 
 
 def _finish_one(state: _DeriveState, job: _Job, ceiling: threading.Event) -> dict:
@@ -1795,7 +1824,8 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                judge_model: Any = None, judge_agent: bool = False, run_probe: Any = None,
                run_rerolls: Any = None, run_variant: Any = None, round_number: int = 0,
                only: Union[str, Iterable[str], None] = None,
-               workers: int = 1, code_hash: Optional[str] = None) -> dict:
+               workers: int = 1, code_hash: Optional[str] = None,
+               should_stop: Callable[[], bool] = never_stop) -> dict:
     """One Verifier per Task from its References by the D111 rule, through the whole D79 suite.
 
     The References are the confirmed seed replays plus the finished re-rolls that agree on one End
@@ -1852,15 +1882,24 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     bytes the serial run gave; the probe budget is handed out between the two pools by the Tasks'
     own keys (D212), so which Tasks get check 6 does not move when a Task is added or dropped.
     `cached` and `ran` in the result count which Tasks came from where.
+
+    `should_stop` is a person's stop, asked at the safe points only: before each Task's derivation
+    starts and before each second-path batch is bought. A derivation already running finishes, the
+    Tasks not reached keep their rows on disk as they were (the merge `only` does), and `stopped`,
+    `derived` and `tasks` in the result say how far the call got.
     """
     pool, sem = _derive_resources(workers)
     try:
         state = _init_state(ctx, inputs, probe_model=probe_model, probe_limit=probe_limit,
                             judge_model=judge_model, judge_agent=judge_agent, run_probe=run_probe,
                             run_rerolls=run_rerolls, run_variant=run_variant,
-                            round_number=round_number, code_hash=code_hash, pool=pool, sem=sem)
+                            round_number=round_number, code_hash=code_hash, pool=pool, sem=sem,
+                            should_stop=should_stop)
         tasks = _select_tasks(inputs, only)
         jobs = _prepare_all(tasks, state, workers)
+        if len(jobs) < len(tasks):
+            # A stop left Tasks unstarted: merge the ones derived, so the rest stay as they were.
+            only = [job.task.id for job in jobs]
         _settle_all(state, jobs, workers)
         probed = _assign_probe_slots(jobs, state)
 
@@ -1877,6 +1916,8 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                                                   state.demoted, retired))
         return {"verifiers": verifiers, "task_status": status, "cached": cached, "ran": len(jobs) - cached,
                 "second_path_runs": sum(_second_path(r)["runs"] for r in status.values()),
-                "retired": retired, "ceiling_reached": ceiling_reached.is_set()}
+                "retired": retired, "ceiling_reached": ceiling_reached.is_set(),
+                "stopped": len(jobs) < len(tasks) or should_stop(), "derived": len(jobs),
+                "tasks": len(tasks)}
     finally:
         pool.shutdown(cancel_futures=True)

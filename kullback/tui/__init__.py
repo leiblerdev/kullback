@@ -88,6 +88,8 @@ TAGLINE = "Rebuilds your environment from traces, checks the rebuild by replay, 
 # How many of a watched build's own events stay on screen under the board. Enough to see a stage's
 # calls going by, few enough that the board itself is never pushed off the top.
 FEED_LINES = 12
+# Seconds /nudge, /tell and /stop wait for a live build in another process to answer on its bus.
+STEER_TIMEOUT = 10.0
 
 # The providers /login walks to by name, and the model each one starts at: a cheap, tool-capable
 # model the provider actually serves, since the menu is where a person tries a provider for the
@@ -207,6 +209,55 @@ def status_segments(workdir: Any, model: Optional[str]) -> Text:
     return out
 
 
+def live_heartbeats(workdir: Any) -> list[dict]:
+    """The heartbeats of builds running now on this workdir, newest first.
+
+    Running means the pid is alive and the heartbeat still says running: a build this screen ran
+    leaves a heartbeat whose pid (the screen's own) outlives the build, so the pid alone is not
+    enough. Paths are compared absolute, the form heartbeat.beat writes. Bridges leave their own
+    live records beside their buses for builds with no heartbeat (a direct builder.session.build),
+    read the same way; a build with both is listed once, by its heartbeat."""
+    from kullback.agent import steer
+    from kullback.runner import heartbeat
+
+    here = Path(workdir).expanduser().absolute()
+    live = [r for r in heartbeat.read_all()
+            if Path(str(r.get("workdir"))).expanduser().absolute() == here
+            and r.get("status") == "running" and heartbeat.alive(r.get("pid"))]
+    pids = {str(record.get("pid")) for record in live}
+    for record in steer.live_records(here):
+        pid = str(record.get("pid"))
+        if pid not in pids and heartbeat.alive(record.get("pid")):
+            pids.add(pid)
+            live.append(record)
+    return live
+
+
+def _still_listed(workdir: Any, pid: Any) -> bool:
+    """The build is still listed live: its pid names a live heartbeat or bridge record."""
+    return any(str(record.get("pid")) == str(pid) for record in live_heartbeats(workdir))
+
+
+#: Heartbeat statuses after which a build runs no more steps (heartbeat.beat writes them).
+TERMINAL_STATUSES = ("done", "failed")
+
+
+def _build_end(workdir: Any, pid: Any) -> Optional[str]:
+    """This build's terminal heartbeat status, or None while it may still run.
+
+    Watchers follow the pid, which outlives the build when another screen started it; the final
+    beat says done or failed instead."""
+    from kullback.runner import heartbeat
+
+    here = Path(workdir).expanduser().absolute()
+    for record in heartbeat.read_all():
+        if (Path(str(record.get("workdir"))).expanduser().absolute() == here
+                and str(record.get("pid")) == str(pid)
+                and record.get("status") in TERMINAL_STATUSES):
+            return str(record.get("status"))
+    return None
+
+
 def in_flight(workdir: Any) -> Optional[str]:
     """What a build that has not stopped is doing now, or None when nothing is running here.
 
@@ -217,11 +268,7 @@ def in_flight(workdir: Any) -> Optional[str]:
     the ledger says what has been spent since. Stages the pipeline does not name are work outside
     it, which is the Examiner's beat; they are counted, not named as the Examiner, because the
     screen states what it read rather than what it inferred."""
-    from kullback.runner import heartbeat
-
-    alive = [r for r in heartbeat.read_all()
-             if str(r.get("workdir")) == str(workdir) and heartbeat.alive(r.get("pid"))]
-    if not alive:
+    if not live_heartbeats(workdir):
         return None
     rounds = _read(Path(workdir) / "rounds.json", [])
     # A row lands here when the round ends, so the row is the close. `exit` is not the test: it
@@ -480,18 +527,42 @@ class Transcript:
         if self.on_line is not None:
             self.on_line(text, style)
 
+    def _stream_text(self, event: Any) -> None:
+        """One text delta appended to the open line, printing each line it completes."""
+        stream = getattr(event, "stream_event", None)
+        if getattr(stream, "type", None) == "text_delta":
+            self._streamed = True
+            self._open += stream.delta
+            while "\n" in self._open:
+                line, self._open = self._open.split("\n", 1)
+                self.say(f"  {line}", "white")
+
+    def _compaction(self, event: Any) -> None:
+        """One compaction event as the line the feed keeps."""
+        replaced = len(event.replaces_entry_ids)
+        self.say(f"compaction by {event.by}: {replaced} entries became one summary"
+                 + (f" ({event.reason})" if event.reason else ""), "magenta")
+
+    def _steer(self, event: Any) -> bool:
+        """One steer request or ack from another process as the line the feed keeps."""
+        kind = getattr(event, "type", None)
+        if kind == "steer_request":
+            said = f": {_first_line(event.text)}" if event.text else ""
+            self.say(f"steer {event.kind} from {event.sender or 'another process'}{said}", "cyan")
+            return True
+        if kind == "steer_ack":
+            self.say(f"steer {event.kind} {event.outcome.replace('_', ' ')}"
+                     + (f": {event.reason}" if event.reason else ""),
+                     "red" if event.outcome == "refused" else "cyan")
+            return True
+        return False
+
     def event(self, event: Any) -> None:
         kind = getattr(event, "type", None)
         if kind == "message_start":
             self._open, self._streamed = "", False
         elif kind == "message_update":
-            stream = getattr(event, "stream_event", None)
-            if getattr(stream, "type", None) == "text_delta":
-                self._streamed = True
-                self._open += stream.delta
-                while "\n" in self._open:
-                    line, self._open = self._open.split("\n", 1)
-                    self.say(f"  {line}", "white")
+            self._stream_text(event)
         elif kind == "message_end":
             self._message_end(event.message)
         elif kind == "tool_execution_start":
@@ -501,11 +572,11 @@ class Transcript:
         elif kind == "turn_end" and self.footer is not None:
             self.say(f"  {self.footer(event.turn)}", "dim")
         elif kind == "compaction":
-            replaced = len(event.replaces_entry_ids)
-            self.say(f"compaction by {event.by}: {replaced} entries became one summary"
-                     + (f" ({event.reason})" if event.reason else ""), "magenta")
+            self._compaction(event)
         elif kind == "custom_message":
             self.say(f"queued ({event.deliver_as}): {_first_line(event.content)}", "cyan")
+        elif self._steer(event):
+            pass
         elif kind == "error":
             self.say(f"error: {event.message}", "red")
         elif kind == "agent_end":
@@ -648,6 +719,19 @@ class Screen:
         self.board: Optional[Board] = None
         self.transcript: Optional[Transcript] = None
         self._compact_asked = False
+        # How long /nudge, /tell and /stop wait for a live build elsewhere to answer on its bus.
+        self.steer_timeout = STEER_TIMEOUT
+
+    def attach(self) -> None:
+        """Follow the live build on this workdir at once (what /watch does for its heartbeat), or
+        say there is none and show /status."""
+        live = live_heartbeats(self.workdir)
+        if not live:
+            self.console.print(Text(f"  no live build in {self.workdir}", style="dim"),
+                               no_wrap=True, overflow="ellipsis")
+            self._status()
+            return
+        self._watch(["1"], rows=live[:1])
 
     def open(self) -> None:
         """The entry screen: what this is, how it stands, what you can do, what is running.
@@ -828,7 +912,8 @@ class Screen:
         return True
 
     def _follow(self, pid: Any, every_seconds: float = 1.0) -> None:
-        """Re-read this build's files until its pid goes, or until the person stops watching.
+        """Re-read this build's files until its pid goes or its heartbeat says it ended, or until
+        the person stops watching.
 
         Two things are read: the board, off the records the build writes, and the build's own
         event stream. A Builder session writes every event of its harness to workdir/bus.jsonl,
@@ -850,7 +935,8 @@ class Screen:
             nonlocal seq
             if bus.path.is_file():
                 # One pass of the follower: every record after the last one read, then stop, so
-                # the pid check above decides when watching ends, not the log.
+                # the pid check above decides when watching ends, not the log. The Bus remembers
+                # the byte offset it reached, so each pass reads only what was appended since.
                 for record in bus.tail(seq, stop=lambda: True):
                     seq = record.seq
                     transcript.event(record.event)
@@ -869,7 +955,12 @@ class Screen:
         recent = lines[-FEED_LINES:]
         with Live(shown(recent), console=self.console, refresh_per_second=4) as live:
             try:
-                while heartbeat.alive(pid):
+                # The pid alone never ends this: a build another screen started carries that
+                # screen's pid, which outlives the build. Its final beat says done or failed, a
+                # direct build's bridge record simply goes when the bridge closes; either way the
+                # build leaves the live list, which ends this with the pid and heartbeat exits.
+                while (heartbeat.alive(pid) and _build_end(self.workdir, pid) is None
+                       and _still_listed(self.workdir, pid)):
                     time.sleep(every_seconds)
                     lines, offset, mtime = since(offset, mtime, False)
                     recent = (recent + lines)[-FEED_LINES:]
@@ -879,7 +970,11 @@ class Screen:
                 live.update(shown(recent))
             except KeyboardInterrupt:
                 pass
-        self.console.print(Text("  stopped watching; the build is untouched", style="dim"))
+        end = _build_end(self.workdir, pid)
+        if end is not None:
+            self.console.print(Text(f"  build {end}; the build is untouched", style="dim"))
+        else:
+            self.console.print(Text("  stopped watching; the build is untouched", style="dim"))
 
     def _watching(self, recent: list[str], transcript: Optional[Transcript] = None) -> Any:
         """The board with the build's last few events under it: state above, story below."""
@@ -1075,17 +1170,28 @@ class Screen:
             transcript.event(event)
 
         def work() -> None:
+            # The same heartbeat and feed `kullback build` writes, so a build started on this
+            # screen is listed under /sessions on any other screen, /watch and in_flight see it,
+            # and `kullback steer` can find it.
+            from kullback.runner import feed, heartbeat
+
+            feed.start(self.workdir, model=self.model, ceiling_usd=self.ceiling_usd)
+            pulse = heartbeat.pulse(self.workdir, self.model, "running")
+            failed = True
             try:
                 result = runner(workdir=self.workdir, model=self._adapter(), files=files,
                                 ceiling_usd=self.ceiling_usd,
                                 subscribers=[on_event, self._compact_when_asked],
                                 on_harness=self._attach)
+                failed = isinstance(result, dict) and result.get("stopped") == "error"
                 if isinstance(result, dict) and result.get("stopped"):
                     board.outcome = (f"stopped: {result['stopped']}; trusted {result.get('trusted', 0)}, "
                                      f"refused {result.get('refused', 0)}, open {result.get('open', 0)}")
             except Exception as exc:  # a failed build is a result to read, not a traceback to lose
                 board.outcome = f"{type(exc).__name__}: {exc}"
             finally:
+                pulse.stop()
+                heartbeat.beat(self.workdir, self.model, "failed" if failed else "done")
                 self.harness = None
                 self.console.print(board.render())
 
@@ -1117,8 +1223,38 @@ class Screen:
     def _refuse_without_session(self, what: str) -> bool:
         if self.running() and self.harness is not None:
             return False
-        self.console.print(Text(f"no session running: {what} reaches a session /build started here",
-                                style="red"))
+        self.console.print(Text(f"no session running: {what} reaches a session /build started here, "
+                                "or a live build elsewhere through `kullback steer`", style="red"))
+        return True
+
+    def _steer_remote(self, kind: str, text: str = "") -> bool:
+        """Steer a live build on this workdir that another process runs, through its bus.
+
+        False when there is none, so the caller refuses as before. The request names the live
+        build's session, so a second build on the same workdir never acts on it; with several
+        live the refusal lists them. The screen waits for the build's ack, up to `steer_timeout`
+        seconds, and prints what it said."""
+        if self.running():
+            return False
+        live = live_heartbeats(self.workdir)
+        if not live:
+            return False
+        from kullback.agent import steer
+
+        try:
+            session = steer.target_session(live)
+        except ValueError as exc:
+            self.console.print(Text(str(exc), style="red"))
+            return True
+        request_id = steer.request(self.workdir, kind, text, sender="screen", session=session)
+        ack = steer.wait_for_ack(self.workdir, request_id, self.steer_timeout)
+        if ack is None:
+            self.console.print(Text(f"sent {kind} to the live build; no answer within "
+                                    f"{self.steer_timeout:g} seconds", style="yellow"))
+        else:
+            self.console.print(Text(f"{kind} {ack.outcome.replace('_', ' ')}"
+                                    + (f": {ack.reason}" if ack.reason else ""),
+                                    style="red" if ack.outcome == "refused" else "cyan"))
         return True
 
     def _queue(self, kind: str, text: str) -> None:
@@ -1128,7 +1264,7 @@ class Screen:
         if not text:
             self.console.print(Text(f"/{kind} needs text: /{kind} TEXT", style="red"))
             return
-        if self._refuse_without_session(f"/{kind}"):
+        if self._steer_remote(kind, text) or self._refuse_without_session(f"/{kind}"):
             return
         if kind == "nudge":
             self.harness.steer(text)
@@ -1143,7 +1279,7 @@ class Screen:
             self._print_line(line, "cyan")
 
     def _stop(self) -> None:
-        if self._refuse_without_session("/stop"):
+        if self._steer_remote("stop") or self._refuse_without_session("/stop"):
             return
         self.harness.cancel()
         self.console.print(Text("cancel asked: the session stops before its next step", style="yellow"))
@@ -1421,9 +1557,12 @@ class Screen:
 
 
 def loop(workdir: Path, model: Optional[str] = None, base_url: Optional[str] = None,
-         ceiling_usd: Optional[float] = None) -> None:
+         ceiling_usd: Optional[float] = None, attach: bool = False) -> None:
+    """The screen's read-and-run loop; `attach` follows the workdir's live build before the prompt."""
     screen = Screen(workdir, model=model, base_url=base_url, ceiling_usd=ceiling_usd)
     screen.open()
+    if attach:
+        screen.attach()
     while True:
         try:
             line = screen.console.input("[bold]›[/bold] ")

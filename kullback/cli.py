@@ -1249,6 +1249,86 @@ def read_domain(
 
 
 
+STEER_KINDS = ("nudge", "tell", "stop")
+STEER_OUTCOMES = {"queued": "queued", "cancel_asked": "cancel asked", "refused": "refused"}
+
+
+@app.command()
+def steer(
+    workdir: Path = typer.Argument(..., help="The workdir of the live build to steer."),  # noqa: B008
+    kind: str = typer.Argument(..., help="nudge (before the next model turn), tell (when the run would "
+                                        "stop) or stop (at the next step)."),
+    text: str = typer.Argument("", help="What to tell the Builder; stop takes none."),
+    timeout: float = typer.Option(30.0, "--timeout", help="Seconds to wait for the build's answer."),
+    session: str = typer.Option("", "--session", help="The session to steer (its pid) when several "
+                                "builds share the workdir; names the only live build itself."),
+):
+    """Steer a live build from any process: the request goes on the workdir's bus and the build answers.
+
+    The build, wherever it was started, reads the request, queues it on its harness and writes an
+    ack beside it; this command prints that ack. No ack within the timeout means no live build is
+    reading that bus. The request names the live build's session, so a second build on the same
+    workdir never acts on it; with several live and no session named, this refuses and lists them.
+    """
+    if kind not in STEER_KINDS:
+        typer.echo(f"steer takes nudge, tell or stop, not {kind}")
+        raise typer.Exit(2)
+    steer_mod = importlib.import_module("kullback.agent.steer")
+    from kullback.tui import live_heartbeats
+
+    try:
+        target = steer_mod.target_session(live_heartbeats(workdir), session)
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from None
+    request_id = steer_mod.request(workdir, kind, text, sender="kullback steer", session=target)
+    ack = steer_mod.wait_for_ack(workdir, request_id, timeout)
+    if ack is None:
+        typer.echo(f"No live build answered in {workdir} within {timeout:g} seconds, so nothing was "
+                   "steered; `kullback tui` lists the running builds under /sessions.")
+        raise typer.Exit(1)
+    typer.echo(f"{kind} {STEER_OUTCOMES[ack.outcome]}" + (f": {ack.reason}" if ack.reason else ""))
+    if ack.outcome == "refused":
+        raise typer.Exit(1)
+
+@app.command()
+def events(
+    workdir: Path = WORKDIR,
+    follow: bool = typer.Option(False, "--follow", help="Keep printing as the bus grows, until ctrl-c."),
+    since: int = typer.Option(0, "--since", help="Print only the records after this seq."),
+    as_json: bool = typer.Option(False, "--json", help="Print each bus record as its JSON line."),
+):
+    """Print a build's event stream off workdir/bus.jsonl, one readable line per event or raw JSON.
+
+    The readable lines are the screen's transcript, so a script, a second dashboard or a pipe into
+    jq reads the same story the screen shows. Reading never touches the build.
+    """
+    bus_cls = _entry("kullback.agent.bus", "Bus")
+    bus = bus_cls(workdir / "bus.jsonl")
+    transcript = None if as_json else _entry("kullback.tui", "Transcript")(
+        on_line=lambda line, _style: typer.echo(line))
+    records = bus.tail(since) if follow else bus.replay(since)
+    try:
+        for record in records:
+            if transcript is None:
+                typer.echo(record.model_dump_json())
+            else:
+                transcript.event(record.event)
+    except KeyboardInterrupt:
+        pass
+
+
+@app.command()
+def attach(
+    workdir: Path = typer.Argument(Path("."), help="The workdir of the build to follow."),  # noqa: B008
+):
+    """Open the screen on a workdir and follow its live build at once, wherever it was started.
+
+    With no live build there, the screen says so and shows the build's status instead.
+    """
+    _entry("kullback.tui", "loop")(workdir=_default_workdir(workdir), attach=True)
+
+
 @app.command()
 def tui(
     workdir: Path = WORKDIR,

@@ -1259,3 +1259,130 @@ def test_the_login_menu_questions_keep_their_bracketed_hints(tmp_path):
     screen = Screen(tmp_path, console=console)
     screen._ask("    model [openai/gpt-6-luna]: ")
     assert "model [openai/gpt-6-luna]:" in _text(console)
+
+
+# --- steering a live build elsewhere ------------------------------------------
+
+def _live_elsewhere(tmp_path):
+    """A live build on tmp_path that this screen did not start: a running heartbeat and a bridge
+    on the workdir's bus, in front of a real harness."""
+    from kullback.agent.harness import AgentHarness
+    from kullback.agent.steer import SteerBridge
+    from kullback.ai.provider import TestModel
+    from kullback.runner import heartbeat
+
+    heartbeat.beat(tmp_path, "openai/gpt-6-luna", "running")
+    harness = AgentHarness(TestModel(["done"]))
+    return harness, SteerBridge(harness, tmp_path / "bus.jsonl", poll_seconds=0.02).start()
+
+
+def test_a_screen_nudge_with_a_live_build_elsewhere_and_no_local_session_sends_a_request(tmp_path):
+    from kullback.agent.bus import Bus
+    from kullback.agent.events import SteerRequestEvent
+
+    _, bridge = _live_elsewhere(tmp_path)
+    screen = _screen(tmp_path)
+    try:
+        screen.command("/nudge look at t-0412, don't guess")
+    finally:
+        bridge.close()
+    requests = [e for e in Bus(tmp_path / "bus.jsonl").events() if isinstance(e, SteerRequestEvent)]
+    assert [(r.kind, r.text, r.sender) for r in requests] == [("nudge", "look at t-0412, don't guess", "screen")]
+    assert "nudge queued: delivered before the next model turn" in _text(screen.console)
+
+
+def test_a_screen_stop_with_a_live_build_elsewhere_asks_it_to_cancel(tmp_path):
+    _, bridge = _live_elsewhere(tmp_path)
+    screen = _screen(tmp_path)
+    try:
+        screen.command("/stop")
+    finally:
+        bridge.close()
+    assert "stop cancel asked" in _text(screen.console)
+
+
+def test_a_control_with_no_session_and_no_live_build_names_kullback_steer(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/tell then stop")
+    assert "`kullback steer`" in _text(screen.console)
+
+
+def test_a_build_started_on_the_screen_beats_a_heartbeat_other_screens_list(tmp_path):
+    from kullback.runner import feed, heartbeat
+    from kullback.tui import live_heartbeats
+
+    session, screen = _held(tmp_path, ("Done.",))
+    screen.command("/build")
+    assert session.inside.wait(10)
+    assert len(live_heartbeats(tmp_path)) == 1 and feed.path_for(tmp_path).is_file()
+    session.release.set()
+    screen.wait(10)
+    assert live_heartbeats(tmp_path) == []
+    assert [r["status"] for r in heartbeat.read_all()] == ["done"]
+
+
+def test_the_transcript_shows_who_steered_and_what_the_build_answered():
+    from kullback.agent.events import SteerAckEvent, SteerRequestEvent
+    from kullback.tui import Transcript
+
+    transcript = Transcript()
+    transcript.event(SteerRequestEvent(id="r1", kind="tell", text="write the report", sender="kullback steer"))
+    transcript.event(SteerAckEvent(id="r1", kind="tell", outcome="refused", reason="a tell needs text"))
+    assert [text for text, _ in transcript.lines] == ["steer tell from kullback steer: write the report",
+                                                      "steer tell refused: a tell needs text"]
+
+
+def test_attach_with_no_live_build_says_so_and_shows_the_status(tmp_path):
+    screen = _screen(tmp_path)
+    screen.attach()
+    out = _text(screen.console)
+    assert "no live build in " in out and "no build yet" in out
+
+
+def test_follow_ends_when_the_heartbeat_says_done_though_the_pid_is_alive(tmp_path, monkeypatch):
+    import os
+
+    from kullback.runner import heartbeat
+
+    # A build started from another screen: the heartbeat carries that screen's pid, which
+    # outlives the build, and the final beat says done.
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    heartbeat.beat(tmp_path, "openai/gpt-6-luna", "done")
+    screen = _screen(tmp_path)
+    done = []
+    watch = threading.Thread(target=lambda: (screen._follow(os.getpid(), every_seconds=0.01),
+                                             done.append(True)),
+                             daemon=True)
+    watch.start()
+    watch.join(5)
+    assert done == [True], "following a finished build never ends while its pid lives"
+    assert "build done" in _text(screen.console)
+
+
+def test_follow_returns_once_the_direct_build_closes_its_bridge(tmp_path, monkeypatch):
+    import os
+    import time
+
+    from kullback.agent.harness import AgentHarness
+    from kullback.agent.steer import SteerBridge
+    from kullback.ai.provider import TestModel
+    from kullback.tui import live_heartbeats
+
+    # A direct build in this live host process: no heartbeat, only the bridge's record, and the
+    # pid outlives the build by definition.
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    harness = AgentHarness(TestModel(["done"]))
+    bridge = SteerBridge(harness, tmp_path / "bus.jsonl", poll_seconds=0.02).start()
+    screen = _screen(tmp_path)
+    deadline = time.time() + 10
+    while not live_heartbeats(tmp_path) and time.time() < deadline:
+        time.sleep(0.01)
+    assert live_heartbeats(tmp_path), "the bridge never registered a live record"
+    done = []
+    watch = threading.Thread(target=lambda: (screen._follow(os.getpid(), every_seconds=0.01),
+                                             done.append(True)),
+                             daemon=True)
+    watch.start()
+    bridge.close()
+    watch.join(5)
+    assert done == [True], "following a closed direct build never returns"

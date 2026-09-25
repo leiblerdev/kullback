@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -373,3 +374,111 @@ def test_the_builders_opening_shows_the_examiners_ruling_on_its_note(tmp_path):
     assert ("t1: needs_action_record: the hand off leaves no row to check. (ruled by finding, builder_wrong: "
             "the hand off writes a ticket row)") in session_mod.opening(root)
     assert session_mod.opening(root).endswith(session_mod.OPENING)
+
+
+def test_a_build_is_steerable_through_its_bus_from_outside_the_caller(tmp_path):
+    """Neither the harness nor on_harness is used here: the nudge goes on the workdir's bus, as it
+    would from another process, and the session's bridge queues it before the next model turn."""
+    from kullback.agent import steer
+
+    root = _workdir(tmp_path)
+    model = TestModel([reply("Reading.", ("read", {"path": "calls/rename_widget.jsonl"})),
+                       reply("Done."), reply(STOP_LINE)])
+    acks = []
+
+    def on_event(event):
+        if event.type == "tool_execution_start" and not acks:
+            acks.append(steer.wait_for_ack(root, steer.request(root, "nudge", "Read the schema next.",
+                                                               session=str(os.getpid())), 5))
+
+    session_mod.build(root, model, subscribers=[on_event])
+    assert acks[0] is not None and acks[0].outcome == "queued"
+    assert any("Read the schema next." in str(message.get("content")) for message in model.calls[1]["messages"])
+
+
+def test_a_stop_through_the_bus_after_a_run_ended_starts_no_continuation(tmp_path):
+    """The first run ends with no tool call while Tasks are open, so a continuation would follow.
+    The stop lands as that run ends, when there is no run left to cancel, and the session ends."""
+    from kullback.agent import steer
+
+    root = _workdir(tmp_path)
+    model = TestModel([reply("Done."), reply(STOP_LINE)])
+    acks = []
+
+    def on_event(event):
+        if event.type == "agent_end" and not acks:
+            acks.append(steer.wait_for_ack(root, steer.request(root, "stop",
+                                                               session=str(os.getpid())), 5))
+
+    result = session_mod.build(root, model, subscribers=[on_event])
+    assert acks[0] is not None and acks[0].outcome == "cancel_asked"
+    assert len(model.calls) == 1
+    assert result["stopped"] == "cancelled" and result["continued"] == 0
+
+
+def test_a_stop_recorded_before_the_next_prompt_starts_no_new_run(tmp_path, monkeypatch):
+    """The stop lands after the last run ended and its follow-up was decided, when no run is
+    left to cancel. The next prompt must check the flag before it starts, never run in full."""
+
+    class _StoppedBridge:
+        stop_asked = True
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return self
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(session_mod, "SteerBridge", _StoppedBridge)
+    root = _workdir(tmp_path)
+    model = TestModel([reply("Done."), reply(STOP_LINE)])
+    result = session_mod.build(root, model)
+    assert model.calls == []
+    assert result["stopped"] == "cancelled" and result["continued"] == 0
+
+
+def test_a_direct_build_is_found_and_stopped_through_the_live_list(tmp_path):
+    """builder.session.build writes no heartbeat, yet its bridge registers a live record where the
+    senders look, so the same resolution `kullback steer` uses finds and stops it. The first event
+    holds the run open until the stop is acked, so the stop always lands mid-run."""
+    import threading
+    import time
+
+    from kullback.agent import steer
+    from kullback.tui import live_heartbeats
+
+    root = _workdir(tmp_path)
+    model = TestModel([reply("Done."), reply(STOP_LINE)])
+    outcome = {}
+    release = threading.Event()
+    held = []
+
+    def on_event(event):
+        # Hold the first turn's end: the model was called, the run has not ended, and the
+        # stall ends the moment the stop is acked, so the stop always lands mid-run.
+        if event.type == "turn_end" and not held:
+            held.append(event.type)
+            assert release.wait(20), "the stop was never sent"
+
+    def _run():
+        outcome["result"] = session_mod.build(root, model, subscribers=[on_event])
+
+    build = threading.Thread(target=_run, name="direct-build", daemon=True)
+    build.start()
+    try:
+        deadline = time.time() + 10
+        live = []
+        while not live and time.time() < deadline:
+            live = live_heartbeats(root)
+        assert live, "the direct build never registered a live record"
+        request_id = steer.request(root, "stop", sender="kullback steer",
+                                   session=steer.target_session(live))
+        ack = steer.wait_for_ack(root, request_id, 10)
+        assert ack is not None and ack.outcome == "cancel_asked"
+    finally:
+        release.set()
+        build.join(30)
+    assert outcome["result"]["stopped"] == "cancelled"

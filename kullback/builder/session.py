@@ -32,6 +32,7 @@ from kullback.agent.events import ToolExecutionEnd
 from kullback.agent.extensions import ExtensionAPI, load_extensions, refuse_paths
 from kullback.agent.harness import AgentHarness
 from kullback.agent.session.store import SessionStore
+from kullback.agent.steer import SteerBridge
 from kullback.ai.cache import ttl_for
 from kullback.ai.provider import ModelConfig
 from kullback.builder import env_files
@@ -238,10 +239,13 @@ def builder_extension(root: BuilderRoot) -> Callable[[ExtensionAPI], None]:
         env = root.env
         env.mkdir(parents=True, exist_ok=True)
         register_base_tools(api, env, allowlist=DEFAULT_ALLOWLIST, only=BUILDER_BASE_TOOLS)
-        model = getattr(getattr(api, "harness", None), "model", None)
+        harness = getattr(api, "harness", None)
+        model = getattr(harness, "model", None)
+        # A stop on the screen sets the harness's cancel token; examine reads it at its safe points.
+        should_stop = (lambda: bool(getattr(harness, "cancel_requested", False))) if harness is not None else None
         for tool in domain_tools(workdir=root.workdir, model=model, examine_fn=root.examine_fn,
                                  judge_model=root.judge_model, probe_model=root.probe_model,
-                                 reroll_model=root.reroll_model, env=env):
+                                 reroll_model=root.reroll_model, env=env, should_stop=should_stop):
             api.register_tool(tool)
         for name, text in prompt_mod.sections():
             api.add_prompt_section(f"builder_{name}", text)
@@ -259,6 +263,18 @@ def _collect(aiter: Any) -> list:
         return [event async for event in aiter]
 
     return asyncio.run(go())
+
+
+def _next_message(bridge: Any, *, follow: Optional[str], continued: int, stopped: str) -> tuple:
+    """The message after a run: none when the session ends here, with how it stopped.
+
+    A stop that came in between runs found no run to cancel; it ends the session here.
+    """
+    if follow is None or continued >= CONTINUATIONS:
+        return None, stopped, True
+    if bridge.stop_asked:
+        return None, "cancelled", True
+    return follow, stopped, False
 
 
 def build(workdir: Any, model: Any, *, files: Optional[list] = None,
@@ -311,31 +327,46 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
         _, guard_stop = ceiling_guard(harness, _GuardPlan(workdir=root, ceiling=ceiling))
     if on_harness is not None:
         on_harness(harness)
-    turns: list = []
-    continued = 0
-    message = opening(root)
-    while True:
-        events = _collect(harness.prompt(message))
-        run_turns = [event for event in events if event.type == "turn_end"]
-        turns += run_turns
-        last_message = run_turns[-1].message if run_turns else None
-        stopped = _stop_of(last_message, run_turns, guard_stop, max_turns)
+    # Any process may steer this session through the bus (agent/steer.py), not only the caller
+    # holding the harness; the bridge follows the bus from here on and goes when the session does.
+    bridge = SteerBridge(harness, root / "bus.jsonl").start()
+    try:
+        turns: list = []
+        continued = 0
+        message = opening(root)
         status = status_of(root)
-        # A follow-up answered with no tool call is the model stating why it cannot go further.
-        answered_with_work = continued == 0 or len(run_turns) > 1
-        follow = (continuation(status, spent_in(root), ceiling_usd)
-                  if stopped == "no tool call" and answered_with_work else None)
-        if follow is None or continued >= CONTINUATIONS:
-            break
-        continued += 1
-        message = follow
-    last_line = str(getattr(last_message, "content", None) or "")
-    if stopped == "error":
-        last_line = str(getattr(last_message, "error_message", None) or last_line)
-    states = [row["state"] for row in status["tasks"]]
-    return {"status": status, "trusted": states.count("trusted"), "refused": states.count("refused"),
-            "open": states.count("open"), "spend": spent_in(root), "turns": len(turns),
-            "stopped": stopped, "last_line": last_line, "continued": continued}
+        stopped = "no tool call"
+        last_message = None
+        while True:
+            # A stop processed after _next_message read stop_asked finds no run to cancel;
+            # check again before a new run begins, so an acknowledged stop never starts one.
+            if bridge.stop_asked:
+                stopped = "cancelled"
+                break
+            events = _collect(harness.prompt(message))
+            run_turns = [event for event in events if event.type == "turn_end"]
+            turns += run_turns
+            last_message = run_turns[-1].message if run_turns else None
+            stopped = _stop_of(last_message, run_turns, guard_stop, max_turns)
+            status = status_of(root)
+            # A follow-up answered with no tool call is the model stating why it cannot go further.
+            answered_with_work = continued == 0 or len(run_turns) > 1
+            follow = (continuation(status, spent_in(root), ceiling_usd)
+                      if stopped == "no tool call" and answered_with_work else None)
+            message, stopped, done = _next_message(bridge, follow=follow, continued=continued,
+                                                   stopped=stopped)
+            if done:
+                break
+            continued += 1
+        last_line = str(getattr(last_message, "content", None) or "")
+        if stopped == "error":
+            last_line = str(getattr(last_message, "error_message", None) or last_line)
+        states = [row["state"] for row in status["tasks"]]
+        return {"status": status, "trusted": states.count("trusted"), "refused": states.count("refused"),
+                "open": states.count("open"), "spend": spent_in(root), "turns": len(turns),
+                "stopped": stopped, "last_line": last_line, "continued": continued}
+    finally:
+        bridge.close()
 
 
 def _stop_of(last_message: Any, turns: list, guard_stop: dict, max_turns: Optional[int]) -> str:

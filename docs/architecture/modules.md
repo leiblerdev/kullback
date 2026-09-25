@@ -71,6 +71,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/agent/session/entries.py` | The session entry types, one pydantic model each. |
 | `kullback/agent/session/store.py` | The JSONL session store: load, append, branch, active path with compactions applied. |
 | `kullback/agent/skills.py` | Skills as named texts put in the system prompt, loaded from a directory. |
+| `kullback/agent/steer.py` | Steer a live run from any process: requests and acks on the bus, and the bridge thread that hands them to the harness. |
 | `kullback/agent/tool_history.py` | Repairs a transcript whose tool calls and results do not line up. |
 | `kullback/agent/tools.py` | `AgentTool` and `ToolRegistry`: pydantic args in, pydantic result out, rulings attached. |
 | `kullback/agent/types.py` | JSON-like type aliases for tool arguments, results and payloads. |
