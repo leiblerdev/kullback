@@ -1918,16 +1918,28 @@ def events(
         pass
 
 
+def _open_textual(workdir: Path, model: Optional[str] = None, base_url: Optional[str] = None,
+                  ceiling_usd: Optional[float] = None) -> None:
+    """Open the Textual app over a workdir; the line screen stays behind --plain."""
+    from kullback.tui.app import KullbackApp
+
+    KullbackApp(workdir=workdir, model=model, base_url=base_url, ceiling_usd=ceiling_usd).run()
+
+
 @app.command()
 def attach(
     workdir: Path = typer.Argument(Path("."), help="The workdir of the build to follow."),  # noqa: B008
+    plain: bool = typer.Option(False, "--plain", help="Use the line screen instead of the app."),
 ):
     """Open the screen on a workdir and follow its live build at once, wherever it was started.
 
     With no live build there, the screen says so and shows the build's status instead.
     """
     _load_keys()
-    _entry("kullback.tui", "loop")(workdir=_default_workdir(workdir), attach=True)
+    if plain:
+        _entry("kullback.tui", "loop")(workdir=_default_workdir(workdir), attach=True)
+        return
+    _open_textual(workdir=_default_workdir(workdir))
 
 
 @app.command()
@@ -1936,11 +1948,16 @@ def tui(
     model: Optional[str] = typer.Option(None, "--model", help="Builder model id, as provider/model."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
+    plain: bool = typer.Option(False, "--plain", help="Use the line screen instead of the app."),
 ):
     """Open the kullback screen: one build, its stages, its gates and its spend, while it runs."""
     _load_keys()
-    _entry("kullback.tui", "loop")(workdir=_default_workdir(workdir), model=model, base_url=base_url,
+    if plain:
+        _entry("kullback.tui", "loop")(workdir=_default_workdir(workdir), model=model, base_url=base_url,
                                        ceiling_usd=ceiling_usd)
+        return
+    _open_textual(workdir=_default_workdir(workdir), model=model, base_url=base_url,
+                   ceiling_usd=ceiling_usd)
 
 
 # A directory counts as a build's workdir when it holds any record a build writes. The screen

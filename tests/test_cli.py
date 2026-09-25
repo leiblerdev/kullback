@@ -368,8 +368,8 @@ def test_the_screen_opens_with_the_remembered_keys_loaded(tmp_path, monkeypatch)
 
     monkeypatch.setattr(cli, "_entry", entry)
     try:
-        assert invoke("tui", "--workdir", str(tmp_path)).exit_code == 0
-        assert invoke("attach", str(tmp_path)).exit_code == 0
+        assert invoke("tui", "--workdir", str(tmp_path), "--plain").exit_code == 0
+        assert invoke("attach", str(tmp_path), "--plain").exit_code == 0
     finally:
         os.environ.pop("OPENAI_API_KEY", None)
     assert len(seen) == 2
