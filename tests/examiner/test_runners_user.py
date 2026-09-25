@@ -18,8 +18,8 @@ from tests.examiner.test_runners import _exam_env
 
 # A question no cue of the rule-driven user reads as one: it asks the user to pick, in words the
 # cues were never written for.
-UNCUED_QUESTION = "There are two finishes on offer here. Which of those suits you best?"
-ANSWER = "The striped one suits me best."
+UNCUED_QUESTION = "There are two of those on offer here. Which of them suits you best?"
+ANSWER = "The second one suits me best."
 
 
 def _asking_candidate() -> TestModel:
