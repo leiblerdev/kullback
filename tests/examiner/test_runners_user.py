@@ -127,14 +127,20 @@ def test_with_the_switch_on_the_examiners_reroll_tool_meets_the_agent_user(tmp_p
     assert budget.load_totals(root)["stages"][R.USER_STAGE]["calls"] == len(user.calls) > 0
 
 
-def test_with_the_switch_off_the_examiners_reroll_tool_is_the_run_it_always_was(tmp_path):
-    from kullback.runner import tool as runner_tool
-
+def test_with_the_switch_off_the_examiners_reroll_tool_meets_the_rule_driven_user(tmp_path):
     root = _exam_env(tmp_path / "env")
-    assert R.runners_for(root, reroll_model=_asking_candidate())["reroll_user"] is None
+    factory = R.runners_for(root, reroll_model=_asking_candidate())["reroll_user"]
+    assert type(factory("widget_task")(_Router(root))) is SimulatedUser
     result = _examiner_reroll(root, None)
-    before = _exam_env(tmp_path / "before")
-    [plain] = runner_tool.reroll(before, "widget_task", _asking_candidate(), count=1, workdir=before)
-    assert _user_turns(_run_file(root, result.runs[0]["run_id"])) == _user_turns(
-        _run_file(before, plain.run_id))
+    turns = _user_turns(_run_file(root, result.runs[0]["run_id"]))
+    floor = R._make_user(root, "widget_task", None, _Router(root))
+    floor.reply([])
+    assert len(turns) > 1 and turns[1] == floor.reply(
+        [{"role": "user", "content": turns[0]}, {"role": "assistant", "content": UNCUED_QUESTION}])
     assert R.USER_STAGE not in budget.load_totals(root)["stages"]
+
+
+def test_with_the_switch_on_the_examiners_reroll_factory_builds_the_agent_user(tmp_path):
+    root = _exam_env(tmp_path / "env")
+    factory = R.runners_for(root, reroll_model=_asking_candidate(), user_model=_user_model())["reroll_user"]
+    assert isinstance(factory("widget_task")(_Router(root)), AgentUser)

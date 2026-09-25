@@ -644,7 +644,7 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     saved. The trusted gate reads each derived file as the current accepted version from that
     seed, and the loosening gate compares each proposal against the version before it (D127).
     The probe model and the probe runner examine built let the suite run its loophole check on
-    each proposal (D79). `reroll_user` is the agent user switch for the reroll tool, None when off.
+    each proposal (D79). `reroll_user` is the re-roll user factory for the reroll tool.
     """
     root = Path(workdir)
     verifiers: dict[str, Verifier] = {}
