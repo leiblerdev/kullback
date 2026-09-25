@@ -50,10 +50,25 @@ class TasksView(Widget):
             table.add_column(name, key=name)
         self.query_one("#nudge", Input).display = False
         self.refresh_rows()
+        self._refresh_timer = self.set_interval(5.0, self._refresh_tick)
 
-    def on_focus(self) -> None:
-        """Re-read the workdir whenever the view regains focus, so a live build shows."""
+    def on_unmount(self) -> None:
+        self._refresh_timer.stop()
+
+    def _refresh_tick(self) -> None:
+        """Re-read every 5 seconds while mounted, keeping selection, cursor and filter."""
+        table = self.query_one("#rows", DataTable)
+        try:
+            saved = table.cursor_coordinate
+        except Exception:
+            saved = None
         self.refresh_rows()
+        if saved is not None and self._shown:
+            row = min(saved[0], len(self._shown) - 1)
+            with table.prevent(DataTable.RowSelected):
+                table.move_cursor(row=row, column=saved[1])
+        if self._selected is not None:
+            self._render_detail()
 
     def refresh_rows(self) -> None:
         """Re-read every row and re-apply the filter; missing files read as no Tasks."""

@@ -253,4 +253,4 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/tui/views/tasks.py` | Browse Tasks: filter, detail, nudge; values hidden until v. |
 | `kullback/tui/views/runs.py` | Run a Candidate detached and score it as a table. |
 | `kullback/tui/views/publish.py` | Publish checklist rows and the word, never an upload. |
-| `kullback/tui/views/synthesise.py` | Synthesis options, a detached start, and the bus as a transcript. |
+| `kullback/tui/views/synthesise.py` | Synthesis modes, a detached start, and the command log as it grows. |

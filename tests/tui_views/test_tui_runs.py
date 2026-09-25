@@ -81,4 +81,46 @@ async def test_runs_launches_a_detached_run_with_the_chosen_tasks(tmp_path, monk
     monkeypatch.setattr(runs_view.subprocess, "Popen", _popen)
     out = runs_view._popen_launcher(["echo", "hi"], tmp_path)
     assert seen.get("start_new_session") is True
-    assert Path(out).parent == tmp_path
+    assert "cwd" not in seen, "the child reads the same .env as this shell"
+    assert Path(out).parent == tmp_path and str(out).endswith(".json")
+    assert Path(seen["stdout"].name).resolve() == Path(out).resolve()
+    assert Path(seen["stderr"].name).resolve() == Path(out).with_suffix(".log").resolve()
+
+
+async def test_runs_shows_the_result_once_the_child_writes_it(tmp_path):
+    """A launcher whose file appears later: running first, the table once it lands."""
+    out = tmp_path / "out.json"
+    calls: list = []
+    view = RunsView(tmp_path, launcher=lambda command, workdir: calls.append(command) or out)
+    app = ViewApp(view)
+    async with app.run_test() as pilot:
+        view.query_one("#model", Input).value = "test/model"
+        view.query_one("#ceiling", Input).value = "5"
+        await pilot.click("#start")
+        await wait_until(
+            pilot, lambda: "Running" in str(view.query_one("#status", Static).content))
+        assert view.query_one("#result", DataTable).row_count == 0
+        out.write_text(json.dumps(RESULT))
+        table = view.query_one("#result", DataTable)
+        await wait_until(pilot, lambda: table.row_count == 2)
+        assert "task-1" in table_text(table)
+
+
+async def test_runs_reads_the_result_despite_warnings_on_stderr(tmp_path):
+    """Warnings ride the sibling .log; the .json still parses into the table."""
+    out = tmp_path / "out.json"
+    out.with_suffix(".log").write_text("unfrozen runner: verdicts carry no version\n")
+
+    def launch(command: list, workdir) -> Path:
+        out.write_text(json.dumps(RESULT))
+        return out
+
+    view = RunsView(tmp_path, launcher=launch)
+    app = ViewApp(view)
+    async with app.run_test() as pilot:
+        view.query_one("#model", Input).value = "test/model"
+        view.query_one("#ceiling", Input).value = "5"
+        await pilot.click("#start")
+        table = view.query_one("#result", DataTable)
+        await wait_until(pilot, lambda: table.row_count == 2)
+        assert "task-2" in table_text(table)
