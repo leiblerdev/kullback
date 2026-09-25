@@ -413,6 +413,120 @@ def sources_check(file: Path = typer.Argument(..., help="The raw file the reader
     typer.echo("passes")
 
 
+@sources_app.command("map")
+def sources_map(
+    file: Path = typer.Argument(..., help="The raw file the reader is written for."),  # noqa: B008
+    name: str = typer.Option(..., "--name", help="Reader name, saved as workdir/sources/NAME.py."),
+    recordings: str = typer.Option(..., "--recordings", help="Dotted path of the list holding one recording each, or . where each JSONL line is one."),
+    role: str = typer.Option(..., "--role", help="Dotted path of the role field."),
+    content: str = typer.Option(..., "--content", help="Dotted path of the content field."),
+    tool_calls: Optional[str] = typer.Option(None, "--tool-calls", help="Dotted path of the tool calls list."),
+    tool_name: Optional[str] = typer.Option(None, "--tool-name", help="Dotted path of the tool name."),
+    tool_arguments: Optional[str] = typer.Option(None, "--tool-arguments", help="Dotted path of the tool arguments."),
+    tool_call_id: Optional[str] = typer.Option(None, "--tool-call-id", help="Dotted path of the tool call id."),
+    tool_results: Optional[str] = typer.Option(None, "--tool-results", help="Dotted path of the tool results list."),
+    tool_result_id: Optional[str] = typer.Option(None, "--tool-result-id", help="Dotted path of the tool result id."),
+    tool_result_content: Optional[str] = typer.Option(None, "--tool-result-content", help="Dotted path of the tool result content."),
+    timestamp: Optional[str] = typer.Option(None, "--timestamp", help="Dotted path of the timestamp field."),
+    role_map: Optional[list[str]] = typer.Option(None, "--role-map", help="Role word to role, as WORD=role; repeatable."),  # noqa: B008
+    workdir: Path = WORKDIR,
+    force: bool = typer.Option(False, "--force", help="Overwrite workdir/sources/NAME.py when it exists."),
+):
+    """Map the fields by hand: write a reader from named paths with no model call."""
+    import hashlib
+    import re
+    import tempfile
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        typer.echo(f"refusing reader name {name!r}: use letters, numbers, dash or underscore")
+        raise typer.Exit(2)
+    render = _entry("kullback.builder.sources.reader_template", "render_reader")
+    check = _entry("kullback.builder.sources.workdir_readers", "check_reader_isolated")
+    mapping: dict = {"recordings": recordings, "role": role, "content": content}
+    for key, value in (("tool_calls", tool_calls), ("tool_name", tool_name),
+                       ("tool_arguments", tool_arguments), ("tool_call_id", tool_call_id),
+                       ("tool_results", tool_results), ("tool_result_id", tool_result_id),
+                       ("tool_result_content", tool_result_content), ("timestamp", timestamp)):
+        if value:
+            mapping[key] = value
+    roles = _parsed_role_map(role_map)
+    if roles:
+        mapping["roles"] = roles
+    digest = hashlib.sha256(Path(file).read_bytes()).hexdigest()
+    try:
+        source = render(name, digest, mapping)
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(2) from None
+    folder = Path(workdir) / "sources"
+    target = folder / f"{name}.py"
+    if target.exists() and not force:
+        typer.echo(f"refusing to overwrite {target}: pass --force to replace it")
+        raise typer.Exit(1)
+    handle = tempfile.NamedTemporaryFile(mode="w", suffix=".py", prefix="kullback-map-",
+                                         delete=False, encoding="utf-8")
+    try:
+        handle.write(source)
+        handle.close()
+        problems = check(Path(handle.name), file)
+    finally:
+        Path(handle.name).unlink(missing_ok=True)
+    if problems:
+        for problem in problems:
+            typer.echo(problem)
+        raise typer.Exit(1)
+    folder.mkdir(parents=True, exist_ok=True)
+    target.write_text(source, encoding="utf-8")
+    typer.echo(f"passes; `kullback ingest {file}` will use it")
+
+
+def _parsed_role_map(entries: Optional[list[str]]) -> dict[str, str]:
+    """--role-map WORD=role entries as a word to role dict, refused unless exact."""
+    roles: dict[str, str] = {}
+    for entry in entries or []:
+        word, sep, role = entry.partition("=")
+        if not sep or not word or role not in ("user", "assistant", "system", "tool"):
+            typer.echo(f"refusing role map {entry!r}: spell it WORD=role with role one of "
+                       "user, assistant, system, tool")
+            raise typer.Exit(2)
+        roles[word] = role
+    return roles
+
+
+@sources_app.command("draft")
+def sources_draft(
+    file: Path = typer.Argument(..., help="The raw file the reader is drafted for."),  # noqa: B008
+    name: str = typer.Option(..., "--name", help="Reader name, saved as workdir/sources/NAME.py."),
+    model: str = typer.Option(..., "--model", help="Model id for the draft, as provider/model."),
+    workdir: Path = WORKDIR,
+    show_values: bool = typer.Option(False, "--show-values", help="Send the first recordings verbatim to the model."),
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Spend ceiling for the draft calls."),
+):
+    """Draft a reader from the file structure, repairing it against the isolated check."""
+    import re
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        typer.echo(f"refusing reader name {name!r}: use letters, numbers, dash or underscore")
+        raise typer.Exit(2)
+    if show_values:
+        typer.echo("warning: sending file contents to the model (--show-values)")
+    writer = _live_model(model, None)
+    writer = _wrapped_model(writer, "draft_reader", Path(workdir), ceiling_usd, model_id=model)
+    draft = _entry("kullback.builder.sources.draft", "draft_reader")
+    result = draft(file, workdir, writer, name, show_values=show_values)
+    for attempt, attempt_problems in enumerate(result.get("attempts", []), start=1):
+        if attempt_problems:
+            typer.echo(f"attempt {attempt}:")
+            for problem in attempt_problems:
+                typer.echo(problem)
+    if result.get("passed"):
+        typer.echo(f"passes; `kullback ingest {file}` will use it")
+        return
+    for problem in result.get("problems", []):
+        typer.echo(problem)
+    raise typer.Exit(1)
+
+
 def _rescue_candidates(workdir: Path, raw_hash: Optional[str]) -> list:
     """Every eligible or set-aside trace whose sidecar carries a task reference.
 
