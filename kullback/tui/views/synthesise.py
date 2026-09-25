@@ -60,10 +60,7 @@ class SynthesiseView(Widget):
                 f"Buckets read as NAME=COUNT, got {bad_bucket!r}: nothing was launched.")
             return
         archetypes = _entries(archetypes_text)
-        try:
-            ceiling = float(ceiling_text)
-        except ValueError:
-            ceiling = -1.0
+        ceiling = _parse_ceiling(ceiling_text)
         if ceiling <= 0:
             self.query_one("#status", Static).update(
                 "A positive ceiling is required: nothing was launched.")
@@ -72,29 +69,15 @@ class SynthesiseView(Widget):
             self.query_one("#status", Static).update(
                 "Choose buckets, archetype ids or from-domain: nothing was launched.")
             return
-        command = [sys.executable, "-m", "kullback.cli", "synthesise",
-                   "--workdir", str(self.workdir)]
-        for bucket in buckets:
-            command += ["--bucket", bucket]
-        for archetype in archetypes:
-            command += ["--archetype", archetype]
+        per: Optional[int] = None
         if archetypes or from_domain:
-            try:
-                per = int(per_text)
-            except ValueError:
-                per = 0
+            per = _parse_per_archetype(per_text)
             if per < 1:
                 self.query_one("#status", Static).update(
                     "Per-archetype must be at least 1: nothing was launched.")
                 return
-            command += ["--per-archetype", str(per)]
-        if from_domain:
-            command.append("--from-domain")
-        if model:
-            command += ["--model", model]
-        if seed:
-            command += ["--seed", seed]
-        command += ["--ceiling-usd", str(ceiling)]
+        command = _synthesise_command(self.workdir, buckets, archetypes, per, from_domain,
+                                      model, seed, ceiling)
         try:
             log_path = self.launcher(command, self.workdir)
         except Exception as exc:
@@ -131,6 +114,44 @@ class SynthesiseView(Widget):
         log = self.query_one("#log", RichLog)
         for line in lines:
             log.write(line)
+
+
+def _parse_ceiling(text: str) -> float:
+    """The ceiling as a number, or a non-positive one where the text is not a number."""
+    try:
+        return float(text)
+    except ValueError:
+        return -1.0
+
+
+def _parse_per_archetype(text: str) -> int:
+    """The per-archetype count as a number, or a non-positive one where it is not."""
+    try:
+        return int(text)
+    except ValueError:
+        return 0
+
+
+def _synthesise_command(workdir: Any, buckets: list[str], archetypes: list[str],
+                        per: Optional[int], from_domain: bool, model: str, seed: str,
+                        ceiling: float) -> list[str]:
+    """The synthesise CLI command for parsed inputs, with the ceiling always capped."""
+    command = [sys.executable, "-m", "kullback.cli", "synthesise",
+               "--workdir", str(workdir)]
+    for bucket in buckets:
+        command += ["--bucket", bucket]
+    for archetype in archetypes:
+        command += ["--archetype", archetype]
+    if per is not None:
+        command += ["--per-archetype", str(per)]
+    if from_domain:
+        command.append("--from-domain")
+    if model:
+        command += ["--model", model]
+    if seed:
+        command += ["--seed", seed]
+    command += ["--ceiling-usd", str(ceiling)]
+    return command
 
 
 def _entries(text: str) -> list[str]:
