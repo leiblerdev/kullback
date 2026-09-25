@@ -428,25 +428,30 @@ def sources_map(
     tool_result_id: Optional[str] = typer.Option(None, "--tool-result-id", help="Dotted path of the tool result id."),
     tool_result_content: Optional[str] = typer.Option(None, "--tool-result-content", help="Dotted path of the tool result content."),
     timestamp: Optional[str] = typer.Option(None, "--timestamp", help="Dotted path of the timestamp field."),
+    role_map: Optional[list[str]] = typer.Option(None, "--role-map", help="Role word to role, as WORD=role; repeatable."),  # noqa: B008
     workdir: Path = WORKDIR,
     force: bool = typer.Option(False, "--force", help="Overwrite workdir/sources/NAME.py when it exists."),
 ):
     """Map the fields by hand: write a reader from named paths with no model call."""
     import hashlib
     import re
+    import tempfile
 
     if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
         typer.echo(f"refusing reader name {name!r}: use letters, numbers, dash or underscore")
         raise typer.Exit(2)
     render = _entry("kullback.builder.sources.reader_template", "render_reader")
     check = _entry("kullback.builder.sources.workdir_readers", "check_reader_isolated")
-    mapping = {"recordings": recordings, "role": role, "content": content}
+    mapping: dict = {"recordings": recordings, "role": role, "content": content}
     for key, value in (("tool_calls", tool_calls), ("tool_name", tool_name),
                        ("tool_arguments", tool_arguments), ("tool_call_id", tool_call_id),
                        ("tool_results", tool_results), ("tool_result_id", tool_result_id),
                        ("tool_result_content", tool_result_content), ("timestamp", timestamp)):
         if value:
             mapping[key] = value
+    roles = _parsed_role_map(role_map)
+    if roles:
+        mapping["roles"] = roles
     digest = hashlib.sha256(Path(file).read_bytes()).hexdigest()
     try:
         source = render(name, digest, mapping)
@@ -454,18 +459,38 @@ def sources_map(
         typer.echo(str(exc))
         raise typer.Exit(2) from None
     folder = Path(workdir) / "sources"
-    folder.mkdir(parents=True, exist_ok=True)
     target = folder / f"{name}.py"
     if target.exists() and not force:
         typer.echo(f"refusing to overwrite {target}: pass --force to replace it")
         raise typer.Exit(1)
-    target.write_text(source, encoding="utf-8")
-    problems = check(target, file)
+    handle = tempfile.NamedTemporaryFile(mode="w", suffix=".py", prefix="kullback-map-",
+                                         delete=False, encoding="utf-8")
+    try:
+        handle.write(source)
+        handle.close()
+        problems = check(Path(handle.name), file)
+    finally:
+        Path(handle.name).unlink(missing_ok=True)
     if problems:
         for problem in problems:
             typer.echo(problem)
         raise typer.Exit(1)
+    folder.mkdir(parents=True, exist_ok=True)
+    target.write_text(source, encoding="utf-8")
     typer.echo(f"passes; `kullback ingest {file}` will use it")
+
+
+def _parsed_role_map(entries: Optional[list[str]]) -> dict[str, str]:
+    """--role-map WORD=role entries as a word to role dict, refused unless exact."""
+    roles: dict[str, str] = {}
+    for entry in entries or []:
+        word, sep, role = entry.partition("=")
+        if not sep or not word or role not in ("user", "assistant", "system", "tool"):
+            typer.echo(f"refusing role map {entry!r}: spell it WORD=role with role one of "
+                       "user, assistant, system, tool")
+            raise typer.Exit(2)
+        roles[word] = role
+    return roles
 
 
 @sources_app.command("draft")
