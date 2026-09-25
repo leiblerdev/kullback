@@ -189,6 +189,29 @@ def writes_made(transcript: Any, write_tools: Iterable[str]) -> set[str]:
     return made
 
 
+def tool_called(transcript: Any) -> bool:
+    """The Candidate has made at least one tool call in this Run, read or write."""
+    for message in transcript or ():
+        if _field_of(message, "role") == "tool" or _calls_of(message):
+            return True
+    return False
+
+
+def goal_done(goal_writes: Optional[frozenset], write_tools: Iterable[str], made: set, *,
+              acted: bool, closed: bool) -> bool:
+    """Whether the Task's goal is done, one predicate for both Simulated users (D210, p3).
+
+    A goal naming writes is done when they are all made. A goal naming none has no write evidence,
+    and the empty set is not evidence either: it is done when the Candidate has used a tool in this
+    Run and its latest turn closes. `goal_writes` None keeps D158's reading, a Run that wrote at all.
+    """
+    if goal_writes is None:
+        return bool(write_tools) and bool(made)
+    if goal_writes:
+        return goal_writes <= made
+    return acted and closed
+
+
 def _flatten(row: Any) -> dict[str, list]:
     """Every leaf value seen under each key, nested dicts included, so 'zip' inside 'address' is
     found. A key seen more than once (two payment methods that both carry 'source') keeps every

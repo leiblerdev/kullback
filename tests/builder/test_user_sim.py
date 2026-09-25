@@ -1152,6 +1152,7 @@ def test_a_run_that_spends_its_turns_without_ending_gave_up(make_test_model):
 
 
 def test_the_end_kind_of_a_finished_run_is_read_off_the_run_the_loop_wrote(make_test_model):
+    """A goal with no writes closed by a Candidate that never used a tool is a handoff (p3)."""
     from kullback.runner import loop
 
     user = renewal_user(write_tools={"renew_loan"}, goal_writes=set())
@@ -1159,7 +1160,7 @@ def test_the_end_kind_of_a_finished_run_is_read_off_the_run_the_loop_wrote(make_
     state = loop.new_run_state("finished", user=user, max_turns=8)
     loop.open_with_user(state)
     loop.run(state, model)
-    assert end_of_run(state.run) == GOAL_SATISFIED
+    assert end_of_run(state.run) == HANDED_OFF
 
 
 def test_a_fact_the_recorded_user_gave_is_askable_and_one_only_the_world_holds_is_a_record_fact():
