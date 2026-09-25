@@ -254,15 +254,20 @@ def test_error_shapes_keep_the_verbatim_payload():
 # --- D68 and D70: kind classification ----------------------------------------
 
 
-def test_the_kind_is_read_from_name_prefixes_and_says_why(fixture_traces):
+def test_a_name_is_read_by_its_first_verb_at_medium_and_says_why():
     """The code rule reads the first verb: generic English verbs at medium, nothing matched at low."""
     for name, kind in [("search_loans", "read"), ("update_member", "write"),
-                       ("renew_loan", "write"), ("place_hold", "write")]:
-        assert propose_kind(name).kind == kind
-        assert propose_kind(name).confidence == "medium"
+                       ("renew_loan", "write"), ("place_hold", "write"),
+                       ("getWidget", "read"), ("renewLoan", "write")]:
+        p = propose_kind(name)
+        assert (p.kind, p.confidence, "verb" in p.reason) == (kind, "medium", True)
     assert propose_kind("frobnicate").kind == "read"
     assert propose_kind("frobnicate").confidence == "low"
     assert "no name rule matched" in propose_kind("frobnicate").reason
+
+
+def test_mined_kinds_keep_the_verb_and_the_evidence_that_decided_them(fixture_traces):
+    """Verb reads stand classified on the name; effect-proven writes stand on the calls."""
     sigs = mine_tools(fixture_traces)
     reads = ["get_loan_details", "get_hold_details", "find_member_id_by_name_zip",
              "find_member_id_by_email"]
@@ -277,6 +282,7 @@ def test_the_kind_is_read_from_name_prefixes_and_says_why(fixture_traces):
         assert sig.kind == "write"
         assert sig.unclassified is False
         assert sig.classified_by == "observed"
+        assert sig.effects_observed != []
 
 
 def test_calculation_and_handoff_names_are_generic():
