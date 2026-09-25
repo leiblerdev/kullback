@@ -540,6 +540,26 @@ def test_a_batch_report_counts_only_the_runs_of_that_model(workdir):
     assert "These are the numbers for one Run batch" in text
 
 
+# --- tasks --------------------------------------------------------------------
+
+def test_tasks_lists_each_task_with_the_word_it_stands_in(workdir):
+    """The tasks command prints one row per Task of the workdir, and --status keeps one word."""
+    (workdir / "task_status.json").write_text(json.dumps({
+        "t1": {"reference_confirmed": True, "verifier_passed": True},
+        "t2": {"reference_confirmed": False, "verifier_passed": False}}), encoding="utf-8")
+    result = invoke("tasks", "--workdir", str(workdir))
+    assert result.exit_code == 0, result.output
+    assert "t1 open" in result.output and "t2 open" in result.output
+    opened = invoke("tasks", "--workdir", str(workdir), "--status", "open", "--json")
+    assert opened.exit_code == 0, opened.output
+    assert [(row["task_id"], row["status"]) for row in json.loads(opened.output)] == [
+        ("t1", "open"), ("t2", "open")]
+    assert invoke("tasks", "--workdir", str(workdir), "--status", "trusted").exit_code == 0
+    detail = invoke("tasks", "--workdir", str(workdir), "--task", "t1")
+    assert detail.exit_code == 0, detail.output
+    assert "task t1" in detail.output and "status: open" in detail.output
+
+
 # --- the ToolSigs a Verdict needs (D70, side effects) -----------------------
 
 def seed_tool_sigs(workdir: Path) -> None:
