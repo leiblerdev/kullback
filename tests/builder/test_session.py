@@ -438,3 +438,47 @@ def test_a_stop_recorded_before_the_next_prompt_starts_no_new_run(tmp_path, monk
     result = session_mod.build(root, model)
     assert model.calls == []
     assert result["stopped"] == "cancelled" and result["continued"] == 0
+
+
+def test_a_direct_build_is_found_and_stopped_through_the_live_list(tmp_path):
+    """builder.session.build writes no heartbeat, yet its bridge registers a live record where the
+    senders look, so the same resolution `kullback steer` uses finds and stops it. The first event
+    holds the run open until the stop is acked, so the stop always lands mid-run."""
+    import threading
+    import time
+
+    from kullback.agent import steer
+    from kullback.tui import live_heartbeats
+
+    root = _workdir(tmp_path)
+    model = TestModel([reply("Done."), reply(STOP_LINE)])
+    outcome = {}
+    release = threading.Event()
+    held = []
+
+    def on_event(event):
+        # Hold the first turn's end: the model was called, the run has not ended, and the
+        # stall ends the moment the stop is acked, so the stop always lands mid-run.
+        if event.type == "turn_end" and not held:
+            held.append(event.type)
+            assert release.wait(20), "the stop was never sent"
+
+    def _run():
+        outcome["result"] = session_mod.build(root, model, subscribers=[on_event])
+
+    build = threading.Thread(target=_run, name="direct-build", daemon=True)
+    build.start()
+    try:
+        deadline = time.time() + 10
+        live = []
+        while not live and time.time() < deadline:
+            live = live_heartbeats(root)
+        assert live, "the direct build never registered a live record"
+        request_id = steer.request(root, "stop", sender="kullback steer",
+                                   session=steer.target_session(live))
+        ack = steer.wait_for_ack(root, request_id, 10)
+        assert ack is not None and ack.outcome == "cancel_asked"
+    finally:
+        release.set()
+        build.join(30)
+    assert outcome["result"]["stopped"] == "cancelled"

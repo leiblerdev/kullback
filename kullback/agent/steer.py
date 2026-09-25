@@ -12,6 +12,7 @@ and needs no port. This module imports only the agent core and the standard libr
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -22,7 +23,7 @@ from typing import Any, Optional, Union
 from kullback.agent.bus import Bus
 from kullback.agent.events import SteerAckEvent, SteerRequestEvent
 
-__all__ = ["BUS_FILE", "SteerBridge", "request", "target_session", "wait_for_ack"]
+__all__ = ["BUS_FILE", "SteerBridge", "live_records", "request", "target_session", "wait_for_ack"]
 
 BUS_FILE = "bus.jsonl"
 
@@ -39,6 +40,32 @@ def request(workdir: Union[str, Path], kind: str, text: str = "", sender: str = 
                                           session=session))
     _SENT[request_id] = (bus, record.seq)
     return request_id
+
+
+def _session_file(workdir: Union[str, Path], pid: int) -> Path:
+    return Path(workdir).expanduser() / f"steer-{pid}.json"
+
+
+def live_records(workdir: Union[str, Path]) -> list[dict]:
+    """The live records bridges wrote beside their buses, running ones only.
+
+    A build started outside the CLI and the screen beats no heartbeat, so its bridge leaves
+    this instead: one small file per live build, named for its pid, removed when the bridge
+    closes. Corrupt files are skipped, not fatal, and a dead pid is left for the caller, which
+    reads aliveness the way it does for heartbeats."""
+    try:
+        paths = sorted(Path(workdir).expanduser().glob("steer-*.json"))
+    except OSError:
+        return []
+    out = []
+    for path in paths:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and record.get("status") == "running":
+            out.append(record)
+    return out
 
 
 def target_session(live: list[dict], session: str = "") -> str:
@@ -99,10 +126,24 @@ class SteerBridge:
 
     def start(self) -> SteerBridge:
         """Start following; returns once the starting point is fixed, so a request sent after
-        this call is always seen."""
+        this call is always seen. Also leaves the bridge's live record beside the bus, so the
+        build is discoverable even where no heartbeat beats for it."""
+        self._register()
         self._thread.start()
         self._started.wait(5)
         return self
+
+    def _register(self) -> None:
+        """One live record beside the bus, named for this pid and removed on close."""
+        try:
+            model = getattr(getattr(self.harness, "model", None), "name", None)
+            record = {"workdir": str(Path(self.bus_path.parent).expanduser().absolute()),
+                      "pid": os.getpid(), "status": "running", "model": model,
+                      "updated_at": time.time()}
+            _session_file(self.bus_path.parent, os.getpid()).write_text(
+                json.dumps(record), encoding="utf-8")
+        except OSError:
+            pass
 
     @property
     def stop_asked(self) -> bool:
@@ -114,6 +155,10 @@ class SteerBridge:
         self._stop.set()
         if self._thread.is_alive():
             self._thread.join(timeout=max(1.0, self.poll_seconds * 4))
+        try:
+            _session_file(self.bus_path.parent, os.getpid()).unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def _run(self) -> None:
         records = Bus(self.bus_path).tail(poll_seconds=self.poll_seconds, stop=self._stop.is_set,

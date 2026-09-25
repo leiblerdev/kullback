@@ -214,13 +214,23 @@ def live_heartbeats(workdir: Any) -> list[dict]:
 
     Running means the pid is alive and the heartbeat still says running: a build this screen ran
     leaves a heartbeat whose pid (the screen's own) outlives the build, so the pid alone is not
-    enough. Paths are compared absolute, the form heartbeat.beat writes."""
+    enough. Paths are compared absolute, the form heartbeat.beat writes. Bridges leave their own
+    live records beside their buses for builds with no heartbeat (a direct builder.session.build),
+    read the same way; a build with both is listed once, by its heartbeat."""
+    from kullback.agent import steer
     from kullback.runner import heartbeat
 
     here = Path(workdir).expanduser().absolute()
-    return [r for r in heartbeat.read_all()
+    live = [r for r in heartbeat.read_all()
             if Path(str(r.get("workdir"))).expanduser().absolute() == here
             and r.get("status") == "running" and heartbeat.alive(r.get("pid"))]
+    pids = {str(record.get("pid")) for record in live}
+    for record in steer.live_records(here):
+        pid = str(record.get("pid"))
+        if pid not in pids and heartbeat.alive(record.get("pid")):
+            pids.add(pid)
+            live.append(record)
+    return live
 
 
 #: Heartbeat statuses after which a build runs no more steps (heartbeat.beat writes them).
