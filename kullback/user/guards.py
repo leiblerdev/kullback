@@ -253,14 +253,13 @@ class EndProtocol:
         self.unanswerable = 0
         self.silent = 0
 
-    def goal_done(self, made: Iterable[str]) -> bool:
-        made = set(made or ())
-        if self.goal_writes is not None:
-            return self.goal_writes <= made
-        return bool(self.write_tools) and bool(made)
+    def goal_done(self, made: Iterable[str], *, acted: bool = False, closed: bool = False) -> bool:
+        return ends_mod.goal_done(self.goal_writes, self.write_tools, set(made or ()),
+                                  acted=acted, closed=closed)
 
     def kind(self, question: Optional[str], *, said_anything: bool, had_nothing: bool,
-             made: Iterable[str] = (), requested: Optional[str] = None) -> Optional[str]:
+             made: Iterable[str] = (), requested: Optional[str] = None,
+             acted: bool = False) -> Optional[str]:
         """Which kind this turn ends on, or nothing where it does not end the Run.
 
         `requested` is what the model asked for through `end_run`; it is read as evidence that the
@@ -269,7 +268,7 @@ class EndProtocol:
         """
         self.unanswerable += int(bool(had_nothing))
         self.silent = 0 if said_anything else self.silent + 1
-        if self.goal_done(made):
+        if self.goal_done(made, acted=acted, closed=rules_mod.closes(question)):
             return rules_mod.GOAL_SATISFIED
         if self.unanswerable >= rules_mod.UNANSWERABLE_LIMIT:
             return rules_mod.SCENARIO_EXHAUSTED

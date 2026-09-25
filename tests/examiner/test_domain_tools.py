@@ -663,3 +663,47 @@ def test_a_probe_and_a_finding_with_note_ruling_each_rule_an_open_note(tmp_path)
     with pytest.raises(ValueError, match="no open note"):
         _run(finding.execute(D.FindingArgs(task_id="t1", kind="other", text="again",
                                            note_ruling="builder_right")))
+
+
+def test_the_examiners_reroll_tool_meets_the_rule_driven_user(tmp_path):
+    """The Examiner's own reroll tool answers its Runs with the derivation's rule-driven user."""
+    from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
+    from kullback.examiner import runners as R
+    from kullback.runner.records import load_run_jsonl
+    from kullback.runner.state import StateView
+    from kullback.runner.world.environment import BuiltEnvironment
+    from kullback.user.simulated import SimulatedUser
+    from tests.examiner.test_runners import _exam_env
+
+    question = "There are two of those on offer here. Which of them suits you best?"
+    candidate = TestModel([
+        ModelReply(content=question, model="test"),
+        ModelReply(content=None, model="test", tool_calls=[
+            ToolCallRequest(id="m1", name="describe_widget", arguments={"widget_id": "w1"})]),
+        ModelReply(content=None, model="test", tool_calls=[
+            ToolCallRequest(id="m2", name="rename_widget",
+                            arguments={"widget_id": "w1", "label": "striped"})]),
+        ModelReply(content="Done.", model="test"),
+    ], loop=True)
+
+    class Router:
+        """What the runner hands `make_user`: the Task's Starting state behind `.state`."""
+
+        def __init__(self, root):
+            self.state = StateView(BuiltEnvironment(root).db)
+
+    root = _exam_env(tmp_path / "env")
+    runners = R.runners_for(root, reroll_model=candidate)
+    factory = runners["reroll_user"]
+    assert type(factory("widget_task")(Router(root))) is SimulatedUser
+
+    exam = ExamRoot(workdir=root, reroll_model=candidate, canon_rules=CanonRules(),
+                    reroll_user=factory)
+    [tool] = [t for t in D.domain_tools(exam) if t.name == "reroll"]
+    result = _run(tool.execute(D.RerollArgs(task_id="widget_task", count=1)))
+    run = load_run_jsonl(root / "runs" / f"{result.runs[0]['run_id']}.jsonl")
+    turns = [str(event.payload.get("text")) for event in run.events if event.type == "user_turn"]
+    floor = R._make_user(root, "widget_task", None, Router(root))
+    floor.reply([])
+    assert len(turns) > 1 and turns[1] == floor.reply(
+        [{"role": "user", "content": turns[0]}, {"role": "assistant", "content": question}])
