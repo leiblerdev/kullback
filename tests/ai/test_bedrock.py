@@ -189,6 +189,7 @@ def test_a_required_tool_call_goes_as_auto_with_the_demand_in_the_prompt_after_t
     assert older["tool_choice"] == {"type": "any"}
 
 
+def test_sampling_parameters_are_left_out_for_a_model_that_refuses_them():
     assert "temperature" not in body_for(pv.ModelConfig(temperature=0.0), model_id=ALWAYS_ON)
     assert body_for(pv.ModelConfig(temperature=0.0), model_id="bedrock/anthropic.claude-haiku-4-5")["temperature"] == 0.0
 
