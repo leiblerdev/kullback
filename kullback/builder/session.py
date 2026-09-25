@@ -334,7 +334,15 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
         turns: list = []
         continued = 0
         message = opening(root)
+        status = status_of(root)
+        stopped = "no tool call"
+        last_message = None
         while True:
+            # A stop processed after _next_message read stop_asked finds no run to cancel;
+            # check again before a new run begins, so an acknowledged stop never starts one.
+            if bridge.stop_asked:
+                stopped = "cancelled"
+                break
             events = _collect(harness.prompt(message))
             run_turns = [event for event in events if event.type == "turn_end"]
             turns += run_turns

@@ -414,3 +414,27 @@ def test_a_stop_through_the_bus_after_a_run_ended_starts_no_continuation(tmp_pat
     assert acks[0] is not None and acks[0].outcome == "cancel_asked"
     assert len(model.calls) == 1
     assert result["stopped"] == "cancelled" and result["continued"] == 0
+
+
+def test_a_stop_recorded_before_the_next_prompt_starts_no_new_run(tmp_path, monkeypatch):
+    """The stop lands after the last run ended and its follow-up was decided, when no run is
+    left to cancel. The next prompt must check the flag before it starts, never run in full."""
+
+    class _StoppedBridge:
+        stop_asked = True
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return self
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(session_mod, "SteerBridge", _StoppedBridge)
+    root = _workdir(tmp_path)
+    model = TestModel([reply("Done."), reply(STOP_LINE)])
+    result = session_mod.build(root, model)
+    assert model.calls == []
+    assert result["stopped"] == "cancelled" and result["continued"] == 0
