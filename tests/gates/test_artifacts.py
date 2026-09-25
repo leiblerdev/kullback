@@ -97,7 +97,7 @@ def test_ingest_gate_fails_a_trace_with_no_hash_or_a_hash_that_moved_between_two
 def a_sig(name="get_order", calls=3, **kw) -> ToolSig:
     base = dict(
         name=name,
-        args_schema={"properties": {"order_id": {"type": "string"}}, "required": ["order_id"]},
+        args_schema={"properties": {"loan_id": {"type": "string"}}, "required": ["loan_id"]},
         evidence_strength=EvidenceStrength(call_count=calls),
     )
     base.update(kw)
@@ -105,7 +105,7 @@ def a_sig(name="get_order", calls=3, **kw) -> ToolSig:
 
 
 def test_mine_gate_fails_a_thin_signature_unless_it_is_flagged_llm():
-    passed = mine_gate([a_sig()], calls=[{"name": "get_order", "args": {"order_id": "W1"}}])
+    passed = mine_gate([a_sig()], calls=[{"name": "get_order", "args": {"loan_id": "W1"}}])
     assert passed.stage == "mine"
     assert passed.passed is True
     out = mine_gate([a_sig(calls=2)])
@@ -123,12 +123,12 @@ def test_mine_gate_believes_a_call_count_of_zero_over_the_evidence_list():
 
 
 def test_mine_gate_fails_a_recorded_arg_outside_the_schema_or_a_missing_required_arg():
-    out = mine_gate([a_sig()], calls=[{"name": "get_order", "args": {"order_id": "W1", "colour": "red"}}])
+    out = mine_gate([a_sig()], calls=[{"name": "get_order", "args": {"loan_id": "W1", "colour": "red"}}])
     assert out.passed is False
     assert any("colour" in f for f in out.failures)
     missing = mine_gate([a_sig()], calls=[{"name": "get_order", "args": {}}])
     assert missing.passed is False
-    assert any("order_id" in f for f in missing.failures)
+    assert any("loan_id" in f for f in missing.failures)
 
 
 def test_mine_gate_reports_the_unknown_tool_names_and_does_not_fail_on_them():
@@ -212,11 +212,11 @@ def test_the_gate_and_the_compilers_own_sandbox_rule_the_same_way_on_the_same_co
 
     holds = a_constraint(
         predicate_src=("def check(pre_state, write_call, transcript):\n"
-                       "    return called_before(transcript, 'get_order_details')\n"),
+                       "    return called_before(transcript, 'get_loan_details')\n"),
         tests=ConstraintTests(
             pos=[{"pre_state": {}, "write_call": {"name": "cancel_order"},
                   "transcript": [{"role": "assistant", "content": None,
-                                  "tool_calls": [{"name": "get_order_details", "arguments": {}}]}]}],
+                                  "tool_calls": [{"name": "get_loan_details", "arguments": {}}]}]}],
             neg=[{"pre_state": {}, "write_call": {"name": "cancel_order"}, "transcript": []}],
         ),
     )
@@ -345,10 +345,10 @@ def test_verifier_gate_needs_every_d79_check():
 
 
 def test_leak_gate_finds_a_verifier_constant_in_the_intent():
-    assert leak_gate(["cancel the pending order"], ["W0000000"]).passed is True
-    out = leak_gate(["cancel order W0000000"], ["W0000000"])
+    assert leak_gate(["cancel the pending order"], ["X0000"]).passed is True
+    out = leak_gate(["cancel order X0000"], ["X0000"])
     assert out.passed is False
-    assert any("W0000000" in f for f in out.failures)
+    assert any("X0000" in f for f in out.failures)
 
 
 def test_leak_gate_matches_whole_tokens_not_substrings():
@@ -407,13 +407,13 @@ def test_the_budget_gate_passes_a_priced_batch_and_fails_a_candidate_batch_with_
 
 
 def test_environment_gate_finds_a_referenced_row_under_any_key_and_fails_the_id_the_db_lacks(tmp_path):
-    """Airline's flights are keyed by flight_number; the row is there, and the gate has to see it."""
+    """Rows are keyed under any id field; the row is there, and the gate has to see it."""
     out = environment_gate(a_env(), referenced_ids=["W1", "W9"], db_ids=["W1"])
     assert out.passed is False
     assert any("W9" in f for f in out.failures)
     ids_dir = tmp_path / "ids"
     ids_dir.mkdir()
-    (ids_dir / "db.json").write_text(json.dumps({"orders": [{"order_id": "W1"}]}), encoding="utf-8")
+    (ids_dir / "db.json").write_text(json.dumps({"loans": [{"loan_id": "W1"}]}), encoding="utf-8")
     for name in ("data_model.py", "tools.py", "policy.md"):
         (ids_dir / name).write_text("x", encoding="utf-8")
     (ids_dir / "tasks.json").write_text("[]", encoding="utf-8")

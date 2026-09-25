@@ -40,7 +40,7 @@ REFERENCE_KEYS = {"references", "recordings", "failed", "groups", "reason", "jud
                   "survivors_capped"}
 # The key the world's two End states differ on, and the value the re-roll `wrong` holds at it (D186).
 # The tool is the one the shared fixture Runs write with, read from there rather than spelled again.
-WRONG_ROW = f"{next(iter(VF.WRITE_TOOLS))}.#w999.order_id"
+WRONG_ROW = f"{next(iter(VF.WRITE_TOOLS))}.#w999.loan_id"
 
 
 def _fails_the_wrong_row(reason: str, *, evidence: tuple = ("end_states",)) -> str:
@@ -538,7 +538,7 @@ def _variant_runner_over(world, make_run, seen: list):
 def _one_call_run(run_id: str = "ref"):
     """The Reference's events with its only read taken out: one call, so no rewrite of it exists."""
     events = [e for e in VF.reference_events()
-              if e["payload"].get("name") != "get_order_details" and e["payload"].get("id") != "c0"]
+              if e["payload"].get("name") != "get_loan_details" and e["payload"].get("id") != "c0"]
     return VF.make_run(run_id, events)
 
 
@@ -553,7 +553,7 @@ def test_a_lone_reference_whose_call_path_can_be_rewritten_gets_a_second_path_wr
                   run_variant=_variant_runner_over(world, VF.alt_path_run, seen), round_number=2)
     row = out["task_status"]["t1"]
     assert len(bought) == stage.SECOND_PATH_BATCHES, "the buying is spent before anything is written"
-    assert [call["calls"] for call in seen] == [["get_order_details", "get_order_details",
+    assert [call["calls"] for call in seen] == [["get_loan_details", "get_loan_details",
                                                  next(iter(VF.WRITE_TOOLS))]]
     assert [turn["role"] for turn in seen[0]["transcript"]] == ["user", "assistant", "user", "assistant"], \
         "a variant varies the call path inside the conversation the Run it came from had"
@@ -795,8 +795,8 @@ def _rich_reference_events():
     events = VF.reference_events()
     first = [VF.call("get_loyalty_balance", {"user_id": "u1"}, kind="read", cid="c8"),
              VF.result({"user_id": "u1", "points": 40}, cid="c8")]
-    second = [VF.call("get_shipping_status", {"order_id": "#W123"}, kind="read", cid="c9"),
-              VF.result({"order_id": "#W123", "status": "in_transit"}, cid="c9")]
+    second = [VF.call("get_hold_details", {"hold_id": "#H123"}, kind="read", cid="c9"),
+              VF.result({"hold_id": "#H123", "status": "in_transit"}, cid="c9")]
     return events[:5] + first + second + events[5:]
 
 

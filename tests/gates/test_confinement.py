@@ -65,11 +65,11 @@ _SKELETON_ONLY_MODULE = "data_model"
 def _module(body: str) -> str:
     return ("import json\n\n\nclass DomainDB:\n    pass\n\n\nclass DomainTools:\n"
             "    def __init__(self, db):\n        self.db = db\n\n"
-            "    def get_order(self, order_id):\n" + body)
+            "    def get_order(self, loan_id):\n" + body)
 
 
 def test_a_clean_tool_body_is_confined():
-    source = _module("        return self.db.orders[order_id].__doc__ or {'id': order_id}\n")
+    source = _module("        return self.db.loans[loan_id].__doc__ or {'id': loan_id}\n")
     assert source_confinement(source) == []
     out = gate_confined(source)
     assert out.stage == "confined" and out.passed is True
@@ -77,7 +77,7 @@ def test_a_clean_tool_body_is_confined():
 
 
 def test_a_tool_body_that_reaches_outside_the_world_is_refused_by_name():
-    source = _module("        import os\n        return getattr(os, 'system')(order_id)\n")
+    source = _module("        import os\n        return getattr(os, 'system')(loan_id)\n")
     out = gate_confined(source)
     assert out.passed is False
     assert out.failures == ["get_order imports os", "get_order uses getattr"]
@@ -85,7 +85,7 @@ def test_a_tool_body_that_reaches_outside_the_world_is_refused_by_name():
                                ("import " + _SKELETON_ONLY_PACKAGE, "get_order imports " + _SKELETON_ONLY_PACKAGE),
                                ("from " + _SKELETON_ONLY_MODULE + " import Widget",
                                 "get_order imports " + _SKELETON_ONLY_MODULE)):
-        refused = _module("        " + statement + "\n        return {'id': order_id}\n")
+        refused = _module("        " + statement + "\n        return {'id': loan_id}\n")
         assert source_confinement(refused) == [failure]
         assert gate_confined(refused).passed is False
 
@@ -123,14 +123,14 @@ def test_a_body_that_does_not_parse_fails_the_gate_rather_than_raising():
 def test_a_body_that_names_a_module_it_never_imported_is_refused_before_a_call_reaches_the_line():
     """Build 8: `calculate` raised NameError: decimal on 49 live results and 33 replayed reads, past a
     compile gate whose recorded calls never reached the line."""
-    source = _module("        if order_id == 'x':\n            return decimal.Decimal(1)\n        return {'id': order_id}\n")
+    source = _module("        if loan_id == 'x':\n            return decimal.Decimal(1)\n        return {'id': loan_id}\n")
     assert unbound_names(source) == [
         "get_order names decimal, which nothing binds; put `import decimal` at the top of the body"]
     out = gate_confined(source)
     assert out.stage == "confined" and out.passed is False
     assert out.metrics == {"chars": len(source), "unbound": 1}
     assert out.failures == unbound_names(source)
-    unknown = _module("        return helper(order_id)\n")
+    unknown = _module("        return helper(loan_id)\n")
     assert unbound_names(unknown) == ["get_order names helper, which nothing binds"]
 
 
@@ -158,7 +158,7 @@ def test_the_names_the_helper_replaces_are_refused_as_they_were_before():
 
 
 def test_names_the_body_the_module_or_python_bind_are_not_unbound():
-    body = ("        rows = [r for r in self.db.orders if r]\n"
+    body = ("        rows = [r for r in self.db.loans if r]\n"
             "        total = sum(len(json.dumps(r)) for r in rows)\n"
             "        for i, row in enumerate(rows):\n"
             "            pass\n"
@@ -181,19 +181,19 @@ def test_a_name_bound_only_inside_a_nested_scope_is_unbound_around_it_and_report
                               "            return total\n"
                               "        return helper() + total\n")
     assert unbound_names(nested_function) == ["get_order names total, which nothing binds"]
-    comprehension = _module("        rows = [item for item in self.db.orders]\n"
+    comprehension = _module("        rows = [item for item in self.db.loans]\n"
                             "        return {'rows': rows, 'last': item}\n")
     assert unbound_names(comprehension) == ["get_order names item, which nothing binds"]
-    lambda_arg = _module("        pick = lambda row: row\n        return pick(order_id) or row\n")
+    lambda_arg = _module("        pick = lambda row: row\n        return pick(loan_id) or row\n")
     assert unbound_names(lambda_arg) == ["get_order names row, which nothing binds"]
-    inside = _module("        return [decimal.Decimal(r) for r in self.db.orders]\n")
+    inside = _module("        return [decimal.Decimal(r) for r in self.db.loans]\n")
     assert unbound_names(inside) == [
         "get_order names decimal, which nothing binds; put `import decimal` at the top of the body"]
 
 
 def test_a_nested_scope_sees_what_the_method_around_it_bound():
-    source = _module("        prefix = str(order_id)\n"
-                     "        return [prefix + str(r) for r in self.db.orders]\n")
+    source = _module("        prefix = str(loan_id)\n"
+                     "        return [prefix + str(r) for r in self.db.loans]\n")
     assert unbound_names(source) == []
 
 
@@ -239,13 +239,13 @@ def test_a_nested_class_method_sees_every_enclosing_scope_and_still_flags_what_n
     accepted and never forced into repair or assisted fallback for this. Threading those bindings
     through the class must not blind the gate to a name nothing binds anywhere, and one level deeper
     (the class inside a nested function) the method reads a local from each enclosing scope."""
-    source = _module("        factor = order_id * 2\n"
+    source = _module("        factor = loan_id * 2\n"
                      "        class Helper:\n"
                      "            def run(self):\n"
                      "                return factor + 1\n"
                      "        return Helper().run()\n")
     assert unbound_names(source) == []
-    missing = _module("        factor = order_id * 2\n"
+    missing = _module("        factor = loan_id * 2\n"
                       "        class Helper:\n"
                       "            def run(self):\n"
                       "                return factor + missing\n"
@@ -255,7 +255,7 @@ def test_a_nested_class_method_sees_every_enclosing_scope_and_still_flags_what_n
                      "        def make():\n"
                      "            class Helper:\n"
                      "                def run(self):\n"
-                     "                    return scale + order_id\n"
+                     "                    return scale + loan_id\n"
                      "            return Helper()\n"
                      "        return make().run()\n")
     assert unbound_names(deeper) == []

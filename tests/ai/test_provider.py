@@ -626,7 +626,7 @@ def test_a_local_endpoint_or_a_registry_gateway_is_sent_no_reasoning_fields(slee
 @pytest.mark.parametrize("adapter", ["anthropic", "openai"])
 def test_a_structured_tool_result_goes_as_json_not_a_python_repr(adapter):
     """D65: the Candidate sees what production gave it, and production never sent repr()."""
-    result = {"order_id": "#W1", "status": "pending", "expedited": True, "note": None}
+    result = {"loan_id": "#W1", "status": "pending", "expedited": True, "note": None}
     tool = {"role": "tool", "tool_call_id": "c1", "content": result}
     if adapter == "anthropic":
         _, out = pv._to_anthropic(

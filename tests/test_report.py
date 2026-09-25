@@ -110,7 +110,7 @@ def data() -> ReportData:
         ],
         frontier_models=["frontier-model"],
         overlays=[TaskOverlay(task_id="t1", rows=[
-            OverlayRow(table="orders", id="W1", version_hash="h1"),
+            OverlayRow(table="loans", id="W1", version_hash="h1"),
             OverlayRow(table="users", id="U1", version_hash="h2"),
         ])],
         policy_items=[
@@ -351,7 +351,7 @@ def test_an_empty_section_says_so_rather_than_vanishing(data):
 
     # The sentence only holds when every mined ToolSig is confirmed read or write (D70).
     data.tool_sigs = [ToolSig(name="cancel_order", kind="write", unclassified=False),
-                      ToolSig(name="get_order_details", kind="read", unclassified=False)]
+                      ToolSig(name="get_loan_details", kind="read", unclassified=False)]
     assert flagged_tool_verdicts(data) == {}
     assert "No flagged tools" in render(data)
     data.tool_sigs.append(ToolSig(name="mystery_tool", unclassified=True))
@@ -485,12 +485,12 @@ def test_the_report_counts_verdicts_that_rest_on_a_flagged_tool(data):
     from kullback.runner.records import Event, ToolSig
 
     call = Event(idx=0, type="tool_call", payload={"name": "search_products"})
-    other = Event(idx=0, type="tool_call", payload={"name": "get_order_details"})
+    other = Event(idx=0, type="tool_call", payload={"name": "get_loan_details"})
     data.runs[0].events = [call]
     data.runs[1].events = [call]
     data.runs[2].events = [other]
     data.tool_sigs = [ToolSig(name="search_products", unclassified=True),
-                      ToolSig(name="get_order_details", unclassified=False, kind="read")]
+                      ToolSig(name="get_loan_details", unclassified=False, kind="read")]
     assert flagged_tool_verdicts(data) == {"search_products": 2}
     text = render(data)
     assert "search_products: 2 Verdicts rest on a Run that called it" in text

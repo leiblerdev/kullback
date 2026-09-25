@@ -86,4 +86,4 @@ def test_a_probe_pool_round_trips_through_json_with_its_runs_and_hashes_by_conte
     assert again == original
     assert content_hash(again) == content_hash(original)
     assert again.probes[1].run.events[-1].payload == original.probes[1].run.events[-1].payload
-    assert P.probe_scores(verifier, again, CanonRules(), {"cancel_pending_order"}) == {"probe-t1-1": False, "probe-t1-2": False}
+    assert P.probe_scores(verifier, again, CanonRules(), {"cancel_hold"}) == {"probe-t1-1": False, "probe-t1-2": False}

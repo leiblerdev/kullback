@@ -80,8 +80,8 @@ def test_a_wrong_entity_fails_both_scorers_when_the_id_came_from_the_user(tmp_pa
             user("Please cancel one of my orders."),
             assistant("Which order id should I cancel?"),
             user("#W123"),
-            call("cancel_pending_order", {"order_id": written, "reason": "customer request"}, cid="c1"),
-            result({"order_id": written, "status": "cancelled"}, cid="c1"),
+            call("cancel_hold", {"loan_id": written, "reason": "customer request"}, cid="c1"),
+            result({"loan_id": written, "status": "cancelled"}, cid="c1"),
             assistant("Done, it is cancelled."),
         ]
     verifier = V.derive_verifier(TASK, make_run("ref", events("#W123")), [], CanonRules(), write_tools=WRITE_TOOLS)
@@ -97,10 +97,10 @@ def test_an_elicited_value_is_bound_to_the_users_own_reply(tmp_path):
         user("Please cancel my order #W123."),
         assistant("Sure. Why do you want to cancel it?"),
         user("changed my mind"),
-        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        call("get_loan_details", {"loan_id": "#W123"}, kind="read", cid="c0"),
         result(ORDER, cid="c0"),
-        call("cancel_pending_order", {"order_id": "#W123", "reason": "no longer needed"}, cid="c1"),
-        result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
+        call("cancel_hold", {"loan_id": "#W123", "reason": "no longer needed"}, cid="c1"),
+        result({"loan_id": "#W123", "status": "cancelled"}, cid="c1"),
         assistant("Your order #W123 is cancelled and 150.0 is refunded."),
     ])
     assert agree(verifier, invented, False)[1] == "q.field:reason"
@@ -114,27 +114,27 @@ def test_a_confirmation_in_the_users_own_words_passes_both_scorers(tmp_path):
         user("Please cancel my order #W123, I no longer need it."),
         assistant("I will cancel #W123 now, is that fine?"),
         user("ok"),
-        call("cancel_pending_order", {"order_id": "#W123", "reason": "no longer needed"}, cid="c1"),
-        result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
+        call("cancel_hold", {"loan_id": "#W123", "reason": "no longer needed"}, cid="c1"),
+        result({"loan_id": "#W123", "status": "cancelled"}, cid="c1"),
         assistant("Cancelled."),
     ]
     verifier = V.derive_verifier(TASK, make_run("ref", events), [], CanonRules(), write_tools=WRITE_TOOLS)
-    assert any(S.atom_payload(a).get("key") == "confirm:cancel_pending_order" for a in verifier.atoms)
+    assert any(S.atom_payload(a).get("key") == "confirm:cancel_hold" for a in verifier.atoms)
     agree(verifier, make_run("ref", events), True)
     unasked = make_run("unasked", [
         user("Please cancel my order #W123, I no longer need it."),
-        call("cancel_pending_order", {"order_id": "#W123", "reason": "no longer needed"}, cid="c1"),
-        result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
+        call("cancel_hold", {"loan_id": "#W123", "reason": "no longer needed"}, cid="c1"),
+        result({"loan_id": "#W123", "status": "cancelled"}, cid="c1"),
         assistant("Cancelled."),
     ])
-    assert agree(verifier, unasked, False)[1] == "q.confirm:cancel_pending_order"
+    assert agree(verifier, unasked, False)[1] == "q.confirm:cancel_hold"
 
 
 def test_writing_the_same_entity_twice_fails_both_scorers(tmp_path):
     verifier = derive(tmp_path)
     twice = make_run("twice", reference_events()[:-1] + [
-        call("cancel_pending_order", {"order_id": "#W123", "reason": "no longer needed"}, cid="c2"),
-        result({"order_id": "#W123", "status": "cancelled"}, cid="c2"),
+        call("cancel_hold", {"loan_id": "#W123", "reason": "no longer needed"}, cid="c2"),
+        result({"loan_id": "#W123", "status": "cancelled"}, cid="c2"),
         assistant("Your order #W123 is cancelled and 150.0 is refunded."),
     ])
     assert agree(verifier, twice, False)[1] == "entity_count"
@@ -148,16 +148,16 @@ def test_a_hard_rule_agrees_on_a_confirmation_that_came_too_late(tmp_path):
         user("Please cancel my order #W123."),
         assistant("Shall I cancel #W123?"),
         user("yes"),
-        call("cancel_pending_order", {"order_id": "#W123", "reason": "customer request"}, cid="c1"),
-        result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
+        call("cancel_hold", {"loan_id": "#W123", "reason": "customer request"}, cid="c1"),
+        result({"loan_id": "#W123", "status": "cancelled"}, cid="c1"),
         assistant("Cancelled."),
     ])
     verifier = V.derive_verifier(TASK, confirmed, [], CanonRules(), write_tools=WRITE_TOOLS, constraints=[never])
     hard_only = Verifier(task_id="t1", atoms=[a for a in verifier.atoms if a.kind == "hard"])
     late = make_run("late", [
         user("Please cancel my order #W123."),
-        call("cancel_pending_order", {"order_id": "#W123", "reason": "customer request"}, cid="c1"),
-        result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
+        call("cancel_hold", {"loan_id": "#W123", "reason": "customer request"}, cid="c1"),
+        result({"loan_id": "#W123", "status": "cancelled"}, cid="c1"),
         assistant("I cancelled #W123. Was that what you wanted?"),
         user("yes"),
         assistant("Great."),
@@ -177,7 +177,7 @@ def test_a_hard_rule_agrees_on_a_tool_the_seed_runs_never_used(tmp_path):
     verifier = derive(tmp_path, constraints=[rule])
     hard_only = Verifier(task_id="t1", atoms=[a for a in verifier.atoms if a.kind == "hard"])
     deleted = make_run("bad", reference_events()[:-1] + [
-        call("delete_order", {"order_id": "#W123"}, cid="c9"),
+        call("delete_order", {"loan_id": "#W123"}, cid="c9"),
         result({"deleted": True}, cid="c9"),
         assistant("Your order #W123 is cancelled and 150.0 is refunded."),
     ])

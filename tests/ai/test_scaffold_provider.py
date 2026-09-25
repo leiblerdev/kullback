@@ -35,17 +35,17 @@ def test_test_model_returns_scripted_replies_in_order(make_test_model):
     model = make_test_model(
         [
             "hello",
-            {"tool_calls": [{"id": "c1", "name": "get_order_details", "arguments": {"order_id": "#W1"}}]},
+            {"tool_calls": [{"id": "c1", "name": "get_loan_details", "arguments": {"loan_id": "#W1"}}]},
             ModelReply(content="done", usage={"input": 10, "output": 2}),
             {"tool_calls": [{"id": "c2", "name": "t", "arguments": '{"a": 1}'}]},
         ]
     )
-    first = model.query([{"role": "user", "content": "hi"}], tools=[{"name": "get_order_details"}])
+    first = model.query([{"role": "user", "content": "hi"}], tools=[{"name": "get_loan_details"}])
     assert first.content == "hello" and first.tool_calls == []
 
     second = model.query([], config=ModelConfig(temperature=0.0, seed=1))
-    assert second.tool_calls[0].name == "get_order_details"
-    assert second.tool_calls[0].arguments == {"order_id": "#W1"}
+    assert second.tool_calls[0].name == "get_loan_details"
+    assert second.tool_calls[0].arguments == {"loan_id": "#W1"}
 
     third = model.query([])
     assert third.usage.input == 10 and third.usage.output == 2
@@ -54,7 +54,7 @@ def test_test_model_returns_scripted_replies_in_order(make_test_model):
     assert model.query([]).tool_calls[0].arguments == {"a": 1}
 
     assert len(model.calls) == 4
-    assert model.calls[0]["tools"] == [{"name": "get_order_details"}]
+    assert model.calls[0]["tools"] == [{"name": "get_loan_details"}]
     with pytest.raises(IndexError):
         model.query([])
 
@@ -69,7 +69,7 @@ def test_recorded_model_replays_model_call_events(make_recorded_model):
                 "payload": {
                     "reply": {
                         "content": None,
-                        "tool_calls": [{"id": "c1", "name": "cancel_pending_order", "arguments": {"order_id": "#W1"}}],
+                        "tool_calls": [{"id": "c1", "name": "cancel_hold", "arguments": {"loan_id": "#W1"}}],
                         "usage": {"input": 100, "output": 20},
                     }
                 },
@@ -79,7 +79,7 @@ def test_recorded_model_replays_model_call_events(make_recorded_model):
         ]
     )
     first = model.query([])
-    assert first.tool_calls[0].name == "cancel_pending_order"
+    assert first.tool_calls[0].name == "cancel_hold"
     assert first.usage.input == 100
     assert model.query([]).content == "Your order is cancelled."
     with pytest.raises(IndexError):
@@ -94,7 +94,7 @@ def test_recorded_model_reads_plain_assistant_messages(make_recorded_model):
             {
                 "role": "assistant",
                 "content": None,
-                "tool_calls": [{"id": "c1", "name": "find_user_id_by_name_zip", "arguments": {"zip": "28236"}}],
+                "tool_calls": [{"id": "c1", "name": "find_member_id_by_name_zip", "arguments": {"zip": "11201"}}],
                 "usage": {"prompt_tokens": 5344, "completion_tokens": 103},
             },
         ],
@@ -102,7 +102,7 @@ def test_recorded_model_reads_plain_assistant_messages(make_recorded_model):
     )
     assert model.query([]).content.startswith("Hi!")
     reply = model.query([])
-    assert reply.tool_calls[0].arguments == {"zip": "28236"}
+    assert reply.tool_calls[0].arguments == {"zip": "11201"}
     assert (reply.usage.input, reply.usage.output) == (5344, 103)
 
 

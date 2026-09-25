@@ -10,9 +10,9 @@ from kullback.examiner import reference as ref
 from kullback.runner.records import Constraint
 
 # A parcel courier desk, invented for these tests: a pending delivery is cancelled with a reason.
-WRITES = {"cancel_pending_delivery", "redirect_delivered_parcel"}
+WRITES = {"cancel_hold", "redirect_delivered_parcel"}
 # One key `cancel_run`'s state holds and `empty_run`'s does not, which is what the two disagree on.
-DELIVERY_KEY = "cancel_pending_delivery.#D123.delivery_id"
+DELIVERY_KEY = "cancel_hold.#D123.delivery_id"
 
 
 def ruling(*failures: dict, evidence=("intent", "end_states"), reason: str = "") -> str:
@@ -32,7 +32,7 @@ def _canon(value):
 def cancel_run(run_id: str, delivery: str = "#D123", kind: str = ref.RECORDING) -> ref.Recording:
     run = make_run(run_id, [
         user(f"Please cancel my delivery {delivery}."),
-        call("cancel_pending_delivery", {"delivery_id": delivery, "reason": "no longer needed"}),
+        call("cancel_hold", {"delivery_id": delivery, "reason": "no longer needed"}),
         result({"delivery_id": delivery, "status": "cancelled"}),
         assistant("Done."),
     ])
@@ -59,7 +59,7 @@ def test_two_runs_that_wrote_the_same_thing_share_an_end_state():
 
 def test_describe_names_the_tool_the_entity_and_the_values():
     text = ref.describe(cancel_run("a").end_state)
-    assert text.startswith("cancel_pending_delivery on #D123") and "reason=no longer needed" in text
+    assert text.startswith("cancel_hold on #D123") and "reason=no longer needed" in text
     assert ref.describe(()) == "no writes; the answer states nothing read from the world"
     assert ref.describe(ref.ANSWERED) == "no writes; the answer states facts read from the world"
 
@@ -201,16 +201,16 @@ def test_the_judge_can_fail_a_state_and_the_other_one_becomes_the_reference():
     assert out.failed == {"b": "judge: the cancellation the user asked for never happened"}
     assert out.judged and not out.judge_abstained
     prompt = judge.calls[0]["messages"][1]["content"]
-    assert "cancel delivery #D123" in prompt and "A (1 run): cancel_pending_delivery" in prompt
+    assert "cancel delivery #D123" in prompt and "A (1 run): cancel_hold" in prompt
 
 
 def test_the_judge_prompt_gives_the_intent_as_the_ground_truth_and_says_it_has_no_transcript():
-    prompt = ref.judge_prompt("exchange the desk lamp only", ["exchanges need a confirmation"],
+    prompt = ref.judge_prompt("renew the loan only", ["renewals need a confirmation"],
                               ref.group([cancel_run("a"), empty_run("b")]))
     assert "intent, policy, end_states" in prompt
     assert "You do not have the transcript." in prompt
     assert "authenticated the user" in prompt and "confirmation" in prompt
-    assert "ground truth of what the user wanted by the end of the Run: exchange the desk lamp only" in prompt
+    assert "ground truth of what the user wanted by the end of the Run: renew the loan only" in prompt
     assert "never the opening request" in prompt
 
 
@@ -515,7 +515,7 @@ NEVER = "def check(pre_state, write_call, transcript):\n    return False\n"
 
 
 def _runs(n: int):
-    return [make_run(f"run{i}", [call("cancel_pending_delivery", {"delivery_id": "#D1"}), result({"status": "cancelled"})])
+    return [make_run(f"run{i}", [call("cancel_hold", {"delivery_id": "#D1"}), result({"status": "cancelled"})])
             for i in range(n)]
 
 
@@ -579,9 +579,9 @@ def test_violations_name_the_constraints_a_run_breaks():
 
 
 def test_a_rule_broken_by_a_few_percent_of_the_recordings_is_demoted():
-    """Calibrated on the second retail build: rules firing at 2.7% of confirmed recordings were miscompiled (D114)."""
+    """Calibrated on the second library build: rules firing at 2.7% of confirmed recordings were miscompiled (D114)."""
     rules = [_rule("rare", "def check(pre_state, write_call, transcript):\n    return write_call['arguments']['delivery_id'] != '#D1'\n")]
-    runs = _runs(39) + [make_run("odd", [call("cancel_pending_delivery", {"delivery_id": "#D2"}), result({"status": "cancelled"})])]
+    runs = _runs(39) + [make_run("odd", [call("cancel_hold", {"delivery_id": "#D2"}), result({"status": "cancelled"})])]
     rates = ref.constraint_rates(rules, runs, WRITES, _canon)
     assert rates["rare"] == {"failed": 39, "runs": 40, "judged": 40}
     one_in_forty = {"rare": {"failed": 1, "runs": 40}}

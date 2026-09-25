@@ -22,8 +22,8 @@ from kullback.runner.records import (
 )
 
 TASK = "t1"
-SIGS = [ToolSig(name="cancel_pending_order", kind="write", kind_confidence="high", unclassified=False),
-        ToolSig(name="get_order_details", kind="read", kind_confidence="high", unclassified=False)]
+SIGS = [ToolSig(name="cancel_hold", kind="write", kind_confidence="high", unclassified=False),
+        ToolSig(name="get_loan_details", kind="read", kind_confidence="high", unclassified=False)]
 
 
 def base(tmp_path: Path) -> Verifier:
