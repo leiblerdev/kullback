@@ -9,15 +9,18 @@ example adapters map theirs, with every derived field citing its raw file.
 
 from __future__ import annotations
 
-from typing import Optional
+import re
+from typing import Any, Mapping
 
 # Mapping keys render_reader understands. Recordings holds one recording
 # each, or "." where each line of a JSONL file is one recording. Role and
-# content are required. The rest are optional tool and time paths.
+# content are required. Roles is an optional map of role word to role. The
+# rest are optional tool and time paths.
 KNOWN_KEYS = (
     "recordings",
     "role",
     "content",
+    "roles",
     "tool_calls",
     "tool_name",
     "tool_arguments",
@@ -30,16 +33,26 @@ KNOWN_KEYS = (
 
 _REQUIRED = ("recordings", "role", "content")
 
+# The four roles a Turn carries. A recorded word equal to one maps to itself.
+_ROLES = ("user", "assistant", "system", "tool")
 
-def render_reader(name: str, for_file: str, mapping: dict[str, str]) -> str:
+# A reader name is also a file stem under workdir/sources, so it stays narrow.
+_NAME = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def render_reader(name: str, for_file: str, mapping: Mapping[str, Any]) -> str:
     """The source of a reader module for this mapping, defining ADAPTER and FOR_FILE.
 
     The mapping carries dotted key paths in the syntax shape.py prints, such
     as "items" for the recordings list and "items[].role" for the role
     inside each one, or "." for a JSONL file where each line is one
-    recording. The reader votes positive only where those paths resolve, so
-    ingest never picks it for a file of another shape.
+    recording. Roles optionally maps each other role word to one of the four
+    roles; a word with no mapping is refused at map time, never guessed. The
+    reader votes positive only where those paths resolve, so ingest never
+    picks it for a file of another shape.
     """
+    if not isinstance(name, str) or not _NAME.fullmatch(name):
+        raise ValueError(f"refusing reader name {name!r}: use letters, numbers, dash or underscore")
     missing = [key for key in _REQUIRED if not mapping.get(key)]
     if missing:
         raise ValueError(f"the mapping needs {', '.join(missing)}, so there is no reader to render")
@@ -47,16 +60,21 @@ def render_reader(name: str, for_file: str, mapping: dict[str, str]) -> str:
     if unknown:
         raise ValueError(f"unknown mapping keys {', '.join(unknown)}, so there is no reader to render")
     for key, value in mapping.items():
+        if key == "roles":
+            continue
         if not isinstance(value, str) or not value:
             raise ValueError(f"mapping {key} is not a dotted path, so there is no reader to render")
+    roles = _checked_roles(mapping.get("roles"))
     class_name = _class_name(name)
     body = _TEMPLATE.format(
         name=name,
         class_name=class_name,
-        for_file=for_file,
-        recordings=mapping["recordings"],
-        role=mapping["role"],
-        content=mapping["content"],
+        for_file=repr(for_file),
+        name_repr=repr(name),
+        recordings=repr(mapping["recordings"]),
+        role=repr(mapping["role"]),
+        content=repr(mapping["content"]),
+        roles=repr(roles),
         tool_calls=_as_none(mapping.get("tool_calls")),
         tool_name=_as_none(mapping.get("tool_name")),
         tool_arguments=_as_none(mapping.get("tool_arguments")),
@@ -69,13 +87,29 @@ def render_reader(name: str, for_file: str, mapping: dict[str, str]) -> str:
     return body
 
 
-def _as_none(value: Optional[str]) -> str:
-    """One mapping value as Python source: the quoted path or None."""
-    return f'"{value}"' if value else "None"
+def _checked_roles(roles: Any) -> dict[str, str]:
+    """The roles map as a plain dict, refused unless every role is one of the four."""
+    if roles is None:
+        return {}
+    if not isinstance(roles, dict) or not all(
+            isinstance(word, str) and isinstance(role, str) for word, role in roles.items()):
+        raise ValueError("mapping roles is word to role, so there is no reader to render")
+    bad = sorted({role for role in roles.values() if role not in _ROLES})
+    if bad:
+        raise ValueError(f"roles map to one of {', '.join(_ROLES)}, not {', '.join(bad)}")
+    return dict(roles)
+
+
+def _as_none(value: Any) -> str:
+    """One mapping value as Python source: its repr, or None where unset."""
+    if value is None:
+        return "None"
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"mapping value {value!r} is not a dotted path, so there is no reader to render")
+    return repr(value)
 
 
 def _class_name(name: str) -> str:
-    """A reader class name from a reader name, falling back where nothing is usable."""
     parts = [chunk for chunk in "".join(char if char.isalnum() else " " for char in name).split() if chunk]
     if not parts:
         return "MappedAdapter"
@@ -97,12 +131,13 @@ from typing import Any, Iterator
 
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
 
-FOR_FILE = "{for_file}"
-NAME = "{name}"
+FOR_FILE = {for_file}
+NAME = {name_repr}
 
-_RECORDINGS = "{recordings}"
-_ROLE = "{role}"
-_CONTENT = "{content}"
+_RECORDINGS = {recordings}
+_ROLE = {role}
+_CONTENT = {content}
+_ROLE_MAP = {roles}
 _TOOL_CALLS = {tool_calls}
 _TOOL_NAME = {tool_name}
 _TOOL_ARGUMENTS = {tool_arguments}
@@ -150,7 +185,7 @@ class {class_name}:
         count = max(len(roles), len(texts), 1)
         turns: list[Turn] = []
         for position in range(count):
-            role = _norm_role(_pick(roles, position, "assistant"))
+            role = _role(_pick(roles, position, "assistant"))
             content = _text(_pick(texts, position, None))
             here = RawPtr(file_hash=ctx.raw_hash, sim_index=index, msg_index=position)
             turns.append(Turn(idx=position, role=role, content=content, raw_ptr=here))
@@ -192,6 +227,8 @@ def _probe(document: Any) -> list[str]:
         found.append(_ROLE)
     if texts and all(value is None or isinstance(value, (str, int, float, bool, list, dict)) for value in texts):
         found.append(_CONTENT)
+    if _ROLE not in found or _CONTENT not in found:
+        return []
     return found
 
 
@@ -266,16 +303,18 @@ def _pick(values: list, position: int, default: Any) -> Any:
     return values[position] if position < len(values) else values[-1]
 
 
-def _norm_role(value: Any) -> str:
-    """A recorded role word as one of the four roles a Turn carries."""
-    text = str(value or "").strip().lower()
-    if text in ("user", "human", "customer"):
-        return "user"
-    if text in ("system",):
-        return "system"
-    if text in ("tool", "function", "observation"):
-        return "tool"
-    return "assistant"
+def _role(value: Any) -> str:
+    """A recorded role word as one of the four roles a Turn carries.
+
+    A word equal to one of the four maps to itself, any other word comes
+    from the roles map, and a word with no mapping raises, so the check
+    refuses the reader instead of guessing.
+    """
+    if value in ("user", "assistant", "system", "tool"):
+        return value
+    if value in _ROLE_MAP:
+        return _ROLE_MAP[value]
+    raise ValueError(f"unmapped role word {{value!r}}, add it to the roles map")
 
 
 def _text(value: Any) -> str | None:
@@ -297,19 +336,27 @@ def _trace_id(recording: Any, ctx: Any) -> str:
     return f"{{ctx.raw_hash[:12]}}-{{ctx.index}}"
 
 
+def _items(values: list) -> list:
+    """One resolved list as its entries: a mapped list reads as its members, not one value."""
+    if len(values) == 1 and isinstance(values[0], list):
+        return values[0]
+    return values
+
+
 def _calls(recording: Any, trace_id: str, ctx: Any) -> list:
-    """The tool calls of one recording, each paired with its result by id."""
+    """The tool calls of one recording, each paired with its result."""
     from kullback.runner.records import RawPtr, ToolCall
 
     here = RawPtr(file_hash=ctx.raw_hash, sim_index=ctx.index, msg_index=0)
     if _TOOL_CALLS:
-        objs = _get_all(recording, _rel(_TOOL_CALLS))
+        objs = _items(_get_all(recording, _rel(_TOOL_CALLS)))
     elif _TOOL_NAME:
-        objs = _get_all(recording, _rel(_TOOL_NAME))
+        objs = _items(_get_all(recording, _rel(_TOOL_NAME)))
         objs = [{{_last(_TOOL_NAME): value}} if not isinstance(value, dict) else value for value in objs]
     else:
         return []
     results = _result_map(recording)
+    ordered = list(results.values())
     calls: list[ToolCall] = []
     for position, obj in enumerate(objs):
         if isinstance(obj, dict):
@@ -321,9 +368,12 @@ def _calls(recording: Any, trace_id: str, ctx: Any) -> list:
         call_name = str(name) if name is not None else "tool"
         call_args = dict(args) if isinstance(args, dict) else {{}}
         cid = str(call_id) if call_id is not None else None
-        answer = results.get(cid) if cid is not None else None
-        if answer is None and len(results) == 1 and cid is None:
-            answer = next(iter(results.values()))
+        if cid is not None:
+            answer = results.get(cid)
+        elif len(objs) == len(ordered):
+            answer = ordered[position]
+        else:
+            answer = None
         if answer is not None:
             content, at = answer
             calls.append(ToolCall(id=cid or f"call-{{position}}", name=call_name, args=call_args,
@@ -332,14 +382,10 @@ def _calls(recording: Any, trace_id: str, ctx: Any) -> list:
                                   result_ptr=RawPtr(file_hash=ctx.raw_hash, sim_index=ctx.index,
                                                     msg_index=at),
                                   trace_id=trace_id))
-        elif _TOOL_RESULTS or _TOOL_RESULT_CONTENT:
-            calls.append(ToolCall(id=cid or f"call-{{position}}", name=call_name, args=call_args,
-                                  requestor="assistant", raw_ptr=here, trace_id=trace_id))
         else:
             calls.append(ToolCall(id=cid or f"call-{{position}}", name=call_name, args=call_args,
-                                  result={{}}, requestor="assistant", has_result=True,
-                                  resolved=True, raw_ptr=here, result_ptr=here,
-                                  trace_id=trace_id))
+                                  requestor="assistant", has_result=False,
+                                  raw_ptr=here, trace_id=trace_id))
     return calls
 
 
@@ -357,9 +403,9 @@ def _field(obj: dict, path: str | None) -> Any:
 def _result_map(recording: Any) -> dict:
     """Tool result id to (content, position), for pairing calls with answers."""
     if _TOOL_RESULTS:
-        objs = _get_all(recording, _rel(_TOOL_RESULTS))
+        objs = _items(_get_all(recording, _rel(_TOOL_RESULTS)))
     elif _TOOL_RESULT_CONTENT:
-        objs = _get_all(recording, _rel(_TOOL_RESULT_CONTENT))
+        objs = _items(_get_all(recording, _rel(_TOOL_RESULT_CONTENT)))
         return {{f"result-{{i}}": (value, i) for i, value in enumerate(objs)}}
     else:
         return {{}}
