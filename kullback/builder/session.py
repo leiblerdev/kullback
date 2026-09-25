@@ -265,6 +265,18 @@ def _collect(aiter: Any) -> list:
     return asyncio.run(go())
 
 
+def _next_message(bridge: Any, *, follow: Optional[str], continued: int, stopped: str) -> tuple:
+    """The message after a run: none when the session ends here, with how it stopped.
+
+    A stop that came in between runs found no run to cancel; it ends the session here.
+    """
+    if follow is None or continued >= CONTINUATIONS:
+        return None, stopped, True
+    if bridge.stop_asked:
+        return None, "cancelled", True
+    return follow, stopped, False
+
+
 def build(workdir: Any, model: Any, *, files: Optional[list] = None,
           examine_fn: Optional[Callable[[Any, Any], Any]] = None,
           ceiling_usd: Optional[float] = None, session_path: Any = None,
@@ -333,14 +345,11 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
             answered_with_work = continued == 0 or len(run_turns) > 1
             follow = (continuation(status, spent_in(root), ceiling_usd)
                       if stopped == "no tool call" and answered_with_work else None)
-            if follow is None or continued >= CONTINUATIONS:
-                break
-            # A stop that came in between runs found no run to cancel; it ends the session here.
-            if bridge.stop_asked:
-                stopped = "cancelled"
+            message, stopped, done = _next_message(bridge, follow=follow, continued=continued,
+                                                   stopped=stopped)
+            if done:
                 break
             continued += 1
-            message = follow
         last_line = str(getattr(last_message, "content", None) or "")
         if stopped == "error":
             last_line = str(getattr(last_message, "error_message", None) or last_line)

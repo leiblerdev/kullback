@@ -489,6 +489,19 @@ def runner_model(model: Any, workdir: Any) -> Any:
     return priced_model(model, workdir, "runner", cap_context=False)
 
 
+def _stopped_texts(findings: Any) -> list[str]:
+    """The lead texts of findings rows marking a stop, so the summary can lead with them."""
+    return [f.get("text") for f in findings
+            if any(isinstance(r, dict) and r.get("stopped") for r in f.get("rows") or [])]
+
+
+def _mark_stopped(result: ExamineResult, stops: list[str]) -> None:
+    """Lead the result with the stop note and flag it, when a stop ended it early."""
+    if stops:
+        result.stopped = True
+        result.summary = "; ".join(filter(None, [stops[0], result.summary]))
+
+
 def _finding_row(item: Any) -> dict:
     """One finding as a dict: `as_dict()` where the examiner's Finding offers it."""
     if isinstance(item, dict):
@@ -985,11 +998,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
         if left_out or not_derived:
             result.summary = "; ".join(filter(None, [*not_derived, result.summary, *left_out]))
         # A stop leads the summary, so the first line says the examination ended early.
-        stops = [f.get("text") for f in result.findings
-                 if any(isinstance(r, dict) and r.get("stopped") for r in f.get("rows") or [])]
-        if stops:
-            result.stopped = True
-            result.summary = "; ".join(filter(None, [stops[0], result.summary]))
+        _mark_stopped(result, _stopped_texts(result.findings))
         stage = stage_of(root)
         if not result.findings or not stage["finished"]:
             why = f"{stage['finished']} of {stage['tasks']} tasks have a finished run"

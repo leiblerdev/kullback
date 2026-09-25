@@ -244,6 +244,18 @@ def select_for_session(task_ids: Iterable[str], replays: dict, rerolls: dict,
     return selected, left_out
 
 
+def _derive_pending(task_id: str, *, status: dict, root: Path, replays: dict) -> bool:
+    """A Task still to derive: never read, cut short by a stop, or confirmed but unwritten."""
+    if task_id not in status:
+        return True
+    if (status[task_id] or {}).get("stopped"):
+        return True
+    if (root / "verifiers" / f"{task_id}.json").is_file():
+        return False
+    return bool((status[task_id] or {}).get("reference_confirmed")
+                or finished_run_ids(task_id, replays, {}))
+
+
 def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> list[str]:
     """The Tasks this examine call is about, in id order (F40).
 
@@ -260,18 +272,8 @@ def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> lis
     status = read_json(root / "task_status.json", {}) or {}
     status = status if isinstance(status, dict) else {}
     replays = store.get("replays") or {}
-
-    def pending(task_id: str) -> bool:
-        if task_id not in status:
-            return True
-        if (status[task_id] or {}).get("stopped"):
-            return True
-        if (root / "verifiers" / f"{task_id}.json").is_file():
-            return False
-        return bool((status[task_id] or {}).get("reference_confirmed")
-                    or finished_run_ids(task_id, replays, {}))
-
-    return [task_id for task_id in known if pending(task_id)]
+    return [task_id for task_id in known
+            if _derive_pending(task_id, status=status, root=root, replays=replays)]
 
 
 def default_workers() -> int:
@@ -495,6 +497,26 @@ def _one_line(text: str, limit: int = HINT_CHARS) -> str:
     return " ".join(text.split())[:limit]
 
 
+def _stopped_before_session(findings: list[Finding], *, derived: int, total: int,
+                            should_stop: Callable[[], bool]) -> list[Finding]:
+    """The findings plus the early-stop note, when a stop came before any session opened."""
+    if should_stop():
+        return findings + [stopped_finding(derived, total, session="not opened")]
+    return findings
+
+
+def _open_session(model: Any, should_stop: Callable[[], bool]) -> bool:
+    """A model session opens: a model is given and no stop came before it."""
+    return model is not None and not should_stop()
+
+
+def _session_stop_note(cancelled: list[bool], *, derived: int, total: int) -> list[Finding]:
+    """The note when a stop cancelled the session, else nothing."""
+    if cancelled:
+        return [stopped_finding(derived, total, session="cancelled")]
+    return []
+
+
 def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: Any,
             judge_model: Any = None, probe_model: Any = None, reroll_model: Any = None,
             allowance_usd: Optional[float] = None, session_path: Any = None,
@@ -549,10 +571,10 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
         wanted = set(task_ids)
         findings = [f for f in findings if f.task_id in wanted or
                     any(str(r.get("task_id")) in wanted for r in f.rows)]
-    if should_stop():
-        findings = findings + [stopped_finding(derived, len(now), session="not opened")]
+    findings = _stopped_before_session(findings, derived=derived, total=len(now),
+                                       should_stop=should_stop)
     write_json(root / "findings.json", [f.as_dict() for f in findings])
-    if model is None or should_stop():
+    if not _open_session(model, should_stop):
         return findings
     candidates = task_ids if task_ids is not None else {
         *(t.id for t in store.get("tasks") or []), *(store.get("replays") or {}),
@@ -580,7 +602,7 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     cancelled = _cancel_on_stop(harness, should_stop)
     load_extensions(harness, [examiner_extension(exam_root, selected)])
     cap_notes = _run_session(harness, session_opening(exam_root, selected), max_turns, selected)
-    stop_note = [stopped_finding(derived, len(now), session="cancelled")] if cancelled else []
+    stop_note = _session_stop_note(cancelled, derived=derived, total=len(now))
     out = list(exam_root.findings) + note + cap_notes + stop_note
     write_json(root / "findings.json", [f.as_dict() for f in out])
     return out

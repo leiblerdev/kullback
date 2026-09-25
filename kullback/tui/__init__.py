@@ -492,18 +492,42 @@ class Transcript:
         if self.on_line is not None:
             self.on_line(text, style)
 
+    def _stream_text(self, event: Any) -> None:
+        """One text delta appended to the open line, printing each line it completes."""
+        stream = getattr(event, "stream_event", None)
+        if getattr(stream, "type", None) == "text_delta":
+            self._streamed = True
+            self._open += stream.delta
+            while "\n" in self._open:
+                line, self._open = self._open.split("\n", 1)
+                self.say(f"  {line}", "white")
+
+    def _compaction(self, event: Any) -> None:
+        """One compaction event as the line the feed keeps."""
+        replaced = len(event.replaces_entry_ids)
+        self.say(f"compaction by {event.by}: {replaced} entries became one summary"
+                 + (f" ({event.reason})" if event.reason else ""), "magenta")
+
+    def _steer(self, event: Any) -> bool:
+        """One steer request or ack from another process as the line the feed keeps."""
+        kind = getattr(event, "type", None)
+        if kind == "steer_request":
+            said = f": {_first_line(event.text)}" if event.text else ""
+            self.say(f"steer {event.kind} from {event.sender or 'another process'}{said}", "cyan")
+            return True
+        if kind == "steer_ack":
+            self.say(f"steer {event.kind} {event.outcome.replace('_', ' ')}"
+                     + (f": {event.reason}" if event.reason else ""),
+                     "red" if event.outcome == "refused" else "cyan")
+            return True
+        return False
+
     def event(self, event: Any) -> None:
         kind = getattr(event, "type", None)
         if kind == "message_start":
             self._open, self._streamed = "", False
         elif kind == "message_update":
-            stream = getattr(event, "stream_event", None)
-            if getattr(stream, "type", None) == "text_delta":
-                self._streamed = True
-                self._open += stream.delta
-                while "\n" in self._open:
-                    line, self._open = self._open.split("\n", 1)
-                    self.say(f"  {line}", "white")
+            self._stream_text(event)
         elif kind == "message_end":
             self._message_end(event.message)
         elif kind == "tool_execution_start":
@@ -513,18 +537,11 @@ class Transcript:
         elif kind == "turn_end" and self.footer is not None:
             self.say(f"  {self.footer(event.turn)}", "dim")
         elif kind == "compaction":
-            replaced = len(event.replaces_entry_ids)
-            self.say(f"compaction by {event.by}: {replaced} entries became one summary"
-                     + (f" ({event.reason})" if event.reason else ""), "magenta")
+            self._compaction(event)
         elif kind == "custom_message":
             self.say(f"queued ({event.deliver_as}): {_first_line(event.content)}", "cyan")
-        elif kind == "steer_request":
-            said = f": {_first_line(event.text)}" if event.text else ""
-            self.say(f"steer {event.kind} from {event.sender or 'another process'}{said}", "cyan")
-        elif kind == "steer_ack":
-            self.say(f"steer {event.kind} {event.outcome.replace('_', ' ')}"
-                     + (f": {event.reason}" if event.reason else ""),
-                     "red" if event.outcome == "refused" else "cyan")
+        elif self._steer(event):
+            pass
         elif kind == "error":
             self.say(f"error: {event.message}", "red")
         elif kind == "agent_end":
