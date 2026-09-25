@@ -55,7 +55,7 @@ from kullback.gates.probes import (
     version_hash,
     write_tools_of,
 )
-from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES
+from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES, skipped_steps
 from kullback.runner.canon import load_rules
 from kullback.runner.gate_support import _get, gate
 from kullback.runner.records import (
@@ -214,10 +214,23 @@ def unattributed_seeds(verifier: Verifier, workdir: Any, files: dict[str, dict[s
     return bad
 
 
-def _passing_probes(verifier: Verifier, pool: Any, canon_rules: Any, write_tools: Any) -> list[str]:
-    """The probes of the Task's pool the Verifier scores a pass, none without a pool."""
-    scores = probe_scores(verifier, as_pool(pool), canon_rules, write_tools) if pool is not None else {}
-    return [probe_id for probe_id, ok in scores.items() if ok]
+def _passing_probes(verifier: Verifier, pool: Any, canon_rules: Any, write_tools: Any,
+                    runs: Optional[list[Run]] = None) -> list[str]:
+    """The probes of the Task's pool the Verifier scores a pass that skipped a step, none without a pool.
+
+    The same reading as check 6: a passing probe that made every call the seeds all made before their
+    first demanded outcome solved the Task, and it is no reason to withhold trust. The seeds are read
+    off the Task's Runs by the Verifier's seed ids; with none of them to hand, a passing probe
+    withholds trust as it always did.
+    """
+    if pool is None:
+        return []
+    pool = as_pool(pool)
+    scores = probe_scores(verifier, pool, canon_rules, write_tools)
+    wanted = set(verifier.seed_run_ids)
+    seeds = [run for run in runs or [] if run.run_id in wanted]
+    return [probe.probe_id for probe in pool.probes if scores[probe.probe_id]
+            and (not seeds or skipped_steps(verifier, probe.run, seeds, canon_rules))]
 
 
 def _pool_ruling(held: dict) -> str:
@@ -262,7 +275,8 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     failures: list[str] = []
     for verifier in sorted(map(as_verifier, verifiers or ()), key=lambda v: v.task_id):
         task_id = verifier.task_id
-        passing = _passing_probes(verifier, (probes or {}).get(task_id), canon_rules, write_tools)
+        passing = _passing_probes(verifier, (probes or {}).get(task_id), canon_rules, write_tools,
+                                  (task_runs or {}).get(task_id))
         probes_passing += len(passing)
         held = false_rejection(verifier, (task_runs or {}).get(task_id, []), legitimate.get(task_id, set()),
                                canon_rules, write_tools)

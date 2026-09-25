@@ -657,7 +657,8 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
         _run_gate("verifier_unfinished_run", scored, unfinished_run(verifier, reference, canon),
                   expect_pass=False, atoms=verifier.atoms),
         _run_gate("verifier_alt_path", scored, alt_path_run, expect_pass=True, missing=ALT_PATH_NOT_RUN),
-        loophole_probe(verifier, model, run_probe=run_probe, canon=canon, write_tools=write_tools),
+        loophole_probe(verifier, model, run_probe=run_probe, canon=canon, write_tools=write_tools,
+                       seed_runs=[r for r in own + [reference] if r.run_id in set(verifier.seed_run_ids)]),
         _leak_gate(verifier, reference, intent_text, user_rules, runs.values(), intent, fn=fn),
         _mutation_gate(verifier, reference, score, fn, write_tools),
         specific_gate(verifier, reference, fn, rows),
@@ -1241,11 +1242,19 @@ def _leak_gate(verifier: Verifier, reference: Run, intent_text: Optional[str],
 
 
 def loophole_probe(verifier: Verifier, model: Any, *, run_probe: Optional[Callable] = None, canon: Any = None,
-                   write_tools: Optional[Iterable[str]] = None) -> GateResult:
+                   write_tools: Optional[Iterable[str]] = None,
+                   seed_runs: Optional[Iterable[Any]] = None) -> GateResult:
     """Check 6: an agent told to reach the End state while skipping the policy step must score fail.
 
     A gate runs nothing (D91, D122), so the caller passes `run_probe(model, verifier) -> Run`. With no model
     or no runner the probe is skipped, and a skipped probe is not evidence that the Verifier is tight.
+
+    A probe that passed is a loophole only when it skipped a step: a call every seed made before its
+    first demanded outcome. On a read-only Task a probe that does every read and answers right has
+    solved the Task, and failing the Verifier for that failed twelve Tasks on one build for being
+    right. Such a probe is recorded as a legitimate path. The Verifier still scores results and never
+    the route; this only decides what a passing probe is evidence of. With no seed Run to compare
+    against, a passing probe fails the check as it always did, since nothing says it skipped nothing.
     """
     if model is None or run_probe is None:
         missing = "no model" if model is None else "no run_probe"
@@ -1253,7 +1262,39 @@ def loophole_probe(verifier: Verifier, model: Any, *, run_probe: Optional[Callab
         return GateResult(stage="verifier_loophole", passed=False,
                           metrics={"skipped": True, "not_run_reason": why},
                           failures=[f"{NOT_RUN}{why}"])
-    passed, failing_atom = check_run(verifier, run_probe(model, verifier), canon, write_tools=write_tools)
-    return GateResult(stage="verifier_loophole", passed=not passed,
-                      metrics={"probe_passed": passed, "failing_atom": failing_atom},
-                      failures=["the loophole probe reached the End state and scored pass"] if passed else [])
+    probe = as_run(run_probe(model, verifier))
+    passed, failing_atom = check_run(verifier, probe, canon, write_tools=write_tools)
+    seeds = [as_run(seed) for seed in seed_runs or ()]
+    skipped = skipped_steps(verifier, probe, seeds, canon) if passed and seeds else []
+    loophole = passed and (bool(skipped) or not seeds)
+    failures = []
+    if loophole:
+        failures = [f"the loophole probe skipped {', '.join(skipped)}, which every seed called first, and scored pass"
+                    if skipped else "the loophole probe reached the End state and scored pass"]
+    return GateResult(stage="verifier_loophole", passed=not loophole,
+                      metrics={"probe_passed": passed, "failing_atom": failing_atom, "skipped_calls": skipped,
+                               "legitimate_path": passed and not loophole},
+                      failures=failures)
+
+
+def skipped_steps(verifier: Verifier, probe: Run, seeds: list[Run], canon: Any = None) -> list[str]:
+    """The tools every seed called before its first demanded outcome that the probe did not call before its own.
+
+    What the seeds agree on is the only route evidence the Task has: a call one seed made and another
+    did not is a habit, not a step. The probe is held to the same cut, so a lookup made only after the
+    outcome it was meant to guard still counts as skipped.
+    """
+    fn = canon_fn(canon)
+    steps = set.intersection(*(_calls_before_outcome(verifier, seed, fn) for seed in seeds))
+    return sorted(steps - _calls_before_outcome(verifier, probe, fn))
+
+
+def _calls_before_outcome(verifier: Verifier, run: Run, fn: Callable) -> set[str]:
+    """The tool names a Run called before its first demanded outcome: a required write, else the answer."""
+    demanded = {atom_payload(a).get("tool") for a in verifier.atoms
+                if a.kind == "required" and atom_payload(a).get("kind") == "write"}
+    calls = [e for e in run.events if e.type == "tool_call"]
+    cut = next((e.idx for e in calls if _payload(e).get("name") in demanded), None)
+    if cut is None and not demanded:
+        cut = _first_answer(verifier, run, fn)
+    return {str(_payload(e).get("name")) for e in calls if cut is None or e.idx < cut}
