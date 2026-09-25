@@ -1,23 +1,32 @@
 """Readers a workdir carries for formats the harness does not map yet.
 
 A workdir/sources/<name>.py file defines a module-level ADAPTER behind the
-intake seam plus the FOR_FILE sha256 of the raw file it was written for.
-Loading registers the adapter so ingest and dry runs read the format, but only
-after the reader passes its checks against that raw file when the workdir
-stores it. A reader that fails to import or fails a check is skipped with its
-reason, never raised, so one bad reader cannot break ingest of known formats.
+intake seam plus the FOR_FILE sha256 of the file it was written for. Loading
+registers the adapter so ingest and dry runs read the format, but only after
+the reader passes its checks against that file. A reader that fails to import,
+names no FOR_FILE, has no file to check against, or fails a check is skipped
+with its reason, never raised, so one bad reader cannot break ingest of known
+formats. No reader is ever registered without a passing check.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
 import json
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
-from kullback.builder.sources import MapContext, by_name, detect_format, register, unregister
+from kullback.builder.sources import (
+    MapContext,
+    by_name,
+    detect_format,
+    register,
+    registered,
+    unregister,
+)
 
 # Loaded reader modules by resolved path, so a second load in one process
 # reuses the module instead of executing the file again.
@@ -30,13 +39,36 @@ def load_workdir_readers(workdir: str | Path) -> list[str]:
     return names
 
 
-def load_with_reasons(workdir: str | Path) -> tuple[list[str], dict[str, str]]:
+def load_with_reasons(workdir: str | Path, candidate: Optional[Path] = None
+                      ) -> tuple[list[str], dict[str, str]]:
     """Register every workdir reader that passes, with the skip reason per failure.
 
-    load_workdir_readers is the plain entry point; ingest and dry runs use this
-    one so the result can say why a reader was skipped.
+    load_workdir_readers is the plain entry point; ingest and dry runs pass the
+    file being ingested as candidate so a reader is checked against it on the
+    very first ingest, before any raw file is stored.
     """
-    return _load(Path(workdir))
+    return _load(Path(workdir), candidate)
+
+
+@contextlib.contextmanager
+def active(workdir: str | Path, candidate: Optional[Path] = None
+           ) -> Iterator[tuple[list[str], dict[str, str]]]:
+    """Register the passing workdir readers for one ingest, then restore the registry.
+
+    A long-lived process must not leak one workdir's readers into the next
+    file's vote, so on exit every name this call registered is unregistered
+    again and any adapter a reader displaced is put back.
+    """
+    previous = {adapter.name: adapter for adapter in registered()}
+    names, skipped = _load(Path(workdir), candidate)
+    try:
+        yield (names, skipped)
+    finally:
+        for name in names:
+            unregister(name)
+        for name, adapter in previous.items():
+            if by_name(name) is not adapter:
+                register(adapter)
 
 
 def adapter_from_path(path: str | Path) -> Any:
@@ -200,13 +232,20 @@ def _default_fixtures() -> list[Path]:
     return sorted(item for item in folder.glob("*.json") if item.is_file())
 
 
-def _load(workdir: Path) -> tuple[list[str], dict[str, str]]:
-    """Import, check, and register every reader file, collecting skip reasons."""
+def _load(workdir: Path, candidate: Optional[Path] = None) -> tuple[list[str], dict[str, str]]:
+    """Import, check, and register every reader file, collecting skip reasons.
+
+    A reader is checked against the candidate when its FOR_FILE is the
+    candidate's sha256, else against the stored raw file when the workdir holds
+    it; with neither, or with no FOR_FILE at all, the reader is skipped with
+    its reason. Nothing registers without a passing check.
+    """
     names: list[str] = []
     skipped: dict[str, str] = {}
     folder = workdir / "sources"
     if not folder.is_dir():
         return (names, skipped)
+    digest = _candidate_hash(candidate)
     for cand in sorted(folder.glob("*.py")):
         try:
             module = _load_module(cand)
@@ -218,18 +257,39 @@ def _load(workdir: Path) -> tuple[list[str], dict[str, str]]:
             continue
         label = str(getattr(adapter, "name", cand.name))
         for_file = getattr(module, "FOR_FILE", None)
-        stored = workdir / "raw" / (for_file + ".json") if isinstance(for_file, str) else None
-        if stored is not None and stored.is_file():
-            try:
-                found = check_reader(adapter, stored)
-            except Exception as exc:
-                found = [f"the check itself fails: {type(exc).__name__}: {exc}"]
-            if found:
-                skipped[label] = "; ".join(found)
-                continue
+        if not isinstance(for_file, str):
+            skipped[label] = "the reader names no FOR_FILE, so there is no file to check it against"
+            continue
+        target: Optional[Path] = None
+        if digest is not None and for_file == digest and candidate is not None:
+            target = Path(candidate)
+        else:
+            stored = workdir / "raw" / (for_file + ".json")
+            if stored.is_file():
+                target = stored
+        if target is None:
+            skipped[label] = "the file it was written for is not here to check it against"
+            continue
+        try:
+            found = check_reader(adapter, target)
+        except Exception as exc:
+            found = [f"the check itself fails: {type(exc).__name__}: {exc}"]
+        if found:
+            skipped[label] = "; ".join(found)
+            continue
         register(adapter)
         names.append(label)
     return (names, skipped)
+
+
+def _candidate_hash(candidate: Optional[Path]) -> Optional[str]:
+    """The sha256 of the file being ingested, or None when there is none to check."""
+    if candidate is None:
+        return None
+    try:
+        return hashlib.sha256(Path(candidate).read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 def _load_module(path: Path) -> ModuleType:

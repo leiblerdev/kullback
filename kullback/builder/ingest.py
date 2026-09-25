@@ -971,38 +971,38 @@ def dry_run(path: str | Path, workdir: str | Path,
         origin = Path(workdir) / "sources"
         if origin.is_dir():
             shutil.copytree(origin, scratch / "sources")
-        readers, skipped = workdir_readers.load_with_reasons(scratch)
-        document, jsonl = _decode(payload)
-        decision = sources.detect_format(document, jsonl)
-        base = {
-            "file": str(source),
-            "format": decision.winner,
-            "confidence": _winner_confidence(decision),
-            "reasons": list(decision.reasons),
-            "floor": floor,
-            "readers": readers,
-            "skipped_readers": skipped,
-        }
-        try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                summary = ingest_file(source, scratch, intake_floor=floor)
-        except IntakeGateError as exc:
-            return _dry_gate_result(base, raw_hash, scratch, exc)
-        except (ValueError, NotImplementedError) as exc:
-            return base | {"recordings": 0, "traces": 0, "eligible_share": 0.0,
-                           "passed": False, "tools": 0, "rejected": {},
-                           "failures": [str(exc)], "message": str(exc)}
-        metrics = summary["gate"]["metrics"]
-        return base | {
-            "recordings": metrics["task_eligible"] + metrics["evidence_only"] + metrics["rejected"],
-            "traces": summary["runs"],
-            "eligible_share": metrics["eligible_share"],
-            "passed": True,
-            "tools": _distinct_tools(scratch),
-            "rejected": _rejected_counts(scratch, summary["raw_hash"]),
-            "failures": [],
-            "message": None,
-        }
+        with workdir_readers.active(scratch, source) as (readers, skipped):
+            document, jsonl = _decode(payload)
+            decision = sources.detect_format(document, jsonl)
+            base = {
+                "file": str(source),
+                "format": decision.winner,
+                "confidence": _winner_confidence(decision),
+                "reasons": list(decision.reasons),
+                "floor": floor,
+                "readers": readers,
+                "skipped_readers": skipped,
+            }
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    summary = ingest_file(source, scratch, intake_floor=floor)
+            except IntakeGateError as exc:
+                return _dry_gate_result(base, raw_hash, scratch, exc)
+            except (ValueError, NotImplementedError) as exc:
+                return base | {"recordings": 0, "traces": 0, "eligible_share": 0.0,
+                               "passed": False, "tools": 0, "rejected": {},
+                               "failures": [str(exc)], "message": str(exc)}
+            metrics = summary["gate"]["metrics"]
+            return base | {
+                "recordings": metrics["task_eligible"] + metrics["evidence_only"] + metrics["rejected"],
+                "traces": summary["runs"],
+                "eligible_share": metrics["eligible_share"],
+                "passed": True,
+                "tools": _distinct_tools(scratch),
+                "rejected": _rejected_counts(scratch, summary["raw_hash"]),
+                "failures": [],
+                "message": None,
+            }
 
 
 def _winner_confidence(decision: Any) -> float:
@@ -1076,43 +1076,43 @@ def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = 
     published, rescued or not, and the traces, evidence traces and sidecars an earlier ingest
     published for the same bytes are withdrawn while the ruling records withdrawn True."""
     intake_floor = _check_floor(intake_floor)
-    readers, skipped = workdir_readers.load_with_reasons(workdir)
-    raw = store_raw(path, workdir)
-    traces = derive_traces(raw.raw_hash, workdir, model=model, floor=intake_floor)
-    ruling = read_intake_ruling(workdir, raw.raw_hash)
-    if ruling:
-        _update_aggregate_ruling(workdir, raw.raw_hash, ruling)
-    gate = gate_ingest(traces, workdir, raw_hash=raw.raw_hash, floor=intake_floor)
-    if not gate.passed:
-        _withdraw_raw_hash(raw.raw_hash, workdir)
-        ruling["withdrawn"] = True
-        _write_ruling(raw.raw_hash, ruling, workdir)
-        raise IntakeGateError(_gate_message(path, gate), gate)
-    # Eligible traces publish only on a passing gate: a failed intake raises above, so a later
-    # build reusing this workdir never loads recordings from a file that failed admission.
-    eligible, set_aside = _split_writes(traces, ruling)
-    write_traces(eligible, workdir)
-    if set_aside:
-        write_evidence(set_aside, workdir)
-    summary = {
-        "raw_hash": raw.raw_hash,
-        "format": raw.format_detected,
-        "readers": readers,
-        "skipped_readers": skipped,
-        "runs": len(eligible),
-        "tool_calls": gate.metrics["tool_calls"],
-        "errors": gate.metrics["errors"],
-        "truncated": gate.metrics["truncated"],
-        "rejected": gate.metrics["rejected"],
-        "task_eligible": gate.metrics["task_eligible"],
-        "evidence_only": gate.metrics["evidence_only"],
-        "rescued": (ruling.get("rescued") or {}).get("count", 0) if ruling else 0,
-        "trace_hashes": [trace.hash for trace in eligible],
-        "gate": as_dict(gate),
-    }
-    print(
-        f"ingest {raw.format_detected}: {summary['runs']} runs, {summary['tool_calls']} tool calls, "
-        f"{summary['errors']} errors, {summary['truncated']} truncated, {summary['rejected']} rejected, "
-        f"gate {'pass' if gate.passed else 'fail'}"
-    )
-    return summary
+    with workdir_readers.active(workdir, path) as (readers, skipped):
+        raw = store_raw(path, workdir)
+        traces = derive_traces(raw.raw_hash, workdir, model=model, floor=intake_floor)
+        ruling = read_intake_ruling(workdir, raw.raw_hash)
+        if ruling:
+            _update_aggregate_ruling(workdir, raw.raw_hash, ruling)
+        gate = gate_ingest(traces, workdir, raw_hash=raw.raw_hash, floor=intake_floor)
+        if not gate.passed:
+            _withdraw_raw_hash(raw.raw_hash, workdir)
+            ruling["withdrawn"] = True
+            _write_ruling(raw.raw_hash, ruling, workdir)
+            raise IntakeGateError(_gate_message(path, gate), gate)
+        # Eligible traces publish only on a passing gate: a failed intake raises above, so a later
+        # build reusing this workdir never loads recordings from a file that failed admission.
+        eligible, set_aside = _split_writes(traces, ruling)
+        write_traces(eligible, workdir)
+        if set_aside:
+            write_evidence(set_aside, workdir)
+        summary = {
+            "raw_hash": raw.raw_hash,
+            "format": raw.format_detected,
+            "readers": readers,
+            "skipped_readers": skipped,
+            "runs": len(eligible),
+            "tool_calls": gate.metrics["tool_calls"],
+            "errors": gate.metrics["errors"],
+            "truncated": gate.metrics["truncated"],
+            "rejected": gate.metrics["rejected"],
+            "task_eligible": gate.metrics["task_eligible"],
+            "evidence_only": gate.metrics["evidence_only"],
+            "rescued": (ruling.get("rescued") or {}).get("count", 0) if ruling else 0,
+            "trace_hashes": [trace.hash for trace in eligible],
+            "gate": as_dict(gate),
+        }
+        print(
+            f"ingest {raw.format_detected}: {summary['runs']} runs, {summary['tool_calls']} tool calls, "
+            f"{summary['errors']} errors, {summary['truncated']} truncated, {summary['rejected']} rejected, "
+            f"gate {'pass' if gate.passed else 'fail'}"
+        )
+        return summary
