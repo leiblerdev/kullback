@@ -1539,3 +1539,12 @@ def test_home_rows_name_slash_fixes_for_login_and_ingest(tmp_path):
     assert home.row_command(0) == "/login"
     assert home.row_command(2) == "/ingest"
     assert fix_command("kullback freeze-runner") == "/freeze-runner"
+
+
+def test_home_model_row_names_the_default_model_in_plain_words(tmp_path):
+    """With no model chosen Home reads the default model's keys, never 'no model'."""
+    from kullback.tui.home import HomeView
+
+    text = HomeView(tmp_path).text()
+    assert "names no key variable" not in text
+    assert "no model" not in text

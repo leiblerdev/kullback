@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from rich.text import Text
 from textual import on
 from textual.containers import Vertical
 from textual.widgets import Label, ListItem, ListView, Static
@@ -86,12 +87,14 @@ class HomeView(Vertical):
         return f"[{mark}] {row.name:<10} {row.detail}"
 
     def _row_item(self, index: int, row: Any) -> ListItem:
-        return ListItem(Label(self._row_line(row)), id=f"home-row-{index}")
+        # Rich Text, not str: a Label reads "[x]" as markup and drops it, which
+        # left done rows with no mark beside the "[ ]" rows.
+        return ListItem(Label(Text(self._row_line(row))), id=f"home-row-{index}")
 
     def _render_rows(self) -> None:
         """The rows as selectable lines, the recent builds under them."""
         for item, row in zip(self._items, self.rows, strict=True):
-            item.query_one(Label).update(self._row_line(row))
+            item.query_one(Label).update(Text(self._row_line(row)))
         lines = ["recent builds in this workdir"]
         if not self.recent:
             lines.append("none")
@@ -102,7 +105,7 @@ class HomeView(Vertical):
             mark = "live" if alive and record.get("status") == "running" else str(
                 record.get("status") or "done")
             lines.append(f"{mark} {record.get('model') or 'no model'}")
-        self.recent_view.update("\n".join(lines))
+        self.recent_view.update(Text("\n".join(lines)))
 
     @on(ListView.Selected, "#home-checklist")
     def _row_chosen(self, event: ListView.Selected) -> None:

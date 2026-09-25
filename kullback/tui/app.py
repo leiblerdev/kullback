@@ -24,7 +24,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
-from kullback.tui import COMMANDS, live_heartbeats, status_segments
+from kullback.tui import COMMANDS, live_heartbeats
 from kullback.tui.build_view import BuildView
 from kullback.tui.command_line import CommandLine
 from kullback.tui.home import HomeView
@@ -33,11 +33,11 @@ from kullback.tui.views.traces import TracesView
 from kullback.tui.watch import WatchView
 
 APP_CSS = """
-#hdr { height: 1; }
 #view { height: 1fr; }
 #cmd-result { height: 1; }
 #cmdline { height: auto; }
-#cmd-menu { height: auto; max-height: 10; }
+#cmd-input { border: solid #8a8a8a; }
+#cmd-menu { height: auto; max-height: 10; border: none; }
 #home-checklist { height: auto; max-height: 8; }
 #output-form { width: 80%; height: auto; max-height: 80%; }
 #transcript { width: 1fr; }
@@ -176,6 +176,7 @@ class KullbackApp(App):
     def __init__(self, workdir: Any, model: Optional[str] = None, base_url: Optional[str] = None,
                  ceiling_usd: Optional[float] = None) -> None:
         super().__init__()
+        self.title = "kullback"
         self.workdir = Path(workdir)
         self.model = model
         self.base_url = base_url or ""
@@ -185,14 +186,12 @@ class KullbackApp(App):
         self.session_keys: dict[str, Optional[str]] = {}
         # The last one-line result, for tests to read without rendering.
         self.last_said = ""
-        self.header = Static("", id="hdr")
         self.body = Vertical(id="view")
         self.result = Static("", id="cmd-result")
         self.cmdline = CommandLine(on_run=self.run_command)
         self.current: Any = None
 
     def compose(self) -> ComposeResult:
-        yield self.header
         yield self.body
         yield self.result
         yield self.cmdline
@@ -202,8 +201,6 @@ class KullbackApp(App):
             self.show_watch()
         else:
             self.show_home()
-        self.refresh_header()
-        self.set_interval(5.0, self.refresh_header)
 
     def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
         """Number keys, slash and ? type into inputs instead of switching views there."""
@@ -214,18 +211,12 @@ class KullbackApp(App):
             return False
         return True
 
-    def refresh_header(self) -> None:
-        """The workdir, its total spend, and where the commands live."""
-        out = Text(f"kullback  {self.workdir} ", style="bold")
-        out.append_text(status_segments(self.workdir, self.model))
-        out.append("   / commands  ? keys", style="dim")
-        self.header.update(out)
-
     def say(self, line: str) -> None:
         """One result line under the view, kept for tests to read without rendering."""
         self.last_said = line
         try:
-            self.query_one("#cmd-result", Static).update(line)
+            # Rich Text, not str: a Static reads "[x]" as markup and drops it.
+            self.query_one("#cmd-result", Static).update(Text(line))
         except Exception:
             pass
 
@@ -279,14 +270,26 @@ class KullbackApp(App):
             return
         if not parts:
             return
-        verb, rest = parts[0].lstrip("/"), parts[1:]
+        self._dispatch_table(parts[0].lstrip("/"), parts[1:], text)
+
+    def _dispatch_table(self, verb: str, rest: list[str], text: str) -> None:
+        """A parsed verb to its view, its action, or the words saying it is unknown."""
         if verb in ("quit", "exit", "q"):
             self.exit()
         elif verb in ("home", "doctor"):
             self.show_home()
         elif verb in ("traces", "tasks", "runs", "publish", "synthesise"):
             self.show_view(verb)
-        elif verb == "build":
+        elif self._dispatch_views(verb, rest):
+            return
+        elif verb in {row[0] for row in COMMANDS}:
+            self._run_screen_text(text)
+        else:
+            self.say(f"no command {verb}; /help lists every command")
+
+    def _dispatch_views(self, verb: str, rest: list[str]) -> bool:
+        """The verbs that open something here; True when one opened."""
+        if verb == "build":
             self._build_command(rest)
         elif verb == "watch":
             self._watch_command(rest)
@@ -300,10 +303,9 @@ class KullbackApp(App):
             self.push_screen(LoginModal(), self._login_saved)
         elif verb == "ingest":
             self._ingest(rest)
-        elif verb in {row[0] for row in COMMANDS}:
-            self._run_screen_text(text)
         else:
-            self.say(f"no command {verb}; /help lists every command")
+            return False
+        return True
 
     def _run_screen_text(self, line: str) -> None:
         """Run a line-screen command off a capturing Screen and show what it said.
@@ -355,9 +357,11 @@ class KullbackApp(App):
         """Home reads again after a command changed the workdir or the keys."""
         if isinstance(self.current, HomeView):
             self.current.session = self.session_keys
-            self.current.model = self.model
+            # No model means the view keeps its own default: writing None reads
+            # as "no model" and its rows lose their key variables.
+            if self.model is not None:
+                self.current.model = self.model
             self.current.refresh_view()
-        self.refresh_header()
 
     def _help(self) -> None:
         """Every command with its one-line meaning, straight from the shared table."""
@@ -425,10 +429,24 @@ class KullbackApp(App):
 
         The same ingest_file the CLI calls, one row per file with its runs, tool
         calls and gate result, and the same ingest_summary.json the checklist
-        reads, so Home's traces row turns done here too.
+        reads, so Home's traces row turns done here too. The result line names
+        counts, never a full path; rows name the file only.
         """
         from kullback.builder import ingest as ingest_mod
 
+        args = self._ingest_args(rest)
+        if isinstance(args, str):
+            self.say(args)
+            return
+        paths, floor, dry = args
+        if dry:
+            self._ingest_dry(ingest_mod, paths, floor)
+        else:
+            self._ingest_files(ingest_mod, paths, floor)
+
+    @staticmethod
+    def _ingest_args(rest: list[str]) -> Any:
+        """Ingest flags and paths, or the words saying what is wrong with them."""
         floor: Optional[float] = None
         dry = False
         paths: list[str] = []
@@ -440,40 +458,42 @@ class KullbackApp(App):
                 index += 1
             elif word == "--intake-floor":
                 if index + 1 >= len(rest):
-                    self.say("--intake-floor needs a value between 0 and 1")
-                    return
+                    return "--intake-floor needs a value between 0 and 1"
                 try:
                     floor = float(rest[index + 1])
                 except ValueError:
-                    self.say(f"--intake-floor takes a number, not {rest[index + 1]!r}")
-                    return
+                    return f"--intake-floor takes a number, not {rest[index + 1]!r}"
                 index += 2
             elif word.startswith("--"):
-                self.say(f"unknown flag {word}: /ingest PATH [PATH ...] [--intake-floor N] [--dry-run]")
-                return
+                return (f"unknown flag {word}: "
+                        "/ingest PATH [PATH ...] [--intake-floor N] [--dry-run]")
             else:
                 paths.append(word)
                 index += 1
         if floor is not None and not 0.0 <= floor <= 1.0:
-            self.say("--intake-floor must lie within [0, 1]")
-            return
+            return "--intake-floor must lie within [0, 1]"
         if not paths:
-            self.say("ingest needs a file: /ingest PATH [PATH ...]")
-            return
-        default_floor = ingest_mod.MIN_TASK_ELIGIBLE_SHARE
-        rows: list[str] = []
-        if dry:
-            for path in paths:
-                try:
-                    result = ingest_mod.dry_run(path, self.workdir,
-                                                intake_floor=default_floor if floor is None else floor)
-                except Exception as exc:
-                    rows.append(f"{path}: {type(exc).__name__}: {exc}")
-                    continue
-                rows.append(self._dry_row(path, result))
-            self.show_text("/ingest --dry-run", "\n".join(rows))
-            self.say(rows[0][:160] if rows else "done")
-            return
+            return "ingest needs a file: /ingest PATH [PATH ...]"
+        return paths, floor, dry
+
+    def _ingest_dry(self, ingest_mod: Any, paths: list[str], floor: Optional[float]) -> None:
+        """Say what each file would give, without writing anything."""
+        rows = []
+        for path in paths:
+            try:
+                result = ingest_mod.dry_run(
+                    path, self.workdir,
+                    intake_floor=ingest_mod.MIN_TASK_ELIGIBLE_SHARE if floor is None else floor)
+            except Exception as exc:
+                rows.append(f"{Path(path).name}: {type(exc).__name__}: {exc}")
+                continue
+            rows.append(self._dry_row(path, result))
+        self.show_text("/ingest --dry-run", "\n".join(rows))
+        self.say(rows[0] if rows else "done")
+
+    def _ingest_files(self, ingest_mod: Any, paths: list[str], floor: Optional[float]) -> None:
+        """Store each file's traces with the builder's entry and report one summary line."""
+        rows = []
         summaries: list[dict] = []
         for path in paths:
             try:
@@ -482,9 +502,9 @@ class KullbackApp(App):
                 else:
                     summary = ingest_mod.ingest_file(path, self.workdir, intake_floor=floor)
             except Exception as exc:
-                rows.append(f"{path}: {type(exc).__name__}: {exc}")
+                rows.append(f"{Path(path).name}: {type(exc).__name__}: {exc}")
                 self.show_text("/ingest", "\n".join(rows))
-                self.say(rows[-1][:160])
+                self.say(rows[-1])
                 return
             summaries.append(summary)
             rows.append(self._ingest_row(path, summary))
@@ -497,16 +517,38 @@ class KullbackApp(App):
         if isinstance(self.current, TracesView):
             self.show_view("traces")
         self.show_text("/ingest", "\n".join(rows))
-        self.say(rows[0][:160] if rows else "done")
+        self.say(self._ingest_summary(paths, summaries))
+
+    @staticmethod
+    def _gate_passed(gate: dict) -> bool:
+        return bool(gate.get("pass", gate.get("passed", True)))
+
+    @staticmethod
+    def _gate_reason(gate: dict) -> str:
+        """The gate's first failure reason, cut to fit one result line."""
+        failures = gate.get("failures") or []
+        return str(failures[0])[:100] if failures else "no reason given"
+
+    def _ingest_summary(self, paths: list[str], summaries: list[dict]) -> str:
+        """One result line: files, traces, tool calls and whether the gate passed."""
+        runs = sum(int(summary.get("runs") or 0) for summary in summaries)
+        calls = sum(int(summary.get("tool_calls") or 0) for summary in summaries)
+        word = "file" if len(paths) == 1 else "files"
+        head = f"ingested {len(paths)} {word}: {runs} traces, {calls} tool calls"
+        failed = [summary for summary in summaries
+                  if not self._gate_passed(summary.get("gate") or {})]
+        if not failed:
+            return head + ", gate passed"
+        return head + f", gate failed: {self._gate_reason(failed[0].get('gate') or {})}"
 
     def _ingest_row(self, path: str, summary: dict) -> str:
         """One ingested file: its runs, its tool calls and what the gate said."""
         gate = summary.get("gate") or {}
         metrics = gate.get("metrics") or {}
-        passed = gate.get("pass", gate.get("passed", True))
+        passed = self._gate_passed(gate)
         share = float(metrics.get("eligible_share") or 0.0)
         floor = float(metrics.get("floor") or 0.0)
-        return (f"{path} format {summary.get('format')} "
+        return (f"{Path(path).name} format {summary.get('format')} "
                 f"traces {summary.get('runs')} calls {summary.get('tool_calls')} "
                 f"eligible {share:.2f} vs {floor:.2f} "
                 f"tools {self._ingested_tools(str(summary.get('raw_hash') or ''))} "
@@ -520,7 +562,8 @@ class KullbackApp(App):
         else:
             failures = result.get("failures") or result.get("reasons") or ["no reason given"]
             status = f"not read: {failures[0]}"
-        return (f"{path} format {result.get('format')} confidence {float(result.get('confidence') or 0):.2f} "
+        return (f"{Path(path).name} format {result.get('format')} "
+                f"confidence {float(result.get('confidence') or 0):.2f} "
                 f"traces {result.get('traces')} eligible {float(result.get('eligible_share') or 0):.2f} "
                 f"vs {float(result.get('floor') or 0):.2f} tools {result.get('tools')} {status}")
 

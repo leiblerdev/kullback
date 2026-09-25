@@ -90,8 +90,10 @@ async def test_ingest_ingests_the_file_and_home_traces_row_turns_done(tmp_path):
         assert (tmp_path / "ingest_summary.json").is_file()
         assert isinstance(app.current, HomeView)
         assert "[x] traces" in app.current.text()
-        assert "traces 3" in app.last_said
+        assert app.last_said == "ingested 1 file: 3 traces, 9 tool calls, gate passed"
         assert isinstance(app.screen, OutputModal)
+        assert "traces_small.json" in app.screen.text()
+        assert str(FIXTURE) not in app.screen.text()
         assert "ready" in app.screen.text()
         await pilot.press("escape")
 
@@ -181,8 +183,8 @@ async def test_home_shows_the_gradient_banner_above_the_checklist(tmp_path):
     from textual.widgets import Static
 
     from kullback.tui import banner
-
     app = KullbackApp(workdir=tmp_path)
+    assert app.title == "kullback"
     async with app.run_test():
         assert isinstance(app.current, HomeView)
         assert app.query_one("#home-banner", Static) is not None
@@ -226,3 +228,16 @@ async def test_screenshots_capture_home_and_the_open_menu(tmp_path):
         app.save_screenshot("/tmp/kb-shell-menu.svg")
     assert Path("/tmp/kb-shell-home.svg").is_file()
     assert Path("/tmp/kb-shell-menu.svg").is_file()
+
+
+@pytest.mark.anyio
+async def test_screenshots_capture_the_login_modal(tmp_path):
+    """Bare /login opens the modal with providers and a masked key field."""
+    app = KullbackApp(workdir=tmp_path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.run_command("/login")
+        await pilot.pause(0.8)
+        assert isinstance(app.screen, LoginModal)
+        app.save_screenshot("/tmp/kb-shell-login.svg")
+        await pilot.press("escape")
+    assert Path("/tmp/kb-shell-login.svg").is_file()
