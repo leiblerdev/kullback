@@ -177,6 +177,17 @@ def _warn_unfrozen_runner() -> None:
     typer.echo("warning: the Verdicts carry no Runner version, run `kullback freeze-runner`", err=True)
 
 
+def _score_tool_sigs(sigs) -> tuple:
+    """The write and unclassified tool names, saying out loud when side effects go unchecked."""
+    write_tools = {sig.name for sig in sigs if sig.kind == "write"}
+    if sigs and not write_tools:
+        typer.echo("no write tools among the mined ToolSigs: side effects are not checked")
+    elif not sigs:
+        typer.echo("no ToolSigs on disk: side effects are not checked")
+    flagged_tools = {sig.name for sig in sigs if sig.unclassified}
+    return write_tools or None, flagged_tools
+
+
 def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = False,
            judge_model: Optional[str] = None, base_url: Optional[str] = None,
            second_judge_model: Optional[str] = None) -> None:
@@ -205,12 +216,7 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
     if schema is None:
         typer.echo("no EntitySchema on disk (schema.json): exempt columns are not dropped from the diff (D73)")
     sigs = load_tool_sigs(workdir)  # without these the extra-write and D70 checks never fire
-    write_tools = {sig.name for sig in sigs if sig.kind == "write"}
-    flagged_tools = {sig.name for sig in sigs if sig.unclassified}
-    if sigs and not write_tools:
-        typer.echo("no write tools among the mined ToolSigs: side effects are not checked")
-    elif not sigs:
-        typer.echo("no ToolSigs on disk: side effects are not checked")
+    write_tools, flagged_tools = _score_tool_sigs(sigs)
     queued = set(_entry("kullback.runner.canon", "queued_regrades")(workdir)) if use_queue else set()
     scored = 0
     for task in _tasks(workdir, task_id):
@@ -814,27 +820,33 @@ def freeze_runner(
     typer.echo(str(path))
 
 
-def _run_task_ids(workdir: Path, selector: str) -> list[str]:
-    """The Task ids `--tasks` names: trusted, all, or comma separated ids, in on-disk order.
-
-    Trusted is the live ruling the hub publishes from, so a graded Run always has a checked
-    Verifier behind it.
-    """
+def _on_disk_task_ids(workdir: Path) -> list[str]:
+    """Every Task id with a file, in on-disk order, without the tasks.json index."""
     folder = Path(workdir) / "tasks"
     on_disk = sorted(path.stem for path in folder.glob("*.json")) if folder.is_dir() else []
-    on_disk = [task_id for task_id in on_disk if task_id != "tasks.json"]
-    if selector == "all":
-        if not on_disk:
-            typer.echo("no Tasks with a file: nothing was run")
-            raise typer.Exit(1)
-        return on_disk
-    if selector == "trusted":
-        trusted = set(_entry("kullback.hub.package", "trusted_ids")(workdir))
-        picked = [task_id for task_id in on_disk if task_id in trusted]
-        if not picked:
-            typer.echo("no trusted Tasks: nothing was run")
-            raise typer.Exit(1)
-        return picked
+    return [task_id for task_id in on_disk if task_id != "tasks.json"]
+
+
+def _all_task_ids(on_disk: list[str]) -> list[str]:
+    """Every Task id, refusing an empty workdir instead of running nothing."""
+    if not on_disk:
+        typer.echo("no Tasks with a file: nothing was run")
+        raise typer.Exit(1)
+    return on_disk
+
+
+def _trusted_task_ids(workdir: Path, on_disk: list[str]) -> list[str]:
+    """The on-disk Task ids the live ruling trusts, refusing when none do."""
+    trusted = set(_entry("kullback.hub.package", "trusted_ids")(workdir))
+    picked = [task_id for task_id in on_disk if task_id in trusted]
+    if not picked:
+        typer.echo("no trusted Tasks: nothing was run")
+        raise typer.Exit(1)
+    return picked
+
+
+def _named_task_ids(on_disk: list[str], selector: str) -> list[str]:
+    """The on-disk Task ids a comma separated selector names, in on-disk order."""
     wanted = [part.strip() for part in selector.split(",") if part.strip()]
     if not wanted:
         typer.echo("--tasks names no Tasks")
@@ -844,6 +856,20 @@ def _run_task_ids(workdir: Path, selector: str) -> list[str]:
         typer.echo(f"no Task named {', '.join(unknown)}")
         raise typer.Exit(2)
     return [task_id for task_id in on_disk if task_id in set(wanted)]
+
+
+def _run_task_ids(workdir: Path, selector: str) -> list[str]:
+    """The Task ids `--tasks` names: trusted, all, or comma separated ids, in on-disk order.
+
+    Trusted is the live ruling the hub publishes from, so a graded Run always has a checked
+    Verifier behind it.
+    """
+    on_disk = _on_disk_task_ids(workdir)
+    if selector == "all":
+        return _all_task_ids(on_disk)
+    if selector == "trusted":
+        return _trusted_task_ids(workdir, on_disk)
+    return _named_task_ids(on_disk, selector)
 
 
 def _run_scoring(workdir: Path) -> dict:
@@ -894,19 +920,41 @@ def _played_runs(workdir: Path, paths: set) -> list:
     return [(load_run(path).run_id, path) for path in sorted(paths, key=lambda path: path.name)]
 
 
+def _scored_run_rows(rows: list) -> list:
+    """The rows with Runs behind them: scored, not refused, with a Verifier."""
+    return [row for row in rows if row["runs"] and not row["refused"] and not row["no_verifier"]]
+
+
+def _mean_pass_rate(scored: list) -> Optional[float]:
+    """The mean of the per-Task pass rates, or nothing where no Task was scored."""
+    rates = [row["passes"] / row["runs"] for row in scored]
+    return sum(rates) / len(rates) if rates else None
+
+
+def _full_pass_rate(scored: list, count: int) -> Optional[float]:
+    """The share of Tasks that passed every Run, over Tasks with the full count."""
+    full = [row for row in scored if row["runs"] == count]
+    if full and count > 1:
+        return sum(1 for row in full if row["passes"] == row["runs"]) / len(full)
+    return None
+
+
+def _failing_run_row(scored: list) -> Optional[dict]:
+    """The scored row with the most failures, or nothing where every Run passed."""
+    failing = max(scored, key=lambda row: row["runs"] - row["passes"], default=None)
+    if failing is not None and failing["runs"] - failing["passes"] == 0:
+        return None
+    return failing
+
+
 def _run_totals(rows: list, count: int, planned: int, spend_usd: float, ceiling_usd,
                 ceiling_stopped: bool) -> dict:
     """One dict under the per-Task lines: pass@1, pass^k, Runs done, spend, the Task that failed most."""
-    scored = [row for row in rows if row["runs"] and not row["refused"] and not row["no_verifier"]]
-    rates = [row["passes"] / row["runs"] for row in scored]
-    full = [row for row in scored if row["runs"] == count]
-    failing = max(scored, key=lambda row: row["runs"] - row["passes"], default=None)
-    if failing is not None and failing["runs"] - failing["passes"] == 0:
-        failing = None
+    scored = _scored_run_rows(rows)
+    failing = _failing_run_row(scored)
     return {
-        "pass_at_1": sum(rates) / len(rates) if rates else None,
-        "pass_k": (sum(1 for row in full if row["passes"] == row["runs"]) / len(full)
-                   if full and count > 1 else None),
+        "pass_at_1": _mean_pass_rate(scored),
+        "pass_k": _full_pass_rate(scored, count),
         "k": count,
         "runs_done": sum(row["runs"] for row in rows),
         "runs_planned": planned,
@@ -935,6 +983,73 @@ def _echo_run_totals(totals: dict, count: int) -> None:
                f"spend ${totals['spend_usd']:.2f} failing most: {failing}")
 
 
+def _run_single_task_reports(workdir: Path, task: Optional[str], model: str,
+                             base_url: Optional[str], count: int) -> None:
+    """The --task answer as it always was: the Run reports as JSON."""
+    if task is None:
+        typer.echo("run takes --task or --tasks")
+        raise typer.Exit(2)
+    reports = _entry("kullback.runner.tool", "reroll")(
+        environment_dir=workdir, task_id=task, model=_live_model(model, base_url), count=count,
+        workdir=workdir)
+    typer.echo(json.dumps([report.as_dict() for report in reports], default=str))
+
+
+def _run_ceiling(workdir: Path, ceiling_usd: Optional[float], budget) -> tuple:
+    """The spend ceiling and whether it already stopped the run before it began."""
+    if ceiling_usd is None:
+        return None, False
+    try:
+        return budget.Ceiling.from_totals(workdir, ceiling_usd), False
+    except budget.BudgetExceeded:
+        return None, True
+
+
+def _play_task_runs(workdir: Path, task_id: str, candidate, count: int, reroll, budget) -> tuple:
+    """(played, ceiling_hit): one Task's Runs, or the files that landed before the ceiling."""
+    runs_dir = Path(workdir) / "runs"
+    before = set(runs_dir.glob("*.jsonl")) if runs_dir.is_dir() else set()
+    try:
+        reports = reroll(environment_dir=workdir, task_id=task_id, model=candidate, count=count,
+                         workdir=workdir)
+        return [(report.run_id, Path(workdir) / report.path) for report in reports], False
+    except budget.BudgetExceeded:
+        after = set(runs_dir.glob("*.jsonl")) if runs_dir.is_dir() else set()
+        return _played_runs(workdir, after - before), True
+
+
+def _played_task_row(task_id: str, played: list, outcomes: list, refusal: Optional[str]) -> tuple:
+    """One Task's row and its line: refused, missing Runs, or the pass/fail words."""
+    if refusal:
+        row = {"task": task_id, "runs": len(played), "passes": 0, "outcomes": [],
+               "refused": True, "no_verifier": False}
+        return row, f"{task_id} refused, {refusal}"
+    if not played:
+        row = {"task": task_id, "runs": 0, "passes": 0, "outcomes": [],
+               "refused": False, "no_verifier": False}
+        return row, f"{task_id} no stored Runs"
+    words = ["pass" if passed else "fail" for passed in outcomes]
+    row = {"task": task_id, "runs": len(words), "passes": sum(outcomes),
+           "outcomes": words, "refused": False, "no_verifier": False}
+    return row, f"{task_id} {' '.join(words)}"
+
+
+def _run_one_task(workdir: Path, task_id: str, candidate, count: int, scoring: dict,
+                  reroll, budget) -> tuple:
+    """One Task's row, its line, and whether the ceiling stopped the run mid-Task."""
+    if not (Path(workdir) / "verifiers" / f"{task_id}.json").is_file():
+        row = {"task": task_id, "runs": 0, "passes": 0, "outcomes": [],
+               "refused": False, "no_verifier": True}
+        return row, f"{task_id} no Verifier yet, not scored", False
+    played, ceiling_hit = _play_task_runs(workdir, task_id, candidate, count, reroll, budget)
+    if played:
+        outcomes, refusal = _score_played_runs(workdir, task_id, played, scoring)
+    else:
+        outcomes, refusal = [], None
+    row, line = _played_task_row(task_id, played, outcomes, refusal)
+    return row, line, ceiling_hit
+
+
 @app.command()
 def run(
     workdir: Path = WORKDIR,
@@ -958,13 +1073,7 @@ def run(
         typer.echo("run takes --task or --tasks, not both")
         raise typer.Exit(2)
     if tasks is None:
-        if task is None:
-            typer.echo("run takes --task or --tasks")
-            raise typer.Exit(2)
-        reports = _entry("kullback.runner.tool", "reroll")(
-            environment_dir=workdir, task_id=task, model=_live_model(model, base_url), count=count,
-            workdir=workdir)
-        typer.echo(json.dumps([report.as_dict() for report in reports], default=str))
+        _run_single_task_reports(workdir, task, model, base_url, count)
         return
     task_ids = _run_task_ids(workdir, tasks)
     trusted_only = tasks.strip() == "trusted"
@@ -972,12 +1081,7 @@ def run(
         typer.echo("only trusted Tasks are graded by a checked Verifier")
     budget = importlib.import_module("kullback.runner.budget")
     candidate = _live_model(model, base_url)
-    ceiling, ceiling_stopped = None, False
-    if ceiling_usd is not None:
-        try:
-            ceiling = budget.Ceiling.from_totals(workdir, ceiling_usd)
-        except budget.BudgetExceeded:
-            ceiling_stopped = True
+    ceiling, ceiling_stopped = _run_ceiling(workdir, ceiling_usd, budget)
     # The Candidate is priced into the workdir ledger like every other model call, but never
     # memoized: a Candidate's answer has to be a fresh sample, and a memoized one would turn a
     # sample into a replay. It is never context capped either: it runs under production settings.
@@ -989,39 +1093,10 @@ def run(
     for task_id in task_ids:
         if ceiling_stopped:
             break
-        if not (Path(workdir) / "verifiers" / f"{task_id}.json").is_file():
-            if not as_json:
-                typer.echo(f"{task_id} no Verifier yet, not scored")
-            rows.append({"task": task_id, "runs": 0, "passes": 0, "outcomes": [],
-                         "refused": False, "no_verifier": True})
-            continue
-        runs_dir = Path(workdir) / "runs"
-        before = set(runs_dir.glob("*.jsonl")) if runs_dir.is_dir() else set()
-        try:
-            reports = reroll(environment_dir=workdir, task_id=task_id, model=candidate, count=count,
-                             workdir=workdir)
-            played = [(report.run_id, Path(workdir) / report.path) for report in reports]
-        except budget.BudgetExceeded:
+        row, line, ceiling_hit = _run_one_task(workdir, task_id, candidate, count, scoring,
+                                               reroll, budget)
+        if ceiling_hit:
             ceiling_stopped = True
-            after = set(runs_dir.glob("*.jsonl")) if runs_dir.is_dir() else set()
-            played = _played_runs(workdir, after - before)
-        if played:
-            outcomes, refusal = _score_played_runs(workdir, task_id, played, scoring)
-        else:
-            outcomes, refusal = [], None
-        if refusal:
-            row = {"task": task_id, "runs": len(played), "passes": 0, "outcomes": [],
-                   "refused": True, "no_verifier": False}
-            line = f"{task_id} refused, {refusal}"
-        elif not played:
-            row = {"task": task_id, "runs": 0, "passes": 0, "outcomes": [],
-                   "refused": False, "no_verifier": False}
-            line = f"{task_id} no stored Runs"
-        else:
-            words = ["pass" if passed else "fail" for passed in outcomes]
-            row = {"task": task_id, "runs": len(words), "passes": sum(outcomes),
-                   "outcomes": words, "refused": False, "no_verifier": False}
-            line = f"{task_id} {' '.join(words)}"
         rows.append(row)
         if not as_json:
             typer.echo(line)
@@ -1333,6 +1408,11 @@ def tasks(
         typer.echo(_task_row_line(row))
 
 
+def _finding_words(kind: Optional[str], path: Optional[str]) -> str:
+    """The kind and path of one finding as words, for a row or a detail line."""
+    return " ".join(part for part in (kind, path) if part)
+
+
 def _task_row_line(row: dict) -> str:
     """One Task's row as text: every cell, with a dash where the workdir holds nothing."""
     finding = " ".join(part for part in (row["last_finding_kind"], row["last_finding_path"]) if part)
@@ -1341,21 +1421,25 @@ def _task_row_line(row: dict) -> str:
     return " ".join(cells)
 
 
+def _replay_calls_line(matched: Optional[int], total: Optional[int]) -> str:
+    """The replayed calls as matched/total, with a dash where the workdir holds nothing."""
+    return (f"replay calls: {(matched if matched is not None else '-')}/"
+            f"{(total if total is not None else '-')} matched/total")
+
+
 def _task_detail_lines(detail: dict) -> list[str]:
     """One Task's detail as text: the row, the gate that failed, findings, atoms and replay calls."""
-    finding = " ".join(part for part in (detail["last_finding_kind"], detail["last_finding_path"]) if part)
+    finding = _finding_words(detail["last_finding_kind"], detail["last_finding_path"])
     lines = [f"task {detail['task_id']}", f"status: {detail['status']}",
              f"replay: {detail['replay'] or '-'}", f"suite: {detail['suite'] or '-'}",
              f"probes: {detail['probes'] or '-'}", f"drift: {detail['drift'] or '-'}",
              f"last finding: {finding or '-'}", f"failing gate: {detail['failing_gate'] or 'none'}"]
     for row in detail["open_findings"]:
-        lines.append("finding: " + " ".join(part for part in (row["kind"], row["path"]) if part))
+        lines.append("finding: " + _finding_words(row["kind"], row["path"]))
     atoms = detail["atom_counts"]
     lines.append("atoms: " + (", ".join(f"{kind} {count}" for kind, count in sorted(atoms.items()))
                               if atoms else "none"))
-    matched, total = detail["replay_matched"], detail["replay_total"]
-    lines.append(f"replay calls: {(matched if matched is not None else '-')}/"
-                 f"{(total if total is not None else '-')} matched/total")
+    lines.append(_replay_calls_line(detail["replay_matched"], detail["replay_total"]))
     return lines
 @app.command()
 def doctor(

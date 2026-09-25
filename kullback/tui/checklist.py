@@ -108,6 +108,79 @@ def _describe_groups(groups: tuple[tuple[str, ...], ...]) -> str:
     return " or ".join(" and ".join(group) for group in groups)
 
 
+def _model_row(model: str, key_env: Mapping[str, str], held: Mapping[str, Any]) -> Row:
+    """The model row: which key group is set and where it came from, or what is missing."""
+    groups = _key_groups(model) if model else ()
+    set_groups = [group for group in groups if group and all(key_env.get(var) for var in group)]
+    if set_groups:
+        shown = set_groups[0]
+        source = key_source(shown[0], held, env=key_env)
+        return Row("model", True, f"{' and '.join(shown)} set ({source})", "/login")
+    if groups:
+        return Row("model", False, f"needs {_describe_groups(groups)}", "/login")
+    return Row("model", False, f"{model or 'no model'} names no key variable", "/login")
+
+
+def _live_row(key_env: Mapping[str, str], held: Mapping[str, Any]) -> Row:
+    """The live calls row: on with where the switch came from, or how to turn it on."""
+    from kullback.ai.provider import LIVE_ENV_VAR
+
+    if _truthy(key_env.get(LIVE_ENV_VAR, "")):
+        source = key_source(LIVE_ENV_VAR, held, env=key_env)
+        return Row("live calls", True, f"on ({LIVE_ENV_VAR}=1 in {source})", "/login")
+    return Row("live calls", False, f"off: put {LIVE_ENV_VAR}=1 in .env or export it", "/login")
+
+
+def _traces_row(workdir: Path) -> Row:
+    """The traces row: how many files and traces ingest brought, or none yet."""
+    try:
+        summaries = json.loads((workdir / "ingest_summary.json").read_text(encoding="utf-8"))
+        summaries = summaries if isinstance(summaries, list) else None
+    except (OSError, ValueError):
+        summaries = None
+    if not summaries:
+        return Row("traces", False, "none yet", "kullback ingest")
+    files = len(summaries)
+    runs = sum(int(row.get("runs") or 0) for row in summaries if isinstance(row, dict))
+    word = "file" if files == 1 else "files"
+    trace_word = "trace" if runs == 1 else "traces"
+    return Row("traces", True, f"{files} {word}, {runs} {trace_word}", "kullback ingest")
+
+
+def _build_row(workdir: Path) -> Row:
+    """The build row: the last round's trusted count and fidelity, or not started."""
+    try:
+        rounds = json.loads((workdir / "rounds.json").read_text(encoding="utf-8"))
+        rounds = [row for row in rounds if isinstance(row, dict)] if isinstance(rounds, list) else []
+    except (OSError, ValueError):
+        rounds = []
+    if not rounds:
+        return Row("build", False, "not started", "/build")
+    last = rounds[-1]
+    counts = last.get("counts") if isinstance(last.get("counts"), dict) else {}
+    trusted_ids = counts.get("trusted_ids")
+    trusted = len(trusted_ids) if isinstance(trusted_ids, list) else int(counts.get("trusted") or 0)
+    detail = f"round {last.get('round', len(rounds))}: trusted {trusted}"
+    if counts.get("fidelity") is not None or counts.get("tasks") is not None:
+        detail += f", fidelity {counts.get('fidelity', 0)}/{counts.get('tasks', 0)}"
+    return Row("build", True, detail, "/build")
+
+
+def _runner_row(workdir: Path) -> Row:
+    """The runner row: the frozen version, or not frozen."""
+    try:
+        version_body = json.loads((workdir / "runner_version.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        version_body = None
+    if isinstance(version_body, dict):
+        version = str(version_body.get("runner_version") or "")
+        return Row("runner", True, f"frozen {version[:12]}" if version else "frozen",
+                   "kullback freeze-runner")
+    if (workdir / "runner_version.json").is_file():
+        return Row("runner", True, "frozen", "kullback freeze-runner")
+    return Row("runner", False, "not frozen", "kullback freeze-runner")
+
+
 def where_it_stands(workdir: Path, env: Mapping[str, str], model: str,
                     session: Optional[Mapping[str, Any]] = None) -> list[Row]:
     """Six rows for a workdir, in the order a newcomer works through them.
@@ -122,73 +195,14 @@ def where_it_stands(workdir: Path, env: Mapping[str, str], model: str,
     workdir = Path(workdir)
     key_env = _live_values(env)
     held: Mapping[str, Any] = session if session is not None else {}
-    rows: list[Row] = []
-
-    from kullback.ai.provider import LIVE_ENV_VAR
-
-    groups = _key_groups(model) if model else ()
-    set_groups = [group for group in groups if group and all(key_env.get(var) for var in group)]
-    if set_groups:
-        shown = set_groups[0]
-        source = key_source(shown[0], held, env=key_env)
-        rows.append(Row("model", True, f"{' and '.join(shown)} set ({source})", "/login"))
-    elif groups:
-        rows.append(Row("model", False, f"needs {_describe_groups(groups)}", "/login"))
-    else:
-        rows.append(Row("model", False, f"{model or 'no model'} names no key variable", "/login"))
-
-    if _truthy(key_env.get(LIVE_ENV_VAR, "")):
-        source = key_source(LIVE_ENV_VAR, held, env=key_env)
-        rows.append(Row("live calls", True, f"on ({LIVE_ENV_VAR}=1 in {source})", "/login"))
-    else:
-        rows.append(Row("live calls", False, f"off: put {LIVE_ENV_VAR}=1 in .env or export it", "/login"))
-
-    try:
-        summaries = json.loads((workdir / "ingest_summary.json").read_text(encoding="utf-8"))
-        summaries = summaries if isinstance(summaries, list) else None
-    except (OSError, ValueError):
-        summaries = None
-    if summaries:
-        files = len(summaries)
-        runs = sum(int(row.get("runs") or 0) for row in summaries if isinstance(row, dict))
-        word = "file" if files == 1 else "files"
-        trace_word = "trace" if runs == 1 else "traces"
-        rows.append(Row("traces", True, f"{files} {word}, {runs} {trace_word}", "kullback ingest"))
-    else:
-        rows.append(Row("traces", False, "none yet", "kullback ingest"))
-
-    try:
-        rounds = json.loads((workdir / "rounds.json").read_text(encoding="utf-8"))
-        rounds = [row for row in rounds if isinstance(row, dict)] if isinstance(rounds, list) else []
-    except (OSError, ValueError):
-        rounds = []
-    if rounds:
-        last = rounds[-1]
-        counts = last.get("counts") if isinstance(last.get("counts"), dict) else {}
-        trusted_ids = counts.get("trusted_ids")
-        trusted = len(trusted_ids) if isinstance(trusted_ids, list) else int(counts.get("trusted") or 0)
-        detail = f"round {last.get('round', len(rounds))}: trusted {trusted}"
-        if counts.get("fidelity") is not None or counts.get("tasks") is not None:
-            detail += f", fidelity {counts.get('fidelity', 0)}/{counts.get('tasks', 0)}"
-        rows.append(Row("build", True, detail, "/build"))
-    else:
-        rows.append(Row("build", False, "not started", "/build"))
-
-    try:
-        version_body = json.loads((workdir / "runner_version.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        version_body = None
-    if isinstance(version_body, dict):
-        version = str(version_body.get("runner_version") or "")
-        rows.append(Row("runner", True, f"frozen {version[:12]}" if version else "frozen",
-                        "kullback freeze-runner"))
-    elif (workdir / "runner_version.json").is_file():
-        rows.append(Row("runner", True, "frozen", "kullback freeze-runner"))
-    else:
-        rows.append(Row("runner", False, "not frozen", "kullback freeze-runner"))
-
-    rows.append(Row("publish", False, "needs fidelity 0.90 over Tasks", "kullback publish"))
-    return rows
+    return [
+        _model_row(model, key_env, held),
+        _live_row(key_env, held),
+        _traces_row(workdir),
+        _build_row(workdir),
+        _runner_row(workdir),
+        Row("publish", False, "needs fidelity 0.90 over Tasks", "kullback publish"),
+    ]
 
 
 def next_step(rows: list[Row]) -> str:

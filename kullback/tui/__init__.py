@@ -899,13 +899,18 @@ class Screen:
         elif verb == "compact":
             self._compact()
         elif verb == "run":
-            if not rest or rest[0].startswith("--"):
-                self.console.print(Text("run needs a task id: /run TASK [--count N]", style="red"))
-            else:
-                self._live(f"run {rest[0]}", lambda emit: self._run(emit, rest))
+            self._command_run(rest)
         else:
             self.console.print(Text(f"no command {verb}; /help", style="red"))
         return True
+
+    def _command_run(self, rest: list[str]) -> None:
+        """Run one Task live: it needs a task id, never a bare flag first."""
+        if not rest or rest[0].startswith("--"):
+            self.console.print(Text("run needs a task id: /run TASK [--count N]", style="red"))
+        else:
+            self._live(f"run {rest[0]}", lambda emit: self._run(emit, rest))
+
 
     @staticmethod
     def _verbs() -> set[str]:
@@ -947,6 +952,28 @@ class Screen:
             return self.command("/" + rows[number - 1][0])
         return self._watch([str(number)], rows=rows)
 
+    @staticmethod
+    def _here_records(records: list, workdir: Any) -> list:
+        """This workdir's records, comparing the absolute form heartbeat.beat writes.
+
+        Absolute on both sides, so a screen opened with a relative --workdir still
+        matches its own builds.
+        """
+        here = str(Path(workdir).expanduser().absolute())
+        return [record for record in records
+                if str(Path(str(record.get("workdir") or "")).expanduser().absolute()) == here]
+
+    @staticmethod
+    def _session_rest(record: dict) -> str:
+        """One record's model, exit, spend and cache saving as dim words."""
+        return " ".join(part for part in (
+            str(record.get("model") or "no model"),
+            str(record.get("exit") or record.get("status") or ""),
+            f"${float(record.get('spend_usd') or 0):,.4f}",
+            (f"cache saved ${float(record.get('cache_saved_usd') or 0):,.4f}"
+             if record.get("cache_saved_usd") is not None else ""),
+        ) if part)
+
     def _print_sessions(self, limit: Optional[int], only_here: bool = False) -> None:
         """Builds running now and before, newest first. Alive means its pid still runs.
 
@@ -956,11 +983,7 @@ class Screen:
 
         records = heartbeat.read_all()
         if only_here:
-            # Absolute on both sides, the form heartbeat.beat writes, so a screen
-            # opened with a relative --workdir still matches its own builds.
-            here = str(Path(self.workdir).expanduser().absolute())
-            records = [record for record in records
-                       if str(Path(str(record.get("workdir") or "")).expanduser().absolute()) == here]
+            records = self._here_records(records, self.workdir)
         self.console.print(Text("\n  02 sessions", style="bold"))
         if not records:
             self.console.print(Text("    none yet: /build starts one here", style="dim"))
@@ -973,14 +996,7 @@ class Screen:
             colour = "green" if heartbeat.alive(record.get("pid")) else "dim"
             line = Text(f"    {i}  {mark} ", style=colour)
             line.append(str(record.get("workdir") or "?"), style="white")
-            rest = " ".join(part for part in (
-                str(record.get("model") or "no model"),
-                str(record.get("exit") or record.get("status") or ""),
-                f"${float(record.get('spend_usd') or 0):,.4f}",
-                (f"cache saved ${float(record.get('cache_saved_usd') or 0):,.4f}"
-                 if record.get("cache_saved_usd") is not None else ""),
-            ) if part)
-            line.append(f"  {rest}", style="dim")
+            line.append(f"  {self._session_rest(record)}", style="dim")
             self.console.print(line, no_wrap=True, overflow="ellipsis")
         self.console.print(Text("    /watch N to watch one here", style="dim"))
         self._pending = ("sessions", shown)
