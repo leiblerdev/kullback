@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -1242,6 +1243,25 @@ def _task_detail_lines(detail: dict) -> list[str]:
     lines.append(f"replay calls: {(matched if matched is not None else '-')}/"
                  f"{(total if total is not None else '-')} matched/total")
     return lines
+@app.command()
+def doctor(
+    workdir: Path = WORKDIR,
+    model: str = typer.Option(DEFAULT_MODEL, "--model",
+                              help=f"Model the checklist reads keys for, as provider/model; "
+                              f"the default is {DEFAULT_MODEL}."),
+):
+    """Say where this workdir stands and name the next step: the entry screen's checklist as text.
+
+    Six rows off the workdir's files and the key variables in the environment, one
+    per line as [x] or [ ] with the name and the detail, and the next step last.
+    Reads files and names only, never secret values, and never calls a model.
+    """
+    from kullback.tui.checklist import next_step, where_it_stands
+
+    rows = where_it_stands(Path(workdir), dict(os.environ), model)
+    for row in rows:
+        typer.echo(f"[{'x' if row.done else ' '}] {row.name} {row.detail}".rstrip())
+    typer.echo(f"next: {next_step(rows)}")
 
 
 def _json_at(root: Path, name: str) -> dict:
