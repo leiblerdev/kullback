@@ -256,13 +256,11 @@ def test_error_shapes_keep_the_verbatim_payload():
 
 def test_the_kind_is_read_from_name_prefixes_and_says_why(fixture_traces):
     """The code rule reads the first verb: generic English verbs at medium, nothing matched at low."""
-    assert propose_kind("search_loans").kind == "read"
-    assert propose_kind("search_loans").confidence == "medium"
-    assert "verb" in propose_kind("search_loans").reason
-    assert propose_kind("update_member").kind == "write"
-    assert propose_kind("update_member").confidence == "medium"
-    assert propose_kind("renew_loan").kind == "write"
-    assert propose_kind("place_hold").kind == "write"
+    for name, kind in [("search_loans", "read"), ("update_member", "write"),
+                       ("renew_loan", "write"), ("place_hold", "write")]:
+        assert propose_kind(name).kind == kind
+        assert propose_kind(name).confidence == "medium"
+        assert "verb" in propose_kind(name).reason
     assert propose_kind("frobnicate").kind == "read"
     assert propose_kind("frobnicate").confidence == "low"
     assert "no name rule matched" in propose_kind("frobnicate").reason

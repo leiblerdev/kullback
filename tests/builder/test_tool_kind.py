@@ -40,7 +40,7 @@ def change_trace(trace_id: str, writer: str) -> Trace:
 
 
 def world_traces(path: str) -> list[Trace]:
-    """The invented worlds' tau2 simulations as Traces, without depending on ingest."""
+    """The invented worlds' simulations as Traces, without depending on ingest."""
     raw = json.loads((Path(__file__).parents[1] / path).read_text(encoding="utf-8"))
     traces = []
     for sim in raw["simulations"]:
@@ -65,7 +65,7 @@ def world_traces(path: str) -> list[Trace]:
             trace_id=sim["id"],
             raw_hash="world",
             ingest_version="test",
-            source="tau2",
+            source="synthetic",
             tool_calls=[calls[i] for i in order],
             raw_ptr=RawPtr(file_hash="world", sim_index=0),
         ))

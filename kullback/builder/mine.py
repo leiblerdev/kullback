@@ -1045,6 +1045,31 @@ def _restating_calls(trace_id: str, calls: list, parsed_all: list, seen: set, ou
                     note=f"{read.name} showed {field} one way and this call answered it another"))
 
 
+def _credit_reread(trace_id: str, calls: list, index: int, call: Any, parsed: Any,
+                   previous: tuple, seen: set, out: dict) -> None:
+    """Credit one re-read pair to the call between the reads that explains the change."""
+    changed = [f for f in _changed_fields(previous[1], parsed) if not _exempt_field(f)]
+    if not changed:
+        return
+    after = _flat(parsed)
+    changed_values = set().union(*(_values_at(after, field) for field in changed))
+    candidates = [
+        c for c in calls[previous[0] + 1: index]
+        if c.name != call.name and c.error is None
+        and _explains(c, call.args or {}, changed_values)
+    ]
+    if not candidates:
+        return
+    for field, actor in sorted(_credit(changed, after, candidates).items()):
+        mark = (actor.name, trace_id, f"{call.name}.{field}")
+        if mark in seen:
+            continue
+        seen.add(mark)
+        out.setdefault(actor.name, []).append(EffectObservation(
+            trace_id=trace_id, field=f"{call.name}.{field}",
+            note=f"changed between two identical {call.name} calls"))
+
+
 def _reread_effects(trace_id: str, calls: list, seen: set, out: dict) -> None:
     """Credit calls a later identical read shows changing a field of (D68).
 
@@ -1062,26 +1087,7 @@ def _reread_effects(trace_id: str, calls: list, seen: set, out: dict) -> None:
         last[key] = (index, parsed)
         if previous is None:
             continue
-        changed = [f for f in _changed_fields(previous[1], parsed) if not _exempt_field(f)]
-        if not changed:
-            continue
-        after = _flat(parsed)
-        changed_values = set().union(*(_values_at(after, field) for field in changed))
-        candidates = [
-            c for c in calls[previous[0] + 1: index]
-            if c.name != call.name and c.error is None
-            and _explains(c, call.args or {}, changed_values)
-        ]
-        if not candidates:
-            continue
-        for field, actor in sorted(_credit(changed, after, candidates).items()):
-            mark = (actor.name, trace_id, f"{call.name}.{field}")
-            if mark in seen:
-                continue
-            seen.add(mark)
-            out.setdefault(actor.name, []).append(EffectObservation(
-                trace_id=trace_id, field=f"{call.name}.{field}",
-                note=f"changed between two identical {call.name} calls"))
+        _credit_reread(trace_id, calls, index, call, parsed, previous, seen, out)
 
 
 def observed_effects(traces: list[Trace]) -> dict[str, list[EffectObservation]]:
