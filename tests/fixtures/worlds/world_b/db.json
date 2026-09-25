@@ -1,0 +1,88 @@
+{
+  "customers": {
+    "cust_01": {
+      "contact": {
+        "email": "morgan.ash@example.org",
+        "phone": "555-0101"
+      },
+      "customer_id": "cust_01",
+      "name": "Morgan Ash",
+      "plots": [
+        {
+          "light": "full sun",
+          "plants": [
+            {
+              "batch_id": "batch_01",
+              "count": 6,
+              "kind": "herb"
+            }
+          ],
+          "plot_id": "plot_01"
+        }
+      ]
+    },
+    "cust_02": {
+      "contact": {
+        "email": "taylor.reed@example.org",
+        "phone": "555-0102"
+      },
+      "customer_id": "cust_02",
+      "name": "Taylor Reed",
+      "plots": [
+        {
+          "light": "part shade",
+          "plants": [
+            {
+              "batch_id": "batch_02",
+              "count": 2,
+              "kind": "herb"
+            }
+          ],
+          "plot_id": "plot_02"
+        }
+      ]
+    },
+    "cust_03": {
+      "contact": {
+        "email": "jordan.vale@example.org",
+        "phone": "555-0103"
+      },
+      "customer_id": "cust_03",
+      "name": "Jordan Vale",
+      "plots": []
+    }
+  },
+  "houses": {
+    "house_north": {
+      "batches": [
+        {
+          "batch_id": "batch_01",
+          "count": 40,
+          "kind": "herb",
+          "quarantine": false,
+          "species": "sweet basil"
+        },
+        {
+          "batch_id": "batch_02",
+          "count": 12,
+          "kind": "herb",
+          "quarantine": true,
+          "species": "sweet basil"
+        }
+      ],
+      "house_id": "house_north"
+    },
+    "house_south": {
+      "batches": [
+        {
+          "batch_id": "batch_03",
+          "count": 25,
+          "kind": "vegetable",
+          "quarantine": false,
+          "species": "cherry tomato"
+        }
+      ],
+      "house_id": "house_south"
+    }
+  }
+}

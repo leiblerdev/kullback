@@ -1,0 +1,215 @@
+[
+  {
+    "description": {
+      "notes": null,
+      "purpose": null,
+      "relevant_policies": null
+    },
+    "evaluation_criteria": {
+      "actions": [
+        {
+          "action_id": "1_0",
+          "arguments": {
+            "email": "morgan.ash@example.org"
+          },
+          "info": null,
+          "name": "find_customer_id_by_email"
+        },
+        {
+          "action_id": "1_1",
+          "arguments": {
+            "batch_id": "batch_01"
+          },
+          "info": null,
+          "name": "get_batch_details"
+        },
+        {
+          "action_id": "1_2",
+          "arguments": {
+            "batches": [
+              {
+                "batch_id": "batch_01",
+                "pots": 6
+              }
+            ],
+            "customer_id": "cust_01",
+            "window": {
+              "day": "Tue",
+              "slot": "morning"
+            }
+          },
+          "info": null,
+          "name": "update_repot_visit"
+        },
+        {
+          "action_id": "1_3",
+          "arguments": {
+            "customer_id": "cust_01",
+            "delivery": {
+              "day": "Tue",
+              "note": "with repot"
+            },
+            "items": [
+              {
+                "batch_id": "batch_01",
+                "quantity": 6
+              }
+            ]
+          },
+          "info": null,
+          "name": "modify_nursery_order"
+        },
+        {
+          "action_id": "1_4",
+          "arguments": {
+            "customer_id": "cust_01",
+            "plan": {
+              "batch_id": "batch_01",
+              "steps": [
+                {
+                  "action": "water",
+                  "day": "Tue"
+                },
+                {
+                  "action": "feed",
+                  "day": "Fri"
+                }
+              ]
+            }
+          },
+          "info": null,
+          "name": "update_care_plan"
+        }
+      ]
+    },
+    "id": "1",
+    "initial_state": null,
+    "ticket": null,
+    "user_scenario": {
+      "instructions": {
+        "domain": "nursery",
+        "known_info": "You are Morgan Ash and your email is morgan.ash@example.org.",
+        "reason_for_call": "You keep a multi-step visit in one call: book a repot for batch_01, order six more of it, and set its care plan.",
+        "task_instructions": "Answer in short turns and confirm each step when asked.",
+        "unknown_info": "You do not know the booking or order numbers."
+      },
+      "persona": null
+    }
+  },
+  {
+    "description": {
+      "notes": null,
+      "purpose": null,
+      "relevant_policies": null
+    },
+    "evaluation_criteria": {
+      "actions": [
+        {
+          "action_id": "2_0",
+          "arguments": {
+            "email": "taylor.reed@example.org"
+          },
+          "info": null,
+          "name": "find_customer_id_by_email"
+        },
+        {
+          "action_id": "2_1",
+          "arguments": {
+            "batch_id": "batch_02"
+          },
+          "info": null,
+          "name": "get_batch_details"
+        },
+        {
+          "action_id": "2_2",
+          "arguments": {
+            "customer_id": "cust_02",
+            "delivery": {
+              "day": "Wed",
+              "note": "leave at door"
+            },
+            "items": [
+              {
+                "batch_id": "batch_01",
+                "quantity": 6
+              }
+            ]
+          },
+          "info": null,
+          "name": "modify_nursery_order"
+        }
+      ]
+    },
+    "id": "2",
+    "initial_state": null,
+    "ticket": null,
+    "user_scenario": {
+      "instructions": {
+        "domain": "nursery",
+        "known_info": "You are Taylor Reed and your email is taylor.reed@example.org.",
+        "reason_for_call": "You ask for batch_02, learn it is quarantined, and take batch_01 instead.",
+        "task_instructions": "Answer in short turns and accept the healthy batch.",
+        "unknown_info": "You do not know which batches are quarantined."
+      },
+      "persona": null
+    }
+  },
+  {
+    "description": {
+      "notes": null,
+      "purpose": null,
+      "relevant_policies": null
+    },
+    "evaluation_criteria": {
+      "actions": [
+        {
+          "action_id": "3_0",
+          "arguments": {
+            "email": "jordan.vale@example.org"
+          },
+          "info": null,
+          "name": "find_customer_id_by_email"
+        },
+        {
+          "action_id": "3_1",
+          "arguments": {
+            "batch_id": "batch_03"
+          },
+          "info": null,
+          "name": "get_batch_details"
+        },
+        {
+          "action_id": "3_2",
+          "arguments": {
+            "batches": [
+              {
+                "batch_id": "batch_03",
+                "pots": 4
+              }
+            ],
+            "customer_id": "cust_03",
+            "window": {
+              "day": "Fri",
+              "slot": "afternoon"
+            }
+          },
+          "info": null,
+          "name": "update_repot_visit"
+        }
+      ]
+    },
+    "id": "3",
+    "initial_state": null,
+    "ticket": null,
+    "user_scenario": {
+      "instructions": {
+        "domain": "nursery",
+        "known_info": "You are Jordan Vale and your email is jordan.vale@example.org.",
+        "reason_for_call": "You only need a repot booking for batch_03 on Friday afternoon.",
+        "task_instructions": "Answer in short turns and confirm when asked.",
+        "unknown_info": "You do not know the booking numbers."
+      },
+      "persona": null
+    }
+  }
+]
