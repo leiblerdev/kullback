@@ -34,7 +34,8 @@ packages = ["kullback"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-markers = ["slow: reads the full raw corpus in ../data/raw"]
+markers = ["slow: reads the full raw corpus in ../data/raw",
+           "smoke: checks the shipped model tables by their real names"]
 
 [tool.mutmut]
 source_paths = ["kullback/"]

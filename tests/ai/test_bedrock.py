@@ -19,14 +19,24 @@ from kullback.ai import provider as pv
 from kullback.ai import sigv4
 from kullback.ai.anthropic import AnthropicProvider
 from kullback.ai.messages import AssistantMessage, ToolCall, ToolResultMessage, UserMessage, to_wire
-from kullback.ai.model_limits import request_rules_for
+from kullback.ai.model_limits import REQUEST_RULES, RequestRules, request_rules_for
 from kullback.ai.usage import Usage
 from kullback.runner import budget
 
 MODEL = "bedrock/global.a-vendor.big-1"
-# A model whose request rules the code keys on by name (model_limits.REQUEST_RULES): the tests
-# below that prove those rules spell it, because a neutral handle would take the default rules.
-ALWAYS_ON = "bedrock/global.anthropic.claude-opus-5-5"
+# A neutral id carrying always-on request rules, registered in the table below: the tests proving
+# those rules need a name the table carries, since any other handle takes the default rules.
+# The smoke tier pins the real names.
+ALWAYS_ON = "bedrock/global.a-vendor.model-x"
+
+
+def _stub_always_on(monkeypatch):
+    """The always-on rules on the neutral id, mirroring the shipped rows: thinking never off,
+    tool choice never forced, no sampling parameters."""
+    monkeypatch.setitem(REQUEST_RULES, "model-x",
+                        RequestRules(thinking_always_on=True, forced_tool_choice=False, sampling=False))
+
+
 KEYS = {"AWS_ACCESS_KEY_ID": "AKIDEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-real-secret"}
 TOOL = {"name": "look_up", "description": "d", "input_schema": {"type": "object"}}
 SIGNED_THINKING = {"type": "thinking", "thinking": "", "signature": "sig-abc"}
@@ -170,7 +180,8 @@ def body_for(config, model_id=MODEL, messages=None, tools=(TOOL,)):
     return handle.build_body(messages or [{"role": "user", "content": "hi"}], list(tools) or None, config)
 
 
-def test_thinking_is_never_sent_disabled_or_budgeted_to_a_model_where_it_is_always_on():
+def test_thinking_is_never_sent_disabled_or_budgeted_to_a_model_where_it_is_always_on(monkeypatch):
+    _stub_always_on(monkeypatch)
     assert "thinking" not in body_for(pv.ModelConfig(thinking={"type": "disabled"}), model_id=ALWAYS_ON)
     assert "thinking" not in body_for(pv.ModelConfig(thinking={"type": "enabled", "budget_tokens": 2048}),
                                       model_id=ALWAYS_ON)
@@ -178,30 +189,31 @@ def test_thinking_is_never_sent_disabled_or_budgeted_to_a_model_where_it_is_alwa
                     model_id=ALWAYS_ON)["thinking"] == {"type": "adaptive"}
     assert body_for(pv.ModelConfig(effort="low"), model_id=ALWAYS_ON)["output_config"] == {"effort": "low"}
 
-
-def test_a_required_tool_call_goes_as_auto_with_the_demand_in_the_prompt_after_the_cache_point():
+def test_a_required_tool_call_goes_as_auto_with_the_demand_in_the_prompt_after_the_cache_point(monkeypatch):
+    _stub_always_on(monkeypatch)
     body = body_for(pv.ModelConfig(tool_choice="required"), model_id=ALWAYS_ON,
                     messages=[{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}])
     assert body["tool_choice"] == {"type": "auto"}
     assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert body["system"][-1] == {"type": "text", "text": pv.FORCED_TOOL_LINE}
-    older = body_for(pv.ModelConfig(tool_choice="required"), model_id="bedrock/anthropic.claude-haiku-4-5")
+    older = body_for(pv.ModelConfig(tool_choice="required"), model_id="bedrock/a-vendor.model-a")
     assert older["tool_choice"] == {"type": "any"}
 
-
-def test_sampling_parameters_are_left_out_for_a_model_that_refuses_them():
+def test_sampling_parameters_are_left_out_for_a_model_that_refuses_them(monkeypatch):
+    _stub_always_on(monkeypatch)
     assert "temperature" not in body_for(pv.ModelConfig(temperature=0.0), model_id=ALWAYS_ON)
-    assert body_for(pv.ModelConfig(temperature=0.0), model_id="bedrock/anthropic.claude-haiku-4-5")["temperature"] == 0.0
+    assert body_for(pv.ModelConfig(temperature=0.0), model_id="bedrock/a-vendor.model-a")["temperature"] == 0.0
 
 
-def test_the_rules_are_read_by_model_whatever_prefix_the_host_puts_on_the_id():
-    rules = request_rules_for("claude-opus-5-5")
-    assert request_rules_for("anthropic.claude-opus-5-5") == rules
-    assert request_rules_for("us.anthropic.claude-opus-5-5") == rules
-    assert request_rules_for("global.anthropic.claude-opus-5-5") == rules
-    assert request_rules_for("bedrock/global.anthropic.claude-opus-5-5") == rules
+def test_the_rules_are_read_by_model_whatever_prefix_the_host_puts_on_the_id(monkeypatch):
+    _stub_always_on(monkeypatch)
+    rules = request_rules_for("model-x")
+    assert request_rules_for("a-vendor.model-x") == rules
+    assert request_rules_for("us.a-vendor.model-x") == rules
+    assert request_rules_for("global.a-vendor.model-x") == rules
+    assert request_rules_for("bedrock/global.a-vendor.model-x") == rules
     assert rules.thinking_always_on and not rules.forced_tool_choice and not rules.sampling
-    assert request_rules_for("anthropic.claude-haiku-4-5") == request_rules_for(None)
+    assert request_rules_for("a-vendor.model-a") == request_rules_for(None)
 
 
 def test_signed_thinking_blocks_come_back_on_the_next_request_unchanged_and_first(live):

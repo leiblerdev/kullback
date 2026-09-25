@@ -435,8 +435,8 @@ LOGIN_CATALOG = {
                                               "cost": {"input": 3, "output": 15}}}},
     # The two the menu names by hand and reaches through the registry, as a real snapshot carries
     # them: without their rows here the menu is right to leave them out, which is its own test.
-    "deepseek": {"id": "deepseek", "npm": "@ai-sdk/openai-compatible",
-                 "api": "https://api.deepseek.com", "env": ["DEEPSEEK_API_KEY"],
+    "vendor-a": {"id": "vendor-a", "npm": "@ai-sdk/openai-compatible",
+                 "api": "https://vendor-a.invalid", "env": ["VENDOR_A_API_KEY"],
                  "models": {"model-a": {"limit": {"context": 128000},
                                                   "cost": {"input": 0.14, "output": 0.28}}}},
     "openrouter": {"id": "openrouter", "npm": "@openrouter/ai-sdk-provider",
@@ -804,7 +804,12 @@ def test_the_login_menu_offers_every_provider_it_can_resolve_and_says_the_range_
         tmp_path, monkeypatch):
     """The range in both prompts is counted off the list, so adding a provider cannot leave the
     menu telling a person to pick a number that is not there."""
-    from kullback.tui import LOGIN_DEFAULT_MODELS
+    defaults = {
+        "opencode-go": "opencode-go/model-a",
+        "vendor-a": "vendor-a/model-a",
+        "openrouter": "openrouter/vendor/model-a",
+    }
+    monkeypatch.setattr("kullback.tui.LOGIN_DEFAULT_MODELS", defaults)
 
     _snapshot(monkeypatch, tmp_path)
     console = _console()
@@ -816,7 +821,7 @@ def test_the_login_menu_offers_every_provider_it_can_resolve_and_says_the_range_
     for name in offered:
         assert name in out
     assert f"pick 1-{len(offered)}" in out
-    assert set(LOGIN_DEFAULT_MODELS) <= set(offered)
+    assert set(defaults) <= set(offered)
 
 
 def test_the_login_menu_offers_the_providers_only_the_local_registry_names(tmp_path, monkeypatch):
