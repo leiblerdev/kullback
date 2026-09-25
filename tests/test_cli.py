@@ -506,10 +506,14 @@ def test_run_stops_at_the_ceiling_and_says_so(workdir, monkeypatch):
     from tests.episode.invented import SCRIPTED_RENAME
 
     _seed_playable_tasks(workdir)
+    from kullback.runner import budget
+
+    monkeypatch.setitem(budget.PRICES, "openai/model-a",
+                        {"input": 0.40, "output": 1.60, "cache_read": 0.10, "cache_write": 0.0})
     priced = [dict(reply, usage={"input": 5000, "output": 0}) for reply in SCRIPTED_RENAME]
-    _scripted_candidate(monkeypatch, priced, name="openai/gpt-4.1-mini", loop=True)
+    _scripted_candidate(monkeypatch, priced, name="openai/model-a", loop=True)
     result = invoke("run", "--workdir", str(workdir), "--tasks", "trusted",
-                    "--model", "openai/gpt-4.1-mini", "--count", "1", "--ceiling-usd", "0.007")
+                    "--model", "openai/model-a", "--count", "1", "--ceiling-usd", "0.007")
     assert result.exit_code == 0, result.output
     assert "t1 pass" in result.output.splitlines()
     assert "ceiling $0.007 reached, stopped where it stood" in result.output
@@ -805,7 +809,7 @@ def test_doctor_counts_a_remembered_key_and_names_auth_json(tmp_path, monkeypatc
     monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     credentials.remember("OPENAI_API_KEY", "marker-secret-value-6")
-    result = invoke("doctor", "--workdir", str(tmp_path), "--model", "openai/gpt-6-luna")
+    result = invoke("doctor", "--workdir", str(tmp_path), "--model", "openai/model-a")
     assert result.exit_code == 0, result.output
     model_line = next(line for line in result.output.splitlines() if " model " in line)
     assert model_line.startswith("[x]") and "auth.json" in model_line

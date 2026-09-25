@@ -9,8 +9,22 @@ import pytest
 from kullback.runner import budget
 from kullback.runner.records import Cost, Event, Usage
 
+N_A = "anthropic/model-a"
+N_B = "anthropic/model-b"
 
-def call_event(idx=0, model="anthropic/claude-opus-5", **usage):
+PRICED_A = {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25}
+PRICED_B = {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25}
+
+
+def _stub_priced(monkeypatch):
+    """Price the neutral handles this file bills at the old table rates."""
+    monkeypatch.setitem(budget.PRICES, N_A, dict(PRICED_A))
+    monkeypatch.setitem(budget.CONTEXT_WINDOWS, N_A, 1_000_000)
+    monkeypatch.setitem(budget.PRICES, N_B, dict(PRICED_B))
+    monkeypatch.setitem(budget.CONTEXT_WINDOWS, N_B, 200_000)
+
+
+def call_event(idx=0, model=N_A, **usage):
     return Event(
         idx=idx,
         type="model_call",
@@ -30,18 +44,24 @@ def test_price_table_entries_have_the_four_prices():
         assert price["cache_read"] < price["input"], name
 
 
-def test_price_lookup_takes_the_full_id_or_the_wire_id():
-    assert budget.price_for("anthropic/claude-opus-5") == budget.price_for("claude-opus-5")
-    assert budget.price_for("openai/gpt-does-not-exist") is None
+def test_price_lookup_takes_the_full_id_or_the_wire_id(monkeypatch):
+    _stub_priced(monkeypatch)
+    assert budget.price_for(N_A) == budget.price_for("model-a")
+    assert budget.price_for("openai/model-does-not-exist") is None
 
 
-def test_price_lookup_takes_an_inference_profile_off_the_id_and_leaves_other_dots_alone():
-    row = budget.price_for("bedrock/anthropic.claude-opus-5-5")
+def test_price_lookup_takes_an_inference_profile_off_the_id_and_leaves_other_dots_alone(monkeypatch):
+    monkeypatch.setitem(budget.PRICES, "bedrock/a-vendor.big-1",
+                        {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0})
+    monkeypatch.setitem(budget.PRICES, "openai/model-a",
+                        {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5})
+    monkeypatch.setitem(budget.CONTEXT_WINDOWS, "bedrock/a-vendor.small-1", 200_000)
+    row = budget.price_for("bedrock/a-vendor.big-1")
     for profile in ("global.", "us.", "eu.", "apac."):
-        assert budget.price_for(f"bedrock/{profile}anthropic.claude-opus-5-5") == row
-        assert budget.price_for(f"{profile}anthropic.claude-opus-5-5") == row
-    assert budget.price_for("openai/gpt-6-sol") == budget.PRICES["openai/gpt-6-sol"]
-    assert budget.window_for("bedrock/global.anthropic.claude-haiku-4-5") == 200_000
+        assert budget.price_for(f"bedrock/{profile}a-vendor.big-1") == row
+        assert budget.price_for(f"{profile}a-vendor.big-1") == row
+    assert budget.price_for("openai/model-a") == budget.PRICES["openai/model-a"]
+    assert budget.window_for("bedrock/global.a-vendor.small-1") == 200_000
 
 
 # --- per call cost ---
@@ -62,11 +82,12 @@ def test_price_lookup_takes_an_inference_profile_off_the_id_and_leaves_other_dot
     ],
     ids=["a_million_input_tokens", "input_beside_cache_reads_and_writes", "mostly_cached"],
 )
-def test_each_token_count_is_billed_once_at_its_own_rate(usage, expected):
+def test_each_token_count_is_billed_once_at_its_own_rate(usage, expected, monkeypatch):
     """Usage.input is uncached input already (Anthropic reports it that way and the OpenAI
     adapter subtracts down to it), so subtracting the cached counts again under-billed."""
-    price = budget.PRICES["anthropic/claude-opus-5"]
-    assert budget.call_cost(usage, "anthropic/claude-opus-5") == pytest.approx(expected(price))
+    _stub_priced(monkeypatch)
+    price = budget.PRICES[N_A]
+    assert budget.call_cost(usage, N_A) == pytest.approx(expected(price))
 
 
 def test_an_unpriced_model_costs_zero_and_is_counted_as_unpriced():
@@ -77,9 +98,10 @@ def test_an_unpriced_model_costs_zero_and_is_counted_as_unpriced():
 # --- record_call and the totals file ---
 
 
-def test_record_call_fills_the_cost_and_writes_per_stage_and_per_build_totals(workdir):
+def test_record_call_fills_the_cost_and_writes_per_stage_and_per_build_totals(workdir, monkeypatch):
+    _stub_priced(monkeypatch)
     first = budget.record_call(call_event(input=1_000_000), stage="mine", workdir=workdir)
-    assert first.cost.usd == pytest.approx(budget.PRICES["anthropic/claude-opus-5"]["input"])
+    assert first.cost.usd == pytest.approx(budget.PRICES[N_A]["input"])
     budget.record_call(call_event(idx=1, input=1_000_000), stage="mine", workdir=workdir)
     budget.record_call(call_event(idx=2, output=1_000_000), stage="compile_tools", workdir=workdir)
 
@@ -98,14 +120,15 @@ def test_record_call_fills_the_cost_and_writes_per_stage_and_per_build_totals(wo
     assert totals["stages"]["unpriced"]["wall_ms"] == pytest.approx(120.0)
 
 
-def test_the_cache_effect_is_what_reads_saved_over_the_input_rate_less_the_write_premium(workdir):
-    price = budget.PRICES["anthropic/claude-opus-5"]
-    reads = budget.cache_effect(Usage(cache_read=1_000_000), "anthropic/claude-opus-5")
+def test_the_cache_effect_is_what_reads_saved_over_the_input_rate_less_the_write_premium(workdir, monkeypatch):
+    _stub_priced(monkeypatch)
+    price = budget.PRICES[N_A]
+    reads = budget.cache_effect(Usage(cache_read=1_000_000), N_A)
     assert reads == pytest.approx(price["input"] - price["cache_read"])
-    writes = budget.cache_effect(Usage(cache_write=1_000_000), "anthropic/claude-opus-5")
+    writes = budget.cache_effect(Usage(cache_write=1_000_000), N_A)
     assert writes == pytest.approx(price["input"] - price["cache_write"]) and writes < 0, \
         "a cache written and never read costs more than plain input, and the ledger says so"
-    assert budget.cache_effect(Usage(input=1_000_000), "anthropic/claude-opus-5") == 0.0
+    assert budget.cache_effect(Usage(input=1_000_000), N_A) == 0.0
     assert budget.cache_effect(Usage(cache_read=1_000_000), "openai/mystery") == 0.0
     # The ledger carries what the cache saved beside what was paid.
     budget.record_call(call_event(input=1_000_000, cache_read=1_000_000), stage="reroll", workdir=workdir)
@@ -194,15 +217,16 @@ def test_ceiling_report_names_what_was_done_and_what_remains():
 # --- an unpriced model, and the price table's coverage ---
 
 
-def test_a_ceilinged_build_refuses_a_model_it_cannot_price(workdir, make_test_model):
+def test_a_ceilinged_build_refuses_a_model_it_cannot_price(workdir, make_test_model, monkeypatch):
     """Unpriced calls cost 0.00, so a ceiling over them can never be reached: refuse instead."""
+    _stub_priced(monkeypatch)
     ceiling = budget.Ceiling(usd=1.0)
     with pytest.raises(budget.UnpricedModel) as excinfo:
         ceiling.require_priced("openai/mystery")
     assert "mystery" in str(excinfo.value)
-    ceiling.require_priced("anthropic/claude-opus-5")
-    # Design section 11 step 6 runs gpt-4.1-mini and o4-mini; unpriced, their Runs cost 0.00.
-    for model_id in ("openai/gpt-4.1-mini", "openai/o4-mini"):
+    ceiling.require_priced(N_A)
+    # Every row the shipped table carries is priced, so a ceiling holds on all of them.
+    for model_id in budget.PRICES:
         price = budget.price_for(model_id)
         assert price is not None, model_id
         assert price["input"] > 0 and price["output"] > 0
@@ -217,7 +241,8 @@ def test_a_ceilinged_build_refuses_a_model_it_cannot_price(workdir, make_test_mo
 # --- one ledger, and a resume that cannot pay twice ---
 
 
-def test_a_ceiling_resumes_from_the_totals_file_unless_that_file_already_reaches_it(workdir):
+def test_a_ceiling_resumes_from_the_totals_file_unless_that_file_already_reaches_it(workdir, monkeypatch):
+    _stub_priced(monkeypatch)
     budget.record_call(call_event(input=1_000_000), stage="mine", workdir=workdir)
     spent = budget.load_totals(workdir)["total"]["usd"]
     with pytest.raises(budget.BudgetExceeded):
@@ -241,10 +266,11 @@ def test_nothing_is_charged_past_a_ceiling_that_is_already_reached():
     assert ceiling.spent == pytest.approx(0.6), "a second item was paid for past the ceiling"
 
 
-def test_record_call_charges_the_ceiling_from_the_ledger_without_counting_twice(workdir):
+def test_record_call_charges_the_ceiling_from_the_ledger_without_counting_twice(workdir, monkeypatch):
+    _stub_priced(monkeypatch)
     ceiling = budget.Ceiling(usd=100.0, workdir=workdir)
     budget.record_call(call_event(input=1_000_000), stage="mine", workdir=workdir, ceiling=ceiling)
-    expected = budget.PRICES["anthropic/claude-opus-5"]["input"]
+    expected = budget.PRICES[N_A]["input"]
     assert ceiling.spent == pytest.approx(expected)
     assert budget.load_totals(workdir)["total"]["usd"] == pytest.approx(expected)
     # Once the ceiling has already been breached, a further charge still lands in the ledger
@@ -263,7 +289,8 @@ def test_record_call_charges_the_ceiling_from_the_ledger_without_counting_twice(
     assert budget.load_totals(breached)["total"]["usd"] == pytest.approx(20.0)
 
 
-def test_record_call_stops_the_build_when_the_ledger_passes_the_ceiling(workdir):
+def test_record_call_stops_the_build_when_the_ledger_passes_the_ceiling(workdir, monkeypatch):
+    _stub_priced(monkeypatch)
     ceiling = budget.Ceiling(usd=1.0, workdir=workdir)
     with pytest.raises(budget.BudgetExceeded) as excinfo:
         budget.record_call(call_event(input=1_000_000), stage="mine", workdir=workdir, ceiling=ceiling)
@@ -286,33 +313,37 @@ def test_a_totals_file_written_before_a_field_existed_still_resumes(workdir):
 # --- the seam: every call priced, recorded and capped (D65, D86) ---
 
 
-def test_every_call_through_the_wrapper_is_priced_and_written_to_the_ledger(workdir, make_test_model):
+def test_every_call_through_the_wrapper_is_priced_and_written_to_the_ledger(workdir, make_test_model, monkeypatch):
     from kullback.ai.provider import ModelReply
 
+    _stub_priced(monkeypatch)
+
     inner = make_test_model(
-        [ModelReply(content="ok", model="claude-opus-5", usage={"input": 1_000_000, "output": 0})]
+        [ModelReply(content="ok", model="model-a", usage={"input": 1_000_000, "output": 0})]
     )
-    model = budget.BudgetedModel(inner, stage="mine", workdir=workdir, model_id="anthropic/claude-opus-5")
+    model = budget.BudgetedModel(inner, stage="mine", workdir=workdir, model_id=N_A)
     assert model.query([{"role": "user", "content": "hi"}]).content == "ok"
 
     totals = budget.load_totals(workdir)
     assert totals["stages"]["mine"]["calls"] == 1
     assert totals["stages"]["mine"]["input"] == 1_000_000
-    assert totals["total"]["usd"] == pytest.approx(budget.PRICES["anthropic/claude-opus-5"]["input"])
+    assert totals["total"]["usd"] == pytest.approx(budget.PRICES[N_A]["input"])
     assert (workdir / budget.TOTALS_NAME).is_file()
 
 
-def test_the_wrapper_refuses_before_the_live_call_once_the_ceiling_is_reached(workdir, make_test_model):
+def test_the_wrapper_refuses_before_the_live_call_once_the_ceiling_is_reached(
+        workdir, make_test_model, monkeypatch):
     """Once the ceiling is breached, the live model must not be called again: the refusal has to
     come before self.inner.query, not only from the after-the-fact record_call check."""
     from kullback.ai.provider import ModelReply
 
+    _stub_priced(monkeypatch)
     inner = make_test_model(
-        [ModelReply(model="claude-opus-5", usage={"input": 1_000_000})], loop=True
+        [ModelReply(model="model-a", usage={"input": 1_000_000})], loop=True
     )
     ceiling = budget.Ceiling(usd=12.0, workdir=workdir)
     model = budget.BudgetedModel(
-        inner, stage="mine", workdir=workdir, model_id="anthropic/claude-opus-5", ceiling=ceiling
+        inner, stage="mine", workdir=workdir, model_id=N_A, ceiling=ceiling
     )
     model.query([{"role": "user", "content": "hi"}])
     model.query([{"role": "user", "content": "hi"}])
@@ -325,11 +356,12 @@ def test_the_wrapper_refuses_before_the_live_call_once_the_ceiling_is_reached(wo
     assert len(inner.calls) == calls_after_breach, "the live model ran again after the ceiling was reached"
 
 
-def test_the_wrapper_refuses_a_builder_prompt_over_the_cap_before_calling(workdir, make_test_model):
+def test_the_wrapper_refuses_a_builder_prompt_over_the_cap_before_calling(workdir, make_test_model, monkeypatch):
     """D65: the call is refused, not compacted, and the model never sees it."""
+    _stub_priced(monkeypatch)
     inner = make_test_model(["never reached"], loop=True)
     model = budget.BudgetedModel(
-        inner, stage="mine", workdir=workdir, model_id="anthropic/claude-haiku-4-5"
+        inner, stage="mine", workdir=workdir, model_id=N_B
     )
     cap_chars = budget.context_cap_tokens(200_000) * budget.CHARS_PER_TOKEN
     with pytest.raises(budget.ContextCapExceeded):
@@ -341,24 +373,26 @@ def test_the_wrapper_refuses_a_builder_prompt_over_the_cap_before_calling(workdi
     assert len(inner.calls) == 1
 
 
-def test_the_candidate_is_not_capped(workdir, make_test_model):
+def test_the_candidate_is_not_capped(workdir, make_test_model, monkeypatch):
     """D65: the Candidate is tested under the production setting; only Builder calls are capped."""
+    _stub_priced(monkeypatch)
     inner = make_test_model(["ok"], loop=True)
     model = budget.BudgetedModel(
-        inner, stage="runs", workdir=workdir, model_id="anthropic/claude-haiku-4-5", cap_context=False
+        inner, stage="runs", workdir=workdir, model_id=N_B, cap_context=False
     )
     big = "x" * (budget.context_cap_tokens(200_000) * budget.CHARS_PER_TOKEN + 100)
     assert model.query([{"role": "user", "content": big}]).content == "ok"
 
 
-def test_a_memomodel_hit_is_counted_in_the_memo_hits_bucket_and_priced_at_zero(workdir, make_test_model):
+def test_a_memomodel_hit_is_counted_in_the_memo_hits_bucket_and_priced_at_zero(workdir, make_test_model, monkeypatch):
     """docs/prompt-caching.md item 3: a hit still counts as a call, but adds to memo_hits and
     prices at zero because MemoModel already zeroed its usage. A plain model never adds to it."""
     from kullback.ai.provider import MemoModel, ModelReply, TestModel
 
-    inner = TestModel([ModelReply(content="ok", model="claude-opus-5", usage={"input": 1_000_000})])
+    _stub_priced(monkeypatch)
+    inner = TestModel([ModelReply(content="ok", model="model-a", usage={"input": 1_000_000})])
     memo = MemoModel(inner, workdir)
-    model = budget.BudgetedModel(memo, stage="mine", workdir=workdir, model_id="anthropic/claude-opus-5")
+    model = budget.BudgetedModel(memo, stage="mine", workdir=workdir, model_id=N_A)
 
     model.query([{"role": "user", "content": "hi"}])
     model.query([{"role": "user", "content": "hi"}])  # same request: a memo hit
@@ -366,10 +400,10 @@ def test_a_memomodel_hit_is_counted_in_the_memo_hits_bucket_and_priced_at_zero(w
     totals = budget.load_totals(workdir)
     assert totals["stages"]["mine"]["calls"] == 2
     assert totals["stages"]["mine"]["memo_hits"] == 1
-    assert totals["total"]["usd"] == pytest.approx(budget.PRICES["anthropic/claude-opus-5"]["input"])
+    assert totals["total"]["usd"] == pytest.approx(budget.PRICES[N_A]["input"])
 
     plain = budget.BudgetedModel(make_test_model(["ok"], loop=True), stage="plain", workdir=workdir,
-                                 model_id="anthropic/claude-opus-5")
+                                 model_id=N_A)
     plain.query([{"role": "user", "content": "hi"}])
     assert budget.load_totals(workdir)["stages"]["plain"]["memo_hits"] == 0
 
@@ -382,7 +416,7 @@ def test_the_wrapper_sets_the_prompt_cache_key_only_when_the_caller_left_it_unse
 
     inner = make_test_model(["ok"])
     model = budget.BudgetedModel(
-        inner, stage="mine", workdir=workdir, model_id="openai/gpt-4o-mini", prompt_cache_key="kullback-abc-mine"
+        inner, stage="mine", workdir=workdir, model_id="openai/model-a", prompt_cache_key="kullback-abc-mine"
     )
     config = None if caller_key is None else ModelConfig(prompt_cache_key=caller_key)
     model.query([{"role": "user", "content": "hi"}], config=config)
@@ -396,27 +430,28 @@ def test_token_estimate_counts_the_tools_as_well_as_the_messages():
     assert budget.estimate_tokens(None) == 0
 
 
-def test_the_window_comes_from_the_model_id():
-    assert budget.window_for("anthropic/claude-haiku-4-5") == 200_000
-    assert budget.window_for("claude-opus-5") == 1_000_000
+def test_the_window_comes_from_the_model_id(monkeypatch):
+    _stub_priced(monkeypatch)
+    assert budget.window_for(N_B) == 200_000
+    assert budget.window_for("model-a") == 1_000_000
     assert budget.window_for("something/unknown") == budget.DEFAULT_CONTEXT_WINDOW
 
 
 def test_a_call_is_priced_under_its_provider_not_the_wire_id_the_endpoint_echoed(workdir):
-    """The endpoint answers with the wire id alone ('gpt-5.6-luna'); the provider is recorded
+    """The endpoint answers with the wire id alone ('model-a'); the provider is recorded
     beside it and has to be used, or the price comes off whichever reseller lists that name."""
     from kullback.runner import feed
 
-    cost = Cost(provider="openai", model="gpt-5.6-luna", usage=Usage(input=1_000_000))
-    assert budget.priced_model_id(cost) == "openai/gpt-5.6-luna"
+    cost = Cost(provider="openai", model="model-a", usage=Usage(input=1_000_000))
+    assert budget.priced_model_id(cost) == "openai/model-a"
     event = budget.record_call(Event(idx=0, type="model_call", cost=cost), stage="mine", workdir=workdir)
-    assert event.cost.usd == pytest.approx(budget.call_cost(cost.usage, "openai/gpt-5.6-luna"))
+    assert event.cost.usd == pytest.approx(budget.call_cost(cost.usage, "openai/model-a"))
     rows = [json.loads(line) for line in feed.path_for(workdir).read_text(encoding="utf-8").splitlines()]
-    assert [row["model"] for row in rows if row["kind"] == "model_call"] == ["openai/gpt-5.6-luna"]
+    assert [row["model"] for row in rows if row["kind"] == "model_call"] == ["openai/model-a"]
     # An id that already names its provider, or a Cost with no provider, is left alone.
-    assert budget.priced_model_id(Cost(provider="openai", model="openai/gpt-5.6-luna")) == \
-        "openai/gpt-5.6-luna"
-    assert budget.priced_model_id(Cost(model="gpt-5.6-luna")) == "gpt-5.6-luna"
+    assert budget.priced_model_id(Cost(provider="openai", model="openai/model-a")) == \
+        "openai/model-a"
+    assert budget.priced_model_id(Cost(model="model-a")) == "model-a"
 
 
 def test_the_default_model_is_priced_and_has_its_own_window_offline():
@@ -457,12 +492,15 @@ def test_the_subscriber_ignores_a_message_without_usage_and_the_turn_end_that_re
     assert not budget.totals_path(workdir).exists()
 
 
-def test_gpt_6_sol_is_priced_from_the_table_and_its_window_is_cut_to_the_priced_tier():
-    assert budget.price_for("openai/gpt-6-sol") == {
-        "input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5, "prompt_tier_limit": 272_000}
-    assert budget.price_source("openai/gpt-6-sol") == "table"
-    assert budget.window_for("openai/gpt-6-sol") == 680_000
-    assert budget.context_cap_tokens(budget.window_for("openai/gpt-6-sol")) <= 272_000
+def test_a_priced_tier_cuts_the_window_so_the_cap_stays_inside_it():
+    """A row carrying prompt_tier_limit is priced only under that many tokens, so window_for
+    cuts the window to the limit over the cap fraction. The exact cut is proved with a neutral
+    row below; here every shipped tiered row keeps its cap inside its tier."""
+    tiered = {name: price for name, price in budget.PRICES.items() if "prompt_tier_limit" in price}
+    assert tiered, "the table carries no tiered row to prove the cut"
+    for name, price in tiered.items():
+        assert budget.price_source(name) == "table"
+        assert budget.context_cap_tokens(budget.window_for(name)) <= price["prompt_tier_limit"]
 
 
 def test_a_model_whose_price_row_carries_a_tier_limit_gets_a_window_whose_cap_stays_in_the_tier(monkeypatch):

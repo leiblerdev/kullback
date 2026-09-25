@@ -11,7 +11,7 @@ import os
 
 from kullback.tui.checklist import Row, next_step, where_it_stands
 
-OPENAI_MODEL = "openai/gpt-6-luna"
+OPENAI_MODEL = "openai/model-a"
 
 
 def _clean(monkeypatch, tmp_path):

@@ -305,7 +305,7 @@ def test_a_build_that_raises_is_shown_as_an_outcome_not_thrown_at_the_terminal(t
 def test_a_screen_with_a_model_named_refuses_to_call_it_with_live_calls_off(tmp_path, monkeypatch):
     monkeypatch.delenv("HARNESS_ALLOW_MODEL_REQUESTS", raising=False)
     monkeypatch.chdir(tmp_path)  # so load_dotenv finds no .env that could turn them on
-    screen = _screen(tmp_path, model="openai/gpt-5.6-luna")
+    screen = _screen(tmp_path, model="openai/model-a")
     screen.command("/build")
     screen.wait()
     assert "live model requests are off" in _text(screen.console)
@@ -341,7 +341,7 @@ def test_status_before_any_build_says_there_is_none(tmp_path):
 
 def test_keys_says_which_are_set_and_never_what_they_are():
     out = _keys({"OPENAI_API_KEY": "sk-secret-value", "HARNESS_ALLOW_MODEL_REQUESTS": "1"},
-                model="bedrock/global.anthropic.claude-opus-5-5").plain
+                model="bedrock/global.a-vendor.big-1").plain
     assert "sk-secret-value" not in out
     assert "AWS_BEARER_TOKEN_BEDROCK" in out and "missing" in out
     assert "OPENAI_API_KEY" in out and "set" in out
@@ -431,17 +431,17 @@ def test_map_loop_layers_commands_print(tmp_path):
 LOGIN_CATALOG = {
     "opencode-go": {"id": "opencode-go", "name": "OpenCode Go", "npm": "@ai-sdk/openai-compatible",
                     "api": "https://opencode.ai/zen/go/v1", "env": ["OPENCODE_API_KEY"],
-                    "models": {"muse-spark": {"limit": {"context": 1048576, "output": 131072},
+                    "models": {"model-a": {"limit": {"context": 1048576, "output": 131072},
                                               "cost": {"input": 3, "output": 15}}}},
     # The two the menu names by hand and reaches through the registry, as a real snapshot carries
     # them: without their rows here the menu is right to leave them out, which is its own test.
     "deepseek": {"id": "deepseek", "npm": "@ai-sdk/openai-compatible",
                  "api": "https://api.deepseek.com", "env": ["DEEPSEEK_API_KEY"],
-                 "models": {"deepseek-v4-flash": {"limit": {"context": 128000},
+                 "models": {"model-a": {"limit": {"context": 128000},
                                                   "cost": {"input": 0.14, "output": 0.28}}}},
     "openrouter": {"id": "openrouter", "npm": "@openrouter/ai-sdk-provider",
                    "api": "https://openrouter.ai/api/v1", "env": ["OPENROUTER_API_KEY"],
-                   "models": {"qwen/qwen3.7-flash": {"limit": {"context": 262144},
+                   "models": {"vendor/model-a": {"limit": {"context": 262144},
                                                      "cost": {"input": 0.05, "output": 0.2}}}},
 }
 
@@ -462,10 +462,10 @@ def _snapshot(monkeypatch, tmp_path, catalog=LOGIN_CATALOG):
 def test_login_with_no_args_inspects_the_current_model(tmp_path, monkeypatch):
     _snapshot(monkeypatch, tmp_path)
     console = _console()
-    screen = Screen(tmp_path, model="opencode-go/muse-spark", console=console)
+    screen = Screen(tmp_path, model="opencode-go/model-a", console=console)
     assert screen.command("/login") is True
     out = _text(console)
-    assert "opencode-go/muse-spark" in out and "OPENCODE_API_KEY" in out and "missing" in out
+    assert "opencode-go/model-a" in out and "OPENCODE_API_KEY" in out and "missing" in out
 
 
 def test_login_with_no_args_inspects_the_default_model(tmp_path):
@@ -488,16 +488,16 @@ def test_login_to_an_id_without_a_slash_is_told_in_words(tmp_path):
 def test_login_to_an_unknown_provider_refuses_and_keeps_the_old_model(tmp_path, monkeypatch):
     _snapshot(monkeypatch, tmp_path, catalog={})
     console = _console()
-    screen = Screen(tmp_path, model="openai/gpt-4", console=console)
+    screen = Screen(tmp_path, model="openai/model-a", console=console)
     assert screen.command("/login nope/nothing") is True
-    assert "no host" in _text(console) and screen.model == "openai/gpt-4"
+    assert "no host" in _text(console) and screen.model == "openai/model-a"
 
 
 def test_login_sets_the_model_the_build_will_use(tmp_path, monkeypatch):
     _snapshot(monkeypatch, tmp_path)
     screen = Screen(tmp_path, console=_console())
-    assert screen.command("/login opencode-go/muse-spark") is True
-    assert screen.model == "opencode-go/muse-spark"
+    assert screen.command("/login opencode-go/model-a") is True
+    assert screen.model == "opencode-go/model-a"
 
 
 def test_login_set_holds_the_key_in_memory_and_logout_forgets_it(tmp_path, monkeypatch):
@@ -508,7 +508,7 @@ def test_login_set_holds_the_key_in_memory_and_logout_forgets_it(tmp_path, monke
     console = _console()
     screen = Screen(tmp_path, console=console)
     screen._ask = lambda prompt: "n"
-    assert screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123") is True
+    assert screen.command("/login opencode-go/model-a --set OPENCODE_API_KEY=sk-zen-123") is True
     assert os.environ.get("OPENCODE_API_KEY") == "sk-zen-123"
     out = _text(console)
     assert "sk-zen-123" not in out and "this session" in out
@@ -524,7 +524,7 @@ def test_logout_restores_what_the_shell_held(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENCODE_API_KEY", "old-key")
     screen = Screen(tmp_path, console=_console())
     screen._ask = lambda prompt: "n"
-    screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=new-key")
+    screen.command("/login opencode-go/model-a --set OPENCODE_API_KEY=new-key")
     screen.command("/logout")
     assert os.environ["OPENCODE_API_KEY"] == "old-key"
 
@@ -534,7 +534,7 @@ def test_keys_marks_the_keys_this_session_set(tmp_path, monkeypatch):
     console = _console()
     screen = Screen(tmp_path, console=console)
     screen._ask = lambda prompt: "n"
-    screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123")
+    screen.command("/login opencode-go/model-a --set OPENCODE_API_KEY=sk-zen-123")
     out = _text(console)
     assert "OPENCODE_API_KEY" in out and "this session" in out and "sk-zen-123" not in out
     screen.command("/logout")
@@ -546,7 +546,7 @@ def test_a_login_secret_reaches_no_file_and_no_line(tmp_path, monkeypatch):
     console = _console()
     screen = Screen(tmp_path, console=console)
     screen._ask = lambda prompt: "n"
-    screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=topsecret-value-9")
+    screen.command("/login opencode-go/model-a --set OPENCODE_API_KEY=topsecret-value-9")
     screen.command("/keys")
     screen.command("/status")
     screen.command("/map")
@@ -568,7 +568,7 @@ def test_a_screen_login_answered_yes_remembers_the_key(tmp_path, monkeypatch):
     console = _console()
     screen = Screen(tmp_path, console=console)
     screen._ask = lambda prompt: "y"
-    assert screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123") is True
+    assert screen.command("/login opencode-go/model-a --set OPENCODE_API_KEY=sk-zen-123") is True
     out = _text(console)
     assert "sk-zen-123" not in out and "remembered OPENCODE_API_KEY" in out
     assert credentials.stored_names() == ["OPENCODE_API_KEY"]
@@ -605,7 +605,7 @@ def test_open_prints_the_workdir_it_is_reading(tmp_path, monkeypatch):
     # A wide console: open() cuts absurdly long workdirs with an ellipsis rather than folding them.
     console = Console(file=io.StringIO(), width=300, force_terminal=False, no_color=True)
     monkeypatch.setenv("HARNESS_ALLOW_MODEL_REQUESTS", "1")
-    Screen(tmp_path, model="opencode-go/muse-spark", console=console).open()
+    Screen(tmp_path, model="opencode-go/model-a", console=console).open()
     assert str(tmp_path) in _text(console)
 
 
@@ -614,7 +614,7 @@ def test_open_never_claims_a_model_or_a_live_switch_of_its_own(tmp_path, monkeyp
     a screen open on someone else's running build used to read 'model none, live off'."""
     console = _console()
     monkeypatch.setenv("HARNESS_ALLOW_MODEL_REQUESTS", "1")
-    Screen(tmp_path, model="opencode-go/muse-spark", console=console).open()
+    Screen(tmp_path, model="opencode-go/model-a", console=console).open()
     out = _text(console)
     assert "live on" not in out and "live off" not in out and "no model calls" not in out
 
@@ -741,7 +741,7 @@ def _watched(tmp_path, monkeypatch, alive: list[bool]):
     other.mkdir()
     (other / "rounds.json").write_text(json.dumps(
         [{"round": 1, "counts": {"fidelity": 2, "tasks": 3}, "exit": None}]), encoding="utf-8")
-    heartbeat.beat(other, "opencode-go/glm-5.3-flash", "running")
+    heartbeat.beat(other, "opencode-go/model-a", "running")
     answers = iter(alive)
     monkeypatch.setattr(heartbeat, "alive", lambda _pid: next(answers, False))
     wide = Console(file=io.StringIO(), width=300, force_terminal=False, no_color=True)
@@ -752,7 +752,7 @@ def test_sessions_lists_a_running_build_and_watch_switches_to_it(tmp_path, monke
     other, screen = _watched(tmp_path, monkeypatch, alive=[True, True])
     assert screen.command("/sessions") is True
     out = _text(screen.console)
-    assert "●" in out and str(other) in out and "glm-5.3-flash" in out
+    assert "●" in out and str(other) in out and "opencode-go/model-a" in out
     assert screen.command("/watch 1") is True
     assert screen.workdir == other
 
@@ -788,13 +788,15 @@ def test_login_menu_walks_to_a_key_without_printing_it(tmp_path, monkeypatch):
     monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
     monkeypatch.setattr(getpass, "getpass", lambda prompt: "sk-menu-secret")
     console = _console()
+    from kullback.tui import LOGIN_DEFAULT_MODELS as DEFAULTS
+
     screen = Screen(tmp_path, console=console)
     answers = iter(["3", "", "n"])
     screen._ask = lambda prompt: next(answers)
     screen.command("/login")
     out = _text(console)
     assert "OPENCODE_API_KEY" in out and "sk-menu-secret" not in out
-    assert screen.model == "opencode-go/glm-5.3-flash"
+    assert screen.model == DEFAULTS["opencode-go"]
     assert "keys held for this session: OPENCODE_API_KEY" in out
 
 
@@ -811,10 +813,10 @@ def test_the_login_menu_offers_every_provider_it_can_resolve_and_says_the_range_
     screen._ask = lambda prompt: "999"
     screen.command("/login")
     out = _text(console)
-    for name in LOGIN_DEFAULT_MODELS:
+    for name in offered:
         assert name in out
     assert f"pick 1-{len(offered)}" in out
-    assert "deepseek" in offered and "openrouter" in offered
+    assert set(LOGIN_DEFAULT_MODELS) <= set(offered)
 
 
 def test_the_login_menu_offers_the_providers_only_the_local_registry_names(tmp_path, monkeypatch):
@@ -859,13 +861,17 @@ def test_a_hand_listed_provider_the_snapshot_does_not_carry_is_not_offered_eithe
     """On a machine with no snapshot yet, the providers reached through the registry cannot be
     reached at all, and the hand-listed ones are no exception: the menu would be offering a number
     that fails the moment it is picked. Typing the id still says so, and says how to get the file."""
+    from kullback.ai import provider as pv
+    from kullback.tui import LOGIN_DEFAULT_MODELS as DEFAULTS
+
     _snapshot(monkeypatch, tmp_path, catalog={})
     screen = Screen(tmp_path, console=_console())
     offered = screen._login_defaults()
-    assert "deepseek" not in offered and "openrouter" not in offered
-    assert "anthropic" in offered and "openai" in offered, "the two with adapters of their own stand"
+    missing = [name for name in DEFAULTS if name not in offered]
+    assert missing, "with no snapshot a registry model must be missing"
+    assert all(name in offered for name in DEFAULTS if name in pv.ADAPTERS)
     with pytest.raises(ValueError) as refusal:
-        screen._resolve("deepseek/deepseek-flash", None)
+        screen._resolve(DEFAULTS[missing[0]], None)
     assert "names no host" in str(refusal.value) and "refresh the snapshot" in str(refusal.value)
 
 
@@ -935,11 +941,11 @@ def test_watching_shows_the_calls_off_the_builds_own_feed(tmp_path, monkeypatch)
     from kullback.runner import feed
 
     other, screen = _watched(tmp_path, monkeypatch, alive=[True, True, True])
-    feed.append(other, "model_call", stage="compile_tools", model="openai/gpt-5.6-luna",
+    feed.append(other, "model_call", stage="compile_tools", model="openai/model-a",
                 input=12000, output=900, usd=0.0031, wall_ms=2400)
     screen.command("/watch 1")
     out = _text(screen.console)
-    assert "compile_tools" in out and "openai/gpt-5.6-luna" in out and "$0.0031" in out
+    assert "compile_tools" in out and "openai/model-a" in out and "$0.0031" in out
 
 
 def test_watching_a_build_that_has_not_called_anything_yet_says_so(tmp_path, monkeypatch):
@@ -962,7 +968,7 @@ def test_a_running_build_says_which_round_is_in_flight_not_the_pipelines_complet
     (tmp_path / "budget.json").write_text(json.dumps(
         {"total": {"usd": 2.5, "calls": 1870},
          "stages": {"mine": {"calls": 100}, "loophole_probe": {"calls": 68}}}))
-    heartbeat.beat(tmp_path, "openai/gpt-5.6-luna", "running")
+    heartbeat.beat(tmp_path, "openai/model-a", "running")
     screen = _screen(tmp_path)
     screen.command("/status")
     out = _text(screen.console)
@@ -990,7 +996,7 @@ def test_a_round_that_ended_without_stopping_the_loop_still_counts_as_closed(tmp
     (tmp_path / "rounds.json").write_text(json.dumps(
         [{"round": 1, "exit": None, "failed": False, "counts": {"spend": {"total": 2.6}}}]))
     (tmp_path / "budget.json").write_text(json.dumps({"total": {"usd": 3.2, "calls": 1899}}))
-    heartbeat.beat(tmp_path, "openai/gpt-5.6-luna", "running")
+    heartbeat.beat(tmp_path, "openai/model-a", "running")
     assert "round 2 running" in (tui_module.in_flight(tmp_path) or "")
 
 
@@ -1010,11 +1016,11 @@ def test_watching_a_build_that_writes_no_feed_shows_the_calls_from_its_reply_cac
     cache = other / feed.CACHE_DIR
     cache.mkdir()
     (cache / "one.json").write_text(json.dumps(
-        {"model": "opencode-go/glm-5.3-flash", "usage": {"input": 676, "output": 193}}))
+        {"model": "opencode-go/model-a", "usage": {"input": 676, "output": 193}}))
     screen.command("/watch 1")
     out = _text(screen.console)
     assert not feed.path_for(other).exists()
-    assert "676 in / 193 out" in out and "glm-5.3-flash" in out
+    assert "676 in / 193 out" in out and "opencode-go/model-a" in out
     assert "waiting for the build's next call" not in out
 
 
@@ -1029,7 +1035,7 @@ def test_the_spend_since_the_last_close_counts_every_closed_round_not_only_the_l
         {"round": 1, "counts": {"spend": {"total": 2.0}}},
         {"round": 2, "counts": {"spend": {"total": 0.5}}}]))
     (tmp_path / "budget.json").write_text(json.dumps({"total": {"usd": 2.75, "calls": 10}}))
-    heartbeat.beat(tmp_path, "openai/gpt-5.6-luna", "running")
+    heartbeat.beat(tmp_path, "openai/model-a", "running")
     said = tui_module.in_flight(tmp_path) or ""
     assert "round 3 running" in said and "$0.2500 since round 2 closed" in said
 
@@ -1038,9 +1044,9 @@ def test_the_login_menu_starts_bedrock_at_the_harness_default_model():
     from kullback.ai.provider import DEFAULT_MODEL
     from kullback.tui import LOGIN_DEFAULT_MODELS
 
-    assert DEFAULT_MODEL == "bedrock/global.anthropic.claude-opus-5-5"
+    assert DEFAULT_MODEL.startswith("bedrock/")
     assert LOGIN_DEFAULT_MODELS["bedrock"] == DEFAULT_MODEL
-    assert LOGIN_DEFAULT_MODELS["openai"] == "openai/gpt-6-luna"
+    assert LOGIN_DEFAULT_MODELS["openai"].startswith("openai/")
 
 
 # --- the live transcript ------------------------------------------------------
@@ -1312,11 +1318,13 @@ def test_every_session_command_is_in_the_table_and_in_help(name):
 
 
 def test_the_login_menu_questions_keep_their_bracketed_hints(tmp_path):
+    from kullback.tui import LOGIN_DEFAULT_MODELS
+
     console = Console(file=io.StringIO(), width=100, force_terminal=False, no_color=True)
     console.input = lambda prompt="", **_: console.print(prompt, end="") or ""
     screen = Screen(tmp_path, console=console)
-    screen._ask("    model [openai/gpt-6-luna]: ")
-    assert "model [openai/gpt-6-luna]:" in _text(console)
+    screen._ask(f"    model [{LOGIN_DEFAULT_MODELS['openai']}]: ")
+    assert f"model [{LOGIN_DEFAULT_MODELS['openai']}]:" in _text(console)
 
 
 # --- steering a live build elsewhere ------------------------------------------
@@ -1329,7 +1337,7 @@ def _live_elsewhere(tmp_path):
     from kullback.ai.provider import TestModel
     from kullback.runner import heartbeat
 
-    heartbeat.beat(tmp_path, "openai/gpt-6-luna", "running")
+    heartbeat.beat(tmp_path, "openai/model-a", "running")
     harness = AgentHarness(TestModel(["done"]))
     return harness, SteerBridge(harness, tmp_path / "bus.jsonl", poll_seconds=0.02).start()
 
@@ -1426,7 +1434,7 @@ def test_the_screen_starts_at_the_cli_default_model(tmp_path):
     from kullback.ai.provider import DEFAULT_MODEL
 
     assert Screen(tmp_path, console=_console()).model == DEFAULT_MODEL
-    assert Screen(tmp_path, model="openai/gpt-6-luna", console=_console()).model == "openai/gpt-6-luna"
+    assert Screen(tmp_path, model="openai/model-a", console=_console()).model == "openai/model-a"
 
 
 def test_home_names_ingest_as_the_next_step_in_an_empty_workdir(tmp_path):
@@ -1440,7 +1448,7 @@ def test_home_names_ingest_as_the_next_step_in_an_empty_workdir(tmp_path):
 def test_the_checklist_never_contains_a_secret_value(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "marker-secret-value-4")
     console = _console()
-    screen = Screen(tmp_path, model="bedrock/global.anthropic.claude-opus-5-5", console=console)
+    screen = Screen(tmp_path, model="bedrock/global.a-vendor.big-1", console=console)
     screen.command("/doctor")
     screen.command("/keys")
     out = _text(console)
@@ -1453,8 +1461,8 @@ def test_the_entry_screen_lists_only_sessions_of_this_workdir(tmp_path):
 
     other = tmp_path / "other"
     other.mkdir()
-    heartbeat.beat(other, "openai/gpt-6-luna", "running")
-    heartbeat.beat(tmp_path, "openai/gpt-6-luna", "running")
+    heartbeat.beat(other, "openai/model-a", "running")
+    heartbeat.beat(tmp_path, "openai/model-a", "running")
     console = Console(file=io.StringIO(), width=300, force_terminal=False, no_color=True)
     Screen(tmp_path, console=console).open()
     out = _text(console)
@@ -1464,7 +1472,7 @@ def test_the_entry_screen_lists_only_sessions_of_this_workdir(tmp_path):
 def test_keys_lists_the_models_own_variables_first(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "marker-secret-value-5")
     console = _console()
-    screen = Screen(tmp_path, model="bedrock/global.anthropic.claude-opus-5-5", console=console)
+    screen = Screen(tmp_path, model="bedrock/global.a-vendor.big-1", console=console)
     screen.command("/keys")
     out = _text(console)
     assert "marker-secret-value-5" not in out

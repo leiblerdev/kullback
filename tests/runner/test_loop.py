@@ -245,7 +245,7 @@ class _Boom(TestModel):
 
 class _Down(TestModel):
     def query(self, messages, tools=None, config=None):
-        raise RetryExhausted("anthropic/claude-opus-5: 5 attempts failed", status=503, attempts=5)
+        raise RetryExhausted("anthropic/model-a: 5 attempts failed", status=503, attempts=5)
 
 
 class _Angry:
@@ -358,14 +358,17 @@ class Wired(TestModel):
         return reply
 
 
-def test_the_model_call_event_is_priced_and_timed_from_the_exchange(workdir):
+def test_the_model_call_event_is_priced_and_timed_from_the_exchange(workdir, monkeypatch):
     """A Run read on its own used to say every call cost nothing and took no time: only the
     budget ledger's own copy of the call was priced."""
     from kullback.ai.provider import Exchange, ModelReply
     from kullback.ai.usage import Usage
+    from kullback.runner import budget
 
+    monkeypatch.setitem(budget.PRICES, "anthropic/model-a",
+                        {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25})
     model = Wired(
-        [ModelReply(content="Your order 123 was delivered.", model="claude-opus-5",
+        [ModelReply(content="Your order 123 was delivered.", model="model-a",
                     usage=Usage(input=1_000_000))],
         Exchange(provider="anthropic", wall_ms=12.5, attempts=1, status=200),
     )
@@ -374,7 +377,7 @@ def test_the_model_call_event_is_priced_and_timed_from_the_exchange(workdir):
     call = [e for e in lines_of(state.path) if e["type"] == "model_call"][0]
     assert call["cost"]["provider"] == "anthropic"
     assert call["cost"]["wall_ms"] == 12.5
-    # anthropic/claude-opus-5 is 5.00 USD per million input tokens in the offline price table.
+    # anthropic/model-a is 5.00 USD per million input tokens in its registered test price.
     assert call["cost"]["usd"] == pytest.approx(5.0)
     assert call["cost"]["price_source"] == "table"
 
