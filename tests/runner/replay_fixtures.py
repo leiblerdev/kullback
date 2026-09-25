@@ -1,5 +1,5 @@
-"""The replayed Trace every test of a Reference Run starts from: one cancel_order Task in a
-tiny order world, its Toolkit, and `do_replay` writing the Run to disk.
+"""The replayed Trace every test of a Reference Run starts from: one cancel_item Task in a
+tiny item world, its Toolkit, and `do_replay` writing the Run to disk.
 
 It lives beside the replay tests because `replay.replay_trace` is what builds it, and the
 gates and Builder tests that rule on a replayed Run import it from here rather than each
@@ -20,14 +20,14 @@ from kullback.runner.route import Router
 PTR = RawPtr(file_hash="f" * 64, sim_index=0, msg_index=0)
 
 
-class Order(BaseModel):
+class Item(BaseModel):
     id: str
     status: str
     total: int = 0
 
 
 class DB(BaseModel):
-    orders: dict[str, Order] = {}
+    items: dict[str, Item] = {}
 
 
 class Toolkit:
@@ -39,30 +39,30 @@ class Toolkit:
     def __init__(self, db: dict):
         self.db = DB.model_validate(db)
 
-    def get_order_details(self, order_id):
-        row = self.db.orders.get(order_id)
+    def get_item_details(self, item_id):
+        row = self.db.items.get(item_id)
         if row is None:
-            raise KeyError(order_id)
+            raise KeyError(item_id)
         out = row.model_dump()
         out["total"] = self.total_as(out["total"])
         return out
 
-    def cancel_order(self, order_id, reason="requested"):
-        self.db.orders[order_id].status = self.cancelled
-        return self.db.orders[order_id].model_dump()
+    def cancel_item(self, item_id, reason="requested"):
+        self.db.items[item_id].status = self.cancelled
+        return self.db.items[item_id].model_dump()
 
     def check_balance(self):
         return {"balance": 10}
 
 
 def world() -> dict:
-    return {"orders": {"123": {"id": "123", "status": "delivered", "total": 25}}}
+    return {"items": {"123": {"id": "123", "status": "delivered", "total": 25}}}
 
 
 def sigs() -> list[ToolSig]:
     # D164: check_balance is the simulated user's own tool, mined from the user's calls alone, so
     # the user is its caller and the assistant would be refused it.
-    return [ToolSig(name="get_order_details", kind="read"), ToolSig(name="cancel_order", kind="write"),
+    return [ToolSig(name="get_item_details", kind="read"), ToolSig(name="cancel_item", kind="write"),
             ToolSig(name="check_balance", kind="read", callers=["user"])]
 
 
@@ -74,18 +74,18 @@ def call(call_id, name, args, result, error=None, requestor="assistant") -> Tool
 def trace(user_call: bool = False) -> Trace:
     turns = [
         Turn(idx=0, role="assistant", content="Hi! How can I help you today?", raw_ptr=PTR),
-        Turn(idx=1, role="user", content="Please cancel order 123.", raw_ptr=PTR),
+        Turn(idx=1, role="user", content="Please cancel item 123.", raw_ptr=PTR),
         Turn(idx=2, role="assistant", content=None, tool_call_ids=["c1"], raw_ptr=PTR),
         Turn(idx=3, role="tool", content='{"id": "123"}', tool_call_ids=["c1"], raw_ptr=PTR),
         Turn(idx=4, role="assistant", content=None, tool_call_ids=["c2"], raw_ptr=PTR),
         Turn(idx=5, role="tool", content='{"id": "123"}', tool_call_ids=["c2"], raw_ptr=PTR),
-        Turn(idx=6, role="assistant", content="Order 123 is cancelled. Anything else?", raw_ptr=PTR),
+        Turn(idx=6, role="assistant", content="Item 123 is cancelled. Anything else?", raw_ptr=PTR),
         Turn(idx=7, role="user", content="No, thanks. ###STOP###", tool_call_ids=["c3"] if user_call else [],
              raw_ptr=PTR),
     ]
     calls = [
-        call("c1", "get_order_details", {"order_id": "123"}, {"id": "123", "status": "delivered", "total": 25}),
-        call("c2", "cancel_order", {"order_id": "123", "reason": "requested"},
+        call("c1", "get_item_details", {"item_id": "123"}, {"id": "123", "status": "delivered", "total": 25}),
+        call("c2", "cancel_item", {"item_id": "123", "reason": "requested"},
               {"id": "123", "status": "cancelled", "total": 25}),
     ]
     if user_call:
@@ -100,7 +100,7 @@ def router(toolkit_class=Toolkit) -> Router:
 
 def do_replay(tmp_path: Path, toolkit_class=Toolkit, user_call: bool = False) -> replay.Replay:
     return replay.replay_trace(trace(user_call), router(toolkit_class), workdir=tmp_path / "runs" / "t1",
-                               task_id="t1", env_id="env1", write_tools={"cancel_order"})
+                               task_id="t1", env_id="env1", write_tools={"cancel_item"})
 
 
 def events(path: str) -> list[dict]:

@@ -26,10 +26,10 @@ def test_the_replay_writes_the_reference_run_the_loop_would(tmp_path):
     assert [e.type for e in run.events] == [
         "model_call", "user_turn", "model_call", "tool_call", "tool_result", "model_call", "tool_call",
         "tool_result", "model_call", "user_turn", "stop"]
-    assert run.events[1].payload["text"] == "Please cancel order 123."
-    assert run.events[3].payload == {"id": "c1", "name": "get_order_details", "args": {"order_id": "123"}}
+    assert run.events[1].payload["text"] == "Please cancel item 123."
+    assert run.events[3].payload == {"id": "c1", "name": "get_item_details", "args": {"item_id": "123"}}
     assert run.events[4].route == "code"
-    assert run.events[-1].payload["end_state"]["orders"]["123"]["status"] == "cancelled"
+    assert run.events[-1].payload["end_state"]["items"]["123"]["status"] == "cancelled"
     assert out.counts["writes"] == 1 and out.counts["writes_matched"] == 1
     assert out.counts["reads"] == 1 and out.counts["reads_same"] == 1
 
@@ -40,7 +40,7 @@ def test_a_write_whose_effect_differs_does_not_confirm(tmp_path):
 
     out = do_replay(tmp_path, Misspelt)
     assert not out.confirmed
-    assert out.reasons == ["cancel_order write: differs (value)"]
+    assert out.reasons == ["cancel_item write: differs (value)"]
     assert out.counts["writes_matched"] == 0
 
 
@@ -55,12 +55,12 @@ def test_a_cosmetic_read_difference_still_confirms(tmp_path):
 
 def test_a_tool_that_refuses_where_the_real_one_answered_is_a_semantic_miss(tmp_path):
     class Broken(Toolkit):
-        def get_order_details(self, order_id):
-            raise KeyError(order_id)
+        def get_item_details(self, item_id):
+            raise KeyError(item_id)
 
     out = do_replay(tmp_path, Broken)
     assert not out.confirmed
-    assert out.reasons == ["get_order_details read: ours_refused (error)"]
+    assert out.reasons == ["get_item_details read: ours_refused (error)"]
 
 
 def test_compare_call_names_every_way_two_answers_part():
@@ -76,26 +76,26 @@ def test_compare_call_names_every_way_two_answers_part():
 
 
 class Refusing(Toolkit):
-    def cancel_order(self, order_id, reason="requested"):
+    def cancel_item(self, item_id, reason="requested"):
         raise ValueError("Payment amount 25.00 does not add up")
 
 
 def _refused_row(toolkit_class, recorded_message: str) -> dict:
-    """One cancel_order call the recording refused with `recorded_message`, routed through a body."""
-    recorded = call("c2", "cancel_order", {"order_id": "123"}, None,
+    """One cancel_item call the recording refused with `recorded_message`, routed through a body."""
+    recorded = call("c2", "cancel_item", {"item_id": "123"}, None,
                     error=ToolCallError(**{"class": "not_found_entity"}, payload=recorded_message))
-    scored = replay.ScoredRouter(router(toolkit_class), deque([recorded]), write_tools={"cancel_order"})
-    scored.route("cancel_order", {"order_id": "123"})
+    scored = replay.ScoredRouter(router(toolkit_class), deque([recorded]), write_tools={"cancel_item"})
+    scored.route("cancel_item", {"item_id": "123"})
     return scored.checks[0]
 
 
 def test_two_refusals_with_different_messages_disagree_and_the_row_keeps_both_messages():
     """F56: both sides refusing is not agreement when they refuse for different reasons."""
-    row = _refused_row(Refusing, "Error: Order is not pending")
+    row = _refused_row(Refusing, "Error: Item is not pending")
     assert row["verdict"] == replay.REFUSED_DIFFERENTLY
     assert row["verdict"] not in replay.AGREES
     assert "Payment amount 25.00 does not add up" in row["difference"]["ours_error"]
-    assert row["difference"]["theirs_error"] == "Error: Order is not pending"
+    assert row["difference"]["theirs_error"] == "Error: Item is not pending"
 
 
 def test_the_same_refusal_message_agrees_across_prefix_case_spacing_and_number_spelling():
@@ -109,7 +109,7 @@ def test_a_body_fault_is_never_both_refused_and_its_row_names_the_fault():
     """F56: a body that crashed did not refuse, whatever the recording refused with."""
 
     class Crashing(Toolkit):
-        def cancel_order(self, order_id, reason="requested"):
+        def cancel_item(self, item_id, reason="requested"):
             raise RuntimeError("Payment amount 25.00 does not add up")
 
     row = _refused_row(Crashing, "Error: Payment amount 25.00 does not add up")
@@ -139,7 +139,7 @@ def test_a_parted_call_alone_records_its_keys_and_both_answers_whole(tmp_path):
 
     out = do_replay(tmp_path / "parted", Misspelt)
     parted = _checks(out, replay.DIFFERS)
-    assert [check["tool"] for check in parted] == ["cancel_order"]
+    assert [check["tool"] for check in parted] == ["cancel_item"]
     difference = parted[0]["difference"]
     assert difference["keys_changed"] == ["status"]
     assert difference["keys_only_ours"] == [] and difference["keys_only_theirs"] == []
@@ -153,7 +153,7 @@ def test_a_parted_call_alone_records_its_keys_and_both_answers_whole(tmp_path):
     # 160 characters is not always enough to reach the message inside a refusal, and the message is
     # the whole of what says whose error it was.
     class Broken(Toolkit):
-        def get_order_details(self, order_id):
+        def get_item_details(self, item_id):
             raise KeyError("x" * 300)
 
     refused = do_replay(tmp_path / "refused", Broken)
@@ -165,8 +165,8 @@ def test_a_parted_call_alone_records_its_keys_and_both_answers_whole(tmp_path):
 
 def test_an_answer_too_long_to_keep_is_marked_as_cut_with_the_keys_still_named(tmp_path):
     class Wordy(Toolkit):
-        def get_order_details(self, order_id):
-            return {"id": order_id, "essay": "x" * 6000}
+        def get_item_details(self, item_id):
+            return {"id": item_id, "essay": "x" * 6000}
 
     out = do_replay(tmp_path, Wordy)
     difference = _checks(out, replay.DIFFERS)[0]["difference"]
@@ -188,11 +188,11 @@ def test_the_verifier_derives_from_the_replayed_run(tmp_path):
     """The whole point: a Run on disk the Verifier stage can read (D91), with the write as an atom."""
     out = do_replay(tmp_path)
     task = Task(id="t1", run_ids=["tr1"])
-    verifier = verifier_mod.derive_verifier(task, out.path, write_tools={"cancel_order"}, canon=CanonRules())
+    verifier = verifier_mod.derive_verifier(task, out.path, write_tools={"cancel_item"}, canon=CanonRules())
     writes = [a for a in verifier.atoms if a.target.get("kind") == "write"]
-    assert [a.kind for a in writes] == ["required"] and writes[0].target["tool"] == "cancel_order"
+    assert [a.kind for a in writes] == ["required"] and writes[0].target["tool"] == "cancel_item"
     gates = {g.stage: g.passed for g in suite.validate_verifier(
-        verifier, out.path, write_tools={"cancel_order"}, canon=CanonRules())}
+        verifier, out.path, write_tools={"cancel_item"}, canon=CanonRules())}
     assert gates["verifier_oracle"] and gates["verifier_empty_run"]
 
 
@@ -231,11 +231,11 @@ def test_a_replayed_call_parts_by_the_column_classes_the_schema_names(ours, verd
 # --- D204: a run of consecutive turns of one role is one logical turn ---
 
 def _replay_of(tmp_path, turns, calls=()):
-    """One invented Trace replayed over the order world, so a test can shape its turn order."""
+    """One invented Trace replayed over the item world, so a test can shape its turn item."""
     recording = Trace(trace_id="tr1", raw_hash="r" * 64, ingest_version="1", source="test",
                       turns=turns, tool_calls=list(calls), raw_ptr=PTR, system_prompt="You are the agent.")
     return replay.replay_trace(recording, router(), workdir=tmp_path / "runs" / "t1", task_id="t1",
-                               env_id="env1", write_tools={"cancel_order"})
+                               env_id="env1", write_tools={"cancel_item"})
 
 
 def _turn(idx, role, content=None, call_ids=()):
@@ -249,20 +249,20 @@ def test_a_run_of_turns_of_one_role_is_one_turn_and_the_other_role_is_asked_once
     absorbed rather than left for an ask that never comes."""
     out = _replay_of(tmp_path / "users", [
         _turn(0, "assistant", "How can I help?"),
-        _turn(1, "user", "Cancel order 123."),
+        _turn(1, "user", "Cancel item 123."),
         _turn(2, "user", "It is the delivered one."),
         _turn(3, "assistant", None, ["c2"]),
         _turn(4, "tool", '{"id": "123"}', ["c2"]),
-        _turn(5, "assistant", "Order 123 is cancelled."),
+        _turn(5, "assistant", "Item 123 is cancelled."),
         _turn(6, "user", "Thanks."),
-    ], [call("c2", "cancel_order", {"order_id": "123", "reason": "requested"},
+    ], [call("c2", "cancel_item", {"item_id": "123", "reason": "requested"},
              {"id": "123", "status": "cancelled", "total": 25})])
     assert out.confirmed, out.reasons
     assert out.counts["gaps"] == 0
     assert out.counts["absorbed_user_runs"] == 1 and out.counts["absorbed_turns"] == 1
     run = suite.load_run(out.path)
     spoken = [e.payload["text"] for e in run.events if e.type == "user_turn"]
-    assert spoken == ["Cancel order 123.\nIt is the delivered one.", "Thanks."]
+    assert spoken == ["Cancel item 123.\nIt is the delivered one.", "Thanks."]
     assert out.counts["writes"] == 1 and out.counts["writes_matched"] == 1, "the write after the run replays"
 
     out = _replay_of(tmp_path / "assistants", [
@@ -285,13 +285,13 @@ def test_a_tool_a_user_turn_called_inside_a_run_is_routed_compared_and_named_a_u
         _turn(0, "assistant", "How can I help?"),
         _turn(1, "user", "What is my balance?", ["u1"]),
         _turn(2, "tool", '{"balance": 10}', ["u1"]),
-        _turn(3, "user", "Then cancel order 123."),
+        _turn(3, "user", "Then cancel item 123."),
         _turn(4, "assistant", None, ["c2"]),
         _turn(5, "tool", '{"id": "123"}', ["c2"]),
-        _turn(6, "assistant", "Order 123 is cancelled."),
+        _turn(6, "assistant", "Item 123 is cancelled."),
         _turn(7, "user", "Thanks."),
     ], [call("u1", "check_balance", {}, {"balance": 10}, requestor="user"),
-        call("c2", "cancel_order", {"order_id": "123", "reason": "requested"},
+        call("c2", "cancel_item", {"item_id": "123", "reason": "requested"},
              {"id": "123", "status": "cancelled", "total": 25})])
     assert out.confirmed, out.reasons
     assert out.counts["absorbed_user_runs"] == 1 and out.counts["gaps"] == 0
@@ -299,7 +299,7 @@ def test_a_tool_a_user_turn_called_inside_a_run_is_routed_compared_and_named_a_u
     assert [(c["tool"], c["verdict"]) for c in own] == [("check_balance", replay.SAME)]
     run = suite.load_run(out.path)
     called = [e.payload["name"] for e in run.events if e.type == "tool_call"]
-    assert called == ["check_balance", "cancel_order"], "the user's call is routed in recorded order"
+    assert called == ["check_balance", "cancel_item"], "the user's call is routed in recorded order"
 
     parted = _replay_of(tmp_path / "parted", [
         _turn(0, "assistant", "How can I help?"),
@@ -322,7 +322,7 @@ def test_only_a_role_standing_where_the_other_was_due_counts_a_gap_and_then_resy
         _turn(2, "user", "Any update?"),
         _turn(3, "assistant", "It is delivered."),
         _turn(4, "user", "Thanks."),
-    ], [call("c1", "get_order_details", {"order_id": "123"},
+    ], [call("c1", "get_item_details", {"item_id": "123"},
              {"id": "123", "status": "delivered", "total": 25})])
     assert out.counts["gaps"] == 1
     assert out.reasons == ["1 turn(s) out of order"]
@@ -426,21 +426,21 @@ class _WorldRouter:
 
 
 def _effect_row(unattributed, after="cancelled"):
-    return {"tool": "cancel_order", "table": "orders", "row": "123", "path": "status",
+    return {"tool": "cancel_item", "table": "items", "row": "123", "path": "status",
             "before": "delivered", "after": after, "named": True, "ambiguous": False,
             "unattributed": unattributed, "formulas": []}
 
 
 def _effect_world():
-    return {"orders": {"123": {"id": "123", "status": "cancelled", "total": 25}}}
+    return {"items": {"123": {"id": "123", "status": "cancelled", "total": 25}}}
 
 
 def _check_effects(effects):
-    scored = replay.ScoredRouter(_WorldRouter(_effect_world()), deque(), write_tools={"cancel_order"},
+    scored = replay.ScoredRouter(_WorldRouter(_effect_world()), deque(), write_tools={"cancel_item"},
                                  effects=effects)
-    recorded = call("c2", "cancel_order", {"order_id": "123"},
+    recorded = call("c2", "cancel_item", {"item_id": "123"},
                     {"id": "123", "status": "cancelled", "total": 25})
-    check = {"tool": "cancel_order", "kind": "write", "call_id": "c2"}
+    check = {"tool": "cancel_item", "kind": "write", "call_id": "c2"}
     scored._check_effects(check, recorded, SimpleNamespace(error=None))
     return scored, check
 
@@ -469,7 +469,7 @@ def test_an_unattributed_row_is_counted_apart_and_never_fails_its_call(tmp_path)
             assert len(scored.stale) == stale
 
     out = replay.replay_trace(trace(), router(), workdir=tmp_path / "runs" / "t8", task_id="t8",
-                              env_id="env1", write_tools={"cancel_order"},
+                              env_id="env1", write_tools={"cancel_item"},
                               effects={"c2": [_effect_row(False)],
                                        STRAY: [_effect_row(True, after="shipped")]})
     assert out.confirmed, out.reasons
@@ -480,10 +480,10 @@ def test_an_unattributed_row_is_counted_apart_and_never_fails_its_call(tmp_path)
 
 def test_a_stray_bucket_colliding_with_a_call_id_still_fails_nothing(tmp_path):
     cid = effects_mod.UNATTRIBUTED
-    effect = effects_mod.WriteEffect(tool="cancel_order", call_id=cid, trace_id="tr1", columns=[
-        effects_mod.EffectColumn(table="orders", row_id="123", path="status", before="delivered",
+    effect = effects_mod.WriteEffect(tool="cancel_item", call_id=cid, trace_id="tr1", columns=[
+        effects_mod.EffectColumn(table="items", row_id="123", path="status", before="delivered",
                                  after="shipped", named=True, checked=True, unattributed=False),
-        effects_mod.EffectColumn(table="orders", row_id="123", path="total", before=25,
+        effects_mod.EffectColumn(table="items", row_id="123", path="total", before=25,
                                  after=26, named=True, checked=False, unattributed=True)])
     assert effects_mod._stray_key({cid: [effect]}) == cid + "\x00"
     evidence = effects_mod.replay_evidence({cid: [effect]})
@@ -492,11 +492,11 @@ def test_a_stray_bucket_colliding_with_a_call_id_still_fails_nothing(tmp_path):
                                              for row in evidence[cid + "\x00"])
     evidence[cid].append(_effect_row(True, after="shipped"))
     evidence[cid].append(_effect_row("yes", after="shipped"))
-    recorded = call(cid, "cancel_order", {"order_id": "123"},
+    recorded = call(cid, "cancel_item", {"item_id": "123"},
                     {"id": "123", "status": "cancelled", "total": 25})
-    scored = replay.ScoredRouter(_WorldRouter(_effect_world()), deque(), write_tools={"cancel_order"},
+    scored = replay.ScoredRouter(_WorldRouter(_effect_world()), deque(), write_tools={"cancel_item"},
                                  effects=evidence)
-    check = {"tool": "cancel_order", "kind": "write", "call_id": cid}
+    check = {"tool": "cancel_item", "kind": "write", "call_id": cid}
     scored._check_effects(check, recorded, SimpleNamespace(error=None))
     assert check["effect_checks"] == 2
     assert check["effect_failures_total"] == 2
@@ -507,37 +507,37 @@ def test_a_stray_bucket_colliding_with_a_call_id_still_fails_nothing(tmp_path):
     # the same collision replayed: the stray is scored apart and the later read is blamed downstream
     colliding = Trace(trace_id="tr9", raw_hash="r" * 64, ingest_version="1", source="test", turns=[
         Turn(idx=0, role="assistant", content="Hi! How can I help you today?", raw_ptr=PTR),
-        Turn(idx=1, role="user", content="Please cancel order 123.", raw_ptr=PTR),
+        Turn(idx=1, role="user", content="Please cancel item 123.", raw_ptr=PTR),
         Turn(idx=2, role="assistant", content=None, tool_call_ids=["c1"], raw_ptr=PTR),
         Turn(idx=3, role="tool", content='{"id": "123"}', tool_call_ids=["c1"], raw_ptr=PTR),
         Turn(idx=4, role="assistant", content=None, tool_call_ids=[cid], raw_ptr=PTR),
         Turn(idx=5, role="tool", content='{"id": "123"}', tool_call_ids=[cid], raw_ptr=PTR),
         Turn(idx=6, role="assistant", content=None, tool_call_ids=["c3"], raw_ptr=PTR),
         Turn(idx=7, role="tool", content='{"id": "123"}', tool_call_ids=["c3"], raw_ptr=PTR),
-        Turn(idx=8, role="assistant", content="Order 123 is cancelled. Anything else?", raw_ptr=PTR),
+        Turn(idx=8, role="assistant", content="Item 123 is cancelled. Anything else?", raw_ptr=PTR),
         Turn(idx=9, role="user", content="No, thanks. ###STOP###", raw_ptr=PTR)],
         tool_calls=[
-            call("c1", "get_order_details", {"order_id": "123"},
+            call("c1", "get_item_details", {"item_id": "123"},
                  {"id": "123", "status": "delivered", "total": 25}),
-            call(cid, "cancel_order", {"order_id": "123", "reason": "requested"},
+            call(cid, "cancel_item", {"item_id": "123", "reason": "requested"},
                  {"id": "123", "status": "cancelled", "total": 25}),
-            call("c3", "get_order_details", {"order_id": "123"},
+            call("c3", "get_item_details", {"item_id": "123"},
                  {"id": "123", "status": "shipped", "total": 25})],
         raw_ptr=PTR, system_prompt="You are the agent.")
-    effect = effects_mod.WriteEffect(tool="cancel_order", call_id=cid, trace_id="tr9", columns=[
-        effects_mod.EffectColumn(table="orders", row_id="123", path="status", before="delivered",
+    effect = effects_mod.WriteEffect(tool="cancel_item", call_id=cid, trace_id="tr9", columns=[
+        effects_mod.EffectColumn(table="items", row_id="123", path="status", before="delivered",
                                  after="shipped", named=True, checked=True, unattributed=False),
-        effects_mod.EffectColumn(table="orders", row_id="123", path="total", before=25,
+        effects_mod.EffectColumn(table="items", row_id="123", path="total", before=25,
                                  after=26, named=True, checked=False, unattributed=True)])
     evidence = effects_mod.replay_evidence({cid: [effect]})
     out = replay.replay_trace(colliding, router(), workdir=tmp_path / "runs" / "t9", task_id="t9",
-                              env_id="env1", write_tools={"cancel_order"}, effects=evidence)
+                              env_id="env1", write_tools={"cancel_item"}, effects=evidence)
     assert not out.confirmed
     assert out.counts["gaps"] == 0
     assert out.counts["effect_checks"] == 1
     assert out.counts["effect_failures"] == 1
     assert out.counts["effect_unattributed"] == 1
     assert out.counts["effects_downstream"] == 1
-    assert "cancel_order write: effect orders.status the column did not move" in out.reasons
+    assert "cancel_item write: effect items.status the column did not move" in out.reasons
     reread = [check for check in out.checks if check.get("call_id") == "c3"]
     assert len(reread) == 1 and reread[0].get("downstream_of") == cid
