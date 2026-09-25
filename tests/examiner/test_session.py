@@ -534,6 +534,22 @@ def test_a_stop_cancels_the_examiner_session_at_its_next_step(tmp_path):
     assert read_json(world.workdir / "findings.json")[-1]["rows"][0]["session"] == "cancelled"
 
 
+def test_a_task_whose_search_a_stop_cut_short_is_picked_again_by_a_plain_examine(tmp_path):
+    root = _env_with_trace(tmp_path / "env")
+    seed = tool.run(root, "widget_task", _rename_loop(), workdir=root)
+    write_json(root / "replays.json", {"widget_task": {
+        "rec1": {"trace_id": "rec1", "run_id": seed.run_id,
+                 "confirmed": True, "path": seed.path}}})
+    write_json(root / "rerolls.json", {"widget_task": []})
+    write_json(root / "constraints.json", [])
+    S.examine(root, model=None, reroll_model=_rename_loop(), should_stop=_stop_after(1))
+    assert read_json(root / "task_status.json")["widget_task"]["stopped"] is True
+    assert S.derive_pick(root, S.load_store(root), None) == ["widget_task"]
+    S.examine(root, model=None, reroll_model=_rename_loop())
+    assert "stopped" not in read_json(root / "task_status.json")["widget_task"]
+    assert S.derive_pick(root, S.load_store(root), None) == []
+
+
 def test_no_second_path_reroll_is_bought_after_a_stop(tmp_path):
     """The Task's derivation starts, then the stop comes: the search buys no batch and caches nothing."""
     root = _env_with_trace(tmp_path / "env")
