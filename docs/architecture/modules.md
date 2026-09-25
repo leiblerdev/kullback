@@ -163,7 +163,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 |---|---|
 | `kullback/examiner/__init__.py` | The Examiner: one Verifier per Task, probes, repairs, refusals, findings. |
 | `kullback/examiner/derive.py` | Derives one Task's Verifier from its Reference and stored re-runs (D42, D43, D91). |
-| `kullback/examiner/domain_tools.py` | The Examiner's tools: edit_verifier, probe, finding, reroll. |
+| `kullback/examiner/domain_tools.py` | The Examiner's tools: edit_verifier, try_atoms (edit_verifier's rulings, nothing written), probe, finding, reroll. |
 | `kullback/examiner/exam_files.py` | The Examiner's root `exam/`: the read surface it is given and its findings file. |
 | `kullback/examiner/findings.py` | Findings the round's records file by themselves before the model speaks (D170). |
 | `kullback/examiner/judge.py` | The reference judge as a bounded agent, one-shot judge as fallback (D12, D92). |

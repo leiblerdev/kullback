@@ -1,11 +1,11 @@
-"""The Examiner's domain tools over its root: edit_verifier, probe, finding, reroll.
+"""The Examiner's domain tools over its root: edit_verifier, try_atoms, probe, finding, reroll.
 
 `edit_verifier` writes the next Verifier version off the current one (edit, then drop and
 add; `propose_verifier` is its alias for one release); the D79 suite,
 the pool and the loosening gate rule on the write through `gate_writes`, never here
-(D79). `probe` scores a hand-written Run against the current Verifier and keeps it in
-the pool. `finding` files what is wrong on the Builder's side with the file to edit
-and what should differ, never a verb. `reroll` buys frontier Runs through the Runner
+(D79). `try_atoms` rules on the same edit and writes nothing. `probe` scores a hand-written
+Run against the current Verifier and keeps it in the pool. `finding` files what is wrong on
+the Builder's side with the file to edit and what should differ, never a verb. `reroll` buys frontier Runs through the Runner
 tool, refused at or below the remaining allowance (D112, D133). Every result carries
 rows, never a count alone.
 
@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal, Optional
+from typing import Any, Callable, Iterable, Iterator, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -106,6 +108,23 @@ class ProposeResult(BaseModel):
     rulings: list[dict] = Field(default_factory=list, description="One record per ruling in the "
                                 "shape attach_ruling uses: name, accepted, line, rows.")
     produced: list[str] = Field(default_factory=lambda: list(PRODUCED_VERIFIERS))
+
+
+class TryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    task_id: str
+    content_hash: str
+    verifier_version: str
+    accepted: Union[bool, Literal["not decided"]] = Field(description="What edit_verifier would "
+                                                          "answer; not decided when only the loophole "
+                                                          "probe, which a dry run never runs, is left.")
+    rulings: list[dict] = Field(default_factory=list, description="One record per ruling in the "
+                                "shape edit_verifier returns: name, accepted, line, rows.")
+    failing_atoms: list[str] = Field(default_factory=list, description="The atom ids the failing "
+                                     "rulings' rows name.")
+    produced: list[str] = Field(default_factory=list)
 
 
 class ProbeArgs(BaseModel):
@@ -396,8 +415,11 @@ def _suite_row(records: list[dict], base: dict) -> Optional[dict]:
             "not_run_reasons": {D79_STAGES[stage]: why for stage, why in held.items()}}
 
 
-def _rule(root: ExamRoot, task_id: str, candidate: Verifier) -> list[dict]:
+def _rule(root: ExamRoot, task_id: str, candidate: Verifier, ruled_dir: Optional[Path] = None) -> list[dict]:
     """Every ruling on the proposal, judged by its own Task only (F47).
+
+    The binding reads the written file under `ruled_dir`, the exam dir unless a dry run hands a
+    scratch copy outside the workdir, so a trial rules on the same bytes a write would leave.
 
     The binding stops at its first refusal, and a check that did not run reads as one there. That
     is no refusal of the proposal (F45), so when the ruling stopped on one, the D79 checks run again
@@ -405,7 +427,7 @@ def _rule(root: ExamRoot, task_id: str, candidate: Verifier) -> list[dict]:
     """
     _merge_bought(root, task_id)
     evidence = evidence_of(root, task_id=task_id)
-    records = _ruling_records(rulings_for(root.exam_dir, f"verifiers/{task_id}.json", root.workdir,
+    records = _ruling_records(rulings_for(ruled_dir or root.exam_dir, f"verifiers/{task_id}.json", root.workdir,
                                           evidence=evidence))
     if not records or records[-1]["accepted"] is not None or records[-1]["name"] not in D79_STAGES \
             or evidence.get("reference") is None:
@@ -500,6 +522,8 @@ _EMPTY_RUN_ADVICE = ("every atom here passes an empty Run: add a question or com
 # How many refusals of one Task a session takes before the tool says to stop proposing for it (F32).
 REFUSALS_PER_TASK = 3
 _STOP = " Stop proposing for this Task in this session."
+# The refusal's pointer to the dry run, so the next atom is tried before it is written.
+_TRY_FIRST = "try_atoms takes the same arguments and rules on an edit without writing it: try the next atom there first."
 
 
 def _atoms_named(records: list[dict]) -> str:
@@ -528,7 +552,7 @@ def _refuse_proposal(task_id: str, version: str, records: list[dict], stop: bool
     return RetryableToolError(
         f"proposal version {version} for task {task_id} refused, the previous file stands:\n"
         f"{lines}" + (f"\nrows behind the failures: {rows}" if rows else "")
-        + (f"\n{atoms}" if atoms else "") + (_STOP if stop else ""),
+        + (f"\n{atoms}" if atoms else "") + f"\n{_TRY_FIRST}" + (_STOP if stop else ""),
         ask=("Read the rows behind the failures and propose again with atoms answering them, "
              "or file a finding naming the Environment file and what differs after two refusals."))
 
@@ -680,6 +704,93 @@ def _propose_verifier(root: ExamRoot, alias: bool = False):
                                stop=refusals[args.task_id] > REFUSALS_PER_TASK)
 
     return edit_verifier
+
+
+# What a dry run says of the loophole probe: it needs a model, and a dry run calls none.
+DRY_RUN_NOT_RUN = "not run in a dry run"
+
+
+@contextmanager
+def _held(root: ExamRoot, task_id: str) -> Iterator[None]:
+    """The root's state a ruling touches, put back as it was however the ruling ends.
+
+    A ruling joins the candidate to the Task's history and Verifiers and merges bought second
+    path rows into the re-roll rows; a dry run keeps none of that.
+    """
+    had_verifier, verifier = task_id in root.verifiers, root.verifiers.get(task_id)
+    had_history = task_id in root.history
+    history = root.history[task_id].model_copy(deep=True) if had_history else None
+    rerolls, probe_model, run_probe = root.rerolls, root.probe_model, root.run_probe
+    try:
+        yield
+    finally:
+        if had_verifier:
+            root.verifiers[task_id] = verifier
+        else:
+            root.verifiers.pop(task_id, None)
+        if had_history:
+            root.history[task_id] = history
+        else:
+            root.history.pop(task_id, None)
+        root.rerolls, root.probe_model, root.run_probe = rerolls, probe_model, run_probe
+
+
+def _dry_run_record(record: dict, probe_left: bool) -> dict:
+    """The loophole probe's record as not run in a dry run, when a write would have run it."""
+    if not probe_left or record["name"] != "verifier_loophole" or record["accepted"] is not None:
+        return record
+    return {**record, "not_run": DRY_RUN_NOT_RUN, "line": f"{record['name']} not run ({DRY_RUN_NOT_RUN})"}
+
+
+def _failing_atoms(records: list[dict]) -> list[str]:
+    """Every atom id a failing ruling's rows name, once each, in order."""
+    atoms = [row["atom"] for record in records if record["accepted"] is False
+             for row in record["rows"] if isinstance(row, dict) and row.get("atom")]
+    return list(dict.fromkeys(atoms))
+
+
+def _try_atoms(root: ExamRoot):
+    """edit_verifier's ruling without its write, so an atom is tried before it costs a refusal.
+
+    The candidate is built the same way and ruled from a scratch copy outside the workdir, with
+    the root's state put back after. The loophole probe needs a model, so it is not run, and an
+    edit only it could still refuse is not decided. Nothing here counts toward the refusals (F32).
+    """
+    async def try_atoms(args: ProposeArgs) -> TryResult:
+        current = _current(root, known_task(root.workdir, args.task_id))
+        candidate = current.model_copy(deep=True, update={
+            "atoms": _candidate_atoms(current, args.drop, args.add, args.edit),
+            "verifier_version": _next_version(current)})
+        digest = version_hash(candidate)
+        head = f"dry run of version {candidate.verifier_version} for task {args.task_id} ({digest[:12]})"
+        if atoms_hash(candidate.atoms) == atoms_hash(current.atoms):
+            why = _needs_no_ruling(current, atoms_hash(candidate.atoms), {})
+            return TryResult(summary=f"{head}: {why}", task_id=args.task_id, content_hash=digest,
+                             verifier_version=candidate.verifier_version, accepted=False)
+        probe_left = root.probe_model is not None and root.run_probe is not None
+        with _held(root, args.task_id), tempfile.TemporaryDirectory() as scratch:
+            root.probe_model = root.run_probe = None
+            _trial_history(root, args.task_id, current, candidate, digest, args.reason)
+            root.verifiers[args.task_id] = candidate
+            write_json(Path(scratch) / "verifiers" / f"{args.task_id}.json", as_dict(candidate))
+            records = _rule(root, args.task_id, candidate, ruled_dir=Path(scratch))
+        records = [_dry_run_record(record, probe_left) for record in records]
+        failing = _failing_atoms(records)
+        accepted: Union[bool, str] = bool(records) and all(record["accepted"] is not False for record in records)
+        if accepted and probe_left:
+            accepted = "not decided"
+        verdict = {True: "would be accepted", False: "would be refused",
+                   "not decided": f"not decided: only the loophole probe is left, {DRY_RUN_NOT_RUN}"}[accepted]
+        lines = "; ".join(record["line"] for record in records) or "no gate ruled on the edit"
+        atoms = _atoms_named(records)
+        summary = (f"{head} {verdict}, nothing written: {lines}"
+                   + (f"; failing atoms: {', '.join(failing)}" if failing else "")
+                   + (f"\n{atoms}" if atoms else ""))
+        return TryResult(summary=summary, task_id=args.task_id, content_hash=digest,
+                         verifier_version=candidate.verifier_version, accepted=accepted,
+                         rulings=records, failing_atoms=failing)
+
+    return try_atoms
 
 
 def _restore(path: Path, body: Optional[bytes]) -> None:
@@ -965,12 +1076,15 @@ def _reroll(root: ExamRoot):
 
 
 def domain_tools(root: ExamRoot) -> list[AgentTool]:
-    """The four domain tools over one ExamRoot, and propose_verifier as edit_verifier's alias for one release."""
+    """The five domain tools over one ExamRoot, and propose_verifier as edit_verifier's alias for one release."""
     return [
         AgentTool("edit_verifier", "Write a new Verifier version: edit atoms in place (a change to an "
                   "existing atom), then drop and add; the D79 suite, the pool and the loosening gate "
                   "rule on the write.",
                   ProposeArgs, ProposeResult, _propose_verifier(root), render=render),
+        AgentTool("try_atoms", "Try an edit before writing it: same arguments as edit_verifier, "
+                  "nothing is written.",
+                  ProposeArgs, TryResult, _try_atoms(root), render=render),
         AgentTool("probe", "Score a hand-written Run against a Task's current Verifier and keep it "
                   "in the Task's pool.",
                   ProbeArgs, ProbeResult, _probe(root), render=render),
@@ -986,9 +1100,9 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
 
 def tool_names() -> tuple[str, ...]:
     """The domain tool names, so tests pin the Builder-called surface."""
-    return ("edit_verifier", "probe", "finding", "reroll", "propose_verifier")
+    return ("edit_verifier", "try_atoms", "probe", "finding", "reroll", "propose_verifier")
 
 
 __all__ = ["DEPRECATED_ALIAS", "NOTES_DIR", "NOTE_REASONS", "note_line", "note_refusal", "notes_of",
            "known_task", "open_note", "read_note", "read_ruling", "rule_note", "ruling_path", "task_ids_of", "task_path", "write_note", "REFUSALS_PER_TASK", "ROW_FIELDS", "SET_BY_TOOL", "FindingArgs", "FindingResult", "ProbeArgs", "ProbeResult", "ProposeArgs",
-           "ProposeResult", "RerollArgs", "RerollResult", "atoms_hash", "domain_tools", "render", "tool_names"]
+           "ProposeResult", "RerollArgs", "RerollResult", "TryResult", "atoms_hash", "domain_tools", "render", "tool_names"]
