@@ -1634,11 +1634,14 @@ def provider_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Any
 def live_model(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     """One live adapter, after the environment has said live calls are allowed.
 
-    Keys come from the environment or from a .env file in the current directory (read here, never
-    overriding exported values). Both frontends go through this, so there is one refusal and one
-    place the flag is ever set.
+    Keys come from the environment, from a .env file in the current directory, or from
+    the remembered store (each read here, never overriding exported values). Both
+    frontends go through this, so there is one refusal and one place the flag is ever set.
     """
+    from kullback.ai import credentials
+
     load_dotenv()
+    credentials.load_credentials()
     if not enable_live_calls_from_env():
         raise RuntimeError(
             f"live model requests are off; put {LIVE_ENV_VAR}=1 in .env or export it")
@@ -1647,7 +1650,10 @@ def live_model(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model
 
 def live_provider(model_id: str, base_url: Optional[str] = None, **kwargs) -> Any:
     """One live streaming provider, after the environment has said live calls are allowed."""
+    from kullback.ai import credentials
+
     load_dotenv()
+    credentials.load_credentials()
     if not enable_live_calls_from_env():
         raise RuntimeError(
             f"live model requests are off; put {LIVE_ENV_VAR}=1 in .env or export it")

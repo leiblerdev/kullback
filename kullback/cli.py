@@ -389,6 +389,58 @@ def _live_model(model_id: str, base_url: Optional[str]):
         raise typer.Exit(2) from None
 
 @app.command()
+def login(
+    name: Optional[str] = typer.Argument(None, help="Key variable to remember, as OPENAI_API_KEY."),
+    list_keys: bool = typer.Option(False, "--list", help="Print the remembered key names, never values."),
+):
+    """Remember a provider key for every later launch, or list what is remembered.
+
+    The value is read with getpass so it never lands in shell history, and it is stored
+    in ~/.kullback/auth.json at mode 0600, never in a workdir or a package. Names are
+    printed, values never."""
+    from kullback.ai import credentials
+
+    if list_keys:
+        for stored in credentials.stored_names():
+            typer.echo(stored)
+        if not credentials.stored_names():
+            typer.echo("no remembered keys")
+        return
+    if not name:
+        typer.echo("kullback login takes a key name, as `kullback login OPENAI_API_KEY`, or --list")
+        raise typer.Exit(2)
+    import getpass
+
+    try:
+        secret = getpass.getpass(f"{name}: ")
+    except (EOFError, KeyboardInterrupt):
+        typer.echo("")
+        raise typer.Exit(1) from None
+    if not secret:
+        typer.echo("empty key: nothing remembered")
+        raise typer.Exit(1)
+    try:
+        path = credentials.remember(name, secret)
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from None
+    typer.echo(f"remembered {name} in {path}")
+
+
+@app.command()
+def logout(name: str = typer.Argument(..., help="Key variable to forget, as OPENAI_API_KEY.")):
+    """Forget a remembered provider key. The live key store is ~/.kullback/auth.json."""
+    from kullback.ai import credentials
+
+    try:
+        removed = credentials.forget(name)
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from None
+    typer.echo(f"forgot remembered {name}" if removed else f"no remembered key {name}")
+
+
+@app.command()
 def build(
     workdir: Path = WORKDIR,
     model: str = typer.Option(DEFAULT_MODEL, "--model",

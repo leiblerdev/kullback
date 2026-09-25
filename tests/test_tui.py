@@ -486,12 +486,14 @@ def test_login_set_holds_the_key_in_memory_and_logout_forgets_it(tmp_path, monke
     import os
 
     _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
     console = _console()
     screen = Screen(tmp_path, console=console)
+    screen._ask = lambda prompt: "n"
     assert screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123") is True
     assert os.environ.get("OPENCODE_API_KEY") == "sk-zen-123"
     out = _text(console)
-    assert "sk-zen-123" not in out and "set" in out
+    assert "sk-zen-123" not in out and "this session" in out
     assert screen.command("/logout") is True
     assert "OPENCODE_API_KEY" not in os.environ
 
@@ -500,20 +502,21 @@ def test_logout_restores_what_the_shell_held(tmp_path, monkeypatch):
     import os
 
     _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
     monkeypatch.setenv("OPENCODE_API_KEY", "old-key")
     screen = Screen(tmp_path, console=_console())
+    screen._ask = lambda prompt: "n"
     screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=new-key")
-    assert os.environ["OPENCODE_API_KEY"] == "new-key"
     screen.command("/logout")
     assert os.environ["OPENCODE_API_KEY"] == "old-key"
 
-
 def test_keys_marks_the_keys_this_session_set(tmp_path, monkeypatch):
     _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
     console = _console()
     screen = Screen(tmp_path, console=console)
+    screen._ask = lambda prompt: "n"
     screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123")
-    screen.command("/keys")
     out = _text(console)
     assert "OPENCODE_API_KEY" in out and "this session" in out and "sk-zen-123" not in out
     screen.command("/logout")
@@ -521,8 +524,10 @@ def test_keys_marks_the_keys_this_session_set(tmp_path, monkeypatch):
 
 def test_a_login_secret_reaches_no_file_and_no_line(tmp_path, monkeypatch):
     _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
     console = _console()
     screen = Screen(tmp_path, console=console)
+    screen._ask = lambda prompt: "n"
     screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=topsecret-value-9")
     screen.command("/keys")
     screen.command("/status")
@@ -534,6 +539,39 @@ def test_a_login_secret_reaches_no_file_and_no_line(tmp_path, monkeypatch):
         if path.is_file():
             assert "topsecret-value-9" not in path.read_text(encoding="utf-8", errors="replace")
     screen.command("/logout")
+
+
+def test_a_screen_login_answered_yes_remembers_the_key(tmp_path, monkeypatch):
+    from kullback.ai import credentials
+
+    _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    screen._ask = lambda prompt: "y"
+    assert screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123") is True
+    out = _text(console)
+    assert "sk-zen-123" not in out and "remembered OPENCODE_API_KEY" in out
+    assert credentials.stored_names() == ["OPENCODE_API_KEY"]
+    assert credentials.load_credentials({}) == {"OPENCODE_API_KEY": "sk-zen-123"}
+    screen.command("/logout")
+
+
+def test_logout_forgets_a_remembered_key(tmp_path, monkeypatch):
+    from kullback.ai import credentials
+
+    _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    credentials.remember("OPENCODE_API_KEY", "sk-zen-123")
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    assert screen.command("/logout OPENCODE_API_KEY") is True
+    out = _text(console)
+    assert "forgot remembered OPENCODE_API_KEY" in out and "sk-zen-123" not in out
+    assert credentials.stored_names() == []
+    screen.command("/logout OPENAI_API_KEY")
+    assert "no remembered key OPENAI_API_KEY" in _text(console)
 
 
 def test_the_banner_is_a_gradient_styles_vary_plain_does_not(tmp_path):
@@ -728,10 +766,11 @@ def test_login_menu_walks_to_a_key_without_printing_it(tmp_path, monkeypatch):
 
     _snapshot(monkeypatch, tmp_path)
     monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
     monkeypatch.setattr(getpass, "getpass", lambda prompt: "sk-menu-secret")
     console = _console()
     screen = Screen(tmp_path, console=console)
-    answers = iter(["3", ""])
+    answers = iter(["3", "", "n"])
     screen._ask = lambda prompt: next(answers)
     screen.command("/login")
     out = _text(console)
