@@ -86,7 +86,7 @@ class WatchView(Vertical):
     def _on_bus_line(self, text: str, style: str) -> None:
         """A Transcript line from the follower thread, appended on the app thread."""
         try:
-            self.call_from_thread(self._append_line, text, style)
+            self.app.call_from_thread(self._append_line, text, style)
         except Exception:
             self._append_line(text, style)
 
@@ -95,23 +95,50 @@ class WatchView(Vertical):
 
     def _follow_bus(self) -> None:
         """Replay the bus, then follow it; every event feeds the transcript."""
-        seq = 0
-        for record in self.bus.replay():
-            seq = record.seq
-            self.transcript.event(record.event)
-        for record in self.bus.tail(seq, poll_seconds=self.poll_seconds,
-                                    stop=self._stop.is_set):
-            self.transcript.event(record.event)
+        try:
+            seq = 0
+            for record in self.bus.replay():
+                seq = record.seq
+                self.transcript.event(record.event)
+            for record in self.bus.tail(seq, poll_seconds=self.poll_seconds,
+                                        stop=self._stop.is_set):
+                self.transcript.event(record.event)
+        except Exception as exc:
+            self.transcript.say(f"watch cannot follow the bus: {exc}", "red")
 
     def refresh_sidebar(self) -> None:
-        """Read the workdir's files again: spend, counts, rounds, failed gates."""
+        """Schedule a sidebar read off the UI thread; reads never overlap."""
+        self.run_worker(self._read_sidebar, thread=True, exclusive=True)
+
+    def _read_sidebar(self) -> None:
+        """The four panels plus liveness, read off the workdir's files."""
         from kullback.live_counts import workdir_counts
 
-        self.money_panel.update(self.board.money())
-        counts = workdir_counts(self.workdir)
-        self.counts_panel.update(self._counts_line(counts))
-        self.rounds_panel.update(self._rounds_table())
-        self.gates_panel.update(self._failed_gates())
+        try:
+            money = self.board.money()
+            counts = self._counts_line(workdir_counts(self.workdir))
+            rounds = self._rounds_table()
+            gates = self._failed_gates()
+            live = bool(live_heartbeats(self.workdir))
+        except Exception as exc:
+            self.transcript.say(f"watch cannot read the workdir: {exc}", "red")
+            return
+        try:
+            self.app.call_from_thread(self._update_sidebar, money, counts, rounds, gates, live)
+        except Exception:
+            pass
+
+    def _update_sidebar(self, money: Any, counts: Text, rounds: Any, gates: Text,
+                        live: bool) -> None:
+        """The read panels onto the screen, on the app thread."""
+        self.money_panel.update(money)
+        self.counts_panel.update(counts)
+        self.rounds_panel.update(rounds)
+        self.gates_panel.update(gates)
+        if live:
+            self.note.update("")
+        else:
+            self.note.update(f"nothing is running in {self.workdir}")
 
     @staticmethod
     def _counts_line(counts: dict) -> Text:
@@ -189,8 +216,12 @@ class WatchView(Vertical):
     def _steer_roundtrip(self, kind: str, text: str) -> None:
         from kullback.agent import steer
 
-        request_id = steer.request(self.workdir, kind, text, sender="tui")
-        ack = steer.wait_for_ack(self.workdir, request_id, STEER_TIMEOUT)
+        try:
+            request_id = steer.request(self.workdir, kind, text, sender="tui")
+            ack = steer.wait_for_ack(self.workdir, request_id, STEER_TIMEOUT)
+        except Exception as exc:
+            self.transcript.say(f"steer {kind} failed: {exc}", "red")
+            return
         if ack is None:
             line = f"steer {kind}: no live build answered"
         else:
@@ -198,7 +229,7 @@ class WatchView(Vertical):
             if ack.reason:
                 line += f": {ack.reason}"
         try:
-            self.call_from_thread(self._append_line, line, "cyan")
+            self.app.call_from_thread(self._append_line, line, "cyan")
         except Exception:
             self._append_line(line, "cyan")
 
