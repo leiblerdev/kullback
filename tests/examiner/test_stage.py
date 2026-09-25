@@ -1008,3 +1008,30 @@ def test_a_workdir_from_before_d281_with_one_shared_second_path_file_derives_for
     assert out["ran"] == 2 and {v.task_id for v in out["verifiers"]} == {"t1", "t2"}
     dropped = [r for r in caplog.records if "second-path row of task t2 dropped" in r.getMessage()]
     assert len(dropped) == 1 and "is a Run of Task t1, not of Task t2" in dropped[0].getMessage()
+
+
+def test_a_stopped_second_path_search_synthesises_no_variants_and_marks_the_task_stopped(
+        tmp_path, monkeypatch):
+    """A stop during second-path search buys nothing more: no variant is synthesised or replayed,
+    so no Run file lands after the stop, and the Task keeps its stop marker for the next call."""
+    from kullback.runner.records import Task
+
+    calls = []
+    monkeypatch.setattr(stage, "second_path_search",
+                        lambda *args, **kwargs: ({"found": False, "batches": 0, "runs": 0,
+                                                 "reason": "stopped"}, [], False))
+
+    def _synth(*args, **kwargs):
+        calls.append(1)
+        return ({"tried": 0, "kinds": [], "structural": False, "reason": ""}, [])
+
+    monkeypatch.setattr(stage, "synth_second_path", _synth)
+    state = SimpleNamespace(should_stop=lambda: True, run_variant=object(), round_number=0,
+                            write_tools=set(), fn=None, atoms=None, run_rerolls=None,
+                            ctx=SimpleNamespace(workdir=tmp_path), tool_fidelity={})
+    confirmation = SimpleNamespace(references=[], recordings=[], failed={})
+    job = stage._Job(task=Task(id="t1"), key="k", confirmation=confirmation)
+    second, bought = stage._second_path_outcome(state, job, threading.Event())
+    assert calls == []
+    assert second["found"] is False and bought == []
+    assert job.stopped is True

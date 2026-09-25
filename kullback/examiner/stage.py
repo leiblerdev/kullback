@@ -1528,8 +1528,8 @@ def _second_path_outcome(state: _DeriveState, job: _Job, ceiling: threading.Even
         round_number=state.round_number, write_tools=state.write_tools, fn=state.fn,
         atoms=state.atoms, should_stop=state.should_stop)
     job.stopped = state.should_stop() and not second["found"]
-    if not second["found"] and state.run_variant is not None:
-        # Gated serial until the re-freeze (docs/todo.md "Next re-freeze: flip the speed-1
+    if not second["found"] and state.run_variant is not None and not state.should_stop():
+        # A stop leaves the Task at its safe point: no variant is synthesised or replayed after
         # variant gate"): the shared replay tally these replays count into stays locked only in
         # docs/frozen-patches/speed-1.patch, so pooled variants would count nondeterministically.
         # None runs the variants as a plain loop; survivor derivation above stays pooled.
