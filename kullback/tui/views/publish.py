@@ -43,10 +43,18 @@ class PublishView(Widget):
 
     @work(thread=True)
     def _check(self, repo: str) -> None:
-        """Run the checklist off the UI thread; it only reads and stages in tmp."""
-        rows = publish_checklist(self.workdir, repo)
-        word = readiness(rows)
-        self.app.call_from_thread(self._show_rows, rows, word, repo)
+        """Run the checklist off the UI thread; an error is one sentence, never a crash."""
+        try:
+            rows = publish_checklist(self.workdir, repo)
+            word = readiness(rows)
+        except Exception as exc:
+            self.app.call_from_thread(self._show_error, _one_sentence(exc))
+        else:
+            self.app.call_from_thread(self._show_rows, rows, word, repo)
+
+    def _show_error(self, sentence: str) -> None:
+        self.query_one("#readiness", Static).update(sentence or "The check failed.")
+        self.query_one("#command", Static).update("")
 
     def _show_rows(self, rows: list, word: str, repo: str) -> None:
         table = self.query_one("#rows", DataTable)
@@ -59,3 +67,9 @@ class PublishView(Widget):
                 f"Run: kullback publish --workdir {self.workdir} --repo {repo}")
         else:
             self.query_one("#command", Static).update("")
+
+
+def _one_sentence(exc: Exception) -> str:
+    """The first line of an error, so a failed check reads as one sentence."""
+    text = str(exc).strip()
+    return text.splitlines()[0] if text else ""

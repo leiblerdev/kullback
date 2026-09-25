@@ -85,3 +85,20 @@ async def test_tasks_n_sends_a_nudge_naming_the_task(tmp_path):
             pilot, lambda: "nudge" in str(view.query_one("#detail", Static).content),
             timeout=15.0)
         assert "task-1" in (tmp_path / "bus.jsonl").read_text()
+
+
+async def test_tasks_picks_up_a_new_task_while_mounted(tmp_path):
+    """A Task stored by a live build appears on the next 5 second refresh."""
+    (tmp_path / "tasks").mkdir()
+    (tmp_path / "tasks" / "task-1.json").write_text("{}")
+    (tmp_path / "task_status.json").write_text(json.dumps({"task-1": {}}))
+    view = TasksView(tmp_path)
+    app = ViewApp(view)
+    async with app.run_test() as pilot:
+        table = view.query_one("#rows", DataTable)
+        await wait_until(pilot, lambda: table.row_count == 1)
+        (tmp_path / "tasks" / "task-2.json").write_text("{}")
+        (tmp_path / "task_status.json").write_text(
+            json.dumps({"task-1": {}, "task-2": {}}))
+        await wait_until(pilot, lambda: table.row_count == 2, timeout=20.0)
+        assert "task-2" in table_text(table)
