@@ -844,7 +844,17 @@ def test_the_memo_survives_a_second_memomodel_over_the_same_workdir(tmp_path):
     assert inner_two.calls == []
 
 
-# --- the request shape the gpt-5 family insists on (found on the first live build) ---
+# --- the request shape the reasoning family insists on (found on the first live build) ---
+
+def _stub_reasoning_shapes(monkeypatch):
+    """Neutral wire shapes standing in for the shipped reasoning family: bright-<major> with
+    major 5 or above, or q<digit>, the same two rules the shipped table carries. The smoke tier
+    pins the real names."""
+    monkeypatch.setattr(pv, "REASONING_WIRE_PATTERNS", (
+        (re.compile(r"(?:.*/)?bright-(\d+)(?![a-z])"), 5),
+        (re.compile(r"(?:.*/)?q\d(?![a-z])"), None),
+    ))
+
 
 def _body(model_id: str, tools=None, **config):
     """The body one call would send, without sending it."""
@@ -853,41 +863,45 @@ def _body(model_id: str, tools=None, **config):
 
 
 @pytest.mark.parametrize("model_id,sent,absent", [
-    ("openai/gpt-5.6-luna", "max_completion_tokens", "max_tokens"),
-    ("openai/o1", "max_completion_tokens", "max_tokens"),
-    ("openai/o3-mini", "max_completion_tokens", "max_tokens"),
-    ("openai/o4-mini", "max_completion_tokens", "max_tokens"),
-    ("openai/gpt-4.1-mini", "max_tokens", "max_completion_tokens"),
+    ("openai/bright-6-sol", "max_completion_tokens", "max_tokens"),
+    ("openai/q1", "max_completion_tokens", "max_tokens"),
+    ("openai/q3-mini", "max_completion_tokens", "max_tokens"),
+    ("openai/q4-mini", "max_completion_tokens", "max_tokens"),
+    ("openai/bright-4-mini", "max_tokens", "max_completion_tokens"),
 ])
-def test_the_gpt5_and_o_families_are_sent_max_completion_tokens_and_older_models_keep_max_tokens(
-        model_id, sent, absent):
+def test_the_reasoning_family_is_sent_max_completion_tokens_and_older_models_keep_max_tokens(
+        monkeypatch, model_id, sent, absent):
+    _stub_reasoning_shapes(monkeypatch)
     body = _body(model_id, max_tokens=2000)
     assert body[sent] == 2000
     assert absent not in body
 
 
-def test_the_gpt5_family_is_not_sent_a_temperature_it_will_refuse():
-    assert "temperature" not in _body("openai/gpt-5.6-luna", temperature=0)
-    assert _body("openai/gpt-4.1-mini", temperature=0)["temperature"] == 0
+def test_the_reasoning_family_is_not_sent_a_temperature_it_will_refuse(monkeypatch):
+    _stub_reasoning_shapes(monkeypatch)
+    assert "temperature" not in _body("openai/bright-6-sol", temperature=0)
+    assert _body("openai/bright-4-mini", temperature=0)["temperature"] == 0
 
 
 TOOLS = [{"name": "get_order", "input_schema": {"type": "object"}}]
 
 
 @pytest.mark.parametrize("model_id,tools,config,expected", [
-    ("openai/gpt-5.6-luna", TOOLS, {}, "none"),
+    ("openai/bright-6-sol", TOOLS, {}, "none"),
     # Not sending the field is not the same as sending 'none': the endpoint applies its own
     # default, and that default is what returns HTTP 400 alongside tools.
-    ("openai/gpt-5.6-luna", None, {}, None),
-    ("openai/gpt-5.6-luna", TOOLS, {"reasoning_effort": "high"}, "high"),
-    ("openai/gpt-4.1-mini", TOOLS, {}, None),
-], ids=["gpt5_with_tools", "gpt5_without_tools", "asked_effort_survives", "older_model_left_alone"])
-def test_a_tool_call_to_the_gpt5_family_turns_reasoning_off_by_name(model_id, tools, config, expected):
+    ("openai/bright-6-sol", None, {}, None),
+    ("openai/bright-6-sol", TOOLS, {"reasoning_effort": "high"}, "high"),
+    ("openai/bright-4-mini", TOOLS, {}, None),
+], ids=["reasoning_with_tools", "reasoning_without_tools", "asked_effort_survives", "older_model_left_alone"])
+def test_a_tool_call_to_the_reasoning_family_turns_reasoning_off_by_name(
+        monkeypatch, model_id, tools, config, expected):
+    _stub_reasoning_shapes(monkeypatch)
     assert _body(model_id, tools=tools, **config).get("reasoning_effort", None) == expected
 
 
 def test_a_responses_model_posts_input_items_to_the_responses_path(live, sleeps):
-    """1.3 speaks /v1/responses, not chat completions: model, input items, function tools."""
+    """A Responses model speaks /v1/responses, not chat completions: model, input items, function tools."""
     seen = {}
 
     def handler(request):
@@ -987,13 +1001,21 @@ def test_a_failed_responses_call_raises_instead_of_parsing(live, sleeps):
     assert "failed" in str(raised.value) and "the model errored" in str(raised.value)
 
 
+def _stub_responses_model(monkeypatch, model_id="opencode-go/model-r"):
+    """A neutral id standing in for the shipped Responses model in the shipped table. The smoke
+    tier pins the real name; the registry snapshot below already carries this provider."""
+    monkeypatch.setattr(pv, "RESPONSES_API_MODELS", frozenset({model_id}))
+    return model_id
+
+
 def test_a_docs_named_responses_model_resolves_to_the_responses_adapter(tmp_path, monkeypatch):
-    """1.3 is not in the snapshot yet; the docs' Endpoints table is the source of truth."""
+    """A model the snapshot carries no shape for still resolves through the shipped table."""
     registry_snapshot(tmp_path, monkeypatch, REGISTRY)
-    model = pv.model_for("opencode-go/muse-spark-1.3-contributor", env={"OPENCODE_API_KEY": "sk-zen"})
+    model_id = _stub_responses_model(monkeypatch)
+    model = pv.model_for(model_id, env={"OPENCODE_API_KEY": "sk-zen"})
     assert isinstance(model, pv.OpenAIResponsesModel)
     assert model.base_url == "https://opencode.ai/zen/go/v1"
-    assert model.wire_id == "muse-spark-1.3-contributor"
+    assert model.wire_id == "model-r"
     assert model.api_key == "sk-zen"
 
 
@@ -1044,11 +1066,11 @@ def test_opencode_hosts_get_session_and_identity_headers(live, sleeps):
 
 
 def test_an_explicit_base_url_does_not_change_a_responses_model_shape(tmp_path, monkeypatch):
-    """Greptile P1: 1.3 with --base-url took the chat branch and posted chat bodies at a
-    Responses-only endpoint. The shape belongs to the model, not to how the host was found."""
+    """Greptile P1: a Responses model with --base-url took the chat branch and posted chat bodies
+    at a Responses-only endpoint. The shape belongs to the model, not to how the host was found."""
     registry_snapshot(tmp_path, monkeypatch, REGISTRY)
-    model = pv.model_for("opencode-go/muse-spark-1.3-contributor",
-                         base_url="http://127.0.0.1:8080/v1", env={})
+    model_id = _stub_responses_model(monkeypatch)
+    model = pv.model_for(model_id, base_url="http://127.0.0.1:8080/v1", env={})
     assert isinstance(model, pv.OpenAIResponsesModel)
     assert model.base_url == "http://127.0.0.1:8080/v1"
 

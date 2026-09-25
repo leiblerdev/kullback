@@ -9,6 +9,7 @@ import asyncio
 import datetime as dt
 import json
 import random
+import re
 
 import httpx
 import pytest
@@ -19,9 +20,20 @@ from kullback.ai.messages import UserMessage
 from kullback.ai.openai_compatible import OpenAICompatibleProvider
 
 MODEL = "bedrock/global.openai.model-a"
-# A wire id with the reasoning-family shape (provider._reasoning_family): the call-shape test
-# below spells it, because a neutral handle would take the max_tokens branch.
-SHAPED = "bedrock/global.openai.gpt-6-sol"
+# A neutral wire id with the reasoning-family shape, registered in the table below: the call-shape
+# test needs a name the table carries, because any other handle takes the max_tokens branch.
+# The smoke tier pins the real names.
+SHAPED = "bedrock/global.openai.bright-6-sol"
+
+
+def _stub_reasoning_shapes(monkeypatch):
+    """Neutral wire shapes standing in for the shipped reasoning family (see test_provider)."""
+    monkeypatch.setattr(pv, "REASONING_WIRE_PATTERNS", (
+        (re.compile(r"(?:.*/)?bright-(\d+)(?![a-z])"), 5),
+        (re.compile(r"(?:.*/)?q\d(?![a-z])"), None),
+    ))
+
+
 KEYS = {"AWS_ACCESS_KEY_ID": "AKIDEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-real-secret"}
 TOOL = {"name": "look_up", "description": "d", "input_schema": {"type": "object"}}
 USAGE = {"prompt_tokens": 900, "completion_tokens": 7,
@@ -61,17 +73,18 @@ def test_an_openai_id_on_bedrock_gets_the_chat_completions_adapter_and_an_anthro
     assert pv.BedrockOpenAIModel.credential_vars() == pv.BedrockAnthropicModel.credential_vars()
 
 
-def test_a_call_sends_the_wire_id_unchanged_with_openai_tools_and_reads_the_cache_counts(live):
+def test_a_call_sends_the_wire_id_unchanged_with_openai_tools_and_reads_the_cache_counts(live, monkeypatch):
+    _stub_reasoning_shapes(monkeypatch)
     seen = []
     reply = httpx.Response(200, json={
-        "model": "gpt-6-sol",
+        "model": "bright-6-sol",
         "choices": [{"finish_reason": "tool_calls", "message": {"content": None, "tool_calls": [
             {"id": "c1", "type": "function", "function": {"name": "look_up", "arguments": "{\"key\": \"a\"}"}}]}}],
         "usage": USAGE})
     got = bedrock_openai(handle_for(seen, reply), model_id=SHAPED).query(
         [{"role": "user", "content": "hi"}], tools=[TOOL], config=pv.ModelConfig(max_tokens=64))
     body = json.loads(seen[0].content)
-    assert body["model"] == "global.openai.gpt-6-sol"
+    assert body["model"] == "global.openai.bright-6-sol"
     assert body["tools"][0]["type"] == "function" and body["tools"][0]["function"]["name"] == "look_up"
     assert body["max_completion_tokens"] == 64 and "max_tokens" not in body
     assert [(call.name, call.arguments) for call in got.tool_calls] == [("look_up", {"key": "a"})]
