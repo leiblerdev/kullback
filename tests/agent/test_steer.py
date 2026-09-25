@@ -179,3 +179,37 @@ def test_target_session_names_the_only_live_build_and_refuses_on_several():
     assert steer.target_session([]) == ""
     with pytest.raises(ValueError, match="pid 41.*pid 42"):
         steer.target_session([{"pid": 41, "model": "m/one"}, {"pid": 42, "model": "m/two"}])
+
+
+def test_a_request_sent_once_the_live_record_appears_is_seen_by_the_bridge(tmp_path, monkeypatch):
+    import time
+
+    times = {}
+    real_tail = steer.Bus.tail
+
+    def timed_tail(self, *args, **kwargs):
+        if kwargs.get("from_end"):
+            times.setdefault("tail_fixed", time.time())
+        return real_tail(self, *args, **kwargs)
+
+    monkeypatch.setattr(steer.Bus, "tail", timed_tail)
+    harness, model = _harness(tmp_path, 0, "done")
+    bridge = steer.SteerBridge(harness, tmp_path / "bus.jsonl", poll_seconds=0.02,
+                               session="s-live")
+    real_register = bridge._register
+
+    def timed_register():
+        times["registered"] = time.time()
+        return real_register()
+
+    bridge._register = timed_register
+    bridge.start()
+    try:
+        assert times["tail_fixed"] <= times["registered"], "the live record is readable before the bridge follows from there"
+        request_id = steer.request(tmp_path, "nudge", "right after discovery", session="s-live")
+        ack = steer.wait_for_ack(tmp_path, request_id, 3)
+        assert ack is not None and ack.outcome == "queued"
+        collect(harness.prompt("build it"))
+    finally:
+        bridge.close()
+    assert _first_call_with(model, "right after discovery") == 0

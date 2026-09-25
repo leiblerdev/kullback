@@ -126,11 +126,12 @@ class SteerBridge:
 
     def start(self) -> SteerBridge:
         """Start following; returns once the starting point is fixed, so a request sent after
-        this call is always seen. Also leaves the bridge's live record beside the bus, so the
-        build is discoverable even where no heartbeat beats for it."""
-        self._register()
+        this call is always seen. The live record is left only then, so a request sent once the
+        record appears is never read past."""
         self._thread.start()
         self._started.wait(5)
+        if self._started.is_set():
+            self._register()
         return self
 
     def _register(self) -> None:
