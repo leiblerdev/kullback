@@ -87,7 +87,7 @@ def _schema_for(db, exempt=(), semantic=("address",)):
     return EntitySchema(
         tables=sorted(db),
         columns=columns,
-        id_patterns={"loans": r"^loan_\d+$", "members": r"^member_\d+$", "copies": r"^copy_\d+$"},
+        id_patterns={"loans": r"^loan_\d+$", "members": r"^member_\d+$", "titles": r"^title_\d+$"},
     )
 
 
@@ -96,30 +96,30 @@ def _schema_for(db, exempt=(), semantic=("address",)):
 
 @pytest.fixture(scope="session")
 def sample():
-    """Three loans with different statuses, plus one member and one copy, kept small on purpose."""
+    """Three loans with different statuses, plus one member and one title, kept small on purpose."""
     loans = {}
     for loan_id, status in (("loan_01", "pending"), ("loan_02", "delivered"), ("loan_03", "processed")):
         loans[loan_id] = {
             "loan_id": loan_id,
             "member_id": "member_01",
-            "copies": [{"copy_id": "copy_01", "title": "Riverside Walks"}],
+            "titles": [{"title_id": "title_01", "title": "Riverside Walks"}],
             "status": status,
             "address": "elm street",
             "amount": 10,
         }
     members = {"member_01": {"member_id": "member_01", "name": "Ava Chen", "zip": "11201"}}
-    copies = {"copy_01": {"copy_id": "copy_01", "title": "Riverside Walks"}}
+    titles = {"title_01": {"title_id": "title_01", "title": "Riverside Walks"}}
     return {
         "loans": loans,
         "members": members,
-        "copies": copies,
+        "titles": titles,
         "by_status": {row["status"]: row for row in loans.values()},
     }
 
 
 @pytest.fixture(scope="session")
 def db0(sample):
-    return {"loans": sample["loans"], "members": sample["members"], "copies": sample["copies"]}
+    return {"loans": sample["loans"], "members": sample["members"], "titles": sample["titles"]}
 
 
 @pytest.fixture(scope="session")
@@ -136,7 +136,7 @@ def schema(db0):
         id_patterns={
             "loans": r"^loan_\d+$",
             "members": r"^member_\d+$",
-            "copies": r"^copy_\d+$",
+            "titles": r"^title_\d+$",
         },
     )
 
@@ -260,12 +260,12 @@ def test_each_task_overlay_pins_the_version_its_runs_saw(sample, schema, sigs, w
     cancel_overlay, cancel_values = ce.load_overlay(workdir, "t_cancel")
     after_overlay, after_values = ce.load_overlay(workdir, "t_after")
     # The loan's own row, and the rows the loan mentions inside itself (D188 walks a result to
-    # any depth); rows are sorted by table, so the copies row comes before the loan row.
+    # any depth); rows are sorted by table, so the titles row comes before the loan row.
     cancel_by_table = {r.table: r for r in cancel_overlay.rows}
     after_by_table = {r.table: r for r in after_overlay.rows}
-    assert set(cancel_by_table) == {"loans", "copies"}
+    assert set(cancel_by_table) == {"loans", "titles"}
     assert cancel_by_table["loans"].id == oid
-    assert cancel_by_table["copies"].id == "copy_01"
+    assert cancel_by_table["titles"].id == "title_01"
     assert cancel_values[cancel_by_table["loans"].version_hash]["status"] == "pending"
     assert after_values[after_by_table["loans"].version_hash]["status"] == "cancelled"
     assert cancel_by_table["loans"].version_hash != after_by_table["loans"].version_hash
@@ -303,7 +303,7 @@ def test_render_tools_writes_the_signature_and_the_docstring(schema, sigs):
 
 def test_render_data_model_has_one_class_per_table_and_a_db(schema):
     source = ce.render_data_model(schema)
-    for name in ("class Loan(", "class Member(", "class Copie(", f"class {ce.DB_CLASS}("):
+    for name in ("class Loan(", "class Member(", "class Title(", f"class {ce.DB_CLASS}("):
         assert name in source
     compile(source, "<rendered>", "exec")
 
@@ -613,7 +613,7 @@ def cancel_sig():
 def cancel_world(sample):
     """One pending loan with room for a cancel reason, and the schema over it."""
     loan = dict(sample["by_status"]["pending"], cancel_reason=None)
-    db = {"loans": {loan["loan_id"]: loan}, "members": {}, "copies": {}}
+    db = {"loans": {loan["loan_id"]: loan}, "members": {}, "titles": {}}
     return db, _schema_for(db), loan
 
 
@@ -670,7 +670,7 @@ def test_a_row_the_corpus_shows_in_two_versions_replays_on_each_tasks_own_world(
     pending = sample["by_status"]["pending"]
     oid = pending["loan_id"]
     other = sample["by_status"]["delivered"]
-    db = {"loans": {oid: pending, other["loan_id"]: other}, "members": {}, "copies": {}}
+    db = {"loans": {oid: pending, other["loan_id"]: other}, "members": {}, "titles": {}}
     schema = _schema_for(db)
     march = _trace("A", [
         _call("get_loan_details", {"loan_id": oid}, result=pending, idx=0),
@@ -702,7 +702,7 @@ def test_a_row_the_corpus_shows_in_two_versions_replays_on_each_tasks_own_world(
 
 def test_a_recorded_invalid_arguments_call_does_not_fail_the_executes_gate(sample, sigs, workdir):
     loan = sample["by_status"]["pending"]
-    db = {"loans": {loan["loan_id"]: loan}, "members": {}, "copies": {}}
+    db = {"loans": {loan["loan_id"]: loan}, "members": {}, "titles": {}}
     schema = _schema_for(db)
     calls = [
         _call("get_loan_details", {"loan_id": loan["loan_id"]}, result=loan, idx=0),
@@ -749,7 +749,7 @@ def test_a_float_row_and_an_int_row_both_load_under_mined_string_and_int_samples
 
 def test_a_body_that_writes_the_result_file_itself_is_refused(sample, sigs, workdir):
     loan = sample["by_status"]["pending"]
-    db = {"loans": {loan["loan_id"]: loan}, "members": {}, "copies": {}}
+    db = {"loans": {loan["loan_id"]: loan}, "members": {}, "titles": {}}
     schema = _schema_for(db)
     calls = [_call("get_loan_details", {"loan_id": f"loan_9900{i}"}, idx=i) for i in range(3)]
     source = ce.module_source(schema, sigs[:1], {"get_loan_details": FORGING_BODY})
@@ -768,7 +768,7 @@ def test_inside_a_list_result_a_hard_column_fails_a_replay_and_an_exempt_one_can
     loan = sample["by_status"]["pending"]
     now = dict(loan, last_seen="2026-06-01T00:00:00Z")
     then = dict(loan, last_seen="2026-03-01T00:00:00Z")
-    db = {"loans": {loan["loan_id"]: now}, "members": {}, "copies": {}}
+    db = {"loans": {loan["loan_id"]: now}, "members": {}, "titles": {}}
     schema = _schema_for(db, exempt=("last_seen",))
     sig = ToolSig(name="list_loans", kind="read", unclassified=False,
                   args_fields=[FieldStat(name="member_id", types=["str"], optional=False)])
@@ -781,7 +781,7 @@ def test_inside_a_list_result_a_hard_column_fails_a_replay_and_an_exempt_one_can
     hard = workdir.parent / "hard"
     hard.mkdir()
     loan = sample["by_status"]["pending"]
-    db = {"loans": {loan["loan_id"]: dict(loan, status="cancelled")}, "members": {}, "copies": {}}
+    db = {"loans": {loan["loan_id"]: dict(loan, status="cancelled")}, "members": {}, "titles": {}}
     schema = _schema_for(db)
     sig = ToolSig(name="list_loans", kind="read", unclassified=False,
                   args_fields=[FieldStat(name="member_id", types=["str"], optional=False)])
@@ -807,7 +807,7 @@ def test_a_correct_body_passes_the_deterministic_gate_and_one_nondeterministic_o
     assert result.passed is True
     assert result.metrics["calls"] == 1
     loans = list(sample["loans"].values())
-    db = {"loans": {o["loan_id"]: o for o in loans}, "members": {}, "copies": {}}
+    db = {"loans": {o["loan_id"]: o for o in loans}, "members": {}, "titles": {}}
     schema = _schema_for(db)
     third = loans[2]["status"]
     # G26 took `random` out of the imports a body may use, so the staged dice is the object's
@@ -853,7 +853,7 @@ def test_an_id_the_traces_only_referenced_gets_a_synthetic_row_shaped_from_the_o
 ):
     known = next(iter(sample["members"]))
     unseen = "member_09"
-    schema = _schema_for({"members": sample["members"], "loans": sample["loans"], "copies": {}})
+    schema = _schema_for({"members": sample["members"], "loans": sample["loans"], "titles": {}})
     trace = _trace("A", [
         _call("get_member_details", {"member_id": known}, result=sample["members"][known], idx=0),
         _call("list_loans", {"member_id": unseen}, result=[], idx=1),
@@ -1060,26 +1060,26 @@ def test_the_helper_is_the_only_name_the_loaders_add_and_the_gate_knows_that_nam
 
 
 def _nursery_nesting_traces():
-    """Copies nested under their house, in the shape of world_b: one house read, one copy read."""
-    copies = {"copy_11": {"copy_id": "copy_11", "count": 6, "available": True},
-              "copy_22": {"copy_id": "copy_22", "count": 2, "available": False}}
-    house = {"name": "North House", "house_id": "house_7", "copies": copies}
-    copy = {"copy_id": "copy_11", "count": 6, "available": True,
+    """Titles nested under their house, in the shape of world_b: one house read, one title read."""
+    titles = {"title_11": {"title_id": "title_11", "count": 6, "available": True},
+              "title_22": {"title_id": "title_22", "count": 2, "available": False}}
+    house = {"name": "North House", "house_id": "house_7", "titles": titles}
+    title = {"title_id": "title_11", "count": 6, "available": True,
             "light": "full sun"}
     return [_trace("t1", [_call("get_house_details", {"house_id": "house_7"}, result=house),
-                          _call("get_copy_details", {"copy_id": "copy_11"}, result=copy, idx=1)])]
+                          _call("get_title_details", {"title_id": "title_11"}, result=title, idx=1)])]
 
 
 def test_mining_reads_a_nested_home_off_the_traces():
-    """copies sat under houses.copies in every get_house_details result, keyed by copy_id,
-    and the schema still said copies was a top-level table: reads answered from the wrong
+    """titles sat under houses.titles in every get_house_details result, keyed by title_id,
+    and the schema still said titles was a top-level table: reads answered from the wrong
     home miss, so the Starting state folds them into the home the traces showed."""
     from kullback.builder import mine
     schema = mine.mine_schema(_nursery_nesting_traces())
-    assert schema.homes == {"copies": "houses.copies"}
-    assert "copies" in schema.tables and "houses" in schema.tables
-    names = {c.name for c in schema.columns if c.table == "copies"}
-    assert {"copy_id", "count", "available", "light"} <= names
+    assert schema.homes == {"titles": "houses.titles"}
+    assert "titles" in schema.tables and "houses" in schema.tables
+    names = {c.name for c in schema.columns if c.table == "titles"}
+    assert {"title_id", "count", "available", "light"} <= names
 
 
 def test_a_nested_collection_never_shown_on_its_own_stays_a_column_of_its_parent():
@@ -1088,7 +1088,7 @@ def test_a_nested_collection_never_shown_on_its_own_stays_a_column_of_its_parent
     traces[0].tool_calls = traces[0].tool_calls[:1]
     schema = mine.mine_schema(traces)
     assert schema.homes == {}
-    assert "copies" not in schema.tables
+    assert "titles" not in schema.tables
 
 
 def test_the_starting_state_folds_a_standalone_row_into_its_home(workdir):
@@ -1096,19 +1096,19 @@ def test_the_starting_state_folds_a_standalone_row_into_its_home(workdir):
     traces = _nursery_nesting_traces()
     schema = mine.mine_schema(traces)
     state = ce.build_starting_state(traces, schema, workdir, synthetic=False)
-    assert "copy_11" not in state.db["copies"]
-    nested = state.db["houses"]["house_7"]["copies"]["copy_11"]
-    assert nested["light"] == "full sun", "the standalone copy's extra field is kept"
+    assert "title_11" not in state.db["titles"]
+    nested = state.db["houses"]["house_7"]["titles"]["title_11"]
+    assert nested["light"] == "full sun", "the standalone title's extra field is kept"
     assert nested["count"] == 6
-    assert any("is stored under houses.copies" in a for a in state.assumptions)
+    assert any("is stored under houses.titles" in a for a in state.assumptions)
 
 
 def test_a_row_whose_parent_was_never_shown_stays_in_its_table():
-    db = {"copies": {"c1": {"copy_id": "c1"}, "c2": {"copy_id": "c2"}},
-          "houses": {"h": {"house_id": "h", "copies": {"c1": {"copy_id": "c1", "count": 1}}}}}
-    schema = EntitySchema(tables=["copies", "houses"], homes={"copies": "houses.copies"})
-    assert ce.fold_into_homes(db, schema) == [("copies", "c1", "houses.copies")]
-    assert list(db["copies"]) == ["c2"]
+    db = {"titles": {"c1": {"title_id": "c1"}, "c2": {"title_id": "c2"}},
+          "houses": {"h": {"house_id": "h", "titles": {"c1": {"title_id": "c1", "count": 1}}}}}
+    schema = EntitySchema(tables=["titles", "houses"], homes={"titles": "houses.titles"})
+    assert ce.fold_into_homes(db, schema) == [("titles", "c1", "houses.titles")]
+    assert list(db["titles"]) == ["c2"]
 
 
 # --- the Starting state grows on request, and the ids are tagged (D40, D107) ---
