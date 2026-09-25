@@ -28,6 +28,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--metrics", required=True, type=Path)
     parser.add_argument("--edit-tools", default="edit_verifier,propose_verifier")
     parser.add_argument("--dry-tool", default="try_atoms")
+    parser.add_argument("--without-dry-run", action="store_true",
+                        help="Hide the dry tool from the Examiner at run time")
     return parser.parse_args(argv)
 
 
@@ -133,6 +135,29 @@ def main(argv: list[str]) -> int:
 
     from kullback.examiner.session import examine
 
+    arm_saw_dry_tool = True
+    if args.without_dry_run:
+        import kullback.examiner.domain_tools as domain_tools_mod
+        import kullback.examiner.prompt as prompt_mod
+        import kullback.examiner.session as session_mod
+        base_domain_tools = domain_tools_mod.domain_tools
+
+        def domain_tools_without_dry(root):
+            return [tool for tool in base_domain_tools(root)
+                    if tool.name != args.dry_tool]
+
+        session_mod.domain_tools = domain_tools_without_dry
+        domain_tools_mod.domain_tools = domain_tools_without_dry
+        base_tools_section = prompt_mod.tools_section
+
+        def tools_section_without_dry():
+            return "\n".join(line for line in base_tools_section().splitlines()
+                             if args.dry_tool not in line)
+
+        prompt_mod.tools_section = tools_section_without_dry
+        arm_saw_dry_tool = False
+        assert args.dry_tool not in prompt_mod.tools_section(), "dry tool still in prompt"
+
     stopped = "done"
     error = None
     started = time.monotonic()
@@ -152,9 +177,10 @@ def main(argv: list[str]) -> int:
     metrics = {
         "workdir": str(workdir),
         "items": ids,
+        "arm": "without" if args.without_dry_run else "with",
+        "arm_saw_dry_tool": arm_saw_dry_tool,
         "stopped": stopped,
         "error": error,
-        "wall_s": wall_s,
         "spend": {
             "stage_usd": after_stage - before_stage,
             "total_usd": after_total - before_total,
