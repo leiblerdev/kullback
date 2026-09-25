@@ -160,7 +160,9 @@ def make_task(world: Any, calls: list, request: str, said: list,
 
 
 def task_uid(tag: str) -> str:
-    return "synth_" + str(abs(hash(tag)) % (16 ** 12)).rjust(12, "0")[:12]
+    import hashlib
+    digest = hashlib.sha256(str(tag).encode()).hexdigest()
+    return "synth_" + str(int(digest[:12], 16) % (16 ** 12)).rjust(12, "0")[:12]
 
 
 def scrub(text: str) -> str:
