@@ -62,3 +62,12 @@ The Verifier scores the End state and what the user was told, never the route, s
 wrong method passes by design. An Environment that scores the route gives a different refusal rate, so a
 comparison across Environments is fair only once every Environment scores the same thing. Forbidden routes are
 Hard atoms written per Task.
+
+## Route checking (founder, 2026-09-25)
+
+Deferred: "how the tools should run is the route check, maybe don't do that, add it in todo". Today a Verifier scores
+the End state and what the user was told. Two route checks are parked here, for recorded and synthetic Tasks alike:
+the tools that should run for a Task, and a no-detour check that no write outside the Task's fix touched a row the
+Task names. The second catches a detour that undoes itself (change a field, change it back); a detour that leaves a
+row behind (place an order, then cancel it) is already caught by the End state. Evidence that the class is large:
+PAE (arXiv 2603.03116) finds 27 to 78 percent of reported tau-bench successes broke a required procedure.
