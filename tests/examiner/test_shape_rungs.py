@@ -85,5 +85,5 @@ def test_every_order_still_stores_the_loose_rung_where_nothing_tighter_holds(mon
     assert stored(order, monkeypatch, events) == ("no_column", ("own_row", "no_column"))
 
 
-def test_the_default_order_is_today_s():
-    assert V.SHAPE_RUNG_ORDER == "row_first"
+def test_the_default_order_asks_the_tightest_source_first():
+    assert V.SHAPE_RUNG_ORDER == "tightest_first"

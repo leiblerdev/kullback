@@ -281,7 +281,7 @@ class ShapeRungs(NamedTuple):
 _TIGHT = (("own_row", "prior_result"), ("own_row", "prior_result", "result_text"))
 # Why the orders differ: `no_column` holds on any row that lacks the column and then accepts any
 # non-empty value, so asked second it answers before `prior_result` is reached, and the stored rule
-# passes a value swapped for another the Run never read (36 swaps on one build). The tightest-first
+# passes a value swapped for any other value of the column, one the Run never read. The tightest-first
 # orders ask it last; the strict one also refuses to store it while a tighter source holds.
 SHAPE_RUNG_ORDERS = {
     "row_first": ShapeRungs(SHAPE_SOURCES, {s: SHAPE_LADDER[_RUNG_OF[s]] for s in SHAPE_SOURCES},
@@ -292,8 +292,9 @@ SHAPE_RUNG_ORDERS = {
                                  _TIGHT + (SHAPE_SOURCES,)),
 }
 SHAPE_RUNG_ORDERS["tightest_first_strict"] = SHAPE_RUNG_ORDERS["tightest_first"]._replace(strict=True)
-# Which order the derivation uses. Today's until the founder picks between the measured variants.
-SHAPE_RUNG_ORDER = "row_first"
+# Which order the derivation uses: tightest_first, chosen 2026-09-25 on the offline measure (airline +17,
+# retail 0, none lost). Reversible: row_first is the order before it.
+SHAPE_RUNG_ORDER = "tightest_first"
 
 # The claim a Task whose Reference wrote nothing still makes about its End state: on the tables these
 # tools touch, the End state is the Starting state. A Run that wrote fails it, which is what the
