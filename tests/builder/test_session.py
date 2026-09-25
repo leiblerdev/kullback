@@ -373,3 +373,22 @@ def test_the_builders_opening_shows_the_examiners_ruling_on_its_note(tmp_path):
     assert ("t1: needs_action_record: the hand off leaves no row to check. (ruled by finding, builder_wrong: "
             "the hand off writes a ticket row)") in session_mod.opening(root)
     assert session_mod.opening(root).endswith(session_mod.OPENING)
+
+
+def test_a_build_is_steerable_through_its_bus_from_outside_the_caller(tmp_path):
+    """Neither the harness nor on_harness is used here: the nudge goes on the workdir's bus, as it
+    would from another process, and the session's bridge queues it before the next model turn."""
+    from kullback.agent import steer
+
+    root = _workdir(tmp_path)
+    model = TestModel([reply("Reading.", ("read", {"path": "calls/rename_widget.jsonl"})),
+                       reply("Done."), reply(STOP_LINE)])
+    acks = []
+
+    def on_event(event):
+        if event.type == "tool_execution_start" and not acks:
+            acks.append(steer.wait_for_ack(root, steer.request(root, "nudge", "Read the schema next."), 5))
+
+    session_mod.build(root, model, subscribers=[on_event])
+    assert acks[0] is not None and acks[0].outcome == "queued"
+    assert any("Read the schema next." in str(message.get("content")) for message in model.calls[1]["messages"])

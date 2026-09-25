@@ -32,6 +32,7 @@ from kullback.agent.events import ToolExecutionEnd
 from kullback.agent.extensions import ExtensionAPI, load_extensions, refuse_paths
 from kullback.agent.harness import AgentHarness
 from kullback.agent.session.store import SessionStore
+from kullback.agent.steer import SteerBridge
 from kullback.ai.cache import ttl_for
 from kullback.ai.provider import ModelConfig
 from kullback.builder import env_files
@@ -314,31 +315,37 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
         _, guard_stop = ceiling_guard(harness, _GuardPlan(workdir=root, ceiling=ceiling))
     if on_harness is not None:
         on_harness(harness)
-    turns: list = []
-    continued = 0
-    message = opening(root)
-    while True:
-        events = _collect(harness.prompt(message))
-        run_turns = [event for event in events if event.type == "turn_end"]
-        turns += run_turns
-        last_message = run_turns[-1].message if run_turns else None
-        stopped = _stop_of(last_message, run_turns, guard_stop, max_turns)
-        status = status_of(root)
-        # A follow-up answered with no tool call is the model stating why it cannot go further.
-        answered_with_work = continued == 0 or len(run_turns) > 1
-        follow = (continuation(status, spent_in(root), ceiling_usd)
-                  if stopped == "no tool call" and answered_with_work else None)
-        if follow is None or continued >= CONTINUATIONS:
-            break
-        continued += 1
-        message = follow
-    last_line = str(getattr(last_message, "content", None) or "")
-    if stopped == "error":
-        last_line = str(getattr(last_message, "error_message", None) or last_line)
-    states = [row["state"] for row in status["tasks"]]
-    return {"status": status, "trusted": states.count("trusted"), "refused": states.count("refused"),
-            "open": states.count("open"), "spend": spent_in(root), "turns": len(turns),
-            "stopped": stopped, "last_line": last_line, "continued": continued}
+    # Any process may steer this session through the bus (agent/steer.py), not only the caller
+    # holding the harness; the bridge follows the bus from here on and goes when the session does.
+    bridge = SteerBridge(harness, root / "bus.jsonl").start()
+    try:
+        turns: list = []
+        continued = 0
+        message = opening(root)
+        while True:
+            events = _collect(harness.prompt(message))
+            run_turns = [event for event in events if event.type == "turn_end"]
+            turns += run_turns
+            last_message = run_turns[-1].message if run_turns else None
+            stopped = _stop_of(last_message, run_turns, guard_stop, max_turns)
+            status = status_of(root)
+            # A follow-up answered with no tool call is the model stating why it cannot go further.
+            answered_with_work = continued == 0 or len(run_turns) > 1
+            follow = (continuation(status, spent_in(root), ceiling_usd)
+                      if stopped == "no tool call" and answered_with_work else None)
+            if follow is None or continued >= CONTINUATIONS:
+                break
+            continued += 1
+            message = follow
+        last_line = str(getattr(last_message, "content", None) or "")
+        if stopped == "error":
+            last_line = str(getattr(last_message, "error_message", None) or last_line)
+        states = [row["state"] for row in status["tasks"]]
+        return {"status": status, "trusted": states.count("trusted"), "refused": states.count("refused"),
+                "open": states.count("open"), "spend": spent_in(root), "turns": len(turns),
+                "stopped": stopped, "last_line": last_line, "continued": continued}
+    finally:
+        bridge.close()
 
 
 def _stop_of(last_message: Any, turns: list, guard_stop: dict, max_turns: Optional[int]) -> str:
