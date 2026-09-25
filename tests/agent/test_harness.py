@@ -126,3 +126,21 @@ def test_subscriber_exception_stops_the_run():
     with pytest.raises(OSError):
         collect(harness.prompt("go"))
     assert harness.is_running is False
+
+
+def test_cancel_requested_reads_true_only_while_a_cancelled_run_is_going(add_tool):
+    model = TestModel([reply(None, call("add", {"a": 1, "b": 1})), reply("after")])
+    harness = AgentHarness(model, tools=[add_tool])
+    seen: list[bool] = []
+
+    def on_event(event):
+        if event.type == "tool_execution_start":
+            seen.append(harness.cancel_requested)
+            harness.cancel()
+            seen.append(harness.cancel_requested)
+
+    harness.subscribe(on_event)
+    assert harness.cancel_requested is False
+    collect(harness.prompt("go"))
+    assert seen == [False, True]
+    assert harness.cancel_requested is False, "the flag belongs to the run, and the run is over"
