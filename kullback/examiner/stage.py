@@ -1581,6 +1581,10 @@ def _derive_and_store(state: _DeriveState, job: _Job, second: dict, bought: list
         probe_skip=job.probe_skip, second_path=second,
         pool_runs=pool_runs_of(task.id, state.replays, state.rerolls) + extra_pool,
         fn=state.fn, user_ends=pool_user_ends(task.id, state.rerolls))
+    if job.stopped:
+        # The row says a stop cut its search short, so a plain examine picks the Task again; a
+        # later derivation that is not stopped writes the row afresh, without the flag.
+        row = {**row, "stopped": True}
     return _write_entry(state, task.id, job.key, row, confirmation.as_dict(), as_dict(record),
                         job.may_probe, cache=not job.stopped)
 

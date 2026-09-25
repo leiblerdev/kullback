@@ -250,7 +250,8 @@ def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> lis
     With task_ids, those that name a Task. Without, every Task not derived yet: it has no status
     row because no derivation has read it, or its Verifier file is absent and either its row holds
     a confirmed Reference or replays.json now holds a confirmed replay for it, read the way
-    select_for_session reads one, so a Task left unconfirmed is revisited once evidence confirms it."""
+    select_for_session reads one, so a Task left unconfirmed is revisited once evidence confirms it.
+    A row a stop cut short is pending whatever else it holds, so a stop never parks a Task for good."""
     known = sorted(task.id for task in store.get("tasks") or [])
     if task_ids is not None:
         wanted = set(task_ids)
@@ -262,6 +263,8 @@ def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> lis
 
     def pending(task_id: str) -> bool:
         if task_id not in status:
+            return True
+        if (status[task_id] or {}).get("stopped"):
             return True
         if (root / "verifiers" / f"{task_id}.json").is_file():
             return False
