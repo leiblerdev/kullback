@@ -171,6 +171,10 @@ def _rescorer(score_one, verifier: Verifier, canon, out_dir: Path, judge_version
 
     return rescore
 
+def _warn_unfrozen_runner() -> None:
+    """One stderr line saying the Verdicts carry no Runner version, and the command that freezes one."""
+    typer.echo("warning: the Verdicts carry no Runner version, run `kullback freeze-runner`", err=True)
+
 
 def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = False,
            judge_model: Optional[str] = None, base_url: Optional[str] = None,
@@ -194,6 +198,8 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
     env_path, version_path = Path(workdir) / "environment.json", Path(workdir) / "runner_version.json"
     environment = _load(env_path, Environment) if env_path.is_file() else None
     version = _load(version_path, RunnerVersion).runner_version if version_path.is_file() else None
+    if not version_path.is_file():
+        _warn_unfrozen_runner()
     schema = _schema(workdir)
     if schema is None:
         typer.echo("no EntitySchema on disk (schema.json): exempt columns are not dropped from the diff (D73)")
@@ -713,19 +719,226 @@ def freeze_runner(
     typer.echo(str(path))
 
 
+def _run_task_ids(workdir: Path, selector: str) -> list[str]:
+    """The Task ids `--tasks` names: trusted, all, or comma separated ids, in on-disk order.
+
+    Trusted is the live ruling the hub publishes from, so a graded Run always has a checked
+    Verifier behind it.
+    """
+    folder = Path(workdir) / "tasks"
+    on_disk = sorted(path.stem for path in folder.glob("*.json")) if folder.is_dir() else []
+    on_disk = [task_id for task_id in on_disk if task_id != "tasks.json"]
+    if selector == "all":
+        if not on_disk:
+            typer.echo("no Tasks with a file: nothing was run")
+            raise typer.Exit(1)
+        return on_disk
+    if selector == "trusted":
+        trusted = set(_entry("kullback.hub.package", "trusted_ids")(workdir))
+        picked = [task_id for task_id in on_disk if task_id in trusted]
+        if not picked:
+            typer.echo("no trusted Tasks: nothing was run")
+            raise typer.Exit(1)
+        return picked
+    wanted = [part.strip() for part in selector.split(",") if part.strip()]
+    if not wanted:
+        typer.echo("--tasks names no Tasks")
+        raise typer.Exit(2)
+    unknown = sorted(set(wanted) - set(on_disk))
+    if unknown:
+        typer.echo(f"no Task named {', '.join(unknown)}")
+        raise typer.Exit(2)
+    return [task_id for task_id in on_disk if task_id in set(wanted)]
+
+
+def _run_scoring(workdir: Path) -> dict:
+    """The verdict path's inputs for Runs played by `run --tasks`, loaded once for every Task.
+
+    The same regrade `_score` calls, over the Run files just played rather than the per-Task
+    folders, so each Task is scored as soon as its Runs land.
+    """
+    load_rules = _entry("kullback.runner.canon", "load_rules")
+    canon = load_rules(Path(workdir) / "canon-rules.json")
+    env_path, version_path = Path(workdir) / "environment.json", Path(workdir) / "runner_version.json"
+    if not version_path.is_file():
+        _warn_unfrozen_runner()
+    sigs = load_tool_sigs(workdir)
+    return {
+        "canon": canon,
+        "environment": _load(env_path, Environment) if env_path.is_file() else None,
+        "runner_version": _load(version_path, RunnerVersion).runner_version if version_path.is_file() else None,
+        "schema": _schema(workdir),
+        "write_tools": {sig.name for sig in sigs if sig.kind == "write"} or None,
+        "flagged_tools": {sig.name for sig in sigs if sig.unclassified},
+    }
+
+
+def _score_played_runs(workdir: Path, task_id: str, played: list, scoring: dict):
+    """Score just-played Runs through regrade and answer pass per Run, or the refusal in words.
+
+    `played` is (run id, Run file) in play order; the Verdicts land where `verdict` writes them.
+    """
+    score = _entry("kullback.runner.regrade", "regrade")
+    gate = _entry("kullback.gates.artifacts", "regrade_gate")
+    verifier = _load(Path(workdir) / "verifiers" / f"{task_id}.json", Verifier)
+    verdicts = score([path for _, path in played], verifier, scoring["canon"],
+                     out_dir=Path(workdir) / "verdicts" / task_id, judge_results={},
+                     environment=scoring["environment"], runner_version=scoring["runner_version"],
+                     schema=scoring["schema"], write_tools=scoring["write_tools"],
+                     flagged_tools=scoring["flagged_tools"], rules=scoring["canon"])
+    failures = getattr(gate(verdicts), "failures", [])
+    if failures:
+        return None, "; ".join(str(failure) for failure in failures)
+    passed = {verdict.run_id: bool(verdict.passed) for verdict in verdicts}
+    return [passed.get(run_id, False) for run_id, _ in played], None
+
+
+def _played_runs(workdir: Path, paths: set) -> list:
+    """(run id, Run file) in filename order for Run files the verdict path can open."""
+    load_run = _entry("kullback.runner.verdict", "load_run")
+    return [(load_run(path).run_id, path) for path in sorted(paths, key=lambda path: path.name)]
+
+
+def _run_totals(rows: list, count: int, planned: int, spend_usd: float, ceiling_usd,
+                ceiling_stopped: bool) -> dict:
+    """One dict under the per-Task lines: pass@1, pass^k, Runs done, spend, the Task that failed most."""
+    scored = [row for row in rows if row["runs"] and not row["refused"] and not row["no_verifier"]]
+    rates = [row["passes"] / row["runs"] for row in scored]
+    full = [row for row in scored if row["runs"] == count]
+    failing = max(scored, key=lambda row: row["runs"] - row["passes"], default=None)
+    if failing is not None and failing["runs"] - failing["passes"] == 0:
+        failing = None
+    return {
+        "pass_at_1": sum(rates) / len(rates) if rates else None,
+        "pass_k": (sum(1 for row in full if row["passes"] == row["runs"]) / len(full)
+                   if full and count > 1 else None),
+        "k": count,
+        "runs_done": sum(row["runs"] for row in rows),
+        "runs_planned": planned,
+        "spend_usd": spend_usd,
+        "failing_most": failing["task"] if failing else None,
+        "failing_most_fails": failing["runs"] - failing["passes"] if failing else 0,
+        "ceiling_stopped": ceiling_stopped,
+        "ceiling_usd": ceiling_usd,
+    }
+
+
+def _rate_or_na(value) -> str:
+    """One rate with two decimals, or n/a where no scored Run stands behind it."""
+    return "n/a" if value is None else f"{value:.2f}"
+
+
+def _echo_run_totals(totals: dict, count: int) -> None:
+    """The pass table's last lines: pass@1, pass^k, Runs done, spend, the Task that failed most."""
+    head = f"pass@1 {_rate_or_na(totals['pass_at_1'])}"
+    if count > 1:
+        head += f" pass^{count} {_rate_or_na(totals['pass_k'])}"
+    typer.echo(head)
+    failing = (f"{totals['failing_most']} ({totals['failing_most_fails']})"
+               if totals["failing_most"] else "none")
+    typer.echo(f"runs {totals['runs_done']}/{totals['runs_planned']} "
+               f"spend ${totals['spend_usd']:.2f} failing most: {failing}")
+
+
 @app.command()
 def run(
     workdir: Path = WORKDIR,
-    task: str = typer.Option(..., "--task", help="Task id to run."),
+    task: Optional[str] = typer.Option(None, "--task", help="Task id to run."),
+    tasks: Optional[str] = typer.Option(None, "--tasks", help="Tasks to run: trusted, all, or comma "
+                                                              "separated ids."),
     model: str = typer.Option(..., "--model", help="Candidate model id, as provider/model."),
     count: int = typer.Option(1, "--count", help="Runs per Task."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Spend ceiling (D86): "
+                                                                            "the run stops where it stands."),
+    as_json: bool = typer.Option(False, "--json", help="Print the rows and the totals as one JSON document."),
 ):
-    """Run a Candidate against the built Environment and write one JSONL per Run."""
-    reports = _entry("kullback.runner.tool", "reroll")(
-        environment_dir=workdir, task_id=task, model=_live_model(model, base_url), count=count,
-        workdir=workdir)
-    typer.echo(json.dumps([report.as_dict() for report in reports], default=str))
+    """Run a Candidate against the built Environment and write one JSONL per Run.
+
+    With --task the command answers as it always did: the Run reports as JSON. With --tasks it
+    runs every named Task --count times, scores each Task as its Runs land, and prints one line
+    per Task plus the pass table underneath.
+    """
+    if tasks is not None and task is not None:
+        typer.echo("run takes --task or --tasks, not both")
+        raise typer.Exit(2)
+    if tasks is None:
+        if task is None:
+            typer.echo("run takes --task or --tasks")
+            raise typer.Exit(2)
+        reports = _entry("kullback.runner.tool", "reroll")(
+            environment_dir=workdir, task_id=task, model=_live_model(model, base_url), count=count,
+            workdir=workdir)
+        typer.echo(json.dumps([report.as_dict() for report in reports], default=str))
+        return
+    task_ids = _run_task_ids(workdir, tasks)
+    trusted_only = tasks.strip() == "trusted"
+    if trusted_only and not as_json:
+        typer.echo("only trusted Tasks are graded by a checked Verifier")
+    budget = importlib.import_module("kullback.runner.budget")
+    candidate = _live_model(model, base_url)
+    ceiling, ceiling_stopped = None, False
+    if ceiling_usd is not None:
+        try:
+            ceiling = budget.Ceiling.from_totals(workdir, ceiling_usd)
+        except budget.BudgetExceeded:
+            ceiling_stopped = True
+    # The Candidate is priced into the workdir ledger like every other model call, but never
+    # memoized: a Candidate's answer has to be a fresh sample, and a memoized one would turn a
+    # sample into a replay. It is never context capped either: it runs under production settings.
+    candidate = budget.BudgetedModel(candidate, stage="run", workdir=workdir, model_id=model,
+                                     ceiling=ceiling, cap_context=False)
+    scoring = _run_scoring(workdir)
+    reroll = _entry("kullback.runner.tool", "reroll")
+    rows: list = []
+    for task_id in task_ids:
+        if ceiling_stopped:
+            break
+        if not (Path(workdir) / "verifiers" / f"{task_id}.json").is_file():
+            if not as_json:
+                typer.echo(f"{task_id} no Verifier yet, not scored")
+            rows.append({"task": task_id, "runs": 0, "passes": 0, "outcomes": [],
+                         "refused": False, "no_verifier": True})
+            continue
+        runs_dir = Path(workdir) / "runs"
+        before = set(runs_dir.glob("*.jsonl")) if runs_dir.is_dir() else set()
+        try:
+            reports = reroll(environment_dir=workdir, task_id=task_id, model=candidate, count=count,
+                             workdir=workdir)
+            played = [(report.run_id, Path(workdir) / report.path) for report in reports]
+        except budget.BudgetExceeded:
+            ceiling_stopped = True
+            after = set(runs_dir.glob("*.jsonl")) if runs_dir.is_dir() else set()
+            played = _played_runs(workdir, after - before)
+        if played:
+            outcomes, refusal = _score_played_runs(workdir, task_id, played, scoring)
+        else:
+            outcomes, refusal = [], None
+        if refusal:
+            row = {"task": task_id, "runs": len(played), "passes": 0, "outcomes": [],
+                   "refused": True, "no_verifier": False}
+            line = f"{task_id} refused, {refusal}"
+        elif not played:
+            row = {"task": task_id, "runs": 0, "passes": 0, "outcomes": [],
+                   "refused": False, "no_verifier": False}
+            line = f"{task_id} no stored Runs"
+        else:
+            words = ["pass" if passed else "fail" for passed in outcomes]
+            row = {"task": task_id, "runs": len(words), "passes": sum(outcomes),
+                   "outcomes": words, "refused": False, "no_verifier": False}
+            line = f"{task_id} {' '.join(words)}"
+        rows.append(row)
+        if not as_json:
+            typer.echo(line)
+    spend_usd = float(budget.load_totals(workdir)["total"]["usd"])
+    totals = _run_totals(rows, count, len(task_ids) * count, spend_usd, ceiling_usd, ceiling_stopped)
+    if as_json:
+        typer.echo(json.dumps({"rows": rows, "totals": totals, "trusted_only": trusted_only},
+                               default=str))
+        return
+    if ceiling_stopped:
+        typer.echo(f"ceiling ${ceiling_usd:g} reached, stopped where it stood")
+    _echo_run_totals(totals, count)
 
 
 @app.command("solve-rate")
@@ -1326,6 +1539,16 @@ def export(
     typer.echo(str(Path(out) / "manifest.json"))
 
 
+def _echo_checklist(workdir: Path, repo: str) -> str:
+    """Print the publish checklist rows and their readiness, and answer the readiness."""
+    checklist = _entry("kullback.hub.checklist", "publish_checklist")(workdir, repo)
+    readiness = _entry("kullback.hub.checklist", "readiness")(checklist)
+    for row in checklist:
+        typer.echo(f"[{'x' if row.done else ' '}] {row.name}: {row.detail}")
+    typer.echo(readiness)
+    return readiness
+
+
 @app.command()
 def publish(
     workdir: Path = WORKDIR,
@@ -1339,13 +1562,20 @@ def publish(
                                                           "on the card saying so."),
     keep: Optional[Path] = typer.Option(None, "--keep", help="Keep the staged package here instead of a "  # noqa: B008
                                                              "temporary directory."),
+    check: bool = typer.Option(False, "--check", help="Print the release checklist and upload nothing."),
 ):
     """Export the Environment, write its card and upload it as one commit, tagged with its round (D221).
 
     A release needs replay fidelity at or above 0.90 over Tasks; below that only --preview is
     allowed. Publishing again writes a new commit on the same repository and rewrites the card's
-    numbers; older rounds stay reachable by their tags.
+    numbers; older rounds stay reachable by their tags. With --check the command prints the
+    checklist and uploads nothing.
     """
+    readiness = _echo_checklist(workdir, repo)
+    if check:
+        if readiness == "not ready":
+            raise typer.Exit(1)
+        return
     push = _entry("kullback.hub.publish", "publish")
     hosted, manifest = push(workdir, repo, name=name, preview=preview, corpus=corpus,
                             corpus_license=corpus_license, corpus_url=corpus_url, keep=keep)
