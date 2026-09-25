@@ -1337,3 +1337,23 @@ def test_attach_with_no_live_build_says_so_and_shows_the_status(tmp_path):
     screen.attach()
     out = _text(screen.console)
     assert "no live build in " in out and "no build yet" in out
+
+
+def test_follow_ends_when_the_heartbeat_says_done_though_the_pid_is_alive(tmp_path, monkeypatch):
+    import os
+
+    from kullback.runner import heartbeat
+
+    # A build started from another screen: the heartbeat carries that screen's pid, which
+    # outlives the build, and the final beat says done.
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    heartbeat.beat(tmp_path, "openai/gpt-6-luna", "done")
+    screen = _screen(tmp_path)
+    done = []
+    watch = threading.Thread(target=lambda: (screen._follow(os.getpid(), every_seconds=0.01),
+                                             done.append(True)),
+                             daemon=True)
+    watch.start()
+    watch.join(5)
+    assert done == [True], "following a finished build never ends while its pid lives"
+    assert "build done" in _text(screen.console)

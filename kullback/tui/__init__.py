@@ -877,7 +877,8 @@ class Screen:
         return True
 
     def _follow(self, pid: Any, every_seconds: float = 1.0) -> None:
-        """Re-read this build's files until its pid goes, or until the person stops watching.
+        """Re-read this build's files until its pid goes or its heartbeat says it ended, or until
+        the person stops watching.
 
         Two things are read: the board, off the records the build writes, and the build's own
         event stream. A Builder session writes every event of its harness to workdir/bus.jsonl,
@@ -919,7 +920,9 @@ class Screen:
         recent = lines[-FEED_LINES:]
         with Live(shown(recent), console=self.console, refresh_per_second=4) as live:
             try:
-                while heartbeat.alive(pid):
+                # The pid alone never ends this: a build another screen started carries that
+                # screen's pid, which outlives the build. Its final beat says done or failed.
+                while heartbeat.alive(pid) and heartbeat.terminal_status(self.workdir, pid) is None:
                     time.sleep(every_seconds)
                     lines, offset, mtime = since(offset, mtime, False)
                     recent = (recent + lines)[-FEED_LINES:]
@@ -929,7 +932,11 @@ class Screen:
                 live.update(shown(recent))
             except KeyboardInterrupt:
                 pass
-        self.console.print(Text("  stopped watching; the build is untouched", style="dim"))
+        end = heartbeat.terminal_status(self.workdir, pid)
+        if end is not None:
+            self.console.print(Text(f"  build {end}; the build is untouched", style="dim"))
+        else:
+            self.console.print(Text("  stopped watching; the build is untouched", style="dim"))
 
     def _watching(self, recent: list[str], transcript: Optional[Transcript] = None) -> Any:
         """The board with the build's last few events under it: state above, story below."""
