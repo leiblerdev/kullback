@@ -12,7 +12,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping, Optional
 
 
 @dataclass
@@ -25,55 +25,66 @@ class Row:
     next_key: str
 
 
-def _dotenv_values(path: Path) -> dict[str, str]:
-    """The KEY=VALUE lines of one .env file, without touching the environment.
+def _dotenv_added() -> dict[str, str]:
+    """The current directory's .env file as values, without touching the environment.
 
-    Same line rules as provider.load_dotenv (blank lines and comments skipped,
-    optional export prefix and matching quotes stripped), but read only: the
-    checklist names where a variable came from without changing what is set.
+    Exactly the file provider.load_dotenv reads, parsed the same way, but into a
+    fresh dict. A workdir's own .env does not count, because the builds never read
+    it: only the current directory's .env reaches a model call.
     """
-    out: dict[str, str] = {}
+    from kullback.ai.provider import load_dotenv
+
     try:
-        text = path.read_text(encoding="utf-8")
+        return load_dotenv(env={})
     except OSError:
-        return out
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip().removeprefix("export ").strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        if key and key not in out:
-            out[key] = value
-    return out
-
-
-def _dotenv_keys(workdir: Path) -> set[str]:
-    """The variable names set in a .env file: the caller's cwd or the workdir.
-
-    Live calls are turned on from the shell or from a .env file in either
-    place, so both count and the detail can say which one held the variable.
-    """
-    return set(_dotenv_values(Path(".env"))) | set(_dotenv_values(Path(workdir) / ".env"))
+        return {}
 
 
 def _truthy(value: str) -> bool:
     return value.strip().lower() in ("1", "true", "yes", "on")
 
 
-def _live_values(env: Mapping[str, str], workdir: Path) -> dict[str, str]:
-    """What the live switch reads: the passed environment over both .env files.
+def _live_values(env: Mapping[str, str]) -> dict[str, str]:
+    """What the live switch and the key rows read: the cwd .env under the passed environment.
 
-    Exported values win, the way load_dotenv leaves them alone when it fills
-    in the rest from the file.
+    Exported values win, the way load_dotenv leaves them alone when it fills in
+    the rest from the file. Presence only, values never reach a row.
     """
-    merged = dict(_dotenv_values(Path(".env")))
-    merged.update(_dotenv_values(Path(workdir) / ".env"))
+    merged = _dotenv_added()
     merged.update(env)
     return merged
+
+
+def key_source(name: str, session: Mapping[str, Any],
+               env: Optional[Mapping[str, str]] = None) -> str:
+    """Where one key variable's value comes from: this session, .env, the remembered
+    store, the environment, or nowhere.
+
+    A session key wins because _apply_key overwrote the environment with it. Otherwise
+    the first store that names it in provider order (exported environment, then .env,
+    then the remembered store) is its source, unless the shell overrode that store
+    with another value, in which case the environment is. Names only, never values.
+    Reads env, the process environment when not given, so a caller passing its own
+    merged mapping gets that mapping's source. The screen imports this for /login.
+    """
+    values = os.environ if env is None else env
+    value = values.get(name)
+    if name in session and value is not None:
+        return "this session"
+    if not value:
+        return "missing"
+    dotted = _dotenv_added()
+    if name in dotted:
+        return ".env" if dotted[name] == value else "environment"
+    try:
+        from kullback.ai import credentials
+
+        stored = credentials.load_credentials({})
+    except Exception:
+        stored = {}
+    if name in stored:
+        return "auth.json" if stored[name] == value else "environment"
+    return "environment"
 
 
 def _key_groups(model: str) -> tuple[tuple[str, ...], ...]:
@@ -92,50 +103,42 @@ def _key_groups(model: str) -> tuple[tuple[str, ...], ...]:
     return groups
 
 
-def _source_of(variable: str, dotenv_keys: set[str]) -> str:
-    """Where a set variable came from: the shell's environment or a .env file."""
-    if variable in os.environ:
-        return "environment"
-    if variable in dotenv_keys:
-        return ".env"
-    return "environment"
-
-
 def _describe_groups(groups: tuple[tuple[str, ...], ...]) -> str:
     """The groups in words: one group fully set is enough, so groups join with or."""
     return " or ".join(" and ".join(group) for group in groups)
 
 
-def where_it_stands(workdir: Path, env: Mapping[str, str], model: str) -> list[Row]:
+def where_it_stands(workdir: Path, env: Mapping[str, str], model: str,
+                    session: Optional[Mapping[str, Any]] = None) -> list[Row]:
     """Six rows for a workdir, in the order a newcomer works through them.
 
     Reads ingest_summary.json, rounds.json and runner_version.json off the
-    workdir and variable names off env and the .env files. Names only: a set
-    variable is named with where it came from, its value never appears.
+    workdir and variable names off env over the current directory's .env, the
+    same two places a build reads them from. Names only: a set variable is
+    named with where it came from (this session, .env, auth.json or the
+    environment), its value never appears. Session maps a /login key to what
+    the shell held before, so the screen's held keys read as this session.
     """
     workdir = Path(workdir)
-    dotenv_keys = _dotenv_keys(workdir)
-    live = _live_values(env, workdir)
+    key_env = _live_values(env)
+    held: Mapping[str, Any] = session if session is not None else {}
     rows: list[Row] = []
 
     from kullback.ai.provider import LIVE_ENV_VAR
 
     groups = _key_groups(model) if model else ()
-    # A key in a .env file counts as set: the builds find it through load_dotenv.
-    # Presence only, the value never reaches a row.
-    key_env = _live_values(env, workdir)
     set_groups = [group for group in groups if group and all(key_env.get(var) for var in group)]
     if set_groups:
         shown = set_groups[0]
-        source = _source_of(shown[0], dotenv_keys)
+        source = key_source(shown[0], held, env=key_env)
         rows.append(Row("model", True, f"{' and '.join(shown)} set ({source})", "/login"))
     elif groups:
         rows.append(Row("model", False, f"needs {_describe_groups(groups)}", "/login"))
     else:
         rows.append(Row("model", False, f"{model or 'no model'} names no key variable", "/login"))
 
-    if _truthy(live.get(LIVE_ENV_VAR, "")):
-        source = ".env" if LIVE_ENV_VAR in dotenv_keys and LIVE_ENV_VAR not in os.environ else "environment"
+    if _truthy(key_env.get(LIVE_ENV_VAR, "")):
+        source = key_source(LIVE_ENV_VAR, held, env=key_env)
         rows.append(Row("live calls", True, f"on ({LIVE_ENV_VAR}=1 in {source})", "/login"))
     else:
         rows.append(Row("live calls", False, f"off: put {LIVE_ENV_VAR}=1 in .env or export it", "/login"))

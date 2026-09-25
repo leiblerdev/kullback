@@ -729,6 +729,21 @@ def test_kullback_doctor_prints_the_checklist_and_the_next_step(tmp_path):
     assert lines[6].startswith("next: ")
 
 
+def test_doctor_counts_a_remembered_key_and_names_auth_json(tmp_path, monkeypatch):
+    """A key remembered in auth.json counts for doctor, named as from auth.json, never its value."""
+    from kullback.ai import credentials
+
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    credentials.remember("OPENAI_API_KEY", "marker-secret-value-6")
+    result = invoke("doctor", "--workdir", str(tmp_path), "--model", "openai/gpt-6-luna")
+    assert result.exit_code == 0, result.output
+    model_line = next(line for line in result.output.splitlines() if " model " in line)
+    assert model_line.startswith("[x]") and "auth.json" in model_line
+    assert "marker-secret-value-6" not in result.output
+
+
+
 # --- the judges the CLI puts between a Run and its Verdict (D76, D88) -------
 
 def _judge(name: str, verdict: str):

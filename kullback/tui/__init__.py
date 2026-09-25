@@ -33,6 +33,7 @@ from rich.text import Text
 
 from kullback.ai.provider import DEFAULT_MODEL, LIVE_ENV_VAR
 from kullback.tui import diagrams
+from kullback.tui.checklist import key_source as _key_source
 from kullback.tui.checklist import next_step, where_it_stands
 
 GLYPHS = {
@@ -760,38 +761,6 @@ def _append_key_lines(out: Text, groups: tuple[tuple[str, ...], ...]) -> None:
         out.append("no key variable: this endpoint takes none\n", style="dim")
 
 
-def _key_source(name: str, session: dict[str, Any]) -> str:
-    """Where one key variable's value comes from: this session, .env, the remembered
-    store, the environment, or nowhere.
-
-    A session key wins because _apply_key overwrote the environment with it. Otherwise
-    the first store that names it in provider order (exported environment, then .env,
-    then the remembered store) is its source, unless the shell overrode that store
-    with another value, in which case the environment is. Names only, never values."""
-    value = os.environ.get(name)
-    if name in session and value is not None:
-        return "this session"
-    if not value:
-        return "missing"
-    try:
-        from kullback.ai.provider import load_dotenv
-
-        dotted = load_dotenv(env={})
-    except Exception:
-        dotted = {}
-    if name in dotted:
-        return ".env" if dotted[name] == value else "environment"
-    try:
-        from kullback.ai import credentials
-
-        stored = credentials.load_credentials({})
-    except Exception:
-        stored = {}
-    if name in stored:
-        return "auth.json" if stored[name] == value else "environment"
-    return "environment"
-
-
 class Screen:
     """One console, one Board, and the small set of commands that drive the pipeline."""
 
@@ -859,7 +828,8 @@ class Screen:
 
     def _doctor(self) -> None:
         """Where this workdir stands and the next step: the entry screen and /doctor share it."""
-        rows = where_it_stands(self.workdir, dict(os.environ), self.model or DEFAULT_MODEL)
+        rows = where_it_stands(self.workdir, dict(os.environ), self.model or DEFAULT_MODEL,
+                               self.session_keys)
         self.console.print(Text("\n  where this workdir stands", style="bold"))
         for row in rows:
             mark = Text(f"    [{'x' if row.done else ' '}] {row.name:<10}", style="white")
