@@ -793,7 +793,7 @@ def _reroll_rows(workdir: Path) -> dict:
 def _rich_reference_events():
     """The Reference's events with two more reads: four calls, so four rewrites exist."""
     events = VF.reference_events()
-    first = [VF.call("get_loyalty_balance", {"user_id": "u1"}, kind="read", cid="c8"),
+    first = [VF.call("get_points_balance", {"user_id": "u1"}, kind="read", cid="c8"),
              VF.result({"user_id": "u1", "points": 40}, cid="c8")]
     second = [VF.call("get_hold_details", {"hold_id": "#H123"}, kind="read", cid="c9"),
               VF.result({"hold_id": "#H123", "status": "in_transit"}, cid="c9")]

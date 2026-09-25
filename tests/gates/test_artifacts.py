@@ -43,17 +43,17 @@ def a_trace(**kw) -> Trace:
 
 
 def test_ingest_gate_passes_a_clean_trace_and_fails_a_call_with_neither_result_nor_error():
-    clean = a_trace(tool_calls=[{"name": "get_order", "args": {}, "result": {"id": "W1"}}])
+    clean = a_trace(tool_calls=[{"name": "get_item", "args": {}, "result": {"id": "W1"}}])
     passed = ingest_gate([clean])
     assert isinstance(passed, GateResult)
     assert passed.stage == "ingest"
     assert passed.passed is True
     assert passed.metrics["traces"] == 1
     assert passed.metrics["tool_calls"] == 1
-    trace = a_trace(tool_calls=[{"name": "get_order", "args": {}}])
+    trace = a_trace(tool_calls=[{"name": "get_item", "args": {}}])
     out = ingest_gate([trace])
     assert out.passed is False
-    assert any("get_order" in f for f in out.failures)
+    assert any("get_item" in f for f in out.failures)
 
 
 def test_ingest_gate_takes_a_recorded_null_result_as_a_result():
@@ -94,7 +94,7 @@ def test_ingest_gate_fails_a_trace_with_no_hash_or_a_hash_that_moved_between_two
 
 # --- mine ---
 
-def a_sig(name="get_order", calls=3, **kw) -> ToolSig:
+def a_sig(name="get_item", calls=3, **kw) -> ToolSig:
     base = dict(
         name=name,
         args_schema={"properties": {"loan_id": {"type": "string"}}, "required": ["loan_id"]},
@@ -105,12 +105,12 @@ def a_sig(name="get_order", calls=3, **kw) -> ToolSig:
 
 
 def test_mine_gate_fails_a_thin_signature_unless_it_is_flagged_llm():
-    passed = mine_gate([a_sig()], calls=[{"name": "get_order", "args": {"loan_id": "W1"}}])
+    passed = mine_gate([a_sig()], calls=[{"name": "get_item", "args": {"loan_id": "W1"}}])
     assert passed.stage == "mine"
     assert passed.passed is True
     out = mine_gate([a_sig(calls=2)])
     assert out.passed is False
-    assert any("get_order" in f and "2" in f for f in out.failures)
+    assert any("get_item" in f and "2" in f for f in out.failures)
     assert mine_gate([a_sig(calls=1, source="llm")]).passed is True
 
 
@@ -118,15 +118,15 @@ def test_mine_gate_believes_a_call_count_of_zero_over_the_evidence_list():
     """A ToolSig that counted no calls is thin, whatever trace ids it lists."""
     out = mine_gate([a_sig(calls=0, evidence=["a", "b", "c"])])
     assert out.passed is False
-    assert any("get_order" in f and "0 observed calls" in f for f in out.failures)
+    assert any("get_item" in f and "0 observed calls" in f for f in out.failures)
     assert mine_gate([a_sig(calls=3, evidence=[])]).passed is True
 
 
 def test_mine_gate_fails_a_recorded_arg_outside_the_schema_or_a_missing_required_arg():
-    out = mine_gate([a_sig()], calls=[{"name": "get_order", "args": {"loan_id": "W1", "colour": "red"}}])
+    out = mine_gate([a_sig()], calls=[{"name": "get_item", "args": {"loan_id": "W1", "colour": "red"}}])
     assert out.passed is False
     assert any("colour" in f for f in out.failures)
-    missing = mine_gate([a_sig()], calls=[{"name": "get_order", "args": {}}])
+    missing = mine_gate([a_sig()], calls=[{"name": "get_item", "args": {}}])
     assert missing.passed is False
     assert any("loan_id" in f for f in missing.failures)
 
@@ -162,11 +162,11 @@ def test_the_gate_runs_a_predicate_the_way_the_verdict_does_with_the_state_the_w
     """Build 8: the gate handed the case as one argument and every compiled constraint failed with a TypeError."""
     reads_all_three = a_constraint(
         predicate_src=("def check(pre_state, write_call, transcript):\n"
-                       "    return write_call.get('tool') != 'cancel_order' or pre_state.get('status') == 'pending'\n"),
+                       "    return write_call.get('tool') != 'cancel_item' or pre_state.get('status') == 'pending'\n"),
         tests=ConstraintTests(
-            pos=[{"pre_state": {"status": "pending"}, "write_call": {"tool": "cancel_order"}, "transcript": []},
-                 {"pre_state": {"status": "delivered"}, "write_call": {"tool": "get_order"}, "transcript": []}],
-            neg=[{"pre_state": {"status": "delivered"}, "write_call": {"tool": "cancel_order"}, "transcript": []}],
+            pos=[{"pre_state": {"status": "pending"}, "write_call": {"tool": "cancel_item"}, "transcript": []},
+                 {"pre_state": {"status": "delivered"}, "write_call": {"tool": "get_item"}, "transcript": []}],
+            neg=[{"pre_state": {"status": "delivered"}, "write_call": {"tool": "cancel_item"}, "transcript": []}],
         ),
     )
     assert policy_gate([reads_all_three]).passed is True
@@ -182,12 +182,12 @@ def test_the_gate_runs_a_predicate_that_calls_the_transcript_helpers_the_compile
     more constraints failed the gate for a reason that was ours and not the model's."""
     asks_first = a_constraint(
         predicate_src=("def check(pre_state, write_call, transcript):\n"
-                       "    return write_call.get('name') != 'cancel_order' or user_confirmed(transcript)\n"),
+                       "    return write_call.get('name') != 'cancel_item' or user_confirmed(transcript)\n"),
         tests=ConstraintTests(
-            pos=[{"pre_state": {}, "write_call": {"name": "cancel_order"},
+            pos=[{"pre_state": {}, "write_call": {"name": "cancel_item"},
                   "transcript": [{"role": "assistant", "content": "Shall I cancel order #W1?"},
                                  {"role": "user", "content": "yes please"}]}],
-            neg=[{"pre_state": {}, "write_call": {"name": "cancel_order"},
+            neg=[{"pre_state": {}, "write_call": {"name": "cancel_item"},
                   "transcript": [{"role": "assistant", "content": "Shall I cancel order #W1?"},
                                  {"role": "user", "content": "no, leave it"}]}],
         ),
@@ -214,10 +214,10 @@ def test_the_gate_and_the_compilers_own_sandbox_rule_the_same_way_on_the_same_co
         predicate_src=("def check(pre_state, write_call, transcript):\n"
                        "    return called_before(transcript, 'get_loan_details')\n"),
         tests=ConstraintTests(
-            pos=[{"pre_state": {}, "write_call": {"name": "cancel_order"},
+            pos=[{"pre_state": {}, "write_call": {"name": "cancel_item"},
                   "transcript": [{"role": "assistant", "content": None,
                                   "tool_calls": [{"name": "get_loan_details", "arguments": {}}]}]}],
-            neg=[{"pre_state": {}, "write_call": {"name": "cancel_order"}, "transcript": []}],
+            neg=[{"pre_state": {}, "write_call": {"name": "cancel_item"}, "transcript": []}],
         ),
     )
     breaks = a_constraint(predicate_src="def check(pre_state, write_call, transcript):\n    return True\n")

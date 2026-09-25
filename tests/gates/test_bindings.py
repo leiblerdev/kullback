@@ -420,13 +420,13 @@ def test_every_bound_gate_lives_in_the_registry():
 # --- F27: a write's confinement ruling is about the write ---
 
 _TWO_BODIES = ("class DomainTools:\n"
-               "    def cancel_order(self, loan_id):\n"
+               "    def cancel_item(self, loan_id):\n"
                "        setattr(self, 'x', loan_id)\n"
                "        return loan_id\n"
-               "    def show_order(self, loan_id):\n"
+               "    def show_item(self, loan_id):\n"
                "        return loan_id\n")
-_CLEAN_SHOW = "def show_order(self, loan_id):\n    return loan_id\n"
-_BAD_CANCEL = "def cancel_order(self, loan_id):\n    setattr(self, 'x', loan_id)\n    return loan_id\n"
+_CLEAN_SHOW = "def show_item(self, loan_id):\n    return loan_id\n"
+_BAD_CANCEL = "def cancel_item(self, loan_id):\n    setattr(self, 'x', loan_id)\n    return loan_id\n"
 
 
 def _confined_of(tmp_path, rel: str, written: str, module: str):
@@ -441,25 +441,25 @@ def _confined_of(tmp_path, rel: str, written: str, module: str):
 
 
 def test_the_write_of_a_clean_body_passes_confined_and_notes_the_other_body_s_failure(tmp_path):
-    ruling, line = _confined_of(tmp_path, "tools/show_order.py", _CLEAN_SHOW, _TWO_BODIES)
+    ruling, line = _confined_of(tmp_path, "tools/show_item.py", _CLEAN_SHOW, _TWO_BODIES)
     assert ruling.passed and ruling.failures == []
     assert line.splitlines() == ["confined pass",
-                                 "the module still fails confinement on: cancel_order uses setattr"]
+                                 "the module still fails confinement on: cancel_item uses setattr"]
 
 
 def test_the_write_of_the_failing_body_fails_confined_on_its_own_line(tmp_path):
-    ruling, line = _confined_of(tmp_path, "tools/cancel_order.py", _BAD_CANCEL, _TWO_BODIES)
+    ruling, line = _confined_of(tmp_path, "tools/cancel_item.py", _BAD_CANCEL, _TWO_BODIES)
     assert not ruling.passed
-    assert ruling.failures == ["cancel_order uses setattr"]
-    assert line == "confined fail (cancel_order uses setattr) [1 rows]"
+    assert ruling.failures == ["cancel_item uses setattr"]
+    assert line == "confined fail (cancel_item uses setattr) [1 rows]"
     assert ruling.note == ""
 
 
 def test_a_module_where_only_the_written_body_fails_carries_no_note(tmp_path):
     module = _TWO_BODIES.replace("setattr(self, 'x', loan_id)", "loan_id = str(loan_id)")
-    module = module.replace("    def show_order(self, loan_id):\n        return loan_id\n",
-                            "    def show_order(self, loan_id):\n        return eval(loan_id)\n")
-    written = "def show_order(self, loan_id):\n    return eval(loan_id)\n"
-    ruling, line = _confined_of(tmp_path, "tools/show_order.py", written, module)
-    assert not ruling.passed and ruling.failures == ["show_order uses eval"]
+    module = module.replace("    def show_item(self, loan_id):\n        return loan_id\n",
+                            "    def show_item(self, loan_id):\n        return eval(loan_id)\n")
+    written = "def show_item(self, loan_id):\n    return eval(loan_id)\n"
+    ruling, line = _confined_of(tmp_path, "tools/show_item.py", written, module)
+    assert not ruling.passed and ruling.failures == ["show_item uses eval"]
     assert ruling.note == "" and "\n" not in line

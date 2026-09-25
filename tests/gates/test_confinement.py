@@ -65,7 +65,7 @@ _SKELETON_ONLY_MODULE = "data_model"
 def _module(body: str) -> str:
     return ("import json\n\n\nclass DomainDB:\n    pass\n\n\nclass DomainTools:\n"
             "    def __init__(self, db):\n        self.db = db\n\n"
-            "    def get_order(self, loan_id):\n" + body)
+            "    def get_item(self, loan_id):\n" + body)
 
 
 def test_a_clean_tool_body_is_confined():
@@ -80,11 +80,11 @@ def test_a_tool_body_that_reaches_outside_the_world_is_refused_by_name():
     source = _module("        import os\n        return getattr(os, 'system')(loan_id)\n")
     out = gate_confined(source)
     assert out.passed is False
-    assert out.failures == ["get_order imports os", "get_order uses getattr"]
-    for statement, failure in (("import os", "get_order imports os"),
-                               ("import " + _SKELETON_ONLY_PACKAGE, "get_order imports " + _SKELETON_ONLY_PACKAGE),
+    assert out.failures == ["get_item imports os", "get_item uses getattr"]
+    for statement, failure in (("import os", "get_item imports os"),
+                               ("import " + _SKELETON_ONLY_PACKAGE, "get_item imports " + _SKELETON_ONLY_PACKAGE),
                                ("from " + _SKELETON_ONLY_MODULE + " import Widget",
-                                "get_order imports " + _SKELETON_ONLY_MODULE)):
+                                "get_item imports " + _SKELETON_ONLY_MODULE)):
         refused = _module("        " + statement + "\n        return {'id': loan_id}\n")
         assert source_confinement(refused) == [failure]
         assert gate_confined(refused).passed is False
@@ -113,7 +113,7 @@ def test_module_level_skeleton_imports_with_clean_bodies_still_pass():
 
 
 def test_a_body_that_does_not_parse_fails_the_gate_rather_than_raising():
-    out = gate_confined("class DomainTools:\n    def get_order(self, x)\n        return x\n")
+    out = gate_confined("class DomainTools:\n    def get_item(self, x)\n        return x\n")
     assert out.passed is False
     assert any("does not parse" in f for f in out.failures)
 
@@ -125,13 +125,13 @@ def test_a_body_that_names_a_module_it_never_imported_is_refused_before_a_call_r
     compile gate whose recorded calls never reached the line."""
     source = _module("        if loan_id == 'x':\n            return decimal.Decimal(1)\n        return {'id': loan_id}\n")
     assert unbound_names(source) == [
-        "get_order names decimal, which nothing binds; put `import decimal` at the top of the body"]
+        "get_item names decimal, which nothing binds; put `import decimal` at the top of the body"]
     out = gate_confined(source)
     assert out.stage == "confined" and out.passed is False
     assert out.metrics == {"chars": len(source), "unbound": 1}
     assert out.failures == unbound_names(source)
     unknown = _module("        return helper(loan_id)\n")
-    assert unbound_names(unknown) == ["get_order names helper, which nothing binds"]
+    assert unbound_names(unknown) == ["get_item names helper, which nothing binds"]
 
 
 def test_a_provided_helper_counts_as_bound_and_a_name_that_only_sounds_like_one_does_not():
@@ -144,15 +144,15 @@ def test_a_provided_helper_counts_as_bound_and_a_name_that_only_sounds_like_one_
     assert source_confinement(source) == []
     assert gate_confined(source).passed is True
     lookalike = _module("        return evaluate_arithmetically('1 + 1')\n")
-    assert unbound_names(lookalike) == ["get_order names evaluate_arithmetically, which nothing binds"]
+    assert unbound_names(lookalike) == ["get_item names evaluate_arithmetically, which nothing binds"]
 
 
 def test_the_names_the_helper_replaces_are_refused_as_they_were_before():
     """Providing an evaluator loosens nothing: eval, exec, compile and ast stay out."""
-    for body, failure in (("        return eval('1 + 1')\n", "get_order uses eval"),
-                          ("        return exec('x = 1')\n", "get_order uses exec"),
-                          ("        return compile('1', '<x>', 'eval')\n", "get_order uses compile"),
-                          ("        import ast\n        return ast.parse('1 + 1')\n", "get_order imports ast")):
+    for body, failure in (("        return eval('1 + 1')\n", "get_item uses eval"),
+                          ("        return exec('x = 1')\n", "get_item uses exec"),
+                          ("        return compile('1', '<x>', 'eval')\n", "get_item uses compile"),
+                          ("        import ast\n        return ast.parse('1 + 1')\n", "get_item imports ast")):
         assert failure in source_confinement(_module(body))
         assert gate_confined(_module(body)).passed is False
 
@@ -180,15 +180,15 @@ def test_a_name_bound_only_inside_a_nested_scope_is_unbound_around_it_and_report
                               "            total = 1\n"
                               "            return total\n"
                               "        return helper() + total\n")
-    assert unbound_names(nested_function) == ["get_order names total, which nothing binds"]
+    assert unbound_names(nested_function) == ["get_item names total, which nothing binds"]
     comprehension = _module("        rows = [item for item in self.db.loans]\n"
                             "        return {'rows': rows, 'last': item}\n")
-    assert unbound_names(comprehension) == ["get_order names item, which nothing binds"]
+    assert unbound_names(comprehension) == ["get_item names item, which nothing binds"]
     lambda_arg = _module("        pick = lambda row: row\n        return pick(loan_id) or row\n")
-    assert unbound_names(lambda_arg) == ["get_order names row, which nothing binds"]
+    assert unbound_names(lambda_arg) == ["get_item names row, which nothing binds"]
     inside = _module("        return [decimal.Decimal(r) for r in self.db.loans]\n")
     assert unbound_names(inside) == [
-        "get_order names decimal, which nothing binds; put `import decimal` at the top of the body"]
+        "get_item names decimal, which nothing binds; put `import decimal` at the top of the body"]
 
 
 def test_a_nested_scope_sees_what_the_method_around_it_bound():
@@ -204,16 +204,16 @@ def test_a_body_that_declares_a_name_global_or_nonlocal_is_refused_by_name_and_t
     locals. A tool body has no business keeping state that outlives its call, so the declaration
     itself is the failure and the resolution question never arises."""
     module_state = _module("        global counter\n        counter = 1\n        return counter\n")
-    assert source_confinement(module_state) == ["get_order declares global counter"]
+    assert source_confinement(module_state) == ["get_item declares global counter"]
     assert gate_confined(module_state).passed is False
     nested = _module("        total = 0\n"
                      "        def helper():\n"
                      "            global total\n"
                      "            return total\n"
                      "        return helper()\n")
-    assert source_confinement(nested) == ["get_order declares global total"]
+    assert source_confinement(nested) == ["get_item declares global total"]
     declared_only = _module("        global counter\n        return counter + 1\n")
-    assert unbound_names(declared_only) == ["get_order names counter, which nothing binds"]
+    assert unbound_names(declared_only) == ["get_item names counter, which nothing binds"]
 
 
 def test_a_method_of_a_nested_class_does_not_see_what_the_class_body_bound():
@@ -224,7 +224,7 @@ def test_a_method_of_a_nested_class_does_not_see_what_the_class_body_bound():
                      "            def label(self):\n"
                      "                return kind\n"
                      "        return Row().label()\n")
-    assert unbound_names(source) == ["get_order names kind, which nothing binds"]
+    assert unbound_names(source) == ["get_item names kind, which nothing binds"]
     qualified = _module("        class Row:\n"
                         "            kind = 'order'\n"
                         "            def label(self):\n"
@@ -250,7 +250,7 @@ def test_a_nested_class_method_sees_every_enclosing_scope_and_still_flags_what_n
                       "            def run(self):\n"
                       "                return factor + missing\n"
                       "        return Helper().run()\n")
-    assert unbound_names(missing) == ["get_order names missing, which nothing binds"]
+    assert unbound_names(missing) == ["get_item names missing, which nothing binds"]
     deeper = _module("        scale = 2\n"
                      "        def make():\n"
                      "            class Helper:\n"

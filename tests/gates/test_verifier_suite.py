@@ -412,9 +412,9 @@ def test_the_spans_gate_reads_a_rerun_span_in_the_run_it_names(tmp_path):
 
 def test_the_mutation_check_flags_an_atom_the_reference_cannot_fail(tmp_path):
     """D79 check 8: an atom whose mutation changes nothing is an atom that is not being checked."""
-    rule = Constraint(id="k1", text="never call delete_order", compiled=True,
+    rule = Constraint(id="k1", text="never call delete_item", compiled=True,
                       predicate_src=("def check(pre_state, write_call, transcript):\n"
-                                     "    return write_call['name'] != 'delete_order'\n"))
+                                     "    return write_call['name'] != 'delete_item'\n"))
     # A re-run wrote twice, so the cap is 2 while the Reference writes once: asking for at most 1
     # write is a smaller demand the Reference still meets, so the cap is checking nothing here.
     loose = derive(tmp_path, reruns=[alt_path_run(), extra_write_run()], constraints=[rule])
@@ -473,9 +473,9 @@ def test_a_hard_atom_that_judged_no_call_does_not_read_as_held(tmp_path):
 def test_a_verifier_with_no_mutable_atom_fails_the_mutation_check_and_the_text_says_so(tmp_path):
     """The cap of 0 plus Hard atoms of a read-only Task: nothing in it can be made to say something
     false about its own Reference, which is the one thing check 8 is there to catch."""
-    rule = Constraint(id="k1", text="never call delete_order", compiled=True,
+    rule = Constraint(id="k1", text="never call delete_item", compiled=True,
                       predicate_src=("def check(pre_state, write_call, transcript):\n"
-                                     "    return write_call['name'] != 'delete_order'\n"))
+                                     "    return write_call['name'] != 'delete_item'\n"))
     talking = make_run("talking", [user("Hello?"), assistant("Hello, how can I help?")])
     verifier = V.derive_verifier(TASK, talking, [], CanonRules(), write_tools=WRITE_TOOLS, constraints=[rule])
     assert {S.atom_payload(a).get("kind") for a in verifier.atoms} == {"entity_count", "hard"}

@@ -170,14 +170,14 @@ def test_a_hard_rule_agrees_on_a_confirmation_that_came_too_late(tmp_path):
 
 
 def test_a_hard_rule_agrees_on_a_tool_the_seed_runs_never_used(tmp_path):
-    """D94: 'never call delete_order' is worth nothing if only the Reference's own tools are judged."""
-    rule = Constraint(id="k1", text="never call delete_order", compiled=True,
+    """D94: 'never call delete_item' is worth nothing if only the Reference's own tools are judged."""
+    rule = Constraint(id="k1", text="never call delete_item", compiled=True,
                       predicate_src=("def check(pre_state, write_call, transcript):\n"
-                                     "    return write_call['name'] != 'delete_order'\n"))
+                                     "    return write_call['name'] != 'delete_item'\n"))
     verifier = derive(tmp_path, constraints=[rule])
     hard_only = Verifier(task_id="t1", atoms=[a for a in verifier.atoms if a.kind == "hard"])
     deleted = make_run("bad", reference_events()[:-1] + [
-        call("delete_order", {"loan_id": "#W123"}, cid="c9"),
+        call("delete_item", {"loan_id": "#W123"}, cid="c9"),
         result({"deleted": True}, cid="c9"),
         assistant("Your order #W123 is cancelled and 150.0 is refunded."),
     ])

@@ -9,10 +9,10 @@ from kullback.ai.provider import TestModel
 from kullback.examiner import reference as ref
 from kullback.runner.records import Constraint
 
-# A parcel courier desk, invented for these tests: a pending delivery is cancelled with a reason.
-WRITES = {"cancel_hold", "redirect_delivered_parcel"}
+# A loan desk, invented for these tests: a pending loan is cancelled with a reason.
+WRITES = {"cancel_hold", "update_loan"}
 # One key `cancel_run`'s state holds and `empty_run`'s does not, which is what the two disagree on.
-DELIVERY_KEY = "cancel_hold.#D123.delivery_id"
+LOAN_KEY = "cancel_hold.#L123.loan_id"
 
 
 def ruling(*failures: dict, evidence=("intent", "end_states"), reason: str = "") -> str:
@@ -29,11 +29,11 @@ def _canon(value):
     return value
 
 
-def cancel_run(run_id: str, delivery: str = "#D123", kind: str = ref.RECORDING) -> ref.Recording:
+def cancel_run(run_id: str, loan: str = "#L123", kind: str = ref.RECORDING) -> ref.Recording:
     run = make_run(run_id, [
-        user(f"Please cancel my delivery {delivery}."),
-        call("cancel_hold", {"delivery_id": delivery, "reason": "no longer needed"}),
-        result({"delivery_id": delivery, "status": "cancelled"}),
+        user(f"Please cancel my loan {loan}."),
+        call("cancel_hold", {"loan_id": loan, "reason": "no longer needed"}),
+        result({"loan_id": loan, "status": "cancelled"}),
         assistant("Done."),
     ])
     return ref.Recording(run_id=run_id, path=run_id, kind=kind, trace_id=run_id if kind == ref.RECORDING else None,
@@ -43,7 +43,7 @@ def cancel_run(run_id: str, delivery: str = "#D123", kind: str = ref.RECORDING) 
 
 
 def empty_run(run_id: str, kind: str = ref.RECORDING) -> ref.Recording:
-    run = make_run(run_id, [user("Please cancel my delivery #D123."), assistant("I cannot do that.")])
+    run = make_run(run_id, [user("Please cancel my loan #L123."), assistant("I cannot do that.")])
     return ref.Recording(run_id=run_id, path=run_id, kind=kind, end_state=ref.end_state(run, WRITES, _canon),
                          stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run),
                          settled=ref.settled_state(run, WRITES, _canon))
@@ -53,13 +53,13 @@ def empty_run(run_id: str, kind: str = ref.RECORDING) -> ref.Recording:
 
 def test_two_runs_that_wrote_the_same_thing_share_an_end_state():
     assert cancel_run("a").end_state == cancel_run("b").end_state
-    assert cancel_run("a").end_state != cancel_run("c", delivery="#D999").end_state
+    assert cancel_run("a").end_state != cancel_run("c", loan="#L999").end_state
     assert empty_run("d").end_state == ()
 
 
 def test_describe_names_the_tool_the_entity_and_the_values():
     text = ref.describe(cancel_run("a").end_state)
-    assert text.startswith("cancel_hold on #D123") and "reason=no longer needed" in text
+    assert text.startswith("cancel_hold on #L123") and "reason=no longer needed" in text
     assert ref.describe(()) == "no writes; the answer states nothing read from the world"
     assert ref.describe(ref.ANSWERED) == "no writes; the answer states facts read from the world"
 
@@ -194,14 +194,14 @@ def test_two_end_states_and_no_judge_is_no_reference():
 
 def test_the_judge_can_fail_a_state_and_the_other_one_becomes_the_reference():
     never = "the cancellation the user asked for never happened"
-    judge = TestModel([ruling(fails("B", DELIVERY_KEY, ref.NO_VALUE, "A", never), reason=never)])
-    out = ref.confirm([cancel_run("a"), empty_run("b")], intent="cancel delivery #D123",
-                      policy_lines=["pending deliveries may be cancelled"], judge=judge)
+    judge = TestModel([ruling(fails("B", LOAN_KEY, ref.NO_VALUE, "A", never), reason=never)])
+    out = ref.confirm([cancel_run("a"), empty_run("b")], intent="cancel loan #L123",
+                      policy_lines=["pending loans may be cancelled"], judge=judge)
     assert [r.run_id for r in out.references] == ["a"]
     assert out.failed == {"b": "judge: the cancellation the user asked for never happened"}
     assert out.judged and not out.judge_abstained
     prompt = judge.calls[0]["messages"][1]["content"]
-    assert "cancel delivery #D123" in prompt and "A (1 run): cancel_hold" in prompt
+    assert "cancel loan #L123" in prompt and "A (1 run): cancel_hold" in prompt
 
 
 def test_the_judge_prompt_gives_the_intent_as_the_ground_truth_and_says_it_has_no_transcript():
@@ -219,7 +219,7 @@ def test_a_judgement_that_rests_on_the_transcript_fails_no_state_and_is_recorded
     confirmation", which no transcript was ever handed to the judge to show."""
     judge = TestModel(['{"failed": ["A", "B"], "evidence": ["transcript"], "reason": '
                        '"without evidence of the required authentication and explicit confirmation"}'])
-    out = ref.confirm([cancel_run("a"), empty_run("b")], intent="cancel delivery #D123", judge=judge)
+    out = ref.confirm([cancel_run("a"), empty_run("b")], intent="cancel loan #L123", judge=judge)
     assert out.failed == {} and out.references == []
     assert out.judged and out.judge_abstained
     assert "transcript" in out.judge_reason and "was not given" in out.judge_reason
@@ -231,17 +231,17 @@ def test_a_run_that_matches_a_revised_intent_is_not_failed_for_the_opening_reque
     """The Intent is what the user wanted by the end of the Run; the opening request was not handed
     to this judge and cannot fail the state that matches the Intent."""
     judge = TestModel(['{"failed": ["A"], "evidence": ["opening_request"], "reason": '
-                       '"the user requested cancellations for both deliveries"}'])
-    out = ref.confirm([cancel_run("a"), cancel_run("b", delivery="#D999")],
-                      intent="cancel delivery #D123 only, leave #D999 alone", judge=judge)
+                       '"the user requested cancellations for both loans"}'])
+    out = ref.confirm([cancel_run("a"), cancel_run("b", loan="#L999")],
+                      intent="cancel loan #L123 only, leave #L999 alone", judge=judge)
     assert out.failed == {} and out.judge_abstained
     assert "opening_request" in out.judge_reason
 
 
 def test_a_judgement_that_rests_on_what_the_judge_was_given_still_fails_a_state():
-    judge = TestModel([ruling(fails("B", DELIVERY_KEY, ref.NO_VALUE, "A"),
+    judge = TestModel([ruling(fails("B", LOAN_KEY, ref.NO_VALUE, "A"),
                               evidence=("Intent", "End states"), reason="nothing was written")])
-    out = ref.confirm([cancel_run("a"), empty_run("b")], intent="cancel delivery #D123", judge=judge)
+    out = ref.confirm([cancel_run("a"), empty_run("b")], intent="cancel loan #L123", judge=judge)
     assert [r.run_id for r in out.references] == ["a"]
     assert out.failed == {"b": "judge: nothing was written"} and not out.judge_abstained
 
@@ -251,7 +251,7 @@ def test_the_judge_never_awards_a_pass():
     nothing = ref.confirm([cancel_run("a"), empty_run("b")],
                           judge=TestModel(['{"failed": [], "reason": "cannot tell"}'], loop=True))
     assert nothing.references == [] and nothing.reason.startswith("recordings disagree")
-    both = ruling(fails("A", DELIVERY_KEY, "#D123", "B"), fails("B", DELIVERY_KEY, ref.NO_VALUE, "A"))
+    both = ruling(fails("A", LOAN_KEY, "#L123", "B"), fails("B", LOAN_KEY, ref.NO_VALUE, "A"))
     everything = ref.confirm([cancel_run("a"), empty_run("b")], judge=TestModel([both]))
     assert everything.references == [] and everything.reason.startswith("the judge failed every End state")
 
@@ -263,7 +263,7 @@ def test_an_unreadable_judge_reply_fails_nothing():
         assert unreadable.failed == set() and unreadable.reason == "unreadable reply"
         assert not unreadable.abstained
     read = ref.parse_judgement(
-        "sure: " + ruling(fails("b", DELIVERY_KEY, ref.NO_VALUE, "A"), fails("Z", "anything", "x", "A"),
+        "sure: " + ruling(fails("b", LOAN_KEY, ref.NO_VALUE, "A"), fails("Z", "anything", "x", "A"),
                           reason="x"), groups)
     assert read.failed == {"B"} and read.reason == "x", "a failure naming no state of this Task fails nothing"
 
@@ -296,7 +296,7 @@ def test_no_run_and_every_run_broken_have_their_own_reasons():
 
 def test_every_group_gets_its_own_label_past_the_end_of_the_alphabet():
     """confirm() fails and keeps groups by label, so two groups under one label are one group."""
-    runs = [cancel_run(f"r{i}", delivery=f"#D{i}") for i in range(30)]
+    runs = [cancel_run(f"r{i}", loan=f"#L{i}") for i in range(30)]
     labels = [g["label"] for g in ref.group(runs)]
     assert len(set(labels)) == len(labels)
     assert labels[:2] == ["A", "B"] and labels[26] == "A1"
@@ -409,12 +409,12 @@ def test_each_states_block_in_the_prompt_opens_with_the_keys_and_values_it_diffe
 
 def test_a_failure_citing_the_no_value_a_state_holds_where_the_other_wrote_is_accepted():
     groups = ref.group([cancel_run("a"), empty_run("b")])
-    prompt = ref.judge_prompt("cancel the delivery", [], groups)
-    assert f"{DELIVERY_KEY} = {ref.NO_VALUE}" in prompt
-    seen = ref.parse_judgement(ruling(fails("B", DELIVERY_KEY, ref.NO_VALUE, "A", "nothing was cancelled")),
+    prompt = ref.judge_prompt("cancel the loan", [], groups)
+    assert f"{LOAN_KEY} = {ref.NO_VALUE}" in prompt
+    seen = ref.parse_judgement(ruling(fails("B", LOAN_KEY, ref.NO_VALUE, "A", "nothing was cancelled")),
                                groups)
     assert seen.failed == {"B"} and not seen.abstained
-    guessed = ref.parse_judgement(ruling(fails("B", DELIVERY_KEY, "no writes", "A")), groups)
+    guessed = ref.parse_judgement(ruling(fails("B", LOAN_KEY, "no writes", "A")), groups)
     assert guessed.failed == set() and guessed.abstained
 
 
@@ -515,7 +515,7 @@ NEVER = "def check(pre_state, write_call, transcript):\n    return False\n"
 
 
 def _runs(n: int):
-    return [make_run(f"run{i}", [call("cancel_hold", {"delivery_id": "#D1"}), result({"status": "cancelled"})])
+    return [make_run(f"run{i}", [call("cancel_hold", {"loan_id": "#L1"}), result({"status": "cancelled"})])
             for i in range(n)]
 
 
@@ -580,8 +580,8 @@ def test_violations_name_the_constraints_a_run_breaks():
 
 def test_a_rule_broken_by_a_few_percent_of_the_recordings_is_demoted():
     """Calibrated on the second library build: rules firing at 2.7% of confirmed recordings were miscompiled (D114)."""
-    rules = [_rule("rare", "def check(pre_state, write_call, transcript):\n    return write_call['arguments']['delivery_id'] != '#D1'\n")]
-    runs = _runs(39) + [make_run("odd", [call("cancel_hold", {"delivery_id": "#D2"}), result({"status": "cancelled"})])]
+    rules = [_rule("rare", "def check(pre_state, write_call, transcript):\n    return write_call['arguments']['loan_id'] != '#L1'\n")]
+    runs = _runs(39) + [make_run("odd", [call("cancel_hold", {"loan_id": "#L2"}), result({"status": "cancelled"})])]
     rates = ref.constraint_rates(rules, runs, WRITES, _canon)
     assert rates["rare"] == {"failed": 39, "runs": 40, "judged": 40}
     one_in_forty = {"rare": {"failed": 1, "runs": 40}}
@@ -648,7 +648,7 @@ def _line_multiset(text: str):
 
 def _two_groups():
     first = ref.group([cancel_run("a"), empty_run("b")])
-    second = ref.group([cancel_run("a", delivery="#D999"), empty_run("b")])
+    second = ref.group([cancel_run("a", loan="#L999"), empty_run("b")])
     assert first != second
     return first, second
 

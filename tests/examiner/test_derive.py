@@ -260,7 +260,7 @@ def test_the_entity_is_the_scalar_id_and_not_a_list_of_item_ids(tmp_path):
     def events(items):
         return [
             user("Swap items 1001 and 2002 in loan #W1."),
-            call("swap_loan_items",
+            call("swap_items",
                  {"loan_id": "#W1", "item_ids": items, "new_item_ids": ["3003"]}, cid="c1"),
             result({"ok": True}, cid="c1"),
             assistant("Done."),
@@ -268,7 +268,7 @@ def test_the_entity_is_the_scalar_id_and_not_a_list_of_item_ids(tmp_path):
     rerun = make_run("rr", events(["2002", "1001"]))
     verifier = V.derive_verifier(TASK, make_run("ref", events(["1001", "2002"])),
                                  [write_events_jsonl(rerun, tmp_path / "rr.jsonl")], CanonRules(),
-                                 write_tools={"swap_loan_items"})
+                                 write_tools={"swap_items"})
     writes = [(a.kind, S.atom_payload(a)["entity"]) for a in verifier.atoms
               if S.atom_payload(a)["kind"] == "write"]
     assert writes == [("required", canon_value("#W1"))]

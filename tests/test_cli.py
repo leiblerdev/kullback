@@ -639,7 +639,7 @@ def seed_tool_sigs(workdir: Path) -> None:
     from kullback.runner.records import ToolSig
 
     (workdir / "tool_sigs.json").write_text(json.dumps([
-        as_dict(ToolSig(name="cancel_order", kind="write", unclassified=False)),
+        as_dict(ToolSig(name="cancel_item", kind="write", unclassified=False)),
         as_dict(ToolSig(name="get_loan_details", kind="read", unclassified=False)),
         as_dict(ToolSig(name="mystery_tool", kind="read", unclassified=True)),
     ]), encoding="utf-8")
@@ -650,7 +650,7 @@ def test_verdict_passes_the_write_tools_and_the_flagged_tools(workdir):
     seed_task(workdir)
     seed_tool_sigs(workdir)
     lines = [{"run_id": "r1", "env_id": "env-1", "task_id": "t1"},
-             {"idx": 0, "type": "tool_call", "payload": {"id": "c1", "name": "cancel_order", "args": {}}},
+             {"idx": 0, "type": "tool_call", "payload": {"id": "c1", "name": "cancel_item", "args": {}}},
              {"idx": 1, "type": "tool_result", "payload": {"id": "c1", "result": {"ok": True}}},
              {"idx": 2, "type": "tool_call", "payload": {"id": "c2", "name": "mystery_tool", "args": {}}},
              {"idx": 3, "type": "tool_result", "payload": {"id": "c2", "result": {"ok": True}}},
@@ -659,7 +659,7 @@ def test_verdict_passes_the_write_tools_and_the_flagged_tools(workdir):
         "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
     (body,) = stored_verdicts(workdir)
-    assert body["pass"] is False and body["failing_atom"] == "extra_write:cancel_order"
+    assert body["pass"] is False and body["failing_atom"] == "extra_write:cancel_item"
     assert "env_mark:flagged_tool:mystery_tool" in body["notes"]
     assert "side_effect_check_skipped" not in body["notes"]
 
@@ -824,16 +824,16 @@ def _judge(name: str, verdict: str):
     from kullback.ai.provider import TestModel
     from kullback.runner.judge import AgenticJudge
 
-    def read_order(loan_id: str = "o1") -> dict:
+    def read_item(loan_id: str = "o1") -> dict:
         """Read one order out of the End state."""
         return {"loan_id": loan_id, "status": "cancelled"}
 
     replies = [
-        {"tool_calls": [{"id": "c1", "name": "read_order", "arguments": {}}]},
+        {"tool_calls": [{"id": "c1", "name": "read_item", "arguments": {}}]},
         {"content": json.dumps({"verdict": verdict, "cited_spans": [f"by {name}"],
                                 "sub_answers": [{"question": "q", "answer": "yes", "cited_span": "s"}]})},
     ]
-    return AgenticJudge(TestModel(replies, name=name, loop=True), {"read_order": read_order}, name=name)
+    return AgenticJudge(TestModel(replies, name=name, loop=True), {"read_item": read_item}, name=name)
 
 
 def _run_jsonl(folder: Path, run_id: str, wrote: bool) -> Path:
