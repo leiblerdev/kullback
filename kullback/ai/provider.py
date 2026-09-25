@@ -1155,14 +1155,25 @@ class BedrockAnthropicModel(BedrockAuth, AnthropicModel):
         return self.authorized({"anthropic-version": self.api_version, "content-type": "application/json"}, body)
 
 
-# gpt-<major> or o<digit>, after an optional gateway prefix such as 'openai/'.
-_REASONING_WIRE = re.compile(r"(?:.*/)?(?:gpt-(\d+)|o\d)(?![a-z])")
+# The wire shapes that take the reasoning-family request shape, as data so a test can register
+# a neutral shape (monkeypatch.setattr) instead of spelling a shipped model name. Each entry is
+# a pattern plus the minimum gpt major it covers, or None when the pattern has no major to check.
+# The gpt entry stays major-gated because each new major re-decides the shape; the o entry has no
+# major, so any o<digit> id is in. reasoning_family reads this tuple at call time.
+REASONING_WIRE_PATTERNS = (
+    (re.compile(r"(?:.*/)?gpt-(\d+)(?![a-z])"), 5),
+    (re.compile(r"(?:.*/)?o\d(?![a-z])"), None),
+)
 
 
 def reasoning_family(wire_id: str) -> bool:
     """Whether a wire id has the reasoning-family shape: gpt-<major> with major 5 or above, or o<digit>."""
-    match = _REASONING_WIRE.match(wire_id.lower())
-    return bool(match) and (match.group(1) is None or int(match.group(1)) >= 5)
+    lowered = wire_id.lower()
+    for pattern, minimum in REASONING_WIRE_PATTERNS:
+        match = pattern.match(lowered)
+        if match and (minimum is None or int(match.group(1)) >= minimum):
+            return True
+    return False
 
 
 def shape_adjustment(error_text: str) -> Optional[str]:
