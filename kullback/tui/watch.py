@@ -222,7 +222,12 @@ class WatchView(Vertical):
         from kullback.agent import steer
 
         try:
-            request_id = steer.request(self.workdir, kind, text, sender="tui")
+            session = steer.target_session(live_heartbeats(self.workdir))
+        except ValueError as exc:
+            self.transcript.say(str(exc), "red")
+            return
+        try:
+            request_id = steer.request(self.workdir, kind, text, sender="tui", session=session)
             ack = steer.wait_for_ack(self.workdir, request_id, STEER_TIMEOUT)
         except Exception as exc:
             self.transcript.say(f"steer {kind} failed: {exc}", "red")
