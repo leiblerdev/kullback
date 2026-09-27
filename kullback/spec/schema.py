@@ -8,8 +8,8 @@ from typing import Literal, Optional
 
 from pydantic import Field
 
-from kullback.examiner.must_not import tier_of as _atom_tier
 from kullback.runner.records import AtomKind, Record
+from kullback.spec.must_not import tier_of as _atom_tier
 
 Stance = Literal["volunteered", "accepted"]
 Tier = Literal["critical", "sanity", "important"]

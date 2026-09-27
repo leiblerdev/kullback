@@ -26,6 +26,8 @@ import re
 import sys
 from pathlib import Path
 
+from kullback.spec import writer_tools
+
 HERE = Path(__file__).resolve()
 WORKTREE = HERE.parents[2]
 SCRATCH = WORKTREE / ".work-scratch"
@@ -302,54 +304,8 @@ def diagnose_run(run, demands: list, verifier, intent: str, writes: set[str], fn
                     "field": field, "reason": reason})
     return out
 
-READ_TOOLS = [
-    {"name": "lookup_rows",
-     "description": ("Read rows of the Starting state by table and key. Read-only. "
-                     "With no key, returns the row count and sample keys."),
-     "parameters": {"type": "object",
-                    "properties": {"table": {"type": "string"},
-                                   "key": {"type": "string"}},
-                    "required": ["table"]}},
-    {"name": "search_rows",
-     "description": ("Find row keys whose dotted field equals a value. Read-only. "
-                     "Returns at most 10 keys."),
-     "parameters": {"type": "object",
-                    "properties": {"table": {"type": "string"},
-                                   "field": {"type": "string"},
-                                   "value": {"type": "string"}},
-                    "required": ["table", "field", "value"]}},
-]
-
-
-def _read_impl(state: dict):
-    def lookup_rows(table: str, key: str = "") -> str:
-        rows = state.get(table)
-        if not isinstance(rows, dict):
-            return "no such table"
-        if not key:
-            keys = sorted(rows)[:12]
-            return json.dumps({"rows": len(rows), "sample_keys": keys})
-        row = rows.get(key)
-        if row is None:
-            return "no such row"
-        return json.dumps(row, default=str)[:2000]
-
-    def search_rows(table: str, field: str, value: str) -> str:
-        rows = state.get(table)
-        if not isinstance(rows, dict):
-            return "no such table"
-        hits = []
-        for row_key, row in rows.items():
-            node = row
-            for part in field.split("."):
-                node = node.get(part) if isinstance(node, dict) else None
-            if node is not None and str(node) == value:
-                hits.append(row_key)
-            if len(hits) >= 10:
-                break
-        return json.dumps(hits)
-
-    return {"lookup_rows": lookup_rows, "search_rows": search_rows}
+READ_TOOLS = writer_tools.READ_TOOLS
+_read_impl = writer_tools.read_tools
 
 
 SYSTEM_PROMPT_R0 = """You write the end-state demands for one customer request. You have never seen \
@@ -411,19 +367,6 @@ rule or policy section. A demand with no valid because is dropped.
 """
 
 
-def _thinking_of(reply: object) -> list[str]:
-    """Summarized thinking text off a reply, signatures dropped."""
-    out = []
-    for block in getattr(reply, "thinking_blocks", None) or []:
-        if isinstance(block, dict):
-            text = block.get("thinking") or block.get("summary") or block.get("text")
-            if text:
-                out.append(str(text))
-    if getattr(reply, "thinking", None):
-        out.append(reply.thinking)
-    return out
-
-
 def policy_sections(clone: Path) -> list[str]:
     """Section headers of the recorded agent policy, for because naming."""
     out = []
@@ -453,19 +396,6 @@ def writer_messages(intent: str, policy: list[str], tools: list[dict],
             "policy_text": policy_text or "no recorded agent policy found"}
     return [{"role": "user", "content": SYSTEM_PROMPT + "\n" + json.dumps(body)[:24000]}]
 
-def _assistant_tool_turn(reply: object) -> dict:
-    return {"role": "assistant", "content": reply.content,
-            "tool_calls": [{"id": c.id, "name": c.name, "arguments": c.arguments}
-                           for c in reply.tool_calls]}
-
-
-def _usage_of(reply: object) -> dict:
-    usage = getattr(reply, "usage", None)
-    get = (lambda k: getattr(usage, k, 0) or 0) if usage is not None else (lambda k: 0)
-    return {"input": get("input"), "output": get("output"),
-            "cache_read": get("cache_read"), "cache_write": get("cache_write")}
-
-
 def _price(usage: dict) -> float:
     from kullback.runner import budget
 
@@ -481,35 +411,7 @@ def run_writer(model: object, messages: list[dict], state: dict, config: object,
     """One bounded writer session: read-only state tools, then a final JSON object."""
     from kullback.ai.provider import ModelConfig
 
-    impl = _read_impl(state)
-    working = list(messages)
-    usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
-    tool_rounds = 0
-    thinking: list[str] = []
-    tool_uses: list[str] = []
-    for _ in range(max_rounds + 1):
-        reply = model.query(working, tools=READ_TOOLS, config=config or ModelConfig())
-        step = _usage_of(reply)
-        for key in usage:
-            usage[key] += step[key]
-        thinking += _thinking_of(reply)
-        if not reply.tool_calls:
-            return {"text": reply.content or "", "usage": usage,
-                    "usd": _price(usage), "tool_rounds": tool_rounds, "thinking": thinking,
-                    "tool_uses": tool_uses}
-        tool_rounds += 1
-        working.append(_assistant_tool_turn(reply))
-        for call in reply.tool_calls:
-            tool_uses.append(call.name)
-            fn = impl.get(call.name)
-            try:
-                result = fn(**(call.arguments or {})) if fn else "unknown tool"
-            except TypeError:
-                result = "bad arguments"
-            working.append({"role": "tool", "tool_call_id": call.id, "content": str(result)})
-    return {"text": "", "usage": usage, "usd": _price(usage),
-            "tool_rounds": tool_rounds, "thinking": thinking, "tool_uses": tool_uses,
-            "unfinished": True}
+    return writer_tools.run_session(model, messages, state, config or ModelConfig(), max_rounds, _price)
 
 
 def parse_demands(text: str) -> tuple[list[dict], str]:
@@ -557,8 +459,8 @@ def valid_because(demand: dict, intent: str, policy: list[str]) -> bool:
 def compile_verifier(demands: list[dict], intent: str, policy: list[str],
                      write_tools: set[str], fn) -> tuple[object, int]:
     """Demands to a Verifier, reusing derive.py atom kinds and the gate builders. No new kinds."""
-    from kullback.gates import verifier_suite
     from kullback.examiner import derive
+    from kullback.gates import verifier_suite
     from kullback.runner.records import Verifier
     from kullback.runner.target import _key as canon_key
 

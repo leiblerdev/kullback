@@ -1,4 +1,4 @@
-"""Tests for examiner/must_not.py: the must-not side of an Intent-written Verifier.
+"""Tests for spec/must_not.py: the must-not side of an Intent-written Verifier.
 
 The tools here are invented (`etch` is the covered write tool, `mend` the
 uncovered one); no corpus tool, table or field appears. Runs are hand-built
@@ -12,10 +12,10 @@ import inspect
 
 from gates.verifier_fixtures import _ev, assistant, call, make_run, result, user
 from kullback import claims
-from kullback.examiner import must_not as M
 from kullback.gates.verifier_suite import atom_payload, make_atom
 from kullback.runner.records import Verifier
 from kullback.runner.target import check_run
+from kullback.spec import must_not as M
 
 ETCH = "etch"
 MEND = "mend"
