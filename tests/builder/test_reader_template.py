@@ -173,6 +173,43 @@ def test_calls_without_ids_pair_by_position_only_when_counts_match(tmp_path):
     assert all(call.has_result is False for call in lone)
 
 
+def test_results_carrying_ids_never_pair_by_position(tmp_path):
+    """Id-free calls leave id-carrying results unpaired instead of taking them in order."""
+    adapter, recordings, ctx = map_first(
+        tmp_path, "idresults", {"entries": [
+            {"id": "rec-1", "role": "user", "content": "first neutral note",
+             "calls": [{"tool_name": "tool_a"}, {"tool_name": "tool_b"}],
+             "answers": [{"call_id": "c2", "output": "second answer"},
+                         {"call_id": "c1", "output": "first answer"}]},
+        ]}, {**base_mapping(),
+              "tool_calls": "entries[].calls", "tool_name": "entries[].calls[].tool_name",
+              "tool_results": "entries[].answers",
+              "tool_result_id": "entries[].answers[].call_id",
+              "tool_result_content": "entries[].answers[].output"})
+    calls = adapter.to_trace(recordings[0], ctx).tool_calls
+    assert [call.result for call in calls] == [None, None]
+    assert all(call.has_result is False for call in calls)
+
+
+def test_reordered_results_pair_with_calls_by_id(tmp_path):
+    """Calls carrying ids take the result with their id wherever it sits in the list."""
+    adapter, recordings, ctx = map_first(
+        tmp_path, "reordered", {"entries": [
+            {"id": "rec-1", "role": "user", "content": "first neutral note",
+             "calls": [{"call_id": "c1", "tool_name": "tool_a"},
+                       {"call_id": "c2", "tool_name": "tool_b"}],
+             "answers": [{"call_id": "c2", "output": "second answer"},
+                         {"call_id": "c1", "output": "first answer"}]},
+        ]}, {**base_mapping(),
+              "tool_calls": "entries[].calls", "tool_name": "entries[].calls[].tool_name",
+              "tool_call_id": "entries[].calls[].call_id",
+              "tool_results": "entries[].answers",
+              "tool_result_id": "entries[].answers[].call_id",
+              "tool_result_content": "entries[].answers[].output"})
+    calls = adapter.to_trace(recordings[0], ctx).tool_calls
+    assert [call.result for call in calls] == ["first answer", "second answer"]
+    assert all(call.has_result for call in calls)
+
 def test_unequal_role_and_content_counts_refuse_the_mapping(tmp_path):
     """Two roles with one content fail the check instead of repeating the content."""
     target = tmp_path / "uneven.json"

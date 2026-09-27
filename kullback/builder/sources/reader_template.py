@@ -348,7 +348,12 @@ def _items(values: list) -> list:
 
 
 def _calls(recording: Any, trace_id: str, ctx: Any) -> list:
-    """The tool calls of one recording, each paired with its result."""
+    """The tool calls of one recording, each paired with its result by id or by position.
+
+    A call carrying an id takes the result with that id, wherever it sits.
+    Position pairing holds only where neither calls nor results carry ids;
+    anything else stays unanswered, so a result never lands on the wrong call.
+    """
     from kullback.runner.records import RawPtr, ToolCall
 
     here = RawPtr(file_hash=ctx.raw_hash, sim_index=ctx.index, msg_index=0)
@@ -359,22 +364,25 @@ def _calls(recording: Any, trace_id: str, ctx: Any) -> list:
         objs = [{{_last(_TOOL_NAME): value}} if not isinstance(value, dict) else value for value in objs]
     else:
         return []
-    results = _result_map(recording)
+    results, result_ids = _result_map(recording)
     ordered = list(results.values())
-    calls: list[ToolCall] = []
-    for position, obj in enumerate(objs):
+    parsed: list[tuple[Any, Any, Any]] = []
+    for obj in objs:
         if isinstance(obj, dict):
-            name = _field(obj, _TOOL_NAME)
-            args = _field(obj, _TOOL_ARGUMENTS)
-            call_id = _field(obj, _TOOL_CALL_ID)
+            parsed.append((_field(obj, _TOOL_NAME), _field(obj, _TOOL_ARGUMENTS),
+                           _field(obj, _TOOL_CALL_ID)))
         else:
-            name, args, call_id = obj, {{}}, None
+            parsed.append((obj, {{}}, None))
+    call_ids = any(call_id is not None for _, _, call_id in parsed)
+    by_position = not call_ids and not result_ids and len(objs) == len(ordered)
+    calls: list[ToolCall] = []
+    for position, (name, args, call_id) in enumerate(parsed):
         call_name = str(name) if name is not None else "tool"
         call_args = dict(args) if isinstance(args, dict) else {{}}
         cid = str(call_id) if call_id is not None else None
         if cid is not None:
             answer = results.get(cid)
-        elif len(objs) == len(ordered):
+        elif by_position:
             answer = ordered[position]
         else:
             answer = None
@@ -404,27 +412,36 @@ def _field(obj: dict, path: str | None) -> Any:
     return found[0] if found else None
 
 
-def _result_map(recording: Any) -> dict:
-    """Tool result id to (content, position), for pairing calls with answers."""
+def _result_map(recording: Any) -> tuple:
+    """Tool result id to (content, position), with whether any result carries an id.
+
+    Results read off a bare content path carry no id, so the caller may pair
+    them by position; any id read off the mapped id path switches pairing to
+    ids only.
+    """
     if _TOOL_RESULTS:
         objs = _items(_get_all(recording, _rel(_TOOL_RESULTS)))
     elif _TOOL_RESULT_CONTENT:
         objs = _items(_get_all(recording, _rel(_TOOL_RESULT_CONTENT)))
-        return {{f"result-{{i}}": (value, i) for i, value in enumerate(objs)}}
+        return ({{f"result-{{i}}": (value, i) for i, value in enumerate(objs)}}, False)
     else:
-        return {{}}
+        return ({{}}, False)
     out: dict[str, tuple[Any, int]] = {{}}
+    any_ids = False
     for position, obj in enumerate(objs):
         if isinstance(obj, dict):
             rid = _field(obj, _TOOL_RESULT_ID)
             content = _field(obj, _TOOL_RESULT_CONTENT)
             if content is None and _TOOL_RESULT_CONTENT is None:
                 content = obj
-            key = str(rid) if rid is not None else f"result-{{position}}"
-            out[key] = (content, position)
+            if rid is not None:
+                any_ids = True
+                out[str(rid)] = (content, position)
+            else:
+                out[f"result-{{position}}"] = (content, position)
         else:
             out[f"result-{{position}}"] = (obj, position)
-    return out
+    return (out, any_ids)
 
 
 ADAPTER = {class_name}()
