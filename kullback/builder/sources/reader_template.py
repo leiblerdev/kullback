@@ -388,14 +388,14 @@ def _calls(recording: Any, trace_id: str, ctx: Any) -> list:
             answer = None
         if answer is not None:
             content, at = answer
-            calls.append(ToolCall(id=cid or f"call-{{position}}", name=call_name, args=call_args,
+            calls.append(ToolCall(id=cid, name=call_name, args=call_args,
                                   result=content, requestor="assistant", has_result=True,
                                   resolved=True, raw_ptr=here,
                                   result_ptr=RawPtr(file_hash=ctx.raw_hash, sim_index=ctx.index,
                                                     msg_index=at),
                                   trace_id=trace_id))
         else:
-            calls.append(ToolCall(id=cid or f"call-{{position}}", name=call_name, args=call_args,
+            calls.append(ToolCall(id=cid, name=call_name, args=call_args,
                                   requestor="assistant", has_result=False,
                                   raw_ptr=here, trace_id=trace_id))
     return calls

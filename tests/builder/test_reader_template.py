@@ -210,6 +210,30 @@ def test_reordered_results_pair_with_calls_by_id(tmp_path):
     assert [call.result for call in calls] == ["first answer", "second answer"]
     assert all(call.has_result for call in calls)
 
+def test_an_unfinished_recording_registers_and_ingests_beside_a_complete_one(
+        tmp_path, workdir, retire):
+    """One answered and one unanswered recording: the reader registers and ingest keeps both."""
+    toy = tmp_path / "half.json"
+    toy.write_text(json.dumps({"entries": [
+        {"id": "rec-1", "role": "user", "content": "first neutral note",
+         "calls": [{"call_id": "c1", "tool_name": "tool_a", "args": {"field_x": 1}}],
+         "answers": [{"call_id": "c1", "output": {"field_x": 2}}]},
+        {"id": "rec-2", "role": "user", "content": "second neutral note",
+         "calls": [{"tool_name": "tool_b"}]},
+    ]}), encoding="utf-8")
+    digest = hashlib.sha256(toy.read_bytes()).hexdigest()
+    mapping = {**neutral_mapping(), "tool_call_id": "entries[].calls[].call_id"}
+    reader = workdir / "sources" / "half.py"
+    reader.parent.mkdir(parents=True, exist_ok=True)
+    reader.write_text(render_reader("half", digest, mapping), encoding="utf-8")
+    retire("half")
+    assert workdir_readers.check_reader_isolated(reader, toy) == []
+    assert workdir_readers.load_with_reasons(workdir, toy) == (["half"], {})
+    summary = ingest.ingest_file(toy, workdir, intake_floor=0.5)
+    assert summary["format"] == "half"
+    assert summary["runs"] == 1
+    assert summary["evidence_only"] == 1
+
 def test_unequal_role_and_content_counts_refuse_the_mapping(tmp_path):
     """Two roles with one content fail the check instead of repeating the content."""
     target = tmp_path / "uneven.json"
