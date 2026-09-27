@@ -15,8 +15,8 @@ from kullback.examiner import domain_tools as D
 from kullback.examiner import prompt as P
 from kullback.examiner import stage
 from kullback.examiner.exam_files import ExamRoot
-from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES
 from kullback.gates import verifier_suite as S
+from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import Verifier, as_dict, read_json, write_json
 
@@ -691,7 +691,7 @@ def _wrong_pass_record():
 
 def _differing_payloads(reference, wrong):
     """The first event payloads where two Runs part, read off the Runs, not the rows."""
-    for old, new in zip(reference.events, wrong.events):
+    for old, new in zip(reference.events, wrong.events, strict=False):
         if old.type != new.type or (old.payload or {}) != (new.payload or {}):
             return old, new
     raise AssertionError("the Runs match event for event")
@@ -705,7 +705,8 @@ def test_a_refused_proposal_names_the_failing_run_id_the_differing_call_and_both
     assert wrong.run_id in message, message
     old, new = _differing_payloads(reference, wrong)
     assert f"call {new.idx}" in message and (new.payload or {}).get("name", new.type) in message
-    compact = lambda payload: _json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    def compact(payload):
+        return _json.dumps(payload, sort_keys=True, separators=(",", ":"))
     assert compact(old.payload)[:60] in message and compact(new.payload)[:60] in message
     assert "rows behind the failures" not in message, "the raw repr dump is gone"
 
@@ -747,3 +748,13 @@ def test_the_atom_text_in_a_refusal_is_never_cut(tmp_path):
     message = str(excinfo.value)
     assert "verifier_oracle" in message
     assert "y" * 500 in message, "the whole atom, not a prefix of it"
+
+
+def test_a_refusal_ask_says_a_dry_run_is_no_refusal_and_counts_edit_refusals_only():
+    """The stop rule the refusal teaches: dry runs never count, two edit refusals end with a finding."""
+    records = [{"name": "verifier_empty_run", "accepted": False, "line": "verifier_empty_run fail",
+                "rows": []}]
+    refused = D._refuse_proposal("t1", "2", records)
+    assert "A try_atoms dry run is not a refusal" in refused.ask, refused.ask
+    assert "after two edit_verifier refusals" in refused.ask, refused.ask
+    assert "try_atoms" in str(refused), "the pointer to the dry run stays in the refusal"

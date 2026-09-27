@@ -123,3 +123,12 @@ def test_an_undecided_dry_run_says_what_would_decide_it(tmp_path):
     [line] = [line for line in tried.summary.splitlines() if line.startswith("undecided:")]
     assert "loophole probe" in line and "not run in a dry run" in line, line
     assert "propose the edit" in line, line
+
+
+def test_a_dry_run_summary_says_it_is_no_refusal_and_only_edit_refusals_count(tmp_path):
+    """A refused trial reads as a trial: the result states both halves of the stop rule."""
+    _, _, verifier, tools = _root(tmp_path)
+    tried = _run(tools["try_atoms"].execute(_loosening(verifier)))
+    assert tried.accepted is False, "the loosening is refused, so the wording is read where it matters"
+    assert "A dry run is not a refusal" in tried.summary, tried.summary
+    assert "only edit_verifier refusals count toward the two that end with a finding" in tried.summary

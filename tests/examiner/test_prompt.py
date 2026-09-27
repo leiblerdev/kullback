@@ -43,3 +43,11 @@ def test_the_system_prompt_is_the_same_whatever_the_rulings_and_the_root_hold():
     second = P.opening("Examine.", "t2: runs: b", ["runs/", "tasks/"])
     assert first != second
     assert all("t1: runs" not in text and "runs/, tasks/" not in text for _, text in P.sections())
+
+
+def test_the_prompt_says_a_dry_run_is_no_refusal_and_counts_only_edit_refusals():
+    """Both halves of the stop rule stand in the prompt: trials are for trying, edits count."""
+    assert "A dry run verdict is not a refusal" in P.tools_section()
+    choice = P.choice_section()
+    assert "Two refused edit_verifier proposals" in choice, choice
+    assert "not a refusal and counts toward neither" in choice, choice

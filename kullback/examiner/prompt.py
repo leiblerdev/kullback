@@ -62,7 +62,8 @@ def tools_section() -> str:
             "stays) and drop with add only to remove an atom or bring a new one; the suite, "
             "the pool and the loosening gate rule on the write.\n"
             "try_atoms: try an edit before writing it: same arguments as edit_verifier, nothing "
-            "is written, and the answer is the same rulings with the failing atoms named.\n"
+            "is written, and the answer is the same rulings with the failing atoms named. "
+            "A dry run verdict is not a refusal. "
             "probe: score a hand-written Run against the current Verifier, "
             'e.g. {"task_id": "t1", "bug_class": "loose check", "note": "what it changes", '
             '"events": [...]}; the Run stays in the pool.\n'
@@ -96,8 +97,9 @@ def choice_section() -> str:
     return ("Choosing. Act first on Tasks with a confirmed Reference whose Verifier failed the "
             "suite, then on Tasks with no Verdict. Search before reading: ground a claim about "
             "many Tasks with a search, then read the records it names. A finding names the file "
-            "and what differs, never a verb. Two rejected proposals on one check end with a "
-            "finding, not a third. A Builder note says a Task is not verifiable as written: rule "
+            "and what differs, never a verb. Two refused edit_verifier proposals on one check end with a "
+            "finding, not a third. A try_atoms dry run is not a refusal and counts toward neither. "
+            "A Builder note says a Task is not verifiable as written: rule "
             "on it before anything else on that Task, with edit_verifier when you agree, a probe, "
             "or a finding with note_ruling saying whether the Builder is right and why. The Task "
             "cannot be refused while its note is open; the ruling goes back to the Builder. "

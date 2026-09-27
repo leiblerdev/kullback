@@ -534,7 +534,10 @@ _EMPTY_RUN_ADVICE = ("every atom here passes an empty Run: add a question or com
 REFUSALS_PER_TASK = 3
 _STOP = " Stop proposing for this Task in this session."
 # The refusal's pointer to the dry run, so the next atom is tried before it is written.
-_TRY_FIRST = "try_atoms takes the same arguments and rules on an edit without writing it: try the next atom there first."
+# A dry run verdict is not a refusal: only edit_verifier refusals count toward the two.
+_TRY_FIRST = ("try_atoms takes the same arguments and rules on an edit without writing it: try the next atom "
+              "there first. A dry run verdict is not a refusal; only edit_verifier refusals count toward the two "
+              "that end with a finding.")
 
 
 def _atoms_named(records: list[dict]) -> str:
@@ -666,9 +669,10 @@ def _refuse_proposal(task_id: str, version: str, records: list[dict], stop: bool
     return RetryableToolError(
         f"proposal version {version} for task {task_id} refused, the previous file stands:\n"
         f"{lines}" + (f"\n{atoms}" if atoms else "")
-        + (f"\n" + "\n".join(why) if why else "") + f"\n{_TRY_FIRST}" + (_STOP if stop else ""),
+        + ("\n" + "\n".join(why) if why else "") + f"\n{_TRY_FIRST}" + (_STOP if stop else ""),
         ask=("Read the failing rows and propose again with atoms answering them, "
-             "or file a finding naming the Environment file and what differs after two refusals."))
+             "or file a finding naming the Environment file and what differs after two edit_verifier refusals. "
+             "A try_atoms dry run is not a refusal."))
 
 
 def atoms_hash(atoms: Iterable[Any]) -> str:
@@ -901,7 +905,9 @@ def _try_atoms(root: ExamRoot):
         summary = (f"{head} {verdict}, nothing written: {lines}"
                    + (f"; failing atoms: {', '.join(failing)}" if failing else "")
                    + (f"\n{atoms}" if atoms else "")
-                   + (f"\n" + "\n".join(why) if why else ""))
+                   + ("\n" + "\n".join(why) if why else "")
+                   + "\nA dry run is not a refusal; only edit_verifier refusals count toward the two that end "
+                   + "with a finding.")
         if accepted == "not decided":
             summary += ("\nundecided: only the loophole probe is left, "
                         f"{DRY_RUN_NOT_RUN}; what would decide it: propose the edit, "
