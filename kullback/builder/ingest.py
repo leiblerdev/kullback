@@ -239,6 +239,7 @@ def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = N
     The winning adapter behind the intake seam (sources) reads the payload; this function only
     orchestrates (derive, sidecar, rejects). A simulation the records refuse is left out with its
     reason in workdir/rejects, which the gate reads, so one broken message never costs the whole
+    file (design section 6, on failure: reject trace with reason). The declared floor rules the
     file (an omitted floor is the module floor); the rescue step then prefixes what was set
     aside, inside the same ruling. The ruling also carries the winning vote's confidence, so the
     ingest row reports what was decided while the reader was registered."""
