@@ -195,6 +195,29 @@ class Answering:
         (lambda: Answering(["My zip is 19122."], payload={"refused": 0, "refused_so_far": 2}),
          "What is your zip code?",
          {"refused": 0, "refused_so_far": 2, "text": "My zip is 19122."}, False),
+        # A model-driven turn carries its tool log and what it weighed, so the run file
+        # says whether the model read before it wrote.
+        (lambda: Answering(["Option_two, please."],
+                           payload={"driver": "agent", "facts": 1,
+                                    "user_tools": [{"tool": "my_choices", "args": ["kind"]}],
+                                    "user_thinking": "the question names a kind I hold"}),
+         "Which kind would you like?",
+         {"driver": "agent", "facts": 1,
+          "user_tools": [{"tool": "my_choices", "args": ["kind"]}],
+          "user_thinking": "the question names a kind I hold",
+          "text": "Option_two, please."}, False),
+        # An empty tool log travels too: no read is the finding, not a missing field.
+        (lambda: Answering(["Thanks, noted."],
+                           payload={"driver": "agent", "user_tools": [], "user_thinking": ""}),
+         "How can I help you today?",
+         {"driver": "agent", "user_tools": [], "text": "Thanks, noted."}, False),
+        # A turn that fell carries why it fell beside what the model weighed before it.
+        (lambda: Answering(["Hello there."],
+                           payload={"user_tools": [], "user_thinking": "I answered from my head",
+                                    "agent_turn_dropped": "some_guard"}),
+         "How can I help you today?",
+         {"user_tools": [], "user_thinking": "I answered from my head",
+          "agent_turn_dropped": "some_guard", "text": "Hello there."}, False),
         # The turn carries what the user recorded for this turn, not what it recorded for the last one.
         (lambda: Answering(["sure"], events=[Event(idx=0, type="user_turn", payload={"tags": ["fact_unavailable"]})]),
          "anything else?", {"text": "sure"}, False),
@@ -204,7 +227,8 @@ class Answering:
          "Which suits you best?",
          {"driver": "agent", "text": "Pick the second."}, False),
     ],
-    ids=["assisted_mark", "unavailable_field", "refusal_count", "no_earlier_tag", "driver_mark"],
+    ids=["assisted_mark", "unavailable_field", "refusal_count", "agent_tool_log",
+         "empty_tool_log", "dropped_turn_record", "no_earlier_tag", "driver_mark"],
 )
 def test_a_user_turn_carries_its_own_marks_and_no_earlier_ones(workdir, user, question, payload, assisted):
     state = new_run_state("r1", workdir=workdir, user=user(), max_turns=1 if question == "anything else?" else 2)

@@ -22,7 +22,7 @@ was.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -99,8 +99,16 @@ class Toolbox:
         # an account value with its column. The guards and the turn record read these (agent.py).
         self.chosen: dict[str, tuple[str, str]] = {}
         self.account_given: dict[str, str] = {}
+        # Every tool call this turn, as names and argument keys, never values: the turn
+        # record says whether the model read before it wrote, even where the turn fell
+        # to the floor. Each recorded turn takes the list and clears it (agent.py).
+        self.tool_calls: list[dict[str, Any]] = []
+
+    def _used(self, tool: str, args: Iterable[str]) -> None:
+        self.tool_calls.append({"tool": tool, "args": sorted(args)})
 
     def facts(self, asked: list[str]) -> str:
+        self._used("my_facts", ("asked",) if asked else ())
         wanted = [field for field in asked if field]
         rows = [f for f in self.ctx.askable() if not wanted or f.field in wanted]
         if not rows:
@@ -113,14 +121,17 @@ class Toolbox:
         return "\n".join(lines)
 
     def goal(self) -> str:
+        self._used("my_goal", ())
         return self.ctx.goal or NO_FACT
 
     def what_i_said(self) -> str:
+        self._used("what_i_said", ())
         return "\n".join(f"{index + 1}. {text}" for index, text in enumerate(self.said)) or NO_FACT
 
     def end(self, kind: str) -> EndOut:
         """Record the request. Code decides; the tool says so, so the model does not read a
         successful call as the conversation being over and stop answering."""
+        self._used("end_run", ("kind",))
         if kind not in rules_mod.USER_END_KINDS:
             return EndOut(requested=kind, accepted=False,
                           note="that is not one of " + ", ".join(rules_mod.USER_END_KINDS))
@@ -130,6 +141,7 @@ class Toolbox:
                            "actually happened, so answer this turn as if it continues")
 
     def my_choices(self, kind: str) -> str:
+        self._used("my_choices", ("kind",))
         if self.choices is None:
             return NO_FACT
         value, source, line = self.choices.answer(kind)
@@ -138,6 +150,7 @@ class Toolbox:
         return line
 
     def my_account(self, what: str = "") -> str:
+        self._used("my_account", ("what",) if what else ())
         if self.account is None:
             return NO_FACT
         text, given = self.account.read(what)
@@ -146,6 +159,7 @@ class Toolbox:
 
     def consult(self, field: str) -> str:
         """Look one field up where the recording shows this user looking things up, else nothing."""
+        self._used("consult", ("field",))
         if field not in self.ctx.consultations:
             return NOT_CONSULTED
         fact = next((f for f in self.ctx.askable() if f.field == field), None)

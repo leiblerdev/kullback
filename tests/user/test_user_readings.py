@@ -7,7 +7,7 @@ the tests prove the mechanism and not any world.
 
 from __future__ import annotations
 
-from kullback.ai.provider import TestModel
+from kullback.ai.provider import ModelReply, TestModel
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, UserFact, UserRules
 from kullback.user import account as account_mod
 from kullback.user import context as context_mod
@@ -75,12 +75,25 @@ def test_a_choice_no_recording_of_this_customer_holds_is_what_most_recorded_user
     assert "2 of 3 recorded users" in line
 
 
-def test_a_choice_nobody_recorded_says_so_and_invents_nothing():
-    assert _book().answer("kind_e") == (None, None, account_mod.NO_CHOICE)
+def test_an_unmatched_kind_lists_the_kinds_held_nearest_layer_first():
+    value, source, line = _book().answer("kind_e")
+    assert (value, source) == (None, None)
+    assert line.startswith(account_mod.NO_CHOICE)
+    assert "kind_a (source: recording)" in line
+    assert "kind_b (source: other_recording)" in line
+    assert "kind_c (source: population)" in line
+    assert line.index("kind_a") < line.index("kind_b") < line.index("kind_c")
+
+
+def test_an_unmatched_kind_on_an_empty_book_says_so_and_invents_nothing():
+    assert account_mod.ChoiceBook().answer("kind_e") == (None, None, account_mod.NO_CHOICE)
 
 
 def test_another_customers_id_is_never_offered_as_a_population_choice():
-    assert _book().answer("kind_d") == (None, None, account_mod.NO_CHOICE)
+    value, source, line = _book().answer("kind_d")
+    assert (value, source) == (None, None)
+    assert line.startswith(account_mod.NO_CHOICE) and "kind_a" in line
+
 
 
 # --- the account ------------------------------------------------------------------------------
@@ -137,6 +150,37 @@ def test_a_customer_the_identity_does_not_match_has_no_account():
     assert view.read() == (account_mod.NO_ACCOUNT, {})
 
 
+def _id_rules() -> UserRules:
+    return UserRules(facts=[UserFact(field="key_a", value="M-1001"),
+                            UserFact(field="goal", value="I want the thing done.")])
+
+
+def test_id_keys_are_the_ids_outside_the_person_shaped_identity():
+    assert account_mod.id_keys(_id_rules(), ["ident_a", "ident_b"]) == ["M-1001"]
+    assert account_mod.customer_keys(_rules("ada@x.example"), ["ident_a", "ident_b"]) == [
+        "ada@x.example"]
+
+
+def test_a_customer_keyed_by_an_id_alone_gets_their_own_rows_only():
+    view = account_mod.account_view(TABLES, {}, _stated(),
+                                    keys=account_mod.id_keys(_id_rules(), ["ident_a", "ident_b"]))
+    text, given = view.read()
+    assert "REF-7731" in text and "2031-04-02" in text
+    assert "REF-8842" not in text and "2031-05-09" not in text
+    assert set(given) == {"REF-7731", "2031-04-02"}
+
+
+def test_two_ids_naming_two_unrelated_rows_are_no_account_never_a_guess():
+    view = account_mod.account_view(TABLES, {}, _stated(), keys=["M-1001", "M-2002"])
+    assert view.read() == (account_mod.NO_ACCOUNT, {})
+
+
+def test_of_two_named_rows_the_one_another_row_plainly_carries_is_the_owner():
+    view = account_mod.account_view(TABLES, {}, _stated(), keys=["M-1001", "L-1"])
+    text, _ = view.read()
+    assert "REF-7731" in text and "REF-8842" not in text
+
+
 def test_the_account_is_a_snapshot_the_run_cannot_write_through():
     tables = {"table_a": {"M-1001": dict(TABLES["table_a"]["M-1001"])}}
     view = account_mod.account_view(tables, {"ident_a": "ada@x.example", "ident_b": "Ann Aa"},
@@ -189,3 +233,68 @@ def test_a_chosen_value_is_tagged_with_the_layer_that_answered_it():
     user.box.my_choices("kind_b")
     user.reply([{"role": "assistant", "content": "Which kind_b would you like?"}])
     assert user.events[-1].payload["sources"] == {"kind_b": account_mod.OTHER_RECORDING}
+
+
+def test_the_prompt_names_every_tool_the_harness_registers():
+    from kullback.user import skills as skills_mod
+    rules = UserRules(facts=[UserFact(field="ident_a", value="ada@x.example")])
+    box = Toolbox(context_mod.curate("t", rules), choices=_book(), account=_account())
+    for tool in user_tools(box):
+        assert tool.name in skills_mod.TOOLS, tool.name
+    assert "my_choices" in skills_mod.TOOLS and "my_account" in skills_mod.TOOLS
+    assert "my_choices" in skills_mod.RULES
+    assert "my_account" in skills_mod.EXAMPLES
+
+
+def test_a_turn_records_the_tools_it_called_as_names_and_argument_keys():
+    user = _agent(["Option_two, please."])
+    user.box.my_choices("kind_b")
+    user.box.my_account("col_x")
+    user.reply([{"role": "assistant", "content": "Which kind_b would you like?"}])
+    assert user.events[-1].payload["user_tools"] == [
+        {"tool": "my_choices", "args": ["kind"]},
+        {"tool": "my_account", "args": ["what"]},
+    ]
+
+
+def test_a_turn_that_fell_to_the_floor_still_records_what_was_called():
+    user = _agent(["Hello, my col x is REF-7731."])
+    user.box.my_account()
+    user.reply([{"role": "assistant", "content": "How can I help you today?"}])
+    payload = user.events[-1].payload
+    assert payload["agent_turn_dropped"] == guards_mod.ACCOUNT_UNASKED
+    assert payload["user_tools"] == [{"tool": "my_account", "args": []}]
+
+
+def test_a_facts_call_logs_asked_only_when_fields_were_passed():
+    user = _agent(["Thanks, noted."])
+    user.box.facts([])
+    user.box.facts(["ident_a"])
+    user.reply([{"role": "assistant", "content": "How can I help you today?"}])
+    assert user.events[-1].payload["user_tools"] == [
+        {"tool": "my_facts", "args": []},
+        {"tool": "my_facts", "args": ["asked"]},
+    ]
+
+
+def test_a_turn_records_what_the_model_weighed_before_it_wrote():
+    user = _agent([ModelReply(content="Thanks, noted.",
+                              thinking="nothing was asked for, so no read fits")])
+    user.reply([{"role": "assistant", "content": "How can I help you today?"}])
+    assert user.events[-1].payload["user_thinking"] == "nothing was asked for, so no read fits"
+
+
+def test_a_turn_with_no_reasoning_summary_records_an_empty_one():
+    user = _agent(["Thanks, noted."])
+    user.reply([{"role": "assistant", "content": "How can I help you today?"}])
+    assert user.events[-1].payload["user_thinking"] == ""
+
+
+def test_a_turn_that_fell_to_the_floor_keeps_what_the_model_weighed():
+    user = _agent([ModelReply(content="Hello, my col x is REF-7731.",
+                              thinking="I answered from my head instead of reading")])
+    user.box.my_account()
+    user.reply([{"role": "assistant", "content": "How can I help you today?"}])
+    payload = user.events[-1].payload
+    assert payload["agent_turn_dropped"] == guards_mod.ACCOUNT_UNASKED
+    assert payload["user_thinking"] == "I answered from my head instead of reading"

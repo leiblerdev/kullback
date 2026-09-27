@@ -124,7 +124,8 @@ def _make_user(workdir: Any, task_id: str, anchor: Any, router: Any, user_model:
         traces=corpus.traces, rules=corpus.rules, identity_fields=identity_fields)
     state = getattr(router, "state", None)
     account = account_mod.account_view(getattr(state, "shared", {}) or {}, floor.identity,
-                                       corpus.columns)
+                                       corpus.columns,
+                                       keys=account_mod.id_keys(rules, identity_fields))
     return user_factory.build_user(
         workdir, task_id, user_model, user_factory.PURPOSE_RUN, ctx=ctx, fallback=floor,
         record_values=record, vocab=GENERIC, write_tools=writes, goal_writes=goal_writes,

@@ -46,7 +46,8 @@ from kullback.user.vocabulary import GENERIC, Vocabulary
 TURN_MESSAGE = ("Write your next turn in this conversation. On the first turn, say why you got in "
                 "touch, in your own words, and whatever you would say without being asked. After "
                 "that, read what they just said. Use your tools for anything about yourself you "
-                "are not sure of, and answer with the turn itself and no tool call.")
+                "are not sure of; the rules name which tool answers which question. Answer with "
+                "the turn itself once your tools have answered, never with a tool call as the turn.")
 # A turn is one model answer, however many tool calls it took to get there. The cap is on the tool
 # calls, so a model that loops on its own tools cannot spend a build's ceiling on one turn.
 MAX_TURNS_PER_REPLY = 6
@@ -109,27 +110,30 @@ class AgentUser:
         question = _last_assistant(transcript)
         self.box.requested = None
         asked = rules_mod.asked_fields(question, vocab=self.vocab)
-        text = self._model_turn(transcript)
-        if text is None:
+        made = self._model_turn(transcript)
+        if made is None:
             return self._from_fallback(transcript)
+        text, thinking = made
         from_account, unasked = guards_mod.account_leak(
             text, self.box.account_given, self.guards.grounding, question, asked)
         if unasked:
             self.guards.counts[guards_mod.ACCOUNT_UNASKED] = (
                 self.guards.counts.get(guards_mod.ACCOUNT_UNASKED, 0) + 1)
-            return self._from_fallback(transcript, dropped=guards_mod.ACCOUNT_UNASKED)
+            return self._from_fallback(transcript, dropped=guards_mod.ACCOUNT_UNASKED,
+                                       thinking=thinking)
         outcome = self.guards.check(
             text, facts_allowed=volunteer_allowance(self.trace, _rules_of(self.fallback), self._turn),
             facts_said=self._facts_said, asked=asked,
             granted=[*from_account, *self.box.chosen])
         if outcome.dropped:
-            return self._from_fallback(transcript, dropped=outcome.reason)
-        return self._speak(outcome.text, question, transcript, outcome.changed, asked)
+            return self._from_fallback(transcript, dropped=outcome.reason, thinking=thinking)
+        return self._speak(outcome.text, question, transcript, outcome.changed, asked,
+                           thinking=thinking)
 
     # --- the model's turn ----------------------------------------------------------------------
 
-    def _model_turn(self, transcript: Sequence = ()) -> Optional[str]:
-        """One model answer over a harness built for this beat, or None when there is no model."""
+    def _model_turn(self, transcript: Sequence = ()) -> Optional[tuple[str, str]]:
+        """One model answer with what it weighed before writing, or None when there is no model."""
         if self.model is None:
             self.counts[NO_MODEL] += 1
             return None
@@ -158,7 +162,8 @@ class AgentUser:
 
     # --- what is actually said -------------------------------------------------------------------
 
-    def _from_fallback(self, transcript: list, dropped: Optional[str] = None) -> str:
+    def _from_fallback(self, transcript: list, dropped: Optional[str] = None,
+                       thinking: str = "") -> str:
         """The rule-driven user answers this beat, and its end decision stands (D214 rule 3)."""
         self.counts["fallback_turns"] += 1
         seen = len(self.fallback.events)
@@ -166,7 +171,11 @@ class AgentUser:
         self.box.said.append(text)
         event = self.fallback.events[-1] if len(self.fallback.events) > seen else None
         payload = dict(event.payload or {}) if event is not None else {"text": text}
-        payload["driver"] = "rules"
+        payload["user_tools"] = [dict(call) for call in self.box.tool_calls]
+        # What the model weighed before the turn fell, so a later reader can tell whether it
+        # never read or read and was dropped anyway. Empty where no model ran.
+        payload["user_thinking"] = thinking
+        self.box.tool_calls = []
         if dropped:
             payload["agent_turn_dropped"] = dropped
         self.done = bool(getattr(self.fallback, "done", False))
@@ -175,7 +184,7 @@ class AgentUser:
         return text
 
     def _speak(self, text: str, question: str, transcript: list, changed: Sequence[str],
-               asked: Sequence[str] = ()) -> str:
+               asked: Sequence[str] = (), thinking: str = "") -> str:
         """The model's turn, guarded, with the end decided in code (D210, D214 rule 4)."""
         self.counts["agent_user_turns"] += 1
         self.box.said.append(text)
@@ -195,7 +204,10 @@ class AgentUser:
                 tags.append(kind)
                 self._end_tagged = True
         payload = {"text": text, "driver": "agent", "facts": carried, "tags": tags,
-                   "requested_end": self.box.requested, "user_end": kind}
+                   "requested_end": self.box.requested, "user_end": kind,
+                   "user_tools": [dict(call) for call in self.box.tool_calls],
+                   "user_thinking": thinking}
+        self.box.tool_calls = []
         sources = self._sources(text)
         if sources:
             payload["sources"] = sources
@@ -257,12 +269,15 @@ def _last_assistant(transcript: Sequence) -> str:
     return question or ""
 
 
-def _last_text(harness: AgentHarness) -> str:
-    """Run one turn to the end and answer with the last assistant text the model wrote.
+def _last_text(harness: AgentHarness) -> tuple[str, str]:
+    """Run one turn to the end and answer with the last assistant text and what it weighed.
 
     The harness already carries the turn line last, so this continues on the transcript as it
-    stands rather than appending another line."""
+    stands rather than appending another line. The thinking is the model's reasoning summary
+    for the turn, kept beside the tools it called so a later reader can tell why it read or not.
+    """
     said: list[str] = []
+    weighed: list[str] = []
 
     async def go() -> None:
         async for event in harness.continue_():
@@ -270,9 +285,13 @@ def _last_text(harness: AgentHarness) -> str:
                 text = (getattr(event.message, "content", "") or "").strip()
                 if text:
                     said.append(text)
+                thought = (getattr(event.message, "thinking", "") or "").strip()
+                if thought:
+                    weighed.append(thought)
 
     _run_to_end(go)
-    return said[-1] if said else ""
+    return (said[-1] if said else ""), "\n".join(weighed)
+
 
 
 def _run_to_end(go: Callable[[], Any]) -> None:

@@ -398,6 +398,9 @@ def _user_payload(user: Any, answer: Optional[str], seen: int) -> tuple[dict, bo
     Who spoke rides along where the user said so: the agent user marks its turns agent and its
     floor's rules, the rule-driven user alone marks nothing, so a row without a driver is the
     rule user as before.
+    What the user logged about its own turn travels too: the tools it called, what it weighed
+    before writing, and why the turn fell. Without those the run file cannot say whether the
+    model read before it wrote.
     """
     payload: dict = {"text": answer or ""}
     events = getattr(user, "events", None) or []
@@ -411,8 +414,12 @@ def _user_payload(user: Any, answer: Optional[str], seen: int) -> tuple[dict, bo
     for key in ("refused", "refused_so_far"):  # counts, and a zero is a number the report reads
         if key in carried:
             payload[key] = carried[key]
-    if carried.get("driver"):
-        payload["driver"] = carried["driver"]
+    if "user_tools" in carried:  # an empty log is the finding: the turn read nothing
+        payload["user_tools"] = carried["user_tools"]
+    for key in ("user_thinking", "driver", "agent_turn_dropped", "requested_end",
+                "user_end", "facts"):
+        if carried.get(key):
+            payload[key] = carried[key]
     tags = list(carried.get("tags") or [])
     if tags:
         payload.update({"tags": tags}, **{tag: True for tag in tags})

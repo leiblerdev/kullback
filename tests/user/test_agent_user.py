@@ -25,6 +25,7 @@ from kullback.user import guards as guards_mod
 from kullback.user import lesson as lesson_mod
 from kullback.user import rules as rules_mod
 from kullback.user import simulated as simulated_mod
+from kullback.user import tools as tools_mod
 from kullback.user.agent import AgentUser
 from kullback.user.tools import Toolbox, user_tools
 from kullback.user.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
@@ -121,6 +122,12 @@ def test_consult_appears_only_where_the_recording_shows_the_user_looking_a_value
 
 def test_the_reference_write_arguments_are_the_values_this_user_chooses(ctx):
     assert ctx.choices["slot"] == "16:00"
+
+
+def test_what_i_said_answers_the_earlier_turns_numbered_in_order(ctx):
+    assert Toolbox(ctx).what_i_said() == tools_mod.NO_FACT
+    box = Toolbox(ctx, said=["first thing", "second thing"])
+    assert box.what_i_said() == "1. first thing\n2. second thing"
 
 
 # --- the guards ------------------------------------------------------------------------------
