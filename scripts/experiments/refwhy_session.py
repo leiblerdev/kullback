@@ -51,7 +51,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     from kullback.examiner.session import examine
 
     workdir = Path(args.workdir)
-    task_ids = json.loads(Path(args.tasks_json).read_text())
+    task_ids = (None if args.tasks_json == "NONE"
+                else json.loads(Path(args.tasks_json).read_text()))
     prior = float(load_totals(workdir)["total"]["usd"])
     examiner = BudgetedModel(
         live_model(args.examiner_model), stage="examiner", workdir=workdir,
@@ -67,7 +68,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         allowance_usd=args.reroll_allowance_usd, workers=args.workers,
         user_model=user,
     )
-    print(f"tasks={len(task_ids)} findings={len(findings)}")
+    print(f"tasks={len(task_ids) if task_ids is not None else 'all'} findings={len(findings)}")
     return 0
 
 

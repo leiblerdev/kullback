@@ -120,8 +120,11 @@ def feedback_section() -> str:
 def stop_section() -> str:
     """The stop rule, last: one line and no tool call when nothing is left to do."""
     return ("Stopping. Answer with one line and no tool call when every Task is trusted or "
-            "refused, or when the rulings after your proposals are the ones you already "
-            "answered, and every Builder note is ruled. Say which Tasks remain and what you filed for each.")
+            "refused, every trusted Task's Reference is checked, and every Builder note is "
+            "ruled; or when the rulings after your proposals are the ones you already "
+            "answered. A Reference is checked once check_reference has been called on its "
+            "Task this session. Say which Tasks remain, what you filed for each, and which "
+            "trusted Tasks are still unchecked.")
 
 
 def sections() -> list[tuple[str, str]]:

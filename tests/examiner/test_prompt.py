@@ -15,6 +15,12 @@ def test_stop_rule_ends_with_one_line_and_no_tool_call():
     assert "one line and no tool call" in text
 
 
+def test_stop_rule_forbids_stopping_with_an_unchecked_trusted_reference():
+    text = P.stop_section()
+    assert "every trusted Task's Reference is checked" in text
+    assert "check_reference has been called on its Task this session" in text
+
+
 def test_prompt_names_files_never_verbs_and_no_dashes():
     whole = P.render(P.sections()) + P.opening("Examine.", "rulings", ["runs/", "replays.json"])
     assert "env/tools/<name>.py" in whole
