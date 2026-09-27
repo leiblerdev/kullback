@@ -24,6 +24,15 @@ _WORD = re.compile(r"[A-Za-z0-9#$€£¥._/-]+")
 CURRENCY = "".join(CanonRules().currency_symbols)
 AFFIRMATIONS = ("yes", "yeah", "yep", "sure", "please do", "go ahead", "confirm", "correct", "ok", "okay")
 JUDGE_MUST_HOLD = frozenset({"required", "question", "communicate", "hard"})
+# Words that deny rather than agree, in plain English, no domain terms: a reply
+# holding one is not a confirmation, however many yes-words surround it
+# ("yes, but wait, no"). Token-matched, so "know" never reads as "no";
+# apostrophes are stripped first, so "don't" reads as "dont". Bare "not" is
+# scoped below, not listed: it negates product options ("not water resistant")
+# and hedges ("not accidentally agreeing") far more often than consent.
+NEGATIONS = ("no", "never", "neither", "nor", "cannot", "nothing",
+             "dont", "didnt", "cant", "couldnt", "wont", "wouldnt", "shouldnt",
+             "isnt", "arent", "wasnt", "werent", "hasnt", "havent", "hadnt", "doesnt")
 # The payload kinds check_run scores a required atom on; a Hard atom is scored on its predicate_src (F51).
 SCORED_KINDS = ("write", "write_value", "entity_count", "question", "communicate")
 
@@ -274,6 +283,34 @@ def _preceded_by_question(run: Run, user_pos: int) -> bool:
     return False
 
 
+def _confirms(text: Any) -> bool:
+    """Did this user reply confirm: holds an affirmation and no denial of it.
+
+    A yes anywhere in the reply counts, not only in first position ("um, yes,
+    please proceed"), and any denial vetoes it ("yes, but wait, no").
+    Single-word affirmations are token-matched, so "incorrect" never reads as
+    "correct"; the two phrasal ones ("please do", "go ahead") read as phrases.
+    Bare "not" vetoes only next to an affirmation ("not sure", "do not
+    confirm"): next to anything else it is a product option or a hedge
+    ("not water resistant", "not accidentally agreeing").
+    """
+    lowered = " ".join(str(text or "").split()).lower()
+    if not lowered:
+        return False
+    tokens = re.findall(r"[a-z0-9]+", lowered.replace("'", ""))
+    words = set(tokens)
+    if words & set(NEGATIONS):
+        return False
+    singles = {word for word in AFFIRMATIONS if " " not in word}
+    if not (words & singles) and not any(word in lowered for word in AFFIRMATIONS if " " in word):
+        return False
+    positions = {i for i, token in enumerate(tokens) if token in singles}
+    if any(abs(i - j) <= 1 for i, token in enumerate(tokens)
+           if token == "not" for j in positions):
+        return False
+    return True
+
+
 def _next_user(run: Run, pos: int) -> Optional[int]:
     return next((later for later in range(pos + 1, len(run.events)) if run.events[later].type == "user_turn"), None)
 
@@ -290,8 +327,7 @@ def question_keys(run: Run, effects: dict, fn: Callable) -> dict[str, dict]:
         reply_pos = _next_user(run, pos) if "?" in _assistant_text(event) else None
         if reply_pos is None:
             continue
-        answer = _user_text(run.events[reply_pos]).strip().lower()
-        if not any(answer.startswith(word) for word in AFFIRMATIONS):
+        if not _confirms(_user_text(run.events[reply_pos])):
             continue
         for effect in effects.values():
             if effect["pos"] > reply_pos:

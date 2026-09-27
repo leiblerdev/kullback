@@ -31,6 +31,7 @@ from kullback.gates.verifier_suite import (
     HELPERS_SRC,
     SUCCESS_TERMINATIONS,
     _key,
+    _matches,
     _texts,
     _token_in,
     _tokens,
@@ -53,7 +54,7 @@ from kullback.gates.verifier_suite import (
     world_rows,
     write_effects,
 )
-from kullback.runner.records import Atom, Constraint, Run, Task, Verifier, load_task_run
+from kullback.runner.records import Atom, Constraint, Run, Task, Verifier, canonical_json, load_task_run
 
 # A write value is required only when it is agreed across the good Runs *and* the customer or their
 # world is where it came from; a value the Candidate invented is never required of it.
@@ -657,12 +658,35 @@ def _value_atoms(atom_id: str, base: dict, run: Run, effect: dict, tools: set[st
 
 # --- questions and facts ----------------------------------------------------
 
+def _world_read_before(run: Run, write_pos: int, value: Any, fn: Any) -> bool:
+    """Did a tool result before this write already hold this value, by the leak check's own rule.
+
+    Any call, any row: the same match classify_provenance reads as system_derived,
+    asked here without asking who the Run got the value from.
+    """
+    for event in run.events[:write_pos]:
+        if event.type == "tool_result" and _matches(
+                canonical_json((event.payload or {}).get("result")), value, fn):
+            return True
+    return False
+
+
 def _question_atoms(good: list[Run], good_effects: list[dict], fn: Any) -> list[Atom]:
-    """One atom per thing every good Run asked the user about before it wrote."""
+    """One atom per thing every good Run asked the user about before it wrote.
+
+    No atom for a field whose value the world already held where the Run could
+    read it: reading it or asking are both right, and demanding the question
+    grades one model's habit of asking. The demand stands only when some seed
+    could not read the value first.
+    """
     asked = [question_keys(r, e, fn) for r, e in zip(good, good_effects, strict=False)]
     common = set.intersection(*[set(a) for a in asked]) if asked else set()
     atoms: list[Atom] = []
     for key in sorted(common):
+        if key.startswith("field:") and all(
+                _read_before(run, effects, key.split(":", 1)[1], fn)
+                for run, effects in zip(good, good_effects, strict=False)):
+            continue
         seen = asked[0][key]
         atoms.append(_atom(f"q.{key}", "question",
                            {"kind": "question", "key": key, "tool": seen.get("tool"),
@@ -670,6 +694,16 @@ def _question_atoms(good: list[Run], good_effects: list[dict], fn: Any) -> list[
                            spans=[seen["span"]] if seen.get("span") else [],
                            description=f"the agent asks the user about {key.split(':', 1)[-1]}"))
     return atoms
+
+
+def _read_before(run: Run, effects: dict, field: str, fn: Any) -> bool:
+    """Did some write of this Run hold this field at a value a prior result held.
+
+    Any effect with the field counts: one world-readable write is enough to
+    make reading a right route for it.
+    """
+    return any(_world_read_before(run, effect["pos"], effect["args"][field], fn)
+               for effect in effects.values() if field in effect["args"])
 
 
 def _stated_facts(said: list[dict], atoms: list[Atom]) -> set[str]:
