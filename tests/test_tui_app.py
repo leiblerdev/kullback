@@ -116,3 +116,63 @@ def test_tui_plain_opens_the_line_screen(tmp_path):
                                 input="/quit\n")
     assert result.exit_code == 0
     assert "where this workdir stands" in result.output
+
+
+def test_palette_table_lists_every_listed_command(tmp_path):
+    """One table holds every palette command, so the palette cannot drift from it."""
+    from kullback.tui.app import PALETTE_COMMANDS
+
+    app = KullbackApp(workdir=tmp_path)
+    table = app._command_table()
+    for name in PALETTE_COMMANDS:
+        assert name in table, name
+    assert table["sessions"] == app.action_sessions
+    assert table["quit"] == app.action_quit_app
+
+
+@pytest.mark.anyio
+async def test_each_palette_command_opens_its_view_or_modal(tmp_path):
+    """Every palette entry acts: views mount, commands show the slash output."""
+    import os
+
+    from kullback.ai.provider import DEFAULT_MODEL
+    from kullback.tui import HELP, Screen, _keys
+    from kullback.tui.app import PALETTE_COMMANDS, MessageModal, SessionsModal
+    from kullback.tui.home import HomeView
+
+    app = KullbackApp(workdir=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.8)
+        assert set(app._command_table()) >= set(PALETTE_COMMANDS)
+        for name, cls in (("build", BuildView), ("watch", WatchView), ("home", HomeView)):
+            app._palette_chosen(name)
+            await pilot.pause(0.5)
+            assert isinstance(app.current, cls), name
+        app._palette_chosen("sessions")
+        await pilot.pause(0.5)
+        assert isinstance(app.screen, SessionsModal)
+        app.screen.dismiss(None)
+        await pilot.pause(0.5)
+        screen = Screen(tmp_path, None, "")
+        expected = {
+            "status": (screen._status_renderable().plain
+                       if hasattr(screen._status_renderable(), "plain")
+                       else str(screen._status_renderable())),
+            "keys": _keys(dict(os.environ), model=DEFAULT_MODEL, host="").plain,
+            "login": screen._login_status().plain,
+            "help": HELP,
+        }
+        for name, body in expected.items():
+            app._palette_chosen(name)
+            await pilot.pause(0.5)
+            assert isinstance(app.screen, MessageModal), name
+            assert app.screen._body == body, name
+            assert app.screen._body, name
+            await pilot.press("escape")
+            await pilot.pause(0.5)
+        app._palette_chosen("logout")
+        await pilot.pause(0.5)
+        assert isinstance(app.screen, MessageModal)
+        assert "cleared" in app.screen._body
+        await pilot.press("escape")
+        await pilot.pause(0.5)

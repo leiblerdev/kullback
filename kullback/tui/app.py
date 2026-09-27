@@ -18,6 +18,7 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
+from kullback.ai.provider import DEFAULT_MODEL
 from kullback.tui import live_heartbeats, status_segments
 from kullback.tui.build_view import BuildView
 from kullback.tui.home import HomeView
@@ -110,6 +111,21 @@ class KeysModal(ModalScreen[None]):
         yield Static(KEYS_HELP, id="keys-body")
 
     BINDINGS = [Binding("escape", "dismiss", "Close"), Binding("question_mark", "dismiss", "Close")]
+
+class MessageModal(ModalScreen[None]):
+    """One palette command's output as plain text: status, keys, login, logout, help."""
+
+    def __init__(self, title: str, body: str) -> None:
+        super().__init__()
+        self._title = title
+        self._body = body
+
+    def compose(self):  # type: ignore[override]
+        yield Static(f"{self._title}", id="message-title")
+        yield Static(self._body, id="message-body")
+
+    BINDINGS = [Binding("escape", "dismiss", "Close")]
+
 
 
 class KullbackApp(App):
@@ -214,15 +230,73 @@ class KullbackApp(App):
         self.push_screen(PaletteModal(self._palette_chosen))
 
     def _palette_chosen(self, name: Optional[str]) -> None:
-        if name in ("home", "build", "watch"):
-            {"home": self.show_home, "build": self.show_build,
-             "watch": self.show_watch}[name]()
-        elif name in VIEW_CLASSES:
-            self.show_view(str(name))
-        elif name == "sessions":
-            self.action_sessions()
-        elif name == "quit":
-            self.action_quit_app()
+        action = self._command_table().get(str(name) if name else "")
+        if action is not None:
+            action()
+
+    def _command_table(self) -> dict[str, Callable[[], None]]:
+        """Every palette command in one table, so the palette cannot drift from the handlers.
+
+        View names mount their registry view; status, keys, login, logout and help show
+        what the same slash command prints on the line screen, through its own renderer."""
+        table: dict[str, Callable[[], None]] = {
+            "home": self.show_home,
+            "build": self.show_build,
+            "watch": self.show_watch,
+            "status": self.show_status,
+            "sessions": self.action_sessions,
+            "keys": self.show_keys,
+            "login": self.show_login,
+            "logout": self.run_logout,
+            "help": self.show_help,
+            "quit": self.action_quit_app,
+        }
+        for view_name in VIEW_CLASSES:
+            table.setdefault(view_name, lambda name=view_name: self.show_view(name))
+        return table
+
+    def show_status(self) -> None:
+        """Palette status shows what slash status prints: the last build read off disk."""
+        from kullback.tui import Screen
+
+        renderable = Screen(self.workdir, self.model, self.base_url)._status_renderable()
+        plain = renderable.plain if hasattr(renderable, "plain") else str(renderable)
+        self.push_screen(MessageModal("status", plain))
+
+    def show_keys(self) -> None:
+        """Palette keys shows what slash keys prints: which provider keys are visible."""
+        import os
+
+        from kullback.tui import _keys
+
+        model = self.model or DEFAULT_MODEL
+        self.push_screen(MessageModal(
+            "keys", _keys(dict(os.environ), model=model, host=self.base_url or "").plain))
+
+    def show_login(self) -> None:
+        """Palette login shows what slash login prints: the model and its key sources."""
+        from kullback.tui import Screen
+
+        text = Screen(self.workdir, self.model, self.base_url)._login_status()
+        self.push_screen(MessageModal("login", text.plain))
+
+    def run_logout(self) -> None:
+        """Palette logout runs the slash logout handler, showing what it cleared."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        from kullback.tui import Screen
+
+        console = Console(file=StringIO(), width=100)
+        Screen(self.workdir, self.model, self.base_url, console=console)._logout([])
+        self.push_screen(MessageModal("logout", str(console.file.getvalue())))
+
+    def show_help(self) -> None:
+        """Palette help shows the slash help text itself, so the two cannot drift."""
+        from kullback.tui import HELP
+
+        self.push_screen(MessageModal("help", HELP))
 
     def action_sessions(self) -> None:
         self.push_screen(SessionsModal(self._session_chosen))
