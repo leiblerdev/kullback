@@ -138,7 +138,7 @@ class RunsView(Widget):
         table = self.query_one("#result", DataTable)
         table.clear()
         for row in body.get("rows", ()):
-            words = ["pass" if passed else "fail" for passed in row.get("outcomes", ())]
+            words = ["pass" if outcome == "pass" else "fail" for outcome in row.get("outcomes", ())]
             if row.get("refused"):
                 words = ["refused"]
             elif row.get("no_verifier"):

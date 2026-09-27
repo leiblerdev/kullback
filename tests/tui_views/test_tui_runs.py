@@ -16,9 +16,9 @@ pytestmark = pytest.mark.anyio
 
 RESULT = {
     "rows": [
-        {"task": "task-1", "runs": 2, "passes": 2, "outcomes": [True, True],
+        {"task": "task-1", "runs": 2, "passes": 2, "outcomes": ["pass", "pass"],
          "refused": False, "no_verifier": False},
-        {"task": "task-2", "runs": 2, "passes": 0, "outcomes": [False, False],
+        {"task": "task-2", "runs": 2, "passes": 0, "outcomes": ["fail", "fail"],
          "refused": False, "no_verifier": False},
     ],
     "totals": {"pass_at_1": 0.5, "pass_k": 0.5, "k": 2, "runs_done": 4,
@@ -168,3 +168,28 @@ async def test_runs_says_so_when_the_run_ends_without_a_result(tmp_path):
         await pilot.pause(2.5)
         assert "ended without a result" in str(view.query_one("#status", Static).content)
         assert view.query_one("#result", DataTable).row_count == 0
+
+
+async def test_runs_shows_a_fail_outcome_as_fail(tmp_path):
+    """Outcomes arrive as pass and fail words, so a fail word reads as fail."""
+    out = tmp_path / "out.json"
+    out.write_text(json.dumps({
+        "rows": [{"task": "task-1", "runs": 2, "passes": 1,
+                  "outcomes": ["pass", "fail"],
+                  "refused": False, "no_verifier": False}],
+        "totals": {"pass_at_1": 0.5, "k": 1, "runs_done": 2, "runs_planned": 2,
+                   "spend_usd": 1.0},
+    }))
+
+    def launch(command: list, workdir) -> tuple:
+        return out, _LiveProc()
+
+    view = RunsView(tmp_path, launcher=launch)
+    app = ViewApp(view)
+    async with app.run_test() as pilot:
+        view.query_one("#model", Input).value = "test/model"
+        view.query_one("#ceiling", Input).value = "5"
+        await pilot.click("#start")
+        table = view.query_one("#result", DataTable)
+        await wait_until(pilot, lambda: table.row_count == 1)
+        assert table_text(table) == "task-1 | 2 | 1 | pass fail"
