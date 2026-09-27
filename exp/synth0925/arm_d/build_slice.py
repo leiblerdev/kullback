@@ -1,7 +1,7 @@
 """Build one static slice of (cluster, level) tasks. Workers append to their
 own jsonl; admitted Tasks store under the shared synthetic/ with distinct ids.
-Usage: build_slice.py <workdir> <outdir> <slice.json> <worker>
-"""
+Usage: build_slice.py <workdir> <outdir> <slice.json> <worker> [filetag]
+With filetag (e.g. -r1), clusters, scenarios and slice outputs use it."""
 import json
 import sys
 from pathlib import Path
@@ -17,23 +17,24 @@ def main() -> None:
     outdir = Path(sys.argv[2])
     spec = json.loads(Path(sys.argv[3]).read_text())
     worker = sys.argv[4]
-    run(workdir, outdir, spec, worker)
+    tag = sys.argv[5] if len(sys.argv) > 5 else ""
+    run(workdir, outdir, spec, worker, tag=tag)
 
 
 SEED = "synth0925-d"
 
 
-def run(workdir, outdir, spec, worker) -> None:
+def run(workdir, outdir, spec, worker, tag: str = "") -> None:
     clusters = {entry["skill"]: entry
-                for entry in json.loads((outdir / "clusters.json").read_text())}
+                for entry in json.loads((outdir / f"clusters{tag}.json").read_text())}
     evidence = json.loads((outdir / "evidence.json").read_text())
-    scenarios = json.loads((outdir / "scenarios.json").read_text())
+    scenarios = json.loads((outdir / f"scenarios{tag}.json").read_text())
     world = S.World(workdir)
     body = S.load_graph(workdir)
     observed = body.get("args") or {}
     fn = verifier_suite.canon_fn(world.canon_rules)
     model = synth_mod.make_synth(workdir)
-    dest = outdir / f"tasks-slice-{worker}.jsonl"
+    dest = outdir / f"tasks{tag}-slice-{worker}.jsonl"
     for pos, job in enumerate(spec):
         entry = clusters[job["cluster"]]
         level = job["level"]

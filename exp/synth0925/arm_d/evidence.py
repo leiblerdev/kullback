@@ -108,7 +108,6 @@ def evidence_for(workdir: Path, pool: dict) -> list[dict]:
     sigs = read_json(workdir / "tool_sigs.json", []) or []
     write_tools = {str(row.get("name")) for row in sigs
                    if row.get("kind") == "write"}
-    grades = grader_map(workdir)
     status = read_json(workdir / "task_status.json", {}) or {}
     by_id = {f"{row['task_id']}:{row['run_id']}": row for row in pool["failed_runs"]}
     out = []
@@ -133,10 +132,6 @@ def evidence_for(workdir: Path, pool: dict) -> list[dict]:
         if ref is not None:
             item["reference"] = call_shape(ref, write_tools, fn)
             item["reference_run_id"] = getattr(ref, "run_id", "")
-        if getattr(run, "trace_id", None) in grades:
-            item["run_reward"] = grades[run.trace_id]
-        if ref is not None and getattr(ref, "trace_id", None) in grades:
-            item["reference_reward"] = grades[ref.trace_id]
         failed = (status.get(task_id) or {}).get("failed_recordings") or {}
         if run_id in failed:
             item["harness_note"] = str(failed[run_id])[:300]
