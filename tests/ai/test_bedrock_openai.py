@@ -9,6 +9,7 @@ import asyncio
 import datetime as dt
 import json
 import random
+import re
 
 import httpx
 import pytest
@@ -18,7 +19,21 @@ from kullback.ai import sigv4
 from kullback.ai.messages import UserMessage
 from kullback.ai.openai_compatible import OpenAICompatibleProvider
 
-MODEL = "bedrock/global.openai.gpt-6-sol"
+MODEL = "bedrock/global.openai.model-a"
+# A neutral wire id with the reasoning-family shape, registered in the table below: the call-shape
+# test needs a name the table carries, because any other handle takes the max_tokens branch.
+# The smoke tier pins the real names.
+SHAPED = "bedrock/global.openai.bright-6-sol"
+
+
+def _stub_reasoning_shapes(monkeypatch):
+    """Neutral wire shapes standing in for the shipped reasoning family (see test_provider)."""
+    monkeypatch.setattr(pv, "REASONING_WIRE_PATTERNS", (
+        (re.compile(r"(?:.*/)?bright-(\d+)(?![a-z])"), 5),
+        (re.compile(r"(?:.*/)?q\d(?![a-z])"), None),
+    ))
+
+
 KEYS = {"AWS_ACCESS_KEY_ID": "AKIDEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-real-secret"}
 TOOL = {"name": "look_up", "description": "d", "input_schema": {"type": "object"}}
 USAGE = {"prompt_tokens": 900, "completion_tokens": 7,
@@ -51,24 +66,25 @@ def test_an_openai_id_on_bedrock_gets_the_chat_completions_adapter_and_an_anthro
     handle = pv.model_for(MODEL, env=KEYS)
     assert isinstance(handle, pv.BedrockOpenAIModel)
     assert isinstance(pv.provider_for(MODEL, env=KEYS), OpenAICompatibleProvider)
-    assert isinstance(pv.model_for("bedrock/us.anthropic.claude-opus-5-5", env=KEYS), pv.BedrockAnthropicModel)
+    assert isinstance(pv.model_for("bedrock/us.anthropic.model-a", env=KEYS), pv.BedrockAnthropicModel)
     assert handle.base_url + handle.path == "https://bedrock-runtime.us-east-2.amazonaws.com/openai/v1/chat/completions"
     eu = pv.model_for(MODEL, env={**KEYS, "AWS_REGION": "eu-west-1"})
     assert eu.base_url.startswith("https://bedrock-runtime.eu-west-1.amazonaws.com/")
     assert pv.BedrockOpenAIModel.credential_vars() == pv.BedrockAnthropicModel.credential_vars()
 
 
-def test_a_call_sends_the_wire_id_unchanged_with_openai_tools_and_reads_the_cache_counts(live):
+def test_a_call_sends_the_wire_id_unchanged_with_openai_tools_and_reads_the_cache_counts(live, monkeypatch):
+    _stub_reasoning_shapes(monkeypatch)
     seen = []
     reply = httpx.Response(200, json={
-        "model": "gpt-6-sol",
+        "model": "bright-6-sol",
         "choices": [{"finish_reason": "tool_calls", "message": {"content": None, "tool_calls": [
             {"id": "c1", "type": "function", "function": {"name": "look_up", "arguments": "{\"key\": \"a\"}"}}]}}],
         "usage": USAGE})
-    got = bedrock_openai(handle_for(seen, reply)).query(
+    got = bedrock_openai(handle_for(seen, reply), model_id=SHAPED).query(
         [{"role": "user", "content": "hi"}], tools=[TOOL], config=pv.ModelConfig(max_tokens=64))
     body = json.loads(seen[0].content)
-    assert body["model"] == "global.openai.gpt-6-sol"
+    assert body["model"] == "global.openai.bright-6-sol"
     assert body["tools"][0]["type"] == "function" and body["tools"][0]["function"]["name"] == "look_up"
     assert body["max_completion_tokens"] == 64 and "max_tokens" not in body
     assert [(call.name, call.arguments) for call in got.tool_calls] == [("look_up", {"key": "a"})]
@@ -92,11 +108,11 @@ def test_a_bearer_key_goes_as_bearer_and_access_keys_sign_the_exact_body(live):
 
 def test_the_stream_is_real_sse_on_the_bedrock_path_and_ends_with_the_tool_call_and_its_usage(live):
     chunks = [
-        '{"model": "gpt-6-sol", "choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1",'
+        '{"model": "model-a", "choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1",'
         ' "function": {"name": "look_up", "arguments": ""}}]}}]}',
-        '{"model": "gpt-6-sol", "choices": [{"delta": {"tool_calls": [{"index": 0,'
+        '{"model": "model-a", "choices": [{"delta": {"tool_calls": [{"index": 0,'
         ' "function": {"arguments": "{}"}}]}, "finish_reason": "tool_calls"}]}',
-        json.dumps({"model": "gpt-6-sol", "choices": [], "usage": USAGE}),
+        json.dumps({"model": "model-a", "choices": [], "usage": USAGE}),
         "[DONE]",
     ]
     seen = []
@@ -117,10 +133,12 @@ def test_the_stream_is_real_sse_on_the_bedrock_path_and_ends_with_the_tool_call_
     assert (done.usage.cache_read, done.usage.cache_write, done.usage.output) == (600, 250, 7)
 
 
-def test_gpt_6_sol_on_bedrock_is_priced_offline_and_its_cap_stays_in_the_priced_tier():
+def test_an_openai_model_on_bedrock_is_priced_offline_and_its_cap_stays_in_the_priced_tier():
     from kullback.runner import budget
 
-    assert budget.price_source(MODEL) == "table"
-    assert (budget.price_for(MODEL)["input"], budget.price_for(MODEL)["output"]) == (2.0, 10.0)
-    assert budget.context_cap_tokens(budget.window_for(MODEL)) <= 272_000
-    assert budget.window_for(MODEL) == 680_000
+    model = next(m for m in budget.PRICES
+                 if m.startswith("bedrock/") and m.partition("/")[2].startswith("openai."))
+    assert budget.price_source(model) == "table"
+    assert (budget.price_for(model)["input"], budget.price_for(model)["output"]) == (2.0, 10.0)
+    assert budget.context_cap_tokens(budget.window_for(model)) <= 272_000
+    assert budget.window_for(model) == 680_000

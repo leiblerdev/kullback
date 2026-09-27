@@ -14,8 +14,8 @@ from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import Atom, Event, Run, Task, Verifier, as_dict
 
-WRITE_TOOLS = {"cancel_pending_order"}
-ORDER = {"order_id": "#W123", "status": "pending", "total": 150.0}
+WRITE_TOOLS = {"cancel_hold"}
+ORDER = {"loan_id": "#W123", "status": "pending", "total": 150.0}
 TASK = Task(id="t1", intent="cancel the pending order and record the reason")
 
 
@@ -56,10 +56,10 @@ def reference_events(reason: str = "no longer needed",
         user("Please cancel my order #W123."),
         assistant("Sure. Why do you want to cancel it?"),
         user(reason),
-        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        call("get_loan_details", {"loan_id": "#W123"}, kind="read", cid="c0"),
         result(ORDER, cid="c0"),
-        call("cancel_pending_order", {"order_id": "#W123", "reason": reason}, cid="c1"),
-        result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
+        call("cancel_hold", {"loan_id": "#W123", "reason": reason}, cid="c1"),
+        result({"loan_id": "#W123", "status": "cancelled"}, cid="c1"),
         assistant(final),
     ]
 
@@ -72,12 +72,12 @@ def alt_path_run() -> Run:
     """Same writes, different reads and different wording (D46 different path)."""
     return make_run("alt", [
         user("Please cancel my order #W123."),
-        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        call("get_loan_details", {"loan_id": "#W123"}, kind="read", cid="c0"),
         result(ORDER, cid="c0"),
         assistant("Happy to help. May I ask the reason?"),
         user("no longer needed"),
-        call("cancel_pending_order", {"order_id": "#W123", "reason": "no longer needed"}, cid="c1"),
-        result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
+        call("cancel_hold", {"loan_id": "#W123", "reason": "no longer needed"}, cid="c1"),
+        result({"loan_id": "#W123", "status": "cancelled"}, cid="c1"),
         assistant("Done: #W123 is cancelled, 150.0 goes back to your card."),
     ])
 
@@ -89,15 +89,15 @@ def other_reason_run() -> Run:
 def extra_write_run() -> Run:
     """A successful re-run that writes one entity more than the Reference did."""
     return make_run("extra", reference_events() + [
-        call("cancel_pending_order", {"order_id": "#W888", "reason": "no longer needed"}, cid="c2"),
-        result({"order_id": "#W888", "status": "cancelled"}, cid="c2"),
+        call("cancel_hold", {"loan_id": "#W888", "reason": "no longer needed"}, cid="c2"),
+        result({"loan_id": "#W888", "status": "cancelled"}, cid="c2"),
     ])
 
 
 def failed_run() -> Run:
     return make_run("bad", [
         user("Please cancel my order #W123."),
-        call("cancel_pending_order", {"order_id": "#W999", "reason": "no longer needed"}, cid="c1"),
+        call("cancel_hold", {"loan_id": "#W999", "reason": "no longer needed"}, cid="c1"),
         result({"error": "not found"}, cid="c1"),
         assistant("I could not find that order."),
     ], termination_reason="max_steps")
@@ -109,10 +109,10 @@ def wrong_run() -> Run:
         user("Please cancel my order #W123."),
         assistant("Sure. Why do you want to cancel it?"),
         user("no longer needed"),
-        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        call("get_loan_details", {"loan_id": "#W123"}, kind="read", cid="c0"),
         result(ORDER, cid="c0"),
-        call("cancel_pending_order", {"order_id": "#W999", "reason": "no longer needed"}, cid="c1"),
-        result({"order_id": "#W999", "status": "cancelled"}, cid="c1"),
+        call("cancel_hold", {"loan_id": "#W999", "reason": "no longer needed"}, cid="c1"),
+        result({"loan_id": "#W999", "status": "cancelled"}, cid="c1"),
         assistant("Your order #W123 is cancelled and 150.0 is refunded."),
     ])
 

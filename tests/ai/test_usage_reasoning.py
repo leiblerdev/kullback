@@ -9,7 +9,7 @@ from kullback.ai.usage import Usage
 from kullback.runner import budget
 from kullback.runner.records import Cost
 
-MODEL = "openai/gpt-4.1-mini"
+MODEL = "openai/model-a"
 
 
 def chat_model():
@@ -34,7 +34,7 @@ def responses_payload(reasoning=None):
         usage["output_tokens_details"] = {"reasoning_tokens": reasoning}
     return {
         "status": "completed",
-        "model": "muse-spark-1.3-contributor",
+        "model": "model-a",
         "output": [{"type": "message", "content": [{"type": "output_text", "text": "done"}]}],
         "usage": usage,
     }
@@ -42,13 +42,13 @@ def responses_payload(reasoning=None):
 
 def responses_model():
     return pv.OpenAIResponsesModel(
-        model_id="opencode-go/muse-spark-1.3-contributor", base_url="http://127.0.0.1:8080/v1", env={})
+        model_id="opencode-go/model-a", base_url="http://127.0.0.1:8080/v1", env={})
 
 
 def messages_payload():
     return {
         "content": [{"type": "text", "text": "hi"}],
-        "model": "claude-opus-5",
+        "model": "model-a",
         "stop_reason": "end_turn",
         "usage": {"input_tokens": 10, "output_tokens": 3},
     }
@@ -63,7 +63,7 @@ def parse_responses(payload):
 
 
 def parse_messages(payload):
-    return pv.AnthropicModel(model_id="anthropic/claude-opus-5", api_key="k", env={}).parse_reply(payload)
+    return pv.AnthropicModel(model_id="anthropic/model-a", api_key="k", env={}).parse_reply(payload)
 
 
 @pytest.mark.parametrize(
@@ -137,15 +137,17 @@ def test_a_stored_record_with_reasoning_above_output_is_still_refused():
         Usage(output=5, reasoning=40)
     with pytest.raises(ValueError):
         Cost.model_validate({
-            "provider": "openai", "model": "openai/gpt-4.1-mini",
+            "provider": "openai", "model": "openai/model-a",
             "usage": {"input": 1, "output": 5, "reasoning": 40}, "usd": 0.0, "wall_ms": 1.0,
         })
     assert pv._reply_from_dict(
         {"content": "hi", "usage": {"input": 1, "output": 5, "reasoning": 40}}).usage.reasoning == 0
 
 
-def test_a_record_with_the_count_costs_what_it_cost_without_it():
-    model = "anthropic/claude-opus-5"
+def test_a_record_with_the_count_costs_what_it_cost_without_it(monkeypatch):
+    model = "anthropic/model-a"
+    monkeypatch.setitem(budget.PRICES, model, {"input": 5.0, "output": 25.0, "cache_read": 0.5,
+                                              "cache_write": 6.25})
     plain = Usage(input=100, output=50)
     shared = Usage(input=100, output=50, reasoning=30)
     assert budget.call_cost(shared, model) == budget.call_cost(plain, model)

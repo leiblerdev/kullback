@@ -19,7 +19,7 @@ def tau2_file(simulations, tasks=None, info=None) -> dict:
     """A minimal file in the tau2 native shape."""
     return {
         "timestamp": "2025-06-05T14:00:00",
-        "info": info if info is not None else {"environment_info": {"domain_name": "retail"}},
+        "info": info if info is not None else {"environment_info": {"domain_name": "library"}},
         "tasks": tasks or [],
         "simulations": simulations,
     }
@@ -220,7 +220,7 @@ def test_only_a_truncated_result_is_marked(small_file, workdir):
 # --- grader stripping (D66) ------------------------------------------------
 
 
-def test_grader_fields_go_to_the_sidecar_and_not_into_the_trace(small_file, tau2_small_path, workdir, tmp_path):
+def test_grader_fields_go_to_the_sidecar_and_not_into_the_trace(small_file, world_a_small_path, workdir, tmp_path):
     """The negative half scans what the rest of the pipeline actually reads: the files under traces/."""
     raw = ingest.store_raw(small_file, workdir)
     trace = ingest.derive_traces(raw.raw_hash, workdir)[0]
@@ -239,7 +239,7 @@ def test_grader_fields_go_to_the_sidecar_and_not_into_the_trace(small_file, tau2
     assert sidecar["fields"]["evaluation_criteria"]["actions"][0]["action_id"] == "7_0"
     fixture_work = tmp_path / "fixture"
     fixture_work.mkdir()
-    raw = ingest.store_raw(tau2_small_path, fixture_work)
+    raw = ingest.store_raw(world_a_small_path, fixture_work)
     traces = ingest.derive_traces(raw.raw_hash, fixture_work)
     for trace in traces:
         blob = json.dumps(trace.model_dump(mode="json", by_alias=True))
@@ -263,7 +263,7 @@ def test_grader_sidecar_written_even_when_the_source_has_no_grader_fields(workdi
 
 
 def test_ingests_of_one_file_repeated_or_in_different_workdirs_produce_the_same_raw_and_trace_hashes(
-        small_file, tau2_small_path, workdir, tmp_path):
+        small_file, world_a_small_path, workdir, tmp_path):
     raw = ingest.store_raw(small_file, workdir)
     first = ingest.derive_traces(raw.raw_hash, workdir)
     other = tmp_path / "work2"
@@ -280,8 +280,8 @@ def test_ingests_of_one_file_repeated_or_in_different_workdirs_produce_the_same_
     left, right = tmp_path / "fixture-a", tmp_path / "fixture-b"
     left.mkdir()
     right.mkdir()
-    first_fixture = ingest.ingest_file(tau2_small_path, left)
-    second_fixture = ingest.ingest_file(tau2_small_path, right)
+    first_fixture = ingest.ingest_file(world_a_small_path, left)
+    second_fixture = ingest.ingest_file(world_a_small_path, right)
     assert first_fixture["trace_hashes"] == second_fixture["trace_hashes"]
 
 
@@ -327,7 +327,7 @@ def test_each_error_message_is_classed_by_rule_and_keeps_its_payload_verbatim(te
 
 
 def test_classify_error_keeps_json_encoding():
-    err = ingest.classify_error('{"code": "not_found", "message": "no such order"}')
+    err = ingest.classify_error('{"code": "not_found", "message": "no such loan"}')
     assert err.encoding == "json"
     assert err.class_ == "not_found_entity"
 
@@ -437,15 +437,15 @@ def test_ingest_file_writes_traces_and_prints_counts(small_file, workdir, capsys
 # --- the real tau2 fixture -------------------------------------------------
 
 
-def test_tau2_fixture_ingests_with_its_policy_and_every_call_paired(tau2_small_path, tau2_small, workdir, capsys):
-    summary = ingest.ingest_file(tau2_small_path, workdir)
+def test_world_a_fixture_ingests_with_its_policy_and_every_call_paired(world_a_small_path, world_a_small, workdir, capsys):
+    summary = ingest.ingest_file(world_a_small_path, workdir)
     capsys.readouterr()
-    assert summary["runs"] == len(tau2_small["simulations"]) == 3
+    assert summary["runs"] == len(world_a_small["simulations"]) == 3
     assert summary["tool_calls"] > 0
     assert summary["gate"]["pass"] is True
-    raw = ingest.store_raw(tau2_small_path, workdir)
+    raw = ingest.store_raw(world_a_small_path, workdir)
     traces = ingest.derive_traces(raw.raw_hash, workdir)
-    assert all(t.system_prompt and "retail agent policy" in t.system_prompt.lower() for t in traces)
+    assert all(t.system_prompt and "library agent policy" in t.system_prompt.lower() for t in traces)
     for trace in traces:
         for call in trace.tool_calls:
             assert call.result is not None or call.error is not None
@@ -500,7 +500,7 @@ def test_a_simulation_id_with_path_separators_cannot_escape_the_folders(workdir,
 # --- results that do not parse (ingest-2) ----------------------------------
 
 
-CUT_JSON = '{"orders": [{"order_id": "#W1", "status": "pending"}, {"order_id": "#W2", "sta'
+CUT_JSON = '{"loans": [{"loan_id": "loan_01", "status": "pending"}, {"loan_id": "loan_02", "sta'
 
 
 def test_a_json_result_cut_off_with_or_without_a_marker_fails_the_gate_and_a_whole_one_does_not(
@@ -636,20 +636,7 @@ def test_an_unusable_llm_reply_leaves_the_rule_class_standing(workdir, tmp_path)
         assert (error.class_, error.classified_by) == ("unknown", "rule")
 
 
-# --- formats we have not mapped yet (ingest-8) -----------------------------
-
-
-def test_claude_code_jsonl_is_labelled_and_says_it_is_not_mapped(workdir, tmp_path):
-    path = tmp_path / "cc.jsonl"
-    path.write_text(
-        '{"type":"user","message":{"role":"user","content":"hi"}}\n'
-        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1"}]}}\n',
-        encoding="utf-8",
-    )
-    raw = ingest.store_raw(path, workdir)
-    assert raw.format_detected == "claude_code_jsonl"
-    with pytest.raises(NotImplementedError, match="claude_code_jsonl"):
-        ingest.derive_traces(raw.raw_hash, workdir)
+# --- a JSON array is one document, not JSONL ---------------------------------
 
 
 def test_a_json_array_of_records_is_not_read_as_jsonl():

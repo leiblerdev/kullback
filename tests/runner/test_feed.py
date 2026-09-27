@@ -8,11 +8,11 @@ from kullback.runner import feed
 
 
 def test_events_are_read_once_in_order_from_where_the_reader_left_off(tmp_path):
-    feed.start(tmp_path, model="openai/gpt-5.6-luna")
+    feed.start(tmp_path, model="openai/model-a")
     feed.append(tmp_path, "model_call", stage="mine", usd=0.01)
     rows, offset = feed.read_since(tmp_path, 0)
     assert [row["kind"] for row in rows] == ["build_start", "model_call"]
-    assert rows[0]["model"] == "openai/gpt-5.6-luna" and rows[0]["pid"]
+    assert rows[0]["model"] == "openai/model-a" and rows[0]["pid"]
     again, offset_again = feed.read_since(tmp_path, offset)
     assert again == [] and offset_again == offset
     feed.append(tmp_path, "model_call", stage="cluster", usd=0.02)
@@ -60,10 +60,10 @@ def test_an_enormous_event_is_recorded_as_a_note_not_a_wall_of_text(tmp_path):
 
 
 def test_a_model_call_reads_as_the_stage_the_model_the_tokens_and_the_cost(tmp_path):
-    line = feed.describe({"kind": "model_call", "stage": "compile_tools", "model": "openai/gpt-5.6-luna",
+    line = feed.describe({"kind": "model_call", "stage": "compile_tools", "model": "openai/model-a",
                           "input": 12000, "output": 900, "cache_read": 4000, "usd": 0.0031,
                           "wall_ms": 2400})
-    assert "compile_tools" in line and "openai/gpt-5.6-luna" in line
+    assert "compile_tools" in line and "openai/model-a" in line
     assert "12,000 in / 900 out / 4,000 cached" in line and "$0.0031" in line and "2.4s" in line
 
 
@@ -78,7 +78,7 @@ def test_the_typed_round_and_beat_events_become_feed_rows_and_token_updates_do_n
     assert feed.event_row(MessageUpdate.model_construct()) is None
 
 
-def _cached_reply(workdir, name, model="openai/gpt-5.6-luna", **usage):
+def _cached_reply(workdir, name, model="openai/model-a", **usage):
     directory = workdir / feed.CACHE_DIR
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{name}.json"
@@ -94,7 +94,7 @@ def test_a_build_that_writes_no_feed_is_still_followed_through_its_reply_cache(t
     first = _cached_reply(tmp_path, "aaa")
     os.utime(first, (1000, 1000))
     rows, cursor = feed.derived_since(tmp_path, 0.0)
-    assert [row["model"] for row in rows] == ["openai/gpt-5.6-luna"]
+    assert [row["model"] for row in rows] == ["openai/model-a"]
     assert rows[0]["input"] == 700 and rows[0]["output"] == 400 and cursor == 1000
 
     assert feed.derived_since(tmp_path, cursor) == ([], cursor)
@@ -103,7 +103,7 @@ def test_a_build_that_writes_no_feed_is_still_followed_through_its_reply_cache(t
     rows, cursor = feed.derived_since(tmp_path, cursor)
     assert [row["input"] for row in rows] == [90] and cursor == 2000
 
-    line = feed.describe({"kind": "model_call", "model": "openai/gpt-5.6-luna",
+    line = feed.describe({"kind": "model_call", "model": "openai/model-a",
                           "input": 700, "output": 400})
     assert "700 in / 400 out" in line and "$" not in line and "0.0s" not in line
     assert feed.derived_since(tmp_path / "nowhere", 0.0) == ([], 0.0)

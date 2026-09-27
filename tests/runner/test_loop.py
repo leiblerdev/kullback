@@ -26,10 +26,10 @@ def make_router(stand_in_model=None) -> Router:
 
 
 def scripted() -> TestModel:
-    """Call get_order_details, then answer in words and stop."""
+    """Call get_item_details, then answer in words and stop."""
     return TestModel([
-        {"content": None, "tool_calls": [{"id": "c1", "name": "get_order_details", "arguments": {"order_id": "123"}}]},
-        {"content": "Your order 123 was delivered."},
+        {"content": None, "tool_calls": [{"id": "c1", "name": "get_item_details", "arguments": {"item_id": "123"}}]},
+        {"content": "Your item 123 was delivered."},
     ])
 
 
@@ -46,8 +46,8 @@ def footer_of(path) -> dict:
 
 
 def test_run_writes_one_jsonl_line_per_event(workdir):
-    state = new_run_state("r1", workdir=workdir, system_prompt="you are support", first_user="where is order 123")
-    run(state, scripted(), tools=[{"name": "get_order_details"}], router=make_router())
+    state = new_run_state("r1", workdir=workdir, system_prompt="you are support", first_user="where is item 123")
+    run(state, scripted(), tools=[{"name": "get_item_details"}], router=make_router())
     events = lines_of(state.path)
     assert [e["type"] for e in events] == ["model_call", "tool_call", "tool_result", "model_call", "stop"]
     assert [e["idx"] for e in events] == [0, 1, 2, 3, 4]
@@ -76,11 +76,11 @@ def test_the_tool_result_goes_back_into_the_transcript(workdir):
 
 def test_step_by_step_equals_run(workdir):
     """D90: the loop is a function that advances one turn, and stepping it gives the same JSONL."""
-    whole = new_run_state("r1", workdir=workdir, first_user="where is order 123")
+    whole = new_run_state("r1", workdir=workdir, first_user="where is item 123")
     run(whole, scripted(), router=make_router())
 
     # the same Run, stepped by hand one turn at a time
-    stepped = new_run_state("r1", path=workdir / "stepped.jsonl", first_user="where is order 123")
+    stepped = new_run_state("r1", path=workdir / "stepped.jsonl", first_user="where is item 123")
     model, stepped_router = scripted(), make_router()
     for _ in range(10):
         if stepped.stopped:
@@ -101,7 +101,7 @@ def test_step_by_step_equals_run(workdir):
 
 def test_max_turns_stops_the_run(workdir):
     calling = TestModel(
-        [{"tool_calls": [{"id": "c1", "name": "get_order_details", "arguments": {"order_id": "123"}}]}],
+        [{"tool_calls": [{"id": "c1", "name": "get_item_details", "arguments": {"item_id": "123"}}]}],
         loop=True,
     )
     state = new_run_state("r1", workdir=workdir, max_turns=3)
@@ -127,7 +127,7 @@ def test_a_stand_in_marks_the_run_assisted(workdir):
 def test_a_bad_call_is_answered_and_the_run_carries_on(workdir):
     """D45: a hallucinated tool call has no effect and does not end the Run."""
     model = TestModel([
-        {"tool_calls": [{"id": "c1", "name": "teleport_order", "arguments": {}}]},
+        {"tool_calls": [{"id": "c1", "name": "teleport_item", "arguments": {}}]},
         {"content": "sorry, I cannot do that"},
     ])
     state = new_run_state("r1", workdir=workdir)
@@ -213,7 +213,7 @@ def test_a_user_turn_carries_its_own_marks_and_no_earlier_ones(workdir, user, qu
 
 def _calling() -> TestModel:
     return TestModel(
-        [{"tool_calls": [{"id": "c1", "name": "get_order_details", "arguments": {"order_id": "123"}}]}],
+        [{"tool_calls": [{"id": "c1", "name": "get_item_details", "arguments": {"item_id": "123"}}]}],
         loop=True,
     )
 
@@ -245,7 +245,7 @@ class _Boom(TestModel):
 
 class _Down(TestModel):
     def query(self, messages, tools=None, config=None):
-        raise RetryExhausted("anthropic/claude-opus-5: 5 attempts failed", status=503, attempts=5)
+        raise RetryExhausted("anthropic/model-a: 5 attempts failed", status=503, attempts=5)
 
 
 class _Angry:
@@ -305,8 +305,8 @@ def test_the_model_call_event_replays_through_recordedmodel(workdir):
     run(state, scripted(), router=make_router())
     replayed = RecordedModel(state.path)
     first = replayed.query([])
-    assert first.tool_calls[0].name == "get_order_details"
-    assert replayed.query([]).content == "Your order 123 was delivered."
+    assert first.tool_calls[0].name == "get_item_details"
+    assert replayed.query([]).content == "Your item 123 was delivered."
 
 
 def test_run_record_fields_are_carried_through(workdir):
@@ -323,7 +323,7 @@ def test_run_record_fields_are_carried_through(workdir):
 
     # a Run that wrote ends on a different state hash than it started on, and the footer shows both
     writing = TestModel([
-        {"tool_calls": [{"id": "c1", "name": "cancel_order", "arguments": {"order_id": "123"}}]},
+        {"tool_calls": [{"id": "c1", "name": "cancel_item", "arguments": {"item_id": "123"}}]},
         {"content": "cancelled"},
     ])
     wrote = new_run_state("r2", workdir=workdir)
@@ -331,8 +331,8 @@ def test_run_record_fields_are_carried_through(workdir):
     assert wrote.run.end_state_hash != before
     # The states are on the stop event, not on the footer: the footer is validated as a Run.
     stop = [e for e in wrote.run.events if e.type == "stop"][-1]
-    assert stop.payload["start_state"]["orders"]["123"]["status"] == "delivered"
-    assert stop.payload["end_state"]["orders"]["123"]["status"] == "cancelled"
+    assert stop.payload["start_state"]["items"]["123"]["status"] == "delivered"
+    assert stop.payload["end_state"]["items"]["123"]["status"] == "cancelled"
     assert "start_state" not in footer_of(wrote.path)
 
 
@@ -358,14 +358,17 @@ class Wired(TestModel):
         return reply
 
 
-def test_the_model_call_event_is_priced_and_timed_from_the_exchange(workdir):
+def test_the_model_call_event_is_priced_and_timed_from_the_exchange(workdir, monkeypatch):
     """A Run read on its own used to say every call cost nothing and took no time: only the
     budget ledger's own copy of the call was priced."""
     from kullback.ai.provider import Exchange, ModelReply
     from kullback.ai.usage import Usage
+    from kullback.runner import budget
 
+    monkeypatch.setitem(budget.PRICES, "anthropic/model-a",
+                        {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25})
     model = Wired(
-        [ModelReply(content="Your order 123 was delivered.", model="claude-opus-5",
+        [ModelReply(content="Your item 123 was delivered.", model="model-a",
                     usage=Usage(input=1_000_000))],
         Exchange(provider="anthropic", wall_ms=12.5, attempts=1, status=200),
     )
@@ -374,13 +377,13 @@ def test_the_model_call_event_is_priced_and_timed_from_the_exchange(workdir):
     call = [e for e in lines_of(state.path) if e["type"] == "model_call"][0]
     assert call["cost"]["provider"] == "anthropic"
     assert call["cost"]["wall_ms"] == 12.5
-    # anthropic/claude-opus-5 is 5.00 USD per million input tokens in the offline price table.
+    # anthropic/model-a is 5.00 USD per million input tokens in its registered test price.
     assert call["cost"]["usd"] == pytest.approx(5.0)
     assert call["cost"]["price_source"] == "table"
 
 
 def test_the_stop_event_carries_the_system_prompt_and_the_tool_specs_the_candidate_was_given(workdir):
-    tools = [{"name": "get_order_details", "description": "look one order up"}]
+    tools = [{"name": "get_item_details", "description": "look one item up"}]
     state = new_run_state("r1", workdir=workdir, system_prompt="you are support")
     run(state, scripted(), tools=tools, router=make_router())
     stop = [e for e in lines_of(state.path) if e["type"] == "stop"][-1]

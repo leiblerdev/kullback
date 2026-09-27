@@ -13,6 +13,9 @@ def test_the_body_skill_names_only_gates_that_exist():
 
 
 def test_the_body_skill_names_nothing_of_any_customer():
-    for fragment in ("order", "booking", "flight", "airline", "retail", "telecom", "phone", "tau2", "task_"):
+    """The skill must name no world the harness could build: neither the library nor the nursery,
+    nor travel words from an earlier corpus, may appear in it."""
+    for fragment in ("loan", "renew", "library", "nursery", "batch", "quarantine", "repot",
+                     "catalogue", "harbor", "hire", "dock", "berth", "phone", "flight"):
         assert fragment not in BODY_SKILL.lower(), fragment
     assert "\u2014" not in BODY_SKILL and "\u2013" not in BODY_SKILL

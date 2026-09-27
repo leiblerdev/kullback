@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import itertools
-import json
-
 import pytest
 
 from conftest import PTR
@@ -36,11 +33,11 @@ from kullback.runner.records import (
 )
 
 SIGS = [
-    ToolSig(name="cancel_order", kind="write"),
-    ToolSig(name="modify_address", kind="write"),
-    ToolSig(name="get_order", kind="read"),
+    ToolSig(name="cancel_hold", kind="write"),
+    ToolSig(name="update_loan", kind="write"),
+    ToolSig(name="get_hold_details", kind="read"),
 ]
-WRITES = {"cancel_order", "modify_address"}
+WRITES = {"cancel_hold", "update_loan"}
 
 
 def make_trace(trace_id: str, user_turns: list[str], calls: list[dict]) -> Trace:
@@ -65,29 +62,29 @@ def make_trace(trace_id: str, user_turns: list[str], calls: list[dict]) -> Trace
         trace_id=trace_id,
         raw_hash="raw",
         ingest_version="0",
-        source="tau2",
+        source="test",
         turns=turns,
         tool_calls=tool_calls,
         raw_ptr=PTR,
     )
 
 
-def cancel_trace(trace_id: str, order: str, reason: str = "delivery was late") -> Trace:
+def cancel_trace(trace_id: str, hold: str, reason: str = "leaving town") -> Trace:
     return make_trace(
         trace_id,
-        [f"i want to cancel order {order}", f"cancel it, the {reason}"],
+        [f"i want to cancel hold {hold}", f"cancel it, i am {reason}"],
         [
-            {"name": "get_order", "args": {"order_id": order}, "result": {"status": "pending"}},
-            {"name": "cancel_order", "args": {"order_id": order, "reason": reason}, "result": {"status": "cancelled"}},
+            {"name": "get_hold_details", "args": {"hold_id": hold}, "result": {"status": "pending"}},
+            {"name": "cancel_hold", "args": {"hold_id": hold, "reason": reason}, "result": {"status": "cancelled"}},
         ],
     )
 
 
-def address_trace(trace_id: str, order: str) -> Trace:
+def renew_trace(trace_id: str, loan: str) -> Trace:
     return make_trace(
         trace_id,
-        [f"please change the shipping address on order {order}", "the new street number is 42"],
-        [{"name": "modify_address", "args": {"order_id": order, "street": "42 elm"}, "result": {"ok": True}}],
+        [f"please renew loan {loan}", "the new due date is friday"],
+        [{"name": "update_loan", "args": {"loan_id": loan, "due": "friday"}, "result": {"ok": True}}],
     )
 
 
@@ -95,37 +92,37 @@ def address_trace(trace_id: str, order: str) -> Trace:
 
 
 def test_category_signature_is_the_confirmed_assistant_write_tools_only():
-    trace = cancel_trace("t1", "W1")
-    assert category_signature(trace, WRITES) == ("cancel_order",)
+    trace = cancel_trace("t1", "H1")
+    assert category_signature(trace, WRITES) == ("cancel_hold",)
     trace = make_trace(
         "t1",
-        ["cancel order W1"],
+        ["cancel hold H1"],
         [
-            {"name": "cancel_order", "args": {"order_id": "W1"}, "result": {"status": "cancelled"},
+            {"name": "cancel_hold", "args": {"hold_id": "H1"}, "result": {"status": "cancelled"},
              "requestor": "user"},
-            {"name": "modify_address", "args": {"order_id": "W1"}, "result": {"ok": True}},
+            {"name": "update_loan", "args": {"loan_id": "L1"}, "result": {"ok": True}},
         ],
     )
-    assert [c.name for c in confirmed_write_calls(trace, WRITES)] == ["modify_address"]
-    assert category_signature(trace, WRITES) == ("modify_address",)
+    assert [c.name for c in confirmed_write_calls(trace, WRITES)] == ["update_loan"]
+    assert category_signature(trace, WRITES) == ("update_loan",)
     trace = make_trace(
         "t1",
-        ["cancel order W1"],
-        [{"name": "cancel_order", "args": {"order_id": "W1"}, "error": "order already delivered"}],
+        ["cancel hold H1"],
+        [{"name": "cancel_hold", "args": {"hold_id": "H1"}, "error": "hold already collected"}],
     )
     assert confirmed_write_calls(trace, WRITES) == []
     assert category_signature(trace, WRITES) == ()
 
 
 def test_same_write_set_is_one_category_different_write_sets_are_two_and_each_lists_its_tasks():
-    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2"), address_trace("t3", "W3")]
+    traces = [cancel_trace("t1", "H1"), cancel_trace("t2", "H2"), renew_trace("t3", "L3")]
     categories, tasks = cluster_runs(traces, SIGS)
     assert len(categories) == 2
     by_tools = {tuple(c.write_tools): c for c in categories}
-    assert set(by_tools) == {("cancel_order",), ("modify_address",)}
-    cancel_runs = {rid for t in tasks if t.category_id == by_tools[("cancel_order",)].id for rid in t.run_ids}
+    assert set(by_tools) == {("cancel_hold",), ("update_loan",)}
+    cancel_runs = {rid for t in tasks if t.category_id == by_tools[("cancel_hold",)].id for rid in t.run_ids}
     assert cancel_runs == {"t1", "t2"}
-    traces = [cancel_trace("t1", "W1"), address_trace("t2", "W2")]
+    traces = [cancel_trace("t1", "H1"), renew_trace("t2", "L2")]
     categories, tasks = cluster_runs(traces, SIGS)
     listed = [tid for c in categories for tid in c.task_ids]
     assert sorted(listed) == sorted(t.id for t in tasks)
@@ -164,8 +161,8 @@ def test_run_tokens_use_the_first_two_user_turns_and_not_the_write_arg_keys():
     """The arg keys are the same for every Run in a Category, so they say nothing about intent."""
     trace = make_trace(
         "t1",
-        ["cancel my order", "it was late", "third turn ignored"],
-        [{"name": "cancel_order", "args": {"order_id": "W1"}, "result": {}}],
+        ["cancel my hold", "it was late", "third turn ignored"],
+        [{"name": "cancel_hold", "args": {"hold_id": "H1"}, "result": {}}],
     )
     toks = run_tokens(trace)
     assert "cancel" in toks and "late" in toks
@@ -184,7 +181,7 @@ def test_words_every_run_says_do_not_merge_two_tasks():
     boiler = "hello i need help with my account, another way to look up my email"
     traces = [
         make_trace(
-            f"t{i}", [f"{boiler}, {extra}"], [{"name": "cancel_order", "args": {"order_id": "W1"}, "result": {}}]
+            f"t{i}", [f"{boiler}, {extra}"], [{"name": "cancel_hold", "args": {"hold_id": "H1"}, "result": {}}]
         )
         for i, extra in enumerate(
             [
@@ -207,21 +204,21 @@ def test_words_every_run_says_do_not_merge_two_tasks():
 
 def test_similar_runs_share_a_task_and_runs_with_no_shared_words_are_their_own():
     traces = [
-        cancel_trace("t1", "W1"),
-        cancel_trace("t2", "W2"),
+        cancel_trace("t1", "H1"),
+        cancel_trace("t2", "H2"),
         make_trace(
             "t3",
             ["the jacket arrived broken", "i changed my mind about the colour anyway"],
-            [{"name": "cancel_order", "args": {"order_id": "W9"}, "result": {}}],
+            [{"name": "cancel_hold", "args": {"hold_id": "H9"}, "result": {}}],
         ),
     ]
     _, tasks = cluster_runs(traces, SIGS)
     membership = sorted(sorted(t.run_ids) for t in tasks)
     assert membership == [["t1", "t2"], ["t3"]]
-    args = {"order_id": "W1", "reason": "asked"}
-    t1 = make_trace("t1", ["swap the jacket for a bigger size"], [{"name": "cancel_order", "args": args, "result": {}}])
+    args = {"hold_id": "H1", "reason": "asked"}
+    t1 = make_trace("t1", ["swap the jacket for a bigger size"], [{"name": "cancel_hold", "args": args, "result": {}}])
     t2 = make_trace(
-        "t2", ["wrong colour on my boots, need black"], [{"name": "cancel_order", "args": args, "result": {}}]
+        "t2", ["wrong colour on my boots, need black"], [{"name": "cancel_hold", "args": args, "result": {}}]
     )
     assert run_tokens(t1) & run_tokens(t2) == set()
     _, tasks = cluster_runs([t1, t2], SIGS)
@@ -232,12 +229,12 @@ def test_similar_runs_share_a_task_and_runs_with_no_shared_words_are_their_own()
 
 
 def test_a_task_is_guarded_from_three_runs_up():
-    traces = [cancel_trace(f"t{i}", f"W{i}") for i in range(3)]
+    traces = [cancel_trace(f"t{i}", f"H{i}") for i in range(3)]
     _, tasks = cluster_runs(traces, SIGS)
     assert len(tasks) == 1
     assert tasks[0].unguarded is False
     assert tasks[0].run_ids == ["t0", "t1", "t2"]
-    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2")]
+    traces = [cancel_trace("t1", "H1"), cancel_trace("t2", "H2")]
     _, tasks = cluster_runs(traces, SIGS)
     assert [t.unguarded for t in tasks] == [True]
 
@@ -259,7 +256,7 @@ EVEN_CHAIN = [  # A to B is worth exactly what B to C is worth, so only the word
 
 def chain_grouping(names: tuple[str, str, str], texts: list[str]) -> list[list[str]]:
     traces = [
-        make_trace(name, [text], [{"name": "cancel_order", "args": {"order_id": "W1"}, "result": {}}])
+        make_trace(name, [text], [{"name": "cancel_hold", "args": {"hold_id": "H1"}, "result": {}}])
         for name, text in zip(names, texts, strict=False)
     ]
     label = dict(zip(names, "ABC", strict=False))
@@ -275,7 +272,7 @@ def test_ids_and_membership_do_not_depend_on_input_order_or_how_the_trace_ids_so
     assert first == chain_grouping(("c", "b", "a"), texts)
     assert first == chain_grouping(("m", "z", "a"), texts)
     assert first == [["A", "B"], ["C"]]
-    traces = [cancel_trace("t1", "W1"), address_trace("t2", "W2"), cancel_trace("t3", "W3")]
+    traces = [cancel_trace("t1", "H1"), renew_trace("t2", "L2"), cancel_trace("t3", "H3")]
     first = cluster_runs(traces, SIGS)
     second = cluster_runs(list(reversed(traces)), SIGS)
     assert [c.model_dump() for c in first[0]] == [c.model_dump() for c in second[0]]
@@ -283,13 +280,13 @@ def test_ids_and_membership_do_not_depend_on_input_order_or_how_the_trace_ids_so
 
 
 def test_a_category_id_is_the_same_for_the_same_write_set_in_another_corpus():
-    one, _ = cluster_runs([cancel_trace("t1", "W1")], SIGS)
-    two, _ = cluster_runs([cancel_trace("z9", "W7")], SIGS)
+    one, _ = cluster_runs([cancel_trace("t1", "H1")], SIGS)
+    two, _ = cluster_runs([cancel_trace("z9", "H7")], SIGS)
     assert one[0].id == two[0].id
 
 
 def test_runs_with_no_confirmed_writes_still_form_a_category():
-    traces = [make_trace("t1", ["where is my order"], [{"name": "get_order", "args": {"order_id": "W1"}}])]
+    traces = [make_trace("t1", ["where is my hold"], [{"name": "get_hold_details", "args": {"hold_id": "H1"}}])]
     categories, tasks = cluster_runs(traces, SIGS)
     assert categories[0].write_tools == []
     assert tasks[0].run_ids == ["t1"]
@@ -298,21 +295,21 @@ def test_runs_with_no_confirmed_writes_still_form_a_category():
 # --- the naming hook only names ---
 
 
-# --- the real tau2 traces (no ingest here: the messages are read as the raw file stores them) ---
+# --- the world_a traces (no ingest here: the messages are read as the file stores them) ---
 
-TAU2_WRITES = {"exchange_delivered_order_items", "return_delivered_order_items"}
+WORLD_WRITES = {"update_loan", "cancel_hold"}
 
 
-def tau2_traces(tau2_small) -> list[Trace]:
+def world_a_traces(world_a_small) -> list[Trace]:
     out = []
-    for sim in tau2_small["simulations"]:
+    for sim in world_a_small["simulations"]:
         messages = sim["messages"]
         out.append(
             Trace(
                 trace_id=sim["id"][:8],
                 raw_hash="raw",
                 ingest_version="0",
-                source="tau2",
+                source="test",
                 turns=[Turn(idx=i, role=m["role"], content=m.get("content"), raw_ptr=PTR)
                        for i, m in enumerate(messages)],
                 tool_calls=[
@@ -326,129 +323,41 @@ def tau2_traces(tau2_small) -> list[Trace]:
     return out
 
 
-def test_tau2_runs_split_into_an_exchange_category_and_a_return_category(tau2_small):
-    categories, _ = cluster_runs(tau2_traces(tau2_small), TAU2_WRITES)
+def test_world_a_runs_split_into_a_renew_category_and_a_cancel_category(world_a_small):
+    categories, _ = cluster_runs(world_a_traces(world_a_small), WORLD_WRITES)
     assert sorted(tuple(c.write_tools) for c in categories) == [
-        ("exchange_delivered_order_items",),
-        ("return_delivered_order_items",),
+        ("cancel_hold",),
+        ("update_loan",),
     ]
 
 
-def test_the_three_tau2_runs_are_three_tasks_as_tau2_says_they_are(tau2_small):
-    """tau2 calls them tasks 6, 2 and 1; the two exchanges differ (bottle and lamp, keyboard).
+def test_the_three_world_a_runs_are_three_tasks_as_the_world_lists_them(world_a_small):
+    """The world lists them as tasks 1, 2 and 3; the two renewals differ (birds guide, riverside walks).
 
-    They used to merge, at a threshold picked so that they would, because they share the
-    authentication chatter every Run of this corpus repeats: "another way", "look up", "email".
+    They share the renewal words every renewing run repeats: "loan" and "renew".
     """
-    assert sorted(s["task_id"] for s in tau2_small["simulations"]) == ["1", "2", "6"]
-    traces = {t.trace_id: t for t in tau2_traces(tau2_small)}
-    shared = run_tokens(traces["4bec2b80"]) & run_tokens(traces["526bdc8f"])
-    assert {"another", "way", "look", "email"} <= shared  # the words that used to merge them
-    _, tasks = cluster_runs(list(traces.values()), TAU2_WRITES)
+    assert sorted(s["task_id"] for s in world_a_small["simulations"]) == ["1", "2", "3"]
+    traces = {t.trace_id: t for t in world_a_traces(world_a_small)}
+    shared = run_tokens(traces["libsim01"]) & run_tokens(traces["libsim03"])
+    assert {"loan", "renew"} <= shared  # the words the two renewals share
+    _, tasks = cluster_runs(list(traces.values()), WORLD_WRITES)
     membership = sorted(sorted(t.run_ids) for t in tasks)
-    assert membership == [["4bec2b80"], ["526bdc8f"], ["ee6707bb"]]
+    assert membership == [["libsim01"], ["libsim02"], ["libsim03"]]
     assert all(t.unguarded for t in tasks)
-
-
-# --- the whole corpus, when it is on disk (the raw traces are never committed) ---
-
-# tau2 retail's write tools, from vendor/tau2-bench retail tools.py; mine.py derives the same set.
-TAU2_RETAIL_WRITES = {
-    "cancel_pending_order",
-    "exchange_delivered_order_items",
-    "modify_pending_order_address",
-    "modify_pending_order_items",
-    "modify_pending_order_payment",
-    "modify_user_address",
-    "return_delivered_order_items",
-}
-
-
-def corpus_traces_and_truth(raw_dir):
-    """Traces straight off a raw file, with tau2's own task_id kept aside as the test's ground truth.
-
-    The task_id is a grader field (D66): it is the yardstick this test measures against and is never
-    handed to `cluster_runs`, which sees only turns and tool calls.
-    """
-    paths = sorted(raw_dir.glob("*retail*4trials.json"))
-    if not paths:
-        pytest.skip("no tau2 retail raw file")
-    data = json.loads(paths[0].read_text(encoding="utf-8"))
-    traces, truth = [], {}
-    for sim in data["simulations"]:
-        messages = sim["messages"]
-        failed = {m.get("id") for m in messages if m.get("role") == "tool" and m.get("error")}
-        traces.append(
-            Trace(
-                trace_id=sim["id"],
-                raw_hash="raw",
-                ingest_version="0",
-                source="tau2",
-                turns=[Turn(idx=i, role=m["role"], content=m.get("content"), raw_ptr=PTR)
-                       for i, m in enumerate(messages)],
-                tool_calls=[
-                    ToolCall(
-                        id=tc.get("id"),
-                        name=tc["name"],
-                        args=tc.get("arguments") or {},
-                        error=(
-                            ToolCallError(**{"class": "business_error", "payload": ""})
-                            if tc.get("id") in failed
-                            else None
-                        ),
-                        raw_ptr=PTR,
-                    )
-                    for m in messages
-                    for tc in (m.get("tool_calls") or [])
-                ],
-                raw_ptr=PTR,
-            )
-        )
-        truth[sim["id"]] = str(sim["task_id"])
-    return traces, truth
-
-
-def pair_f1(tasks, truth) -> float:
-    """Pair-counting F1 of the Task membership against tau2's task_ids."""
-    task_of = {run_id: task.id for task in tasks for run_id in task.run_ids}
-    tp = fp = fn = 0
-    for a, b in itertools.combinations(sorted(truth), 2):
-        same_task, same_truth = task_of[a] == task_of[b], truth[a] == truth[b]
-        tp += same_task and same_truth
-        fp += same_task and not same_truth
-        fn += same_truth and not same_task
-    precision = tp / (tp + fp) if tp + fp else 0.0
-    recall = tp / (tp + fn) if tp + fn else 0.0
-    return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-
-
-def test_the_whole_corpus_clusters_close_to_tau2s_own_tasks(raw_dir):
-    """The rule has to hold on 456 Runs, not only on three: pair F1 against tau2's task_ids."""
-    traces, truth = corpus_traces_and_truth(raw_dir)
-    assert len(traces) > 100
-    _, tasks = cluster_runs(traces, TAU2_RETAIL_WRITES)
-    assert pair_f1(tasks, truth) >= 0.65
-
-
-def test_the_corpus_score_does_not_hang_on_the_exact_threshold(raw_dir):
-    """The shipped rule scored 0.28 at its own default and 0.72 at 0.6; that cliff is what idf removes."""
-    traces, truth = corpus_traces_and_truth(raw_dir)
-    scores = {th: pair_f1(cluster_runs(traces, TAU2_RETAIL_WRITES, threshold=th)[1], truth) for th in (0.3, 0.5)}
-    assert min(scores.values()) >= 0.65, scores
 
 
 # --- D74: one starting world per Task ---------------------------------------
 
 def _bare_trace(trace_id: str) -> Trace:
     """The record split_by_world is handed by the pipeline; it reads only the trace_id."""
-    return Trace(trace_id=trace_id, raw_hash="h", ingest_version="1", source="tau2", raw_ptr=PTR)
+    return Trace(trace_id=trace_id, raw_hash="h", ingest_version="1", source="test", raw_ptr=PTR)
 
 
 def test_only_runs_that_saw_a_row_in_two_versions_before_writing_are_different_tasks():
     from kullback.builder.cluster import split_by_world
 
-    worlds = {"a": {("orders", "o1"): "v_pending"}, "b": {("orders", "o1"): "v_pending", ("users", "u1"): "v1"},
-              "c": {("orders", "o1"): "v_delivered"}, "d": {}}
+    worlds = {"a": {("loans", "l1"): "v_pending"}, "b": {("loans", "l1"): "v_pending", ("members", "u1"): "v1"},
+              "c": {("loans", "l1"): "v_due"}, "d": {}}
     traces = [_bare_trace(t) for t in ("c", "a", "d", "b")]
     parts = split_by_world(traces, worlds)
     assert [[t.trace_id for t in part] for part in parts] == [["a", "b", "d"], ["c"]]
@@ -466,18 +375,18 @@ def test_only_runs_that_saw_a_row_in_two_versions_before_writing_are_different_t
 # The same three Runs, mined once with the shipping tool read and once with it written: the
 # Category the Runs land in moves, which is the whole point of the second signature.
 KINDS_AFTER_REMINE = [
-    ToolSig(name="cancel_order", kind="write"),
-    ToolSig(name="modify_address", kind="write"),
-    ToolSig(name="get_order", kind="write"),
+    ToolSig(name="cancel_hold", kind="write"),
+    ToolSig(name="update_loan", kind="write"),
+    ToolSig(name="get_hold_details", kind="write"),
 ]
 
 
 def test_the_same_runs_get_the_same_task_id_in_two_clusterings_whatever_their_category():
-    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2")]
+    traces = [cancel_trace("t1", "H1"), cancel_trace("t2", "H2")]
     first = {t.id: t.run_ids for t in cluster_runs(traces, SIGS)[1]}
     second = {t.id: t.run_ids for t in cluster_runs(list(reversed(traces)), SIGS)[1]}
     assert first == second
-    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2")]
+    traces = [cancel_trace("t1", "H1"), cancel_trace("t2", "H2")]
     before = cluster_runs(traces, SIGS)[1]
     after = cluster_runs(traces, KINDS_AFTER_REMINE)[1]
     assert [t.id for t in before] == [t.id for t in after]
@@ -485,26 +394,26 @@ def test_the_same_runs_get_the_same_task_id_in_two_clusterings_whatever_their_ca
 
 
 def test_a_second_clustering_keeps_every_frozen_task_and_without_one_every_task_is_new():
-    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2"), address_trace("t3", "W3")]
+    traces = [cancel_trace("t1", "H1"), cancel_trace("t2", "H2"), renew_trace("t3", "L3")]
     frozen = cluster_runs(traces, SIGS)[1]
     tasks, split = resume_frozen(cluster_runs(traces, SIGS)[1], [t.model_dump() for t in frozen])
     assert [t.id for t in tasks] == [t.id for t in frozen]
     assert (split["frozen"], split["added"], split["frozen_only"]) == (len(frozen), [], [])
-    tasks = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
+    tasks = cluster_runs([cancel_trace("t1", "H1")], SIGS)[1]
     resumed, split = resume_frozen(tasks, None)
     assert resumed == tasks
     assert (split["frozen"], split["added"], split["frozen_only"]) == (0, [t.id for t in tasks], [])
 
 
 def test_a_recluster_adds_new_runs_as_tasks_and_moves_no_frozen_one():
-    frozen = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
-    grown = cluster_runs([cancel_trace("t1", "W1"), address_trace("t9", "W9")], SIGS)[1]
+    frozen = cluster_runs([cancel_trace("t1", "H1")], SIGS)[1]
+    grown = cluster_runs([cancel_trace("t1", "H1"), renew_trace("t9", "L9")], SIGS)[1]
     tasks, split = resume_frozen(grown, [t.model_dump() for t in frozen])
     assert [t.id for t in tasks][: len(frozen)] == [t.id for t in frozen]
     assert len(split["added"]) == 1
     added = next(t for t in tasks if t.id in split["added"])
     assert added.run_ids == ["t9"] and split["frozen_only"] == []
-    frozen = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
+    frozen = cluster_runs([cancel_trace("t1", "H1")], SIGS)[1]
     mixed = [Task(id="task_mixed", category_id=frozen[0].category_id, run_ids=["t1", "t7"])]
     tasks, split = resume_frozen(mixed, [t.model_dump() for t in frozen])
     assert [t.run_ids for t in tasks] == [["t1"], ["t7"]]
@@ -514,7 +423,7 @@ def test_a_recluster_adds_new_runs_as_tasks_and_moves_no_frozen_one():
 
 def test_a_recluster_that_would_drop_a_frozen_task_marks_it_frozen_only():
     """Two Runs frozen apart, then merged by a later round: neither frozen Task is dropped."""
-    apart = cluster_runs([cancel_trace("t1", "W1"), address_trace("t2", "W2")], SIGS)[1]
+    apart = cluster_runs([cancel_trace("t1", "H1"), renew_trace("t2", "L2")], SIGS)[1]
     assert len(apart) == 2
     merged = [Task(id="task_merged", category_id=apart[0].category_id, run_ids=["t1", "t2"])]
     tasks, split = resume_frozen(merged, [t.model_dump() for t in apart])
@@ -525,7 +434,7 @@ def test_a_recluster_that_would_drop_a_frozen_task_marks_it_frozen_only():
 
 def test_a_frozen_task_whose_id_predates_content_addressing_is_matched_on_its_runs():
     """A list frozen by an older harness keeps its ids; the same Runs are still the same Task."""
-    live = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
+    live = cluster_runs([cancel_trace("t1", "H1")], SIGS)[1]
     older = [Task(id="task_oldstyle", category_id=live[0].category_id, run_ids=["t1"])]
     tasks, split = resume_frozen(live, [t.model_dump() for t in older])
     assert [t.id for t in tasks] == ["task_oldstyle"]

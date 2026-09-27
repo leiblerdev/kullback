@@ -23,14 +23,14 @@ from kullback.builder.policy import (
 from kullback.gates.verifier_suite import HELPERS_SRC
 from kullback.runner.records import Constraint, ConstraintTests, Event, Run
 
-# --- the three real retail policy sentences the module is exercised on ---
+# --- the three library policy sentences the module is exercised on ---
 
-CONFIRM = "explicit user confirmation"
-AUTH = "authenticate the user identity"
-MAKEUP = "should not make up any information"
+CONFIRM = "explicitly confirm"
+AUTH = "finding their member id"
+MAKEUP = "Do not invent copy availability"
 
 
-CONFIRM_PRED = '''WRITE_TOOLS = ("cancel_pending_order", "modify_pending_order_address", "return_delivered_order_items")
+CONFIRM_PRED = '''WRITE_TOOLS = ("update_loan", "cancel_hold")
 
 
 def check(pre_state, write_call, transcript):
@@ -43,9 +43,9 @@ CONFIRM_TESTS = {
     "pos": [
         {
             "pre_state": {},
-            "write_call": {"name": "cancel_pending_order", "arguments": {"order_id": "#W1"}},
+            "write_call": {"name": "cancel_hold", "arguments": {"hold_id": "hold_01"}},
             "transcript": [
-                {"role": "assistant", "content": "I will cancel order #W1 for a refund. Shall I proceed?"},
+                {"role": "assistant", "content": "I will cancel hold hold_01. Shall I proceed?"},
                 {"role": "user", "content": "yes please"},
             ],
         }
@@ -53,17 +53,17 @@ CONFIRM_TESTS = {
     "neg": [
         {
             "pre_state": {},
-            "write_call": {"name": "cancel_pending_order", "arguments": {"order_id": "#W1"}},
+            "write_call": {"name": "cancel_hold", "arguments": {"hold_id": "hold_01"}},
             "transcript": [{"role": "user", "content": "how much do I get back for it?"}],
         }
     ],
 }
 
 AUTH_BAD_PRED = '''def check(pre_state, write_call, transcript):
-    return called_before(transcript, "find_user_id_by_email")
+    return called_before(transcript, "find_member_id_by_email")
 '''
 
-AUTH_GOOD_PRED = '''LOOKUPS = ("find_user_id_by_email", "find_user_id_by_name_zip")
+AUTH_GOOD_PRED = '''LOOKUPS = ("find_member_id_by_email", "find_member_id_by_name_zip")
 
 
 def check(pre_state, write_call, transcript):
@@ -76,16 +76,16 @@ AUTH_TESTS = {
     "pos": [
         {
             "pre_state": {},
-            "write_call": {"name": "get_order_details", "arguments": {"order_id": "#W1"}},
+            "write_call": {"name": "get_loan_details", "arguments": {"loan_id": "loan_01"}},
             "transcript": [
-                {"role": "assistant", "tool_calls": [{"name": "find_user_id_by_name_zip", "arguments": {}}]}
+                {"role": "assistant", "tool_calls": [{"name": "find_member_id_by_name_zip", "arguments": {}}]}
             ],
         }
     ],
     "neg": [
         {
             "pre_state": {},
-            "write_call": {"name": "get_order_details", "arguments": {"order_id": "#W1"}},
+            "write_call": {"name": "get_loan_details", "arguments": {"loan_id": "loan_01"}},
             "transcript": [],
         }
     ],
@@ -108,8 +108,8 @@ def _sentence(policy_md, needle):
 
 
 @pytest.fixture(scope="session")
-def policy_md(tau2_retail_dir) -> str:
-    return (tau2_retail_dir / "policy.md").read_text(encoding="utf-8")
+def policy_md(world_dir) -> str:
+    return (world_dir("world_a") / "policy.md").read_text(encoding="utf-8")
 
 
 # --- split_policy ---
@@ -120,7 +120,7 @@ def test_split_policy_finds_the_three_sentences(policy_md):
     assert any(CONFIRM in t for t in texts)
     assert any(AUTH in t for t in texts)
     assert any(MAKEUP in t for t in texts)
-    assert len(texts) > 30
+    assert len(texts) == 10
 
 
 def test_split_policy_spans_point_back_at_the_source(policy_md):
@@ -133,19 +133,19 @@ def test_split_policy_spans_point_back_at_the_source(policy_md):
 def test_split_policy_drops_headings_and_keeps_the_section(policy_md):
     items = split_policy(policy_md)
     assert not any(s.text.startswith("#") for s in items)
-    assert any(s.section == "User" for s in items)
+    assert {s.section for s in items} == {"Library agent policy"}
     confirm = _sentence(policy_md, CONFIRM)
-    assert confirm.section == "Retail agent policy"  # the H1, the last heading above it
+    assert confirm.section == "Library agent policy"  # the H1, the last heading above it
 
 
 def test_split_policy_ends_a_sentence_after_a_quote_but_not_on_abbreviations_or_times(policy_md):
     texts = [s.text for s in split_policy(policy_md)]
-    assert any("e.g." in t and len(t.split()) > 6 for t in texts)
-    assert not any(t.strip() in {"g.", "e.", "30:00\" means 2:30 AM EST."} for t in texts)
+    assert any("(renewals)" in t for t in texts)
+    assert not any(t.strip() in {"a.", "e.", "members:"} for t in texts)
     confirm = _sentence(policy_md, CONFIRM)
-    assert confirm.text.startswith("Before taking any action")
-    assert confirm.text.endswith("to proceed.")
-    assert "e.g." not in confirm.text
+    assert confirm.text.startswith("A loan change or a hold cancellation")
+    assert confirm.text.endswith("is made.")
+    assert "(renewals)" not in confirm.text
     items = split_policy('The user must say "yes." Then the agent may proceed.')
     assert [s.text for s in items] == ['The user must say "yes."', "Then the agent may proceed."]
 
@@ -246,8 +246,8 @@ def test_run_constraint_tests_ignores_an_expect_the_model_put_in_its_own_case():
     """A constant predicate must not pass by declaring the positive case false (the gate owns expect)."""
     src = "def check(pre_state, write_call, transcript):\n    return False\n"
     tests = {
-        "pos": [{"write_call": {"name": "cancel_pending_order"}, "expect": False}],
-        "neg": [{"write_call": {"name": "cancel_pending_order"}}],
+        "pos": [{"write_call": {"name": "cancel_hold"}, "expect": False}],
+        "neg": [{"write_call": {"name": "cancel_hold"}}],
     }
     gate = run_constraint_tests(_constraint(src, tests))
     assert gate.passed is False
@@ -286,7 +286,7 @@ def test_helpers_are_available_to_the_predicate():
     gate = run_constraint_tests(_constraint(AUTH_GOOD_PRED, AUTH_TESTS))
     assert gate.passed is True
     tests = json.loads(json.dumps(AUTH_TESTS))
-    tests["pos"][0]["transcript"] = [{"role": "assistant", "tool_calls": [{"name": "get_order_details"}]}]
+    tests["pos"][0]["transcript"] = [{"role": "assistant", "tool_calls": [{"name": "get_loan_details"}]}]
     assert run_constraint_tests(_constraint(AUTH_GOOD_PRED, tests)).passed is False, "called_before must read names"
     said_before = _helpers()["said_before"]
     turns = [{"role": "assistant", "content": "Your refund goes to the ORIGINAL card."}]
@@ -298,7 +298,7 @@ def test_helpers_are_available_to_the_predicate():
 def test_user_confirmed_needs_a_yes_to_something_that_was_proposed():
     """D43 case 3: a Hard constraint that reads the transcript must not read a refusal as consent."""
     user_confirmed = _helpers()["user_confirmed"]
-    ask = {"role": "assistant", "content": "I will cancel order #W1 for a refund. Shall I proceed?"}
+    ask = {"role": "assistant", "content": "I will cancel hold hold_01. Shall I proceed?"}
 
     def reply(text):
         return user_confirmed([ask, {"role": "user", "content": text}])
@@ -308,9 +308,9 @@ def test_user_confirmed_needs_a_yes_to_something_that_was_proposed():
     assert reply("No, do not proceed.") is False
     assert reply("That is not correct, please don't.") is False
     assert reply("No thanks, it's ok as it is.") is False
-    assert reply("Hmm, which order is that?") is False
+    assert reply("Hmm, which hold is that?") is False
     # an opening turn nobody asked for is not consent
-    assert user_confirmed([{"role": "user", "content": "Yes hello, I want to ask about my order."}]) is False
+    assert user_confirmed([{"role": "user", "content": "Yes hello, I want to ask about my hold."}]) is False
     # the proposal has to come before the yes, and it has to be a proposal
     assert user_confirmed([{"role": "assistant", "content": "I cancelled it."},
                            {"role": "user", "content": "yes"}]) is False
@@ -347,8 +347,8 @@ def test_compile_rule_rewrites_when_the_first_predicate_fails_its_tests(policy_m
     """D76: a rule that does not compile is rewritten for review, not silently dropped."""
     sentence = _sentence(policy_md, AUTH)
     rewritten = (
-        "Before any tool call other than a user lookup, the transcript must already contain "
-        "a call to find_user_id_by_email or find_user_id_by_name_zip."
+        "Before any tool call other than a member lookup, the transcript must already contain "
+        "a call to find_member_id_by_email or find_member_id_by_name_zip."
     )
     model = TestModel(
         [
@@ -524,7 +524,7 @@ def _run(pairs) -> Run:
 
 CONFIRM_ONLY_PRED = (
     "def check(pre_state, write_call, transcript):\n"
-    "    if write_call.get('name') != 'cancel_pending_order':\n"
+    "    if write_call.get('name') != 'cancel_hold':\n"
     "        return True\n"
     "    return user_confirmed(transcript)\n"
 )
@@ -534,13 +534,13 @@ def test_reference_violations_finds_a_rule_the_gold_path_itself_breaks():
     rule = Constraint(id="k1", text="never cancel without confirmation", compiled=True,
                       predicate_src=CONFIRM_ONLY_PRED)
     unconfirmed = _run([
-        ("user_turn", {"content": "cancel #W1"}),
-        ("tool_call", {"name": "cancel_pending_order", "args": {"order_id": "#W1"}}),
+        ("user_turn", {"content": "cancel hold_01"}),
+        ("tool_call", {"name": "cancel_hold", "args": {"hold_id": "hold_01"}}),
         ("stop", {"start_state": {}, "end_state": {}}),
     ])
     hits = reference_violations([rule], [unconfirmed])
     assert [(h["run_id"], h["constraint_id"], h["tool"]) for h in hits] == [
-        ("ref", "k1", "cancel_pending_order")
+        ("ref", "k1", "cancel_hold")
     ]
 
 
@@ -549,14 +549,14 @@ def test_reference_violations_reads_the_transcript_before_the_write_only():
     rule = Constraint(id="k1", text="never cancel without confirmation", compiled=True,
                       predicate_src=CONFIRM_ONLY_PRED)
     before = _run([
-        ("model_call", {"content": "I will cancel order #W1. Shall I proceed?"}),
+        ("model_call", {"content": "I will cancel hold hold_01. Shall I proceed?"}),
         ("user_turn", {"content": "yes"}),
-        ("tool_call", {"name": "cancel_pending_order", "args": {"order_id": "#W1"}}),
+        ("tool_call", {"name": "cancel_hold", "args": {"hold_id": "hold_01"}}),
         ("stop", {"start_state": {}, "end_state": {}}),
     ])
     after = _run([
-        ("user_turn", {"content": "cancel #W1"}),
-        ("tool_call", {"name": "cancel_pending_order", "args": {"order_id": "#W1"}}),
+        ("user_turn", {"content": "cancel hold_01"}),
+        ("tool_call", {"name": "cancel_hold", "args": {"hold_id": "hold_01"}}),
         ("model_call", {"content": "Cancelled. Was that right?"}),
         ("user_turn", {"content": "yes"}),
         ("stop", {"start_state": {}, "end_state": {}}),
@@ -570,7 +570,7 @@ def test_reference_violations_skips_rules_that_are_not_compiled_code():
     pending = Constraint(id="k3", text="lookup first", rewritten_text="lookup first",
                          predicate_src=CONFIRM_ONLY_PRED)
     run = _run([
-        ("tool_call", {"name": "cancel_pending_order", "args": {"order_id": "#W1"}}),
+        ("tool_call", {"name": "cancel_hold", "args": {"hold_id": "hold_01"}}),
         ("stop", {"start_state": {}, "end_state": {}}),
     ])
     assert reference_violations([judged, pending], [run]) == []

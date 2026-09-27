@@ -478,7 +478,7 @@ def test_a_refusal_on_an_empty_run_that_passes_a_communicate_atom_names_it_and_g
 
     answering = VF.make_run("answering", [
         VF.user("What is the status of order #W123?"),
-        VF.call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        VF.call("get_loan_details", {"loan_id": "#W123"}, kind="read", cid="c0"),
         VF.result(VF.ORDER, cid="c0"), VF.assistant("Order #W123 is pending."), VF.user("Thanks, bye.")])
     derived = derive_verifier(VF.TASK, answering, [], CanonRules(), write_tools=VF.WRITE_TOOLS)
     [said] = [a for a in derived.atoms if atom_payload(a).get("kind") == "communicate"]

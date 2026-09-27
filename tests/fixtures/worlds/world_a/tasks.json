@@ -1,0 +1,148 @@
+[
+  {
+    "description": {
+      "notes": null,
+      "purpose": null,
+      "relevant_policies": null
+    },
+    "evaluation_criteria": {
+      "actions": [
+        {
+          "action_id": "1_0",
+          "arguments": {
+            "first_name": "Robin",
+            "last_name": "Alder",
+            "zip": "11201"
+          },
+          "info": null,
+          "name": "find_member_id_by_name_zip"
+        },
+        {
+          "action_id": "1_1",
+          "arguments": {
+            "loan_id": "loan_01"
+          },
+          "info": null,
+          "name": "get_loan_details"
+        },
+        {
+          "action_id": "1_2",
+          "arguments": {
+            "loan_id": "loan_01"
+          },
+          "info": null,
+          "name": "update_loan"
+        }
+      ]
+    },
+    "id": "1",
+    "initial_state": null,
+    "ticket": null,
+    "user_scenario": {
+      "instructions": {
+        "domain": "library",
+        "known_info": "You are Robin Alder in zip code 11201.",
+        "reason_for_call": "You borrowed loan_01, a guide to backyard birds, and want to renew it before it is due.",
+        "task_instructions": "Ask for the renewal in one go and confirm it when asked.",
+        "unknown_info": "You do not remember your email address."
+      },
+      "persona": null
+    }
+  },
+  {
+    "description": {
+      "notes": null,
+      "purpose": null,
+      "relevant_policies": null
+    },
+    "evaluation_criteria": {
+      "actions": [
+        {
+          "action_id": "2_0",
+          "arguments": {
+            "email": "casey.birch@example.org"
+          },
+          "info": null,
+          "name": "find_member_id_by_email"
+        },
+        {
+          "action_id": "2_1",
+          "arguments": {
+            "hold_id": "hold_01"
+          },
+          "info": null,
+          "name": "get_hold_details"
+        },
+        {
+          "action_id": "2_2",
+          "arguments": {
+            "hold_id": "hold_01"
+          },
+          "info": null,
+          "name": "cancel_hold"
+        }
+      ]
+    },
+    "id": "2",
+    "initial_state": null,
+    "ticket": null,
+    "user_scenario": {
+      "instructions": {
+        "domain": "library",
+        "known_info": "You are Casey Birch and your email is casey.birch@example.org.",
+        "reason_for_call": "You placed hold_01 on The Night Train and now need to cancel it.",
+        "task_instructions": "Ask for the cancellation in one go and confirm it when asked.",
+        "unknown_info": "You do not know the hold numbers of other members."
+      },
+      "persona": null
+    }
+  },
+  {
+    "description": {
+      "notes": null,
+      "purpose": null,
+      "relevant_policies": null
+    },
+    "evaluation_criteria": {
+      "actions": [
+        {
+          "action_id": "3_0",
+          "arguments": {
+            "email": "jamie.cedar@example.org"
+          },
+          "info": null,
+          "name": "find_member_id_by_email"
+        },
+        {
+          "action_id": "3_1",
+          "arguments": {
+            "loan_id": "loan_03"
+          },
+          "info": null,
+          "name": "get_loan_details"
+        },
+        {
+          "action_id": "3_2",
+          "arguments": {
+            "loan_id": "loan_03"
+          },
+          "info": null,
+          "name": "update_loan"
+        }
+      ]
+    },
+    "id": "3",
+    "initial_state": null,
+    "ticket": null,
+    "user_scenario": {
+      "instructions": {
+        "domain": "library",
+        "known_info": "You are Jamie Cedar and your email is jamie.cedar@example.org.",
+        "reason_for_call": "You want to renew loan_03, and you are curious what another member has checked out.",
+        "task_instructions": "Ask for the renewal, ask about the other member once, then confirm.",
+        "unknown_info": "You do not know the other member's loans."
+      },
+      "persona": null
+    }
+  }
+]

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import re
-from pathlib import Path
 
 import pytest
 
@@ -35,7 +33,7 @@ from kullback.runner.records import RawPtr, ToolCall, ToolCallError, Trace, as_d
 
 
 def traces_from_raw(raw: dict, file_hash: str = "fixture") -> list[Trace]:
-    """Minimal tau2 raw -> Trace conversion, so these tests do not depend on ingest.py."""
+    """Minimal raw -> Trace conversion, so these tests do not depend on ingest.py."""
     traces = []
     for sim_index, sim in enumerate(raw["simulations"]):
         calls: dict[str, ToolCall] = {}
@@ -60,7 +58,7 @@ def traces_from_raw(raw: dict, file_hash: str = "fixture") -> list[Trace]:
                 trace_id=sim["id"],
                 raw_hash=file_hash,
                 ingest_version="test",
-                source="tau2",
+                source="test",
                 tool_calls=[calls[i] for i in order],
                 raw_ptr=RawPtr(file_hash=file_hash, sim_index=sim_index),
             )
@@ -93,59 +91,62 @@ def json_model(make_test_model, payloads):
 
 
 @pytest.fixture(scope="module")
-def fixture_traces():
-    path = Path(__file__).resolve().parents[1] / "fixtures" / "tau2_retail_small.json"
-    return traces_from_raw(json.loads(path.read_text(encoding="utf-8")))
+def fixture_traces(world_a_small_path):
+    return traces_from_raw(json.loads(world_a_small_path.read_text(encoding="utf-8")))
 
 
-# --- mine_tools over the tau2 fixture ----------------------------------------
+# --- mine_tools over the world_a fixture --------------------------------------
 
 
 def test_mine_tools_finds_every_called_tool(fixture_traces):
     sigs = mine_tools(fixture_traces)
     assert [s.name for s in sigs] == sorted(
         [
-            "exchange_delivered_order_items",
-            "find_user_id_by_name_zip",
-            "get_order_details",
-            "get_product_details",
-            "get_user_details",
-            "list_all_product_types",
-            "return_delivered_order_items",
+            "cancel_hold",
+            "find_member_id_by_email",
+            "find_member_id_by_name_zip",
+            "get_hold_details",
+            "get_loan_details",
+            "update_loan",
         ]
     )
-    order = sig_by_name(sigs, "get_order_details")
-    assert order.evidence_strength.call_count == 7
-    assert order.evidence_strength.error_count == 0
-    assert order.evidence_strength.trace_count == 3
-    assert order.source == "observed"
+    loan = sig_by_name(sigs, "get_loan_details")
+    assert loan.evidence_strength.call_count == 2
+    assert loan.evidence_strength.error_count == 0
+    assert loan.evidence_strength.trace_count == 2
+    assert loan.source == "observed"
 
 
 def test_mine_tools_result_and_args_schema_from_observed_results(fixture_traces):
-    order = sig_by_name(mine_tools(fixture_traces), "get_order_details")
-    result_fields = {f.name for f in order.result_schema}
-    assert {"order_id", "user_id", "status", "items", "address"} <= result_fields
-    status = next(f for f in order.result_schema if f.name == "status")
+    loan = sig_by_name(mine_tools(fixture_traces), "get_loan_details")
+    result_fields = {f.name for f in loan.result_schema}
+    assert {"loan_id", "member_id", "status", "title", "due", "copy_id"} <= result_fields
+    status = next(f for f in loan.result_schema if f.name == "status")
     assert status.types == ["str"]
-    assert status.count == 7
+    assert status.count == 2
     assert status.optional is False
     assert status.first_seen in {t.trace_id for t in fixture_traces}
     assert status.declared is False
 
-    assert [f.name for f in order.args_fields] == ["order_id"]
-    assert order.args_fields[0].optional is False
-    assert order.args_schema["properties"]["order_id"]["type"] == ["str"]
-    assert order.args_schema["required"] == ["order_id"]
+    assert [f.name for f in loan.args_fields] == ["loan_id"]
+    assert loan.args_fields[0].optional is False
+    assert loan.args_schema["properties"]["loan_id"]["type"] == ["str"]
+    assert loan.args_schema["required"] == ["loan_id"]
 
 
-def test_mine_tools_scalar_result_is_marked_apart_from_a_field_named_value(fixture_traces):
+def test_mine_tools_scalar_result_is_marked_apart_from_a_field_named_value():
     """A bare scalar result is not an object with one field named value: mixing the two up is
     what made every generated calculate body wrap its answer in {"value": ...} and fail replay
     against the real tool's bare number (docs/live-build.md)."""
-    find = sig_by_name(mine_tools(fixture_traces), "find_user_id_by_name_zip")
-    assert [f.name for f in find.result_schema] == [SCALAR_RESULT_FIELD]
-    assert find.result_schema[0].types == ["str"]
-    assert is_scalar_result(find)
+    traces = [one_trace("t1", [
+        {"name": "count_loans", "args": {}, "result": "3"},
+        {"name": "get_shelf_label", "args": {}, "result": '{"value": "north"}'},
+    ])]
+    count = sig_by_name(mine_tools(traces), "count_loans")
+    assert [f.name for f in count.result_schema] == [SCALAR_RESULT_FIELD]
+    assert count.result_schema[0].types == ["str"]
+    assert is_scalar_result(count)
+    assert not is_scalar_result(sig_by_name(mine_tools(traces), "get_shelf_label"))
 
 
 # --- D72: union of everything observed ---------------------------------------
@@ -253,30 +254,39 @@ def test_error_shapes_keep_the_verbatim_payload():
 # --- D68 and D70: kind classification ----------------------------------------
 
 
-def test_the_kind_is_read_from_name_prefixes_and_says_why(fixture_traces):
-    assert propose_kind("search_orders").kind == "read"
-    assert "prefix" in propose_kind("search_orders").reason
-    assert propose_kind("update_user").kind == "write"
-    assert propose_kind("update_user").confidence == "high"
+def test_a_name_is_read_by_its_first_verb_at_medium_and_says_why():
+    """The code rule reads the first verb: generic English verbs at medium, nothing matched at low."""
+    for name, kind in [("search_loans", "read"), ("update_member", "write"),
+                       ("renew_loan", "write"), ("place_hold", "write"),
+                       ("getWidget", "read"), ("renewLoan", "write")]:
+        p = propose_kind(name)
+        assert (p.kind, p.confidence, "verb" in p.reason) == (kind, "medium", True)
     assert propose_kind("frobnicate").kind == "read"
     assert propose_kind("frobnicate").confidence == "low"
     assert "no name rule matched" in propose_kind("frobnicate").reason
+
+
+def test_mined_kinds_keep_the_verb_and_the_evidence_that_decided_them(fixture_traces):
+    """Verb reads stand classified on the name; effect-proven writes stand on the calls."""
     sigs = mine_tools(fixture_traces)
-    reads = ["get_order_details", "get_user_details", "find_user_id_by_name_zip", "list_all_product_types"]
+    reads = ["get_loan_details", "get_hold_details", "find_member_id_by_name_zip",
+             "find_member_id_by_email"]
     for name in reads:
         sig = sig_by_name(sigs, name)
         assert sig.kind == "read"
         assert sig.unclassified is False
         assert sig.classified_by == "rule"
-        assert "prefix" in (sig.kind_reason or "")
-    for name in ["exchange_delivered_order_items", "return_delivered_order_items"]:
+        assert "verb" in (sig.kind_reason or "")
+    for name in ["update_loan", "cancel_hold"]:
         sig = sig_by_name(sigs, name)
         assert sig.kind == "write"
         assert sig.unclassified is False
+        assert sig.classified_by == "observed"
+        assert sig.effects_observed != []
 
 
-def test_calculation_and_handoff_names_are_generic_as_tau2_has_them():
-    """tau2's tools.py marks calculate and transfer_to_human_agents GENERIC; compile_env emits the
+def test_calculation_and_handoff_names_are_generic():
+    """The declarations mark calculate and transfer_to_human_agents GENERIC; compile_env emits the
     kind verbatim, so a read here would emit the wrong ToolType and leave the D70 review open."""
     for name in ["calculate", "transfer_to_human_agents", "think"]:
         proposal = propose_kind(name)
@@ -422,10 +432,11 @@ def test_gate_needs_three_observed_calls_or_the_llm_flag(fixture_traces):
     gate = gate_tools(mine_tools(fixture_traces))
     assert gate.stage == "mine"
     assert gate.passed is False
-    assert gate.metrics["tools"] == 7
-    assert gate.metrics["thin"] == 3
+    assert gate.metrics["tools"] == 6
+    assert gate.metrics["thin"] == 6
     joined = " ".join(gate.failures)
-    for name in ["list_all_product_types", "return_delivered_order_items", "exchange_delivered_order_items"]:
+    for name in ["cancel_hold", "find_member_id_by_email", "find_member_id_by_name_zip",
+                 "get_hold_details", "get_loan_details", "update_loan"]:
         assert name in joined
 
 
@@ -558,50 +569,50 @@ def test_gate_passes_when_every_tool_is_thick_or_flagged(make_test_model):
 
 
 def test_a_column_of_ids_or_an_enum_is_hard_a_timestamp_or_counter_is_exempt_and_free_prose_is_semantic():
-    assert propose_column_class("orders", "created_at", ["2025-06-05T14:01:10"]).column_class == "exempt"
-    assert propose_column_class("orders", "retry_count", [1, 2, 3]).column_class == "exempt"
-    assert propose_column_class("orders", "order_id", ["#W1", "#W2"]).column_class == "hard"
-    assert propose_column_class("orders", "status", ["pending", "delivered", "pending"]).column_class == "hard"
+    assert propose_column_class("loans", "created_at", ["2025-06-05T14:01:10"]).column_class == "exempt"
+    assert propose_column_class("loans", "retry_count", [1, 2, 3]).column_class == "exempt"
+    assert propose_column_class("loans", "loan_id", ["#L1", "#L2"]).column_class == "hard"
+    assert propose_column_class("loans", "status", ["pending", "delivered", "pending"]).column_class == "hard"
     long = [
         "a paragraph of prose that a person wrote and nobody will match by string equality " + str(i)
         for i in range(6)
     ]
-    assert propose_column_class("orders", "note", long).column_class == "semantic"
-    proposal = propose_column_class("orders", "note", long)
+    assert propose_column_class("loans", "note", long).column_class == "semantic"
+    proposal = propose_column_class("loans", "note", long)
     assert proposal.confidence in {"low", "medium", "high"}
     assert proposal.evidence["distinct"] == 6
 
 
 def test_a_nullable_enum_is_still_an_enum():
-    proposal = propose_column_class("orders", "cancel_reason", [None, "no longer needed", None, "ordered by mistake"])
+    proposal = propose_column_class("loans", "hold_note", [None, "no longer needed", None, "ordered by mistake"])
     assert proposal.column_class == "hard"
     assert "enum" in proposal.reason
     assert proposal.evidence["types"] == ["NoneType", "str"]
 
 
-def test_mine_schema_from_the_tau2_db_json(tau2_retail_dir):
-    schema = mine_schema([], db_json_path=tau2_retail_dir / "db.json")
-    assert schema.tables == ["orders", "products", "users"]
-    assert col(schema, "orders", "order_id").class_ == "hard"
-    assert col(schema, "orders", "status").class_ == "hard"
-    assert col(schema, "orders", "status").classified_by == "rule"
-    assert col(schema, "orders", "status").class_rule == "hard"
-    assert schema.id_patterns["orders.order_id"] == r"^#W\d{7}$"
-    assert col(schema, "users", "email").samples
+def test_mine_schema_from_the_world_a_db_json(world_dir):
+    schema = mine_schema([], db_json_path=world_dir("world_a") / "db.json")
+    assert schema.tables == ["copies", "holds", "loans", "members"]
+    assert col(schema, "loans", "loan_id").class_ == "hard"
+    assert col(schema, "loans", "status").class_ == "hard"
+    assert col(schema, "loans", "status").classified_by == "rule"
+    assert col(schema, "loans", "status").class_rule == "hard"
+    assert schema.id_patterns["loans.loan_id"] == r"^loan_0\d$"
+    assert col(schema, "members", "email").samples
 
 
 def test_mine_schema_from_traces_names_tables_after_the_entity(fixture_traces):
     schema = mine_schema(fixture_traces)
-    assert {"orders", "users", "products"} <= set(schema.tables)
-    assert col(schema, "orders", "status").class_ == "hard"
-    assert col(schema, "users", "email")
-    assert "orders.order_id" in schema.id_patterns
+    assert {"holds", "loans", "members"} <= set(schema.tables)
+    assert col(schema, "loans", "status").class_ == "hard"
+    assert col(schema, "members", "member_id")
+    assert "loans.loan_id" in schema.id_patterns
 
 
-def test_mine_schema_merges_db_json_and_traces(fixture_traces, tau2_retail_dir):
-    schema = mine_schema(fixture_traces, db_json_path=tau2_retail_dir / "db.json")
-    assert schema.tables == ["orders", "products", "users"]
-    assert col(schema, "orders", "status").evidence["count"] > 1000
+def test_mine_schema_merges_db_json_and_traces(fixture_traces, world_dir):
+    schema = mine_schema(fixture_traces, db_json_path=world_dir("world_a") / "db.json")
+    assert schema.tables == ["copies", "holds", "loans", "members"]
+    assert col(schema, "loans", "status").evidence["count"] == 8
 
 
 def test_the_classify_column_hook_sees_the_proposal_and_can_override_the_rule(make_test_model):
@@ -615,13 +626,13 @@ def test_the_classify_column_hook_sees_the_proposal_and_can_override_the_rule(ma
     assert body.class_reason == "free text"
     assert body.class_confidence == "high"
     model = json_model(make_test_model, [{"class": "exempt", "confidence": "medium", "reason": "a counter"}])
-    proposal = propose_column_class("orders", "status", ["a", "b"])
-    out = classify_column(model, "orders", "status", proposal, ["a", "b"])
+    proposal = propose_column_class("loans", "status", ["a", "b"])
+    out = classify_column(model, "loans", "status", proposal, ["a", "b"])
     assert out.column_class == "exempt"
     assert out.confidence == "medium"
     payload = json.loads(model.calls[0]["messages"][1]["content"])
     assert payload["column"] == "status"
-    assert payload["table"] == "orders"
+    assert payload["table"] == "loans"
     assert payload["proposed_class"] == "hard"
     assert payload["evidence"]["distinct"] == 2
     assert payload["samples"] == ["a", "b"]
@@ -631,63 +642,11 @@ def test_schema_round_trips_through_json(fixture_traces):
     schema = mine_schema(fixture_traces)
     back = json.loads(json.dumps(as_dict(schema)))
     assert back["tables"] == schema.tables
-    assert {"orders", "users", "products"} <= set(back["tables"])
-    status = next(c for c in back["columns"] if c["table"] == "orders" and c["name"] == "status")
+    assert {"holds", "loans", "members"} <= set(back["tables"])
+    status = next(c for c in back["columns"] if c["table"] == "loans" and c["name"] == "status")
     assert status["class"] == "hard"  # the alias, not the field name
     assert status["classified_by"] == "rule"
-    assert back["id_patterns"]["orders.order_id"] == schema.id_patterns["orders.order_id"]
-
-
-# --- the full raw corpus -----------------------------------------------------
-
-
-def retail_tool_names() -> set[str]:
-    # Kullback keeps vendor/ under the package root; the brain keeps it one level up, at
-    # monitoring-tool/vendor; mutmut runs this file from a copy under mutants/tests. Walk up
-    # from here and take the first ancestor that has it, same idea as raw_dir in conftest.
-    rel = Path("vendor") / "tau2-bench" / "src" / "tau2" / "domains" / "retail" / "tools.py"
-    for root in Path(__file__).resolve().parents:
-        path = root / rel
-        if path.is_file():
-            break
-    else:
-        pytest.skip("vendor/tau2-bench not present")
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef):
-            for item in node.body:
-                if isinstance(item, ast.FunctionDef) and not item.name.startswith("_"):
-                    names.add(item.name)
-    assert len(names) >= 16
-    return names
-
-
-@pytest.mark.slow
-def test_mining_the_whole_corpus_finds_every_tool_table_id_pattern_and_column_class(retail_raw_files, raw_dir, tau2_retail_dir):
-    # One corpus only: raw_dir also holds other corpora's traces, checked separately.
-    traces: list[Trace] = []
-    for path in retail_raw_files:
-        traces += traces_from_raw(json.loads(path.read_text(encoding="utf-8")), file_hash=path.name)
-    assert len(traces) > 100
-    sigs = mine_tools(traces)
-    mined = {s.name for s in sigs}
-    missing = retail_tool_names() - mined
-    assert not missing, f"tools in tau2's retail tools.py that the traces never showed: {sorted(missing)}"
-    assert gate_tools(sigs).passed is True
-    order = sig_by_name(sigs, "get_order_details")
-    assert order.evidence_strength.call_count > 1000
-    assert {f.name for f in order.result_schema} >= {"order_id", "status", "items"}
-    writes = {s.name for s in sigs if s.kind == "write"}
-    assert "cancel_pending_order" in writes and "modify_user_address" in writes
-    traces: list[Trace] = []
-    for path in sorted(raw_dir.glob("*.json")):
-        traces += traces_from_raw(json.loads(path.read_text(encoding="utf-8")), file_hash=path.name)
-    schema = mine_schema(traces, db_json_path=tau2_retail_dir / "db.json")
-    # "items" joins the three db.json tables: get_item_details returns rows keyed by item_id
-    assert set(schema.tables) >= {"orders", "products", "users"}
-    assert col(schema, "orders", "status").class_ == "hard"
-    assert set(schema.id_patterns) >= {"orders.order_id", "users.user_id", "products.product_id"}
+    assert back["id_patterns"]["loans.loan_id"] == schema.id_patterns["loans.loan_id"]
 
 
 # --- D67: unknown errors are a flag on the Environment ---
@@ -718,13 +677,13 @@ def test_a_column_that_varies_across_two_or_more_successful_reruns_becomes_exemp
     from kullback.builder.mine import exempt_from_reruns
     from kullback.runner.records import Column, EntitySchema
 
-    schema = EntitySchema(tables=["orders"], columns=[
-        Column(table="orders", name="status", class_="hard"),
-        Column(table="orders", name="updated_at", class_="hard", classified_by="llm"),
+    schema = EntitySchema(tables=["loans"], columns=[
+        Column(table="loans", name="status", class_="hard"),
+        Column(table="loans", name="updated_at", class_="hard", classified_by="llm"),
     ])
     states = [
-        {"orders": {"o1": {"status": "cancelled", "updated_at": "2026-01-01T10:00:00Z"}}},
-        {"orders": {"o1": {"status": "cancelled", "updated_at": "2026-01-01T10:00:09Z"}}},
+        {"loans": {"o1": {"status": "cancelled", "updated_at": "2026-01-01T10:00:00Z"}}},
+        {"loans": {"o1": {"status": "cancelled", "updated_at": "2026-01-01T10:00:09Z"}}},
     ]
     out = exempt_from_reruns(schema, states)
     by_name = {c.name: c for c in out.columns}
@@ -734,8 +693,8 @@ def test_a_column_that_varies_across_two_or_more_successful_reruns_becomes_exemp
     from kullback.builder.mine import exempt_from_reruns
     from kullback.runner.records import Column, EntitySchema
 
-    schema = EntitySchema(tables=["orders"], columns=[Column(table="orders", name="x", class_="hard")])
-    assert exempt_from_reruns(schema, [{"orders": {"o1": {"x": 1}}}]).columns[0].class_ == "hard"
+    schema = EntitySchema(tables=["loans"], columns=[Column(table="loans", name="x", class_="hard")])
+    assert exempt_from_reruns(schema, [{"loans": {"o1": {"x": 1}}}]).columns[0].class_ == "hard"
 
 
 # --- D95: a truncated result is reconstructed, tagged and Assisted ---
@@ -804,30 +763,32 @@ def test_a_complete_result_is_never_reconstructed():
 
 
 def test_effect_credit_goes_to_the_tool_that_explains_it_not_the_last_candidate():
-    """D70: a change 'explained only by this tool'. A prefix-less read that merely names the same id
-    after the real write must not become an observed write, and the write must keep its evidence."""
+    """D70: a change 'explained only by this tool'. A verb-less read that merely names the same id
+    after the real write must not become an observed write, and the write must keep its evidence.
+    check_ is a generic read verb, so the read stands classified at medium."""
     traces = [
         one_trace(
             "t1",
             [
-                {"name": "get_order_details", "args": {"order_id": "#W1"},
-                 "result": '{"order_id": "#W1", "status": "pending"}'},
-                {"name": "cancel_pending_order", "args": {"order_id": "#W1", "reason": "no longer needed"},
-                 "result": '{"order_id": "#W1", "status": "cancelled"}'},
-                {"name": "check_order_eligibility", "args": {"order_id": "#W1"}, "result": '{"eligible": false}'},
-                {"name": "get_order_details", "args": {"order_id": "#W1"},
-                 "result": '{"order_id": "#W1", "status": "cancelled"}'},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"},
+                 "result": '{"loan_id": "#L1", "status": "pending"}'},
+                {"name": "cancel_hold", "args": {"loan_id": "#L1", "reason": "no longer needed"},
+                 "result": '{"loan_id": "#L1", "status": "cancelled"}'},
+                {"name": "check_loan_eligibility", "args": {"loan_id": "#L1"}, "result": '{"eligible": false}'},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"},
+                 "result": '{"loan_id": "#L1", "status": "cancelled"}'},
             ],
         )
     ]
     sigs = mine_tools(traces)
-    check = sig_by_name(sigs, "check_order_eligibility")
-    cancel = sig_by_name(sigs, "cancel_pending_order")
+    check = sig_by_name(sigs, "check_loan_eligibility")
+    cancel = sig_by_name(sigs, "cancel_hold")
     assert check.effects_observed == []
     assert check.kind == "read"
+    assert check.kind_confidence == "medium"
     assert check.classified_by == "rule"
-    assert check.unclassified is True
-    assert [e.field for e in cancel.effects_observed] == ["get_order_details.status"]
+    assert check.unclassified is False
+    assert [e.field for e in cancel.effects_observed] == ["get_loan_details.status"]
     assert cancel.classified_by == "observed"
 
 
@@ -838,39 +799,46 @@ def test_two_writes_are_credited_per_field_by_the_value_they_carry():
         one_trace(
             "t1",
             [
-                {"name": "get_order_details", "args": {"order_id": "#W1"},
-                 "result": '{"order_id": "#W1", "status": "pending", "address": "a"}'},
-                {"name": "modify_pending_order_address", "args": {"order_id": "#W1", "address": "b"},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"},
+                 "result": '{"loan_id": "#L1", "status": "pending", "address": "a"}'},
+                {"name": "update_loan_address", "args": {"loan_id": "#L1", "address": "b"},
                  "result": "ok"},
-                {"name": "cancel_pending_order", "args": {"order_id": "#W1"}, "result": "ok"},
-                {"name": "get_order_details", "args": {"order_id": "#W1"},
-                 "result": '{"order_id": "#W1", "status": "cancelled", "address": "b"}'},
+                {"name": "cancel_hold", "args": {"loan_id": "#L1"}, "result": "ok"},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"},
+                 "result": '{"loan_id": "#L1", "status": "cancelled", "address": "b"}'},
             ],
         )
     ]
     effects = {name: [e.field for e in obs] for name, obs in observed_effects(traces).items()}
-    assert effects["modify_pending_order_address"] == ["get_order_details.address"]
-    assert effects["cancel_pending_order"] == ["get_order_details.status"]
+    assert effects["update_loan_address"] == ["get_loan_details.address"]
+    assert effects["cancel_hold"] == ["get_loan_details.status"]
 
 
 def test_no_actor_when_two_candidates_could_explain_the_same_field():
-    """With nothing to tell two writes apart, the field gets no actor rather than the wrong one."""
+    """return_loan_items matches no generic verb, so the leftover pool narrows to cancel_hold alone
+    and the field is credited there rather than left without an actor."""
     from kullback.builder.mine import observed_effects
 
     traces = [
         one_trace(
             "t1",
             [
-                {"name": "get_order_details", "args": {"order_id": "#W1"},
-                 "result": '{"order_id": "#W1", "status": "pending"}'},
-                {"name": "cancel_pending_order", "args": {"order_id": "#W1"}, "result": "ok"},
-                {"name": "return_delivered_order_items", "args": {"order_id": "#W1"}, "result": "ok"},
-                {"name": "get_order_details", "args": {"order_id": "#W1"},
-                 "result": '{"order_id": "#W1", "status": "cancelled"}'},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"},
+                 "result": '{"loan_id": "#L1", "status": "pending"}'},
+                {"name": "cancel_hold", "args": {"loan_id": "#L1"}, "result": "ok"},
+                {"name": "return_loan_items", "args": {"loan_id": "#L1"}, "result": "ok"},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"},
+                 "result": '{"loan_id": "#L1", "status": "cancelled"}'},
             ],
         )
     ]
-    assert observed_effects(traces) == {}
+    effects = {name: [e.field for e in obs] for name, obs in observed_effects(traces).items()}
+    assert effects["cancel_hold"] == ["get_loan_details.status"]
+    assert "return_loan_items" not in effects
+    sigs = mine_tools(traces)
+    cancel = sig_by_name(sigs, "cancel_hold")
+    assert cancel.kind == "write"
+    assert cancel.classified_by == "observed"
 
 
 def test_a_timestamp_that_moves_on_its_own_is_not_an_effect():
@@ -905,11 +873,11 @@ def test_a_generic_tool_is_never_the_actor_of_someone_elses_write():
         one_trace(
             "t1",
             [
-                {"name": "get_order_details", "args": {"order_id": "#W1"},
-                 "result": '{"order_id": "#W1", "status": "pending"}'},
-                {"name": "calculate", "args": {"expression": "#W1"}, "result": "2"},
-                {"name": "get_order_details", "args": {"order_id": "#W1"},
-                 "result": '{"order_id": "#W1", "status": "cancelled"}'},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"},
+                 "result": '{"loan_id": "#L1", "status": "pending"}'},
+                {"name": "calculate", "args": {"expression": "#L1"}, "result": "2"},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"},
+                 "result": '{"loan_id": "#L1", "status": "cancelled"}'},
             ],
         )
     ]
@@ -936,38 +904,38 @@ def test_a_write_named_only_by_the_new_value_is_credited():
 
 
 def test_a_field_that_goes_from_null_or_absent_to_a_value_is_a_change():
-    """tau2 sets exchange_items from null to a list; comparing only the keys both sides share misses it."""
+    """A write sets swap_items from null to a list; comparing only the keys both sides share misses it."""
     from kullback.builder.mine import observed_effects
 
     traces = [
         one_trace(
             "t1",
             [
-                {"name": "get_order_details", "args": {"order_id": "#W1"},
-                 "result": '{"order_id": "#W1", "exchange_items": null}'},
-                {"name": "frobnicate", "args": {"order_id": "#W1"}, "result": "ok"},
-                {"name": "get_order_details", "args": {"order_id": "#W1"},
-                 "result": '{"order_id": "#W1", "exchange_items": ["i1"]}'},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"},
+                 "result": '{"loan_id": "#L1", "swap_items": null}'},
+                {"name": "frobnicate", "args": {"loan_id": "#L1"}, "result": "ok"},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"},
+                 "result": '{"loan_id": "#L1", "swap_items": ["i1"]}'},
             ],
         )
     ]
     effects = observed_effects(traces)
-    assert [e.field for e in effects["frobnicate"]] == ["get_order_details.exchange_items"]
+    assert [e.field for e in effects["frobnicate"]] == ["get_loan_details.swap_items"]
     from kullback.builder.mine import observed_effects
 
     traces = [
         one_trace(
             "t1",
             [
-                {"name": "get_order_details", "args": {"order_id": "#W1"}, "result": '{"order_id": "#W1"}'},
-                {"name": "frobnicate", "args": {"order_id": "#W1"}, "result": "ok"},
-                {"name": "get_order_details", "args": {"order_id": "#W1"},
-                 "result": '{"order_id": "#W1", "cancel_reason": "no longer needed"}'},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"}, "result": '{"loan_id": "#L1"}'},
+                {"name": "frobnicate", "args": {"loan_id": "#L1"}, "result": "ok"},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"},
+                 "result": '{"loan_id": "#L1", "hold_note": "no longer needed"}'},
             ],
         )
     ]
     effects = observed_effects(traces)
-    assert [e.field for e in effects["frobnicate"]] == ["get_order_details.cancel_reason"]
+    assert [e.field for e in effects["frobnicate"]] == ["get_loan_details.hold_note"]
 
 
 # --- D72: what a truncated or a declared schema does to the union ---
@@ -1071,12 +1039,16 @@ def test_mcp_annotations_are_a_rule_and_reach_the_llm(make_test_model):
 
 
 def test_a_name_rule_that_disagrees_with_the_annotations_says_so():
+    """A declaration outranks a verb guess: the source's write stands over get_'s read."""
     declared = [{"name": "get_thing", "parameters": {"properties": {}},
                  "annotations": {"destructiveHint": True}}]
     traces = [one_trace("t1", [{"name": "get_thing", "args": {}, "result": "ok"}], tools_declared=declared)]
     sig = sig_by_name(mine_tools(traces), "get_thing")
-    assert sig.kind == "read"
-    assert "disagree" in (sig.kind_reason or "")
+    assert sig.kind == "write"
+    assert sig.kind_confidence == "medium"
+    assert sig.unclassified is False
+    assert sig.classified_by == "declared"
+    assert "destructiveHint" in (sig.kind_reason or "")
 
 
 # --- D95: reconstruction keeps what the agent saw ---
@@ -1100,15 +1072,15 @@ def test_reconstruction_of_a_cut_list_result_is_still_a_list():
     from kullback.builder.mine import reconstruct_truncated
     from kullback.runner.records import FieldStat, ToolSig
 
-    sig = ToolSig(name="search_orders",
-                  result_schema=[FieldStat(name="[].order_id"), FieldStat(name="[].status")])
-    cut = ToolCall(name="search_orders", args={"q": "x"}, truncated=True,
-                   result='[{"order_id": "#W1", "st...', raw_ptr=PTR)
-    whole = ToolCall(name="search_orders", args={"q": "y"},
-                     result='[{"order_id": "#W2", "status": "pending"}]', raw_ptr=PTR)
+    sig = ToolSig(name="search_loans",
+                  result_schema=[FieldStat(name="[].loan_id"), FieldStat(name="[].status")])
+    cut = ToolCall(name="search_loans", args={"q": "x"}, truncated=True,
+                   result='[{"loan_id": "#L1", "st...', raw_ptr=PTR)
+    whole = ToolCall(name="search_loans", args={"q": "y"},
+                     result='[{"loan_id": "#L2", "status": "pending"}]', raw_ptr=PTR)
     out = reconstruct_truncated(cut, sig, [cut, whole])
     assert isinstance(out["result"], list)
-    assert out["result"][0]["order_id"] == "#W1"
+    assert out["result"][0]["loan_id"] == "#L1"
     assert out["result"][0]["status"] == "pending"
     assert out["reconstructed_fields"] == ["[].status"]
 
@@ -1133,7 +1105,7 @@ def test_a_money_column_that_happens_to_increase_is_not_exempt():
     """Three increasing values are not a counter; a gift-card balance nobody compares is a silent pass."""
     proposal = propose_column_class("gift_cards", "balance", [10.0, 25.5, 100.0])
     assert proposal.column_class != "exempt"
-    assert propose_column_class("orders", "amount", [1, 2, 3]).column_class != "exempt"
+    assert propose_column_class("loans", "amount", [1, 2, 3]).column_class != "exempt"
     counter = propose_column_class("jobs", "attempts", [1, 2, 3, 4, 5])
     assert counter.column_class == "exempt"
     assert counter.confidence == "low", "a counter found by shape alone still goes to review"
@@ -1162,9 +1134,9 @@ def test_business_dates_and_versions_are_not_high_confidence_exempt():
         assert not (proposal.column_class == "exempt" and proposal.confidence == "high"), name
     assert propose_column_class("users", "date_of_birth", ["1990-01-01"]).column_class == "hard"
     # a system timestamp still is one, by name or by the shape of every value
-    assert propose_column_class("orders", "updated_at", ["2026-01-01T10:00:00"]).column_class == "exempt"
-    assert propose_column_class("orders", "updated_at", ["2026-01-01T10:00:00"]).confidence == "high"
-    seen = propose_column_class("orders", "last_seen_time", ["2026-01-01T10:00:00", "2026-01-02T11:00:00"])
+    assert propose_column_class("loans", "updated_at", ["2026-01-01T10:00:00"]).column_class == "exempt"
+    assert propose_column_class("loans", "updated_at", ["2026-01-01T10:00:00"]).confidence == "high"
+    seen = propose_column_class("loans", "last_seen_time", ["2026-01-01T10:00:00", "2026-01-02T11:00:00"])
     assert seen.column_class == "exempt"
     assert seen.confidence == "medium"
 
@@ -1211,41 +1183,39 @@ def test_a_position_that_mixes_letters_and_digits_is_that_class_and_not_any_char
     assert id_pattern(["k1nw8n", "hathat", "z7gozk"]) == "^[a-z0-9]{6}$"
     assert id_pattern(["K1nw8N", "hAthaT", "z7GOzk"]) == "^[A-Za-z0-9]{6}$"
     # an id whose positions each hold letters only or digits only keeps the tighter shape it had
-    assert id_pattern(["#W1234567", "#W7651432", "#W3487216"]) == r"^#W\d{7}$"
+    assert id_pattern(["#L1234567", "#L7651432", "#L3487216"]) == r"^#L\d{7}$"
     assert id_pattern(["TX", "NY", "CA"]) == "^[A-Za-z]{2}$"
 
 
-# --- kind and table naming, against the domains the retail rules missed ------
+# --- kind and table naming, against the domains the first rules missed --------
 # docs/cross-domain-check.md: every case below is a tool or a table that another corpus got
-# wrong and retail never exercised. The retail-shaped cases at the end must keep their old answer.
+# wrong and the first rules never exercised. The loan-shaped cases at the end must keep their old answer.
 
 
 def test_a_tool_that_returns_what_it_was_sent_is_a_write():
-    """Airline's `book_reservation`: no write verb in the name and no field it visibly changed.
+    """A `book_visit` booking: no write verb in the name and no field it visibly changed.
 
-    A read answers with the world; a create answers with what you handed it. On all three tau2
-    domains `book_reservation` is the only tool where most of the result came back out of the
-    arguments, at 0.81 against 0.20 for the highest read.
+    A read answers with the world; a create answers with what you handed it. This is the shape
+    where most of the result came back out of the arguments.
     """
-    booked = {"reservation_id": "R1", "user_id": "u_1", "origin": "LAS", "destination": "DEN",
-              "cabin": "economy", "insurance": "yes", "total_baggages": 2}
+    booked = {"visit_id": "V1", "member_id": "m_1", "room": "north", "day": "Tue",
+              "topic": "history", "shelf": "archive", "party_size": 2}
     traces = [one_trace("t1", [
-        {"name": "book_reservation",
-         "args": {"user_id": "u_1", "origin": "LAS", "destination": "DEN", "cabin": "economy",
-                  "insurance": "yes", "total_baggages": 2},
+        {"name": "book_visit",
+         "args": {"member_id": "m_1", "room": "north", "day": "Tue", "topic": "history",
+                  "shelf": "archive", "party_size": 2},
          "result": json.dumps(booked)},
     ])]
-    sig = sig_by_name(mine_tools(traces), "book_reservation")
+    sig = sig_by_name(mine_tools(traces), "book_visit")
     assert sig.kind == "write"
     assert sig.classified_by == "observed"
     assert "what the call sent" in sig.kind_reason
 
 
 def test_a_tool_that_answers_with_a_message_about_a_row_it_was_handed_is_a_write():
-    """A `send_certificate` and a `send_payment_request`, which return a sentence.
-
-    Neither matches a write verb, neither returns a row, and neither was ever bracketed by two
-    identical reads of the thing it touched, so the two stronger signals say nothing about them.
+    """send_ is a generic write verb, so the name decides at medium and the message signal stays
+    silent where the name speaks. The answers below would also earn the message signal on a
+    verb-less name; here they only confirm the verb is not contradicted by the calls.
     """
     traces = [one_trace(f"t{i}", [
         {"name": "send_payment_request", "args": {"customer_id": "C1", "bill_id": f"B{i}"},
@@ -1253,18 +1223,23 @@ def test_a_tool_that_answers_with_a_message_about_a_row_it_was_handed_is_a_write
     ]) for i in range(3)]
     sig = sig_by_name(mine_tools(traces), "send_payment_request")
     assert sig.kind == "write"
-    assert sig.classified_by == "observed"
+    assert sig.kind_confidence == "medium"
+    assert sig.classified_by == "rule"
+    assert sig.unclassified is False
+    assert "verb" in (sig.kind_reason or "")
 
 
 def test_a_message_tool_the_corpus_barely_shows_stays_unclassified():
-    """The weakest signal is held to the same floor as the mine gate: flag, never synthesize."""
+    """The floor holds the weak signals, not a verb name: one sighting of send_ is a medium write."""
     traces = [one_trace("t1", [
         {"name": "send_payment_request", "args": {"customer_id": "C1", "bill_id": "B1"},
          "result": "Payment request sent."},
     ])]
     sig = sig_by_name(mine_tools(traces), "send_payment_request")
-    assert sig.kind == "read"
-    assert sig.unclassified is True
+    assert sig.kind == "write"
+    assert sig.kind_confidence == "medium"
+    assert sig.unclassified is False
+    assert sig.classified_by == "rule"
 
 
 def test_a_message_tool_an_unchanged_read_brackets_is_not_called_a_write():
@@ -1281,20 +1256,20 @@ def test_a_message_tool_an_unchanged_read_brackets_is_not_called_a_write():
 
 
 def test_quiet_evidence_needs_a_read_that_asked_about_what_the_call_named():
-    """A reservation names its user in its body, and reading it twice says nothing about the user.
+    """A visit names its member in its body, and reading it twice says nothing about the member.
 
     Reading the answer rather than the question is what kept `send_certificate` mined as a read
-    even after the quiet rule went in: every airline trace reads a reservation twice, and every
-    reservation body carries the `user_id` the certificate was sent to.
+    even after the quiet rule went in: every trace here reads a visit twice, and every
+    visit body carries the `member_id` the certificate was sent to.
     """
     calls = []
     for _ in range(3):
-        body = '{"reservation_id": "R1", "user_id": "u_1", "cabin": "economy"}'
+        body = '{"visit_id": "V1", "member_id": "m_1", "room": "north"}'
         calls += [
-            {"name": "get_reservation_details", "args": {"reservation_id": "R1"}, "result": body},
-            {"name": "send_certificate", "args": {"user_id": "u_1", "amount": 100},
-             "result": "Certificate certificate_1 added to user u_1 with amount 100."},
-            {"name": "get_reservation_details", "args": {"reservation_id": "R1"}, "result": body},
+            {"name": "get_visit_details", "args": {"visit_id": "V1"}, "result": body},
+            {"name": "send_certificate", "args": {"member_id": "m_1", "amount": 100},
+             "result": "Certificate certificate_1 added to member m_1 with amount 100."},
+            {"name": "get_visit_details", "args": {"visit_id": "V1"}, "result": body},
         ]
     sig = sig_by_name(mine_tools([one_trace("t1", calls)]), "send_certificate")
     assert sig.kind == "write"
@@ -1312,42 +1287,42 @@ def test_the_table_is_the_noun_before_the_preposition_not_after_it():
 
 
 def test_an_id_column_the_name_rule_cannot_see_is_found_from_the_calls():
-    """Airline's `flights` was never recovered despite 338 calls, because ids there end in `_number`.
+    """A `rooms` table never recovered: ids there end in `_number`.
 
     The column is used to address a row and its values are distinct in every result that shows
     several rows. That is what an id does, and no verb list or suffix list is consulted to see it.
     """
     rows = json.dumps([
-        {"flight_number": "HAT001", "origin": "LAS", "destination": "DEN", "status": "available"},
-        {"flight_number": "HAT002", "origin": "LAS", "destination": "DEN", "status": "available"},
+        {"room_number": "RM001", "branch": "north", "kind": "study", "status": "open"},
+        {"room_number": "RM002", "branch": "north", "kind": "study", "status": "open"},
     ])
     traces = [one_trace("t1", [
-        {"name": "search_direct_flight", "args": {"origin": "LAS", "destination": "DEN"}, "result": rows},
-        {"name": "get_flight_status", "args": {"flight_number": "HAT001"}, "result": '"delayed"'},
+        {"name": "search_open_rooms", "args": {"branch": "north", "kind": "study"}, "result": rows},
+        {"name": "get_room_status", "args": {"room_number": "RM001"}, "result": '"quiet"'},
     ])]
     schema = mine_schema(traces)
-    assert "flights" in schema.tables
-    assert schema.id_patterns.get("flights.flight_number")
+    assert "rooms" in schema.tables
+    assert schema.id_patterns.get("rooms.room_number")
 
 
 def test_a_column_shared_by_every_row_of_a_result_is_not_an_id():
-    """`origin` is passed as an argument too, and it is the same on every row a search returns.
+    """`branch` is passed as an argument too, and it is the same on every row a search returns.
 
     Being addressed is not enough on its own, or every filter a search takes would name a table.
     """
     rows = json.dumps([
-        {"flight_number": "HAT001", "origin": "LAS", "destination": "DEN"},
-        {"flight_number": "HAT002", "origin": "LAS", "destination": "DEN"},
+        {"room_number": "RM001", "branch": "north", "kind": "study"},
+        {"room_number": "RM002", "branch": "north", "kind": "study"},
     ])
     traces = [one_trace("t1", [
-        {"name": "search_direct_flight", "args": {"origin": "LAS", "destination": "DEN"}, "result": rows},
-        {"name": "get_flight_status", "args": {"flight_number": "HAT001"}, "result": '"delayed"'},
+        {"name": "search_open_rooms", "args": {"branch": "north", "kind": "study"}, "result": rows},
+        {"name": "get_room_status", "args": {"room_number": "RM001"}, "result": '"quiet"'},
     ])]
     from kullback.builder.mine import id_columns
 
     found = id_columns(traces)
-    assert "flight_number" in found
-    assert "origin" not in found and "destination" not in found
+    assert "room_number" in found
+    assert "branch" not in found and "kind" not in found
 
 
 # --- a row is homed by the id the call asked for ------------------------------

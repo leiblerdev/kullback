@@ -6,7 +6,7 @@ import json
 import shutil
 from pathlib import Path
 
-FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "tau2_retail_small.json"
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "worlds" / "world_a" / "traces_small.json"
 
 STABLE_ARTIFACTS = [
     "schema.json",
