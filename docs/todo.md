@@ -26,6 +26,14 @@ list was cleared on 2026-09-22 for the overhaul and rebuilt on 2026-09-24 after 
   runner's spend.
 - The airline body's hand-rolled id rule should go back to the context's new_id in the next build.
 
+## Before the first training run (founder, 2026-09-25)
+
+- Compare every built Task with the benchmark's test tasks, one by one: which test task each Task came from, and
+  how close each synthetic Task sits to a test task (same request, same rows changed). The held-out anchor
+  (builder/world_tools.py draw_anchor) holds out recordings inside a Task, not Tasks, so today every benchmark
+  task the traces cover is built and would be trained on. Decide from the comparison how to split by task
+  before ingest, and write the held-out task ids into the package manifest. Do this when training is about to start.
+
 ## Priority order after the overhaul (founder, 2026-09-23)
 
 Item 1, every trace passes, is met by build-20260924 (replay fidelity 1.00 on retail and airline). Synthetic Tasks moved

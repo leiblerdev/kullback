@@ -941,3 +941,10 @@ def test_a_build_that_ended_on_a_provider_error_beats_failed_and_exits_one(workd
     assert result.exit_code == 1, result.output
     assert '"stopped": "error"' in result.output
     assert [record["status"] for record in heartbeat.read_all()] == ["failed"]
+
+
+# --- train --------------------------------------------------------------------
+
+def test_train_refuses_without_a_run_id(workdir):
+    result = invoke("train", "--workdir", str(workdir))
+    assert result.exit_code != 0
