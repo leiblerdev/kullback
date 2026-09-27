@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from exp.synth0925.arm_c import birth as B
+from exp.synth0925.arm_c import coherent as C
 from exp.synth0925.arm_c import webtools as W
 from exp.synth0925.arm_c.cost import JUDGE_ID, SYNTH_ID, Priced, Share
 
@@ -37,6 +38,19 @@ LEVEL_QUOTA = {"easy": 20, "medium": 20, "hard": 20}
 MAX_READ_ITERS = 6
 MAX_REVISIONS = 3
 
+ATTEMPTS_PATH = None
+ID_SALT = ""
+
+
+def note_attempt(obj: dict) -> None:
+    """One attempt record: counts and names only, never argument values."""
+    if ATTEMPTS_PATH is None:
+        return
+    try:
+        with open(ATTEMPTS_PATH, "a") as fh:
+            fh.write(json.dumps(obj) + "\n")
+    except OSError:
+        pass
 
 def log(*parts) -> None:
     print(*parts, flush=True)
@@ -54,7 +68,8 @@ def capability_summary() -> dict:
     schema = read_json(WORK / "schema.json", {})
     db = read_json(WORK / "db.json", {})
     tools = [{"name": s.get("name"), "kind": s.get("kind"),
-              "args": sorted((s.get("args_schema") or {}).get("properties", {}).keys())}
+              "args": sorted((s.get("args_schema") or {}).get("properties", {}).keys()),
+              "required": sorted((s.get("args_schema") or {}).get("required", []) or [])}
              for s in sigs]
     tables = {}
     for name, rows in (db.items() if isinstance(db, dict) else []):
@@ -269,10 +284,11 @@ Scenario {sid} (requested level {level}, requested kind {kind}):
 - tricky part: {hard}
 
 {feedback}You work in rounds. In each round reply with exactly one JSON object, no other text:
-R) explore: {{"call_reads": [{{"name": read tool, "args": {{...}}}}]}} to run up to 4 read calls and see their answers next round. Start here: the placeholder facts above will not match real rows, so first discover real rows with reads.
+R) explore: {{"call_reads": [{{"name": read tool, "args": {{...}}}}]}} to run up to 4 read calls and see their answers next round. Start here: the facts above identify a real customer. Use them as read keys first, then follow what the answers return.
 V) ask for keys: {{"need_values": {{"tool": write tool, "arg": argument}}}} to receive values past customers used for one argument, then use them as read keys.
 A) final blueprint: {{"reads": [{{"name": tool, "args": {{}}}}], "writes": [{{"name": tool, "args": {{}}}}], "must_tell": ["..."], "kind": "do|decline|mixed", "level": "easy|medium|hard", "wrong_fact": false, "request": "the customer's opening message in their own words, one or two sentences, using only facts they hold", "unservable": ""}}.
-   Reads come first and every row id a write names must appear in a read answer you have already seen. Request text must not name any tool, table or system step. Keep args minimal and complete.
+   Reads come first. Row ids are rebound from the world before anything runs, so prefer ids from read answers but do not stall on them. Request text must not name any tool, table or system step. Keep args minimal and complete.
+   Structure by level: easy is one write as do, medium two writes as do or a decline, hard three or more writes, or mixed, or a wrong fact the user holds.
 B) {{"unservable": "one line reason", "kind": "decline"}} when no tool can serve this scenario at all.
 No other text."""
 
@@ -333,8 +349,14 @@ def exec_reads(world, toolkit, calls: list) -> list:
 def build_task(world, synth: Priced, judge: Priced, share: Share, scen: dict,
                level: str, kind_want: str, slot: int) -> dict:
     tools = capability_summary()["tools"]
-    tool_text = "\n".join(f"- {t['name']} ({t['kind']}): {', '.join(t['args'])}" for t in tools)
-    facts = "\n".join(f"- {f['field']}: {f['value']}" for f in scen.get("facts") or [])
+    def show(tool: dict) -> str:
+        req = set(tool.get("required") or [])
+        args = ", ".join(a + ("*" if a in req else "") for a in tool["args"])
+        return f"- {tool['name']} ({tool['kind']}): {args}"
+    tool_text = "\n".join(show(t) for t in tools) + "\n(* marks a required argument)"
+    anchor = C.draw_anchor(world, f"{SEED}:{slot}")
+    user_facts = (anchor or {}).get("facts") or scen.get("facts") or []
+    facts = "\n".join(f"- {f['field']}: {f['value']}" for f in user_facts)
     feedback = ""
     history = ""
     toolkit = world.toolkit(world.fresh_db())
@@ -378,7 +400,7 @@ def build_task(world, synth: Priced, judge: Priced, share: Share, scen: dict,
                 continue
             explored = "READ ANSWERS:" in history or "RECORDED VALUES:" in history
             done, outcome = settle_blueprint(world, synth, judge, share, scen, level, bp,
-                                             slot, rev, explored)
+                                             slot, rev, explored, user_facts)
             log(f"slot {slot} rev {rev} settle: {outcome} "
                 f"{str(done.get('reasons', done))[:120] if isinstance(done, dict) else str(done)[:120]}")
             if outcome == "soft":
@@ -396,7 +418,8 @@ def build_task(world, synth: Priced, judge: Priced, share: Share, scen: dict,
             "cost_usd": round(share.model_usd - usd0, 6),
             "scenario_id": scen["id"]}
 def settle_blueprint(world, synth: Priced, judge: Priced, share: Share, scen: dict,
-                     level: str, bp: dict, slot: int, rev: int, explored: bool = True):
+                     level: str, bp: dict, slot: int, rev: int, explored: bool = True,
+                     user_facts: list | None = None):
     """One finished blueprint through the birth checks. Returns (result, action).
 
     action is done (final), retry (birth issue, next revision) or soft
@@ -422,17 +445,29 @@ def settle_blueprint(world, synth: Priced, judge: Priced, share: Share, scen: di
                 "medium two writes or a decline, hard three or more or mixed or a wrong fact. "
                 f"You gave {len(writes)} writes as {kind}. Fix it. "), "soft"
     ident = f"{SEED}:{scen['id']}:{slot}:r{rev}"
-    calls, why = B.try_blueprint(world, reads, writes, ident)
+    calls, why, info = C.run_blueprint(world, reads, writes, ident)
+    info = info or {}
+    note_attempt({"slot": slot, "rev": rev, "phase": "bind", "why": why or "ran",
+                  "failed_tool": info.get("tool"), "n_reads": len(reads or []),
+                  "n_writes": len(writes or []), "stats": info.get("stats") or {}})
+    if (why or "").startswith("no_host_row"):
+        return {"status": "rejected", "revisions": rev, "kind": kind,
+                "reasons": [why], "scenario_id": scen["id"]}, "done"
     if why:
         if why.startswith(("crashed", "unknown_tool")):
-            return {"status": "rejected", "revisions": rev,
+            return {"status": "rejected", "revisions": rev, "kind": kind,
                     "reasons": [why], "scenario_id": scen["id"]}, "done"
-        return (f"FEEDBACK: the environment refused this blueprint with class {why}. "
-                "Pick different rows through the read tools, or mark unservable. "), "retry"
+        where = f"call {info.get('index')} ({info.get('tool')})" if info.get("tool") \
+            else "a call"
+        return (f"FEEDBACK: the environment refused {where} with class {why}. Row ids "
+                "are rebound from the world automatically, so do not resend other ids: "
+                "change what the request asks, call different reads, or mark "
+                "unservable. "), "retry"
     request = clean(bp.get("request"))[:500]
     if not request:
         return "FEEDBACK: request text is empty. Write the customer's opening message. ", "soft"
-    said_vals = {str(f.get("value")) for f in (scen.get("facts") or []) if f.get("value")}
+    held_by_user = user_facts if user_facts is not None else (scen.get("facts") or [])
+    said_vals = {str(f.get("value")) for f in held_by_user if f.get("value")}
     held_vals = set()
     for call in calls:
         for _path, val in _arg_leaves(call.get("args")):
@@ -442,10 +477,14 @@ def settle_blueprint(world, synth: Priced, judge: Priced, share: Share, scen: di
     if leaked:
         return "FEEDBACK: the request states a value only the world knows. Rewrite it. ", "soft"
     must_tell = [clean(m)[:200] for m in (bp.get("must_tell") or [])][:5]
-    said = [{"field": str(f.get("field")), "value": str(f.get("value"))}
-            for f in (scen.get("facts") or [])]
-    task_id = B.task_uid(f"{SEED}:{scen['id']}:{slot}")
+    said = [{"field": str(f.get("field")), "value": f.get("value")}
+            for f in held_by_user]
+    task_id = B.task_uid(f"{SEED}:{ID_SALT}:{scen['id']}:{slot}")
     _, checks = B.make_task(world, calls, request, said, task_id, SEED)
+    note_attempt({"slot": slot, "rev": rev, "phase": "checks",
+                  "why": "runs_failed" if not checks["runs"] else "ran",
+                  "failed_tool": None, "n_reads": len(reads or []),
+                  "n_writes": len(writes or [])})
     reasons = []
     if not checks["runs"]:
         reasons.append("runs_failed")
@@ -457,7 +496,7 @@ def settle_blueprint(world, synth: Priced, judge: Priced, share: Share, scen: di
         reasons += [f"suite:{f}" for f in checks["suite_failures"]]
     if reasons:
         if rev == MAX_REVISIONS:
-            return {"status": "rejected", "revisions": rev,
+            return {"status": "rejected", "revisions": rev, "task_id": task_id,
                     "reasons": reasons, "scenario_id": scen["id"],
                     "blueprint_writes": [{"name": c["name"], "args": c["args"]}
                                          for c in calls if c["name"] in world.write_tools]}, "done"
@@ -499,11 +538,60 @@ def slots(plan: int) -> list:
     return [{"level": lv, "kind": kinds[lv]} for lv in order[:plan]]
 
 
+TASKS_PATH = OUT / "tasks.jsonl"
+
+
 def existing_tasks() -> list:
-    path = OUT / "tasks.jsonl"
+    path = TASKS_PATH
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def run_slot(world, synth: Priced, judge: Priced, share: Share, slot: int) -> dict | None:
+    """One slot through the blueprint loop, appended to TASKS_PATH. Returns the line."""
+
+    scen_path = OUT / "scenarios.jsonl"
+    scenarios = [json.loads(line) for line in scen_path.read_text().splitlines() if line.strip()]
+    if not scenarios:
+        raise RuntimeError("no scenarios found")
+    plan = slots(WANT_TASKS)
+    spec = plan[slot]
+    scen = scenarios[slot % len(scenarios)]
+    t0 = time.time()
+    try:
+        task = build_task(world, synth, judge, share, scen,
+                          spec["level"], spec["kind"], slot)
+    except RuntimeError as error:
+        log(f"slot {slot} stopped: {error}")
+        return None
+    task["task_id"] = task.get("task_id") or B.task_uid(f"{SEED}:{ID_SALT}:rej:{slot}")
+    task.setdefault("kind", "do" if spec["level"] == "easy" else spec["level"])
+    task.setdefault("level", spec["level"])
+    task.setdefault("units", 0)
+    task.setdefault("scenario_id", scen["id"])
+    task.setdefault("request", "")
+    task.setdefault("user_facts", [])
+    task.setdefault("blueprint_writes", [])
+    task.setdefault("must_tell", [])
+    task.setdefault("checks", {"runs": False, "do_nothing_fails": False,
+                               "prefix_fails": False, "suite_passed": False,
+                               "suite_failures": []})
+    line = {"task_id": task["task_id"], "arm": ARM, "kind": task["kind"],
+            "level": task["level"], "units": task["units"],
+            "scenario_id": task.get("scenario_id"), "request": task["request"],
+            "user_facts": task["user_facts"],
+            "blueprint_writes": task["blueprint_writes"],
+            "must_tell": task["must_tell"], "checks": task["checks"],
+            "revisions": task.get("revisions", 0), "status": task["status"],
+            "reasons": [B.scrub(r) for r in (task.get("reasons") or [])],
+            "cost_usd": round(float(task.get("cost_usd", 0.0)), 6)}
+    with TASKS_PATH.open("a") as fh:
+        fh.write(json.dumps(line) + "\n")
+    dt = time.time() - t0
+    log(f"slot {slot} {spec['level']} {scen['id']} -> {line['status']} "
+        f"rev {line['revisions']} ({dt:.0f}s)")
+    return line
 
 
 def phase_tasks(share: Share, synth: Priced, judge: Priced, limit: int) -> list:
@@ -513,51 +601,13 @@ def phase_tasks(share: Share, synth: Priced, judge: Priced, limit: int) -> list:
     log(f"tasks kept: {len(rows)}")
     if len(rows) >= limit:
         return rows
-    scen_path = OUT / "scenarios.jsonl"
-    scenarios = [json.loads(line) for line in scen_path.read_text().splitlines() if line.strip()]
-    if not scenarios:
-        raise RuntimeError("no scenarios found")
     world = S.World(WORK)
-    plan = slots(limit)
-    with (OUT / "tasks.jsonl").open("a") as fh:
-        for slot in range(len(rows), limit):
-            share.refuse_if_broke()
-            spec = plan[slot]
-            scen = scenarios[slot % len(scenarios)]
-            t0 = time.time()
-            try:
-                task = build_task(world, synth, judge, share, scen,
-                                  spec["level"], spec["kind"], slot)
-            except RuntimeError as error:
-                log(f"slot {slot} stopped: {error}")
-                break
-            task["task_id"] = task.get("task_id") or B.task_uid(f"{SEED}:rej:{slot}")
-            task.setdefault("kind", "do" if spec["level"] == "easy" else spec["level"])
-            task.setdefault("level", spec["level"])
-            task.setdefault("units", 0)
-            task.setdefault("scenario_id", scen["id"])
-            task.setdefault("request", "")
-            task.setdefault("user_facts", [])
-            task.setdefault("blueprint_writes", [])
-            task.setdefault("must_tell", [])
-            task.setdefault("checks", {"runs": False, "do_nothing_fails": False,
-                                       "prefix_fails": False, "suite_passed": False,
-                                       "suite_failures": []})
-            line = {"task_id": task["task_id"], "arm": ARM, "kind": task["kind"],
-                    "level": task["level"], "units": task["units"],
-                    "scenario_id": task.get("scenario_id"), "request": task["request"],
-                    "user_facts": task["user_facts"],
-                    "blueprint_writes": task["blueprint_writes"],
-                    "must_tell": task["must_tell"], "checks": task["checks"],
-                    "revisions": task.get("revisions", 0), "status": task["status"],
-                    "reasons": [B.scrub(r) for r in (task.get("reasons") or [])],
-                    "cost_usd": round(float(task.get("cost_usd", 0.0)), 6)}
-            fh.write(json.dumps(line) + "\n")
-            fh.flush()
-            rows.append(line)
-            dt = time.time() - t0
-            log(f"slot {slot} {spec['level']} {scen['id']} -> {line['status']} "
-                f"rev {line['revisions']} ({dt:.0f}s)")
+    for slot in range(len(rows), limit):
+        share.refuse_if_broke()
+        line = run_slot(world, synth, judge, share, slot)
+        if line is None:
+            break
+        rows.append(line)
     return rows
 
 
