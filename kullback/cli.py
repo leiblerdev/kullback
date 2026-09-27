@@ -281,10 +281,15 @@ def ingest(files: list[Path] = typer.Argument(..., help="The customer's export f
                    "refused outside [0, 1]."),
           dry_run: bool = typer.Option(
               False, "--dry-run",
-              help="Say whether each file would ingest and what it would give, without writing anything.")):
+              help="Say whether each file would ingest and what it would give, without writing anything."),
+          approve_readers: bool = typer.Option(
+              False, "--approve-readers",
+              help="Check unapproved workdir readers in isolation and approve those that pass.")):
     """Store the customer's files byte for byte and derive Traces from them (D66)."""
     if intake_floor is not None and not 0.0 <= intake_floor <= 1.0:
         raise typer.BadParameter("--intake-floor must lie within [0, 1]")
+    if approve_readers:
+        _approve_pending(workdir, files)
     if dry_run:
         _ingest_dry_run(files, workdir, intake_floor)
         return
@@ -306,6 +311,22 @@ def ingest(files: list[Path] = typer.Argument(..., help="The customer's export f
                               summary["gate"]["metrics"]["floor"],
                               _ingested_tools(Path(workdir), summary["raw_hash"]), "ready"))
     _write(Path(workdir) / "ingest_summary.json", summaries)
+
+
+def _approve_pending(workdir: Path, files: list[Path]) -> None:
+    """Check unapproved workdir readers in isolation, approving those that pass.
+
+    A reader file that arrived by hand earns its approval here, against the
+    files about to ingest; anything still waiting stays skipped with why.
+    """
+    approve = _entry("kullback.builder.sources.workdir_readers", "approve_pending")
+    approved, refused = approve(workdir, [Path(item) for item in files])
+    for name in approved:
+        typer.echo(f"approved reader {name}")
+    for name, problems in refused.items():
+        typer.echo(f"reader {name} is not approved:")
+        for problem in problems:
+            typer.echo(problem)
 
 
 def _ingest_dry_run(files: list[Path], workdir: Path, intake_floor: Optional[float]) -> None:
@@ -468,6 +489,8 @@ def sources_map(
         raise typer.Exit(1)
     folder.mkdir(parents=True, exist_ok=True)
     target.write_text(source, encoding="utf-8")
+    record = _entry("kullback.builder.sources.workdir_readers", "record_approval")
+    record(workdir, target.name, hashlib.sha256(source.encode("utf-8")).hexdigest())
     typer.echo(f"passes; `kullback ingest {file}` will use it")
 
 

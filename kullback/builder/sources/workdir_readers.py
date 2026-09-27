@@ -1,12 +1,15 @@
 """Readers a workdir carries for formats the harness does not map yet.
 
 A workdir/sources/<name>.py file defines a module-level ADAPTER behind the
-intake seam plus the FOR_FILE sha256 of the file it was written for. Loading
-registers the adapter so ingest and dry runs read the format, but only after
-the reader passes its checks against that file. A reader that fails to import,
-names no FOR_FILE, has no file to check against, or fails a check is skipped
-with its reason, never raised, so one bad reader cannot break ingest of known
-formats. No reader is ever registered without a passing check.
+intake seam plus the FOR_FILE sha256 of the file it was written for. A reader
+runs in process only where the sha256 of its bytes is on the approval list in
+workdir/sources/approved.json, which only a passing isolated check writes.
+Loading registers the adapter so ingest and dry runs read the format, but only
+after the reader passes its checks against that file. A reader that is not
+approved, changed since, fails to import, names no FOR_FILE, has no file to
+check against, or fails a check is skipped with its reason, never raised, so
+one bad reader cannot break ingest of known formats. No reader is ever
+registered without a passing check.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import contextlib
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Iterator, Optional
@@ -326,6 +330,130 @@ def _default_fixtures() -> list[Path]:
     return sorted(item for item in folder.glob("*.json") if item.is_file())
 
 
+# The file holding approved reader hashes by file name, beside the readers.
+_APPROVALS = "approved.json"
+
+# One FOR_FILE declaration, read as text so the reader never executes.
+_FOR_FILE = re.compile(r"^FOR_FILE\s*=\s*[\"']([0-9a-fA-F]{64})[\"']", re.MULTILINE)
+
+
+def _approval_skip(reader: Path, approvals: dict[str, str]) -> Optional[str]:
+    """The skip reason where this reader file is not approved at its bytes, else None.
+
+    Nothing imports before this passes, so an unapproved or changed reader
+    never executes in the ingest process.
+    """
+    try:
+        reader_digest = hashlib.sha256(reader.read_bytes()).hexdigest()
+    except OSError as exc:
+        return f"the reader is not readable: {type(exc).__name__}: {exc}"
+    if approvals.get(reader.name) == reader_digest:
+        return None
+    if reader.name in approvals:
+        return ("the reader changed since approval, so it is skipped without import: "
+                "run kullback ingest --approve-readers to check it in isolation "
+                "and approve it again")
+    return ("the reader is not approved, so it is skipped without import: "
+            "run kullback ingest --approve-readers to check it in isolation "
+            "and approve it")
+
+
+def approve_pending(workdir: str | Path,
+                    candidates: Optional[str | Path | list[str | Path]] = None
+                    ) -> tuple[list[str], dict[str, list[str]]]:
+    """Check every unapproved reader in isolation, approving those that pass.
+
+    A reader runs in process only where its bytes are approved, so this is the
+    way a reader file that arrived by hand earns its entry: the FOR_FILE hash
+    is read as text, matched against a candidate file or the stored raw file,
+    and a passing isolated check writes the approval. Answers the newly
+    approved file names with the problems per reader still waiting.
+    """
+    root = Path(workdir)
+    folder = root / "sources"
+    approved: list[str] = []
+    refused: dict[str, list[str]] = {}
+    if not folder.is_dir():
+        return (approved, refused)
+    known = _read_approvals(root)
+    if candidates is None:
+        cands: list[Path] = []
+    elif isinstance(candidates, (str, Path)):
+        cands = [Path(candidates)]
+    else:
+        cands = [Path(item) for item in candidates]
+    for reader in sorted(folder.glob("*.py")):
+        try:
+            reader_digest = hashlib.sha256(reader.read_bytes()).hexdigest()
+        except OSError as exc:
+            refused[reader.name] = [f"the reader is not readable: {type(exc).__name__}: {exc}"]
+            continue
+        if known.get(reader.name) == reader_digest:
+            continue
+        for_file = _reader_for_file(reader)
+        if for_file is None:
+            refused[reader.name] = [
+                "the reader names no FOR_FILE, so there is nothing to approve it against"]
+            continue
+        target = _approval_target(root, cands, for_file)
+        if target is None:
+            refused[reader.name] = [
+                "the file it was written for is not here to approve it against"]
+            continue
+        problems = check_reader_isolated(reader, target)
+        if problems:
+            refused[reader.name] = problems
+            continue
+        record_approval(root, reader.name, reader_digest)
+        approved.append(reader.name)
+    return (approved, refused)
+
+
+def record_approval(workdir: str | Path, filename: str, digest: str) -> None:
+    """Mark one reader file approved at this hash, after its isolated check passed."""
+    root = Path(workdir)
+    known = _read_approvals(root)
+    known[filename] = digest
+    folder = root / "sources"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / _APPROVALS).write_text(
+        json.dumps(known, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _read_approvals(workdir: Path) -> dict[str, str]:
+    """The approved reader hashes by file name, empty where nothing is approved yet."""
+    try:
+        body = json.loads((workdir / "sources" / _APPROVALS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    return {str(name): str(value) for name, value in body.items()
+            if isinstance(name, str) and isinstance(value, str)}
+
+
+def _reader_for_file(reader: Path) -> Optional[str]:
+    """The FOR_FILE hash a reader file declares, read as text so nothing executes."""
+    try:
+        text = reader.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    found = _FOR_FILE.search(text)
+    return found.group(1) if found else None
+
+
+def _approval_target(workdir: Path, candidates: list[Path], digest: str) -> Optional[Path]:
+    """The file a reader was written for: a matching candidate, else the stored raw file."""
+    for cand in candidates:
+        try:
+            if hashlib.sha256(cand.read_bytes()).hexdigest() == digest:
+                return cand
+        except OSError:
+            continue
+    stored = workdir / "raw" / (digest + ".json")
+    return stored if stored.is_file() else None
+
+
 def _load(workdir: Path, candidate: Optional[Path] = None) -> tuple[list[str], dict[str, str]]:
     """Import, check, and register every reader file, collecting skip reasons.
 
@@ -339,8 +467,13 @@ def _load(workdir: Path, candidate: Optional[Path] = None) -> tuple[list[str], d
     folder = workdir / "sources"
     if not folder.is_dir():
         return (names, skipped)
+    approvals = _read_approvals(workdir)
     digest = _candidate_hash(candidate)
     for cand in sorted(folder.glob("*.py")):
+        reason = _approval_skip(cand, approvals)
+        if reason is not None:
+            skipped[cand.name] = reason
+            continue
         try:
             module = _load_module(cand)
         except Exception as exc:

@@ -60,6 +60,7 @@ def test_a_hand_mapped_reader_for_a_toy_format_passes_its_checks_and_ingest_uses
     reader.write_text(source, encoding="utf-8")
     retire("neutral")
     assert workdir_readers.check_reader_isolated(reader, toy) == []
+    assert workdir_readers.approve_pending(workdir, toy) == (["neutral.py"], {})
     assert workdir_readers.load_with_reasons(workdir, toy) == (["neutral"], {})
     summary = ingest.ingest_file(toy, workdir)
     assert summary["format"] == "neutral"
@@ -228,6 +229,7 @@ def test_an_unfinished_recording_registers_and_ingests_beside_a_complete_one(
     reader.write_text(render_reader("half", digest, mapping), encoding="utf-8")
     retire("half")
     assert workdir_readers.check_reader_isolated(reader, toy) == []
+    assert workdir_readers.approve_pending(workdir, toy) == (["half.py"], {})
     assert workdir_readers.load_with_reasons(workdir, toy) == (["half"], {})
     summary = ingest.ingest_file(toy, workdir, intake_floor=0.5)
     assert summary["format"] == "half"

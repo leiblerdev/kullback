@@ -152,11 +152,37 @@ def test_ingest_reports_the_confidence_decided_while_the_reader_was_registered(
         "neutral", digest, {"recordings": "entries", "role": "entries[].role",
                             "content": "entries[].content"}), encoding="utf-8")
     try:
+        from kullback.builder.sources import workdir_readers as _readers
+        assert _readers.approve_pending(workdir, toy) == (["neutral.py"], {})
         result = invoke("ingest", str(toy), "--workdir", str(workdir))
     finally:
         _sources.unregister("neutral")
     assert result.exit_code == 0, result.output
     assert "confidence 0.80" in result.output
+
+
+def test_ingest_approve_readers_approves_and_uses_a_hand_dropped_reader(tmp_path, workdir):
+    """A hand-dropped reader ingests once --approve-readers checks and approves it."""
+    import hashlib
+
+    from kullback.builder import sources as _sources
+    from kullback.builder.sources.reader_template import render_reader
+
+    toy = _neutral_toy(tmp_path / "neutral.json")
+    digest = hashlib.sha256(toy.read_bytes()).hexdigest()
+    folder = workdir / "sources"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "neutral.py").write_text(render_reader(
+        "neutral", digest, {"recordings": "entries", "role": "entries[].role",
+                            "content": "entries[].content"}), encoding="utf-8")
+    try:
+        result = invoke("ingest", str(toy), "--workdir", str(workdir), "--approve-readers")
+    finally:
+        _sources.unregister("neutral")
+    assert result.exit_code == 0, result.output
+    assert "approved reader neutral.py" in result.output
+    assert "confidence 0.80" in result.output
+
 
 
 # --- sources map and draft ----------------------------------------------------

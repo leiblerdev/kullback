@@ -85,6 +85,15 @@ def write_reader(workdir: Path, filename: str, name: str, for_file: str, mode: s
     return target
 
 
+def approve(workdir: Path, filename: str) -> None:
+    """Plant the approval a passing isolated check would write, to reach the registry check."""
+    from kullback.builder.sources import workdir_readers
+
+    target = workdir / "sources" / filename
+    workdir_readers.record_approval(
+        workdir, filename, hashlib.sha256(target.read_bytes()).hexdigest())
+
+
 def test_a_workdir_reader_that_passes_its_checks_is_used_by_ingest(tmp_path, workdir, retire):
     """A toy format with a toy reader ingests for real once the reader is in workdir/sources."""
     from kullback.builder.sources import workdir_readers
@@ -93,7 +102,7 @@ def test_a_workdir_reader_that_passes_its_checks_is_used_by_ingest(tmp_path, wor
     digest = hashlib.sha256(toy.read_bytes()).hexdigest()
     write_reader(workdir, "toy_pass.py", "toy_pass", digest, "pass")
     retire("toy_pass")
-    assert workdir_readers.load_with_reasons(workdir, toy) == (["toy_pass"], {})
+    assert workdir_readers.approve_pending(workdir, toy) == (["toy_pass.py"], {})
     summary = ingest.ingest_file(toy, workdir)
     assert summary["format"] == "toy_pass"
     assert summary["runs"] == 1
@@ -108,9 +117,9 @@ def test_a_workdir_reader_that_fails_its_checks_is_skipped_with_a_reason(tmp_pat
     digest = hashlib.sha256(toy.read_bytes()).hexdigest()
     write_reader(workdir, "toy_novote.py", "toy_novote", digest, "no_vote")
     retire("toy_novote")
+    approve(workdir, "toy_novote.py")
     ingest.store_raw(toy, workdir)
     names, skipped = workdir_readers.load_with_reasons(workdir)
-    assert names == []
     assert "toy_novote" in skipped and "no positive vote" in skipped["toy_novote"]
     assert sources.by_name("toy_novote") is None
 
@@ -137,6 +146,7 @@ def test_a_workdir_reader_is_checked_against_the_file_on_its_first_ingest(tmp_pa
     digest = hashlib.sha256(toy.read_bytes()).hexdigest()
     write_reader(workdir, "toy_bad.py", "toy_bad", digest, "no_vote")
     retire("toy_bad")
+    approve(workdir, "toy_bad.py")
     with pytest.raises(ValueError, match="unknown"):
         ingest.ingest_file(toy, workdir)
     assert sources.by_name("toy_bad") is None
@@ -156,20 +166,47 @@ def test_a_workdir_reader_without_for_file_is_skipped_with_a_reason(tmp_path, wo
     (folder / "toy_nofor.py").write_text(
         reader_source("toy_nofor", digest, "pass", omit_for_file=True), encoding="utf-8")
     retire("toy_nofor")
+    approve(workdir, "toy_nofor.py")
     names, skipped = workdir_readers.load_with_reasons(workdir, toy)
     assert names == []
     assert "FOR_FILE" in skipped["toy_nofor"]
     assert sources.by_name("toy_nofor") is None
 
 
+def test_an_unapproved_reader_is_never_imported_until_approved(tmp_path, workdir, retire):
+    """A reader outside the approval list is skipped without import, then loads after approval."""
+    from kullback.builder.sources import workdir_readers
+
+    toy = write_toy(tmp_path / "toy.json")
+    digest = hashlib.sha256(toy.read_bytes()).hexdigest()
+    marker = tmp_path / "imported.marker"
+    folder = workdir / "sources"
+    folder.mkdir(parents=True, exist_ok=True)
+    source = reader_source("toy_evil", digest, "pass").replace(
+        "from kullback.runner.records import",
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n"
+        "from kullback.runner.records import")
+    (folder / "toy_evil.py").write_text(source, encoding="utf-8")
+    retire("toy_evil")
+    names, skipped = workdir_readers.load_with_reasons(workdir, toy)
+    assert names == []
+    assert not marker.exists()
+    assert "toy_evil.py" in skipped and "approve-readers" in skipped["toy_evil.py"]
+    approved, refused = workdir_readers.approve_pending(workdir, toy)
+    assert approved == ["toy_evil.py"] and refused == {}
+    assert workdir_readers.load_with_reasons(workdir, toy) == (["toy_evil"], {})
+
+
 def test_workdir_readers_are_gone_from_the_registry_after_the_ingest_ends(tmp_path, workdir, retire):
     """An ingest leaves the registry as it found it, so one workdir never votes on the next file."""
+    from kullback.builder.sources import workdir_readers
 
     before = [adapter.name for adapter in sources.registered()]
     toy = write_toy(tmp_path / "toy.json")
     digest = hashlib.sha256(toy.read_bytes()).hexdigest()
     write_reader(workdir, "toy_gone.py", "toy_gone", digest, "pass")
     retire("toy_gone")
+    assert workdir_readers.approve_pending(workdir, toy) == (["toy_gone.py"], {})
     summary = ingest.ingest_file(toy, workdir)
     assert summary["format"] == "toy_gone"
     assert sources.by_name("toy_gone") is None

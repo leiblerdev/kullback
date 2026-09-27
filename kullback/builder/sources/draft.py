@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from kullback.builder.sources.shape import shape_summary
-from kullback.builder.sources.workdir_readers import check_reader_isolated
+from kullback.builder.sources.workdir_readers import check_reader_isolated, record_approval
 
 # The model answers with one fenced block; the first match wins.
 _FENCE = re.compile(r"```(?:python)?\s*\n(.*?)```", re.DOTALL)
@@ -194,9 +194,14 @@ def _write_temp(source: str) -> Path:
 
 
 def _save(workdir: str | Path, name: str, source: str) -> Path:
-    """Store a passing reader under workdir/sources, making the folder as needed."""
+    """Store a passing reader under workdir/sources, making the folder as needed.
+
+    The save follows a passing isolated check, so it approves the file it
+    writes at its hash; a later change to the file needs a fresh approval.
+    """
     folder = Path(workdir) / "sources"
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / f"{name}.py"
     target.write_text(source, encoding="utf-8")
+    record_approval(workdir, target.name, hashlib.sha256(source.encode("utf-8")).hexdigest())
     return target
