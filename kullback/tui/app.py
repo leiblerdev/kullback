@@ -40,7 +40,7 @@ PALETTE_COMMANDS = ("status", "sessions", "watch", "build", "keys", "login", "lo
 KEYS_HELP = """keys: 1 home, 2 traces, 3 build, 4 watch, 5 tasks, 6 runs. ctrl+k commands \
 (publish, synthesise), ctrl+r machine sessions, ? keys, ctrl+d quit. In watch: enter nudges, \
 alt+enter tells, esc asks before stopping."""
-LOGIN_HINT = "To log in from here, run `kullback` for the line screen, then /login."
+LOGIN_HINT = "To log in, run `kullback tui --plain`, then /login."
 
 
 # The views by their palette name, off the registry the views package owns.
