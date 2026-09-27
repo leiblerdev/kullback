@@ -155,3 +155,18 @@ def test_an_effort_wrapped_user_model_carries_the_effort_on_every_user_turn(tmp_
     assert len(user.calls) > 0
     assert all(call["config"].effort == "low" and call["config"].reasoning_effort == "low"
                for call in user.calls)
+
+
+def test_the_builders_run_user_is_the_rule_user_alone_without_a_model(tmp_path):
+    from kullback.builder import domain_tools as builder_tools
+
+    root = _exam_env(tmp_path / "env")
+    assert type(builder_tools._run_user(root, "widget_task", _Router(root))) is SimulatedUser
+
+
+def test_the_builders_run_user_is_the_agent_user_over_the_floor_with_a_model(tmp_path):
+    from kullback.builder import domain_tools as builder_tools
+
+    root = _exam_env(tmp_path / "env")
+    user = builder_tools._run_user(root, "widget_task", _Router(root), _user_model())
+    assert isinstance(user, AgentUser) and type(user.fallback) is SimulatedUser

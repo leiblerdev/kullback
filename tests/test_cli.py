@@ -967,7 +967,9 @@ def test_build_without_run_model_runs_the_candidate_on_the_builder_model(workdir
     assert not isinstance(builder, budget_mod.EffortModel)
     record = _build_start(workdir)
     assert (record["model"], record["run_model"]) == ("vendor/large", "vendor/large")
-    assert record["run_effort"] is None and record["user_model"] is None
+    assert record["run_effort"] is None
+    assert (record["user_model"], record["user_kind"]) == ("vendor/large", "agent")
+    assert call["kwargs"]["user_model"] is builder
 
 
 def test_build_with_run_model_and_effort_runs_the_candidate_on_them_not_the_builder(
@@ -987,13 +989,29 @@ def test_build_with_run_model_and_effort_runs_the_candidate_on_them_not_the_buil
     assert not isinstance(call["kwargs"]["probe_model"], budget_mod.EffortModel)
     record = _build_start(workdir)
     assert (record["run_model"], record["run_effort"]) == ("cheap/small", "low")
-
-
-def test_without_the_user_switch_no_examine_fn_reaches_the_session(workdir, fake_modules, monkeypatch):
-    _named_adapters(monkeypatch)
+def test_default_build_meets_every_run_with_the_agent_user_on_the_run_model(workdir, fake_modules,
+                                                                             monkeypatch):
+    built = _named_adapters(monkeypatch)
     result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large")
     assert result.exit_code == 0, result.output
-    assert "examine_fn" not in fake_modules["kullback.builder.session.build"][0]["kwargs"]
+    call = fake_modules["kullback.builder.session.build"][0]
+    assert call["kwargs"]["user_model"] is built["vendor/large"]
+    call["kwargs"]["examine_fn"](workdir, None)
+    seen = fake_modules["kullback.examiner.session.examine"][0]["kwargs"]
+    assert seen["user_model"] is built["vendor/large"]
+    record = _build_start(workdir)
+    assert (record["user_model"], record["user_kind"]) == ("vendor/large", "agent")
+
+
+def test_rule_user_keeps_the_rule_driven_user_alone(workdir, fake_modules, monkeypatch):
+    _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large",
+                    "--run-model", "cheap/small", "--run-effort", "low", "--rule-user")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]["kwargs"]
+    assert "examine_fn" not in call and call["user_model"] is None
+    record = _build_start(workdir)
+    assert record["user_model"] is None and record["user_kind"] == "rule"
 
 
 def test_bare_user_model_switches_the_agent_user_on_with_the_run_model(workdir, fake_modules,
@@ -1010,6 +1028,7 @@ def test_bare_user_model_switches_the_agent_user_on_with_the_run_model(workdir, 
     assert seen["reroll_model"] is call["kwargs"]["run_model"]
     assert seen["user_model"].effort == "low"
     assert _build_start(workdir)["user_model"] == "cheap/small"
+    assert _build_start(workdir)["user_kind"] == "agent"
 
 
 def test_valued_user_model_names_its_own_model_with_the_run_effort(workdir, fake_modules, monkeypatch):
@@ -1027,3 +1046,4 @@ def test_valued_user_model_names_its_own_model_with_the_run_effort(workdir, fake
     assert isinstance(user, budget_mod.EffortModel)
     assert user.inner is built["other/id"] and user.effort == "low"
     assert _build_start(workdir)["user_model"] == "other/id"
+    assert _build_start(workdir)["user_kind"] == "agent"

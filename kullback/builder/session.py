@@ -79,6 +79,7 @@ class BuilderRoot:
     probe_model: Any = None
     reroll_model: Any = None
     run_model: Any = None
+    user_model: Any = None
 
     @property
     def env(self) -> Path:
@@ -242,7 +243,8 @@ def builder_extension(root: BuilderRoot) -> Callable[[ExtensionAPI], None]:
         model = getattr(getattr(api, "harness", None), "model", None)
         for tool in domain_tools(workdir=root.workdir, model=model, examine_fn=root.examine_fn,
                                  judge_model=root.judge_model, probe_model=root.probe_model,
-                                 reroll_model=root.reroll_model, run_model=root.run_model, env=env):
+                                 reroll_model=root.reroll_model, run_model=root.run_model,
+                                 user_model=root.user_model, env=env):
             api.register_tool(tool)
         for name, text in prompt_mod.sections():
             api.add_prompt_section(f"builder_{name}", text)
@@ -266,18 +268,16 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
           ceiling_usd: Optional[float] = None, session_path: Any = None,
           subscribers: Iterable[Callable[[Any], Any]] = (),
           max_turns: Optional[int] = None, judge_model: Any = None, probe_model: Any = None,
-          reroll_model: Any = None, run_model: Any = None,
+          reroll_model: Any = None, run_model: Any = None, user_model: Any = None,
           on_harness: Optional[Callable[[AgentHarness], Any]] = None) -> dict:
     """Run one Builder session over the workdir and say how it stopped.
 
     `files` are customer files to ingest first, as paths under the workdir. `session_path`
     defaults to workdir/sessions/builder.jsonl. The dict carries the status tool's rows,
     the trusted, refused and open counts, the spend, the turns, how it stopped (one of:
-    no tool call, ceiling, cancelled, max turns, error) and the last assistant line, or the
-    provider's error message when the last turn ended in an error. A stop with no tool call
-    while Tasks are open and the spend is under the ceiling draws a follow-up (`continuation`),
     at most CONTINUATIONS of them; "continued" counts those sent. `judge_model`, `probe_model`
-    and `reroll_model` reach examine, `run_model` reaches the run tool; each is `model` when not named.
+    and `reroll_model` reach examine, `run_model` and `user_model` reach the run tool; each is
+    `model` when not named. Without a `user_model` fresh Runs meet the rule-driven user alone.
     `on_harness` is handed the live harness once it exists and before the first model turn, so a
     caller on another thread can steer, follow up, compact or cancel it while this call runs.
     """
@@ -302,7 +302,7 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
     load_extensions(harness, [builder_extension(
         BuilderRoot(workdir=root, env_root=env, examine_fn=examine_fn, ceiling_usd=ceiling_usd,
                     judge_model=judge_model, probe_model=probe_model, reroll_model=reroll_model,
-                    run_model=run_model))])
+                    run_model=run_model, user_model=user_model))])
     for subscriber in subscribers:
         harness.subscribe(subscriber)
     ceiling = budget.Ceiling.from_totals(root, ceiling_usd) if ceiling_usd is not None else None

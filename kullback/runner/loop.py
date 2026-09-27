@@ -395,6 +395,9 @@ def _user_payload(user: Any, answer: Optional[str], seen: int) -> tuple[dict, bo
 
     Only an event the user appended during this turn is read (D77): a fact it could not give one
     turn ago does not tag this one, and a read that hit a synthetic row makes this turn Assisted.
+    Who spoke rides along where the user said so: the agent user marks its turns agent and its
+    floor's rules, the rule-driven user alone marks nothing, so a row without a driver is the
+    rule user as before.
     """
     payload: dict = {"text": answer or ""}
     events = getattr(user, "events", None) or []
@@ -408,6 +411,8 @@ def _user_payload(user: Any, answer: Optional[str], seen: int) -> tuple[dict, bo
     for key in ("refused", "refused_so_far"):  # counts, and a zero is a number the report reads
         if key in carried:
             payload[key] = carried[key]
+    if carried.get("driver"):
+        payload["driver"] = carried["driver"]
     tags = list(carried.get("tags") or [])
     if tags:
         payload.update({"tags": tags}, **{tag: True for tag in tags})

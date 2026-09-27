@@ -456,9 +456,13 @@ def build(
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
     user_model: Optional[str] = typer.Option(
         None, "--user-model",
-        help="Model id for the agent user in the Examiner's re-rolls (D214); off by default, "
-             "which keeps the rule-driven user. Bare, the switch takes --run-model's model. "
-             "The agent user's effort follows --run-effort."),
+        help="Model id for the agent user every Run meets (D214); the default is --run-model. "
+             "Bare, the switch takes --run-model's model. The agent user's effort follows "
+             "--run-effort."),
+    rule_user: bool = typer.Option(
+        False, "--rule-user",
+        help="Meet every Run with the rule-driven user alone, the default before the agent "
+             "user became the Simulated user. No model is called for the user on this flag."),
 ):
     """Run the autonomous Builder session over the ingested Traces and write the Environment.
 
@@ -469,17 +473,19 @@ def build(
     otherwise, the Examiner, the judges and the loophole probe; `--judge-model` puts the judges
     on a model of their own. `--run-model` puts the Candidate on a model of its own instead of
     --model, and `--run-effort` sends one reasoning effort on the Candidate's calls and the agent
-    user's, never the Builder's, the Examiner's or the judges'. `--user-model` switches the
-    re-rolls' users to the agent user over the rule floor, priced under the user stage.
+    user's, never the Builder's, the Examiner's or the judges'. Every Run meets the agent user
+    on the run model over the rule floor, priced under the user stage; `--rule-user` keeps the
+    rule-driven user alone, and `--user-model` names the agent user's own model.
     """
     adapter = _live_model(model, base_url)
     judge_adapter = _live_model(judge_model, base_url) if judge_model else None
     run_id = run_model or model
     run_adapter = adapter if run_id == model else _live_model(run_id, base_url)
     run_adapter = _effort_model(run_adapter, run_effort)
+    user_kind = "rule" if rule_user else "agent"
     user_id = None
     user_adapter = None
-    if user_model is not None:
+    if not rule_user:
         user_id = run_id if not user_model else user_model
         if user_id == run_id:
             user_adapter = run_adapter
@@ -490,15 +496,16 @@ def build(
     # the spend move, rather than a stale $0.0000 until the build is over.
     # The feed is this build's story, opened here and appended to as it goes: /watch reads it to
     # show the calls as they happen instead of a board that only moves when the session ends.
-    # The build_start row is the build record: which model and effort each role used.
     feed.start(workdir, model=model, ceiling_usd=ceiling_usd, run_model=run_id,
-               run_effort=run_effort or None, user_model=user_id, judge_model=judge_model)
+               run_effort=run_effort or None, user_model=user_id, user_kind=user_kind,
+               judge_model=judge_model)
     pulse = heartbeat.pulse(workdir, model, "running")
     try:
         result = _entry("kullback.builder.session", "build")(
             workdir, adapter, files=list(files or []), ceiling_usd=ceiling_usd,
             subscribers=[_session_subscriber(workdir)], judge_model=judge_adapter,
             probe_model=adapter, reroll_model=run_adapter, run_model=run_adapter,
+            user_model=user_adapter,
             **_user_switch(adapter, judge_adapter, user_adapter, reroll_model=run_adapter))
     except Exception:
         pulse.stop()
