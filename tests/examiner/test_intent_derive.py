@@ -52,10 +52,11 @@ def test_a_check_quoting_the_request_is_kept_with_its_because():
     stats: dict = {}
     verifier = _write("t1", "please mark the record ready", None,
                                 _tools(), _world(), model, stats=stats)
-    assert [atom.kind for atom in verifier.atoms] == ["required", "required"]
+    assert [atom.kind for atom in verifier.atoms] == ["required", "required", "required"]
     assert verifier.atoms[0].target["kind"] == "write"
     assert verifier.atoms[1].target["value"] is not None
     assert "mark the record ready" in verifier.atoms[1].description
+    assert verifier.atoms[2].target == {"kind": "entity_count", "count": 1}
     assert stats["kept_checks"] == 1 and stats["refused"] == 0
 
 
@@ -70,7 +71,7 @@ def test_a_quote_outside_the_request_is_refused_then_rewritten():
                                 _tools(), _world(), model, stats=stats)
     assert stats["attempts"] == 2 and stats["refused"] == 0
     assert stats["kept_checks"] == 2
-    assert len(verifier.atoms) == 4
+    assert len(verifier.atoms) == 5
 
 
 def test_a_value_no_read_returned_is_refused():
@@ -80,7 +81,8 @@ def test_a_value_no_read_returned_is_refused():
     stats: dict = {}
     verifier = _write("t1", "please mark the record ready", None,
                                 _tools(), _world(), model, stats=stats, attempts=1)
-    assert verifier.atoms == [] and stats["kept_checks"] == 0
+    assert [a.target.get("kind") for a in verifier.atoms] == ["entity_count"]
+    assert verifier.atoms[0].target["count"] == 0 and stats["kept_checks"] == 0
     assert stats["refused"] == 1
 
 
@@ -108,7 +110,8 @@ def test_a_required_row_the_request_never_names_is_refused():
     stats: dict = {}
     verifier = _write("t1", "please mark the record ready", None,
                                 _tools(), _world(), model, stats=stats, attempts=1)
-    assert verifier.atoms == [] and stats["refused"] == 1
+    assert [a.target.get("kind") for a in verifier.atoms] == ["entity_count"]
+    assert verifier.atoms[0].target["count"] == 0 and stats["refused"] == 1
 
 
 def test_a_value_the_request_holds_is_user_stated():
@@ -167,8 +170,8 @@ def test_a_communicate_check_splits_into_stated_tokens():
     model = TestModel([_checks(check)])
     verifier = _write("t1", "is record K7 ready?", None,
                                 _tools(), _world(), model)
-    assert [atom.target["text"] for atom in verifier.atoms] == ["K7"]
-    assert all(atom.kind == "communicate" for atom in verifier.atoms)
+    said = [atom for atom in verifier.atoms if atom.kind == "communicate"]
+    assert [atom.target["text"] for atom in said] == ["K7"]
 
 
 def test_a_fact_without_a_user_question_is_refused():
@@ -179,7 +182,8 @@ def test_a_fact_without_a_user_question_is_refused():
     stats: dict = {}
     verifier = _write("t1", "mark record K7 ready", None,
                                 _tools(), _world(), model, stats=stats, attempts=1)
-    assert verifier.atoms == [] and stats["refused"] == 1
+    assert [a.target.get("kind") for a in verifier.atoms] == ["entity_count"]
+    assert verifier.atoms[0].target["count"] == 0 and stats["refused"] == 1
 
 
 def test_a_failing_body_leaves_the_starting_state_whole():
@@ -294,3 +298,38 @@ def test_a_fenced_answer_still_parses():
     _write("t1", "please mark the record ready", None,
            _tools(), _world(), model, stats=stats, attempts=1)
     assert stats["kept_checks"] == 1 and stats["refused"] == 0
+
+def test_a_gappy_quote_is_refused():
+    """A quote must state one span word for word, not words in order."""
+    check = _write_check(because_quote="please mark ready", value="ready")
+    model = TestModel([_checks(check)])
+    stats: dict = {}
+    _write("t1", "please mark the record ready", None,
+           _tools(), _world(), model, stats=stats, attempts=1)
+    assert stats["kept_checks"] == 0 and stats["refused"] == 1
+
+
+def test_a_short_quote_is_refused():
+    """A quote under 12 characters proves nothing, however contiguous."""
+    check = _write_check(because_quote="mark ready", value="ready")
+    model = TestModel([_checks(check)])
+    stats: dict = {}
+    _write("t1", "please mark ready of record now", None,
+           _tools(), _world(), model, stats=stats, attempts=1)
+    assert stats["kept_checks"] == 0 and stats["refused"] == 1
+
+
+def test_a_policy_rule_may_require_what_words_cannot():
+    """A valid policy because exempts the required check from the demand scope."""
+    check = _write_check(entity="ledger", value="ready", because_rule="ask-first")
+    model = TestModel([_checks(check)])
+    stats: dict = {}
+    verifier = _write("t1", "please mark the record ready", {"ask-first": "ask before changing"},
+                      _tools(), _world(), model, stats=stats, attempts=1)
+    assert stats["kept_checks"] == 1 and stats["refused"] == 0
+    assert verifier.atoms[0].kind == "required"
+
+
+def test_read_rounds_stop_at_four():
+    """The writer turns pin the experiment's read budget."""
+    assert W.MAX_TURNS == 4

@@ -6,11 +6,14 @@ of the Starting state. No tool, prompt line or file shows another episode of the
 Task. It writes must checks (required, allowed, question, communicate), each with
 a because: a quote from the request or a policy rule named as the policy names it.
 
-Grounding is code, no model: a check is refused whose quote is not in the request
-(same tokeniser as builder/intent.py, vendored below so this module never imports
-the Builder), whose rule is not in the policy, or whose value no read returned
-and the request does not hold. Refusals go back to the session for a rewrite, up
-to 3 attempts; the attempt with the most kept checks wins.
+Grounding is code, no model: a check is refused whose quote is not a long
+word-for-word span of the request (same strictness as the experiment writer),
+whose rule is not in the policy, or whose value no read returned and the
+request does not hold. A required check carries only what the request
+determines unless a policy rule requires it; read rows go allowed. Refusals go
+back to the session for a rewrite, up to 3 attempts; the attempt with the most
+kept checks wins. A required cap matching the listed write count is appended
+in code.
 
 The Verifier is built with make_atom from the D79 suite, the same call the
 derivation uses, so the existing scorer rules on it unchanged. Several acceptable
@@ -39,7 +42,7 @@ write_verifier(task, intent, policy, tools, starting_state, model) shapes:
 
 Extra keyword-only knobs: canon (the Environment's CanonRules, required, so value
 keys score under the same rules as the suite), max_attempts (3), max_turns per
-attempt (8), stats (a dict that is filled with attempts, written, refused,
+attempt (4), stats (a dict that is filled with attempts, written, refused,
 kept_checks, atoms, calls, reads, input_tokens, output_tokens when given).
 """
 
@@ -100,10 +103,25 @@ def _intent_tokens(text: Any) -> list[str]:
     lowered = _APOSTROPHE_RE.sub("", str(text or "").lower())
     return [_normalise(token) for token in _TOKEN_RE.findall(lowered)]
 
+MIN_QUOTE_CHARS = 12
+
+
+def _flat(text: Any) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+
+
+def _quote_ok(quote: Any, flat_intent: str) -> bool:
+    """The quote states an Intent span word for word: a long contiguous span of it."""
+    for span in re.split(r"[.!?\n]+", _flat(quote)):
+        span = span.strip("\"' ").strip()
+        if len(span) >= MIN_QUOTE_CHARS and span in flat_intent:
+            return True
+    return False
+
 
 MUST_KINDS = ("required", "allowed", "question", "communicate")
 MAX_ATTEMPTS = 3
-MAX_TURNS = 8
+MAX_TURNS = 4
 READ_ARG_NAMES = ("state", "db", "world", "env")
 RESULT_CHARS = 4000
 
@@ -327,14 +345,17 @@ def _head() -> str:
         "Every check states one thing the end state must hold or may hold, or one",
         "thing the final message must ask or state. Several acceptable end states",
         "are all welcome as checks; never pin one value where several are right.",
-        "Each check carries a because: quote the request in because_quote using its",
-        "own words, or name a policy rule in because_rule using the name the policy",
-        "gives it. A check with neither is refused, and so is one whose quote the",
-        "request does not hold, whose rule is not in the policy, or whose value no",
-        "read returned and the request does not hold.",
+        "Each check carries a because: quote the request word for word in because_quote",
+        "(at least 12 characters of one span), or name a policy rule in because_rule",
+        "using the name the policy gives it. A check with neither is refused, and so",
+        "is one whose quote the request does not hold, whose rule is not in the",
+        "policy, or whose value no read returned and the request does not hold.",
         "Use the policy rules as written; never reason from memory.",
+        "Demand only what the request asks for or the policy requires, never a step",
+        "just because it would be a sensible way to do the job.",
         "Exact values come from what your reads return or from what the request",
-        "says, never from habit. Read first where the request points at the world.",
+        "says, never from habit. Spend at most 4 read rounds, then write with what",
+        "you have. List every acceptable write; the count is set from what you list.",
         "Answer with one JSON object: {\"checks\": [{\"kind\", ...}]}.",
         "A required or allowed check over a write names tool, entity and id_field: entity is the",
         "id of the exact row the write acts on, as your reads show it, with id_field naming that",
@@ -444,17 +465,6 @@ def _parse_checks(text: str) -> tuple[list[dict], Optional[str]]:
     return [check for check in checks if isinstance(check, dict)], None
 
 
-def _is_subsequence(needles: list[str], haystack: list[str]) -> bool:
-    pos = 0
-    for needle in needles:
-        try:
-            pos = haystack.index(needle, pos) + 1
-        except ValueError:
-            return False
-
-    return True
-
-
 _ASK_WORDS = frozenset("what when where which who whom whose why how is are was were do does did can could will would should have has".split())
 
 
@@ -467,13 +477,13 @@ def _asks(words: Any) -> bool:
     return bool(toks) and toks[0] in _ASK_WORDS
 
 
-def _ground(checks: list[dict], intent_toks: list[str], intent_set: set[str],
+def _ground(checks: list[dict], flat_intent: str, intent_set: set[str],
             rule_names: set[str], read_set: set[str], asks: bool) -> tuple[list[dict], list[dict]]:
     """Split candidate checks into kept and refused, by code only."""
     kept: list[dict] = []
     refused: list[dict] = []
     for index, check in enumerate(checks):
-        reason = _refusal(check, intent_toks, intent_set, rule_names, read_set, asks)
+        reason = _refusal(check, flat_intent, intent_set, rule_names, read_set, asks)
         if reason is None:
             kept.append(check)
         else:
@@ -496,7 +506,8 @@ def _determined(check: dict, intent_set: set[str]) -> Optional[str]:
     """A required check carries only what the request determines.
 
     A row or value the request never names is one the writer picked out of the reads;
-    when several rows fit, every fitting row is allowed and none is required.
+    when several rows fit, every fitting row is allowed and none is required. Skipped
+    where a policy rule requires the check: the policy determines it instead.
     """
     entity = check.get("entity")
     if isinstance(entity, str) and entity and _intent_tokens(entity):
@@ -507,15 +518,15 @@ def _determined(check: dict, intent_set: set[str]) -> Optional[str]:
             return "required carries only a value the request determines; list read values as allowed"
     return None
 
-def _refusal(check: dict, intent_toks: list[str], intent_set: set[str],
+
+def _refusal(check: dict, flat_intent: str, intent_set: set[str],
              rule_names: set[str], read_set: set[str], asks: bool) -> Optional[str]:
     kind = check.get("kind")
     if kind not in MUST_KINDS:
         return f"kind {kind!r} is not a must check"
     quote = check.get("because_quote")
     rule = check.get("because_rule")
-    quote_ok = bool(isinstance(quote, str) and quote.strip()) and _is_subsequence(
-        _intent_tokens(quote), intent_toks)
+    quote_ok = _quote_ok(quote, flat_intent)
     rule_ok = bool(isinstance(rule, str) and rule in rule_names)
     if not (quote_ok or rule_ok):
         if quote and not rule:
@@ -523,7 +534,7 @@ def _refusal(check: dict, intent_toks: list[str], intent_set: set[str],
         if rule and not quote:
             return f"the policy names no rule {rule!r}"
         return "no because from the request or the policy"
-    if kind == "required":
+    if kind == "required" and not rule_ok:
         scoped = _determined(check, intent_set)
         if scoped is not None:
             return scoped
@@ -605,6 +616,12 @@ def _build_atoms(kept: list[dict], fn: Any, intent_set: set[str]) -> list[Atom]:
                                     else "system_derived"),
                         description=f"{check['tool']} {field} is {text_of(value)}; {because}"))
             write_no += 1
+    listed = {(atom.target.get("tool"), atom.target.get("entity")) for atom in atoms
+              if atom.target.get("kind") == "write"}
+    atoms.append(make_atom("entity_count", "required",
+                           {"kind": "entity_count", "count": len(listed)},
+                           helpers=HELPERS_SRC,
+                           description=f"the Run makes at most {len(listed)} write calls"))
     return atoms
 
 
@@ -632,8 +649,8 @@ def write_verifier(task: Any, intent: Any, policy: Any, tools: Any, starting_sta
                 "input_schema": _input_schema(entry)} for entry in readable]
     tables = _world_tables(starting_state)
     fn = canon_fn(canon)
-    intent_toks = _intent_tokens(words)
-    intent_set = set(intent_toks)
+    intent_set = set(_intent_tokens(words))
+    flat_words = _flat(words)
     read_tokens: set[str] = set()
     tally = {"calls": 0, "reads": 0, "input_tokens": 0, "output_tokens": 0}
     messages: list[dict] = [{"role": "system", "content": _head()},
@@ -651,7 +668,7 @@ def write_verifier(task: Any, intent: Any, policy: Any, tools: Any, starting_sta
             refused = [{"index": -1, "kind": None, "reason": parse_error}]
             kept: list[dict] = []
         else:
-            kept, refused = _ground(checks, intent_toks, intent_set,
+            kept, refused = _ground(checks, flat_words, intent_set,
                                     set(rules), set(read_tokens), _asks(words))
         score = (len(kept), -len(refused))
         if not best or score > best:
