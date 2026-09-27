@@ -202,6 +202,8 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/spec/must_not.py` | The forbidden side of the writer's Verifier: scope atoms for uncovered write tools and the compiled policy prohibitions; `tier_of` by atom kind. `kullback/examiner/must_not.py` re-exports it. |
 | `kullback/spec/atoms.py` | `shape_atom` and `no_write_atom`, the two generated Hard rules, moved from the Examiner so the Spec never reads it; `derive` re-exports them. |
 | `kullback/spec/text.py` | `STOPWORDS`, `APOSTROPHE_RE`, `TOKEN_RE` and `normalise`, moved from the Builder so the Spec never reads it; `cluster` and `intent` re-export them. |
+| `kullback/spec/intent.py` | The intent miner: `mine_intent` runs one agent session per Task on the Examiner's model path, capped in calls and USD, and writes the SpecIntent part of `workdir/spec/<task_id>.json`. |
+| `kullback/spec/intent_tools.py` | The miner's view and tools: user turns of every recording with the agent's line before, never a tool call or result; `add_facts` checks each fact's words against its turn; witnesses and `counts` (rule 5) in code. |
 
 ## kullback/builder
 

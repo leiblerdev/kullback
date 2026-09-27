@@ -38,6 +38,8 @@ class SpecIntent(Record):
     task_id: str
     facts: list[IntentFact] = Field(default_factory=list)
     text: str = ""
+    # Facts the miner offered that code refused (words not in the named turn, a repeat, and so on).
+    refusals: int = 0
     model: Optional[str] = None
     written_at: Optional[str] = None
 
