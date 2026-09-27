@@ -254,13 +254,13 @@ def _config(config: Any) -> Any:
 
 
 def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Optional[str] = None,
-               config: Any = None) -> Written:
-    """One writer session for one Task, and the Spec code keeps from it."""
+               config: Any = None, ceiling_usd: Optional[float] = None) -> Written:
+    """One writer session for one Task, and the Spec code keeps from it; past `ceiling_usd` it answers at once."""
     writer_tools.refuse_run_inputs(inputs.intent, inputs.state)
     messages, cut = writer_messages(inputs)
     session = writer_tools.run_session(model, messages, inputs.state, _config(config),
                                        writer_tools.MAX_READ_ROUNDS, _price(model_id),
-                                       force_answer=True)
+                                       force_answer=True, ceiling_usd=ceiling_usd)
     demands, error = writer_tools.parse_list(session["text"], "demands")
     spec, counts = build_spec(task_id, demands, inputs)
     counts.update(parse_error=error, truncated_chars=cut)

@@ -436,6 +436,48 @@ def _user_switch(adapter: Any, judge_adapter: Any, user_adapter: Any, reroll_mod
     return {"examine_fn": examine_fn}
 
 
+def _spec_switch(adapter: Any, judge_adapter: Any, user_adapter: Any, reroll_model: Any,
+                 spec_adapter: Any) -> dict:
+    """The Builder's examine call under `--verifier-from intent`: the Specs written first, then examined.
+
+    The named Tasks, else every runnable Task of the build's sample, get a Spec and its Verifier on
+    `spec_adapter` (a Task that has both keeps them); then the Examiner judges in intent mode.
+    """
+    examine = _entry("kullback.examiner.session", "examine")
+    write_specs = _entry("kullback.spec.stage", "write_specs")
+    runnable = _entry("kullback.builder.domain_tools", "runnable_task_ids")
+
+    def examine_fn(workdir: Any, task_ids: Any) -> Any:
+        ids = list(task_ids) if task_ids is not None else list(runnable(Path(workdir)))
+        counts = write_specs(Path(workdir), ids, spec_adapter)
+        typer.echo(f"spec: {json.dumps(counts, default=str, sort_keys=True)}")
+        return examine(Path(workdir), task_ids=task_ids, model=adapter,
+                       judge_model=judge_adapter or adapter, probe_model=adapter,
+                       reroll_model=reroll_model or adapter, user_model=user_adapter,
+                       verifier_from="intent")
+
+    return {"examine_fn": examine_fn}
+
+
+def _task_sample(value: Optional[str]) -> Optional[list[str]]:
+    """The --tasks value as Task ids: a comma list, or @path to a file of ids, one per line."""
+    if value is None:
+        return None
+    if value.startswith("@"):
+        lines = Path(value[1:]).read_text(encoding="utf-8").splitlines()
+    else:
+        lines = value.split(",")
+    return [line.strip() for line in lines if line.strip()]
+
+
+def _store_sample(workdir: Path, sample: Optional[list[str]]) -> None:
+    """The --tasks sample into the build manifest; without one the manifest keeps what it holds."""
+    if sample is not None:
+        from kullback.spec.trust import store_tasks
+
+        store_tasks(workdir, sample)
+
+
 @app.command(cls=_BuildCommand)
 def build(
     workdir: Path = WORKDIR,
@@ -468,6 +510,14 @@ def build(
         help="Where each Task's Verifier comes from: intent (the Spec file, trust by the four "
              "gates) or runs (derived from the Runs, the D126 ruling). Stored in the workdir's "
              "build manifest, so a resume keeps it; the default is the stored choice, else runs."),
+    spec_model: Optional[str] = typer.Option(
+        None, "--spec-model",
+        help="Model id for the Spec writer (intent miner and Verifier writer) under --verifier-from "
+             "intent; the default is --model."),
+    tasks: Optional[str] = typer.Option(
+        None, "--tasks",
+        help="The build's Task sample: a comma list of ids, or @path to a file of ids, one per line. "
+             "Stored in the build manifest; the build plays and examines no Task outside it."),
 ):
     """Run the autonomous Builder session over the ingested Traces and write the Environment.
 
@@ -484,6 +534,7 @@ def build(
     `--verifier-from intent` the build ends by writing the tier report (tiers.json) and its line.
     """
     chosen = _verifier_from(workdir, verifier_from)
+    _store_sample(workdir, _task_sample(tasks))
     adapter = _live_model(model, base_url)
     judge_adapter = _live_model(judge_model, base_url) if judge_model else None
     run_id = run_model or model
@@ -513,7 +564,8 @@ def build(
             subscribers=[_session_subscriber(workdir)], judge_model=judge_adapter,
             probe_model=adapter, reroll_model=run_adapter, run_model=run_adapter,
             user_model=user_adapter,
-            **_user_switch(adapter, judge_adapter, user_adapter, reroll_model=run_adapter))
+            **_examine_switch(chosen, adapter, judge_adapter, user_adapter, run_adapter,
+                              spec_model, model, base_url))
     except Exception:
         pulse.stop()
         heartbeat.beat(workdir, model, "failed")
@@ -528,6 +580,15 @@ def build(
     typer.echo(json.dumps(result, indent=2, default=str))
     if failed:
         raise typer.Exit(code=1)
+
+
+def _examine_switch(chosen: str, adapter: Any, judge_adapter: Any, user_adapter: Any, run_adapter: Any,
+                    spec_model: Optional[str], model: str, base_url: Optional[str]) -> dict:
+    """The examine call of this build: the Spec's under intent, else the runs path unchanged."""
+    if chosen != "intent":
+        return _user_switch(adapter, judge_adapter, user_adapter, reroll_model=run_adapter)
+    spec_adapter = adapter if (spec_model or model) == model else _live_model(spec_model, base_url)
+    return _spec_switch(adapter, judge_adapter, user_adapter, run_adapter, spec_adapter)
 
 
 def _verifier_from(workdir: Path, flag: Optional[str]) -> str:

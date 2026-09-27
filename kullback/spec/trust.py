@@ -226,13 +226,39 @@ def store_verifier_from(workdir: Any, value: str) -> Path:
     """Records the foundation in the build manifest, keeping whatever else the manifest holds."""
     if value not in VERIFIER_FROM:
         raise ValueError(f"verifier_from must be one of {', '.join(VERIFIER_FROM)}, not {value!r}")
+    return _store(workdir, "verifier_from", value)
+
+
+def _store(workdir: Any, key: str, value: Any) -> Path:
+    """One key of the build manifest written, keeping whatever else the manifest holds."""
     path = Path(workdir) / BUILD_MANIFEST
     body = read_json(path, None)
     body = dict(body) if isinstance(body, dict) else {}
-    body["verifier_from"] = value
+    body[key] = value
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def store_tasks(workdir: Any, task_ids: Iterable[str]) -> Path:
+    """Records the build's Task sample in the manifest: the only Tasks it plays or examines."""
+    return _store(workdir, "tasks", [str(task_id) for task_id in task_ids])
+
+
+def stored_tasks(workdir: Any) -> Optional[list[str]]:
+    """The build's Task sample, or None when the build covers every Task."""
+    body = read_json(Path(workdir) / BUILD_MANIFEST, None)
+    value = body.get("tasks") if isinstance(body, dict) else None
+    return [str(task_id) for task_id in value] if isinstance(value, list) else None
+
+
+def in_sample(workdir: Any, task_ids: Iterable[str]) -> list[str]:
+    """The named Tasks inside the build's sample, in their order; all of them when there is none."""
+    sample = stored_tasks(workdir)
+    if sample is None:
+        return list(task_ids)
+    kept = set(sample)
+    return [task_id for task_id in task_ids if task_id in kept]
 
 
 def verifier_from_of(workdir: Any) -> str:

@@ -1066,6 +1066,54 @@ def test_build_under_intent_stores_the_choice_and_ends_with_the_tier_report(work
     assert resumed.exit_code == 0 and "tiers trusted " in resumed.output
 
 
+def test_build_stores_a_task_sample_from_a_comma_list_and_a_file_and_reads_it_back(workdir, fake_modules, tmp_path):
+    from kullback.spec.trust import in_sample, stored_tasks
+
+    result = invoke("build", "--workdir", str(workdir), "--tasks", "t2, t1,")
+    assert result.exit_code == 0, result.output
+    assert stored_tasks(workdir) == ["t2", "t1"] and in_sample(workdir, ["t1", "t3"]) == ["t1"]
+    listed = tmp_path / "sample.txt"
+    listed.write_text("t5\n\n t4 \n")
+    result = invoke("build", "--workdir", str(workdir), "--tasks", f"@{listed}")
+    assert result.exit_code == 0, result.output
+    assert stored_tasks(workdir) == ["t5", "t4"]
+
+
+def test_build_without_tasks_stores_no_sample_and_filters_nothing(workdir, fake_modules):
+    from kullback.spec.trust import in_sample, stored_tasks
+
+    assert invoke("build", "--workdir", str(workdir)).exit_code == 0
+    assert stored_tasks(workdir) is None and in_sample(workdir, ["t1", "t3"]) == ["t1", "t3"]
+
+
+def test_intent_examine_writes_the_specs_on_the_builder_model_by_default_then_examines_in_intent_mode(
+        workdir, fake_modules, monkeypatch):
+    built = _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large", "--verifier-from", "intent")
+    assert result.exit_code == 0, result.output
+    fake_modules["kullback.builder.session.build"][0]["kwargs"]["examine_fn"](workdir, ["t1"])
+    (written,) = fake_modules["kullback.spec.stage.write_specs"]
+    assert written["args"][1] == ["t1"] and written["args"][2] is built["vendor/large"]
+    seen = fake_modules["kullback.examiner.session.examine"][0]["kwargs"]
+    assert seen["verifier_from"] == "intent" and seen["task_ids"] == ["t1"]
+
+
+def test_intent_examine_writes_the_specs_on_a_named_spec_model(workdir, fake_modules, monkeypatch):
+    built = _named_adapters(monkeypatch)
+    invoke("build", "--workdir", str(workdir), "--model", "vendor/large", "--verifier-from", "intent",
+           "--spec-model", "other/writer")
+    fake_modules["kullback.builder.session.build"][0]["kwargs"]["examine_fn"](workdir, ["t1"])
+    assert fake_modules["kullback.spec.stage.write_specs"][0]["args"][2] is built["other/writer"]
+
+
+def test_the_runs_path_never_writes_a_spec(workdir, fake_modules, monkeypatch):
+    _named_adapters(monkeypatch)
+    invoke("build", "--workdir", str(workdir), "--verifier-from", "runs", "--spec-model", "other/writer")
+    fake_modules["kullback.builder.session.build"][0]["kwargs"]["examine_fn"](workdir, ["t1"])
+    assert "kullback.spec.stage.write_specs" not in fake_modules
+    assert "verifier_from" not in fake_modules["kullback.examiner.session.examine"][0]["kwargs"]
+
+
 @pytest.mark.parametrize("value", ["runs", "neither"])
 def test_build_refuses_a_foundation_other_than_the_stored_one_or_an_unknown_one(workdir, fake_modules, value):
     invoke("build", "--workdir", str(workdir), "--verifier-from", "intent")

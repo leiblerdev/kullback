@@ -40,6 +40,7 @@ from kullback.runner.records import EXAM_DIR, read_json, run_path, write_json
 from kullback.runner.replay import AGREES, OURS_REFUSED, THEIRS_REFUSED
 from kullback.runner.target import as_run
 from kullback.runner.world.environment import BuiltEnvironment
+from kullback.spec.trust import in_sample, stored_tasks
 from kullback.user import fidelity as user_fidelity
 from kullback.user.rules import GOAL_SATISFIED, goal_write_set
 from kullback.user.simulated import SimulatedUser
@@ -757,16 +758,26 @@ def _replay_rows(reference: Any, arguments: dict[str, Any]) -> list[ReplayRow]:
 
 
 def _runnable_tasks(root: Path) -> tuple[list[str], int]:
-    """Every open Task whose reference Trace replayed confirmed and that has a Verifier file, in
-    Task order, and how many confirmed open Tasks were left out for no Verifier (F54)."""
+    """Every open Task of the build's sample whose reference Trace replayed confirmed and that has a
+    Verifier file, in Task order, and how many confirmed open Tasks were left out for no Verifier (F54)."""
     replays = read_json(root / REPLAYS_FILE, None) or {}
-    open_ids = [row["task_id"] for row in status_of(root)["tasks"] if row["state"] == "open"]
+    open_ids = in_sample(root, [row["task_id"] for row in status_of(root)["tasks"] if row["state"] == "open"])
     confirmed = [task_id for task_id in open_ids
                  if any(isinstance(trace, dict) and trace.get("reference") and trace.get("confirmed")
                         for trace in ((replays.get(task_id) or {}) if isinstance(replays, dict)
                                       else {}).values())]
     verified = [task_id for task_id in confirmed if (root / "verifiers" / f"{task_id}.json").is_file()]
     return verified, len(confirmed) - len(verified)
+
+
+def _examined(root: Path, named: Optional[list[str]]) -> Optional[list[str]]:
+    """The Tasks an examine call covers: a sampled build examines its sample only, named or not."""
+    return in_sample(root, named) if named is not None else stored_tasks(root)
+
+
+def runnable_task_ids(root: Path) -> list[str]:
+    """The Tasks a run or an examination with no Task named covers: `_runnable_tasks` without the count."""
+    return _runnable_tasks(Path(root))[0]
 
 
 def _run_row(root: Path, task_id: str, item: Any) -> RunRow:
@@ -946,7 +957,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
         task_ids = list(named) if named is not None else runnable
         from kullback.examiner.domain_tools import known_task
 
-        task_ids = [known_task(root, task_id) for task_id in task_ids]
+        task_ids = in_sample(root, [known_task(root, task_id) for task_id in task_ids])
         # A Task without user rules would be played against no Simulated user: the candidate
         # gets its system prompt alone and invents a customer. It is named, never played (F34).
         env = BuiltEnvironment(root)
@@ -983,7 +994,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
 
     async def examine(args: ExamineArgs) -> ExamineResult:
         # The Examiner session owns its own event loop, so it runs off the Builder's, on a thread.
-        result = _coerce_examine(await asyncio.to_thread(examine_call, root, args.task_ids))
+        result = _coerce_examine(await asyncio.to_thread(examine_call, root, _examined(root, args.task_ids)))
         # The Tasks the Examiner session left out, and why, lead the summary (F24).
         left_out = [f.get("change") for f in result.findings
                     if any(isinstance(r, dict) and "left_out" in r for r in f.get("rows") or [])]
@@ -1029,4 +1040,5 @@ def domain_tools(*, workdir: Any, model: Any = None,
 
 
 __all__ = ["HELD_SHOWN", "ROWS_SHOWN", "RUNS_PER_CALL", "call_arguments", "default_examine_fn", "domain_tools",
-           "fidelity_index", "held_tasks", "notes_lines", "opening_for", "root_line", "stage_line", "stage_of", "status_of"]
+           "fidelity_index", "held_tasks", "notes_lines", "opening_for", "root_line", "runnable_task_ids",
+           "stage_line", "stage_of", "status_of"]
