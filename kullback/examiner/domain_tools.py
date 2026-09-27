@@ -1239,8 +1239,27 @@ def _reroll(root: ExamRoot):
     return reroll
 
 
-def domain_tools(root: ExamRoot) -> list[AgentTool]:
-    """The domain tools over one ExamRoot, and propose_verifier as edit_verifier's alias for one release."""
+#: The tools that write the Verifier, which the Examiner does not hold when the Spec writes it.
+EDIT_TOOLS = ("edit_verifier", "try_atoms", "propose_verifier")
+#: The tools an intent-mode session does not hold: the edit tools, and probe, which scores a derived Verifier.
+NOT_IN_INTENT = (*EDIT_TOOLS, "probe")
+
+
+def domain_tools(root: ExamRoot, verifier_from: str = "runs") -> list[AgentTool]:
+    """The domain tools over one ExamRoot. Under `verifier_from="intent"` the Examiner judges only:
+    no edit tool and no probe, `rule` added, and reject_reference files a ruling on the Reference Run."""
+    tools = _runs_tools(root)
+    if verifier_from != "intent":
+        return tools
+    from kullback.examiner import rule_tool as R
+
+    kept = [R.reject_tool(root) if tool.name == "reject_reference" else tool
+            for tool in tools if tool.name not in NOT_IN_INTENT]
+    return [R.rule_tool(root), *kept]
+
+
+def _runs_tools(root: ExamRoot) -> list[AgentTool]:
+    """The domain tools under the Verifier derived from Runs, and propose_verifier as edit_verifier's alias."""
     from kullback.examiner import reference_check as RC  # it imports this module's note readers
     return [
         AgentTool("edit_verifier", "Write a new Verifier version: edit atoms in place (a change to an "
@@ -1271,12 +1290,13 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
     ]
 
 
-def tool_names() -> tuple[str, ...]:
+def tool_names(verifier_from: str = "runs") -> tuple[str, ...]:
     """The domain tool names, so tests pin the Builder-called surface."""
-    return ("edit_verifier", "try_atoms", "probe", "finding", "reroll", "check_reference", "reject_reference",
-            "propose_verifier")
+    names = ("edit_verifier", "try_atoms", "probe", "finding", "reroll", "check_reference", "reject_reference",
+             "propose_verifier")
+    return names if verifier_from != "intent" else ("rule", *(n for n in names if n not in NOT_IN_INTENT))
 
 
-__all__ = ["DEPRECATED_ALIAS", "NOTES_DIR", "NOTE_REASONS", "note_line", "note_refusal", "notes_of",
+__all__ = ["DEPRECATED_ALIAS", "EDIT_TOOLS", "NOT_IN_INTENT", "NOTES_DIR", "NOTE_REASONS", "note_line", "note_refusal", "notes_of",
            "known_task", "open_note", "read_note", "read_ruling", "rule_note", "ruling_path", "task_ids_of", "task_path", "write_note", "REFUSALS_PER_TASK", "ROW_FIELDS", "SET_BY_TOOL", "FindingArgs", "FindingResult", "ProbeArgs", "ProbeResult", "ProposeArgs",
            "ProposeResult", "RerollArgs", "RerollResult", "TryResult", "atoms_hash", "domain_tools", "render", "tool_names"]

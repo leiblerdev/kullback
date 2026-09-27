@@ -127,8 +127,92 @@ def stop_section() -> str:
             "trusted Tasks are still unchecked.")
 
 
-def sections() -> list[tuple[str, str]]:
-    """Every prompt section in GEPA order, the stop rule last. The same text in every session."""
+# --- under --verifier-from intent: the Spec writes the Verifier, the Examiner judges only ---
+
+
+def intent_receives_section() -> str:
+    """What an intent-mode session receives: a Spec per Task and the Runs scored against it."""
+    return ("You receive Tasks whose Verifier the Spec wrote from the user's words. Each Task has a spec "
+            "view: the Intent facts, each with its stance (volunteered or accepted), the checks, each with "
+            "its because and tier, and one verdict row per Run naming the checks it failed and the values "
+            'they expect. Your root is ".", the exam directory: every path you pass is relative to it, '
+            "never a host path. It holds the Runs as JSONL and one spoken file per Task. You judge; code "
+            "moves on what you rule. What the root holds and the Tasks are in the opening message.")
+
+
+def intent_tools_section() -> str:
+    """The intent-mode tools with one example call each: `rule` is the one move."""
+    return ("Tools, one example call each.\n"
+            "rule: file one ruling on a Task, "
+            'e.g. {"task_id": "t1", "target": "check", "check_ids": ["c2"], "code": "check_unpassable", '
+            '"reason": "the check demands '
+            'a second write, but its because says only \\"<the words of the because>\\""}; target is run (the '
+            "Run did the wrong thing), check (a check demands what the Intent does not), intent (a fact is "
+            "missing or wrong), or environment (the Environment cannot support the Task). The reason must "
+            "copy verbatim, in quotation marks and at least twelve characters, a because of the Spec or a "
+            "turn of the Run in run_id; a reason without a quote is refused. Put a long quote in excerpt. "
+            "code names the kind of reason: check_unpassable, run_contradicts_intent, reference_wrong, "
+            "environment_defect or other.\n"
+            "check_reference: the evidence on a Task's Reference in one view, "
+            'e.g. {"task_id": "t1"}.\n'
+            "reject_reference: rule on a Reference Run whose End state is wrong for the Intent, "
+            'e.g. {"task_id": "t1", "run_id": "r1", "why": "the user said <their words> and it wrote nothing"}; '
+            "it files rule with target run, so the why quotes like any reason.\n"
+            "finding: file what is wrong on the Builder side, "
+            'e.g. {"task_id": "t1", "kind": "fidelity", "text": "what differs", "rows": [...], '
+            '"path": "env/tools/<name>.py", "change": "what should differ"}.\n'
+            "reroll: buy more frontier Runs of a Task, "
+            'e.g. {"task_id": "t1", "count": 2}.')
+
+
+def intent_examples_section() -> str:
+    """General examples of a disagreement and the ruling that answers it."""
+    return ("Examples of a disagreement and the ruling that answers it.\n"
+            "Runs fail a check whose because quotes a fact the user never asked for: rule target check "
+            "on that check, quoting the because.\n"
+            "One Run fails a check the others pass, and its turns show it did something the user did "
+            "not ask: rule target run on that Run, quoting the turn.\n"
+            "Every Run fails a check because the user's turns ask for something the facts left out: "
+            "rule target intent, quoting the turn.\n"
+            "The Runs cannot reach the End state because a tool refuses what the policy allows: rule "
+            "target environment, quoting the turn that shows it.")
+
+
+def intent_choice_section() -> str:
+    """The intent-mode choice rule: judge disagreements, one ruling per wrong thing."""
+    return ("Choosing. You hold no edit tool: the Spec repairs its checks, the Runner re-rolls, the "
+            "Builder fixes the Environment. Read each Task's spec view first. Act on the Tasks where "
+            "Runs and checks disagree: some Runs fail a check. Decide which side is wrong from the Intent "
+            "and the policy, never from which side has more Runs. A Task where every Run passes and the "
+            "checks match the facts needs no ruling. File one ruling per wrong thing, with the check ids "
+            "or the run id it is about. A ruling already filed on a check is not filed again this session. "
+            "A refused rule says what its reason lacked: quote the evidence and file it once more, or drop it.")
+
+
+def intent_feedback_section() -> str:
+    """The shape of the feedback in intent mode."""
+    return ("Feedback. A filed rule answers with its number and the sources it quoted; a refusal says "
+            "what was missing. Code routes each ruling: a Run to a re-roll, a check or the Intent to "
+            "the Spec's repair, the Environment to the Builder. Two rounds on a Task without agreement "
+            "set it aside.")
+
+
+def intent_stop_section() -> str:
+    """The intent-mode stop rule, last."""
+    return ("Stopping. Answer with one line and no tool call when every Task with a disagreement has a "
+            "ruling or needs none, and every Builder note is ruled. Say which Tasks you ruled on, with "
+            "which target, and which needed none.")
+
+
+def sections(verifier_from: str = "runs") -> list[tuple[str, str]]:
+    """Every prompt section in GEPA order, the stop rule last. The same text in every session of a mode."""
+    if verifier_from == "intent":
+        return [("receives", intent_receives_section()),
+                ("tools", intent_tools_section()),
+                ("examples", intent_examples_section()),
+                ("choice", intent_choice_section()),
+                ("feedback", intent_feedback_section()),
+                ("stop", intent_stop_section())]
     return [("receives", receives_section()),
             ("tools", tools_section()),
             ("examples", examples_section()),
@@ -142,5 +226,7 @@ def render(sections_list: list[tuple[str, str]]) -> str:
     return "\n\n".join(text for _, text in sections_list)
 
 
-__all__ = ["WRITABLE_DIRS", "choice_section", "examples_section", "feedback_section", "opening", "receives_section",
+__all__ = ["WRITABLE_DIRS", "choice_section", "examples_section", "feedback_section", "intent_choice_section",
+           "intent_examples_section", "intent_feedback_section", "intent_receives_section", "intent_stop_section",
+           "intent_tools_section", "opening", "receives_section",
            "received", "render", "sections", "stop_section", "tools_section"]

@@ -72,6 +72,9 @@ class Spec(Record):
     rulings_open: int = 0
     round: int = 0
     version: int = 0
+    # Rulings the router could not hand to a writer yet (spec/router.py), and why the Task is set aside.
+    pending_repair: list[dict] = Field(default_factory=list)
+    set_aside: Optional[str] = None
 
 
 def spec_path(workdir: Path, task_id: str) -> Path:

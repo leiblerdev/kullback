@@ -177,6 +177,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/examiner/reference_check.py` | `check_reference`: the evidence on a Task's Reference in one view, code only, for the Examiner to judge. |
 | `kullback/examiner/reference_check.py` | `reject_reference`: excludes a wrong Reference's End state, re-picks, and pools the Task in `exam/reference_pool.json` when none is left. |
 | `kullback/examiner/runners.py` | Builds the probe, re-roll and variant runners over the runner tool (D120); `user_model` switches re-roll users to the agent user, priced under the user stage. |
+| `kullback/examiner/rule_tool.py` | The `rule` tool under `--verifier-from intent`: a ruling must quote a because or a Run turn, lands whole in exam/rulings/ and on the bus as a code; the per-Task spec view. |
 | `kullback/examiner/session.py` | The Examiner extension and `examine`, called by the Builder. |
 | `kullback/examiner/skills.py` | The probe skill: the eight Verifier bug classes (D127, D133). |
 | `kullback/examiner/stage.py` | The derive_verifier stage body and its helpers, writing `verifiers/`, `task_status.json`, `references.json`. |
@@ -191,6 +192,8 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/spec/ground.py` | Trust gate 1: `valid_because` (an Intent quote of 12 characters or a named policy section), `coverage`, `ground_spec`. |
 | `kullback/spec/compile.py` | `compile_spec`: checks to Verifier atoms with the existing builders, no new kinds, ungrounded checks dropped and counted. |
 | `kullback/spec/canfail.py` | Trust gate 2: `can_fail` scores the D79 empty, wrong entity and swapped value Runs against the Spec's Verifier. |
+| `kullback/spec/events.py` | The Spec and ruling events on the workdir bus: spec.written, spec.repaired, spec.defended, spec.repair_deferred, ruling.filed, task.set_aside; ids, counts and reason codes from `REASON_CODES`, never free text. |
+| `kullback/spec/router.py` | `Router`, a bus subscriber that moves each ruling once by target (run re-roll, check or intent to `writer.repair_for_ruling`, environment Builder note), counts rounds and sets a Task aside past `ROUNDS_CAP`; `is_set_aside` is the one set-aside rule. |
 
 ## kullback/builder
 

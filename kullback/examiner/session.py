@@ -65,6 +65,7 @@ MAX_DERIVE_WORKERS = 8
 NOT_DERIVED_SHOWN = 10
 NO_FINISHED_RUN = "no finished Run"
 NO_CONFIRMED_REFERENCE = "no confirmed Reference"
+NO_SPEC = "no Spec"
 
 
 def _refuse_forbidden_paths() -> Callable:
@@ -206,8 +207,8 @@ def notes_line(root: ExamRoot, task_ids: Optional[Iterable[str]] = None) -> str:
                      if wanted is None or task_id in wanted)
 
 
-def examiner_extension(root: ExamRoot,
-                       task_ids: Optional[Iterable[str]] = None) -> Callable[[ExtensionAPI], None]:
+def examiner_extension(root: ExamRoot, task_ids: Optional[Iterable[str]] = None,
+                       verifier_from: str = "runs") -> Callable[[ExtensionAPI], None]:
     """The setup the harness loads: base tools over exam/, domain tools, prompt, hooks.
 
     The prompt names the root as "." (F18); what the root holds and the rulings (F25) are this
@@ -216,9 +217,9 @@ def examiner_extension(root: ExamRoot,
 
     def setup(api: ExtensionAPI) -> None:
         register_base_tools(api, root.exam_dir, only=BASE_ONLY)
-        for tool in domain_tools(root):
+        for tool in domain_tools(root, verifier_from):
             api.register_tool(tool)
-        for name, text in prompt_mod.sections():
+        for name, text in prompt_mod.sections(verifier_from):
             api.add_prompt_section(f"examiner_{name}", prompt_block(name, text))
         api.tool_call(refuse_paths(
             names_protected_path, "under the gates or the Runner, which no agent writes (D122)",
@@ -501,7 +502,8 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
             allowance_usd: Optional[float] = None, session_path: Any = None,
             subscribers: Iterable[Callable] = (), max_turns: int = EXAMINE_MAX_TURNS,
             workers: Optional[int] = None, limit: Optional[int] = None,
-            user_model: Any = None, audit_references: bool = True) -> list[Finding]:
+            user_model: Any = None, audit_references: bool = True,
+            verifier_from: str = "runs") -> list[Finding]:
     """Derive the Verifiers by code, file what the records say, then run one model session.
 
     With `model=None` the session is code only: the derivation and its findings. With a model,
@@ -526,6 +528,10 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     With `audit_references` (on by default) the call then audits every trusted Task whose
     Reference no session has checked, in chunks of thirty Tasks per session over the same
     root, each landing one spend line in the exam directory.
+
+    Under `verifier_from="intent"` the session sees the Tasks with a Spec, reads one spec view per
+    Task, holds `rule` and no edit tool, and the router moves on every ruling over the bus; the
+    Reference audits, which judge derived Verifiers, do not run.
     """
     root = Path(workdir)
     task_ids = list(task_ids) if task_ids is not None else None
@@ -555,9 +561,7 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
         *(t.id for t in store.get("tasks") or []), *(store.get("replays") or {}),
         *(store.get("rerolls") or {})}
     status = read_json(root / "task_status.json", {}) or {}
-    selected, left_out = select_for_session(candidates, store.get("replays") or {},
-                                            store.get("rerolls") or {},
-                                            status if isinstance(status, dict) else {})
+    selected, left_out = _session_tasks(verifier_from, candidates, store, status, root)
     note = [left_out_finding(left_out, len(selected))] if left_out else []
     if not selected:
         out = findings + note
@@ -569,17 +573,96 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     harness = AgentHarness(model=model, max_turns=max_turns,
                            session=SessionStore.load(session_path) if session_path is not None else None,
                            context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
-                           bus=Bus(root / "bus.jsonl", agent="examiner"))
+                           bus=_exam_bus(exam_root))
     for subscriber in subscribers:
         harness.subscribe(subscriber)
     harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
-    load_extensions(harness, [examiner_extension(exam_root, selected)])
-    cap_notes = _run_session(harness, session_opening(exam_root, selected), max_turns, selected)
-    if audit_references:
+    load_extensions(harness, [examiner_extension(exam_root, selected, verifier_from)])
+    opening_message, detach = _mode_opening(exam_root, selected, verifier_from, model, allowance_usd)
+    try:
+        cap_notes = _run_session(harness, opening_message, max_turns, selected)
+    finally:
+        detach()
+    if _audits_on(audit_references, verifier_from):
         cap_notes.extend(_run_audits(root, exam_root, model, max_turns, subscribers))
     out = list(exam_root.findings) + note + cap_notes
     write_json(root / "findings.json", [f.as_dict() for f in out])
     return out
+
+
+def _exam_bus(exam_root: ExamRoot) -> Bus:
+    """The one bus of the session: the harness's events and the rule tool's rulings on one log."""
+    exam_root.bus = Bus(Path(exam_root.workdir) / "bus.jsonl", agent="examiner")
+    return exam_root.bus
+
+
+def _audits_on(audit_references: bool, verifier_from: str) -> bool:
+    return audit_references and verifier_from != "intent"
+
+
+def _session_tasks(verifier_from: str, candidates: Iterable[str], store: dict, status: Any,
+                   root: Path) -> tuple[list[str], list[tuple[str, str]]]:
+    """The Tasks the session sees: by finished Run and confirmed Reference, or by Spec in intent mode."""
+    if verifier_from != "intent":
+        return select_for_session(candidates, store.get("replays") or {}, store.get("rerolls") or {},
+                                  status if isinstance(status, dict) else {})
+    from kullback.spec.schema import spec_path
+
+    ids = sorted(set(candidates))
+    return ([t for t in ids if spec_path(root, t).is_file()],
+            [(t, NO_SPEC) for t in ids if not spec_path(root, t).is_file()])
+
+
+def intent_line(root: ExamRoot, task_id: str, view: Optional[str]) -> str:
+    """One Task's line in intent mode: its spec view, its Runs and its spoken file, as root paths."""
+    return f"{task_id}: spec view: {view or 'none'}; {_runs_part(root, task_id)}; {_spoken_part(root, task_id)}"
+
+
+def _mode_opening(exam_root: ExamRoot, selected: list[str], verifier_from: str, model: Any = None,
+                  ceiling_usd: Optional[float] = None) -> tuple[str, Callable[[], None]]:
+    """The opening message, and in intent mode the spec views written and the router subscribed, its
+    repairs on the session's model inside the session's allowance."""
+    if verifier_from != "intent":
+        return session_opening(exam_root, selected), lambda: None
+    from kullback.examiner import rule_tool
+    from kullback.spec.router import Router
+
+    views = rule_tool.write_views(exam_root, selected)
+    lines = "\n".join(intent_line(exam_root, task_id, views.get(task_id)) for task_id in selected)
+    router = Router(exam_root.workdir, exam_root.bus, reroll=_router_reroll(exam_root),
+                    note=_router_note(exam_root), model=model, ceiling_usd=ceiling_usd)
+    text = prompt_mod.opening(EXAMINE_MESSAGE, lines, root_listing(exam_root.exam_dir),
+                              notes_line(exam_root, selected))
+    return text, router.attach()
+
+
+def _router_reroll(exam_root: ExamRoot) -> Optional[Callable]:
+    """The router's re-roll: the same Runner entry the reroll tool calls, inside the allowance."""
+    if exam_root.reroll_model is None:
+        return None
+    from kullback.examiner.runners import _priced
+    from kullback.runner import tool as runner_tool
+
+    def reroll(task_id: str, count: int) -> None:
+        if exam_root.allowance_remaining is not None and exam_root.allowance_remaining <= 0:
+            return
+        extra = {"make_user": exam_root.reroll_user(task_id)} if exam_root.reroll_user is not None else {}
+        runner_tool.reroll(exam_root.workdir, task_id, _priced(exam_root.reroll_model, exam_root.workdir),
+                           count=count, workdir=exam_root.workdir, prefix="ruling", **extra)
+
+    return reroll
+
+
+def _router_note(exam_root: ExamRoot) -> Callable:
+    """The router's Builder note: an environment finding, the path the Builder already reads."""
+    def note(task_id: str, ruling: dict) -> None:
+        exam_root.findings.append(Finding(
+            kind="environment", source="model", task_id=task_id,
+            text=f"ruling {ruling.get('number')}: the Environment cannot support the Task",
+            rows=[{"ruling": ruling.get("number"), "quoted": ruling.get("quoted") or []}],
+            change=f"read the ruling at rulings/{task_id}/{ruling.get('number')}.json and change what it quotes"))
+
+    return note
 
 
 def _run_audits(root: Path, exam_root: ExamRoot, model: Any, max_turns: int,

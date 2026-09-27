@@ -57,3 +57,15 @@ def test_the_prompt_says_a_dry_run_is_no_refusal_and_counts_only_edit_refusals()
     choice = P.choice_section()
     assert "Two refused edit_verifier proposals" in choice, choice
     assert "not a refusal and counts toward neither" in choice, choice
+
+
+def test_the_intent_prompt_keeps_the_gepa_order_and_the_runs_prompt_unchanged():
+    assert [name for name, _ in P.sections("intent")] == [name for name, _ in P.sections()]
+    assert P.sections("runs") == P.sections()
+
+
+def test_the_intent_prompt_says_the_examiner_judges_and_quotes_its_evidence():
+    tools, choice = P.intent_tools_section(), P.intent_choice_section()
+    assert "rule:" in tools and "in quotation marks" in tools and "is refused" in tools
+    assert "You hold no edit tool" in choice
+    assert "never from which side has more Runs" in choice
