@@ -952,6 +952,21 @@ class HttpModel(Model):
         raise NotImplementedError
 
 
+def _collect_anthropic_thinking(block: dict, thinking: list[dict], thinking_text: list[str]) -> bool:
+    """File one thinking block. True when the block was thinking and is now filed."""
+    if block.get("type") not in THINKING_BLOCK_TYPES:
+        return False
+    # Kept whole, signature and all: the next request of a tool loop sends them back
+    # unchanged (preserved thinking), and an edited block is a 400. The readable
+    # text goes on the reply beside them, so a reader sees the summary.
+    if block.get("signature") or block.get("data"):
+        thinking.append(copy.deepcopy(block))
+    summary = block.get("thinking")
+    if isinstance(summary, str):
+        thinking_text.append(summary or "")
+    return True
+
+
 class AnthropicModel(HttpModel):
     """Anthropic Messages API: system split out, cache points, tool_use blocks."""
 
@@ -1012,15 +1027,9 @@ class AnthropicModel(HttpModel):
         for block in data.get("content") or []:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") in THINKING_BLOCK_TYPES:
-                # Kept whole, signature and all: the next request of a tool loop sends them back
-                # unchanged (preserved thinking), and an edited block is a 400. The readable
-                # text goes on the reply beside them, so a reader sees the summary.
-                if block.get("signature") or block.get("data"):
-                    thinking.append(copy.deepcopy(block))
-                if isinstance(block.get("thinking"), str):
-                    thinking_text.append(block.get("thinking") or "")
-            elif block.get("type") == "text":
+            if _collect_anthropic_thinking(block, thinking, thinking_text):
+                continue
+            if block.get("type") == "text":
                 text.append(block.get("text") or "")
             elif block.get("type") == "tool_use":
                 calls.append(
