@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from kullback.hub.publish import PUBLISH_RECORD
+
 
 @dataclass
 class Row:
@@ -184,7 +186,7 @@ def _runner_row(workdir: Path) -> Row:
 def _publish_row(workdir: Path) -> Row:
     """The publish row: done once a publish recorded its repo and revision in the workdir."""
     try:
-        record = json.loads((workdir / "publish.json").read_text(encoding="utf-8"))
+        record = json.loads((workdir / PUBLISH_RECORD).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         record = None
     if isinstance(record, dict) and record.get("repo") and record.get("revision"):

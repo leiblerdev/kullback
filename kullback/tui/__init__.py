@@ -1200,6 +1200,7 @@ class Screen:
         if name not in self.session_keys:
             self.session_keys[name] = os.environ.get(name)
         os.environ[name] = value
+
     def _offer_to_remember(self, pairs: list[tuple[str, str]]) -> None:
         """Ask once whether the keys just held should outlive the session, and store them.
 
