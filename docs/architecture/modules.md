@@ -194,6 +194,9 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/spec/canfail.py` | Trust gate 2: `can_fail` scores the D79 empty, wrong entity and swapped value Runs against the Spec's Verifier. |
 | `kullback/spec/events.py` | The Spec and ruling events on the workdir bus: spec.written, spec.repaired, spec.defended, spec.repair_deferred, ruling.filed, task.set_aside; ids, counts and reason codes from `REASON_CODES`, never free text. |
 | `kullback/spec/router.py` | `Router`, a bus subscriber that moves each ruling once by target (run re-roll, check or intent to `writer.repair_for_ruling`, environment Builder note), counts rounds and sets a Task aside past `ROUNDS_CAP`; `is_set_aside` is the one set-aside rule. |
+| `kullback/spec/trust.py` | The four gates in order (grounded, can fail, an independent Run passes, no open ruling) and `tier_of_task`: trusted, replay_only, untrusted, set_aside, each row naming the failing gate and the Runs scored; gates 2 and 3 score the Verifier file the Spec writer wrote (`spec/verifiers/<task_id>.json`), and a Task without one is untrusted; the replay prefix is read off the Runner's replay index; under `--verifier-from runs`, `runs_tiers` is the gates' D126 ruling in tier words; the build manifest (`build.json`) keeps the choice. |
+| `kullback/spec/split.py` | The Reference class of a Task from the benchmark sidecar (right, wrong, mixed, unknown), measurement only; scripts/measure/trust_split.py imports it. |
+| `kullback/spec/report.py` | The per-build tier report (`tiers.json`): counts per tier, trusted split by Reference class (`split.py`) when the sidecar is there, one table line in docs/builds/README.md's format. |
 
 ## kullback/builder
 

@@ -463,6 +463,11 @@ def build(
         False, "--rule-user",
         help="Meet every Run with the rule-driven user alone, the default before the agent "
              "user became the Simulated user. No model is called for the user on this flag."),
+    verifier_from: Optional[str] = typer.Option(
+        None, "--verifier-from",
+        help="Where each Task's Verifier comes from: intent (the Spec file, trust by the four "
+             "gates) or runs (derived from the Runs, the D126 ruling). Stored in the workdir's "
+             "build manifest, so a resume keeps it; the default is the stored choice, else runs."),
 ):
     """Run the autonomous Builder session over the ingested Traces and write the Environment.
 
@@ -475,8 +480,10 @@ def build(
     --model, and `--run-effort` sends one reasoning effort on the Candidate's calls and the agent
     user's, never the Builder's, the Examiner's or the judges'. Every Run meets the agent user
     on the run model over the rule floor, priced under the user stage; `--rule-user` keeps the
-    rule-driven user alone, and `--user-model` names the agent user's own model.
+    rule-driven user alone, and `--user-model` names the agent user's own model. Under
+    `--verifier-from intent` the build ends by writing the tier report (tiers.json) and its line.
     """
+    chosen = _verifier_from(workdir, verifier_from)
     adapter = _live_model(model, base_url)
     judge_adapter = _live_model(judge_model, base_url) if judge_model else None
     run_id = run_model or model
@@ -516,9 +523,40 @@ def build(
     failed = isinstance(result, dict) and result.get("stopped") == "error"
     heartbeat.beat(workdir, model, "failed" if failed else "done")
     typer.echo(_counts_line(workdir))
+    if chosen == "intent":
+        typer.echo(_tier_line(workdir))
     typer.echo(json.dumps(result, indent=2, default=str))
     if failed:
         raise typer.Exit(code=1)
+
+
+def _verifier_from(workdir: Path, flag: Optional[str]) -> str:
+    """The Verifier foundation of this build: the flag, stored in the manifest, or the stored one, or runs.
+
+    A flag that contradicts the stored choice stops the build: one workdir under two foundations
+    would mix Verifiers of both kinds in one trusted count.
+    """
+    from kullback.spec import VERIFIER_FROM
+    from kullback.spec.trust import DEFAULT_VERIFIER_FROM, store_verifier_from, stored_verifier_from
+
+    stored = stored_verifier_from(workdir)
+    if flag is not None and flag not in VERIFIER_FROM:
+        typer.echo(f"--verifier-from must be one of {', '.join(VERIFIER_FROM)}, not {flag}")
+        raise typer.Exit(code=2)
+    if flag is not None and stored is not None and flag != stored:
+        typer.echo(f"this workdir was built with --verifier-from {stored}; start a new workdir for {flag}")
+        raise typer.Exit(code=2)
+    if flag is not None and stored is None:
+        store_verifier_from(workdir, flag)
+    return flag or stored or DEFAULT_VERIFIER_FROM
+
+
+def _tier_line(workdir: Path) -> str:
+    """The tier counts of the report just written to the workdir, as one line."""
+    from kullback.spec.report import write_report
+
+    counts = write_report(workdir, verifier_from="intent")["tiers"]
+    return "tiers " + ", ".join(f"{tier} {count}" for tier, count in counts.items())
 
 
 def _session_subscriber(workdir: Path):

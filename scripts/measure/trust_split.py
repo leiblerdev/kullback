@@ -25,20 +25,24 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-RIGHT = "right"
-WRONG = "wrong"
-MIXED = "mixed"
-UNKNOWN = "unknown"
-CLASSES = (RIGHT, WRONG, MIXED, UNKNOWN)
+from kullback.spec.split import (  # noqa: F401  (re-exported: the script's readers use these names)
+    CLASSES,
+    MIXED,
+    REWARD_FIELD,
+    RIGHT,
+    SIDECAR_DIR,
+    TRACES_DIR,
+    UNKNOWN,
+    WRONG,
+    classify,
+    sidecar_rewards,
+)
 
 AGREE = "agree"
 DISAGREE = "disagree"
 NONE = "none"
 PROXIES = (AGREE, DISAGREE, NONE)
 
-SIDECAR_DIR = "grader"
-TRACES_DIR = "traces"
-REWARD_FIELD = "reward_info.reward"
 POOL_PATH = "exam/reference_pool.json"
 STATUS_PATHS = ("task_status.json", "exam/task_status.json")
 REFERENCES_PATHS = ("references.json", "exam/references.json")
@@ -50,15 +54,6 @@ def _read(path: Path, fallback: Any = None) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return fallback
-
-
-def _dig(doc: Any, dotted: str) -> Any:
-    node = doc
-    for part in dotted.split("."):
-        if not isinstance(node, dict) or part not in node:
-            return None
-        node = node[part]
-    return node
 
 
 def _first_existing(workdir: Path, names: tuple[str, ...]) -> Optional[Path]:
@@ -107,58 +102,12 @@ def trusted_from_ledger(workdir: Path) -> tuple[list[str], list[str]]:
     return [], []
 
 
-def sidecar_rewards(
-    sidecar_dir: Path, reward_field: str, traces_dir: Optional[Path]
-) -> tuple[dict[str, float], int]:
-    """trace id -> the benchmark's own reward, plus how many sidecars were read.
-
-    The trace id is read off the sidecar itself; where the sidecar carries none,
-    the file stem (the recording hash) is resolved through the traces, the way
-    the older agreement script does. The reward is the dotted field inside the
-    sidecar's fields, falling back to a top-level reward in either place.
-    """
-    reward_of: dict[str, float] = {}
-    files = sorted(sidecar_dir.glob("*.json")) if sidecar_dir.is_dir() else []
-    hash_to_trace: dict[str, str] = {}
-    if traces_dir is not None and traces_dir.is_dir():
-        for path in sorted(traces_dir.glob("*.json")):
-            trace = _read(path, {}) or {}
-            if trace.get("hash") and trace.get("trace_id"):
-                hash_to_trace[str(trace["hash"])] = str(trace["trace_id"])
-    for path in files:
-        doc = _read(path, {}) or {}
-        trace_id = doc.get("trace_id") or hash_to_trace.get(path.stem)
-        if not trace_id:
-            continue
-        fields = doc.get("fields") or {}
-        reward = _dig(fields, reward_field)
-        if reward is None:
-            reward = fields.get("reward", doc.get("reward"))
-        if reward is None:
-            continue
-        try:
-            reward_of[str(trace_id)] = float(reward)
-        except (TypeError, ValueError):
-            continue
-    return reward_of, len(files)
-
-
 def pool_size(workdir: Path, pool: str) -> tuple[int, bool]:
     """(tasks waiting on a Reference, whether the pool file was there to say)."""
     body = _read(workdir / pool, None)
     if body is None:
         return 0, False
     return (len(body) if isinstance(body, dict) else 0), True
-
-
-def classify(rewards: list[float]) -> str:
-    if not rewards:
-        return UNKNOWN
-    if all(r == 1.0 for r in rewards):
-        return RIGHT
-    if all(r == 0.0 for r in rewards):
-        return WRONG
-    return MIXED
 
 
 def proxy(reached: int, failed: int, reruns: int) -> str:

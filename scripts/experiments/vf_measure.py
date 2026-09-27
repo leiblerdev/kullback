@@ -32,8 +32,9 @@ from typing import Any, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from kullback.gates import verifier_suite as S  # noqa: E402
 import vf_lib as L  # noqa: E402
+
+from kullback.gates import verifier_suite as S  # noqa: E402
 
 FINALS_LOG = "vf_finals.log"
 
@@ -144,9 +145,18 @@ def pooled_ids(workdir: Path) -> set[str]:
     return set(body) if isinstance(body, dict) else set()
 
 
+def tier_rows(workdir: Path) -> dict[str, dict]:
+    """task_id -> {"trusted": ...} off the build's tier report (tiers.json), else the latest round's rows."""
+    body = L._read(workdir / "tiers.json", None)
+    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
+        return L.latest_round_rows(workdir)
+    return {row["task_id"]: {"trusted": row.get("tier") == "trusted", "tier": row.get("tier")}
+            for row in body["rows"] if isinstance(row, dict) and row.get("task_id")}
+
+
 def measure(workdir: Path, sidecar: Path, task_ids: list[str], seed: int, audit_n: int) -> dict[str, Any]:
-    """All six numbers over one task slice of one workdir."""
-    rows = L.latest_round_rows(workdir)
+    """All six numbers over one task slice of one workdir; trusted is the tier report's where it has one."""
+    rows = tier_rows(workdir)
     trusted = {t for t in task_ids if rows.get(t, {}).get("trusted")}
     references = L._read(workdir / "references.json", {}) or {}
     rewards = L.sidecar_rewards(sidecar)

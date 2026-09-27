@@ -1047,3 +1047,28 @@ def test_valued_user_model_names_its_own_model_with_the_run_effort(workdir, fake
     assert user.inner is built["other/id"] and user.effort == "low"
     assert _build_start(workdir)["user_model"] == "other/id"
     assert _build_start(workdir)["user_kind"] == "agent"
+
+
+def test_build_without_verifier_from_writes_no_manifest_and_prints_no_tier_line(workdir, fake_modules):
+    result = invoke("build", "--workdir", str(workdir))
+    assert result.exit_code == 0, result.output
+    assert not (Path(workdir) / "build.json").exists()
+    assert not any(line.startswith("tiers ") for line in result.output.splitlines())
+
+
+def test_build_under_intent_stores_the_choice_and_ends_with_the_tier_report(workdir, fake_modules):
+    result = invoke("build", "--workdir", str(workdir), "--verifier-from", "intent")
+    assert result.exit_code == 0, result.output
+    assert json.loads((Path(workdir) / "build.json").read_text()) == {"verifier_from": "intent"}
+    assert result.output.splitlines()[4].startswith("tiers trusted ")
+    assert json.loads((Path(workdir) / "tiers.json").read_text())["verifier_from"] == "intent"
+    resumed = invoke("build", "--workdir", str(workdir))
+    assert resumed.exit_code == 0 and "tiers trusted " in resumed.output
+
+
+@pytest.mark.parametrize("value", ["runs", "neither"])
+def test_build_refuses_a_foundation_other_than_the_stored_one_or_an_unknown_one(workdir, fake_modules, value):
+    invoke("build", "--workdir", str(workdir), "--verifier-from", "intent")
+    result = invoke("build", "--workdir", str(workdir), "--verifier-from", value)
+    assert result.exit_code == 2
+    assert len(fake_modules["kullback.builder.session.build"]) == 1

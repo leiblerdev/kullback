@@ -12,6 +12,15 @@ workdirs by an internal number (`.work-b9-agent`); those are file names, not bui
 Every build is followed by `scripts/measure/trust_split.py` over its workdirs: the trusted Tasks split by
 whether the Reference is right, read afterwards off the build's own records and the benchmark sidecars.
 
+## Tier table
+
+A build under `--verifier-from intent` writes `tiers.json` in its workdir (kullback/spec/report.py) and adds one
+line per corpus here. Trusted by Reference is the trusted count split by `kullback/spec/split.py`'s class
+of the kept References; n/a when the build had no sidecar.
+
+| Build | Corpus | Verifier from | Tasks | Trusted | Replay-only | Untrusted | Set aside | Trusted by Reference (right, wrong, mixed, unknown) |
+|---|---|---|---|---|---|---|---|---|
+
 ## Index
 
 | Build | Notes |
