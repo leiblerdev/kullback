@@ -587,7 +587,7 @@ HI = [{"role": "user", "content": "hi"}]
 def test_anthropic_sends_thinking_and_effort(sleeps):
     body = anthropic_model(ok_anthropic(), sleeps).build_body(
         HI, None, pv.ModelConfig(thinking={"type": "adaptive"}, effort="low"))
-    assert body["thinking"] == {"type": "adaptive"}
+    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert body["output_config"] == {"effort": "low"}
     assert "budget_tokens" not in json.dumps(body), "the current models reject budget_tokens"
     # A config without reasoning sends none of it.
@@ -1337,3 +1337,63 @@ def test_the_adapters_with_a_provider_of_their_own_still_report_what_the_endpoin
     echoed = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
               "model": "gpt-4o-mini-dated", "usage": {}}
     assert openai_model(ok_openai(echoed), sleeps).query(HI).model == "gpt-4o-mini-dated"
+
+
+def test_a_responses_request_carries_effort_and_asks_for_a_summary(live, sleeps):
+    """The runner and the user run at low effort; every Responses request asks for a summary
+    so the reasoning text is kept like the summarized thinking."""
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"status": "completed", "output": [], "usage": {}})
+
+    def body_for(config):
+        model = pv.OpenAIResponsesModel(
+            model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
+            client=transport_of(handler), sleep=sleeps.append, env={},
+        )
+        model.query([{"role": "user", "content": "hi"}], config=config)
+        return seen["body"]
+
+    assert body_for(pv.ModelConfig(reasoning_effort="low"))["reasoning"] == {
+        "effort": "low", "summary": "auto"}
+    assert body_for(pv.ModelConfig())["reasoning"] == {"summary": "auto"}
+
+
+def test_a_responses_reply_keeps_the_summary_and_drops_the_encrypted_blob(live, sleeps):
+    """Summary text lands on the reply for a reader; encrypted reasoning is never kept,
+    so no follow-up can echo it."""
+
+    def handler(request):
+        return httpx.Response(200, json={
+            "status": "completed", "model": "muse-spark-1.3-contributor",
+            "output": [{"type": "reasoning", "encrypted_content": "Q-PaD",
+                        "summary": [{"type": "summary_text", "text": "checking the ledger"}]},
+                       {"type": "message", "content": [
+                           {"type": "output_text", "text": "done"}]}],
+            "usage": {}})
+
+    model = pv.OpenAIResponsesModel(
+        model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
+        client=transport_of(handler), sleep=sleeps.append, env={},
+    )
+    reply = model.query([{"role": "user", "content": "hi"}])
+    assert reply.thinking == "checking the ledger"
+    assert "Q-PaD" not in reply.model_dump_json(exclude={"raw"})
+
+
+def test_summarized_thinking_blocks_echo_back_with_their_signature(sleeps):
+    """A summarized thinking block goes back unchanged on the next turn: its text for a
+    reader, its signature for the endpoint."""
+    from kullback.ai.provider import THINKING_BLOCKS_KEY
+
+    block = {"type": "thinking", "thinking": "weighing the rows",
+             "signature": "sig-1"}
+    body = anthropic_model(ok_anthropic(), sleeps).build_body(
+        [{"role": "assistant", "content": "draft", THINKING_BLOCKS_KEY: [block],
+          "tool_calls": []}],
+        None, pv.ModelConfig(thinking={"type": "adaptive"}, effort="low"))
+    assistant = next(m for m in body["messages"] if m["role"] == "assistant")
+    assert assistant["content"][0] == block
+    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
