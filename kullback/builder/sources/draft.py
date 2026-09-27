@@ -66,7 +66,7 @@ def draft_reader(file_path: str | Path, workdir: str | Path, model: Any, name: s
 
 
 def _prompt(summary: dict, show_values: bool = False, file_path: Optional[Path] = None) -> str:
-    """The draft prompt: shape lines, example adapters and the contract, no file values."""
+    """The draft prompt: shape lines, example adapters and the contract, values only where asked."""
     lines = [f"file: {summary.get('file')} jsonl={summary.get('jsonl')} "
              f"records={summary.get('records')}"]
     for path, info in sorted(summary.get("paths", {}).items()):
@@ -75,7 +75,7 @@ def _prompt(summary: dict, show_values: bool = False, file_path: Optional[Path] 
             line += f" len {info['min_len']}..{info['max_len']}"
         for hint in info.get("hints", []):
             line += f" {hint}"
-        if "values" in info:
+        if show_values and "values" in info:
             line += f" ={'|'.join(info['values'])}"
         lines.append(line)
     examples = _examples()

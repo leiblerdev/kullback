@@ -66,6 +66,22 @@ def test_the_draft_prompt_holds_no_value_from_the_file_by_default(tmp_path, work
     assert marker not in prompt
 
 
+def test_the_draft_prompt_holds_no_values_without_show_values():
+    """A summary carrying values renders a prompt holding none of them by default."""
+    from kullback.builder.sources.draft import _prompt
+
+    summary = {"file": "neutral.json", "jsonl": False, "records": 2,
+               "paths": {"entries[].role": {
+                   "types": ["str"], "count": 2, "hints": ["looks_like_role"],
+                   "values": ["alpha-marker-value", "beta-marker-value"]}}}
+    plain = _prompt(summary, show_values=False)
+    assert "alpha-marker-value" not in plain
+    assert "beta-marker-value" not in plain
+    shown = _prompt(summary, show_values=True)
+    assert "alpha-marker-value" in shown
+    assert "beta-marker-value" in shown
+
+
 def test_draft_gives_up_after_the_repair_budget_with_the_last_problems(tmp_path, workdir):
     """Two replies with no fenced block spend the budget and keep the last problems."""
     toy = write_neutral(tmp_path / "neutral.json")
