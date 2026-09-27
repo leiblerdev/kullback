@@ -176,3 +176,35 @@ async def test_each_palette_command_opens_its_view_or_modal(tmp_path):
         assert "cleared" in app.screen._body
         await pilot.press("escape")
         await pilot.pause(0.5)
+
+
+def test_default_launcher_creates_a_new_workdir_for_the_build_log(tmp_path):
+    """The first build names a workdir that is not there yet, so the log needs it made."""
+    import sys
+
+    from kullback.tui.build_view import default_launcher
+
+    workdir = tmp_path / "nested" / "work"
+    proc = default_launcher([sys.executable, "-c", "pass"], workdir)
+    assert proc.wait(timeout=30) == 0
+    assert (workdir / "build.log").is_file()
+
+
+@pytest.mark.anyio
+async def test_build_launch_failure_shows_in_the_view_instead_of_raising(tmp_path, monkeypatch):
+    """What the launcher cannot open is named in the view, not raised past it."""
+    _live_env(monkeypatch)
+
+    def boom(argv):
+        raise OSError("disk gone")
+
+    app = KullbackApp(workdir=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("3")
+        view = app.query_one(BuildView)
+        view.launcher = boom
+        view.ceiling_input.value = "25"
+        await pilot.click("#start")
+        await pilot.pause(0.3)
+        assert "build did not start" in str(app.query_one("#build-message").content)
+        assert "disk gone" in str(app.query_one("#build-message").content)

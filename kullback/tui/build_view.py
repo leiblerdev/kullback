@@ -46,6 +46,7 @@ def last_ceiling_usd(workdir: Any) -> str:
 
 def default_launcher(argv: list[str], workdir: Any) -> subprocess.Popen:
     """Start the build detached: its own session, its output to workdir/build.log."""
+    Path(workdir).mkdir(parents=True, exist_ok=True)
     log = open(Path(workdir) / "build.log", "ab")
     try:
         return subprocess.Popen(argv, start_new_session=True, stdout=log, stderr=log,
@@ -143,13 +144,21 @@ class BuildView(Vertical):
         self.start_build()
 
     def start_build(self) -> bool:
-        """Refuse or launch; True when a child was started."""
+        """Refuse or launch; True when a child was started.
+
+        A launch failure reads as a message in the view, never a traceback: the
+        first build on a new workdir starts there instead of failing to open
+        its log, and what the launcher cannot open is named, not raised."""
         refusal = self.refusal()
         if refusal is not None:
             self.message.update(refusal)
             return False
         self.message.update("")
-        self.launcher(self.build_argv())
+        try:
+            self.launcher(self.build_argv())
+        except OSError as exc:
+            self.message.update(f"build did not start: {exc}")
+            return False
         if self.on_started is not None:
             self.on_started()
         return True
