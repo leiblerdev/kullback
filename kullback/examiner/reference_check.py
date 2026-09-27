@@ -30,6 +30,7 @@ from typing import Any, Iterable, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kullback.examiner import audit as audit_mod
 from kullback.examiner import reference as reference_mod
 from kullback.examiner.exam_files import ExamRoot, reference_runs
 from kullback.examiner.reference import EXCLUSIONS_FILE, excluded_runs, exclusions, exclusions_path
@@ -301,6 +302,7 @@ def _check_reference(root: ExamRoot):
     async def check_reference(args: CheckReferenceArgs) -> CheckReferenceResult:
         task_id = known_task(root.workdir, args.task_id)
         view = reference_view(root, task_id)
+        audit_mod.record_check(root.workdir, task_id)
         return CheckReferenceResult(summary=view_line(task_id, view), task_id=task_id, view=view)
 
     return check_reference

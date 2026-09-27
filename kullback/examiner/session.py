@@ -19,6 +19,7 @@ from kullback.agent.context import ContextConfig, prompt_block
 from kullback.agent.extensions import ExtensionAPI, load_extensions, refuse_paths
 from kullback.agent.harness import AgentHarness
 from kullback.agent.session import SessionStore
+from kullback.examiner import audit as audit_mod
 from kullback.examiner import findings as findings_mod
 from kullback.examiner import prompt as prompt_mod
 from kullback.examiner import runners as runners_mod
@@ -188,11 +189,14 @@ def root_listing(folder: Path) -> list[str]:
     return sorted(f"{p.name}/" if p.is_dir() else p.name for p in folder.iterdir())
 
 
-def session_opening(root: ExamRoot, task_ids: Optional[Iterable[str]] = None) -> str:
+def session_opening(root: ExamRoot, task_ids: Optional[Iterable[str]] = None,
+                    audit: bool = False) -> str:
     """The Examiner's opening message: the ask, what its root holds, the rulings to answer (F25),
-    and the Builder's notes on these Tasks, each open or with its ruling."""
-    return prompt_mod.opening(EXAMINE_MESSAGE, rulings_line(root, task_ids), root_listing(root.exam_dir),
+    and the Builder's notes on these Tasks, each open or with its ruling. An audit session
+    carries one line saying it audits References."""
+    text = prompt_mod.opening(EXAMINE_MESSAGE, rulings_line(root, task_ids), root_listing(root.exam_dir),
                               notes_line(root, task_ids))
+    return text if not audit else f"{text}\n{audit_mod.AUDIT_LINE}"
 
 
 def notes_line(root: ExamRoot, task_ids: Optional[Iterable[str]] = None) -> str:
@@ -497,7 +501,7 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
             allowance_usd: Optional[float] = None, session_path: Any = None,
             subscribers: Iterable[Callable] = (), max_turns: int = EXAMINE_MAX_TURNS,
             workers: Optional[int] = None, limit: Optional[int] = None,
-            user_model: Any = None) -> list[Finding]:
+            user_model: Any = None, audit_references: bool = True) -> list[Finding]:
     """Derive the Verifiers by code, file what the records say, then run one model session.
 
     With `model=None` the session is code only: the derivation and its findings. With a model,
@@ -519,6 +523,9 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
 
     The session sees only the Tasks with a finished Run and a confirmed Reference; one finding
     of kind other names the rest and why, and when none is left no session opens at all (F24).
+    With `audit_references` (on by default) the call then audits every trusted Task whose
+    Reference no session has checked, in chunks of thirty Tasks per session over the same
+    root, each landing one spend line in the exam directory.
     """
     root = Path(workdir)
     task_ids = list(task_ids) if task_ids is not None else None
@@ -568,9 +575,41 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
     load_extensions(harness, [examiner_extension(exam_root, selected)])
     cap_notes = _run_session(harness, session_opening(exam_root, selected), max_turns, selected)
+    if audit_references:
+        cap_notes.extend(_run_audits(root, exam_root, model, max_turns, subscribers))
     out = list(exam_root.findings) + note + cap_notes
     write_json(root / "findings.json", [f.as_dict() for f in out])
     return out
+
+
+def _run_audits(root: Path, exam_root: ExamRoot, model: Any, max_turns: int,
+                subscribers: Iterable[Callable]) -> list[Finding]:
+    """Audit sessions over every trusted Task still unchecked, in chunks of thirty.
+
+    The same Examiner with the same tools over the same root, so findings and the
+    reroll allowance carry across; each chunk opens with the audit line and lands
+    one spend line in the exam directory. Returns the cap notes of chunks that
+    ran out of turns."""
+    notes: list[Finding] = []
+    for index, chunk in enumerate(audit_mod.chunks(audit_mod.audit_list(root))):
+        before = float(budget.load_totals(root)["total"]["usd"])
+        events: list = []
+        harness = AgentHarness(model=model, max_turns=max_turns,
+                               context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
+                               bus=Bus(root / "bus.jsonl", agent="examiner"))
+        for subscriber in subscribers:
+            harness.subscribe(subscriber)
+        harness.subscribe(events.append)
+        harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
+        load_extensions(harness, [examiner_extension(exam_root, chunk)])
+        notes.extend(_run_session(harness, session_opening(exam_root, chunk, audit=True),
+                                  max_turns, chunk))
+        spent = float(budget.load_totals(root)["total"]["usd"]) - before
+        audit_mod.record_audit(root, {"chunk": index, "tasks": chunk,
+                                      "turns": sum(1 for e in events
+                                                   if getattr(e, "type", None) == "turn_end"),
+                                      "spent_usd": spent})
+    return notes
 
 
 def _run_session(harness: AgentHarness, opening_message: str, max_turns: int,
