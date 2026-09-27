@@ -959,8 +959,16 @@ class Screen:
                 # screen's pid, which outlives the build. Its final beat says done or failed, a
                 # direct build's bridge record simply goes when the bridge closes; either way the
                 # build leaves the live list, which ends this with the pid and heartbeat exits.
-                while (heartbeat.alive(pid) and _build_end(self.workdir, pid) is None
-                       and _still_listed(self.workdir, pid)):
+                # A heartbeat read mid rewrite looks the same as a build that left, so one
+                # missed listing never ends this: only two in a row do.
+                missed = 0
+                while heartbeat.alive(pid) and _build_end(self.workdir, pid) is None:
+                    if _still_listed(self.workdir, pid):
+                        missed = 0
+                    else:
+                        missed += 1
+                        if missed >= 2:
+                            break
                     time.sleep(every_seconds)
                     lines, offset, mtime = since(offset, mtime, False)
                     recent = (recent + lines)[-FEED_LINES:]

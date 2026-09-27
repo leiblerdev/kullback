@@ -1359,6 +1359,58 @@ def test_follow_ends_when_the_heartbeat_says_done_though_the_pid_is_alive(tmp_pa
     assert "build done" in _text(screen.console)
 
 
+def test_follow_keeps_watching_when_the_live_list_misses_a_single_poll(tmp_path, monkeypatch):
+    """A heartbeat read mid rewrite looks like a build that left for one poll, so watching
+    keeps going and the next polls are still read."""
+    import os
+
+    from kullback import tui as tui_module
+    from kullback.runner import heartbeat
+
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(tui_module.time, "sleep", lambda _seconds: None)
+    alive = iter([True] * 8)
+    monkeypatch.setattr(heartbeat, "alive", lambda _pid: next(alive, False))
+    monkeypatch.setattr(tui_module, "_build_end", lambda _workdir, _pid: None)
+    listed = iter([True, True, False, True, True, True, True, True])
+    polls = []
+
+    def fake_listed(workdir, pid):
+        answer = next(listed, True)
+        polls.append(answer)
+        return answer
+
+    monkeypatch.setattr(tui_module, "_still_listed", fake_listed)
+    screen = _screen(tmp_path)
+    screen._follow(os.getpid(), every_seconds=0.01)
+    assert polls == [True, True, False, True, True, True, True, True]
+
+
+def test_follow_returns_after_the_live_list_misses_two_polls_in_a_row(tmp_path, monkeypatch):
+    """Two straight polls with no listing mean the build left, so watching stops there."""
+    import os
+
+    from kullback import tui as tui_module
+    from kullback.runner import heartbeat
+
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(tui_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(heartbeat, "alive", lambda _pid: True)
+    monkeypatch.setattr(tui_module, "_build_end", lambda _workdir, _pid: None)
+    listed = iter([True, False, False])
+    polls = []
+
+    def fake_listed(workdir, pid):
+        answer = next(listed, True)
+        polls.append(answer)
+        return answer
+
+    monkeypatch.setattr(tui_module, "_still_listed", fake_listed)
+    screen = _screen(tmp_path)
+    screen._follow(os.getpid(), every_seconds=0.01)
+    assert polls == [True, False, False]
+
+
 def test_follow_returns_once_the_direct_build_closes_its_bridge(tmp_path, monkeypatch):
     import os
     import time
