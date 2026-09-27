@@ -590,6 +590,24 @@ def test_publish_check_uploads_nothing_and_names_what_is_missing(workdir, monkey
     assert "fidelity over Tasks" in result.output
 
 
+def test_publish_without_a_frozen_runner_refuses_and_uploads_nothing(workdir, monkeypatch):
+    from tests.episode.invented import write_env
+
+    write_env(workdir, task_id="t1")
+    monkeypatch.setenv("HF_TOKEN", "a token for the publish gate")
+    reached = []
+
+    def bomb(*args, **kwargs):
+        reached.append(True)
+        raise AssertionError("a refused publish must not reach the upload")
+
+    monkeypatch.setattr("kullback.hub.publish.publish", bomb)
+    result = invoke("publish", "--workdir", str(workdir), "--repo", "org/name")
+    assert result.exit_code == 1, result.output
+    assert "runner frozen" in result.output
+    assert reached == []
+
+
 def stored_verdicts(workdir: Path, task_id: str = "t1") -> list[dict]:
     folder = workdir / "verdicts" / task_id
     return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(folder.glob("*.json"))]

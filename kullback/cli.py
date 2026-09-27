@@ -1839,15 +1839,22 @@ def publish(
     """Export the Environment, write its card and upload it as one commit, tagged with its round (D221).
 
     A release needs replay fidelity at or above 0.90 over Tasks; below that only --preview is
-    allowed. Publishing again writes a new commit on the same repository and rewrites the card's
-    numbers; older rounds stay reachable by their tags. With --check the command prints the
-    checklist and uploads nothing.
+    allowed. The checklist prints first and a publish whose required rows fail stops there
+    without uploading: every row for a release, only the token, repo and leak rows for a
+    preview. Publishing again writes a new commit on the same repository and rewrites the
+    card's numbers; older rounds stay reachable by their tags. With --check the command
+    prints the checklist and uploads nothing.
     """
     readiness = _echo_checklist(workdir, repo)
     if check:
         if readiness == "not ready":
             raise typer.Exit(1)
         return
+    if preview:
+        if readiness == "not ready":
+            raise typer.Exit(1)
+    elif readiness != "ready to release":
+        raise typer.Exit(1)
     push = _entry("kullback.hub.publish", "publish")
     hosted, manifest = push(workdir, repo, name=name, preview=preview, corpus=corpus,
                             corpus_license=corpus_license, corpus_url=corpus_url, keep=keep)
