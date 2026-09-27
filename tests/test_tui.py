@@ -576,6 +576,25 @@ def test_a_screen_login_answered_yes_remembers_the_key(tmp_path, monkeypatch):
     screen.command("/logout")
 
 
+def test_an_interrupted_or_command_answer_at_the_remember_question_remembers_nothing(
+        tmp_path, monkeypatch):
+    from kullback.ai import credentials
+
+    _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_AUTH_FILE", str(tmp_path / "auth.json"))
+    screen = _screen(tmp_path)
+
+    def eof(prompt=""):
+        raise EOFError
+
+    screen.console.input = eof
+    screen._offer_to_remember([("OPENAI_API_KEY", "sk-zen-123")])
+    screen.console.input = lambda prompt="": "/status"
+    screen._offer_to_remember([("OPENAI_API_KEY", "sk-zen-123")])
+    assert not (tmp_path / "auth.json").exists()
+    assert credentials.stored_names() == []
+
+
 def test_logout_forgets_a_remembered_key(tmp_path, monkeypatch):
     from kullback.ai import credentials
 
@@ -1594,7 +1613,7 @@ def test_a_unique_prefix_runs_its_command(tmp_path):
 def test_a_slash_answer_at_a_menu_question_is_run_after_the_menu(tmp_path):
     screen = _screen(tmp_path)
     screen.console.input = lambda prompt="": "/status"
-    assert screen._ask("    provider [1-6 or name]: ") == ""
+    assert screen._ask("    provider [1-6 or name]: ") is None
     assert screen._pending_command == "/status"
 
 

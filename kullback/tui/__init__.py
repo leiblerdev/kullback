@@ -1135,7 +1135,10 @@ class Screen:
         for i, name in enumerate(providers, 1):
             self.console.print(Text(f"    {i}  {name}", style="white"))
         span = f"1-{len(providers)}"
-        choice = self._ask(f"    provider [{span} or name]: ").strip().lower()
+        choice_answer = self._ask(f"    provider [{span} or name]: ")
+        if choice_answer is None:
+            return
+        choice = choice_answer.strip().lower()
         if choice.isdigit() and 1 <= int(choice) <= len(providers):
             provider_name = providers[int(choice) - 1]
         elif choice in providers:
@@ -1144,7 +1147,10 @@ class Screen:
             self.console.print(Text(f"pick {span} or a provider name", style="red"))
             return
         default_model = defaults[provider_name]
-        model = self._ask(f"    model [{default_model}]: ").strip() or default_model
+        model_answer = self._ask(f"    model [{default_model}]: ")
+        if model_answer is None:
+            return
+        model = model_answer.strip() or default_model
         key_var = self._key_var_for(provider_name, model)
         self.console.print(Text(f"    {key_var} holds the key (names only, value stays hidden)",
                                 style="dim"))
@@ -1167,24 +1173,25 @@ class Screen:
         self._offer_to_remember([(key_var, secret)])
         self.console.print(self._login_status())
 
-    def _ask(self, prompt: str) -> str:
+    def _ask(self, prompt: str) -> Optional[str]:
         """One question to the person typing. A method so tests can answer without stdin.
 
         Escaped, because rich reads the bracketed hint ("[1-6 or name]", "[default model]") as a
         style tag and the person was asked "model :" with the default gone. An answer that
         starts with "/" is not an answer: the menu ate the person's next command, the way
         /status typed at the provider question was lost. It is recorded as a pending
-        command and "" is returned, so the menu ends as if cancelled and the main loop
-        runs that command next."""
+        command and None is returned, so the menu ends as if cancelled and the main loop
+        runs that command next. An interrupted question answers None too, so no caller
+        may read it as consent."""
         from rich.markup import escape
 
         try:
             answer = self.console.input(escape(prompt))
         except (EOFError, KeyboardInterrupt, OSError):
-            return ""
+            return None
         if answer.strip().startswith("/"):
             self._pending_command = answer.strip()
-            return ""
+            return None
         return answer
 
     def _apply_key(self, name: str, value: str) -> None:
@@ -1193,16 +1200,18 @@ class Screen:
         if name not in self.session_keys:
             self.session_keys[name] = os.environ.get(name)
         os.environ[name] = value
-
     def _offer_to_remember(self, pairs: list[tuple[str, str]]) -> None:
         """Ask once whether the keys just held should outlive the session, and store them.
 
         Yes or an empty answer remembers every key in the remembered store at 0600; no
-        keeps today's session-only behaviour. Names are printed, values never."""
+        keeps today's session-only behaviour. No answer at all, an interrupted question
+        or a slash command, remembers nothing. Names are printed, values never."""
         from kullback.ai import credentials
 
-        answer = self._ask("remember this key in ~/.kullback/auth.json? [Y/n] ").strip().lower()
-        if answer not in ("", "y", "yes"):
+        answer = self._ask("remember this key in ~/.kullback/auth.json? [Y/n] ")
+        if answer is None:
+            return
+        if answer.strip().lower() not in ("", "y", "yes"):
             return
         for name, value in pairs:
             try:
