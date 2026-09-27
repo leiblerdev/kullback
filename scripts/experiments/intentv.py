@@ -34,7 +34,7 @@ MAIN_ENV = Path("/Users/krishuagarwal/Desktop/Programming/leibler/kullback/.env"
 SEED = 7
 MODEL_ID = "bedrock/global.anthropic.claude-opus-5-5"
 PRICE_MODEL = "bedrock/anthropic.claude-opus-5-5"
-MAX_TOOL_ROUNDS = 6
+MAX_TOOL_ROUNDS = 4
 # corpus -> (wrong count, right count)
 STRATA = {"retail": (16, 10), "airline": (9, 5)}
 
@@ -101,7 +101,8 @@ def confirmed_tasks(clone: Path) -> set[str]:
     return {t for t, row in status.items() if row.get("reference_confirmed")}
 
 
-def sample_tasks(seed: int = SEED) -> dict:
+def sample_tasks(seed: int = SEED, exclude: frozenset = frozenset(),
+                 allow: frozenset | None = None) -> dict:
     """40 confirmed tasks: 25 on a wrong Reference, 15 on a right one, both corpora."""
     rng = random.Random(seed)
     picked: list[dict] = []
@@ -112,17 +113,19 @@ def sample_tasks(seed: int = SEED) -> dict:
         refs = _read_json(clone / "exam" / "references.json")
         pools: dict[str, list[str]] = {"wrong": [], "right": []}
         for task_id in refs:
-            if task_id not in confirmed:
+            if task_id not in confirmed or task_id in exclude:
+                continue
+            if allow is not None and (corpus, task_id) not in allow:
                 continue
             cls = task_class(reference_traces(clone, task_id), rewards)
             if cls in pools:
                 pools[cls].append(task_id)
         for cls, want in (("wrong", n_wrong), ("right", n_right)):
             pool = sorted(pools[cls])
-            if len(pool) < want:
-                raise SystemExit(f"{corpus} {cls}: only {len(pool)} tasks for {want}")
-            for task_id in rng.sample(pool, want):
-                picked.append({"corpus": corpus, "task_id": task_id, "ref_class": cls})
+            take = min(want, len(pool))
+            for task_id in rng.sample(pool, take):
+                picked.append({"corpus": corpus, "task_id": task_id, "ref_class": cls,
+                               "short": len(pool) < want})
     picked.sort(key=lambda r: (r["corpus"], r["task_id"]))
     return {"seed": seed, "tasks": picked}
 
@@ -205,6 +208,100 @@ def start_state(clone: Path, task_id: str) -> dict:
                 return state
     raise SystemExit(f"no Starting state for {task_id}")
 
+_POLICY_CACHE: dict[str, str] = {}
+
+
+def corpus_policy(clone: Path) -> str:
+    """The recorded agent's own policy text, off the raw traces, constant per corpus."""
+    key = str(clone)
+    if key not in _POLICY_CACHE:
+        text = ""
+        raws = sorted((clone / "raw").glob("*.json"))
+        if raws:
+            try:
+                sims = json.loads(raws[0].read_text(encoding="utf-8")).get("simulations", [])
+                text = str((sims[0] or {}).get("policy") or "")
+            except (ValueError, IndexError):
+                text = ""
+        _POLICY_CACHE[key] = text
+    return _POLICY_CACHE[key]
+
+
+def _words_of(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", _norm(text)) if len(w) >= 4}
+
+
+def _result_keys(run, fn) -> set[str]:
+    from kullback.runner.target import _key as canon_key
+
+    keys: set[str] = set()
+
+    def gather(node) -> None:
+        if isinstance(node, dict):
+            for value in node.values():
+                gather(value)
+        elif isinstance(node, (list, tuple)):
+            for value in node:
+                gather(value)
+        elif node is not None:
+            try:
+                keys.add(canon_key(fn, node))
+            except Exception:
+                pass
+
+    for event in run.events:
+        if event.type == "tool_result":
+            gather((event.payload or {}).get("result"))
+    return keys
+
+
+def diagnose_run(run, demands: list, verifier, intent: str, writes: set[str], fn) -> list[dict]:
+    """Every failed atom of one recording, grouped by kind and reason. No values kept."""
+    from kullback.runner import target as _target
+
+    effects = _target.write_effects(run, writes, fn)
+    asked = set(_target.question_keys(run, effects, fn))
+    said = set(_target.communicate_values(run, fn))
+    present = {(e["tool"], e["entity"]) for e in effects.values()}
+    written = {(e["tool"], e["entity"], f): v
+               for e in effects.values() for f, v in e["values"].items()}
+    result_keys = _result_keys(run, fn)
+    intent_words = _words_of(intent)
+    out = []
+    for atom in verifier.atoms:
+        holds = _target.atom_holds(atom, run, fn, writes,
+                                   effects=effects, asked=asked, said=said)
+        if holds is not False:
+            continue
+        payload = _target.atom_payload(atom)
+        kind, tool, field = payload.get("kind"), payload.get("tool"), payload.get("field")
+        number = str(atom.id).lstrip("i").split(".")[0]
+        demand = demands[int(number)] if number.isdigit() and int(number) < len(demands) else {}
+        reason = "other"
+        if kind == "write":
+            reason = "write_not_made" if (tool, payload.get("entity")) not in present else "other"
+        elif kind == "write_value":
+            key = (tool, payload.get("entity"), field)
+            if key not in written and (tool, payload.get("entity")) not in present:
+                reason = "write_not_made"
+            elif payload.get("value") in result_keys:
+                reason = "value_differs_read"
+            else:
+                reason = "value_differs_unread"
+        elif kind == "communicate":
+            text = str(demand.get("text") if isinstance(demand, dict) else payload.get("text"))
+            reason = ("fact_not_said_named" if _words_of(text) & intent_words
+                      else "fact_not_said_unnamed")
+        elif kind == "question":
+            reason = "question_not_asked"
+        elif kind == "entity_count":
+            reason = "cap_exceeded"
+        elif kind == "hard":
+            reason = "hard_rule"
+        out.append({"atom": atom.id, "kind": atom.kind, "target": kind, "tool": tool,
+                    "field": field, "reason": reason})
+    return out
+
 READ_TOOLS = [
     {"name": "lookup_rows",
      "description": ("Read rows of the Starting state by table and key. Read-only. "
@@ -262,21 +359,30 @@ derive everything from the Intent, the policy, the tool list, and the Starting s
 Rules:
 - Demand only what the Intent asks for or the policy requires. Never demand a step just because \
 it would be a sensible way to do the job.
+- The recorded agent policy below is the standing policy. Reason from it, never from memory of \
+how such systems work. Name its section in because when it decides.
+- Spend at most 4 read rounds, then write the JSON with what you have. A truncated list is not a \
+reason to keep reading; demand the shape instead of the literal you could not see.
+- Say only what the Intent states word for word: the because must quote the Intent span that IS \
+the fact. Never demand a computed, read, or rephrased figure as a say; if the answer must convey \
+it some other way, leave it out.
+- List every write an acceptable run may make: required where the Intent or policy demands it, \
+allowed everywhere else it is acceptable. Set cap to the number of entities listed, so a run that \
+stays inside the listed writes never fails on coverage.
 - Every exact value (ids, names, amounts, codes) must come from a Starting state read in this \
 session, never from memory or guesswork. If a value is not in the Starting state, demand the \
 shape (which tool and field) rather than a literal, or leave it out.
-- Several acceptable end states may be listed: mark alternatives with kind "allowed".
 - Output one JSON object only, no prose: {"demands": [{"id": "d0", "kind": "required", \
 "demand": "write" | "say" | "ask" | "no_write" | "cap" | "shape", ...fields..., \
 "because": "quote of the Intent span or the policy rule name"}]}.
 - write needs tool, id_field, entity, values (an object of field to value read from the state).
-- say needs text (a fact the final answer must state, read from the state or the Intent).
+- say needs text (the Intent's own words for the fact).
 - ask needs field (a field of the request the agent must ask the user about) or confirm_tool.
 - no_write needs no fields: the end state is the starting state.
-- cap needs count: how many entities may be written at most.
+- cap needs count: the number of entities listed above.
 - shape needs tool, field, id_field: the write must carry a value the run read for that column.
 - because must quote the Intent span word for word (at least 12 characters) or name the policy \
-rule. A demand with no valid because is dropped.
+rule or policy section. A demand with no valid because is dropped.
 """
 
 
@@ -293,11 +399,28 @@ def _thinking_of(reply: object) -> list[str]:
     return out
 
 
-def writer_messages(intent: str, policy: list[str], tools: list[dict]) -> list[dict]:
+def policy_sections(clone: Path) -> list[str]:
+    """Section headers of the recorded agent policy, for because naming."""
+    out = []
+    for line in corpus_policy(clone).splitlines():
+        clean = line.strip().strip("#").replace("**", "").strip()
+        if line.startswith("#") and len(clean.split()) >= 2:
+            out.append(f"section:{_norm(clean)}")
+    return out
+
+
+def because_rules(clone: Path, task_id: str) -> list[str]:
+    """Every rule a because may name: disclosure conditions plus policy sections."""
+    return policy_rules(clone, task_id) + policy_sections(clone)
+
+
+def writer_messages(intent: str, policy: list[str], policy_text: str,
+                    tools: list[dict]) -> list[dict]:
     body = {"intent": intent,
-            "policy": policy or ["no compiled policy rules; the Intent alone governs"],
-            "tools": tools}
-    return [{"role": "user", "content": SYSTEM_PROMPT + "\n" + json.dumps(body)[:12000]}]
+            "tools": tools,
+            "policy": policy or ["no compiled disclosure rules; the Intent alone governs"],
+            "policy_text": policy_text or "no recorded agent policy found"}
+    return [{"role": "user", "content": SYSTEM_PROMPT + "\n" + json.dumps(body)[:24000]}]
 
 def _assistant_tool_turn(reply: object) -> dict:
     return {"role": "assistant", "content": reply.content,
@@ -377,7 +500,7 @@ def _norm(text: str) -> str:
 
 
 def valid_because(demand: dict, intent: str, policy: list[str]) -> bool:
-    """A because that quotes an Intent span or names a policy rule."""
+    """A because that quotes an Intent span or names a policy rule or section."""
     because = _norm(demand.get("because"))
     if not because:
         return False
@@ -388,6 +511,11 @@ def valid_because(demand: dict, intent: str, policy: list[str]) -> bool:
             return True
     words = set(re.findall(r"[a-z0-9_]+", because))
     for rule in policy:
+        if rule.startswith("section:"):
+            phrase = rule[len("section:"):]
+            if phrase and phrase in because:
+                return True
+            continue
         for token in re.findall(r"[a-z0-9_]+", _norm(rule)):
             if len(token) >= 3 and token in words:
                 return True
@@ -549,6 +677,8 @@ def main(argv=None) -> int:
     p_sample = sub.add_parser("sample")
     p_sample.add_argument("--seed", type=int, default=SEED)
     p_sample.add_argument("--out", type=Path, required=True)
+    p_sample.add_argument("--exclude", type=Path, default=None)
+    p_sample.add_argument("--allow", type=Path, default=None)
     p_write = sub.add_parser("write")
     p_write.add_argument("--sample", type=Path, required=True)
     p_write.add_argument("--model", default=MODEL_ID)
@@ -559,10 +689,21 @@ def main(argv=None) -> int:
     p_score.add_argument("--sample", type=Path, required=True)
     p_score.add_argument("--demands-dir", type=Path, required=True)
     p_score.add_argument("--out", type=Path, required=True)
+    p_diag = sub.add_parser("diagnose")
+    p_diag.add_argument("--sample", type=Path, required=True)
+    p_diag.add_argument("--demands-dir", type=Path, required=True)
+    p_diag.add_argument("--score", type=Path, required=True)
+    p_diag.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
 
     if args.cmd == "sample":
-        body = sample_tasks(args.seed)
+        excluded = frozenset(r["task_id"] for r in
+                             json.loads(args.exclude.read_text(encoding="utf-8"))["tasks"]
+                             ) if args.exclude else frozenset()
+        allowed = (frozenset(tuple(entry.split("/", 1)) for entry in
+                             json.loads(args.allow.read_text(encoding="utf-8"))
+                             ) if args.allow else None)
+        body = sample_tasks(args.seed, excluded, allowed)
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
         counts: dict[str, int] = {}
@@ -583,7 +724,7 @@ def main(argv=None) -> int:
             sample = [r for r in sample if r["task_id"] in args.only]
         model = live_model(args.model)
         config = ModelConfig(thinking={"type": "adaptive", "display": "summarized"},
-                             max_tokens=3000)
+                             max_tokens=2000)
         args.out_dir.mkdir(parents=True, exist_ok=True)
         spent = 0.0
         for row in sample:
@@ -593,10 +734,11 @@ def main(argv=None) -> int:
                 continue
             clone = SCRATCH / row["corpus"]
             intent = intent_text(clone, row["task_id"])
-            policy = policy_rules(clone, row["task_id"])
+            policy = because_rules(clone, row["task_id"])
             tools, _, _ = tool_list(clone)
             state = start_state(clone, row["task_id"])
-            result = run_writer(model, writer_messages(intent, policy, tools), state, config)
+            result = run_writer(model, writer_messages(intent, policy, corpus_policy(clone),
+                                                      tools), state, config)
             spent += result["usd"]
             demands, error = parse_demands(result["text"])
             out = {"corpus": row["corpus"], "task_id": row["task_id"],
@@ -632,7 +774,7 @@ def main(argv=None) -> int:
             fn = canon_fn(rules)
             _, writes, _ = tool_list(clone)
             intent = intent_text(clone, task_id)
-            policy = policy_rules(clone, task_id)
+            policy = because_rules(clone, task_id)
             verifier, invalid = compile_verifier(stored["demands"], intent, policy, writes, fn)
             verifier = verifier.model_copy(update={"task_id": task_id})
             current = current_verifier(clone, task_id)
@@ -665,7 +807,46 @@ def main(argv=None) -> int:
         print(json.dumps({"tasks": len(rows),
                           "scored": sum(1 for r in rows if r["status"] == "scored")}))
         return 0
+    if args.cmd == "diagnose":
+        from kullback.runner import canon
+        from kullback.runner.records import load_task_run
+        from kullback.runner.target import canon_fn
 
+        sample = {r["task_id"]: r for r in
+                  json.loads(args.sample.read_text(encoding="utf-8"))["tasks"]}
+        scored = {r["task_id"]: r for r in
+                  json.loads(args.score.read_text(encoding="utf-8"))["rows"]}
+        rows = []
+        for task_id, row in sorted(sample.items()):
+            clone = SCRATCH / row["corpus"]
+            stored = json.loads((args.demands_dir / f"{task_id}.json").read_text(
+                encoding="utf-8"))
+            rules = canon.load_rules(clone / "canon-rules.json")
+            fn = canon_fn(rules)
+            _, writes, _ = tool_list(clone)
+            intent = intent_text(clone, task_id)
+            policy = because_rules(clone, task_id)
+            verifier, _ = compile_verifier(stored["demands"], intent, policy, writes, fn)
+            verifier = verifier.model_copy(update={"task_id": task_id})
+            for rec in scored.get(task_id, {}).get("recordings", []):
+                if not rec["is_reference"] or rec["grade"] != 1 or rec["intent"]["pass"]:
+                    continue
+                path = recording_paths(clone, task_id)[rec["run_id"]]
+                run = load_task_run(path, task_id)
+                rows.append({"task_id": task_id, "corpus": row["corpus"],
+                             "run_id": rec["run_id"],
+                             "verdict_failing": rec["intent"]["failing"],
+                             "failures": diagnose_run(run, stored["demands"], verifier,
+                                                      intent, writes, fn)})
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps({"rows": rows}, indent=2) + "\n", encoding="utf-8")
+        groups: dict[str, int] = {}
+        for row in rows:
+            for failure in row["failures"]:
+                key = f"{failure['target']}/{failure['reason']}"
+                groups[key] = groups.get(key, 0) + 1
+        print(json.dumps({"recordings": len(rows), "groups": groups}))
+        return 0
     raise SystemExit("unknown command")
 
 
