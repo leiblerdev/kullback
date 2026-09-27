@@ -36,3 +36,8 @@ def test_ground_spec_refuses_an_ungrounded_check_and_an_uncovered_fact():
 
 def test_ground_spec_never_raises_on_a_malformed_spec():
     assert ground_spec(object()) and ground_spec(spec(), policy_sections=None) == ground_spec(spec())
+
+
+def test_a_section_matches_as_whole_words_only():
+    assert not valid_because("a1 is the item", INTENT, ["a", "1"])
+    assert valid_because("per the Identity  Check rule", INTENT, ["identity check"])

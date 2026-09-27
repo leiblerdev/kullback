@@ -1,7 +1,7 @@
 """Trust gate 1: every check rests on the Intent or the policy, every Intent fact has a check or a gap.
 
-`valid_because` is the one implementation of the because rule; it replaces the copy the intentv
-experiment carried.
+`valid_because` is the because rule every Spec path uses. scripts/experiments/intentv.py keeps its own
+copy on purpose, as the frozen record of the arm it measured.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ def _names_section(because: str, sections: Iterable[str]) -> bool:
     for section in sections:
         name = _norm(section)
         name = name[len(_SECTION):] if name.startswith(_SECTION) else name
-        if name and name in because:
+        if name and re.search(rf"(?<![a-z0-9_]){re.escape(name)}(?![a-z0-9_])", because):
             return True
     return False
 
