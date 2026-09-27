@@ -84,19 +84,31 @@ def test_a_value_no_read_returned_is_refused():
     assert stats["refused"] == 1
 
 
-def test_a_value_from_a_read_is_kept():
-    """Reads of the Starting state ground values the request never says."""
+def test_a_value_only_a_read_holds_is_listed_allowed_not_required():
+    """A required check may not pick a row the request never names; allowed it is kept."""
+    demanded = _write_check(because_quote="mark the record", value="ready")
+    listed = _write_check(kind="allowed", because_quote="mark the record", value="ready")
     model = TestModel([
         {"content": "", "tool_calls": [{"id": "c1", "name": "fetch", "arguments": {"code": "K7"}}]},
-        _checks(_write_check(because_quote="mark the record",
-                             value="ready")),
+        _checks(demanded),
+        _checks(listed),
     ])
     stats: dict = {}
     verifier = _write("t1", "please mark the record", None,
                                 _tools(), _world(), model, stats=stats)
-    assert stats["reads"] == 1 and stats["kept_checks"] == 1
-    assert verifier.atoms[1].target["raw"] == "ready"
+    assert stats["reads"] == 1 and stats["attempts"] == 2 and stats["kept_checks"] == 1
+    assert verifier.atoms[1].kind == "allowed" and verifier.atoms[1].target["raw"] == "ready"
     assert verifier.atoms[1].provenance == "system_derived"
+
+
+def test_a_required_row_the_request_never_names_is_refused():
+    """The demand scope covers the row as well as the value."""
+    check = _write_check(entity="ledger", because_quote="mark the record ready", value="ready")
+    model = TestModel([_checks(check)])
+    stats: dict = {}
+    verifier = _write("t1", "please mark the record ready", None,
+                                _tools(), _world(), model, stats=stats, attempts=1)
+    assert verifier.atoms == [] and stats["refused"] == 1
 
 
 def test_a_value_the_request_holds_is_user_stated():
@@ -151,12 +163,24 @@ def test_a_question_names_what_the_policy_asks_for():
 def test_a_communicate_check_splits_into_stated_tokens():
     """One message fact becomes one atom per token the scorer reads."""
     check = {"kind": "communicate", "text": "record K7",
-             "because_quote": "mark record K7 ready"}
+             "because_quote": "record K7 ready"}
     model = TestModel([_checks(check)])
-    verifier = _write("t1", "please mark record K7 ready", None,
+    verifier = _write("t1", "is record K7 ready?", None,
                                 _tools(), _world(), model)
     assert [atom.target["text"] for atom in verifier.atoms] == ["K7"]
     assert all(atom.kind == "communicate" for atom in verifier.atoms)
+
+
+def test_a_fact_without_a_user_question_is_refused():
+    """No question in the request means no message fact is demanded."""
+    check = {"kind": "communicate", "text": "record K7",
+             "because_quote": "record K7 ready"}
+    model = TestModel([_checks(check)])
+    stats: dict = {}
+    verifier = _write("t1", "mark record K7 ready", None,
+                                _tools(), _world(), model, stats=stats, attempts=1)
+    assert verifier.atoms == [] and stats["refused"] == 1
+
 
 def test_a_failing_body_leaves_the_starting_state_whole():
     """A body that raises reads as a failure and changes nothing."""
@@ -202,7 +226,6 @@ def test_the_session_only_calls_reads_and_names_no_other_episode():
         assert banned not in prompt.lower()
     assert "amend" in call["messages"][1]["content"]
 
-
 def test_a_state_first_body_reads_the_copied_world():
     """Bodies taking the state read the copy the way the Runner passes it."""
 
@@ -212,7 +235,7 @@ def test_a_state_first_body_reads_the_copied_world():
 
     model = TestModel([
         {"content": "", "tool_calls": [{"id": "c1", "name": "fetch", "arguments": {"code": "K7"}}]},
-        _checks(_write_check(because_quote="mark the record")),
+        _checks(_write_check(kind="allowed", because_quote="mark the record")),
     ])
     stats: dict = {}
     _write("t1", "please mark the record", None,

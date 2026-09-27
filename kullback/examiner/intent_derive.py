@@ -54,10 +54,12 @@ from typing import Any, Optional
 from kullback.gates.verifier_suite import (
     HELPERS_SRC,
     _key,
-    _tokens as _score_tokens,
     canon_fn,
     make_atom,
     text_of,
+)
+from kullback.gates.verifier_suite import (
+    _tokens as _score_tokens,
 )
 from kullback.runner.records import Atom, Verifier, plain
 
@@ -330,14 +332,19 @@ def _head() -> str:
         "gives it. A check with neither is refused, and so is one whose quote the",
         "request does not hold, whose rule is not in the policy, or whose value no",
         "read returned and the request does not hold.",
+        "Use the policy rules as written; never reason from memory.",
         "Exact values come from what your reads return or from what the request",
         "says, never from habit. Read first where the request points at the world.",
         "Answer with one JSON object: {\"checks\": [{\"kind\", ...}]}.",
         "A required or allowed check over a write names tool, entity and id_field: entity is the",
         "id of the exact row the write acts on, as your reads show it, with id_field naming that",
         "id column, never the table. One over a column adds field, value and alternatives.",
+        "Required checks carry only what the request determines: when several rows fit, list",
+        "every fitting row as allowed; never pick one as required.",
         "A question names tool and, where one is asked for, field.",
         "A communicate check carries the text the final message must state.",
+        "A message fact is demanded only when the user asks for it with a question;",
+        "otherwise write no message check.",
     ])
 
 
@@ -444,16 +451,29 @@ def _is_subsequence(needles: list[str], haystack: list[str]) -> bool:
             pos = haystack.index(needle, pos) + 1
         except ValueError:
             return False
+
     return True
 
 
+_ASK_WORDS = frozenset("what when where which who whom whose why how is are was were do does did can could will would should have has".split())
+
+
+def _asks(words: Any) -> bool:
+    """Did the user ask for a fact: a question mark, or a question word first."""
+    text = str(words or "")
+    if "?" in text:
+        return True
+    toks = _TOKEN_RE.findall(text.lower())
+    return bool(toks) and toks[0] in _ASK_WORDS
+
+
 def _ground(checks: list[dict], intent_toks: list[str], intent_set: set[str],
-            rule_names: set[str], read_set: set[str]) -> tuple[list[dict], list[dict]]:
+            rule_names: set[str], read_set: set[str], asks: bool) -> tuple[list[dict], list[dict]]:
     """Split candidate checks into kept and refused, by code only."""
     kept: list[dict] = []
     refused: list[dict] = []
     for index, check in enumerate(checks):
-        reason = _refusal(check, intent_toks, intent_set, rule_names, read_set)
+        reason = _refusal(check, intent_toks, intent_set, rule_names, read_set, asks)
         if reason is None:
             kept.append(check)
         else:
@@ -472,9 +492,23 @@ def _value_tokens(check: dict) -> list[str]:
         toks.extend(_score_tokens(text))
     return toks
 
+def _determined(check: dict, intent_set: set[str]) -> Optional[str]:
+    """A required check carries only what the request determines.
+
+    A row or value the request never names is one the writer picked out of the reads;
+    when several rows fit, every fitting row is allowed and none is required.
+    """
+    entity = check.get("entity")
+    if isinstance(entity, str) and entity and _intent_tokens(entity):
+        if not set(_intent_tokens(entity)) <= intent_set:
+            return "required names only a row the request determines; list read rows as allowed"
+    if check.get("field") is not None and check.get("value") is not None:
+        if _intent_tokens(check.get("value")) and not set(_intent_tokens(check.get("value"))) <= intent_set:
+            return "required carries only a value the request determines; list read values as allowed"
+    return None
 
 def _refusal(check: dict, intent_toks: list[str], intent_set: set[str],
-             rule_names: set[str], read_set: set[str]) -> Optional[str]:
+             rule_names: set[str], read_set: set[str], asks: bool) -> Optional[str]:
     kind = check.get("kind")
     if kind not in MUST_KINDS:
         return f"kind {kind!r} is not a must check"
@@ -489,6 +523,10 @@ def _refusal(check: dict, intent_toks: list[str], intent_set: set[str],
         if rule and not quote:
             return f"the policy names no rule {rule!r}"
         return "no because from the request or the policy"
+    if kind == "required":
+        scoped = _determined(check, intent_set)
+        if scoped is not None:
+            return scoped
     if kind in ("required", "allowed") and not check.get("tool"):
         return "a write check names its tool"
     if kind == "question" and not check.get("tool"):
@@ -498,6 +536,8 @@ def _refusal(check: dict, intent_toks: list[str], intent_set: set[str],
     text = check.get("text")
     if kind == "communicate" and not (isinstance(text, str) and text.strip()):
         return "a communicate check carries its text"
+    if kind == "communicate" and not asks:
+        return "the request asks no question, so no message fact is demanded"
     if kind == "communicate" and not _score_tokens(str(text)):
         return "the text states no token the scorer reads"
     if kind in ("required", "allowed") and check.get("field") is not None:
@@ -612,7 +652,7 @@ def write_verifier(task: Any, intent: Any, policy: Any, tools: Any, starting_sta
             kept: list[dict] = []
         else:
             kept, refused = _ground(checks, intent_toks, intent_set,
-                                    set(rules), set(read_tokens))
+                                    set(rules), set(read_tokens), _asks(words))
         score = (len(kept), -len(refused))
         if not best or score > best:
             best = score
