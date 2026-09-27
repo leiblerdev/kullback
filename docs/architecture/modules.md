@@ -182,6 +182,16 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/examiner/stage.py` | The derive_verifier stage body and its helpers, writing `verifiers/`, `task_status.json`, `references.json`. |
 | `kullback/examiner/variants.py` | Second paths synthesised from a Run's own calls, code only (D199). |
 
+## kullback/spec
+
+| Module | What it does |
+|---|---|
+| `kullback/spec/__init__.py` | The Spec package; `VERIFIER_FROM` names the two Verifier foundations, intent and runs. |
+| `kullback/spec/schema.py` | `IntentFact`, `SpecIntent`, `Check`, `Spec` and `tier_of`; one file per Task at `workdir/spec/<task_id>.json`. |
+| `kullback/spec/ground.py` | Trust gate 1: `valid_because` (an Intent quote of 12 characters or a named policy section), `coverage`, `ground_spec`. |
+| `kullback/spec/compile.py` | `compile_spec`: checks to Verifier atoms with the existing builders, no new kinds, ungrounded checks dropped and counted. |
+| `kullback/spec/canfail.py` | Trust gate 2: `can_fail` scores the D79 empty, wrong entity and swapped value Runs against the Spec's Verifier. |
+
 ## kullback/builder
 
 | Module | What it does |
