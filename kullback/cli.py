@@ -578,6 +578,29 @@ def solve_rate(
         typer.echo(f"{table['unpriced_calls']} calls are unpriced; the spend estimate is incomplete")
 
 
+@app.command()
+def train(
+    workdir: Path = WORKDIR,
+    model: str = typer.Option(DEFAULT_MODEL, "--model",
+                              help=f"Trainer model id, as provider/model; the default is {DEFAULT_MODEL}."),
+    policy_model: Optional[str] = typer.Option(None, "--policy-model",
+                                               help="Model under training, as provider/model; "
+                                                    "without it no policy plays."),
+    policy_base_url: Optional[str] = typer.Option(None, "--policy-base-url",
+                                                  help="Endpoint for an OpenAI-compatible model under training."),
+    base_url: Optional[str] = BASE_URL,
+    run_id: str = typer.Option(..., "--run-id", help="Run the session trains under."),
+    max_turns: int = typer.Option(200, "--max-turns", help="Turn cap of the session."),
+):
+    """Run the training agent over the built Environment in the workdir and print what it did as JSON."""
+    adapter = _live_model(model, base_url)
+    policy = _live_model(policy_model, policy_base_url) if policy_model else None
+    result = _entry("kullback.trainer.session", "train")(
+        workdir, adapter, policy_model=policy, policy_model_id=policy_model,
+        train_run_id=run_id, max_turns=max_turns)
+    typer.echo(json.dumps(result, indent=2, default=str))
+
+
 def _format_consistency(value: Optional[float]) -> str:
     """One consistency number as four decimals, or n/a where no law was checked."""
     return "n/a" if value is None else f"{value:.4f}"
