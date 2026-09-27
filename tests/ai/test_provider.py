@@ -1339,9 +1339,14 @@ def test_the_adapters_with_a_provider_of_their_own_still_report_what_the_endpoin
     assert openai_model(ok_openai(echoed), sleeps).query(HI).model == "gpt-4o-mini-dated"
 
 
-def test_a_responses_request_carries_effort_and_asks_for_a_summary(live, sleeps):
-    """The runner and the user run at low effort; every Responses request asks for a summary
-    so the reasoning text is kept like the summarized thinking."""
+def test_a_responses_request_to_a_model_that_reasons_carries_effort_and_a_summary(
+        live, sleeps, tmp_path, monkeypatch):
+    """The catalogue row says this model reasons, so every Responses request asks for a summary
+    and the reasoning text is kept like the summarized thinking."""
+    registry_snapshot(tmp_path, monkeypatch, {
+        "opencode-go": {"id": "opencode-go", "npm": "@ai-sdk/openai-compatible",
+                        "api": "https://opencode.ai/zen/go/v1", "env": ["OPENCODE_API_KEY"],
+                        "models": {"muse-spark-1.3-contributor": {"reasoning": True}}}})
     seen = {}
 
     def handler(request):
@@ -1359,6 +1364,48 @@ def test_a_responses_request_carries_effort_and_asks_for_a_summary(live, sleeps)
     assert body_for(pv.ModelConfig(reasoning_effort="low"))["reasoning"] == {
         "effort": "low", "summary": "auto"}
     assert body_for(pv.ModelConfig())["reasoning"] == {"summary": "auto"}
+
+
+def responses_catalog():
+    """One gateway with a model that reasons and one that does not, in the catalogue shape."""
+    return {"rs-test": {"id": "rs-test", "npm": "@ai-sdk/openai-compatible",
+                        "api": "https://127.0.0.1:1/v1", "env": ["RS_TEST_API_KEY"],
+                        "models": {"thinker": {"reasoning": True},
+                                   "talker": {"reasoning": False}}}}
+
+
+def responses_body_for(model_id, config, sleeps):
+    """The posted body for a Responses request that answers empty; nothing leaves the machine."""
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"status": "completed", "output": [], "usage": {}})
+
+    pv.OpenAIResponsesModel(
+        model_id=model_id, base_url="https://127.0.0.1:1/v1",
+        client=transport_of(handler), sleep=sleeps.append, env={},
+    ).query([{"role": "user", "content": "hi"}], config=config)
+    return seen["body"]
+
+
+def test_a_responses_request_to_a_model_that_does_not_reason_carries_no_reasoning_field(
+        live, sleeps, tmp_path, monkeypatch):
+    """The catalogue row says plain chat: even an asked effort sends no reasoning field, since
+    a model that does not reason may refuse it."""
+    registry_snapshot(tmp_path, monkeypatch, responses_catalog())
+    body = responses_body_for("rs-test/talker", pv.ModelConfig(reasoning_effort="low"), sleeps)
+    assert "reasoning" not in body
+
+
+def test_a_responses_request_with_no_catalogue_row_sends_reasoning_only_with_an_effort(
+        live, sleeps, tmp_path, monkeypatch):
+    """No row found: the field goes only when the config sets an effort, never by default."""
+    registry_snapshot(tmp_path, monkeypatch, responses_catalog())
+    assert responses_body_for(
+        "rs-test/stranger", pv.ModelConfig(reasoning_effort="low"), sleeps)["reasoning"] == {
+            "effort": "low", "summary": "auto"}
+    assert "reasoning" not in responses_body_for("rs-test/stranger", pv.ModelConfig(), sleeps)
 
 
 def test_a_responses_reply_keeps_the_summary_and_drops_the_encrypted_blob(live, sleeps):

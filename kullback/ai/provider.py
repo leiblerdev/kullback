@@ -1435,6 +1435,9 @@ class OpenAIResponsesModel(HttpModel):
         self.key_env_var = key_env_var
         self.key_required = bool(key_env_var)
         super().__init__(model_id, base_url=base_url, **kwargs)
+        # Whether this model reasons comes from its catalogue row, read once here: a plain
+        # chat model behind a gateway may refuse the reasoning field, so the row gates it.
+        self.sends_reasoning = _catalogue_reasoning(self.provider, self.wire_id, self.env)
 
     def headers(self, body: Optional[bytes] = None) -> dict:
         headers = {"content-type": "application/json"}
@@ -1455,11 +1458,9 @@ class OpenAIResponsesModel(HttpModel):
             body["max_output_tokens"] = config.max_tokens
         # Reasoning branch four of four: the effort comes from the config and a summary is
         # always asked for, so the reasoning text is kept like the summarized thinking.
-        effort = config.reasoning_effort or config.effort
-        reasoning: dict[str, Any] = {"summary": "auto"}
-        if effort:
-            reasoning["effort"] = effort
-        body["reasoning"] = reasoning
+        reasoning = _responses_reasoning(config, self.sends_reasoning)
+        if reasoning is not None:
+            body["reasoning"] = reasoning
         if config.logprobs or config.top_logprobs is not None:
             # This endpoint returns logprobs only for what `include` asks for, so asking for them
             # is two fields, not one.
@@ -1503,6 +1504,38 @@ class OpenAIResponsesModel(HttpModel):
             stop_reason=data.get("status"),
             raw=data,
         )
+
+def _catalogue_reasoning(provider: str, wire_id: str, env: dict) -> Optional[bool]:
+    """What the catalogue row says about reasoning: True, False, or None when no row says.
+
+    The same lookup price_from_catalog reads from, through the snapshot model_for already
+    uses: the provider entry, then the row for the wire id. Anything but a boolean reads
+    as no row, so a row that predates the field takes the cautious path below.
+    """
+    from kullback.ai import pricing
+    entry = (pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=env) or {}).get(provider)
+    row = pricing.model_row(entry, wire_id)
+    verdict = row.get("reasoning") if isinstance(row, dict) else None
+    return verdict if isinstance(verdict, bool) else None
+
+
+def _responses_reasoning(config: ModelConfig, sends: Optional[bool]) -> Optional[dict[str, Any]]:
+    """The reasoning field for one Responses request, or None when this model gets none.
+
+    A model whose row says it reasons always asks for a summary; one whose row says it does
+    not sends no reasoning field. With no row the field goes only when the config sets an
+    effort, since a plain chat model behind a gateway may refuse it.
+    """
+    if sends is False:
+        return None
+    effort = config.reasoning_effort or config.effort
+    if sends is None and not effort:
+        return None
+    reasoning: dict[str, Any] = {"summary": "auto"}
+    if effort:
+        reasoning["effort"] = effort
+    return reasoning
+
 
 
 def _responses_text_of(output: Any, item_type: str, parts_key: str, text_type: str) -> list[str]:
