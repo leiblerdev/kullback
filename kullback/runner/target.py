@@ -315,20 +315,13 @@ def _next_user(run: Run, pos: int) -> Optional[int]:
     return next((later for later in range(pos + 1, len(run.events)) if run.events[later].type == "user_turn"), None)
 
 
-def question_keys(run: Run, effects: dict, fn: Callable, *, elicited_only: bool = False) -> dict[str, dict]:
-    """The questions this Run asked, keyed so the same question is recognisable in another Run.
-
-    A field the user stated before the write counts as asked, whether the agent
-    asked for it or the user volunteered it: the value was obtained from the
-    user, and asking again is not the point. Derivation passes elicited_only
-    so a volunteered value never becomes a new demand; scoring reads the full
-    set, so a volunteer satisfies the atom.
-    """
+def question_keys(run: Run, effects: dict, fn: Callable) -> dict[str, dict]:
+    """The questions this Run asked, keyed so the same question is recognisable in another Run."""
     out: dict[str, dict] = {}
     for effect in effects.values():
         for field, value in effect["args"].items():
             kind, span = classify_provenance(run, effect["pos"], value, fn)
-            if kind == "user_elicited" or (kind == "user_stated" and not elicited_only):
+            if kind == "user_elicited":
                 out.setdefault(f"field:{field}", {"span": span, "tool": effect["tool"], "field": field})
     for pos, event in enumerate(run.events):
         reply_pos = _next_user(run, pos) if "?" in _assistant_text(event) else None

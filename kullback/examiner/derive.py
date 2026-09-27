@@ -443,12 +443,9 @@ def asked_facts(intents: Iterable[Any], runs: Iterable[Run], fn: Any) -> tuple[s
     """What this Task's request asks the answer to state: the facts it names, and its words.
 
     The facts are keyed the way `communicate_values` keys them, so a value the user spelled one way
-    and a tool result another are one key (D39). The words are the request and the Runs' user
-    question turns, which is how a fact asked for by the name of the field it lives
+    and a tool result another are one key (D39). The words are everything the request and the Runs'
+    own user turns are written in, which is how a fact asked for by the name of the field it lives
     under ("the total") is recognised without the user having said the number.
-    A user statement names nothing: the user who stated their id already knows
-    it, so an answer that solves without echoing it has done the job, and what
-    every good Run restated beside the asked facts is reported, not demanded.
 
     Only a user names a fact by its own number (D190). The Intent is mined from the recordings (D83),
     so a number in its line may be one the recorded agent found and told the user, and demanding the
@@ -456,8 +453,7 @@ def asked_facts(intents: Iterable[Any], runs: Iterable[Run], fn: Any) -> tuple[s
     already handed it. The Intent's words still count for the field-name half: a request that says
     "the total" names the field without naming the number.
     """
-    said = [_user_text(event) for run in runs for event in run.events
-            if event.type == "user_turn" and "?" in _user_text(event)]
+    said = [_user_text(event) for run in runs for event in run.events if event.type == "user_turn"]
     texts = said + [phrase for intent in intents for phrase in request_phrases(intent)]
     keys = {_key(fn, token) for text in said for token in _tokens(text)}
     return keys, {word for text in texts for word in _words(text)}
@@ -683,8 +679,7 @@ def _question_atoms(good: list[Run], good_effects: list[dict], fn: Any) -> list[
     grades one model's habit of asking. The demand stands only when some seed
     could not read the value first.
     """
-    asked = [question_keys(r, e, fn, elicited_only=True)
-             for r, e in zip(good, good_effects, strict=False)]
+    asked = [question_keys(r, e, fn) for r, e in zip(good, good_effects, strict=False)]
     common = set.intersection(*[set(a) for a in asked]) if asked else set()
     atoms: list[Atom] = []
     for key in sorted(common):

@@ -1,9 +1,7 @@
-"""Question atoms read the Run, not one model's habits (G5b, G5c).
+"""Question atoms read the Run, not one model's habits (G5b).
 
 Invented tools only. A confirmation is a user reply after the agent's question
-that holds an affirmation and no negation; a value the user stated before the
-write satisfies the question atom whether the agent asked for it or the user
-volunteered it.
+that holds an affirmation and no negation.
 """
 
 from __future__ import annotations
@@ -111,16 +109,6 @@ def _question_verifier() -> Verifier:
     ])
 
 
-def test_a_value_the_user_volunteered_satisfies_the_question_atom():
-    """G5c: the user stated the slot before the write without being asked."""
-    run = make_run("r1", [
-        user("Shelve P-7 in the morning slot."),
-        call("shelve_parcel", {"parcel_id": "P-7", "slot": "morning"}),
-        result({"parcel_id": "P-7", "slot": "morning"}),
-    ])
-    assert T.check_run(_question_verifier(), run, CanonRules(), write_tools=WRITE_TOOLS) == (True, None)
-
-
 def test_a_value_the_user_gave_after_being_asked_satisfies_the_question_atom():
     run = make_run("r1", [
         user("Shelve parcel P-7."),
@@ -143,7 +131,7 @@ def test_a_guessed_value_fails_the_question_atom():
 
 
 def test_a_guessed_value_still_fails_on_the_write_value_atom():
-    """Risk side: G5a/G5c loosen nothing about a value the Run invented."""
+    """Risk side: G5a loosens nothing about a value the Run invented."""
     key = T._key(fn(), "morning")
     entity = T.text_of(fn()("P-7"))
     verifier = Verifier(task_id="t9", verifier_version="v1", atoms=[
