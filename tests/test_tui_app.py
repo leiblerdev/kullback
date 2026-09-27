@@ -137,7 +137,7 @@ async def test_each_palette_command_opens_its_view_or_modal(tmp_path):
 
     from kullback.ai.provider import DEFAULT_MODEL
     from kullback.tui import HELP, Screen, _keys
-    from kullback.tui.app import PALETTE_COMMANDS, MessageModal, SessionsModal
+    from kullback.tui.app import LOGIN_HINT, PALETTE_COMMANDS, MessageModal, SessionsModal
     from kullback.tui.home import HomeView
 
     app = KullbackApp(workdir=tmp_path)
@@ -159,7 +159,7 @@ async def test_each_palette_command_opens_its_view_or_modal(tmp_path):
                        if hasattr(screen._status_renderable(), "plain")
                        else str(screen._status_renderable())),
             "keys": _keys(dict(os.environ), model=DEFAULT_MODEL, host="").plain,
-            "login": screen._login_status().plain,
+            "login": screen._login_status().plain + "\n" + LOGIN_HINT,
             "help": HELP,
         }
         for name, body in expected.items():

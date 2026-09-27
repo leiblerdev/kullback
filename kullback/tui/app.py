@@ -40,6 +40,7 @@ PALETTE_COMMANDS = ("status", "sessions", "watch", "build", "keys", "login", "lo
 KEYS_HELP = """keys: 1 home, 2 traces, 3 build, 4 watch, 5 tasks, 6 runs. ctrl+k commands \
 (publish, synthesise), ctrl+r machine sessions, ? keys, ctrl+d quit. In watch: enter nudges, \
 alt+enter tells, esc asks before stopping."""
+LOGIN_HINT = "To log in from here, run `kullback` for the line screen, then /login."
 
 
 # The views by their palette name, off the registry the views package owns.
@@ -112,6 +113,7 @@ class KeysModal(ModalScreen[None]):
 
     BINDINGS = [Binding("escape", "dismiss", "Close"), Binding("question_mark", "dismiss", "Close")]
 
+
 class MessageModal(ModalScreen[None]):
     """One palette command's output as plain text: status, keys, login, logout, help."""
 
@@ -125,7 +127,6 @@ class MessageModal(ModalScreen[None]):
         yield Static(self._body, id="message-body")
 
     BINDINGS = [Binding("escape", "dismiss", "Close")]
-
 
 
 class KullbackApp(App):
@@ -278,7 +279,7 @@ class KullbackApp(App):
         from kullback.tui import Screen
 
         text = Screen(self.workdir, self.model, self.base_url)._login_status()
-        self.push_screen(MessageModal("login", text.plain))
+        self.push_screen(MessageModal("login", text.plain + "\n" + LOGIN_HINT))
 
     def run_logout(self) -> None:
         """Palette logout runs the slash logout handler, showing what it cleared."""
