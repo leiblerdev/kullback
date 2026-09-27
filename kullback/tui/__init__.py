@@ -237,6 +237,17 @@ def live_heartbeats(workdir: Any) -> list[dict]:
     return live
 
 
+def steer_session(workdir: Any) -> str:
+    """The session a view names on its steer request: the only live build here.
+
+    Empty with none live, so the wait for the ack says no live build answered.
+    Several live builds raise, listing them, so the sender shows it and sends
+    nothing rather than steering every build on the workdir."""
+    from kullback.agent import steer
+
+    return steer.target_session(live_heartbeats(workdir))
+
+
 def _still_listed(workdir: Any, pid: Any) -> bool:
     """The build is still listed live: its pid names a live heartbeat or bridge record."""
     return any(str(record.get("pid")) == str(pid) for record in live_heartbeats(workdir))

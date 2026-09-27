@@ -13,6 +13,7 @@ from textual.widgets import DataTable, Input, Static
 
 from kullback.agent import steer
 from kullback.live_counts import task_detail, task_rows
+from kullback.tui import steer_session
 
 _COLUMNS = ("task_id", "status", "replay", "suite", "probes", "drift",
             "last_finding_kind", "last_finding_path")
@@ -161,7 +162,13 @@ class TasksView(Widget):
     def _send_nudge(self, text: str) -> None:
         """Append the nudge to the workdir bus and report the ack, off the UI thread."""
         try:
-            request_id = steer.request(self.workdir, "nudge", text, sender="tasks-view")
+            session = steer_session(self.workdir)
+        except ValueError as exc:
+            self.app.call_from_thread(self._nudge_outcome, str(exc))
+            return
+        try:
+            request_id = steer.request(self.workdir, "nudge", text, sender="tasks-view",
+                                       session=session)
             ack = steer.wait_for_ack(self.workdir, request_id, timeout=2.0)
         except Exception as exc:
             self.app.call_from_thread(self._nudge_outcome, f"nudge not sent: {exc}")

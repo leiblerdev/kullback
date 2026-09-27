@@ -21,7 +21,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, RichLog, Static
 
 from kullback.agent.bus import Bus
-from kullback.tui import STEER_TIMEOUT, Board, Transcript, live_heartbeats
+from kullback.tui import STEER_TIMEOUT, Board, Transcript, live_heartbeats, steer_session
 
 BUS_FILE = "bus.jsonl"
 
@@ -222,7 +222,7 @@ class WatchView(Vertical):
         from kullback.agent import steer
 
         try:
-            session = steer.target_session(live_heartbeats(self.workdir))
+            session = steer_session(self.workdir)
         except ValueError as exc:
             self.transcript.say(str(exc), "red")
             return
