@@ -337,6 +337,8 @@ class RunResult(BaseModel):
                                "in the same order.")
     no_verifier: int = Field(default=0, description="Open Tasks with a confirmed Reference left out "
                              "because no Verifier is derived for them yet.")
+    outside_sample: int = Field(default=0, description="Named Tasks left out as outside the build's "
+                                "Task sample (--tasks).")
 
 
 # Why a named Task was not played: past the per-call cap, or no Simulated user to answer it (F34).
@@ -377,6 +379,7 @@ def _render_run(result: RunResult) -> str:
         lines.append(f"not run, {reason}: {shown}" + (f" and {more} more" if more > 0 else ""))
     if result.no_verifier:
         lines.append(f"{result.no_verifier} open Tasks skipped for no Verifier: examine derives them first")
+    lines.extend(filter(None, [outside_line(result.outside_sample)]))
     return "\n".join(lines)
 
 
@@ -770,9 +773,23 @@ def _runnable_tasks(root: Path) -> tuple[list[str], int]:
     return verified, len(confirmed) - len(verified)
 
 
-def _examined(root: Path, named: Optional[list[str]]) -> Optional[list[str]]:
-    """The Tasks an examine call covers: a sampled build examines its sample only, named or not."""
-    return in_sample(root, named) if named is not None else stored_tasks(root)
+def _sampled(root: Path, named: list[str]) -> tuple[list[str], int]:
+    """The named Tasks inside the build's sample, and how many were left out as outside it."""
+    kept = in_sample(root, named)
+    return kept, len(named) - len(kept)
+
+
+def outside_line(count: int) -> str:
+    """The one line saying how many named Tasks the build's sample left out, or empty at zero."""
+    return f"{count} named Tasks left out as outside the build's Task sample (--tasks)" if count else ""
+
+
+def _examined(root: Path, named: Optional[list[str]]) -> tuple[Optional[list[str]], int]:
+    """The Tasks an examine call covers, and how many named ones fell outside the sample.
+
+    A sampled build examines its sample only, named or not.
+    """
+    return _sampled(root, named) if named is not None else (stored_tasks(root), 0)
 
 
 def runnable_task_ids(root: Path) -> list[str]:
@@ -957,7 +974,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
         task_ids = list(named) if named is not None else runnable
         from kullback.examiner.domain_tools import known_task
 
-        task_ids = in_sample(root, [known_task(root, task_id) for task_id in task_ids])
+        task_ids, outside = _sampled(root, [known_task(root, task_id) for task_id in task_ids])
         # A Task without user rules would be played against no Simulated user: the candidate
         # gets its system prompt alone and invents a customer. It is named, never played (F34).
         env = BuiltEnvironment(root)
@@ -981,7 +998,8 @@ def domain_tools(*, workdir: Any, model: Any = None,
         summary = _run_summary(task_ids, named, played=played, runs=len(rows), finished=finished,
                                reasons=reasons, not_run=not_run, no_verifier=no_verifier)
         return RunResult(summary=summary, task_id=task_ids[0] if len(task_ids) == 1 else "",
-                         runs=rows, not_run=not_run, reasons=reasons, no_verifier=no_verifier)
+                         runs=rows, not_run=not_run, reasons=reasons, no_verifier=no_verifier,
+                         outside_sample=outside)
 
     async def note_task(args: NoteArgs) -> NoteResult:
         from kullback.examiner.domain_tools import known_task, write_note
@@ -994,7 +1012,8 @@ def domain_tools(*, workdir: Any, model: Any = None,
 
     async def examine(args: ExamineArgs) -> ExamineResult:
         # The Examiner session owns its own event loop, so it runs off the Builder's, on a thread.
-        result = _coerce_examine(await asyncio.to_thread(examine_call, root, _examined(root, args.task_ids)))
+        examined, outside = _examined(root, args.task_ids)
+        result = _coerce_examine(await asyncio.to_thread(examine_call, root, examined))
         # The Tasks the Examiner session left out, and why, lead the summary (F24).
         left_out = [f.get("change") for f in result.findings
                     if any(isinstance(r, dict) and "left_out" in r for r in f.get("rows") or [])]
@@ -1009,6 +1028,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
             if not stage["finished"]:
                 why += ", so there is nothing to examine yet: replay or run the Tasks first"
             result.summary = f"{result.summary}: {why}" if result.summary else why
+        result.summary = "; ".join(filter(None, [result.summary, outside_line(outside)]))
         result.held = held_tasks(root)
         return result
 
@@ -1040,5 +1060,5 @@ def domain_tools(*, workdir: Any, model: Any = None,
 
 
 __all__ = ["HELD_SHOWN", "ROWS_SHOWN", "RUNS_PER_CALL", "call_arguments", "default_examine_fn", "domain_tools",
-           "fidelity_index", "held_tasks", "notes_lines", "opening_for", "root_line", "runnable_task_ids",
-           "stage_line", "stage_of", "status_of"]
+           "fidelity_index", "held_tasks", "notes_lines", "opening_for", "outside_line", "root_line",
+           "runnable_task_ids", "stage_line", "stage_of", "status_of"]

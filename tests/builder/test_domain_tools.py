@@ -522,3 +522,60 @@ def test_examine_names_each_finding_by_task_and_each_held_task_by_the_check_hold
     lines = result.content.splitlines()
     assert "task_c: suite: tighten the atom [0 rows]" in lines
     assert lines[-2:] == ["task_a: loophole_probe_fails not run", "task_c: empty_fails failed"]
+
+
+# --- the build's Task sample (--tasks) ---------------------------------------------------------------
+
+OUTSIDE = "1 named Tasks left out as outside the build's Task sample (--tasks)"
+
+
+def _replayed(tmp_path):
+    root = _workdir(tmp_path)
+    _run(_tool(root, "replay"), {"task_id": "widget_task"})
+    return root
+
+
+def test_a_stored_sample_narrows_the_runnable_tasks_to_the_sample(tmp_path):
+    from kullback.spec.trust import store_tasks
+
+    root = _replayed(tmp_path)
+    assert domain_tools_mod._runnable_tasks(root) == (["widget_task"], 0)
+    store_tasks(root, ["widget_task"])
+    assert domain_tools_mod._runnable_tasks(root) == (["widget_task"], 0)
+    store_tasks(root, ["other_task"])
+    assert domain_tools_mod._runnable_tasks(root) == ([], 0)
+
+
+def test_run_drops_a_named_task_outside_the_sample_and_says_how_many_it_left_out(tmp_path):
+    from kullback.spec.trust import store_tasks
+
+    root = _replayed(tmp_path)
+    store_tasks(root, ["other_task"])
+    model = TestModel([reply("Done.")], loop=True)
+    result = _run(_tool(root, "run", model=model), {"task_ids": ["widget_task"], "count": 1})
+    assert not result.is_error, result.content
+    assert result.details["runs"] == [] and model.calls == []
+    assert result.details["outside_sample"] == 1 and result.content.splitlines()[-1] == OUTSIDE
+
+
+def test_examine_drops_a_named_task_outside_the_sample_and_says_how_many_it_left_out(tmp_path):
+    from kullback.spec.trust import store_tasks
+
+    root = _workdir(tmp_path)
+    store_tasks(root, ["other_task"])
+    seen = []
+    result = _run(_tool(root, "examine", examine_fn=lambda workdir, task_ids: seen.append(task_ids) or []),
+                  {"task_ids": ["widget_task"]})
+    assert seen == [[]] and OUTSIDE in result.content
+
+
+def test_without_a_sample_run_and_examine_keep_every_named_task_and_say_nothing_of_one(tmp_path):
+    root = _replayed(tmp_path)
+    seen = []
+    examined = _run(_tool(root, "examine", examine_fn=lambda workdir, task_ids: seen.append(task_ids) or []),
+                    {"task_ids": ["widget_task"]})
+    model = TestModel([reply(None, ("rename_widget", {"widget_id": "w1", "label": "striped"})), reply("Done.")],
+                      loop=True)
+    ran = _run(_tool(root, "run", model=model), {"task_ids": ["widget_task"], "count": 1})
+    assert seen == [["widget_task"]] and "sample" not in examined.content
+    assert len(ran.details["runs"]) == 1 and ran.details["outside_sample"] == 0 and "sample" not in ran.content
