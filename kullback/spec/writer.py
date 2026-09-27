@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 from kullback.runner.records import Record, Verifier
-from kullback.runner.target import text_of
 from kullback.spec import writer_tools
 from kullback.spec.compile import ATOM_KINDS, Compiled, compile_spec
 from kullback.spec.ground import coverage, valid_because
@@ -209,9 +208,6 @@ def _check_of(number: Any, item: Any, inputs: WriterInputs) -> tuple[Optional[Ch
     if refusal:
         return None, refusal
     demand = {key: value for key, value in item.items() if key not in _META}
-    if demand.get("entity"):
-        # compile.py keys a write atom by the entity as given, the scorer by its canonical form.
-        demand["entity"] = text_of(inputs.canon(demand["entity"]))
     check_id = number if isinstance(number, str) else f"c{number}"
     return Check(id=check_id, kind=item["kind"], demand=demand, because=str(item["because"]),
                  tier=tier_of(item["kind"], demand), fact_ids=fact_ids), ""
@@ -228,10 +224,20 @@ def build_spec(task_id: str, demands: Iterable[Any], inputs: WriterInputs) -> tu
             continue
         counts["kept"] += 1
         checks.append(check)
-    spec = Spec(task_id=task_id, intent=inputs.intent, checks=checks)
-    spec = spec.model_copy(update={"gaps": coverage(spec)})
+    spec = with_gaps(Spec(task_id=task_id, intent=inputs.intent, checks=checks), inputs)
     counts["gaps"] = len(spec.gaps)
     return spec, counts
+
+
+def with_gaps(spec: Spec, inputs: WriterInputs) -> Spec:
+    """The Spec with its gaps: facts no check covers, then one line per check compile names as dropped.
+
+    A compile reason (a write with no entity, say) is a check the Verifier silently lacks, so it is shown
+    where the Examiner and the trust report already look.
+    """
+    spec = spec.model_copy(update={"gaps": []})
+    reasons = compile_spec(spec, inputs.write_tools, inputs.canon, inputs.sections).reasons
+    return spec.model_copy(update={"gaps": coverage(spec) + list(reasons)})
 
 
 def _price(model_id: Optional[str]) -> Callable[[dict], float]:
@@ -267,7 +273,7 @@ def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:
     must = [atom for atom in compiled.verifier.atoms if atom.kind in ("required", "allowed")]
     forbid = must_not(must, spec.intent.text, inputs.constraints, sorted(inputs.write_tools))
     atoms = compiled.verifier.atoms + forbid
-    return Compiled(compiled.verifier.model_copy(update={"atoms": atoms}), compiled.dropped)
+    return compiled._replace(verifier=compiled.verifier.model_copy(update={"atoms": atoms}))
 
 
 def spec_verifier_path(workdir: Path, task_id: str) -> Path:
@@ -322,7 +328,7 @@ def apply_repair(spec: Spec, ruling: Ruling, answers: Iterable[Any], inputs: Wri
                 replaced[check_id] = check
     checks = [replaced.get(check.id, check) for check in spec.checks]
     repaired = spec.model_copy(update={"checks": checks, "version": spec.version + 1})
-    return repaired.model_copy(update={"gaps": coverage(repaired)}), counts
+    return with_gaps(repaired, inputs), counts
 
 
 def repair(spec: Spec, ruling: Ruling, inputs: WriterInputs, model: Any, *,

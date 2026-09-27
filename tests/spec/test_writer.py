@@ -144,6 +144,7 @@ def test_a_starting_state_table_named_like_a_run_field_is_still_a_table():
 
 def test_the_verifier_passes_the_right_run_and_fails_a_swapped_value_and_a_write_beyond_scope():
     written = W.write_spec("t1", inputs(), TestModel([answer("demands", [MOVE])]))
+    assert written.spec.checks[0].demand["entity"] == "A1"  # kept raw: compile canonicalises, as check_run does
     compiled = W.verifier_of(written.spec, inputs())
     assert {atom.kind for atom in compiled.verifier.atoms} == {"required", "forbidden"}
     forbidden = [atom for atom in compiled.verifier.atoms if atom.kind == "forbidden"]
@@ -153,6 +154,17 @@ def test_the_verifier_passes_the_right_run_and_fails_a_swapped_value_and_a_write
     assert not check_run(compiled.verifier, moved_run("nine"), fn, write_tools=tools)[0]
     passed, failing = check_run(compiled.verifier, deleting_run(), fn, write_tools=tools)
     assert not passed and failing == "forbidden.delete_item"
+
+
+def test_a_write_compile_drops_is_listed_as_a_gap_and_survives_a_repair():
+    no_entity = dict(MOVE, entity="")
+    written = W.write_spec("t1", inputs(), TestModel([answer("demands", [no_entity])]))
+    assert [check.id for check in written.spec.checks] == ["c0"]
+    assert written.spec.gaps == ["f2", "c0: write without entity"]
+    assert W.verifier_of(written.spec, inputs()).reasons == ("c0: write without entity",)
+    ruling = W.Ruling(check_ids=["c0"], reason="no entity")
+    repaired, _ = W.apply_repair(written.spec, ruling, [dict(MOVE, id="c0")], inputs())
+    assert repaired.gaps == ["f2"]
 
 
 def test_write_verifier_replaces_the_runner_verifier_only_under_intent(tmp_path):
