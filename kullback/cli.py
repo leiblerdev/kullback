@@ -301,7 +301,7 @@ def ingest(files: list[Path] = typer.Argument(..., help="The customer's export f
             typer.echo(str(exc))
             raise typer.Exit(1) from None
         summaries.append(summary)
-        typer.echo(_ingest_row(str(path), summary["format"], _detect_confidence(path),
+        typer.echo(_ingest_row(str(path), summary["format"], summary["confidence"],
                               summary["runs"], summary["gate"]["metrics"]["eligible_share"],
                               summary["gate"]["metrics"]["floor"],
                               _ingested_tools(Path(workdir), summary["raw_hash"]), "ready"))
@@ -327,21 +327,6 @@ def _ingest_row(path: str, format: str, confidence: float, traces: int, share: f
     """One ingest line: the file, what it is, and whether it is ready to build on."""
     return (f"{path} format {format} confidence {confidence:.2f} traces {traces} "
             f"eligible {share:.2f} vs {floor:.2f} tools {tools} {status}")
-
-
-def _detect_confidence(path: Path) -> float:
-    """The winning adapter's vote on a file, for the row after a successful ingest.
-
-    Confidence is a display concern, so it is re-voted here instead of riding the summary.
-    """
-    decode = _entry("kullback.builder.ingest", "_decode")
-    detect = _entry("kullback.builder.sources", "detect_format")
-    document, jsonl = decode(Path(path).read_bytes())
-    decision = detect(document, jsonl)
-    if decision.winner == "unknown":
-        return 0.0
-    vote = decision.votes.get(decision.winner, (0.0, []))[0]
-    return float(vote) if isinstance(vote, (int, float)) and vote > 0 else 0.0
 
 
 def _ingested_tools(workdir: Path, raw_hash: str) -> int:

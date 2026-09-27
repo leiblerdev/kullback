@@ -136,6 +136,29 @@ def test_ingest_dry_run_prints_one_row_per_file(tmp_path, workdir):
     assert list(workdir.iterdir()) == []
 
 
+def test_ingest_reports_the_confidence_decided_while_the_reader_was_registered(
+        tmp_path, workdir):
+    """A custom reader file ingests with its own confidence, not zero after unregister."""
+    import hashlib
+
+    from kullback.builder import sources as _sources
+    from kullback.builder.sources.reader_template import render_reader
+
+    toy = _neutral_toy(tmp_path / "neutral.json")
+    digest = hashlib.sha256(toy.read_bytes()).hexdigest()
+    folder = workdir / "sources"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "neutral.py").write_text(render_reader(
+        "neutral", digest, {"recordings": "entries", "role": "entries[].role",
+                            "content": "entries[].content"}), encoding="utf-8")
+    try:
+        result = invoke("ingest", str(toy), "--workdir", str(workdir))
+    finally:
+        _sources.unregister("neutral")
+    assert result.exit_code == 0, result.output
+    assert "confidence 0.80" in result.output
+
+
 # --- sources map and draft ----------------------------------------------------
 
 def _neutral_toy(path):

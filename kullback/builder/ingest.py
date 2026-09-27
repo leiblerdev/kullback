@@ -1094,9 +1094,12 @@ def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = 
         write_traces(eligible, workdir)
         if set_aside:
             write_evidence(set_aside, workdir)
+        document, jsonl = _decode(Path(path).read_bytes())
+        decision = sources.detect_format(document, jsonl)
         summary = {
             "raw_hash": raw.raw_hash,
             "format": raw.format_detected,
+            "confidence": _winner_confidence(decision),
             "readers": readers,
             "skipped_readers": skipped,
             "runs": len(eligible),
