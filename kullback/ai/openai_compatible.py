@@ -151,6 +151,9 @@ class OpenAICompatibleProvider:
             max_retries=self.max_retries,
             read_timeout_s=self.handle.timeout,
             signal=signal,
+            retry_policy=self.handle.retry,
+            rng=self.handle.rng,
+            rate_bucket=self.handle.rate_bucket,
         )
 
     def _get_client(self) -> httpx.AsyncClient:

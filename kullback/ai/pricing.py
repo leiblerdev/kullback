@@ -21,6 +21,7 @@ import httpx
 
 # LIVE_ENV_VAR is re-exported: a caller reading prices names the switch through this module
 # rather than reaching past it into the adapters.
+from kullback.ai.limits import RateSpec
 from kullback.ai.provider import LIVE_ENV_VAR, live_calls_requested  # noqa: F401
 
 MODELS_DEV_URL = "https://models.dev/api.json"
@@ -601,6 +602,44 @@ def model_row_key(models: Any, wire_id: str) -> Optional[str]:
     found = [key for key, candidate in models.items()
              if isinstance(candidate, dict) and key.rpartition("/")[2] == tail]
     return found[0] if len(found) == 1 else None
+
+
+def _rate_numbers(rate: Any) -> Optional[dict[str, int]]:
+    """One rate object read as caps, or None when it names none.
+
+    Either cap may be missing; a cap that is not a positive whole number reads as missing
+    rather than raising, the way an unreadable price leaves the model unpriced instead of
+    taking the call down.
+    """
+    if not isinstance(rate, dict):
+        return None
+    caps = {}
+    for key in ("requests_per_minute", "in_flight"):
+        value = rate.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            continue
+        caps[key] = value
+    return caps or None
+
+
+def rate_from_catalog(catalog: Optional[dict], model_id: Optional[str]) -> Optional[RateSpec]:
+    """The limiter caps for one model: its row's rate wins over its provider's.
+
+    A row rate gets that model's own bucket; a provider rate is one bucket shared by all
+    that provider's models without a row rate. None means no limiter, today's behaviour.
+    """
+    provider, _, wire_id = str(model_id or "").partition("/")
+    entry = (catalog or {}).get(provider) if wire_id else None
+    if not isinstance(entry, dict):
+        return None
+    row = model_row(entry, wire_id)
+    numbers = _rate_numbers(row.get("rate")) if isinstance(row, dict) else None
+    if numbers is not None:
+        return RateSpec(model_specific=True, **numbers)
+    numbers = _rate_numbers(entry.get("rate"))
+    if numbers is not None:
+        return RateSpec(model_specific=False, **numbers)
+    return None
 
 
 def window_from_catalog(catalog: Optional[dict], model_id: Optional[str]) -> Optional[int]:
