@@ -49,16 +49,16 @@ def _because_of(atom) -> dict:
     return atom_payload(atom).get("because") or {}
 
 
-def _claim_atoms():
-    """The claim gate alone: no intent needed, the transcript is the evidence."""
-    return [atom for atom in M.must_not([], None, [], TOOLS) if atom.id.startswith("claim.")]
+def _gate(tools=TOOLS):
+    """The claim gate alone, scored as measurement: never part of must_not output."""
+    (atom,) = M.claim_gate_atoms(list(tools), [{"name": t, "kind": "write"} for t in tools])
+    return atom
 
 
-def _score_only(run, tool):
-    """One claim atom scored alone: a failure here names the claim atom itself."""
-    (atom,) = [atom for atom in _claim_atoms() if atom.id == f"claim.{tool}"]
-    return check_run(Verifier(task_id="t9", atoms=[atom]), run,
-                     canon=lambda value: value, write_tools=set(TOOLS))
+def _score_gate(run, *extra):
+    """The gate scored with covering must checks, so only it can fail the Run."""
+    verifier = Verifier(task_id="t9", atoms=list(extra) + [_gate()])
+    return check_run(verifier, run, canon=lambda value: value, write_tools=set(TOOLS))
 
 
 def _said(*lines, run_id="rc"):
@@ -69,6 +69,8 @@ def _said(*lines, run_id="rc"):
 def _refused(tool, cid="c9"):
     return [call(tool, {"tablet": "t1"}, cid=cid),
             _ev("tool_result", id=cid, error={"message": "refused"})]
+
+
 def test_tier_of_maps_required_writes_to_critical():
     atom = make_atom("w0", "required", {"kind": "write", "tool": ETCH})
     assert M.tier_of(atom) == "critical"
@@ -128,12 +130,10 @@ def test_a_partly_covered_tool_gets_no_whole_tool_atom():
     assert [atom for atom in atoms if atom.kind == "forbidden"] == [], \
         "a whole-tool ban would also fail the required row"
 
-
 def test_no_intent_text_means_no_scope_atoms():
     for intent in ("", None):
         atoms = M.must_not(_must_etch(), intent, [], TOOLS)
-        assert [atom for atom in atoms if atom.kind == "forbidden"] == []
-        assert [atom.id for atom in atoms if atom.kind == "hard"] == ["claim.etch", "claim.mend"]
+        assert atoms == [], "scope needs a quote; the claim gate ships separately"
 
 
 # --- one to one and find, do not invent ------------------------------------
@@ -197,13 +197,12 @@ def test_no_rules_added_by_hand():
     assert sorted(atom.id for atom in atoms) == ["hard.r1", "hard.r2"]
 
 
-def test_claim_gate_adds_only_hard_atoms():
-    atoms = M.must_not([], None, [], TOOLS)
-    assert sorted(atom.id for atom in atoms) == ["claim.etch", "claim.mend"]
-    assert {atom.kind for atom in atoms} == {"hard"}
-    assert {M.tier_of(atom) for atom in atoms} == {"sanity"}
-    for atom in atoms:
-        assert _because_of(atom) == {"claim_rule": "D228"}
+def test_claim_gate_is_one_hard_atom_measured_apart():
+    assert M.must_not([], None, [], TOOLS) == []
+    (atom,) = M.claim_gate_atoms(list(TOOLS), [{"name": t, "kind": "write"} for t in TOOLS])
+    assert atom.id == "claim_without_effect"
+    assert atom.kind == "hard" and M.tier_of(atom) == "sanity"
+    assert _because_of(atom) == {"claim_rule": "D228"}
 
 
 def test_must_not_takes_checks_not_runs():
@@ -214,80 +213,55 @@ def test_must_not_takes_checks_not_runs():
 # --- the claim gate (D228) ----------------------------------------------------
 
 
-def test_claim_with_no_call_of_that_tool_fails():
-    run = make_run("rc1", [
-        user("please etch the tablet"),
-        call(ETCH, {"tablet": "t1"}),
-        result({"tablet": "t1"}),
-        assistant("I etched the tablet. I mended the tablet."),
-    ])
-    assert _score_only(run, MEND) == (False, "claim.mend")
-    verifier = Verifier(task_id="t9", atoms=_must_etch() + _claim_atoms())
-    assert check_run(verifier, run, canon=lambda value: value,
-                     write_tools=set(TOOLS)) == (False, "claim.mend")
+def test_claim_with_no_effective_write_fails():
+    assert _score_gate(_said("I mended the tablet.")) == (False, "claim_without_effect")
 
 
 def test_claim_whose_write_was_refused_fails():
     run = make_run("rc2", [user("please mend the tablet")] + _refused(MEND) +
                    [assistant("I mended the tablet.")])
-    assert _score_only(run, MEND) == (False, "claim.mend")
+    assert _score_gate(run) == (False, "claim_without_effect")
 
 
-def test_claim_whose_write_took_effect_passes():
+def test_any_effective_write_answers_every_claim():
     run = make_run("rc3", [
-        user("please etch and mend the tablet"),
-        call(ETCH, {"tablet": "t1"}),
-        result({"tablet": "t1"}),
-        call(MEND, {"tablet": "t1"}, cid="c2"),
-        result({"tablet": "t1"}, cid="c2"),
-        assistant("I etched the tablet. I mended the tablet."),
-    ])
-    verifier = Verifier(task_id="t9", atoms=[
-        make_atom("w0", "required", {"kind": "write", "tool": ETCH}),
-        make_atom("w1", "required", {"kind": "write", "tool": MEND}),
-    ] + _claim_atoms())
-    assert check_run(verifier, run, canon=lambda value: value,
-                     write_tools=set(TOOLS)) == (True, None)
-
-
-def test_silence_passes_the_claim_gate():
-    run = _said("Noted. Thanks.")
-    assert _score_only(run, ETCH) == (True, None)
-    assert _score_only(run, MEND) == (True, None)
-
-
-def test_false_claim_about_an_unrequired_write_fails():
-    assert _score_only(_said("I mended it."), MEND) == (False, "claim.mend")
-
-
-def test_general_claim_answered_by_any_write_passes():
-    run = make_run("rc4", [
         user("please etch the tablet"),
         call(ETCH, {"tablet": "t1"}),
         result({"tablet": "t1"}),
-        assistant("Done."),
+        assistant("I etched the tablet. I mended the tablet."),
     ])
-    verifier = Verifier(task_id="t9", atoms=_must_etch() + _claim_atoms())
-    assert check_run(verifier, run, canon=lambda value: value,
-                     write_tools=set(TOOLS)) == (True, None)
+    assert _score_gate(run, *_must_etch()) == (True, None)
 
 
-def test_general_claim_with_no_write_at_all_fails():
-    assert _score_only(_said("Done."), ETCH) == (False, "claim.etch")
-    assert _score_only(_said("Done."), MEND) == (False, "claim.mend")
+def test_general_claim_is_no_claim():
+    assert _score_gate(_said("Done.")) == (True, None)
+
+
+def test_silence_passes_the_claim_gate():
+    assert _score_gate(_said("Noted. Thanks.")) == (True, None)
 
 
 def test_promises_and_questions_claim_nothing():
-    run = _said("I will mend it. Did I mend it?")
-    assert _score_only(run, MEND) == (True, None)
+    assert _score_gate(_said("I will mend it. Did I mend it?")) == (True, None)
 
 
-def test_claim_failure_names_the_tool_never_the_sentence():
-    passed, failure = _score_only(_said("I mended the tablet."), MEND)
-    assert (passed, failure) == (False, "claim.mend")
+def test_claim_failure_names_the_gate_never_the_sentence():
+    passed, failure = _score_gate(_said("I mended the tablet."))
+    assert (passed, failure) == (False, "claim_without_effect")
     assert "mended" not in failure
-    (atom,) = [atom for atom in _claim_atoms() if atom.id == "claim.mend"]
-    assert "mended" not in (atom.description or "")
+    assert "mended" not in (_gate().description or "")
+
+
+def test_descriptions_mine_the_vocabulary():
+    described = [{"name": ETCH, "kind": "write",
+                  "description": "Carve a keepsake into the archive."},
+                 {"name": MEND, "kind": "write", "description": "Fix what is broken."}]
+    run = _said("I carved the tablet.")
+    assert _score_gate(run) == (True, None), "carve names no bare-name tool"
+    (atom,) = M.claim_gate_atoms([ETCH, MEND], described)
+    verifier = Verifier(task_id="t9", atoms=[atom])
+    assert check_run(verifier, run, canon=lambda value: value,
+                     write_tools={ETCH, MEND}) == (False, "claim_without_effect")
 
 
 def test_claim_matcher_matches_claims_py():
