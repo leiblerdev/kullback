@@ -1,8 +1,9 @@
-"""One Task played through the Episode interface under the rule user, grouped in k.
+"""One Task played through the Episode interface, grouped in k.
 
 A training agent plays each Task k times and learns from the group. The rule user
-drives every Run, so agent driven Tasks are refused before the first attempt and
-each group is written as one record line beside the Runs it scores.
+drives every Run unless a user model is given, when the agent user drives over the
+rule user as its fallback. Agent driven Tasks are refused before the first attempt
+and each group is written as one record line beside the Runs it scores.
 """
 
 from __future__ import annotations
@@ -34,6 +35,20 @@ def rule_user(env: BuiltEnvironment, task: Any, router: Any, rules: Any, referen
     return SimulatedUser(
         rules, starting_state_reader=router.state, vocab=vocab,
         write_tools=env.write_tools(), goal_writes=goal_writes, answer_strip=answer_strip)
+
+
+def agent_user_factory(model: Any) -> Any:
+    """Episode's user factory with the agent user over the rule user as its fallback."""
+    def factory(env: BuiltEnvironment, task: Any, router: Any, rules: Any,
+                reference: Any) -> Any:
+        from kullback.user.factory import PURPOSE_RUN, build_user
+        fallback = rule_user(env, task, router, rules, reference)
+        try:
+            user = build_user(env.root, task.id, model, PURPOSE_RUN, fallback=fallback)
+        except Exception:
+            return fallback
+        return fallback if user is None else user
+    return factory
 
 
 class Policy(Protocol):
@@ -92,9 +107,10 @@ def _run_file(episode: Episode) -> str:
 
 
 def play(env: BuiltEnvironment, task_id: str, seed: int, policy: Policy, *,
-         outdir: Any, max_turns: int = 30) -> Rollout:
+         outdir: Any, max_turns: int = 30, user_model: Any = None) -> Rollout:
     """Play one Task with the policy through the Episode interface."""
-    episode = Episode(env, outdir=outdir, max_turns=max_turns, user_factory=rule_user)
+    episode = Episode(env, outdir=outdir, max_turns=max_turns, user_factory=(
+        rule_user if user_model is None else agent_user_factory(user_model)))
     info = episode.reset(task_id, seed)
     if episode.run_file() is None:
         raise EpisodeError("reset wrote no Run file")
@@ -156,7 +172,8 @@ def _tally(rollouts: list[Rollout]) -> tuple[dict[str, int], dict[str, int]]:
 def _group_record(task_id: str, k: int, rollouts: list[Rollout], root: Path, *,
                   train_run_id: str, model_id: str, checkpoint: str, step: Any,
                   source: str, sampling: Any, started_at: float, ended_at: float,
-                  task_origin: str = "recorded", birth_level: Any = None) -> dict:
+                  task_origin: str = "recorded", birth_level: Any = None,
+                  user_driver: str = "rule", user_model_id: Any = None) -> dict:
     """The solve rate record of one group, ready to append as one JSON line."""
     no_signal, stop_reasons = _tally(rollouts)
     return {
@@ -175,7 +192,8 @@ def _group_record(task_id: str, k: int, rollouts: list[Rollout], root: Path, *,
         "interrupted": sum(1 for rollout in rollouts if rollout.interrupted),
         "no_signal": no_signal,
         "stop_reasons": stop_reasons,
-        "user_driver": "rule",
+        "user_driver": user_driver,
+        "user_model_id": user_model_id,
         "sampling": dict(sampling) if sampling is not None else {},
         "seeds": [rollout.seed for rollout in rollouts],
         "env_hash": {"runner_live": runner_tool.version()},
@@ -189,7 +207,7 @@ def run_group(env: BuiltEnvironment, task_id: str, k: int, policy: Policy, *,
               outdir: Any, train_run_id: str, model_id: str, checkpoint: str,
               step: Any = None, source: str = "training", sampling: Any = None,
               max_turns: int = 30, task_origin: str = "recorded",
-              birth_level: Any = None) -> tuple[list[Rollout], dict]:
+              birth_level: Any = None, user_model: Any = None) -> tuple[list[Rollout], dict]:
     """Play one Task k times and append the group's record as one JSON line."""
     if env.agent_driven(task_id):
         raise TaskSkipped(task_id, "the Task is driven by the agent user, "
@@ -198,13 +216,16 @@ def run_group(env: BuiltEnvironment, task_id: str, k: int, policy: Policy, *,
     root.mkdir(parents=True, exist_ok=True)
     started_at = time.time()
     rollouts = [play(env, task_id, rollout_seed(env, task_id, attempt), policy,
-                     outdir=root, max_turns=max_turns) for attempt in range(k)]
+                     outdir=root, max_turns=max_turns, user_model=user_model)
+                for attempt in range(k)]
     ended_at = time.time()
     record = _group_record(task_id, k, rollouts, root, train_run_id=train_run_id,
                            model_id=model_id, checkpoint=checkpoint, step=step,
                            source=source, sampling=sampling,
                            started_at=started_at, ended_at=ended_at,
-                           task_origin=task_origin, birth_level=birth_level)
+                           task_origin=task_origin, birth_level=birth_level,
+                           user_driver="agent" if user_model is not None else "rule",
+                           user_model_id=getattr(user_model, "name", None))
     with open(root / "solve_rates.jsonl", "a", encoding="utf-8") as handle:
         handle.write(json.dumps(record) + "\n")
     return rollouts, record

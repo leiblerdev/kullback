@@ -226,7 +226,7 @@ def start_run(cfg: RemoteConfig, run_id: str, script: str, *, args: str = "", wo
     _write_state(cfg, run_id, {"status": "running", "step": None, "checkpoint": None,
                                "updated_at": time.time()}, workdir)
     launch = (
-        "{ nohup " + cfg.python + " " + script + " " + args
+        "{ [ -f .env ] && set -a && . ./.env && set +a; nohup " + cfg.python + " " + script + " " + args
         + " > runs/" + run_id + "/run.log 2>&1 < /dev/null & echo $! > runs/" + run_id + "/pid; }"
     )
     launched = run(cfg, launch, workdir=workdir)

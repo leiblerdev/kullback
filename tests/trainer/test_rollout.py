@@ -18,6 +18,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 from kullback import curriculum  # noqa: E402
+from kullback.ai.provider import TestModel  # noqa: E402
 from kullback.runner.world import BuiltEnvironment  # noqa: E402
 from kullback.trainer.rollout import TaskSkipped, play, rollout_seed, run_group  # noqa: E402
 from tests.episode.invented import SCRIPTED_RENAME, write_env  # noqa: E402
@@ -120,3 +121,30 @@ def test_group_record_carries_origin_and_birth_level(tmp_path):
                            outdir=tmp_path / "out2", train_run_id="tr1",
                            model_id="m1", checkpoint="c1")
     assert default["task_origin"] == "recorded" and default["birth_level"] is None
+
+
+def test_play_with_user_model_falls_back_to_the_rule_user_and_passes(tmp_path):
+    root = write_env(tmp_path / "env")
+    rollout = play(BuiltEnvironment(root), "widget_task", 7, rename_policy,
+                   outdir=tmp_path / "out", user_model=TestModel(["noted"], loop=True))
+    assert rollout.reward == 1
+    assert not rollout.interrupted
+
+
+def test_group_with_user_model_records_agent_driver_and_model_name(tmp_path):
+    root = write_env(tmp_path / "env")
+    _, record = run_group(BuiltEnvironment(root), "widget_task", 1, rename_policy,
+                          outdir=tmp_path / "out", train_run_id="tr1",
+                          model_id="m1", checkpoint="c1",
+                          user_model=TestModel(["noted"], loop=True))
+    assert record["user_driver"] == "agent"
+    assert record["user_model_id"] == "test"
+
+
+def test_group_without_user_model_records_rule_driver_and_no_model(tmp_path):
+    root = write_env(tmp_path / "env")
+    _, record = run_group(BuiltEnvironment(root), "widget_task", 1, rename_policy,
+                          outdir=tmp_path / "out", train_run_id="tr1",
+                          model_id="m1", checkpoint="c1")
+    assert record["user_driver"] == "rule"
+    assert record["user_model_id"] is None

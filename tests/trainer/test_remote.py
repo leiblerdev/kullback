@@ -275,3 +275,22 @@ def test_start_reports_a_script_failed_state_as_not_started(tmp_path):
     assert got["reason"] == "exited at once" and got["status"] == "failed"
     state = json.loads((root / "runs" / "fail1" / "state.json").read_text(encoding="utf-8"))
     assert state == {"status": "failed", "step": 2}
+
+
+def test_start_run_loads_dot_env_for_the_launched_script(tmp_path):
+    import os
+    cfg = make_cfg(tmp_path)
+    root = tmp_path / "remote"
+    assert os.environ.get("INVENTED_DOT_ENV_ONLY") is None
+    (root / ".env").write_text("INVENTED_DOT_ENV_ONLY=from_dot_env\n", encoding="utf-8")
+    (root / "show.py").write_text(
+        "import os\n"
+        "print('seen=' + os.environ.get('INVENTED_DOT_ENV_ONLY', 'missing'))\n",
+        encoding="utf-8")
+    first = start_run(cfg, "env1", "show.py", workdir=tmp_path / "work")
+    assert first["started"] is False
+    assert any("seen=from_dot_env" in line for line in first["log_tail"])
+    (root / ".env").unlink()
+    second = start_run(cfg, "env2", "show.py", workdir=tmp_path / "work")
+    assert second["started"] is False
+    assert any("seen=missing" in line for line in second["log_tail"])

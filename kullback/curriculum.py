@@ -38,6 +38,7 @@ class SolveRate(BaseModel):
     no_signal: dict[str, int] = Field(default_factory=dict)
     stop_reasons: dict[str, int] = Field(default_factory=dict)
     user_driver: str
+    user_model_id: Optional[str] = None
     sampling: dict = Field(default_factory=dict)
     seeds: list[int] = Field(default_factory=list)
     env_hash: dict[str, Optional[str]] = Field(default_factory=dict)

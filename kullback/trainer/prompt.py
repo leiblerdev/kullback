@@ -40,7 +40,8 @@ def loop_section() -> str:
         "until both answer. Then smoke test the policy. Before writing a training script, "
         "read the trl-training skill in your prompt. Write a new training script or pick "
         "an existing one under training/scripts, push it, and start the run. "
-        "Watch metrics every few minutes. When the metrics decision says to ask, "
+        "When a dry run earns nothing, read one play and find why before starting "
+        "the real run. Watch metrics every few minutes. When the metrics decision says to ask, "
         "call ask_tasks once with the level, count, step, checkpoint and evidence it "
         "names, then wait for the answer instead of asking again. File a finding for "
         "anything the next reader must know: a broken setup, a finished run, a "
@@ -100,6 +101,10 @@ The training script runs on the GPU machine, which needs this package and the
 Environment's files there. Before start_run, check with shell: import the
 package and list the Environment folder. File a finding when either is
 missing, saying what is absent and where.
+
+Drive Episodes with the agent user: pass user_model to play and run_group, built with
+kullback.ai.provider.live_model from the model id you are given; the rule user is only its fallback. Keys
+come from the .env file in the run root, which start_run loads; never write or print a key.
 """
 
 
