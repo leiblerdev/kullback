@@ -1,8 +1,9 @@
 import sys
 from pathlib import Path
 
+from kullback.runner.target import check_run, text_of
 from kullback.spec.compile import compile_spec
-from tests.spec.fixtures import WRITE, WRITE_TOOLS, check, fn, spec
+from tests.spec.fixtures import WRITE, WRITE_TOOLS, check, fn, reference_run, spec
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "experiments"))
 
@@ -25,8 +26,12 @@ def test_compile_yields_the_same_atoms_as_the_intentv_experiment():
     ported, dropped = compile_verifier([dict(d, kind=k, because="move item A1 to slot seven")
                                         for k, d in zip(KINDS, DEMANDS, strict=True)], the_spec.intent.text, [], WRITE_TOOLS, fn)
     assert dropped == compiled.dropped == 0
+    # intentv wrote the raw id as the entity; the Spec writes the id as the write effect keys it (sp-layer r1).
+    def keyed(target):
+        return dict(target, entity=text_of(fn(target["entity_raw"]))) if "entity_raw" in target else target
+
     assert [(a.id, a.kind, a.target) for a in compiled.verifier.atoms] == \
-        [(a.id, a.kind, a.target) for a in ported.atoms]
+        [(a.id, a.kind, keyed(a.target)) for a in ported.atoms]
     assert compiled.verifier.task_id == "t1"
 
 
@@ -40,3 +45,18 @@ def test_a_check_with_an_ungrounded_because_is_dropped_and_counted():
     compiled = compile_spec(spec([check(), check("c2", because="the agent decided this")]), WRITE_TOOLS, fn)
     assert compiled.dropped == 1
     assert {a.id.split(".")[0] for a in compiled.verifier.atoms} == {"i0"}
+
+
+def test_a_write_id_whose_canonical_form_differs_from_its_raw_form_passes_its_own_run():
+    verifier = compile_spec(spec(), WRITE_TOOLS, fn).verifier
+    write = next(a for a in verifier.atoms if a.target["kind"] == "write")
+    assert write.target["entity"] != write.target["entity_raw"] == "A1"
+    assert check_run(verifier, reference_run(), canon=fn)[0]
+
+
+def test_a_write_demand_without_an_entity_yields_no_atom_and_one_named_drop():
+    no_entity = {key: value for key, value in WRITE.items() if key != "entity"}
+    compiled = compile_spec(spec([check("c9", demand=no_entity)]), WRITE_TOOLS, fn)
+    assert compiled.verifier.atoms == []
+    assert compiled.dropped == 1
+    assert compiled.reasons == ("c9: write without entity",)

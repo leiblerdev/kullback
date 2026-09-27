@@ -15,18 +15,24 @@ from kullback.spec.atoms import no_write_atom, shape_atom
 from kullback.spec.ground import valid_because
 
 ATOM_KINDS = ("required", "allowed", "forbidden", "question", "communicate", "hard")
+WRITE_WITHOUT_ENTITY = "write without entity"
 
 
 class Compiled(NamedTuple):
     verifier: Verifier
     dropped: int
+    # One line per drop this module can name, "<check id>: <reason>"; an ungrounded because is counted only.
+    reasons: tuple[str, ...] = ()
 
 
 def _write(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable) -> Optional[list[Atom]]:
     if demand.get("tool") not in write_tools or not demand.get("id_field"):
         return None
     tool, entity = demand["tool"], str(demand.get("entity", ""))
-    base = {"tool": tool, "entity": entity, "entity_raw": entity, "id_field": demand["id_field"], "at": 0}
+    # The atom holds the id as the write effect keys it (text_of(fn(raw))), as derive writes it, since check_run
+    # compares that form; canon_key would add JSON quotes and never match.
+    base = {"tool": tool, "entity": verifier_suite.text_of(fn(entity)), "entity_raw": entity,
+            "id_field": demand["id_field"], "at": 0}
     atoms = [verifier_suite.make_atom(atom_id, kind, dict(base, kind="write"),
                                       description=f"{tool} writes {entity or 'an entity'}")]
     values = demand.get("values") or {}
@@ -92,10 +98,16 @@ def compile_demands(demands: list, intent: str, sections: Iterable[str], write_t
     tools, sections = set(write_tools), list(sections)
     atoms: list[Atom] = []
     dropped = 0
+    reasons: list[str] = []
     for number, demand in enumerate(demands):
         if (not isinstance(demand, dict) or demand.get("kind") not in ATOM_KINDS
                 or not valid_because(demand.get("because"), intent, sections)):
             dropped += 1
+            continue
+        if demand.get("demand") == "write" and not demand.get("entity"):
+            # An empty entity never matches a row, so the atom would fail every Run, the Reference included.
+            dropped += 1
+            reasons.append(f"{demand.get('check_id') or f'i{number}'}: {WRITE_WITHOUT_ENTITY}")
             continue
         build = BUILDERS.get(demand.get("demand"))
         built = build(f"i{number}", demand["kind"], demand, tools, fn) if build else None
@@ -103,12 +115,13 @@ def compile_demands(demands: list, intent: str, sections: Iterable[str], write_t
             dropped += 1
             continue
         atoms += [_because(atom, str(demand["because"])) for atom in built]
-    return Compiled(Verifier(task_id=task_id, atoms=atoms, verifier_version=version, seed_run_ids=[]), dropped)
+    return Compiled(Verifier(task_id=task_id, atoms=atoms, verifier_version=version, seed_run_ids=[]), dropped,
+                    tuple(reasons))
 
 
 def compile_spec(spec, write_tools: Iterable[str], canon_fn: Callable,
                  policy_sections: Iterable[str] = ()) -> Compiled:
     """The Spec's checks as a Verifier; a check whose because is not grounded is dropped and counted."""
-    demands = [dict(check.demand, kind=check.kind, because=check.because) for check in spec.checks]
+    demands = [dict(check.demand, kind=check.kind, because=check.because, check_id=check.id) for check in spec.checks]
     return compile_demands(demands, spec.intent.text, policy_sections, write_tools, canon_fn,
                            task_id=spec.task_id, version=f"spec{spec.version}")
