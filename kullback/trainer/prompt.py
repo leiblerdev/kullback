@@ -102,9 +102,11 @@ Environment's files there. Before start_run, check with shell: import the
 package and list the Environment folder. File a finding when either is
 missing, saying what is absent and where.
 
-Drive Episodes with the agent user: pass user_model to play and run_group, built with
-kullback.ai.provider.live_model from the model id you are given; the rule user is only its fallback. Keys
-come from the .env file in the run root, which start_run loads; never write or print a key.
+Episodes run in instruction mode by default: the first message is the Task's intent with the facts the user
+would give, the agent acts until it answers without a tool call, and the Verifier judges the end state.
+user="rule" or user="agent" (with user_model from kullback.ai.provider.live_model) bring a conversational
+user; use them only when asked. Keys come from the .env file in the run root, which start_run loads; never
+write or print a key.
 """
 
 

@@ -20,6 +20,7 @@ pytestmark = pytest.mark.skipif(
 from kullback import curriculum  # noqa: E402
 from kullback.ai.provider import TestModel  # noqa: E402
 from kullback.runner.world import BuiltEnvironment  # noqa: E402
+from kullback.runner.world.episode import EpisodeError  # noqa: E402
 from kullback.trainer.rollout import TaskSkipped, play, rollout_seed, run_group  # noqa: E402
 from tests.episode.invented import SCRIPTED_RENAME, write_env  # noqa: E402
 
@@ -80,7 +81,7 @@ def test_group_of_three_writes_one_line_with_counts_adding_to_k(tmp_path):
     assert record["passes"] + record["fails"] + sum(record["no_signal"].values()) \
         + record["interrupted"] == 3
     assert len(set(record["seeds"])) == 3
-    assert record["user_driver"] == "rule"
+    assert record["user_driver"] == "instruction"
     assert len(record["run_files"]) == 3
     for entry in record["run_files"]:
         assert isinstance(entry, str)
@@ -123,28 +124,56 @@ def test_group_record_carries_origin_and_birth_level(tmp_path):
     assert default["task_origin"] == "recorded" and default["birth_level"] is None
 
 
-def test_play_with_user_model_falls_back_to_the_rule_user_and_passes(tmp_path):
+def test_instruction_opening_carries_the_intent_and_every_fact_value(tmp_path):
     root = write_env(tmp_path / "env")
     rollout = play(BuiltEnvironment(root), "widget_task", 7, rename_policy,
-                   outdir=tmp_path / "out", user_model=TestModel(["noted"], loop=True))
+                   outdir=tmp_path / "out")
+    first = next(message for message in rollout.messages if message.get("role") == "user")
+    assert first["content"] == ("give widget w1 the label striped\n"
+                                "Details: widget_id: w1; label: striped")
     assert rollout.reward == 1
+
+
+def test_text_only_first_reply_ends_the_run_and_fails(tmp_path):
+    root = write_env(tmp_path / "env")
+    rollout = play(BuiltEnvironment(root), "widget_task", 7, done_policy,
+                   outdir=tmp_path / "out", max_turns=5)
+    assert rollout.reward == 0
     assert not rollout.interrupted
 
 
-def test_group_with_user_model_records_agent_driver_and_model_name(tmp_path):
-    root = write_env(tmp_path / "env")
-    _, record = run_group(BuiltEnvironment(root), "widget_task", 1, rename_policy,
-                          outdir=tmp_path / "out", train_run_id="tr1",
-                          model_id="m1", checkpoint="c1",
-                          user_model=TestModel(["noted"], loop=True))
-    assert record["user_driver"] == "agent"
-    assert record["user_model_id"] == "test"
-
-
-def test_group_without_user_model_records_rule_driver_and_no_model(tmp_path):
+def test_instruction_group_records_instruction_driver(tmp_path):
     root = write_env(tmp_path / "env")
     _, record = run_group(BuiltEnvironment(root), "widget_task", 1, rename_policy,
                           outdir=tmp_path / "out", train_run_id="tr1",
                           model_id="m1", checkpoint="c1")
+    assert record["user_driver"] == "instruction"
+    assert record["user_model_id"] is None
+
+
+def test_agent_without_a_model_raises_naming_the_need(tmp_path):
+    root = write_env(tmp_path / "env")
+    with pytest.raises(ValueError, match="needs a user_model"):
+        play(BuiltEnvironment(root), "widget_task", 7, rename_policy,
+             outdir=tmp_path / "out", user="agent")
+    with pytest.raises(ValueError, match="takes no user_model"):
+        play(BuiltEnvironment(root), "widget_task", 7, rename_policy,
+             outdir=tmp_path / "out", user="rule",
+             user_model=TestModel(["noted"], loop=True))
+
+
+def test_agent_where_no_reference_recording_raises_the_build_error(tmp_path):
+    root = write_env(tmp_path / "env")
+    with pytest.raises(EpisodeError, match="could not be built"):
+        play(BuiltEnvironment(root), "widget_task", 7, rename_policy,
+             outdir=tmp_path / "out", user="agent",
+             user_model=TestModel(["noted"], loop=True))
+
+
+def test_rule_group_records_rule_driver_and_no_model(tmp_path):
+    root = write_env(tmp_path / "env")
+    _, record = run_group(BuiltEnvironment(root), "widget_task", 1, rename_policy,
+                          outdir=tmp_path / "out", train_run_id="tr1",
+                          model_id="m1", checkpoint="c1", user="rule")
     assert record["user_driver"] == "rule"
     assert record["user_model_id"] is None

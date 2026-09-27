@@ -1,8 +1,8 @@
 """One Task played through the Episode interface, grouped in k.
 
-A training agent plays each Task k times and learns from the group. The rule user
-drives every Run unless a user model is given, when the agent user drives over the
-rule user as its fallback. Agent driven Tasks are refused before the first attempt
+A training agent plays each Task k times and learns from the group. Instruction mode
+states the Task and its facts up front and the agent acts alone; the rule user and the
+agent user stay as options. Agent driven Tasks are refused before the first attempt
 and each group is written as one record line beside the Runs it scores.
 """
 
@@ -37,6 +37,29 @@ def rule_user(env: BuiltEnvironment, task: Any, router: Any, rules: Any, referen
         write_tools=env.write_tools(), goal_writes=goal_writes, answer_strip=answer_strip)
 
 
+class InstructionUser:
+    """The Task stated once up front: its intent with the facts the user would give."""
+
+    done = True
+
+    def __init__(self, instruction: str):
+        self.instruction = instruction
+
+    def reply(self, messages: list[dict]) -> str:
+        """Answer the loop's first ask with the instruction; later asks never come."""
+        return self.instruction
+
+
+def instruction_user(env: BuiltEnvironment, task: Any, router: Any, rules: Any,
+                     reference: Any) -> Any:
+    """Episode's user factory for instruction mode: intent plus facts, then silence."""
+    facts = getattr(rules, "facts", None) or []
+    if not facts:
+        return InstructionUser(str(task.intent))
+    details = "; ".join(f"{fact.field}: {fact.value}" for fact in facts)
+    return InstructionUser(f"{task.intent}\nDetails: {details}")
+
+
 def agent_user_factory(model: Any) -> Any:
     """Episode's user factory with the agent user over the rule user as its fallback."""
     def factory(env: BuiltEnvironment, task: Any, router: Any, rules: Any,
@@ -45,10 +68,30 @@ def agent_user_factory(model: Any) -> Any:
         fallback = rule_user(env, task, router, rules, reference)
         try:
             user = build_user(env.root, task.id, model, PURPOSE_RUN, fallback=fallback)
-        except Exception:
-            return fallback
-        return fallback if user is None else user
+        except Exception as exc:
+            raise EpisodeError(
+                f"the agent user could not be built for Task {task.id}: {exc}") from exc
+        if user is None:
+            raise EpisodeError(
+                f"the agent user could not be built for Task {task.id}: "
+                "the workdir holds no reference recording to build it from")
+        return user
     return factory
+
+
+def _user_factory_for(user: str, user_model: Any) -> Any:
+    """Episode's user factory for the named driver, after checking the model rule."""
+    if user == "agent":
+        if user_model is None:
+            raise ValueError('user="agent" needs a user_model to build the agent user')
+        return agent_user_factory(user_model)
+    if user_model is not None:
+        raise ValueError(f'user={user!r} takes no user_model: only user="agent" uses one')
+    if user == "rule":
+        return rule_user
+    if user == "instruction":
+        return instruction_user
+    raise ValueError(f'user={user!r} is not one of "instruction", "rule", "agent"')
 
 
 class Policy(Protocol):
@@ -107,10 +150,11 @@ def _run_file(episode: Episode) -> str:
 
 
 def play(env: BuiltEnvironment, task_id: str, seed: int, policy: Policy, *,
-         outdir: Any, max_turns: int = 30, user_model: Any = None) -> Rollout:
+         outdir: Any, max_turns: int = 30, user: str = "instruction",
+         user_model: Any = None) -> Rollout:
     """Play one Task with the policy through the Episode interface."""
-    episode = Episode(env, outdir=outdir, max_turns=max_turns, user_factory=(
-        rule_user if user_model is None else agent_user_factory(user_model)))
+    episode = Episode(env, outdir=outdir, max_turns=max_turns,
+                      user_factory=_user_factory_for(user, user_model))
     info = episode.reset(task_id, seed)
     if episode.run_file() is None:
         raise EpisodeError("reset wrote no Run file")
@@ -207,7 +251,8 @@ def run_group(env: BuiltEnvironment, task_id: str, k: int, policy: Policy, *,
               outdir: Any, train_run_id: str, model_id: str, checkpoint: str,
               step: Any = None, source: str = "training", sampling: Any = None,
               max_turns: int = 30, task_origin: str = "recorded",
-              birth_level: Any = None, user_model: Any = None) -> tuple[list[Rollout], dict]:
+              birth_level: Any = None, user: str = "instruction",
+              user_model: Any = None) -> tuple[list[Rollout], dict]:
     """Play one Task k times and append the group's record as one JSON line."""
     if env.agent_driven(task_id):
         raise TaskSkipped(task_id, "the Task is driven by the agent user, "
@@ -216,7 +261,7 @@ def run_group(env: BuiltEnvironment, task_id: str, k: int, policy: Policy, *,
     root.mkdir(parents=True, exist_ok=True)
     started_at = time.time()
     rollouts = [play(env, task_id, rollout_seed(env, task_id, attempt), policy,
-                     outdir=root, max_turns=max_turns, user_model=user_model)
+                     outdir=root, max_turns=max_turns, user=user, user_model=user_model)
                 for attempt in range(k)]
     ended_at = time.time()
     record = _group_record(task_id, k, rollouts, root, train_run_id=train_run_id,
@@ -224,7 +269,7 @@ def run_group(env: BuiltEnvironment, task_id: str, k: int, policy: Policy, *,
                            source=source, sampling=sampling,
                            started_at=started_at, ended_at=ended_at,
                            task_origin=task_origin, birth_level=birth_level,
-                           user_driver="agent" if user_model is not None else "rule",
+                           user_driver=user,
                            user_model_id=getattr(user_model, "name", None))
     with open(root / "solve_rates.jsonl", "a", encoding="utf-8") as handle:
         handle.write(json.dumps(record) + "\n")
