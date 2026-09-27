@@ -81,7 +81,7 @@ WORLD_TRACE_FILES = {"world_a": "traces_small.json", "world_b": "traces_small_ta
 
 @pytest.fixture(scope="session")
 def worlds_dir() -> Path:
-    """The invented worlds every module's tests share, beside the retail fixtures."""
+    """The invented worlds every module's tests share, beside the shipped small fixture."""
     return FIXTURES / "worlds"
 
 
@@ -97,7 +97,7 @@ def world_dir(worlds_dir):
 
 @pytest.fixture(scope="session")
 def world_traces_path(world_dir):
-    """Factory: the ingestible traces file of a world; world_b's is its tau2 twin."""
+    """Factory: the ingestible traces file of a world; world_b's is its recorded-format twin."""
     def _get(name: str) -> Path:
         return world_dir(name) / WORLD_TRACE_FILES[name]
     return _get

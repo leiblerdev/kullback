@@ -1,13 +1,13 @@
 """Builds the two invented worlds under tests/fixtures/worlds/.
 
-Each world is a folder with the same kinds of files the retail fixture has: db.json,
-policy.md and tasks.json in tau2's domain shape, plus traces. World A (a community
-library) keeps the tau2 trace format; world B (a plant nursery) carries its traces in
-the line-delimited transcript shape and repeats them in tau2 format for tests that
-need tau2 input.
+Each world is a folder with the same kinds of files the shipped small fixture has:
+db.json, policy.md and tasks.json in the recorded simulation shape, plus traces.
+World A (a community library) keeps the recorded trace format; world B (a plant
+nursery) carries its traces in the line-delimited transcript shape and repeats them
+in the recorded format for tests that need that input.
 
 Tool names follow the pipeline's own prefix convention (get_, find_, list_ read;
-cancel_, modify_, update_ write), the same convention the retail tools follow, so the
+cancel_, modify_, update_ write), the same convention the shipped fixture tools follow, so the
 offline miner classes each tool without a model.
 
 No model calls, no network, fixed strings throughout: running this script twice
@@ -23,7 +23,7 @@ from pathlib import Path
 
 BASE_TS = "2026-03-10T09:00:00"
 
-# --- shared message builders (the tau2 simulation shape) ---------------------
+# --- shared message builders (the recorded simulation shape) ---------------------
 
 
 def _assistant(text: str, calls: list | None = None) -> dict:
@@ -56,7 +56,7 @@ def _sim(
     actions: list,
     index: int,
 ) -> dict:
-    """One simulation with its grader fields still in, like the retail small file."""
+    """One simulation with its grader fields still in, like the shipped small fixture."""
     stamped = []
     for turn_idx, message in enumerate(messages):
         entry = dict(message)
@@ -131,7 +131,7 @@ def _task(
 
 
 def _info(domain: str, policy: str) -> dict:
-    """The info block, tau2 shaped, with invented neutral implementations only."""
+    """The info block in the recorded shape, with invented neutral implementations only."""
     return {
         "git_commit": "invented",
         "num_trials": 1,

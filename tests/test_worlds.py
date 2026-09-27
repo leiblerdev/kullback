@@ -44,7 +44,7 @@ def test_each_worlds_domain_files_parse(world):
 
 
 def test_each_world_carries_its_grader_fields_so_ingest_can_be_tested_stripping_them(world):
-    """Like the retail small file: reward checks and criteria stay in until ingest."""
+    """Like the shipped small fixture: reward checks and criteria stay in until ingest."""
     for sim in world["traces"]["simulations"]:
         assert {"reward_info", "task_id", "trial"} <= set(sim)
         assert "action_checks" in sim["reward_info"]
@@ -69,27 +69,39 @@ def _nested(node) -> bool:
     return False
 
 
-def test_world_b_nests_records_and_arguments_where_world_a_stays_flat(
-        world_dir, world_traces):
-    """The shape difference the suite parametrizes over: flat rows and scalar args in
-    world_a, lists of objects inside objects and nested tool arguments in world_b."""
-    db_a = json.loads((world_dir("world_a") / "db.json").read_text(encoding="utf-8"))
-    for rows in db_a.values():
-        for row in rows.values():
-            assert not _nested(row)
-    for sim in world_traces("world_a")["simulations"]:
-        for message in sim["messages"]:
-            for call in message.get("tool_calls") or []:
-                assert not _nested(call["arguments"])
-    db_b = json.loads((world_dir("world_b") / "db.json").read_text(encoding="utf-8"))
-    assert any(
-        _nested(row) for rows in db_b.values() for row in rows.values()
-    )
-    assert any(
-        _nested(call["arguments"])
-        for sim in world_traces("world_b")["simulations"]
+def _db_rows(db: dict) -> list:
+    """Every record row in a world db."""
+    return [row for rows in db.values() for row in rows.values()]
+
+
+def _calls(traces: dict) -> list:
+    """Every tool call in a world's simulations."""
+    return [
+        call
+        for sim in traces["simulations"]
         for message in sim["messages"]
         for call in message.get("tool_calls") or []
+    ]
+
+
+def _read_db(world_dir, name: str) -> dict:
+    """The parsed db.json of one world."""
+    return json.loads((world_dir(name) / "db.json").read_text(encoding="utf-8"))
+
+
+def test_world_a_stays_flat_in_records_and_arguments(world_dir, world_traces):
+    """World_a keeps flat rows and scalar args, the shape most tests assume."""
+    for row in _db_rows(_read_db(world_dir, "world_a")):
+        assert not _nested(row)
+    for call in _calls(world_traces("world_a")):
+        assert not _nested(call["arguments"])
+
+
+def test_world_b_nests_records_and_arguments(world_dir, world_traces):
+    """World_b nests lists of objects in records and in tool arguments."""
+    assert any(_nested(row) for row in _db_rows(_read_db(world_dir, "world_b")))
+    assert any(
+        _nested(call["arguments"]) for call in _calls(world_traces("world_b"))
     )
 
 
