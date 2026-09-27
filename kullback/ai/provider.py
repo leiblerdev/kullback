@@ -515,6 +515,10 @@ def _reply_from_dict(data: dict) -> ModelReply:
     output = int(usage.get("output", usage.get("completion_tokens", 0)) or 0)
     return ModelReply(
         content=content,
+        thinking=data.get("thinking"),
+        thinking_blocks=copy.deepcopy(data.get("thinking_blocks"))
+        if isinstance(data.get("thinking_blocks"), list)
+        else None,
         tool_calls=[
             ToolCallRequest(
                 id=c.get("id"),
@@ -1004,14 +1008,18 @@ class AnthropicModel(HttpModel):
         text: list[str] = []
         calls: list[ToolCallRequest] = []
         thinking: list[dict] = []
+        thinking_text: list[str] = []
         for block in data.get("content") or []:
             if not isinstance(block, dict):
                 continue
             if block.get("type") in THINKING_BLOCK_TYPES:
                 # Kept whole, signature and all: the next request of a tool loop sends them back
-                # unchanged (preserved thinking), and an edited block is a 400.
+                # unchanged (preserved thinking), and an edited block is a 400. The readable
+                # text goes on the reply beside them, so a reader sees the summary.
                 if block.get("signature") or block.get("data"):
                     thinking.append(copy.deepcopy(block))
+                if isinstance(block.get("thinking"), str):
+                    thinking_text.append(block.get("thinking") or "")
             elif block.get("type") == "text":
                 text.append(block.get("text") or "")
             elif block.get("type") == "tool_use":
@@ -1024,6 +1032,7 @@ class AnthropicModel(HttpModel):
                 )
         return ModelReply(
             content="".join(text) or None,
+            thinking="".join(thinking_text) or None,
             tool_calls=calls,
             usage=usage_from_anthropic(data.get("usage")),
             model=data.get("model") or self.wire_id,
@@ -1435,9 +1444,11 @@ class OpenAIResponsesModel(HttpModel):
         self.key_env_var = key_env_var
         self.key_required = bool(key_env_var)
         super().__init__(model_id, base_url=base_url, **kwargs)
-        # Whether this model reasons comes from its catalogue row, read once here: a plain
-        # chat model behind a gateway may refuse the reasoning field, so the row gates it.
-        self.sends_reasoning = _catalogue_reasoning(self.provider, self.wire_id, self.env)
+        # Whether this model reasons comes from its catalogue row, read on the first request
+        # and cached after: construction never fetches, so an explicit endpoint pays nothing.
+        # A plain chat model behind a gateway may refuse the reasoning field, so the row gates it.
+        self.sends_reasoning: Optional[bool] = None
+        self._reasoning_known = False
 
     def headers(self, body: Optional[bytes] = None) -> dict:
         headers = {"content-type": "application/json"}
@@ -1458,6 +1469,9 @@ class OpenAIResponsesModel(HttpModel):
             body["max_output_tokens"] = config.max_tokens
         # Reasoning branch four of four: the effort comes from the config and a summary is
         # always asked for, so the reasoning text is kept like the summarized thinking.
+        if not self._reasoning_known:
+            self.sends_reasoning = _catalogue_reasoning(self.provider, self.wire_id, self.env)
+            self._reasoning_known = True
         reasoning = _responses_reasoning(config, self.sends_reasoning)
         if reasoning is not None:
             body["reasoning"] = reasoning

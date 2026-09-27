@@ -1444,3 +1444,63 @@ def test_summarized_thinking_blocks_echo_back_with_their_signature(sleeps):
     assistant = next(m for m in body["messages"] if m["role"] == "assistant")
     assert assistant["content"][0] == block
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+
+
+def test_a_sync_thinking_block_keeps_its_readable_text_for_replay(sleeps):
+    """The sync parser keeps the signed block and copies its readable text onto the reply,
+    so replay reports a thinking delta."""
+    import asyncio
+
+    from kullback.ai._provider_events import ProviderThinkingDelta
+    from kullback.ai.stream import assemble, reply_events
+
+    block = {"type": "thinking", "thinking": "weighing the rows", "signature": "sig-1"}
+    reply = pv.AnthropicModel(
+        model_id="anthropic/claude-opus-5", api_key="k", env={}).parse_reply(
+            {"content": [block, {"type": "text", "text": "done"}],
+             "model": "claude-opus-5", "stop_reason": "end_turn", "usage": {}})
+    assert reply.thinking == "weighing the rows"
+    assert reply.thinking_blocks == [block]
+    assert assemble(reply).thinking == "weighing the rows"
+    events = asyncio.run(_collect(reply_events(reply)))
+    assert any(isinstance(e, ProviderThinkingDelta) and e.delta == "weighing the rows"
+               for e in events)
+
+
+async def _collect(source):
+    """One async iterator drained into a list, for a test that stays synchronous."""
+    return [e async for e in source]
+
+
+def test_a_recorded_reply_keeps_its_thinking(make_recorded_model):
+    """A summary stored on the reply comes back on replay."""
+    model = make_recorded_model(
+        [
+            {"idx": 0, "type": "model_call",
+             "payload": {"reply": {"content": "done", "thinking": "checking the ledger"}}},
+        ]
+    )
+    assert model.query([]).thinking == "checking the ledger"
+
+
+def test_constructing_a_responses_model_never_touches_the_catalogue(tmp_path, monkeypatch):
+    """An explicit endpoint needs no catalogue read; the row is looked up on first build_body."""
+    from kullback.ai import pricing
+
+    registry_snapshot(tmp_path, monkeypatch, responses_catalog())
+    calls = []
+    real = pricing.refresh
+
+    def counting(**kwargs):
+        calls.append(1)
+        return real(**kwargs)
+
+    monkeypatch.setattr(pricing, "refresh", counting)
+    model = pv.OpenAIResponsesModel(
+        model_id="rs-test/thinker", base_url="https://127.0.0.1:1/v1", env={})
+    assert calls == []
+    body = model.build_body([{"role": "user", "content": "hi"}], None, pv.ModelConfig())
+    assert body["reasoning"] == {"summary": "auto"}
+    assert len(calls) == 1
+    model.build_body([{"role": "user", "content": "hi"}], None, pv.ModelConfig())
+    assert len(calls) == 1
