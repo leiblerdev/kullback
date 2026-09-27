@@ -9,6 +9,8 @@ table inside the app: views mount, text answers show in a modal, and bare
 Quitting never touches the build child, which runs detached.
 """
 
+from __future__ import annotations
+
 import json
 import shlex
 from pathlib import Path
@@ -58,7 +60,6 @@ PALETTE_COMMANDS = ("status", "sessions", "watch", "build", "keys", "login", "lo
 KEYS_HELP = """keys: 1 home, 2 traces, 3 build, 4 watch, 5 tasks, 6 runs. ctrl+k commands \
 (publish, synthesise), ctrl+r machine sessions, ? keys, ctrl+d quit. In watch: enter nudges, \
 alt+enter tells, esc asks before stopping."""
-LOGIN_HINT = "To log in, run `kullback tui --plain`, then /login."
 
 
 # The views by their palette name, off the registry the views package owns.
@@ -88,6 +89,7 @@ class PaletteModal(ModalScreen[Optional[str]]):
             name = str(event.button.label)
         self.dismiss(None)
         self.choose(name)
+
 
 class SessionsModal(ModalScreen[None]):
     """The machine's sessions off the heartbeats, newest first."""
@@ -131,6 +133,7 @@ class KeysModal(ModalScreen[None]):
 
     BINDINGS = [Binding("escape", "dismiss", "Close"), Binding("question_mark", "dismiss", "Close")]
 
+
 class OutputModal(ModalScreen[None]):
     """A slash command's result text, with esc or a close button to leave."""
 
@@ -155,21 +158,6 @@ class OutputModal(ModalScreen[None]):
     def text(self) -> str:
         """The result as plain text, for tests to read without rendering."""
         return self._text
-
-
-class MessageModal(ModalScreen[None]):
-    """One palette command's output as plain text: status, keys, login, logout, help."""
-
-    def __init__(self, title: str, body: str) -> None:
-        super().__init__()
-        self._title = title
-        self._body = body
-
-    def compose(self):  # type: ignore[override]
-        yield Static(f"{self._title}", id="message-title")
-        yield Static(self._body, id="message-body")
-
-    BINDINGS = [Binding("escape", "dismiss", "Close")]
 
 
 class KullbackApp(App):
@@ -330,11 +318,9 @@ class KullbackApp(App):
         elif verb == "watch":
             self._watch_command(rest)
         elif verb == "help":
-            self._help()
+            self.show_help()
         elif verb == "login" and not rest:
-            from kullback.tui.login_modal import LoginModal
-
-            self.push_screen(LoginModal(), self._login_saved)
+            self.show_login()
         elif verb == "ingest":
             self._ingest(rest)
         else:
@@ -396,10 +382,6 @@ class KullbackApp(App):
             if self.model is not None:
                 self.current.model = self.model
             self.current.refresh_view()
-
-    def _help(self) -> None:
-        """Every command with its one-line meaning, straight from the shared table."""
-        self.show_text("/help", "\n".join(f"/{name:<10} {blurb}" for name, _, blurb in COMMANDS))
 
     def _login_saved(self, payload: Optional[dict]) -> None:
         """A modal login lands on its default model and Home's key rows update."""
@@ -698,8 +680,8 @@ class KullbackApp(App):
     def _command_table(self) -> dict[str, Callable[[], None]]:
         """Every palette command in one table, so the palette cannot drift from the handlers.
 
-        View names mount their registry view; status, keys, login, logout and help show
-        what the same slash command prints on the line screen, through its own renderer."""
+        View names mount their registry view; status, keys, logout and help show
+        their text in a modal; login opens the same modal bare /login opens."""
         table: dict[str, Callable[[], None]] = {
             "home": self.show_home,
             "build": self.show_build,
@@ -722,7 +704,7 @@ class KullbackApp(App):
 
         renderable = Screen(self.workdir, self.model, self.base_url)._status_renderable()
         plain = renderable.plain if hasattr(renderable, "plain") else str(renderable)
-        self.push_screen(MessageModal("status", plain))
+        self.push_screen(OutputModal("status", plain))
 
     def show_keys(self) -> None:
         """Palette keys shows what slash keys prints: which provider keys are visible."""
@@ -731,15 +713,14 @@ class KullbackApp(App):
         from kullback.tui import _keys
 
         model = self.model or DEFAULT_MODEL
-        self.push_screen(MessageModal(
+        self.push_screen(OutputModal(
             "keys", _keys(dict(os.environ), model=model, host=self.base_url or "").plain))
 
     def show_login(self) -> None:
-        """Palette login shows what slash login prints: the model and its key sources."""
-        from kullback.tui import Screen
+        """Palette login opens the same modal as bare /login."""
+        from kullback.tui.login_modal import LoginModal
 
-        text = Screen(self.workdir, self.model, self.base_url)._login_status()
-        self.push_screen(MessageModal("login", text.plain + "\n" + LOGIN_HINT))
+        self.push_screen(LoginModal(), self._login_saved)
 
     def run_logout(self) -> None:
         """Palette logout runs the slash logout handler, showing what it cleared."""
@@ -751,13 +732,11 @@ class KullbackApp(App):
 
         console = Console(file=StringIO(), width=100)
         Screen(self.workdir, self.model, self.base_url, console=console)._logout([])
-        self.push_screen(MessageModal("logout", str(console.file.getvalue())))
+        self.push_screen(OutputModal("logout", str(console.file.getvalue())))
 
     def show_help(self) -> None:
-        """Palette help shows the slash help text itself, so the two cannot drift."""
-        from kullback.tui import HELP
-
-        self.push_screen(MessageModal("help", HELP))
+        """Palette help shows the same table /help shows, so the two cannot drift."""
+        self.show_text("/help", "\n".join(f"/{name:<10} {blurb}" for name, _, blurb in COMMANDS))
 
     def action_sessions(self) -> None:
         self.push_screen(SessionsModal(self._session_chosen))

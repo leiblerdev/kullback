@@ -136,9 +136,10 @@ async def test_each_palette_command_opens_its_view_or_modal(tmp_path):
     import os
 
     from kullback.ai.provider import DEFAULT_MODEL
-    from kullback.tui import HELP, Screen, _keys
-    from kullback.tui.app import LOGIN_HINT, PALETTE_COMMANDS, MessageModal, SessionsModal
+    from kullback.tui import COMMANDS, Screen, _keys
+    from kullback.tui.app import PALETTE_COMMANDS, OutputModal, SessionsModal
     from kullback.tui.home import HomeView
+    from kullback.tui.login_modal import LoginModal
 
     app = KullbackApp(workdir=tmp_path)
     async with app.run_test() as pilot:
@@ -153,27 +154,31 @@ async def test_each_palette_command_opens_its_view_or_modal(tmp_path):
         assert isinstance(app.screen, SessionsModal)
         app.screen.dismiss(None)
         await pilot.pause(0.5)
+        app._palette_chosen("login")
+        await pilot.pause(0.5)
+        assert isinstance(app.screen, LoginModal)
+        await pilot.press("escape")
+        await pilot.pause(0.5)
         screen = Screen(tmp_path, None, "")
         expected = {
             "status": (screen._status_renderable().plain
                        if hasattr(screen._status_renderable(), "plain")
                        else str(screen._status_renderable())),
             "keys": _keys(dict(os.environ), model=DEFAULT_MODEL, host="").plain,
-            "login": screen._login_status().plain + "\n" + LOGIN_HINT,
-            "help": HELP,
+            "help": "\n".join(f"/{name:<10} {blurb}" for name, _, blurb in COMMANDS),
         }
         for name, body in expected.items():
             app._palette_chosen(name)
             await pilot.pause(0.5)
-            assert isinstance(app.screen, MessageModal), name
-            assert app.screen._body == body, name
-            assert app.screen._body, name
+            assert isinstance(app.screen, OutputModal), name
+            assert app.screen.text() == body, name
+            assert app.screen.text(), name
             await pilot.press("escape")
             await pilot.pause(0.5)
         app._palette_chosen("logout")
         await pilot.pause(0.5)
-        assert isinstance(app.screen, MessageModal)
-        assert "cleared" in app.screen._body
+        assert isinstance(app.screen, OutputModal)
+        assert "cleared" in app.screen.text()
         await pilot.press("escape")
         await pilot.pause(0.5)
 
