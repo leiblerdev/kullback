@@ -63,3 +63,18 @@ def test_the_checklist_refuses_a_repo_that_is_not_an_organisation_and_a_name(nur
     assert by_name["repo name"].done is False
     assert "organisation/name" in by_name["repo name"].detail
     assert checklist_mod.readiness(rows) == "not ready"
+
+
+def test_a_repo_tail_of_dotdot_stages_inside_the_temporary_directory(tmp_path, nursery, monkeypatch):
+    """A repo ending in .. must not stage the package outside the temporary directory."""
+    import tempfile
+
+    marker = tmp_path / "marker"
+    marker.write_text("held", encoding="utf-8")
+    before = {path for path in tmp_path.rglob("*")}
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda *args, **kwargs: str(stage))
+    checklist_mod.publish_checklist(nursery, "org/..")
+    assert marker.read_text(encoding="utf-8") == "held"
+    assert {path for path in tmp_path.rglob("*")} == before

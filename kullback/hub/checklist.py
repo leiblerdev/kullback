@@ -85,11 +85,15 @@ def _token_row() -> Row:
 
 
 def _stage_manifest(workdir: Path, repo: str) -> dict:
-    """The manifest a publish would upload, staged in a temporary directory and taken away again."""
+    """The manifest a publish would upload, staged in a temporary directory and taken away again.
+
+    The staging child keeps a fixed name while the repo tail travels only as the manifest
+    name: a tail of ".." joined onto the directory would stage outside it.
+    """
     name = repo.rsplit("/", 1)[-1] or "checklist"
     tmp = Path(tempfile.mkdtemp(prefix="kullback-checklist-"))
     try:
-        return package_mod.export(workdir, tmp / name, name=name, scan=True)
+        return package_mod.export(workdir, tmp / "package", name=name, scan=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
