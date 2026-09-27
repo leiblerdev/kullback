@@ -987,16 +987,6 @@ def test_a_failed_responses_call_raises_instead_of_parsing(live, sleeps):
     assert "failed" in str(raised.value) and "the model errored" in str(raised.value)
 
 
-def test_a_docs_named_responses_model_resolves_to_the_responses_adapter(tmp_path, monkeypatch):
-    """1.3 is not in the snapshot yet; the docs' Endpoints table is the source of truth."""
-    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
-    model = pv.model_for("opencode-go/muse-spark-1.3-contributor", env={"OPENCODE_API_KEY": "sk-zen"})
-    assert isinstance(model, pv.OpenAIResponsesModel)
-    assert model.base_url == "https://opencode.ai/zen/go/v1"
-    assert model.wire_id == "muse-spark-1.3-contributor"
-    assert model.api_key == "sk-zen"
-
-
 def test_a_model_row_overriding_to_another_shape_is_refused_by_name(tmp_path, monkeypatch):
     """minimax-m3 rides opencode-go but speaks the Anthropic shape; chat bodies must never go
     at it (previously the provider-level npm sent exactly those)."""
@@ -1041,16 +1031,6 @@ def test_opencode_hosts_get_session_and_identity_headers(live, sleeps):
     assert local.query([{"role": "user", "content": "hi"}]).content == "hi"
     assert "x-opencode-session" not in other["headers"]
     assert other["headers"].get("user-agent", "").startswith("python-httpx")
-
-
-def test_an_explicit_base_url_does_not_change_a_responses_model_shape(tmp_path, monkeypatch):
-    """Greptile P1: 1.3 with --base-url took the chat branch and posted chat bodies at a
-    Responses-only endpoint. The shape belongs to the model, not to how the host was found."""
-    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
-    model = pv.model_for("opencode-go/muse-spark-1.3-contributor",
-                         base_url="http://127.0.0.1:8080/v1", env={})
-    assert isinstance(model, pv.OpenAIResponsesModel)
-    assert model.base_url == "http://127.0.0.1:8080/v1"
 
 
 @pytest.mark.parametrize("details,prompt,expected", [

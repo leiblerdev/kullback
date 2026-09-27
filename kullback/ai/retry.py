@@ -65,6 +65,18 @@ def backoff_delay(attempt: int, policy: RetryPolicy, rng: random.Random) -> floa
     return delay + rng.random() * policy.jitter * delay
 
 
+def rate_limit_delay(headers: Any, attempt: int, policy: RetryPolicy, rng: random.Random) -> float:
+    """How long a 429 waits: what the provider asked for, capped, else the policy backoff.
+
+    The blocking and streaming paths share this so both back off the same way; the bucket
+    cooldown is this same delay, which is what parks every waiter on the key.
+    """
+    wait = retry_after_seconds(headers)
+    if wait is not None:
+        return min(wait, policy.max_retry_after_s)
+    return backoff_delay(attempt, policy, rng)
+
+
 def retryable_status(status: int) -> bool:
     """Only rate limits and server faults. A 400 is our bug and retrying it wastes money."""
     return status == 429 or status >= 500
