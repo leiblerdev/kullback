@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Callable, Iterable, NamedTuple, Optional
 
-from kullback.examiner import derive
 from kullback.gates import verifier_suite
 from kullback.runner.records import Atom, Verifier
 from kullback.runner.target import _key as canon_key
+from kullback.spec.atoms import no_write_atom, shape_atom
 from kullback.spec.ground import valid_because
 
 ATOM_KINDS = ("required", "allowed", "forbidden", "question", "communicate", "hard")
@@ -62,7 +62,7 @@ def _ask(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable) 
 
 
 def _no_write(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable) -> Optional[list[Atom]]:
-    return [derive.no_write_atom(write_tools).model_copy(update={"id": atom_id})]
+    return [no_write_atom(write_tools).model_copy(update={"id": atom_id})]
 
 
 def _cap(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable) -> Optional[list[Atom]]:
@@ -76,7 +76,7 @@ def _cap(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable) 
 def _shape(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable) -> Optional[list[Atom]]:
     if demand.get("tool") not in write_tools or not demand.get("field") or not demand.get("id_field"):
         return None
-    return [derive.shape_atom(atom_id, demand["tool"], demand["field"], demand["id_field"], write_tools)]
+    return [shape_atom(atom_id, demand["tool"], demand["field"], demand["id_field"], write_tools)]
 
 
 BUILDERS = {"write": _write, "say": _say, "ask": _ask, "no_write": _no_write, "cap": _cap, "shape": _shape}

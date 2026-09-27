@@ -10,6 +10,8 @@ from typing import Any, Iterable, Optional, Sequence
 from kullback.ai.provider import Model
 from kullback.builder.mine import is_assistant_call
 from kullback.runner.records import Category, Task, ToolCall, Trace, content_hash
+from kullback.spec.text import APOSTROPHE_RE as APOSTROPHE_RE
+from kullback.spec.text import STOPWORDS as STOPWORDS
 
 # Similarity is Jaccard over the user's words weighted by inverse document frequency, so the
 # politeness and authentication chatter every Run repeats cannot decide membership. On the 456-Run
@@ -23,17 +25,6 @@ USER_TURNS_USED = 2  # the user's opening turns carry the intent; later turns ar
 MAX_NAME_CHARS = 80
 
 TOKEN_RE = re.compile(r"[a-z0-9_]+")
-APOSTROPHE_RE = re.compile(r"[\u0027\u2019\u02bc]")  # "don't" is one word, not "don" and "t"
-STOPWORDS = frozenset(
-    """
-    a an the and or but so then of to for in on at by from with without about into as is was were be been being
-    are am it its this that these those there here i me my we our you your he she they them their his her
-    do does did done have has had can could would should will shall may might must not no yes if when while
-    because please thanks thank hi hello ok okay just also very really any some all
-    dont doesnt didnt cant cannot couldnt wouldnt shouldnt wasnt werent isnt arent wont havent hasnt hadnt
-    im ive ill id youre youve youll youd hes shes theyre theyve thats whats lets weve wed
-    """.split()
-)
 
 
 def tokens(text: Optional[str]) -> list[str]:

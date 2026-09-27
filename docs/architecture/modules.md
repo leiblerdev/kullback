@@ -200,6 +200,8 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/spec/writer.py` | The Verifier writer (intentv r1): checks with becauses and fact ids from the Intent, the recorded policy, the tool schemas and the Starting state; `write_verifier` saves the Spec and its Verifier (the Runner's too under `intent`); `repair` answers a ruling on the ruled checks only; `repair_for_ruling` is the router's entry point, which saves, rewrites the Verifier files and publishes spec.repaired or spec.defended. |
 | `kullback/spec/writer_tools.py` | The writer's two read-only Starting state lookups, the bounded session (4 read rounds, a spend ceiling, a forced final answer), `refuse_run_inputs`, which keeps every Run, Reference, Verifier and End state out, and `policy_sections_of`, the one list of policy names a because may cite (policy headings plus compiled rule names). |
 | `kullback/spec/must_not.py` | The forbidden side of the writer's Verifier: scope atoms for uncovered write tools and the compiled policy prohibitions; `tier_of` by atom kind. `kullback/examiner/must_not.py` re-exports it. |
+| `kullback/spec/atoms.py` | `shape_atom` and `no_write_atom`, the two generated Hard rules, moved from the Examiner so the Spec never reads it; `derive` re-exports them. |
+| `kullback/spec/text.py` | `STOPWORDS`, `APOSTROPHE_RE`, `TOKEN_RE` and `normalise`, moved from the Builder so the Spec never reads it; `cluster` and `intent` re-export them. |
 
 ## kullback/builder
 

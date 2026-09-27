@@ -74,6 +74,7 @@ layers = [
     "hub",
     "builder",
     "examiner",
+    "spec",
     "user",
     "agent",
     "runner:gates",
