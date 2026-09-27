@@ -2017,6 +2017,14 @@ def events(
         pass
 
 
+@app.callback(invoke_without_command=True)
+def _open_app_without_command(ctx: typer.Context) -> None:
+    """Open the app when no command was typed, the same as `kullback tui -w .`."""
+    if ctx.invoked_subcommand is None:
+        _load_keys()
+        _open_textual(workdir=_default_workdir(Path(".")))
+
+
 def _open_textual(workdir: Path, model: Optional[str] = None, base_url: Optional[str] = None,
                   ceiling_usd: Optional[float] = None) -> None:
     """Open the Textual app over a workdir; the line screen stays behind --plain."""

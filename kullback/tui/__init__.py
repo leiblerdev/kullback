@@ -56,6 +56,7 @@ MARKS = {
 HELP = """\
 /build [--file PATH]              run the autonomous Builder session over the ingested traces,
                                   in the background: the screen keeps taking commands
+/ingest PATH [PATH ...]            ingest trace files into this workdir
 /nudge TEXT                        steer the running session: delivered before its next model turn
 /tell TEXT                         follow up: delivered when the running session would stop
 /stop                              cancel the running session after its current step
@@ -143,6 +144,7 @@ def registry_refusal(catalog: Optional[dict], model: str) -> Optional[str]:
 # beside it, and a test fails when a table name is missing from HELP, so the two cannot drift.
 COMMANDS = [
     ("build", "/build [--file PATH]", "run the Builder over the ingested traces, in the background"),
+    ("ingest", "/ingest PATH [PATH ...]", "ingest trace files into this workdir"),
     ("nudge", "/nudge TEXT", "steer the running session before its next model turn"),
     ("tell", "/tell TEXT", "follow up when the running session would stop"),
     ("stop", "/stop", "cancel the running session after its current step"),

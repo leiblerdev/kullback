@@ -1,9 +1,10 @@
 """Where the workdir stands: the Home view of the Textual app.
 
-The entry screen of the app, for a newcomer before anything else. It reads the
-same six rows and the same next step the line screen's /doctor prints, then the
-recent builds of this workdir only, so the machine's other worktrees stay one
-key away on ctrl+r.
+The entry screen of the app, for a newcomer before anything else. The gradient
+name on top, then the same six rows and the same next step the line screen's
+/doctor prints, then the recent builds of this workdir only, so the machine's
+other worktrees stay one key away on ctrl+r. Each checklist row carries its fix
+command, and enter on a row puts that command in the app's command line.
 """
 
 from __future__ import annotations
@@ -12,55 +13,129 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from rich.text import Text
+from textual import on
 from textual.containers import Vertical
-from textual.widgets import Static
+from textual.widgets import Label, ListItem, ListView, Static
 
 from kullback.ai.provider import DEFAULT_MODEL
+from kullback.tui import banner
 from kullback.tui.checklist import next_step, where_it_stands
+
+# How many of this workdir's recent builds Home keeps: the banner and the six
+# rows stay visible on an 80x24 terminal with the command line on screen.
+MAX_RECENT = 3
+
+
+def fix_command(next_key: str) -> str:
+    """A checklist fix as a command line: slash commands as is, CLI words slashed."""
+    if next_key.startswith("/"):
+        return next_key
+    if next_key.startswith("kullback "):
+        return "/" + next_key[len("kullback "):]
+    return next_key
 
 
 class HomeView(Vertical):
-    """The checklist, the next step, and this workdir's recent builds."""
+    """The banner, the checklist, the next step, and this workdir's recent builds."""
 
-    def __init__(self, workdir: Any, model: Optional[str] = None, base_url: str = "") -> None:
+    def __init__(self, workdir: Any, model: Optional[str] = None, base_url: str = "",
+                 session: Optional[dict] = None) -> None:
         super().__init__(id="home")
         self.workdir = Path(workdir)
         self.model = model or DEFAULT_MODEL
         self.base_url = base_url
-        self.panel = Static("", id="home-body")
+        self.session = session if session is not None else {}
+        self.rows: list = []
+        self.next_line = ""
+        self.recent: list = []
+        self._read()
+        # One item per row, built once: ListView.clear needs an await before a
+        # re-mount, so later reads update these labels in place instead.
+        self._items = [self._row_item(index, row) for index, row in enumerate(self.rows)]
+        self.checklist = ListView(*self._items, id="home-checklist")
+        self.recent_view = Static("", id="home-recent")
 
     def compose(self):  # type: ignore[override]
-        yield self.panel
+        yield Static(banner(), id="home-banner")
+        yield self.checklist
+        yield self.recent_view
 
     def on_mount(self) -> None:
-        self.refresh_view()
+        self._render_rows()
 
     def refresh_view(self) -> None:
         """Read the workdir again; the app calls this every time Home is shown."""
+        self._read()
+        if self.is_mounted:
+            self._render_rows()
+
+    def _read(self) -> None:
+        """The rows, the next step and this workdir's recent builds, off disk and env."""
         from kullback.runner import heartbeat
 
-        rows = where_it_stands(self.workdir, dict(os.environ), self.model)
-        lines = ["where this workdir stands"]
-        for row in rows:
-            mark = "x" if row.done else " "
-            lines.append(f"[{mark}] {row.name:<10} {row.detail}")
-        lines.append("")
-        lines.append(f"next: {next_step(rows)}")
-        lines.append("")
-        lines.append("recent builds in this workdir")
+        self.rows = where_it_stands(self.workdir, dict(os.environ), self.model, self.session)
+        self.next_line = f"next: {next_step(self.rows)}"
         here = str(Path(self.workdir).expanduser().absolute())
-        recent = [record for record in heartbeat.read_all()
-                  if str(Path(str(record.get("workdir") or "")).expanduser().absolute()) == here][:5]
-        if not recent:
+        self.recent = [record for record in heartbeat.read_all()
+                       if str(Path(str(record.get("workdir") or "")).expanduser().absolute())
+                       == here][:MAX_RECENT]
+
+    @staticmethod
+    def _row_line(row: Any) -> str:
+        """One checklist row, with its slash fix named while it is not done."""
+        mark = "x" if row.done else " "
+        line = f"[{mark}] {row.name:<10} {row.detail}"
+        if not row.done and row.next_key.startswith("/"):
+            line += f" or {row.next_key}"
+        return line
+
+    def _row_item(self, index: int, row: Any) -> ListItem:
+        # Rich Text, not str: a Label reads "[x]" as markup and drops it, which
+        # left done rows with no mark beside the "[ ]" rows.
+        return ListItem(Label(Text(self._row_line(row))), id=f"home-row-{index}")
+
+    def _render_rows(self) -> None:
+        """The rows as selectable lines, the recent builds under them."""
+        for item, row in zip(self._items, self.rows, strict=True):
+            item.query_one(Label).update(Text(self._row_line(row)))
+        lines = ["recent builds in this workdir"]
+        if not self.recent:
             lines.append("none")
-        for record in recent:
+        for record in self.recent:
+            from kullback.runner import heartbeat
+
             alive = heartbeat.alive(record.get("pid"))
             mark = "live" if alive and record.get("status") == "running" else str(
                 record.get("status") or "done")
             lines.append(f"{mark} {record.get('model') or 'no model'}")
-        self.panel.update("\n".join(lines))
+        self.recent_view.update(Text("\n".join(lines)))
+
+    @on(ListView.Selected, "#home-checklist")
+    def _row_chosen(self, event: ListView.Selected) -> None:
+        """Enter on a row puts its fix command in the command line."""
+        try:
+            index = list(self.checklist.children).index(event.item)
+        except ValueError:
+            return
+        if 0 <= index < len(self.rows):
+            self.app.prefill_command(fix_command(self.rows[index].next_key))
+
+    def row_command(self, index: int) -> str:
+        """The command row `index` puts in the command line, for tests to read."""
+        return fix_command(self.rows[index].next_key)
 
     def text(self) -> str:
         """The view as plain text, for tests to read without rendering."""
-        content = self.panel.content
-        return content.plain if hasattr(content, "plain") else str(content)
+        lines = ["where this workdir stands"]
+        for row in self.rows:
+            lines.append(self._row_line(row))
+        lines.append("")
+        lines.append(self.next_line)
+        lines.append("")
+        lines.append("recent builds in this workdir")
+        if not self.recent:
+            lines.append("none")
+        for record in self.recent:
+            lines.append(str(record.get("status") or "done"))
+        return "\n".join(lines)
