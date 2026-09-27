@@ -21,18 +21,22 @@ GLUED_PROMPT = (
     "must_tell (a short list of things the agent must tell the person at the end, may be empty)."
 )
 
-DIRECT_PROMPT = (
+DIRECT_TASK = (
     "A person is writing to a support agent about several problems they want solved. "
-    "Plan the exact steps that fulfil every goal below.\n\n"
-    "Their goals, each in plain words with the values the world holds for it:\n{goals}\n\n"
-    "The steps the agent may take, each with the arguments it requires:\n{tools}\n\n"
-    "Rules: use only the steps named above; fill every required argument; an argument "
-    "that names a row must reuse a value from the goal data above, never an invented one; "
-    "the request must state symptoms and outcomes in the person's own words in a few sentences, "
-    "naming no tool, system, table or step, and carrying no value outside this list:\n{facts}\n\n"
-    "Reply as JSON with three keys: request (the person's first message), writes (the exact "
-    "steps in order, each with name and args), and must_tell (a short list of things the agent "
-    "must tell the person at the end, may be empty)."
+    "You plan the exact steps that fulfil every goal below. This person is {anchor}.\n\n"
+    "Their goals, each in plain words:\n{goals}\n\n"
+    "The only values this person knows and may state:\n{facts}\n\n"
+    "Look up rows with the read steps below (each names the arguments it requires):\n{reads}\n\n"
+    "When the plan is ready, use the write steps below (each names the arguments it "
+    "requires):\n{writes}\n\n"
+    "Rules: use only the steps named above; fill every required argument from values "
+    "your reads returned, never an invented one; reads never change anything; the request "
+    "must state symptoms and outcomes in the person's own words in a few sentences, naming "
+    "no tool, system, table or step, and carrying no value outside the list above.\n\n"
+    "{note}"
+    "Reply as JSON: either {{\"read\": {{\"name\": ..., \"args\": {{...}}}}}} to look up "
+    "rows, or {{\"blueprint\": {{\"request\": ..., \"writes\": [{{\"name\": ..., \"args\": "
+    "{{...}}}}], \"must_tell\": [...]}}}} when every goal has its steps."
 )
 
 
@@ -104,25 +108,63 @@ def glued_request(model: Any, goals: list[str], facts: list[dict], note: str = "
     return {"request": request, "must_tell": must_tell}, ""
 
 
-def direct_blueprint(
-    model: Any, goals: list[str], blocks: list[str], tools: list[str], facts: list[dict], note: str = ""
-) -> tuple[dict, str]:
-    glines = "\n".join(f"- {g}\n  data: {b}" for g, b in zip(goals, blocks, strict=True)) or "- nothing"
-    tlines = "\n".join(f"- {t}" for t in tools) or "- nothing"
+def direct_blueprint_loop(
+    model: Any,
+    goals: list[str],
+    facts: list[dict],
+    anchor: str,
+    read_tools: list[str],
+    write_tools: list[str],
+    note: str,
+    executor: Any,
+    max_reads: int = 12,
+) -> tuple[dict, str, int]:
+    """One long blueprint from scratch: goals in words, rows found by reading.
+
+    The model sees no recorded call and no args JSON, only the goals, the anchor
+    id, the user facts, and the tool shapes. It may call read steps (executed
+    here against a fresh world, results truncated) up to max_reads times, then
+    returns the blueprint. Returns the blueprint, the failure reason, and the
+    reads used.
+    """
+    glines = "\n".join(f"- {g}" for g in goals) or "- nothing"
     fact_lines = "\n".join(f"- {r['field']}: {r['value']}" for r in facts) or "- nothing"
-    prompt = DIRECT_PROMPT.format(goals=glines, tools=tlines, facts=fact_lines)
-    if note:
-        prompt += f"\n\nThe previous blueprint failed for this reason, fix it: {note}"
-    text, reason = _query(model, prompt)
-    if reason:
-        return {}, reason
-    parsed, reason = _parse_json(text)
-    if reason:
-        return {}, reason
-    request = str(parsed.get("request") or "").strip()
-    writes = parsed.get("writes") or []
+    rlines = "\n".join(f"- {t}" for t in read_tools) or "- nothing"
+    wlines = "\n".join(f"- {t}" for t in write_tools) or "- nothing"
+    history = DIRECT_TASK.format(
+        anchor=anchor, goals=glines, facts=fact_lines, reads=rlines, writes=wlines, note=note
+    )
+    used = 0
+    for _ in range(max_reads + 1):
+        text, reason = _query(model, history)
+        if reason:
+            return {}, reason, used
+        parsed, reason = _parse_json(text)
+        if reason:
+            history += f"\n\nThat reply was not usable ({reason}). Reply as JSON, a read or a blueprint."
+            continue
+        if isinstance(parsed.get("blueprint"), dict):
+            return _clean_blueprint(parsed["blueprint"], used)
+        want = parsed.get("read") or {}
+        if not isinstance(want, dict) or not str(want.get("name") or "").strip():
+            history += "\n\nThat reply was neither a read nor a blueprint. Reply as JSON, one or the other."
+            continue
+        if used >= max_reads:
+            history += "\n\nNo read calls are left. Reply with the blueprint now."
+            continue
+        observation = executor(str(want.get("name")), want.get("args") or {})
+        used += 1
+        history += f"\n\nThe read returned:\n{observation}\n\nReply as JSON, a read or a blueprint."
+    return {}, "the synthesiser never returned a blueprint", used
+
+
+def _clean_blueprint(raw: Any, used: int) -> tuple[dict, str, int]:
+    if not isinstance(raw, dict):
+        return {}, "the synthesiser gave no usable blueprint", used
+    request = str(raw.get("request") or "").strip()
+    writes = raw.get("writes") or []
     if not request or not isinstance(writes, list) or not writes:
-        return {}, "the synthesiser gave no usable blueprint"
+        return {}, "the synthesiser gave no usable blueprint", used
     clean = []
     for w in writes:
         if not isinstance(w, dict):
@@ -132,10 +174,10 @@ def direct_blueprint(
         if name and isinstance(args, dict):
             clean.append({"name": name, "args": args})
     if not clean:
-        return {}, "the synthesiser gave no usable blueprint"
-    must = parsed.get("must_tell") or []
+        return {}, "the synthesiser gave no usable blueprint", used
+    must = raw.get("must_tell") or []
     must_tell = [str(m) for m in must if str(m).strip()][:5]
-    return {"request": request, "writes": clean, "must_tell": must_tell}, ""
+    return {"request": request, "writes": clean, "must_tell": must_tell}, "", used
 
 
 def leaked(request: str, held: list[dict]) -> list[str]:

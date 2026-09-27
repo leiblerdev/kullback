@@ -18,10 +18,14 @@ from typing import Any, Optional
 from kullback import graph as graph_mod
 from kullback import synthesise as S
 from kullback.builder import synth as synth_mod
+from kullback.builder.compile_env import ACTIONS_TABLE
+from kullback.builder.mine import CONSTANTS_TABLE
 from kullback.examiner import variants as variants_mod
 from kullback.gates import verifier_suite
 from kullback.gates.tool_runs import CRASH_ERRORS
 from kullback.sampling import sample_key
+
+SKIP_TABLES = (ACTIONS_TABLE, CONSTANTS_TABLE)
 
 TRIES = 8
 
@@ -103,7 +107,7 @@ def mine_units(world: Any, workdir: Any, trusted: list[str]) -> tuple[list[dict]
 
 def coverage_votes(world: Any, mined: list[dict]) -> dict[str, int]:
     """Units naming one row of each table, read off the mined units' arguments."""
-    tables = [t for t in (world.schema.tables or ()) if t not in ("actions", "constants")]
+    tables = [t for t in (world.schema.tables or ()) if t not in SKIP_TABLES]
     lower: dict[str, set[str]] = {}
     for table in tables:
         lower[table] = {str(k).lower() for k in synth_mod.table_rows(world.db, world.schema, table)}
@@ -130,7 +134,7 @@ def profile_anchor_table(world: Any, workdir: Any, trusted: list[str]) -> str:
     replayed and its answer mapped to the table holding it.
     """
     askable = askable_fields(workdir)
-    tables = [t for t in (world.schema.tables or ()) if t not in ("actions", "constants")]
+    tables = [t for t in (world.schema.tables or ()) if t not in SKIP_TABLES]
     lower: dict[str, set[str]] = {
         t: {str(k).lower() for k in synth_mod.table_rows(world.db, world.schema, t)} for t in tables
     }
@@ -176,7 +180,7 @@ def anchor_table(world: Any, votes: dict[str, int] | None = None) -> str:
     then most mined units naming one of its rows, then fewest rows.
     Votes maps table to units naming it and is read off the mined units.
     """
-    tables = [t for t in (world.schema.tables or ()) if t not in ("actions", "constants")]
+    tables = [t for t in (world.schema.tables or ()) if t not in SKIP_TABLES]
     hits: dict[str, set[str]] = {}
     for table in tables:
         rows = synth_mod.table_rows(world.db, world.schema, table)

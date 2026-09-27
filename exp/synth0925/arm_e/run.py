@@ -71,6 +71,16 @@ def tool_lines(world: Any) -> list[str]:
     return lines
 
 
+def read_lines(world: Any) -> list[str]:
+    lines = []
+    for sig in sorted(world.sigs, key=lambda s: s.name):
+        if sig.name in world.write_tools:
+            continue
+        _props, req = S.declared(sig)
+        lines.append(f"{sig.name} requires {', '.join(req) or 'nothing'}")
+    return lines
+
+
 def to_calls(world: Any, sigs: dict, writes: list[dict], ident: str) -> tuple[list[dict], str]:
     """Model-proposed writes into replayable call rows, declared args only."""
     calls = []
@@ -182,12 +192,13 @@ def line_for(
     request: str,
     said: list[dict],
     calls: list[dict],
-    must_tell: list[str],
+    must_tell: list[dict],
     checks: dict,
     revisions: int,
     status: str,
     reasons: list[str],
     cost: float,
+    reads_used: int = 0,
 ) -> dict:
     writes = [{"name": c["name"], "args": c["args"]} for c in calls if c.get("name") is not None]
     return {
@@ -214,6 +225,7 @@ def line_for(
         "status": status,
         "reasons": reasons,
         "cost_usd": round(cost, 6),
+        "reads_used": reads_used,
     }
 
 
@@ -282,12 +294,57 @@ def build_glued(
     return {}, reasons
 
 
+def _reader(world: Any, sigs: dict, reads: set[str]):
+    """A read-only executor over one fresh world. Writes are refused, never run."""
+    toolkit = world.toolkit(world.fresh_db())
+
+    def run(name: str, args: Any) -> str:
+        if name in world.write_tools or name not in reads:
+            return "refused: read steps only"
+        sig = sigs.get(name)
+        if sig is None:
+            return "refused: unknown step"
+        properties, required = S.declared(sig)
+        given = args if isinstance(args, dict) else {}
+        call = {k: v for k, v in given.items() if k in properties}
+        for key in required:
+            if key not in call:
+                return f"refused: missing {key}"
+        body = getattr(toolkit, name, None)
+        if body is None:
+            return "refused: no such step"
+        try:
+            answer = body(**call)
+        except Exception as error:  # noqa: BLE001 - the class is the ruling
+            return f"refused: {type(error).__name__}"
+        return json.dumps(answer, default=str, sort_keys=True)[:1500]
+
+    return run
+
+
 def build_direct(
-    world: Any, sigs: dict, askable: set[str], model: Any, tools: list[str], goal_set: dict, set_no: int, salt: str
+    world: Any,
+    sigs: dict,
+    askable: set[str],
+    model: Any,
+    tools: list[str],
+    reads: list[str],
+    goal_set: dict,
+    set_no: int,
+    salt: str,
 ) -> tuple[dict, list[str]]:
-    """One long blueprint straight from the synthesiser: goals and tools only, no calls."""
+    """One long blueprint from scratch: goals in words, rows found by reading.
+
+    The synthesiser never sees a recorded call or an args JSON: only the goal
+    lines, the anchor id, the user facts, and the tool shapes. It reads the
+    fresh world itself (read steps only, 12 per attempt), then returns the
+    blueprint.
+    """
     reasons: list[str] = []
-    lines, blocks, said_all, held_all = zip(*(prompts.goal_line(u, askable) for u in goal_set["units"]), strict=True)
+    parts = [prompts.goal_line(u, askable) for u in goal_set["units"]]
+    lines = [p[0] for p in parts]
+    said_all = [p[2] for p in parts]
+    held_all = [p[3] for p in parts]
     facts = [dict(f) for f in said_all[0]]
     seen = {(f["field"], json.dumps(f["value"], default=str)) for f in facts}
     for extra in said_all[1:]:
@@ -300,15 +357,21 @@ def build_direct(
     for extra in held_all[1:]:
         held.extend(dict(f) for f in extra)
     _ = salt
+    read_names = {t.split(" requires ")[0] for t in reads}
+    total_reads = 0
     for rev in range(REVISIONS + 1):
         ident = f"e:direct:{set_no}:r{rev}"
-        note = f"attempt {rev}: " + reasons[-1] if reasons else ""
-        prop, reason = prompts.direct_blueprint(model, list(lines), list(blocks), tools, facts, note)
+        base_note = f"attempt {rev}: " + reasons[-1] if reasons else ""
+        note = f"The previous blueprint failed for this reason, fix it: {base_note}" if base_note else ""
+        prop, reason, used = prompts.direct_blueprint_loop(
+            model, lines, facts, goal_set["anchor"], reads, tools, note, _reader(world, sigs, read_names)
+        )
+        total_reads += used
         if reason:
             reasons.append(reason if rev else f"direct_{reason}")
             if rev < REVISIONS:
                 continue
-            return {}, reasons
+            return {"reads_used": total_reads}, reasons
         calls, why = to_calls(world, sigs, prop["writes"], ident)
         if why:
             reasons.append(f"direct_{why}")
@@ -331,19 +394,45 @@ def build_direct(
             "said": facts,
             "held": held,
             "revisions": rev,
+            "reads_used": total_reads,
         }, reasons
-    return {}, reasons
+    return {"reads_used": total_reads}, reasons
+
+
+def identical_writes() -> dict:
+    """Admitted pairs whose glued and direct write calls match exactly."""
+    glued: dict[int, list] = {}
+    direct: dict[int, list] = {}
+    path = OUT / "tasks.jsonl"
+    if not path.exists():
+        return {"pairs": 0, "identical": 0, "sets": []}
+    for raw in open(path):
+        row = json.loads(raw)
+        if row.get("status") != "admitted":
+            continue
+        key = (row.get("construction"), int(row.get("goal_set")))
+        writes = [(w.get("name"), json.dumps(w.get("args"), sort_keys=True, default=str))
+                  for w in row.get("blueprint_writes") or []]
+        if key[0] == "glued":
+            glued[key[1]] = writes
+        elif key[0] == "direct":
+            direct[key[1]] = writes
+    same = sorted(s for s in glued if s in direct and glued[s] == direct[s])
+    pairs = sorted(s for s in glued if s in direct)
+    return {"pairs": len(pairs), "identical": len(same), "sets": same}
 
 
 def main() -> None:
     t0 = time.time()
     pilot_only = "--pilot-only" in sys.argv
+    direct_only = "--direct-only" in sys.argv
     world = S.World(WORKDIR)
     sigs = {s.name: s for s in world.sigs}
     body = S.load_graph(WORKDIR)
     askable = units.askable_fields(WORKDIR)
     models = live_models(WORKDIR)
     tools = tool_lines(world)
+    reads = read_lines(world)
 
     trusted = units.trusted_ids(WORKDIR)
     mined, mstats = units.mine_units(world, WORKDIR, trusted)
@@ -367,7 +456,7 @@ def main() -> None:
         print("too few validated units, stopping")
         return
 
-    sets = draw_sets(valid, anchors, SETS if not pilot_only else 5, SEED)
+    sets = draw_sets(valid, anchors, 5 if pilot_only else SETS, SEED)
     for s in sets:
         alts = []
         for r in range(REVISIONS):
@@ -380,8 +469,17 @@ def main() -> None:
 
     OUT.mkdir(parents=True, exist_ok=True)
     lines_path = OUT / "tasks.jsonl"
-    if not pilot_only and lines_path.exists():
+    if not pilot_only and not direct_only and lines_path.exists():
         lines_path.unlink()
+    glued_status: dict[int, str] = {}
+    done_direct: set[int] = set()
+    if direct_only and lines_path.exists():
+        for raw in open(lines_path):
+            row = json.loads(raw)
+            if row.get("construction") == "glued":
+                glued_status[int(row.get("goal_set"))] = row.get("status")
+            elif row.get("construction") == "direct":
+                done_direct.add(int(row.get("goal_set")))
     results: list[dict] = []
     per: dict[str, dict] = {
         "glued": {"admitted": 0, "rejected": 0, "revs": [], "usd": 0.0},
@@ -391,26 +489,29 @@ def main() -> None:
     pairs: list[dict] = []
 
     for set_no, goal_set in enumerate(sets):
-        if stage_usd(WORKDIR, "synth_glued") + stage_usd(WORKDIR, "synth_direct") >= CEILING - 0.5:
-            print("spend guard reached, stopping")
-            break
+        if direct_only and set_no in done_direct:
+            continue
         unit_n = len(goal_set["units"])
         level = "hard" if unit_n >= 3 else "medium"
-        pair_status: dict[str, str] = {}
-        for construction, stage, builder in (
-            ("glued", "synth_glued", build_glued),
-            ("direct", "synth_direct", build_direct),
-        ):
+        pair_status: dict[str, str] = {"glued": glued_status[set_no]} if set_no in glued_status else {}
+        builders = (
+            (("glued", "synth_glued", build_glued), ("direct", "synth_direct", build_direct))
+            if not direct_only
+            else (("direct", "synth_direct", build_direct),)
+        )
+        for construction, stage, builder in builders:
             tid = f"synth_e_{construction}_{set_no:02d}"
             before = stage_usd(WORKDIR, stage)
             if construction == "glued":
                 prop, reasons = builder(world, body, sigs, askable, models[stage], goal_set, set_no, SEED)
             else:
-                prop, reasons = builder(world, sigs, askable, models[stage], tools, goal_set, set_no, SEED)
+                prop, reasons = builder(
+                    world, sigs, askable, models[stage], tools, reads, goal_set, set_no, SEED
+                )
             status, checks = "rejected", {}
-            revisions = prop["revisions"] if prop else REVISIONS
+            revisions = (prop or {}).get("revisions", REVISIONS)
             said, req, must, calls = [], "", [], []
-            if prop:
+            if prop and prop.get("calls"):
                 made, checks = admit(
                     world,
                     body,
@@ -459,6 +560,7 @@ def main() -> None:
                 status,
                 reasons[-4:],
                 round(after_cost, 6),
+                reads_used=(prop or {}).get("reads_used", 0),
             )
             results.append(line)
             with open(lines_path, "a") as fh:
@@ -489,7 +591,53 @@ def main() -> None:
             pairs.append({"goal_set": set_no, "glued": pair_status.get("glued"), "direct": pair_status.get("direct")})
         if pilot_only is False and set_no == 4:
             print(f"PILOT FUNNEL: {json.dumps(per)} tallies={json.dumps(check_tally)} pairs={pairs}", flush=True)
-
+    if direct_only:
+        per["direct"] = {"admitted": 0, "rejected": 0, "revs": [], "usd": 0.0}
+        check_tally["direct"] = {}
+        seen_direct = {r["goal_set"] for r in results if r["construction"] == "direct"}
+        for raw in open(lines_path):
+            row = json.loads(raw)
+            if row.get("construction") != "direct" or row.get("goal_set") in seen_direct:
+                continue
+            results.append(row)
+            per["direct"]["admitted" if row.get("status") == "admitted" else "rejected"] += 1
+            per["direct"]["revs"].append(row.get("revisions", REVISIONS))
+            per["direct"]["usd"] += float(row.get("cost_usd") or 0.0)
+            ck = row.get("checks") or {}
+            key = (
+                "runs"
+                if not ck.get("runs")
+                else "do_nothing_fails"
+                if not ck.get("do_nothing_fails")
+                else "prefix_fails"
+                if not ck.get("prefix_fails")
+                else "suite_passed"
+                if not ck.get("suite_passed")
+                else "pass"
+            )
+            tally = check_tally.setdefault("direct", {})
+            tally[key] = tally.get(key, 0) + 1
+        status_of: dict[int, dict[str, str]] = {}
+        for raw in open(lines_path):
+            row = json.loads(raw)
+            status_of.setdefault(int(row.get("goal_set")), {})[row.get("construction")] = row.get("status")
+        pairs = [
+            {"goal_set": s, "glued": v.get("glued"), "direct": v.get("direct")}
+            for s, v in sorted(status_of.items())
+            if v.get("glued") != v.get("direct")
+        ]
+    per_out: dict[str, dict] = {}
+    for k, v in per.items():
+        if direct_only and k == "glued":
+            continue
+        per_out[k] = {
+            "admitted": v["admitted"],
+            "rejected": v["rejected"],
+            "revisions": v["revs"],
+            "usd": round(v["usd"], 4),
+            "usd_per_admitted": round(v["usd"] / v["admitted"], 4) if v["admitted"] else None,
+            "reads_used": sorted(r.get("reads_used", 0) for r in results if r["construction"] == k),
+        }
     summary = {
         "seed": SEED,
         "synth_model": SYNTH_MODEL,
@@ -497,20 +645,24 @@ def main() -> None:
         "wall_s": round(time.time() - t0, 1),
         "mined": mstats,
         "units_validated_alone": len(valid),
-        "per_construction": {
-            k: {
-                "admitted": v["admitted"],
-                "rejected": v["rejected"],
-                "revisions": v["revs"],
-                "usd": round(v["usd"], 4),
-                "usd_per_admitted": round(v["usd"] / v["admitted"], 4) if v["admitted"] else None,
-            }
-            for k, v in per.items()
-        },
+        "per_construction": per_out,
         "check_tally": check_tally,
         "pairs_split": pairs,
-        "total_usd": round(per["glued"]["usd"] + per["direct"]["usd"], 4),
+        "total_usd": round(sum(v["usd"] for v in per_out.values()), 4),
+        "identical_writes": identical_writes(),
     }
+    if direct_only and (OUT / "summary.json").exists():
+        old = json.loads((OUT / "summary.json").read_text())
+        old_glued = (old.get("per_construction") or {}).get("glued")
+        if old_glued:
+            summary["per_construction"]["glued"] = old_glued
+        old_tally = (old.get("check_tally") or {}).get("glued")
+        if old_tally:
+            summary["check_tally"]["glued"] = old_tally
+        summary["total_usd"] = round(
+            summary["total_usd"] + float((old_glued or {}).get("usd") or 0.0), 4
+        )
+        summary["leaked_run"] = "tasks-direct-leaked.jsonl holds the 30 direct lines written with args JSON in goals"
     with open(OUT / "summary.json", "w") as fh:
         json.dump(summary, fh, indent=1)
     print(json.dumps(summary, indent=1), flush=True)
