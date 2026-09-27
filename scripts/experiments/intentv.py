@@ -352,6 +352,31 @@ def _read_impl(state: dict):
     return {"lookup_rows": lookup_rows, "search_rows": search_rows}
 
 
+SYSTEM_PROMPT_R0 = """You write the end-state demands for one customer request. You have never seen \
+any agent run, reference solution, or existing check for this task, and you must not ask for one: \
+derive everything from the Intent, the policy, the tool list, and the Starting state reads below.
+
+Rules:
+- Demand only what the Intent asks for or the policy requires. Never demand a step just because \
+it would be a sensible way to do the job.
+- Every exact value (ids, names, amounts, codes) must come from a Starting state read in this \
+session, never from memory or guesswork. If a value is not in the Starting state, demand the \
+shape (which tool and field) rather than a literal, or leave it out.
+- Several acceptable end states may be listed: mark alternatives with kind "allowed".
+- Output one JSON object only, no prose: {"demands": [{"id": "d0", "kind": "required", \
+"demand": "write" | "say" | "ask" | "no_write" | "cap" | "shape", ...fields..., \
+"because": "quote of the Intent span or the policy rule name"}]}.
+- write needs tool, id_field, entity, values (an object of field to value read from the state).
+- say needs text (a fact the final answer must state, read from the state or the Intent).
+- ask needs field (a field of the request the agent must ask the user about) or confirm_tool.
+- no_write needs no fields: the end state is the starting state.
+- cap needs count: how many entities may be written at most.
+- shape needs tool, field, id_field: the write must carry a value the run read for that column.
+- because must quote the Intent span word for word (at least 12 characters) or name the policy \
+rule. A demand with no valid because is dropped.
+"""
+
+
 SYSTEM_PROMPT = """You write the end-state demands for one customer request. You have never seen \
 any agent run, reference solution, or existing check for this task, and you must not ask for one: \
 derive everything from the Intent, the policy, the tool list, and the Starting state reads below.
@@ -414,8 +439,14 @@ def because_rules(clone: Path, task_id: str) -> list[str]:
     return policy_rules(clone, task_id) + policy_sections(clone)
 
 
-def writer_messages(intent: str, policy: list[str], policy_text: str,
-                    tools: list[dict]) -> list[dict]:
+def writer_messages(intent: str, policy: list[str], tools: list[dict],
+                    policy_text: str = "", prompt: str = "r1") -> list[dict]:
+    """The writer prompt: r0 is the round-0 text and body exactly, r1 adds the policy text."""
+    if prompt == "r0":
+        body = {"intent": intent,
+                "policy": policy or ["no compiled policy rules; the Intent alone governs"],
+                "tools": tools}
+        return [{"role": "user", "content": SYSTEM_PROMPT_R0 + "\n" + json.dumps(body)[:12000]}]
     body = {"intent": intent,
             "tools": tools,
             "policy": policy or ["no compiled disclosure rules; the Intent alone governs"],
@@ -445,7 +476,8 @@ def _price(usage: dict) -> float:
     return total
 
 
-def run_writer(model: object, messages: list[dict], state: dict, config: object) -> dict:
+def run_writer(model: object, messages: list[dict], state: dict, config: object,
+               max_rounds: int = MAX_TOOL_ROUNDS) -> dict:
     """One bounded writer session: read-only state tools, then a final JSON object."""
     from kullback.ai.provider import ModelConfig
 
@@ -455,7 +487,7 @@ def run_writer(model: object, messages: list[dict], state: dict, config: object)
     tool_rounds = 0
     thinking: list[str] = []
     tool_uses: list[str] = []
-    for _ in range(MAX_TOOL_ROUNDS + 1):
+    for _ in range(max_rounds + 1):
         reply = model.query(working, tools=READ_TOOLS, config=config or ModelConfig())
         step = _usage_of(reply)
         for key in usage:
@@ -685,6 +717,7 @@ def main(argv=None) -> int:
     p_write.add_argument("--ceiling-usd", type=float, default=12.0)
     p_write.add_argument("--out-dir", type=Path, required=True)
     p_write.add_argument("--only", nargs="*", default=None)
+    p_write.add_argument("--prompt", choices=("r0", "r1"), default="r1")
     p_score = sub.add_parser("score")
     p_score.add_argument("--sample", type=Path, required=True)
     p_score.add_argument("--demands-dir", type=Path, required=True)
@@ -723,8 +756,10 @@ def main(argv=None) -> int:
         if args.only:
             sample = [r for r in sample if r["task_id"] in args.only]
         model = live_model(args.model)
+        prompt = args.prompt
         config = ModelConfig(thinking={"type": "adaptive", "display": "summarized"},
-                             max_tokens=2000)
+                             max_tokens=3000 if prompt == "r0" else 2000)
+        rounds = 6 if prompt == "r0" else MAX_TOOL_ROUNDS
         args.out_dir.mkdir(parents=True, exist_ok=True)
         spent = 0.0
         for row in sample:
@@ -734,15 +769,18 @@ def main(argv=None) -> int:
                 continue
             clone = SCRATCH / row["corpus"]
             intent = intent_text(clone, row["task_id"])
-            policy = because_rules(clone, row["task_id"])
+            policy = policy_rules(clone, row["task_id"]) if prompt == "r0" else because_rules(
+                clone, row["task_id"])
             tools, _, _ = tool_list(clone)
             state = start_state(clone, row["task_id"])
-            result = run_writer(model, writer_messages(intent, policy, corpus_policy(clone),
-                                                      tools), state, config)
+            result = run_writer(
+                model, writer_messages(intent, policy, tools,
+                                       corpus_policy(clone) if prompt == "r1" else "",
+                                       prompt), state, config, rounds)
             spent += result["usd"]
             demands, error = parse_demands(result["text"])
             out = {"corpus": row["corpus"], "task_id": row["task_id"],
-                   "ref_class": row["ref_class"], "demands": demands,
+                   "ref_class": row["ref_class"], "prompt": prompt, "demands": demands,
                    "parse_error": error, "usd": round(result["usd"], 4),
                    "usage": result["usage"], "tool_rounds": result["tool_rounds"],
                    "tool_uses": result.get("tool_uses", []),

@@ -161,3 +161,20 @@ def test_policy_sections_names_recorded_headers(tmp_path):
         encoding="utf-8")
     assert corpus_policy(tmp_path) != ""
     assert policy_sections(tmp_path) == ["section:cancel pending order", "section:modify items"]
+
+def test_writer_prompts_differ_only_by_revision():
+    import json
+    from intentv import SYSTEM_PROMPT, SYSTEM_PROMPT_R0, writer_messages
+
+    def body(**kwargs):
+        content = writer_messages("intent", ["disclosure:zip:volunteered"],
+                                  [{"name": "t"}], **kwargs)[0]["content"]
+        return content, json.loads(content[content.index('{"intent"'):])
+
+    r0_content, r0 = body(prompt="r0")
+    r1_content, r1 = body(policy_text="policy words")
+    assert "policy_text" not in r0 and r0["policy"] == ["disclosure:zip:volunteered"]
+    assert r1["policy_text"] == "policy words"
+    assert r0_content.startswith(SYSTEM_PROMPT_R0)
+    assert r1_content.startswith(SYSTEM_PROMPT)
+    assert SYSTEM_PROMPT_R0 != SYSTEM_PROMPT
