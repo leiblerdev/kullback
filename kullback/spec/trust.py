@@ -38,6 +38,8 @@ from kullback.spec.router import (  # noqa: F401  (ROUNDS_CAP re-exported for re
     is_set_aside,
 )
 from kullback.spec.schema import Spec, load_spec, spec_path
+from kullback.spec.writer import spec_verifier_path
+from kullback.spec.writer_tools import policy_sections_of
 
 TIERS = ("trusted", "replay_only", "untrusted", "set_aside")
 GATES = ("grounded", "can_fail", "independent_pass", "no_open_ruling")
@@ -239,14 +241,6 @@ def verifier_from_of(workdir: Any) -> str:
 
 # --- one workdir -----------------------------------------------------------------------------------
 
-def policy_sections_of(workdir: Any) -> list[str]:  # owed to spec/writer_tools.py
-    """The names of the compiled policy rules, the sections a because may name."""
-    body = read_json(Path(workdir) / "constraints_check.json", None)
-    rules = body.get("constraints", body) if isinstance(body, dict) else body
-    return sorted({str(rule["name"]) for rule in rules if isinstance(rule, dict) and rule.get("name")}
-                  if isinstance(rules, list) else ())
-
-
 def set_aside_events(workdir: Any) -> list[dict]:
     """The router's set-aside events off the workdir bus; a missing or torn bus reads as none."""
     try:
@@ -262,12 +256,6 @@ def _task_ids(root: Path) -> list[str]:
     folder = spec_path(root, "_").parent
     ids |= {path.stem for path in folder.glob("*.json")} if folder.is_dir() else set()
     return sorted(ids)
-
-
-def spec_verifier_path(workdir: Any, task_id: str) -> Path:
-    """The Verifier the Spec writer wrote for the Task (its checks and the must_not atoms), the file the
-    Runner reads: workdir/spec/verifiers/<task_id>.json."""
-    return spec_path(workdir, task_id).parent / "verifiers" / f"{task_id}.json"
 
 
 def load_spec_verifier(workdir: Any, task_id: str) -> Optional[Verifier]:
