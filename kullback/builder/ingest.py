@@ -239,9 +239,9 @@ def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = N
     The winning adapter behind the intake seam (sources) reads the payload; this function only
     orchestrates (derive, sidecar, rejects). A simulation the records refuse is left out with its
     reason in workdir/rejects, which the gate reads, so one broken message never costs the whole
-    file (design section 6, on failure: reject trace with reason). The declared floor rules the
     file (an omitted floor is the module floor); the rescue step then prefixes what was set
-    aside, inside the same ruling."""
+    aside, inside the same ruling. The ruling also carries the winning vote's confidence, so the
+    ingest row reports what was decided while the reader was registered."""
     floor = _check_floor(floor)
     document, jsonl = _decode(raw_path(raw_hash, workdir).read_bytes())
     decision = sources.detect_format(document, jsonl)
@@ -282,6 +282,7 @@ def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = N
         _write_grader(trace, adapter.sidecar(simulation, document), workdir)
         traces.append(trace)
     ruling = rule_recordings(raw_hash, decision.winner, recordings, traces, rejects, floor=floor)
+    ruling["confidence"] = _winner_confidence(decision)
     _rescue_into_ruling(adapter, document, recordings, traces, ruling, workdir)
     _write_ruling(raw_hash, ruling, workdir)
     _write_rejects(raw_hash, rejects, workdir)
@@ -1094,12 +1095,10 @@ def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = 
         write_traces(eligible, workdir)
         if set_aside:
             write_evidence(set_aside, workdir)
-        document, jsonl = _decode(Path(path).read_bytes())
-        decision = sources.detect_format(document, jsonl)
         summary = {
             "raw_hash": raw.raw_hash,
             "format": raw.format_detected,
-            "confidence": _winner_confidence(decision),
+            "confidence": ruling["confidence"],
             "readers": readers,
             "skipped_readers": skipped,
             "runs": len(eligible),

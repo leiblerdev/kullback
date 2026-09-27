@@ -155,6 +155,19 @@ def test_a_derived_trace_carries_its_ids_source_ingest_version_turns_and_calls(s
     assert [c.name for c in trace.tool_calls] == ["get_user", "cancel_order", "list_orders"]
 
 
+def test_derive_writes_the_winning_vote_into_the_ruling(small_file, workdir):
+    """The ruling carries the confidence derive decided with, for the ingest row to report."""
+    from kullback.builder import sources
+
+    raw = ingest.store_raw(small_file, workdir)
+    ingest.derive_traces(raw.raw_hash, workdir)
+    ruling = ingest.read_intake_ruling(workdir, raw.raw_hash)
+    document, jsonl = ingest._decode(ingest.raw_path(raw.raw_hash, workdir).read_bytes())
+    decision = sources.detect_format(document, jsonl)
+    assert ruling["confidence"] == float(decision.votes[decision.winner][0])
+    assert ruling["confidence"] > 0
+
+
 def test_every_field_carries_a_raw_pointer(small_file, workdir):
     raw = ingest.store_raw(small_file, workdir)
     trace = ingest.derive_traces(raw.raw_hash, workdir)[0]
