@@ -144,3 +144,29 @@ def test_with_the_switch_on_the_examiners_reroll_factory_builds_the_agent_user(t
     root = _exam_env(tmp_path / "env")
     factory = R.runners_for(root, reroll_model=_asking_candidate(), user_model=_user_model())["reroll_user"]
     assert isinstance(factory("widget_task")(_Router(root)), AgentUser)
+
+
+def test_an_effort_wrapped_user_model_carries_the_effort_on_every_user_turn(tmp_path):
+    """The agent user's effort follows the run effort: each turn it takes carries it."""
+    root = _exam_env(tmp_path / "env")
+    user = _user_model()
+    R.runners_for(root, reroll_model=_asking_candidate(),
+                  user_model=budget.EffortModel(user, "low"))["run_rerolls"]("widget_task", 1, "on")
+    assert len(user.calls) > 0
+    assert all(call["config"].effort == "low" and call["config"].reasoning_effort == "low"
+               for call in user.calls)
+
+
+def test_the_builders_run_user_is_the_rule_user_alone_without_a_model(tmp_path):
+    from kullback.builder import domain_tools as builder_tools
+
+    root = _exam_env(tmp_path / "env")
+    assert type(builder_tools._run_user(root, "widget_task", _Router(root))) is SimulatedUser
+
+
+def test_the_builders_run_user_is_the_agent_user_over_the_floor_with_a_model(tmp_path):
+    from kullback.builder import domain_tools as builder_tools
+
+    root = _exam_env(tmp_path / "env")
+    user = builder_tools._run_user(root, "widget_task", _Router(root), _user_model())
+    assert isinstance(user, AgentUser) and type(user.fallback) is SimulatedUser

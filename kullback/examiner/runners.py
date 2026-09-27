@@ -131,6 +131,16 @@ def _make_user(workdir: Any, task_id: str, anchor: Any, router: Any, user_model:
         answer_strip=answer_strip, trace=reference, choices=choices, account=account)
 
 
+def run_user(workdir: Any, task_id: str, router: Any, user_model: Any) -> Any:
+    """The Task's agent user over its rule floor for a fresh Run outside the derivation.
+
+    The Builder's run tool meets the same user the Examiner's re-rolls meet: no anchor
+    here, so held-out Runs are not filtered from the Reference pick the way the
+    derivation filters them, the way the Builder's own rule user picks its rules.
+    """
+    return _make_user(workdir, task_id, None, router, user_model)
+
+
 class _Corpus:
     """The workdir's recordings, their rules and the columns their users stated, mined once per
     `runners_for` and only when the agent user is switched on."""

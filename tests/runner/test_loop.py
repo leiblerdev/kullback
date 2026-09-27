@@ -198,8 +198,13 @@ class Answering:
         # The turn carries what the user recorded for this turn, not what it recorded for the last one.
         (lambda: Answering(["sure"], events=[Event(idx=0, type="user_turn", payload={"tags": ["fact_unavailable"]})]),
          "anything else?", {"text": "sure"}, False),
+        # Who spoke rides the row where the user marked it: the agent user marks its turns agent,
+        # the rule-driven user alone marks nothing, so its rows stay driverless as the rows above.
+        (lambda: Answering(["Pick the second."], payload={"driver": "agent"}),
+         "Which suits you best?",
+         {"driver": "agent", "text": "Pick the second."}, False),
     ],
-    ids=["assisted_mark", "unavailable_field", "refusal_count", "no_earlier_tag"],
+    ids=["assisted_mark", "unavailable_field", "refusal_count", "no_earlier_tag", "driver_mark"],
 )
 def test_a_user_turn_carries_its_own_marks_and_no_earlier_ones(workdir, user, question, payload, assisted):
     state = new_run_state("r1", workdir=workdir, user=user(), max_turns=1 if question == "anything else?" else 2)

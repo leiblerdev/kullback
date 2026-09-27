@@ -2119,3 +2119,7 @@ When the Examiner rejected every Reference of a Task, the Task was refused as `r
 ### D295. A goal naming no writes is done by a tool call and a close, never by the empty set (2026-09-25)
 
 With `goal_writes` an empty set, `set() <= made` held at every turn, so on a Task whose goal implies no write the rule user skipped its one goal restatement and ended `goal_satisfied` at the first turn no cue matched: a Candidate that opened with a question was ended after one reply. The agent user's `EndProtocol.goal_done` carried the same comparison. Both now read one predicate, `ends.goal_done`: a goal naming writes is done when they are all made, D158's reading holds where no goal writes were named (`None`), and a goal naming none is done only when the Candidate has made at least one tool call in the Run and its latest turn closes (the close cue `_closes` reads). A close with no tool call is `handed_off`, and the rule user no longer restates a no-write goal to a Candidate that closed. The end mix changes: read-only Tasks that ended `goal_satisfied` on a first question now answer or restate, and those closed without a tool call count as `handed_off` in D133's `user_ends` and the second-path and re-roll summaries. Checked in code: `tests/user/test_user_goal_ends.py`.
+
+### D296. The agent user is the Simulated user by default (2026-09-27)
+
+Every Run a build makes meets the agent user on the run model over the rule floor; `--rule-user` keeps the rule-driven user alone. The rule user answered 0 of 60 dead turns, the agent user 45 of 60 (founder, 2026-09-27).

@@ -714,6 +714,16 @@ def rule_user(workdir: Any, task_id: str, router: Any) -> Optional[SimulatedUser
         answer_strip=value_strip(members) if members else None)
 
 
+def _run_user(root: Any, task_id: str, router: Any, user_model: Any = None) -> Optional[SimulatedUser]:
+    """The Simulated user of a fresh Run: the agent user over the rule floor where a user
+    model was named, else the rule-driven user alone, exactly as before the switch existed."""
+    if user_model is None:
+        return rule_user(root, task_id, router)
+    from kullback.examiner.runners import run_user
+
+    return run_user(root, task_id, router, user_model)
+
+
 def call_arguments(env: Any) -> dict[str, Any]:
     """The arguments of every shown recorded call, by call id, off the calls files under env/."""
     folder = Path(env) / env_files.CALLS_DIR
@@ -784,16 +794,20 @@ def _run_summary(task_ids: list[str], named: Any, *, played: list[str], runs: in
 
 def domain_tools(*, workdir: Any, model: Any = None,
                  examine_fn: Optional[Callable[[Any, Any], Any]] = None, judge_model: Any = None,
-                 probe_model: Any = None, reroll_model: Any = None, env: Any = None) -> list[AgentTool]:
+                 probe_model: Any = None, reroll_model: Any = None, run_model: Any = None,
+                 user_model: Any = None, env: Any = None) -> list[AgentTool]:
     """The nine domain tools bound to one workdir and the Builder's root `env` (workdir/env by default).
 
-    `model` drives the fresh Runs `run` buys and the Examiner session the default
-    `examine` runs; `examine_fn(workdir, task_ids)` answers `examine` and defaults to
-    the lazily resolved examination stream 6 delivers, which hands the judges, the probe
-    and the re-rolls their own models (each `model` when not named).
+    `model` drives the session's own calls, the readers and the Examiner session the default
+    `examine` runs; `examine_fn(workdir, task_ids)` answers `examine` and defaults to the lazily
+    resolved examination stream 6 delivers, which hands the judges, the probe and the re-rolls
+    their own models (each `model` when not named). `run_model` plays the fresh Runs `run` buys;
+    it is `model` when not named. `user_model` meets those Runs as the agent user over the
+    rule floor; without it they meet the rule-driven user alone, as before.
     """
     root = Path(workdir)
     env_root = Path(env) if env is not None else root / "env"
+    priced_user = priced_model(user_model, root, "user", cap_context=False)
     if examine_fn is not None:
         examine_call = examine_fn
     else:
@@ -925,7 +939,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
                              path=path, rulings=[_ruling_record(ruling) for ruling in drawn])
 
     async def run(args: RunArgs) -> RunResult:
-        if model is None:
+        if run_model is None and model is None:
             raise ValueError("run needs the session model to play fresh Runs with")
         named = args.task_ids if args.task_ids is not None else [args.task_id] if args.task_id else None
         runnable, no_verifier = _runnable_tasks(root) if named is None else ([], 0)
@@ -942,12 +956,13 @@ def domain_tools(*, workdir: Any, model: Any = None,
         played, capped = playable[:fits], playable[fits:]
         not_run = userless + capped
         reasons = [NO_USER_REASON] * len(userless) + [CAP_REASON] * len(capped)
-        priced = runner_model(model, root)
+        priced = runner_model(run_model or model, root)
         rows: list[RunRow] = []
         finished = 0
         for task_id in played:
             reports = runner_tool.reroll(root, task_id, priced, count=args.count, workdir=root,
-                                         make_user=lambda router, task_id=task_id: rule_user(root, task_id, router))
+                                         make_user=lambda router, task_id=task_id: _run_user(
+                                             root, task_id, router, priced_user))
             rows += [_run_row(root, task_id, item) for item in reports]
             # A Run is finished when its Simulated user ended it with the goal met (D210); the loop's
             # own end reason says only who stopped, never whether the goal was reached.
