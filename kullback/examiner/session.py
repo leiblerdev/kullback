@@ -625,12 +625,14 @@ def _mode_opening(exam_root: ExamRoot, selected: list[str], verifier_from: str, 
     if verifier_from != "intent":
         return session_opening(exam_root, selected), lambda: None
     from kullback.examiner import rule_tool
+    from kullback.examiner.reference_check import reject_reference
     from kullback.spec.router import Router
 
     views = rule_tool.write_views(exam_root, selected)
     lines = "\n".join(intent_line(exam_root, task_id, views.get(task_id)) for task_id in selected)
     router = Router(exam_root.workdir, exam_root.bus, reroll=_router_reroll(exam_root),
-                    note=_router_note(exam_root), model=model, ceiling_usd=ceiling_usd)
+                    note=_router_note(exam_root), model=model, ceiling_usd=ceiling_usd,
+                    reject_reference=reject_reference, reference_ids_of=rule_tool.reference_ids_of)
     text = prompt_mod.opening(EXAMINE_MESSAGE, lines, root_listing(exam_root.exam_dir),
                               notes_line(exam_root, selected))
     return text, router.attach()

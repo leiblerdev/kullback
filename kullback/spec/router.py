@@ -79,10 +79,13 @@ class Router:
 
     def __init__(self, workdir: Any, bus: Any, *, reroll: Optional[Callable] = None,
                  note: Optional[Callable] = None, model: Any = None, ceiling_usd: Optional[float] = None,
-                 reroll_count: int = REROLL_COUNT):
+                 reroll_count: int = REROLL_COUNT, reject_reference: Optional[Callable] = None,
+                 reference_ids_of: Optional[Callable] = None):
         self.workdir = Path(workdir)
         self.bus = bus
         self.reroll, self.note = reroll, note
+        # The Examiner's Reference exclusion, injected by the Examiner so the Spec never imports it.
+        self.reject_reference, self.reference_ids_of = reject_reference, reference_ids_of
         self.model, self.ceiling_usd = model, ceiling_usd
         self.reroll_count = reroll_count
         self.state = load_state(self.workdir)
@@ -160,12 +163,10 @@ class Router:
     def _rerun(self, task_id: str, body: dict, seq: int) -> tuple[str, bool]:
         run_id = str(body.get("run_id") or "")
         action = "reroll"
-        from kullback.examiner.reference_check import reject_reference  # the examiner reads the spec package
-        from kullback.examiner.rule_tool import reference_ids_of
-
-        if run_id and run_id in reference_ids_of(self.workdir, task_id):
-
-            reject_reference(self.workdir, task_id, run_id, str(body.get("reason") or ""))
+        if self.reject_reference is None or self.reference_ids_of is None:
+            log.warning("router: no Reference exclusion injected; ruling on run %s of %s rerolls only", run_id, task_id)
+        elif run_id and run_id in self.reference_ids_of(self.workdir, task_id):
+            self.reject_reference(self.workdir, task_id, run_id, str(body.get("reason") or ""))
             action = "reference_rejected_and_reroll"
         if self.reroll is None:
             self.state["queue"].append({"seq": seq, "task_id": task_id, "move": "reroll",

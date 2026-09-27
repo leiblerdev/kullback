@@ -48,18 +48,22 @@ def test_a_ruling_on_a_run_rerolls_the_task_through_the_runner_callee(tmp_path):
     assert load_spec(tmp_path, "t1").round == 1 and load_spec(tmp_path, "t1").rulings_open == 0
 
 
-def test_a_ruling_on_a_reference_run_rejects_it_before_the_reroll(tmp_path, monkeypatch):
-    from kullback.examiner import reference_check
-    from kullback.runner.records import write_json
-
-    write_json(tmp_path / "references.json", {"t1": {"references": [{"run_id": "ref"}]}})
+def test_a_ruling_on_a_reference_run_rejects_it_before_the_reroll(tmp_path):
     rejected = []
-    monkeypatch.setattr(reference_check, "reject_reference", lambda w, t, r, why: rejected.append((t, r)))
-    bus, router = _setup(tmp_path)
+    bus, router = _setup(tmp_path, reject_reference=lambda w, t, r, why: rejected.append((t, r)),
+                         reference_ids_of=lambda w, t: {"ref"})
     _ruling(bus, "run", run_id="ref")
     assert rejected == [("t1", "ref")]
     assert _actions(router) == [("run", "reference_rejected_and_reroll_queued")]
     assert router.state["queue"][0]["move"] == "reroll" and load_spec(tmp_path, "t1").rulings_open == 1
+
+
+def test_without_the_injected_exclusion_a_ruling_on_a_run_rerolls_only_and_warns(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING, logger=R.__name__):
+        bus, router = _setup(tmp_path)
+        _ruling(bus, "run", run_id="ref")
+    assert _actions(router) == [("run", "reroll_queued")]
+    assert any("no Reference exclusion" in record.getMessage() for record in caplog.records)
 
 
 def test_a_ruling_on_a_check_without_a_writer_is_deferred_and_kept_as_pending_repair(tmp_path, no_writer, caplog):
