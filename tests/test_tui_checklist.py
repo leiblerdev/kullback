@@ -95,6 +95,16 @@ def test_publish_is_never_done_and_names_the_bar(tmp_path, monkeypatch):
                                    Row("runner", True, "", ""), row])
 
 
+def test_publish_is_done_once_the_workdir_records_a_publish(tmp_path, monkeypatch):
+    _clean(monkeypatch, tmp_path)
+    (tmp_path / "publish.json").write_text(json.dumps({
+        "repo": "org/name", "revision": "commit-1",
+        "published_at": "2026-09-27T00:00:00+00:00"}), encoding="utf-8")
+    row = where_it_stands(tmp_path, {}, OPENAI_MODEL)[5]
+    assert row.done is True
+    assert "org/name" in row.detail and "commit-1" in row.detail
+
+
 def test_next_step_names_the_command_for_each_first_undone_row():
     names = ["model", "live calls", "traces", "build", "runner", "publish"]
     commands = ["/login", "HARNESS_ALLOW_MODEL_REQUESTS=1", "kullback ingest",

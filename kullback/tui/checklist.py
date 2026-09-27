@@ -181,11 +181,22 @@ def _runner_row(workdir: Path) -> Row:
     return Row("runner", False, "not frozen", "kullback freeze-runner")
 
 
+def _publish_row(workdir: Path) -> Row:
+    """The publish row: done once a publish recorded its repo and revision in the workdir."""
+    try:
+        record = json.loads((workdir / "publish.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        record = None
+    if isinstance(record, dict) and record.get("repo") and record.get("revision"):
+        return Row("publish", True, f"{record['repo']} at {record['revision']}", "kullback publish")
+    return Row("publish", False, "needs fidelity 0.90 over Tasks", "kullback publish")
+
+
 def where_it_stands(workdir: Path, env: Mapping[str, str], model: str,
                     session: Optional[Mapping[str, Any]] = None) -> list[Row]:
     """Six rows for a workdir, in the order a newcomer works through them.
 
-    Reads ingest_summary.json, rounds.json and runner_version.json off the
+    Reads ingest_summary.json, rounds.json, runner_version.json and publish.json off the
     workdir and variable names off env over the current directory's .env, the
     same two places a build reads them from. Names only: a set variable is
     named with where it came from (this session, .env, auth.json or the
@@ -201,7 +212,7 @@ def where_it_stands(workdir: Path, env: Mapping[str, str], model: str,
         _traces_row(workdir),
         _build_row(workdir),
         _runner_row(workdir),
-        Row("publish", False, "needs fidelity 0.90 over Tasks", "kullback publish"),
+        _publish_row(workdir),
     ]
 
 

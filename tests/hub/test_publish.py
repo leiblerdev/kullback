@@ -321,6 +321,15 @@ def test_publishing_uploads_the_package_and_tags_the_commit_with_the_round(nurse
     assert str(manifest["content_hash"])[:12] in hub.messages[0]
 
 
+def test_a_successful_publish_records_the_repo_revision_and_time_in_the_workdir(nursery, hub):
+    hosted, _ = publish_mod.publish(nursery, "leibler/nursery", client=hub, preview=True)
+    assert (nursery / "publish.json").is_file()
+    record = read_json(nursery / "publish.json")
+    assert record["repo"] == "leibler/nursery"
+    assert record["revision"] == hosted.commit
+    assert datetime.fromisoformat(record["published_at"])
+
+
 def test_publishing_again_writes_a_new_commit_and_a_new_tag_and_leaves_the_old_one(nursery, tmp_path, hub):
     first, _ = publish_mod.publish(nursery, "leibler/nursery", client=hub, preview=True)
     write_json(nursery / "rounds.json", [{"round": 3, "counts": {

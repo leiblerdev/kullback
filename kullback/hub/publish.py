@@ -19,8 +19,10 @@ builder state at all.
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,6 +33,10 @@ from kullback.hub.package import CARD_NAME
 from kullback.runner.records import read_json
 
 RELEASE_FIDELITY = FIDELITY_BAR
+
+# The workdir file a successful publish leaves behind: the repo it landed in, the revision
+# that landed, and when. The status screen reads it for its publish row.
+PUBLISH_RECORD = "publish.json"
 
 # What `kullback run` opens in a workdir before it can run a candidate. A fetch reports any of these
 # the package did not carry, so a directory that will not run says so on arrival rather than at the
@@ -86,10 +92,14 @@ def publish(workdir: Any, repo_id: str, *, client: Optional[HubClient] = None, n
             preview: bool = False, corpus: Optional[str] = None, corpus_license: Optional[str] = None,
             corpus_url: Optional[str] = None, keep: Optional[Any] = None,
             bar: float = RELEASE_FIDELITY) -> tuple[HostedRepo, dict]:
-    """Export, card, upload, tag. Answers where it landed and the manifest that landed there."""
+    """Export, card, upload, tag. Answers where it landed and the manifest that landed there.
+
+    A successful publish records the repo, the revision and the time in the workdir, so the
+    status screen can show the publish row as done.
+    """
     host = hub_client(client)
     root = Path(keep) if keep is not None else Path(tempfile.mkdtemp(prefix="kullback-publish-"))
-    out = root / repo_id.rsplit("/", 1)[-1]
+    out = root / "package"
     if out.exists():
         shutil.rmtree(out)
     try:
@@ -99,10 +109,18 @@ def publish(workdir: Any, repo_id: str, *, client: Optional[HubClient] = None, n
         tag = manifest["tag"]
         commit = host.upload_folder(repo_id, out, _commit_message(manifest, tag))
         host.tag(repo_id, tag, revision=commit or None)
+        _record_publish(workdir, repo_id, commit or tag)
     finally:
         if keep is None:
             shutil.rmtree(root, ignore_errors=True)
     return HostedRepo(repo_id=repo_id, url=url or url_for(repo_id), commit=commit or None, tag=tag), manifest
+
+
+def _record_publish(workdir: Any, repo_id: str, revision: str) -> None:
+    """Leave the publish record in the workdir: the repo, the revision and the time."""
+    record = {"repo": repo_id, "revision": revision,
+              "published_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    Path(workdir, PUBLISH_RECORD).write_text(json.dumps(record), encoding="utf-8")
 
 
 def _commit_message(manifest: dict, tag: str) -> str:
