@@ -173,6 +173,21 @@ def test_calls_without_ids_pair_by_position_only_when_counts_match(tmp_path):
     assert all(call.has_result is False for call in lone)
 
 
+def test_unequal_role_and_content_counts_refuse_the_mapping(tmp_path):
+    """Two roles with one content fail the check instead of repeating the content."""
+    target = tmp_path / "uneven.json"
+    target.write_text(json.dumps({"entries": [
+        {"id": "rec-1", "role": ["user", "assistant"], "content": ["only note"]},
+    ]}), encoding="utf-8")
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    reader = tmp_path / "reader.py"
+    reader.write_text(render_reader("uneven", digest, {
+        "recordings": "entries", "role": "entries[].role[]",
+        "content": "entries[].content"}), encoding="utf-8")
+    problems = workdir_readers.check_reader_isolated(reader, target)
+    assert problems
+    assert any("counts differ" in problem for problem in problems)
+
 def test_a_path_with_a_quote_renders_a_module_that_imports_and_maps(tmp_path):
     """A field name holding a quote renders quoted source that still imports and maps."""
     adapter, recordings, ctx = map_first(

@@ -182,7 +182,11 @@ class {class_name}:
         trace_id = _trace_id(recording, ctx)
         roles = _get_all(recording, _rel(_ROLE))
         texts = _get_all(recording, _rel(_CONTENT))
-        count = max(len(roles), len(texts), 1)
+        if len(roles) != len(texts):
+            raise ValueError(
+                f"the role and content counts differ ({{len(roles)}} roles, "
+                f"{{len(texts)}} contents), so one turn per message is not defined")
+        count = len(roles)
         turns: list[Turn] = []
         for position in range(count):
             role = _role(_pick(roles, position, "assistant"))
