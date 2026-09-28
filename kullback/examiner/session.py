@@ -276,6 +276,16 @@ def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> lis
     return [task_id for task_id in known if pending(task_id)]
 
 
+def spec_owned(workdir: Any, store: dict, verifier_from: str) -> list[str]:
+    """The Tasks whose Runner Verifier is their Spec's under intent: derivation reads them, never writes them.
+    Under runs there are none."""
+    if verifier_from != "intent":
+        return []
+    from kullback.spec.schema import spec_verifier_path
+
+    return [task.id for task in store.get("tasks") or [] if spec_verifier_path(Path(workdir), task.id).is_file()]
+
+
 def default_workers() -> int:
     """How many Tasks derive at once when the caller names no number: the cores, at most eight."""
     return max(1, min(MAX_DERIVE_WORKERS, os.cpu_count() or 1))
@@ -537,7 +547,8 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     task_ids = list(task_ids) if task_ids is not None else None
     store = load_store(workdir)
     anchor = _load_anchor(root)
-    ctx = stage_mod.ExamContext(root, GateLedger(root), anchor=anchor)
+    ctx = stage_mod.ExamContext(root, GateLedger(root), anchor=anchor,
+                                kept=spec_owned(root, store, verifier_from))
     runners = runners_mod.runners_for(root, reroll_model=reroll_model, anchor=anchor,
                                       user_model=user_model)
     picked = derive_pick(root, store, task_ids)
@@ -797,4 +808,4 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     return exam_root
 __all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "derive_findings", "examine", "examiner_extension", "session_opening",
            "finding_from_row", "left_out_finding", "load_store", "notes_line", "root_listing", "rulings_line",
-           "select_for_session", "task_runs_of", "turns_ran_out"]
+           "select_for_session", "spec_owned", "task_runs_of", "turns_ran_out"]

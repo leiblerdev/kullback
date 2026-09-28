@@ -501,3 +501,33 @@ def test_the_examiners_opening_lists_the_builders_open_notes_on_its_tasks(world)
     assert "The Builder's notes" in opening
     assert "t1: fact_unavailable_to_user: the user never learns the code. (open)" in opening
     assert "t9:" not in opening
+
+
+def _spec_verifier_beside_derived(world, task_id: str) -> bytes:
+    """A derived world whose `task_id` then gets a Spec Verifier, copied to the Runner's file as the Spec
+    stage writes it; returns the Runner file's bytes."""
+    S.examine(world.workdir, model=None)
+    body = read_json(world.workdir / "verifiers" / f"{task_id}.json")
+    body["verifier_version"] = "spec2"
+    for folder in (world.workdir / "spec" / "verifiers", world.workdir / "verifiers"):
+        write_json(folder / f"{task_id}.json", body)
+    (world.workdir / "task_status.json").unlink()
+    return (world.workdir / "verifiers" / f"{task_id}.json").read_bytes()
+
+
+def test_under_intent_a_named_task_with_a_spec_verifier_keeps_its_runner_verifier_byte_for_byte(tmp_path):
+    world = make_world(tmp_path, tasks=2)
+    materialize(world)
+    before = _spec_verifier_beside_derived(world, "t1")
+    S.examine(world.workdir, task_ids=["t1", "t2"], model=None, verifier_from="intent")
+    assert (world.workdir / "verifiers" / "t1.json").read_bytes() == before
+    assert sorted(read_json(world.workdir / "task_status.json")) == ["t1", "t2"], "both still derived"
+
+
+def test_under_runs_a_named_task_with_a_spec_verifier_is_derived_over_as_before(tmp_path):
+    world = make_world(tmp_path, tasks=2)
+    materialize(world)
+    before = _spec_verifier_beside_derived(world, "t1")
+    S.examine(world.workdir, task_ids=["t1", "t2"], model=None)
+    assert (world.workdir / "verifiers" / "t1.json").read_bytes() != before
+    assert read_json(world.workdir / "verifiers" / "t1.json")["verifier_version"] != "spec2"

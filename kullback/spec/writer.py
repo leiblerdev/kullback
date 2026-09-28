@@ -33,6 +33,7 @@ from kullback.spec.schema import (
     intent_text,
     load_spec,
     save_spec,
+    spec_verifier_path,
     tier_of,
 )
 
@@ -274,10 +275,6 @@ def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:
     forbid = must_not(must, spec.intent.text, inputs.constraints, sorted(inputs.write_tools))
     atoms = compiled.verifier.atoms + forbid
     return compiled._replace(verifier=compiled.verifier.model_copy(update={"atoms": atoms}))
-
-
-def spec_verifier_path(workdir: Path, task_id: str) -> Path:
-    return Path(workdir) / "spec" / "verifiers" / f"{task_id}.json"
 
 
 def runner_verifier_path(workdir: Path, task_id: str) -> Path:

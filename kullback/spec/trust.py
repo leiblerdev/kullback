@@ -37,7 +37,7 @@ from kullback.spec.router import (  # noqa: F401  (ROUNDS_CAP re-exported for re
     ROUNDS_CAP,
     is_set_aside,
 )
-from kullback.spec.schema import Spec, load_spec, spec_path
+from kullback.spec.schema import Spec, load_spec, spec_ids
 from kullback.spec.writer import spec_verifier_path
 from kullback.spec.writer_tools import policy_sections_of
 
@@ -279,9 +279,7 @@ def set_aside_events(workdir: Any) -> list[dict]:
 def _task_ids(root: Path) -> list[str]:
     status = read_json(root / "task_status.json", None)
     ids = set(status) if isinstance(status, dict) else set()
-    folder = spec_path(root, "_").parent
-    ids |= {path.stem for path in folder.glob("*.json")} if folder.is_dir() else set()
-    return sorted(ids)
+    return sorted(ids | set(spec_ids(root)))
 
 
 def load_spec_verifier(workdir: Any, task_id: str) -> Optional[Verifier]:

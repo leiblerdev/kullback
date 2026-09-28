@@ -83,6 +83,16 @@ def spec_path(workdir: Path, task_id: str) -> Path:
     return Path(workdir) / "spec" / f"{task_id}.json"
 
 
+def spec_verifier_path(workdir: Path, task_id: str) -> Path:
+    return Path(workdir) / "spec" / "verifiers" / f"{task_id}.json"
+
+
+def spec_ids(workdir: Path) -> list[str]:
+    """The ids of every Spec on disk, sorted; the spec folder holds Specs only, one file each."""
+    folder = spec_path(workdir, "_").parent
+    return sorted(path.stem for path in folder.glob("*.json")) if folder.is_dir() else []
+
+
 def save_spec(workdir: Path, spec: Spec) -> Path:
     """Writes the Spec to its one file and returns the path."""
     path = spec_path(workdir, spec.task_id)

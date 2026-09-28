@@ -126,15 +126,18 @@ def on_disk(workdir: Path) -> list[Verifier]:
             for path in sorted((Path(workdir) / "verifiers").glob("*.json"))]
 
 
-def retire(workdir: Path, task_status: dict, *, round_number: int = 0) -> list[dict]:
+def retire(workdir: Path, task_status: dict, *, round_number: int = 0,
+           kept: Iterable[str] = ()) -> list[dict]:
     """Retire, in the derivation's own step, every Verifier on disk whose Reference is not held.
 
     The file leaves verifiers/ so nothing can pick it up off disk, the Task's status row says it was
     retired and why, and the row returned carries the Verifier itself so the caller can keep it in
     version history. Deriving again is what gives the Task a Verifier back; nothing revives one.
+    A `kept` Task's file belongs to another owner (its Spec) and stays.
     """
     rows: list[dict] = []
-    for verifier in on_disk(workdir):
+    kept = set(kept)
+    for verifier in (v for v in on_disk(workdir) if v.task_id not in kept):
         row = retirement(verifier, (task_status or {}).get(verifier.task_id))
         if row is None:
             continue

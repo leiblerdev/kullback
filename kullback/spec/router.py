@@ -6,7 +6,7 @@ or Intent goes to the Spec writer's repair, and an Environment that cannot suppo
 the Builder as a note. Each move is one round on the Task; a ruling filed after ROUNDS_CAP rounds
 is no agreement, so the Task is set aside with its rulings attached and task.set_aside published.
 
-The router keeps the last sequence it read in workdir/spec/router_state.json, so replaying the bus
+The router keeps the last sequence it read in workdir/spec/state/router.json, so replaying the bus
 from any sequence handles each ruling once. Moves it cannot make yet are recorded, never dropped:
 a repair with no writer lands on the Spec as pending_repair and publishes spec.repair_deferred, a
 re-roll with no Runner as a queued request in the state file.
@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 ROUNDS_CAP = 2
 REROLL_COUNT = 2
-STATE_FILE = "router_state.json"
+STATE_FILE = "state/router.json"
 NO_AGREEMENT = events.NO_AGREEMENT
 WRITER_MODULE = "kullback.spec.writer"
 WRITER_ENTRY = "repair_for_ruling"

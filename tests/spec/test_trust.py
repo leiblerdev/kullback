@@ -173,3 +173,14 @@ def test_a_task_with_a_spec_and_no_verifier_file_is_untrusted_for_want_of_the_fi
     T.spec_verifier_path(tmp_path, "t1").unlink()
     tier, row = T.intent_tiers(tmp_path)["t1"]
     assert tier == "untrusted" and row["reason"] == "no verifier file" and row["runs_scored"] == []
+
+
+def test_tiers_are_computed_with_the_routers_state_file_present_and_it_is_no_task(tmp_path):
+    from kullback.runner.records import write_json
+    from kullback.spec.router import state_path
+
+    _intent_workdir(tmp_path, [_replay(), _fresh()])
+    write_json(state_path(tmp_path), {"last_seq": 3, "rounds": {"t1": 1}, "queue": [], "actions": []})
+    tiers = T.intent_tiers(tmp_path)
+    assert sorted(tiers) == ["t1", "t2"]
+    assert tiers["t1"].row["runs_scored"] == ["fresh-1", REPLAY_ID]

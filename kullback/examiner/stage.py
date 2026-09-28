@@ -84,12 +84,20 @@ CODE_MODULES = (verifier_mod, reference_mod, judge_mod, verifier_suite, variants
 class ExamContext:
     """What the derivation is given beside its inputs: where to write, the anchor to seed from, the ledger."""
 
-    def __init__(self, workdir: Path, ledger: GateLedger, anchor: Any = None, stage: str = STAGE):
+    def __init__(self, workdir: Path, ledger: GateLedger, anchor: Any = None, stage: str = STAGE,
+                 kept: Iterable[str] = ()):
         self.workdir = Path(workdir)
         self.ledger = ledger
         self.anchor = anchor
         self.stage = stage
         self.recorded: list[GateResult] = []
+        # Tasks whose verifiers/ file another owner wrote (a Spec's): derived, never written or retired.
+        self.kept = frozenset(kept)
+
+    def write_verifier(self, task_id: str, body: Any) -> None:
+        """The derived Verifier into verifiers/, unless the Task's file is kept."""
+        if task_id not in self.kept:
+            write_json(self.workdir / "verifiers" / f"{task_id}.json", body)
 
     def seed_runs(self, task_id: str, run_ids: Iterable[str]) -> list[str]:
         """The Task's Runs minus its anchor when one was chosen, every Run otherwise (D81)."""
@@ -1085,7 +1093,7 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
                       probe_skip=probe_skip)
     results = verifier_suite.d79_results(gates)
     passed = artifacts.verifier_gate(results).passed
-    write_json(ctx.workdir / "verifiers" / f"{task.id}.json", as_dict(record))
+    ctx.write_verifier(task.id, as_dict(record))
     left_out = not_at_reference(confirmation, pool_runs, write_tools,
                                 fn or verifier_suite.canon_fn(canon_rules))
     # D199: a Task whose path is single by structure has no second path to score and never will, so
@@ -1491,7 +1499,7 @@ def _settle_all(state: _DeriveState, jobs: list[_Job], workers: int) -> None:
 def _finish_cached(state: _DeriveState, job: _Job) -> dict:
     """A cache hit's entry, with its Verifier file rewritten beside the live rows."""
     if job.entry.get("verifier") is not None:
-        write_json(state.ctx.workdir / "verifiers" / f"{job.task.id}.json", job.entry["verifier"])
+        state.ctx.write_verifier(job.task.id, job.entry["verifier"])
     return job.entry
 
 
@@ -1639,7 +1647,7 @@ def _persist_results(ctx: ExamContext, status: dict, references: dict, only: Any
     if only is not None:
         status = {**prior_status, **status}
         references = {**prior_references, **references}
-    retired = lifecycle.retire(ctx.workdir, status, round_number=round_number)
+    retired = lifecycle.retire(ctx.workdir, status, round_number=round_number, kept=ctx.kept)
     lifecycle.carry_forward(ctx.workdir, status, prior_status)
     write_json(ctx.workdir / "task_status.json", stamped(status, prior_status, round_number))
     write_json(ctx.workdir / "references.json", references)
