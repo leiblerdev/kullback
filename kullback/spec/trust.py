@@ -292,7 +292,8 @@ def load_spec_verifier(workdir: Any, task_id: str) -> Optional[Verifier]:
 
 
 def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[str, TaskTier]:
-    """Every Task of the workdir under the intent foundation; `specs` stands in for the spec folder."""
+    """Every Task of the workdir under the intent foundation, the build's sample only when the manifest
+    holds one; `specs` stands in for the spec folder."""
     root = Path(workdir)
     canon = load_rules(root / "canon-rules.json")
     sigs = read_json(root / "tool_sigs.json", None) or []
@@ -302,7 +303,7 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
     prefix = replay_prefix(read_json(root / "replays.json", None))
     events = set_aside_events(root)
     out: dict[str, TaskTier] = {}
-    for task_id in sorted(set(_task_ids(root)) | set(specs or ())):
+    for task_id in in_sample(root, sorted(set(_task_ids(root)) | set(specs or ()))):
         spec = (specs or {}).get(task_id) or load_spec(root, task_id)
         if spec is None:
             out[task_id] = missing_spec_row(task_id)

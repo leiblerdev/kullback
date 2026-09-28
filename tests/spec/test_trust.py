@@ -184,3 +184,19 @@ def test_tiers_are_computed_with_the_routers_state_file_present_and_it_is_no_tas
     tiers = T.intent_tiers(tmp_path)
     assert sorted(tiers) == ["t1", "t2"]
     assert tiers["t1"].row["runs_scored"] == ["fresh-1", REPLAY_ID]
+
+
+def test_a_stored_task_sample_narrows_the_tier_report_to_it(tmp_path):
+    _intent_workdir(tmp_path, [_replay(), _fresh()])
+    T.store_tasks(tmp_path, ["t1"])
+    tiers = T.intent_tiers(tmp_path)
+    assert sorted(tiers) == ["t1"]
+    assert tiers["t1"].row["runs_scored"] == ["fresh-1", REPLAY_ID]
+
+
+def test_without_a_stored_sample_the_tier_report_covers_every_task_and_names_the_failing_gate(tmp_path):
+    _intent_workdir(tmp_path, [_replay(), _fresh()])
+    tiers = T.intent_tiers(tmp_path)
+    assert sorted(tiers) == ["t1", "t2"]
+    assert all("failing" in tier.row for tier in tiers.values())
+    assert tiers["t2"].row["failing"] == "grounded"
