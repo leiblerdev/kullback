@@ -72,7 +72,7 @@ def test_write_specs_writes_the_spec_both_verifiers_and_publishes_spec_written(t
     assert [check.id for check in spec.checks] == ["c0"] and spec.version == 1
     assert {k: spec.writer[k] for k in ("demands", "kept", "attempts", "empty_first", "sent_back")} == \
         {"demands": 1, "kept": 1, "attempts": 1, "empty_first": False, "sent_back": 0}
-    assert spec.writer["usd"] > 0 and spec.writer["read_rounds"] == 0
+    assert spec.writer["usd"] > 0 and spec.writer["read_rounds"] == 0 and "first_attempt" not in spec.writer
     assert spec_verifier_path(root, "t1").read_text() == runner_verifier_path(root, "t1").read_text()
     assert _events(root) == ["spec.written"]
     ledger = json.loads((root / "budget.json").read_text())["stages"]["spec"]
@@ -105,6 +105,8 @@ def test_an_empty_first_spec_is_written_once_more_and_the_second_stands(tmp_path
         {"written": 1, "empty_seen": 1, "retried": 1, "set_aside_empty": 0}
     spec = load_spec(root, "t1")
     assert spec.set_aside is None and (spec.writer["attempts"], spec.writer["empty_first"]) == (2, True)
+    first = spec.writer["first_attempt"]
+    assert (first["demands"], first["kept"], first["usd"]) == (0, 0, 0.0) and spec.writer["kept"] == 1
     assert _events(root) == ["spec.written"]
 
 

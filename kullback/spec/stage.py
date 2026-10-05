@@ -55,6 +55,8 @@ def write_from_intent(workdir: Path, task_id: str, intent: SpecIntent, model: An
     rounds = sum(int(t.session.get("tool_rounds") or 0) for t in tries)
     writer = dict(written.counts, usd=spent, read_rounds=rounds, attempts=len(tries), empty_first=empty_first,
                   empty=empty)
+    if len(tries) > 1:
+        writer["first_attempt"] = dict(tries[0].counts, usd=float(tries[0].session.get("usd") or 0.0))
     spec = written.spec.model_copy(update={"version": _version(workdir, task_id) + 1, "writer": writer})
     if empty:
         save_spec(workdir, spec.model_copy(update={"set_aside": events.EMPTY_SPEC}))

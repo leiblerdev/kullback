@@ -175,6 +175,19 @@ def test_a_task_with_a_spec_and_no_verifier_file_is_untrusted_for_want_of_the_fi
     assert tier == "untrusted" and row["reason"] == "no verifier file" and row["runs_scored"] == []
 
 
+def test_a_set_aside_task_with_no_verifier_file_is_set_aside_with_its_reason_not_untrusted(tmp_path):
+    _intent_workdir(tmp_path, [_replay(), _fresh()])
+    save_spec(tmp_path, spec(gaps=["f2"]).model_copy(update={"set_aside": "empty_spec"}))
+    T.spec_verifier_path(tmp_path, "t1").unlink()
+    (tmp_path / "bus.jsonl").write_text(json.dumps(
+        {"event": {"type": "custom", "name": TASK_SET_ASIDE, "payload": {"task_id": "t2"}}}) + "\n")
+    save_spec(tmp_path, spec(gaps=["f2"]).model_copy(update={"task_id": "t2"}))
+    tiers = T.intent_tiers(tmp_path)
+    assert {t: (tiers[t].tier, tiers[t].row["reason"], tiers[t].row["set_aside"]) for t in tiers} == \
+        {"t1": ("set_aside", "empty_spec", True), "t2": ("set_aside", "set aside", True)}
+    assert tiers["t1"].row["runs_scored"] == [] and tiers["t1"].row["failing"] is None
+
+
 def test_tiers_are_computed_with_the_routers_state_file_present_and_it_is_no_task(tmp_path):
     from kullback.runner.records import write_json
     from kullback.spec.router import state_path

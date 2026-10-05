@@ -187,6 +187,12 @@ def unruled_row(task_id: str, failing: str, reason: str) -> TaskTier:
                                   "set_aside": False})
 
 
+def set_aside_row(task_id: str, reason: str) -> TaskTier:
+    """A Task set aside before any Verifier was written: tier set_aside, with the reason and no Run scored."""
+    row = dict(unruled_row(task_id, "", reason).row, tier="set_aside", failing=None, set_aside=True)
+    return TaskTier("set_aside", row)
+
+
 def missing_spec_row(task_id: str) -> TaskTier:
     """A Task with no Spec file: nothing grounds it, so it is untrusted at the first gate."""
     return unruled_row(task_id, "grounded", "no spec")
@@ -307,6 +313,9 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
         spec = (specs or {}).get(task_id) or load_spec(root, task_id)
         if spec is None:
             out[task_id] = missing_spec_row(task_id)
+            continue
+        if set_aside_of(spec, events):
+            out[task_id] = set_aside_row(task_id, spec.set_aside or "set aside")
             continue
         verifier = load_spec_verifier(root, task_id)
         if verifier is None:
