@@ -136,12 +136,17 @@ def _write_verifier(root, verifier, task_id="t1"):
     path.write_text(verifier.model_dump_json())
 
 
+def _write_run(folder, run):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{run.run_id}.jsonl").write_text(run.model_dump_json() + "\n")
+
+
 def _intent_workdir(root, runs, verifier=None):
     (root / "tool_sigs.json").write_text(json.dumps([{"name": "update_item", "kind": "write"}]))
     (root / "task_status.json").write_text(json.dumps({"t1": {}, "t2": {}}))
     (root / "replays.json").write_text(json.dumps({"t1": {"rec1": {"run_id": REPLAY_ID, "trace_id": "rec1"}}}))
-    (root / "exam").mkdir()
-    (root / "exam" / "task_runs.json").write_text(json.dumps({"t1": [r.model_dump(mode="json") for r in runs]}))
+    for run in runs:
+        _write_run(root / "runs", run)
     save_spec(root, spec(gaps=["f2"]))
     _write_verifier(root, verifier or _verifier(spec(gaps=["f2"])))
 
@@ -166,6 +171,15 @@ def test_the_written_verifier_file_is_what_the_gates_score_so_an_atom_beyond_the
     row = T.intent_tiers(tmp_path)["t1"].row
     assert row["replay"] == {REPLAY_ID: False} and row["fresh_passed"] == []
     assert _tier([_replay(), _fresh()], verifier=compiled).row["fresh_passed"] == ["fresh-1"]
+
+
+def test_intent_tiers_score_the_run_files_under_runs_at_any_depth_and_skip_a_file_that_does_not_load(tmp_path):
+    _intent_workdir(tmp_path, [_replay()])
+    _write_run(tmp_path / "runs" / "nested", _fresh())
+    (tmp_path / "runs" / "torn.jsonl").write_text("{not json\n")
+    assert not (tmp_path / "exam" / "task_runs.json").exists()
+    row = T.intent_tiers(tmp_path)["t1"].row
+    assert row["runs_scored"] == ["fresh-1", REPLAY_ID] and row["fresh_passed"] == ["fresh-1"]
 
 
 def test_a_task_with_a_spec_and_no_verifier_file_is_untrusted_for_want_of_the_file(tmp_path):

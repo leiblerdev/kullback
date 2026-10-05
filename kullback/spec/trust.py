@@ -26,7 +26,7 @@ from typing import Any, Iterable, NamedTuple, Optional
 from kullback.gates.probes import write_tools_of
 from kullback.gates.trust import trusted_gate, workdir_trusted_ruling
 from kullback.runner.canon import load_rules
-from kullback.runner.records import GateResult, Run, Verifier, load_exam_task_runs, read_json, read_jsonl
+from kullback.runner.records import GateResult, Run, Verifier, load_run_jsonl, read_json, read_jsonl
 from kullback.runner.replay import RECORDED
 from kullback.runner.target import check_run
 from kullback.spec import VERIFIER_FROM
@@ -297,6 +297,19 @@ def load_spec_verifier(workdir: Any, task_id: str) -> Optional[Verifier]:
         return None
 
 
+def runs_on_disk(workdir: Any) -> dict[str, list[Run]]:
+    """Every Run file the build wrote under runs/, per Task; a file that does not load is skipped."""
+    out: dict[str, list[Run]] = {}
+    for path in sorted((Path(workdir) / "runs").rglob("*.jsonl")):
+        try:
+            run = load_run_jsonl(path)
+        except (OSError, ValueError, TypeError):
+            continue
+        if run.task_id:
+            out.setdefault(str(run.task_id), []).append(run)
+    return out
+
+
 def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[str, TaskTier]:
     """Every Task of the workdir under the intent foundation, the build's sample only when the manifest
     holds one; `specs` stands in for the spec folder."""
@@ -305,7 +318,7 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
     sigs = read_json(root / "tool_sigs.json", None) or []
     tools = write_tools_of(sigs.get("sigs", []) if isinstance(sigs, dict) else sigs)
     sections = policy_sections_of(root)
-    runs = load_exam_task_runs(root)
+    runs = runs_on_disk(root)
     prefix = replay_prefix(read_json(root / "replays.json", None))
     events = set_aside_events(root)
     out: dict[str, TaskTier] = {}
