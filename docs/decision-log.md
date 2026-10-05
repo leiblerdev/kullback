@@ -2115,3 +2115,22 @@ Three review findings on D291 and D292. First, a build resumed with another `--m
 ### D294. A goal naming no writes is done by a tool call and a close, never by the empty set (2026-09-25)
 
 With `goal_writes` an empty set, `set() <= made` held at every turn, so on a Task whose goal implies no write the rule user skipped its one goal restatement and ended `goal_satisfied` at the first turn no cue matched: a Candidate that opened with a question was ended after one reply. The agent user's `EndProtocol.goal_done` carried the same comparison. Both now read one predicate, `ends.goal_done`: a goal naming writes is done when they are all made, D158's reading holds where no goal writes were named (`None`), and a goal naming none is done only when the Candidate has made at least one tool call in the Run and its latest turn closes (the close cue `_closes` reads). A close with no tool call is `handed_off`, and the rule user no longer restates a no-write goal to a Candidate that closed. The end mix changes: read-only Tasks that ended `goal_satisfied` on a first question now answer or restate, and those closed without a tool call count as `handed_off` in D133's `user_ends` and the second-path and re-roll summaries. Checked in code: `tests/user/test_user_goal_ends.py`.
+
+### D297. The catalogue row decides the Responses wire shape (2026-09-27)
+
+`model_for` chose the Responses adapter from a hardcoded model-name set, so each new Responses model needed a code change. The rule now reads the snapshot: a MODEL row whose own `provider.npm` override is `@ai-sdk/openai` resolves to `OpenAIResponsesModel`, through the registry and on an explicit base URL, and every other row stays on chat. The provider entry alone never switches, and an unreadable catalogue reads as chat. The npm string lives in one constant (`pricing.RESPONSES_NPM`) beside `OPENAI_SHAPED`, read through `pricing.speaks_responses`. To mark a model Responses locally, give its row the same override in the registry beside the snapshot (`providers.local.json`), which is laid over the snapshot before the lookup.
+
+### D298. Every model request takes a slot from its provider key's bucket; a 429 parks all waiters (2026-09-27)
+
+Thirty-two parallel Runs that each retried on their own made 131 429s on a key that allows 100
+requests a minute, while other endpoints scaled cleanly, so the limits differ per provider and
+per model and must come from data. The catalogue now reads an optional "rate" object
+({"requests_per_minute", "in_flight"}) off a provider entry or a model row, and a new module
+kullback/ai/limits.py holds one process-wide bucket per key: a row rate is that model's own
+bucket, a provider rate is shared. Every HTTP request takes a slot just before the post and
+hands it back with the response read, so a retry counts against the minute cap and waits the
+shared cooldown like any other request, and a backoff sleep holds no slot; the streaming path
+polls for its slot without blocking the loop. A 429 sets a cooldown every waiter honours, using
+the Retry-After the blocking path already honoured, now shared with streaming under the
+handle's caps. Live check (12 concurrent calls, cap in_flight 3): one bucket, peak in flight 3,
+9 waits, 0 rate limited, 12 answers, no errors.

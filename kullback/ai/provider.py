@@ -21,6 +21,7 @@ read off this module by name from elsewhere in the Harness.
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import json
 import os
@@ -29,6 +30,7 @@ import re
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterable, Optional, Protocol, Sequence, runtime_checkable
 from urllib.parse import urlparse
@@ -61,11 +63,13 @@ from kullback.ai.http_errors import (
     error_text,
     is_context_overflow,
 )
+from kullback.ai.limits import Bucket, bucket_for, note_cooldown
 from kullback.ai.messages import Message
 from kullback.ai.model_limits import RequestRules, request_rules_for, split_vendor
 from kullback.ai.retry import (
     RetryPolicy,
     backoff_delay,
+    rate_limit_delay,
     retry_after_seconds,
     retryable_status,
 )
@@ -767,6 +771,25 @@ class HttpModel(Model):
         # Request-shape fields an endpoint's 400 taught this instance (see `shape_adjustment`).
         self.shape_fixes: set[str] = set()
 
+    @functools.cached_property
+    def rate_bucket(self) -> Optional[Bucket]:
+        """The shared limiter for this handle's provider key, or None when the catalogue names
+        no rate for it: every request takes a slot from it first. Read on the first request
+        and cached after, so construction never fetches. The bucket is process-wide, read off
+        the same snapshot model_for resolves the host from. A provider gains a limiter by
+        gaining a rate row, with no branch per provider here. The lookups below already
+        tolerate anything unreadable, so no limiter, not a failed call, is what comes back."""
+        from kullback.ai import pricing
+
+        spec = pricing.rate_from_catalog(
+            pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=self.env), self.name)
+        if spec is None:
+            return None
+        host = urlparse(self.base_url).hostname or self.base_url
+        fingerprint = hashlib.sha256(self.api_key.encode()).hexdigest()[:12] if self.api_key else ""
+        return bucket_for(provider=self.provider, host=host, key=fingerprint,
+                          key_name=self.key_env_var or "", model=self.name, spec=spec)
+
     @classmethod
     def for_model(cls, model_id: str) -> type:
         """The adapter class that serves this id; a provider serving several shapes picks here."""
@@ -866,13 +889,18 @@ class HttpModel(Model):
         require_live_calls_enabled()
         url = self.base_url + self.path
         content = self.encode_body(body)
+        bucket = self.rate_bucket
         for attempt in range(1, self.retry.attempts + 1):
             last_attempt = attempt == self.retry.attempts
-            # Per attempt: a signed request carries its time, and a retry after a long wait
-            # would otherwise send a signature the endpoint has stopped accepting.
-            headers = self.headers(content)
+            # One slot per request: taken just before the post, handed back with the
+            # response read, so a retry counts against the minute cap and waits the
+            # shared cooldown like any other caller, and a backoff sleep holds no slot.
             try:
-                response = self.client().post(url, headers=headers, content=content, timeout=self.request_timeout)
+                with bucket.slot() if bucket is not None else nullcontext():
+                    # After the slot, per attempt: a signed request carries its time, and a
+                    # queue before it must not send a signature the endpoint stopped accepting.
+                    headers = self.headers(content)
+                    response = self.client().post(url, headers=headers, content=content, timeout=self.request_timeout)
             except httpx.HTTPError as exc:
                 if last_attempt:
                     # A timeout names the budget that was in force, so the log line that lands
@@ -907,6 +935,8 @@ class HttpModel(Model):
             error.attempts = attempt
             if isinstance(error, ContextOverflowError) or not retryable_status(response.status_code):
                 raise error
+            note_cooldown(bucket, response.status_code,
+                          rate_limit_delay(response.headers, attempt, self.retry, self.rng))
             if last_attempt:
                 raise RetryExhausted(
                     f"{self.name}: {self.retry.attempts} attempts failed: {error}",
@@ -1427,14 +1457,6 @@ class RegistryModel(OpenAICompatibleModel):
         super().__init__(model_id, base_url=base_url, key_env_var=key_env_var or None, **kwargs)
 
 
-# Models OpenCode serves through the Responses API (/v1/responses) rather than chat completions,
-# from its Go docs' Endpoints table. The models.dev snapshot carries no per-model shape field
-# (and does not list 1.3 at all yet), so the docs are the source of truth here. Delete an entry
-# when the snapshot carries that model with a shape the resolver can read; never add one the
-# docs' table does not name. gpt-5.6-luna is deliberately absent: it answers chat bodies live.
-RESPONSES_API_MODELS = frozenset({"opencode-go/muse-spark-1.3-contributor"})
-
-
 class OpenAIResponsesModel(HttpModel):
     """OpenAI's Responses API: input items in, output items out, one round trip per query.
 
@@ -1673,11 +1695,15 @@ def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     adapter = ADAPTERS.get(provider)
     if adapter is not None:
         return adapter.for_model(model_id)(model_id, base_url=base_url, **kwargs)
-    if model_id in RESPONSES_API_MODELS and base_url:
-        # An explicit endpoint never changes the wire shape: a Responses model speaks
-        # Responses wherever it lives, so this check sits before the base_url branch.
-        return OpenAIResponsesModel(model_id, base_url=base_url, **kwargs)
     if base_url:
+        from kullback.ai import pricing
+
+        catalog = pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=kwargs.get("env"))
+        if pricing.speaks_responses(catalog, model_id):
+            # An explicit endpoint never changes the wire shape: a Responses model speaks
+            # Responses wherever it lives, so this check sits before the chat branch.
+            # An unreadable catalogue reads as chat.
+            return OpenAIResponsesModel(model_id, base_url=base_url, **kwargs)
         return OpenAICompatibleModel(model_id, base_url=base_url, **kwargs)
     endpoint = registry_endpoint(model_id, env=kwargs.get("env"))
     if endpoint is None:
@@ -1685,12 +1711,12 @@ def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
             f"{model_id} has no adapter of its own and the models.dev snapshot names no host for "
             f"{provider!r}; pass base_url, or refresh the snapshot with live calls on"
         )
-    if model_id in RESPONSES_API_MODELS:
-        return OpenAIResponsesModel(model_id, base_url=endpoint.base_url,
-                                     key_env_var=endpoint.key_env_var, **kwargs)
     from kullback.ai import pricing
 
     catalog = pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=kwargs.get("env"))
+    if pricing.speaks_responses(catalog, model_id):
+        return OpenAIResponsesModel(model_id, base_url=endpoint.base_url,
+                                     key_env_var=endpoint.key_env_var, **kwargs)
     per_model = pricing.model_adapter_for(catalog, model_id)
     shape = per_model or endpoint.adapter
     if shape not in pricing.OPENAI_SHAPED:

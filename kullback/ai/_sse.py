@@ -9,6 +9,7 @@ delta while the rest of the answer is still on the wire.
 from __future__ import annotations
 
 import json
+import random
 from typing import Any, AsyncIterator, Callable, Optional, Protocol
 
 import httpx
@@ -21,8 +22,12 @@ from kullback.ai._provider_events import (
 )
 from kullback.ai.http import CONNECT_TIMEOUT_S, create_async_client, request_id_of, timeout_note
 from kullback.ai.http_errors import provider_http_error_message
+from kullback.ai.limits import Bucket, acquire_async, note_cooldown
 from kullback.ai.retry import (
     CancelSignal,
+    RetryPolicy,
+    backoff_delay,
+    rate_limit_delay,
     retry_delay_seconds,
     retryable_status,
     wait_for_retry,
@@ -64,6 +69,41 @@ def loads_object(value: str) -> Optional[dict]:
     return loaded if isinstance(loaded, dict) else None
 
 
+def _stream_retry_delay(
+    status: Optional[int],
+    headers: Any,
+    attempt: int,
+    *,
+    max_retry_delay_seconds: float,
+    retry_policy: Optional[RetryPolicy],
+    rng: Optional[random.Random],
+) -> float:
+    """What one streaming retry waits: the blocking path's rule, not the old 1 s cap.
+
+    A 429 honours Retry-After under the handle's caps; anything else doubles off the
+    handle's base. Without a policy the old capped doubling stands.
+    """
+    if retry_policy is not None:
+        attempt_no = attempt + 1
+        if status == 429:
+            return rate_limit_delay(headers, attempt_no, retry_policy, rng or random.Random())
+        return backoff_delay(attempt_no, retry_policy, rng or random.Random())
+    return retry_delay_seconds(attempt, max_delay_seconds=max_retry_delay_seconds)
+
+
+async def _acquire_slot(rate_bucket: Optional[Bucket], signal: Optional[CancelSignal]) -> bool:
+    """One limiter slot without blocking the loop; False when the Run was cancelled."""
+    if rate_bucket is None:
+        return True
+    return await acquire_async(rate_bucket, signal)
+
+
+def _release_slot(rate_bucket: Optional[Bucket], taken: bool) -> None:
+    """Hand a streaming slot back, on every exit path."""
+    if taken and rate_bucket is not None:
+        rate_bucket.release()
+
+
 def stream_sse_events(
     *,
     client: Callable[[], httpx.AsyncClient],
@@ -78,6 +118,9 @@ def stream_sse_events(
     max_retry_delay_seconds: float = 1.0,
     read_timeout_s: float = 300.0,
     signal: Optional[CancelSignal] = None,
+    retry_policy: Optional[RetryPolicy] = None,
+    rng: Optional[random.Random] = None,
+    rate_bucket: Optional[Bucket] = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Post once and report what comes back, trying a transient failure again from the start.
 
@@ -88,17 +131,26 @@ def stream_sse_events(
     over, posted as they are rather than encoded a second time.
     """
     sent = {"content": content} if content is not None else {"json": payload}
-
     async def iterator() -> AsyncIterator[ProviderEvent]:
         attempt = 0
         while True:
             parser = parser_factory()
+            # One slot per request: taken just before the post, handed back when this
+            # attempt ends, so a retry waits the shared cooldown and a sleep holds no slot.
+            taken = await _acquire_slot(rate_bucket, signal)
+            if not taken:
+                return
             try:
+                retry_delay: Optional[float] = None
                 async with client().stream("POST", url, headers=headers, **sent) as response:
                     if response.status_code >= 400:
                         body = (await response.aread()).decode(errors="replace")
                         if attempt < max_retries and retryable_status(response.status_code):
-                            delay = retry_delay_seconds(attempt, max_delay_seconds=max_retry_delay_seconds)
+                            delay = _stream_retry_delay(
+                                response.status_code, response.headers, attempt,
+                                max_retry_delay_seconds=max_retry_delay_seconds,
+                                retry_policy=retry_policy, rng=rng)
+                            note_cooldown(rate_bucket, response.status_code, delay)
                             yield _retry_event(
                                 attempt=attempt,
                                 max_retries=max_retries,
@@ -107,26 +159,32 @@ def stream_sse_events(
                                 data={"status": response.status_code, "body": body},
                             )
                             attempt += 1
-                            if not await wait_for_retry(delay, signal=signal):
-                                return
-                            continue
-                        yield ProviderErrorEvent(
-                            message=provider_http_error_message(
-                                provider_name=parser_name,
-                                status_code=response.status_code,
-                                body=body,
-                                model=model,
-                            ),
-                            data={"status": response.status_code, "body": body, "attempts": attempt + 1},
-                        )
+                            retry_delay = delay
+                        else:
+                            if response.status_code == 429:
+                                note_cooldown(rate_bucket, response.status_code, _stream_retry_delay(
+                                    response.status_code, response.headers, attempt,
+                                    max_retry_delay_seconds=max_retry_delay_seconds,
+                                    retry_policy=retry_policy, rng=rng))
+                            yield ProviderErrorEvent(
+                                message=provider_http_error_message(
+                                    provider_name=parser_name,
+                                    status_code=response.status_code,
+                                    body=body,
+                                    model=model,
+                                ),
+                                data={"status": response.status_code, "body": body, "attempts": attempt + 1},
+                            )
+                            return
+                    else:
+                        async for event in _answer_events(response, parser, model=model, signal=signal):
+                            yield event
                         return
-
-                    async for event in _answer_events(response, parser, model=model, signal=signal):
-                        yield event
-                    return
             except httpx.HTTPError as exc:
                 if not parser.emitted_content and attempt < max_retries:
-                    delay = retry_delay_seconds(attempt, max_delay_seconds=max_retry_delay_seconds)
+                    delay = _stream_retry_delay(
+                        None, {}, attempt, max_retry_delay_seconds=max_retry_delay_seconds,
+                        retry_policy=retry_policy, rng=rng)
                     yield _retry_event(
                         attempt=attempt,
                         max_retries=max_retries,
@@ -135,15 +193,19 @@ def stream_sse_events(
                         data={"error": str(exc), "error_type": type(exc).__name__},
                     )
                     attempt += 1
-                    if not await wait_for_retry(delay, signal=signal):
-                        return
-                    continue
-                note = timeout_note(exc, CONNECT_TIMEOUT_S, read_timeout_s)
-                yield ProviderErrorEvent(
-                    message=f"{parser_name}: {exc}{note}",
-                    data={"attempts": attempt + 1},
-                )
-                return
+                    retry_delay = delay
+                else:
+                    note = timeout_note(exc, CONNECT_TIMEOUT_S, read_timeout_s)
+                    yield ProviderErrorEvent(
+                        message=f"{parser_name}: {exc}{note}",
+                        data={"attempts": attempt + 1},
+                    )
+                    return
+            finally:
+                _release_slot(rate_bucket, taken)
+            if retry_delay is not None:
+                if not await wait_for_retry(retry_delay, signal=signal):
+                    return
 
     return iterator()
 
