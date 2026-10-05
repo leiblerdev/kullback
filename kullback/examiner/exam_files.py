@@ -137,6 +137,7 @@ class ExamRoot:
     reroll_model: Any = None
     probe_model: Any = None
     run_probe: Any = None
+    reroll_user: Any = None   # the re-rolls' user factory for the reroll tool
 
     @property
     def exam_dir(self) -> Path:
