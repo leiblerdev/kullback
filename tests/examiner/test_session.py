@@ -531,3 +531,14 @@ def test_under_runs_a_named_task_with_a_spec_verifier_is_derived_over_as_before(
     S.examine(world.workdir, task_ids=["t1", "t2"], model=None)
     assert (world.workdir / "verifiers" / "t1.json").read_bytes() != before
     assert read_json(world.workdir / "verifiers" / "t1.json")["verifier_version"] != "spec2"
+
+
+def test_a_second_router_reroll_of_one_task_takes_the_next_seed_instead_of_dying_on_the_first_file(tmp_path):
+    from tests.examiner.test_runners import _exam_env, _rename_script
+
+    workdir = _exam_env(tmp_path / "env")
+    reroll = S._router_reroll(ExamRoot(workdir=workdir, reroll_model=_rename_script(), canon_rules=CanonRules()))
+    reroll("widget_task", 1)
+    reroll("widget_task", 1)
+    assert sorted(p.name for p in (workdir / "runs").glob("ruling-*.jsonl")) == \
+        ["ruling-widget_task-0.jsonl", "ruling-widget_task-1.jsonl"]

@@ -653,7 +653,7 @@ def _router_reroll(exam_root: ExamRoot) -> Optional[Callable]:
     """The router's re-roll: the same Runner entry the reroll tool calls, inside the allowance."""
     if exam_root.reroll_model is None:
         return None
-    from kullback.examiner.runners import _priced
+    from kullback.examiner.runners import _priced, next_seed
     from kullback.runner import tool as runner_tool
 
     def reroll(task_id: str, count: int) -> None:
@@ -661,7 +661,8 @@ def _router_reroll(exam_root: ExamRoot) -> Optional[Callable]:
             return
         extra = {"make_user": exam_root.reroll_user(task_id)} if exam_root.reroll_user is not None else {}
         runner_tool.reroll(exam_root.workdir, task_id, _priced(exam_root.reroll_model, exam_root.workdir),
-                           count=count, workdir=exam_root.workdir, prefix="ruling", **extra)
+                           count=count, workdir=exam_root.workdir, prefix="ruling",
+                           first_seed=next_seed(exam_root.workdir, "ruling", task_id), **extra)
 
     return reroll
 

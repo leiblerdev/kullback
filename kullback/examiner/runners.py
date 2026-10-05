@@ -9,6 +9,7 @@ touching the compiled side, which the runner reads on its behalf (D123).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -37,6 +38,18 @@ def _seed_ids(anchor: Any, task_id: str, run_ids: Iterable[str]) -> list[str]:
         return list(seed_runs(task_id, run_ids))
     held = set((anchor.get("held_out", {}) or {}).get(task_id, []))
     return [run_id for run_id in run_ids if run_id not in held]
+
+
+def next_seed(workdir: Any, prefix: str, task_id: str) -> int:
+    """One past the highest seed of the Task's Run files under the prefix, 0 when none.
+
+    A re-roll names its Runs `<prefix>-<task_id>-<seed>` and a Run file is written once (D281),
+    so a second re-roll of one Task starts where the first stopped instead of at seed 0.
+    """
+    pattern = re.compile(rf"{re.escape(prefix)}-{re.escape(task_id)}-(\d+)")
+    seeds = [int(found.group(1)) for path in (Path(workdir) / runner_tool.RUNS_DIR).glob("*.jsonl")
+             if (found := pattern.fullmatch(path.stem))]
+    return max(seeds) + 1 if seeds else 0
 
 
 def _replay_rows(workdir: Any, task_id: str) -> dict:
@@ -223,7 +236,7 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None,
             raise ValueError("the Examiner has no model to re-roll with: pass reroll_model")
         reports = runner_tool.reroll(
             root, task_id, reroll_model, count=count, prefix=prefix, workdir=root,
-            make_user=make_user(task_id))
+            make_user=make_user(task_id), first_seed=next_seed(root, prefix, task_id))
         rows = []
         for report in reports:
             path = str(run_path(root, report.path))
@@ -266,4 +279,4 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None,
             "reroll_user": make_user}
 
 
-__all__ = ["runners_for"]
+__all__ = ["next_seed", "runners_for"]
