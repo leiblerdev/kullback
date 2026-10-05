@@ -1,4 +1,4 @@
-from kullback.spec.ground import coverage, ground_spec, valid_because
+from kullback.spec.ground import coverage, ground_spec, valid_because, valid_write_because
 from tests.spec.fixtures import check, spec
 
 INTENT = "Please move item A1 to slot seven.\nI also want a note saying it was urgent."
@@ -41,3 +41,11 @@ def test_ground_spec_never_raises_on_a_malformed_spec():
 def test_a_section_matches_as_whole_words_only():
     assert not valid_because("a1 is the item", INTENT, ["a", "1"])
     assert valid_because("per the Identity  Check rule", INTENT, ["identity check"])
+
+
+def test_a_write_because_must_quote_the_intent_or_the_policy_text_and_a_section_name_is_not_enough():
+    policy = "## Moving items\nMove an item only to a free slot."
+    assert valid_write_because("move item A1 to slot seven", INTENT, policy)
+    assert valid_write_because('per moving items: "Move an item only to a free slot"', INTENT, policy)
+    assert not valid_write_because("per the moving items rules", INTENT, policy)
+    assert not valid_write_because("", INTENT, policy)

@@ -7,8 +7,10 @@ never sees a Run, a Reference, a Verifier or an End state: the inputs come from 
 files and `writer_tools.refuse_run_inputs` refuses anything else.
 
 Code then decides what stands: a check whose because quotes neither the Intent nor a policy section
-is dropped, a check resting only on facts that were accepted and never witnessed is dropped, facts no
-check names become gaps, and `must_not` adds the forbidden side. `repair` answers a ruling by changing
+is dropped, a check resting only on facts that were accepted and never witnessed is dropped, a write
+whose because quotes neither a witnessed fact nor the policy text is dropped, facts no check names
+become gaps, and `must_not` adds the forbidden side. Demands refused on their because go back to the
+writer once, in one follow-up turn of the same conversation, and the corrections that ground are kept. `repair` answers a ruling by changing
 or defending the ruled checks only, under the same rules.
 """
 
@@ -22,7 +24,7 @@ from typing import Any, Callable, Iterable, NamedTuple, Optional
 from kullback.runner.records import Record, Verifier
 from kullback.spec import writer_tools
 from kullback.spec.compile import ATOM_KINDS, Compiled, compile_spec
-from kullback.spec.ground import coverage, valid_because
+from kullback.spec.ground import coverage, valid_because, valid_write_because
 from kullback.spec.must_not import must_not
 from kullback.spec.schema import (
     Check,
@@ -72,7 +74,22 @@ name it, but a demand resting on unwitnessed facts alone is dropped.
 - shape needs tool, field, id_field: the write must carry a value the run read for that column.
 - because must quote the Intent span word for word (at least 12 characters) or name the policy \
 rule or policy section. A demand with no valid because is dropped.
+- A write's because must quote the user's own words asking for that action, or the policy \
+sentence that requires it; naming a section is not enough.
 """
+
+FOLLOWUP_PROMPT = """Code refused these demands of yours, each for the reason and rule named. Send a \
+corrected version of each, under the same id, or leave it out to drop it. Send only these demands, \
+as one JSON object, no prose: {"demands": [...]}.
+"""
+
+# The rule each refusal a writer is told about breaks, in the words the follow-up turn shows it.
+SENT_BACK_RULES = {
+    "ungrounded": "because must quote the Intent word for word (at least 12 characters) or name a policy section",
+    "unwitnessed": "a demand may not rest on unwitnessed facts alone; its because must quote a witnessed fact",
+    "condition_unquoted": "a write's because must quote the user's own words asking for that action, or the "
+                          "policy sentence that requires it; naming a section is not enough",
+}
 
 REPAIR_PROMPT = """A ruling says some checks you wrote for this customer request are wrong. You \
 still have never seen any agent run, and you must not ask for one. For each ruled check, either \
@@ -197,7 +214,11 @@ def _refusal(item: Any, fact_ids: list[str], inputs: WriterInputs) -> str:
     witnessed = intent_text([fact for fact in inputs.intent.facts if not unwitnessed(fact)])
     if fact_ids and all(unwitnessed(facts[f]) for f in fact_ids):
         return "unwitnessed"
-    return "" if valid_because(because, witnessed, inputs.sections) else "unwitnessed"
+    if not valid_because(because, witnessed, inputs.sections):
+        return "unwitnessed"
+    if item.get("demand") == "write" and not valid_write_because(because, witnessed, inputs.policy_text):
+        return "condition_unquoted"
+    return ""
 
 
 def _check_of(number: Any, item: Any, inputs: WriterInputs) -> tuple[Optional[Check], str]:
@@ -214,20 +235,68 @@ def _check_of(number: Any, item: Any, inputs: WriterInputs) -> tuple[Optional[Ch
                  tier=tier_of(item["kind"], demand), fact_ids=fact_ids), ""
 
 
-def build_spec(task_id: str, demands: Iterable[Any], inputs: WriterInputs) -> tuple[Spec, dict]:
-    """The Spec code keeps from the writer's demands, and how many of each refusal it made."""
-    checks, counts = [], {"demands": 0, "kept": 0, "ungrounded": 0, "unwitnessed": 0, "bad_kind": 0}
+def _keep(demands: Iterable[Any], inputs: WriterInputs) -> tuple[list[Check], dict, list[tuple[int, Any, str]]]:
+    """The checks code keeps, how many of each refusal it made, and each refused demand with its code."""
+    checks, refused = [], []
+    counts = {"demands": 0, "kept": 0, "ungrounded": 0, "unwitnessed": 0, "condition_unquoted": 0, "bad_kind": 0}
     for number, item in enumerate(demands):
         counts["demands"] += 1
         check, refusal = _check_of(number, item, inputs)
         if check is None:
             counts[refusal] += 1
+            refused.append((number, item, refusal))
             continue
         counts["kept"] += 1
         checks.append(check)
+    return checks, counts, refused
+
+
+def _spec_of(task_id: str, checks: list[Check], counts: dict, inputs: WriterInputs) -> Spec:
     spec = with_gaps(Spec(task_id=task_id, intent=inputs.intent, checks=checks), inputs)
     counts["gaps"] = len(spec.gaps)
-    return spec, counts
+    return spec
+
+
+def build_spec(task_id: str, demands: Iterable[Any], inputs: WriterInputs) -> tuple[Spec, dict]:
+    """The Spec code keeps from the writer's demands, and how many of each refusal it made."""
+    checks, counts, _ = _keep(demands, inputs)
+    return _spec_of(task_id, checks, counts, inputs), counts
+
+
+def _writer_id(number: int, item: Any) -> str:
+    return str(item.get("id") or f"d{number}") if isinstance(item, dict) else f"d{number}"
+
+
+def followup_message(refused: list[tuple[int, Any, str]]) -> str:
+    """The one follow-up turn: each refused demand's id, its reason code and the rule it broke."""
+    rows = [{"id": _writer_id(number, item), "reason": code, "rule": SENT_BACK_RULES[code]}
+            for number, item, code in refused]
+    return FOLLOWUP_PROMPT + json.dumps({"refused": rows})
+
+
+def _send_back(messages: list[dict], session: dict, refused: list[tuple[int, Any, str]], inputs: WriterInputs,
+               model: Any, config: Any, price: Callable[[dict], float],
+               ceiling_usd: Optional[float]) -> tuple[list[Check], dict]:
+    """One follow-up turn in the same conversation; the corrected demands code keeps, and that turn's session.
+
+    A corrected demand keeps the check id of the demand it corrects; one under an id never sent back is ignored.
+    """
+    numbers = {_writer_id(number, item): number for number, item, _ in refused}
+    turn = messages + [{"role": "assistant", "content": session["text"]},
+                       {"role": "user", "content": followup_message(refused)}]
+    remaining = None if ceiling_usd is None else max(ceiling_usd - float(session.get("usd") or 0.0), 0.0)
+    again = writer_tools.run_session(model, turn, inputs.state, _config(config), writer_tools.MAX_READ_ROUNDS,
+                                     price, force_answer=True, ceiling_usd=remaining)
+    corrected, _ = writer_tools.parse_list(again["text"], "demands")
+    kept: dict[int, Check] = {}
+    for item in corrected:
+        number = numbers.get(str(item.get("id"))) if isinstance(item, dict) else None
+        if number is None or number in kept:
+            continue
+        check, _ = _check_of(number, item, inputs)
+        if check is not None:
+            kept[number] = check
+    return [kept[number] for number in sorted(kept)], again
 
 
 def with_gaps(spec: Spec, inputs: WriterInputs) -> Spec:
@@ -263,7 +332,18 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
                                        writer_tools.MAX_READ_ROUNDS, _price(model_id),
                                        force_answer=True, ceiling_usd=ceiling_usd)
     demands, error = writer_tools.parse_list(session["text"], "demands")
-    spec, counts = build_spec(task_id, demands, inputs)
+    checks, counts, refused = _keep(demands, inputs)
+    refused = [row for row in refused if row[2] in SENT_BACK_RULES]
+    counts.update(sent_back=len(refused), sent_back_kept=0)
+    if refused:
+        corrected, again = _send_back(messages, session, refused, inputs, model, config, _price(model_id),
+                                      ceiling_usd)
+        counts["sent_back_kept"] = len(corrected)
+        checks = sorted(checks + corrected, key=lambda check: int(check.id[1:]))
+        session = dict(again, usd=float(session.get("usd") or 0.0) + float(again.get("usd") or 0.0),
+                       tool_rounds=session.get("tool_rounds", 0) + again.get("tool_rounds", 0),
+                       tool_uses=session.get("tool_uses", []) + again.get("tool_uses", []))
+    spec = _spec_of(task_id, checks, counts, inputs)
     counts.update(parse_error=error, truncated_chars=cut)
     return Written(spec, counts, session)
 

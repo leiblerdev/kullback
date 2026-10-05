@@ -71,15 +71,51 @@ def test_writer_reads_the_starting_state_then_keeps_only_grounded_witnessed_chec
          "because": "I also want a note saying it was urgent"},
         {"kind": "made_up", "demand": "cap", "count": 1, "because": "move item A1 to slot seven"},
         {"kind": "required", "demand": "cap", "count": 1, "because": "per the moving items rules"},
-    ])])
+    ]), answer("demands", [])])
     written = W.write_spec("t1", inputs(), model)
     assert [check.id for check in written.spec.checks] == ["c0", "c4"]
-    assert written.counts == {"demands": 5, "kept": 2, "ungrounded": 1, "unwitnessed": 1, "bad_kind": 1,
-                              "gaps": 1, "parse_error": "", "truncated_chars": 0}
+    assert written.counts == {"demands": 5, "kept": 2, "ungrounded": 1, "unwitnessed": 1, "condition_unquoted": 0,
+                              "bad_kind": 1, "gaps": 1, "sent_back": 2, "sent_back_kept": 0, "parse_error": "",
+                              "truncated_chars": 0}
     assert written.spec.gaps == ["f2"]
     assert written.session["tool_uses"] == ["lookup_rows"]
     tool_turn = model.calls[1]["messages"][-1]
     assert json.loads(tool_turn["content"]) == STATE["items"]["A1"]
+
+
+def test_a_write_naming_only_a_section_goes_back_once_and_its_grounded_correction_keeps_its_check_id():
+    by_section = dict(WRITE, id="d1", kind="allowed", fact_ids=["f1"], because="per the moving items rules")
+    cap = {"id": "d0", "kind": "required", "demand": "cap", "count": 1, "because": "per the moving items rules"}
+    fixed = dict(by_section, because='per the moving items rules: "Move an item only to a free slot."')
+    stray = dict(MOVE, id="d7")
+    model = TestModel([answer("demands", [cap, by_section]), answer("demands", [fixed, stray])])
+    written = W.write_spec("t1", inputs(), model)
+    assert [check.id for check in written.spec.checks] == ["c0", "c1"]
+    assert written.spec.checks[1].because == fixed["because"]
+    assert (written.counts["condition_unquoted"], written.counts["sent_back"], written.counts["sent_back_kept"]) \
+        == (1, 1, 1)
+    first, second = model.calls[0]["messages"], model.calls[1]["messages"]
+    assert second[:1] == first and second[1]["role"] == "assistant" and second[2]["role"] == "user"
+    refused = json.loads(second[2]["content"][len(W.FOLLOWUP_PROMPT):])["refused"]
+    assert refused == [{"id": "d1", "reason": "condition_unquoted", "rule": W.SENT_BACK_RULES["condition_unquoted"]}]
+
+
+def test_a_write_quoting_the_policy_without_naming_a_section_is_still_ungrounded():
+    quoted = dict(WRITE, kind="required", fact_ids=["f1"], because="Move an item only to a free slot.")
+    written = W.write_spec("t1", inputs(), TestModel([answer("demands", [quoted]), answer("demands", [])]))
+    assert written.counts["ungrounded"] == 1 and written.counts["sent_back"] == 1
+
+
+def test_a_correction_that_still_names_only_a_section_is_dropped():
+    by_section = dict(WRITE, id="d0", kind="required", fact_ids=["f1"], because="per the moving items rules")
+    model = TestModel([answer("demands", [by_section]), answer("demands", [by_section])])
+    written = W.write_spec("t1", inputs(), model)
+    assert written.spec.checks == [] and written.counts["sent_back_kept"] == 0 and len(model.calls) == 2
+
+
+def test_the_write_rule_line_is_short_and_names_the_section_limit():
+    (line,) = [row for row in W.SYSTEM_PROMPT.splitlines() if row.startswith("- A write's")]
+    assert len(line) < 150 and "naming a section is not enough" in line
 
 
 def test_an_accepted_fact_with_a_witness_may_carry_a_check_alone():

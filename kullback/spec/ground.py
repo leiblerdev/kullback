@@ -1,6 +1,7 @@
 """Trust gate 1: every check rests on the Intent or the policy, every Intent fact has a check or a gap.
 
-`valid_because` is the because rule every Spec path uses. scripts/experiments/intentv.py keeps its own
+`valid_because` is the because rule every Spec path uses; a write demand must also pass
+`valid_write_because`. scripts/experiments/intentv.py keeps its own
 copy on purpose, as the frozen record of the arm it measured.
 """
 
@@ -18,9 +19,14 @@ def _norm(text: object) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
 
 
-def _quotes(because: str, intent: str) -> bool:
+# Where a because splits into spans; a write's quote may also sit inside quote marks or after a colon.
+_SPANS = r"[.!?\n]+"
+_WRITE_SPANS = r"[.!?\n:;\"\u201c\u201d]+"
+
+
+def _quotes(because: str, intent: str, spans: str = _SPANS) -> bool:
     flat = _norm(intent)
-    for span in re.split(r"[.!?\n]+", because):
+    for span in re.split(spans, because):
         span = span.strip("\"' ").strip()
         if len(span) >= MIN_QUOTE and span in flat:
             return True
@@ -40,6 +46,16 @@ def valid_because(because: object, intent: str, sections: Iterable[str] = ()) ->
     """A because quotes at least MIN_QUOTE characters of the Intent, or names a given policy section."""
     text = _norm(because)
     return bool(text) and (_quotes(text, intent) or _names_section(text, sections))
+
+
+def valid_write_because(because: object, intent: str, policy_text: str = "") -> bool:
+    """A write's because quotes at least MIN_QUOTE characters of the Intent or of the policy text.
+
+    Naming a section is not enough for a write: the because must carry the words that state its condition.
+    The writer applies it on top of `valid_because`, so compile and the trust gate still see a grounded check.
+    """
+    text = _norm(because)
+    return bool(text) and (_quotes(text, intent, _WRITE_SPANS) or _quotes(text, policy_text, _WRITE_SPANS))
 
 
 def coverage(spec) -> list[str]:
