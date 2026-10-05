@@ -9,6 +9,9 @@ are defined from the code in the "Words" section of the top-level README.md. The
 builds from 2026-09-02 to 2026-09-07 were deleted on 2026-09-24; git history keeps them. Some paths below name
 workdirs by an internal number (`.work-b9-agent`); those are file names, not build names.
 
+Every build is followed by `scripts/measure/trust_split.py` over its workdirs: the trusted Tasks split by
+whether the Reference is right, read afterwards off the build's own records and the benchmark sidecars.
+
 ## Index
 
 | Build | Notes |
