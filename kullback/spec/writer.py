@@ -74,8 +74,8 @@ name it, but a demand resting on unwitnessed facts alone is dropped.
 - shape needs tool, field, id_field: the write must carry a value the run read for that column.
 - because must quote the Intent span word for word (at least 12 characters) or name the policy \
 rule or policy section. A demand with no valid because is dropped.
-- A write's because must quote the user's own words asking for that action, or the policy \
-sentence that requires it; naming a section is not enough.
+- A write's because quotes the user's words asking for it, or names the policy section and \
+quotes the sentence requiring it; a section alone fails.
 """
 
 FOLLOWUP_PROMPT = """Code refused these demands of yours, each for the reason and rule named. Send a \
@@ -87,8 +87,9 @@ as one JSON object, no prose: {"demands": [...]}.
 SENT_BACK_RULES = {
     "ungrounded": "because must quote the Intent word for word (at least 12 characters) or name a policy section",
     "unwitnessed": "a demand may not rest on unwitnessed facts alone; its because must quote a witnessed fact",
-    "condition_unquoted": "a write's because must quote the user's own words asking for that action, or the "
-                          "policy sentence that requires it; naming a section is not enough",
+    "condition_unquoted": "a write's because must quote the user's own words asking for that action, or name "
+                          "the policy section and quote the sentence of it that requires the action; naming a "
+                          "section alone is not enough",
 }
 
 REPAIR_PROMPT = """A ruling says some checks you wrote for this customer request are wrong. You \

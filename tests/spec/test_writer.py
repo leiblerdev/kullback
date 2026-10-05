@@ -113,9 +113,10 @@ def test_a_correction_that_still_names_only_a_section_is_dropped():
     assert written.spec.checks == [] and written.counts["sent_back_kept"] == 0 and len(model.calls) == 2
 
 
-def test_the_write_rule_line_is_short_and_names_the_section_limit():
+def test_the_write_rule_line_is_short_and_asks_for_the_section_and_its_quoted_sentence():
     (line,) = [row for row in W.SYSTEM_PROMPT.splitlines() if row.startswith("- A write's")]
-    assert len(line) < 150 and "naming a section is not enough" in line
+    assert len(line) < 150 and "names the policy section and quotes the sentence" in line
+    assert "a section alone fails" in line
 
 
 def test_an_accepted_fact_with_a_witness_may_carry_a_check_alone():
