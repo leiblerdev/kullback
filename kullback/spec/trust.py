@@ -32,6 +32,7 @@ from kullback.runner.records import GateResult, Run, Verifier, load_run_jsonl, r
 from kullback.runner.replay import RECORDED
 from kullback.runner.target import check_run
 from kullback.spec import VERIFIER_FROM
+from kullback.spec.actions import workdir_action_tools
 from kullback.spec.canfail import can_fail
 from kullback.spec.events import TASK_SET_ASIDE
 from kullback.spec.ground import ground_spec
@@ -348,7 +349,7 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
     root = Path(workdir)
     canon = load_rules(root / "canon-rules.json")
     sigs = read_json(root / "tool_sigs.json", None) or []
-    tools = write_tools_of(sigs.get("sigs", []) if isinstance(sigs, dict) else sigs)
+    tools = write_tools_of(sigs.get("sigs", []) if isinstance(sigs, dict) else sigs) - workdir_action_tools(root)
     sections = policy_sections_of(root)
     runs = runs_on_disk(root)
     references = faithful_references(root)

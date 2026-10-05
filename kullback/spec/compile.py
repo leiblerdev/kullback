@@ -1,7 +1,8 @@
 """A Spec's checks to a Verifier with the existing atom builders, no new kinds (ported from intentv).
 
 Each demand compiles exactly as the intentv experiment compiled it; the Spec adds only its because,
-appended to every atom's description, and drops a check whose because is not grounded.
+appended to every atom's description, and drops a check whose because is not grounded. A write or
+no-write demand on an action tool (spec/actions.py, D308) compiles to an action atom instead.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from typing import Callable, Iterable, NamedTuple, Optional
 from kullback.gates import verifier_suite
 from kullback.runner.records import Atom, Verifier
 from kullback.runner.target import _key as canon_key
-from kullback.spec.atoms import no_write_atom, shape_atom
+from kullback.spec.atoms import action_atoms, no_write_atom, shape_atom
 from kullback.spec.ground import valid_because
 
 ATOM_KINDS = ("required", "allowed", "forbidden", "question", "communicate", "hard")
@@ -88,14 +89,24 @@ def _shape(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable
 BUILDERS = {"write": _write, "say": _say, "ask": _ask, "no_write": _no_write, "cap": _cap, "shape": _shape}
 
 
+def _action(atom_id: str, demand: dict) -> list[Atom]:
+    """A write or no-write demand on an action tool: required, allowed or forbidden as the call happening."""
+    if demand.get("demand") == "no_write" or demand["kind"] == "forbidden":
+        return action_atoms(atom_id, "forbidden", demand["tool"])
+    return action_atoms(atom_id, "required" if demand["kind"] in ("required", "hard") else "allowed",
+                        demand["tool"])
+
+
 def _because(atom: Atom, because: str) -> Atom:
     return atom.model_copy(update={"description": f"{atom.description or ''} because: {because}"})
 
 
 def compile_demands(demands: list, intent: str, sections: Iterable[str], write_tools: Iterable[str],
-                    fn: Callable, task_id: str = "", version: str = "spec") -> Compiled:
+                    fn: Callable, task_id: str = "", version: str = "spec",
+                    action_tools: Iterable[str] = ()) -> Compiled:
     """Demand dicts (each with kind, demand and because) to a Verifier, and how many were dropped."""
-    tools, sections = set(write_tools), list(sections)
+    actions = set(action_tools)
+    tools, sections = set(write_tools) - actions, list(sections)
     atoms: list[Atom] = []
     dropped = 0
     reasons: list[str] = []
@@ -103,6 +114,9 @@ def compile_demands(demands: list, intent: str, sections: Iterable[str], write_t
         if (not isinstance(demand, dict) or demand.get("kind") not in ATOM_KINDS
                 or not valid_because(demand.get("because"), intent, sections)):
             dropped += 1
+            continue
+        if demand.get("tool") in actions and demand.get("demand") in ("write", "no_write"):
+            atoms += [_because(atom, str(demand["because"])) for atom in _action(f"i{number}", demand)]
             continue
         if demand.get("demand") == "write" and not demand.get("entity"):
             # An empty entity never matches a row, so the atom would fail every Run, the Reference included.
@@ -120,8 +134,8 @@ def compile_demands(demands: list, intent: str, sections: Iterable[str], write_t
 
 
 def compile_spec(spec, write_tools: Iterable[str], canon_fn: Callable,
-                 policy_sections: Iterable[str] = ()) -> Compiled:
+                 policy_sections: Iterable[str] = (), action_tools: Iterable[str] = ()) -> Compiled:
     """The Spec's checks as a Verifier; a check whose because is not grounded is dropped and counted."""
     demands = [dict(check.demand, kind=check.kind, because=check.because, check_id=check.id) for check in spec.checks]
     return compile_demands(demands, spec.intent.text, policy_sections, write_tools, canon_fn,
-                           task_id=spec.task_id, version=f"spec{spec.version}")
+                           task_id=spec.task_id, version=f"spec{spec.version}", action_tools=action_tools)

@@ -15,6 +15,8 @@ from kullback.runner.records import Atom
 # the status row can count them without re-deriving.
 SHAPE_ATOM = "shape"
 NO_WRITE_ATOM = "no_write"
+# A demand on a tool the world records as an action (spec/actions.py, D308): the call happened or not.
+ACTION_ATOM = "action"
 
 
 def _helpers_src() -> str:
@@ -153,6 +155,26 @@ def check(pre_state, write_call, transcript):
 '''
 
 
+# An action the Run must take: some successful call of the tool is in the Run. The rule reads the
+# Run's own `calls`, so it answers the same on every call the Hard wrapper asks it about.
+_ACTION_DONE_SRC = '''
+_ACTION = {tool!r}
+
+
+def check(pre_state, write_call, transcript):
+    return any(call.get("name") == _ACTION and not call.get("error") for call in calls)
+'''
+
+# An action the Run must not take: no call of the tool, the no-write rule over that tool alone.
+_ACTION_NOT_DONE_SRC = '''
+_ACTION = {tool!r}
+
+
+def check(pre_state, write_call, transcript):
+    return (write_call.get("name") or "") != _ACTION
+'''
+
+
 def _rule_atom(atom_id: str, source: str, tools: Iterable[str], derived_as: str, description: str) -> Atom:
     """One generated rule as a Hard atom, asked about every call the Run made.
 
@@ -192,6 +214,23 @@ def no_write_atom(tools: Iterable[str]) -> Atom:
     """The one claim a Task that wrote nothing and stated nothing still makes about its End state."""
     return _rule_atom(NO_WRITE_ATOM, _NO_WRITE_SRC.format(tools=sorted(tools)), tools, NO_WRITE_ATOM,
                       "the End state is the Starting state: the Run wrote nothing")
+
+
+def action_atoms(atom_id: str, kind: str, tool: str) -> list[Atom]:
+    """A demand on an action tool: `required` and `forbidden` as a Hard rule over the Run's calls.
+
+    A required or allowed action also carries an allowed whole-tool write atom, so a scorer that still
+    counts the tool among its writes (the Runner's own Verdict) never names the call an extra write.
+    """
+    if kind == "forbidden":
+        return [_rule_atom(atom_id, _ACTION_NOT_DONE_SRC.format(tool=tool), [tool], ACTION_ATOM,
+                           f"the Run does not call {tool}")]
+    allowed = make_atom(f"{atom_id}.allowed" if kind == "required" else atom_id, "allowed",
+                        {"kind": "write", "tool": tool}, description=f"the Run may call {tool}")
+    if kind != "required":
+        return [allowed]
+    return [_rule_atom(atom_id, _ACTION_DONE_SRC.format(tool=tool), [tool], ACTION_ATOM,
+                       f"the Run calls {tool}"), allowed]
 
 
 def _atom(atom_id: str, kind: str, payload: dict, **fields: Any) -> Atom:

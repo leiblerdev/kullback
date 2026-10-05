@@ -4,7 +4,7 @@ import pytest
 
 from gates.examiner_fixtures import TASK
 from kullback.gates import trust as gates_trust
-from kullback.runner.records import Verifier
+from kullback.runner.records import Event, Verifier
 from kullback.spec import trust as T
 from kullback.spec.compile import compile_demands, compile_spec
 from kullback.spec.events import TASK_SET_ASIDE
@@ -180,6 +180,18 @@ def test_intent_tiers_score_the_run_files_under_runs_at_any_depth_and_skip_a_fil
     assert not (tmp_path / "exam" / "task_runs.json").exists()
     row = T.intent_tiers(tmp_path)["t1"].row
     assert row["runs_scored"] == ["fresh-1", REPLAY_ID] and row["fresh_passed"] == ["fresh-1"]
+
+
+def test_intent_tiers_score_without_the_tools_the_schema_records_as_actions(tmp_path):
+    fresh = _fresh()
+    action = [Event(idx=6, type="tool_call", payload={"id": "c9", "name": "close_case", "args": {}}),
+              Event(idx=7, type="tool_result", payload={"id": "c9", "result": "done"})]
+    _intent_workdir(tmp_path, [fresh.model_copy(update={"events": fresh.events + action})])
+    (tmp_path / "tool_sigs.json").write_text(json.dumps([{"name": "update_item", "kind": "write"},
+                                                         {"name": "close_case", "kind": "write"}]))
+    (tmp_path / "schema.json").write_text(json.dumps({"columns": [
+        {"table": "actions", "name": "tool", "class": "hard", "evidence": {"actions_of": ["close_case"]}}]}))
+    assert T.intent_tiers(tmp_path)["t1"].row["fresh_passed"] == ["fresh-1"]
 
 
 def test_a_task_with_a_spec_and_no_verifier_file_is_untrusted_for_want_of_the_file(tmp_path):

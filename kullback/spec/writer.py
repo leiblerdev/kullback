@@ -23,6 +23,7 @@ from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 from kullback.runner.records import Record, Verifier
 from kullback.spec import writer_tools
+from kullback.spec.actions import action_tools_of
 from kullback.spec.compile import ATOM_KINDS, Compiled, compile_spec
 from kullback.spec.ground import coverage, valid_because, valid_write_because
 from kullback.spec.must_not import must_not
@@ -126,6 +127,8 @@ class WriterInputs(NamedTuple):
     state: dict
     constraints: list[dict]
     canon: Callable[[Any], Any]
+    # The tools the world records as actions (spec/actions.py): never in write_tools.
+    action_tools: frozenset = frozenset()
 
 
 class Ruling(Record):
@@ -146,6 +149,7 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
 
     The policy is the recorded agent's own system prompt, else the Environment's policy.md. The
     Starting state is the shared world with the Task's overlay laid over it, never a Run's record.
+    An action tool (spec/actions.py) is kept out of the write tools.
     """
     from kullback.runner.state import StateView
     from kullback.runner.target import canon_fn
@@ -160,10 +164,11 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
     policy = env.system_prompt(env.task(task_id)) or ""
     overlay, rows = env.overlay(task_id)
     tools = writer_tools.tool_rows(env.sigs)
+    actions = frozenset(action_tools_of(env.schema))
     return WriterInputs(intent=intent, policy_text=policy, sections=writer_tools.policy_sections_of(workdir),
-                        tools=tools, write_tools={row["name"] for row in tools if row["kind"] == "write"},
+                        tools=tools, write_tools={row["name"] for row in tools if row["kind"] == "write"} - actions,
                         state=StateView(env.db, overlay, rows).shared, constraints=_constraints(workdir),
-                        canon=canon_fn(env.canon_rules))
+                        canon=canon_fn(env.canon_rules), action_tools=actions)
 
 
 def _constraints(workdir: Path) -> list[dict]:
@@ -307,7 +312,7 @@ def with_gaps(spec: Spec, inputs: WriterInputs) -> Spec:
     where the Examiner and the trust report already look.
     """
     spec = spec.model_copy(update={"gaps": []})
-    reasons = compile_spec(spec, inputs.write_tools, inputs.canon, inputs.sections).reasons
+    reasons = compile_spec(spec, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools).reasons
     return spec.model_copy(update={"gaps": coverage(spec) + list(reasons)})
 
 
@@ -351,7 +356,7 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
 
 def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:
     """The Spec's checks compiled, with the must-not atoms `must_not` adds from them."""
-    compiled = compile_spec(spec, inputs.write_tools, inputs.canon, inputs.sections)
+    compiled = compile_spec(spec, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools)
     must = [atom for atom in compiled.verifier.atoms if atom.kind in ("required", "allowed")]
     forbid = must_not(must, spec.intent.text, inputs.constraints, sorted(inputs.write_tools))
     atoms = compiled.verifier.atoms + forbid

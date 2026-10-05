@@ -287,6 +287,16 @@ def test_inputs_come_from_the_environment_files_and_never_from_runs_or_verifiers
     assert "SEEN" not in json.dumps(model.calls[0]["messages"])
 
 
+def test_a_tool_the_schema_records_as_an_action_is_kept_out_of_the_write_tools(tmp_path):
+    _workdir(tmp_path)
+    (tmp_path / "tool_sigs.json").write_text(json.dumps([{"name": "update_item", "kind": "write"},
+                                                         {"name": "close_case", "kind": "write"}]))
+    (tmp_path / "schema.json").write_text(json.dumps({"tables": ["actions"], "columns": [
+        {"table": "actions", "name": "tool", "class": "hard", "evidence": {"actions_of": ["close_case"]}}]}))
+    loaded = W.load_inputs(tmp_path, "t1", inputs().intent)
+    assert loaded.write_tools == {"update_item"} and loaded.action_tools == {"close_case"}
+
+
 def test_policy_sections_of_joins_the_policy_headings_and_the_compiled_rule_names(tmp_path):
     (tmp_path / "env").mkdir()
     (tmp_path / "env" / "policy.md").write_text(POLICY)
