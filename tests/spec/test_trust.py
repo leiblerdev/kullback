@@ -244,3 +244,34 @@ def test_a_recorded_model_run_under_any_id_is_a_replay_and_never_an_independent_
     tier, row = _tier([_recorded_elsewhere(on_reply_only), _fresh(right=False)])
     assert tier == "replay_only" and row["failing"] == "independent_pass"
     assert row["replay"] == {"synth-rec1": True} and row["fresh_passed"] == []
+
+
+def _hold_reference(root, fidelity=1.0, confirmed=True, kept=True):
+    """The harness's own record of rec1: kept as the Task's Reference, and its replay's fidelity."""
+    kept_rows = [{"kind": "recording", "trace_id": "rec1", "run_id": REPLAY_ID}] if kept else []
+    (root / "references.json").write_text(json.dumps({"t1": {"references": kept_rows}}))
+    (root / "replays.json").write_text(json.dumps({"env": {"rec1": {
+        "task_id": "t1", "trace_id": "rec1", "run_id": REPLAY_ID, "fidelity": fidelity, "confirmed": confirmed}}}))
+
+
+def _failing_replay():
+    return _fresh(REPLAY_ID, right=False).model_copy(update={"model": "recorded", "trace_id": "rec1"})
+
+
+def test_a_verifier_that_fails_a_faithful_replay_of_a_kept_reference_is_untrusted_and_names_the_atom(tmp_path):
+    _intent_workdir(tmp_path, [_failing_replay(), _fresh()])
+    _hold_reference(tmp_path)
+    tier, row = T.intent_tiers(tmp_path)["t1"]
+    verifier = T.load_spec_verifier(tmp_path, "t1")
+    assert tier == "untrusted" and row["failing"] == "reference_replay"
+    assert row["reference_replay"]["failed"] == REPLAY_ID
+    assert row["reference_replay"]["atom"] in {atom.id for atom in verifier.atoms}
+
+
+@pytest.mark.parametrize("held", [{"fidelity": 0.8}, {"confirmed": False}, {"kept": False}],
+                         ids=["unfaithful", "unconfirmed", "not_kept"])
+def test_a_failed_replay_that_is_not_a_faithful_kept_reference_leaves_the_task_trusted(tmp_path, held):
+    _intent_workdir(tmp_path, [_failing_replay(), _fresh()])
+    _hold_reference(tmp_path, **held)
+    tier, row = T.intent_tiers(tmp_path)["t1"]
+    assert tier == "trusted" and row["reference_replay"]["failed"] is None

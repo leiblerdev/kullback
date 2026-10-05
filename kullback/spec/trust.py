@@ -1,13 +1,16 @@
-"""The trust bar under `--verifier-from intent`: four gates, in order, all code (DESIGN.md, the trust bar).
+"""The trust bar under `--verifier-from intent`: five gates, in order, all code (DESIGN.md, the trust bar).
 
 1. grounded: `ground_spec` has nothing to say (every check quotes the Intent or names a policy section,
    every fact has a check or is listed as a gap);
 2. can fail: the D79 mutations of a passing Run fail the Spec's Verifier (`can_fail`);
-3. independent pass: a live Candidate Run (not the recorded model) passes under `check_run`;
-4. no open ruling: `spec.rulings_open == 0` and the Task is not set aside.
+3. reference replay: the Verifier passes every faithful replay (fidelity 1, confirmed) of a recording the
+   harness keeps as the Task's Reference (references.json and replays.json in the workdir);
+4. independent pass: a live Candidate Run (not the recorded model) passes under `check_run`;
+5. no open ruling: `spec.rulings_open == 0` and the Task is not set aside.
 
-The replay's own verdict is kept on the row as evidence and is never the condition. The tiers are
-trusted (all four), replay_only (1 and 2, the replay passes, no fresh Run passes yet), set_aside
+A replay's verdict is a condition only for a faithful kept Reference (gate 3); every other replay
+verdict rides on the row as evidence. The tiers are
+trusted (all five), replay_only (1 to 3, a replay passes, no fresh Run passes yet), set_aside
 (the router's rule, spec/router.py: marked on the Spec, or ROUNDS_CAP rounds with a ruling open;
 a set-aside event on the bus counts too) and untrusted
 (everything else). Every row names the first failing gate and the ids of the Runs it scored.
@@ -41,7 +44,7 @@ from kullback.spec.writer import spec_verifier_path
 from kullback.spec.writer_tools import policy_sections_of
 
 TIERS = ("trusted", "replay_only", "untrusted", "set_aside")
-GATES = ("grounded", "can_fail", "independent_pass", "no_open_ruling")
+GATES = ("grounded", "can_fail", "reference_replay", "independent_pass", "no_open_ruling")
 # The build manifest in the workdir: the Verifier foundation the build chose, kept for a resume.
 BUILD_MANIFEST = "build.json"
 DEFAULT_VERIFIER_FROM = "runs"
@@ -79,14 +82,23 @@ def is_fresh(run: Run) -> bool:
 
 # --- the four gates --------------------------------------------------------------------------------
 
-def _score(verifier: Verifier, runs: list[Run], canon: Any, write_tools: Any) -> dict[str, bool]:
-    scores = {}
+def _score(verifier: Verifier, runs: list[Run], canon: Any, write_tools: Any) -> dict[str, tuple[bool, Any]]:
+    """run id -> (passed, the first failing atom id or None)."""
+    verdicts = {}
     for run in runs:
         try:
-            scores[run.run_id] = bool(check_run(verifier, run, canon, write_tools=write_tools)[0])
+            passed, atom = check_run(verifier, run, canon, write_tools=write_tools)
+            verdicts[run.run_id] = (bool(passed), atom)
         except Exception:  # a Run the scorer cannot read is not a pass, and never stops the ruling
-            scores[run.run_id] = False
-    return scores
+            verdicts[run.run_id] = (False, None)
+    return verdicts
+
+
+def _reference_replay(verdicts: dict, references: Iterable[str]) -> dict:
+    """The faithful Reference replays scored, and the first the Verifier fails with its failing atom."""
+    scored = sorted(run_id for run_id in set(references) if run_id in verdicts)
+    failed = next((run_id for run_id in scored if not verdicts[run_id][0]), None)
+    return {"runs": scored, "failed": failed, "atom": verdicts[failed][1] if failed else None}
 
 
 def _mutation_base(runs: list[Run], scores: dict[str, bool]) -> Optional[Run]:
@@ -140,34 +152,39 @@ def _tier(gates: dict[str, bool], replay_passed: bool, set_aside: bool) -> str:
         return "set_aside"
     if all(gates.values()):
         return "trusted"
-    if gates["grounded"] and gates["can_fail"] and replay_passed and not gates["independent_pass"]:
+    if (gates["grounded"] and gates["can_fail"] and gates["reference_replay"] and replay_passed
+            and not gates["independent_pass"]):
         return "replay_only"
     return "untrusted"
 
 
 def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: Iterable[Any] = (), *,
-                 canon: Any, write_tools: Optional[Iterable[str]] = None, policy_sections: Iterable[str] = ()) -> TaskTier:
+                 canon: Any, write_tools: Optional[Iterable[str]] = None, policy_sections: Iterable[str] = (),
+                 references: Iterable[str] = ()) -> TaskTier:
     """The tier of one Task under the Spec's Verifier, with the row of evidence behind it.
 
     `runs` are every Run of the Task, the replays included; `rulings` are the bus events about it.
-    A replay is known by its recorded model (`is_replay`), never by its run id.
+    A replay is known by its recorded model (`is_replay`), never by its run id. `references` are the
+    run ids of the faithful replays of the Task's kept References (`faithful_references`).
     """
     runs = list(runs or ())
     tools = set(write_tools) if write_tools is not None else None
     refusals = ground_spec(spec, policy_sections)
-    scores = _score(verifier, runs, canon, tools)
+    verdicts = _score(verifier, runs, canon, tools)
+    scores = {run_id: passed for run_id, (passed, _atom) in verdicts.items()}
+    reference = _reference_replay(verdicts, references)
     fresh = [run.run_id for run in runs if is_fresh(run)]
     replay = {run.run_id: scores[run.run_id] for run in runs if is_replay(run)}
     failed_ok, mutation_rows, mutated_from = _can_fail(verifier, runs, scores, canon, tools)
     set_aside = set_aside_of(spec, rulings)
-    gates = {"grounded": not refusals, "can_fail": failed_ok,
+    gates = {"grounded": not refusals, "can_fail": failed_ok, "reference_replay": reference["failed"] is None,
              "independent_pass": any(scores[run_id] for run_id in fresh),
              "no_open_ruling": spec.rulings_open == 0 and not set_aside}
     tier = _tier(gates, any(replay.values()), set_aside)
     row = {"task_id": spec.task_id, "tier": tier,
            "failing": next((name for name in GATES if not gates[name]), None), "gates": gates,
            "grounding": {"refusals": len(refusals), "first": refusals[:_REASONS_KEPT]},
-           "can_fail": {"from": mutated_from, "rows": mutation_rows},
+           "can_fail": {"from": mutated_from, "rows": mutation_rows}, "reference_replay": reference,
            "runs_scored": sorted(scores), "fresh_passed": sorted(r for r in fresh if scores[r]),
            "replay": replay, "rulings_open": spec.rulings_open, "round": spec.round, "set_aside": set_aside}
     return TaskTier(tier, row)
@@ -291,6 +308,27 @@ def load_spec_verifier(workdir: Any, task_id: str) -> Optional[Verifier]:
         return None
 
 
+def faithful_references(workdir: Any) -> dict[str, list[str]]:
+    """task id -> run ids of the faithful replays (fidelity 1, confirmed) of the Task's kept References.
+
+    The kept References are the harness's own (references.json); the replay index (replays.json) says how
+    faithfully each recording was played back. A missing or torn file reads as none.
+    """
+    root = Path(workdir)
+    references, replays = read_json(root / "references.json", None), read_json(root / "replays.json", None)
+    kept = {(str(task_id), str(ref.get("trace_id")))
+            for task_id, row in (references.items() if isinstance(references, dict) else ())
+            for ref in ((row or {}).get("references") or []) if isinstance(ref, dict)}
+    out: dict[str, list[str]] = {}
+    for rows in (replays.values() if isinstance(replays, dict) else ()):
+        for row in (rows.values() if isinstance(rows, dict) else ()):
+            row = row if isinstance(row, dict) else {}
+            if ((str(row.get("task_id")), str(row.get("trace_id"))) in kept and row.get("run_id")
+                    and row.get("confirmed") is True and row.get("fidelity") == 1):
+                out.setdefault(str(row["task_id"]), []).append(str(row["run_id"]))
+    return out
+
+
 def runs_on_disk(workdir: Any) -> dict[str, list[Run]]:
     """Every Run file the build wrote under runs/, per Task; a file that does not load is skipped."""
     out: dict[str, list[Run]] = {}
@@ -313,6 +351,7 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
     tools = write_tools_of(sigs.get("sigs", []) if isinstance(sigs, dict) else sigs)
     sections = policy_sections_of(root)
     runs = runs_on_disk(root)
+    references = faithful_references(root)
     events = set_aside_events(root)
     out: dict[str, TaskTier] = {}
     for task_id in in_sample(root, sorted(set(_task_ids(root)) | set(specs or ()))):
@@ -328,7 +367,8 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
             out[task_id] = unruled_row(task_id, "can_fail", "no verifier file")
             continue
         out[task_id] = tier_of_task(spec, verifier, runs.get(task_id, []), events, canon=canon,
-                                    write_tools=tools, policy_sections=sections)
+                                    write_tools=tools, policy_sections=sections,
+                                    references=references.get(task_id, ()))
     return out
 
 
