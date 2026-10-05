@@ -71,7 +71,7 @@ name = "the Builder sits on the Examiner, both on the user, the agent core, the 
 type = "layers"
 containers = ["kullback"]
 layers = [
-    "hub",
+    "hub | trainer",
     "builder",
     "examiner",
     "user",
@@ -111,3 +111,38 @@ source_modules = [
     "kullback.examiner",
 ]
 forbidden_modules = ["kullback.cli", "kullback.tui", "kullback.report"]
+
+[[tool.importlinter.contracts]]
+name = "the trainer learns from recorded runs and never reaches into the builder, the examiner or the hub"
+type = "forbidden"
+source_modules = ["kullback.trainer"]
+forbidden_modules = ["kullback.examiner", "kullback.builder", "kullback.hub"]
+
+[[tool.importlinter.contracts]]
+name = "the trainer plays runs but never grades them so it never reaches into the gates"
+type = "forbidden"
+source_modules = ["kullback.trainer"]
+forbidden_modules = ["kullback.gates"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "nothing the trainer learns from ever imports it back"
+type = "forbidden"
+source_modules = [
+    "kullback.ai",
+    "kullback.agent",
+    "kullback.runner",
+    "kullback.gates",
+    "kullback.user",
+    "kullback.builder",
+    "kullback.examiner",
+    "kullback.hub",
+]
+forbidden_modules = ["kullback.trainer"]
+
+[[tool.importlinter.contracts]]
+name = "the record format imports nothing of the harness"
+type = "forbidden"
+source_modules = ["kullback.curriculum"]
+forbidden_modules = ["kullback.ai", "kullback.agent", "kullback.runner", "kullback.gates", "kullback.user",
+                     "kullback.builder", "kullback.examiner", "kullback.hub", "kullback.trainer"]
