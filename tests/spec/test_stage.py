@@ -8,7 +8,7 @@ from kullback.agent.bus import Bus
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.runner.records import Usage
 from kullback.spec import stage
-from kullback.spec.schema import load_spec, spec_path
+from kullback.spec.schema import FactSource, IntentFact, SpecIntent, intent_text, load_spec, spec_path
 from kullback.spec.writer import runner_verifier_path, spec_verifier_path
 
 STATE = {"items": {"A1": {"item_id": "A1", "slot": "two"}}}
@@ -56,6 +56,9 @@ def _one_task_replies() -> list[ModelReply]:
             ModelReply(content=json.dumps({"demands": [DEMAND]}), usage=Usage(input=300, output=50))]
 
 
+EMPTY = ModelReply(content=json.dumps({"demands": []}), usage=Usage(input=300, output=5))
+
+
 def _events(root) -> list[str]:
     return [json.loads(line)["event"]["name"] for line in (root / "bus.jsonl").read_text().splitlines()]
 
@@ -67,6 +70,9 @@ def test_write_specs_writes_the_spec_both_verifiers_and_publishes_spec_written(t
         {"written": 1, "skipped_existing": 0, "failed": 0}
     spec = load_spec(root, "t1")
     assert [check.id for check in spec.checks] == ["c0"] and spec.version == 1
+    assert {k: spec.writer[k] for k in ("demands", "kept", "attempts", "empty_first", "sent_back")} == \
+        {"demands": 1, "kept": 1, "attempts": 1, "empty_first": False, "sent_back": 0}
+    assert spec.writer["usd"] > 0 and spec.writer["read_rounds"] == 0
     assert spec_verifier_path(root, "t1").read_text() == runner_verifier_path(root, "t1").read_text()
     assert _events(root) == ["spec.written"]
     ledger = json.loads((root / "budget.json").read_text())["stages"]["spec"]
@@ -89,3 +95,38 @@ def test_write_specs_records_a_failing_task_and_goes_on_to_the_next(tmp_path):
     assert (counts["written"], counts["failed"]) == (1, 1)
     assert set(counts["failures"]) == {"t0"}
     assert not spec_path(root, "t0").exists() and spec_path(root, "t1").is_file()
+
+
+def test_an_empty_first_spec_is_written_once_more_and_the_second_stands(tmp_path):
+    root = _workdir(tmp_path)
+    replies = _one_task_replies()
+    counts = stage.write_specs(root, ["t1"], TestModel(replies[:3] + [EMPTY, replies[3]]))
+    assert {k: counts[k] for k in ("written", "empty_seen", "retried", "set_aside_empty")} == \
+        {"written": 1, "empty_seen": 1, "retried": 1, "set_aside_empty": 0}
+    spec = load_spec(root, "t1")
+    assert spec.set_aside is None and (spec.writer["attempts"], spec.writer["empty_first"]) == (2, True)
+    assert _events(root) == ["spec.written"]
+
+
+def test_an_empty_spec_twice_sets_the_task_aside_with_no_verifier_and_a_resume_skips_it(tmp_path):
+    root = _workdir(tmp_path)
+    counts = stage.write_specs(root, ["t1"], TestModel(_one_task_replies()[:3] + [EMPTY, EMPTY]))
+    assert {k: counts[k] for k in ("written", "empty_seen", "retried", "set_aside_empty")} == \
+        {"written": 0, "empty_seen": 1, "retried": 1, "set_aside_empty": 1}
+    spec = load_spec(root, "t1")
+    assert spec.set_aside == "empty_spec" and spec.writer["empty"] is True
+    assert not spec_verifier_path(root, "t1").exists() and not runner_verifier_path(root, "t1").exists()
+    (line,) = (root / "bus.jsonl").read_text().splitlines()
+    assert json.loads(line)["event"]["payload"] == {"task_id": "t1", "reason": "empty_spec", "rounds": 0}
+    again = stage.write_specs(root, ["t1"], TestModel([ModelReply(content="unused")]))
+    assert again["skipped_existing"] == 1
+
+
+def test_write_from_intent_writes_the_spec_from_a_given_intent_without_mining(tmp_path):
+    root = _workdir(tmp_path)
+    facts = [IntentFact(id="f1", text=FACT["text"], stance="volunteered", source=FactSource(recording="rec-a", turn=1))]
+    intent = SpecIntent(task_id="t1", facts=facts, text=intent_text(facts))
+    model = TestModel([ModelReply(content=json.dumps({"demands": [DEMAND]}), usage=Usage(input=300, output=50))])
+    spent = stage.write_from_intent(root, "t1", intent, model, 1.0, Bus(root / "bus.jsonl", agent="spec"))
+    assert len(model.calls) == 1 and spent == 0.0
+    assert load_spec(root, "t1").intent == intent and spec_verifier_path(root, "t1").is_file()

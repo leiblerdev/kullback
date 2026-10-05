@@ -26,7 +26,9 @@ Target = Literal["run", "check", "intent", "environment"]
 RULING_CODES = ("check_unpassable", "run_contradicts_intent", "reference_wrong", "environment_defect", "other")
 QUOTE_MISSING = "quote_missing"
 NO_AGREEMENT = "no_agreement"
-REASON_CODES = (QUOTE_MISSING, *RULING_CODES, NO_AGREEMENT)
+# The writer kept no check twice running (spec/stage.py).
+EMPTY_SPEC = "empty_spec"
+REASON_CODES = (QUOTE_MISSING, *RULING_CODES, NO_AGREEMENT, EMPTY_SPEC)
 RulingCode = Literal["check_unpassable", "run_contradicts_intent", "reference_wrong", "environment_defect", "other"]
 
 
@@ -81,7 +83,7 @@ def task_set_aside(bus: Any, task_id: str, reason: str, rounds: int):
                                                "rounds": int(rounds)})
 
 
-__all__ = ["EVENT_NAMES", "NO_AGREEMENT", "QUOTE_MISSING", "REASON_CODES", "RULING_CODES", "RULING_FILED",
+__all__ = ["EMPTY_SPEC", "EVENT_NAMES", "NO_AGREEMENT", "QUOTE_MISSING", "REASON_CODES", "RULING_CODES", "RULING_FILED",
            "SPEC_DEFENDED", "SPEC_REPAIRED", "SPEC_REPAIR_DEFERRED", "SPEC_WRITTEN", "TARGETS", "TASK_SET_ASIDE",
            "RulingCode", "Target", "code_of", "excerpt_ref", "ruling_filed", "ruling_payload", "spec_defended",
            "spec_repair_deferred", "spec_repaired", "spec_written", "task_set_aside"]

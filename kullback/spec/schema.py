@@ -77,6 +77,21 @@ class Spec(Record):
     # Rulings the router could not hand to a writer yet (spec/router.py), and why the Task is set aside.
     pending_repair: list[dict] = Field(default_factory=list)
     set_aside: Optional[str] = None
+    # The writer's session counts: demands, refusals, gaps, spend, read rounds, attempts, sent back.
+    writer: dict = Field(default_factory=dict)
+
+
+# Checks that specify a Task with no expected write: a Spec keeping one is never empty.
+_NO_WRITE_DEMANDS = ("no_write", "cap")
+
+
+def is_empty(spec: Spec) -> bool:
+    """A Spec that keeps no check, or whose every Intent fact is a gap, unless it keeps a no_write or cap check."""
+    if any(check.demand.get("demand") in _NO_WRITE_DEMANDS for check in spec.checks):
+        return False
+    gaps = set(spec.gaps)
+    facts = spec.intent.facts
+    return not spec.checks or (bool(facts) and all(fact.id in gaps for fact in facts))
 
 
 def spec_path(workdir: Path, task_id: str) -> Path:
