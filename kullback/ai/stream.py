@@ -101,6 +101,7 @@ def assemble(reply: Any, call_id_prefix: str = "call") -> AssistantMessage:
     ]
     return AssistantMessage(
         content=reply.content,
+        thinking=getattr(reply, "thinking", None),
         tool_calls=calls,
         usage=reply.usage,
         stop_reason=normalize_stop_reason(reply.stop_reason, bool(calls)),

@@ -150,14 +150,21 @@ class ModelReply(BaseModel):
     # What the adapter sent to get this reply. None on the three offline models: TestModel and
     # RecordedModel never touch a wire, and a MemoModel hit carries the original call's exchange.
     exchange: Optional[Exchange] = None
+    # What the model reasoned before it answered, when the endpoint reports a reasoning summary.
+    # Kept for a reader and never sent back: replaying reasoning we did not produce would be
+    # fabrication, so no adapter echoes it. Omitted from a dump when absent, by the same rule as
+    # thinking_blocks. Readers must use attribute access, never key access on a dumped dict.
+    thinking: Optional[str] = None
     # The Messages API's signed thinking blocks, exactly as they came, for the next request of the
     # conversation to send back unchanged (see AnthropicModel.parse_reply). A reply without them
     # omits the key when dumped, so a memo or recording written before the field is unchanged.
     thinking_blocks: Optional[list[dict]] = None
 
     @model_serializer(mode="wrap")
-    def _omit_absent_thinking_blocks(self, handler):
+    def _omit_absent_thinking(self, handler):
         data = handler(self)
+        if self.thinking is None:
+            data.pop("thinking", None)
         if self.thinking_blocks is None:
             data.pop("thinking_blocks", None)
         return data
@@ -508,6 +515,10 @@ def _reply_from_dict(data: dict) -> ModelReply:
     output = int(usage.get("output", usage.get("completion_tokens", 0)) or 0)
     return ModelReply(
         content=content,
+        thinking=data.get("thinking"),
+        thinking_blocks=copy.deepcopy(data.get("thinking_blocks"))
+        if isinstance(data.get("thinking_blocks"), list)
+        else None,
         tool_calls=[
             ToolCallRequest(
                 id=c.get("id"),
@@ -941,6 +952,21 @@ class HttpModel(Model):
         raise NotImplementedError
 
 
+def _collect_anthropic_thinking(block: dict, thinking: list[dict], thinking_text: list[str]) -> bool:
+    """File one thinking block. True when the block was thinking and is now filed."""
+    if block.get("type") not in THINKING_BLOCK_TYPES:
+        return False
+    # Kept whole, signature and all: the next request of a tool loop sends them back
+    # unchanged (preserved thinking), and an edited block is a 400. The readable
+    # text goes on the reply beside them, so a reader sees the summary.
+    if block.get("signature") or block.get("data"):
+        thinking.append(copy.deepcopy(block))
+    summary = block.get("thinking")
+    if isinstance(summary, str):
+        thinking_text.append(summary or "")
+    return True
+
+
 class AnthropicModel(HttpModel):
     """Anthropic Messages API: system split out, cache points, tool_use blocks."""
 
@@ -979,7 +1005,7 @@ class AnthropicModel(HttpModel):
             body["temperature"] = config.temperature
         if config.stop:
             body["stop_sequences"] = list(config.stop)
-        # Reasoning branch one of three: Anthropic takes thinking as its own block and the
+        # Reasoning branch one of four: Anthropic takes thinking as its own block and the
         # depth as output_config.effort. budget_tokens is not sent: the current models reject it.
         thinking = _anthropic_thinking(config.thinking, rules)
         if thinking:
@@ -997,15 +1023,13 @@ class AnthropicModel(HttpModel):
         text: list[str] = []
         calls: list[ToolCallRequest] = []
         thinking: list[dict] = []
+        thinking_text: list[str] = []
         for block in data.get("content") or []:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") in THINKING_BLOCK_TYPES:
-                # Kept whole, signature and all: the next request of a tool loop sends them back
-                # unchanged (preserved thinking), and an edited block is a 400.
-                if block.get("signature") or block.get("data"):
-                    thinking.append(copy.deepcopy(block))
-            elif block.get("type") == "text":
+            if _collect_anthropic_thinking(block, thinking, thinking_text):
+                continue
+            if block.get("type") == "text":
                 text.append(block.get("text") or "")
             elif block.get("type") == "tool_use":
                 calls.append(
@@ -1017,6 +1041,7 @@ class AnthropicModel(HttpModel):
                 )
         return ModelReply(
             content="".join(text) or None,
+            thinking="".join(thinking_text) or None,
             tool_calls=calls,
             usage=usage_from_anthropic(data.get("usage")),
             model=data.get("model") or self.wire_id,
@@ -1069,13 +1094,23 @@ def _put_anthropic_tool_choice(body: dict[str, Any], choice: Optional[str], rule
 
 
 def _anthropic_thinking(requested: Optional[dict], rules: RequestRules) -> dict:
-    """The thinking block to send, empty when the model's rules leave the field out."""
+    """The thinking block to send, empty when the model's rules leave the field out.
+
+    Adaptive thinking asks for the summarized display, so the thinking text comes back
+    readable instead of encrypted: without it the block carries only a signature.
+    """
     thinking = dict(requested or {})
     if rules.thinking_always_on:
         # Disabled or budgeted thinking is a 400 here; leaving the field out is adaptive.
         thinking.pop("budget_tokens", None)
-        if thinking.get("type") != "adaptive":
+        if thinking.get("type") == "adaptive":
+            thinking.setdefault("display", "summarized")
+        elif not thinking:
+            thinking = {"type": "adaptive", "display": "summarized"}
+        else:
             thinking = {}
+    elif thinking.get("type") == "adaptive":
+        thinking.setdefault("display", "summarized")
     return thinking
 
 
@@ -1257,7 +1292,7 @@ class OpenAIModel(HttpModel):
         return True
 
     def reasoning_fields(self, config: ModelConfig) -> dict:
-        """Reasoning branch two of three: OpenAI takes one reasoning_effort field."""
+        """Reasoning branch two of four: OpenAI takes one reasoning_effort field."""
         return {"reasoning_effort": config.reasoning_effort} if config.reasoning_effort else {}
 
     def parse_reply(self, data: dict) -> ModelReply:
@@ -1355,7 +1390,7 @@ class OpenAICompatibleModel(OpenAIModel):
         return opencode_headers(self.base_url, super().headers(body))
 
     def reasoning_fields(self, config: ModelConfig) -> dict:
-        """Reasoning branch three of three: a local endpoint gets none of it. Servers that do
+        """Reasoning branch three of four: a local endpoint gets none of it. Servers that do
         not know the field reject the whole request, and there is no effort table to guess from."""
         return {}
 
@@ -1418,6 +1453,11 @@ class OpenAIResponsesModel(HttpModel):
         self.key_env_var = key_env_var
         self.key_required = bool(key_env_var)
         super().__init__(model_id, base_url=base_url, **kwargs)
+        # Whether this model reasons comes from its catalogue row, read on the first request
+        # and cached after: construction never fetches, so an explicit endpoint pays nothing.
+        # A plain chat model behind a gateway may refuse the reasoning field, so the row gates it.
+        self.sends_reasoning: Optional[bool] = None
+        self._reasoning_known = False
 
     def headers(self, body: Optional[bytes] = None) -> dict:
         headers = {"content-type": "application/json"}
@@ -1436,6 +1476,14 @@ class OpenAIResponsesModel(HttpModel):
                 body["tool_choice"] = config.tool_choice
         if config.max_tokens is not None:
             body["max_output_tokens"] = config.max_tokens
+        # Reasoning branch four of four: the effort comes from the config and a summary is
+        # always asked for, so the reasoning text is kept like the summarized thinking.
+        if not self._reasoning_known:
+            self.sends_reasoning = _catalogue_reasoning(self.provider, self.wire_id, self.env)
+            self._reasoning_known = True
+        reasoning = _responses_reasoning(config, self.sends_reasoning)
+        if reasoning is not None:
+            body["reasoning"] = reasoning
         if config.logprobs or config.top_logprobs is not None:
             # This endpoint returns logprobs only for what `include` asks for, so asking for them
             # is two fields, not one.
@@ -1454,17 +1502,15 @@ class OpenAIResponsesModel(HttpModel):
                 f"{self.name}: the Responses API ended as {data.get('status')}: "
                 f"{error.get('message') or error or 'no reason given'}"
             )
-        texts: list[str] = []
+        output = data.get("output") or []
+        texts = _responses_text_of(output, "message", "content", "output_text")
+        # The summary text is kept; the encrypted blob never is (read, never echo).
+        thinking = _responses_text_of(output, "reasoning", "summary", "summary_text")
         calls: list[ToolCallRequest] = []
-        for item in data.get("output") or []:
+        for item in output:
             if not isinstance(item, dict):
                 continue
-            kind = item.get("type")
-            if kind == "message":
-                for part in item.get("content") or []:
-                    if isinstance(part, dict) and part.get("type") == "output_text":
-                        texts.append(part.get("text") or "")
-            elif kind == "function_call":
+            if item.get("type") == "function_call":
                 calls.append(
                     ToolCallRequest(
                         id=clean_tool_call_id(item.get("call_id") or item.get("id")),
@@ -1474,12 +1520,57 @@ class OpenAIResponsesModel(HttpModel):
                 )
         return ModelReply(
             content="".join(texts) or None,
+            thinking="".join(thinking) or None,
             tool_calls=calls,
             usage=usage_from_openai_responses(data.get("usage")),
             model=data.get("model") or self.wire_id,
             stop_reason=data.get("status"),
             raw=data,
         )
+
+def _catalogue_reasoning(provider: str, wire_id: str, env: dict) -> Optional[bool]:
+    """What the catalogue row says about reasoning: True, False, or None when no row says.
+
+    The same lookup price_from_catalog reads from, through the snapshot model_for already
+    uses: the provider entry, then the row for the wire id. Anything but a boolean reads
+    as no row, so a row that predates the field takes the cautious path below.
+    """
+    from kullback.ai import pricing
+    entry = (pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=env) or {}).get(provider)
+    row = pricing.model_row(entry, wire_id)
+    verdict = row.get("reasoning") if isinstance(row, dict) else None
+    return verdict if isinstance(verdict, bool) else None
+
+
+def _responses_reasoning(config: ModelConfig, sends: Optional[bool]) -> Optional[dict[str, Any]]:
+    """The reasoning field for one Responses request, or None when this model gets none.
+
+    A model whose row says it reasons always asks for a summary; one whose row says it does
+    not sends no reasoning field. With no row the field goes only when the config sets an
+    effort, since a plain chat model behind a gateway may refuse it.
+    """
+    if sends is False:
+        return None
+    effort = config.reasoning_effort or config.effort
+    if sends is None and not effort:
+        return None
+    reasoning: dict[str, Any] = {"summary": "auto"}
+    if effort:
+        reasoning["effort"] = effort
+    return reasoning
+
+
+
+def _responses_text_of(output: Any, item_type: str, parts_key: str, text_type: str) -> list[str]:
+    """Text parts of one Responses output kind: message content or reasoning summaries."""
+    texts: list[str] = []
+    for item in output or []:
+        if not isinstance(item, dict) or item.get("type") != item_type:
+            continue
+        for part in item.get(parts_key) or []:
+            if isinstance(part, dict) and part.get("type") == text_type:
+                texts.append(part.get("text") or "")
+    return texts
 
 
 def _responses_tool(tool: dict) -> dict:
