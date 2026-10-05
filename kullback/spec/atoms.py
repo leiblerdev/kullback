@@ -17,6 +17,8 @@ SHAPE_ATOM = "shape"
 NO_WRITE_ATOM = "no_write"
 # A demand on a tool the world records as an action (spec/actions.py, D308): the call happened or not.
 ACTION_ATOM = "action"
+# A cap on one named tool (D309): its successful calls, not every write of the Run.
+TOOL_CAP_ATOM = "tool_cap"
 
 
 def _helpers_src() -> str:
@@ -175,6 +177,17 @@ def check(pre_state, write_call, transcript):
 '''
 
 
+# At most this many successful calls of one tool; the Run's other writes are not counted.
+_TOOL_CAP_SRC = '''
+_TOOL = {tool!r}
+_COUNT = {count!r}
+
+
+def check(pre_state, write_call, transcript):
+    return sum(1 for call in calls if call.get("name") == _TOOL and not call.get("error")) <= _COUNT
+'''
+
+
 def _rule_atom(atom_id: str, source: str, tools: Iterable[str], derived_as: str, description: str) -> Atom:
     """One generated rule as a Hard atom, asked about every call the Run made.
 
@@ -214,6 +227,12 @@ def no_write_atom(tools: Iterable[str]) -> Atom:
     """The one claim a Task that wrote nothing and stated nothing still makes about its End state."""
     return _rule_atom(NO_WRITE_ATOM, _NO_WRITE_SRC.format(tools=sorted(tools)), tools, NO_WRITE_ATOM,
                       "the End state is the Starting state: the Run wrote nothing")
+
+
+def tool_cap_atom(atom_id: str, tool: str, count: int) -> Atom:
+    """A cap on one tool: the Run makes at most `count` successful calls of it."""
+    return _rule_atom(atom_id, _TOOL_CAP_SRC.format(tool=tool, count=count), [tool], TOOL_CAP_ATOM,
+                      f"the Run makes at most {count} {tool} calls")
 
 
 def action_atoms(atom_id: str, kind: str, tool: str) -> list[Atom]:

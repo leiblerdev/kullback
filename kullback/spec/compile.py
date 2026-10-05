@@ -12,7 +12,7 @@ from typing import Callable, Iterable, NamedTuple, Optional
 from kullback.gates import verifier_suite
 from kullback.runner.records import Atom, Verifier
 from kullback.runner.target import _key as canon_key
-from kullback.spec.atoms import action_atoms, no_write_atom, shape_atom
+from kullback.spec.atoms import action_atoms, no_write_atom, shape_atom, tool_cap_atom
 from kullback.spec.ground import valid_because
 
 ATOM_KINDS = ("required", "allowed", "forbidden", "question", "communicate", "hard")
@@ -69,12 +69,17 @@ def _ask(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable) 
 
 
 def _no_write(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable) -> Optional[list[Atom]]:
-    return [no_write_atom(write_tools).model_copy(update={"id": atom_id})]
+    """No write at all, or, when the demand names a tool, no call of that tool alone."""
+    tools = {demand["tool"]} if demand.get("tool") else write_tools
+    return [no_write_atom(tools).model_copy(update={"id": atom_id})]
 
 
 def _cap(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable) -> Optional[list[Atom]]:
+    """At most `count` writes, or, when the demand names a tool, at most `count` calls of that tool."""
     if not isinstance(demand.get("count"), int):
         return None
+    if demand.get("tool"):
+        return [tool_cap_atom(atom_id, demand["tool"], demand["count"])]
     return [verifier_suite.make_atom(
         atom_id, "required", {"kind": "entity_count", "count": demand["count"]},
         description=f"the Run makes at most {demand['count']} write calls")]

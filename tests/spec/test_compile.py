@@ -1,7 +1,8 @@
 import sys
 from pathlib import Path
 
-from kullback.runner.target import check_run, text_of
+from kullback.runner.records import Event, Run
+from kullback.runner.target import atom_holds, check_run, hard_holds, text_of
 from kullback.spec.compile import compile_spec
 from tests.spec.fixtures import WRITE, WRITE_TOOLS, check, fn, reference_run, spec
 
@@ -60,3 +61,36 @@ def test_a_write_demand_without_an_entity_yields_no_atom_and_one_named_drop():
     assert compiled.verifier.atoms == []
     assert compiled.dropped == 1
     assert compiled.reasons == ("c9: write without entity",)
+
+
+TWO_WRITES = set(WRITE_TOOLS) | {"delete_item"}
+
+
+def _writing(*calls) -> Run:
+    """A Run making each (tool, item id) write once, each answered without an error."""
+    events = []
+    for n, (tool, item) in enumerate(calls):
+        events += [Event(idx=2 * n, type="tool_call", payload={"id": f"c{n}", "name": tool, "args": {"item_id": item}}),
+                   Event(idx=2 * n + 1, type="tool_result", payload={"id": f"c{n}", "result": {"item_id": item}})]
+    return Run(run_id="r", task_id="t1", termination_reason="success", events=events)
+
+
+def _holds(demand, run) -> bool:
+    (atom,) = compile_spec(spec([check("c0", "required", demand)]), TWO_WRITES, fn).verifier.atoms
+    if atom.kind == "hard":
+        return hard_holds(atom, run, TWO_WRITES, fn)
+    return atom_holds(atom, run, fn, TWO_WRITES)
+
+
+def test_a_no_write_naming_a_tool_forbids_that_tool_only():
+    named = {"demand": "no_write", "tool": "update_item"}
+    assert _holds(named, _writing(("delete_item", "B2")))
+    assert not _holds(named, _writing(("update_item", "A1")))
+    assert not _holds({"demand": "no_write"}, _writing(("delete_item", "B2")))
+
+
+def test_a_cap_naming_a_tool_counts_that_tools_writes_only():
+    named = {"demand": "cap", "count": 1, "tool": "update_item"}
+    assert _holds(named, _writing(("update_item", "A1"), ("delete_item", "B2"), ("delete_item", "C3")))
+    assert not _holds(named, _writing(("update_item", "A1"), ("update_item", "B2")))
+    assert not _holds({"demand": "cap", "count": 1}, _writing(("update_item", "A1"), ("delete_item", "B2")))
