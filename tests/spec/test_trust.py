@@ -44,7 +44,7 @@ def _fresh(run_id="fresh-1", right=True):
 def _tier(runs, the_spec=None, rulings=(), verifier=None):
     the_spec = the_spec or spec(gaps=["f2"])
     return T.tier_of_task(the_spec, verifier or _verifier(the_spec), runs, rulings, canon=fn,
-                          write_tools=WRITE_TOOLS, prefix="replay-")
+                          write_tools=WRITE_TOOLS)
 
 
 def test_a_grounded_spec_that_can_fail_with_a_fresh_pass_and_no_ruling_is_trusted_and_names_the_runs_scored():
@@ -61,7 +61,8 @@ def test_a_replay_pass_without_a_fresh_pass_is_replay_only_and_the_replay_verdic
 
 
 def test_a_failing_recording_with_a_fresh_pass_is_trusted():
-    tier, row = _tier([_fresh("replay-rec1", right=False), _fresh()])
+    failing = _fresh(REPLAY_ID, right=False).model_copy(update={"model": "recorded"})
+    tier, row = _tier([failing, _fresh()])
     assert tier == "trusted" and row["replay"] == {REPLAY_ID: False}
 
 
@@ -96,12 +97,11 @@ def test_an_open_ruling_withholds_trust_and_the_routers_rule_or_a_bus_event_sets
     assert row["gates"]["no_open_ruling"] is (tier == "trusted")
 
 
-def test_the_replay_prefix_is_read_off_the_runners_replay_index_and_without_one_the_recorded_model_decides():
-    index = {"t1": {"rec1": {"run_id": "replay-rec1", "trace_id": "rec1"}},
-             "t2": {"rec2": {"run_id": "replay-rec2", "trace_id": "rec2"}, "x": {"run_id": "x", "trace_id": ""}}}
-    assert T.replay_prefix(index) == "replay-"
-    assert T.replay_prefix({}) is None
-    assert T.is_replay(_replay(), None) and not T.is_replay(_fresh(), None)
+def test_a_run_that_names_no_model_is_neither_a_replay_nor_fresh():
+    unnamed = _fresh().model_copy(update={"model": None})
+    assert T.is_replay(_replay()) and not T.is_fresh(_replay())
+    assert T.is_fresh(_fresh()) and not T.is_replay(_fresh())
+    assert not T.is_replay(unnamed) and not T.is_fresh(unnamed)
 
 
 def test_the_runs_path_is_the_gates_trusted_ruling_task_for_task(tmp_path):
@@ -227,3 +227,20 @@ def test_without_a_stored_sample_the_tier_report_covers_every_task_and_names_the
     assert sorted(tiers) == ["t1", "t2"]
     assert all("failing" in tier.row for tier in tiers.values())
     assert tiers["t2"].row["failing"] == "grounded"
+
+
+def _recorded_elsewhere(on_reply_only=False):
+    """A recording played back under a run id that carries no replay prefix."""
+    run = _replay().model_copy(update={"run_id": "synth-rec1"})
+    if not on_reply_only:
+        return run
+    events = [e.model_copy(update={"payload": {"reply": dict(e.payload["reply"], model="recorded")}})
+              if e.type == "model_call" else e for e in run.events]
+    return run.model_copy(update={"model": None, "events": events})
+
+
+@pytest.mark.parametrize("on_reply_only", [False, True], ids=["run_model", "reply_model"])
+def test_a_recorded_model_run_under_any_id_is_a_replay_and_never_an_independent_pass(on_reply_only):
+    tier, row = _tier([_recorded_elsewhere(on_reply_only), _fresh(right=False)])
+    assert tier == "replay_only" and row["failing"] == "independent_pass"
+    assert row["replay"] == {"synth-rec1": True} and row["fresh_passed"] == []

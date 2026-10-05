@@ -3,7 +3,7 @@
 1. grounded: `ground_spec` has nothing to say (every check quotes the Intent or names a policy section,
    every fact has a check or is listed as a gap);
 2. can fail: the D79 mutations of a passing Run fail the Spec's Verifier (`can_fail`);
-3. independent pass: a Run that is not a replay of a recording passes under `check_run`;
+3. independent pass: a live Candidate Run (not the recorded model) passes under `check_run`;
 4. no open ruling: `spec.rulings_open == 0` and the Task is not set aside.
 
 The replay's own verdict is kept on the row as evidence and is never the condition. The tiers are
@@ -19,7 +19,6 @@ kullback/gates/trust.py mapped onto the tier words, so the switch cannot move th
 from __future__ import annotations
 
 import json
-from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, NamedTuple, Optional
 
@@ -57,27 +56,25 @@ class TaskTier(NamedTuple):
 
 # --- which Run is a replay -------------------------------------------------------------------------
 
-def replay_prefix(replays: Any) -> Optional[str]:
-    """The run id prefix the Runner gives a replay, read off its own replay index, or None.
-
-    Each replay row names its run id and the recording it replays; the run id less the recording id
-    is the prefix. The commonest one wins, so a row written by hand does not move it.
-    """
-    found: Counter = Counter()
-    for rows in (replays or {}).values() if isinstance(replays, dict) else ():
-        for row in (rows or {}).values() if isinstance(rows, dict) else ():
-            run_id, trace_id = str((row or {}).get("run_id") or ""), str((row or {}).get("trace_id") or "")
-            if trace_id and run_id.endswith(trace_id) and len(run_id) > len(trace_id):
-                found[run_id[:-len(trace_id)]] += 1
-    return found.most_common(1)[0][0] if found else None
+def run_models(run: Run) -> set[str]:
+    """Every model the Run names: its own model field and the model each of its model replies carries."""
+    named = {str(run.model)} if run.model else set()
+    for event in run.events:
+        reply = event.payload.get("reply") if event.type == "model_call" else None
+        if isinstance(reply, dict) and reply.get("model"):
+            named.add(str(reply["model"]))
+    return named
 
 
-def is_replay(run: Run, prefix: Optional[str]) -> bool:
-    """A Run the recorded agent played: its id carries the replay prefix, or, with none known, its model is
-    the recorded one."""
-    if prefix:
-        return run.run_id.startswith(prefix)
-    return run.model == RECORDED
+def is_replay(run: Run) -> bool:
+    """A Run the recorded agent played, whatever its run id: the recorded model is among its models."""
+    return RECORDED in run_models(run)
+
+
+def is_fresh(run: Run) -> bool:
+    """A live Candidate Run: it names a model and the recorded one is not among them."""
+    models = run_models(run)
+    return bool(models) and RECORDED not in models
 
 
 # --- the four gates --------------------------------------------------------------------------------
@@ -92,23 +89,22 @@ def _score(verifier: Verifier, runs: list[Run], canon: Any, write_tools: Any) ->
     return scores
 
 
-def _mutation_base(runs: list[Run], scores: dict[str, bool], prefix: Optional[str]) -> Optional[Run]:
+def _mutation_base(runs: list[Run], scores: dict[str, bool]) -> Optional[Run]:
     """The Run the D79 mutations start from: a passing replay, else any passing Run, else the first replay.
 
     Mutating a Run the Verifier passes is what asks whether it can fail; a Verifier nothing passes is
     still asked, from the recording, so an empty Verifier is refused whatever the Runs did.
     """
     passing = [run for run in runs if scores.get(run.run_id)]
-    replays = [run for run in runs if is_replay(run, prefix)]
-    for pool in ([r for r in passing if is_replay(r, prefix)], passing, replays, runs):
+    replays = [run for run in runs if is_replay(run)]
+    for pool in ([r for r in passing if is_replay(r)], passing, replays, runs):
         if pool:
             return pool[0]
     return None
 
 
-def _can_fail(verifier: Verifier, runs: list[Run], scores: dict, prefix: Optional[str], canon: Any,
-              write_tools: Any) -> tuple[bool, list[dict], Optional[str]]:
-    base = _mutation_base(runs, scores, prefix)
+def _can_fail(verifier: Verifier, runs: list[Run], scores: dict, canon: Any, write_tools: Any) -> tuple[bool, list[dict], Optional[str]]:
+    base = _mutation_base(runs, scores)
     if base is None:
         return False, [], None
     try:
@@ -150,21 +146,19 @@ def _tier(gates: dict[str, bool], replay_passed: bool, set_aside: bool) -> str:
 
 
 def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: Iterable[Any] = (), *,
-                 canon: Any, write_tools: Optional[Iterable[str]] = None, policy_sections: Iterable[str] = (),
-                 prefix: Optional[str] = None) -> TaskTier:
+                 canon: Any, write_tools: Optional[Iterable[str]] = None, policy_sections: Iterable[str] = ()) -> TaskTier:
     """The tier of one Task under the Spec's Verifier, with the row of evidence behind it.
 
     `runs` are every Run of the Task, the replays included; `rulings` are the bus events about it.
-    `prefix` is the Runner's replay prefix (`replay_prefix`); without one a replay is known by its
-    recorded model.
+    A replay is known by its recorded model (`is_replay`), never by its run id.
     """
     runs = list(runs or ())
     tools = set(write_tools) if write_tools is not None else None
     refusals = ground_spec(spec, policy_sections)
     scores = _score(verifier, runs, canon, tools)
-    fresh = [run.run_id for run in runs if not is_replay(run, prefix)]
-    replay = {run.run_id: scores[run.run_id] for run in runs if is_replay(run, prefix)}
-    failed_ok, mutation_rows, mutated_from = _can_fail(verifier, runs, scores, prefix, canon, tools)
+    fresh = [run.run_id for run in runs if is_fresh(run)]
+    replay = {run.run_id: scores[run.run_id] for run in runs if is_replay(run)}
+    failed_ok, mutation_rows, mutated_from = _can_fail(verifier, runs, scores, canon, tools)
     set_aside = set_aside_of(spec, rulings)
     gates = {"grounded": not refusals, "can_fail": failed_ok,
              "independent_pass": any(scores[run_id] for run_id in fresh),
@@ -319,7 +313,6 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
     tools = write_tools_of(sigs.get("sigs", []) if isinstance(sigs, dict) else sigs)
     sections = policy_sections_of(root)
     runs = runs_on_disk(root)
-    prefix = replay_prefix(read_json(root / "replays.json", None))
     events = set_aside_events(root)
     out: dict[str, TaskTier] = {}
     for task_id in in_sample(root, sorted(set(_task_ids(root)) | set(specs or ()))):
@@ -335,7 +328,7 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
             out[task_id] = unruled_row(task_id, "can_fail", "no verifier file")
             continue
         out[task_id] = tier_of_task(spec, verifier, runs.get(task_id, []), events, canon=canon,
-                                    write_tools=tools, policy_sections=sections, prefix=prefix)
+                                    write_tools=tools, policy_sections=sections)
     return out
 
 
