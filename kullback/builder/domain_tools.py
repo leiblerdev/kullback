@@ -259,7 +259,9 @@ def fidelity_index(replays: Any) -> dict[str, Any]:
 
     Carried shape from build.py `attribute_fidelity` (D171), keyed on the runner's ReplayCall
     rows instead of the deleted call outcomes: `tools` counts every recorded call once,
-    `tasks` keeps the first three differing calls per Task per tool, already worded.
+    `tasks` keeps the first three differing calls per Task per tool, already worded in `reasons`
+    and as data in `differing_calls` (call_id, column, recorded, ours), which the body edits of a
+    finding are read from (D317).
     A call counts as replayed when its verdict is in the runner's AGREES, else as
     differing; a tool with a differing call is assisted.
     """
@@ -279,7 +281,7 @@ def fidelity_index(replays: Any) -> dict[str, Any]:
                 entry = tools.setdefault(
                     name, {"calls": 0, "replayed": 0, "differing": 0, "assisted": False})
                 task_row = tasks.setdefault(str(task_id), {}).setdefault(
-                    name, {"replayed": 0, "differing": 0, "reasons": []})
+                    name, {"replayed": 0, "differing": 0, "reasons": [], "differing_calls": []})
                 entry["calls"] += 1
                 if str(call.get("verdict") or "") in AGREES:
                     entry["replayed"] += 1
@@ -289,6 +291,9 @@ def fidelity_index(replays: Any) -> dict[str, Any]:
                     entry["assisted"] = True
                     task_row["differing"] += 1
                     if len(task_row["reasons"]) < 3:
+                        task_row["differing_calls"].append(
+                            {"call_id": call.get("call_id"), "column": call.get("first_differing_column"),
+                             "recorded": call.get("recorded"), "ours": call.get("ours")})
                         task_row["reasons"].append(
                             f"call {call.get('call_id')}: {call.get('first_differing_column')} "
                             f"recorded {call.get('recorded')} ours {call.get('ours')}")

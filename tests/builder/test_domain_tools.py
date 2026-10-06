@@ -259,7 +259,7 @@ def test_a_task_whose_traces_all_fail_is_named_by_the_ruling(tmp_path):
     assert "replay_reference fail (task widget_task:" in ruling["line"]
 
 
-def test_fidelity_index_counts_both_grains_with_worded_reasons():
+def test_fidelity_index_counts_both_grains_with_worded_reasons_and_the_differing_calls_as_data():
     replays = {"task-1": {"trace-1": {"task_id": "task-1", "trace_id": "trace-1",
                                       "confirmed": False, "calls": [
                 {"call_id": "c1", "tool": "a-tool", "verdict": "same",
@@ -272,6 +272,7 @@ def test_fidelity_index_counts_both_grains_with_worded_reasons():
     task_row = index["tasks"]["task-1"]["a-tool"]
     assert (task_row["replayed"], task_row["differing"]) == (1, 1)
     assert task_row["reasons"] == ["call c2: label recorded plain ours smudged"]
+    assert task_row["differing_calls"] == [{"call_id": "c2", "column": "label", "recorded": "plain", "ours": "smudged"}]
 
 
 def test_status_answers_one_row_per_task_and_per_tool(tmp_path):

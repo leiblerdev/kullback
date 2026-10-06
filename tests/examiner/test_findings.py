@@ -241,17 +241,28 @@ def test_a_runs_disagree_finding_validates_and_is_filed(tmp_path):
 # --- one finding shape: a diff with the why and the rows (D317) --------------------------
 
 def test_a_differing_call_becomes_a_body_edit_naming_call_column_and_both_values_and_no_verb():
-    worded = "call c7: due_date recorded '2026-03-15' ours '2026-03-01'"
+    worded = "call c7: due_date recorded 2026-03-15 ours 2026-03-01"
+    calls = [{"call_id": "c7", "column": "due_date", "recorded": "2026-03-15", "ours": "2026-03-01"}]
     fidelity = {"tools": {"renew_loan": {"calls": 2, "replayed": 1}},
-                "tasks": {RENEW: {"renew_loan": {"replayed": 1, "differing": 1, "reasons": [worded]}}}}
+                "tasks": {RENEW: {"renew_loan": {"replayed": 1, "differing": 1, "reasons": [worded],
+                                                 "differing_calls": calls}}}}
     status = {RENEW: {"reference_confirmed": False, "blocking_tools": ["renew_loan"]}}
     for row in (F.assisted_tool_rows(status, fidelity)[0],
                 F.fidelity_rows(status, fidelity, {RENEW: {"trace-1": {"confirmed": False, "reasons": [worded]}}})[0]):
         assert "suggested" not in row and "hint" not in row
         [edit] = row["edits"]
         assert edit == {"kind": "body", "path": "env/tools/renew_loan.py", "call_id": "c7", "column": "due_date",
-                        "recorded": "'2026-03-15'", "replayed": "'2026-03-01'", "why": edit["why"]}
+                        "recorded": "2026-03-15", "replayed": "2026-03-01", "why": edit["why"]}
         assert edit["why"]
+
+
+def test_a_fidelity_file_written_before_differing_calls_gives_no_edit_and_keeps_the_change_line():
+    worded = "call c7: due_date recorded 2026-03-15 ours 2026-03-01"
+    fidelity = {"tools": {"renew_loan": {"calls": 2, "replayed": 1}},
+                "tasks": {RENEW: {"renew_loan": {"replayed": 1, "differing": 1, "reasons": [worded]}}}}
+    status = {RENEW: {"reference_confirmed": False, "blocking_tools": ["renew_loan"]}}
+    [row] = F.assisted_tool_rows(status, fidelity)
+    assert row["edits"] == [] and row["change"] == worded
 
 
 def test_a_rule_finding_files_its_edits_into_the_store(tmp_path):
