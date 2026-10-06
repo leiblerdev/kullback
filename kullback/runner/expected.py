@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, Iterable, Optional
 
-from kullback.runner.atom_context import AtomContext
+from kullback.runner.atom_context import AFFIRM_OPEN, NEGATIVE_OPEN, AtomContext
 from kullback.runner.canon import DIFFERENT, UNRESOLVED
 from kullback.runner.records import (
     EndState,
@@ -310,3 +310,91 @@ def match_any(end_states: list[EndState], context: AtomContext) -> Match:
             return result
     unsettled = [result for result in results if result.ok is None]
     return unsettled[0] if unsettled else results[0]
+
+
+def _named(needle: str, text: str) -> bool:
+    """The canonical value said as a whole word or phrase of the canonical turn, not inside another."""
+    return bool(needle) and re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", text) is not None
+
+
+def _column_path(path: str) -> str:
+    """A leaf path without its list positions ("items.0.id" reads "items.id"), so rows compare."""
+    return ".".join(part for part in path.split(".") if not part.isdigit())
+
+
+def _domain(start_state: dict, table: str, name: str, path: Optional[str]) -> list:
+    """Every value the column (at this leaf path, for a nested value) holds anywhere in the start state."""
+    out = set()
+    for row in ((start_state or {}).get(table) or {}).values():
+        value = (row or {}).get(name) if isinstance(row, dict) else None
+        if path is None:
+            if not isinstance(value, (dict, list)):
+                out.add(json.dumps(value, sort_keys=True, default=str))
+            continue
+        out.update(json.dumps(leaf, sort_keys=True, default=str) for leaf_path, leaf in _paths(value).items()
+                   if _column_path(leaf_path) == path)
+    return [json.loads(item) for item in out]
+
+
+def contradicts_user(end_state: EndState, user_turns: Iterable[Any], start_state: Optional[dict],
+                     canon: Any = None) -> list[str]:
+    """Each cell whose value is not one the user named, where the user named some value of its column.
+
+    The column's domain is every value it holds anywhere in the start state (for a nested value, every
+    leaf at the same path, list positions ignored), so a word of the user's is a value of the column
+    only when the column holds it. A cell (or changed leaf) contradicts the user when their own turns
+    name one or more domain values and its value is none of them. A column the user named no value of
+    is not contradicted: that is availability, which the source already speaks to. Values compare by
+    canonical text; a semantic pair is not settled here (it is the end state match's question).
+    """
+    context = AtomContext(Run(run_id="contradicts"), canon)
+    turns = [context.t(text) for text in _turns(user_turns)]
+    start = start_state or {}
+    out: list[str] = []
+    for cell in end_state.cells:
+        if cell.field is None:
+            continue
+        start_row = ((start.get(cell.table) or {}).get(cell.row_id) or {})
+        before = start_row.get(cell.field) if isinstance(start_row, dict) else None
+        if isinstance(cell.value, (dict, list)):
+            was = _paths(before) if isinstance(before, type(cell.value)) else {}
+            leaves = {path: leaf for path, leaf in _paths(cell.value).items()
+                      if path not in was or context.c(was[path]) != context.c(leaf)}
+        else:
+            leaves = {None: cell.value}
+        for path, value in leaves.items():
+            column = None if path is None else _column_path(path)
+            domain = {context.t(v) for v in _domain(start, cell.table, cell.field, column)} - {"", "none", "null"}
+            named = {v for v in domain if any(_named(v, text) for text in turns)}
+            if named and context.t(value) not in named:
+                where = f"{cell.table}.{cell.row_id}.{cell.field}" + (f".{path}" if path else "")
+                out.append(where)
+    return out
+
+
+def unasked_writes(run_events: Any, user_turns: Iterable[Any] = (), write_tools: Optional[Iterable[str]] = None
+                   ) -> list[str]:
+    """Each successful write call no user turn before it asked for, as "tool@event index".
+
+    Asked means a user turn before the call names one of its argument values (a row id or a scalar
+    argument, canonical text, whole words) or opens a sentence on a yes with none on a no (D306's
+    reading). Turn order comes from the Run's own user turns; `user_turns` stands in, all before every
+    call, only when the Run carries none. No write tools named means no call is read as a write.
+    """
+    context = AtomContext(_as_run(run_events), None)
+    turns = context.user or [(-1, text) for text in _turns(user_turns)]
+    tools = set(write_tools or ())
+    out: list[str] = []
+    for call in context.calls:
+        if call["name"] not in tools or call["error"]:
+            continue
+        before = [context.t(text) for idx, text in turns if idx < call["idx"]]
+        values = {context.t(leaf) for leaf in _leaves(call["args"])} - {"", "none", "null", "true", "false"}
+        if any(_named(value, text) for value in values for text in before):
+            continue
+        sentences = [part.strip() for idx, text in turns if idx < call["idx"]
+                     for part in re.split(r"[.!?\n]+", text) if part.strip()]
+        if any(AFFIRM_OPEN.match(s) for s in sentences) and not any(NEGATIVE_OPEN.match(s) for s in sentences):
+            continue
+        out.append(f"{call['name']}@{call['idx']}")
+    return out

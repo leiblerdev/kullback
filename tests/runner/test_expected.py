@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from kullback.runner.expected import alternatives_from_turns, expected_from_run, forbidden_from, match, refusals_of
+from kullback.runner.expected import (
+    alternatives_from_turns,
+    contradicts_user,
+    expected_from_run,
+    forbidden_from,
+    match,
+    refusals_of,
+    unasked_writes,
+)
 from kullback.runner.records import Verifier
 from kullback.runner.verdict import verdict
 
@@ -98,3 +106,47 @@ def test_a_list_cell_is_sourced_by_its_changed_leaves_and_names_the_leaf_no_turn
     events[0]["payload"]["content"] = turns[0]
     cell = expected_from_run(events, turns).cells[0]
     assert cell.source is None and cell.leaf_sources == {"1.sku": None}
+
+
+# --- D320: consistent with the request, not only available ---
+
+WALLET = {"orders": {"A1": {"method": "card_1"}, "B2": {"method": "gift_9"}, "C3": {"method": "paypal_4"}}}
+
+
+def _cell_state(field, value, row_id="A1"):
+    return expected_from_run(_events([], {"orders": {**START["orders"], row_id: {
+        **START["orders"][row_id], field: value}}}), []).model_copy()
+
+
+def test_a_cell_holding_a_value_the_user_named_is_not_contradicted():
+    state = _cell_state("method", "gift_9")
+    assert contradicts_user(state, ["Refund A1 to gift_9 please."], WALLET) == []
+
+
+def test_a_cell_holding_another_value_of_a_column_the_user_named_a_choice_of_contradicts_the_user():
+    state = _cell_state("method", "paypal_4")
+    turns = ["Refund A1 please.", "Put it on gift_9, not my card."]
+    assert contradicts_user(state, turns, WALLET) == ["orders.A1.method"]
+
+
+def test_a_column_the_user_never_named_a_value_of_is_not_contradicted():
+    state = _cell_state("method", "paypal_4")
+    assert contradicts_user(state, ["Refund A1 however you like."], WALLET) == []
+
+
+def _write_run(turns):
+    events = [{"idx": i, "type": "user_turn", "payload": {"content": text}} for i, text in enumerate(turns)]
+    n = len(events)
+    events += [{"idx": n, "type": "tool_call", "payload": {"id": "w", "name": "refund", "args": {"order_id": "Z9"}}},
+               {"idx": n + 1, "type": "tool_result", "payload": {"id": "w", "result": {"ok": True}}},
+               {"idx": n + 2, "type": "stop", "payload": {"start_state": START, "end_state": START}}]
+    return {"run_id": "r", "events": events}
+
+
+def test_a_write_with_no_request_naming_its_arguments_and_no_yes_before_it_is_unasked():
+    assert unasked_writes(_write_run(["Something is wrong with my account."]), (), {"refund"}) == ["refund@1"]
+
+
+def test_a_write_after_a_user_yes_or_a_request_naming_its_row_is_asked():
+    assert unasked_writes(_write_run(["Something is wrong.", "Yes, do that."]), (), {"refund"}) == []
+    assert unasked_writes(_write_run(["Refund order Z9."]), (), {"refund"}) == []

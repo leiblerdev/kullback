@@ -147,6 +147,10 @@ def task_row(task_id: str, *, round_number: int, row: Any, replays: Optional[dic
         "false_rejection_ruling": str((metrics.get("false_rejection_ruling") or {}).get(task_id) or ""),
         "trusted": task_id in set(metrics.get("trusted") or ()),
         "trusted_reason": str(untrusted.get(task_id) or ""),
+        # D319: the tier code ruled, the cells nobody sourced, and what the pre-D319 rule said.
+        "trust_tier": str((metrics.get("trust_tier") or {}).get(task_id) or "pending"),
+        "unsupported_cells": int((metrics.get("unsupported_cells") or {}).get(task_id) or 0),
+        "legacy_trusted": task_id in set(metrics.get("legacy_trusted") or ()),
         "refused": task_id in refused,
         "refused_reason": str(refused.get(task_id) or ""),
         "difficulty": str((buckets or {}).get(task_id) or ""),
@@ -176,7 +180,14 @@ def counts_of(rows: Iterable[dict]) -> dict:
             "reference": sum(1 for row in rows if row.get("reference")),
             "verifier_passed": sum(1 for row in rows if row.get("verifier_passed")),
             "trusted": sum(1 for row in rows if row.get("trusted")),
-            "refused": sum(1 for row in rows if row.get("refused"))}
+            "refused": sum(1 for row in rows if row.get("refused")),
+            # D319: the tiers side by side with the old rule's count and D133's held-out number.
+            "unconfirmed": sum(1 for row in rows if row.get("trust_tier") == "unconfirmed"),
+            "pending": sum(1 for row in rows if row.get("trust_tier") == "pending"),
+            "legacy_trusted": sum(1 for row in rows if row.get("legacy_trusted")),
+            "valid_other_failing": sum(round(float(row.get("false_rejection") or 0.0)
+                                             * int(row.get("false_rejection_pool") or 0)) for row in rows),
+            "held_out": sum(int(row.get("false_rejection_pool") or 0) for row in rows)}
 
 
 def buckets_by_task(body: Optional[dict]) -> dict[str, str]:

@@ -30,12 +30,14 @@ it builds its atoms with `make_atom` from here, wrapping a Hard predicate with `
 from __future__ import annotations
 
 import ast
+import copy
 import re
 from typing import Any, Callable, Iterable, Optional
 
 from kullback.runner import target as _target
 from kullback.runner.records import (
     Atom,
+    Event,
     GateResult,
     Run,
     UserRules,
@@ -785,10 +787,19 @@ def _first_answer(verifier: Verifier, run: Run, fn: Callable) -> Optional[int]:
     return answers[-1].idx if answers else None
 
 
-def _empty_run(reference: Run) -> Run:
-    """Check 3's Run that does nothing (CUA-Gym's `r(s_init) < r(s_gold)`), which needs no Runner."""
+def empty_run(reference: Run) -> Run:
+    """Check 3's Run that does nothing (CUA-Gym's `r(s_init) < r(s_gold)`), which needs no Runner.
+
+    Empty means no write and none of the required conduct (D319): no call, no agent message, and the
+    Reference's start state left as it was, so an expected end state is checked against a real
+    world that did not move rather than against no world at all.
+    """
+    start = next((copy.deepcopy((e.payload or {}).get("start_state")) for e in reference.events
+                  if e.type == "stop" and (e.payload or {}).get("start_state") is not None), None)
+    events = [] if start is None else [Event(idx=0, type="stop", payload={
+        "start_state": start, "end_state": copy.deepcopy(start)})]
     return Run(run_id=f"{reference.run_id}.empty", task_id=reference.task_id, env_id=reference.env_id,
-               events=[], termination_reason="max_turns")
+               events=events, termination_reason="max_turns")
 
 
 def _spans_gate(verifier: Verifier, runs: dict[str, Run], fn: Callable) -> GateResult:
@@ -993,6 +1004,10 @@ def _mutant(atom: Atom, fn: Callable) -> Optional[Atom]:
         return make_atom(atom.id, atom.kind, dict(payload, predicate_src=_NEVER_HOLDS),
                      description=atom.description)
     return None
+
+
+# `validate_verifier` takes a parameter named `empty_run`, and scripts read the old private name.
+_empty_run = empty_run
 
 
 # --- specificity: what a demand says about this Task and no other (D285, D286) ---
