@@ -241,7 +241,6 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/builder/sources/terminus_2.py` | Adapter for terminus-2 terminal recordings, one shell tool. |
 | `kullback/builder/synth.py` | Grows the Starting state past the ids the traces named (D40, D107). |
 | `kullback/builder/templates.py` | Aligns a reader for homed prose results out of the tool's own results (D176, D180). |
-| `kullback/builder/transaction.py` | Every repair as a transaction: lands only if it fixed its target and broke nothing (D201). |
 | `kullback/builder/triage.py` | The triage skill: how the Builder works a red light to green (D150). |
 | `kullback/builder/user_sim.py` | Re-exports the rule-driven Simulated user from `kullback.user.rules` (D214). |
 | `kullback/builder/vocabulary.py` | Derives the facts users state and the words agents ask for them with (D115). |

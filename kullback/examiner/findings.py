@@ -26,7 +26,6 @@ rulings and the status the derivation wrote (D66, D122).
 
 from __future__ import annotations
 
-import re
 from typing import Any, Iterable, Optional
 
 from kullback.examiner.plan import ExaminerPlan
@@ -39,10 +38,6 @@ from kullback.runner.records import Finding, as_dict, read_json
 # How many body edits one rule finding carries. Each is one recorded call the body answers
 # differently, and the first few are what the next edit is made against; the count is in the text.
 EDITS_PER_FINDING = 5
-# The words `fidelity_index` puts on one differing call: its id, the first differing column, the
-# recorded value and the body's own. Read back here into the four values a body edit names (D317).
-DIFFERING_CALL = re.compile(r"^call (?P<call_id>\S+): (?P<column>\S+) recorded (?P<recorded>.*) ours (?P<replayed>.*)$",
-                            re.DOTALL)
 # How much of a gate's own failure line a rule quotes. The line names the leaf and both values
 # (D154) and is the whole of what the next body has to answer, but a keys-differ failure over a
 # wide table runs to thousands of characters, and a lesson that long is not a lesson. Only the
@@ -222,21 +217,21 @@ def assisted_tool_rows(status: dict, fidelity: dict) -> list[dict]:
 def body_edits(per_task: dict, name: str, task_ids: Iterable[str]) -> list[dict]:
     """The differing calls of these Tasks as body edits: path, call, column, both values and why (D317).
 
-    A worded call whose column is not named (an error class, a missing result) gives no edit: the
-    change line still says it, and an edit that cannot name the column is not one the Builder can
-    make exactly.
+    They are read from `differing_calls`, the four values `fidelity_index` keeps beside its worded
+    reasons. A call whose column is not named (an error class, a missing result) gives no edit, and
+    neither does a file written before D317 with only the worded reasons: the change line still says
+    it, and an edit that cannot name the call and the column is not one the Builder can make exactly.
     """
     edits: list[dict] = []
     for task_id in task_ids:
-        for reason in ((per_task.get(task_id) or {}).get(name) or {}).get("reasons") or []:
-            found = DIFFERING_CALL.match(str(reason))
-            if not found or found["column"] in ("None", ""):
+        for call in ((per_task.get(task_id) or {}).get(name) or {}).get("differing_calls") or []:
+            if not isinstance(call, dict) or call.get("call_id") in (None, "") or call.get("column") in (None, ""):
                 continue
-            edits.append({"kind": "body", "path": f"env/tools/{name}.py", "call_id": found["call_id"],
-                          "column": found["column"], "recorded": found["recorded"][:HINT_CHARS],
-                          "replayed": found["replayed"][:HINT_CHARS],
+            edits.append({"kind": "body", "path": f"env/tools/{name}.py", "call_id": str(call["call_id"]),
+                          "column": str(call["column"]), "recorded": str(call.get("recorded"))[:HINT_CHARS],
+                          "replayed": str(call.get("ours"))[:HINT_CHARS],
                           "why": (f"the recording is the standard: on this call {name} answers "
-                                  f"{found['column']} with the recorded value")})
+                                  f"{call['column']} with the recorded value")})
             if len(edits) >= EDITS_PER_FINDING:
                 return edits
     return edits
