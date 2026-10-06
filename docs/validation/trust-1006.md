@@ -64,3 +64,49 @@ the values it wrote were in the user's words or in a lookup it made (another ite
 method, an address on file). Literal sourcing finds them there and calls them supported. A source says
 the value was available, not that the user asked for it, so it cannot separate a right choice from a
 wrong one among values the conversation showed.
+
+## Round 2: consistency with the request (pre-registered 2026-10-06, before computing)
+
+Two checks read the other way from sourcing, both by code, in `kullback/runner/expected.py`:
+
+- contradiction (`contradicts_user`): for each changed scalar value or changed nested leaf, the
+  column's domain is every value that column (and leaf path) holds anywhere in the start state. If the
+  user's own turns name one or more values of that domain and the cell's value is not among them, the
+  cell contradicts the user. A column the user never named a value of is not contradicted.
+- unasked write (`unasked_writes`): every successful write call in the Reference must follow a user
+  turn naming one of its argument values (a row id or a scalar argument, canonical match) or a user
+  yes (D306's reading). A write with neither is unasked.
+
+Either one leaves the Task unconfirmed, naming the cell or the tool. Both run in `code_ruling` after
+the sourcing check and before the replay match.
+
+The rule: on the same 222 Tasks, trusted-on-wrong-Reference under 10 percent with both checks. Reported
+beside it: trusted, unconfirmed, pending, and the right References newly withheld, with the wrong cases
+split by which check caught them and which neither did. If the rule fails, that is said first and no
+third check follows.
+
+### Round 2 outcome (smoke9 retail copy, no model call)
+
+The rule fails: 55 of 132 trusted rest on a wrong Reference (41.7 percent, Wilson 95 percent 33.6 to
+50.2), worse than round 1. By the rule above, no third check follows.
+
+| gate | trusted | unconfirmed | refused | pending | trusted, wrong Reference | rate | Wilson 95 percent |
+|---|---|---|---|---|---|---|---|
+| old (pre-D319) | 193 | 0 | 0 | 29 | 63 of 193 | 32.6 percent | 26.4 to 39.5 percent |
+| round 1 (sourcing) | 191 | 28 | 0 | 3 | 64 of 191 | 33.5 percent | 27.2 to 40.5 percent |
+| round 2 (sourcing, contradiction, unasked write) | 132 | 88 | 0 | 2 | 55 of 132 | 41.7 percent | 33.6 to 50.2 percent |
+
+The 64 wrong References round 1 trusted: contradiction caught 7, unasked write 2, both 0, neither 55.
+The 126 right References round 1 trusted: contradiction withheld 42, unasked write 5, both 1, neither 74;
+48 right References newly withheld against 9 wrong ones. Mixed: 2 of 5 withheld by contradiction.
+
+Withheld by column (right, wrong): `orders.status` 21, 7; `users.address` leaves 9, 0; `orders.address`
+leaves 3, 0; `orders.items` leaves (price, options) 8, 0; `orders.payment_history` leaves 2, 0. Unasked
+writes by tool (right, wrong): the hand-off tool 4, 1; the return tool 1, 1; the exchange tool 0, 1.
+
+Why, read off the columns: the user names a value of a column to describe where the row stands ("my
+delivered order", "I live in" a state), not what it should become, so a status or address the right
+Reference wrote reads as contradicting the value the user used as a description. A domain match cannot
+tell a description from a request. The unasked-write check is near silent: the user almost always names
+the order or says yes before a write, right or wrong. 55 wrong References pass all three checks: they
+wrote values the user named or never constrained, on rows the user named, after a yes.

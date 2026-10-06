@@ -67,6 +67,7 @@ from kullback.gates.probes import (
 from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES, empty_run, skipped_steps
 from kullback.runner.atom_context import AtomContext
 from kullback.runner.canon import load_rules
+from kullback.runner.expected import contradicts_user, unasked_writes
 from kullback.runner.gate_support import _get, gate
 from kullback.runner.records import (
     EXAM_DIR,
@@ -415,7 +416,8 @@ def code_ruling(verifier: Verifier, references: list[Run], row: Any, canon_rules
                 write_tools: Any, schema: Any = None) -> tuple[str, str, int]:
     """(tier, reason, unsupported cells) by code alone: no model, no probe pool, no history (D319).
 
-    In order: an end state fully sourced; every faithful replay of the Reference matching one
+    In order: an end state fully sourced; one no cell of which contradicts the user's named values
+    and no write of the Reference unasked (D320: both leave the Task unconfirmed); every faithful replay of the Reference matching one
     (False is a Verifier defect ruled back to the Spec, None leaves the Task unconfirmed, and the
     forbidden list and conduct answer too, so an unknown there blocks the same way); the empty Run
     failing; the wrong Run failing (D286) and the leak check clean (D287), off the suite's row.
@@ -432,7 +434,16 @@ def code_ruling(verifier: Verifier, references: list[Run], row: Any, canon_rules
         return "unconfirmed", f"unsupported cell {fewest[0]}{more}", count
     if not references:
         return "pending", "no faithful replay of a kept Reference", count
-    gated = verifier.model_copy(update={"expected": sourced})
+    # Sourced says a value was available; these two say it is consistent with what the user asked.
+    request = _context(references[0], canon_rules, write_tools, schema)
+    turns = [text for _, text in request.user]
+    contradicted = [contradicts_user(state, turns, request.start_state, canon_rules) for state in sourced]
+    consistent = [state for state, cells in zip(sourced, contradicted, strict=True) if not cells]
+    if not consistent:
+        return "unconfirmed", f"contradicts the user at {min(contradicted, key=len)[0]}", count
+    if unasked := unasked_writes(references[0], turns, write_tools):
+        return "unconfirmed", f"unasked write {unasked[0].split('@')[0]}", count
+    gated = verifier.model_copy(update={"expected": consistent})
     for run in references:
         failed, unsettled = verdict_gates(gated, _context(run, canon_rules, write_tools, schema))
         if failed:

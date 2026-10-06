@@ -370,6 +370,26 @@ def test_a_task_with_an_empty_expected_diff_and_one_conduct_is_not_trusted_when_
     assert ruling.metrics["untrusted"] == {TASK: "pending: the empty Run passes"}
 
 
+def test_an_end_state_holding_a_value_other_than_the_one_the_user_named_is_unconfirmed_naming_the_cell():
+    start = {"orders": {"W1": {"status": "pending", "note": "none"}, "W2": {"status": "returned", "note": "none"}}}
+    end = {"orders": {"W1": {"status": "cancelled", "note": "none"}, "W2": {"status": "returned", "note": "none"}}}
+    replay = make_run("ref", [_turn("Please mark W1 returned."), _turn("Yes, go ahead."),
+                              {"type": "tool_call", "payload": {"id": "c1", "name": "cancel_order",
+                                                                "args": {"order_id": "W1"}}},
+                              {"type": "stop", "payload": {"start_state": start, "end_state": end}}])
+    ruling = T.trusted_gate(**_code_world([_cell()], run=replay))
+    assert ruling.metrics["untrusted"] == {TASK: "unconfirmed: contradicts the user at orders.W1.status"}
+
+
+def test_a_reference_write_no_user_turn_asked_for_leaves_the_task_unconfirmed_naming_the_tool():
+    replay = make_run("ref", [_turn("I have a problem with an order."),
+                              {"type": "tool_call", "payload": {"id": "c1", "name": "cancel_pending_order",
+                                                                "args": {"order_id": "W1"}}},
+                              {"type": "stop", "payload": {"start_state": START, "end_state": END}}])
+    ruling = T.trusted_gate(**_code_world([_cell()], run=replay))
+    assert ruling.metrics["untrusted"] == {TASK: "unconfirmed: unasked write cancel_pending_order"}
+
+
 def test_the_status_table_shows_trusted_unconfirmed_refused_and_the_legacy_count_on_one_row():
     rows = [{"task_id": "a", "trust_tier": "trusted", "trusted": True, "legacy_trusted": True},
             {"task_id": "b", "trust_tier": "unconfirmed", "legacy_trusted": True,
