@@ -249,7 +249,8 @@ def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = N
             + "; ".join(decision.reasons)
         )
     if not adapter.maps:
-        raise NotImplementedError(adapter.unmapped_message())  # type: ignore[attr-defined]
+        raise NotImplementedError(f"{adapter.display} ingest ({adapter.name}) only detects the "
+                                  "format; no mapper reads it yet")
     environment = adapter.environment(document)
     traces, rejects = [], []
     recordings = list(adapter.recordings(document))
