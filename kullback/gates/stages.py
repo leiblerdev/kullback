@@ -24,11 +24,18 @@ from kullback.runner.records import GateResult
 
 
 def cluster_gate(tasks: Iterable[Any], categories: Iterable[Any] = ()) -> GateResult:
-    """Every Task holds at least one Run; a Task with none is named, the build goes on (section 6)."""
+    """Every Task holds at least one Run; a Task with none is named, the build goes on (section 6).
+
+    The metrics carry how many Tasks hold two Runs or more and how many of those dissent, meaning
+    their Runs disagree on the write set (D313): a count, never a failure.
+    """
     tasks = list(tasks)
     empty = [_get(t, "id") for t in tasks if not _get(t, "run_ids")]
+    labels = [_get(t, "write_labels") or {} for t in tasks]
     return gate("cluster", [f"task {i} holds no Run" for i in empty],
-                tasks=len(tasks), categories=len(list(categories)))
+                tasks=len(tasks), categories=len(list(categories)),
+                multi_run=sum(1 for t in tasks if len(_get(t, "run_ids") or ()) > 1),
+                dissenting=sum(1 for one in labels if len({tuple(v) for v in one.values()}) > 1))
 
 
 def compile_tools_gate(bodies: dict, assisted_tools: Iterable[str] = ()) -> GateResult:

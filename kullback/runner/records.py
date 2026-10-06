@@ -414,7 +414,7 @@ class TaskOverlay(Record):
 
 
 class Category(Record):
-    """The Runs whose References write through the same tool set (D83)."""
+    """The Tasks whose Runs mostly write through the same tool set: a summary, not a cut (D83, D313)."""
     id: str
     name: Optional[str] = None
     write_tools: list[str] = Field(default_factory=list)
@@ -422,7 +422,11 @@ class Category(Record):
 
 
 class Task(Record):
-    """A cluster of Runs sharing one Intent, inside a Category (D83); unguarded when too small to hold out (D81)."""
+    """A cluster of Runs sharing one request (D83, D313); unguarded when too small to hold out (D81).
+
+    `write_labels` is each Run's confirmed write set: a label, never the cut, so Runs of one request
+    that wrote differently sit in one Task and their disagreement stays visible.
+    """
     id: str
     category_id: Optional[str] = None
     run_ids: list[str] = Field(default_factory=list)
@@ -430,6 +434,7 @@ class Task(Record):
     unguarded: bool = False
     name: Optional[str] = None
     anchor_run_ids: list[str] = Field(default_factory=list)
+    write_labels: dict[str, list[str]] = Field(default_factory=dict)
 
 # --- intent ---
 
