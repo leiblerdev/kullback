@@ -327,21 +327,20 @@ def _record_examine(monkeypatch):
     return seen
 
 
-def test_default_examine_runs_judges_probe_and_rerolls_on_the_builder_model(tmp_path, monkeypatch):
+def test_default_examine_runs_the_judges_on_the_builder_model_and_hands_no_probe_or_reroll(
+        tmp_path, monkeypatch):
     seen = _record_examine(monkeypatch)
     builder = object()
-    domain_tools_mod.default_examine_fn(tmp_path, None, model=builder)
-    assert seen == {"model": builder, "judge_model": builder, "probe_model": builder,
-                    "reroll_model": builder}
+    domain_tools_mod.default_examine_fn(tmp_path, None, model=builder, probe_model=object(),
+                                        reroll_model=object())
+    assert seen == {"model": builder, "judge_model": builder, "probe_model": None, "reroll_model": None}
 
 
-def test_default_examine_hands_a_named_judge_probe_or_reroll_model_its_own_role(tmp_path, monkeypatch):
+def test_default_examine_hands_a_named_judge_model_its_own_role(tmp_path, monkeypatch):
     seen = _record_examine(monkeypatch)
-    builder, judge, probe, reroll = object(), object(), object(), object()
-    domain_tools_mod.default_examine_fn(tmp_path, None, model=builder, judge_model=judge,
-                                        probe_model=probe, reroll_model=reroll)
-    assert seen == {"model": builder, "judge_model": judge, "probe_model": probe,
-                    "reroll_model": reroll}
+    builder, judge = object(), object()
+    domain_tools_mod.default_examine_fn(tmp_path, None, model=builder, judge_model=judge)
+    assert seen == {"model": builder, "judge_model": judge, "probe_model": None, "reroll_model": None}
 
 
 def test_default_examine_with_no_model_leaves_every_model_none(tmp_path, monkeypatch):

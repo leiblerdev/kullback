@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
+from kullback import derive as verifier_mod
 from kullback import report
 from kullback.ai.provider import RecordedModel, TestModel
 from kullback.builder import cluster, compile_env, ingest, mine, policy, user_sim
-from kullback.examiner import derive as verifier_mod
 from kullback.runner import canon, loop, regrade, route
 from kullback.runner import verdict as verdict_mod
 from kullback.runner.canon import CanonRules

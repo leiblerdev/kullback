@@ -1,4 +1,4 @@
-"""The trust bar under `--verifier-from intent`: five gates, in order, all code (DESIGN.md, the trust bar).
+"""The trust bar on the Spec's Verifier: five gates, in order, all code (DESIGN.md, the trust bar).
 
 1. grounded: `ground_spec` has nothing to say (every check quotes the Intent or names a policy section,
    every fact has a check or is listed as a gap);
@@ -16,9 +16,6 @@ a set-aside event on the bus counts too) and untrusted
 (everything else). Every row names the first failing gate and the ids of the Runs it scored, and carries
 `code_hash`, the content hash of the Runner, gates and Spec code that scored it (runner/code_hash.py): two
 rows are comparable when their hashes match.
-
-Under `--verifier-from runs` nothing here decides: `runs_tiers` is the D126 trusted ruling of
-kullback/gates/trust.py mapped onto the tier words, so the switch cannot move that foundation.
 """
 
 from __future__ import annotations
@@ -28,13 +25,11 @@ from pathlib import Path
 from typing import Any, Iterable, NamedTuple, Optional
 
 from kullback.gates.probes import write_tools_of
-from kullback.gates.trust import trusted_gate, workdir_trusted_ruling
 from kullback.runner.canon import load_rules
 from kullback.runner.code_hash import CODE_HASH
-from kullback.runner.records import GateResult, Run, Verifier, load_run_jsonl, read_json, read_jsonl
+from kullback.runner.records import Run, Verifier, load_run_jsonl, read_json, read_jsonl
 from kullback.runner.replay import RECORDED
 from kullback.runner.target import check_run
-from kullback.spec import VERIFIER_FROM
 from kullback.spec.actions import workdir_action_tools
 from kullback.spec.canfail import can_fail
 from kullback.spec.events import TASK_SET_ASIDE
@@ -49,9 +44,8 @@ from kullback.spec.writer_tools import policy_sections_of
 
 TIERS = ("trusted", "replay_only", "untrusted", "set_aside")
 GATES = ("grounded", "can_fail", "reference_replay", "independent_pass", "no_open_ruling")
-# The build manifest in the workdir: the Verifier foundation the build chose, kept for a resume.
+# The build manifest in the workdir: the build's Task sample, kept for a resume.
 BUILD_MANIFEST = "build.json"
-DEFAULT_VERIFIER_FROM = "runs"
 # How many grounding refusals a row repeats; the count is always whole.
 _REASONS_KEPT = 5
 
@@ -214,43 +208,7 @@ def missing_spec_row(task_id: str) -> TaskTier:
     return unruled_row(task_id, "grounded", "no spec")
 
 
-# --- the runs foundation, unchanged ----------------------------------------------------------------
-
-def tiers_of_ruling(ruling: GateResult) -> dict[str, TaskTier]:
-    """The D126 trusted ruling in tier words: trusted stays trusted, every other ruled Task is untrusted.
-
-    The runs foundation has no replay-only and no set-aside tier; its reasons ride on the row as they are.
-    """
-    metrics = ruling.metrics or {}
-    out = {task_id: TaskTier("trusted", {"task_id": task_id, "tier": "trusted", "failing": None,
-                                         "code_hash": CODE_HASH})
-           for task_id in metrics.get("trusted") or []}
-    for task_id, reason in (metrics.get("untrusted") or {}).items():
-        out[task_id] = TaskTier("untrusted", {"task_id": task_id, "tier": "untrusted", "failing": "trusted_gate",
-                                              "reason": reason, "code_hash": CODE_HASH})
-    return out
-
-
-def runs_tiers(**world: Any) -> dict[str, TaskTier]:
-    """`gates.trust.trusted_gate` over the same inputs, in tier words; never a ruling of its own."""
-    return tiers_of_ruling(trusted_gate(**world))
-
-
 # --- the build manifest ----------------------------------------------------------------------------
-
-def stored_verifier_from(workdir: Any) -> Optional[str]:
-    """The foundation the workdir's build chose, or None when none was stored."""
-    body = read_json(Path(workdir) / BUILD_MANIFEST, None)
-    value = body.get("verifier_from") if isinstance(body, dict) else None
-    return value if value in VERIFIER_FROM else None
-
-
-def store_verifier_from(workdir: Any, value: str) -> Path:
-    """Records the foundation in the build manifest, keeping whatever else the manifest holds."""
-    if value not in VERIFIER_FROM:
-        raise ValueError(f"verifier_from must be one of {', '.join(VERIFIER_FROM)}, not {value!r}")
-    return _store(workdir, "verifier_from", value)
-
 
 def _store(workdir: Any, key: str, value: Any) -> Path:
     """One key of the build manifest written, keeping whatever else the manifest holds."""
@@ -282,10 +240,6 @@ def in_sample(workdir: Any, task_ids: Iterable[str]) -> list[str]:
         return list(task_ids)
     kept = set(sample)
     return [task_id for task_id in task_ids if task_id in kept]
-
-
-def verifier_from_of(workdir: Any) -> str:
-    return stored_verifier_from(workdir) or DEFAULT_VERIFIER_FROM
 
 
 # --- one workdir -----------------------------------------------------------------------------------
@@ -378,9 +332,6 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
     return out
 
 
-def workdir_tiers(workdir: Any, verifier_from: Optional[str] = None) -> dict[str, TaskTier]:
-    """Every Task's tier under the foundation named, or the one the build manifest stored."""
-    chosen = verifier_from or verifier_from_of(workdir)
-    if chosen == "intent":
-        return intent_tiers(workdir)
-    return tiers_of_ruling(workdir_trusted_ruling(workdir))
+def workdir_tiers(workdir: Any) -> dict[str, TaskTier]:
+    """Every Task's tier: the Spec writes every Verifier, so this is `intent_tiers` (D320)."""
+    return intent_tiers(workdir)

@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from kullback.examiner import derive as derive_mod
+from kullback import derive as derive_mod
 from kullback.examiner import reference as reference_mod
 from kullback.examiner import stage
 from kullback.examiner.session import load_store

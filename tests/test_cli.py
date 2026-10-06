@@ -187,7 +187,8 @@ def test_build_prints_one_line_per_tool_result_and_the_counts_before_the_json(wo
     assert lines[1] == "examine: 2 findings filed"
     assert lines[2] == "  ruling replay_fidelity: accepted (12)"
     assert lines[3] == "trusted 0, refused 0, fidelity 0/0"
-    body = json.loads("\n".join(lines[4:]))
+    assert lines[4].startswith("tier report, verifier from the Spec, code ") and lines[5].startswith("tiers trusted ")
+    body = json.loads("\n".join(lines[lines.index("{"):]))
     assert (body["trusted"], body["refused"]) == (1, 0) and body["stopped"] == "no tool call"
 
 
@@ -960,9 +961,6 @@ def test_default_build_meets_every_run_with_the_agent_user_on_the_run_model(work
     assert result.exit_code == 0, result.output
     call = fake_modules["kullback.builder.session.build"][0]
     assert call["kwargs"]["user_model"] is built["vendor/large"]
-    call["kwargs"]["examine_fn"](workdir, None)
-    seen = fake_modules["kullback.examiner.session.examine"][0]["kwargs"]
-    assert seen["user_model"] is built["vendor/large"]
     record = _build_start(workdir)
     assert (record["user_model"], record["user_kind"]) == ("vendor/large", "agent")
 
@@ -973,7 +971,7 @@ def test_rule_user_keeps_the_rule_driven_user_alone(workdir, fake_modules, monke
                     "--run-model", "cheap/small", "--run-effort", "low", "--rule-user")
     assert result.exit_code == 0, result.output
     call = fake_modules["kullback.builder.session.build"][0]["kwargs"]
-    assert "examine_fn" not in call and call["user_model"] is None
+    assert call["user_model"] is None
     record = _build_start(workdir)
     assert record["user_model"] is None and record["user_kind"] == "rule"
 
@@ -985,12 +983,8 @@ def test_bare_user_model_switches_the_agent_user_on_with_the_run_model(workdir, 
                     "--run-model", "cheap/small", "--run-effort", "low", "--user-model")
     assert result.exit_code == 0, result.output
     call = fake_modules["kullback.builder.session.build"][0]
-    examine_fn = call["kwargs"]["examine_fn"]
-    examine_fn(workdir, None)
-    seen = fake_modules["kullback.examiner.session.examine"][0]["kwargs"]
-    assert seen["user_model"] is call["kwargs"]["run_model"]
-    assert seen["reroll_model"] is call["kwargs"]["run_model"]
-    assert seen["user_model"].effort == "low"
+    assert call["kwargs"]["user_model"] is call["kwargs"]["run_model"]
+    assert call["kwargs"]["user_model"].effort == "low"
     assert _build_start(workdir)["user_model"] == "cheap/small"
     assert _build_start(workdir)["user_kind"] == "agent"
 
@@ -1004,31 +998,21 @@ def test_valued_user_model_names_its_own_model_with_the_run_effort(workdir, fake
                     "--user-model", "other/id")
     assert result.exit_code == 0, result.output
     call = fake_modules["kullback.builder.session.build"][0]
-    call["kwargs"]["examine_fn"](workdir, None)
-    seen = fake_modules["kullback.examiner.session.examine"][0]["kwargs"]
-    user = seen["user_model"]
+    user = call["kwargs"]["user_model"]
     assert isinstance(user, budget_mod.EffortModel)
     assert user.inner is built["other/id"] and user.effort == "low"
     assert _build_start(workdir)["user_model"] == "other/id"
     assert _build_start(workdir)["user_kind"] == "agent"
 
 
-def test_build_without_verifier_from_writes_no_manifest_and_prints_no_tier_line(workdir, fake_modules):
+def test_build_ends_with_the_tier_report_and_takes_no_verifier_from_flag(workdir, fake_modules):
     result = invoke("build", "--workdir", str(workdir))
     assert result.exit_code == 0, result.output
-    assert not (Path(workdir) / "build.json").exists()
-    assert not any(line.startswith("tiers ") for line in result.output.splitlines())
-
-
-def test_build_under_intent_stores_the_choice_and_ends_with_the_tier_report(workdir, fake_modules):
-    result = invoke("build", "--workdir", str(workdir), "--verifier-from", "intent")
-    assert result.exit_code == 0, result.output
-    assert json.loads((Path(workdir) / "build.json").read_text()) == {"verifier_from": "intent"}
     lines = result.output.splitlines()
-    assert lines[4].startswith("tier report, verifier from intent, code ") and lines[5].startswith("tiers trusted ")
-    assert json.loads((Path(workdir) / "tiers.json").read_text())["verifier_from"] == "intent"
-    resumed = invoke("build", "--workdir", str(workdir))
-    assert resumed.exit_code == 0 and "tiers trusted " in resumed.output
+    assert lines[4].startswith("tier report, verifier from the Spec, code ") and lines[5].startswith("tiers trusted ")
+    assert json.loads((Path(workdir) / "tiers.json").read_text())["tasks"] == 0
+    refused = invoke("build", "--workdir", str(workdir), "--verifier-from", "intent")
+    assert refused.exit_code == 2 and len(fake_modules["kullback.builder.session.build"]) == 1
 
 
 def test_build_stores_a_task_sample_from_a_comma_list_and_a_file_and_reads_it_back(workdir, fake_modules, tmp_path):
@@ -1051,37 +1035,22 @@ def test_build_without_tasks_stores_no_sample_and_filters_nothing(workdir, fake_
     assert stored_tasks(workdir) is None and in_sample(workdir, ["t1", "t3"]) == ["t1", "t3"]
 
 
-def test_intent_examine_writes_the_specs_on_the_builder_model_by_default_then_examines_in_intent_mode(
+def test_examine_chooses_references_then_writes_the_specs_on_the_builder_model_then_reviews(
         workdir, fake_modules, monkeypatch):
     built = _named_adapters(monkeypatch)
-    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large", "--verifier-from", "intent")
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large")
     assert result.exit_code == 0, result.output
     fake_modules["kullback.builder.session.build"][0]["kwargs"]["examine_fn"](workdir, ["t1"])
     (written,) = fake_modules["kullback.spec.stage.write_specs"]
     assert written["args"][1] == ["t1"] and written["args"][2] is built["vendor/large"]
-    seen = fake_modules["kullback.examiner.session.examine"][0]["kwargs"]
-    assert seen["verifier_from"] == "intent" and seen["task_ids"] == ["t1"]
+    first, second = (call["kwargs"] for call in fake_modules["kullback.examiner.session.examine"])
+    assert first["model"] is None and second["model"] is built["vendor/large"]
+    assert second["task_ids"] == ["t1"] and "verifier_from" not in second
+    assert not {"probe_model", "reroll_model", "user_model"} & set(second)
 
 
-def test_intent_examine_writes_the_specs_on_a_named_spec_model(workdir, fake_modules, monkeypatch):
+def test_examine_writes_the_specs_on_a_named_spec_model(workdir, fake_modules, monkeypatch):
     built = _named_adapters(monkeypatch)
-    invoke("build", "--workdir", str(workdir), "--model", "vendor/large", "--verifier-from", "intent",
-           "--spec-model", "other/writer")
+    invoke("build", "--workdir", str(workdir), "--model", "vendor/large", "--spec-model", "other/writer")
     fake_modules["kullback.builder.session.build"][0]["kwargs"]["examine_fn"](workdir, ["t1"])
     assert fake_modules["kullback.spec.stage.write_specs"][0]["args"][2] is built["other/writer"]
-
-
-def test_the_runs_path_never_writes_a_spec(workdir, fake_modules, monkeypatch):
-    _named_adapters(monkeypatch)
-    invoke("build", "--workdir", str(workdir), "--verifier-from", "runs", "--spec-model", "other/writer")
-    fake_modules["kullback.builder.session.build"][0]["kwargs"]["examine_fn"](workdir, ["t1"])
-    assert "kullback.spec.stage.write_specs" not in fake_modules
-    assert "verifier_from" not in fake_modules["kullback.examiner.session.examine"][0]["kwargs"]
-
-
-@pytest.mark.parametrize("value", ["runs", "neither"])
-def test_build_refuses_a_foundation_other_than_the_stored_one_or_an_unknown_one(workdir, fake_modules, value):
-    invoke("build", "--workdir", str(workdir), "--verifier-from", "intent")
-    result = invoke("build", "--workdir", str(workdir), "--verifier-from", value)
-    assert result.exit_code == 2
-    assert len(fake_modules["kullback.builder.session.build"]) == 1

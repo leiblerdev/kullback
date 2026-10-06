@@ -7,7 +7,7 @@ A dead turn is a user turn the rule-driven user answered with its goal again (so
 tagged goal_restated) right after a Candidate turn that asked a question, in a stored re-roll
 (runs/second-path-*.jsonl) whose successful writes differ from its Reference's: it wrote nothing,
 or something else. For each sampled dead turn the Task's agent user is rebuilt exactly as a
-switch-on re-roll builds it (`examiner.runners._make_user` with a user model, over the Task's own
+switch-on re-roll builds it (`builder.run_user._make_user` with a user model, over the Task's own
 Router), handed the stored transcript up to that Candidate turn with its earlier turns preset, and
 asked for the next turn once. No Candidate runs.
 
@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from kullback.ai.provider import live_model
-from kullback.examiner import runners as R
+from kullback.builder import run_user as R
 from kullback.examiner.session import _load_anchor
 from kullback.runner import budget
 from kullback.runner import tool as runner_tool

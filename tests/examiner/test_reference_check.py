@@ -46,9 +46,8 @@ def test_rejecting_one_of_two_recordings_repicks_the_other_as_reference(tmp_path
     root = _root(world)
     write_json(world.workdir / "references.json", {"t1": _row(
         {"A": ["ref"], "B": ["rr2"]}, ["ref"], {"rr2": "survivor B was not chosen: A stood up better"})})
-    result = asyncio.run(_tool(root, "reject_reference").execute(
-        RC.RejectReferenceArgs(task_id="t1", run_id="ref", why="the End state is not what the Intent asks")))
-    assert result.excluded == ["ref"] and result.references == ["rr2"] and not result.pooled
+    result = RC.reject_reference(world.workdir, "t1", "ref", "the End state is not what the Intent asks", root=root)
+    assert result["excluded"] == ["ref"] and result["references"] == ["rr2"] and not result["pooled"]
     row = read_json(world.workdir / "references.json")["t1"]
     assert [r["run_id"] for r in row["references"]] == ["rr2"]
     assert row["failed"]["ref"].startswith("rejected:")
@@ -69,10 +68,9 @@ def test_rejecting_the_only_recording_pools_the_task_and_writes_no_refusal(tmp_p
     world = make_world(tmp_path)
     root = _root(world)
     write_json(world.workdir / "references.json", {"t1": _row({"A": ["ref", "alt"]}, ["ref", "alt"])})
-    result = asyncio.run(_tool(root, "reject_reference").execute(
-        RC.RejectReferenceArgs(task_id="t1", run_id="ref", why="the user asked for no change")))
-    assert sorted(result.excluded) == ["alt", "ref"], "every Run of the rejected End state goes"
-    assert result.references == [] and result.pooled
+    result = RC.reject_reference(world.workdir, "t1", "ref", "the user asked for no change", root=root)
+    assert sorted(result["excluded"]) == ["alt", "ref"], "every Run of the rejected End state goes"
+    assert result["references"] == [] and result["pooled"]
     assert read_json(R.pool_path(world.workdir)) == {
         "t1": {"why": "the user asked for no change", "excluded": ["alt", "ref"]}}
     assert not (world.workdir / "refusals" / "t1.json").exists()
@@ -192,8 +190,6 @@ def test_a_re_derive_after_a_rejection_picks_the_other_recording_and_not_the_cac
     assert read_json(world.workdir / "references.json")["t1"]["failed"]["ref"].startswith("rejected:")
 
 
-
-
 def _repicked_session(tmp_path):
     """A session whose builder_right ruling on an outcome note re-picked the Reference to ref and alt."""
     world = make_world(tmp_path)
@@ -229,11 +225,3 @@ def test_a_rejection_with_no_edit_after_it_leaves_the_task_marked_and_untrusted(
     assert ruling.metrics["untrusted"] == {"t1": RC.REPICKED}
 
 
-def test_an_accepted_edit_after_a_rejection_clears_the_mark_and_the_task_is_trusted(tmp_path):
-    world, root = _repicked_session(tmp_path)
-    result = asyncio.run(_tool(root, "edit_verifier").execute(D.ProposeArgs(
-        task_id="t1", reason="widen the cap",
-        add=[{"id": "wide_cap", "kind": "allowed", "payload": {"kind": "entity_count", "count": 1000}}])))
-    by_name = {record["name"]: record for record in result.rulings}
-    assert by_name["trusted"]["accepted"] is True
-    assert all(RC.DERIVE_AGAIN not in row and row["verifier_passed"] is True for row in _status_rows(world))

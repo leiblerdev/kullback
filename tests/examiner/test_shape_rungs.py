@@ -12,7 +12,10 @@ import re
 
 import pytest
 
-from examiner.test_derive_provenance import (
+from kullback import derive as V
+from kullback.gates import verifier_suite as S
+from kullback.runner.canon import CanonRules
+from tests.test_derive_provenance import (
     ASSIGN,
     ROSTER,
     WRITE_TOOLS,
@@ -25,9 +28,6 @@ from examiner.test_derive_provenance import (
     says,
     user,
 )
-from kullback.examiner import derive as V
-from kullback.gates import verifier_suite as S
-from kullback.runner.canon import CanonRules
 
 
 def new_locker_events(badge: str = "QX41", read: bool = True) -> list[dict]:

@@ -76,7 +76,8 @@ def test_writer_reads_the_starting_state_then_keeps_only_grounded_witnessed_chec
     assert [check.id for check in written.spec.checks] == ["c0", "c4"]
     assert written.counts == {"demands": 5, "kept": 2, "ungrounded": 1, "unwitnessed": 1, "condition_unquoted": 0,
                               "bad_kind": 1, "gaps": 1, "sent_back": 2, "sent_back_kept": 0, "parse_error": "",
-                              "truncated_chars": 0, "unsatisfiable_sent_back": 0, "unsatisfiable": []}
+                              "truncated_chars": 0, "unsatisfiable_sent_back": 0, "unsatisfiable": [],
+                              "write_predicate": 0}
     assert written.spec.gaps == ["f2"]
     assert written.session["tool_uses"] == ["lookup_rows"]
     tool_turn = model.calls[1]["messages"][-1]
@@ -216,16 +217,15 @@ def test_a_write_compile_drops_is_listed_as_a_gap_and_survives_a_repair():
     assert repaired.gaps == ["f2"]
 
 
-def test_write_verifier_replaces_the_runner_verifier_only_under_intent(tmp_path):
+def test_write_verifier_writes_the_spec_and_one_verifier_the_runner_and_the_spec_share(tmp_path):
     spec = W.write_spec("t1", inputs(), TestModel([answer("demands", [MOVE])])).spec
-    paths = W.write_verifier(spec, tmp_path, inputs(), verifier_from="runs")
-    assert paths == [tmp_path / "spec" / "t1.json", tmp_path / "spec" / "verifiers" / "t1.json"]
-    assert not W.runner_verifier_path(tmp_path, "t1").exists()
-    assert load_spec(tmp_path, "t1") == spec
-    W.write_verifier(spec, tmp_path, inputs(), verifier_from="intent")
+    paths = W.write_verifier(spec, tmp_path, inputs())
+    assert paths == [tmp_path / "spec" / "t1.json", tmp_path / "spec" / "verifiers" / "t1.json",
+                     W.runner_verifier_path(tmp_path, "t1")]
     runner = Verifier.model_validate_json(W.runner_verifier_path(tmp_path, "t1").read_text())
     assert runner == Verifier.model_validate_json(W.spec_verifier_path(tmp_path, "t1").read_text())
     assert runner.task_id == "t1" and runner.atoms
+    assert load_spec(tmp_path, "t1").end_state["reference"] is None
 
 
 def test_repair_changes_or_defends_only_ruled_checks_and_every_change_must_ground():
@@ -348,7 +348,7 @@ def _ruled_workdir(tmp_path):
     loaded = W.load_inputs(tmp_path, "t1", inputs().intent)
     first = [MOVE, {"kind": "required", "demand": "cap", "count": 1, "because": "per the moving items rules"}]
     spec = W.write_spec("t1", loaded, TestModel([answer("demands", first)])).spec
-    W.write_verifier(spec, tmp_path, loaded, verifier_from="intent")
+    W.write_verifier(spec, tmp_path, loaded)
     return spec
 
 
@@ -374,12 +374,12 @@ def test_repair_for_ruling_saves_the_changed_spec_rewrites_both_verifiers_and_pu
 
 def test_repair_for_ruling_publishes_defended_when_every_ruled_check_stands(tmp_path):
     spec = _ruled_workdir(tmp_path)
-    runs_verifier = json.dumps({"task_id": "t1", "atoms": [], "verifier_version": "runs3"})
-    W.runner_verifier_path(tmp_path, "t1").write_text(runs_verifier)
+    before = W.runner_verifier_path(tmp_path, "t1").read_text()
     ruling = {"number": 2, "target": "check", "check_ids": ["c0"], "reason": "not asked", "code": "other"}
     model = TestModel([answer("checks", [{"id": "c0", "action": "defend", "because": "move item A1"}])])
     defended = W.repair_for_ruling(tmp_path, "t1", ruling, model)
     assert defended.checks == spec.checks
-    assert W.runner_verifier_path(tmp_path, "t1").read_text() == runs_verifier
+    after = W.runner_verifier_path(tmp_path, "t1").read_text()
+    assert json.loads(after)["atoms"] == json.loads(before)["atoms"]
     (event,) = _bus_events(tmp_path)
     assert event["name"] == "spec.defended" and event["payload"]["check_ids"] == ["c0"]

@@ -4,7 +4,7 @@ vocabulary the independence rule has."""
 
 from __future__ import annotations
 
-from kullback.examiner import variants
+from kullback import variants
 from kullback.runner.records import Event, Run
 
 WATER = "water_pot"

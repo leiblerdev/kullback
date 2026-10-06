@@ -1,4 +1,4 @@
-"""Tests for examiner/derive.py: derivation from re-runs on disk and the tau2 export.
+"""Tests for kullback/derive.py: derivation from re-runs on disk and the tau2 export.
 
 The module moved here from builder/verifier.py in phase 5 (D123) with its behaviour unchanged, which
 the hash pin at the top holds. Reading a Run, scoring one against a Verifier and the D79 suite live in
@@ -34,7 +34,7 @@ from gates.verifier_fixtures import (
     user,
     write_events_jsonl,
 )
-from kullback.examiner import derive as V
+from kullback import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules, canon_value
 from kullback.runner.records import Constraint, ForeignRunError, Run, Task, Verifier, as_dict, content_hash

@@ -79,6 +79,10 @@ class Spec(Record):
     set_aside: Optional[str] = None
     # The writer's session counts: demands, refusals, gaps, spend, read rounds, attempts, sent back.
     writer: dict = Field(default_factory=dict)
+    # The review edits to the compiled atoms, applied in order (spec/review.py): {drop, add, why}.
+    atom_edits: list[dict] = Field(default_factory=list)
+    # What the Verifier's gates came to: the Reference, end states, cells, unsupported (spec/end_state.py).
+    end_state: dict = Field(default_factory=dict)
 
 
 # Checks that specify a Task with no expected write: a Spec keeping one is never empty.

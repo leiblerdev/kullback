@@ -459,7 +459,7 @@ def valid_because(demand: dict, intent: str, policy: list[str]) -> bool:
 def compile_verifier(demands: list[dict], intent: str, policy: list[str],
                      write_tools: set[str], fn) -> tuple[object, int]:
     """Demands to a Verifier, reusing derive.py atom kinds and the gate builders. No new kinds."""
-    from kullback.examiner import derive
+    from kullback import derive
     from kullback.gates import verifier_suite
     from kullback.runner.records import Verifier
     from kullback.runner.target import _key as canon_key

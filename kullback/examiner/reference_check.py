@@ -308,25 +308,6 @@ def _check_reference(root: ExamRoot):
     return check_reference
 
 
-def _reject_reference(root: ExamRoot):
-    from kullback.examiner.domain_tools import known_task
-
-    async def reject(args: RejectReferenceArgs) -> RejectReferenceResult:
-        task_id = known_task(root.workdir, args.task_id)
-        why = " ".join(str(args.why or "").split())
-        if not why:
-            raise ValueError("say in `why` what the Intent and the policy needed that this End state lacks")
-        done = reject_reference(root.workdir, task_id, args.run_id, why, root=root)
-        now = (f"the Reference is now {done['references'][0]}" if done["references"] else
-               "no Reference is left, so the Task waits in the pool for a later Run" if done["pooled"] else
-               "the End states left disagree, so the Task keeps no Reference")
-        summary = f"rejected {', '.join(done['excluded'])} on task {task_id}; {now}"
-        return RejectReferenceResult(summary=summary, task_id=task_id, excluded=done["excluded"],
-                                     references=done["references"], pooled=done["pooled"])
-
-    return reject
-
-
 __all__ = ["EXCLUSIONS_FILE", "REFERENCE_WRONG_NOTES", "CheckReferenceArgs",
            "CheckReferenceResult", "RejectReferenceArgs", "RejectReferenceResult", "excluded_runs",
            "exclusions", "exclusions_path", "reference_view", "reject_on_note", "reject_reference", "repick",

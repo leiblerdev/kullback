@@ -26,7 +26,7 @@ from gates.verifier_fixtures import (
     user,
     wrong_run,
 )
-from kullback.examiner import derive as V
+from kullback import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner import verdict as R
 from kullback.runner.canon import CanonRules

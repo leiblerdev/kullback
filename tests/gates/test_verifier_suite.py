@@ -33,7 +33,7 @@ from gates.verifier_fixtures import (
     write_run_with_footer,
     wrong_run,
 )
-from kullback.examiner import derive as V
+from kullback import derive as V
 from kullback.gates import artifacts
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules
@@ -744,8 +744,7 @@ def test_an_expected_fail_run_that_failed_or_an_expected_pass_carries_no_passing
 
 def test_a_mutation_the_reference_survives_names_the_run_and_both_values():
     """A changed atom the Reference still passes names the mutated field with the original
-    and the mutated value, so the refusal says what would fail it."""
-    from kullback.examiner import domain_tools as D
+    and the mutated value."""
     from kullback.gates.bindings import rows_for
 
     verifier = Verifier(task_id="t1", atoms=[S.make_atom("few", "required",
@@ -761,15 +760,11 @@ def test_a_mutation_the_reference_survives_names_the_run_and_both_values():
     assert {"check": "verifier_mutation", "atom": "few", "run": "ref",
             "expected": "fail", "got": "pass", "field": "count", "old": 5, "new": 4,
             "text": rows[0]["text"]} in rows
-    [line] = D._why_lines([D._gate_record(gate, verifier, evidence)])
-    assert "run ref" in line and "5 -> 4" in line and str(verifier.atoms[0]) in line
-    assert line.endswith("would pass: an atom that pins count to 5"), line
 
 
 def test_a_stated_fact_failure_names_the_answer_turn_and_both_wordings(tmp_path):
     """A communicate atom the Run does not state names the Run's answer turn with the
     demanded wording against what that turn said."""
-    from kullback.examiner import domain_tools as D
     from kullback.gates.bindings import rows_for
     from kullback.runner.target import _assistant_text, _reply
 
@@ -788,6 +783,3 @@ def test_a_stated_fact_failure_names_the_answer_turn_and_both_wordings(tmp_path)
     [row] = [row for row in rows_for(gate, evidence) if row.get("atom") == "c0"]
     assert row["run"] == "altered" and row["call"] == 1 and row["tool"] == "model_call"
     assert row["old"] == "#W123" and row["new"] == _assistant_text(altered.events[1])
-    [line] = D._why_lines([D._gate_record(gate, verifier, evidence)])
-    assert "call 1 model_call" in line and "->" in line
-    assert line.endswith("would pass: the run itself breaks the atom, so check the run"), line

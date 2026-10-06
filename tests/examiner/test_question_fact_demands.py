@@ -14,7 +14,7 @@ from gates.verifier_fixtures import (
     user,
     write_events_jsonl,
 )
-from kullback.examiner import derive as V
+from kullback import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import Task

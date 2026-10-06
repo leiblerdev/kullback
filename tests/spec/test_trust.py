@@ -2,15 +2,12 @@ import json
 
 import pytest
 
-from gates.examiner_fixtures import TASK
-from kullback.gates import trust as gates_trust
 from kullback.runner.records import Event, Verifier
 from kullback.spec import trust as T
 from kullback.spec.compile import compile_demands, compile_spec
 from kullback.spec.events import TASK_SET_ASIDE
 from kullback.spec.router import ROUNDS_CAP
 from kullback.spec.schema import save_spec
-from tests.gates.test_trust import _world
 from tests.spec.fixtures import WRITE, WRITE_TOOLS, check, fn, reference_run
 from tests.spec.fixtures import spec as base_spec
 
@@ -104,32 +101,6 @@ def test_a_run_that_names_no_model_is_neither_a_replay_nor_fresh():
     assert not T.is_replay(unnamed) and not T.is_fresh(unnamed)
 
 
-def test_the_runs_path_is_the_gates_trusted_ruling_task_for_task(tmp_path):
-    world = _world(tmp_path)
-    tiers = T.runs_tiers(**world)
-    ruling = gates_trust.trusted_gate(**world)
-    assert [t for t, v in tiers.items() if v.tier == "trusted"] == ruling.metrics["trusted"] == [TASK]
-    world["task_status"] = {TASK: {"verifier_passed": False}}
-    tiers = T.runs_tiers(**world)
-    assert tiers[TASK].tier == "untrusted"
-    assert tiers[TASK].row["reason"] == gates_trust.trusted_gate(**world).metrics["untrusted"][TASK]
-
-
-def test_a_workdir_under_runs_is_the_gates_workdir_ruling(tmp_path):
-    ruling = gates_trust.workdir_trusted_ruling(tmp_path)
-    assert T.workdir_tiers(tmp_path) == T.tiers_of_ruling(ruling)
-
-
-def test_the_build_manifest_keeps_the_foundation_and_whatever_else_it_holds(tmp_path):
-    assert T.verifier_from_of(tmp_path) == "runs" and T.stored_verifier_from(tmp_path) is None
-    (tmp_path / T.BUILD_MANIFEST).write_text(json.dumps({"other": 1}))
-    T.store_verifier_from(tmp_path, "intent")
-    assert json.loads((tmp_path / T.BUILD_MANIFEST).read_text()) == {"other": 1, "verifier_from": "intent"}
-    assert T.verifier_from_of(tmp_path) == "intent"
-    with pytest.raises(ValueError):
-        T.store_verifier_from(tmp_path, "neither")
-
-
 def _write_verifier(root, verifier, task_id="t1"):
     path = T.spec_verifier_path(root, task_id)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -151,9 +122,8 @@ def _intent_workdir(root, runs, verifier=None):
     _write_verifier(root, verifier or _verifier(spec(gaps=["f2"])))
 
 
-def test_a_workdir_under_intent_rules_every_task_from_its_spec_and_a_task_without_one_is_untrusted(tmp_path):
+def test_a_workdir_rules_every_task_from_its_spec_and_a_task_without_one_is_untrusted(tmp_path):
     _intent_workdir(tmp_path, [_replay(), _fresh(right=False)])
-    T.store_verifier_from(tmp_path, "intent")
     tiers = T.workdir_tiers(tmp_path)
     assert tiers["t2"].tier == "untrusted" and tiers["t2"].row["failing"] == "grounded"
     assert tiers["t1"].row["runs_scored"] == ["fresh-1", REPLAY_ID]

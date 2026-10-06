@@ -411,44 +411,23 @@ def _effort_model(adapter: Any, effort: Optional[str]) -> Any:
     return budget.EffortModel(adapter, effort)
 
 
-def _user_switch(adapter: Any, judge_adapter: Any, user_adapter: Any, reroll_model: Any = None) -> dict:
-    """The Builder's examine call with the agent user switched on, or nothing where it is off.
+def _spec_switch(adapter: Any, judge_adapter: Any, spec_adapter: Any) -> dict:
+    """The Builder's examine call: References chosen, the Specs written, then the Examiner's review (D320).
 
-    Off, the Builder's own default examine runs exactly as before. On, examine is called the way
-    that default calls it, with the user model added: the Builder's session never learns of it.
-    The re-rolls stay the Candidate's model either way, never the Builder's by accident.
-    """
-    if user_adapter is None:
-        return {}
-    examine = _entry("kullback.examiner.session", "examine")
-
-    def examine_fn(workdir: Any, task_ids: Any) -> Any:
-        return examine(Path(workdir), task_ids=task_ids, model=adapter,
-                       judge_model=judge_adapter or adapter, probe_model=adapter,
-                       reroll_model=reroll_model or adapter, user_model=user_adapter)
-
-    return {"examine_fn": examine_fn}
-
-
-def _spec_switch(adapter: Any, judge_adapter: Any, user_adapter: Any, reroll_model: Any,
-                 spec_adapter: Any) -> dict:
-    """The Builder's examine call under `--verifier-from intent`: the Specs written first, then examined.
-
-    The named Tasks, else every runnable Task of the build's sample, get a Spec and its Verifier on
-    `spec_adapter` (a Task that has both keeps them); then the Examiner judges in intent mode.
+    The named Tasks, else every runnable Task of the build's sample, get their References by code,
+    then a Spec and its Verifier on `spec_adapter` (a Task that has both keeps them, its gates
+    refreshed once a Reference has come); then the Examiner reviews them on `adapter`.
     """
     examine = _entry("kullback.examiner.session", "examine")
     write_specs = _entry("kullback.spec.stage", "write_specs")
     runnable = _entry("kullback.builder.domain_tools", "runnable_task_ids")
 
     def examine_fn(workdir: Any, task_ids: Any) -> Any:
+        examine(Path(workdir), task_ids=task_ids, model=None, judge_model=judge_adapter or adapter)
         ids = list(task_ids) if task_ids is not None else list(runnable(Path(workdir)))
         counts = write_specs(Path(workdir), ids, spec_adapter)
         typer.echo(f"spec: {json.dumps(counts, default=str, sort_keys=True)}")
-        return examine(Path(workdir), task_ids=task_ids, model=adapter,
-                       judge_model=judge_adapter or adapter, probe_model=adapter,
-                       reroll_model=reroll_model or adapter, user_model=user_adapter,
-                       verifier_from="intent")
+        return examine(Path(workdir), task_ids=task_ids, model=adapter, judge_model=judge_adapter or adapter)
 
     return {"examine_fn": examine_fn}
 
@@ -499,15 +478,9 @@ def build(
         False, "--rule-user",
         help="Meet every Run with the rule-driven user alone, the default before the agent "
              "user became the Simulated user. No model is called for the user on this flag."),
-    verifier_from: Optional[str] = typer.Option(
-        None, "--verifier-from",
-        help="Where each Task's Verifier comes from: intent (the Spec file, trust by the four "
-             "gates) or runs (derived from the Runs, the D126 ruling). Stored in the workdir's "
-             "build manifest, so a resume keeps it; the default is the stored choice, else runs."),
     spec_model: Optional[str] = typer.Option(
         None, "--spec-model",
-        help="Model id for the Spec writer (intent miner and Verifier writer) under --verifier-from "
-             "intent; the default is --model."),
+        help="Model id for the Spec writer (intent miner and Verifier writer); the default is --model."),
     tasks: Optional[str] = typer.Option(
         None, "--tasks",
         help="The build's Task sample: a comma list of ids, or @path to a file of ids, one per line. "
@@ -524,10 +497,10 @@ def build(
     --model, and `--run-effort` sends one reasoning effort on the Candidate's calls and the agent
     user's, never the Builder's, the Examiner's or the judges'. Every Run meets the agent user
     on the run model over the rule floor, priced under the user stage; `--rule-user` keeps the
-    rule-driven user alone, and `--user-model` names the agent user's own model. Under
-    `--verifier-from intent` the build ends by writing the tier report (tiers.json) and its line.
+    rule-driven user alone, and `--user-model` names the agent user's own model. The Spec writes
+    every Verifier and the Examiner reviews it (D320); the build ends by writing the tier report
+    (tiers.json) and its line.
     """
-    chosen = _verifier_from(workdir, verifier_from)
     _store_sample(workdir, _task_sample(tasks))
     adapter = _live_model(model, base_url)
     judge_adapter = _live_model(judge_model, base_url) if judge_model else None
@@ -558,8 +531,8 @@ def build(
             subscribers=[_session_subscriber(workdir)], judge_model=judge_adapter,
             probe_model=adapter, reroll_model=run_adapter, run_model=run_adapter,
             user_model=user_adapter,
-            **_examine_switch(chosen, adapter, judge_adapter, user_adapter, run_adapter,
-                              spec_model, model, base_url))
+            **_spec_switch(adapter, judge_adapter,
+                           adapter if (spec_model or model) == model else _live_model(spec_model, base_url)))
     except Exception:
         pulse.stop()
         heartbeat.beat(workdir, model, "failed")
@@ -569,48 +542,17 @@ def build(
     failed = isinstance(result, dict) and result.get("stopped") == "error"
     heartbeat.beat(workdir, model, "failed" if failed else "done")
     typer.echo(_counts_line(workdir))
-    if chosen == "intent":
-        typer.echo(_tier_line(workdir))
+    typer.echo(_tier_line(workdir))
     typer.echo(json.dumps(result, indent=2, default=str))
     if failed:
         raise typer.Exit(code=1)
-
-
-def _examine_switch(chosen: str, adapter: Any, judge_adapter: Any, user_adapter: Any, run_adapter: Any,
-                    spec_model: Optional[str], model: str, base_url: Optional[str]) -> dict:
-    """The examine call of this build: the Spec's under intent, else the runs path unchanged."""
-    if chosen != "intent":
-        return _user_switch(adapter, judge_adapter, user_adapter, reroll_model=run_adapter)
-    spec_adapter = adapter if (spec_model or model) == model else _live_model(spec_model, base_url)
-    return _spec_switch(adapter, judge_adapter, user_adapter, run_adapter, spec_adapter)
-
-
-def _verifier_from(workdir: Path, flag: Optional[str]) -> str:
-    """The Verifier foundation of this build: the flag, stored in the manifest, or the stored one, or runs.
-
-    A flag that contradicts the stored choice stops the build: one workdir under two foundations
-    would mix Verifiers of both kinds in one trusted count.
-    """
-    from kullback.spec import VERIFIER_FROM
-    from kullback.spec.trust import DEFAULT_VERIFIER_FROM, store_verifier_from, stored_verifier_from
-
-    stored = stored_verifier_from(workdir)
-    if flag is not None and flag not in VERIFIER_FROM:
-        typer.echo(f"--verifier-from must be one of {', '.join(VERIFIER_FROM)}, not {flag}")
-        raise typer.Exit(code=2)
-    if flag is not None and stored is not None and flag != stored:
-        typer.echo(f"this workdir was built with --verifier-from {stored}; start a new workdir for {flag}")
-        raise typer.Exit(code=2)
-    if flag is not None and stored is None:
-        store_verifier_from(workdir, flag)
-    return flag or stored or DEFAULT_VERIFIER_FROM
 
 
 def _tier_line(workdir: Path) -> str:
     """The tier counts of the report just written to the workdir, after its head and before any warning."""
     from kullback.spec.report import header_line, write_report
 
-    report = write_report(workdir, verifier_from="intent")
+    report = write_report(workdir)
     counts = "tiers " + ", ".join(f"{tier} {count}" for tier, count in report["tiers"].items())
     return "\n".join([header_line(report), counts, *(f"warning: {w}" for w in report["warnings"])])
 

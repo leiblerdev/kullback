@@ -59,7 +59,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from kullback.examiner import derive as verifier_mod
+from kullback import derive as verifier_mod
 from kullback.gates import verifier_suite
 from kullback.gates.trust import POOL_FILE
 from kullback.gates.trust import pooled_tasks as _pooled_tasks

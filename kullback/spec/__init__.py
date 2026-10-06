@@ -4,6 +4,3 @@ Code only, no model call. `schema` holds the records, `ground` the because and c
 (trust gate 1), `compile` turns checks into Verifier atoms with the existing builders, and
 `canfail` asks whether the compiled Verifier can fail at all (trust gate 2).
 """
-
-# Where a Task's Verifier comes from: the Spec written from the Intent, or the derivation from Runs.
-VERIFIER_FROM = ("intent", "runs")

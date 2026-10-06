@@ -28,12 +28,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Union
 
+from kullback import derive as verifier_mod
 from kullback import sampling
-from kullback.examiner import derive as verifier_mod
+from kullback import variants as variants_mod
 from kullback.examiner import judge as judge_mod
 from kullback.examiner import lifecycle
 from kullback.examiner import reference as reference_mod
-from kullback.examiner import variants as variants_mod
 from kullback.gates import artifacts, fidelity, loosening, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
 from kullback.gates import stages as stage_gates

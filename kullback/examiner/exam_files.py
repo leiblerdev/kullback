@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from kullback.examiner import derive as derive_mod
+from kullback import derive as derive_mod
 from kullback.examiner.plan import task_runs_of
 from kullback.gates import PROTECTED_PATH, first_string
 from kullback.gates.probes import version_hash, write_tools_of

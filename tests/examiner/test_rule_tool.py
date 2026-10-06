@@ -128,16 +128,15 @@ def test_the_view_names_the_checks_each_run_fails_with_the_expected_values(tmp_p
         [{k: v for k, v in value.items() if k != "atom"} for value in failed["values"]]
 
 
-def test_intent_mode_offers_rule_and_no_edit_tool(tmp_path):
-    names = [tool.name for tool in D.domain_tools(_root(tmp_path), "intent")]
-    assert names == list(D.tool_names("intent"))
-    assert names == ["rule", "finding", "reroll", "check_reference", "reject_reference"]
-    assert set(D.NOT_IN_INTENT) <= {tool.name for tool in D.domain_tools(_root(tmp_path))}
+def test_the_examiner_offers_its_review_tools_and_no_edit_tool(tmp_path):
+    names = [tool.name for tool in D.domain_tools(_root(tmp_path))]
+    assert names == list(D.tool_names())
+    assert names == ["rule", "finding", "no_finding", "check_reference", "reject_reference"]
 
 
-def test_reject_reference_in_intent_mode_files_a_ruling_on_the_run(tmp_path):
+def test_reject_reference_files_a_ruling_on_the_run(tmp_path):
     root = _root(tmp_path)
-    reject = next(t for t in D.domain_tools(root, "intent") if t.name == "reject_reference")
+    reject = next(t for t in D.domain_tools(root) if t.name == "reject_reference")
     from kullback.examiner.reference_check import RejectReferenceArgs
 
     asyncio.run(reject.execute(RejectReferenceArgs(task_id="t1", run_id="ref", why=f"the user said \"{TURN}\"")))
@@ -145,9 +144,10 @@ def test_reject_reference_in_intent_mode_files_a_ruling_on_the_run(tmp_path):
     assert payload["target"] == "run" and payload["run_id"] == "ref" and payload["reason"] == "reference_wrong"
 
 
-def test_the_intent_prompt_names_every_offered_tool_and_no_edit_tool():
-    text = P.render(P.sections("intent"))
-    for name in D.tool_names("intent"):
+def test_the_prompt_names_every_offered_tool_and_no_edit_tool():
+    text = P.render(P.sections())
+    for name in D.tool_names():
         assert f"{name}:" in text
-    assert not any(f"{name}:" in text for name in D.NOT_IN_INTENT)
+    assert not any(f"{name}:" in text for name in ("edit_verifier", "propose_verifier", "try_atoms", "probe",
+                                                    "reroll"))
     assert chr(0x2014) not in text and chr(0x2013) not in text

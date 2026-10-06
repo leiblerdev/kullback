@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from kullback.examiner import derive as V
+from kullback import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.atom_context import AtomContext
 from kullback.runner.canon import CanonRules

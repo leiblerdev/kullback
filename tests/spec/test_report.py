@@ -11,17 +11,17 @@ def _tiers(code="c0de" * 16, **tiers):
 
 def test_the_report_counts_every_tier_and_splits_the_trusted_tasks_by_reference_class():
     tiers = _tiers(a="trusted", b="trusted", c="replay_only", d="untrusted", e="set_aside", f="trusted")
-    report = R.build_report(tiers, verifier_from="intent", corpus="c1", build="b1",
+    report = R.build_report(tiers, corpus="c1", build="b1",
                             classes={"a": "right", "b": "wrong"})
     assert report["tiers"] == {"trusted": 3, "replay_only": 1, "untrusted": 1, "set_aside": 1}
     assert report["trusted_by_reference"] == {"right": 1, "wrong": 1, "unknown": 1}
     assert [row["task_id"] for row in report["rows"]] == ["a", "b", "c", "d", "e", "f"]
-    assert R.table_line(report) == "| b1 | c1 | intent | 6 | 3 | 1 | 1 | 1 | 1, 1, 0, 1 | c0dec0dec0de |"
+    assert R.table_line(report) == "| b1 | c1 | spec | 6 | 3 | 1 | 1 | 1 | 1, 1, 0, 1 | c0dec0dec0de |"
     assert R.table_line(report).count("|") == R.TABLE_HEADER.count("|")
 
 
 def test_without_a_sidecar_the_split_is_absent_rather_than_zero(tmp_path):
-    report = R.build_report(_tiers(a="trusted"), verifier_from="runs")
+    report = R.build_report(_tiers(a="trusted"))
     assert report["trusted_by_reference"] is None and R.table_line(report).endswith("| n/a | c0dec0dec0de |")
     assert R.reference_classes(tmp_path) is None
 
@@ -39,9 +39,9 @@ def test_the_class_of_a_task_is_trust_splits_class_of_its_references_rewards(tmp
     assert R.reference_classes(tmp_path) == {"t1": "right", "t2": "wrong", "t3": "mixed", "t4": "unknown"}
 
 
-def test_the_report_is_written_once_to_the_workdir_under_the_stored_foundation(tmp_path):
+def test_the_report_is_written_once_to_the_workdir(tmp_path):
     report = R.write_report(tmp_path, corpus="c1")
-    assert report["verifier_from"] == "runs" and report["tasks"] == 0
+    assert report["tasks"] == 0
     assert json.loads((tmp_path / R.REPORT_FILE).read_text()) == report
 
 
@@ -53,11 +53,11 @@ def test_the_builds_readme_carries_the_tier_table_header_the_report_writes_lines
 
 
 def test_the_report_heads_with_the_one_code_hash_and_warns_when_its_rows_carry_two():
-    one = R.build_report(_tiers(a="trusted", b="untrusted"), verifier_from="intent")
+    one = R.build_report(_tiers(a="trusted", b="untrusted"))
     assert one["code_hash"] == "c0de" * 16 and one["warnings"] == []
-    assert R.header_line(one) == "tier report, verifier from intent, code c0dec0dec0de"
+    assert R.header_line(one) == "tier report, verifier from the Spec, code c0dec0dec0de"
     rows = {**_tiers(a="trusted"), **_tiers(code="beef" * 16, b="untrusted")}
-    mixed = R.build_report(rows, verifier_from="intent")
+    mixed = R.build_report(rows)
     assert mixed["code_hash"] is None and R.header_line(mixed).endswith("code mixed")
     assert mixed["warnings"] and "2 code hashes" in mixed["warnings"][0]
     assert R.table_line(mixed).endswith("| mixed |")
@@ -68,12 +68,12 @@ def test_every_row_carries_the_live_code_hash_and_a_report_over_other_code_is_fl
     from kullback.spec import trust as T
 
     tiers = {"a": T.missing_spec_row("a")}
-    monkeypatch.setattr(R, "workdir_tiers", lambda workdir, chosen: tiers)
-    first = R.write_report(tmp_path, verifier_from="intent")
+    monkeypatch.setattr(R, "workdir_tiers", lambda workdir: tiers)
+    first = R.write_report(tmp_path)
     assert [row["code_hash"] for row in first["rows"]] == [CODE_HASH]
     assert first["code_hash"] == CODE_HASH and first["warnings"] == []
     stale = dict(first, code_hash="beef" * 16, rows=[dict(first["rows"][0], code_hash="beef" * 16)])
     (tmp_path / R.REPORT_FILE).write_text(json.dumps(stale))
-    second = R.write_report(tmp_path, verifier_from="intent")
+    second = R.write_report(tmp_path)
     assert second["warnings"] and "beefbeefbeef" in second["warnings"][0]
     assert json.loads((tmp_path / R.REPORT_FILE).read_text()) == second

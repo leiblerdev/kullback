@@ -33,6 +33,7 @@ from kullback.spec.compile import (
     Compiled,
     compile_spec,
 )
+from kullback.spec.end_state import Gates, gates_of
 from kullback.spec.ground import coverage, valid_because, valid_write_because
 from kullback.spec.must_not import must_not
 from kullback.spec.schema import (
@@ -81,6 +82,9 @@ name it, but a demand resting on unwitnessed facts alone is dropped.
 - no_write needs no fields: the end state is the starting state.
 - cap needs count: the number of entities listed above.
 - shape needs tool, field, id_field: the write must carry a value the run read for that column.
+- refuse needs nothing, or tool: the policy or the user refuses the request, and the agent must say so.
+- handoff needs tool: the user asks for a person, and the agent must hand the conversation over.
+- Never write code, a predicate or a lambda: a write is a cell of the end state (tool, row, values).
 - because must quote the Intent span word for word (at least 12 characters) or name the policy \
 rule or policy section. A demand with no valid because is dropped.
 - A write's because quotes the user's words asking for it, or names the policy section and \
@@ -91,6 +95,11 @@ FOLLOWUP_PROMPT = """Code refused these demands of yours, each for the reason an
 corrected version of each, under the same id, or leave it out to drop it. Send only these demands, \
 as one JSON object, no prose: {"demands": [...]}.
 """
+
+# Why a demand carrying code is refused (D320): what a Run must write is the end state's cells, read by code.
+WRITE_PREDICATE = "write demands are end-state cells"
+# The keys a demand may not carry: code the Runner would evaluate in place of the end state.
+_PREDICATE_KEYS = ("predicate", "predicate_src", "code", "lambda")
 
 # The rule each refusal a writer is told about breaks, in the words the follow-up turn shows it.
 SENT_BACK_RULES = {
@@ -103,6 +112,7 @@ SENT_BACK_RULES = {
                               "required write on one of them; keep the one the Intent asks for",
     FORBIDDEN_EQUALS_REQUIRED: "one demand cannot be both required and forbidden; keep the one the Intent asks for",
     WRITE_WITHOUT_ROW: "a required write names one row: id_field, and entity as that single id value, not an object",
+    "write_predicate": WRITE_PREDICATE,
 }
 
 REPAIR_PROMPT = """A ruling says some checks you wrote for this customer request are wrong. You \
@@ -225,6 +235,8 @@ def _refusal(item: Any, fact_ids: list[str], inputs: WriterInputs) -> str:
     """Why code refuses a demand before it becomes a Check, or empty when it stands."""
     if not isinstance(item, dict) or item.get("kind") not in ATOM_KINDS:
         return "bad_kind"
+    if any(key in item for key in _PREDICATE_KEYS):
+        return "write_predicate"
     because = str(item.get("because") or "")
     if not valid_because(because, inputs.intent.text, inputs.sections):
         return "ungrounded"
@@ -256,7 +268,8 @@ def _check_of(number: Any, item: Any, inputs: WriterInputs) -> tuple[Optional[Ch
 def _keep(demands: Iterable[Any], inputs: WriterInputs) -> tuple[list[Check], dict, list[tuple[int, Any, str]]]:
     """The checks code keeps, how many of each refusal it made, and each refused demand with its code."""
     checks, refused = [], []
-    counts = {"demands": 0, "kept": 0, "ungrounded": 0, "unwitnessed": 0, "condition_unquoted": 0, "bad_kind": 0}
+    counts = {"demands": 0, "kept": 0, "ungrounded": 0, "unwitnessed": 0, "condition_unquoted": 0, "bad_kind": 0,
+              "write_predicate": 0}
     for number, item in enumerate(demands):
         counts["demands"] += 1
         check, refusal = _check_of(number, item, inputs)
@@ -383,13 +396,44 @@ def _clashing(task_id: str, checks: list[Check], demands: list, inputs: WriterIn
     return [(int(check_id[1:]), demands[int(check_id[1:])], code) for check_id, code in first.items()]
 
 
-def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:
-    """The Spec's checks compiled, with the must-not atoms `must_not` adds from them."""
-    compiled = compile_spec(spec, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools)
-    must = [atom for atom in compiled.verifier.atoms if atom.kind in ("required", "allowed")]
-    forbid = must_not(must, spec.intent.text, inputs.constraints, sorted(inputs.write_tools))
-    atoms = compiled.verifier.atoms + forbid
-    return compiled._replace(verifier=compiled.verifier.model_copy(update={"atoms": atoms}))
+# The demands that stay weighted atoms beside an expected end state: facts told and questions asked (D320).
+ATOM_DEMANDS = ("say", "ask")
+
+
+def verifier_of(spec: Spec, inputs: WriterInputs, gates: Optional[Gates] = None) -> Compiled:
+    """The Spec's checks compiled, with its gates when it has an expected end state.
+
+    With an expected end state the writes are its cells, so only fact and question checks compile to
+    atoms and `must_not` adds nothing: the forbidden list and the collateral rule answer for it. With
+    none (no Reference yet) every check compiles as before, with the must-not atoms. The Spec's
+    review edits to its atoms (`atom_edits`) are applied last.
+    """
+    if gates is not None and gates.expected:
+        kept = spec.model_copy(update={"checks": [c for c in spec.checks if c.demand.get("demand") in ATOM_DEMANDS]})
+        compiled = compile_spec(kept, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools)
+        atoms = compiled.verifier.atoms
+    else:
+        compiled = compile_spec(spec, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools)
+        must = [atom for atom in compiled.verifier.atoms if atom.kind in ("required", "allowed")]
+        atoms = compiled.verifier.atoms + must_not(must, spec.intent.text, inputs.constraints, sorted(inputs.write_tools))
+    update: dict = {"atoms": edited_atoms(atoms, spec.atom_edits)}
+    if gates is not None:
+        update.update(expected=gates.expected, forbidden=gates.forbidden, conduct=gates.conduct)
+    return compiled._replace(verifier=compiled.verifier.model_copy(update=update))
+
+
+def edited_atoms(atoms: list, edits: Iterable[dict]) -> list:
+    """The atoms after each review edit in order: its drop ids out, its added atoms in (ids replaced)."""
+    from kullback.gates import verifier_suite
+
+    out = list(atoms)
+    for edit in edits or ():
+        dropped = {str(atom_id) for atom_id in edit.get("drop") or []}
+        added = [verifier_suite.make_atom(str(a["id"]), a["kind"], dict(a["payload"]),
+                                          description=a.get("description")) for a in edit.get("add") or []]
+        new_ids = {atom.id for atom in added}
+        out = [atom for atom in out if atom.id not in dropped and atom.id not in new_ids] + added
+    return out
 
 
 def runner_verifier_path(workdir: Path, task_id: str) -> Path:
@@ -397,15 +441,27 @@ def runner_verifier_path(workdir: Path, task_id: str) -> Path:
     return Path(workdir) / "verifiers" / f"{task_id}.json"
 
 
+def end_state_counts(gates: Gates) -> dict:
+    """What the Spec record keeps of its gates: the Reference, the cells, how many are unsupported."""
+    cells = gates.expected[0].cells if gates.expected else []
+    return {"reference": gates.reference, "end_states": len(gates.expected), "cells": len(cells),
+            "unsupported": gates.unsupported, "forbidden": len(gates.forbidden), "conduct": len(gates.conduct)}
+
+
 def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = None,
-                   verifier_from: str = "runs") -> list[Path]:
-    """Saves the Spec and its compiled Verifier; under `intent` the Runner's Verifier is replaced too."""
+                   gates: Optional[Gates] = None) -> list[Path]:
+    """Saves the Spec and its whole Verifier, the gates derived by code from the Task's Reference.
+
+    The Spec is the one writer of a Task's Verifier (D320): the Runner's file and the Spec's copy are
+    the same bytes. The end-state counts ride on the saved Spec as `end_state`.
+    """
     inputs = inputs or load_inputs(workdir, spec.task_id, spec.intent)
-    verifier: Verifier = verifier_of(spec, inputs).verifier
+    gates = gates if gates is not None else gates_of(workdir, spec, inputs.policy_text, inputs.canon)
+    verifier: Verifier = verifier_of(spec, inputs, gates).verifier
     text = json.dumps(verifier.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-    paths = [save_spec(workdir, spec), spec_verifier_path(workdir, spec.task_id)]
-    if verifier_from == "intent":
-        paths.append(runner_verifier_path(workdir, spec.task_id))
+    spec = spec.model_copy(update={"end_state": end_state_counts(gates)})
+    paths = [save_spec(workdir, spec), spec_verifier_path(workdir, spec.task_id),
+             runner_verifier_path(workdir, spec.task_id)]
     for path in paths[1:]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -459,15 +515,6 @@ def repair(spec: Spec, ruling: Ruling, inputs: WriterInputs, model: Any, *,
     return Written(repaired, counts, session)
 
 
-def _runner_reads_spec(workdir: Path, task_id: str) -> bool:
-    """Whether the Runner's Verifier for the Task was compiled from its Spec (compile_spec's version)."""
-    path = runner_verifier_path(workdir, task_id)
-    try:
-        return str(json.loads(path.read_text(encoding="utf-8")).get("verifier_version", "")).startswith("spec")
-    except (OSError, ValueError, AttributeError):
-        return False
-
-
 def ruling_of(body: dict) -> Ruling:
     """A ruling as the router hands it over: its checks, its reason, and its quoted evidence.
 
@@ -484,8 +531,7 @@ def repair_for_ruling(workdir: Path, task_id: str, ruling: dict, model: Any,
     """The router's entry point: repair the Task's Spec from one ruling file and tell the bus.
 
     Loads the Spec and the writer's inputs, repairs the ruled checks, saves the Spec (version + 1),
-    rewrites both Verifier files (the Runner's only when it was compiled from the Spec, so a
-    workdir scoring on Runs keeps its Verifier) and publishes spec.repaired when any check changed,
+    rewrites both Verifier files and publishes spec.repaired when any check changed,
     else spec.defended.
     """
     from kullback.agent.bus import Bus
@@ -498,7 +544,7 @@ def repair_for_ruling(workdir: Path, task_id: str, ruling: dict, model: Any,
     ruled = ruling_of(ruling)
     written = repair(spec, ruled, inputs, model, model_id=model_id or getattr(model, "name", None),
                      ceiling_usd=ceiling_usd)
-    write_verifier(written.spec, workdir, inputs, "intent" if _runner_reads_spec(workdir, task_id) else "runs")
+    write_verifier(written.spec, workdir, inputs)
     bus = Bus(Path(workdir) / "bus.jsonl", agent="spec")
     before = {check.id: check for check in spec.checks}
     changed = [check.id for check in written.spec.checks if before.get(check.id) != check]

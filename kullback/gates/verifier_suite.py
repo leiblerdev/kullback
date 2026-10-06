@@ -23,7 +23,7 @@ verdict.py evaluates it without importing anything from here (D89). The `kind` k
 The target and the predicate say the same thing on purpose: `check_run` here scores a Run off the
 target and verdict.py scores it off `predicate_src`, so a check one of them makes and the other does
 not is a hole no D79 gate can see. tests/gates/test_verifier_runner_agreement.py holds the two
-together. The derivation that writes atoms from Runs is `kullback.examiner.derive.derive_verifier`;
+together. The derivation that writes atoms from Runs is `kullback.derive.derive_verifier`;
 it builds its atoms with `make_atom` from here, wrapping a Hard predicate with `HELPERS_SRC`.
 """
 

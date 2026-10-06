@@ -1,4 +1,4 @@
-"""The Examiner's one move under --verifier-from intent: `rule` files a ruling with a target (DESIGN.md rule 3).
+"""The Examiner's ruling tool: `rule` files a ruling with a target (DESIGN.md rule 3, D320).
 
 The Examiner judges only. It reads the Spec of a Task (facts with stance, checks with because and
 tier), each Run's verdict rows against the Spec's checks, and the Runs, and files a ruling that
@@ -243,7 +243,7 @@ def verdict_rows(spec: Spec, run: Run, canon: Any, write_tools: set) -> dict:
 
 
 def spec_view(root: ExamRoot, task_id: str) -> Optional[dict]:
-    """The Task's view in intent mode: the Spec's facts and checks, then each Run's verdict rows."""
+    """The Task's view: the Spec's facts and checks, the Verifier's gates, then each Run's verdict rows."""
     spec = load_spec(root.workdir, task_id)
     if spec is None:
         return None
@@ -257,7 +257,18 @@ def spec_view(root: ExamRoot, task_id: str) -> Optional[dict]:
             "facts": [{"id": f.id, "stance": f.stance, "text": f.text} for f in spec.intent.facts],
             "checks": [{"id": c.id, "kind": c.kind, "tier": c.tier, "because": c.because,
                         "demand": c.demand, "fact_ids": c.fact_ids} for c in spec.checks],
-            "gaps": spec.gaps, "runs": runs}
+            "gaps": spec.gaps, "end_state": spec.end_state, **_gates_view(root, task_id), "runs": runs}
+
+
+def _gates_view(root: ExamRoot, task_id: str) -> dict:
+    """The Spec Verifier's gates as the review reads them: each expected cell with its source (D320)."""
+    from kullback.spec.trust import load_spec_verifier
+
+    verifier = load_spec_verifier(root.workdir, task_id)
+    if verifier is None:
+        return {"expected": [], "forbidden": [], "conduct": []}
+    return {name: [item.model_dump(mode="json") for item in getattr(verifier, name)]
+            for name in ("expected", "forbidden", "conduct")}
 
 
 def write_views(root: ExamRoot, task_ids: Iterable[str]) -> dict[str, str]:

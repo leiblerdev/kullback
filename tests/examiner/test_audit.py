@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-from examiner.worlds import make_world
-from kullback.ai.provider import TestModel
 from kullback.examiner import audit as A
-from kullback.examiner import session as S
-from kullback.examiner.exam_files import ExamRoot
-from kullback.runner.records import read_json, write_json
-from tests.examiner.test_session import materialize, reply
+from kullback.runner.records import write_json
 
 
 def _rounds(workdir, rows, number=1):
@@ -49,28 +44,3 @@ def test_record_check_marks_and_checked_ids_reads_back(tmp_path):
     assert A.checked_ids(tmp_path) == {"t9"}
 
 
-def test_audit_opening_carries_the_audit_line():
-    root = ExamRoot(workdir="/nonexistent")
-    plain = S.session_opening(root, [])
-    audited = S.session_opening(root, [], audit=True)
-    assert A.AUDIT_LINE not in plain
-    assert audited.endswith(A.AUDIT_LINE)
-
-
-def test_examine_with_the_flag_off_runs_no_audit_session(tmp_path):
-    world = make_world(tmp_path)
-    materialize(world)
-    _rounds(world.workdir, [{"task_id": "t1", "trusted": True}])
-    S.examine(world.workdir, model=TestModel([reply("done")]), audit_references=False)
-    assert not (world.workdir / "exam" / A.AUDITS_FILE).exists()
-
-
-def test_examine_audits_the_trusted_task_the_session_never_checked(tmp_path):
-    world = make_world(tmp_path)
-    materialize(world)
-    _rounds(world.workdir, [{"task_id": "t1", "trusted": True}])
-    S.examine(world.workdir, model=TestModel([reply("done"), reply("done"), reply("done")]))
-    records = read_json(world.workdir / "exam" / A.AUDITS_FILE, None)
-    assert records is not None and len(records) == 1
-    assert records[0]["tasks"] == ["t1"]
-    assert records[0]["turns"] >= 1 and records[0]["spent_usd"] >= 0

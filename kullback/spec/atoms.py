@@ -1,4 +1,4 @@
-"""The two generated Hard rules a Verifier is written in, whoever writes it (moved from examiner/derive.py).
+"""The two generated Hard rules a Verifier is written in, whoever writes it (moved from kullback/derive.py).
 
 The Examiner's derivation and the Spec's compiler both build a shape atom and the no-write atom; the
 rules live here so the Spec never reads the Examiner, and derive.py re-exports every name it moved.

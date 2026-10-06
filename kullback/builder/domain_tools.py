@@ -468,15 +468,15 @@ def default_examine_fn(workdir: Any, task_ids: Any, *, model: Any = None, judge_
                        probe_model: Any = None, reroll_model: Any = None) -> Any:
     """The examination stream 6 delivers, resolved lazily so this module never imports it.
 
-    `model` runs the Examiner session; with None the call is derivation only. The judges, the
-    loophole probe and the re-rolls run on their own models when named, else on `model`.
+    `model` runs the Examiner's review; with None the call is the Reference stage only. The judges
+    run on their own model when named, else on `model`. `probe_model` and `reroll_model` are taken
+    and unused: the Examiner runs nothing (D320).
     With no finished Run among the named Tasks the examination opens no Examiner session: its
     selection hands the session only Tasks with a finished Run and a confirmed Reference (F24).
     """
     from kullback.examiner.session import examine
 
-    return examine(Path(workdir), task_ids=task_ids, model=model, judge_model=judge_model or model,
-                   probe_model=probe_model or model, reroll_model=reroll_model or model)
+    return examine(Path(workdir), task_ids=task_ids, model=model, judge_model=judge_model or model)
 
 
 def priced_model(model: Any, workdir: Any, stage: str, *, cap_context: bool = True) -> Any:
@@ -743,7 +743,7 @@ def _run_user(root: Any, task_id: str, router: Any, user_model: Any = None) -> O
     model was named, else the rule-driven user alone, exactly as before the switch existed."""
     if user_model is None:
         return rule_user(root, task_id, router)
-    from kullback.examiner.runners import run_user
+    from kullback.builder.run_user import run_user
 
     return run_user(root, task_id, router, user_model)
 
@@ -1034,6 +1034,11 @@ def domain_tools(*, workdir: Any, model: Any = None,
         # The Examiner session owns its own event loop, so it runs off the Builder's, on a thread.
         examined, outside = _examined(root, args.task_ids)
         result = _coerce_examine(await asyncio.to_thread(examine_call, root, examined))
+        # Atoms and text edits go to the Spec by code; the Builder reads body edits and one count (D320).
+        from kullback.spec.review import rounds_line, route_findings
+
+        result.findings, rounds = route_findings(root, result.findings)
+        result.summary = "; ".join(filter(None, [result.summary, rounds_line(rounds)]))
         # The Tasks the Examiner session left out, and why, lead the summary (F24).
         left_out = [f.get("change") for f in result.findings
                     if any(isinstance(r, dict) and "left_out" in r for r in f.get("rows") or [])]

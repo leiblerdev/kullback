@@ -17,7 +17,7 @@ import os
 import sys
 from pathlib import Path
 
-from kullback.examiner import derive as derive_mod
+from kullback import derive as derive_mod
 from kullback.runner import target as T
 from scripts.experiments import rungs_loophole as R
 

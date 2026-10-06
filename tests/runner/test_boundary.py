@@ -27,7 +27,7 @@ def _tree(root: Path, runner_src: str, ai_src: str = "x = 1\n") -> Path:
         (root / part / "__init__.py").write_text("", encoding="utf-8")
     (root / "runner" / "loop.py").write_text(runner_src, encoding="utf-8")
     (root / "ai" / "provider.py").write_text(ai_src, encoding="utf-8")
-    (root / "examiner" / "derive.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "derive.py").write_text("x = 1\n", encoding="utf-8")
     return root
 
 
@@ -45,11 +45,11 @@ def test_a_runner_import_of_the_builder_is_caught(tmp_path: Path):
     assert any("provider.py" in f for f in out.failures)
 
     root = _tree(tmp_path / "derive_side" / "kullback", "x = 1\n")
-    (root / "examiner" / "derive.py").write_text("from kullback.runner.loop import run\n", encoding="utf-8")
+    (root / "derive.py").write_text("from kullback.runner.loop import run\n", encoding="utf-8")
     out = import_boundary_check(root)
     assert out.passed is False
-    assert any("examiner/derive.py" in f and "kullback.runner.loop" in f for f in out.failures)
-    (root / "examiner" / "derive.py").write_text(
+    assert any("kullback/derive.py" in f and "kullback.runner.loop" in f for f in out.failures)
+    (root / "derive.py").write_text(
         "from kullback.runner.records import Run\nfrom kullback.gates import verifier_suite\n", encoding="utf-8")
     assert import_boundary_check(root).passed is True
 

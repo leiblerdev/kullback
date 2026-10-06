@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 from kullback.runner.code_hash import SHORT
 from kullback.spec.split import reference_classes
-from kullback.spec.trust import TIERS, TaskTier, verifier_from_of, workdir_tiers
+from kullback.spec.trust import TIERS, TaskTier, workdir_tiers
 
 # The report file in the workdir, one per build.
 REPORT_FILE = "tiers.json"
@@ -41,7 +41,7 @@ def _hash_warnings(hashes: list[str], previous: Optional[str] = None) -> list[st
     return warnings
 
 
-def build_report(tiers: dict[str, TaskTier], *, verifier_from: str, corpus: Optional[str] = None,
+def build_report(tiers: dict[str, TaskTier], *, corpus: Optional[str] = None,
                  build: Optional[str] = None, classes: Optional[dict[str, str]] = None) -> dict:
     """Counts per tier and, given the classes, the trusted Tasks by Reference class; rows keep ids only."""
     counts = {tier: 0 for tier in TIERS}
@@ -56,7 +56,7 @@ def build_report(tiers: dict[str, TaskTier], *, verifier_from: str, corpus: Opti
                 split[cls] = split.get(cls, 0) + 1
     rows = [tiers[task_id].row for task_id in sorted(tiers)]
     hashes = code_hashes(rows)
-    return {"build": build, "corpus": corpus, "verifier_from": verifier_from, "tasks": len(tiers),
+    return {"build": build, "corpus": corpus, "tasks": len(tiers),
             "code_hash": hashes[0] if len(hashes) == 1 else None, "warnings": _hash_warnings(hashes),
             "tiers": counts, "trusted_by_reference": split, "rows": rows}
 
@@ -64,7 +64,7 @@ def build_report(tiers: dict[str, TaskTier], *, verifier_from: str, corpus: Opti
 def header_line(report: dict) -> str:
     """The report's head: the foundation and the one code hash its rows were scored under, or "mixed"."""
     code = report.get("code_hash")
-    return f"tier report, verifier from {report['verifier_from']}, code {code[:SHORT] if code else 'mixed'}"
+    return f"tier report, verifier from the Spec, code {code[:SHORT] if code else 'mixed'}"
 
 
 def _code_cell(report: dict) -> str:
@@ -78,16 +78,15 @@ def table_line(report: dict) -> str:
     split = report.get("trusted_by_reference")
     by_class = ("n/a" if split is None else
                 ", ".join(str(split.get(cls, 0)) for cls in ("right", "wrong", "mixed", "unknown")))
-    cells = [report.get("build") or "", report.get("corpus") or "", report["verifier_from"], str(report["tasks"]),
+    cells = [report.get("build") or "", report.get("corpus") or "", "spec", str(report["tasks"]),
              *(str(counts[tier]) for tier in TIERS), by_class, _code_cell(report)]
     return "| " + " | ".join(cells) + " |"
 
 
 def write_report(workdir: Any, *, corpus: Optional[str] = None, build: Optional[str] = None,
-                 verifier_from: Optional[str] = None, sidecar: Optional[Any] = None) -> dict:
+                 sidecar: Optional[Any] = None) -> dict:
     """The build's tier report written to workdir/tiers.json and returned."""
-    chosen = verifier_from or verifier_from_of(workdir)
-    report = build_report(workdir_tiers(workdir, chosen), verifier_from=chosen, corpus=corpus, build=build,
+    report = build_report(workdir_tiers(workdir), corpus=corpus, build=build,
                           classes=reference_classes(workdir, sidecar))
     path = Path(workdir) / REPORT_FILE
     report["warnings"] = _hash_warnings(code_hashes(report["rows"]), _previous_hash(path))
