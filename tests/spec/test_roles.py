@@ -12,6 +12,7 @@ from kullback.ai.provider import TestModel
 from kullback.runner.records import Run, Verifier, write_json
 from kullback.spec import review as RV
 from kullback.spec import writer as W
+from kullback.spec.canfail import can_fail, judge_run
 from kullback.spec.schema import load_spec
 from tests.spec.fixtures import WRITE, check, spec
 from tests.spec.test_writer import MOVE, answer, inputs
@@ -122,3 +123,11 @@ def test_route_findings_sends_atoms_and_text_edits_to_the_spec_and_keeps_body_ed
     assert [f["edits"] for f in kept] == [[body]]
     assert [r["task_id"] for r in rounds] == ["t1"]
     assert RV.rounds_line(rounds).startswith("spec repairs: 1 edits on 1 Tasks, ")
+
+
+def test_a_verifier_with_end_state_gates_passes_its_reference_and_fails_the_empty_and_undone_runs(tmp_path):
+    _, verifier = _written(tmp_path)
+    assert judge_run(verifier, _reference()) == (True, None)
+    result = can_fail(verifier, _reference())
+    assert result.passed
+    assert [row["stage"] for row in result.rows] == ["verifier_empty_run"] + ["verifier_undone_cell"] * 2

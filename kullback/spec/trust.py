@@ -5,7 +5,7 @@
 2. can fail: the D79 mutations of a passing Run fail the Spec's Verifier (`can_fail`);
 3. reference replay: the Verifier passes every faithful replay (fidelity 1, confirmed) of a recording the
    harness keeps as the Task's Reference (references.json and replays.json in the workdir);
-4. independent pass: a live Candidate Run (not the recorded model) passes under `check_run`;
+4. independent pass: a live Candidate Run (not the recorded model) passes under the Verdict;
 5. no open ruling: `spec.rulings_open == 0` and the Task is not set aside.
 
 A replay's verdict is a condition only for a faithful kept Reference (gate 3); every other replay
@@ -29,9 +29,8 @@ from kullback.runner.canon import load_rules
 from kullback.runner.code_hash import CODE_HASH
 from kullback.runner.records import Run, Verifier, load_run_jsonl, read_json, read_jsonl
 from kullback.runner.replay import RECORDED
-from kullback.runner.target import check_run
 from kullback.spec.actions import workdir_action_tools
-from kullback.spec.canfail import can_fail
+from kullback.spec.canfail import can_fail, judge_run
 from kullback.spec.events import TASK_SET_ASIDE
 from kullback.spec.ground import ground_spec
 from kullback.spec.router import (  # noqa: F401  (ROUNDS_CAP re-exported for readers of the tiers)
@@ -85,8 +84,7 @@ def _score(verifier: Verifier, runs: list[Run], canon: Any, write_tools: Any) ->
     verdicts = {}
     for run in runs:
         try:
-            passed, atom = check_run(verifier, run, canon, write_tools=write_tools)
-            verdicts[run.run_id] = (bool(passed), atom)
+            verdicts[run.run_id] = judge_run(verifier, run, canon, write_tools)
         except Exception:  # a Run the scorer cannot read is not a pass, and never stops the ruling
             verdicts[run.run_id] = (False, None)
     return verdicts
