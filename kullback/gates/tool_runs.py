@@ -26,6 +26,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import threading
 import weakref
 from typing import Any, Iterable, NamedTuple, Optional
 
@@ -450,12 +451,19 @@ def _present(row: dict, name: str, rules: Any = None) -> bool:
     return name in row and canon(row.get(name), rules) not in EMPTY_CANON
 
 
+_TALLY_LOCK = threading.Lock()
+
+
 def _tally(tally: Optional[dict], *names: str) -> None:
     """Count one semantic outcome, where the caller asked to be told (D219)."""
     if tally is None:
         return
-    for name in names:
-        tally[name] = int(tally.get(name) or 0) + 1
+    # One runner closure shares its comparer across the Examiner's pooled variant jobs
+    # (speed-1): the tally is read-modify-write, so the increment goes under this lock and
+    # nothing else does, which keeps the judge calls outside it running together.
+    with _TALLY_LOCK:
+        for name in names:
+            tally[name] = int(tally.get(name) or 0) + 1
 
 
 def compare_columns(schema: EntitySchema, table: Optional[str], expected: dict, got: dict,

@@ -12,8 +12,9 @@ list was cleared on 2026-09-22 for the overhaul and rebuilt on 2026-09-24 after 
 - Synthetic Task generation, on the D224 to D226 path: grounded scenarios, augmented seeds and traps, then
   generated Tasks hardened the way TauForge augments, validates and hardens. Every generated Task needs concise
   instructions and a high quality Verifier (founder, 2026-09-23).
-- The patches still waiting in docs/frozen-patches land or retire by their own commits now that the freeze is
-  open (D314); the speed-1 variant gate that examiner/stage.py keeps serial goes with speed-1.
+- Two patches still wait in docs/frozen-patches now that the freeze is open (D314): confinement-holes (five of
+  its holes are still open, but its module-shape rule refuses today's generated skeleton, so it needs a rebase
+  of its own) and speed-3 (the spend ledger batching, written against a budget.py that has since moved).
 - Re-roll batches. One Builder run call plays at most RUNS_PER_CALL = 20 fresh Runs, which is why builds re-roll
   10 to 20 Tasks at a time. Measure whether a larger cap or parallel Runs helps.
 - Cheaper runner model experiment. Record the Run kind in the ledger first, since second-path Runs dominate the
