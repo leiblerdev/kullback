@@ -20,6 +20,8 @@ list was cleared on 2026-09-22 for the overhaul and rebuilt on 2026-09-24 after 
 - Cheaper runner model experiment. Record the Run kind in the ledger first, since second-path Runs dominate the
   runner's spend.
 - The airline body's hand-rolled id rule should go back to the context's new_id in the next build.
+- Independent check on the rebuilt world: the replay only confirms recorded calls; nothing checks the world
+  against evidence outside the recording (review 2026-10-06).
 
 ## From the failure research of build-20260924 (2026-09-25)
 
