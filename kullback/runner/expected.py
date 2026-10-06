@@ -88,6 +88,32 @@ def _source(value: Any, context: AtomContext, turns: list[str], clauses: list[st
     return None
 
 
+def _paths(value: Any, prefix: str = "") -> dict[str, Any]:
+    """Every leaf of a nested value by its path ("items.0.price"); an empty container is a leaf."""
+    if isinstance(value, dict) and value:
+        items = value.items()
+    elif isinstance(value, (list, tuple)) and value:
+        items = enumerate(value)
+    else:
+        return {prefix: value}
+    out: dict[str, Any] = {}
+    for key, item in items:
+        out.update(_paths(item, f"{prefix}.{key}" if prefix else str(key)))
+    return out
+
+
+def _nested_source(before: Any, after: Any, context: AtomContext, turns: list[str], clauses: list[str],
+                   recording: Optional[str]) -> tuple[Optional[ValueSource], dict]:
+    """A nested value sourced leaf by leaf: only a leaf new or changed at its path needs a source."""
+    was = _paths(before) if isinstance(before, type(after)) else {}
+    changed = {path: leaf for path, leaf in _paths(after).items()
+               if path not in was or context.c(was[path]) != context.c(leaf)}
+    if not changed:
+        return ValueSource(kind="unchanged"), {}
+    leaves = {path: _source(leaf, context, turns, clauses, recording) for path, leaf in changed.items()}
+    return (None if None in leaves.values() else next(iter(leaves.values()))), leaves
+
+
 def _split_key(key: str) -> tuple[str, str]:
     table, _, row_id = key.partition(".")
     return table, row_id
@@ -99,7 +125,9 @@ def expected_from_run(run_events: Any, user_turns: Iterable[Any], policy_text: O
 
     A value is sourced by a user turn whose canonical text contains it, a policy clause holding it
     verbatim, or the call result that first showed it; a row id the same way. Neither found means
-    unsupported (`source` or `row_source` None). Short values (a digit, a yes) are found by plain
+    unsupported (`source` or `row_source` None). A list or dict value is sourced by its leaves that
+    are new or changed at their path, each the same way, kept in `leaf_sources`; the cell is sourced
+    when every such leaf is, and is `unchanged` when none is new (reordered only). Short values (a digit, a yes) are found by plain
     containment and may be sourced by a turn that says them for another reason.
     """
     context = AtomContext(_as_run(run_events), canon, schema=schema)
@@ -113,11 +141,15 @@ def expected_from_run(run_events: Any, user_turns: Iterable[Any], policy_text: O
                                       source=row_source))
             continue
         row = (context.end_state.get(table) or {}).get(row_id) or {}
+        start_row = (context.start_state.get(table) or {}).get(row_id) or {}
         for name in moved["fields"]:
-            value = row.get(name)
-            cells.append(ExpectedCell(table=table, row_id=row_id, field=name, value=value,
-                                      source=_source(value, context, turns, clauses, recording),
-                                      row_source=row_source))
+            value, leaves = row.get(name), {}
+            if isinstance(value, (list, dict)):
+                source, leaves = _nested_source(start_row.get(name), value, context, turns, clauses, recording)
+            else:
+                source = _source(value, context, turns, clauses, recording)
+            cells.append(ExpectedCell(table=table, row_id=row_id, field=name, value=value, source=source,
+                                      row_source=row_source, leaf_sources=leaves))
     return EndState(cells=cells)
 
 

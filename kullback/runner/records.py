@@ -565,8 +565,9 @@ class ValueSource(Record):
 
     `ptr` for a user_turn holds the recording and the turn index; for a policy, the clause quoted;
     for a tool_result, the event index, call id and tool of the result that first showed the value.
+    `unchanged` is a nested value none of whose leaves is new (reordered only): nothing to source.
     """
-    kind: Literal["user_turn", "policy", "tool_result"]
+    kind: Literal["user_turn", "policy", "tool_result", "unchanged"]
     ptr: dict = Field(default_factory=dict)
 
 
@@ -581,6 +582,8 @@ class ExpectedCell(Record):
     value: Any = None
     source: Optional[ValueSource] = None
     row_source: Optional[ValueSource] = None
+    # A nested value is sourced by its changed leaves: each leaf path and its source, None if unsupported.
+    leaf_sources: dict[str, Optional[ValueSource]] = Field(default_factory=dict)
 
 
 class EndState(Record):

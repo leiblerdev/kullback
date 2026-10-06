@@ -85,3 +85,16 @@ def test_a_user_negation_and_a_recorded_refusal_are_the_only_forbidden_writes():
     found = forbidden_from(state, turns, refusals_of(events), start_state=START)
     assert {(f.tool, f.row_id, f.field, f.source.kind) for f in found} == {
         (None, "B2", None, "user_turn"), (None, "A1", "note", "user_turn"), ("refund", "A1", None, "tool_result")}
+
+
+def test_a_list_cell_is_sourced_by_its_changed_leaves_and_names_the_leaf_no_turn_or_result_shows():
+    start = {"orders": {"A1": {"items": [{"sku": "k1", "qty": 1}, {"sku": "k2", "qty": 1}]}}}
+    end = {"orders": {"A1": {"items": [{"sku": "k1", "qty": 1}, {"sku": "k9", "qty": 1}]}}}
+    events = [{"idx": 0, "type": "user_turn", "payload": {"content": "Swap the second item of A1 for k9."}},
+              {"idx": 1, "type": "stop", "payload": {"start_state": start, "end_state": end}}]
+    cell = expected_from_run(events, ["Swap the second item of A1 for k9."]).cells[0]
+    assert cell.source.kind == "user_turn" and list(cell.leaf_sources) == ["1.sku"]
+    turns = ["Swap the second item of A1."]
+    events[0]["payload"]["content"] = turns[0]
+    cell = expected_from_run(events, turns).cells[0]
+    assert cell.source is None and cell.leaf_sources == {"1.sku": None}
