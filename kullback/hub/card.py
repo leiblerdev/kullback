@@ -110,7 +110,7 @@ def _provenance_rows(manifest: dict) -> list[tuple[str, str]]:
     rows.append(("Corpus", f"{corpus}, {source['url']}" if source.get("url") else corpus))
     build = [f"kullback {manifest.get('kullback_version', 'unknown')}", f"git {_short(manifest.get('git_sha'))}"]
     build += [f"{label} {_short(manifest[key])}" for label, key in
-              (("runner", "runner_version"), ("gates", "gates_version"), ("Environment", "env_id"))
+              (("code", "runner_version"), ("Environment", "env_id"))
               if manifest.get(key)]
     rows += [("Built", f"{manifest.get('created_at', 'not recorded')} by {', '.join(build)}"),
              ("Content hash", _short(manifest.get("content_hash")))]
@@ -264,8 +264,8 @@ CARD_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("funnel", "How many Tasks stopped at each rung", "the per-Task index the export writes"),
     ("buckets", "Tasks and trusted Tasks per difficulty bucket", "`difficulty.json` (D209), else computed"),
     ("untrusted", "Untrusted count and the commonest fixed reasons", "the per-Task index"),
-    ("runner_version", "Hash of the frozen Runner the numbers were measured under", "`runner_version.json`"),
-    ("gates_version", "Hash of the gates package", "`runner_version.json`"),
+    ("runner_version", "Hash of the Runner, gates and Spec code the numbers were measured under",
+     "`runner_version.json`"),
     ("kullback_version", "Harness version", "the installed distribution"),
     ("git_sha", "Commit the export ran from", "`git rev-parse HEAD`"),
     ("leak_scan", "What the export checked against the source corpus, in counts", "the export's own scan"),

@@ -13,7 +13,9 @@ verdict rides on the row as evidence. The tiers are
 trusted (all five), replay_only (1 to 3, a replay passes, no fresh Run passes yet), set_aside
 (the router's rule, spec/router.py: marked on the Spec, or ROUNDS_CAP rounds with a ruling open;
 a set-aside event on the bus counts too) and untrusted
-(everything else). Every row names the first failing gate and the ids of the Runs it scored.
+(everything else). Every row names the first failing gate and the ids of the Runs it scored, and carries
+`code_hash`, the content hash of the Runner, gates and Spec code that scored it (runner/code_hash.py): two
+rows are comparable when their hashes match.
 
 Under `--verifier-from runs` nothing here decides: `runs_tiers` is the D126 trusted ruling of
 kullback/gates/trust.py mapped onto the tier words, so the switch cannot move that foundation.
@@ -28,6 +30,7 @@ from typing import Any, Iterable, NamedTuple, Optional
 from kullback.gates.probes import write_tools_of
 from kullback.gates.trust import trusted_gate, workdir_trusted_ruling
 from kullback.runner.canon import load_rules
+from kullback.runner.code_hash import CODE_HASH
 from kullback.runner.records import GateResult, Run, Verifier, load_run_jsonl, read_json, read_jsonl
 from kullback.runner.replay import RECORDED
 from kullback.runner.target import check_run
@@ -187,7 +190,8 @@ def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: I
            "grounding": {"refusals": len(refusals), "first": refusals[:_REASONS_KEPT]},
            "can_fail": {"from": mutated_from, "rows": mutation_rows}, "reference_replay": reference,
            "runs_scored": sorted(scores), "fresh_passed": sorted(r for r in fresh if scores[r]),
-           "replay": replay, "rulings_open": spec.rulings_open, "round": spec.round, "set_aside": set_aside}
+           "replay": replay, "rulings_open": spec.rulings_open, "round": spec.round, "set_aside": set_aside,
+           "code_hash": CODE_HASH}
     return TaskTier(tier, row)
 
 
@@ -196,7 +200,7 @@ def unruled_row(task_id: str, failing: str, reason: str) -> TaskTier:
     gates = {name: False for name in GATES}
     return TaskTier("untrusted", {"task_id": task_id, "tier": "untrusted", "failing": failing, "gates": gates,
                                   "reason": reason, "runs_scored": [], "fresh_passed": [], "replay": {},
-                                  "set_aside": False})
+                                  "set_aside": False, "code_hash": CODE_HASH})
 
 
 def set_aside_row(task_id: str, reason: str) -> TaskTier:
@@ -218,11 +222,12 @@ def tiers_of_ruling(ruling: GateResult) -> dict[str, TaskTier]:
     The runs foundation has no replay-only and no set-aside tier; its reasons ride on the row as they are.
     """
     metrics = ruling.metrics or {}
-    out = {task_id: TaskTier("trusted", {"task_id": task_id, "tier": "trusted", "failing": None})
+    out = {task_id: TaskTier("trusted", {"task_id": task_id, "tier": "trusted", "failing": None,
+                                         "code_hash": CODE_HASH})
            for task_id in metrics.get("trusted") or []}
     for task_id, reason in (metrics.get("untrusted") or {}).items():
         out[task_id] = TaskTier("untrusted", {"task_id": task_id, "tier": "untrusted", "failing": "trusted_gate",
-                                              "reason": reason})
+                                              "reason": reason, "code_hash": CODE_HASH})
     return out
 
 

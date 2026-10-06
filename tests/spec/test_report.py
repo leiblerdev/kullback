@@ -4,8 +4,9 @@ from kullback.spec import report as R
 from kullback.spec.trust import TaskTier
 
 
-def _tiers(**tiers):
-    return {task_id: TaskTier(tier, {"task_id": task_id, "tier": tier}) for task_id, tier in tiers.items()}
+def _tiers(code="c0de" * 16, **tiers):
+    return {task_id: TaskTier(tier, {"task_id": task_id, "tier": tier, "code_hash": code})
+            for task_id, tier in tiers.items()}
 
 
 def test_the_report_counts_every_tier_and_splits_the_trusted_tasks_by_reference_class():
@@ -15,13 +16,13 @@ def test_the_report_counts_every_tier_and_splits_the_trusted_tasks_by_reference_
     assert report["tiers"] == {"trusted": 3, "replay_only": 1, "untrusted": 1, "set_aside": 1}
     assert report["trusted_by_reference"] == {"right": 1, "wrong": 1, "unknown": 1}
     assert [row["task_id"] for row in report["rows"]] == ["a", "b", "c", "d", "e", "f"]
-    assert R.table_line(report) == "| b1 | c1 | intent | 6 | 3 | 1 | 1 | 1 | 1, 1, 0, 1 |"
+    assert R.table_line(report) == "| b1 | c1 | intent | 6 | 3 | 1 | 1 | 1 | 1, 1, 0, 1 | c0dec0dec0de |"
     assert R.table_line(report).count("|") == R.TABLE_HEADER.count("|")
 
 
 def test_without_a_sidecar_the_split_is_absent_rather_than_zero(tmp_path):
     report = R.build_report(_tiers(a="trusted"), verifier_from="runs")
-    assert report["trusted_by_reference"] is None and R.table_line(report).endswith("| n/a |")
+    assert report["trusted_by_reference"] is None and R.table_line(report).endswith("| n/a | c0dec0dec0de |")
     assert R.reference_classes(tmp_path) is None
 
 
@@ -49,3 +50,30 @@ def test_the_builds_readme_carries_the_tier_table_header_the_report_writes_lines
 
     readme = Path(__file__).resolve().parents[2] / "docs" / "builds" / "README.md"
     assert R.TABLE_HEADER in readme.read_text(encoding="utf-8").splitlines()
+
+
+def test_the_report_heads_with_the_one_code_hash_and_warns_when_its_rows_carry_two():
+    one = R.build_report(_tiers(a="trusted", b="untrusted"), verifier_from="intent")
+    assert one["code_hash"] == "c0de" * 16 and one["warnings"] == []
+    assert R.header_line(one) == "tier report, verifier from intent, code c0dec0dec0de"
+    rows = {**_tiers(a="trusted"), **_tiers(code="beef" * 16, b="untrusted")}
+    mixed = R.build_report(rows, verifier_from="intent")
+    assert mixed["code_hash"] is None and R.header_line(mixed).endswith("code mixed")
+    assert mixed["warnings"] and "2 code hashes" in mixed["warnings"][0]
+    assert R.table_line(mixed).endswith("| mixed |")
+
+
+def test_every_row_carries_the_live_code_hash_and_a_report_over_other_code_is_flagged(tmp_path, monkeypatch):
+    from kullback.runner.code_hash import CODE_HASH
+    from kullback.spec import trust as T
+
+    tiers = {"a": T.missing_spec_row("a")}
+    monkeypatch.setattr(R, "workdir_tiers", lambda workdir, chosen: tiers)
+    first = R.write_report(tmp_path, verifier_from="intent")
+    assert [row["code_hash"] for row in first["rows"]] == [CODE_HASH]
+    assert first["code_hash"] == CODE_HASH and first["warnings"] == []
+    stale = dict(first, code_hash="beef" * 16, rows=[dict(first["rows"][0], code_hash="beef" * 16)])
+    (tmp_path / R.REPORT_FILE).write_text(json.dumps(stale))
+    second = R.write_report(tmp_path, verifier_from="intent")
+    assert second["warnings"] and "beefbeefbeef" in second["warnings"][0]
+    assert json.loads((tmp_path / R.REPORT_FILE).read_text()) == second

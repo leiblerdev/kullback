@@ -16,14 +16,16 @@ whether the Reference is right, read afterwards off the build's own records and 
 
 A build under `--verifier-from intent` writes `tiers.json` in its workdir (kullback/spec/report.py) and adds one
 line per corpus here. Trusted by Reference is the trusted count split by `kullback/spec/split.py`'s class
-of the kept References; n/a when the build had no sidecar.
+of the kept References; n/a when the build had no sidecar. Code is the first 12 characters of the content hash
+of the Runner, gates and Spec code that scored the rows (kullback/runner/code_hash.py): two lines compare only
+when their Code matches.
 
 Under intent, each examine first writes the Spec and Verifier of every examined Task that lacks them, on `--spec-model`
 (default `--model`), priced under the `spec` stage. `--tasks a,b` or `--tasks @ids.txt` stores a Task sample in `build.json`;
 the Builder's run and examine tools then touch no Task outside it.
 
-| Build | Corpus | Verifier from | Tasks | Trusted | Replay-only | Untrusted | Set aside | Trusted by Reference (right, wrong, mixed, unknown) |
-|---|---|---|---|---|---|---|---|---|
+| Build | Corpus | Verifier from | Tasks | Trusted | Replay-only | Untrusted | Set aside | Trusted by Reference (right, wrong, mixed, unknown) | Code |
+|---|---|---|---|---|---|---|---|---|---|
 
 ## Index
 

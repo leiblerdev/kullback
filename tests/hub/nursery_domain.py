@@ -123,7 +123,7 @@ def build_workdir(workdir: Path) -> Path:
                {"env_id": "env-hash-1", "policy_version": "pol-1", "schema_version": "sch-1",
                 "tools_version": "too-1", "assisted_tools": [], "version": 1})
     write_json(workdir / "runner_version.json",
-               {"runner_version": "runner-hash-1", "gates_version": "gates-hash-1",
+               {"runner_version": "runner-hash-1",
                 "confirmed_by": "a person"})
     for task_id in TASK_IDS:
         write_json(workdir / "tasks" / f"{task_id}.json",

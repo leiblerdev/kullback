@@ -17,6 +17,7 @@ from kullback import difficulty, round_snapshot
 from kullback.ai.provider import DEFAULT_MODEL
 from kullback.report import coverage_rows, load, load_tool_sigs, write_report
 from kullback.runner import feed, heartbeat
+from kullback.runner.code_hash import CODE_HASH, SCORING_PACKAGES
 from kullback.runner.records import (
     EntitySchema,
     Environment,
@@ -212,9 +213,9 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
     load_rules = _entry("kullback.runner.canon", "load_rules")
     canon_rules = load_rules(Path(workdir) / "canon-rules.json")
     canon = canon_rules
-    env_path, version_path = Path(workdir) / "environment.json", Path(workdir) / "runner_version.json"
+    env_path = Path(workdir) / "environment.json"
     environment = _load(env_path, Environment) if env_path.is_file() else None
-    version = _load(version_path, RunnerVersion).runner_version if version_path.is_file() else None
+    version = CODE_HASH
     schema = _schema(workdir)
     if schema is None:
         typer.echo("no EntitySchema on disk (schema.json): exempt columns are not dropped from the diff (D73)")
@@ -267,17 +268,10 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
         raise typer.Exit(1)
 
 
-def runner_version(routing_config: Optional[Path] = None) -> RunnerVersion:
-    """The content hash of every file in runner/ and the routing config, as one RunnerVersion record.
-
-    runner/boundary.py computes it, so freeze-runner and the gate that checks a Run can never
-    disagree; the gates package is hashed beside it as `gates_version` (D122).
-    """
-    compute = _entry("kullback.runner.boundary", "runner_version")
-
-    config = Path(routing_config).read_text(encoding="utf-8") if routing_config else None
-    return compute(Path(__file__).parent, config,
-                   created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+def runner_version() -> RunnerVersion:
+    """The code hash this checkout runs and scores under (runner/code_hash.py), as one RunnerVersion record."""
+    return RunnerVersion(runner_version=CODE_HASH,
+                         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
 
 @app.command()
@@ -613,11 +607,12 @@ def _verifier_from(workdir: Path, flag: Optional[str]) -> str:
 
 
 def _tier_line(workdir: Path) -> str:
-    """The tier counts of the report just written to the workdir, as one line."""
-    from kullback.spec.report import write_report
+    """The tier counts of the report just written to the workdir, after its head and before any warning."""
+    from kullback.spec.report import header_line, write_report
 
-    counts = write_report(workdir, verifier_from="intent")["tiers"]
-    return "tiers " + ", ".join(f"{tier} {count}" for tier, count in counts.items())
+    report = write_report(workdir, verifier_from="intent")
+    counts = "tiers " + ", ".join(f"{tier} {count}" for tier, count in report["tiers"].items())
+    return "\n".join([header_line(report), counts, *(f"warning: {w}" for w in report["warnings"])])
 
 
 def _session_subscriber(workdir: Path):
@@ -696,13 +691,14 @@ def _refusal_dicts(root: Path) -> dict:
 def freeze_runner(
     workdir: Path = WORKDIR,
     yes: bool = typer.Option(False, "--yes", help="Skip the confirmation."),
-    routing_config: Optional[Path] = typer.Option(None, "--routing-config", help="Routing config to hash in."),  # noqa: B008
     by: str = typer.Option("unknown", "--by", help="Who confirmed the freeze."),
 ):
-    """Write the RunnerVersion that every later Verdict carries, after a person confirms it."""
-    version = runner_version(routing_config)
-    typer.echo(f"runner version {version.runner_version} over {len(version.file_hashes)} files")
-    typer.echo(f"gates version {version.gates_version} over {len(version.gates_file_hashes)} files")
+    """Record the code hash this build runs on for the export, after a person confirms it.
+
+    It pins no code: every Verdict and tier row carries the live hash of the code that scored it.
+    """
+    version = runner_version()
+    typer.echo(f"code hash {version.runner_version} over {', '.join(SCORING_PACKAGES)}")
     if not yes and not typer.confirm("write this RunnerVersion?"):
         typer.echo("not frozen")
         raise typer.Exit(1)

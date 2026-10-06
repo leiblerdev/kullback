@@ -776,7 +776,6 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         "tools_version": environment.get("tools_version"),
         "assisted_tools": list(environment.get("assisted_tools") or ()),
         "runner_version": versions.get("runner_version"),
-        "gates_version": versions.get("gates_version"),
         "kullback_version": kullback_version(),
         "git_sha": git_sha(),
         "leak_scan": leak_scan(out, workdir / "raw") if scan else {"baseline": LEAK_BASELINE, "leaks": 0,

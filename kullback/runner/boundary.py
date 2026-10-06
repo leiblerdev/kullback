@@ -1,14 +1,15 @@
-"""The D89 and D91 import boundary as a static AST scan, and the RunnerVersion that scan
-certifies (design section 7)."""
+"""The D89 and D91 import boundary as a static AST scan (design section 7).
+
+The content hash of the code a Run is executed and scored under is runner/code_hash.py's."""
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Union
 
 from kullback.runner.gate_support import gate
-from kullback.runner.records import GateResult, RunnerVersion, content_hash
+from kullback.runner.records import GateResult
 
 # The two directories that must never reach the Builder, whatever the model does with a tool call:
 # ai/ (the provider layer runner/ depends on) and runner/ (which now also holds the records,
@@ -172,37 +173,3 @@ def _is_runner_internal(name: str) -> bool:
     else:
         return False
     return bool(tail) and tail[0] not in RUNNER_DATA_MODULES
-
-
-def _package_hashes(directory: Path) -> dict[str, str]:
-    """Every .py file under a package, keyed by its path relative to the package, in sorted order."""
-    hashes = {}
-    if directory.is_dir():
-        for path in sorted(directory.rglob("*.py")):
-            hashes[path.relative_to(directory).as_posix()] = content_hash(path.read_text(encoding="utf-8"))
-    return hashes
-
-
-def runner_version(src_root: Union[str, Path], routing_config: Any = None,
-                   created_at: Optional[str] = None, confirmed_by: Optional[str] = None) -> RunnerVersion:
-    """The content hash of every .py file in kullback/runner/ and the routing config, written by freeze-runner.
-
-    Every file under runner/ is hashed, sorted by its path relative to runner/, rather than a
-    hand-kept list of names (D121, the Runner's hash is a package): a file that moves in or out of
-    the package moves the hash the same way a line changing inside one of the old three files
-    (loop.py, route.py, verdict.py) always did. The gates package is hashed the same way into
-    `gates_version`, recorded beside the Runner's hash and never folded into it (D122): a gate
-    that changes does not change what executes or grades a Run, and a regrade that names both can
-    say which gates accepted an artifact and under which Runner it was graded.
-    """
-    root = _package_root(src_root)
-    hashes = _package_hashes(root / "runner")
-    gate_hashes = _package_hashes(root / "gates")
-    config_hash = content_hash(routing_config) if routing_config is not None else None
-    return RunnerVersion(
-        runner_version=content_hash({"files": hashes, "routing_config": config_hash}),
-        file_hashes=hashes, routing_config_hash=config_hash,
-        gates_version=content_hash({"files": gate_hashes}) if gate_hashes else None,
-        gates_file_hashes=gate_hashes,
-        created_at=created_at, confirmed_by=confirmed_by,
-    )

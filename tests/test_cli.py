@@ -9,7 +9,8 @@ import pytest
 from typer.testing import CliRunner
 
 from kullback import cli
-from kullback.runner.records import Environment, RunnerVersion, Task, Verdict, Verifier, as_dict
+from kullback.runner.code_hash import CODE_HASH
+from kullback.runner.records import Environment, Task, Verdict, Verifier, as_dict
 
 runner = CliRunner()
 
@@ -195,20 +196,12 @@ def version_file(workdir: Path) -> Path:
 
 
 @pytest.mark.parametrize("flags, answer", [([], "y\n"), (["--yes"], None)], ids=["after_a_yes", "with_yes"])
-def test_freeze_runner_writes_the_runner_version_after_a_yes_or_with_yes(workdir, flags, answer):
+def test_freeze_runner_records_the_live_code_hash_after_a_yes_or_with_yes(workdir, flags, answer):
     result = invoke("freeze-runner", "--workdir", str(workdir), *flags, input=answer)
     assert result.exit_code == 0
     body = json.loads(version_file(workdir).read_text(encoding="utf-8"))
-    assert body["runner_version"]
-    assert set(body["file_hashes"]) >= {"loop.py", "route.py", "verdict.py"}
-    # The gates package is hashed beside the Runner, not into it (D122).
-    assert body["gates_version"] and body["gates_version"] != body["runner_version"]
-    assert set(body["gates_file_hashes"]) >= {"__init__.py", "artifacts.py", "verifier_suite.py"}
-    assert "gates version" in result.output
-    # The version written is the hash of the runner files, read back.
-    again = cli.runner_version()
-    assert again.runner_version == body["runner_version"]
-    assert again.gates_version == body["gates_version"]
+    assert body["runner_version"] == CODE_HASH
+    assert "code hash" in result.output
 
 
 def test_freeze_runner_writes_nothing_on_a_no(workdir):
@@ -216,15 +209,6 @@ def test_freeze_runner_writes_nothing_on_a_no(workdir):
     assert result.exit_code != 0
     assert not version_file(workdir).exists()
     assert "not frozen" in result.output
-
-
-def test_a_routing_config_changes_the_version(workdir, tmp_path):
-    config = tmp_path / "routing.json"
-    config.write_text('{"llm_standin": false}', encoding="utf-8")
-    plain = cli.runner_version()
-    with_config = cli.runner_version(config)
-    assert with_config.runner_version != plain.runner_version
-    assert with_config.routing_config_hash
 
 
 # --- run, verdict, regrade --------------------------------------------------
@@ -241,10 +225,6 @@ def seed_task(workdir: Path, task_id: str = "t1", run_id: str = "r1") -> None:
     (workdir / "runs" / task_id / f"{run_id}.jsonl").write_text(
         json.dumps({"idx": 0, "type": "stop", "payload": {"run_id": run_id}}) + "\n", encoding="utf-8")
     (workdir / "environment.json").write_text(json.dumps(as_dict(Environment(env_id="env-1"))), encoding="utf-8")
-    # regrade_gate (D97) refuses a Verdict with no runner_version, so the real regrade path (the
-    # one test below that does not fake cli._entry) needs a frozen RunnerVersion on disk too.
-    (workdir / "runner_version.json").write_text(
-        json.dumps(as_dict(RunnerVersion(runner_version="rv-1"))), encoding="utf-8")
 
 
 def seed_runs(workdir: Path, runs: list) -> None:
@@ -389,14 +369,14 @@ def test_the_report_computes_task_coverage_when_no_stage_wrote_it(workdir):
     assert "t1: not covered, no Reference confirmation is recorded for this Task (D57, D93)" in text
 
 
-def test_the_verdict_carries_the_environment_and_runner_versions(workdir):
+def test_the_verdict_carries_the_environment_version_and_the_live_code_hash(workdir):
+    """No freeze is needed: verdict stamps the hash of the code that scored, the one a Run carries."""
     seed_task(workdir)
-    invoke("freeze-runner", "--workdir", str(workdir), "--yes")
-    frozen = json.loads((workdir / "runner_version.json").read_text(encoding="utf-8"))["runner_version"]
+    assert not version_file(workdir).exists()
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
     body = stored_verdicts(workdir)[0]
     assert body["env_id"] == "env-1"
-    assert body["runner_version"] == frozen
+    assert body["runner_version"] == CODE_HASH
 
 
 # --- what the Verdict is actually given (D39, D73, D84) ---------------------
@@ -442,22 +422,6 @@ def test_regrade_reads_the_queue_and_verdict_leaves_it_alone(workdir):
     assert "1 re-scored from the regrade queue" in result.output
     assert canon.queued_regrades(workdir) == []
     assert json.loads(stored[0].read_text(encoding="utf-8"))["notes"] != ["stale"]
-
-
-def test_a_verdict_missing_its_runner_version_is_refused_not_counted(workdir):
-    """D97: regrade_gate refuses a Verdict that never copied its Runner version (row 18).
-
-    The regrade cache has already written the Verdict to disk by the time the gate sees it (D97's
-    own cache path), so refusal is what happens next: the Task is not counted as scored and the
-    command exits non-zero, rather than the file being retracted.
-    """
-    seed_task(workdir)
-    (workdir / "runner_version.json").unlink()
-    result = invoke("verdict", "--workdir", str(workdir))
-    assert result.exit_code == 1
-    assert "refused" in result.output
-    assert "runner_version is not on the Verdict" in result.output
-    assert "nothing was scored" in result.output
 
 
 def test_nothing_scored_is_a_failure_not_a_silent_success(workdir):
@@ -1060,7 +1024,8 @@ def test_build_under_intent_stores_the_choice_and_ends_with_the_tier_report(work
     result = invoke("build", "--workdir", str(workdir), "--verifier-from", "intent")
     assert result.exit_code == 0, result.output
     assert json.loads((Path(workdir) / "build.json").read_text()) == {"verifier_from": "intent"}
-    assert result.output.splitlines()[4].startswith("tiers trusted ")
+    lines = result.output.splitlines()
+    assert lines[4].startswith("tier report, verifier from intent, code ") and lines[5].startswith("tiers trusted ")
     assert json.loads((Path(workdir) / "tiers.json").read_text())["verifier_from"] == "intent"
     resumed = invoke("build", "--workdir", str(workdir))
     assert resumed.exit_code == 0 and "tiers trusted " in resumed.output

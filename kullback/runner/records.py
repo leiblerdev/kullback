@@ -702,18 +702,11 @@ def disagreement_stats(rows: Iterable[dict]) -> dict:
 
 
 class RunnerVersion(Record):
-    """Content hash of the Runner files and routing config, written by freeze-runner.
+    """The code hash a build recorded it ran on (runner/code_hash.py), written by freeze-runner.
 
-    `gates_version` is the hash of the gates package, recorded beside the Runner's own so a regrade
-    can name which gates accepted an artifact (D122); it is not folded into `runner_version`,
-    which stays the hash of what executes and grades a Run. It is optional because a
-    RunnerVersion frozen before phase 3 has none.
+    A record of the build, read by the export; no Verdict reads it, each carries the live hash.
     """
     runner_version: str
-    file_hashes: dict[str, str] = Field(default_factory=dict)
-    routing_config_hash: Optional[str] = None
-    gates_version: Optional[str] = None
-    gates_file_hashes: dict[str, str] = Field(default_factory=dict)
     created_at: Optional[str] = None
     confirmed_by: Optional[str] = None
 

@@ -236,8 +236,8 @@ def counted_ruling_line(label: str, rulings: Any) -> str:
 
     This is what both agents' `tool_result` hooks and both agents' tool renderings print, so a
     ruling reads the same wherever it reaches a model. It lives here rather than beside
-    `gates.ruling_line` because `kullback/gates` is hashed per release (`gates_version`) and a
-    rendering is no reason to move that hash; it takes anything with `stage`, `passed` and
+    `gates.ruling_line` because `kullback/gates` is in the code hash every tier row carries
+    (runner/code_hash.py) and a rendering is no reason to move that hash; it takes anything with `stage`, `passed` and
     `failures`, which is what `gates.Ruling` and `runner.records.GateResult` both are.
     """
     return f"{label}: " + "; ".join(counted_failure(r) for r in rulings)
