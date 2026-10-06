@@ -12,14 +12,8 @@ list was cleared on 2026-09-22 for the overhaul and rebuilt on 2026-09-24 after 
 - Synthetic Task generation, on the D224 to D226 path: grounded scenarios, augmented seeds and traps, then
   generated Tasks hardened the way TauForge augments, validates and hardens. Every generated Task needs concise
   instructions and a high quality Verifier (founder, 2026-09-23).
-- Re-freeze the runner under the new hash before the next build, because the recorded tool-context feed changed
-  kullback/runner. Verdicts from before and after the re-freeze are not comparable (D61). The patches still waiting
-  in docs/frozen-patches (safe-write, speed-1, speed-3, confinement-holes and the others tests name) land in the
-  same re-freeze, including the speed-1 variant gate that examiner/stage.py keeps serial until then.
-- Two Runner version labels. `kullback run` puts the live `runner/tool.py:version()` hash (runner/ plus two agent
-  core files) on a Run and its first Verdict, while `kullback verdict` and `regrade` put the frozen hash from
-  runner_version.json on later Verdicts of the same Run, and the two never match. Founder to decide which one a
-  Verdict carries, or whether run should refuse when the live code differs from the frozen record.
+- The patches still waiting in docs/frozen-patches land or retire by their own commits now that the freeze is
+  open (D314); the speed-1 variant gate that examiner/stage.py keeps serial goes with speed-1.
 - Re-roll batches. One Builder run call plays at most RUNS_PER_CALL = 20 fresh Runs, which is why builds re-roll
   10 to 20 Tasks at a time. Measure whether a larger cap or parallel Runs helps.
 - Cheaper runner model experiment. Record the Run kind in the ledger first, since second-path Runs dominate the

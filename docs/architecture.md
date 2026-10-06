@@ -83,17 +83,15 @@ flowchart LR
 
 Across all of it, the core appends every event to `bus.jsonl`, the Builder's transcript lives in `sessions/builder.jsonl`, and priced calls stream to the feed (`runner/feed.py`) that `kullback tui` and `kullback budget cache` read.
 
-## What is frozen
+## What is hashed instead of frozen
 
-The Runner and the gates are the two things no agent may change during a build, because they decide what a Run did and whether an artifact is accepted. An agent that could edit either could grade its own work (D120, D122, ADR-0007).
+No agent may change the Runner or the gates during a build, because they decide what a Run did and whether an artifact is accepted: an agent that could edit either could grade its own work (D120, D122, ADR-0007). `gates.PROTECTED` refuses those paths to the Builder and the Examiner. People change them by ordinary commits (D314).
 
-`kullback freeze-runner` computes a `RunnerVersion` through `runner/boundary.py:runner_version` and, after a person confirms, writes it to `runner_version.json` in the workdir. The hash covers every `.py` file under `kullback/runner/` plus an optional routing config, so a file moving in or out of the package moves it (D121). The gates are hashed the same way into `gates_version`, recorded beside the Runner's hash and never folded into it, so a regrade can say which gates accepted an artifact and which Runner graded it (D122).
+What makes two numbers comparable is one content hash, `runner/code_hash.py:CODE_HASH`: sha256 over the relative path and bytes of every `.py` file under `kullback/runner/`, `kullback/gates/` and `kullback/spec/`, taken once when the module is imported. No file inside those packages is listed, so a file moving in or out moves the hash the same way a changed byte does. One hash goes everywhere:
 
-Two paths put a Runner version on a Verdict, and they read different hashes:
+- `runner/tool.py:version()` returns it, so every Run and Replay report and the Verdict scored right after a Run carry it as `runner_version`.
+- `kullback verdict` and `kullback regrade` (`cli.py:_score`) stamp it on every Verdict they write, so no file has to exist for a Verdict to pass `regrade_gate`, and the regrade cache key changes whenever the scoring code does.
+- Every tier row (`spec/trust.py`) carries it as `code_hash`. The tier report (`spec/report.py`, `tiers.json`) states it once at its head and in the Code column of its table line, and warns when its rows carry more than one hash or when the report it replaces in the workdir was scored under other code.
+- `kullback freeze-runner` only records it in `runner_version.json` for the export manifest; it pins nothing.
 
-- `kullback verdict` and `kullback regrade` (`cli.py:_score`) read `runner_version` out of `runner_version.json` and pass it to every Verdict they write. With no file on disk the Verdict carries none.
-- `kullback run` never opens that file. `runner/tool.py:run` (which `reroll` calls per Run) and `probe` call `runner/tool.py:version()` after the loop finishes. It is a sha256 over every `.py` file under the installed `kullback/runner/` plus `agent/loop.py` and `agent/harness.py`, and it goes on the Run's report and on the Verdict scored right after the Run. Replay reports carry the same live hash.
-
-The two hashes cover different files and are computed differently, so they differ even over identical code ([todo.md](todo.md) has the open question).
-
-Freezing writes a record; it does not pin code. Every command executes whatever Kullback its checkout has, so a fix merged after the freeze reaches a build as soon as that checkout carries it, and the frozen hash then describes code that no longer runs. A build keeps older code only when it runs from a checkout nobody updated, which is how builds are kept on a Runner in practice. Before attributing a failure to an open problem, check that checkout's commit as well as `runner_version.json` ([learnings.md](learnings.md) says why).
+Every command executes whatever Kullback its checkout has. Two tier reports, Verdicts or table lines are comparable exactly when their hashes match; before attributing a change in counts to anything else, compare the hashes ([learnings.md](learnings.md) says why).
