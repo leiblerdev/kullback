@@ -30,7 +30,9 @@ from gates.verifier_fixtures import (
 )
 from kullback.gates import trust as T
 from kullback.gates.probes import version_hash
+from kullback.round_snapshot import counts_of
 from kullback.runner.canon import CanonRules
+from kullback.runner.records import Column, Conduct, EndState, EntitySchema, ExpectedCell, ValueSource, Verifier
 
 REFUSAL = {TASK: {"task_id": TASK, "reason": "no frontier Run reaches the End state", "round": 1}}
 NOTHING_FINISHED = ({TASK: {"tr1": replay_row("tr1", False)}}, {TASK: [reroll_row("reroll-t1-0", "max_steps")]})
@@ -295,3 +297,88 @@ def test_a_seed_no_row_or_runs_folder_can_find_is_not_attributable(tmp_path):
     world = _seeded_world(tmp_path)
     (world["workdir"] / "runs" / TASK / "alt.jsonl").unlink()
     assert T.trusted_gate(**world).metrics["untrusted_seeds"] == {TASK: ["alt"]}
+
+
+# --- D319: trust is decided by code on the expected end states ---
+
+START = {"orders": {"W1": {"status": "pending", "note": "none"}}}
+END = {"orders": {"W1": {"status": "cancelled", "note": "none"}}}
+CODE_CHECKS = {"plausible_wrong_fails": True, "leak_check_clean": True}
+
+
+def _turn(text):
+    return {"type": "user_turn", "payload": {"text": text}}
+
+
+def _replay(start=START, end=END, run_id="ref"):
+    """A faithful replay: the user asks and confirms, the agent writes, the world moves from start to end."""
+    return make_run(run_id, [
+        _turn("Please cancel order W1."),
+        _turn("Yes, go ahead."),
+        {"type": "tool_call", "payload": {"id": "c1", "name": "cancel_order", "args": {"order_id": "W1"}}},
+        {"type": "tool_result", "payload": {"id": "c1", "result": {"order_id": "W1", "status": "cancelled"}}},
+        {"type": "stop", "payload": {"start_state": start, "end_state": end}},
+    ])
+
+
+def _cell(field="status", value="cancelled", sourced=True, table="orders"):
+    said = ValueSource(kind="user_turn", ptr={"turn": 0})
+    return ExpectedCell(table=table, row_id="W1", field=field, value=value, row_source=said,
+                        source=said if sourced else None)
+
+
+def _code_world(cells, *, conduct=(), run=None, checks=CODE_CHECKS, schema=None):
+    """A Verifier with expected end states and no atoms, its faithful replay, and no probe pool."""
+    verifier = Verifier(task_id=TASK, seed_run_ids=["ref"], expected=[EndState(cells=list(cells))],
+                        conduct=list(conduct))
+    return dict(task_status={TASK: status(checks=dict(checks))}, verifiers=[verifier], probes={}, history={},
+                refusals={}, task_runs={TASK: [run or _replay()]},
+                replays={TASK: {"tr1": replay_row("tr1", True, run_id="ref")}}, rerolls={},
+                canon_rules=CanonRules(), sigs=SIGS, schema=schema)
+
+
+def test_a_verifier_that_passes_every_code_gate_is_trusted_with_no_probe_pool_present():
+    ruling = T.trusted_gate(**_code_world([_cell()]))
+    assert ruling.metrics["trusted"] == [TASK] and ruling.metrics["trust_tier"] == {TASK: "trusted"}
+    assert ruling.metrics["unsupported_cells"] == {TASK: 0} and ruling.metrics["legacy_only"] == []
+
+
+def test_a_verifier_with_one_unsupported_cell_is_unconfirmed_not_trusted_and_names_the_cell():
+    ruling = T.trusted_gate(**_code_world([_cell(sourced=False)]))
+    assert ruling.metrics["trusted"] == [] and ruling.metrics["trust_tier"] == {TASK: "unconfirmed"}
+    assert ruling.metrics["untrusted"] == {TASK: "unconfirmed: unsupported cell orders.W1.status"}
+    assert ruling.metrics["unsupported_cells"] == {TASK: 1}
+
+
+def test_a_reference_run_whose_match_is_unsettled_leaves_the_task_unconfirmed_naming_the_column_kind():
+    schema = EntitySchema(tables=["orders"], columns=[Column(table="orders", name="note", **{"class": "semantic"})])
+    replay = _replay(end={"orders": {"W1": {"status": "cancelled", "note": "item arrived broken"}}})
+    cells = [_cell(), _cell(field="note", value="the item came damaged")]
+    ruling = T.trusted_gate(**_code_world(cells, run=replay, schema=schema))
+    assert ruling.metrics["trust_tier"] == {TASK: "unconfirmed"}
+    assert ruling.metrics["untrusted"] == {TASK: "unconfirmed: unsettled orders.note on faithful replay ref"}
+
+
+def test_a_task_with_an_empty_expected_diff_and_one_conduct_is_not_trusted_when_the_empty_run_passes_it():
+    """The confirmation rule holds vacuously where nothing is written, so the empty Run passes (D295)."""
+    still = _replay(end=START)
+    rule = Conduct(kind="confirm_before_write", tool="cancel_order", source=ValueSource(kind="policy"))
+    world = _code_world([], conduct=[rule], run=still)
+    world["verifiers"][0].expected[0].cells.clear()
+    ruling = T.trusted_gate(**world)
+    assert ruling.metrics["trusted"] == [] and ruling.metrics["trust_tier"] == {TASK: "pending"}
+    assert ruling.metrics["untrusted"] == {TASK: "pending: the empty Run passes"}
+
+
+def test_the_status_table_shows_trusted_unconfirmed_refused_and_the_legacy_count_on_one_row():
+    rows = [{"task_id": "a", "trust_tier": "trusted", "trusted": True, "legacy_trusted": True},
+            {"task_id": "b", "trust_tier": "unconfirmed", "legacy_trusted": True,
+             "false_rejection": 0.5, "false_rejection_pool": 4},
+            {"task_id": "c", "trust_tier": "refused", "refused": True},
+            {"task_id": "d", "trust_tier": "pending", "legacy_trusted": True}]
+    line = T.trust_row(counts_of(rows))
+    assert "\n" not in line
+    assert line == ("trusted 1 | unconfirmed 1 | refused 1 | pending 1 | legacy rule trusted 3 | "
+                    "valid other solutions failing 2 of 4 held-out Runs")
+    ruling = T.trusted_gate(**_code_world([_cell(sourced=False)]))
+    assert T.tier_counts(ruling.metrics)["unconfirmed"] == 1
