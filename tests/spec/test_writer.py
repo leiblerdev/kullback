@@ -76,7 +76,7 @@ def test_writer_reads_the_starting_state_then_keeps_only_grounded_witnessed_chec
     assert [check.id for check in written.spec.checks] == ["c0", "c4"]
     assert written.counts == {"demands": 5, "kept": 2, "ungrounded": 1, "unwitnessed": 1, "condition_unquoted": 0,
                               "bad_kind": 1, "gaps": 1, "sent_back": 2, "sent_back_kept": 0, "parse_error": "",
-                              "truncated_chars": 0}
+                              "truncated_chars": 0, "unsatisfiable_sent_back": 0, "unsatisfiable": []}
     assert written.spec.gaps == ["f2"]
     assert written.session["tool_uses"] == ["lookup_rows"]
     tool_turn = model.calls[1]["messages"][-1]
@@ -98,6 +98,18 @@ def test_a_write_naming_only_a_section_goes_back_once_and_its_grounded_correctio
     assert second[:1] == first and second[1]["role"] == "assistant" and second[2]["role"] == "user"
     refused = json.loads(second[2]["content"][len(W.FOLLOWUP_PROMPT):])["refused"]
     assert refused == [{"id": "d1", "reason": "condition_unquoted", "rule": W.SENT_BACK_RULES["condition_unquoted"]}]
+
+
+def test_a_no_write_beside_a_required_write_goes_back_once_and_the_kept_correction_stands():
+    no_write = {"id": "d1", "kind": "required", "demand": "no_write", "fact_ids": ["f1"],
+                "because": "move item A1 to slot seven"}
+    model = TestModel([answer("demands", [dict(MOVE, id="d0"), no_write]), answer("demands", [dict(MOVE, id="d0")])])
+    written = W.write_spec("t1", inputs(), model)
+    assert [check.id for check in written.spec.checks] == ["c0"]
+    assert (written.counts["unsatisfiable_sent_back"], written.counts["unsatisfiable"]) == (2, [])
+    refused = json.loads(model.calls[1]["messages"][-1]["content"][len(W.FOLLOWUP_PROMPT):])["refused"]
+    assert [(row["id"], row["reason"]) for row in refused] == \
+        [("d0", "no_write_beside_required_write"), ("d1", "no_write_beside_required_write")]
 
 
 def test_a_write_quoting_the_policy_without_naming_a_section_is_still_ungrounded():

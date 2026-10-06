@@ -94,3 +94,27 @@ def test_a_cap_naming_a_tool_counts_that_tools_writes_only():
     assert _holds(named, _writing(("update_item", "A1"), ("delete_item", "B2"), ("delete_item", "C3")))
     assert not _holds(named, _writing(("update_item", "A1"), ("update_item", "B2")))
     assert not _holds({"demand": "cap", "count": 1}, _writing(("update_item", "A1"), ("delete_item", "B2")))
+
+
+def _unsatisfiable(*checks):
+    return compile_spec(spec(list(checks)), TWO_WRITES, fn).unsatisfiable
+
+
+def test_a_hard_no_write_beside_a_required_write_on_a_tool_it_covers_is_unsatisfiable():
+    write = check("c0", "required", WRITE)
+    assert _unsatisfiable(write, check("c1", "required", {"demand": "no_write"})) == \
+        (("c0", "no_write_beside_required_write"), ("c1", "no_write_beside_required_write"))
+    assert _unsatisfiable(write, check("c1", "required", {"demand": "no_write", "tool": "delete_item"})) == ()
+
+
+def test_a_forbidden_demand_equal_to_a_required_one_is_unsatisfiable():
+    assert _unsatisfiable(check("c0", "required", WRITE), check("c1", "forbidden", WRITE)) == \
+        (("c0", "forbidden_equals_required"), ("c1", "forbidden_equals_required"))
+
+
+def test_a_required_write_with_no_id_field_or_an_object_entity_is_unsatisfiable():
+    no_field = {key: value for key, value in WRITE.items() if key != "id_field"}
+    as_object = dict(WRITE, entity={"item_id": "A1"})
+    assert _unsatisfiable(check("c0", "required", no_field), check("c1", "required", as_object)) == \
+        (("c0", "required_write_without_row"), ("c1", "required_write_without_row"))
+    assert _unsatisfiable(check("c0", "allowed", no_field)) == ()

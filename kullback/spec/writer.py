@@ -9,8 +9,9 @@ files and `writer_tools.refuse_run_inputs` refuses anything else.
 Code then decides what stands: a check whose because quotes neither the Intent nor a policy section
 is dropped, a check resting only on facts that were accepted and never witnessed is dropped, a write
 whose because quotes neither a witnessed fact nor the policy text is dropped, facts no check names
-become gaps, and `must_not` adds the forbidden side. Demands refused on their because go back to the
-writer once, in one follow-up turn of the same conversation, and the corrections that ground are kept. `repair` answers a ruling by changing
+become gaps, and `must_not` adds the forbidden side. Demands refused on their because, and checks that
+make the Spec unpassable (compile.UNSATISFIABLE), go back to the writer once, in one follow-up turn of
+the same conversation, and the corrections that ground are kept. `repair` answers a ruling by changing
 or defending the ruled checks only, under the same rules.
 """
 
@@ -24,7 +25,14 @@ from typing import Any, Callable, Iterable, NamedTuple, Optional
 from kullback.runner.records import Record, Verifier
 from kullback.spec import writer_tools
 from kullback.spec.actions import action_tools_of
-from kullback.spec.compile import ATOM_KINDS, Compiled, compile_spec
+from kullback.spec.compile import (
+    ATOM_KINDS,
+    FORBIDDEN_EQUALS_REQUIRED,
+    NO_WRITE_BESIDE_REQUIRED,
+    WRITE_WITHOUT_ROW,
+    Compiled,
+    compile_spec,
+)
 from kullback.spec.ground import coverage, valid_because, valid_write_because
 from kullback.spec.must_not import must_not
 from kullback.spec.schema import (
@@ -91,6 +99,10 @@ SENT_BACK_RULES = {
     "condition_unquoted": "a write's because must quote the user's own words asking for that action, or name "
                           "the policy section and quote the sentence of it that requires the action; naming a "
                           "section alone is not enough",
+    NO_WRITE_BESIDE_REQUIRED: "a no_write forbids every write of the tools it covers, so it cannot stand beside a "
+                              "required write on one of them; keep the one the Intent asks for",
+    FORBIDDEN_EQUALS_REQUIRED: "one demand cannot be both required and forbidden; keep the one the Intent asks for",
+    WRITE_WITHOUT_ROW: "a required write names one row: id_field, and entity as that single id value, not an object",
 }
 
 REPAIR_PROMPT = """A ruling says some checks you wrote for this customer request are wrong. You \
@@ -340,7 +352,10 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
     demands, error = writer_tools.parse_list(session["text"], "demands")
     checks, counts, refused = _keep(demands, inputs)
     refused = [row for row in refused if row[2] in SENT_BACK_RULES]
-    counts.update(sent_back=len(refused), sent_back_kept=0)
+    clashing = _clashing(task_id, checks, demands, inputs)
+    checks = [check for check in checks if check.id not in {f"c{number}" for number, _, _ in clashing}]
+    counts.update(sent_back=len(refused), sent_back_kept=0, unsatisfiable_sent_back=len(clashing))
+    refused = sorted(refused + clashing, key=lambda row: row[0])
     if refused:
         corrected, again = _send_back(messages, session, refused, inputs, model, config, _price(model_id),
                                       ceiling_usd)
@@ -349,9 +364,23 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
         session = dict(again, usd=float(session.get("usd") or 0.0) + float(again.get("usd") or 0.0),
                        tool_rounds=session.get("tool_rounds", 0) + again.get("tool_rounds", 0),
                        tool_uses=session.get("tool_uses", []) + again.get("tool_uses", []))
+    counts["unsatisfiable"] = sorted({code for _, code in _unpassable(task_id, checks, inputs)})
     spec = _spec_of(task_id, checks, counts, inputs)
     counts.update(parse_error=error, truncated_chars=cut)
     return Written(spec, counts, session)
+
+
+def _unpassable(task_id: str, checks: list[Check], inputs: WriterInputs) -> tuple[tuple[str, str], ...]:
+    spec = Spec(task_id=task_id, intent=inputs.intent, checks=checks)
+    return compile_spec(spec, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools).unsatisfiable
+
+
+def _clashing(task_id: str, checks: list[Check], demands: list, inputs: WriterInputs) -> list[tuple[int, Any, str]]:
+    """Each check that makes the Spec unpassable (compile.UNSATISFIABLE) as a demand to send back, with its reason."""
+    first: dict[str, str] = {}
+    for check_id, code in _unpassable(task_id, checks, inputs):
+        first.setdefault(check_id, code)
+    return [(int(check_id[1:]), demands[int(check_id[1:])], code) for check_id, code in first.items()]
 
 
 def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:

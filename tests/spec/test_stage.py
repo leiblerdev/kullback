@@ -132,3 +132,17 @@ def test_write_from_intent_writes_the_spec_from_a_given_intent_without_mining(tm
     spent = stage.write_from_intent(root, "t1", intent, model, 1.0, Bus(root / "bus.jsonl", agent="spec"))
     assert len(model.calls) == 1 and spent == 0.0
     assert load_spec(root, "t1").intent == intent and spec_verifier_path(root, "t1").is_file()
+
+
+def test_a_spec_no_run_can_pass_goes_back_once_and_still_unpassable_is_set_aside_with_no_verifier(tmp_path):
+    root = _workdir(tmp_path)
+    clash = {"demands": [DEMAND, dict(DEMAND, id="d1", kind="forbidden")]}
+    reply = ModelReply(content=json.dumps(clash), usage=Usage(input=300, output=50))
+    model = TestModel(_one_task_replies()[:3] + [reply, reply])
+    counts = stage.write_specs(root, ["t1"], model)
+    assert (counts["written"], counts["set_aside_unsatisfiable"], len(model.calls)) == (0, 1, 5)
+    spec = load_spec(root, "t1")
+    assert spec.set_aside == "unsatisfiable_spec" and spec.writer["unsatisfiable"] == ["forbidden_equals_required"]
+    assert not spec_verifier_path(root, "t1").exists() and not runner_verifier_path(root, "t1").exists()
+    (line,) = (root / "bus.jsonl").read_text().splitlines()
+    assert json.loads(line)["event"]["payload"] == {"task_id": "t1", "reason": "unsatisfiable_spec", "rounds": 0}

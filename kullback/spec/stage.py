@@ -2,7 +2,8 @@
 
 A Task whose Spec and Spec Verifier are both on disk is skipped, so a resumed build writes only
 what is missing. An empty Spec is written once more; empty again, the Task is set aside with no
-Verifier, and a set-aside Spec counts as done. Every call is priced under the `spec` stage of the workdir ledger (budget.json):
+Verifier. A Spec no Run can pass after its one send-back is set aside the same way, as
+unsatisfiable_spec. A set-aside Spec counts as done. Every call is priced under the `spec` stage of the workdir ledger (budget.json):
 the miner through the harness subscriber, the writer through BudgetedModel, the two seams every
 other stage uses. A Task that fails is counted by its error class and the loop goes on.
 """
@@ -40,7 +41,8 @@ def write_from_intent(workdir: Path, task_id: str, intent: SpecIntent, model: An
     """Write and compile one Task's Spec from a given Intent under `intent`; return the spend.
 
     An empty first Spec is written once more in a fresh session. Empty again, the Spec is saved set aside
-    as empty_spec, task.set_aside is published and no Verifier is written; else spec.written is published.
+    as empty_spec, task.set_aside is published and no Verifier is written; a Spec no Run can pass is set
+    aside so as unsatisfiable_spec; else spec.written is published.
     """
     model_id = getattr(model, "name", None)
     inputs = load_inputs(workdir, task_id, intent)
@@ -58,9 +60,10 @@ def write_from_intent(workdir: Path, task_id: str, intent: SpecIntent, model: An
     if len(tries) > 1:
         writer["first_attempt"] = dict(tries[0].counts, usd=float(tries[0].session.get("usd") or 0.0))
     spec = written.spec.model_copy(update={"version": _version(workdir, task_id) + 1, "writer": writer})
-    if empty:
-        save_spec(workdir, spec.model_copy(update={"set_aside": events.EMPTY_SPEC}))
-        events.task_set_aside(bus, task_id, events.EMPTY_SPEC, 0)
+    aside = events.EMPTY_SPEC if empty else events.UNSATISFIABLE_SPEC if written.counts.get("unsatisfiable") else None
+    if aside:
+        save_spec(workdir, spec.model_copy(update={"set_aside": aside}))
+        events.task_set_aside(bus, task_id, aside, 0)
         return spent
     write_verifier(spec, workdir, inputs, verifier_from="intent")
     events.spec_written(bus, task_id, spec.version)
@@ -81,7 +84,7 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
     bus = bus or Bus(workdir / "bus.jsonl", agent="spec")
     ceiling = SPEC_TASK_CEILING_USD if ceiling_usd is None else ceiling_usd
     counts: dict = {"written": 0, "skipped_existing": 0, "failed": 0, "spent_usd": 0.0, "failures": {},
-                    "empty_seen": 0, "retried": 0, "set_aside_empty": 0}
+                    "empty_seen": 0, "retried": 0, "set_aside_empty": 0, "set_aside_unsatisfiable": 0}
     for task_id in task_ids:
         if written_already(workdir, task_id):
             counts["skipped_existing"] += 1
@@ -95,8 +98,8 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
         spec = load_spec(workdir, task_id)
         counts["empty_seen"] += int(bool(spec.writer.get("empty_first")))
         counts["retried"] += int(spec.writer.get("attempts", 1) > 1)
-        aside = spec.set_aside == events.EMPTY_SPEC
-        counts["set_aside_empty" if aside else "written"] += 1
+        aside = {events.EMPTY_SPEC: "set_aside_empty", events.UNSATISFIABLE_SPEC: "set_aside_unsatisfiable"}
+        counts[aside.get(spec.set_aside, "written")] += 1
     return counts
 
 

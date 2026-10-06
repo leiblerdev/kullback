@@ -17,6 +17,14 @@ from kullback.spec.ground import valid_because
 
 ATOM_KINDS = ("required", "allowed", "forbidden", "question", "communicate", "hard")
 WRITE_WITHOUT_ENTITY = "write without entity"
+# Why no Run can pass a Spec (D310): a no-write over a tool a required write needs, a demand both
+# forbidden and required, a required write that names no one row.
+NO_WRITE_BESIDE_REQUIRED = "no_write_beside_required_write"
+FORBIDDEN_EQUALS_REQUIRED = "forbidden_equals_required"
+WRITE_WITHOUT_ROW = "required_write_without_row"
+UNSATISFIABLE = (NO_WRITE_BESIDE_REQUIRED, FORBIDDEN_EQUALS_REQUIRED, WRITE_WITHOUT_ROW)
+# The keys of a demand dict that say why and how strongly, not what is demanded.
+_NOT_DEMANDED = ("kind", "because", "check_id")
 
 
 class Compiled(NamedTuple):
@@ -24,6 +32,8 @@ class Compiled(NamedTuple):
     dropped: int
     # One line per drop this module can name, "<check id>: <reason>"; an ungrounded because is counted only.
     reasons: tuple[str, ...] = ()
+    # (check id, one of UNSATISFIABLE) per check that makes the Spec unpassable; empty when a Run can pass.
+    unsatisfiable: tuple[tuple[str, str], ...] = ()
 
 
 def _write(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable) -> Optional[list[Atom]]:
@@ -102,6 +112,29 @@ def _action(atom_id: str, demand: dict) -> list[Atom]:
                         demand["tool"])
 
 
+def _what(demand: dict) -> dict:
+    return {key: value for key, value in demand.items() if key not in _NOT_DEMANDED}
+
+
+def unsatisfiable(demands: list[tuple[str, dict]], write_tools: set, action_tools: set) -> list[tuple[str, str]]:
+    """The (check id, reason) pairs that make these grounded demands unpassable, in check order."""
+    out: list[tuple[str, str]] = []
+    required = [(cid, d) for cid, d in demands if d["kind"] == "required" and d.get("demand") == "write"]
+    for cid, demand in required:
+        if demand.get("tool") in write_tools and (not demand.get("id_field") or isinstance(demand.get("entity"), dict)):
+            out.append((cid, WRITE_WITHOUT_ROW))
+    for cid, demand in demands:
+        if demand.get("demand") == "no_write":
+            covered = {demand["tool"]} if demand.get("tool") else write_tools
+            clash = [other for other, d in required if d.get("tool") in covered]
+            out += [(other, NO_WRITE_BESIDE_REQUIRED) for other in [cid] * bool(clash) + clash]
+        if demand["kind"] == "forbidden":
+            same = [other for other, d in demands if d["kind"] == "required" and _what(d) == _what(demand)]
+            out += [(other, FORBIDDEN_EQUALS_REQUIRED) for other in [cid] * bool(same) + same]
+    order = {cid: n for n, (cid, _) in enumerate(demands)}
+    return sorted(dict.fromkeys(out), key=lambda pair: (order[pair[0]], pair[1]))
+
+
 def _because(atom: Atom, because: str) -> Atom:
     return atom.model_copy(update={"description": f"{atom.description or ''} because: {because}"})
 
@@ -115,11 +148,13 @@ def compile_demands(demands: list, intent: str, sections: Iterable[str], write_t
     atoms: list[Atom] = []
     dropped = 0
     reasons: list[str] = []
+    grounded: list[tuple[str, dict]] = []
     for number, demand in enumerate(demands):
         if (not isinstance(demand, dict) or demand.get("kind") not in ATOM_KINDS
                 or not valid_because(demand.get("because"), intent, sections)):
             dropped += 1
             continue
+        grounded.append((str(demand.get("check_id") or f"i{number}"), demand))
         if demand.get("tool") in actions and demand.get("demand") in ("write", "no_write"):
             atoms += [_because(atom, str(demand["because"])) for atom in _action(f"i{number}", demand)]
             continue
@@ -135,7 +170,7 @@ def compile_demands(demands: list, intent: str, sections: Iterable[str], write_t
             continue
         atoms += [_because(atom, str(demand["because"])) for atom in built]
     return Compiled(Verifier(task_id=task_id, atoms=atoms, verifier_version=version, seed_run_ids=[]), dropped,
-                    tuple(reasons))
+                    tuple(reasons), tuple(unsatisfiable(grounded, tools, actions)))
 
 
 def compile_spec(spec, write_tools: Iterable[str], canon_fn: Callable,
