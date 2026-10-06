@@ -289,6 +289,19 @@ class EndProtocol:
         return None
 
 
+def confirms(text: Optional[str], question: Optional[str]) -> bool:
+    """This turn agrees to what the Candidate asked to do: it asked for a yes and got one (D306).
+
+    A confirmation carries no fact and needs none, so it is an answered turn and never counts
+    toward the unanswerable limit; a turn that says no is not a confirmation.
+    """
+    if not rules_mod.CONFIRM_REQUEST.search(question or ""):
+        return False
+    said = [sentence.strip() for sentence in _sentences(text or "")]
+    return (any(rules_mod.AFFIRM_CUE.match(sentence) for sentence in said)
+            and not any(rules_mod.NEGATIVE_CUE.match(sentence) for sentence in said))
+
+
 def _within(token: str, cleared: set[str]) -> bool:
     return bool(token) and any(token in value or value in token for value in cleared if value)
 

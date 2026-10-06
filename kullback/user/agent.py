@@ -227,8 +227,11 @@ class AgentUser:
         return out
 
     def _had_nothing(self, text: str, question: str) -> bool:
-        """This turn answered a question with no fact of its own, which is the scenario running out."""
+        """This turn answered a question with no fact of its own and no yes to what was asked, which
+        is the scenario running out."""
         if not rules_mod._request_sentences(rules_mod._norm(question)):
+            return False
+        if guards_mod.confirms(text, question):
             return False
         return self.guards.facts_in(text) == 0
 

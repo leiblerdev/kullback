@@ -196,6 +196,13 @@ def test_a_candidate_that_twice_asks_what_nobody_told_this_user_runs_the_scenari
                          had_nothing=True) == rules_mod.SCENARIO_EXHAUSTED
 
 
+def test_a_yes_to_what_the_candidate_asked_to_do_confirms_and_a_no_does_not():
+    asked = "Shall I move your delivery to the later slot? Please confirm."
+    assert guards_mod.confirms("Yes, please go ahead.", asked)
+    assert not guards_mod.confirms("No, wait.", asked)
+    assert not guards_mod.confirms("Yes, please go ahead.", "What is your tier?")
+
+
 # --- the agent user ---------------------------------------------------------------------------
 
 def agent_for(ctx, rules, replies, recorded=None, record=None) -> AgentUser:
@@ -219,6 +226,18 @@ def test_the_rule_driven_user_answers_the_beat_a_guard_dropped(ctx, rules, recor
     assert user.counts["fallback_turns"] == 1
     assert user.guards.counts[guards_mod.INVENTED] == 1
     assert user.events[-1].payload["agent_turn_dropped"] == guards_mod.INVENTED
+
+
+def test_confirming_twice_is_answering_and_never_runs_the_scenario_out(ctx, rules, recorded):
+    user = agent_for(ctx, rules, ["Yes, please go ahead."], recorded)
+    asked = "I will move your delivery to the later slot. Shall I proceed? Please confirm."
+    transcript = [{"role": "assistant", "content": asked}]
+    user.reply(transcript)
+    transcript += [{"role": "user", "content": "Yes, please go ahead."},
+                   {"role": "assistant", "content": "Just to be sure, please confirm once more."}]
+    user.reply(transcript)
+    assert user.counts["agent_user_turns"] == 2
+    assert not user.done and user.end_reason is None
 
 
 # --- the fidelity score -----------------------------------------------------------------------
