@@ -409,6 +409,20 @@ def _one_line(text: Any) -> str:
     return compact(" ".join(str(text or "").split()))
 
 
+def _edit_line(edit: dict) -> str:
+    """One edit of a finding on its own line, in the order the Builder acts: path, values, why (D317)."""
+    kind = edit.get("kind")
+    if kind == "body":
+        what = (f"call {edit.get('call_id')} column {edit.get('column')}: recorded "
+                f"{_one_line(edit.get('recorded'))}, replayed {_one_line(edit.get('replayed'))}")
+    elif kind == "text":
+        what = f"where {json.dumps(edit.get('where'))} replace {json.dumps(edit.get('replace'))}"
+    else:
+        what = f"drop {edit.get('drop') or []} add {len(edit.get('add') or [])} atoms"
+    where = edit.get("path") or f"task {edit.get('task_id')}"
+    return f"  edit {kind} {where}: {what}; why: {_one_line(edit.get('why'))}"
+
+
 def _render_examine(result: ExamineResult) -> str:
     lines = [result.summary]
     for finding in result.findings:
@@ -416,6 +430,7 @@ def _render_examine(result: ExamineResult) -> str:
         lines.append(f"{finding.get('task_id') or 'no task'}: {finding.get('kind')}: "
                      f"{_one_line(finding.get('change') or finding.get('text'))}"
                      + (f" ({finding.get('path')})" if finding.get("path") else "") + f" [{len(rows)} rows]")
+        lines += [_edit_line(edit) for edit in finding.get("edits") or [] if isinstance(edit, dict)]
     lines += result.held[:HELD_SHOWN]
     if len(result.held) > HELD_SHOWN:
         lines.append(f"and {len(result.held) - HELD_SHOWN} more held Tasks")

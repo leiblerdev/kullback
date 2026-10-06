@@ -479,7 +479,7 @@ def finding_from_row(row: dict) -> Finding:
     task_id = row.get("task_id") or (task_ids[0] if len(task_ids) == 1 else None)
     kind = str(row.get("kind") or "other")
     tool = row.get("tool")
-    hint = _one_line(str(row.get("hint") or ""))
+    hint = _one_line(str(row.get("change") or ""))
     if kind in ("fidelity", "assisted_tool") and tool:
         path = f"env/tools/{tool}.py"
         change = hint or f"the body of {tool} answers its recorded calls"
@@ -487,7 +487,7 @@ def finding_from_row(row: dict) -> Finding:
         path, change = "", hint
     return Finding(task_id=task_id, kind=kind, text=str(row.get("text") or ""),
                    rows=_evidence_rows(kind, row, task_ids), path=path, change=change,
-                   source="derive")
+                   source="derive", edits=list(row.get("edits") or []))
 
 
 def _evidence_rows(kind: str, row: dict, task_ids: list[str]) -> list[dict]:
@@ -496,10 +496,10 @@ def _evidence_rows(kind: str, row: dict, task_ids: list[str]) -> list[dict]:
         return [{"task_id": task_id, "check": check, "passed": False} for task_id in task_ids]
     if kind in ("fidelity", "assisted_tool"):
         return [{"task_id": task_id, "tool": row.get("tool"),
-                 "detail": _one_line(str(row.get("hint") or ""))} for task_id in task_ids]
+                 "detail": _one_line(str(row.get("change") or ""))} for task_id in task_ids]
     if kind == "false_rejection":
         return [{"task_id": task_id, "run_id": row.get("run_id")} for task_id in task_ids]
-    return [{"task_id": task_id, "reason": _one_line(str(row.get("hint") or ""))}
+    return [{"task_id": task_id, "reason": _one_line(str(row.get("change") or ""))}
             for task_id in task_ids]
 
 
