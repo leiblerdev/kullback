@@ -22,6 +22,7 @@ from kullback.spec.trust import TIERS, TaskTier, workdir_tiers
 # The report file in the workdir, one per build.
 REPORT_FILE = "tiers.json"
 TABLE_HEADER = ("| Build | Corpus | Verifier from | Tasks | Trusted | Replay-only | Untrusted | Set aside "
+                "| Unconfirmed | Pending | Refused "
                 "| Trusted by Reference (right, wrong, mixed, unknown) | Code |")
 
 

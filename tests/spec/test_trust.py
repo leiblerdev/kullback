@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from kullback.runner.records import Event, Verifier
+from kullback.runner.records import EndState, Event, ExpectedCell, ValueSource, Verifier
 from kullback.spec import trust as T
 from kullback.spec.compile import compile_demands, compile_spec
 from kullback.spec.events import TASK_SET_ASIDE
@@ -20,28 +20,46 @@ def spec(checks=None, gaps=()):
     return base_spec(checks=[written] if checks is None else checks, gaps=gaps)
 
 
-def _verifier(the_spec=None) -> Verifier:
+START = {"items": {"A1": {"slot": "two"}, "B2": {"slot": "four"}}}
+END = {"items": {"A1": {"slot": "seven"}, "B2": {"slot": "four"}}}
+CODE_CHECKS = {"checks": {"plausible_wrong_fails": True, "leak_check_clean": True}}
+
+
+def _cell(sourced=True):
+    said = ValueSource(kind="user_turn", ptr={"turn": 0})
+    return ExpectedCell(table="items", row_id="A1", field="slot", value="seven", row_source=said,
+                        source=said if sourced else None)
+
+
+def _verifier(the_spec=None, sourced=True) -> Verifier:
+    """The compiled Verifier with one expected end state: A1 moved to slot seven, said by the user."""
     verifier = compile_spec(the_spec or spec(), WRITE_TOOLS, fn).verifier
     at = next(e.idx for e in reference_run().events if e.type == "tool_call" and e.payload["name"] == "update_item")
     return verifier.model_copy(update={"atoms": [a.model_copy(update={"target": dict(a.target, at=at)})
-                                                 for a in verifier.atoms]})
+                                                 for a in verifier.atoms],
+                                       "expected": [EndState(cells=[_cell(sourced)])]})
 
 
-def _replay():
-    return reference_run().model_copy(update={"run_id": REPLAY_ID, "model": "recorded", "trace_id": "rec1"})
+def _stopped(run, end=END):
+    stop = Event(idx=len(run.events), type="stop", payload={"start_state": START, "end_state": end})
+    return run.model_copy(update={"events": run.events + [stop]})
+
+
+def _replay(run_id=REPLAY_ID, trace_id="rec1"):
+    return _stopped(reference_run()).model_copy(update={"run_id": run_id, "model": "recorded", "trace_id": trace_id})
 
 
 def _fresh(run_id="fresh-1", right=True):
     run = reference_run().model_copy(update={"run_id": run_id, "model": "some/model"})
     if right:
-        return run
-    return run.model_copy(update={"events": [e for e in run.events if e.idx < 3 or e.idx == 5]})
+        return _stopped(run)
+    return _stopped(run.model_copy(update={"events": [e for e in run.events if e.idx < 3 or e.idx == 5]}), START)
 
 
-def _tier(runs, the_spec=None, rulings=(), verifier=None):
+def _tier(runs, the_spec=None, rulings=(), verifier=None, references=(REPLAY_ID,)):
     the_spec = the_spec or spec(gaps=["f2"])
     return T.tier_of_task(the_spec, verifier or _verifier(the_spec), runs, rulings, canon=fn,
-                          write_tools=WRITE_TOOLS)
+                          write_tools=WRITE_TOOLS, references=references, status=CODE_CHECKS)
 
 
 def test_a_grounded_spec_that_can_fail_with_a_fresh_pass_and_no_ruling_is_trusted_and_names_the_runs_scored():
@@ -57,10 +75,10 @@ def test_a_replay_pass_without_a_fresh_pass_is_replay_only_and_the_replay_verdic
     assert row["replay"] == {REPLAY_ID: True} and row["fresh_passed"] == []
 
 
-def test_a_failing_recording_with_a_fresh_pass_is_trusted():
+def test_a_failing_recording_that_is_not_the_kept_reference_with_a_fresh_pass_is_trusted():
     failing = _fresh(REPLAY_ID, right=False).model_copy(update={"model": "recorded"})
-    tier, row = _tier([failing, _fresh()])
-    assert tier == "trusted" and row["replay"] == {REPLAY_ID: False}
+    tier, row = _tier([failing, _replay("replay-rec2", "rec2"), _fresh()], references=("replay-rec2",))
+    assert tier == "trusted" and row["replay"] == {REPLAY_ID: False, "replay-rec2": True}
 
 
 def test_a_check_whose_because_quotes_nothing_is_untrusted_at_the_first_gate():
@@ -76,7 +94,8 @@ def test_an_unlisted_fact_without_a_check_is_not_grounded():
 
 def test_a_verifier_that_demands_nothing_cannot_fail_and_is_untrusted():
     tier, row = _tier([_replay(), _fresh()], verifier=Verifier(task_id="t1"))
-    assert tier == "untrusted" and row["failing"] == "can_fail"
+    assert tier == "unconfirmed" and row["failing"] == "no expected end state"
+    assert row["gates"]["can_fail"] is False
 
 
 @pytest.mark.parametrize("update, rulings, tier", [
@@ -114,8 +133,8 @@ def _write_run(folder, run):
 
 def _intent_workdir(root, runs, verifier=None):
     (root / "tool_sigs.json").write_text(json.dumps([{"name": "update_item", "kind": "write"}]))
-    (root / "task_status.json").write_text(json.dumps({"t1": {}, "t2": {}}))
-    (root / "replays.json").write_text(json.dumps({"t1": {"rec1": {"run_id": REPLAY_ID, "trace_id": "rec1"}}}))
+    (root / "task_status.json").write_text(json.dumps({"t1": CODE_CHECKS, "t2": {}}))
+    _hold_reference(root)
     for run in runs:
         _write_run(root / "runs", run)
     save_spec(root, spec(gaps=["f2"]))
@@ -223,7 +242,7 @@ def _recorded_elsewhere(on_reply_only=False):
 
 @pytest.mark.parametrize("on_reply_only", [False, True], ids=["run_model", "reply_model"])
 def test_a_recorded_model_run_under_any_id_is_a_replay_and_never_an_independent_pass(on_reply_only):
-    tier, row = _tier([_recorded_elsewhere(on_reply_only), _fresh(right=False)])
+    tier, row = _tier([_recorded_elsewhere(on_reply_only), _fresh(right=False)], references=("synth-rec1",))
     assert tier == "replay_only" and row["failing"] == "independent_pass"
     assert row["replay"] == {"synth-rec1": True} and row["fresh_passed"] == []
 
@@ -240,20 +259,45 @@ def _failing_replay():
     return _fresh(REPLAY_ID, right=False).model_copy(update={"model": "recorded", "trace_id": "rec1"})
 
 
-def test_a_verifier_that_fails_a_faithful_replay_of_a_kept_reference_is_untrusted_and_names_the_atom(tmp_path):
+def test_a_verifier_that_fails_a_faithful_replay_of_a_kept_reference_is_pending_and_names_the_cell(tmp_path):
     _intent_workdir(tmp_path, [_failing_replay(), _fresh()])
     _hold_reference(tmp_path)
     tier, row = T.intent_tiers(tmp_path)["t1"]
     verifier = T.load_spec_verifier(tmp_path, "t1")
-    assert tier == "untrusted" and row["failing"] == "reference_replay"
+    assert tier == "pending" and row["failing"].startswith("Verifier defect, ruled back to the Spec")
+    assert row["gates"]["reference_replay"] is False
     assert row["reference_replay"]["failed"] == REPLAY_ID
-    assert row["reference_replay"]["atom"] in {atom.id for atom in verifier.atoms}
+    assert row["reference_replay"]["atom"] == f"gate:expected:cell:{verifier.expected[0].cells[0].table}.A1.slot"
 
 
 @pytest.mark.parametrize("held", [{"fidelity": 0.8}, {"confirmed": False}, {"kept": False}],
                          ids=["unfaithful", "unconfirmed", "not_kept"])
-def test_a_failed_replay_that_is_not_a_faithful_kept_reference_leaves_the_task_trusted(tmp_path, held):
+def test_a_failed_replay_that_is_not_a_faithful_kept_reference_fails_no_gate_and_leaves_trust_pending(tmp_path, held):
     _intent_workdir(tmp_path, [_failing_replay(), _fresh()])
     _hold_reference(tmp_path, **held)
     tier, row = T.intent_tiers(tmp_path)["t1"]
-    assert tier == "trusted" and row["reference_replay"]["failed"] is None
+    assert row["gates"]["reference_replay"] is True and row["reference_replay"]["failed"] is None
+    assert tier == "pending" and row["failing"] == "no faithful replay of a kept Reference"
+
+
+# --- D322: one trust ruling, the code gates inside the Spec's tiers ---
+
+def test_a_verifier_with_one_unsupported_cell_is_unconfirmed_naming_the_cell_and_never_trusted():
+    tier, row = _tier([_replay(), _fresh()], verifier=_verifier(spec(gaps=["f2"]), sourced=False))
+    assert tier == "unconfirmed" and row["failing"] == "unsupported cell items.A1.slot"
+    assert row["gates"]["sourced"] is False and row["sourced"]["unsupported"] == 1
+
+
+def test_a_verifier_passing_every_gate_is_trusted_with_no_probe_pool(tmp_path):
+    _intent_workdir(tmp_path, [_replay(), _fresh()])
+    assert not (tmp_path / "probes").exists()
+    tier, row = T.intent_tiers(tmp_path)["t1"]
+    assert tier == "trusted" and row["failing"] is None and all(row["gates"].values())
+    assert row["contradicts"] == [] and row["unasked"] == []
+
+
+def test_the_workdir_ruling_reads_the_spec_tiers_where_the_workdir_has_specs(tmp_path):
+    _intent_workdir(tmp_path, [_replay(), _fresh()])
+    ruling = T.workdir_ruling(tmp_path)
+    assert ruling.metrics["trust_tier"] == {"t1": "trusted", "t2": "untrusted"}
+    assert ruling.metrics["trusted"] == ["t1"] and ruling.metrics["untrusted"] == {"t2": "untrusted: grounded"}

@@ -24,8 +24,8 @@ Under intent, each examine first writes the Spec and Verifier of every examined 
 (default `--model`), priced under the `spec` stage. `--tasks a,b` or `--tasks @ids.txt` stores a Task sample in `build.json`;
 the Builder's run and examine tools then touch no Task outside it.
 
-| Build | Corpus | Verifier from | Tasks | Trusted | Replay-only | Untrusted | Set aside | Trusted by Reference (right, wrong, mixed, unknown) | Code |
-|---|---|---|---|---|---|---|---|---|---|
+| Build | Corpus | Verifier from | Tasks | Trusted | Replay-only | Untrusted | Set aside | Unconfirmed | Pending | Refused | Trusted by Reference (right, wrong, mixed, unknown) | Code |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
 
 ## Index
 

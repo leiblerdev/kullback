@@ -13,10 +13,11 @@ def test_the_report_counts_every_tier_and_splits_the_trusted_tasks_by_reference_
     tiers = _tiers(a="trusted", b="trusted", c="replay_only", d="untrusted", e="set_aside", f="trusted")
     report = R.build_report(tiers, corpus="c1", build="b1",
                             classes={"a": "right", "b": "wrong"})
-    assert report["tiers"] == {"trusted": 3, "replay_only": 1, "untrusted": 1, "set_aside": 1}
+    assert report["tiers"] == {"trusted": 3, "replay_only": 1, "untrusted": 1, "set_aside": 1,
+                               "unconfirmed": 0, "pending": 0, "refused": 0}
     assert report["trusted_by_reference"] == {"right": 1, "wrong": 1, "unknown": 1}
     assert [row["task_id"] for row in report["rows"]] == ["a", "b", "c", "d", "e", "f"]
-    assert R.table_line(report) == "| b1 | c1 | spec | 6 | 3 | 1 | 1 | 1 | 1, 1, 0, 1 | c0dec0dec0de |"
+    assert R.table_line(report) == "| b1 | c1 | spec | 6 | 3 | 1 | 1 | 1 | 0 | 0 | 0 | 1, 1, 0, 1 | c0dec0dec0de |"
     assert R.table_line(report).count("|") == R.TABLE_HEADER.count("|")
 
 

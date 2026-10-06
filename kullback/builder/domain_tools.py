@@ -33,14 +33,13 @@ from kullback.gates.fidelity import reference_replay_gate
 from kullback.gates.hook import compact, ruled, ruling_line
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import legitimate_runs
-from kullback.gates.trust import workdir_trusted_ruling
 from kullback.runner import budget
 from kullback.runner import tool as runner_tool
 from kullback.runner.records import EXAM_DIR, read_json, run_path, write_json
 from kullback.runner.replay import AGREES, OURS_REFUSED, THEIRS_REFUSED
 from kullback.runner.target import as_run
 from kullback.runner.world.environment import BuiltEnvironment
-from kullback.spec.trust import in_sample, stored_tasks
+from kullback.spec.trust import in_sample, stored_tasks, workdir_ruling
 from kullback.user import fidelity as user_fidelity
 from kullback.user.rules import GOAL_SATISFIED, goal_write_set
 from kullback.user.simulated import SimulatedUser
@@ -628,14 +627,14 @@ def _render_note(result: NoteResult) -> str:
 def status_of(workdir: Any) -> dict[str, Any]:
     """One row per Task (trusted, refused or open, with its reason) and per tool (last replay fidelity).
 
-    Read off the workdir files through `workdir_trusted_ruling`, the one trusted ruling the round's
-    snapshot reads as well (D281). The Examiner's artefacts (its proposed Verifiers, the version
+    Read off the workdir files through `spec.trust.workdir_ruling`, the one trusted ruling the round's
+    snapshot reads as well (D281, D322). The Examiner's artefacts (its proposed Verifiers, the version
     histories, the task runs, the probe pools) are read where the Examiner wrote them (F22). Files
     not there yet read as empty, so a Task with no Verifier is open with its reason.
     """
     root = Path(workdir)
     task_ids = [path.stem for path in sorted((root / "tasks").glob("*.json")) if path.name != "tasks.json"]
-    ruling = workdir_trusted_ruling(root)
+    ruling = workdir_ruling(root)
     trusted = set(ruling.metrics.get("trusted") or [])
     refused = ruling.metrics.get("refused") or {}
     untrusted = ruling.metrics.get("untrusted") or {}

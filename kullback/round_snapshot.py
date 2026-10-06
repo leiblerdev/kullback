@@ -151,6 +151,7 @@ def task_row(task_id: str, *, round_number: int, row: Any, replays: Optional[dic
         "trust_tier": str((metrics.get("trust_tier") or {}).get(task_id) or "pending"),
         "unsupported_cells": int((metrics.get("unsupported_cells") or {}).get(task_id) or 0),
         "legacy_trusted": task_id in set(metrics.get("legacy_trusted") or ()),
+        "consistency_flags": int((metrics.get("consistency_flags") or {}).get(task_id) or 0),
         "refused": task_id in refused,
         "refused_reason": str(refused.get(task_id) or ""),
         "difficulty": str((buckets or {}).get(task_id) or ""),
@@ -187,7 +188,9 @@ def counts_of(rows: Iterable[dict]) -> dict:
             "legacy_trusted": sum(1 for row in rows if row.get("legacy_trusted")),
             "valid_other_failing": sum(round(float(row.get("false_rejection") or 0.0)
                                              * int(row.get("false_rejection_pool") or 0)) for row in rows),
-            "held_out": sum(int(row.get("false_rejection_pool") or 0) for row in rows)}
+            "held_out": sum(int(row.get("false_rejection_pool") or 0) for row in rows),
+            # D322: Tasks a consistency check flags, counted and never gating.
+            "consistency_flags": sum(1 for row in rows if row.get("consistency_flags"))}
 
 
 def buckets_by_task(body: Optional[dict]) -> dict[str, str]:
@@ -197,10 +200,10 @@ def buckets_by_task(body: Optional[dict]) -> dict[str, str]:
 
 
 def _trusted_ruling(root: Path) -> Any:
-    """The trusted ruling over the live workdir files: the one the status tool reads (D281)."""
-    from kullback.gates.trust import workdir_trusted_ruling
+    """The trusted ruling over the live workdir files: the one the status tool reads (D281, D322)."""
+    from kullback.spec.trust import workdir_ruling
 
-    return workdir_trusted_ruling(root)
+    return workdir_ruling(root)
 
 
 def snapshot_rows(workdir: Any, round_number: int) -> list[dict]:

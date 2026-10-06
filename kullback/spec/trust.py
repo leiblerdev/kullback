@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Iterable, NamedTuple, Optional
 
 from kullback.gates.probes import write_tools_of
+from kullback.gates.trust import code_ruling, schema_of, workdir_trusted_ruling
 from kullback.runner.canon import load_rules
 from kullback.runner.code_hash import CODE_HASH
 from kullback.runner.records import Run, Verifier, load_run_jsonl, read_json, read_jsonl
@@ -41,8 +42,10 @@ from kullback.spec.schema import Spec, load_spec, spec_ids
 from kullback.spec.writer import spec_verifier_path
 from kullback.spec.writer_tools import policy_sections_of
 
-TIERS = ("trusted", "replay_only", "untrusted", "set_aside")
-GATES = ("grounded", "can_fail", "reference_replay", "independent_pass", "no_open_ruling")
+TIERS = ("trusted", "replay_only", "untrusted", "set_aside", "unconfirmed", "pending", "refused")
+GATES = ("grounded", "sourced", "can_fail", "reference_replay", "independent_pass", "no_open_ruling")
+# The code ruling's tiers (gates/trust.py, D319) that stand in for the Spec's when its gate fails.
+_CODE_TIERS = ("unconfirmed", "refused", "pending")
 # The build manifest in the workdir: the build's Task sample, kept for a resume.
 BUILD_MANIFEST = "build.json"
 # How many grounding refusals a row repeats; the count is always whole.
@@ -143,9 +146,11 @@ def set_aside_of(spec: Spec, rulings: Iterable[Any] = ()) -> bool:
                                      and _event_task(event) in (None, spec.task_id) for event in rulings or ())
 
 
-def _tier(gates: dict[str, bool], replay_passed: bool, set_aside: bool) -> str:
+def _tier(gates: dict[str, bool], replay_passed: bool, set_aside: bool, code_tier: str = "trusted") -> str:
     if set_aside:
         return "set_aside"
+    if code_tier in _CODE_TIERS:
+        return code_tier
     if all(gates.values()):
         return "trusted"
     if (gates["grounded"] and gates["can_fail"] and gates["reference_replay"] and replay_passed
@@ -156,12 +161,15 @@ def _tier(gates: dict[str, bool], replay_passed: bool, set_aside: bool) -> str:
 
 def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: Iterable[Any] = (), *,
                  canon: Any, write_tools: Optional[Iterable[str]] = None, policy_sections: Iterable[str] = (),
-                 references: Iterable[str] = ()) -> TaskTier:
+                 references: Iterable[str] = (), status: Any = None, schema: Any = None) -> TaskTier:
     """The tier of one Task under the Spec's Verifier, with the row of evidence behind it.
 
     `runs` are every Run of the Task, the replays included; `rulings` are the bus events about it.
     A replay is known by its recorded model (`is_replay`), never by its run id. `references` are the
-    run ids of the faithful replays of the Task's kept References (`faithful_references`).
+    run ids of the faithful replays of the Task's kept References (`faithful_references`). The
+    `sourced` gate is `gates.trust.code_ruling` on those replays and the Task's `status` row (D322):
+    unconfirmed, refused and pending become the tier with its reason; the consistency checks (D321)
+    ride on the row as `contradicts` and `unasked` and never gate.
     """
     runs = list(runs or ())
     tools = set(write_tools) if write_tools is not None else None
@@ -173,12 +181,16 @@ def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: I
     replay = {run.run_id: scores[run.run_id] for run in runs if is_replay(run)}
     failed_ok, mutation_rows, mutated_from = _can_fail(verifier, runs, scores, canon, tools)
     set_aside = set_aside_of(spec, rulings)
-    gates = {"grounded": not refusals, "can_fail": failed_ok, "reference_replay": reference["failed"] is None,
+    kept = set(references)
+    code = code_ruling(verifier, [run for run in runs if run.run_id in kept], status or {}, canon, tools, schema)
+    gates = {"grounded": not refusals, "sourced": code.tier == "trusted", "can_fail": failed_ok, "reference_replay": reference["failed"] is None,
              "independent_pass": any(scores[run_id] for run_id in fresh),
              "no_open_ruling": spec.rulings_open == 0 and not set_aside}
-    tier = _tier(gates, any(replay.values()), set_aside)
-    row = {"task_id": spec.task_id, "tier": tier,
-           "failing": next((name for name in GATES if not gates[name]), None), "gates": gates,
+    tier = _tier(gates, any(replay.values()), set_aside, code.tier)
+    failing = code.reason if tier in _CODE_TIERS else next((name for name in GATES if not gates[name]), None)
+    row = {"task_id": spec.task_id, "tier": tier, "failing": failing, "gates": gates,
+           "sourced": {"tier": code.tier, "reason": code.reason, "unsupported": code.unsupported},
+           "contradicts": list(code.contradicts), "unasked": list(code.unasked),
            "grounding": {"refusals": len(refusals), "first": refusals[:_REASONS_KEPT]},
            "can_fail": {"from": mutated_from, "rows": mutation_rows}, "reference_replay": reference,
            "runs_scored": sorted(scores), "fresh_passed": sorted(r for r in fresh if scores[r]),
@@ -311,6 +323,9 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
     runs = runs_on_disk(root)
     references = faithful_references(root)
     events = set_aside_events(root)
+    statuses = read_json(root / "task_status.json", None)
+    statuses = statuses if isinstance(statuses, dict) else {}
+    schema = schema_of(root)
     out: dict[str, TaskTier] = {}
     for task_id in in_sample(root, sorted(set(_task_ids(root)) | set(specs or ()))):
         spec = (specs or {}).get(task_id) or load_spec(root, task_id)
@@ -326,10 +341,19 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
             continue
         out[task_id] = tier_of_task(spec, verifier, runs.get(task_id, []), events, canon=canon,
                                     write_tools=tools, policy_sections=sections,
-                                    references=references.get(task_id, ()))
+                                    references=references.get(task_id, ()), status=statuses.get(task_id),
+                                    schema=schema)
     return out
 
 
 def workdir_tiers(workdir: Any) -> dict[str, TaskTier]:
     """Every Task's tier: the Spec writes every Verifier, so this is `intent_tiers` (D320)."""
     return intent_tiers(workdir)
+
+
+def workdir_ruling(workdir: Any) -> Any:
+    """The one trusted ruling over a workdir (D322): the Spec's tiers where it has Specs, read through
+    `gates.trust.workdir_trusted_ruling` so status, the round snapshot and the report print one tier per
+    Task from one place; a workdir with no Spec keeps the gates' own ruling."""
+    root = Path(workdir)
+    return workdir_trusted_ruling(root, spec_tiers=workdir_tiers(root) if spec_ids(root) else None)

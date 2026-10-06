@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from kullback.gates.loosening import (
     accepted_versions,
@@ -412,59 +412,74 @@ def _empty_run_passes(verifier: Verifier, reference: Run, canon_rules: Any, writ
     return "the empty Run passes" + (f" ({_unknown(unsettled)})" if unsettled else "")
 
 
-def code_ruling(verifier: Verifier, references: list[Run], row: Any, canon_rules: Any,
-                write_tools: Any, schema: Any = None) -> tuple[str, str, int]:
-    """(tier, reason, unsupported cells) by code alone: no model, no probe pool, no history (D319).
+class CodeRuling(NamedTuple):
+    tier: str
+    reason: str
+    unsupported: int
+    contradicts: list[str] = []
+    unasked: list[str] = []
 
-    In order: an end state fully sourced; one no cell of which contradicts the user's named values
-    and no write of the Reference unasked (D321: both leave the Task unconfirmed); every faithful replay of the Reference matching one
+
+def code_ruling(verifier: Verifier, references: list[Run], row: Any, canon_rules: Any,
+                write_tools: Any, schema: Any = None) -> CodeRuling:
+    """(tier, reason, unsupported cells, consistency flags) by code alone: no model, no probe pool (D319).
+
+    In order: an end state fully sourced; every faithful replay of the Reference matching one
     (False is a Verifier defect ruled back to the Spec, None leaves the Task unconfirmed, and the
     forbidden list and conduct answer too, so an unknown there blocks the same way); the empty Run
     failing; the wrong Run failing (D286) and the leak check clean (D287), off the suite's row.
-    The count is the fewest unsupported cells of any one end state.
+    The count is the fewest unsupported cells of any one end state. The cells that contradict the
+    user's named values and the Reference's writes nobody asked for (D321) ride on the ruling as
+    flags and never decide the tier (D322).
     """
     if not verifier.expected:
-        return "unconfirmed", "no expected end state", 0
+        return CodeRuling("unconfirmed", "no expected end state", 0)
     missing = [unsupported_cells(state) for state in verifier.expected]
     count = min(len(cells) for cells in missing)
     sourced = [state for state, cells in zip(verifier.expected, missing, strict=True) if not cells]
     if not sourced:
         fewest = min(missing, key=len)
         more = f" and {count - 1} more" if count > 1 else ""
-        return "unconfirmed", f"unsupported cell {fewest[0]}{more}", count
+        return CodeRuling("unconfirmed", f"unsupported cell {fewest[0]}{more}", count)
     if not references:
-        return "pending", "no faithful replay of a kept Reference", count
-    # Sourced says a value was available; these two say it is consistent with what the user asked.
+        return CodeRuling("pending", "no faithful replay of a kept Reference", count)
+    # Sourced says a value was available; these two say whether it is consistent with what the
+    # user asked, reported as flags and never gating (D322).
     request = _context(references[0], canon_rules, write_tools, schema)
     turns = [text for _, text in request.user]
-    contradicted = [contradicts_user(state, turns, request.start_state, canon_rules) for state in sourced]
-    consistent = [state for state, cells in zip(sourced, contradicted, strict=True) if not cells]
-    if not consistent:
-        return "unconfirmed", f"contradicts the user at {min(contradicted, key=len)[0]}", count
-    if unasked := unasked_writes(references[0], turns, write_tools):
-        return "unconfirmed", f"unasked write {unasked[0].split('@')[0]}", count
-    gated = verifier.model_copy(update={"expected": consistent})
+    contradicts = sorted({cell for state in sourced
+                          for cell in contradicts_user(state, turns, request.start_state, canon_rules)})
+    unasked = [write.split("@")[0] for write in unasked_writes(references[0], turns, write_tools)]
+
+    def ruled(tier: str, reason: str = "") -> CodeRuling:
+        return CodeRuling(tier, reason, count, contradicts, unasked)
+
+    gated = verifier.model_copy(update={"expected": sourced})
     for run in references:
         failed, unsettled = verdict_gates(gated, _context(run, canon_rules, write_tools, schema))
         if failed:
-            return "pending", f"Verifier defect, ruled back to the Spec: faithful replay {run.run_id} fails {failed}", count
+            return ruled("pending", f"Verifier defect, ruled back to the Spec: faithful replay {run.run_id} fails {failed}")
         if unsettled:
-            return "unconfirmed", f"{_unknown(unsettled)} on faithful replay {run.run_id}", count
+            return ruled("unconfirmed", f"{_unknown(unsettled)} on faithful replay {run.run_id}")
     if why := _empty_run_passes(verifier, references[0], canon_rules, write_tools):
-        return "pending", why, count
+        return ruled("pending", why)
     checks = _get(row, "checks", None) or {}
     for name, words in (("plausible_wrong_fails", "the wrong Run is not failed"),
                         ("leak_check_clean", "the leak check is not clean")):
         if not checks.get(name):
-            return "pending", f"{words} ({name})", count
-    return "trusted", "", count
+            return ruled("pending", f"{words} ({name})")
+    return ruled("trusted")
 
 
 def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str, ProbePool],
                  history: dict[str, VerifierHistory], refusals: dict[str, dict], task_runs: dict[str, list[Run]],
                  replays: dict, rerolls: dict, canon_rules: Any, sigs: list, *,
-                 workdir: Any = None, schema: Any = None) -> GateResult:
+                 workdir: Any = None, schema: Any = None, spec_tiers: Optional[dict] = None) -> GateResult:
     """A failure per Task with a Verifier that is not trusted, its tier and the first reason (D319).
+
+    `spec_tiers` (task id -> (tier, row), `spec.trust.workdir_tiers`) are the one ruling where the
+    workdir has Specs (D322): they replace trusted, untrusted and the tier, and the rule below stays
+    for the legacy column only.
 
     A refused Task is refused; a Task waiting in the Reference pool, or whose seeds are not Runs of
     it (D281), is pending; a Verifier carrying expected end states is ruled by `code_ruling`. One
@@ -484,6 +499,7 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     tiers: dict[str, str] = {}
     unsupported: dict[str, int] = {}
     foreign_seeds: dict[str, list[str]] = {}
+    flags: dict[str, int] = {}
     failures: list[str] = []
     for verifier in sorted(map(as_verifier, verifiers or ()), key=lambda v: v.task_id):
         task_id = verifier.task_id
@@ -511,9 +527,10 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
             tier, reason = "pending", (f"version {version_hash(verifier)} was derived from seeds that are not Runs "
                                        f"of this Task: {', '.join(unattributed)}")
         else:
-            tier, reason, count = code_ruling(verifier, faithful_references(verifier, task_runs, replays),
-                                              (task_status or {}).get(task_id) or {}, canon_rules, write_tools,
-                                              schema)
+            ruling = code_ruling(verifier, faithful_references(verifier, task_runs, replays),
+                                 (task_status or {}).get(task_id) or {}, canon_rules, write_tools, schema)
+            tier, reason, count = ruling.tier, ruling.reason, ruling.unsupported
+            flags[task_id] = len(ruling.contradicts) + len(ruling.unasked)
         tiers[task_id] = tier
         unsupported[task_id] = count
         if tier == "trusted":
@@ -523,8 +540,26 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
         failures.append(f"task {task_id}: {untrusted[task_id]}")
     metrics = dict(legacy.metrics, trusted=trusted, untrusted=untrusted, untrusted_seeds=foreign_seeds,
                    trust_tier=tiers, unsupported_cells=unsupported, legacy_trusted=list(legacy.metrics["trusted"]),
-                   legacy_only=sorted(v.task_id for v in map(as_verifier, verifiers or ()) if not v.expected))
+                   legacy_only=sorted(v.task_id for v in map(as_verifier, verifiers or ()) if not v.expected),
+                   consistency_flags=flags)
+    if spec_tiers:
+        metrics.update(_spec_ruling(spec_tiers, refused))
+        failures = [f"task {task_id}: {why}" for task_id, why in sorted(metrics["untrusted"].items())]
     return gate("trusted", failures, **metrics)
+
+
+def _spec_ruling(spec_tiers: dict[str, Any], refused: dict) -> dict:
+    """The Spec's tiers as the one trusted ruling (D322): trusted stays trusted, every other tier is
+    untrusted with its word and the first failing gate or reason; refused Tasks stay refused."""
+    trusted, untrusted, tiers, flags = [], {}, {}, {}
+    for task_id, (tier, row) in sorted(spec_tiers.items()):
+        tiers[task_id] = tier
+        flags[task_id] = len(row.get("contradicts") or ()) + len(row.get("unasked") or ())
+        if tier == "trusted" and task_id not in refused:
+            trusted.append(task_id)
+        else:
+            untrusted[task_id] = f"{tier}: {row.get('failing') or row.get('reason') or ''}".rstrip(": ")
+    return {"trusted": trusted, "untrusted": untrusted, "trust_tier": tiers, "consistency_flags": flags}
 
 
 def tier_counts(metrics: dict) -> dict[str, int]:
@@ -539,15 +574,18 @@ def tier_counts(metrics: dict) -> dict[str, int]:
     return {**{tier: tiers.count(tier) for tier in TIERS},
             "legacy_trusted": len(metrics.get("legacy_trusted") or ()),
             "valid_other_failing": sum(round((fractions.get(t) or 0.0) * int(n or 0)) for t, n in pools.items()),
-            "held_out": sum(int(n or 0) for n in pools.values())}
+            "held_out": sum(int(n or 0) for n in pools.values()),
+            "consistency_flags": sum(1 for n in (metrics.get("consistency_flags") or {}).values() if n)}
 
 
 def trust_row(counts: dict) -> str:
-    """One line: trusted, unconfirmed, refused and pending, the legacy count and the over-strictness."""
+    """One line: trusted, unconfirmed, refused and pending, the legacy count, the over-strictness and the
+    Tasks carrying a consistency flag (D322: counted, never gating)."""
     return (f"trusted {counts.get('trusted', 0)} | unconfirmed {counts.get('unconfirmed', 0)} | "
             f"refused {counts.get('refused', 0)} | pending {counts.get('pending', 0)} | "
             f"legacy rule trusted {counts.get('legacy_trusted', 0)} | valid other solutions failing "
-            f"{counts.get('valid_other_failing', 0)} of {counts.get('held_out', 0)} held-out Runs")
+            f"{counts.get('valid_other_failing', 0)} of {counts.get('held_out', 0)} held-out Runs | "
+            f"consistency flags {counts.get('consistency_flags', 0)}")
 
 
 def _live_verifiers(root: Path) -> list[dict]:
@@ -575,12 +613,14 @@ def _refusal_files(root: Path) -> dict[str, Any]:
     return refusals
 
 
-def workdir_trusted_ruling(workdir: Any) -> GateResult:
+def workdir_trusted_ruling(workdir: Any, spec_tiers: Optional[dict] = None) -> GateResult:
     """The trusted ruling over a workdir's live files, with provenance: the one trusted number (D281).
 
     The Builder's status and the round's snapshot both read trust here, so they cannot disagree: the
     Examiner's artefacts where it wrote them (F22), the refusals, the replay and re-roll rows, and
-    the workdir for the seed provenance step. Files not there yet read as empty.
+    the workdir for the seed provenance step. Files not there yet read as empty. Where the workdir
+    has Specs the caller passes their tiers (`spec.trust.workdir_ruling`, D322), since the gates sit
+    below the Spec and cannot read it themselves.
     """
     root = Path(workdir)
     task_status = read_json(root / "task_status.json", None) or {}
@@ -588,10 +628,11 @@ def workdir_trusted_ruling(workdir: Any) -> GateResult:
                         load_probe_pools(root), load_exam_history(root), _refusal_files(root),
                         load_exam_task_runs(root), read_json(root / "replays.json", None) or {},
                         read_json(root / "rerolls.json", None) or {}, load_rules(root / "canon-rules.json"),
-                        read_json(root / "tool_sigs.json", None) or [], workdir=root, schema=_schema(root))
+                        read_json(root / "tool_sigs.json", None) or [], workdir=root, schema=schema_of(root),
+                        spec_tiers=spec_tiers)
 
 
-def _schema(root: Path) -> Optional[EntitySchema]:
+def schema_of(root: Path) -> Optional[EntitySchema]:
     """The workdir's column classes, so a semantic pair reads as unsettled rather than as different."""
     try:
         return EntitySchema.model_validate(read_json(root / "schema.json", None) or {})

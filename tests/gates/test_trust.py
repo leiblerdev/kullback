@@ -370,24 +370,42 @@ def test_a_task_with_an_empty_expected_diff_and_one_conduct_is_not_trusted_when_
     assert ruling.metrics["untrusted"] == {TASK: "pending: the empty Run passes"}
 
 
-def test_an_end_state_holding_a_value_other_than_the_one_the_user_named_is_unconfirmed_naming_the_cell():
+def test_a_contradicted_cell_flags_the_row_and_does_not_change_the_tier():
     start = {"orders": {"W1": {"status": "pending", "note": "none"}, "W2": {"status": "returned", "note": "none"}}}
     end = {"orders": {"W1": {"status": "cancelled", "note": "none"}, "W2": {"status": "returned", "note": "none"}}}
     replay = make_run("ref", [_turn("Please mark W1 returned."), _turn("Yes, go ahead."),
                               {"type": "tool_call", "payload": {"id": "c1", "name": "cancel_order",
                                                                 "args": {"order_id": "W1"}}},
                               {"type": "stop", "payload": {"start_state": start, "end_state": end}}])
-    ruling = T.trusted_gate(**_code_world([_cell()], run=replay))
-    assert ruling.metrics["untrusted"] == {TASK: "unconfirmed: contradicts the user at orders.W1.status"}
+    world = _code_world([_cell()], run=replay)
+    ruling = T.code_ruling(world["verifiers"][0], [replay], world["task_status"][TASK], CanonRules(),
+                           T.write_tools_of(SIGS))
+    assert ruling.tier == "trusted" and ruling.contradicts == ["orders.W1.status"]
+    gated = T.trusted_gate(**world)
+    assert gated.metrics["trust_tier"] == {TASK: "trusted"} and gated.metrics["consistency_flags"] == {TASK: 1}
 
 
-def test_a_reference_write_no_user_turn_asked_for_leaves_the_task_unconfirmed_naming_the_tool():
+def test_a_reference_write_no_user_turn_asked_for_is_flagged_by_its_tool_and_does_not_gate():
     replay = make_run("ref", [_turn("I have a problem with an order."),
                               {"type": "tool_call", "payload": {"id": "c1", "name": "cancel_pending_order",
                                                                 "args": {"order_id": "W1"}}},
                               {"type": "stop", "payload": {"start_state": START, "end_state": END}}])
-    ruling = T.trusted_gate(**_code_world([_cell()], run=replay))
-    assert ruling.metrics["untrusted"] == {TASK: "unconfirmed: unasked write cancel_pending_order"}
+    world = _code_world([_cell()], run=replay)
+    ruling = T.code_ruling(world["verifiers"][0], [replay], world["task_status"][TASK], CanonRules(),
+                           T.write_tools_of(SIGS))
+    assert ruling.unasked == ["cancel_pending_order"] and ruling.tier == "trusted"
+
+
+def test_a_workdir_with_specs_reports_the_spec_tier_through_the_workdir_ruling(tmp_path):
+    spec_tiers = {"a": ("trusted", {"failing": None}),
+                  "b": ("unconfirmed", {"failing": "unsupported cell orders.W1.status", "contradicts": ["x"]}),
+                  "c": ("replay_only", {"failing": "independent_pass"})}
+    ruling = T.workdir_trusted_ruling(tmp_path, spec_tiers=spec_tiers)
+    assert ruling.metrics["trusted"] == ["a"]
+    assert ruling.metrics["trust_tier"] == {"a": "trusted", "b": "unconfirmed", "c": "replay_only"}
+    assert ruling.metrics["untrusted"] == {"b": "unconfirmed: unsupported cell orders.W1.status",
+                                           "c": "replay_only: independent_pass"}
+    assert ruling.metrics["consistency_flags"] == {"a": 0, "b": 1, "c": 0}
 
 
 def test_the_status_table_shows_trusted_unconfirmed_refused_and_the_legacy_count_on_one_row():
@@ -395,10 +413,10 @@ def test_the_status_table_shows_trusted_unconfirmed_refused_and_the_legacy_count
             {"task_id": "b", "trust_tier": "unconfirmed", "legacy_trusted": True,
              "false_rejection": 0.5, "false_rejection_pool": 4},
             {"task_id": "c", "trust_tier": "refused", "refused": True},
-            {"task_id": "d", "trust_tier": "pending", "legacy_trusted": True}]
+            {"task_id": "d", "trust_tier": "pending", "legacy_trusted": True, "consistency_flags": 2}]
     line = T.trust_row(counts_of(rows))
     assert "\n" not in line
     assert line == ("trusted 1 | unconfirmed 1 | refused 1 | pending 1 | legacy rule trusted 3 | "
-                    "valid other solutions failing 2 of 4 held-out Runs")
+                    "valid other solutions failing 2 of 4 held-out Runs | consistency flags 1")
     ruling = T.trusted_gate(**_code_world([_cell(sourced=False)]))
     assert T.tier_counts(ruling.metrics)["unconfirmed"] == 1
