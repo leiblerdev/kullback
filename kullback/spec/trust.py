@@ -80,7 +80,7 @@ def is_fresh(run: Run) -> bool:
     return bool(models) and RECORDED not in models
 
 
-# --- the four gates --------------------------------------------------------------------------------
+# --- the five gates ---------------------------------------------------------------------------------
 
 def _score(verifier: Verifier, runs: list[Run], canon: Any, write_tools: Any) -> dict[str, tuple[bool, Any]]:
     """run id -> (passed, the first failing atom id or None)."""
