@@ -216,6 +216,21 @@ def load_task_runs(workdir: Path, path: str) -> Optional[dict]:
     return load_exam_task_runs(workdir) or None
 
 
+def load_verifiers(workdir: Path, path: str) -> Optional[list]:
+    """Every Task's Verifier from the verifiers/ folder (one file per Task), else verifiers.json, else None."""
+    _ = path
+    folder = workdir / "verifiers"
+    rows = [_read_json(folder, file.name) for file in sorted(folder.glob("*.json"))] if folder.is_dir() else []
+    return [row for row in rows if isinstance(row, dict)] or _read_json(workdir, "verifiers.json")
+
+
+def load_task_status(workdir: Path, path: str) -> Optional[dict]:
+    """The Tasks' status rows (task_status.json), or None when there is none."""
+    _ = path
+    status = _read_json(workdir, "task_status.json")
+    return status if isinstance(status, dict) else None
+
+
 def load_probes(workdir: Path, path: str) -> Optional[dict]:
     """Every probe pool on disk (records.load_probe_pools), or None when there are none."""
     _ = path
@@ -247,7 +262,8 @@ BINDINGS: tuple[Binding, ...] = (
     Binding("verifiers/*.json", VERIFIER_GATES,
             {"replays": _file_loader("replays.json"), "rerolls": _file_loader("rerolls.json"),
              "history": load_history, "task_runs": load_task_runs,
-             "reference": _file_loader("reference.json"), "verifiers": _file_loader("verifiers.json"),
+             "reference": _file_loader("reference.json"), "verifiers": load_verifiers,
+             "task_status": load_task_status,
              "probes": load_probes, "sigs": _file_loader("tool_sigs.json"),
              "rules": load_rules}),
     Binding("refusals/*.json", ("refuse",),
@@ -512,17 +528,18 @@ def _gate_trusted(evidence: dict) -> Optional[list[GateResult]]:
     """The trusted gate rules on the suite that just ran on the write: its row overlays the Task's
     status for this ruling only. With no suite in this ruling it falls back to the file row.
     "spec_tiers" (D322), a dict or a loader the layer above the gates hands in, makes the Spec's tiers
-    the ruling; the gates never read the Spec themselves."""
+    the ruling; the gates never read the Spec themselves. A Spec tier is a ruling in itself: it needs
+    no status row and no suite."""
     task_status = evidence.get("task_status")
     suite = _suite_status(evidence)
     if suite is not None:
         task_id, row = suite
         task_status = {**(task_status or {}), task_id: {**((task_status or {}).get(task_id) or {}), **row}}
-    if evidence.get("verifiers") is None or task_status is None:
-        return None
     spec_tiers = evidence.get("spec_tiers")
     spec_tiers = spec_tiers() if callable(spec_tiers) else spec_tiers
-    return [trusted_gate(task_status, evidence["verifiers"], evidence.get("probes") or {},
+    if evidence.get("verifiers") is None or (task_status is None and not spec_tiers):
+        return None
+    return [trusted_gate(task_status or {}, evidence["verifiers"], evidence.get("probes") or {},
                          evidence.get("history") or {}, evidence.get("refusals") or {},
                          evidence.get("task_runs") or {}, evidence.get("replays") or {},
                          evidence.get("rerolls") or {}, evidence.get("rules"), evidence.get("sigs") or [],
