@@ -1,7 +1,7 @@
 """The tool context: a body takes time, randomness and new ids from one context.
 
-Needs docs/frozen-patches/tool-context.patch on top of the confinement imports
-patch. Skips on a tree without them. Every tool and table here is invented.
+The tool context landed with the confinement imports change; the guard below skips on a tree
+without them. Every tool and table here is invented.
 """
 
 from __future__ import annotations
