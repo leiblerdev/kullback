@@ -108,7 +108,7 @@ def test_a_list_cell_is_sourced_by_its_changed_leaves_and_names_the_leaf_no_turn
     assert cell.source is None and cell.leaf_sources == {"1.sku": None}
 
 
-# --- D320: consistent with the request, not only available ---
+# --- D321: consistent with the request, not only available ---
 
 WALLET = {"orders": {"A1": {"method": "card_1"}, "B2": {"method": "gift_9"}, "C3": {"method": "paypal_4"}}}
 

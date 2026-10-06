@@ -417,7 +417,7 @@ def code_ruling(verifier: Verifier, references: list[Run], row: Any, canon_rules
     """(tier, reason, unsupported cells) by code alone: no model, no probe pool, no history (D319).
 
     In order: an end state fully sourced; one no cell of which contradicts the user's named values
-    and no write of the Reference unasked (D320: both leave the Task unconfirmed); every faithful replay of the Reference matching one
+    and no write of the Reference unasked (D321: both leave the Task unconfirmed); every faithful replay of the Reference matching one
     (False is a Verifier defect ruled back to the Spec, None leaves the Task unconfirmed, and the
     forbidden list and conduct answer too, so an unknown there blocks the same way); the empty Run
     failing; the wrong Run failing (D286) and the leak check clean (D287), off the suite's row.
