@@ -20,6 +20,7 @@ every turn is a context that is wrong and not a model that is bad.
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import Any, Callable, Iterable, Optional, Sequence
 
 from kullback.runner.records import Record
@@ -197,17 +198,24 @@ class Guards:
         return " ".join(out)
 
     def _strip_values(self, text: str, changed: list[str]) -> str:
-        """D196's strip: a sentence it takes something out of is a sentence this user cannot say."""
+        """D196's strip: the value it takes out goes, and the rest of its sentence stays (D307).
+
+        A sentence that names a flagged value often names the ids, the reason or the items the
+        Candidate needs beside it, and dropping the whole sentence lost those too. The strip's own
+        stand-ins (a month, a code's last characters) still say part of the value, so nothing stands
+        in: the words the strip changed go and the words it left are kept.
+        """
         if self.strip is None:
             return text
         kept = []
         for sentence in _sentences(text):
-            _, taken = self.strip(sentence)
+            stripped, taken = self.strip(sentence)
             if taken:
                 changed.append(STRIPPED)
                 self.counts[STRIPPED] = self.counts.get(STRIPPED, 0) + 1
-                continue
-            kept.append(sentence)
+                sentence = _unchanged_words(sentence, stripped)
+            if sentence:
+                kept.append(sentence)
         return " ".join(kept)
 
     def _cut_surplus(self, text: str, allowed: int, said: int, changed: list[str],
@@ -287,6 +295,20 @@ class EndProtocol:
         if requested == rules_mod.HANDED_OFF and rules_mod.closes(question):
             return rules_mod.HANDED_OFF
         return None
+
+
+def _unchanged_words(sentence: str, stripped: str) -> str:
+    """The words of a sentence the strip left as they were, in order.
+
+    Words compare as `canonical` spells them, so the punctuation the strip tidies away is not a
+    change. A sentence the strip flagged but changed nowhere has no span to take, so it goes whole.
+    """
+    words = sentence.split()
+    matcher = SequenceMatcher(a=[canonical(w) for w in words],
+                              b=[canonical(w) for w in (stripped or "").split()], autojunk=False)
+    kept = [word for op, start, end, _, _ in matcher.get_opcodes() if op == "equal"
+            for word in words[start:end]]
+    return "" if len(kept) == len(words) else " ".join(kept)
 
 
 def confirms(text: Optional[str], question: Optional[str]) -> bool:

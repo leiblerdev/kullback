@@ -152,11 +152,27 @@ def test_a_record_fact_is_replaced_by_the_sentence_that_points_at_it(ctx, record
     assert guards_mod.RECORD_FACT in outcome.changed
 
 
-def test_the_strip_takes_a_sentence_this_user_could_never_have_said(ctx):
-    def strip(text):
+def code_tail_strip(text):
+    """The D196 strip's shape for a code: the value goes and its last characters stand in."""
+    if "PLOT-4471" not in text:
+        return text, []
+    return text.replace("PLOT-4471", "ending 4471"), ["a value only the system knew"]
+
+
+def test_the_strip_takes_out_only_the_flagged_value_and_keeps_the_rest_of_the_sentence(ctx):
+    guards = guards_for(ctx, strip=code_tail_strip)
+    outcome = guards.check("Please move plot PLOT-4471 to the 16:00 slot.")
+    assert not outcome.dropped
+    assert "16:00" in outcome.text and "move" in outcome.text
+    assert "4471" not in outcome.text
+    assert guards_mod.STRIPPED in outcome.changed and guards.counts[guards_mod.STRIPPED] == 1
+
+
+def test_a_strip_that_flags_a_sentence_without_changing_it_drops_that_sentence(ctx):
+    def flags_only(text):
         return (text, ["a value only the system knew"]) if "PLOT-4471" in text else (text, [])
 
-    outcome = guards_for(ctx, strip=strip).check("My plot number is PLOT-4471.")
+    outcome = guards_for(ctx, strip=flags_only).check("My plot number is PLOT-4471.")
     assert outcome.dropped and outcome.reason == guards_mod.STRIPPED
 
 
