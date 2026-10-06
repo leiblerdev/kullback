@@ -11,7 +11,7 @@ import stat
 from pathlib import Path
 from typing import Any, Iterable, Literal, Optional, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from kullback.ai.usage import Usage
 
@@ -560,12 +560,74 @@ class Atom(Record):
     judge: bool = False
 
 
+class ValueSource(Record):
+    """Where one expected value came from (D315).
+
+    `ptr` for a user_turn holds the recording and the turn index; for a policy, the clause quoted;
+    for a tool_result, the event index, call id and tool of the result that first showed the value.
+    """
+    kind: Literal["user_turn", "policy", "tool_result"]
+    ptr: dict = Field(default_factory=dict)
+
+
+class ExpectedCell(Record):
+    """One cell of an expected end state; `field` None is the row itself, gone when `value` is None.
+
+    `source is None` means the value is unsupported, and `row_source is None` that the row is.
+    """
+    table: str
+    row_id: str
+    field: Optional[str] = None
+    value: Any = None
+    source: Optional[ValueSource] = None
+    row_source: Optional[ValueSource] = None
+
+
+class EndState(Record):
+    """One expected end state: its cells, and what else may differ (`allowed`); nothing else moves."""
+    cells: list[ExpectedCell] = Field(default_factory=list)
+    allowed: list[dict] = Field(default_factory=list)
+
+
+class Forbidden(Record):
+    """A write or a Run-ending call that must not happen (D315). Reads are never forbidden."""
+    kind: Literal["write", "end_call"]
+    tool: Optional[str] = None
+    table: Optional[str] = None
+    row_id: Optional[str] = None
+    field: Optional[str] = None
+    value: Any = None
+    source: ValueSource
+
+
+class Conduct(Record):
+    """Conduct the event log must show: a confirmation before a write, a refusal, a hand-off (D316)."""
+    kind: Literal["confirm_before_write", "refusal", "handoff"]
+    tool: Optional[str] = None
+    source: ValueSource
+
+
 class Verifier(Record):
-    """The End-state check for one Task, derived from confirmed References."""
+    """The End-state check for one Task, derived from confirmed References.
+
+    The end state and the event log decide (`expected`, `forbidden`, `conduct`); atoms guide (D316).
+    """
     task_id: str
     atoms: list[Atom] = Field(default_factory=list)
     verifier_version: str = "0"
     seed_run_ids: list[str] = Field(default_factory=list)
+    expected: list[EndState] = Field(default_factory=list)  # any one may match
+    forbidden: list[Forbidden] = Field(default_factory=list)
+    conduct: list[Conduct] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def _without_empty_gates(self, handler):
+        # An old Verifier dumps, and so hashes, byte for byte as it did before the gates existed.
+        data = handler(self)
+        for key in ("expected", "forbidden", "conduct"):
+            if isinstance(data, dict) and not data.get(key):
+                data.pop(key, None)
+        return data
 
 # --- runs, events, verdicts, gates ---
 

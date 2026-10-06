@@ -7,7 +7,17 @@ from typing import Any, Iterable, Optional
 from kullback.runner import target as _target
 from kullback.runner.atom_context import AtomContext, _evaluate, gate
 from kullback.runner.canon import UNRESOLVED, Unresolved, record_use
-from kullback.runner.records import VERDICT_VERSION, Atom, Run, Verdict, Verifier, load_run_jsonl
+from kullback.runner.expected import match_any
+from kullback.runner.records import (
+    VERDICT_VERSION,
+    Atom,
+    Conduct,
+    Forbidden,
+    Run,
+    Verdict,
+    Verifier,
+    load_run_jsonl,
+)
 
 # AtomContext, gate and _evaluate live in runner/atom_context.py: they are what a Verdict evaluates
 # an atom's predicate against, and the confinement gate they share with gates/confinement.py's
@@ -171,7 +181,7 @@ def _tally_atom(atom: Atom, holds: Optional[bool], unresolved_ids: set[str],
         # An atom that could not be checked leaves the Run not verdicted; a counted pass here
         # would hide a Verifier defect, an unrun judge or an unsettled pair (D76, D79, D219).
         # A forbidden atom is included: nothing said its forbidden state is absent either.
-        if atom.kind in MUST_HOLD or atom.id in unresolved_ids:
+        if atom.kind in MUST_HOLD or (atom.kind == "forbidden" and not atom.judge) or atom.id in unresolved_ids:
             unevaluable.append(atom)
         return
     if atom.kind in MUST_HOLD and not holds:
@@ -224,6 +234,78 @@ def _evaluate_atoms(verifier: Verifier, context: AtomContext, judge_results: Opt
     if unresolved_ids:
         notes.append(f"atoms_unresolved={len(unresolved_ids)}")
     return failures, unevaluable, judge_used
+
+
+# --- the gates: end state, forbidden list, conduct (D316) ---
+
+def _forbidden_happened(rule: Forbidden, context: AtomContext, moved: dict) -> Optional[bool]:
+    """Did this forbidden write or Run-ending call happen? Read off the calls and the diff."""
+    if rule.tool is not None:
+        hits = [call for call in context.calls if call["name"] == rule.tool and not call["error"]]
+        if rule.row_id is not None:
+            hits = [call for call in hits if any(context.c(v) == context.c(rule.row_id)
+                                                 for v in (call["args"] or {}).values())]
+        if hits or rule.kind == "end_call" or rule.table is None:
+            return bool(hits)
+    if rule.table is None:
+        return None
+    unsettled = False
+    for key, change in moved.items():
+        table, _, row_id = key.partition(".")
+        if table != rule.table or (rule.row_id is not None and row_id != rule.row_id):
+            continue
+        if rule.field is None:
+            return True
+        field = change["fields"].get(rule.field)
+        if field is None:
+            continue
+        if field.get("unresolved"):
+            unsettled = True
+        elif rule.value is None or context.c(rule.value) == field["after"]:
+            return True
+    return None if unsettled else False
+
+
+def _conduct_holds(rule: Conduct, context: AtomContext) -> Optional[bool]:
+    if rule.kind == "confirm_before_write":
+        return None if rule.tool is None else context.confirmed_before_first_write(rule.tool)
+    if rule.kind == "handoff":
+        return None if rule.tool is None else context.called(rule.tool)
+    message = (rule.source.ptr or {}).get("message")
+    if not message:
+        return None
+    errors = [call["error"] for call in context.calls if call["name"] == rule.tool and call["error"]]
+    said = [text for _, text in context.assistant] + [str(e.get("message") if isinstance(e, dict) else e)
+                                                      for e in errors]
+    return any(context.t(message) in context.t(text) for text in said)
+
+
+def _gates(verifier: Verifier, context: AtomContext) -> tuple[Optional[str], Optional[str]]:
+    """The first gate that failed and the first that could not be settled, each named, or None."""
+    failed: list[str] = []
+    unsettled: list[str] = []
+    if verifier.expected:
+        result = match_any(verifier.expected, context)
+        if result.ok is False:
+            failed.append(f"gate:expected:{result.why[0]}")
+        elif result.ok is None:
+            unsettled.append(f"gate:expected:{result.why[0]}")
+    moved = context.diff() if verifier.forbidden else {}
+    for i, rule in enumerate(verifier.forbidden):
+        happened = _forbidden_happened(rule, context, moved)
+        where = f"gate:forbidden:{i}:{rule.tool or ''}:{rule.table or ''}.{rule.row_id or ''}.{rule.field or ''}"
+        if happened:
+            failed.append(where)
+        elif happened is None:
+            unsettled.append(where)
+    for i, rule in enumerate(verifier.conduct):
+        holds = _conduct_holds(rule, context)
+        where = f"gate:conduct:{i}:{rule.kind}:{rule.tool or ''}"
+        if holds is False:
+            failed.append(where)
+        elif holds is None:
+            unsettled.append(where)
+    return (failed[0] if failed else None), (unsettled[0] if unsettled else None)
 
 
 def _classify(run: Run, context: AtomContext, cause_result: Any, marks: list[str], names: list[str],
@@ -287,11 +369,18 @@ def _note_comparisons(context: AtomContext, verifier: Verifier, workdir: Any, ru
 
 def _decide_outcome(verifier: Verifier, context: AtomContext, failures: list[Atom],
                     unevaluable: list[Atom], notes: list[str]) -> tuple[Optional[str], bool]:
+    # The gates come first: a False fails the Run naming the gate and the cell or rule, and a
+    # definite failure anywhere wins over an unsettled gate, which leaves the Run not verdicted (D316).
+    gate_failed, gate_open = _gates(verifier, context)
+    if gate_failed:
+        notes.append(f"failing_atom:{gate_failed}")
+        return gate_failed, False
     # One scorer (G3): covered writes are read off the Verifier atoms, as check_run does,
     # because non-Hard atoms no longer evaluate wrote() and mark nothing covered. Verifiers
-    # with no structured write target (unit fixtures only) keep the covered-set check.
+    # with no structured write target (unit fixtures only) keep the covered-set check. With
+    # expected end states the collateral rule already answers for a write nothing asked for.
     uneven = [atom for atom in unevaluable if not atom.judge]
-    extra = None if (failures or uneven) else _extra_write_outcome(verifier, context)
+    extra = None if (failures or uneven or verifier.expected) else _extra_write_outcome(verifier, context)
     if failures:
         first = failures[0]
         notes.append(f"failing_atom:{first.id}: {first.description or first.predicate_src or first.kind}")
@@ -300,6 +389,9 @@ def _decide_outcome(verifier: Verifier, context: AtomContext, failures: list[Ato
         failing_atom, note = extra
         notes.append(note)
         return failing_atom, False
+    if gate_open:
+        notes.append(f"not_verdicted:{gate_open}")
+        return gate_open, True
     if unevaluable:
         first = unevaluable[0]
         notes.append(f"not_verdicted:{first.id}: a {first.kind} atom could not be evaluated")
@@ -323,6 +415,12 @@ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results
             rules: Any = None, equivalence: Any = None, workdir: Any = None,
             verdict_version: str = VERDICT_VERSION) -> Verdict:
     """Pass or fail one stored Run on its End state; never calls a model, judge atoms arrive as results (D76).
+
+    The Verifier's gates decide first (D316): one of its expected end states matches with nothing
+    else moved, no forbidden write or call happened, and its conduct shows in the event log. A gate
+    that cannot be settled leaves the Run not verdicted naming the pair. Then the atoms, as before.
+    A Verifier with no expected end state and no forbidden or conduct rule is checked by its atoms
+    alone, exactly as before, so every stored Verifier keeps working.
 
     `cause_result` is judge.py's answer for this Run's failure cause (D88); code marks the Run,
     the judge names the cause, and neither is computed here.

@@ -3,6 +3,8 @@ runs (D39, design section 7)."""
 
 from __future__ import annotations
 
+import copy
+import re
 from typing import Any, Iterable, Optional
 
 from kullback.runner.canon import (
@@ -20,6 +22,9 @@ from kullback.runner.confinement import SAFE_BUILTINS, confine
 from kullback.runner.records import Run
 
 CONFIRM_WORDS = ("yes", "confirm", "go ahead")
+# A sentence that opens on a yes, and one that opens on a no, the way D306 reads a confirmation.
+AFFIRM_OPEN = re.compile(r"^(yes|yeah|yep|sure|ok|okay|confirm|confirmed|go ahead|please do|correct)\b", re.I)
+NEGATIVE_OPEN = re.compile(r"^(no|nope|don'?t|do not|not yet|hold on|wait|stop)\b", re.I)
 
 
 def _reply(payload: dict) -> dict:
@@ -95,9 +100,9 @@ class AtomContext:
             if event.type == "tool_call":
                 self.calls.append({"i": len(self.calls), "idx": event.idx, "id": payload.get("id"),
                                    "name": payload.get("name", ""), "error": None,
-                                   "args": payload.get("args") or payload.get("arguments") or {}})
+                                   "args": copy.deepcopy(payload.get("args") or payload.get("arguments") or {})})
             elif event.type == "tool_result":
-                self.results.append((event.idx, payload.get("result")))
+                self.results.append((event.idx, copy.deepcopy(payload.get("result"))))
                 for call in reversed(self.calls):
                     if payload.get("id") in (None, call["id"]):
                         call["error"] = payload.get("error")
@@ -114,11 +119,12 @@ class AtomContext:
             elif event.type == "user_turn":
                 self.user.append((event.idx, _text_of(payload)))
             elif event.type == "stop":
-                self.start_state = payload.get("start_state") or self.start_state
-                self.end_state = payload.get("end_state") or self.end_state
+                # The Verdict's own copies: nothing a predicate does reaches the stored Run (D316).
+                self.start_state = copy.deepcopy(payload.get("start_state")) or self.start_state
+                self.end_state = copy.deepcopy(payload.get("end_state")) or self.end_state
         if not self.calls:
             self.calls = [{"i": i, "idx": idx, "id": c.get("id"), "name": c.get("name", ""), "error": None,
-                           "args": c.get("args") or c.get("arguments") or {}}
+                           "args": copy.deepcopy(c.get("args") or c.get("arguments") or {})}
                           for i, (idx, c) in enumerate(inline)]
 
     # canonicalization, shared with route.py by construction (D39)
@@ -177,6 +183,22 @@ class AtomContext:
         return any(idx < first and any(self.t(w) in self.t(text) for w in needles)
                    for idx, text in self.user)
 
+    def confirmed_before_first_write(self, tool: str) -> bool:
+        """A user turn opening a sentence on a yes, none on a no, before this tool's first write (D306).
+
+        A tool never called holds: whether it had to be called is the expected end state's question.
+        """
+        first = next((call["idx"] for call in self.calls if call["name"] == tool and not call["error"]), None)
+        if first is None:
+            return True
+        for idx, text in self.user:
+            if idx >= first:
+                continue
+            sentences = [part.strip() for part in re.split(r"[.!?\n]+", text) if part.strip()]
+            if any(AFFIRM_OPEN.match(s) for s in sentences) and not any(NEGATIVE_OPEN.match(s) for s in sentences):
+                return True
+        return False
+
     def value(self, table: str, row_id: str, field: Optional[str] = None) -> Any:
         """The End state value as it stands.
 
@@ -185,7 +207,7 @@ class AtomContext:
         eq() to compare two values under the canonicalizer (D39).
         """
         row = (self.end_state.get(table) or {}).get(row_id)
-        return row if field is None else (row or {}).get(field)
+        return copy.deepcopy(row if field is None else (row or {}).get(field))
 
     def eq(self, left: Any, right: Any) -> bool:
         """Compare two values the way the rest of the Verdict compares them (D39)."""
@@ -302,11 +324,15 @@ class AtomContext:
                 # all three answers; `same` and `changed` are booleans and stop on an unresolved
                 # pair unless the atom states a policy for it (D219).
                 "same": self.same, "resolution": self.resolution,
-                "changed": self.changed, "diff": self.diff, "extra_writes": self.extra_writes,
-                "writes_count": self.writes_count, "write_calls": self.write_calls,
-                "calls": [dict(c) for c in self.calls], "transcript": self.transcript(),
+                # Everything handed out is a copy, so a predicate that mutates a row cannot make a
+                # later check pass (D316); the helpers above read the context's own copies.
+                "changed": self.changed, "diff": self.diff,
+                "extra_writes": lambda: copy.deepcopy(self.extra_writes()),
+                "writes_count": self.writes_count, "write_calls": lambda: copy.deepcopy(self.write_calls()),
+                "calls": copy.deepcopy(self.calls), "transcript": copy.deepcopy(self.transcript()),
                 "messages": [t for _, t in self.assistant], "user_turns": [t for _, t in self.user],
-                "start_state": self.start_state, "end_state": self.end_state, "canon": self.c}
+                "start_state": copy.deepcopy(self.start_state), "end_state": copy.deepcopy(self.end_state),
+                "canon": self.c}
 
 
 def gate(source: str) -> list[str]:
