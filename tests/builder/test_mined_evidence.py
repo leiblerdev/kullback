@@ -5,8 +5,8 @@ calls that tell the truth, then checks the fact's basis, its supporting calls an
 calls contradict the name, the recorded contradiction. The table a column names has no
 observation test a call could run, so its tests lock the punt: the basis stays the name.
 
-The module skips without the frozen patch that adds "declared" to ClassifiedBy, because the
-declared-kind facts only validate with it (docs/frozen-patches/mined-evidence.patch).
+The module skips on a tree whose ClassifiedBy has no "declared", because the declared-kind facts
+only validate with it.
 """
 
 from __future__ import annotations

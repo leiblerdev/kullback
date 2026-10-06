@@ -634,10 +634,9 @@ def _decide_kind(sig: ToolSig, model: Optional[Model], samples: list, spec: Opti
     elif annotation is not None and annotation.kind != rule.kind:
         rule = rule._replace(reason=f"{rule.reason}; the declared annotations disagree: {annotation.reason}")
     sig.kind, sig.kind_confidence, sig.kind_reason = rule.kind, rule.confidence, rule.reason
-    # A declaration is its own basis, not a name guess; it needs the frozen patch that adds the
-    # value to ClassifiedBy, and rides there (docs/frozen-patches/mined-evidence.patch).
-    # Where the runtime tree predates the patch, the declaration still decides the kind but is
-    # recorded as a rule with the wait said out loud, so no artifact carries a value nothing reads.
+    # A declaration is its own basis, not a name guess, and rides on ClassifiedBy as "declared".
+    # Where a runtime tree has no such value, the declaration still decides the kind but is
+    # recorded as a rule, so no artifact carries a value nothing reads.
     sig.classified_by = BASIS_DECLARED if declared and _DECLARED_BASIS_ALLOWED else "rule"
     standing_basis = BASIS_DECLARED if declared else BASIS_NAME
     sig.unclassified = rule.confidence == "low"
