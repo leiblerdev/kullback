@@ -68,8 +68,15 @@ def tools_section() -> str:
             'e.g. {"task_id": "t1", "bug_class": "loose check", "note": "what it changes", '
             '"events": [...]}; the Run stays in the pool.\n'
             "finding: file what is wrong on the Builder side, "
-            'e.g. {"task_id": "t1", "kind": "fidelity", "text": "what differs", '
-            '"rows": [...], "path": "env/tools/<name>.py", "change": "what should differ"}.\n'
+            'e.g. {"task_id": "t1", "kind": "fidelity", "text": "what differs", "rows": [...], '
+            '"path": "env/tools/<name>.py", "change": "what should differ", "edits": [{"kind": "body", '
+            '"path": "env/tools/<name>.py", "call_id": "c3", "column": "<column>", "recorded": "<value>", '
+            '"replayed": "<value>", "why": "one sentence"}]}. An edit is the diff: body (the call, the '
+            "column and both values), text (path intents/<task>.json or tasks/<task>.json, where the "
+            "verbatim current text, found exactly once, and replace the new text) or atoms (task_id, "
+            "drop and add). Prefer an edit whenever you can name the values or quote the text: a line "
+            "the Builder has to interpret is a guess, an edit is a fact it can apply and the gates can "
+            "rule on. Never return a whole body or a whole Intent as a finding.\n"
             "reroll: buy more frontier Runs of a Task, "
             'e.g. {"task_id": "t1", "count": 2}.\n'
             "check_reference: the evidence on a Task's Reference in one view, "
@@ -160,7 +167,14 @@ def intent_tools_section() -> str:
             "it files rule with target run, so the why quotes like any reason.\n"
             "finding: file what is wrong on the Builder side, "
             'e.g. {"task_id": "t1", "kind": "fidelity", "text": "what differs", "rows": [...], '
-            '"path": "env/tools/<name>.py", "change": "what should differ"}.\n'
+            '"path": "env/tools/<name>.py", "change": "what should differ", "edits": [{"kind": "body", '
+            '"path": "env/tools/<name>.py", "call_id": "c3", "column": "<column>", "recorded": "<value>", '
+            '"replayed": "<value>", "why": "one sentence"}]}. An edit is the diff: body (the call, the '
+            "column and both values), text (path intents/<task>.json or tasks/<task>.json, where the "
+            "verbatim current text, found exactly once, and replace the new text) or atoms (task_id, "
+            "drop and add). Prefer an edit whenever you can name the values or quote the text: a line "
+            "the Builder has to interpret is a guess, an edit is a fact it can apply and the gates can "
+            "rule on. Never return a whole body or a whole Intent as a finding.\n"
             "reroll: buy more frontier Runs of a Task, "
             'e.g. {"task_id": "t1", "count": 2}.')
 

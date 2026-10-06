@@ -879,11 +879,6 @@ VersionBy = Literal["derive", "repair", "auto_loosen"]
 # reached the Builder (D227).
 FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "suite", "false_rejection",
                       "environment", "intent_leak", "runs_disagree", "other"]
-# `repair` is the Examiner's own verb, the one answer to a Verifier the Builder cannot touch (D123),
-# and `reroll_then_derive` is its other one, for a check that had no second Run to score (D173);
-# `repair_refuse_task` is the Builder's, for a Task the corpus itself does not settle.
-FindingVerb = Literal["compile_tool", "replay", "reroll", "repair_intent", "repair_recompile",
-                      "repair_refuse_task", "repair", "reroll_then_derive", "none"]
 FindingStatus = Literal["open", "delivered", "closed"]
 
 
@@ -943,9 +938,10 @@ class Refusal(Record):
 class Finding(Record):
     """What the Examiner found wrong on the Builder's side, delivered to the Builder as a follow-up (D123).
 
-    `suggested` is the Builder verb that answers it and `hint` the one line that verb is given: the
-    repair verbs take a hint, so a finding that names one without a hint asks for the same repair
-    again with nothing new to go on. The round driver renders the two together as a callable line.
+    `change` is the one line saying what should differ and `edits` the diff itself, each edit with
+    its why and the values behind it, in the one shape the Builder and the Spec both read (D317).
+    The repair verbs are gone: a file written before D317 still loads, its `suggested` dropped and
+    its `hint` read as the change.
 
     `task_ids` is every Task the finding costs and `task_id` the first of them, so one loss that
     blocks fifty Tasks is one finding with a count rather than fifty (D170). `key` is what makes two
@@ -958,13 +954,24 @@ class Finding(Record):
     text: str
     run_id: Optional[str] = None
     tool: Optional[str] = None
-    suggested: FindingVerb = "none"
-    hint: str = ""
+    change: str = ""
+    edits: list[dict] = Field(default_factory=list)
     about_entry_id: Optional[str] = None
     round: int = 0
     status: FindingStatus = "open"
     task_ids: list[str] = Field(default_factory=list)
     key: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _before_d317(cls, data: Any) -> Any:
+        """A finding written with the old verb and hint: the verb is dropped, the hint is the change."""
+        if isinstance(data, dict) and ("suggested" in data or "hint" in data):
+            data = dict(data)
+            data.pop("suggested", None)
+            hint = data.pop("hint", "")
+            data.setdefault("change", hint or "")
+        return data
 
     @property
     def cost(self) -> int:

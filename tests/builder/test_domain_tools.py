@@ -119,6 +119,31 @@ def test_examine_calls_the_function_the_session_passed_in(tmp_path):
     assert "widget_task: fidelity: answer the recorded call (tools/a.py) [1 rows]" in result.content
 
 
+
+def test_examine_renders_each_edit_on_its_own_line_path_then_values_then_why():
+    finding = {"task_id": "widget_task", "kind": "fidelity", "change": "label differs", "path": "env/tools/a.py",
+               "rows": [{"call_id": "c1"}], "edits": [
+                   {"kind": "body", "path": "env/tools/a.py", "call_id": "c1", "column": "label",
+                    "recorded": "striped", "replayed": "plain", "why": "the recording is the standard"},
+                   {"kind": "text", "path": "intents/widget_task.json", "where": "the widget",
+                    "replace": "widget w1", "why": "the user named it"}]}
+    lines = domain_tools_mod._render_examine(domain_tools_mod.ExamineResult(summary="1 finding",
+                                                                            findings=[finding])).splitlines()
+    assert lines[1] == "widget_task: fidelity: label differs (env/tools/a.py) [1 rows]"
+    assert lines[2] == ("  edit body env/tools/a.py: call c1 column label: recorded striped, replayed plain; "
+                        "why: the recording is the standard")
+    assert lines[3] == ('  edit text intents/widget_task.json: where "the widget" replace "widget w1"; '
+                        "why: the user named it")
+
+
+def test_the_builder_prompt_says_findings_carry_edits_and_how_each_is_applied():
+    from kullback.builder import prompt
+
+    text = prompt.EXAMPLES + prompt.FEEDBACK
+    assert "may carry edits" in text and "A text edit is applied with edit exactly as given" in text
+    assert "moves the replayed value to the recorded one" in text
+
+
 RENAME_BODY = (
     "row = self.db.widgets.get(widget_id)\n"
     "if row is None:\n"

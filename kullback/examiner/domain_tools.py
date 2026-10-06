@@ -30,6 +30,7 @@ from kullback.agent.tools import AgentTool, RetryableToolError
 from kullback.examiner.exam_files import (
     ExamRoot,
     Finding,
+    check_edit,
     evidence_of,
     finding_key,
     open_by_key,
@@ -161,6 +162,10 @@ class FindingArgs(BaseModel):
     rows: list[dict] = Field(default_factory=list, description="The evidence, one record per call or Task.")
     path: str = Field(default="", description="The Environment file the Builder should edit, or empty.")
     change: str = Field(default="", description="One line saying what should differ.")
+    edits: list[dict] = Field(default_factory=list, description=(
+        "The diff, each with its why: {kind: body, path, call_id, column, recorded, replayed, why}, "
+        "{kind: text, path: intents/<task>.json or tasks/<task>.json, where: verbatim text found "
+        "once, replace, why}, or {kind: atoms, task_id, drop: [atom ids], add: [atoms], why}."))
     note_ruling: Optional[Literal["builder_right", "builder_wrong"]] = Field(
         default=None, description="Set to rule on the Builder's open note on this Task: whether the "
                                   "Builder is right, with the why in text.")
@@ -1167,8 +1172,9 @@ def _refuse_repeat(root: ExamRoot, record: Finding, args: FindingArgs) -> None:
 def _finding(root: ExamRoot):
     async def finding(args: FindingArgs) -> FindingResult:
         kind = _check_finding(root, args)
+        edits = [check_edit(edit, root.exam_dir) for edit in args.edits]
         record = Finding(task_id=args.task_id, kind=kind, text=args.text, rows=list(args.rows),
-                         path=args.path, change=args.change, source="model")
+                         path=args.path, change=args.change, source="model", edits=edits)
         _refuse_repeat(root, record, args)
         root.findings.append(record)
         body = record.as_dict()
