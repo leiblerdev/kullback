@@ -1054,3 +1054,14 @@ def test_examine_writes_the_specs_on_a_named_spec_model(workdir, fake_modules, m
     invoke("build", "--workdir", str(workdir), "--model", "vendor/large", "--spec-model", "other/writer")
     fake_modules["kullback.builder.session.build"][0]["kwargs"]["examine_fn"](workdir, ["t1"])
     assert fake_modules["kullback.spec.stage.write_specs"][0]["args"][2] is built["other/writer"]
+
+
+def test_status_and_the_counts_line_print_one_trusted_count_on_a_workdir_with_specs(tmp_path):
+    from kullback import round_snapshot
+    from tests.spec.test_trust import _fresh, _intent_workdir, _replay
+
+    _intent_workdir(tmp_path, [_replay(), _fresh()])
+    round_snapshot.checkpoint(tmp_path, 1)
+    out = runner.invoke(cli.app, ["status", "--workdir", str(tmp_path)]).output
+    assert "trusted: 1" in out and "trust: trusted 1 |" in out
+    assert cli._counts_line(tmp_path).startswith("trusted 1,")

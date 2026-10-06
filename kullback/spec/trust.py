@@ -351,9 +351,15 @@ def workdir_tiers(workdir: Any) -> dict[str, TaskTier]:
     return intent_tiers(workdir)
 
 
+def spec_tiers_of(workdir: Any) -> Optional[dict[str, TaskTier]]:
+    """The Spec's tiers where the workdir has Specs, else None: what the gates take as `spec_tiers` (D322)."""
+    root = Path(workdir)
+    return workdir_tiers(root) if spec_ids(root) else None
+
+
 def workdir_ruling(workdir: Any) -> Any:
     """The one trusted ruling over a workdir (D322): the Spec's tiers where it has Specs, read through
     `gates.trust.workdir_trusted_ruling` so status, the round snapshot and the report print one tier per
     Task from one place; a workdir with no Spec keeps the gates' own ruling."""
     root = Path(workdir)
-    return workdir_trusted_ruling(root, spec_tiers=workdir_tiers(root) if spec_ids(root) else None)
+    return workdir_trusted_ruling(root, spec_tiers=spec_tiers_of(root))

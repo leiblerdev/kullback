@@ -583,9 +583,11 @@ def _session_subscriber(workdir: Path):
 
 
 def _counts_line(workdir: Path) -> str:
-    """The workdir counts as one line: trusted, refused, the pool and fidelity off the gate rulings."""
+    """The workdir counts as one line: trusted, refused, the pool and fidelity off the gate rulings,
+    trusted read off the Spec tiers where the workdir has Specs (D322)."""
     from kullback.examiner.reference import pooled_tasks
     from kullback.gates import counts as counts_mod
+    from kullback.spec.trust import spec_tiers_of
 
     root = Path(workdir)
     task_status = _json_at(root, "task_status.json")
@@ -594,7 +596,8 @@ def _counts_line(workdir: Path) -> str:
     result = counts_mod.round_counts(
         task_status, verifiers, {}, {}, _refusal_dicts(root), {}, replays,
         _json_at(root, "rerolls.json"), _entry("kullback.runner.canon", "load_rules")(root / "canon-rules.json"),
-        (_json_at(root, "tool_sigs.json") or {}).get("sigs", []), workdir=root)
+        (_json_at(root, "tool_sigs.json") or {}).get("sigs", []), workdir=root,
+        spec_tiers=spec_tiers_of(root))
     line = (f"trusted {result['trusted']}, refused {result['refused_count']}, "
             f"fidelity {result['fidelity']}/{result['tasks']}")
     if waiting := pooled_tasks(root):

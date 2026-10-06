@@ -41,6 +41,7 @@ from kullback.builder.world_tools import ingest_files
 from kullback.gates import names_protected_path
 from kullback.gates.hook import PATH_KEYS, gate_writes
 from kullback.runner import budget
+from kullback.spec.trust import spec_tiers_of
 
 #: The directories under env/ the model may write; everything else there is read-only for it.
 WRITABLE_PREFIXES = ("tools/", "intents/", "refusals/", "policy/")
@@ -251,8 +252,10 @@ def builder_extension(root: BuilderRoot) -> Callable[[ExtensionAPI], None]:
         api.tool_call(no_agent_writes_gates_or_runner)
         api.tool_call(write_fence)
         api.tool_call(refusal_waits_for_note(root.workdir))
+        # The trusted gate rules by the Spec's tiers (D322), loaded here since the gates sit below the Spec.
         api.tool_result(gate_writes(root=env, workdir=root.workdir,
-                                    execute=env_files.executor(root.workdir, env)))
+                                    execute=env_files.executor(root.workdir, env),
+                                    evidence={"spec_tiers": lambda: spec_tiers_of(root.workdir)}))
         api.tool_result(regenerate_and_guard(api, root))
 
     return setup

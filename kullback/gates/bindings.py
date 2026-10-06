@@ -510,7 +510,9 @@ def _suite_status(evidence: dict) -> Optional[tuple[str, dict]]:
 
 def _gate_trusted(evidence: dict) -> Optional[list[GateResult]]:
     """The trusted gate rules on the suite that just ran on the write: its row overlays the Task's
-    status for this ruling only. With no suite in this ruling it falls back to the file row."""
+    status for this ruling only. With no suite in this ruling it falls back to the file row.
+    "spec_tiers" (D322), a dict or a loader the layer above the gates hands in, makes the Spec's tiers
+    the ruling; the gates never read the Spec themselves."""
     task_status = evidence.get("task_status")
     suite = _suite_status(evidence)
     if suite is not None:
@@ -518,11 +520,13 @@ def _gate_trusted(evidence: dict) -> Optional[list[GateResult]]:
         task_status = {**(task_status or {}), task_id: {**((task_status or {}).get(task_id) or {}), **row}}
     if evidence.get("verifiers") is None or task_status is None:
         return None
+    spec_tiers = evidence.get("spec_tiers")
+    spec_tiers = spec_tiers() if callable(spec_tiers) else spec_tiers
     return [trusted_gate(task_status, evidence["verifiers"], evidence.get("probes") or {},
                          evidence.get("history") or {}, evidence.get("refusals") or {},
                          evidence.get("task_runs") or {}, evidence.get("replays") or {},
                          evidence.get("rerolls") or {}, evidence.get("rules"), evidence.get("sigs") or [],
-                         workdir=evidence.get("workdir"))]
+                         workdir=evidence.get("workdir"), spec_tiers=spec_tiers)]
 
 
 def _gate_refuse(evidence: dict) -> Optional[list[GateResult]]:
@@ -705,9 +709,9 @@ def _atom_case(evidence: dict, atom_id: Any, run: Any) -> dict:
     the Run made; a stated fact names the answer turn its span points at with the demanded
     wording against what that turn said. Shapes with no single call carry no call.
     """
+    from kullback.gates.verifier_suite import atom_payload as _atom_payload
     from kullback.runner.target import _args as _call_args
     from kullback.runner.target import _payload as _call_payload
-    from kullback.gates.verifier_suite import atom_payload as _atom_payload
 
     verifier = _verifier_of(evidence)
     payload: dict = {}
@@ -720,6 +724,7 @@ def _atom_case(evidence: dict, atom_id: Any, run: Any) -> dict:
             break
     if not payload:
         return {}
+    events = list(getattr(run, "events", None) or [])
     at, tool = payload.get("at"), payload.get("tool")
     if isinstance(at, int) and isinstance(tool, str):
         case: dict = {"call": at, "tool": tool}
@@ -763,6 +768,7 @@ def _atom_case(evidence: dict, atom_id: Any, run: Any) -> dict:
 
 def _suite_rows(evidence: dict, result: GateResult) -> list[dict]:
     import re as _re
+
     from kullback.gates.verifier_suite import first_diff as _first_diff
 
     metrics = result.metrics or {}
