@@ -2285,7 +2285,7 @@ Limit: the empty Run still passes a Verifier whose expected diff is empty and wh
 forbidden list on the wrong Run instead, which that function does not yet say. A tool signature with no argument
 list is read as unknown and never refuses a value. Status: built 2026-10-07 on fix-1007/demands.
 
-### D323. Examiner edits reach what gates: atom ids that exist, end-state and conduct edits, no silent no-finding (2026-10-07)
+### D325. Examiner edits reach what gates: atom ids that exist, end-state and conduct edits, no silent no-finding (2026-10-07)
 
 The analysis of the verify-1006 live run (analyze-1007) found the Examiner's review edits mostly reached nothing. 179 atom
 drops named check ids (c<n>) or fact ids while the compiled atoms are i<n>; `spec/review.py` stored every drop and counted it
