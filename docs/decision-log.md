@@ -2238,3 +2238,31 @@ After the verify-1006 fold two rulings decided trust for the same Task: the Spec
 The consistency checks of D321 (`contradicts_user`, `unasked_writes`) leave the trusted decision: `code_ruling` still computes them and the row carries them as `contradicts` and `unasked`, counted in the status table as "consistency flags" and never gating. This is the fold's reading pending the founder's decision on D321, and it is reversible in one place: where `code_ruling` builds the flags it can return unconfirmed again.
 
 Rejected: two rulings on one Task, because a reader could not say which tier a Task has; unsupported cells passing the grounded gate, because a value nobody sourced is not evidence the Task is right; the consistency checks as gates until the founder decides, because D321 found they do not separate a wrong Reference.
+
+### D323. The rule user hears id asks, confirms only a pending write, and ends only when the job is done (2026-10-07)
+
+The fix-1007 failure analysis put 273 of 334 failing airline Runner Runs on the rule user and 57 of 213 retail Runs on a
+goal marked satisfied after part of the job. Six changes, all over names read at run time:
+- `user/fidelity.py vocabulary_of`: with no valid vocabulary.json, the Vocabulary is the generic core plus every id
+  argument of the mined signatures (`user/vocabulary.py from_signatures`, cues from `_base_cues`). The generic core alone
+  heard no id ask, and the user restated its goal and closed (260 Runs).
+- `user/simulated.py _asked`: a held fact the agent's turn names is answered under a confirm cue too; a fact whose value
+  the turn states is a confirmation, not an ask.
+- `_respond`: once the goal's writes are made, a confirm cue past the recorded confirmations gets the goal or the close,
+  never the reused yes (5 Runs looped to max_turns). A line said again with no write in between is replaced by one
+  generic "what else do you need" line; the third time the user closes, `scenario_exhausted` with the tag `user_repeat`.
+- `_close`: a closing line that carries the transfer token is said without it, and the token goes on the next turn, so
+  the agent keeps one turn for its hand-off call (6 Runs ended `transfer` with no hand-off).
+- `_goal_done`: with `goal_counts` (`user/rules.py goal_write_counts`, the Reference's successful writes per tool), the
+  goal is done only when every requested write is made, not one of each tool.
+- `runner/tool.py runner_prompt`: the Runner prompt ends with one line asking the agent to list every item the user
+  asked for and say whether it was done (173 retail Runs stopped short). Not in `_system_prompt_for`, which the Spec
+  writer reads as policy text; `runner/world/episode.py` still passes the bare instructions.
+
+Limits: `builder/run_user.py` builds the exam user with the generic core and no `goal_counts`, and `user/factory.py` and
+`builder/domain_tools.py` pass no `goal_counts`; until they pass `vocabulary_of(workdir)` and
+`goal_write_counts(reference, writes)` those Runs keep the old behaviour. A count per tool stands in for a count per
+entity, so the same row written twice satisfies a count of two. "Pending write" is read as the goal not done, not as the
+turn naming the write. No Run was made to measure the change.
+
+Status: built 2026-10-07 on fix-1007/user.
