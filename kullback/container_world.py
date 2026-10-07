@@ -105,7 +105,6 @@ class StepReceipt:
 
 
 OWNER_LABEL = "kullback.owner=container_world"
-OWNER_KEY = "kullback.owner"
 OWNER_VALUE = "container_world"
 WORLD_KEY = "kullback.world"
 USER_SPEC = "65534:65534"
@@ -148,11 +147,6 @@ def _validate_image(image: object) -> None:
         raise ImagePinError("image must be pinned as name@sha256:<digest>")
     _check_image_name(parts[0])
     _check_image_digest(parts[1])
-
-
-def _split_image(image: str) -> tuple[str, str]:
-    parts = image.split("@sha256:")
-    return (parts[0], parts[1].lower())
 
 
 def _validate_image_metadata(meta: object) -> None:
