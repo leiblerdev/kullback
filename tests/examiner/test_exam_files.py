@@ -152,3 +152,26 @@ def test_expose_writes_the_derived_verifier_under_derived_and_leaves_verifiers_a
     assert read_json(workdir / "exam" / "derived" / "t1.json") == as_dict(verifier)
     assert "derived/t1.json" in out["copied"]
     assert not (workdir / "exam" / "verifiers").exists(), "the proposal path stays the Examiner's own"
+
+
+def test_current_reads_the_spec_verifier_and_ignores_a_stale_proposal_under_exam(tmp_path):
+    verifier = _verifier(tmp_path)
+    write_json(tmp_path / "exam" / "verifiers" / "t1.json", as_dict(verifier.model_copy(update={"atoms": []})))
+    root = F.ExamRoot(workdir=tmp_path, verifiers={"t1": verifier})
+    assert root.current("t1") == verifier and root.current("t2") is None
+
+
+def test_check_edit_takes_cell_conduct_and_reference_edits_and_names_what_is_missing(tmp_path):
+    cell = {"kind": "cell", "task_id": "t1", "table": "items", "action": "drop", "why": "no turn says it"}
+    conduct = {"kind": "conduct", "task_id": "t1", "action": "add", "conduct": "refusal", "why": "policy"}
+    reference = {"kind": "reference", "task_id": "t1", "run_id": "r2", "why": "it did what was asked"}
+    assert [F.check_edit(e, tmp_path) for e in (cell, conduct, reference)] == [cell, conduct, reference]
+    for edit, said in ((dict(cell, action="keep"), "action, one of allow, drop"),
+                       (dict(conduct, conduct="apology"), "conduct, one of handoff"),
+                       ({**reference, "run_id": ""}, "run_id")):
+        try:
+            F.check_edit(edit, tmp_path)
+        except ValueError as error:
+            assert said in str(error)
+        else:
+            raise AssertionError(f"{edit} was taken")

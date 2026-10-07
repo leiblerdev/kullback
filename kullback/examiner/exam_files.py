@@ -32,7 +32,6 @@ from kullback.runner.records import (
     as_probe_pool,
     exam_history_path,
     exam_task_runs_path,
-    exam_verifier_path,
     load_exam_history,
     read_json,
     write_json,
@@ -68,9 +67,15 @@ def names_forbidden_path(value: Any) -> Optional[str]:
 FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "suite",
                       "false_rejection", "environment", "other"]
 FindingSource = Literal["derive", "model"]
-# The three shapes one edit takes (D317): what a body answered differently on one recorded call,
-# an exact-match-once replacement in an Intent or Task file, and a Verifier diff in atoms.
-EDIT_KINDS = ("body", "text", "atoms")
+# The shapes one edit takes (D317): what a body answered differently on one recorded call,
+# an exact-match-once replacement in an Intent or Task file, a Verifier diff in atoms, a cell of the
+# expected end states to allow or drop, a conduct rule to add or remove, and a Run proposed as Reference.
+EDIT_KINDS = ("body", "text", "atoms", "cell", "conduct", "reference")
+# What each end-state or reference edit names besides its kind and why: key and allowed values (None any).
+EDIT_FIELDS = {"cell": {"task_id": None, "table": None, "action": ("allow", "drop")},
+               "conduct": {"task_id": None, "action": ("add", "remove"),
+                           "conduct": ("handoff", "refusal", "confirm_before_write")},
+               "reference": {"task_id": None, "run_id": None}}
 # The files a text edit may name: the ones the Examiner reads whole and can quote (COPIED_DIRS).
 TEXT_EDIT_DIRS = ("intents", "tasks")
 BODY_EDIT_KEYS = ("call_id", "column", "recorded", "replayed")
@@ -135,6 +140,10 @@ def check_edit(edit: Any, exam_dir: Path) -> dict:
             raise ValueError(f"text not found in {path}")
         if found > 1:
             raise ValueError(f"found {found} times in {path}; quote enough to match once")
+    elif edit["kind"] in EDIT_FIELDS:
+        for key, allowed in EDIT_FIELDS[edit["kind"]].items():
+            if not edit.get(key) or (allowed and edit[key] not in allowed):
+                raise ValueError(f"a {edit['kind']} edit names {key}" + (f", one of {', '.join(allowed)}" if allowed else ""))
     elif not (edit.get("drop") or edit.get("add")) or not edit.get("task_id"):
         raise ValueError("an atoms edit names task_id and at least one atom to drop or add")
     return dict(edit)
@@ -189,13 +198,7 @@ class ExamRoot:
         return Path(self.workdir) / EXAM_DIR
 
     def current(self, task_id: str) -> Optional[Verifier]:
-        """The Task's live Verifier: the exam proposal first, else the derived one."""
-        path = exam_verifier_path(self.workdir, task_id)
-        if path.is_file():
-            try:
-                return Verifier.model_validate(read_json(path))
-            except ValueError:
-                pass
+        """The Task's live Verifier: the Spec's, as written to verifiers/; never a file under exam/."""
         return self.verifiers.get(task_id)
 
 

@@ -2284,3 +2284,30 @@ Limit: the empty Run still passes a Verifier whose expected diff is empty and wh
 (`gates/trust.py _empty_run_passes`, the return at line 412), since it writes nothing; such a Task is judged by its
 forbidden list on the wrong Run instead, which that function does not yet say. A tool signature with no argument
 list is read as unknown and never refuses a value. Status: built 2026-10-07 on fix-1007/demands.
+
+### D323. Examiner edits reach what gates: atom ids that exist, end-state and conduct edits, no silent no-finding (2026-10-07)
+
+The analysis of the verify-1006 live run (analyze-1007) found the Examiner's review edits mostly reached nothing. 179 atom
+drops named check ids (c<n>) or fact ids while the compiled atoms are i<n>; `spec/review.py` stored every drop and counted it
+applied, and 0 atoms were removed. 116 findings carried no edit because no kind existed for what they asked (re-pick a
+Reference 23, a conduct rule 18, a cell to drop or allow 17, among others). 40 no-finding reviews sat on Tasks with an
+unsupported cell, and `ExamRoot.current` read stale proposals under exam/verifiers/ before the Spec's Verifier.
+
+Now an atoms edit whose drop names no atom of the live Verifier is refused with the atom ids, and one dropping more than half
+of the atoms at once is refused. Each Task's line in the opening shows every atom id beside the check that made it, and the
+prompt shows an added atom in the shape the Spec accepts. Three edit kinds join body, text and atoms: `cell` (allow or drop a
+cell of every expected end state), `conduct` (add or remove a handoff, refusal or confirm_before_write rule; the conduct's
+kind sits under the key `conduct`, since `kind` names the edit) and `reference` (a Run on disk proposed as the Reference).
+Cell and conduct edits are kept on the Spec as `end_state_edits` and applied by code after each rewrite, both Verifier copies
+written with the version marked; an added conduct's source is a policy source whose clause is the review's why, since
+ValueSource has no examiner kind. A reference edit promotes nothing: it writes a `reference_proposed` row to
+examiner/reviews.json and opens a ruling on the Spec, so the Task's no_open_ruling gate fails until someone acts.
+`no_finding` is refused while the Task's Verifier holds a cell without a value or row source, naming the cells.
+`ExamRoot.current` reads the Spec's Verifier only.
+
+Limit: only `apply_review` reapplies the end-state edits; another rewrite of the Verifier (a router repair through
+`spec/writer.py write_verifier`) drops them until the next review round. Nothing closes a reference ruling yet. The finding
+tool's own field description (examiner/domain_tools.py) still lists the three old edit kinds; the prompt lists all six.
+Rejected: an examiner kind on ValueSource, a records change for one pointer; promoting the proposed Run by code, which would
+let the Examiner pick the Reference it is then judged against.
+Status: built 2026-10-07 on fix-1007/examiner.
