@@ -326,3 +326,10 @@ def test_repair_for_ruling_publishes_defended_when_no_item_changes(tmp_path):
     assert defended.checks == spec.checks
     (event,) = _bus_events(tmp_path)
     assert event["name"] == "spec.defended" and event["payload"]["check_ids"] == ["s1"]
+
+
+def test_refusal_counts_keep_the_reasons_words_and_never_the_refused_value():
+    store = W.store_of(inputs())
+    store.add([{"id": "s1", "kind": "row_is", "table": "items", "find": {"item_id": "A1"},
+                "expect": {"slot": "nine_42"}, "fact_ids": ["f1"]}])
+    assert W._store_counts(store)["refused_why"] == {"value is not in the world the policy or": 1}

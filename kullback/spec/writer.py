@@ -311,7 +311,10 @@ def _config(config: Any) -> Any:
 def _store_counts(store: writer_tools.ItemStore) -> dict:
     reasons: dict[str, int] = {}
     for row in store.refused:
-        key = re.sub(r"[^a-z_ ]", "", row["reason"].split(":")[-1].split(";")[0].strip().casefold())[:40]
+        # The reason's words only: quoted values and the leading field name are cut, so no value is kept.
+        text = re.sub(r"\"[^\"]*\"|'[^']*'|\([^)]*\)", "", row["reason"]).split(";")[0]
+        text = re.sub(r"^[\w.]+:\s*", "", text.strip())
+        key = re.sub(r"\s+", " ", re.sub(r"[^a-z_ ]", "", text.casefold())).strip()[:40].strip()
         reasons[key] = reasons.get(key, 0) + 1
     return {"offered": store.offered, "kept": len(store.items), "refused": len(store.refused),
             "refused_why": dict(sorted(reasons.items())), "dropped": len(store.dropped)}

@@ -2370,7 +2370,9 @@ and provenance (fact_ids or a verbatim policy_line). It searches the world with 
 turn holds, a find matching no row or several, a field the table lacks, and says why ("find, do not invent").
 A judge anchor cites the one row it was read from and its answer states that row's fields; only an anchor quoting
 the item's policy line goes without a row. Code adds the sanity item (`nothing_else`) to every Task: no row outside
-the declared rows changes. Items with `alt` make several end states, any one may match. `runner/items.py` scores
+the declared rows changes. A cell value may be a list (members in any order); `free` on a row_is names
+fields a tool sets to a value no search finds (records it fills in, a computed balance), allowed to move
+unchecked. Items with `alt` make several end states, any one may match. `runner/items.py` scores
 each item on a Run (None for judge items). Contradicting items go back once; any left set the Task aside.
 Retired: the Reference path of the Spec package. D320's Reference-derived `write_verifier` and `refresh_gates`;
 D315's `expected_from_run` as the Verifier source (it stays for fidelity measurement); D323's Reference reading
