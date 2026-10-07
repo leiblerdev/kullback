@@ -551,15 +551,19 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
 def _spec_ruling(spec_tiers: dict[str, Any], refused: dict) -> dict:
     """The Spec's tiers as the one trusted ruling (D322): trusted stays trusted, every other tier is
     untrusted with its word and the first failing gate or reason; refused Tasks stay refused."""
-    trusted, untrusted, tiers, flags = [], {}, {}, {}
+    trusted, untrusted, tiers, flags, not_run, disagrees = [], {}, {}, {}, [], {}
     for task_id, (tier, row) in sorted(spec_tiers.items()):
         tiers[task_id] = tier
         flags[task_id] = len(row.get("contradicts") or ()) + len(row.get("unasked") or ())
+        disagrees[task_id] = len(row.get("writer_disagrees") or ())
+        if tier == "replay_only" and not row.get("fresh_runs"):
+            not_run.append(task_id)
         if tier == "trusted" and task_id not in refused:
             trusted.append(task_id)
         else:
             untrusted[task_id] = f"{tier}: {row.get('failing') or row.get('reason') or ''}".rstrip(": ")
-    return {"trusted": trusted, "untrusted": untrusted, "trust_tier": tiers, "consistency_flags": flags}
+    return {"trusted": trusted, "untrusted": untrusted, "trust_tier": tiers, "consistency_flags": flags,
+            "not_run": not_run, "writer_disagrees": disagrees}
 
 
 def tier_counts(metrics: dict) -> dict[str, int]:
@@ -575,17 +579,23 @@ def tier_counts(metrics: dict) -> dict[str, int]:
             "legacy_trusted": len(metrics.get("legacy_trusted") or ()),
             "valid_other_failing": sum(round((fractions.get(t) or 0.0) * int(n or 0)) for t, n in pools.items()),
             "held_out": sum(int(n or 0) for n in pools.values()),
-            "consistency_flags": sum(1 for n in (metrics.get("consistency_flags") or {}).values() if n)}
+            "consistency_flags": sum(1 for n in (metrics.get("consistency_flags") or {}).values() if n),
+            "replay_only": tiers.count("replay_only"), "not_run": len(metrics.get("not_run") or ()),
+            "writer_disagrees": sum(1 for n in (metrics.get("writer_disagrees") or {}).values() if n)}
 
 
 def trust_row(counts: dict) -> str:
-    """One line: trusted, unconfirmed, refused and pending, the legacy count, the over-strictness and the
-    Tasks carrying a consistency flag (D322: counted, never gating)."""
+    """One line: trusted, unconfirmed, refused, pending and replay_only with the Tasks of it never run (no
+    fresh Run on disk, apart from the ones whose fresh Runs failed), the legacy count, the over-strictness,
+    the Tasks carrying a consistency flag (D322) and the Tasks the writer disagrees with the Reference on
+    (D323); the flags are counted, never gating."""
     return (f"trusted {counts.get('trusted', 0)} | unconfirmed {counts.get('unconfirmed', 0)} | "
             f"refused {counts.get('refused', 0)} | pending {counts.get('pending', 0)} | "
+            f"replay_only {counts.get('replay_only', 0)} (not run {counts.get('not_run', 0)}) | "
             f"legacy rule trusted {counts.get('legacy_trusted', 0)} | valid other solutions failing "
             f"{counts.get('valid_other_failing', 0)} of {counts.get('held_out', 0)} held-out Runs | "
-            f"consistency flags {counts.get('consistency_flags', 0)}")
+            f"consistency flags {counts.get('consistency_flags', 0)} | "
+            f"writer disagrees {counts.get('writer_disagrees', 0)}")
 
 
 def _live_verifiers(root: Path) -> list[dict]:

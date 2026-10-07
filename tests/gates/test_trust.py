@@ -399,13 +399,18 @@ def test_a_reference_write_no_user_turn_asked_for_is_flagged_by_its_tool_and_doe
 def test_a_workdir_with_specs_reports_the_spec_tier_through_the_workdir_ruling(tmp_path):
     spec_tiers = {"a": ("trusted", {"failing": None}),
                   "b": ("unconfirmed", {"failing": "unsupported cell orders.W1.status", "contradicts": ["x"]}),
-                  "c": ("replay_only", {"failing": "independent_pass"})}
+                  "c": ("replay_only", {"failing": "not run: no fresh Run on disk", "fresh_runs": 0,
+                                        "writer_disagrees": ["c2: no call to remove_item"]}),
+                  "d": ("replay_only", {"failing": "no fresh Run passes", "fresh_runs": 2})}
     ruling = T.workdir_trusted_ruling(tmp_path, spec_tiers=spec_tiers)
     assert ruling.metrics["trusted"] == ["a"]
-    assert ruling.metrics["trust_tier"] == {"a": "trusted", "b": "unconfirmed", "c": "replay_only"}
+    assert ruling.metrics["trust_tier"] == {"a": "trusted", "b": "unconfirmed", "c": "replay_only", "d": "replay_only"}
     assert ruling.metrics["untrusted"] == {"b": "unconfirmed: unsupported cell orders.W1.status",
-                                           "c": "replay_only: independent_pass"}
-    assert ruling.metrics["consistency_flags"] == {"a": 0, "b": 1, "c": 0}
+                                           "c": "replay_only: not run: no fresh Run on disk",
+                                           "d": "replay_only: no fresh Run passes"}
+    assert ruling.metrics["consistency_flags"] == {"a": 0, "b": 1, "c": 0, "d": 0}
+    line = T.trust_row(T.tier_counts(ruling.metrics))
+    assert "| replay_only 2 (not run 1) |" in line and line.endswith("| writer disagrees 1")
 
 
 def test_the_status_table_shows_trusted_unconfirmed_refused_and_the_legacy_count_on_one_row():
@@ -416,7 +421,8 @@ def test_the_status_table_shows_trusted_unconfirmed_refused_and_the_legacy_count
             {"task_id": "d", "trust_tier": "pending", "legacy_trusted": True, "consistency_flags": 2}]
     line = T.trust_row(counts_of(rows))
     assert "\n" not in line
-    assert line == ("trusted 1 | unconfirmed 1 | refused 1 | pending 1 | legacy rule trusted 3 | "
-                    "valid other solutions failing 2 of 4 held-out Runs | consistency flags 1")
+    assert line == ("trusted 1 | unconfirmed 1 | refused 1 | pending 1 | replay_only 0 (not run 0) | "
+                    "legacy rule trusted 3 | valid other solutions failing 2 of 4 held-out Runs | "
+                    "consistency flags 1 | writer disagrees 0")
     ruling = T.trusted_gate(**_code_world([_cell(sourced=False)]))
     assert T.tier_counts(ruling.metrics)["unconfirmed"] == 1
