@@ -345,9 +345,9 @@ def test_a_required_write_on_a_row_the_reference_left_unchanged_is_flagged_and_a
     assert T.writer_disagreement(allowed, _reference()) == []
 
 
-def test_a_diffed_row_no_write_demand_names_is_flagged_as_table_and_row():
+def test_a_diffed_row_no_write_demand_names_is_not_flagged():
     end = {"items": {"A1": {"slot": "seven"}, "B2": {"slot": "nine"}}}
-    assert T.writer_disagreement(spec(), _reference(end)) == ["items.B2: no write demand names it"]
+    assert T.writer_disagreement(spec(), _reference(end)) == []
 
 
 def test_action_table_rows_never_count_and_an_action_demand_is_read_by_its_call_alone():
@@ -355,7 +355,6 @@ def test_action_table_rows_never_count_and_an_action_demand_is_read_by_its_call_
     handed = spec().model_copy(update={"checks": [*spec().checks, _write("c2", tool="hand_over", entity="desk")]})
     assert T.writer_disagreement(handed, _reference(end, calls=["hand_over"]), ACTIONS_SCHEMA) == []
     assert T.writer_disagreement(handed, _reference(end), ACTIONS_SCHEMA) == ["c2: no call to hand_over"]
-    assert T.writer_disagreement(spec(), _reference(end)) == ["actions.0: no write demand names it"]
 
 
 def test_without_a_reference_the_writer_cannot_disagree():

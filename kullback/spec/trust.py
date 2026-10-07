@@ -34,6 +34,7 @@ from kullback.gates.trust import code_ruling, schema_of, workdir_trusted_ruling
 from kullback.runner.atom_context import AtomContext
 from kullback.runner.canon import load_rules
 from kullback.runner.code_hash import CODE_HASH
+from kullback.runner.expected import action_tables, attr_of
 from kullback.runner.records import Run, Verifier, load_run_jsonl, read_json, read_jsonl
 from kullback.runner.replay import RECORDED
 from kullback.spec.actions import action_tools_of, workdir_action_tools
@@ -148,16 +149,6 @@ def _event_task(event: Any) -> Optional[str]:
     return payload.get("task_id")
 
 
-def _get(item: Any, name: str) -> Any:
-    return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
-
-
-def _action_tables(schema: Any) -> set[str]:
-    """The tables whose rows record calls rather than changes (`evidence.actions_of`, spec/actions.py)."""
-    return {str(_get(column, "table")) for column in _get(schema, "columns") or ()
-            if (_get(column, "evidence") or {}).get("actions_of")}
-
-
 def _row_parts(row_id: str, separator: str) -> set[str]:
     """A diffed row's id and, for a composite key, each of its parts, compared without case or spacing."""
     parts = {row_id, *row_id.split(separator)} if separator else {row_id}
@@ -168,29 +159,26 @@ def writer_disagreement(spec: Spec, reference: Optional[Run], schema: Any = None
     """Where the Spec's write demands and the Reference's diff disagree, by code (D327); empty without one.
 
     Each required write demand whose tool the Reference never called, or whose named row is in no diffed
-    row, is named by its check id; each diffed row outside the action tables that no write demand names
-    is named as table.row. An action tool's demand is read by its call alone: its rows are the harness's
-    record of the call, never a change, so they never count. A flag on the row, never a gate.
+    row, is named by its check id. An action tool's demand is read by its call alone: its rows are the
+    harness's record of the call, never a change, so they never count. A diffed row no demand names is
+    not flagged: it fired on right References only (docs/validation/trust-1007.md). A flag, never a gate.
     """
     if reference is None:
         return []
     context = AtomContext(reference)
-    separator = str(_get(schema, "key_separator") or "")
-    actions, action_tools = _action_tables(schema), action_tools_of(schema or {})
+    separator = str(attr_of(schema, "key_separator") or "")
+    actions, action_tools = action_tables(schema), action_tools_of(schema or {})
     rows = {key: _row_parts(key.partition(".")[2], separator) for key in context.diff()
             if key.partition(".")[0] not in actions}
-    writes = [check for check in spec.checks if check.demand.get("demand") == "write"]
-    named = {" ".join(str(check.demand.get("entity") or "").split()).lower() for check in writes}
     out = []
-    for check in writes:
-        if check.kind != "required":
+    for check in spec.checks:
+        if check.demand.get("demand") != "write" or check.kind != "required":
             continue
         entity = " ".join(str(check.demand.get("entity") or "").split()).lower()
         if not context.called(str(check.demand.get("tool") or "")):
             out.append(f"{check.id}: no call to {check.demand.get('tool')}")
         elif check.demand.get("tool") not in action_tools and not any(entity in parts for parts in rows.values()):
             out.append(f"{check.id}: its row is in no diffed row")
-    out.extend(f"{key}: no write demand names it" for key, parts in rows.items() if not parts & named)
     return out
 
 

@@ -180,14 +180,15 @@ def _split_key(key: str) -> tuple[str, str]:
     return table, row_id
 
 
-def _get(item: Any, name: str) -> Any:
+def attr_of(item: Any, name: str) -> Any:
+    """A dict's key or a model's attribute, so a schema reads the same from JSON or from EntitySchema."""
     return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
 
 
-def _action_tables(schema: Any) -> set[str]:
+def action_tables(schema: Any) -> set[str]:
     """Tables whose columns record tool calls (evidence.actions_of), read as spec/actions.py reads them (D308)."""
-    return {str(_get(column, "table")) for column in _get(schema, "columns") or ()
-            if (_get(column, "evidence") or {}).get("actions_of")}
+    return {str(attr_of(column, "table")) for column in attr_of(schema, "columns") or ()
+            if (attr_of(column, "evidence") or {}).get("actions_of")}
 
 
 def expected_from_run(run_events: Any, user_turns: Iterable[Any], policy_text: Optional[str] = None,
@@ -209,8 +210,8 @@ def expected_from_run(run_events: Any, user_turns: Iterable[Any], policy_text: O
     """
     context = AtomContext(_as_run(run_events), canon, schema=schema)
     turns, clauses = _turns(user_turns), _clauses(policy_text)
-    actions = _action_tables(schema) if schema is not None else set()
-    separator = _get(schema, "key_separator") or "|"
+    actions = action_tables(schema) if schema is not None else set()
+    separator = attr_of(schema, "key_separator") or "|"
     cells: list[ExpectedCell] = []
     allowed = [{"table": table, "why": "action table: calls are conduct, not state"} for table in sorted(actions)]
     for key, moved in context.diff().items():
