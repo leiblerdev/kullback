@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from kullback import difficulty, domain
+from kullback import difficulty, domain, round_snapshot
 from kullback.gates.verifier_suite import PROSE_MIN_LENGTH, elide_verifier_prose
 from kullback.runner.records import Verifier, as_dict, content_hash, read_json, write_json
 
@@ -288,6 +288,7 @@ def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
     trusted = trusted_ids(workdir, counts)
     refused = set((counts.get("refused") or {}))
     records = _difficulty_records(workdir)
+    trust = _trust_rows(workdir)
     rows = []
     for task_id in task_ids:
         row = status.get(task_id) or {}
@@ -302,6 +303,8 @@ def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
             "refused": stage == REFUSED_STAGE,
             "stage": stage,
             "stopped_because": stopped_because(stage, row),
+            # D328: why a Task is not trusted, and the two flags that never gate (None: unscored).
+            **{key: (trust.get(task_id) or {}).get(key) for key in TRUST_FIELDS},
             "replay_confirmed": confirmed,
             # A Task with any confirmed replay, the count replay fidelity reports, so the two agree.
             "reference_confirmed": confirmed,
@@ -311,6 +314,15 @@ def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
             "bucket": record.get("bucket"),
         })
     return rows
+
+
+TRUST_FIELDS = ("trust_reason", "reference_passes", "solvable")
+
+
+def _trust_rows(workdir: Path) -> dict[str, dict]:
+    """Each Task's trust reason and flags off the last closed round's table; none where no round closed."""
+    snapshot = round_snapshot.read_snapshot(workdir) or {}
+    return {str(row.get("task_id")): row for row in snapshot.get("rows") or () if isinstance(row, dict)}
 
 
 def _difficulty_records(workdir: Path) -> dict[str, dict]:
@@ -721,6 +733,10 @@ def _row_counts(rows: list[dict]) -> dict:
         "verifier_derived": sum(1 for row in rows if row["verifier"]),
         "trusted": sum(1 for row in rows if row["trusted"]),
         "refused": sum(1 for row in rows if row["refused"]),
+        "trust_reasons": {reason: sum(1 for row in rows if row.get("trust_reason") == reason)
+                          for reason in sorted({row["trust_reason"] for row in rows if row.get("trust_reason")})},
+        **{flag: {"true": sum(1 for row in rows if row.get(flag) is True),
+                  "false": sum(1 for row in rows if row.get(flag) is False)} for flag in TRUST_FIELDS[1:]},
         "funnel": {stage: sum(1 for row in rows if row["stage"] == stage)
                    for stage in FUNNEL + (REFUSED_STAGE,)},
     }
