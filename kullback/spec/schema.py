@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from kullback.runner.records import AtomKind, Record
+from kullback.runner.records import GATE_KINDS, AtomKind, Item, Record
 from kullback.spec.must_not import tier_of as _atom_tier
 
 Stance = Literal["volunteered", "accepted"]
@@ -55,14 +55,35 @@ def tier_of(kind: str, demand: dict) -> Tier:
     return _atom_tier({"kind": compiled})
 
 
-class Check(Record):
-    """One demand of the Verifier, with the Intent quote or policy section it rests on."""
+class Check(Item):
+    """One demand of the Verifier, with the Intent quote or policy section it rests on.
+
+    `fact_ids` is its provenance in the Intent and `policy_line` the policy line it rests on, when
+    it rests on one. `gate` and `weight` go onto every atom it compiles to (D328); left unsaid, the
+    gate follows the kind as an atom's does.
+    """
     id: str
     kind: AtomKind
     demand: dict
     because: str
     tier: Tier
     fact_ids: list[str] = Field(default_factory=list)
+    policy_line: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _gate_from_kind(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "gate" not in data:
+            data = dict(data, gate=data.get("kind") in GATE_KINDS)
+        return data
+
+    def _gate_default(self) -> bool:
+        return self.kind in GATE_KINDS
+
+    def _drop_defaults(self, data: dict) -> dict:
+        if data.get("policy_line") is None:
+            data.pop("policy_line", None)
+        return super()._drop_defaults(data)
 
 
 class Spec(Record):

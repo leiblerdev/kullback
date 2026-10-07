@@ -105,14 +105,18 @@ def test_a_plain_string_anchor_is_the_answer_alone():
     assert checkpoint_line("j", {"question": "Q?", "anchor": "yes"}) == "- [j] Q? (met = 1: yes)"
 
 
+def _row(graded, item_id="j1"):
+    return next(item for item in graded.items if item.id == item_id)
+
+
 def test_the_verdict_records_judge_items_and_a_scored_item_never_moves_pass():
     verifier = Verifier(task_id="t", atoms=[_item()])
     run = _run(["Your total is 40.00."])
     results = judge_items(TestModel([_says(0, "wrong total")]), verifier.atoms, run)
     graded = verdict(run, verifier, judge_results=results)
     assert graded.passed is True and graded.class_ == "pass"
-    assert graded.items["j1"]["score"] == 0 and graded.items["j1"]["why"] == "wrong total"
-    assert graded.items["j1"]["gate"] is False and graded.judge_used
+    assert _row(graded).score == 0 and _row(graded).why == "wrong total"
+    assert _row(graded).gate is False and graded.judge_used
 
 
 def test_a_gate_item_scored_zero_fails_the_run_and_unjudged_leaves_it_not_verdicted():
@@ -121,12 +125,12 @@ def test_a_gate_item_scored_zero_fails_the_run_and_unjudged_leaves_it_not_verdic
     failed = verdict(run, verifier, judge_results=judge_items(TestModel([_says(0)]), verifier.atoms, run))
     assert failed.passed is False and failed.failing_atom == "j1"
     unjudged = verdict(run, verifier)
-    assert unjudged.class_ == "not_verdicted" and unjudged.items["j1"]["score"] is None
+    assert unjudged.class_ == "not_verdicted" and _row(unjudged).score is None
 
 
 def test_an_unjudged_scored_item_does_not_block_a_verdict_judged_by_code_only():
     unjudged = verdict(_run(["hi"]), Verifier(task_id="t", atoms=[_item()]))
-    assert unjudged.class_ == "pass" and unjudged.items["j1"]["score"] is None
+    assert unjudged.class_ == "pass" and _row(unjudged).score is None
 
 
 def test_the_candidate_side_never_reads_an_anchor():

@@ -337,25 +337,39 @@ def _allowed(allowed: list[dict], table: str, row_id: str, name: Optional[str]) 
                    (("table", table), ("row_id", row_id), ("field", name))) for rule in allowed)
 
 
-def match_context(end_state: EndState, context: AtomContext) -> Match:
-    """`match` on a context the caller already built, so the Verdict reads its own copy."""
-    failed: list[str] = []
-    open_pairs: list[str] = []
-    cells = {(c.table, c.row_id, c.field) for c in end_state.cells}
+def cell_results(end_state: EndState, context: AtomContext) -> list[tuple[ExpectedCell, Optional[bool], str]]:
+    """Each cell of one end state on the Run's end: held, failed or unsettled (None), and its name.
+
+    A cell on an exempt column holds by definition: the exemption says its value never decides.
+    """
+    out: list[tuple[ExpectedCell, Optional[bool], str]] = []
     for cell in end_state.cells:
         row = (context.end_state.get(cell.table) or {}).get(cell.row_id)
         where = f"{cell.table}.{cell.row_id}.{cell.field}"
         if cell.field is None:
-            if (row is None) != (cell.value is None):
-                failed.append(f"cell:{where}")
+            out.append((cell, (row is None) == (cell.value is None), f"cell:{where}"))
             continue
         if f"{cell.table}.{cell.field}" in context.exempt:
+            out.append((cell, True, f"cell:{where}"))
             continue
         found = context.resolution(f"{cell.table}.{cell.field}", cell.value, (row or {}).get(cell.field))
         if found == DIFFERENT or row is None:
-            failed.append(f"cell:{where}")
+            out.append((cell, False, f"cell:{where}"))
         elif found == UNRESOLVED:
-            open_pairs.append(f"unsettled:{cell.table}.{cell.field}")
+            out.append((cell, None, f"unsettled:{cell.table}.{cell.field}"))
+        else:
+            out.append((cell, True, f"cell:{where}"))
+    return out
+
+
+def collateral(end_state: EndState, context: AtomContext) -> Match:
+    """The sanity item (D328): nothing outside the end state's declared rows, cells and `allowed` moved.
+
+    A row made or removed is declared by any cell on it; a row kept is declared field by field.
+    """
+    failed: list[str] = []
+    open_pairs: list[str] = []
+    cells = {(c.table, c.row_id, c.field) for c in end_state.cells}
     touched = {(table, row_id) for table, row_id, _ in cells}
     for key, moved in context.diff().items():
         table, row_id = _split_key(key)
@@ -378,6 +392,19 @@ def match_context(end_state: EndState, context: AtomContext) -> Match:
     return Match(True, [])
 
 
+def match_context(end_state: EndState, context: AtomContext) -> Match:
+    """`match` on a context the caller already built, so the Verdict reads its own copy."""
+    cells = cell_results(end_state, context)
+    rest = collateral(end_state, context)
+    failed = [why for _, ok, why in cells if ok is False] + (rest.why if rest.ok is False else [])
+    open_pairs = [why for _, ok, why in cells if ok is None] + (rest.why if rest.ok is None else [])
+    if failed:
+        return Match(False, failed)
+    if open_pairs:
+        return Match(None, open_pairs)
+    return Match(True, [])
+
+
 def match(end_state: EndState, start: dict, end: dict, canon: Any = None, *, schema: Any = None,
           rules: Any = None, equivalence: Any = None) -> Match:
     """True when every cell holds in `end` and nothing outside the cells and `allowed` moved from
@@ -386,16 +413,6 @@ def match(end_state: EndState, start: dict, end: dict, canon: Any = None, *, sch
     run = Run(run_id="match", events=[Event(idx=0, type="stop",
                                             payload={"start_state": start, "end_state": end})])
     return match_context(end_state, AtomContext(run, canon, schema=schema, rules=rules, equivalence=equivalence))
-
-
-def match_any(end_states: list[EndState], context: AtomContext) -> Match:
-    """Any one end state matching passes; else an unsettled one blocks; else the first failure."""
-    results = [match_context(state, context) for state in end_states]
-    for result in results:
-        if result.ok:
-            return result
-    unsettled = [result for result in results if result.ok is None]
-    return unsettled[0] if unsettled else results[0]
 
 
 def _named(needle: str, text: str) -> bool:

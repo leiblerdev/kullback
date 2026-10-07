@@ -543,7 +543,39 @@ def apply_intent(task: Task, intent: Intent) -> Task:
 
 # --- verifier ---
 
-class Atom(Record):
+# The atom kinds that gate when the writer did not say (D328): every kind that failed a Run before
+# items had a gate flag, so no stored Verifier changes its pass. Whether a question or a stated fact
+# may fail a whole Task is the founder's open point (2026-09-27); the writer sets `gate` per item.
+GATE_KINDS = frozenset({"required", "question", "communicate", "hard", "forbidden"})
+
+
+class Item(Record):
+    """What every Verifier item carries (D328): does it gate the Run, and its weight past the gates.
+
+    A failing gate item fails the Run and its reward is 0; the other items are scored, and the
+    reward of a Run whose gates all hold is their weighted mean. Both fields are left out of the
+    dump at their default, so a record written before they existed dumps and hashes as it did.
+    """
+    gate: bool = True
+    weight: float = Field(default=1.0, ge=0)
+
+    def _gate_default(self) -> bool:
+        return True
+
+    def _drop_defaults(self, data: dict) -> dict:
+        if data.get("gate") == self._gate_default():
+            data.pop("gate", None)
+        if data.get("weight") == 1.0:
+            data.pop("weight", None)
+        return data
+
+    @model_serializer(mode="wrap")
+    def _without_default_weighting(self, handler):
+        data = handler(self)
+        return self._drop_defaults(data) if isinstance(data, dict) else data
+
+
+class Atom(Item):
     """One check in a Task's Verifier.
 
     `predicate_src` is the code the Runner evaluates; `target` is the same check as structured data
@@ -558,20 +590,22 @@ class Atom(Record):
     predicate_src: Optional[str] = None
     target: dict = Field(default_factory=dict)
     judge: bool = False
-    # Shape contract (shape-1007): a gate item failing fails the Run; scored items are weighted.
-    gate: bool = False
-    weight: float = 1.0
 
-    @model_serializer(mode="wrap")
-    def _without_default_shape(self, handler):
-        # An Atom with the default gate and weight dumps, and so hashes, as it did before them.
-        data = handler(self)
-        if isinstance(data, dict):
-            if data.get("gate") is False:
-                data.pop("gate")
-            if data.get("weight") == 1.0:
-                data.pop("weight")
+    @model_validator(mode="before")
+    @classmethod
+    def _gate_from_kind(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "gate" not in data:
+            data = dict(data, gate=data.get("kind") in GATE_KINDS)
         return data
+
+    def _gate_default(self) -> bool:
+        return self.kind in GATE_KINDS
+
+    def model_copy(self, *, update: Optional[dict] = None, deep: bool = False) -> "Atom":
+        """A copy; a new kind brings its default gate along unless this atom's gate was set apart."""
+        if update and "kind" in update and "gate" not in update and self.gate == self._gate_default():
+            update = dict(update, gate=update["kind"] in GATE_KINDS)
+        return super().model_copy(update=update, deep=deep)
 
 
 class ValueSource(Record):
@@ -585,7 +619,7 @@ class ValueSource(Record):
     ptr: dict = Field(default_factory=dict)
 
 
-class ExpectedCell(Record):
+class ExpectedCell(Item):
     """One cell of an expected end state; `field` None is the row itself, gone when `value` is None.
 
     `source is None` means the value is unsupported, and `row_source is None` that the row is.
@@ -606,7 +640,7 @@ class EndState(Record):
     allowed: list[dict] = Field(default_factory=list)
 
 
-class Forbidden(Record):
+class Forbidden(Item):
     """A write or a Run-ending call that must not happen (D315). Reads are never forbidden."""
     kind: Literal["write", "end_call"]
     tool: Optional[str] = None
@@ -617,7 +651,7 @@ class Forbidden(Record):
     source: ValueSource
 
 
-class Conduct(Record):
+class Conduct(Item):
     """Conduct the event log must show: a confirmation before a write, a refusal, a hand-off (D316)."""
     kind: Literal["confirm_before_write", "refusal", "handoff"]
     tool: Optional[str] = None
@@ -826,7 +860,27 @@ class RunnerVersion(Record):
 
 
 # The version of the scoring rules a Verdict was computed under; bump it when the rules change so cached Verdicts are not reused and reports prefer the current one.
-VERDICT_VERSION = "3"
+# "4": pass reads the gate items only and the Verdict carries the weighted score (D328).
+VERDICT_VERSION = "4"
+
+ItemKind = Literal["state", "sanity", "event", "atom", "judge"]
+
+
+class ItemResult(Record):
+    """One Verifier item on one Run: what it is, whether it gates, its weight, and whether it held.
+
+    `holds` None is an item nobody could settle: on a gate it leaves the Run not verdicted, on a
+    scored item it masks the score (None, never a false 0).
+    """
+    id: str
+    kind: ItemKind
+    gate: bool
+    weight: float = 1.0
+    holds: Optional[bool] = None
+    why: Optional[str] = None
+    # A judge item's score (0, 1 or None when unjudged) and whether its evidence was cut.
+    score: Optional[float] = None
+    truncated: bool = False
 
 
 class Verdict(Record):
@@ -851,8 +905,10 @@ class Verdict(Record):
     judge_used: bool = False
     environment_suspected: bool = False
     notes: list[str] = Field(default_factory=list)
-    # Per item results by atom id (D328): judge items carry score, why and truncated.
-    items: dict[str, dict] = Field(default_factory=dict)
+    # The reward past the gates (D328): 0 when a gate failed, else the weighted mean of the scored
+    # items (1.0 with none); None when the Run is not verdicted, an env error, or a scored item is open.
+    score: Optional[float] = None
+    items: list[ItemResult] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _pass_matches_class(self) -> "Verdict":

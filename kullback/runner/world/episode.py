@@ -57,11 +57,17 @@ class StepOut:
 
 @dataclass
 class Reward:
-    """The stored Run scored by code alone: 1 for pass, 0 for fail, no number where code cannot say."""
+    """The stored Run scored by code alone: pass and score, no number where code cannot say (D328).
 
-    score: Optional[int]
+    `passed` is every gate item holding; `score` is 0 when a gate failed, else the weighted score
+    past the gates. Both are None when the Run is not verdicted or an env error; `score` alone is
+    None when a scored item (an unrun judge) is open.
+    """
+
+    score: Optional[float]
     class_: str
     reason: str
+    passed: Optional[bool] = None
 
 
 def _needs_world_step() -> None:
@@ -200,7 +206,7 @@ class Episode:
         loop.finish(self._state, self._router)
 
     def reward(self) -> Reward:
-        """Score the stored Run with the Verdict by code alone: 1, 0, or no number with the reason.
+        """Score the stored Run with the Verdict by code alone: pass and score, or no number with the reason.
 
         Judge atoms arrive with no judge results, so a Verifier holding a must-hold judge atom
         comes out not verdicted: no number at all, with the class and the reason. An environment
@@ -223,12 +229,12 @@ class Episode:
         result = verdict(run, verifier, self.env.canon_rules, None,
                          schema=self.env.schema, write_tools=write_tools or None,
                          flagged_tools=flagged)
-        if result.class_ == "pass":
-            return Reward(score=1, class_=result.class_, reason="")
         if result.class_ in ("not_verdicted", "env_error"):
             return Reward(score=None, class_=result.class_,
                           reason=result.failing_atom or "; ".join(result.notes[-2:]))
-        return Reward(score=0, class_=result.class_, reason=result.failing_atom or "")
+        masked = next((note for note in result.notes if note.startswith("score_masked:")), "")
+        return Reward(score=result.score, class_=result.class_, reason=result.failing_atom or masked,
+                      passed=result.passed)
 
     def run_file(self) -> Optional[Path]:
         """Where this Run is recorded, under the Episode's own folder.

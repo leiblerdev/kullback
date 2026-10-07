@@ -37,7 +37,8 @@ from typing import Any, Iterable, Optional
 
 from kullback import difficulty, domain
 from kullback.gates.verifier_suite import PROSE_MIN_LENGTH, elide_verifier_prose
-from kullback.runner.records import Verifier, as_dict, content_hash, read_json, write_json
+from kullback.runner.records import VERDICT_VERSION, Verifier, as_dict, content_hash, read_json, write_json
+from kullback.runner.verdict import REWARD_SHAPE, item_counts
 
 # 2: the manifest carries what the domain reading attests and what this Environment cannot execute
 # of it, so a card's numbers say how much of the domain the package covers (D225).
@@ -292,7 +293,8 @@ def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
     for task_id in task_ids:
         row = status.get(task_id) or {}
         confirmed = any(_confirmed(entry) for entry in (replays.get(task_id) or {}).values())
-        has_verifier = (workdir / "verifiers" / f"{task_id}.json").is_file()
+        verifier_file = workdir / "verifiers" / f"{task_id}.json"
+        has_verifier = verifier_file.is_file()
         stage = funnel_stage(task_id, status_row=row, replay_confirmed=confirmed, has_verifier=has_verifier,
                              trusted_ids=trusted, refused=refused)
         record = records.get(task_id) or {}
@@ -306,6 +308,8 @@ def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
             # A Task with any confirmed replay, the count replay fidelity reports, so the two agree.
             "reference_confirmed": confirmed,
             "verifier": has_verifier,
+            # The Verifier's gate and scored items (D328), so a reader sees which Tasks score past pass.
+            "items": item_counts(Verifier.model_validate(read_json(verifier_file))) if has_verifier else None,
             "recordings": int(row.get("recordings") or 0),
             "difficulty": {key: value for key, value in record.items() if key != "task_id"} or None,
             "bucket": record.get("bucket"),
@@ -767,6 +771,8 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         **_row_counts(rows),
         "buckets": _buckets(rows),
         "untrusted": untrusted_reasons(rows),
+        # D328: what a Run's reward is, pass and score, under the Verdict version the graders score at.
+        "reward": dict(REWARD_SHAPE, verdict_version=VERDICT_VERSION),
         # D225: what the domain's own public material was read to attest, and how much of it this
         # Environment holds no tool for. Both are counts and nothing of any page travels with them.
         "domain": _domain_counts(workdir),
