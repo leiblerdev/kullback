@@ -1,28 +1,47 @@
 """The Spec writes and repairs the whole Verifier; the Examiner's atoms edits reach it by code (D320).
 
-A tiny invented workdir: one Task whose Reference moves one item to a new slot and renames it, both
-values said by the user, so its expected end state carries two sourced cells.
+A tiny invented workdir: one Task whose user asks to move one item to a new slot and rename it; the
+Spec's one state item carries both values, said by the user, so its expected end state has two
+sourced cells. The Reference on disk is a witness only: nothing here derives from it.
 """
 
 from __future__ import annotations
 
 import json
 
-from kullback.ai.provider import TestModel
 from kullback.runner.records import Run, Verifier, write_json
 from kullback.spec import review as RV
 from kullback.spec import writer as W
 from kullback.spec.canfail import can_fail, judge_run
-from kullback.spec.schema import load_spec
-from tests.spec.fixtures import WRITE, check, spec
-from tests.spec.test_writer import MOVE, answer, inputs
+from kullback.spec.schema import FactSource, IntentFact, intent_text, load_spec
+from tests.spec.fixtures import FACTS, check
+from tests.spec.fixtures import spec as _spec
 from tests.spec.test_writer import _workdir as _environment
+from tests.spec.test_writer import inputs as _inputs
 
 TURN = "Please move item A1 to slot seven and call it blue."
 START = {"items": {"A1": {"item_id": "A1", "slot": "two", "label": "red"},
                    "B2": {"item_id": "B2", "slot": "four", "label": "green"}}}
 END = {"items": {"A1": {"item_id": "A1", "slot": "seven", "label": "blue"},
                  "B2": {"item_id": "B2", "slot": "four", "label": "green"}}}
+ASKED = IntentFact(id="f3", text=TURN, stance="volunteered", source=FactSource(recording="rec1", turn=0))
+ROW = {"id": "s1", "kind": "row_is", "table": "items", "find": {"item_id": "A1"}, "row": "A1",
+       "expect": {"slot": "seven", "label": "blue"}, "gate": True, "weight": 1.0, "fact_ids": ["f3"],
+       "policy_line": None}
+
+
+def inputs():
+    return _inputs(facts=[*FACTS, ASKED])
+
+
+def spec(checks=None):
+    """The Spec whose one item moves and renames A1, beside any older checks given; its Intent has f3."""
+    out = _spec(checks=[W.check_of(ROW, inputs())] + list(checks or []))
+    facts = [*FACTS, ASKED]
+    return out.model_copy(update={"intent": out.intent.model_copy(update={"facts": facts, "text": intent_text(facts)}),
+                                  "gaps": ["f1", "f2"]})
+
+
 SAID = {"id": "said_slot", "kind": "required",
         "payload": {"kind": "communicate", "text": "slot seven", "id": "said_slot"}}
 
@@ -58,26 +77,16 @@ def _written(tmp_path):
     return root, Verifier.model_validate_json(W.runner_verifier_path(root, "t1").read_text())
 
 
-def test_write_verifier_on_a_reference_puts_its_two_sourced_cells_in_expected_and_no_write_predicate(tmp_path):
+def test_write_verifier_puts_the_items_two_sourced_cells_in_expected_and_no_write_predicate(tmp_path):
     root, verifier = _written(tmp_path)
     [state] = verifier.expected
     cells = {cell.field: cell for cell in state.cells}
     assert set(cells) == {"slot", "label"}
     assert all(cell.source is not None and cell.source.kind == "user_turn" for cell in cells.values())
-    assert not any(atom.payload.get("kind") in {"write_value", "entity_count"} for atom in verifier.atoms)
+    assert not any(atom.target.get("kind") in {"write_value", "entity_count"} for atom in verifier.atoms)
     assert not any(getattr(atom, "predicate_src", None) for atom in verifier.atoms)
-    assert load_spec(root, "t1").end_state == {"reference": "ref", "end_states": 1, "cells": 2, "unsupported": 0,
-                                               "forbidden": len(verifier.forbidden), "conduct": 0, "unseen": 0}
-
-
-def test_a_write_demand_carrying_a_python_predicate_is_refused_and_sent_back_once():
-    coded = dict(MOVE, id="d0", predicate_src="lambda run: run.wrote('A1')")
-    model = TestModel([answer("demands", [coded]), answer("demands", [dict(MOVE, id="d0")])])
-    written = W.write_spec("t1", inputs(), model)
-    assert written.counts["write_predicate"] == 1 and written.counts["sent_back"] == 1
-    assert len(model.calls) == 2
-    assert W.WRITE_PREDICATE in json.dumps(model.calls[1]["messages"][-1])
-    assert [c.demand.get("demand") for c in written.spec.checks] == [WRITE["demand"]]
+    counts = load_spec(root, "t1").end_state
+    assert (counts["end_states"], counts["cells"], counts["gate"]) == (1, 2, 2) and "reference" not in counts
 
 
 def test_an_atoms_edit_is_applied_by_the_spec_kept_on_it_and_ruled_on_by_the_gates(tmp_path):
@@ -104,7 +113,7 @@ def test_an_atoms_edit_adding_a_write_or_a_predicate_is_refused_with_the_end_sta
 
 def test_the_loop_stops_at_the_ceiling_with_the_task_pending_and_the_rounds_on_the_spec(tmp_path):
     root = _environment(tmp_path) or tmp_path
-    W.write_verifier(spec(checks=[check()]), root, inputs())
+    W.write_verifier(spec(), root, inputs())
     rounds = [RV.apply_review(root, "t1", [{"kind": "atoms", "drop": ["nothing"]}], ceiling=2) for _ in range(3)]
     assert [r.get("round") for r in rounds[:2]] == [1, 2]
     assert rounds[0]["passed"] is False and rounds[0]["pending"] is False
@@ -137,9 +146,9 @@ TOLD = check("c2", demand={"demand": "say", "text": "slot seven"}, because="move
 
 
 def _told(tmp_path):
-    """The workdir with a Verifier of two cells and one fact-told atom, i0, made by check c2."""
+    """The workdir with a Verifier of two cells and one fact-told atom, i0, made by the older check c2."""
     root = _workdir(tmp_path)
-    W.write_verifier(spec(checks=[check(), TOLD]), root, inputs())
+    W.write_verifier(spec(checks=[TOLD]), root, inputs())
     return root
 
 
@@ -151,11 +160,12 @@ def _both_copies(root) -> Verifier:
 
 def test_an_atom_drop_naming_a_check_id_is_refused_with_the_atom_ids_and_more_than_half_is_refused(tmp_path):
     root = _told(tmp_path)
-    assert RV.atom_checks(load_spec(root, "t1"), _both_copies(root)) == {"i0": "c2"}
-    out = RV.apply_review(root, "t1", [{"kind": "atoms", "drop": ["c2"]}, {"kind": "atoms", "drop": ["i0"]}])
+    assert RV.atom_checks(load_spec(root, "t1"), _both_copies(root)) == {"s1": "s1", "sanity": "code", "i0": "c2"}
+    out = RV.apply_review(root, "t1", [{"kind": "atoms", "drop": ["c2"]}, {"kind": "atoms", "drop": ["i0", "s1"]}])
     assert out["applied"] == 0
-    assert out["refused"] == ["drop names no atom of the Verifier: c2; atoms are i0", "drops 1 of 1 atoms and adds 0"]
-    assert load_spec(root, "t1").atom_edits == [] and [a.id for a in _both_copies(root).atoms] == ["i0"]
+    assert out["refused"] == ["drop names no atom of the Verifier: c2; atoms are s1, sanity, i0",
+                              "drops 2 of 3 atoms and adds 0"]
+    assert load_spec(root, "t1").atom_edits == [] and [a.id for a in _both_copies(root).atoms] == ["s1", "sanity", "i0"]
 
 
 def test_cell_drop_and_allow_rewrite_both_verifier_copies_move_the_gate_row_and_outlive_a_rewrite(tmp_path):

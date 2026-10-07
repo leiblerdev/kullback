@@ -614,13 +614,17 @@ class ValueSource(Record):
     `ptr` for a user_turn holds the recording and the turn index; for a policy, the clause quoted;
     for a tool_result, the event index, call id and tool of the result that first showed the value.
     `unchanged` is a nested value none of whose leaves is new (reordered only): nothing to source.
+    `world` is a value found in the Starting state: the table, row and field it was read from.
     """
-    kind: Literal["user_turn", "policy", "tool_result", "unchanged"]
+    kind: Literal["user_turn", "policy", "tool_result", "unchanged", "world"]
     ptr: dict = Field(default_factory=dict)
 
 
 class ExpectedCell(Item):
     """One cell of an expected end state; `field` None is the row itself, gone when `value` is None.
+
+    `field` may be a dotted path into a nested value; the top-level column is what it declares. A
+    `value` of {"one_of": [...]} holds when the cell is any listed value, {"not": [...]} when none.
 
     `source is None` means the value is unsupported, and `row_source is None` that the row is.
     """
@@ -635,9 +639,20 @@ class ExpectedCell(Item):
 
 
 class EndState(Record):
-    """One expected end state: its cells, and what else may differ (`allowed`); nothing else moves."""
+    """One expected end state: its cells, and what else may differ (`allowed`); nothing else moves.
+
+    `new_rows` names rows a Run must make whose ids it mints: {table, where: {field: value}, count}.
+    """
     cells: list[ExpectedCell] = Field(default_factory=list)
     allowed: list[dict] = Field(default_factory=list)
+    new_rows: list[dict] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def _without_empty_new_rows(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and not data.get("new_rows"):
+            data.pop("new_rows", None)
+        return data
 
 
 class Forbidden(Item):

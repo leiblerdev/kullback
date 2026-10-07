@@ -11,7 +11,7 @@ from dataclasses import field as dataclass_field
 from typing import Any, Iterable, Optional
 
 from kullback.runner.atom_context import AFFIRM_OPEN, NEGATIVE_OPEN, AtomContext
-from kullback.runner.canon import DIFFERENT, UNRESOLVED
+from kullback.runner.canon import DIFFERENT, EQUAL, UNRESOLVED
 from kullback.runner.records import (
     EndState,
     Event,
@@ -337,10 +337,62 @@ def _allowed(allowed: list[dict], table: str, row_id: str, name: Optional[str]) 
                    (("table", table), ("row_id", row_id), ("field", name))) for rule in allowed)
 
 
+VALUE_SETS = ("one_of", "not")
+
+
+def value_set(value: Any) -> Optional[tuple[str, list]]:
+    """("one_of" | "not", values) when an expected value is a value set, else None."""
+    if isinstance(value, dict) and len(value) == 1:
+        (key, values), = value.items()
+        if key in VALUE_SETS and isinstance(values, list):
+            return key, values
+    return None
+
+
+def path_value(row: Any, field: str) -> Any:
+    """The value at a dotted path of a row (a list step is its index), or None when absent."""
+    node = row
+    for part in str(field).split("."):
+        if isinstance(node, dict):
+            node = node.get(part)
+        elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
+            node = node[int(part)]
+        else:
+            return None
+    return node
+
+
+def cell_resolution(context: AtomContext, column: str, expected: Any, actual: Any) -> str:
+    """How an actual value meets an expected one: a plain value, a list (same members, any order), or a value
+    set ("one_of", "not")."""
+    if isinstance(expected, list):
+        def members(values: list) -> list[str]:
+            return sorted(json.dumps(context.c(v), sort_keys=True, default=str) for v in values)
+        same = isinstance(actual, list) and members(expected) == members(actual)
+        return EQUAL if same else DIFFERENT
+    found = value_set(expected)
+    if found is None:
+        return context.resolution(column, expected, actual)
+    key, values = found
+    answers = [context.resolution(column, value, actual) for value in values]
+    if EQUAL in answers:
+        return DIFFERENT if key == "not" else EQUAL
+    if UNRESOLVED in answers:
+        return UNRESOLVED
+    return EQUAL if key == "not" else DIFFERENT
+
+
+def _new_row_matches(spec: dict, row: Any, context: AtomContext) -> bool:
+    where = spec.get("where") or {}
+    return isinstance(row, dict) and all(context.c(path_value(row, field)) == context.c(value)
+                                         for field, value in where.items())
+
+
 def cell_results(end_state: EndState, context: AtomContext) -> list[tuple[ExpectedCell, Optional[bool], str]]:
     """Each cell of one end state on the Run's end: held, failed or unsettled (None), and its name.
 
-    A cell on an exempt column holds by definition: the exemption says its value never decides.
+    A cell on an exempt column holds by definition: the exemption says its value never decides. A
+    cell's field may be a dotted path, and its value a list or a value set (`cell_resolution`).
     """
     out: list[tuple[ExpectedCell, Optional[bool], str]] = []
     for cell in end_state.cells:
@@ -352,7 +404,8 @@ def cell_results(end_state: EndState, context: AtomContext) -> list[tuple[Expect
         if f"{cell.table}.{cell.field}" in context.exempt:
             out.append((cell, True, f"cell:{where}"))
             continue
-        found = context.resolution(f"{cell.table}.{cell.field}", cell.value, (row or {}).get(cell.field))
+        column = f"{cell.table}.{cell.field}"
+        found = cell_resolution(context, column, cell.value, path_value(row or {}, cell.field))
         if found == DIFFERENT or row is None:
             out.append((cell, False, f"cell:{where}"))
         elif found == UNRESOLVED:
@@ -365,18 +418,29 @@ def cell_results(end_state: EndState, context: AtomContext) -> list[tuple[Expect
 def collateral(end_state: EndState, context: AtomContext) -> Match:
     """The sanity item (D328): nothing outside the end state's declared rows, cells and `allowed` moved.
 
-    A row made or removed is declared by any cell on it; a row kept is declared field by field.
+    A row made or removed is declared by any cell on it or by a declared new row, which must be
+    made as many times as it says; a row kept is declared field by field (a dotted cell declares
+    its top-level column).
     """
     failed: list[str] = []
     open_pairs: list[str] = []
-    cells = {(c.table, c.row_id, c.field) for c in end_state.cells}
+    cells = {(c.table, c.row_id, str(c.field).split(".")[0] if c.field is not None else None)
+             for c in end_state.cells}
     touched = {(table, row_id) for table, row_id, _ in cells}
+    made = [0] * len(end_state.new_rows)
     for key, moved in context.diff().items():
         table, row_id = _split_key(key)
         if not (moved["present_before"] and moved["present_after"]):
-            # A row made or removed: any cell on it speaks for it, else it is collateral.
-            if (table, row_id) not in touched and not _allowed(end_state.allowed, table, row_id, None):
+            # A row made or removed: any cell on it speaks for it, a declared new row counts it, else collateral.
+            if (table, row_id) in touched or _allowed(end_state.allowed, table, row_id, None):
+                continue
+            row = (context.end_state.get(table) or {}).get(row_id) if moved["present_after"] else None
+            spec = next((n for n, s in enumerate(end_state.new_rows)
+                         if s.get("table") == table and _new_row_matches(s, row, context)), None)
+            if spec is None:
                 failed.append(f"collateral:{table}.{row_id}")
+            else:
+                made[spec] += 1
             continue
         for name, change in moved["fields"].items():
             if (table, row_id, name) in cells or _allowed(end_state.allowed, table, row_id, name):
@@ -385,6 +449,9 @@ def collateral(end_state: EndState, context: AtomContext) -> Match:
                 open_pairs.append(f"unsettled:{table}.{name}")
             else:
                 failed.append(f"collateral:{table}.{row_id}.{name}")
+    for spec, count in zip(end_state.new_rows, made, strict=True):
+        if count != int(spec.get("count") or 1):
+            failed.append(f"new:{spec.get('table')}:{count}")
     if failed:
         return Match(False, failed)
     if open_pairs:
