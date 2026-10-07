@@ -477,6 +477,30 @@ def _score(items: list[_Item], passed: bool, decided: bool, notes: list[str]) ->
     return (gates + sum(result.weight for result in scored if result.holds)) / (gates + rest)
 
 
+# What the reward of a Run is, in the words a package manifest and a report carry (D328).
+REWARD_SHAPE = {
+    "pass": "every gate item holds",
+    "score": "0 when a gate item fails, else the weighted mean of every item with the gate items held and "
+             "holding at least half the weight; 1.0 with no scored item",
+    "masked": "no pass and no score when the Run is not verdicted or an environment error; no score when a "
+              "scored item is open",
+    "sanity": "a gate item for every Task: nothing outside the declared rows changed",
+}
+
+
+def item_counts(verifier: Verifier) -> dict:
+    """How many gate and scored items one Verifier holds, the sanity item included, read without a Run.
+
+    Several end states are alternatives (any one may match), so the cells of the largest one count.
+    """
+    flags: list[bool] = [True]  # the sanity item
+    if verifier.expected:
+        flags += [cell.gate for cell in max((state.cells for state in verifier.expected), key=len)]
+    flags += [rule.gate for rule in verifier.forbidden] + [rule.gate for rule in verifier.conduct]
+    flags += [atom.gate for atom in verifier.atoms if atom.kind != "allowed"]
+    return {"gate": sum(flags), "scored": len(flags) - sum(flags), "end_states": len(verifier.expected)}
+
+
 def _side_effect_count(verifier: Verifier, context: AtomContext) -> int:
     if not _target.judge_write_tools(verifier):
         return context.writes_count()
