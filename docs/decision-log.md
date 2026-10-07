@@ -2360,3 +2360,23 @@ fires on 19 right and 0 wrong. Limit: it flags 1 of the 6 wrong-trusted retail T
 writer demanded what the Reference did; gating on it would hold back 5 right retail References with 22 wrong.
 Status: built 2026-10-07 on fix-1007/trust.
 Folded 2026-10-07 on fix-1007/fold
+
+### D328. Dead code out: the Builder's memory tree, triage skill, body writer and Intent writer (2026-10-07)
+
+What changed: code no command, module or script reaches is deleted, found by vulture plus a reference count per
+name over kullback, tests, scripts and docs, then a module-aware pass for private names. Whole modules:
+`builder/memory.py` (D64, D69, D87 version tree and lessons file; nothing imported it), `builder/triage.py` (the D150
+skill text; nothing loaded it), `agent/reading.py` (G21 helpers; only its test), `builder/body_skill.py` (D168). In
+`compile_env` the model-written body path: `write_tool_body`, its prompt chain and the D117 lookup_rows and test_body
+loop, whose flag was always off. `builder/intent.py` loses the Intent writer and its grounding (D47, D83, D113,
+D143, D157 as code; the Spec stage writes Intents) and keeps a re-export, because `user/factory.py` loads it by
+name for the value strip and a missing module would silently switch the strip off. Smaller: helpers in mine,
+readers, lesson, feed, route, ingest and agent tools that only their own tests called, and three scripts that
+imported removed modules or measured removed code (`reroll_snapshot.py`, `user2_wider.py`, `request_snapshot.py`,
+`prompt_snapshot.py`). Tests of behaviour that still exists were kept or rewritten (apply_intent, the blocked lesson).
+Why: carve, never rewrite; dead code is read by every agent that greps the tree and costs review and mutation time.
+Kept on purpose: `builder/skills.py` and the container world and cheat suite, which D rows and ADR 0010 name as the
+mechanism for planned work; `runner/world/birth.py`, which the trust redesign may reuse for constructed Runs; the
+`kullback/ai` and `kullback/agent` surfaces that mirror tau; the hub package; documented CLI commands.
+Measured: 245 functions and classes and 80 tests removed (one test added), 5705 lines deleted; suite 4153 to 4074.
+Status: built 2026-10-07 on shape-1007/deadcode. Renumber at the fold if another stream took D328.
