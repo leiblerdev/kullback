@@ -562,15 +562,17 @@ class Item(Record):
     def _gate_default(self) -> bool:
         return True
 
+    def _drop_defaults(self, data: dict) -> dict:
+        if data.get("gate") == self._gate_default():
+            data.pop("gate", None)
+        if data.get("weight") == 1.0:
+            data.pop("weight", None)
+        return data
+
     @model_serializer(mode="wrap")
     def _without_default_weighting(self, handler):
         data = handler(self)
-        if isinstance(data, dict):
-            if data.get("gate") == self._gate_default():
-                data.pop("gate", None)
-            if data.get("weight") == 1.0:
-                data.pop("weight", None)
-        return data
+        return self._drop_defaults(data) if isinstance(data, dict) else data
 
 
 class Atom(Item):
