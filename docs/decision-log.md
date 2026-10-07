@@ -2360,3 +2360,29 @@ fires on 19 right and 0 wrong. Limit: it flags 1 of the 6 wrong-trusted retail T
 writer demanded what the Reference did; gating on it would hold back 5 right retail References with 22 wrong.
 Status: built 2026-10-07 on fix-1007/trust.
 Folded 2026-10-07 on fix-1007/fold
+
+### D328. Trust is two constructed Runs failing and no open ruling; Reference and solvable are flags (2026-10-07)
+
+What changed: `spec/trust.py tier_of_task` rules a Task trusted when the do-nothing Run and a stray-write Run both
+fail its Verifier and no ruling is open; otherwise untrusted with one reason, read in order: no_intent (no Spec, an
+empty Spec, no Intent fact, a Verifier that checks nothing, no Verifier file, or a refused Task), open_ruling (a
+ruling open, or set aside by the router's rule), constructed_run_passed (a constructed Run passed, or none could be
+built). The stray-write Run is built by code: a passing Run of the Task (a faithful kept Reference first, then a
+fresh Run, else the do-nothing Run) plus one write to a row outside every row the Verifier declares (expected
+cells, `allowed`, forbidden rows), skipping tables that record calls and exempt columns, so it can fail only at the
+sanity item. A refusal Verifier (`forbids_only`) is not asked to fail the do-nothing Run, as before. Two flags ride
+on the row and never gate: reference_passes (every faithful replay of a kept Reference passes; None without one)
+and solvable (any fresh Run passed; None without one). A failing Reference becomes a code ruling for the Examiner
+(`examiner_rulings`, non-blocking), who rules which side is wrong. Counts (`round_snapshot.counts_of`,
+`gates.trust.tier_counts` and `trust_row`), the tier report and its README table, the Spec review's repair gates
+and the package rows and manifest read the tier, the reason and the flags; round snapshots move to format 2.
+Retired: the grounded, sourced, can_fail (the D79 mutation suite, `spec/canfail.py can_fail`), reference_replay
+(D312) and independent_pass gates; the tiers replay_only, set_aside, unconfirmed, pending and refused as Task tiers
+(D319's words stay only in the untrusted text of a workdir with no Spec, whose untrusted Tasks read no_intent);
+the code ruling as a gate inside the Spec's tiers (D322's sourced gate); D327 in full (the not-run split and
+`writer_disagreement`, replaced by the reference_passes flag).
+Why: the founder's v3 shape (verifier-redesign-1007.md): trust by code with no model, sourced enforced in the
+writer's tool, the Reference a witness only.
+Limits: until the sanity item lands (sh-reward), the stray write fails only where an expected end state's
+"nothing else moves" rule or a forbidden row catches it; a Verifier with atoms and no end state lets it pass.
+Status: built 2026-10-07 on shape-1007/trust.
