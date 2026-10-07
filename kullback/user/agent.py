@@ -205,8 +205,10 @@ class AgentUser:
             if not self._end_tagged:
                 tags.append(kind)
                 self._end_tagged = True
+        goal_met = self.protocol.goal_done(made, acted=ends_mod.tool_called(transcript),
+                                           closed=rules_mod.closes(question))
         payload = {"text": text, "driver": "agent", "facts": carried, "tags": tags,
-                   "requested_end": self.box.requested, "user_end": kind,
+                   "requested_end": self.box.requested, "user_end": kind, "user_goal_met": goal_met,
                    "user_tools": [dict(call) for call in self.box.tool_calls],
                    "user_thinking": thinking}
         self.box.tool_calls = []

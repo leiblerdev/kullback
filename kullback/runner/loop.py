@@ -411,7 +411,7 @@ def _user_payload(user: Any, answer: Optional[str], seen: int) -> tuple[dict, bo
     for key in ("unavailable_fields", "sources"):
         if carried.get(key):
             payload[key] = carried[key]
-    for key in ("refused", "refused_so_far"):  # counts, and a zero is a number the report reads
+    for key in ("refused", "refused_so_far", "user_goal_met"):  # a zero or a False is a reading too
         if key in carried:
             payload[key] = carried[key]
     if "user_tools" in carried:  # an empty log is the finding: the turn read nothing

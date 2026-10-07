@@ -136,7 +136,8 @@ class FactStore:
         words: set[str] = set()
         for sentence in rules_mod._sentences(text) or [text]:
             if not rules_mod.CONFIRM_REQUEST.search(sentence):
-                words |= set(_content(sentence))
+                # A word the next word re-points ("the name of the product") names no field of ours.
+                words |= set(_content(re.sub(r"\b[a-z]+\s+of\b", " ", sentence)))
         scored: dict[str, int] = {}
         for field in fields:
             own = {word for phrase in self.phrases(field) for word in _content(phrase)}

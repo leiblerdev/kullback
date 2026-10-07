@@ -430,7 +430,7 @@ def _greeting_first_candidate():
     return TestModel([
         reply("What would you like help with?"),
         reply(None, ("rename_widget", {"widget_id": "w1", "label": "striped"})),
-        reply("Done, widget w1 is labelled striped."),
+        reply("Done, widget w1 is labelled striped. Anything else I can help with?"),
     ], loop=True)
 
 
