@@ -118,3 +118,15 @@ def test_a_required_write_with_no_id_field_or_an_object_entity_is_unsatisfiable(
     assert _unsatisfiable(check("c0", "required", no_field), check("c1", "required", as_object)) == \
         (("c0", "required_write_without_row"), ("c1", "required_write_without_row"))
     assert _unsatisfiable(check("c0", "allowed", no_field)) == ()
+
+
+def test_a_say_demand_listing_values_compiles_to_one_communicate_atom_per_value():
+    said = {"demand": "say", "values": ["slot seven", "A1"]}
+    atoms = compile_spec(spec([check(demand=said)]), WRITE_TOOLS, fn).verifier.atoms
+    assert [(atom.kind, atom.target["text"]) for atom in atoms] == [("communicate", "slot seven"),
+                                                                     ("communicate", "A1")]
+    assert [atom.description.split(" because:")[0] for atom in atoms] == \
+        ["the final answer states slot seven", "the final answer states A1"]
+    assert len({atom.id for atom in atoms}) == 2
+    assert len(compile_spec(spec([check(demand={"demand": "say", "text": "slot seven"})]), WRITE_TOOLS,
+                            fn).verifier.atoms) == 1
