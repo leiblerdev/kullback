@@ -36,7 +36,7 @@ from kullback.runner.code_hash import CODE_HASH
 from kullback.runner.records import Run, Verifier, load_run_jsonl, read_json, read_jsonl
 from kullback.runner.replay import RECORDED
 from kullback.spec.actions import action_tables_of, workdir_action_tools
-from kullback.spec.canfail import judge_run
+from kullback.spec.canfail import Outcome, outcome_of
 from kullback.spec.events import TASK_SET_ASIDE
 from kullback.spec.router import (  # noqa: F401  (ROUNDS_CAP re-exported for readers of the tiers)
     ROUNDS_CAP,
@@ -53,7 +53,6 @@ REASONS = (NO_INTENT, OPEN_RULING, CONSTRUCTED_RUN_PASSED)
 # The two constructed Runs, each of which must fail.
 CONSTRUCTED = ("do_nothing", "stray_write")
 # How the Verdict names a failure at the sanity check: a row outside the declared ones moved.
-SANITY_MARKERS = ("collateral:", "sanity")
 STRAY_UNTESTED = "stray_untested"
 FLAGS = ("reference_passes", "solvable")
 # The build manifest in the workdir: the build's Task sample, kept for a resume.
@@ -172,11 +171,11 @@ def _do_nothing(runs: list[Run]) -> Optional[Run]:
     return empty_run(base) if base is not None else None
 
 
-def _judge(verifier: Verifier, run: Run, canon: Any, write_tools: Any) -> tuple[bool, Any]:
+def _judge(verifier: Verifier, run: Run, canon: Any, write_tools: Any) -> Outcome:
     try:
-        return judge_run(verifier, run, canon, write_tools)
-    except Exception:  # a Run the scorer cannot read is not a pass, and never stops the ruling
-        return False, None
+        return outcome_of(verifier, run, canon, write_tools)
+    except Exception:  # a Run the scorer cannot read neither passes nor fails, and never stops the ruling
+        return Outcome(False, None, False)
 
 
 def _stray_base(runs: list[Run], passing: Iterable[str], empty: Optional[Run]) -> tuple[Optional[Run], bool]:
@@ -200,32 +199,25 @@ def constructed_runs(verifier: Verifier, runs: list[Run], passing: Iterable[str]
     return out
 
 
-def at_sanity(atom: Any) -> bool:
-    """Whether a failing atom is the sanity check: nothing outside the declared rows moved."""
-    return any(marker in str(atom or "") for marker in SANITY_MARKERS)
-
-
 def _constructed(verifier: Verifier, runs: list[Run], passing: list[str], canon: Any, tools: Any,
                  schema: Any) -> dict[str, dict]:
     """name -> {built, failed, atom, run_id}, and for the stray write `untested`.
 
-    The stray write counts as failed only when it fails at the sanity check on a base the Verifier passes.
-    On a failing base (the do-nothing Run, unless the Verifier rightly passes it), or failing at a cell or an
-    atom, the sanity check was never tested (`untested`).
+    A constructed Run counts as failed only on a definite failure, a gate item that holds False; a Run
+    left not verdicted has not failed (S1). The stray write counts as failed only when its sanity item
+    (read off Verdict.items) holds False; failing anywhere else, it never tested the sanity check.
     """
-    base, on_passing = _stray_base(runs, passing, _do_nothing(runs))
-    if not on_passing and base is not None:  # a refusal Verifier is passed by the do-nothing Run rightly
-        on_passing = _judge(verifier, base, canon, tools)[0]
     out = {}
     for name, run in constructed_runs(verifier, runs, passing, schema=schema, canon=canon).items():
         if run is None:
             out[name] = {"built": False, "failed": False, "atom": None, "run_id": None}
             continue
-        passed, atom = _judge(verifier, run, canon, tools)
-        out[name] = {"built": True, "failed": not passed, "atom": None if passed else atom, "run_id": run.run_id}
-        if name == "stray_write" and not passed:
-            untested = not on_passing or not at_sanity(atom)
-            out[name].update(failed=not untested, untested=untested)
+        outcome = _judge(verifier, run, canon, tools)
+        out[name] = {"built": True, "failed": outcome.failed is not None, "atom": outcome.failed,
+                     "run_id": run.run_id}
+        if name == "stray_write":
+            untested = not outcome.sanity_failed and not outcome.passed
+            out[name].update(failed=outcome.sanity_failed, untested=untested)
     return out
 
 
@@ -251,8 +243,10 @@ def set_aside_of(spec: Spec, rulings: Iterable[Any] = ()) -> bool:
                                      and _event_task(event) in (None, spec.task_id) for event in rulings or ())
 
 
-def _flag(verdicts: dict[str, tuple[bool, Any]], run_ids: Iterable[str], every: bool) -> Optional[bool]:
-    scored = [verdicts[run_id][0] for run_id in run_ids if run_id in verdicts]
+def _flag(verdicts: dict[str, Outcome], run_ids: Iterable[str], every: bool) -> Optional[bool]:
+    """A Run left not verdicted (no judge in trust, a gate open) says nothing either way."""
+    scored = [verdicts[run_id].passed for run_id in run_ids
+              if run_id in verdicts and (verdicts[run_id].passed or verdicts[run_id].failed)]
     if not scored:
         return None
     return all(scored) if every else any(scored)
@@ -284,13 +278,13 @@ def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: I
         reason = CONSTRUCTED_RUN_PASSED
     else:
         reason = None
-    failed_reference = next((run_id for run_id in kept if not verdicts[run_id][0]), None)
+    failed_reference = next((run_id for run_id in kept if verdicts[run_id].failed), None)
     row = {"task_id": spec.task_id, "tier": UNTRUSTED if reason else TRUSTED, "reason": reason, "gates": gates,
            "constructed": constructed,
            "detail": STRAY_UNTESTED if (constructed.get("stray_write") or {}).get("untested") else None,
            "reference_passes": _flag(verdicts, kept, every=True), "solvable": _flag(verdicts, fresh, every=False),
            "reference": {"runs": kept, "failed": failed_reference,
-                         "atom": verdicts[failed_reference][1] if failed_reference else None},
+                         "atom": verdicts[failed_reference].failed if failed_reference else None},
            "runs_scored": sorted(verdicts), "fresh_runs": len(fresh),
            "fresh_passed": sorted(r for r in fresh if verdicts[r][0]),
            "rulings_open": spec.rulings_open, "round": spec.round, "set_aside": set_aside,

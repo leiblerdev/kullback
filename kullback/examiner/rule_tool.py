@@ -267,7 +267,7 @@ def verify_rows(workdir: Any, task_id: str, verifier: Verifier, reference: Optio
     from kullback.gates.probes import write_tools_of
     from kullback.runner.canon import load_rules
     from kullback.runner.records import ToolSig
-    from kullback.spec.canfail import judge_run
+    from kullback.spec.canfail import judge_run, outcome_of
     from kullback.spec.trust import constructed_runs
 
     if reference is None:
@@ -282,7 +282,8 @@ def verify_rows(workdir: Any, task_id: str, verifier: Verifier, reference: Optio
         built = constructed_runs(verifier, [reference], [reference.run_id], schema=schema, canon=canon)
         for name, run in built.items():
             if run is not None:
-                rows.append({"run": name, "verifier_fails_it": not judge_run(verifier, run, canon, tools)[0]})
+                failed = outcome_of(verifier, run, canon, tools).failed
+                rows.append({"run": name, "verifier_fails_it": failed is not None, "at": failed})
     except Exception as exc:  # a constructed Run the Verdict cannot read says the code does not run
         rows.append({"run": "constructed", "error": type(exc).__name__})
     try:
