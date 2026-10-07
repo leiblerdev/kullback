@@ -199,25 +199,6 @@ def event_row(event: Any) -> Optional[dict]:
     return None
 
 
-def from_event(workdir: Any, event: Any) -> None:
-    """Append a typed agent-core event, if it is one the feed carries."""
-    row = event_row(event)
-    if row is not None:
-        append(workdir, str(row.pop("kind")), **row)
-
-
-def pid_of(workdir: Any) -> Optional[int]:
-    """The pid recorded on this feed's first line, when it has one."""
-    rows, _ = read_since(workdir, 0)
-    for row in rows:
-        if row.get("pid"):
-            try:
-                return int(row["pid"])
-            except (TypeError, ValueError):
-                return None
-    return None
-
-
 def start(workdir: Any, **fields: Any) -> None:
     """Open a build's feed. Truncates, because a feed is one build's story and a workdir that is
     built again is a new one; the ledger keeps the history."""
