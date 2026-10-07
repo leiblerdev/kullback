@@ -10,7 +10,9 @@ A Task is trusted when both constructed Runs score 0 under its Verifier and no b
 
 Otherwise the Task is untrusted with one reason, in this order: no_intent (no Spec, an empty Spec, no
 Verifier, or a Task refused), open_ruling (a ruling open, or the Task set aside by the router's rule),
-constructed_run_passed (a constructed Run passed, or none could be built: not shown to fail).
+constructed_run_passed (a constructed Run passed, or none could be built: not shown to fail). A stray
+write that fails at a cell or an atom, or that sits on the do-nothing Run, never tested the sanity check:
+it counts as passed and the row's `detail` says stray_untested.
 
 Two flags ride on the row and never gate. reference_passes: every faithful replay of a kept Reference
 passes the Verifier (None without one); a fail is handed to the Examiner as a code ruling
@@ -51,6 +53,9 @@ NO_INTENT, OPEN_RULING, CONSTRUCTED_RUN_PASSED = "no_intent", "open_ruling", "co
 REASONS = (NO_INTENT, OPEN_RULING, CONSTRUCTED_RUN_PASSED)
 # The two constructed Runs, each of which must fail.
 CONSTRUCTED = ("do_nothing", "stray_write")
+# How the Verdict names a failure at the sanity check: a row outside the declared ones moved.
+SANITY_MARKERS = ("collateral:", "sanity")
+STRAY_UNTESTED = "stray_untested"
 FLAGS = ("reference_passes", "solvable")
 # The build manifest in the workdir: the build's Task sample, kept for a resume.
 BUILD_MANIFEST = "build.json"
@@ -175,17 +180,22 @@ def _judge(verifier: Verifier, run: Run, canon: Any, write_tools: Any) -> tuple[
         return False, None
 
 
+def _stray_base(runs: list[Run], passing: Iterable[str], empty: Optional[Run]) -> tuple[Optional[Run], bool]:
+    """(the Run the stray write is laid on, whether it passes): the first Run in `passing` (a faithful
+    Reference first, then a fresh Run), else the do-nothing Run, on which the sanity check goes untested."""
+    by_id = {run.run_id: run for run in runs}
+    base = next((by_id[run_id] for run_id in passing if run_id in by_id and _stop(by_id[run_id]) is not None), None)
+    return (base, True) if base is not None else (empty, False)
+
+
 def constructed_runs(verifier: Verifier, runs: list[Run], passing: Iterable[str], *, schema: Any = None,
                      canon: Any = None) -> dict[str, Optional[Run]]:
     """name -> the constructed Run, None where it cannot be built; do_nothing is left out where it is right.
 
-    The stray write is laid on the first Run in `passing` (a faithful Reference first, then a fresh Run),
-    else on the do-nothing Run: on a passing base, the stray row is the one thing that can fail it.
+    The stray write is laid on `_stray_base`: on a passing base, the stray row is the one thing that can fail it.
     """
-    by_id = {run.run_id: run for run in runs}
     empty = _do_nothing(runs)
-    base = next((by_id[run_id] for run_id in passing if run_id in by_id and _stop(by_id[run_id]) is not None),
-                empty)
+    base, _passing = _stray_base(runs, passing, empty)
     out: dict[str, Optional[Run]] = {}
     if not forbids_only(verifier):
         out["do_nothing"] = empty
@@ -193,9 +203,22 @@ def constructed_runs(verifier: Verifier, runs: list[Run], passing: Iterable[str]
     return out
 
 
+def at_sanity(atom: Any) -> bool:
+    """Whether a failing atom is the sanity check: nothing outside the declared rows moved."""
+    return any(marker in str(atom or "") for marker in SANITY_MARKERS)
+
+
 def _constructed(verifier: Verifier, runs: list[Run], passing: list[str], canon: Any, tools: Any,
                  schema: Any) -> dict[str, dict]:
-    """name -> {built, failed, atom, base}: whether the constructed Run was built and failed, and at what."""
+    """name -> {built, failed, atom, run_id}, and for the stray write `untested`.
+
+    The stray write counts as failed only when it fails at the sanity check on a base the Verifier passes.
+    On a failing base (the do-nothing Run, unless the Verifier rightly passes it), or failing at a cell or an
+    atom, the sanity check was never tested (`untested`).
+    """
+    base, on_passing = _stray_base(runs, passing, _do_nothing(runs))
+    if not on_passing and base is not None:  # a refusal Verifier is passed by the do-nothing Run rightly
+        on_passing = _judge(verifier, base, canon, tools)[0]
     out = {}
     for name, run in constructed_runs(verifier, runs, passing, schema=schema, canon=canon).items():
         if run is None:
@@ -203,6 +226,9 @@ def _constructed(verifier: Verifier, runs: list[Run], passing: list[str], canon:
             continue
         passed, atom = _judge(verifier, run, canon, tools)
         out[name] = {"built": True, "failed": not passed, "atom": None if passed else atom, "run_id": run.run_id}
+        if name == "stray_write" and not passed:
+            untested = not on_passing or not at_sanity(atom)
+            out[name].update(failed=not untested, untested=untested)
     return out
 
 
@@ -264,6 +290,7 @@ def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: I
     failed_reference = next((run_id for run_id in kept if not verdicts[run_id][0]), None)
     row = {"task_id": spec.task_id, "tier": UNTRUSTED if reason else TRUSTED, "reason": reason, "gates": gates,
            "constructed": constructed,
+           "detail": STRAY_UNTESTED if (constructed.get("stray_write") or {}).get("untested") else None,
            "reference_passes": _flag(verdicts, kept, every=True), "solvable": _flag(verdicts, fresh, every=False),
            "reference": {"runs": kept, "failed": failed_reference,
                          "atom": verdicts[failed_reference][1] if failed_reference else None},

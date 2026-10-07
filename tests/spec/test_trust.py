@@ -127,6 +127,18 @@ def test_the_stray_write_lands_on_a_passing_run_outside_the_declared_rows_and_fa
     assert run.events[-1].payload["end_state"]["items"]["A1"] == END["items"]["A1"]
 
 
+def test_a_stray_write_failing_at_a_cell_or_on_the_do_nothing_run_left_the_sanity_check_untested():
+    tier, row = _tier([_fresh(right=False)], references=())
+    stray = row["constructed"]["stray_write"]
+    assert stray["untested"] is True and stray["failed"] is False and stray["atom"].startswith("gate:expected:cell")
+    assert tier == "untrusted" and row["reason"] == "constructed_run_passed" and row["detail"] == "stray_untested"
+
+
+def test_a_stray_write_on_a_passing_base_failing_at_the_sanity_check_is_tested():
+    stray = _tier([_replay(), _fresh()])[1]["constructed"]["stray_write"]
+    assert stray["untested"] is False and stray["failed"] is True and T.at_sanity(stray["atom"])
+
+
 def test_no_stray_write_is_built_when_every_row_is_declared_and_trust_is_withheld():
     declared = _verifier().model_copy(update={"expected": [EndState(cells=[_cell()],
                                                                     allowed=[{"table": "items"}])]})
