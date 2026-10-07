@@ -9,12 +9,10 @@ model on its own: write_tool_body takes a Model.
 from __future__ import annotations
 
 import copy
-import io
 import json
 import keyword
 import re
 import textwrap
-import tokenize
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
@@ -2848,105 +2846,7 @@ def _confinement_block(denied: Iterable[str] = DENIED_BUILTINS, allowed: Iterabl
             "non-ASCII character anywhere in the body, not even in a comment.")
 
 
-# The typographic characters a model reaches for that Python refuses outside a string. A live build
-# stalled a whole round on an em dash written into code, and every attempt after it was spent on the
-# same character. They are replaced deterministically and for free, and only where Python would
-# execute them: inside a string literal the character may be the behaviour the recording shows, and
-# rewriting a literal would move the replay the gates compare by. Any other non-ASCII character is
-# left where it stands and named in the note, because guessing what a model meant by it is not the
-# sanitizer's business.
-# Written as escapes so the table stays greppable and no editor can quietly alter it.
-CONFUSABLES = {
-    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-",
-    "\u2015": "-", "\u2212": "-", "\u2018": "'", "\u2019": "'", "\u201a": "'",
-    "\u201b": "'", "\u2032": "'", "\u201c": '"', "\u201d": '"', "\u201e": '"',
-    "\u201f": '"', "\u2033": '"', "\u2026": "...", "\u00a0": " ", "\u2007": " ",
-    "\u2009": " ", "\u202f": " ", "\u200b": "", "\u200c": "", "\u200d": "",
-    "\ufeff": "",
-}
 
-# Python 3.12 reports the printed halves of an f-string under their own token type; 3.11 has no such
-# type and hands the whole f-string back as one string token.
-_FSTRING_MIDDLE = getattr(tokenize, "FSTRING_MIDDLE", -1)
-
-
-def sanitize_body(body: str) -> tuple[str, Optional[str]]:
-    """Replace typographic confusables where Python would execute them, so a smart quote never costs
-    a model an attempt.
-
-    Returns the body and a note naming what was changed and what was left standing, or None when the
-    body needed nothing. What a string literal prints keeps every character it was written with. An
-    f-string keeps its printed text and its format specs for the same reason, while the expressions
-    inside it are code like any other and are sanitized like any other: that is one rule, not two,
-    and it reads the same on every Python the harness supports even though the two tokenizers hand
-    an f-string back differently.
-
-    A body the tokenizer itself refuses is returned unchanged and unremarked. There is nothing to
-    stand on there, and the compile gate already tells the model where it does not parse.
-    """
-    if not body or body.isascii():
-        return body, None
-    try:
-        tokens = list(tokenize.generate_tokens(io.StringIO(body).readline))
-    except (tokenize.TokenError, IndentationError, SyntaxError):
-        return body, None
-    lines = body.splitlines(keepends=True)
-    printed = _printed_positions(tokens, lines)
-    changed: list[str] = []
-    left: set[str] = set()
-    out: list[str] = []
-    for row, line in enumerate(lines, start=1):
-        chars: list[str] = list(line)
-        for column, char in enumerate(chars):
-            if char.isascii() or (row, column) in printed:
-                continue
-            if char in CONFUSABLES:
-                chars[column] = CONFUSABLES[char]
-                changed.append(f"{char!r} at line {row}")
-            else:
-                left.add(char)
-        out.append("".join(chars))
-    notes = []
-    if changed:
-        notes.append("replaced typographic characters outside strings: " + "; ".join(changed[:5]))
-    if left:
-        notes.append("non-ASCII outside strings the sanitizer does not cover: "
-                     + ", ".join(f"U+{ord(char):04X}" for char in sorted(left)))
-    return ("".join(out) if changed else body), ("; ".join(notes) or None)
-
-
-def _printed_positions(tokens: Iterable[Any], lines: list[str]) -> set[tuple[int, int]]:
-    """Every (line, column) of the body that a string literal prints rather than runs.
-
-    Two tokenizers have to be read into the same answer. From Python 3.12 the tokenizer reports the
-    printed halves of an f-string and its format specs as their own tokens and hands the expressions
-    back as ordinary code, so protecting those halves is the whole job. Up to 3.11 a whole f-string
-    arrives as a single string token, and skipping it whole is how a confusable inside a replacement
-    field used to reach the parser untouched; there the expressions are found in the token's text and
-    left out of the protection.
-    """
-    printed: set[tuple[int, int]] = set()
-    for token in tokens:
-        if token.type == _FSTRING_MIDDLE:
-            printed.update(_span_positions(token.start, token.end, lines))
-        elif token.type == tokenize.STRING:
-            spans = _fstring_expression_spans(token.string)
-            row, column = token.start
-            for offset, char in enumerate(token.string):
-                if not any(begin <= offset < end for begin, end in spans):
-                    printed.add((row, column))
-                row, column = (row + 1, 0) if char == "\n" else (row, column + 1)
-    return printed
-
-
-def _span_positions(start: tuple[int, int], end: tuple[int, int], lines: list[str]):
-    row, column = start
-    while (row, column) < end and row <= len(lines):
-        if column >= len(lines[row - 1]):
-            row, column = row + 1, 0
-            continue
-        yield row, column
-        column += 1
 
 
 def _string_parts(text: str) -> tuple[str, int, int]:
@@ -3245,69 +3145,6 @@ TEST_BODY_TOOL = {
 BUILDER_TOOLS = [LOOKUP_ROWS_TOOL, TEST_BODY_TOOL]
 
 
-def _find_row(schema: EntitySchema, world: dict, table: str, key: str) -> tuple[Optional[dict], Optional[str]]:
-    """A row and where it sits: the table itself, or (schema.homes) the parent it is nested in."""
-    row = (world.get(table) or {}).get(key)
-    if isinstance(row, dict):
-        return row, table
-    home = (schema.homes or {}).get(table)
-    if home:
-        parent, column = home.split(".", 1)
-        for parent_row in (world.get(parent) or {}).values():
-            nest = parent_row.get(column) if isinstance(parent_row, dict) else None
-            if isinstance(nest, dict) and isinstance(nest.get(key), dict):
-                return nest[key], home
-    return None, None
-
-
-def _shown_worlds(db: dict, shown: list[ToolCall], call_states: Optional[dict]) -> list[dict]:
-    """db, then every distinct world a shown call ran on (D74's per-Task overlay), never a held-out
-    one: the same call_states lookup Sandbox.state_for makes, read here off the dict directly
-    since no Sandbox exists yet when the model is still drafting the body."""
-    seen = {id(db)}
-    worlds = [db]
-    for call in shown if call_states else []:
-        state = call_states.get(call.id, db) if call.id else db
-        if id(state) not in seen:
-            seen.add(id(state))
-            worlds.append(state)
-    return worlds
-
-
-def _lookup_rows_text(schema: EntitySchema, db: dict, shown: list[ToolCall], call_states: Optional[dict],
-                      table: Optional[str] = None, key: Optional[str] = None,
-                      holdout: Optional[dict] = None) -> str:
-    """What lookup_rows answers: a row, a table's shape, or the table list for an unknown name.
-
-    `holdout` is `holdout_columns`: per table and row, the columns only a held-out Run witnessed.
-    The row comes back with those columns present and their values masked (D220 rule 2a), so the
-    writer knows the shape of what it will read and cannot write a body around a value it was never
-    entitled to see. The masking is on the answer, so it holds whichever world the row was found
-    in, the shared one or a shown call's own.
-    """
-    tables = sorted(schema.tables)
-    if table not in tables:
-        return f"unknown table {table!r}; tables on self.db: {', '.join(tables)}"
-    if not key:
-        rows = db.get(table) or {}
-        return f"{table}: {len(rows)} rows; sample keys: {sorted(rows)[:3]}"
-    row, location = None, None
-    for world in _shown_worlds(db, shown, call_states):
-        row, location = _find_row(schema, world, table, key)
-        if row is not None:
-            break
-    if row is None:
-        return f"{table} row {key!r} was not found in the Starting state or a shown call's world"
-    masked = ((holdout or {}).get(table) or {}).get(key) or []
-    row = {**row, **{name: MASKED for name in masked if name in row}}
-    text = json.dumps(row, sort_keys=True, default=str)
-    note = ""
-    if len(text) > 2000:
-        text, note = text[:2000], " (truncated to 2000 characters)"
-    where = f"table {table}" if location == table else f"nested inside {location} (schema.homes)"
-    return f"{table} row {key} is stored in {where}{note}: {text}"
-
-
 def _assistant_tool_turn(reply: Any) -> dict:
     """The canonical assistant turn a tool-calling reply becomes, the same shape the Runner's own
     loop and provider.py's adapters read (runner.loop._assistant_message)."""
@@ -3461,23 +3298,6 @@ def _import_hints(gates: list[GateResult]) -> list[str]:
     return out
 
 
-_TABLE_READ = re.compile(r"self\.db\.([A-Za-z_][A-Za-z0-9_]*)")
-
-
-def value_shape(value: str) -> str:
-    """One value with its characters generalized: digits `#`, lowercase `a`, uppercase `A`, the rest itself.
-
-    The shape of an id is what the next attempt needs (an id of this table looks like this); the id
-    itself is a customer value and there is no reason to hand back three of them.
-    """
-    return "".join("#" if c.isdigit() else "a" if c.islower() else "A" if c.isupper() else c
-                   for c in str(value))
-
-
-def table_read(line: str) -> str:
-    """The world table a crashing source line reads, from `self.db.<table>`; "" when it reads none."""
-    found = _TABLE_READ.findall(line or "")
-    return found[0] if found else ""
 
 
 def _evidence_for(attempt: int, shown: list[ToolCall], gates: list[GateResult]) -> list[ToolCall]:
