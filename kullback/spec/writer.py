@@ -10,8 +10,9 @@ anything else. Nothing here reads the Reference index (spec/witness.py does, for
 Code decides what stands, in the tool: an item naming a value no world row, policy line or user turn
 holds is refused with the reason, as is an item with no provenance or resting on unwitnessed facts
 alone, so the writer fixes it in the same session. Items no Run can pass together go back once in a
-follow-up turn. Code adds the sanity item. Facts no item names become gaps. `repair` answers a
-ruling by dropping or replacing the ruled items under the same rules.
+follow-up turn. Code adds the sanity item. Facts no item names become gaps. `repair` answers an
+Examiner ruling (D328): it applies the ruling's fix (drop or replace a ruled item, add at most
+MAX_ADDS items for an uncovered fact) or rebuts it with why, under the same rules.
 
 A Spec of the older demand grammar still compiles (`compile_spec`, `must_not`, Reference-free gates).
 """
@@ -120,14 +121,17 @@ FOLLOWUP_PROMPT = """Code found items no run can pass together, each with the re
 them under their ids so a correct run can pass, then reply that you are done.
 """
 
-REPAIR_PROMPT = """A ruling says some items you wrote for this customer request are wrong. You still \
-have never seen any agent run, and you must not ask for one. Drop or replace the ruled items, or add \
-the item the ruling says is missing; you may not drop any other item. Every rule of the writer still \
-holds. Reply that you are done when finished.
+REPAIR_PROMPT = """The Examiner ruled on items you wrote for this customer request. A ruling names \
+one item (an item id, an Intent fact id, or the task), what is wrong and a fix. You still have never \
+seen any agent run, and you must not ask for one. Apply the fix: drop or replace the ruled items, or \
+add at most 3 items the ruling says are missing; you may not drop or replace any other item. Every \
+rule of the writer still holds. Or rebut: when the Intent or the policy still requires the items as \
+written, change nothing and reply with one line starting "rebut:" and why in one sentence. Otherwise \
+reply that you are done when finished.
 
 """
 
-# Kept for the review's atom edits (spec/review.py): what a Run must write is the end state's cells.
+# Why a demand carrying code is refused (D320): what a Run must write is the end state's cells.
 WRITE_PREDICATE = "write demands are end-state cells"
 # The demands of the older grammar that stay atoms beside an expected end state (D320).
 ATOM_DEMANDS = ("say", "ask")
@@ -137,6 +141,8 @@ ATOM_DEMANDS = ("say", "ask")
 BODY_CHARS = 24000
 # The longest ruling excerpt a repair session is shown: a quote, never a transcript.
 MAX_EXCERPT = 1000
+# The most items one repair may add (D328): a fix covers a fact, it never rewrites the Spec.
+MAX_ADDS = 3
 
 
 class WriterInputs(NamedTuple):
@@ -158,10 +164,13 @@ class WriterInputs(NamedTuple):
 
 
 class Ruling(Record):
-    """What a repair answers: the ruled check ids, the reason in words, and the Examiner's excerpt."""
+    """What a repair answers: the ruled check ids, the item ruled on, the reason and the fix (D328)."""
     check_ids: list[str]
     reason: str
     excerpt: str = ""
+    item: str = ""
+    fix: str = ""
+    kind: str = ""
 
 
 class Written(NamedTuple):
@@ -251,10 +260,10 @@ def world_of(inputs: WriterInputs) -> I.World:
     return I.World(inputs.state, inputs.policy_text, inputs.intent.facts, inputs.tools, inputs.columns)
 
 
-def store_of(inputs: WriterInputs, items: Iterable[dict] = (), ruled: Optional[set[str]] = None
-             ) -> writer_tools.ItemStore:
+def store_of(inputs: WriterInputs, items: Iterable[dict] = (), ruled: Optional[set[str]] = None,
+             max_adds: Optional[int] = None) -> writer_tools.ItemStore:
     return writer_tools.ItemStore(world_of(inputs), {fact.id: fact for fact in inputs.intent.facts}, unwitnessed,
-                                  items, ruled)
+                                  items, ruled, max_adds)
 
 
 def is_item_check(check: Check) -> bool:
@@ -370,7 +379,7 @@ def verifier_of(spec: Spec, inputs: WriterInputs, gates: Optional[Gates] = None)
 
     Checks of the older demand grammar compile as before, Reference-free, beside the items: their
     atoms, the must-not atoms when the Spec has no item, and the forbidden writes and conduct they ask
-    for (`gates_of`). The review's atom edits (`atom_edits`) are applied last.
+    for (`gates_of`).
     """
     items = item_checks(spec)
     legacy = spec.model_copy(update={"checks": [c for c in spec.checks if not is_item_check(c)]})
@@ -387,25 +396,11 @@ def verifier_of(spec: Spec, inputs: WriterInputs, gates: Optional[Gates] = None)
         conduct += more_conduct
         forbidden += more_forbidden
         atoms = [I.atom_of(item) for item in items] + [I.sanity_atom(expected)] + atoms
-    verifier = Verifier(task_id=spec.task_id, atoms=edited_atoms(atoms, spec.atom_edits),
+    verifier = Verifier(task_id=spec.task_id, atoms=atoms,
                         verifier_version=f"spec{spec.version}", seed_run_ids=[], expected=expected,
                         forbidden=forbidden, conduct=conduct)
     return Compiled(verifier, compiled.dropped, compiled.reasons,
                     compiled.unsatisfiable + tuple(I.contradictions(items)))
-
-
-def edited_atoms(atoms: list, edits: Iterable[dict]) -> list:
-    """The atoms after each review edit in order: its drop ids out, its added atoms in (ids replaced)."""
-    from kullback.gates import verifier_suite
-
-    out = list(atoms)
-    for edit in edits or ():
-        dropped = {str(atom_id) for atom_id in edit.get("drop") or []}
-        added = [verifier_suite.make_atom(str(a["id"]), a["kind"], dict(a["payload"]),
-                                          description=a.get("description")) for a in edit.get("add") or []]
-        new_ids = {atom.id for atom in added}
-        out = [atom for atom in out if atom.id not in dropped and atom.id not in new_ids] + added
-    return out
 
 
 def runner_verifier_path(workdir: Path, task_id: str) -> Path:
@@ -430,10 +425,8 @@ def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = N
     """Saves the Spec and its whole Verifier, written from its items by code; no Reference is read.
 
     The Spec is the one writer of a Task's Verifier (D320): the Runner's file and the Spec's copy are
-    the same bytes. The counts ride on the saved Spec as `end_state`. The review's kept cell and conduct
-    edits (D325) are applied after, so a router repair does not drop them.
+    the same bytes. The counts ride on the saved Spec as `end_state`.
     """
-    from kullback.spec.review import apply_end_state_edits  # review imports this module
     inputs = inputs or load_inputs(workdir, spec.task_id, spec.intent)
     verifier: Verifier = verifier_of(spec, inputs, gates).verifier
     text = json.dumps(verifier.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
@@ -443,14 +436,14 @@ def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = N
     for path in paths[1:]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-    apply_end_state_edits(workdir, spec)
     return paths
 
 
 def _ruled_view(spec: Spec, ruling: Ruling) -> dict:
     ruled = [check.model_dump(mode="json") for check in spec.checks if check.id in set(ruling.check_ids)]
     return {"items": item_checks(spec), "ruled_items": ruled,
-            "ruling": {"reason": ruling.reason, "excerpt": str(ruling.excerpt)[:MAX_EXCERPT]}}
+            "ruling": {"item": ruling.item, "kind": ruling.kind, "reason": ruling.reason, "fix": ruling.fix,
+                       "excerpt": str(ruling.excerpt)[:MAX_EXCERPT]}}
 
 
 def repair_messages(spec: Spec, ruling: Ruling, inputs: WriterInputs) -> tuple[list[dict], int]:
@@ -460,26 +453,40 @@ def repair_messages(spec: Spec, ruling: Ruling, inputs: WriterInputs) -> tuple[l
 def repair(spec: Spec, ruling: Ruling, inputs: WriterInputs, model: Any, *,
            model_id: Optional[str] = None, config: Any = None,
            ceiling_usd: Optional[float] = None) -> Written:
-    """One repair session answering a ruling; no Run is shown, only the ruling's excerpt.
+    """One repair session answering a ruling: apply the fix or rebut it; no Run is shown, only the excerpt.
 
-    The session starts from the Spec's items; it may drop only ruled items and may add items under
-    the same find-do-not-invent rule. A Spec of the older grammar is rewritten as items.
+    The session starts from the Spec's items; it may drop or replace only ruled items and add at most
+    MAX_ADDS new ones, under the same find-do-not-invent rule, and code answers each add with its
+    refusal reason inside the session. A Spec of the older grammar is rewritten as items. The counts
+    say what changed, dropped and was added, what code refused, and the writer's rebuttal when it
+    changed nothing.
     """
     ruling = Ruling.model_validate(ruling.model_dump() if isinstance(ruling, Record) else ruling)
     writer_tools.refuse_run_inputs(inputs.intent, inputs.state, ruling.excerpt)
     messages, cut = repair_messages(spec, ruling, inputs)
     legacy = not all(is_item_check(check) for check in spec.checks)
-    store = store_of(inputs, item_checks(spec), None if legacy else set(ruling.check_ids))
+    store = store_of(inputs, item_checks(spec), None if legacy else set(ruling.check_ids),
+                     None if legacy else MAX_ADDS)
     before = {item["id"]: item for item in item_checks(spec)}
     session = _session(model, messages, store, inputs, config, _price(model_id), ceiling_usd)
     items = list(store.items.values())
     counts = _store_counts(store)
-    counts.update(changed=sum(1 for item in items if before.get(item["id"]) != item) + len(store.dropped),
-                  truncated_chars=cut)
+    counts.update(changed=sum(1 for item in items if item["id"] in before and before[item["id"]] != item),
+                  dropped=sum(1 for check in spec.checks if check.id not in store.items),
+                  added=sum(1 for item in items if item["id"] not in before),
+                  not_ruled=store.not_ruled, truncated_chars=cut,
+                  refusals=[{"id": row["id"], "kind": row["kind"]} for row in store.refused],
+                  rebut=rebuttal_of(session.get("text") or ""))
     repaired = _spec_of(spec.task_id, items, counts, inputs).model_copy(update={
         "version": spec.version + 1, "round": spec.round, "rulings_open": spec.rulings_open,
-        "writer": spec.writer, "atom_edits": spec.atom_edits, "end_state_edits": spec.end_state_edits})
+        "writer": spec.writer})
     return Written(repaired, counts, session)
+
+
+def rebuttal_of(text: str) -> str:
+    """The writer's why when it rebuts: the text after "rebut:" in its last reply, else empty."""
+    found = re.search(r"rebut:\s*(.+)", text or "", re.IGNORECASE | re.DOTALL)
+    return " ".join(found.group(1).split()) if found else ""
 
 
 def ruling_of(body: dict) -> Ruling:
@@ -489,8 +496,10 @@ def ruling_of(body: dict) -> Ruling:
     """
     quotes = body.get("quotes") or body.get("quoted") or []
     excerpt = body.get("excerpt") or "\n".join(str(q) for q in quotes if isinstance(q, str))
-    return Ruling(check_ids=[str(c) for c in body.get("check_ids") or []], reason=str(body.get("reason") or ""),
-                  excerpt=str(excerpt))
+    check_ids = body.get("check_ids") or ([body["item"]] if body.get("item") else [])
+    return Ruling(check_ids=[str(c) for c in check_ids], reason=str(body.get("reason") or ""),
+                  excerpt=str(excerpt), item=str(body.get("item") or ""), fix=str(body.get("fix") or ""),
+                  kind="/".join(str(body[key]) for key in ("kind", "code") if body.get(key)))
 
 
 def repair_for_ruling(workdir: Path, task_id: str, ruling: dict, model: Any,

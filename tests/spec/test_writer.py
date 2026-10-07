@@ -299,6 +299,30 @@ def test_repair_drops_only_ruled_items_and_adds_under_the_same_rules():
     assert "s1: not ruled, kept" in model.calls[1]["messages"][-1]["content"]
 
 
+def test_a_repair_may_not_replace_an_unruled_item_and_adds_at_most_the_cap():
+    told = {"id": "t1", "kind": "said", "values": ["seven"], "fact_ids": ["f1"]}
+    spec = W.write_spec("t1", inputs(), TestModel([add(ROW, told), DONE])).spec
+    ruling = W.Ruling(check_ids=["t1"], reason="a fact is uncovered", item="f2", kind="derivation/uncovered_fact")
+    extra = [dict(told, id=f"n{n}") for n in range(W.MAX_ADDS + 1)]
+    model = TestModel([add(dict(ROW, expect={"slot": "four"}), *extra), DONE])
+    written = W.repair(spec, ruling, inputs(), model)
+    kept = {check.id: check for check in written.spec.checks}
+    assert kept["s1"] == spec.checks[0] and written.counts["not_ruled"] == 1
+    assert written.counts["added"] == W.MAX_ADDS and f"n{W.MAX_ADDS}" not in kept
+    shown = model.calls[1]["messages"][-1]["content"]
+    assert "s1: refused: not ruled" in shown and f"at most {W.MAX_ADDS} items" in shown
+    assert "uncovered_fact" in model.calls[0]["messages"][0]["content"]
+
+
+def test_a_rebuttal_changes_nothing_and_carries_the_writers_why():
+    spec = W.write_spec("t1", inputs(), TestModel([add(ROW), DONE])).spec
+    ruling = W.Ruling(check_ids=["s1"], reason="not asked for", fix="drop s1")
+    written = W.repair(spec, ruling, inputs(), TestModel([ModelReply(content="rebut: the user asks for slot seven.")]))
+    assert written.spec.checks == spec.checks
+    assert written.counts["rebut"] == "the user asks for slot seven."
+    assert not (written.counts["changed"] or written.counts["dropped"] or written.counts["added"])
+
+
 def _ruled_workdir(tmp_path):
     _workdir(tmp_path)
     loaded = W.load_inputs(tmp_path, "t1", inputs().intent)

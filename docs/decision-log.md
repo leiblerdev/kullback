@@ -2441,3 +2441,22 @@ Run, so a wrong Reference can no longer write its own Verifier.
 Limit: D327's `writer_disagreement` reads write demands, which item Specs no longer carry; it reads nothing on
 them until sh-trust compares items with the Reference.
 Status: built 2026-10-07 on shape-1007/writer.
+
+### D328. The Examiner gives feedback and never edits; rulings, two rounds (2026-10-07)
+
+What changed: the Examiner files rulings (`spec/rulings.py`), one file each under exam/rulings/<task>: the item (a check,
+atom, Intent fact or the task), a kind and code (derivation, judge, code, scope), the reason and the fix in one sentence
+each, blocking or note. `examiner/rule_tool.py` holds rule, close, verify (the do-nothing Run, a stray write and the
+Reference end state through the Verifier, cited by a passes_do_nothing or fails_reference ruling, which names the wrong
+side) and the writer's world tools lookup_rows and search_rows, so a judge anchor is checked against the world.
+`spec/review.py answer_rulings` has the writer apply (Verifier rewritten) or rebut each ruling with why;
+`spec/rounds.py run_rounds` runs Examiner, writer, Examiner (ROUNDS_CAP 2), logged to spec/state/rounds.jsonl and the
+bus. The Spec's `rulings_open` counts open blocking rulings and `round` the last round: an open blocking ruling after
+the last round holds the Task untrusted. A ruling that the Reference is wrong is a note, never asked of the writer.
+Retired: the D325 edit kinds (atoms, text, cell, conduct, reference) and `reference_proposed`; the D317 text and atoms
+edit shape on the Spec (`atom_edits`, `end_state_edits`, dropped on load); the bus-driven Router and its moves on run,
+check, intent and environment targets (`spec/router.py` keeps the set-aside state); reject_reference; the quote
+requirement on rulings. A finding keeps body edits for the Builder only.
+Why: sh-examiner (shape-1007): an Examiner that edits the Spec grades its own work; feedback the writer answers keeps
+one author per Verifier and leaves a trail.
+Status: built 2026-10-07 on shape-1007/examiner.
