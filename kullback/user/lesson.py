@@ -16,10 +16,10 @@ a new lesson or a new Candidate model does not restart the clock, and a Task tha
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Iterable, Optional
 
 from kullback.runner.records import Record, read_json, write_json
-from kullback.user.fidelity import AGENT_DRIVER, RULES_DRIVER, TaskScore
+from kullback.user.fidelity import AGENT_DRIVER, RULES_DRIVER
 
 FILE_NAME = "user_lessons.json"
 FORMAT = 1
@@ -62,19 +62,6 @@ class Lesson(Record):
             out.append(f"You got the ending wrong on {self.ends_wrong} turn(s): you stopped where the "
                        "conversation went on, or went on where it had stopped.")
         return out
-
-
-def lesson_from(agent: Optional[TaskScore], rules: Optional[TaskScore], *, task_id: str = "",
-                round: int = 0, key: str = "") -> Lesson:
-    """One round's lesson for one Task, off the two scores the round computed."""
-    source = agent or rules
-    return Lesson(task_id=task_id or (source.task_id if source else ""), round=round, key=key,
-                  agent=agent.score if agent is not None else None,
-                  rules=rules.score if rules is not None else None,
-                  missed=list(source.missed) if source else [],
-                  invented=list(source.invented) if source else [],
-                  record_spoken=list(source.record_spoken) if source else [],
-                  ends_wrong=source.ends_wrong if source else 0)
 
 
 def lines_for(lessons: Iterable[Lesson], task_id: str, key: str = "") -> list[str]:
@@ -139,11 +126,6 @@ def load_lessons(workdir: Any) -> list[Lesson]:
         except ValueError:
             continue
     return out
-
-
-def append_round(workdir: Any, lessons: Sequence[Lesson]) -> Path:
-    """This round's lessons after the ones already on disk, so the stall rule can count rounds."""
-    return write_lessons(workdir, [*load_lessons(workdir), *lessons])
 
 
 def counts(lessons: Iterable[Lesson], round: int) -> dict:

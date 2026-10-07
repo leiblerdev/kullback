@@ -243,7 +243,7 @@ def test_withdrawing_the_reference_retires_the_verifier_and_no_gate_scores_it(de
     row = lifecycle.retired_row(plan.store["task_status"][WITHDRAWN])
     assert row is not None and row["reason"] == lifecycle.REFERENCE_WITHDRAWN and row["round"] == 1
     assert row["source_run_ids"] == ["ref", "alt"]
-    assert lifecycle.counts(lifecycle.retired_in_round(plan.store["task_status"], 1)) == {
+    assert lifecycle.counts([row]) == {
         "verifiers_retired": 1,
         "verifiers_retired_by_reason": {lifecycle.REFERENCE_WITHDRAWN: 1, lifecycle.REFERENCE_REDERIVED: 0}}
 

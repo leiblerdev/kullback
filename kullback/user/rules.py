@@ -600,4 +600,3 @@ def _words(field: str) -> str:
 # end protocol (kullback/user/guards.py) decides the same four kinds over the turns a model drove
 # and must read them exactly as the rule-driven user does, not with a second pair of cues (D214).
 closes = _closes
-names_change = _names_change

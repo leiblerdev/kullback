@@ -290,14 +290,6 @@ def _spec_of(task_id: str, items: Iterable[dict], counts: dict, inputs: WriterIn
     return spec
 
 
-def build_spec(task_id: str, items: Iterable[Any], inputs: WriterInputs) -> tuple[Spec, dict]:
-    """The Spec code keeps from offered items (no model), and the counts of kept and refused."""
-    store = store_of(inputs)
-    store.add(list(items))
-    counts = _store_counts(store)
-    return _spec_of(task_id, store.items.values(), counts, inputs), counts
-
-
 def with_gaps(spec: Spec, inputs: WriterInputs) -> Spec:
     """The Spec with its gaps: facts no check covers, then, for older demands, what compile drops."""
     spec = spec.model_copy(update={"gaps": []})

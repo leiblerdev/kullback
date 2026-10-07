@@ -90,8 +90,6 @@ class TaskContext(Record):
         """The facts an agent user may speak: the spoken sentences are the persona's, not values."""
         return [f for f in self.facts if f.field not in rules_mod.SPOKEN_FIELDS]
 
-    def fact_values(self) -> list[str]:
-        return [str(f.value) for f in self.askable() if f.value is not None]
 
     def grounding(self) -> list[str]:
         """Every sentence this user is known to have said: the facts' own contexts and the spoken

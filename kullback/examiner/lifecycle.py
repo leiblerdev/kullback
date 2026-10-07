@@ -179,20 +179,6 @@ def retired_row(row: Any) -> Optional[dict]:
     return value if isinstance(value, dict) else None
 
 
-def retired_in_round(task_status: Optional[dict], round_number: int) -> list[dict]:
-    """The retirements one round made, off the status rows themselves.
-
-    The rows outlive the call that made them, which is what lets a driver read a round's retirements
-    after the fact rather than having to be handed them by the stage that ran.
-    """
-    out = []
-    for task_id, row in sorted((task_status or {}).items()):
-        gone = retired_row(row)
-        if gone is not None and int(gone.get("round") or 0) == int(round_number):
-            out.append({"task_id": str(task_id), **gone})
-    return out
-
-
 def counts(rows: Iterable[dict]) -> dict:
     """What a round retired, in the two counts D208 asks to be read: how many, and by which reason."""
     rows = list(rows or ())

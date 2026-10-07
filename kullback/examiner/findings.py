@@ -569,33 +569,3 @@ def rule_rows(plan: ExaminerPlan) -> list[dict]:
     return sorted(rows, key=lambda row: (-len(row["task_ids"]), row["key"]))
 
 
-def file_rule_findings(plan: ExaminerPlan, limit: int = RULE_FINDING_LIMIT) -> list[Finding]:
-    """File what the records say, ranked, and only what the Builder has not already been told.
-
-    Two skips. A key that is open is the finding the Builder has not answered yet, and a second copy
-    of it would be a second message saying the same thing. A key that was answered and comes back
-    costing the very same Tasks is the same news a second time: the repair did not move it, the
-    round is stalled and the loop's own exit says so (`cost_by_key`). What does get filed again is
-    the same loss over a different set of Tasks, because that is a number that moved.
-
-    The cut is at the bottom of the ranked list, so a round that is over the limit drops the losses
-    that cost the fewest Tasks and never the one that costs the most.
-    """
-    already = open_by_key(plan)
-    told = cost_by_key(plan)
-    covered = told_task_tools(plan)
-    filed: list[Finding] = []
-    for row in rule_rows(plan):
-        if len(filed) >= limit:
-            break
-        if row["key"] in already or told.get(row["key"]) == sorted(row["task_ids"]):
-            continue
-        pairs = covered_pairs(row)
-        # The pair skip is the fidelity rule's and the unread-result rule's: a Task and tool another
-        # finding already names is that finding's news. The other rules are ranked by the Tasks they
-        # cost and re-file when that set moves (`cost_by_key`), which a pair cannot see.
-        if row["kind"] in PAIR_DEDUPED and pairs and pairs <= covered:
-            continue
-        covered |= pairs
-        filed.append(file_finding(plan, **row))
-    return filed

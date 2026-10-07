@@ -400,14 +400,6 @@ class UserRules(Record):
     confirmed_by_write: bool = False
 
 
-class UserBehaviour(Record):
-    """Stub: how the customer's real users behave, once we mine style across Runs (D44)."""
-    behaviour_id: str
-    style_notes: list[str] = Field(default_factory=list)
-    patience: Optional[str] = None
-    verbosity: Optional[str] = None
-    trace_ids: list[str] = Field(default_factory=list)
-
 # --- environment, categories, tasks ---
 
 class Environment(Record):
