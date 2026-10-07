@@ -9,13 +9,13 @@ from __future__ import annotations
 import pytest
 
 from kullback.ai.provider import TestModel
-from kullback.builder import intent as intent_mod
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
 from kullback.user import context as context_mod
 from kullback.user import factory as factory_mod
 from kullback.user import fidelity as fidelity_mod
 from kullback.user import rules as rules_mod
 from kullback.user import simulated as simulated_mod
+from kullback.user import value_strip as intent_mod
 from kullback.user.agent import AgentUser
 from kullback.user.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
 
@@ -173,9 +173,9 @@ def test_the_disk_fallback_carries_write_tools_goal_writes_and_strip(workdir):
 
 def test_the_disk_derivation_lists_the_tasks_own_recordings_as_members(workdir):
     """Members off disk are the Task's own recordings, in a fixed order."""
-    from kullback.builder import intent as intent_mod
     from kullback.runner import canon as canon_mod
     from kullback.runner.records import EntitySchema, read_json
+    from kullback.user import value_strip as intent_mod
 
     index = fidelity_mod.trace_index(workdir)
     disk_members = factory_mod._members_of(workdir, "task_1", index)

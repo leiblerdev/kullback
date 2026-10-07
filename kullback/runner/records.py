@@ -485,7 +485,7 @@ class Task(Record):
 
 # The Intent record and the one function that applies it to a Task live here rather than in the
 # Builder's intent.py (which keeps the stage, the prompt and the grounding) so the Examiner can read
-# an Intent without importing the Builder (D123); builder/intent.py re-exports the three names.
+# an Intent without importing the Builder (D123).
 
 SpanSource = Literal["user_utterance", "tool_arg", "written_value"]
 # Where a value the strip took out of an Intent was known from, and the shape left in its place

@@ -7,7 +7,6 @@ import json
 import pytest
 
 from conftest import PTR
-from kullback.builder import intent as intent_mod
 from kullback.builder import user_sim
 from kullback.builder.user_sim import (
     ASKABLE,
@@ -43,6 +42,7 @@ from kullback.runner.records import (
     UserFact,
     UserRules,
 )
+from kullback.user import value_strip as intent_mod
 
 # What the retail build derives (D115): the generic core plus the fields retail's users state.
 RETAIL = Vocabulary(domain="retail", fields=[f.model_copy(deep=True) for f in GENERIC_FIELDS] + [
