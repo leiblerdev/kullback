@@ -65,18 +65,25 @@ def answer_rulings(workdir: Any, task_id: str, model: Any, round_number: int, *,
                    ceiling_usd: Optional[float] = None, repair: Optional[Callable] = None) -> dict:
     """The writer's answer to every open ruling on one Task it has not answered; returns the counts.
 
-    `repair(spec, ruling, inputs, model)` is the writer's repair (spec/writer.py) unless a caller gives
-    another; it returns the repaired Spec and its counts. Applied when it changed, dropped or added a
+    `repair(spec, ruling, inputs, model)` is the writer's repair (spec/writer.py), priced under the Spec's
+    stage of the ledger, unless a caller gives another; it returns the repaired Spec and its counts. Applied when it changed, dropped or added a
     check, the Verifier rewritten; rebutted otherwise, with the writer's why.
     """
     from kullback.agent.bus import Bus
+    from kullback.runner.budget import BudgetedModel
+    from kullback.spec.stage import STAGE
     from kullback.spec.trust import load_spec_verifier
     from kullback.spec.writer import load_inputs, write_verifier
     from kullback.spec.writer import repair as writer_repair
 
     root = Path(workdir)
-    repair = repair or (lambda spec, ruled, inputs, m: writer_repair(
-        spec, ruled, inputs, m, model_id=getattr(m, "name", None), ceiling_usd=ceiling_usd))
+    if repair is None:
+        model_id = getattr(model, "name", None)
+        model = BudgetedModel(model, stage=STAGE, workdir=root, model_id=model_id)
+
+        def repair(spec: Spec, ruled: Any, inputs: Any, m: Any) -> Any:
+            return writer_repair(spec, ruled, inputs, m, model_id=model_id, ceiling_usd=ceiling_usd)
+
     out = {"task_id": task_id, "answered": 0, "applied": 0, "rebutted": 0, "skipped": 0}
     todo = [r for r in R.unanswered(R.load_rulings(root, task_id)) if r.wrong_side != "reference"]
     out["skipped"] = len(R.unanswered(R.load_rulings(root, task_id))) - len(todo)

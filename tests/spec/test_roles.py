@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 
 from kullback.ai.provider import ModelReply, TestModel
-from kullback.examiner.rule_tool import verify_rows
+from kullback.examiner.rule_tool import verify_line, verify_rows
 from kullback.runner.records import Run, Verifier, write_json
 from kullback.spec import review as RV
 from kullback.spec import rounds as RD
@@ -159,6 +159,7 @@ def test_verify_says_the_do_nothing_run_fails_and_the_reference_passes(tmp_path)
     by_run = {row["run"]: row for row in rows}
     assert by_run["empty_run"]["verifier_fails_it"] is True
     assert by_run["reference"]["verifier_passes_it"] is True
+    assert verify_line(rows).startswith("empty_run: the Verifier fails 1 of 1;") and "reference: passes" in verify_line(rows)
     assert verify_rows(root, "t1", verifier, None) == [{"run": "reference", "error": "no faithful Reference on disk"}]
 
 

@@ -291,6 +291,21 @@ def verify_rows(workdir: Any, task_id: str, verifier: Verifier, reference: Optio
     return rows
 
 
+def verify_line(rows: list[dict]) -> str:
+    """The verify rows in one line: each kind of Run with how many the Verifier failed, the Reference's word."""
+    parts, kinds = [], {}
+    for row in rows:
+        if "error" in row:
+            parts.append(f"{row['run']}: {row['error']}")
+        elif row["run"] == "reference":
+            parts.append("reference: " + ("passes" if row["verifier_passes_it"] else f"fails on {row['failing']}"))
+        else:
+            failed, total = kinds.get(row["run"], (0, 0))
+            kinds[row["run"]] = (failed + bool(row["verifier_fails_it"]), total + 1)
+    lines = [f"{run}: the Verifier fails {failed} of {total}" for run, (failed, total) in kinds.items()]
+    return "; ".join(lines + parts)
+
+
 def _verify(root: ExamRoot):
     async def verify(args: VerifyArgs) -> VerifyResult:
         from kullback.spec.trust import load_spec_verifier
@@ -300,7 +315,7 @@ def _verify(root: ExamRoot):
             raise ValueError(f"task {args.task_id} has no Verifier to run")
         rows = verify_rows(root.workdir, args.task_id, verifier, _reference_run(root.workdir, args.task_id))
         root.verified[args.task_id] = rows
-        return VerifyResult(summary=json.dumps(rows), rows=rows)
+        return VerifyResult(summary=verify_line(rows), rows=rows)
 
     return verify
 
