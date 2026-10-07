@@ -41,7 +41,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
-from kullback.gates.tool_runs import MEMORISED_STAGE, SENSITIVITY_STAGE
 from kullback.runner.canon import canonicalize as canon
 
 # --- the constants, in one place -------------------------------------------------
@@ -76,10 +75,6 @@ CONSTRUCTS_SHOWN = 6
 # is still a leaf the set holds.
 RELATION_LEAVES = 32
 
-# The stages that run before the fidelity ruling, in the order `sandbox.run_gates` runs them. A tie
-# at one of these is a tie the fidelity number cannot break, because the fidelity ruling never ran.
-GATES_BEFORE_FIDELITY = ("parses", "confined", MEMORISED_STAGE, "executes_on_s0",
-                         "deterministic", "non_trivial", SENSITIVITY_STAGE)
 
 RELATION_KINDS = ("broadcast", "shared_value", "refusal_predicate", "arithmetic", "order")
 # Which construct a line is named as when two of them start on it, most telling first: the branch
@@ -626,29 +621,6 @@ def missing_refusal(triples: Iterable[Triple], source: str = "", function: str =
 def stalled(unbeaten: int, limit: int = STALL_LIMIT) -> bool:
     """True once this many recompiles in a row have scored no higher than the body already there."""
     return int(unbeaten or 0) >= int(limit)
-
-
-def _first_failing(gates: Iterable[Any]) -> str:
-    for gate in gates or ():
-        stage = gate.get("stage") if isinstance(gate, dict) else getattr(gate, "stage", "")
-        passed = gate.get("pass", gate.get("passed")) if isinstance(gate, dict) else getattr(gate, "passed", True)
-        if not passed:
-            return str(stage or "")
-    return ""
-
-
-def blocked_gate(kept: Iterable[Any], attempt: Iterable[Any]) -> str:
-    """The gate before the fidelity ruling that both bodies fall at; "" when they do not.
-
-    A tie the fidelity number cannot break is not a fidelity problem. Both sides scoring the same
-    with the fidelity ruling never reached reads as "nothing beat the incumbent", and the round
-    that follows writes another hint about the recorded calls when what stands between the tool and
-    its calls is one static gate.
-    """
-    one, other = _first_failing(kept), _first_failing(attempt)
-    if not one or one != other or one not in GATES_BEFORE_FIDELITY:
-        return ""
-    return one
 
 
 # --- what the lesson says --------------------------------------------------------------
