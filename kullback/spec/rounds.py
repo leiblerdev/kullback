@@ -44,6 +44,16 @@ def task_rows(workdir: Any, task_ids: Iterable[str]) -> dict[str, dict]:
     return out
 
 
+def _route_reference_fails(root: Path, task_ids: list[str]) -> dict[str, list[int]]:
+    """Trust's kept-Reference failures filed as rulings before the Examiner's first round (D333, fold)."""
+    from kullback.spec.trust import intent_tiers, route_reference_fails
+
+    if not (root / "runs").is_dir():
+        return {}
+    tiers = {task_id: tier for task_id, tier in intent_tiers(root).items() if task_id in task_ids}
+    return {task_id: [n] for task_id in tiers for n in route_reference_fails(root, {task_id: tiers[task_id]})}
+
+
 def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., dict], model: Any,
                writer_model: Any = None, rounds: int = ROUNDS_CAP, ceiling_usd: Optional[float] = None,
                answer: Callable[..., dict] = answer_rulings) -> dict:
@@ -60,6 +70,9 @@ def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., 
     bus = Bus(root / "bus.jsonl", agent="spec")
     rounds = min(int(rounds), ROUNDS_CAP)
     log: list[dict] = []
+    routed = _route_reference_fails(root, task_ids)
+    if routed:
+        _log(root, {"side": "trust", "reference_fails_filed": routed})
     for number in range(1, rounds + 1):
         exam = examine(root, task_ids, model=model, round_number=number)
         for task_id in task_ids:

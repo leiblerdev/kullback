@@ -623,8 +623,12 @@ def rulings_part(workdir: Any, task_id: str) -> str:
     if not rulings:
         return "rulings: none"
     answered = [f"{r.number} {r.answer['action']}" for r in rulings if r.status == "open" and r.answer]
+    unruled = [str(r.number) for r in rulings
+               if r.status == "open" and r.code == "fails_reference" and r.wrong_side is None]
     text = f"rulings: {len(rulings)}, {sum(r.status == 'open' for r in rulings)} open"
-    return text + (f"; answered, to close or keep open: {', '.join(answered)}" if answered else "")
+    text += f"; answered, to close or keep open: {', '.join(answered)}" if answered else ""
+    return text + (f"; the Reference fails the Verifier, rule which side is wrong: {', '.join(unruled)}"
+                   if unruled else "")
 
 
 def _opening(exam_root: ExamRoot, selected: list[str], model: Any = None,

@@ -15,8 +15,8 @@ write that fails at a cell or an atom, or that sits on the do-nothing Run, never
 it counts as passed and the row's `detail` says stray_untested.
 
 Two flags ride on the row and never gate. reference_passes: every faithful replay of a kept Reference
-passes the Verifier (None without one); a fail is handed to the Examiner as a code ruling
-(`examiner_rulings`), who rules which side is wrong. solvable: any fresh Run passed (None without one).
+passes the Verifier (None without one); a fail is filed for the Examiner as a blocking
+code/fails_reference ruling (`route_reference_fails`), who rules which side is wrong. solvable: any fresh Run passed (None without one).
 Sourced is enforced in the writer's tool, not here. Every row names the Runs it scored and carries
 `code_hash` (runner/code_hash.py): two rows are comparable when their hashes match.
 """
@@ -323,6 +323,30 @@ def examiner_rulings(tiers: dict[str, TaskTier]) -> list[dict]:
             out.append({"task_id": task_id, "kind": REFERENCE_FAILS, "run_id": reference.get("failed"),
                         "atom": reference.get("atom"), "blocking": False})
     return out
+
+
+def route_reference_fails(workdir: Any, tiers: dict[str, TaskTier]) -> list[int]:
+    """Each `examiner_rulings` row filed as the Examiner's code/fails_reference ruling, blocking, with no
+    side named: the Examiner rules which side is wrong on its next round, and until it closes the ruling
+    the Task is held untrusted. A Task that already holds a fails_reference ruling gets no second one.
+    Returns the ruling numbers filed."""
+    from kullback.spec import rulings as R
+
+    filed = []
+    for row in examiner_rulings(tiers):
+        task_id = row["task_id"]
+        if any(r.code == "fails_reference" for r in R.load_rulings(workdir, task_id)):
+            continue
+        item = str(row.get("atom") or R.TASK_ITEM)
+        ruling = R.Ruling(task_id=task_id, number=R.next_number(workdir, task_id), round=0, item=item, kind="code",
+                          code="fails_reference", blocking=True,
+                          reason="The kept Reference fails this Verifier, found by code at the trust step.",
+                          fix="Rule which side is wrong: close this if the Reference is wrong, else file the fix.",
+                          verified=[{"run": "reference", "verifier_passes_it": False, "failing": row.get("atom")}])
+        R.save_ruling(workdir, ruling)
+        R.sync_spec(workdir, task_id)
+        filed.append(ruling.number)
+    return filed
 
 
 # --- the build manifest ----------------------------------------------------------------------------

@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from kullback.ai.provider import TestModel
 from kullback.runner.records import Atom, EndState, Event, ExpectedCell, Forbidden, ValueSource, Verifier
 from kullback.spec import trust as T
 from kullback.spec.compile import compile_demands, compile_spec
@@ -345,6 +346,24 @@ def test_a_verifier_failing_a_faithful_kept_reference_flags_it_and_hands_the_exa
     assert row["reference"]["atom"] == f"gate:expected:cell:{verifier.expected[0].cells[0].table}.A1.slot"
     assert T.examiner_rulings(tiers) == [{"task_id": "t1", "kind": "reference_fails", "run_id": REPLAY_ID,
                                           "atom": row["reference"]["atom"], "blocking": False}]
+
+
+def test_a_failing_kept_reference_is_routed_as_a_blocking_examiner_ruling_and_holds_the_task_untrusted(tmp_path):
+    from kullback.spec import rulings as RL
+    from kullback.spec.review import answer_rulings
+
+    _intent_workdir(tmp_path, [_failing_replay(), _fresh()])
+    _hold_reference(tmp_path)
+    assert T.route_reference_fails(tmp_path, T.intent_tiers(tmp_path)) == [1]
+    assert T.route_reference_fails(tmp_path, T.intent_tiers(tmp_path)) == [], "one ruling per Task"
+    ruling = RL.load_rulings(tmp_path, "t1")[0]
+    assert (ruling.kind, ruling.code, ruling.blocking, ruling.wrong_side) == ("code", "fails_reference", True, None)
+    tier, row = T.intent_tiers(tmp_path)["t1"]
+    assert tier == "untrusted" and row["reason"] == "open_ruling"
+    assert answer_rulings(tmp_path, "t1", TestModel([]), 1)["skipped"] == 1, "the Examiner rules first"
+    RL.close(tmp_path, "t1", 1, False, "The Reference wrote a slot the user never asked for.", 1)
+    RL.sync_spec(tmp_path, "t1")
+    assert T.intent_tiers(tmp_path)["t1"].tier == "trusted"
 
 
 @pytest.mark.parametrize("held", [{"fidelity": 0.8}, {"confirmed": False}, {"kept": False}],
