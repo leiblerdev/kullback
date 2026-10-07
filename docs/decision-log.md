@@ -2238,3 +2238,19 @@ After the verify-1006 fold two rulings decided trust for the same Task: the Spec
 The consistency checks of D321 (`contradicts_user`, `unasked_writes`) leave the trusted decision: `code_ruling` still computes them and the row carries them as `contradicts` and `unasked`, counted in the status table as "consistency flags" and never gating. This is the fold's reading pending the founder's decision on D321, and it is reversible in one place: where `code_ruling` builds the flags it can return unconfirmed again.
 
 Rejected: two rulings on one Task, because a reader could not say which tier a Task has; unsupported cells passing the grounded gate, because a value nobody sourced is not evidence the Task is right; the consistency checks as gates until the founder decides, because D321 found they do not separate a wrong Reference.
+
+### D323. Not run apart from failed; the writer's disagreement with the Reference as a flag (2026-10-07)
+
+What changed: `spec/trust.py tier_of_task` puts `fresh_runs` on the row, and a replay_only Task with no fresh Run
+says "not run: no fresh Run on disk" while one whose fresh Runs all fail keeps "no fresh Run passes"; the
+independent pass was `any()` over nothing, so 40 retail and 3 airline Tasks never played read like failures.
+`writer_disagreement` compares the Spec's write demands with the Reference's diff by code: a required write demand
+whose tool the Reference never called or whose row is in no diffed row, and a diffed row outside the action tables
+(`evidence.actions_of`) that no write demand names. It rides on the row as `writer_disagrees` beside `contradicts`
+and `unasked`, never gating. The trust row prints "replay_only N (not run M)" and "writer disagrees N".
+Why: the failure analysis of 2026-10-07 found the blind writer named a write the Reference never made on 18 wrong
+retail References against 1 right one, and nothing read it. Measured (docs/validation/trust-1007.md): the demand
+half has precision 0.82 and recall 0.45 for a wrong retail Reference (22 of 27 flagged Tasks wrong); the row half
+fires on 19 right and 0 wrong. Limit: it flags 1 of the 6 wrong-trusted retail Tasks, since on the other 5 the
+writer demanded what the Reference did; gating on it would hold back 24 right retail References with 22 wrong.
+Status: built 2026-10-07 on fix-1007/trust.
