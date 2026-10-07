@@ -1034,7 +1034,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
         # The Examiner session owns its own event loop, so it runs off the Builder's, on a thread.
         examined, outside = _examined(root, args.task_ids)
         result = _coerce_examine(await asyncio.to_thread(examine_call, root, examined))
-        # The Examiner's rulings go to the Spec writer's round; the Builder reads body edits and one count (D328).
+        # The Examiner's rulings go to the Spec writer's round; the Builder reads body edits and one count (D331).
         from kullback.examiner.domain_tools import task_ids_of
         from kullback.spec.rulings import rulings_line
 

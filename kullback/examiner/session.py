@@ -3,7 +3,7 @@
 `examine` chooses each Task's References by code (the Reference stage, which writes no Verifier:
 the Spec writes every Verifier), files what the records already say as findings with rows, then
 runs one review session over the Examiner's root when a model is given. The session reads, files
-rulings on the Specs and findings on the Environment; it edits nothing (D328). It returns the findings
+rulings on the Specs and findings on the Environment; it edits nothing (D331). It returns the findings
 and writes them to `findings.json` at once, never a round late (learnings 7).
 
 `review_specs` is one Examiner round of the review loop (spec/rounds.py) alone: the Spec views, the
@@ -89,7 +89,7 @@ def _refuse_forbidden_paths() -> Callable:
 
 
 EXAMINER_WRITES = ("the Examiner writes nothing: it files rulings the writer applies or rebuts, and findings "
-                   "for the Builder (D320, D328)")
+                   "for the Builder (D320, D331)")
 
 
 def _refuse_generic_writes() -> Callable:
@@ -630,7 +630,7 @@ def rulings_part(workdir: Any, task_id: str) -> str:
 def _opening(exam_root: ExamRoot, selected: list[str], model: Any = None,
              ceiling_usd: Optional[float] = None) -> tuple[str, Callable[[], None]]:
     """The opening message with the spec views written. Nothing moves on a ruling inside the session:
-    the writer answers rulings in its own round (spec/rounds.py, D328)."""
+    the writer answers rulings in its own round (spec/rounds.py, D331)."""
     from kullback.examiner import rule_tool
 
     views = rule_tool.write_views(exam_root, selected)
@@ -799,7 +799,7 @@ __all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "REVIEW_MESSAGE", "review_extension",
 
 def examine_rounds(workdir: Any, task_ids: Iterable[str], *, model: Any, writer_model: Any = None,
                    rounds: Optional[int] = None, ceiling_usd: Optional[float] = None) -> dict:
-    """The review loop over the Tasks with the Examiner's round wired in (spec/rounds.py, D328)."""
+    """The review loop over the Tasks with the Examiner's round wired in (spec/rounds.py, D331)."""
     from kullback.spec.rounds import run_rounds
     from kullback.spec.router import ROUNDS_CAP
 

@@ -2387,7 +2387,7 @@ Measured (hand-written items, 8 Tasks, 23 Runs, 66 judged items, Opus 5.5 on Bed
 Limit: no Examiner anchor ruling exists yet, so judge against Examiner agreement is not measured.
 Status: built 2026-10-07 on shape-1007/judge.
 
-### D328. Every item gates or scores; the Verdict carries pass and a weighted score; a sanity item for every Task (2026-10-07)
+### D329. Every item gates or scores; the Verdict carries pass and a weighted score; a sanity item for every Task (2026-10-07)
 
 What changed: `Atom`, `ExpectedCell`, `Forbidden` and `Conduct` (runner/records.py) and the Spec's `Check` carry
 `gate` and `weight`; a Check also carries `policy_line`, and `compile_spec` puts its gate and weight on every atom it
@@ -2417,7 +2417,7 @@ Retired: the whole-Run binary reward of `Episode.reward` (1 or 0 from the class)
 `match_any` inside the verdict.
 Status: built 2026-10-07 on shape-1007/reward.
 
-### D328. The Spec writer is blind to the Reference: items from the Intent, the policy and the world (2026-10-07)
+### D330. The Spec writer is blind to the Reference: items from the Intent, the policy and the world (2026-10-07)
 
 What changed: the writer writes typed items (`spec/items.py`): state (`row_is`, `row_new`, `row_keeps`), event
 (`called`, `not_called`, `before`), text (`said`) and judge (`{question, anchor, evidence}`), each with gate, weight
@@ -2442,7 +2442,7 @@ Limit: D327's `writer_disagreement` reads write demands, which item Specs no lon
 them until sh-trust compares items with the Reference.
 Status: built 2026-10-07 on shape-1007/writer.
 
-### D328. The Examiner gives feedback and never edits; rulings, two rounds (2026-10-07)
+### D331. The Examiner gives feedback and never edits; rulings, two rounds (2026-10-07)
 
 What changed: the Examiner files rulings (`spec/rulings.py`), one file each under exam/rulings/<task>: the item (a check,
 atom, Intent fact or the task), a kind and code (derivation, judge, code, scope), the reason and the fix in one sentence
@@ -2461,7 +2461,7 @@ Why: sh-examiner (shape-1007): an Examiner that edits the Spec grades its own wo
 one author per Verifier and leaves a trail.
 Status: built 2026-10-07 on shape-1007/examiner.
 
-### D328. The user looks facts up; its goal never ends a Run; a single-turn Task shape (2026-10-07)
+### D332. The user looks facts up; its goal never ends a Run; a single-turn Task shape (2026-10-07)
 
 What changed: `user/lookup.py` holds the user's facts (rules facts and argument facts) keyed by field name, with
 the Vocabulary's aliases, from the signatures where no build Vocabulary exists (D326). One lookup takes question
@@ -2490,7 +2490,7 @@ derivation), D210's "a Run whose goal writes are confirmed is done whatever the 
 `rules.py` still mines asks with the cues; a goal met is still read off the Reference's writes, as a label.
 Status: built 2026-10-07 on shape-1007/user.
 
-### D328. Trust is two constructed Runs failing and no open ruling; Reference and solvable are flags (2026-10-07)
+### D333. Trust is two constructed Runs failing and no open ruling; Reference and solvable are flags (2026-10-07)
 
 What changed: `spec/trust.py tier_of_task` rules a Task trusted when the do-nothing Run and a stray-write Run both
 fail its Verifier and no ruling is open; otherwise untrusted with one reason, read in order: no_intent (no Spec, an
@@ -2518,7 +2518,7 @@ Limits: until the sanity item lands (sh-reward), the stray write fails only wher
 "nothing else moves" rule or a forbidden row catches it; a Verifier with atoms and no end state lets it pass.
 Status: built 2026-10-07 on shape-1007/trust.
 
-### D328. Dead code out: the Builder's memory tree, triage skill, body writer and Intent writer (2026-10-07)
+### D334. Dead code out: the Builder's memory tree, triage skill, body writer and Intent writer (2026-10-07)
 
 What changed: code no command, module or script reaches is deleted, found by vulture plus a reference count per
 name over kullback, tests, scripts and docs, then a module-aware pass for private names. Whole modules:
@@ -2536,4 +2536,4 @@ Kept on purpose: `builder/skills.py` and the container world and cheat suite, wh
 mechanism for planned work; `runner/world/birth.py`, which the trust redesign may reuse for constructed Runs; the
 `kullback/ai` and `kullback/agent` surfaces that mirror tau; the hub package; documented CLI commands.
 Measured: 245 functions and classes and 80 tests removed (one test added), 5705 lines deleted; suite 4153 to 4074.
-Status: built 2026-10-07 on shape-1007/deadcode. Renumber at the fold if another stream took D328.
+Status: built 2026-10-07 on shape-1007/deadcode. Renumbered D334 at the fold.

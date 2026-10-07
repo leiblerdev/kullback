@@ -1,4 +1,4 @@
-"""The review loop: Examiner round, writer round, Examiner round, at most ROUNDS_CAP rounds (D328).
+"""The review loop: Examiner round, writer round, Examiner round, at most ROUNDS_CAP rounds (D331).
 
 The writer's first round is the Spec itself. Each Examiner round files rulings (and from round two
 closes or keeps open the ones the writer answered); each writer round answers every open ruling,

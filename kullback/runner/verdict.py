@@ -272,7 +272,7 @@ def _atom_items(verifier: Verifier, context: AtomContext, judge_results: Optiona
     return items, judge_used
 
 
-# --- the gates: end state, sanity, forbidden list, conduct (D316, D328) ---
+# --- the gates: end state, sanity, forbidden list, conduct (D316, D329) ---
 
 def _forbidden_happened(rule: Forbidden, context: AtomContext, moved: dict) -> Optional[bool]:
     """Did this forbidden write or Run-ending call happen? Read off the calls and the diff."""
@@ -317,7 +317,7 @@ def _conduct_holds(rule: Conduct, context: AtomContext) -> Optional[bool]:
 
 
 def _best_end_state(verifier: Verifier, context: AtomContext) -> tuple[EndState, list, Match]:
-    """The end state the Run is read against: any one matching whole, else the closest (D328).
+    """The end state the Run is read against: any one matching whole, else the closest (D329).
 
     Closest is all cells held, then no cell failed (only unsettled), then the most cell weight held.
     """
@@ -417,7 +417,7 @@ def _extra_write_outcome(verifier: Verifier, context: AtomContext) -> Optional[t
 
 
 def _sanity_by_writes(verifier: Verifier, context: AtomContext, atoms: list[_Item]) -> Optional[_Item]:
-    """The sanity item of a Verifier with no end state: no write that no atom declares (D328).
+    """The sanity item of a Verifier with no end state: no write that no atom declares (D329).
 
     An open atom may be the one that would have declared the write, so beside one the item is open
     too, and it blocks nothing of its own: the open atom already leaves the Run not verdicted.
@@ -476,7 +476,7 @@ def _decide_outcome(items: list[_Item], context: AtomContext, notes: list[str]) 
 
 
 def _score(items: list[_Item], passed: bool, decided: bool, notes: list[str]) -> Optional[float]:
-    """0 when a gate failed; past the gates the weighted mean of every item, 1.0 with none (D328).
+    """0 when a gate failed; past the gates the weighted mean of every item, 1.0 with none (D329).
 
     The gate items all held, so they count in full, and together they hold at least half the
     weight (agreed 2026-09-27): a Run that got the end state right never scores under one half,
@@ -499,7 +499,7 @@ def _score(items: list[_Item], passed: bool, decided: bool, notes: list[str]) ->
     return (gates + sum(result.weight for result in scored if result.holds)) / (gates + rest)
 
 
-# What the reward of a Run is, in the words a package manifest and a report carry (D328).
+# What the reward of a Run is, in the words a package manifest and a report carry (D329).
 REWARD_SHAPE = {
     "pass": "every gate item holds",
     "score": "0 when a gate item fails, else the weighted mean of every item with the gate items held and "

@@ -211,7 +211,7 @@ def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, mak
     """
     env = BuiltEnvironment(environment_dir)
     task = env.task(task_id)
-    single = task.facts_in_instruction  # the facts ride in the opening and no user answers (D328)
+    single = task.facts_in_instruction  # the facts ride in the opening and no user answers (D332)
     if not single and env.agent_driven(task_id):
         raise EnvironmentError(f"Task {task_id} is driven by the agent user, which needs a model "
                                "the runner is not given")

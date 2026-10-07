@@ -1,6 +1,6 @@
 """How the Spec's Verifier scores one Run: the Verdict for a gated Verifier, else the atoms alone.
 
-The D79 mutation suite that once stood here as trust's can-fail gate is retired (D328): trust now asks
+The D79 mutation suite that once stood here as trust's can-fail gate is retired (D333): trust now asks
 two constructed Runs to fail (spec/trust.py), the do-nothing Run and the stray write.
 """
 

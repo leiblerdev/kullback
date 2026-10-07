@@ -139,7 +139,7 @@ def _task_row(env, task_id, model, runs_per_task, outdir, max_turns, stopped):
             scores.append(reward.score)
     scoreable = row["runs"] - row["no_signal"]
     row["solve_rate"] = row["passes"] / scoreable if scoreable else None
-    # The weighted score past the gates (D328), over the Runs whose score no open item masked.
+    # The weighted score past the gates (D329), over the Runs whose score no open item masked.
     row["mean_score"] = sum(scores) / len(scores) if scores else None
     return row, stopped
 

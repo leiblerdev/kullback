@@ -291,7 +291,7 @@ class EndProtocol:
         elif self.silent >= rules_mod.SILENCE_LIMIT:
             kind = rules_mod.SCENARIO_EXHAUSTED
         else:
-            return None  # the goal never ends a Run on its own (D328)
+            return None  # the goal never ends a Run on its own (D332)
         done = self.goal_done(made, acted=acted, closed=rules_mod.closes(question))
         return rules_mod.GOAL_SATISFIED if done else kind
 

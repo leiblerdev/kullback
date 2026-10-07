@@ -1,4 +1,4 @@
-"""The writer's round of the review loop: each open ruling applied or rebutted (D328).
+"""The writer's round of the review loop: each open ruling applied or rebutted (D331).
 
 The Examiner files rulings and edits nothing (examiner/rule_tool.py). Here the Spec writer answers
 each ruling it has not answered yet, one repair session per ruling (spec/writer.py repair): it applies

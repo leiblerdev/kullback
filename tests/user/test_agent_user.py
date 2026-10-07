@@ -597,7 +597,7 @@ def test_the_run_path_and_the_scorer_path_send_identical_requests(ctx, rules, re
 
 def test_the_guards_read_the_writes_the_transcript_carries(ctx, rules, recorded):
     """A write the world refused leaves the goal open; one that took effect is reported as the goal
-    met, on the turn the Candidate itself closes, and never ends the Run before it (D328)."""
+    met, on the turn the Candidate itself closes, and never ends the Run before it (D332)."""
     moved = {"role": "tool", "tool_call_id": "c1", "name": "move_delivery", "content": "{}"}
     refused = dict(moved, content="that slot is full", error={"class": "business_error"})
     question = [{"role": "assistant", "content": "What delivery slot would you like?"}]

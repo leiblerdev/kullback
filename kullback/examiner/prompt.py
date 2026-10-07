@@ -1,4 +1,4 @@
-"""The Examiner's prompt in GEPA order: receives, tools, examples, choice, feedback, stop (D320, D328).
+"""The Examiner's prompt in GEPA order: receives, tools, examples, choice, feedback, stop (D320, D331).
 
 The Examiner gives feedback and never edits: it reads the Intent, the policy and the Spec and files
 rulings the writer applies or rebuts, then closes or keeps them open. General only: no corpus,

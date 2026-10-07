@@ -12,7 +12,7 @@ from kullback.runner.records import GATE_KINDS, AtomKind, Item, Record
 from kullback.spec.must_not import tier_of as _atom_tier
 
 Stance = Literal["volunteered", "accepted"]
-# Spec fields retired with the Examiner's edit kinds (D325 to D328): dropped when an older file loads.
+# Spec fields retired with the Examiner's edit kinds (D325 to D331): dropped when an older file loads.
 RETIRED_KEYS = ("atom_edits", "end_state_edits")
 Tier = Literal["critical", "sanity", "important"]
 
@@ -61,7 +61,7 @@ class Check(Item):
     """One item of the Verifier, with the Intent facts (`fact_ids`) or the policy line it rests on.
 
     `demand` holds the item as code kept it (spec/items.py), or a demand of the older grammar.
-    `gate` and `weight` go onto every atom it compiles to (D328); left unsaid, the gate follows
+    `gate` and `weight` go onto every atom it compiles to (D329); left unsaid, the gate follows
     the kind as an atom's does. A failing gate check zeroes a Run's reward; the others are weighed.
     """
     id: str
@@ -110,7 +110,7 @@ class Spec(Record):
     @model_validator(mode="before")
     @classmethod
     def _retired(cls, data: Any) -> Any:
-        """A Spec written before D328 loads: the Examiner's edit records are retired, never applied."""
+        """A Spec written before D331 loads: the Examiner's edit records are retired, never applied."""
         if isinstance(data, dict) and any(key in data for key in RETIRED_KEYS):
             data = {key: value for key, value in data.items() if key not in RETIRED_KEYS}
         return data

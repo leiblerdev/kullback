@@ -1,4 +1,4 @@
-"""The package carries each Task's trust reason and the two flags off the last round's table (D328)."""
+"""The package carries each Task's trust reason and the two flags off the last round's table (D333)."""
 
 from kullback.hub import package as P
 from kullback.round_snapshot import snapshot_path

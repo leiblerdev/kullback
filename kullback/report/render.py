@@ -214,10 +214,10 @@ def _rounds(data: ReportData) -> list[str]:
         return lines
     lines += _rounds_table(data)
     metrics = (data.trusted.metrics or {}) if data.trusted is not None else {}
-    if "trust_reason" in metrics:  # a ruling written before D328 has no reasons
+    if "trust_reason" in metrics:  # a ruling written before D333 has no reasons
         from kullback.gates.trust import tier_counts, trust_row
 
-        lines += ["", f"Trust (D328): {trust_row(tier_counts(metrics))}"]
+        lines += ["", f"Trust (D333): {trust_row(tier_counts(metrics))}"]
     return lines
 
 
@@ -712,7 +712,7 @@ def _uncounted_line(run: Optional[Run], record: Verdict) -> str:
 
 
 def _score_words(numbers: dict, side: str) -> str:
-    """The mean weighted score of one side and how many of its Runs carried a score (D328)."""
+    """The mean weighted score of one side and how many of its Runs carried a score (D329)."""
     mean = numbers.get(f"{side}_mean_score")
     return ("n/a" if mean is None else f"{mean:.2f}") + f" ({numbers.get(f'{side}_scored', 0)} scored)"
 

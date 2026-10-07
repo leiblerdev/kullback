@@ -1,4 +1,4 @@
-"""The Spec writes the whole Verifier; the Examiner rules, the writer applies or rebuts, in rounds (D320, D328).
+"""The Spec writes the whole Verifier; the Examiner rules, the writer applies or rebuts, in rounds (D320, D331).
 
 A tiny invented workdir: one Task whose user asks to move one item to a new slot and rename it; the
 Spec's one state item carries both values, said by the user, so its expected end state has two

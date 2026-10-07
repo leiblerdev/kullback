@@ -1,4 +1,4 @@
-"""The set-aside rule the trust gates read: the mark, or the round cap with a blocking ruling open (D328)."""
+"""The set-aside rule the trust gates read: the mark, or the round cap with a blocking ruling open (D331)."""
 
 from __future__ import annotations
 

@@ -11,7 +11,7 @@ Code decides what stands, in the tool: an item naming a value no world row, poli
 holds is refused with the reason, as is an item with no provenance or resting on unwitnessed facts
 alone, so the writer fixes it in the same session. Items no Run can pass together go back once in a
 follow-up turn. Code adds the sanity item. Facts no item names become gaps. `repair` answers an
-Examiner ruling (D328): it applies the ruling's fix (drop or replace a ruled item, add at most
+Examiner ruling (D331): it applies the ruling's fix (drop or replace a ruled item, add at most
 MAX_ADDS items for an uncovered fact) or rebuts it with why, under the same rules.
 
 A Spec of the older demand grammar still compiles (`compile_spec`, `must_not`, Reference-free gates).
@@ -141,7 +141,7 @@ ATOM_DEMANDS = ("say", "ask")
 BODY_CHARS = 24000
 # The longest ruling excerpt a repair session is shown: a quote, never a transcript.
 MAX_EXCERPT = 1000
-# The most items one repair may add (D328): a fix covers a fact, it never rewrites the Spec.
+# The most items one repair may add (D331): a fix covers a fact, it never rewrites the Spec.
 MAX_ADDS = 3
 
 
@@ -164,7 +164,7 @@ class WriterInputs(NamedTuple):
 
 
 class Ruling(Record):
-    """What a repair answers: the ruled check ids, the item ruled on, the reason and the fix (D328)."""
+    """What a repair answers: the ruled check ids, the item ruled on, the reason and the fix (D331)."""
     check_ids: list[str]
     reason: str
     excerpt: str = ""

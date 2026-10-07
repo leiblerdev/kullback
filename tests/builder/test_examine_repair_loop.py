@@ -1,4 +1,4 @@
-"""The Builder's examine tool reads body edits and one line on the rulings; it never edits a Spec (D328).
+"""The Builder's examine tool reads body edits and one line on the rulings; it never edits a Spec (D331).
 
 The findings are the examine result the Builder's `examine_fn` seam answers with; the workdir is
 tests/spec/test_roles.py's, its Verifier written from a Spec with one state item and one fact told.

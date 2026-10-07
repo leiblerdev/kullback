@@ -1,4 +1,4 @@
-"""The Examiner's ruling tools: rule, close, verify and the world lookups (DESIGN.md rule 3, D320, D328).
+"""The Examiner's ruling tools: rule, close, verify and the world lookups (DESIGN.md rule 3, D320, D331).
 
 The Examiner gives feedback and never edits. It reads the Intent, the policy and the Spec (items with
 their provenance) and files rulings: one item, a kind and code (spec/rulings.py RULING_KINDS), the reason

@@ -71,7 +71,7 @@ def _field(item: Any, key: str) -> Any:
 
 
 def _passed_score(reward: Any) -> Any:
-    """1 for a pass, 0 for a fail, None for no signal: the pass decides, not the weighted score (D328).
+    """1 for a pass, 0 for a fail, None for no signal: the pass decides, not the weighted score (D329).
 
     A reward that carries no pass (an older shape) is read by its score as before.
     """

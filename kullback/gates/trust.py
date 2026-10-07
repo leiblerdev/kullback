@@ -1,7 +1,7 @@
 """The refuse ruling (the solvability judge as code, D128) and what a trusted Verifier is (D126, D319).
 
 D319: a Verifier carrying expected end states is trusted by code alone (`code_ruling`), and every
-Task gets a ruling: trusted, unconfirmed, refused or pending, read as trusted or untrusted (D328).
+Task gets a ruling: trusted, unconfirmed, refused or pending, read as trusted or untrusted (D333).
 No model's judgment and no probe pool is read on that path, and the faithful replay is read only as the Run the end states describe,
 never as evidence that the recorded agent was right. What follows to the next marker is the
 pre-D319 rule, kept as `_legacy_trusted` this release so its count prints beside the tiers, and
@@ -359,7 +359,7 @@ def _legacy_trusted(task_status: dict, verifiers: list[Verifier], probes: dict[s
                 untrusted_seeds=foreign_seeds)
 
 
-#: The tiers a Task's row carries (D328): trusted or not. A workdir with no Spec has no Intent, so its
+#: The tiers a Task's row carries (D333): trusted or not. A workdir with no Spec has no Intent, so its
 #: untrusted Tasks carry the reason no_intent; `code_ruling`'s words (D319) stay in the untrusted text.
 TIERS = ("trusted", "untrusted")
 
@@ -484,7 +484,7 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     workdir has Specs (D322): they replace trusted, untrusted and the tier, and the rule below stays
     for the legacy column only.
 
-    The tier is trusted or untrusted (D328); the words below ride in `untrusted`. A refused Task is
+    The tier is trusted or untrusted (D333); the words below ride in `untrusted`. A refused Task is
     refused; a Task waiting in the Reference pool, or whose seeds are not Runs of it (D281), is pending;
     a Verifier carrying expected end states is ruled by `code_ruling`. One
     with none (written before D315) keeps the pre-D319 ruling and its words this release, and its
@@ -554,7 +554,7 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
 
 
 def _spec_ruling(spec_tiers: dict[str, Any], refused: dict) -> dict:
-    """The Spec's tiers as the one trusted ruling (D322, D328): trusted or untrusted with one reason, and
+    """The Spec's tiers as the one trusted ruling (D322, D333): trusted or untrusted with one reason, and
     the two flags; a refused Task is untrusted for no_intent."""
     trusted, untrusted, tiers, reasons = [], {}, {}, {}
     flags: dict[str, dict] = {"reference_passes": {}, "solvable": {}}
@@ -572,7 +572,7 @@ def _spec_ruling(spec_tiers: dict[str, Any], refused: dict) -> dict:
     return {"trusted": trusted, "untrusted": untrusted, "trust_tier": tiers, "trust_reason": reasons, **flags}
 
 
-#: The reasons a Task is not trusted (spec/trust.py REASONS) and the two flags (D328).
+#: The reasons a Task is not trusted (spec/trust.py REASONS) and the two flags (D333).
 REASONS = ("no_intent", "open_ruling", "constructed_run_passed")
 FLAGS = ("reference_passes", "solvable")
 

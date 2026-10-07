@@ -1,4 +1,4 @@
-"""The Examiner's rulings on a Spec: feedback the writer applies or rebuts, never an edit (D328).
+"""The Examiner's rulings on a Spec: feedback the writer applies or rebuts, never an edit (D331).
 
 A ruling names one item of the Task (a check, an atom, an Intent fact, or the task as a whole), a kind
 and a code from RULING_KINDS, the reason in one sentence, the fix the writer should make, and whether it

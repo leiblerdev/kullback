@@ -148,7 +148,7 @@ def task_row(task_id: str, *, round_number: int, row: Any, replays: Optional[dic
         "false_rejection_ruling": str((metrics.get("false_rejection_ruling") or {}).get(task_id) or ""),
         "trusted": task_id in set(metrics.get("trusted") or ()),
         "trusted_reason": str(untrusted.get(task_id) or ""),
-        # D328: trusted or untrusted with one reason, and the two flags (never gating, None unscored).
+        # D333: trusted or untrusted with one reason, and the two flags (never gating, None unscored).
         "trust_tier": str((metrics.get("trust_tier") or {}).get(task_id) or "untrusted"),
         "trust_reason": (metrics.get("trust_reason") or {}).get(task_id),
         "reference_passes": (metrics.get("reference_passes") or {}).get(task_id),
@@ -186,7 +186,7 @@ def counts_of(rows: Iterable[dict]) -> dict:
             "verifier_passed": sum(1 for row in rows if row.get("verifier_passed")),
             "trusted": sum(1 for row in rows if row.get("trusted")),
             "refused": sum(1 for row in rows if row.get("refused")),
-            # D328: untrusted by reason and the two flags, beside the old rule's count and D133's number.
+            # D333: untrusted by reason and the two flags, beside the old rule's count and D133's number.
             "untrusted": sum(1 for row in rows if row.get("trust_tier") != "trusted"),
             **{reason: sum(1 for row in rows if row.get("trust_reason") == reason) for reason in REASONS},
             **{name: sum(1 for row in rows if row.get(flag) is value) for flag in FLAGS

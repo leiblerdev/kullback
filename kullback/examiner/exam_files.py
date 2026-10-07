@@ -69,7 +69,7 @@ FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "su
 FindingSource = Literal["derive", "model"]
 # The one shape an edit takes (D317): what a body answered differently on one recorded call, for the
 # Builder. The Spec's edit kinds (text, atoms, cell, conduct, reference; D325) are gone: the Examiner
-# rules on a Spec and the writer applies or rebuts (D328).
+# rules on a Spec and the writer applies or rebuts (D331).
 EDIT_KINDS = ("body",)
 BODY_EDIT_KEYS = ("call_id", "column", "recorded", "replayed")
 
@@ -109,7 +109,7 @@ def check_edit(edit: Any, exam_dir: Path) -> dict:
     """One edit as filed, or a ValueError naming what is missing (D317).
 
     A body edit has to name the call, the column and both values; anything else is a guess the
-    Builder would have to interpret. What is wrong with a Spec is a ruling, never an edit (D328).
+    Builder would have to interpret. What is wrong with a Spec is a ruling, never an edit (D331).
     """
     if not isinstance(edit, dict) or edit.get("kind") not in EDIT_KINDS:
         raise ValueError(f"an edit is one of the kinds {', '.join(EDIT_KINDS)}; what is wrong with a Spec is a "
@@ -162,7 +162,7 @@ class ExamRoot:
     probe_model: Any = None
     run_probe: Any = None
     reroll_user: Any = None   # runners_for's re-roll user factory: rule user, or agent user when on
-    round: int = 0            # the review round this session is (D328); 0 reads the Spec's round plus one
+    round: int = 0            # the review round this session is (D331); 0 reads the Spec's round plus one
     verified: dict = field(default_factory=dict)   # the verify rows per Task, which a code ruling cites
     states: dict = field(default_factory=dict)     # each Task's Starting state, loaded once for the lookups
 

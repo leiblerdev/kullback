@@ -1,4 +1,4 @@
-"""The review skill: what one review of a Spec reads and rules (D320, D328).
+"""The review skill: what one review of a Spec reads and rules (D320, D331).
 
 A skill is text the harness puts in the prompt; this one says nothing a gate does not enforce and
 names no domain, tool or value.

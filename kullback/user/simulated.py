@@ -79,7 +79,7 @@ class SimulatedUser:
         self.model = model
         self.vocab = vocab
         # The facts this user can be asked for, by field name and alias, and every lookup this Run
-        # made, so a report counts the asks answered and the asks the store held nothing for (D328).
+        # made, so a report counts the asks answered and the asks the store held nothing for (D332).
         self.store = FactStore.from_rules(rules, vocab)
         self.lookups: list[Found] = []
         # The tools that change the world (`ToolSig.kind`), so this user can tell a Run that has
@@ -206,7 +206,7 @@ class SimulatedUser:
                 "refused": refused,
                 "refused_so_far": self._refused,
                 "user_end": self.end_reason,
-                # Reported, never read by trust or the Verifier, and never a reason to end (D328).
+                # Reported, never read by trust or the Verifier, and never a reason to end (D332).
                 "user_goal_met": self._goal_done(self._writes_made(transcript), question),
                 "stripped_so_far": self.stripped,
             },
@@ -215,7 +215,7 @@ class SimulatedUser:
         return text
 
     def _asked(self, question: str) -> list[str]:
-        """The fields this question asks for, through the one lookup both users share (D328).
+        """The fields this question asks for, through the one lookup both users share (D332).
 
         Only the turn's request sentences are looked up, so a turn that reports what was done and
         asks nothing asks for no fact. A field whose value the turn states is not asked for: an
@@ -306,9 +306,9 @@ class SimulatedUser:
         self.done = True
 
     def _end_kind(self, question: str, satisfied: bool) -> Optional[str]:
-        """Which kind this end is reported as, or nothing where the user has not ended (D210, D328).
+        """Which kind this end is reported as, or nothing where the user has not ended (D210, D332).
 
-        The goal never ends a Run (D328): it is read off the Reference's writes, and nothing the
+        The goal never ends a Run (D332): it is read off the Reference's writes, and nothing the
         Reference holds may decide a Run that trust or the Verifier reads. What ends one is the
         Candidate's own stop (it closes or passes the conversation on), the scenario running out
         (twice asked for what nobody told this user, or nothing left to say) and the turn limit the

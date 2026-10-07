@@ -196,7 +196,7 @@ def test_reset_step_and_transcript_outputs_cannot_mutate_world_or_recording(tmp_
 
 
 def test_a_single_turn_task_opens_with_its_facts_folded_in_and_runs_with_no_user(tmp_path):
-    """D328: `facts_in_instruction` folds the user's facts into the opening; no user is built."""
+    """D332: `facts_in_instruction` folds the user's facts into the opening; no user is built."""
     import json
 
     from kullback.runner.world.environment import FACTS_LEAD

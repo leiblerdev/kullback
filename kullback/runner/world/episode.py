@@ -57,7 +57,7 @@ class StepOut:
 
 @dataclass
 class Reward:
-    """The stored Run scored by code alone: pass and score, no number where code cannot say (D328).
+    """The stored Run scored by code alone: pass and score, no number where code cannot say (D329).
 
     `passed` is every gate item holding; `score` is 0 when a gate failed, else the weighted score
     past the gates. Both are None when the Run is not verdicted or an env error; `score` alone is

@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Iterable, NamedTuple, Optional  # noqa: F401  - the surface holds
 
-# The spoken sentences (D44), named beside the record since D328; the wording model never touches
+# The spoken sentences (D44), named beside the record since D332; the wording model never touches
 # these, so a confirmation is repeated exactly as it was given.
 from kullback.runner.records import (  # noqa: F401  - as above  # noqa: F401
     CHOICE,

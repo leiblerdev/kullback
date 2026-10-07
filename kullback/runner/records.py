@@ -365,7 +365,7 @@ class Constraint(Record):
 
 # Whole sentences the recorded user said, kept verbatim: the goal it opened with, the confirmations
 # a write needs, the choices it stated and the line it closed on (D44). They live beside the record
-# so the world can fold a user's facts into an instruction without importing the user (D328).
+# so the world can fold a user's facts into an instruction without importing the user (D332).
 GOAL, CONFIRMATION, CHOICE, CLOSING = "goal", "confirmation", "choice", "closing"
 SPOKEN_FIELDS = (GOAL, CONFIRMATION, CHOICE, CLOSING)
 
@@ -477,7 +477,7 @@ class Task(Record):
     name: Optional[str] = None
     anchor_run_ids: list[str] = Field(default_factory=list)
     write_labels: dict[str, list[str]] = Field(default_factory=dict)
-    # The single-turn shape (D328): the user's facts are folded into the opening message and the
+    # The single-turn shape (D332): the user's facts are folded into the opening message and the
     # Run has no Simulated user. Off by default, so every Task keeps its conversation.
     facts_in_instruction: bool = False
 
@@ -553,14 +553,14 @@ def apply_intent(task: Task, intent: Intent) -> Task:
 
 # --- verifier ---
 
-# The atom kinds that gate when the writer did not say (D328): every kind that failed a Run before
+# The atom kinds that gate when the writer did not say (D329): every kind that failed a Run before
 # items had a gate flag, so no stored Verifier changes its pass. Whether a question or a stated fact
 # may fail a whole Task is the founder's open point (2026-09-27); the writer sets `gate` per item.
 GATE_KINDS = frozenset({"required", "question", "communicate", "hard", "forbidden"})
 
 
 class Item(Record):
-    """What every Verifier item carries (D328): does it gate the Run, and its weight past the gates.
+    """What every Verifier item carries (D329): does it gate the Run, and its weight past the gates.
 
     A failing gate item fails the Run and its reward is 0; the other items are scored, and the
     reward of a Run whose gates all hold is their weighted mean. Both fields are left out of the
@@ -885,7 +885,7 @@ class RunnerVersion(Record):
 
 
 # The version of the scoring rules a Verdict was computed under; bump it when the rules change so cached Verdicts are not reused and reports prefer the current one.
-# "4": pass reads the gate items only and the Verdict carries the weighted score (D328).
+# "4": pass reads the gate items only and the Verdict carries the weighted score (D329).
 VERDICT_VERSION = "4"
 
 ItemKind = Literal["state", "sanity", "event", "atom", "judge"]
@@ -930,7 +930,7 @@ class Verdict(Record):
     judge_used: bool = False
     environment_suspected: bool = False
     notes: list[str] = Field(default_factory=list)
-    # The reward past the gates (D328): 0 when a gate failed, else the weighted mean of the scored
+    # The reward past the gates (D329): 0 when a gate failed, else the weighted mean of the scored
     # items (1.0 with none); None when the Run is not verdicted, an env error, or a scored item is open.
     score: Optional[float] = None
     items: list[ItemResult] = Field(default_factory=list)

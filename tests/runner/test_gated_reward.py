@@ -1,4 +1,4 @@
-"""Gates then weighted reward (D328): pass is every gate item holding, the score is 0 past a failed gate and
+"""Gates then weighted reward (D329): pass is every gate item holding, the score is 0 past a failed gate and
 the weighted mean past the gates, and the sanity item fails a Run that changed a row nobody declared."""
 
 from __future__ import annotations

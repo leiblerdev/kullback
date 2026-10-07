@@ -2,7 +2,7 @@
 
 The Builder reads the build's artifacts and the Examiner reads the Runs; this one reads its own
 memory. `my_facts` is what it knows about itself, looked up by the question it was asked through the
-same lookup the rule user answers from (lookup.py, D328), so a Task with forty facts does not put
+same lookup the rule user answers from (lookup.py, D332), so a Task with forty facts does not put
 forty in front of a model answering a question about one, and the model never guesses field names. `my_goal` is
 why it called. `what_i_said` is its own earlier turns, which is the cheapest way to stop a model
 contradicting itself two turns later. `end_run` is the only way to ask for an ending, and code

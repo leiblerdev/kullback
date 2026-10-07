@@ -310,7 +310,7 @@ def _cause_counts(graded: list[Verdict]) -> dict[str, int]:
 
 
 def _mean_score(verdicts: list[Verdict]) -> tuple[Optional[float], int]:
-    """The mean weighted score (D328) over the Verdicts that carry one, and how many do."""
+    """The mean weighted score (D329) over the Verdicts that carry one, and how many do."""
     scores = [v.score for v in verdicts if v.score is not None]
     return (sum(scores) / len(scores) if scores else None), len(scores)
 

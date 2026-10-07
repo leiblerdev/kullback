@@ -1,4 +1,4 @@
-"""The Examiner's ruling tools: a ruling names an item, a kind and code, a reason and a fix; it never edits (D328)."""
+"""The Examiner's ruling tools: a ruling names an item, a kind and code, a reason and a fix; it never edits (D331)."""
 
 from __future__ import annotations
 

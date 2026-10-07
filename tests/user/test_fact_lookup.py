@@ -1,4 +1,4 @@
-"""The fact store and the one lookup both Simulated users answer from (D328)."""
+"""The fact store and the one lookup both Simulated users answer from (D332)."""
 
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ def test_the_rule_user_answers_through_the_lookup_and_keeps_every_lookup():
 
 
 def test_no_trust_or_verifier_module_reads_the_users_goal():
-    """The user's goal is reported on the Run; spec, gates and the Verdict never read it (D328)."""
+    """The user's goal is reported on the Run; spec, gates and the Verdict never read it (D332)."""
     root = Path(__file__).resolve().parents[2] / "kullback"
     paths = [*sorted((root / "spec").rglob("*.py")), *sorted((root / "gates").rglob("*.py")),
              root / "runner" / "verdict.py", root / "runner" / "records.py"]

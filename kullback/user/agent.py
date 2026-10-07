@@ -110,7 +110,7 @@ class AgentUser:
         self._turn += 1
         question = _last_assistant(transcript)
         self.box.requested = None
-        request = asked_in(question)  # the same lookup the rule user and my_facts answer from (D328)
+        request = asked_in(question)  # the same lookup the rule user and my_facts answer from (D332)
         asked = self.box.store.lookup(request).fields() if request else []
         made = self._model_turn(transcript)
         if made is None:

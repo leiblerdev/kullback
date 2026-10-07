@@ -1,4 +1,4 @@
-"""Trust on the Spec's Verifier: constructed Runs fail and no ruling is open, by code (D328).
+"""Trust on the Spec's Verifier: constructed Runs fail and no ruling is open, by code (D333).
 
 A Task is trusted when both constructed Runs score 0 under its Verifier and no blocking ruling is open:
 

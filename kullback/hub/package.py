@@ -305,13 +305,13 @@ def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
             "refused": stage == REFUSED_STAGE,
             "stage": stage,
             "stopped_because": stopped_because(stage, row),
-            # D328: why a Task is not trusted, and the two flags that never gate (None: unscored).
+            # D333: why a Task is not trusted, and the two flags that never gate (None: unscored).
             **{key: (trust.get(task_id) or {}).get(key) for key in TRUST_FIELDS},
             "replay_confirmed": confirmed,
             # A Task with any confirmed replay, the count replay fidelity reports, so the two agree.
             "reference_confirmed": confirmed,
             "verifier": has_verifier,
-            # The Verifier's gate and scored items (D328), so a reader sees which Tasks score past pass.
+            # The Verifier's gate and scored items (D329), so a reader sees which Tasks score past pass.
             "items": item_counts(Verifier.model_validate(read_json(verifier_file))) if has_verifier else None,
             "recordings": int(row.get("recordings") or 0),
             "difficulty": {key: value for key, value in record.items() if key != "task_id"} or None,
@@ -787,7 +787,7 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         **_row_counts(rows),
         "buckets": _buckets(rows),
         "untrusted": untrusted_reasons(rows),
-        # D328: what a Run's reward is, pass and score, under the Verdict version the graders score at.
+        # D329: what a Run's reward is, pass and score, under the Verdict version the graders score at.
         "reward": dict(REWARD_SHAPE, verdict_version=VERDICT_VERSION),
         # D225: what the domain's own public material was read to attest, and how much of it this
         # Environment holds no tool for. Both are counts and nothing of any page travels with them.

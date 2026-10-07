@@ -231,7 +231,7 @@ class BuiltEnvironment:
 
     def opening(self, task: Task) -> Optional[str]:
         """The first user message of a Run with no Simulated user: the instruction, and on a
-        single-turn Task (D328) the user's facts folded in after it."""
+        single-turn Task (D332) the user's facts folded in after it."""
         if not task.facts_in_instruction:
             return task.intent
         return facts_instruction(task.intent, self.rules(task))
@@ -318,7 +318,7 @@ FACTS_LEAD = "Details you may need from me:"
 
 
 def facts_instruction(intent: Optional[str], rules: Optional[UserRules]) -> Optional[str]:
-    """The instruction with the user's facts folded in, one line per field (D328).
+    """The instruction with the user's facts folded in, one line per field (D332).
 
     The facts are the ones the user would have given when asked (the rules facts and the argument
     facts), never a spoken line; two values of one field are both given, in the order stated. A Task

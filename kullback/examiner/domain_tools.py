@@ -1,6 +1,6 @@
 """The Examiner's domain tools over its root: the ruling tools, finding, no_finding, check_reference.
 
-The Examiner reads and gives feedback; it edits nothing and writes no Verifier (D320, D328). The
+The Examiner reads and gives feedback; it edits nothing and writes no Verifier (D320, D331). The
 ruling tools (rule_tool.py: rule, close, verify, lookup_rows, search_rows) carry its feedback on a
 Spec, which the writer applies or rebuts. `finding` files what is wrong with the Environment for the
 Builder: the rows and a body edit (D317). `no_finding` files a review that found nothing, with the

@@ -1,4 +1,4 @@
-"""The set-aside rule of the review loop (DESIGN.md rule 4, D328).
+"""The set-aside rule of the review loop (DESIGN.md rule 4, D331).
 
 The bus-driven router that moved each ruling as it was filed (a re-roll, a writer repair, a Builder
 note) is retired: rulings are feedback the writer answers in its own round (spec/rounds.py). What

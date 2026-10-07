@@ -141,7 +141,7 @@ def unsatisfiable(demands: list[tuple[str, dict]], write_tools: set, action_tool
 
 
 def _because(atom: Atom, demand: dict) -> Atom:
-    """The atom with its check's because appended, and the check's gate and weight where it set them (D328)."""
+    """The atom with its check's because appended, and the check's gate and weight where it set them (D329)."""
     update = {"description": f"{atom.description or ''} because: {demand['because']}"}
     update.update({key: demand[key] for key in ("gate", "weight") if key in demand})
     return atom.model_copy(update=update)

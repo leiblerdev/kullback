@@ -416,7 +416,7 @@ def cell_results(end_state: EndState, context: AtomContext) -> list[tuple[Expect
 
 
 def collateral(end_state: EndState, context: AtomContext) -> Match:
-    """The sanity item (D328): nothing outside the end state's declared rows, cells and `allowed` moved.
+    """The sanity item (D329): nothing outside the end state's declared rows, cells and `allowed` moved.
 
     A row made or removed is declared by any cell on it or by a declared new row, which must be
     made as many times as it says; a row kept is declared field by field (a dotted cell declares
