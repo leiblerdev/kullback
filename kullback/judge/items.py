@@ -48,11 +48,11 @@ SYSTEM = (
 )
 
 
-class ItemResult(BaseModel):
-    """One judge item judged on one Run, as the Verdict records it beside the code items."""
+class JudgeScore(BaseModel):
+    """One judge item judged on one Run: the Verdict reads its score into the item's holds (D328)."""
     id: str
     kind: str = "judge"
-    gate: bool = False
+    gate: bool = True
     weight: float = 1.0
     score: Optional[int] = None  # 0 or 1; None when the judge failed or was not asked
     why: str = ""
@@ -182,13 +182,13 @@ def _parse(content: Optional[str], item_id: str) -> tuple[Optional[int], str]:
     return int(score), str(row.get("why") or "")[:WHY_CHARS * 2]
 
 
-def judge_item(model: Model, atom: Atom, run: Run, *, model_id: Optional[str] = None) -> ItemResult:
+def judge_item(model: Model, atom: Atom, run: Run, *, model_id: Optional[str] = None) -> JudgeScore:
     """One judge item on one Run: one call, temperature 0, priced; score 0, 1 or None."""
     target = atom.target or {}
     refs = evidence_refs(target)
     evidence, cut, missing = build_evidence(run, refs)
     name = model_id or getattr(model, "name", None)
-    result = ItemResult(id=atom.id, gate=bool(getattr(atom, "gate", False)),
+    result = JudgeScore(id=atom.id, gate=bool(getattr(atom, "gate", True)),
                         weight=float(getattr(atom, "weight", 1.0)), truncated=cut,
                         evidence=refs, missing=missing, model=name)
     messages = [{"role": "system", "content": SYSTEM},
@@ -205,12 +205,12 @@ def judge_item(model: Model, atom: Atom, run: Run, *, model_id: Optional[str] = 
     return result
 
 
-def judge_items(model: Model, atoms: Iterable[Atom], run: Run, **kwargs) -> dict[str, ItemResult]:
+def judge_items(model: Model, atoms: Iterable[Atom], run: Run, **kwargs) -> dict[str, JudgeScore]:
     """Every item-shaped judge atom of a Verifier on one Run, one call each, keyed by atom id."""
     return {atom.id: judge_item(model, atom, run, **kwargs) for atom in atoms if is_item(atom)}
 
 
-def tally(results: Iterable[ItemResult]) -> dict:
+def tally(results: Iterable[JudgeScore]) -> dict:
     """Counts a report prints: judged, scores, unjudged, truncated, spend."""
     rows = list(results)
     return {"items": len(rows),

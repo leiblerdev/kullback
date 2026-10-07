@@ -42,7 +42,7 @@ def _item(item_id="j1", gate=False, evidence=None, anchor=None):
               "anchor": anchor or {"answer": "42.50", "accepted": ["$42.5"], "reject": ["40.00"]}}
     if evidence is not None:
         target["evidence"] = evidence
-    return Atom(id=item_id, kind="communicate", judge=True, gate=gate, target=target)
+    return Atom(id=item_id, kind="allowed", judge=True, gate=gate, target=target)
 
 
 def _says(score, why="ok", item_id="j1"):
