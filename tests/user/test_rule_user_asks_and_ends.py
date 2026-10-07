@@ -6,7 +6,6 @@ Every name here is invented: a ferry desk whose tools take a `passenger_id` and 
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 from kullback.runner.records import DisclosureRule, UserFact, UserRules
 from kullback.runner.tool import STOP_SHORT_LINE, runner_prompt
@@ -19,7 +18,7 @@ from kullback.user.rules import (
     SCENARIO_EXHAUSTED,
     TRANSFER_MARKER,
     asked_fields,
-    goal_write_counts,
+    spec_goal,
 )
 from kullback.user.simulated import REPEAT_ASK, TRANSFER_ACCEPT, USER_REPEAT, SimulatedUser
 from kullback.user.vocabulary import GENERIC, _id_arg
@@ -118,12 +117,10 @@ def test_the_transfer_token_waits_one_agent_turn_before_it_is_sent():
 
 
 def test_the_goal_is_not_done_with_one_of_two_requested_writes_made():
-    reference = SimpleNamespace(tool_calls=[
-        SimpleNamespace(name="rebook_voyage", error=None), SimpleNamespace(name="rebook_voyage", error=None),
-        SimpleNamespace(name="rebook_voyage", error={"class": "refused"}),
-        SimpleNamespace(name="find_passenger", error=None)])
-    counts = goal_write_counts(reference, {"rebook_voyage"})
-    assert counts == {"rebook_voyage": 2}
+    items = [{"kind": "called", "tool": "rebook_voyage"}, {"kind": "called", "tool": "rebook_voyage"},
+             {"kind": "called", "tool": "find_passenger"}, {"kind": "row_is", "table": "voyages"}]
+    goal, counts = spec_goal(items, {"rebook_voyage"})
+    assert goal == {"rebook_voyage"} and counts == {"rebook_voyage": 2}
     user = SimulatedUser(rules(), write_tools={"rebook_voyage"}, goal_writes={"rebook_voyage"},
                          goal_counts=counts)
     user.reply(ask("Hello, how can I help?"))

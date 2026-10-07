@@ -25,7 +25,6 @@ from kullback.runner.records import EntitySchema, read_json
 from kullback.user import context as context_mod
 from kullback.user import fidelity as fidelity_mod
 from kullback.user import lesson as lesson_mod
-from kullback.user import rules as rules_mod
 from kullback.user.agent import AgentUser
 from kullback.user.simulated import SimulatedUser
 
@@ -103,9 +102,11 @@ def _disk_state(workdir: Any, task_id: str, purpose: str, goal_counts: Any = _MI
     lessons = lesson_mod.lines_for(lesson_mod.load_lessons(workdir), task_id)
     ctx = context_mod.curate(task_id, user_rules, trace, vocab=vocab, write_tools=writes,
                              record_fields=sorted(record), lessons=lessons)
-    goal_writes = rules_mod.goal_write_set(trace, writes)
+    # The goal is the Spec's (`spec.schema.goal_of`), which this layer cannot read: a caller passes
+    # it, and without one the goal is any write (None), never the Reference's calls.
+    goal_writes = None
     if goal_counts is _MISSING:
-        goal_counts = rules_mod.goal_write_counts(trace, writes)
+        goal_counts = None
     answer_strip = _strip_for(workdir, task_id, index)
     return {
         "ctx": ctx,

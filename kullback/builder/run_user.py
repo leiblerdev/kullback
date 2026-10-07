@@ -11,11 +11,11 @@ from typing import Any, Iterable, Optional
 
 from kullback.runner.records import UserRules, read_json
 from kullback.runner.world.environment import BuiltEnvironment
+from kullback.spec.schema import goal_of
 from kullback.user import account as account_mod
 from kullback.user import context as context_mod
 from kullback.user import factory as user_factory
 from kullback.user.fidelity import vocabulary_of
-from kullback.user.rules import goal_write_counts, goal_write_set
 from kullback.user.simulated import SimulatedUser
 from kullback.user.value_strip import value_strip
 
@@ -100,8 +100,7 @@ def _make_user(workdir: Any, task_id: str, anchor: Any, router: Any, user_model:
     traces = env.traces()
     reference = traces.get(reference_id) if reference_id is not None else None
     members = [traces[run_id] for run_id in task.run_ids if run_id in traces]
-    goal_writes = goal_write_set(reference, writes) if reference is not None else None
-    goal_counts = goal_write_counts(reference, writes) if reference is not None else None
+    goal_writes, goal_counts = goal_of(workdir, task_id, writes)
     answer_strip = value_strip(members) if members else None
     vocab = vocabulary_of(workdir)
     floor = SimulatedUser(

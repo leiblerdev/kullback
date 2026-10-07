@@ -199,8 +199,7 @@ def test_the_agent_may_only_request_an_end_and_code_decides_it(ctx):
     out = box.end(rules_mod.GOAL_SATISFIED)
     assert out.requested == rules_mod.GOAL_SATISFIED and out.accepted is False
     protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
-    assert protocol.kind("Anything else?", said_anything=True, had_nothing=False, made=set(),
-                         requested=rules_mod.GOAL_SATISFIED) == rules_mod.HANDED_OFF
+    assert protocol.kind("Anything else?", said_anything=True, had_nothing=False, made=set()) == rules_mod.HANDED_OFF
     assert protocol.kind("Anything else?", said_anything=True, had_nothing=False,
                          made={"move_delivery"}) == rules_mod.GOAL_SATISFIED
 

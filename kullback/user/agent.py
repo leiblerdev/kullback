@@ -196,7 +196,7 @@ class AgentUser:
         made = guards_mod.writes_made(transcript, self.write_tools)
         kind = self.protocol.kind(question, said_anything=bool(text.strip()),
                                   had_nothing=self._had_nothing(text, question),
-                                  made=made, requested=self.box.requested,
+                                  made=made,
                                   acted=ends_mod.tool_called(transcript))
         tags = list(changed)
         if kind is not None:
