@@ -154,7 +154,7 @@ def test_an_atom_drop_naming_a_check_id_is_refused_with_the_atom_ids_and_more_th
     assert RV.atom_checks(load_spec(root, "t1"), _both_copies(root)) == {"i0": "c2"}
     out = RV.apply_review(root, "t1", [{"kind": "atoms", "drop": ["c2"]}, {"kind": "atoms", "drop": ["i0"]}])
     assert out["applied"] == 0
-    assert out["refused"] == ["drop names no atom of the Verifier: c2; atoms are i0", "drops 1 of 1 atoms"]
+    assert out["refused"] == ["drop names no atom of the Verifier: c2; atoms are i0", "drops 1 of 1 atoms and adds 0"]
     assert load_spec(root, "t1").atom_edits == [] and [a.id for a in _both_copies(root).atoms] == ["i0"]
 
 

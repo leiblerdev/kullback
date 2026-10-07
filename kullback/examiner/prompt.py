@@ -58,7 +58,7 @@ def tools_section() -> str:
             '"why": "the check demands what no fact says"}]}. An edit is the diff, one of these kinds.\n'
             "atoms: task_id, drop and add. Drop names atom ids (i<n>), which each Task's line lists beside "
             "the check (c<n>) that made it; a check id or fact id is not an atom id, and an edit dropping "
-            "more than half the atoms is refused. An added atom is a fact told or a question asked, never "
+            "more than half the atoms, its adds counted, is refused. An added atom is a fact told or a question asked, never "
             'a write, e.g. {"kind": "atoms", "task_id": "t1", "drop": [], "add": [{"id": "said_total", '
             '"kind": "required", "payload": {"kind": "communicate", "text": "<the words said>", '
             '"id": "said_total"}}], "why": "the user asked to hear the total"}.\n'

@@ -2292,8 +2292,8 @@ applied, and 0 atoms were removed. 116 findings carried no edit because no kind 
 Reference 23, a conduct rule 18, a cell to drop or allow 17, among others). 40 no-finding reviews sat on Tasks with an
 unsupported cell, and `ExamRoot.current` read stale proposals under exam/verifiers/ before the Spec's Verifier.
 
-Now an atoms edit whose drop names no atom of the live Verifier is refused with the atom ids, and one dropping more than half
-of the atoms at once is refused. Each Task's line in the opening shows every atom id beside the check that made it, and the
+Now an atoms edit whose drop names no atom of the live Verifier is refused with the atom ids, and one dropping more than
+half of the atoms at once (its adds counted, since the fold) is refused. Each Task's line in the opening shows every atom id beside the check that made it, and the
 prompt shows an added atom in the shape the Spec accepts. Three edit kinds join body, text and atoms: `cell` (allow or drop a
 cell of every expected end state), `conduct` (add or remove a handoff, refusal or confirm_before_write rule; the conduct's
 kind sits under the key `conduct`, since `kind` names the edit) and `reference` (a Run on disk proposed as the Reference).

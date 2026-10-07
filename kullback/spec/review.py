@@ -117,8 +117,9 @@ def _atoms_edit(spec: Spec, edit: dict, atom_ids: list[str]) -> tuple[Spec, str]
     unknown = next((a for a in drops if a not in atom_ids), None)
     if unknown is not None:
         return spec, f"drop names no atom of the Verifier: {unknown}; atoms are {', '.join(atom_ids) or 'none'}"
-    if 2 * len(set(drops)) > len(atom_ids):
-        return spec, f"drops {len(set(drops))} of {len(atom_ids)} atoms"
+    adds = len(edit.get("add") or [])
+    if 2 * len(set(drops)) > len(atom_ids) + adds:  # its adds count, so one wrong atom is replaced in one edit
+        return spec, f"drops {len(set(drops))} of {len(atom_ids)} atoms and adds {adds}"
     kept = {"drop": [str(a) for a in edit.get("drop") or []], "add": list(edit.get("add") or []),
             "why": str(edit.get("why") or "")}
     return spec.model_copy(update={"atom_edits": [*spec.atom_edits, kept]}), ""
