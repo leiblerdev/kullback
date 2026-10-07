@@ -1596,13 +1596,6 @@ def test_a_write_that_acknowledges_every_call_the_same_way_is_not_a_constant():
     assert world_constants(traces, write_tools=["update_kennel"]) == {}
 
 
-def test_the_constant_is_a_column_of_one_row_so_a_body_reaches_it_without_naming_a_key():
-    schema = mine_schema([_listing("A", ["K1", "K2"]), _listing("B", ["K1", "K2"])])
-    block = compile_env._schema_block(schema)
-    assert f"self.db.{CONSTANTS_TABLE} holds one row of the world's constants" in block
-    assert f"next(iter(self.db.{CONSTANTS_TABLE}.values()))" in block
-
-
 def test_the_starting_state_holds_the_constant_the_recording_pinned(tmp_path):
     schema = mine_schema([_listing("A", ["K1", "K2"]), _listing("B", ["K1", "K2"])])
     state = compile_env.build_starting_state(

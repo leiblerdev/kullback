@@ -3,7 +3,7 @@ shape, and each tool body with its five gates and bounded repair.
 
 The gates run each generated tool body in a subprocess sandbox before it is trusted; see
 kullback.builder.sandbox for what that sandbox does and does not close off. Nothing here calls a
-model on its own: write_tool_body takes a Model.
+model on its own.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from typing import Any, Callable, Iterable, Optional
 
 from kullback.builder import lesson as lesson_mod
 from kullback.builder import mine, synth
-from kullback.builder.body_skill import BODY_SKILL
 from kullback.builder.mine import is_assistant_call, is_scalar_result
 from kullback.builder.sandbox import (
     DB_CLASS,
@@ -27,7 +26,6 @@ from kullback.builder.sandbox import (
     SandboxError,
     args_text,
     calls_by_trace,
-    id_field,
     id_pattern_for,
     key_fields,
     key_separator,
@@ -45,7 +43,7 @@ from kullback.builder.sandbox import gate_executes_on_s0 as gate_executes_on_s0
 from kullback.builder.sandbox import gate_non_trivial as gate_non_trivial
 from kullback.builder.sandbox import gate_parses as gate_parses
 from kullback.builder.sandbox import gate_replay_fidelity as gate_replay_fidelity
-from kullback.gates.confinement import ALLOWED_IMPORTS, DENIED_BUILTINS, TOOLS_CLASS
+from kullback.gates.confinement import TOOLS_CLASS
 from kullback.gates.confinement import source_confinement as source_confinement
 from kullback.gates.tool_runs import body_replay_fidelity_gate
 from kullback.runner.canon import (
@@ -2617,238 +2615,6 @@ def module_source(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict) -
 # wrapper (D67 keeps the payload verbatim, with `raw_ptr` back to D66's untouched byte).
 
 
-def shared_error_prefix(calls: Iterable[ToolCall]) -> str:
-    """The prefix every string error payload in `calls` shares, cut at the last ": " they all have.
-
-    Two payloads at least, or one message alone would be its own prefix. The remainder has to be
-    non-empty on every payload, so a corpus whose errors are all one identical message yields the
-    part before its last ": " only if that leaves something after it.
-    """
-    payloads = [call.error.payload for call in calls
-                if call.error is not None and isinstance(call.error.payload, str)]
-    if len(payloads) < 2:
-        return ""
-    common = payloads[0]
-    for payload in payloads[1:]:
-        limit = min(len(common), len(payload))
-        cut = next((i for i in range(limit) if common[i] != payload[i]), limit)
-        common = common[:cut]
-    boundary = common.rfind(": ")
-    while boundary >= 0:
-        prefix = common[:boundary + 2]
-        if all(len(payload) > len(prefix) for payload in payloads):
-            return prefix
-        boundary = common.rfind(": ", 0, boundary)
-    return ""
-
-
-def _display_error_payload(payload: Any, prefix: str = "") -> Any:
-    """The error payload as the model should read it, with the corpus's shared prefix peeled off.
-
-    Only a leading, exact `prefix` is peeled, and only from a str payload; a JSON payload (D67's
-    `code` class) and a payload that never carried the prefix pass through untouched.
-    """
-    if prefix and isinstance(payload, str) and payload.startswith(prefix) and len(payload) > len(prefix):
-        return payload[len(prefix):]
-    return payload
-
-
-_SYSTEM = ("You write the body of one Python method of a tool class rebuilt from a customer's traces. "
-           "Return only the body: no signature, no fences, no explanation. The body may read and write "
-           "self.db, a pydantic model with one dict per table. Each dict's values are pydantic model rows, "
-           "not plain dicts: read or write a row's field by attribute, as in order.status or "
-           "order.status = \"cancelled\", never with .get(...) or any other dict method. That holds for the "
-           "row and stops there: what a column of a row holds is not a model. A column whose value is a "
-           "list or a dict is a plain Python list or dict, so index it, read its parts by key, as in "
-           "row.entries[0][\"amount\"], and write them by plain assignment, as in "
-           "row.entries[0][\"amount\"] = 0; row.entries[0].amount raises AttributeError. Where a column "
-           "holds one, the tables below say so and show the form that reads it. The body reads the "
-           "world's tables for every id and every value it works with: an id or a value copied out "
-           "of a recorded call and written into the body as a literal is refused by the "
-           "memorised_values gate, however well it replays the calls you were shown. Raise ValueError "
-           "with the customer's own message where the traces show an error. Where every recorded error "
-           "in this corpus begins with the same transport prefix, it is shown with that prefix removed, "
-           "so write the message exactly as shown and do not put a prefix of your own in front of it.")
-
-
-_TOOL_CONTEXT_PARAGRAPH = (
-    "Time, randomness and new ids come from the tool context on self.ctx, never from an import. "
-    "Read the call's time as self.ctx.now() and draw randomness as self.ctx.random(), so Runs "
-    "under the same seed answer alike and Runs under different seeds may differ. "
-    "Mint the id of a row the call creates with self.ctx.new_id naming its table before "
-    "inserting the row under it, as in loan_id = self.ctx.new_id(\"loans\") for a new row of loans.")
-
-
-def _example_block(calls: Iterable[ToolCall], error_prefix: Optional[str] = None) -> str:
-    """The recorded calls as the model sees them: arguments, then result or error class, in full.
-
-    Nothing is cut here. D75's third attempt is the full call table, and a node that says
-    `evidence_calls: 30` has to mean the model saw thirty complete rows; the only limit is the D65
-    cap, which refuses the call rather than shortening it. `error_prefix` is the corpus-wide shared
-    error prefix (`shared_error_prefix`); given None it is read off these calls alone.
-    """
-    calls = list(calls)
-    prefix = shared_error_prefix(calls) if error_prefix is None else error_prefix
-    lines = []
-    for call in calls:
-        outcome = (f"error {call.error.class_}: {_display_error_payload(call.error.payload, prefix)!r}"
-                   if call.error is not None
-                   else "result " + json.dumps(parse_result(call.result), default=str))
-        lines.append(f"- args {json.dumps(call.args, sort_keys=True, default=str)} -> {outcome}")
-    return "\n".join(lines)
-
-
-def _sample_value(column: Column) -> Any:
-    """One mined sample of a column as a Python value, or None when there is none to read.
-
-    Mining stores a nested sample as JSON text and cuts it at a length (`mine._short`), so a long
-    one does not parse; a sample that does not parse is no sample, and the caller falls back to the
-    form that names no field.
-    """
-    sample = column.samples[0] if column.samples else None
-    if isinstance(sample, (list, dict)):
-        return sample
-    if isinstance(sample, str):
-        try:
-            return json.loads(sample)
-        except ValueError:
-            return None
-    return None
-
-
-def _column_access(table: str, column: Column) -> str:
-    """How a column that holds a list or a dict is read, in one line, off its own mined sample.
-
-    The data model types a nested column as `Optional[Any]`, so the value inside it is a plain
-    Python list or dict however the row around it is typed. A body that took `_SYSTEM` at its word
-    and read a row's field by attribute all the way down crashed on every attempt of one live
-    build, at the same call, with the same AttributeError, and the retry could not help because the
-    instruction that caused it was still true of the row and false of what the column held. The
-    sample already beside the column says which it is and what one part is called, so the form that
-    reads it is derived here rather than left to the model to infer.
-
-    Everything is read off the schema: no name here comes from a domain.
-    """
-    types = (column.evidence or {}).get("types") or []
-    sample = _sample_value(column)
-    name = f"{table}.{column.name}"
-    if "list" in types:
-        element = next((v for v in sample if isinstance(v, dict)), None) if isinstance(sample, list) else None
-        if element:
-            key = next(iter(element))
-            return (f"{name} is a list of plain dicts, not model rows; one element looks like: "
-                    f"{json.dumps(element, default=str)}; read element[\"{key}\"], "
-                    f"never element.{key}")
-        return (f"{name} is a plain list, not a model row: index it, and read anything it holds by "
-                "key, never by attribute")
-    if "dict" in types:
-        rows = sample if isinstance(sample, dict) else {}
-        key, inner = next(((k, v) for k, v in rows.items() if isinstance(v, dict)), ("", None))
-        if inner:
-            keyed_by = next((f for f, v in inner.items() if v == key), "its own key")
-            field = next(iter(inner))
-            return (f"{name} is a dict of plain dicts keyed by {keyed_by}; read "
-                    f"{column.name}[key][\"{field}\"], never {column.name}[key].{field}")
-        return (f"{name} is a plain dict, not a model row: read it by key, as in "
-                f"{column.name}[\"key\"], never by attribute")
-    return ""
-
-
-def _schema_block(schema: EntitySchema) -> str:
-    """Tables and columns of the customer's world: the same for every tool in this build (D65's
-    stable prefix, docs/prompt-caching.md item 1).
-
-    A column mined as a dict gets one sample beside it, and a column that holds a list or a dict
-    gets the form that reads it (`_column_access`). Mining cannot tell a customer's real table from
-    a stand-in built out of a value nested inside another table's column: a tool that answers with
-    one nested row makes mining propose a table for it, while the table that stores those rows
-    keeps them in a column of its own. Both are real observations and nothing here decides which is
-    the customer's real storage; the sample is what lets the model notice the second on its own,
-    instead of trusting the proposed table alone and raising "not found" on a database that only
-    fills it through the nesting. That is what happened on the first live build, nine calls out of
-    nine.
-    """
-    lines = ["Tables on self.db:"]
-    for table in sorted(schema.tables):
-        columns = sorted((c for c in schema.columns if c.table == table), key=lambda c: c.name)
-        names = ", ".join(c.name for c in columns) if columns else "(no columns observed)"
-        lines.append(f"- {table}: {names}")
-        fields = key_fields(schema, table)
-        if len(fields) > 1:
-            separator = key_separator(schema)
-            form = separator.join("{" + name + "}" for name in fields)
-            lines.append(f"    self.db.{table} is keyed by {' and '.join(fields)} together, joined "
-                         f"with {separator!r}: the key of a row is f\"{form}\". One "
-                         f"{fields[0]} stands for several rows here, one per "
-                         f"{' and '.join(fields[1:])}, so build the whole key to reach a row and "
-                         f"never look one up by {fields[0]} alone. A row's own "
-                         f"{' or '.join(fields[1:])} column can be null where the customer's tool "
-                         f"took the value from the call's arguments; the key is what says which row "
-                         f"this is. Split a key on {separator!r} to read its parts back, and answer "
-                         f"rows whose key parts match the arguments you were given.")
-        if table == mine.constants_table_of(schema):
-            lines.append(f"    self.db.{table} holds one row of the world's constants: every "
-                         f"recorded call of the tool a column is named after answered that column's "
-                         f"value, whatever it was asked. Read the row with "
-                         f"next(iter(self.db.{table}.values())), never by key, and let such a tool "
-                         f"answer its own column whole rather than assembling the answer out of "
-                         f"other tables' rows.")
-        home = (schema.homes or {}).get(table)
-        if home:
-            parent, column = home.split(".", 1)
-            key = id_field(schema, table) or "its id"
-            lines.append(f"    {table} rows are stored inside {home}, keyed by {key}: walk "
-                         f"self.db.{parent}.values() and read .{column} to find one. self.db.{table} "
-                         f"holds only rows the traces showed on their own and may be empty on the "
-                         f"customer's real database, so look in {home} first and in self.db.{table} "
-                         f"second.")
-        for column in columns:
-            if "dict" in (column.evidence or {}).get("types", []) and column.samples:
-                lines.append(f"    {table}.{column.name} looks like: {column.samples[0]}")
-            access = _column_access(table, column)
-            if access:
-                lines.append(f"    {access}")
-    return "\n".join(lines)
-
-
-def _confinement_block(denied: Iterable[str] = DENIED_BUILTINS, allowed: Iterable[str] = ALLOWED_IMPORTS) -> str:
-    """The confinement gate's own rules, in words, generated from the gate's own constants.
-
-    The first live build spent four of sixteen tools discovering these by being refused: the model
-    reached for `getattr` and `__dict__` because nothing had told it not to, and each refusal cost
-    an attempt to learn one rule. Written out here it costs nothing, because this text sits in the
-    stable system prefix that every call of the stage reuses from the provider's cache.
-
-    Generated rather than written so the two can never drift: if sandbox.py starts denying a name,
-    the prompt says so on the next build without anyone remembering to edit it. The two lists are
-    parameters defaulting to the gate's own constants, so a caller can show a reader (or a test)
-    what a different gate would render without reaching into this module.
-
-    The helper sentence sits here rather than in a per-tool message because it is the same for every
-    tool of every build, so it is read out of the provider's cache and costs nothing. Build 12 spent
-    four attempts on one tool watching the model write an arithmetic parser by hand, each one worse
-    than the last, because nothing had said there was one already.
-    """
-    return ("The body is checked before it runs and is refused if it names anything outside the "
-            "customer's world. It may not use: " + ", ".join(sorted(denied)) + ". It may "
-            "not touch a dunder attribute (`__dict__`, `__class__`, `__globals__` and the rest). "
-            "Do not touch any attribute whose name starts with an underscore, do not spell a dunder "
-            "inside a string, and do not call `.format` or `.format_map`; build strings with an "
-            "f-string. It may import only: " + ", ".join(sorted(allowed)) + ", and do not read "
-            "another module out of one of those (`uuid.os`, `json.codecs` and the like). Read "
-            "fields by name (`order.status`) or by key (`self.db.orders[order_id]`), never through "
-            "getattr. "
-            "evaluate_arithmetic(expression) is provided in the body's namespace: it evaluates "
-            "+ - * / // % ** with parentheses over a decimal and returns a Decimal, so never write "
-            "a parser and never reach for eval; for example `float(evaluate_arithmetic(expression))` "
-            "or round it to the places the recording shows. "
-            "Write ASCII only: no smart quotes, no dashes other than the hyphen and no other "
-            "non-ASCII character anywhere in the body, not even in a comment.")
-
-
-
-
-
 def _string_parts(text: str) -> tuple[str, int, int]:
     """One string token as its prefix letters, where its content starts, and where it ends."""
     for index, char in enumerate(text):
@@ -2957,199 +2723,6 @@ def _quoted_end(text: str, index: int, stop: int) -> int:
     return stop
 
 
-# D117: said once, only when compile_tool was asked to offer the two builder tools, so a caller
-# that turns them off (or an old caller that never knew about them) gets exactly the old prompt.
-_BUILDER_TOOLS_PARAGRAPH = (
-    "Two tools are available while you write this body: lookup_rows(table, key=None) reads a row "
-    "of the Starting state (or, with no key, that table's row count and a few sample keys), and "
-    "test_body(body) runs a draft through the same gates this attempt will face, on the calls you "
-    "were shown. Look a row up before guessing its shape; test the draft before you submit it. "
-    "A tool call is never a submission: when a draft passes, send the body itself as your reply. "
-    "The rounds are few; if they run out, the last body you tested is taken as your reply.")
-
-
-def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[str] = (),
-                   builder_tools: bool = False, world_note: str = "") -> str:
-    """`_SYSTEM` plus what every tool in this build shares: one prefix, sent unchanged on every
-    call of the stage, long enough on a real customer to clear a provider's cache minimum.
-
-    `world_note` is what a table another requestor revealed needs said about it
-    (`builder/readers.py`): how to reach its one row, and the derivations of the columns nothing
-    stores. It is the same bytes for every tool of a build, so it belongs in this prefix and not in
-    the per-tool turn.
-
-    The helper paragraph (`_BUILDER_TOOLS_PARAGRAPH`) is appended last on purpose, after the
-    tool list: the bytes in front of it are then shared with a call that turns the helpers off,
-    so the common prefix still caches. Every part is built from sorted values, never from set
-    iteration or dict order, so two calls over the same build are byte identical.
-    """
-    # The body skill (D168) sits in the prefix too: it is the same bytes for every tool of a build,
-    # and it is read before the tables, which is where a body's mistakes are made.
-    parts = [_SYSTEM, BODY_SKILL, _confinement_block(), _TOOL_CONTEXT_PARAGRAPH]
-    if schema is not None:
-        parts.append(_schema_block(schema))
-    if world_note:
-        parts.append(world_note)
-    names = sorted(set(tool_names))
-    if names:
-        parts.append("Tools in this build: " + ", ".join(names))
-    if builder_tools:
-        parts.append(_BUILDER_TOOLS_PARAGRAPH)
-    return "\n\n".join(parts)
-
-
-def _head_for_tools(schema: Optional[EntitySchema], tool_names: Iterable[str],
-                    builder_tools: bool, world_note: str,
-                    system_head: Optional[str]) -> str:
-    """The tool's head: the one built once per tool, or one built here for a lone call."""
-    if system_head is not None:
-        return system_head
-    return _stable_system(schema, tool_names, builder_tools, world_note)
-
-
-def _tool_block(toolsig: ToolSig, examples: Iterable[ToolCall], error_prefix: Optional[str] = None,
-                effects: str = "") -> str:
-    """What differs call to call: this one tool, its signature, its recorded calls and its effects.
-
-    `effects` (D215) is the section a write tool gets when the recording shows its calls moving rows
-    their arguments never named: the columns, what each held on either side, and the formula the
-    numbers imply. It sits above the recorded calls, because it is the part of the tool's behaviour
-    the calls themselves do not show, and it is empty for every tool nothing was observed of, so a
-    read's block is the bytes it always was.
-    """
-    if is_scalar_result(toolsig):
-        result_line = ("Result: a bare " + _annotation(toolsig.result_schema[0].types)
-                       + ", returned directly, not as {\"value\": ...} or any other wrapper object")
-    else:
-        result_line = "Result fields: " + ", ".join(f.name for f in toolsig.result_schema)
-    parts = [f"Tool: {toolsig.name}",
-             f"Description: {toolsig.description or 'not declared by the customer'}",
-             "Arguments: " + ", ".join(f"{f.name} ({_annotation(f.types)})" for f in toolsig.args_fields),
-             result_line]
-    if effects:
-        parts.append(effects)
-    parts += ["Recorded calls:", _example_block(examples, error_prefix)]
-    return "\n".join(parts)
-
-
-def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Optional[EntitySchema] = None,
-                  failure: str = "", tool_names: Iterable[str] = (),
-                  error_prefix: Optional[str] = None, builder_tools: bool = False,
-                  lesson: str = "", world_note: str = "", effects: str = "",
-                  system_head: Optional[str] = None) -> list[dict]:
-    """The whole message list one body request sends, so its size can be checked before it goes.
-
-    The system message carries the fixed instructions plus what is the same for every tool in
-    this build (the schema, the tool list): one prefix, unchanged call to call, for a provider's
-    cache to reuse. `system_head`, given by compile_tool, is that prefix built once per tool
-    (one string object for every attempt of the tool); given none it is built here, which reads
-    the same bytes. The user message carries only this one tool, its recorded calls, and (for a
-    one-shot request outside the repair loop) the failure of a previous attempt. `builder_tools`
-    (D117) adds the one paragraph naming lookup_rows and test_body to the stable prefix; it is the
-    same value on every call of one compile_tool, so the cached bytes never move mid-build.
-
-    `lesson` is what earlier attempts at this one tool already failed on (memory.lesson_for): it
-    belongs to this tool and not to the build, so it goes in the user turn and leaves the stable
-    prefix alone. Empty, the messages are the same bytes they were before there was a lesson.
-
-    `effects` (D215) belongs to this tool for the same reason and goes in the same turn: it is what
-    this tool's own recorded calls were seen to change beyond their own answers.
-    """
-    system_head = _head_for_tools(schema, tool_names, builder_tools, world_note, system_head)
-    user = _tool_block(toolsig, examples, error_prefix, effects)
-    if lesson:
-        user += "\n\n" + lesson
-    if failure:
-        user += "\n\nThe previous body failed these gates:\n" + failure
-    return [{"role": "system", "content": system_head},
-            {"role": "user", "content": user}]
-
-
-def _append_retry(messages: list[dict], reply_content: str, evidence: Iterable[ToolCall],
-                  failure: str, error_prefix: Optional[str] = None) -> list[dict]:
-    """A gate-failure retry (D75, docs/prompt-caching.md item 2): the messages so far are kept
-    exactly as they were sent, so the system and first user turn stay the cached prefix; the
-    model's previous reply arrives as an assistant turn and the new evidence and failure as a
-    new user turn, never folded back into the first one."""
-    turn = ("Recorded calls:\n" + _example_block(evidence, error_prefix)
-            + "\n\nThe previous body failed these gates:\n" + failure)
-    return messages + [{"role": "assistant", "content": reply_content},
-                       {"role": "user", "content": turn}]
-
-
-def _context_cap_error() -> tuple:
-    """budget.py's D65 refusal, imported late so this module does not need budget.py to exist."""
-    try:
-        from kullback.runner.budget import ContextCapExceeded
-        return (ContextCapExceeded,)
-    except Exception:  # pragma: no cover - budget.py is always importable in this package
-        return ()
-
-
-def write_tool_body(model, toolsig: ToolSig, examples: Iterable[ToolCall],
-                    schema: Optional[EntitySchema] = None, failure: str = "") -> str:
-    """Ask the Model for one tool body. Code owns the signature, the docstring and the schema."""
-    return _body_from(model, body_messages(toolsig, examples, schema, failure))
-
-
-def _body_from(model, messages: list[dict]) -> str:
-    reply = model.query(messages)
-    return _strip_fence(reply.content or "")
-
-
-def _strip_fence(text: str) -> str:
-    """Take the code out of a fenced reply and dedent it."""
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()[1:]
-        text = "\n".join(lines[:-1] if lines and lines[-1].strip().startswith("```") else lines)
-    return textwrap.dedent(text).strip("\n")
-
-# --- the two tools the body-writing model may call (D117) ---
-#
-# A body-writing model has to guess a row's shape from the schema block and the recorded calls
-# alone, and has to guess whether its own draft clears the gates. lookup_rows answers the first
-# guess and test_body answers the second, both without spending a repair attempt to find out.
-# lookup_rows only reads db and the shown calls' own worlds. test_body runs the same
-# shown/held-out split the attempt will face (D250), and `_failure_text` still withholds held-out
-# values, so a reconstruction that matches shown keys can fail here before submit without
-# leaking the hidden calls.
-
-LOOKUP_ROWS_TOOL = {
-    "name": "lookup_rows",
-    "description": ("Read one row of the Starting state by table and key, or (with no key) a "
-                    "table's row count and a few sample keys. Read-only: nothing here changes "
-                    "the world. Never returns a held-out row."),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "table": {"type": "string", "description": "the table to look in"},
-            "key": {"type": "string", "description": "the row's id; omit to see the table's shape"},
-        },
-        "required": ["table"],
-    },
-}
-
-TEST_BODY_TOOL = {
-    "name": "test_body",
-    "description": ("Run a draft body through the same gates this attempt will face, including "
-                    "held-out argument shapes. Returns which gate failed and why, or that every "
-                    "gate passed. Held-out calls are never named: a miss on them is a count."),
-    "parameters": {
-        "type": "object",
-        "properties": {"body": {"type": "string", "description": "the full body to test, as Python source"}},
-        "required": ["body"],
-    },
-}
-
-BUILDER_TOOLS = [LOOKUP_ROWS_TOOL, TEST_BODY_TOOL]
-
-
-def _assistant_tool_turn(reply: Any) -> dict:
-    """The canonical assistant turn a tool-calling reply becomes, the same shape the Runner's own
-    loop and provider.py's adapters read (runner.loop._assistant_message)."""
-    return {"role": "assistant", "content": reply.content,
-            "tool_calls": [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in reply.tool_calls]}
 
 
 # --- the bounded repair loop (D75) ---
@@ -3212,122 +2785,8 @@ def split_calls(calls: Iterable[ToolCall], every: int = 3) -> tuple[list[ToolCal
     return _shape_split(calls, unique, every)
 
 
-def _failing_calls(gates: list[GateResult], shown: list[ToolCall]) -> list[ToolCall]:
-    """The shown calls a gate named in its failures; empty when no shown call was named."""
-    named = [f for gate in gates if not gate.passed for f in gate.failures]
-    return [c for c in shown if any(args_text(c) in f for f in named)]
 
 
-def _constant_evidence_note(evidence: Iterable[ToolCall]) -> str:
-    """Said once, when the calls just shown already share one answer among themselves.
-
-    Gate 4 fails a body that answers every call the same way, and the failure line reads like an
-    instruction to make the answers differ. For a tool whose own recorded calls differ in nothing
-    but their arguments, that is not a defect the next attempt can write its way out of; it is
-    what the evidence says the tool does. Left unsaid, the model takes gate 4 at its word and
-    invents a categorization the traces never showed. transfer_to_human_agents did exactly that on
-    the first live build: every recorded call answered "Transfer successful" whatever the summary,
-    three repair attempts each added logic to make the answers differ, and the last used a name it
-    never imported and crashed on every call.
-    """
-    results = [canon(parse_result(call.result)) for call in evidence if call.error is None]
-    if len(results) < 2 or len(set(results)) != 1:
-        return ""
-    return ("\nThe recorded calls above already answer every one of them the same way. If your body "
-            "does too, that may be the correct behaviour; do not invent a detail the calls never "
-            "showed just to make the answers differ.")
-
-
-def _failure_text(gates: list[GateResult], held_out: Iterable[ToolCall] = ()) -> str:
-    """What the next attempt is told, with the held-out split kept out of it (D51, D75).
-
-    The held-out calls are the ones the model is never shown, so neither their arguments nor the
-    outcome expected of them may travel back in a repair prompt. A failure on them is reported as a
-    count, which tells the model its body is wrong somewhere without handing it the answers. Gates 2
-    to 4 run over every call, so their failure lines are filtered by the same rule.
-    """
-    hidden = [args_text(call) for call in held_out]
-    lines = []
-    for gate in gates:
-        if gate.passed:
-            continue
-        split = gate.metrics.get("split", "")
-        kept = [] if split == "held_out" else [f for f in gate.failures if not any(h in f for h in hidden)]
-        withheld = len(gate.failures) - len(kept)
-        text = "; ".join(kept)
-        if withheld:
-            text += ("; " if text else "") + f"{withheld} more on calls you were not shown"
-        lines.append(f"- gate {gate.stage} ({split}): {text}")
-    lines += _import_hints(gates)
-    return "\n".join(lines)
-
-
-
-
-
-
-
-_UNDEFINED_NAME = re.compile(r"NameError: name '(\w+)' is not defined")
-
-
-# Time, randomness and new ids come from the tool context, never from an import, so a body
-# that reaches for one of these modules is pointed at the context instead of at an import line.
-_CONTEXT_HINTS = {"datetime": "self.ctx.now()", "time": "self.ctx.now()",
-                  "random": "self.ctx.random()", "uuid": "self.ctx.new_id(table)"}
-
-
-def _import_hints(gates: list[GateResult]) -> list[str]:
-    """A NameError on a module the sandbox allows names the fix; say it instead of the traceback.
-
-    transfer_to_human_agents called re.findall on the first live build and never imported re, and
-    every one of its 25 replays died on the same NameError. The gate already knew which name was
-    missing and that the module is on the allowed list; the retry was handing back the raw error.
-    The four time, randomness and id modules are not importable: a body naming one is pointed at
-    the tool context instead.
-    """
-    names = sorted({m.group(1) for gate in gates if not gate.passed
-                    for failure in gate.failures for m in _UNDEFINED_NAME.finditer(failure)})
-    out = []
-    for name in names:
-        if name in _CONTEXT_HINTS:
-            out.append(f"- `{name}` is not importable; take it from the tool context instead, "
-                       f"as in `{_CONTEXT_HINTS[name]}`")
-        elif name in ALLOWED_IMPORTS:
-            out.append(f"- `{name}` is on the allowed import list but the body never imported it; put "
-                       f"`import {name}` at the top of the body")
-    return out
-
-
-
-
-def _evidence_for(attempt: int, shown: list[ToolCall], gates: list[GateResult]) -> list[ToolCall]:
-    """Evidence grows per attempt: the failing call, then all failing calls, then the full table.
-
-    When no shown call is named in the failures (the held-out split failed on its own, or the module
-    did not parse at all), there is no failing call to point at, so the attempt gets every shown call
-    rather than the first one, which passed.
-    """
-    if attempt == 0:
-        return shown[:3]
-    failing = _failing_calls(gates, shown)
-    if not failing:
-        return shown
-    return failing[:1] if attempt == 1 else (failing if attempt == 2 else shown)
-
-
-def attempt_score(gates: Iterable[GateResult]) -> tuple[int, int]:
-    """How far one attempt's body got, as the key the kept body is chosen by.
-
-    `run_gates` runs the gates in one order (parses, confined, executes_on_s0, deterministic,
-    non_trivial, replay_fidelity, refuses_unknown) and stops at the first failure, so the count of
-    gates a body passed is how far down that order it reached. The tie-break is how many recorded
-    calls its replay actually matched, which separates two bodies that fell at the same gate.
-    """
-    gates = list(gates)
-    passed = sum(1 for gate in gates if gate.passed)
-    matched = sum(int(gate.metrics.get("success_matches") or 0)
-                  for gate in gates if gate.stage == "replay_fidelity")
-    return passed, matched
 
 
 def body_could_not_run(gates: Iterable[GateResult], rows: Iterable[dict]) -> bool:
@@ -3417,7 +2876,7 @@ def diagnose_body(toolsig: ToolSig, source: str, sandbox: Sandbox, calls: list[T
 
     The triples are the shown split's alone (D51, D75): a lesson is written into a prompt, and the
     held-out calls' arguments and outcomes may not travel there, which is the same rule
-    `_failure_text` and `kept_body_hint` are filtered by. The witnessed-branch read is over every
+    `kept_body_hint` is filtered by. The witnessed-branch read is over every
     recorded call, because it carries no value of any of them: a line number is a fact about the
     body, and a branch reached only by a held-out call is a branch the evidence supports.
     """

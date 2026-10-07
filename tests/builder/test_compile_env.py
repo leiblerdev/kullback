@@ -1209,9 +1209,6 @@ def test_the_refusal_probe_runs_on_write_tools_only(schema, sigs, db0, workdir, 
     assert probed[-1].stage == "refuses_unknown" and probed[-1].passed is False
 
 
-# --- the builder tools: lookup_rows and test_body, in a bounded loop (D117) ---
-
-
 # --- per-call replay outcomes, the per-Task grain of the fidelity ruling (D171) ---
 
 LIBRARY_DB = {

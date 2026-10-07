@@ -210,7 +210,6 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | Module | What it does |
 |---|---|
 | `kullback/builder/__init__.py` | Package marker for the Builder. |
-| `kullback/builder/body_skill.py` | The body skill: how a tool body is written so it clears the gates (D168). |
 | `kullback/builder/cache_reach.py` | Hashes a module's import closure so code-keyed caches invalidate (G29). |
 | `kullback/builder/run_user.py` | The Simulated user the run tool meets: the rule-driven user, or the agent user over it with a model, from the Reference's user rules (D214). |
 | `kullback/builder/cluster.py` | Groups Runs into Categories by write-tool set, then Tasks by intent (D83). |
