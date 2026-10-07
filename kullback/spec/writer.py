@@ -134,8 +134,6 @@ reply that you are done when finished.
 
 # Why a demand carrying code is refused (D320): what a Run must write is the end state's cells.
 WRITE_PREDICATE = "write demands are end-state cells"
-# The demands of the older grammar that stay atoms beside an expected end state (D320).
-ATOM_DEMANDS = ("say", "ask")
 
 # The longest message body a session is sent, about 6000 tokens: it bounds one call's input cost
 # whatever the policy or tool list holds (held-out bodies ran 12000 to 18000 characters).

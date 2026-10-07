@@ -19,7 +19,7 @@ from kullback.runner.verdict import verdict
 from kullback.spec import writer as W
 from kullback.spec import writer_tools as T
 from kullback.spec.schema import SpecIntent, intent_text, load_spec
-from tests.spec.fixtures import FACTS, WRITE_TOOLS, fn, reference_run
+from tests.spec.fixtures import FACTS, WRITE_TOOLS, check, fn, reference_run
 
 STATE = {"items": {"A1": {"item_id": "A1", "slot": "two"}, "B2": {"item_id": "B2", "slot": "four"}}}
 SECTION = "section:moving items"
@@ -239,6 +239,19 @@ def test_the_compiled_verifier_passes_the_right_run_and_fails_a_wrong_slot_and_a
     assert ok(_ended(end)) == (True, {"state:items.A1.slot": True, "sanity": True})
     assert ok(_ended({"items": {**end["items"], "A1": {"item_id": "A1", "slot": "nine"}}}))[0] is False
     assert ok(_ended({"items": {"A1": end["items"]["A1"]}})) == (False, {"state:items.A1.slot": True, "sanity": False})
+
+
+def test_an_added_said_or_judge_item_or_an_older_say_check_is_never_dropped_beside_end_states():
+    spec = W.write_spec("t1", inputs(), TestModel([add(ROW), DONE])).spec
+    ruling = W.Ruling(check_ids=[], reason="a fact is uncovered", item="f1", kind="derivation/uncovered_fact")
+    told = {"id": "t2", "kind": "said", "values": ["seven"], "fact_ids": ["f1"]}
+    declined = {"id": "j1", "kind": "judge", "question": "Did the agent refuse?", "policy_line": "Move an item only to "
+                "a free slot.", "anchor": {"answer": "Move an item only to a free slot."}}
+    repaired = W.repair(spec, ruling, inputs(), TestModel([add(told, declined), DONE])).spec
+    older = check("c9", kind="communicate", demand={"demand": "say", "values": ["seven"]})
+    verifier = W.verifier_of(repaired.model_copy(update={"checks": repaired.checks + [older]}), inputs()).verifier
+    assert verifier.expected and {"t2", "j1", "sanity"} <= {atom.id for atom in verifier.atoms}
+    assert len(verifier.atoms) == 5, "the older say check compiles to its own atom beside the items"
 
 
 def _ended(end: dict) -> Run:

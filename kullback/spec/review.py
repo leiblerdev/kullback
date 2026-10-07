@@ -29,14 +29,12 @@ def atom_checks(spec: Spec, verifier: Optional[Verifier]) -> dict[str, str]:
     """Each atom id of the Verifier with the check that made it: an item's atom is its check's id, the
     sanity item is "code"; compile names an older check's atoms i<n>, n its index among the older checks;
     "unknown" for an atom no check made."""
-    from kullback.spec.writer import ATOM_DEMANDS, is_item_check
+    from kullback.spec.writer import is_item_check
 
     if verifier is None:
         return {}
     items = {check.id for check in spec.checks if is_item_check(check)}
     checks = [check for check in spec.checks if not is_item_check(check)]
-    if verifier.expected and not items:
-        checks = [check for check in checks if check.demand.get("demand") in ATOM_DEMANDS]
     out: dict[str, str] = {}
     for atom in verifier.atoms:
         if atom.id in items or atom.id == SANITY_ID:
