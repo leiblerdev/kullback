@@ -2360,3 +2360,32 @@ fires on 19 right and 0 wrong. Limit: it flags 1 of the 6 wrong-trusted retail T
 writer demanded what the Reference did; gating on it would hold back 5 right retail References with 22 wrong.
 Status: built 2026-10-07 on fix-1007/trust.
 Folded 2026-10-07 on fix-1007/fold
+
+### D328. The user looks facts up; its goal never ends a Run; a single-turn Task shape (2026-10-07)
+
+What changed: `user/lookup.py` holds the user's facts (rules facts and argument facts) keyed by field name, with
+the Vocabulary's aliases, from the signatures where no build Vocabulary exists (D326). One lookup takes question
+text and returns the facts it asks for: field words, then an alias, then plain-word overlap with the words a
+question points at ("which", "what", "your"; not "your" in an offer, never in a closing question). A fact whose
+value the question states is not asked for; a field named but held nowhere comes back `missing`, which the rule
+user hands to its Starting state reader (the seam for the user reading its own rows later). The rule user's
+`_asked` and the agent user's asked fields call it on the turn's request sentences; `my_facts(question=...)`
+replaces `my_facts(asked=[fields])`, and each call logs the fields found and missing, never values.
+Run ending: `goal_done` no longer ends a Run in `SimulatedUser._end_kind` or `guards.EndProtocol.kind`. The
+Candidate's close, the scenario running out and the turn limit end Runs; where one of them ends a Run with the
+goal's writes made, the end is reported `goal_satisfied` (a label), and every user turn carries `user_goal_met`.
+No module in spec/, gates/, runner/verdict.py or runner/records.py read the goal (a source test keeps it so).
+Single-turn shape: `Task.facts_in_instruction` (default off) folds the user's facts into the opening message
+(`world/environment.py facts_instruction`) and runs with no Simulated user in `runner/tool.py run` and
+`Episode.reset`. The spoken field names moved to `runner/records.py` so the world folds without importing the user.
+Why: the cue lists heard an ask only in the words a corpus showed, and the goal that ended Runs is read off the
+Reference's writes, which may decide nothing trust or the Verifier reads (verifier-redesign-1007 v2).
+Measured (live replay, every fresh Run of verify-1006-live, same Candidate request sentences): retail 176
+questions, answered 43 by the lookup vs 27 by the cues; airline 212, 14 vs 5; no question the cues answered was
+lost. By hand about 5 of the 25 new hits are wrong (yes/no asks, a statement, another traveller's name). One live
+Run per corpus with the agent user on Muse contributor: 4 and 2 `my_facts` calls, found and missing logged.
+Retired: the cue matching of D115 in both users' hearing (`asked_fields` and `named_fields` stay for rule
+derivation), D210's "a Run whose goal writes are confirmed is done whatever the Candidate said next", and the D214
+`my_facts(asked=[...])` argument. Limits: the overlap has no labelled truth beyond the hand read; derivation in
+`rules.py` still mines asks with the cues; a goal met is still read off the Reference's writes, as a label.
+Status: built 2026-10-07 on shape-1007/user.
