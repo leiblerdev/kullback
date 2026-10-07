@@ -9,7 +9,6 @@ model on its own: write_tool_body takes a Model.
 from __future__ import annotations
 
 import copy
-import hashlib
 import io
 import json
 import keyword
@@ -51,14 +50,6 @@ from kullback.builder.sandbox import gate_replay_fidelity as gate_replay_fidelit
 from kullback.gates.confinement import ALLOWED_IMPORTS, DENIED_BUILTINS, TOOLS_CLASS
 from kullback.gates.confinement import source_confinement as source_confinement
 from kullback.gates.tool_runs import body_replay_fidelity_gate
-from kullback.runner.budget import (
-    CHARS_PER_TOKEN,
-    CONTEXT_CAP_FRACTION,
-    context_cap_tokens,
-)
-from kullback.runner.budget import (
-    DEFAULT_CONTEXT_WINDOW as CONTEXT_WINDOW,
-)
 from kullback.runner.canon import (
     canonicalize as canon,  # D39: one canonicalizer, no local variant
 )
@@ -96,9 +87,7 @@ from kullback.runner.world.recorded import recorded_call_contexts as recorded_ca
 
 DB_FILE = "db.json"
 PINS_FILE = "overlay_pins.json"  # what the Starting-state pinner pinned per Task, and what it could not
-NODE_DIR = "tool_nodes"
 OUTCOME_DETAIL_CHARS = 300  # how much of one differing call's sentence a per-call row carries (D171)
-MAX_REPAIR_ATTEMPTS = 3
 # D202: how many starting values one column is tried in before the pinner gives up on inverting a
 # write, and how many (column, value) pairs one recorded write is tried in altogether. A boolean or
 # an enum has a domain of two to a few values and settles in the first batch; a wide table with a
@@ -109,15 +98,6 @@ PRE_WRITE_TRIES_CAP = 64
 # subprocess is set by how big that world is rather than by a fixed count: a small world settles a
 # whole column in one run, a large one is split so no job file grows past this.
 PRE_WRITE_JOB_BYTES = 4_000_000
-# D117: at most this many model calls inside one attempt's tool-use loop, so a model that keeps
-# reaching for lookup_rows or test_body instead of ever submitting a body cannot spend an attempt
-# for free; the last reply's content is taken as the body once the rounds run out.
-MAX_TOOL_ROUNDS = 6
-# CONTEXT_WINDOW and CHARS_PER_TOKEN are budget.py's own (imported above): one context-sizing
-# constant per Harness, not a second copy that could drift from what budget.py actually bills.
-MAX_EVIDENCE_CHARS = context_cap_tokens(CONTEXT_WINDOW, CONTEXT_CAP_FRACTION) * CHARS_PER_TOKEN
-EVIDENCE_LABELS = ("initial", "failing_call", "all_failing_calls", "full_call_table")
-HELD_OUT_LABEL = "held_out_failed, shown calls only"  # no shown call failed, so none can be pointed at
 
 
 @dataclass
@@ -1549,14 +1529,6 @@ def _run_versions(sightings: Iterable[_Obs]) -> dict[str, dict[str, Any]]:
         for name, value in obs.row.items():
             per.setdefault(str(name), value)
     return by_run
-
-
-def _columns_disagreeing(sightings: list[_Obs]) -> list[str]:
-    """Columns two of a Task's Runs read differently, each Run taking its own earliest value."""
-    by_run = _run_versions(sightings)
-    names = sorted({name for per in by_run.values() for name in per})
-    return [name for name in names
-            if len({canon(per[name]) for per in by_run.values() if name in per}) > 1]
 
 
 def column_domains(observations: Iterable[_Obs]) -> dict[tuple[str, str], list]:
@@ -3214,11 +3186,6 @@ def _context_cap_error() -> tuple:
         return ()
 
 
-def prompt_chars(messages: Iterable[dict]) -> int:
-    """The size the D65 cap is checked against: the whole prompt, not the evidence block alone."""
-    return sum(len(message.get("content") or "") for message in messages)
-
-
 def write_tool_body(model, toolsig: ToolSig, examples: Iterable[ToolCall],
                     schema: Optional[EntitySchema] = None, failure: str = "") -> str:
     """Ask the Model for one tool body. Code owns the signature, the docstring and the schema."""
@@ -3276,13 +3243,6 @@ TEST_BODY_TOOL = {
 }
 
 BUILDER_TOOLS = [LOOKUP_ROWS_TOOL, TEST_BODY_TOOL]
-
-
-def _specs_for(tool_specs: Optional[list] = None) -> list:
-    """The frozen helper spec list: the one object per build, or the module's own."""
-    if tool_specs is not None:
-        return tool_specs
-    return BUILDER_TOOLS
 
 
 def _find_row(schema: EntitySchema, world: dict, table: str, key: str) -> tuple[Optional[dict], Optional[str]]:
@@ -3348,116 +3308,12 @@ def _lookup_rows_text(schema: EntitySchema, db: dict, shown: list[ToolCall], cal
     return f"{table} row {key} is stored in {where}{note}: {text}"
 
 
-def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCall],
-                      held_out: list[ToolCall], db: dict,
-                      call_states: Optional[dict], workdir: Path, attempt: int, timeout: float,
-                      rules: Any, readers: Any = None, holdout: Optional[dict] = None,
-                      holdout_values: Optional[dict] = None,
-                      effect_values: Optional[dict] = None,
-                      transition_evidence: Optional[dict] = None) -> dict[str, Callable[..., str]]:
-    """lookup_rows and test_body, closed over one attempt's own evidence and probe directory.
-
-    test_body runs the same shown/held-out split the repair loop will gate (D250). Held-out
-    *values* stay hidden: the probe reports a fixed "held-out shapes failed" sentence, never a
-    moving withheld count and never the hidden args. The submit path still names how many.
-
-    `holdout` is what only a held-out Run witnessed (`holdout_columns`): lookup_rows answers with
-    those columns masked (D220 rule 2a), while test_body runs the draft on the complete `db`,
-    because a body has to be gated on the world it will run on and a masked world would fail it for
-    the wrong reason.
-    """
-    probes = {"n": 0}
-    # The recorded feed each gate call is served from, built once: a pure function of the calls.
-    ctx_feeds = recorded_call_contexts(list(shown) + list(held_out), schema)
-    # The module holds this one tool, so the prefix each gated call replays first is its own
-    # tool's earlier calls in the same trace; the others would name a tool it does not hold.
-    by_trace = calls_by_trace(list(shown) + list(held_out))
-
-    def lookup_rows(table: Optional[str] = None, key: Optional[str] = None) -> str:
-        return _lookup_rows_text(schema, db, shown, call_states, table, key, holdout=holdout)
-
-    def test_body(body: Optional[str] = None) -> str:
-        probes["n"] += 1
-        # The same sanitize the submission path runs, so the probe answers for the body that would
-        # be gated: a draft carrying a smart quote used to be told it does not parse and then pass
-        # on submission, which is a repair round spent on a difference the harness invented.
-        body, sanitized = sanitize_body(body or "")
-        source = module_source(schema, [toolsig], {toolsig.name: body})
-        sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}_probe_{probes['n']}", timeout=timeout,
-                          call_states=call_states, call_context=ctx_feeds, trace_calls=by_trace)
-        gates = run_gates(source, sandbox, shown, held_out, schema, rules,
-                          probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
-                          holdout_values=holdout_values, effect_values=effect_values,
-                          transition_evidence=transition_evidence)
-        note = ("\n" + sanitized) if sanitized else ""
-        if all(g.passed for g in gates):
-            return "passed every gate: " + ", ".join(g.stage for g in gates) + note
-        return _probe_failure_text(gates, held_out) + note
-
-    return {"lookup_rows": lookup_rows, "test_body": test_body}
-
-
-def _tool_use_record(call: Any, result_text: str) -> dict:
-    """What a tool use is remembered as on the node: never the row or the body, only what was asked."""
-    if call.name == "test_body":
-        body = (call.arguments or {}).get("body") or ""
-        arguments: dict = {"body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest()}
-    else:
-        arguments = {"table": (call.arguments or {}).get("table"), "key": (call.arguments or {}).get("key")}
-    return {"name": call.name, "arguments": arguments, "result_chars": len(result_text)}
-
-
-def _run_builder_tool(call: Any, tools_impl: dict[str, Callable[..., str]]) -> str:
-    impl = tools_impl.get(call.name)
-    if impl is None:
-        return f"unknown tool {call.name!r}; available tools: {', '.join(sorted(tools_impl))}"
-    try:
-        return impl(**(call.arguments or {}))
-    except TypeError as exc:
-        return f"bad arguments for {call.name}: {exc}"
-
-
 def _assistant_tool_turn(reply: Any) -> dict:
     """The canonical assistant turn a tool-calling reply becomes, the same shape the Runner's own
     loop and provider.py's adapters read (runner.loop._assistant_message)."""
     return {"role": "assistant", "content": reply.content,
             "tool_calls": [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in reply.tool_calls]}
 
-
-def _reply_with_tools(model, messages: list[dict], tools_impl: dict[str, Callable[..., str]],
-                      max_rounds: int = MAX_TOOL_ROUNDS,
-                      tool_specs: Optional[list] = None) -> tuple[str, list[dict], str]:
-    """Query the model with lookup_rows and test_body on, executing whatever it calls (D117).
-
-    `tool_specs` is the frozen helper spec list: one list object in a fixed order, the same
-    object on every attempt and every tool round, so the request envelope never splits the
-    provider's cache. Given none it is `BUILDER_TOOLS`, which is that same object.
-    `messages` (the attempt's own system and user turns, exactly as compile_tool built them) is
-    never mutated: the tool exchange runs over a local copy, so the next attempt's retry still
-    appends its assistant reply and new evidence onto the plain chain `_append_retry` expects,
-    never onto a transcript of tool calls. At most `max_rounds` model calls; a reply that asks for
-    no tool is the body. The third value is the last body the model handed to test_body, so a
-    model that tests a draft and keeps probing until the rounds run out (the sixth retail build's
-    cancel_pending_order: three drafts tested, then a row lookup, and no reply) still hands the
-    caller the draft it was working on rather than nothing.
-    """
-    working = list(messages)
-    tool_uses: list[dict] = []
-    reply = None
-    draft = ""
-    specs = _specs_for(tool_specs)
-    for _ in range(max_rounds):
-        reply = model.query(working, tools=specs)
-        if not reply.tool_calls:
-            return reply.content or "", tool_uses, draft
-        working = working + [_assistant_tool_turn(reply)]
-        for call in reply.tool_calls:
-            result_text = _run_builder_tool(call, tools_impl)
-            tool_uses.append(_tool_use_record(call, result_text))
-            if call.name == "test_body" and (call.arguments or {}).get("body"):
-                draft = str(call.arguments["body"])
-            working = working + [{"role": "tool", "tool_call_id": call.id, "content": result_text}]
-    return (reply.content or "") if reply is not None else "", tool_uses, draft
 
 # --- the bounded repair loop (D75) ---
 
@@ -3525,12 +3381,6 @@ def _failing_calls(gates: list[GateResult], shown: list[ToolCall]) -> list[ToolC
     return [c for c in shown if any(args_text(c) in f for f in named)]
 
 
-def _held_out_only(gates: list[GateResult]) -> bool:
-    """True when the held-out replay is the only gate that failed, so no shown call can be shown."""
-    failed = [g for g in gates if not g.passed]
-    return bool(failed) and all(g.metrics.get("split") == "held_out" for g in failed)
-
-
 def _constant_evidence_note(evidence: Iterable[ToolCall]) -> str:
     """Said once, when the calls just shown already share one answer among themselves.
 
@@ -3575,51 +3425,10 @@ def _failure_text(gates: list[GateResult], held_out: Iterable[ToolCall] = ()) ->
     return "\n".join(lines)
 
 
-_WITHHELD_COUNT = re.compile(r"\d+ more on calls you were not shown")
-PROBE_HELD_OUT = "held-out shapes failed"
 
 
-def _probe_failure_text(gates: list[GateResult], held_out: Iterable[ToolCall] = ()) -> str:
-    """What test_body reports: the same gates, with a moving withheld count collapsed to one sentence.
-
-    The submit path still names how many hidden calls failed, because the body is then locked.
-    A probe can be called every round, and a changing N would be an oracle on the hidden values.
-    """
-    return _WITHHELD_COUNT.sub(PROBE_HELD_OUT, _failure_text(gates, held_out))
 
 
-_RAISED = re.compile(r"\braised ([A-Za-z_][A-Za-z0-9_.]*): (.+)")
-
-
-def exception_in(failure: str) -> str:
-    """The exception a gate's failure line quotes, as `ExceptionClass: message`; "" when it quotes none.
-
-    The executes gate writes `<tool>(<args>) raised <class>: <message>` (gates/tool_runs.py), so the
-    class and the message are what is left when the call in front of them is dropped. Two attempts
-    that crashed the same way then compare equal whatever calls their failures named.
-    """
-    match = _RAISED.search(failure)
-    return f"{match.group(1)}: {match.group(2).strip()}" if match else ""
-
-
-def exception_line(gates: Iterable[GateResult]) -> str:
-    """The first exception the failing gates report; "" when none of them reports one."""
-    for gate in gates:
-        if gate.passed:
-            continue
-        for failure in gate.failures:
-            found = exception_in(failure)
-            if found:
-                return found
-    return ""
-
-
-# Said only when the attempt that just ran raised what the attempt before it raised. One live build
-# spent all four attempts at one write tool on the same AttributeError at the same call: the retry
-# showed the crash each time and the model rewrote around it each time, because nothing said the
-# error had not moved. This goes in the new user turn, never in the cached prefix (D65).
-_SAME_ERROR = ("\nThe same error as the attempt before, at the same call. The body must change "
-               "where it raised: {error}")
 
 _UNDEFINED_NAME = re.compile(r"NameError: name '(\w+)' is not defined")
 
@@ -3652,9 +3461,6 @@ def _import_hints(gates: list[GateResult]) -> list[str]:
     return out
 
 
-RAISED_KINDS = ("KeyError", "AttributeError")
-RAISED_SAMPLES = 3
-RAISED_LINES = 2
 _TABLE_READ = re.compile(r"self\.db\.([A-Za-z_][A-Za-z0-9_]*)")
 
 
@@ -3672,68 +3478,6 @@ def table_read(line: str) -> str:
     """The world table a crashing source line reads, from `self.db.<table>`; "" when it reads none."""
     found = _TABLE_READ.findall(line or "")
     return found[0] if found else ""
-
-
-def missing_key(result: dict) -> str:
-    """The key a KeyError names, without its quotes; "" for any other exception."""
-    if result.get("error") != "KeyError":
-        return ""
-    message = (result.get("message") or "").strip()
-    quoted = len(message) > 1 and message[0] == message[-1] and message[0] in "'\""
-    return message[1:-1] if quoted else message
-
-
-def table_note(state: dict, table: str, key: str) -> str:
-    """What the world says about the table the body was reading, and about the key it asked for."""
-    rows = state.get(table) if isinstance(state, dict) else None
-    if not isinstance(rows, dict):
-        return f"the world holds no table `{table}`"
-    ids = sorted(str(k) for k in rows)
-    note = f"`{table}` holds {len(ids)} rows"
-    if key:
-        note += f" and not `{key}`" if key not in rows else f", `{key}` among them"
-    if ids:
-        shapes = ", ".join(dict.fromkeys(value_shape(i) for i in ids[:RAISED_SAMPLES]))
-        note += f"; its ids look like {shapes}"
-    return note
-
-
-def raised_detail(sandbox: Sandbox, calls: Iterable[ToolCall], limit: int = RAISED_LINES) -> str:
-    """What the world says about a KeyError or an AttributeError the body raised, a line per crash.
-
-    A body that reads a row nobody holds is told `KeyError: 'x'` and nothing else, so the next
-    attempt guesses: it wraps the read in a try, or reaches for another table, or invents a
-    fallback answer. The sandbox knows more than it was saying. The crashing source line names the
-    table the body was reading (`self.db.<table>`), and the world in front of it says how many rows
-    that table holds, whether the key asked for is one of them, and what the ids it does hold look
-    like. That is the difference between "your read raised" and "you read the wrong table".
-
-    Only the calls given here are named, so the caller passes the shown split and the held-out
-    calls stay out of it (D51, D75). The sandbox memo makes this free: these calls have already run
-    for the gate that failed.
-    """
-    calls = list(calls)
-    try:
-        results = sandbox.run(calls)
-    except SandboxError:
-        return ""
-    lines: list[str] = []
-    seen: set[tuple[str, str]] = set()
-    for call, result in zip(calls, results, strict=False):
-        if result.get("ok") or result.get("error") not in RAISED_KINDS:
-            continue
-        line = (result.get("line") or "").strip()
-        table = table_read(line)
-        key = (table, result.get("error") or "")
-        if not table or key in seen:
-            continue
-        seen.add(key)
-        note = table_note(sandbox.state_for(call), table, missing_key(result))
-        lines.append(f"- `{call.name}({args_text(call)})` raised {result['error']} at `{line}`: "
-                     f"{note}; read the arguments that call was given, not another table.")
-        if len(lines) >= limit:
-            break
-    return "\n".join(lines)
 
 
 def _evidence_for(attempt: int, shown: list[ToolCall], gates: list[GateResult]) -> list[ToolCall]:
@@ -3917,13 +3661,6 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
                                         build.gates, unbeaten=unbeaten, blocked=blocked, rules=rules,
                                         readers=readers)
     return build
-
-
-def _evidence_label(attempt: int, gates: list[GateResult]) -> str:
-    """The node's own name for its evidence, honest about the held-out case."""
-    if attempt and _held_out_only(gates):
-        return HELD_OUT_LABEL
-    return EVIDENCE_LABELS[min(attempt, len(EVIDENCE_LABELS) - 1)]
 
 
 def call_starting_states(db: dict, overlays: Iterable[TaskOverlay], values: dict,
@@ -4118,21 +3855,6 @@ def recorded_digest(call: ToolCall) -> str:
     return content_hash(canon(parse_result(call.result)))
 
 
-HARDCODED_MARK = "# hardcoded: this body answered every recorded call alike; read what it is given"
-HARDCODED_LESSON = ("the body kept answered every recorded call the same way whatever arguments and "
-                    "whatever world it was given, while the recordings answered them differently; the "
-                    "next body has to answer out of its arguments and the rows in front of it")
-
-
-def mark_hardcoded(body: str) -> str:
-    """The body as it is kept, with one comment line saying what is wrong with it.
-
-    bodies.json holds source, and source is what the next reader of it sees: the Builder asking for
-    the body back, the module the Runner loads, a person opening the file. A comment says it in all
-    three without changing what the body does, which a kept body must not do.
-    """
-    body = body or ""
-    return body if body.lstrip().startswith(HARDCODED_MARK) else f"{HARDCODED_MARK}\n{body.lstrip()}"
 
 
 def hardcoded_body(calls: Iterable[ToolCall], rows: Iterable[dict]) -> bool:
