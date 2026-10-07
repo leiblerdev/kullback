@@ -60,7 +60,7 @@ class Ruling(Record):
     # The verify rows the ruling cites (constructed Runs and the Reference through the Verifier).
     verified: list[dict] = Field(default_factory=list)
     status: Literal["open", "closed"] = "open"
-    # {action: applied | rebutted, why, round, changed: [check ids]}
+    # {action: applied | rebutted, why, round, changed: [check ids], writer: the repair's counts}
     answer: Optional[dict] = None
     # {round, why}
     closed: Optional[dict] = None
@@ -139,13 +139,15 @@ def unanswered(rulings: Iterable[Ruling]) -> list[Ruling]:
 
 
 def answer(workdir: Any, task_id: str, number: int, action: str, why: str, round_number: int,
-           changed: Iterable[str] = ()) -> Ruling:
-    """The writer's answer on one ruling: applied (with the checks it changed) or rebutted, with why."""
+           changed: Iterable[str] = (), writer: Optional[dict] = None) -> Ruling:
+    """The writer's answer on one ruling: applied (with the checks it changed) or rebutted, with why, and
+    the writer's counts (what code refused, a parse error) so an empty rebuttal can be told apart."""
     if action not in ANSWER_ACTIONS:
         raise ValueError(f"an answer is one of {', '.join(ANSWER_ACTIONS)}")
     ruling = Ruling.model_validate(read_json(ruling_path(workdir, task_id, number)))
     ruling = ruling.model_copy(update={"answer": {"action": action, "why": " ".join(str(why or "").split()),
-                                                  "round": int(round_number), "changed": list(changed)}})
+                                                  "round": int(round_number), "changed": list(changed),
+                                                  "writer": dict(writer or {})}})
     save_ruling(workdir, ruling)
     return ruling
 

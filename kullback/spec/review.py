@@ -106,7 +106,8 @@ def answer_rulings(workdir: Any, task_id: str, model: Any, round_number: int, *,
             action, why = "applied", counts.get("rebut") or ruling.fix
         else:
             action, why = "rebutted", counts.get("rebut") or REBUT_NONE
-        R.answer(root, task_id, ruling.number, action, why, round_number, changed)
+        kept = {k: v for k, v in counts.items() if k != "rebut" and v}
+        R.answer(root, task_id, ruling.number, action, why, round_number, changed, writer=kept)
         events.ruling_answered(bus, task_id, ruling.number, action, changed)
         out["answered"] += 1
         out[action] += 1

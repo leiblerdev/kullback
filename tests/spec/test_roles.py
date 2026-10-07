@@ -137,10 +137,21 @@ def test_an_applied_ruling_rewrites_both_verifier_copies_and_a_rebutted_one_keep
     assert out == {"task_id": "t1", "answered": 2, "applied": 1, "rebutted": 1, "skipped": 0}
     first, second = RL.load_rulings(root, "t1")
     assert first.answer["action"] == "applied" and first.answer["changed"] == ["c2"]
-    assert second.answer == {"action": "rebutted", "why": "The user named slot seven.", "round": 2, "changed": []}
+    assert second.answer == {"action": "rebutted", "why": "The user named slot seven.", "round": 2, "changed": [],
+                             "writer": {}}
     assert [c.id for c in load_spec(root, "t1").checks] == ["c1"]
     assert _both_copies(root).atoms != before.atoms
     assert load_spec(root, "t1").rulings_open == 2  # answered is not closed: the Examiner closes
+
+
+def test_an_empty_rebuttal_keeps_what_code_refused_so_it_reads_apart_from_a_reasoned_one(tmp_path):
+    root = _told(tmp_path)
+    _ruling(root, 1)
+    model = TestModel([ModelReply(content=json.dumps({"checks": [{"id": "c1", "action": "add"}], "rebut": ""}))])
+    RV.answer_rulings(root, "t1", model, 2)
+    [ruling] = RL.load_rulings(root, "t1")
+    assert ruling.answer["action"] == "rebutted" and ruling.answer["why"] == RV.REBUT_NONE
+    assert ruling.answer["writer"] == {"refused": 1}
 
 
 def test_a_ruling_that_the_reference_is_wrong_asks_nothing_of_the_writer(tmp_path):
