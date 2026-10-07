@@ -30,7 +30,7 @@ from gates.verifier_fixtures import (
 )
 from kullback.gates import trust as T
 from kullback.gates.probes import version_hash
-from kullback.round_snapshot import counts_of
+from kullback.round_snapshot import counts_of, task_row
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import (
     Column,
@@ -431,6 +431,9 @@ def test_a_workdir_with_specs_reports_the_spec_tier_through_the_workdir_ruling(t
     assert ruling.metrics["consistency_flags"] == {"a": 0, "b": 1, "c": 0, "d": 0}
     line = T.trust_row(T.tier_counts(ruling.metrics))
     assert "| replay_only 2 (not run 1) |" in line and line.endswith("| writer disagrees 1")
+    rows = [task_row(task, round_number=1, row={}, replays=None, trusted=ruling, bodies=None, buckets=None)
+            for task in "abcd"]
+    assert T.trust_row(counts_of(rows)) == line, "a round snapshot shows the same row"
 
 
 def test_the_status_table_shows_trusted_unconfirmed_refused_and_the_legacy_count_on_one_row():

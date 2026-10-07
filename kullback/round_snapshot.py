@@ -152,6 +152,9 @@ def task_row(task_id: str, *, round_number: int, row: Any, replays: Optional[dic
         "unsupported_cells": int((metrics.get("unsupported_cells") or {}).get(task_id) or 0),
         "legacy_trusted": task_id in set(metrics.get("legacy_trusted") or ()),
         "consistency_flags": int((metrics.get("consistency_flags") or {}).get(task_id) or 0),
+        # D327: replay_only with no fresh Run on disk, and the writer's disagreement flags (never gating).
+        "not_run": task_id in set(metrics.get("not_run") or ()),
+        "writer_disagrees": int((metrics.get("writer_disagrees") or {}).get(task_id) or 0),
         "refused": task_id in refused,
         "refused_reason": str(refused.get(task_id) or ""),
         "difficulty": str((buckets or {}).get(task_id) or ""),
@@ -190,7 +193,11 @@ def counts_of(rows: Iterable[dict]) -> dict:
                                              * int(row.get("false_rejection_pool") or 0)) for row in rows),
             "held_out": sum(int(row.get("false_rejection_pool") or 0) for row in rows),
             # D322: Tasks a consistency check flags, counted and never gating.
-            "consistency_flags": sum(1 for row in rows if row.get("consistency_flags"))}
+            "consistency_flags": sum(1 for row in rows if row.get("consistency_flags")),
+            # D327: replay_only split by not run, and Tasks the writer's disagreement flags.
+            "replay_only": sum(1 for row in rows if row.get("trust_tier") == "replay_only"),
+            "not_run": sum(1 for row in rows if row.get("not_run")),
+            "writer_disagrees": sum(1 for row in rows if row.get("writer_disagrees"))}
 
 
 def buckets_by_task(body: Optional[dict]) -> dict[str, str]:
