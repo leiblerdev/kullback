@@ -275,7 +275,6 @@ def apply_review(workdir: Any, task_id: str, edits: Iterable[dict], *, ceiling: 
     spec = with_gaps(spec, inputs).model_copy(update={"version": spec.version + 1, "round": spec.round + 1})
     write_verifier(spec, root, inputs)
     spec = load_spec(root, task_id)
-    apply_end_state_edits(root, spec)
     row = gate_row(root, spec)
     passed = gates_pass(row)
     if not passed and spec.round >= ceiling:

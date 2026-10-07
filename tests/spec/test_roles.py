@@ -158,7 +158,7 @@ def test_an_atom_drop_naming_a_check_id_is_refused_with_the_atom_ids_and_more_th
     assert load_spec(root, "t1").atom_edits == [] and [a.id for a in _both_copies(root).atoms] == ["i0"]
 
 
-def test_cell_drop_and_allow_rewrite_both_verifier_copies_and_move_the_gate_row(tmp_path):
+def test_cell_drop_and_allow_rewrite_both_verifier_copies_move_the_gate_row_and_outlive_a_rewrite(tmp_path):
     root = _told(tmp_path)
     undone = lambda: [r for r in RV.gate_row(root, load_spec(root, "t1"))["can_fail"]["rows"]  # noqa: E731
                       if r["stage"] == "verifier_undone_cell"]
@@ -174,6 +174,8 @@ def test_cell_drop_and_allow_rewrite_both_verifier_copies_and_move_the_gate_row(
     assert _both_copies(root).verifier_version == "spec1.e2" and len(undone()) == 1
     RV.apply_review(root, "t1", [])
     assert [c.field for c in _both_copies(root).expected[0].cells] == ["slot"], "a later round keeps the edits"
+    W.write_verifier(load_spec(root, "t1"), root)
+    assert [c.field for c in _both_copies(root).expected[0].cells] == ["slot"], "a router rewrite keeps them"
 
 
 def test_conduct_add_and_remove_rewrite_the_verifier_and_a_remove_of_a_missing_rule_is_refused(tmp_path):

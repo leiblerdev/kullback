@@ -497,8 +497,10 @@ def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = N
     """Saves the Spec and its whole Verifier, the gates derived by code from the Task's Reference.
 
     The Spec is the one writer of a Task's Verifier (D320): the Runner's file and the Spec's copy are
-    the same bytes. The end-state counts ride on the saved Spec as `end_state`.
+    the same bytes. The end-state counts ride on the saved Spec as `end_state`. The review's kept cell
+    and conduct edits (D325) are applied after, so a router repair does not drop them.
     """
+    from kullback.spec.review import apply_end_state_edits  # review imports this module
     inputs = inputs or load_inputs(workdir, spec.task_id, spec.intent)
     gates = gates if gates is not None else gates_of(workdir, spec, inputs.policy_text, inputs.canon,
                                                     write_tools=inputs.write_tools)
@@ -510,6 +512,7 @@ def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = N
     for path in paths[1:]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+    apply_end_state_edits(workdir, spec)
     return paths
 
 
