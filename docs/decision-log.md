@@ -2360,3 +2360,26 @@ fires on 19 right and 0 wrong. Limit: it flags 1 of the 6 wrong-trusted retail T
 writer demanded what the Reference did; gating on it would hold back 5 right retail References with 22 wrong.
 Status: built 2026-10-07 on fix-1007/trust.
 Folded 2026-10-07 on fix-1007/fold
+
+### D328. The Spec writer is blind to the Reference: items from the Intent, the policy and the world (2026-10-07)
+
+What changed: the writer writes typed items (`spec/items.py`): state (`row_is`, `row_new`, `row_keeps`), event
+(`called`, `not_called`, `before`), text (`said`) and judge (`{question, anchor, evidence}`), each with gate, weight
+and provenance (fact_ids or a verbatim policy_line). It searches the world with tools (`read_schema`, `find_rows`,
+`read_row`, `read_policy`) and adds items with `add_items`, which refuses a value no world row, policy line or user
+turn holds, a find matching no row or several, a field the table lacks, and says why ("find, do not invent").
+A judge anchor cites the one row it was read from and its answer states that row's fields; only an anchor quoting
+the item's policy line goes without a row. Code adds the sanity item (`nothing_else`) to every Task: no row outside
+the declared rows changes. Items with `alt` make several end states, any one may match. `runner/items.py` scores
+each item on a Run (None for judge items). Contradicting items go back once; any left set the Task aside.
+Retired: the Reference path of the Spec package. D320's Reference-derived `write_verifier` and `refresh_gates`;
+D315's `expected_from_run` as the Verifier source (it stays for fidelity measurement); D323's Reference reading
+on the Verifier path; D324's unseen conduct (`reference_tools`) and the demand send-back. `gates_of` takes no
+Reference; `reference_run` moved to `spec/witness.py` for the witness flag. A source test fails if `kullback/spec`
+imports `kullback.runner.expected` or the writer path reads references.json. A refusal is the sanity item plus a
+judge item, with no refusal kind. Older demand Specs still compile, Reference-free.
+Why: COMMON shape-1007: Verifier items come from the Intent, the policy and the world, never from the Reference
+Run, so a wrong Reference can no longer write its own Verifier.
+Limit: D327's `writer_disagreement` reads write demands, which item Specs no longer carry; it reads nothing on
+them until sh-trust compares items with the Reference.
+Status: built 2026-10-07 on shape-1007/writer.

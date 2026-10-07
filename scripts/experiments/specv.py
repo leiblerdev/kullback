@@ -86,7 +86,7 @@ def write(args) -> int:
                "recordings": _score(clone, row["task_id"], compiled.verifier)}
         (args.out_dir / f"{row['task_id']}.json").write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"task": row["task_id"], "kept": written.counts["kept"],
-                          "error": written.counts["parse_error"] or None,
+                          "error": written.counts.get("unfinished") or None,
                           "usd": out["usd"], "spent": round(spent, 4)}), flush=True)
     print(json.dumps({"spent_usd": round(spent, 4)}))
     return 0
@@ -144,7 +144,7 @@ def table(args) -> int:
             if isinstance(value, int):
                 counts[key] = counts.get(key, 0) + value
         counts["compile_dropped"] = counts.get("compile_dropped", 0) + row["compile_dropped"]
-        counts["silent"] = counts.get("silent", 0) + bool(row["counts"]["parse_error"])
+        counts["silent"] = counts.get("silent", 0) + bool(row["counts"].get("unfinished"))
     body = {"table": out, "right_failure_sources": sources, "counts": counts,
             "usd": round(sum(row["usd"] for row in rows), 4), "tasks": len(rows)}
     args.out.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
