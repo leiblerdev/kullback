@@ -93,6 +93,14 @@ def _keys(value: Any) -> Iterable[str]:
             yield from _keys(item)
 
 
+NUMBER_RE = re.compile(r"\d+(?:,\d{3})*(?:\.\d+)?")
+
+
+def _numbers(text: str) -> set[float]:
+    """The numbers a text states, thousands separators dropped."""
+    return {float(match.replace(",", "")) for match in NUMBER_RE.findall(text or "")}
+
+
 def path_value(row: Any, field: str) -> Any:
     node = row
     for part in str(field).split("."):
@@ -487,6 +495,18 @@ class World:
                               f"({json.dumps(values[str(field)])}); read the row again or cite the right one")
         return {"table": kept["table"], "find": kept["find"], "key": kept["row"], "fields": values}, ""
 
+    def _computed(self, answer: str, cited: Optional[dict]) -> str:
+        """Why an anchor answer is refused: it states a number that is no value of the cited row and is
+        not in the policy, so the writer computed it. The answer is looked up, never worked out."""
+        row = self.row(cited["table"], cited["key"]) or {} if cited else {}
+        found = {n for leaf in _leaves(row) for n in _numbers(str(leaf))} | _numbers(self.policy)
+        found |= _numbers(str(cited["key"])) if cited else set()
+        made = sorted(_numbers(answer) - found)
+        if made:
+            return (f"anchor.answer states {', '.join(f'{n:g}' for n in made)}, which is no value of the cited row "
+                    "and not in the policy; state the row's own value or a policy line, never a computed one")
+        return ""
+
     def _judge(self, item: dict, kept: dict) -> str:
         question = str(item.get("question") or "").strip()
         anchor = item.get("anchor")
@@ -502,6 +522,9 @@ class World:
         cited, why = self._anchor_row(anchor, answer)
         policy = item.get("policy_line") and _flat(item["policy_line"]) in _flat(answer)
         if why and not (policy and anchor.get("row") is None):
+            return why
+        why = self._computed(answer, cited)
+        if why:
             return why
         if cited is None:
             kept["gate"] = True  # a refusal is the item that decides: a silent Run must fail it (D330)
@@ -655,6 +678,8 @@ def counts_of(items: list[dict]) -> dict:
             "scored": sum(1 for item in items if not item.get("gate")),
             "fact_backed": sum(1 for item in items if item.get("fact_ids")),
             "free_fields": sum(len(item.get("free") or {}) for item in items),
+            "anchors_without_lookup": sum(1 for item in items if item.get("kind") == "judge"
+                                          and not (item.get("anchor") or {}).get("row")),
             "policy_backed": sum(1 for item in items if item.get("policy_line"))}
 
 

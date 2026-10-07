@@ -312,3 +312,15 @@ def test_a_stored_intent_is_marked_echo_from_its_own_turns():
         UserTurn(index=1, text="Please move item A1 to slot seven.", agent_before="Hello."),
         UserTurn(index=3, text="Sure.", agent_before="Shall I leave a note?")]})
     assert [fact.echo for fact in mark_echo(FACTS, found)] == [False, True]
+
+
+def test_an_anchor_answer_is_looked_up_never_computed():
+    """A number the cited row and the policy do not hold is the writer's arithmetic: refused."""
+    judge = {"id": "j1", "kind": "judge", "question": "Did the agent give both slots?", "fact_ids": ["f1"],
+             "anchor": {"answer": "B2 is in slot four, 6 slots in all", "row": {
+                 "table": "items", "find": {"item_id": "B2"}, "fields": ["slot"]}}}
+    kept, why = keep(judge)
+    assert kept is None and "states 6" in why and "computed" in why
+    assert keep(dict(judge, anchor=dict(judge["anchor"], answer="B2 is in slot four")))[1] == ""
+    counted = I.counts_of([{"kind": "judge", "anchor": {"row": None}}, {"kind": "judge", "anchor": {"row": {"t": 1}}}])
+    assert counted["anchors_without_lookup"] == 1
