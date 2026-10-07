@@ -363,6 +363,13 @@ class Constraint(Record):
     residual_reason: Optional[str] = None
 
 
+# Whole sentences the recorded user said, kept verbatim: the goal it opened with, the confirmations
+# a write needs, the choices it stated and the line it closed on (D44). They live beside the record
+# so the world can fold a user's facts into an instruction without importing the user (D328).
+GOAL, CONFIRMATION, CHOICE, CLOSING = "goal", "confirmation", "choice", "closing"
+SPOKEN_FIELDS = (GOAL, CONFIRMATION, CHOICE, CLOSING)
+
+
 class UserFact(Record):
     """A fact the recorded user gave, exact (D44)."""
     field: str
@@ -470,6 +477,9 @@ class Task(Record):
     name: Optional[str] = None
     anchor_run_ids: list[str] = Field(default_factory=list)
     write_labels: dict[str, list[str]] = Field(default_factory=dict)
+    # The single-turn shape (D328): the user's facts are folded into the opening message and the
+    # Run has no Simulated user. Off by default, so every Task keeps its conversation.
+    facts_in_instruction: bool = False
 
 # --- intent ---
 

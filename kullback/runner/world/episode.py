@@ -107,7 +107,7 @@ class Episode:
         if self._state is not None and not self._state.stopped:
             raise EpisodeError("finish the current Run before resetting")
         task = self.env.task(task_id)
-        if self.env.agent_driven(task_id):
+        if not task.facts_in_instruction and self.env.agent_driven(task_id):
             raise EpisodeError(f"Task {task_id} is driven by the agent user, which needs a model "
                                "the interface does not have")
         overlay, overlay_rows = self.env.overlay(task_id)
@@ -126,7 +126,8 @@ class Episode:
         # its recordings, the write set the reference implies); without a factory, or where
         # the directory carries no rules, the Run has no Simulated user.
         simulated = self._user_factory(self.env, task, self._router, rules, reference) \
-            if rules is not None and self._user_factory is not None else None
+            if rules is not None and self._user_factory is not None and not task.facts_in_instruction \
+            else None
         run_id = f"{task_id}-{seed}"
         from kullback.runner.tool import runner_prompt  # tool imports the world package
 
@@ -139,11 +140,11 @@ class Episode:
             run_id, workdir=recording_dir, env_id=self.env.env_id, task_id=task_id,
             model="episode", seed=seed, user=simulated,
             user_rules=rules, max_turns=self.max_turns, system_prompt=system_prompt,
-            first_user=task.intent if simulated is None else None)
+            first_user=self.env.opening(task) if simulated is None else None)
         self._state.tools = copy.deepcopy(self._tools)
         opening = loop.open_with_user(self._state)
         if simulated is None:
-            opening = task.intent
+            opening = self.env.opening(task)
         self.task_id, self.run_id = task_id, run_id
         return Reset(run_id=run_id, seed=self._state.run.seed, system_prompt=system_prompt,
                      tools=copy.deepcopy(self._tools), opening=opening)
