@@ -41,7 +41,7 @@ def conduct_of(spec: Spec) -> list[Conduct]:
             out.append(Conduct(kind="confirm_before_write", tool=check.demand["confirm_tool"],
                                source=_fact_source(check, spec)))
         elif demand == "handoff" and check.demand.get("tool"):
-            out.append(Conduct(kind="handoff", tool=check.demand["tool"], source=_fact_source(check, spec)))
+            out.append(Conduct(kind="called", tool=check.demand["tool"], source=_fact_source(check, spec)))
     return out
 
 

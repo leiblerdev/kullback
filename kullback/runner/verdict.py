@@ -354,7 +354,7 @@ def _forbidden_happened(rule: Forbidden, context: AtomContext, moved: dict) -> O
 def _conduct_holds(rule: Conduct, context: AtomContext) -> Optional[bool]:
     if rule.kind == "confirm_before_write":
         return None if rule.tool is None else context.confirmed_before_first_write(rule.tool)
-    if rule.kind == "handoff":
+    if rule.kind == "called":
         return None if rule.tool is None else context.called(rule.tool)
     message = (rule.source.ptr or {}).get("message")
     if not message:

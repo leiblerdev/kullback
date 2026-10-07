@@ -4,7 +4,7 @@ as forbidden writes, confirmations and hand-offs as conduct."""
 from __future__ import annotations
 
 from kullback.runner.atom_context import AtomContext
-from kullback.runner.records import Run, Verifier
+from kullback.runner.records import Conduct, Run, Verifier
 from kullback.runner.verdict import _gates as verdict_gates
 from kullback.spec.end_state import gates_of
 from tests.spec.fixtures import check, fn, reference_run, spec
@@ -43,5 +43,10 @@ def test_a_no_write_fails_a_deleting_run_and_the_empty_run_passes_it():
 
 def test_a_handoff_and_a_confirmation_become_conduct_whatever_any_reference_called():
     gates = _gates({"demand": "handoff", "tool": "call_person"}, {"demand": "ask", "confirm_tool": "delete_item"})
-    assert [(rule.kind, rule.tool) for rule in gates.conduct] == [("handoff", "call_person"),
+    assert [(rule.kind, rule.tool) for rule in gates.conduct] == [("called", "call_person"),
                                                                   ("confirm_before_write", "delete_item")]
+
+
+def test_a_stored_handoff_conduct_rule_reads_as_called():
+    rule = Conduct.model_validate({"kind": "handoff", "tool": "call_person", "source": {"kind": "policy"}})
+    assert rule.kind == "called"

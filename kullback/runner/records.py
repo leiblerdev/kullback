@@ -11,7 +11,7 @@ import stat
 from pathlib import Path
 from typing import Any, Iterable, Literal, Optional, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from kullback.ai.usage import Usage
 
@@ -677,10 +677,18 @@ class Forbidden(Item):
 
 
 class Conduct(Item):
-    """Conduct the event log must show: a confirmation before a write, a refusal, a hand-off (D316)."""
-    kind: Literal["confirm_before_write", "refusal", "handoff"]
+    """Conduct the event log must show: a confirmation before a write, a refusal, a call made (D316).
+
+    `called` was `handoff` until the fold (D330); a stored rule of that kind reads as `called`.
+    """
+    kind: Literal["confirm_before_write", "refusal", "called"]
     tool: Optional[str] = None
     source: ValueSource
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _handoff_is_called(cls, kind: Any) -> Any:
+        return "called" if kind == "handoff" else kind
 
 
 class Verifier(Record):
