@@ -52,7 +52,7 @@ WORLD_PROVENANCE_FILE = "world_provenance.json"
 PROBES_DIR = "probes"
 MAX_TURNS = 30
 # One general line after the Task's instructions, for the Runner's Candidate only (D326): Candidates
-# ended with part of the user's requests undone on 173 retail Runs. The Spec writer reads the same
+# ended with part of the user's requests undone on 173 Runs of one build. The Spec writer reads the same
 # instructions as policy text, so the line is added here and not where the instructions are loaded.
 STOP_SHORT_LINE = ("Before you end the conversation, list every item the user asked for and say for each "
                    "whether it was done or why not.")

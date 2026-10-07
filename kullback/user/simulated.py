@@ -298,7 +298,7 @@ class SimulatedUser:
         sources[CLOSING] = "rules" if closing is not None else "generic_close"
         if TRANSFER_MARKER in line:
             # The token ends the Run on the turn it is said, so the agent never makes the hand-off
-            # call it just promised (6 airline Runs). Agree now, send the token on the next turn.
+            # call it just promised (6 Runs of one build). Agree now, send the token on the next turn.
             spoken.append(line.replace(TRANSFER_MARKER, "").strip() or TRANSFER_ACCEPT)
             self._transfer_end = (kind, line)
             return

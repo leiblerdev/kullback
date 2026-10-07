@@ -261,7 +261,7 @@ def write_tools_of(workdir: Any) -> list[str]:
 def vocabulary_of(workdir: Any):
     """This build's Vocabulary, else one built from the mined signatures' id arguments (D326).
 
-    The generic core alone cannot hear an ask for any id, which left 260 airline Runs restating the
+    The generic core alone cannot hear an ask for any id, which left 260 exam Runs of one build restating the
     goal to an agent asking for one; with no signatures either, the generic core is what is left.
     """
     from kullback.user.vocabulary import Vocabulary, from_signatures

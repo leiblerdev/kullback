@@ -2256,6 +2256,7 @@ change was the hand-off, which is now conduct and gates only where the Spec dema
 `tool_result` because `ValueSource.kind` has no `world`; a yes affirms every value of the turn before it; a short value
 is still found by plain containment. The wrong-trust bound must be re-measured before this ships.
 Status: built 2026-10-07 on fix-1007/cells.
+Folded 2026-10-07 on fix-1007/fold
 
 ### D324. Refusals and no-writes are forbidden writes, say lists values, conduct must be in the Reference (2026-10-07)
 
@@ -2283,6 +2284,7 @@ Limit: the empty Run still passes a Verifier whose expected diff is empty and wh
 (`gates/trust.py _empty_run_passes`, the return at line 412), since it writes nothing; such a Task is judged by its
 forbidden list on the wrong Run instead, which that function does not yet say. A tool signature with no argument
 list is read as unknown and never refuses a value. Status: built 2026-10-07 on fix-1007/demands.
+Folded 2026-10-07 on fix-1007/fold
 
 ### D325. Examiner edits reach what gates: atom ids that exist, end-state and conduct edits, no silent no-finding (2026-10-07)
 
@@ -2311,6 +2313,7 @@ tool's own field description (examiner/domain_tools.py) still lists the three ol
 Rejected: an examiner kind on ValueSource, a records change for one pointer; promoting the proposed Run by code, which would
 let the Examiner pick the Reference it is then judged against.
 Status: built 2026-10-07 on fix-1007/examiner.
+Folded 2026-10-07 on fix-1007/fold
 
 ### D326. The rule user hears id asks, confirms only a pending write, and ends only when the job is done (2026-10-07)
 
@@ -2339,6 +2342,7 @@ entity, so the same row written twice satisfies a count of two. "Pending write" 
 turn naming the write. No Run was made to measure the change.
 
 Status: built 2026-10-07 on fix-1007/user.
+Folded 2026-10-07 on fix-1007/fold
 
 ### D327. Not run apart from failed; the writer's disagreement with the Reference as a flag (2026-10-07)
 
@@ -2355,3 +2359,4 @@ half has precision 0.82 and recall 0.45 for a wrong retail Reference (22 of 27 f
 fires on 19 right and 0 wrong. Limit: it flags 1 of the 6 wrong-trusted retail Tasks, since on the other 5 the
 writer demanded what the Reference did; gating on it would hold back 5 right retail References with 22 wrong.
 Status: built 2026-10-07 on fix-1007/trust.
+Folded 2026-10-07 on fix-1007/fold
