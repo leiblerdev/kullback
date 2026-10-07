@@ -23,8 +23,9 @@ WHAT = ("You are a customer of a company, in the middle of a support conversatio
         "you were asked and you say what you want.")
 
 TOOLS = ("Tools, one example call each.\n"
-         "my_facts(asked=[\"postal_code\"]): what you know about yourself for the fields you were "
-         "asked for. my_facts() with nothing is everything you hold.\n"
+         "my_facts(question=\"what is your postal code?\"): look up what you know about yourself "
+         "that answers the question you were asked, passed in its own words. my_facts() with "
+         "nothing is everything you hold.\n"
          "my_goal(): why you got in touch, in the words you used.\n"
          "what_i_said(): your own earlier turns, in order, so you do not contradict one.\n"
          "my_choices(kind=\"appointment time\"): what you chose, or would choose, when offered "

@@ -315,10 +315,10 @@ def test_the_agent_drives_a_task_only_where_it_beats_the_rules():
 
 # --- what the table says ------------------------------------------------------------------------
 
-def test_a_facts_tool_answers_only_what_was_asked(ctx):
+def test_a_facts_tool_answers_only_what_the_question_asks(ctx):
     box = Toolbox(ctx)
-    assert "PLOT-4471" in box.facts(["plot_id"])
-    assert "16:00" not in box.facts(["plot_id"])
+    assert "PLOT-4471" in box.facts("Which plot id is it?")
+    assert "16:00" not in box.facts("Which plot id is it?")
 
 
 def test_the_user_never_holds_a_tool_that_reads_the_world(ctx):

@@ -17,6 +17,7 @@ from kullback.user.ends import (
     write_took_effect,
     writes_made,
 )
+from kullback.user.lookup import FactStore, Found, asked_in
 from kullback.user.rules import (
     ASKABLE,
     CHOICE,
@@ -47,14 +48,11 @@ from kullback.user.rules import (
     _names_change,
     _norm,
     _request_sentences,
-    _said_in,
     _shared,
     _tokens,
     _words,
-    asked_fields,
     extracted_values,
     fact_class,
-    named_fields,
 )
 from kullback.user.vocabulary import GENERIC, Vocabulary
 
@@ -80,6 +78,10 @@ class SimulatedUser:
         self.reader = starting_state_reader
         self.model = model
         self.vocab = vocab
+        # The facts this user can be asked for, by field name and alias, and every lookup this Run
+        # made, so a report counts the asks answered and the asks the store held nothing for (D328).
+        self.store = FactStore.from_rules(rules, vocab)
+        self.lookups: list[Found] = []
         # The tools that change the world (`ToolSig.kind`), so this user can tell a Run that has
         # done what it came for from one that has not. The transcript `reply` is handed already
         # carries the calls and their results, so nothing new has to be plumbed to the user; the
@@ -211,25 +213,20 @@ class SimulatedUser:
         return text
 
     def _asked(self, question: str) -> list[str]:
-        """The fields this question asks for: the vocabulary's cues, plus the facts the recording
-        holds that the question names in words no cue carries.
+        """The fields this question asks for, through the one lookup both users share (D328).
 
-        A field the question states itself is not an ask for it. An agent that lists the action it
-        is about to take and asks "do you confirm" names the order it is confirming, and answering
-        with that order id instead of confirming is what build 8's Simulated user did.
+        Only the turn's request sentences are looked up, so a turn that reports what was done and
+        asks nothing asks for no fact. A field whose value the turn states is not asked for: an
+        agent that lists the action it is about to take and asks "do you confirm" names the order
+        it is confirming, and answering with that order id instead of confirming is what build 8's
+        Simulated user did.
         """
-        stated = {field for field, _ in extracted_values(question, vocab=self.vocab)}
-        stated |= {fact.field for fact in self.rules.facts
-                   if fact.value is not None and _said_in(question, str(fact.value))}
-        fields = [field for field in asked_fields(question, vocab=self.vocab) if field not in stated]
-        # A confirm cue does not hide a held fact the turn names and does not state: "please confirm
-        # your user id" asks for it (D326), where "confirm cancelling order X" states it.
-        held: list[str] = []
-        for fact in self.rules.facts:
-            if fact.field not in SPOKEN_FIELDS and fact.field not in stated and fact.field not in held:
-                held.append(fact.field)
-        return fields + [field for field in named_fields(question, held, vocab=self.vocab)
-                         if field not in fields]
+        asked = asked_in(question)
+        if not asked:
+            return []
+        found = self.store.lookup(asked)
+        self.lookups.append(found)
+        return found.fields()
 
     def _open(self, answers: dict, sources: dict, spoken: list) -> None:
         """The opening reply: the goal the recorded user stated, then what it volunteered (D44)."""

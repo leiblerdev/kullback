@@ -37,6 +37,7 @@ from kullback.user import rules as rules_mod
 from kullback.user.account import ACCOUNT, AccountView, ChoiceBook
 from kullback.user.context import TaskContext, volunteer_allowance
 from kullback.user.extension import user_extension
+from kullback.user.lookup import asked_in
 from kullback.user.tools import Toolbox
 from kullback.user.vocabulary import GENERIC, Vocabulary
 
@@ -90,7 +91,7 @@ class AgentUser:
             record_values=record_values, strip=answer_strip)
         self.protocol = guards_mod.EndProtocol(goal_writes, write_tools)
         self.write_tools = frozenset(write_tools or ())
-        self.box = Toolbox(ctx, choices=choices, account=account)
+        self.box = Toolbox(ctx, choices=choices, account=account, vocab=vocab)
         self.events: list[Event] = []
         self.done = False
         self.end_reason: Optional[str] = None
@@ -109,7 +110,8 @@ class AgentUser:
         self._turn += 1
         question = _last_assistant(transcript)
         self.box.requested = None
-        asked = rules_mod.asked_fields(question, vocab=self.vocab)
+        request = asked_in(question)  # the same lookup the rule user and my_facts answer from (D328)
+        asked = self.box.store.lookup(request).fields() if request else []
         made = self._model_turn(transcript)
         if made is None:
             return self._from_fallback(transcript)
