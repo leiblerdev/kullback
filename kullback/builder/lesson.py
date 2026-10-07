@@ -80,7 +80,6 @@ RELATION_LEAVES = 32
 # at one of these is a tie the fidelity number cannot break, because the fidelity ruling never ran.
 GATES_BEFORE_FIDELITY = ("parses", "confined", MEMORISED_STAGE, "executes_on_s0",
                          "deterministic", "non_trivial", SENSITIVITY_STAGE)
-FIDELITY_STAGE = "replay_fidelity"
 
 RELATION_KINDS = ("broadcast", "shared_value", "refusal_predicate", "arithmetic", "order")
 # Which construct a line is named as when two of them start on it, most telling first: the branch
@@ -739,14 +738,3 @@ def diagnose(tool: str, triples: Iterable[Triple], source: str = "", function: s
                      missing=missing_refusal(triples, source, function),
                      unbeaten=int(unbeaten or 0), blocked=blocked)
 
-
-def merge_counts(rows: Iterable[dict]) -> dict:
-    """The per-tool counts added up, which is what one round records (D211)."""
-    total = {"relations_found": {kind: 0 for kind in RELATION_KINDS},
-             "unwitnessed_lines": 0, "rewrites_forced": 0, "blocked_by_gate": 0}
-    for row in rows:
-        for kind, count in (row.get("relations_found") or {}).items():
-            total["relations_found"][kind] = total["relations_found"].get(kind, 0) + int(count)
-        for name in ("unwitnessed_lines", "rewrites_forced", "blocked_by_gate"):
-            total[name] += int(row.get(name) or 0)
-    return total
