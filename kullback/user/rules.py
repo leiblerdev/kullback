@@ -576,6 +576,17 @@ def goal_write_set(trace: Optional[Trace], writes: Iterable[str]) -> set[str]:
             if call.name in names and call.error is None}
 
 
+def goal_write_counts(trace: Optional[Trace], writes: Iterable[str]) -> dict[str, int]:
+    """How many times the Reference made each goal write, so a Run that cancelled one order of two
+    has not done the goal (D326). The same calls `goal_write_set` reads, counted rather than named."""
+    names = set(writes)
+    counts: dict[str, int] = {}
+    for call in trace.tool_calls if trace is not None else ():
+        if call.name in names and call.error is None:
+            counts[call.name] = counts.get(call.name, 0) + 1
+    return counts
+
+
 def _words(field: str) -> str:
     return field.replace("_", " ")
 
