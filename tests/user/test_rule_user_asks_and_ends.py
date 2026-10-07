@@ -22,11 +22,12 @@ from kullback.user.rules import (
     goal_write_counts,
 )
 from kullback.user.simulated import REPEAT_ASK, TRANSFER_ACCEPT, USER_REPEAT, SimulatedUser
-from kullback.user.vocabulary import GENERIC
+from kullback.user.vocabulary import GENERIC, _id_arg
 
 SIGS = [
     {"name": "find_passenger", "kind": "read", "args_fields": [{"name": "passenger_id"}]},
-    {"name": "rebook_voyage", "kind": "write", "args_schema": {"properties": {"voyage_id": {}, "deck": {}}}},
+    {"name": "rebook_voyage", "kind": "write",
+     "args_schema": {"properties": {"voyage_id": {}, "deck": {}, "paid": {}, "valid": {}, "cabinId": {}}}},
 ]
 GOAL_LINE = "I want to move my two crossings to a later day."
 
@@ -54,6 +55,8 @@ def test_a_workdir_without_a_vocabulary_hears_an_id_ask_through_its_tool_signatu
     assert asked_fields(question, vocab=GENERIC) == []
     assert asked_fields(question, vocab=vocab) == ["passenger_id", "voyage_id"]
     assert vocab.get("deck") is None and vocab.get("email") is not None
+    assert vocab.get("paid") is None and vocab.get("valid") is None, "an id argument is id, *_id or *Id only"
+    assert vocab.get("cabinId") is not None and all(map(_id_arg, ["id", "order_id", "orderId"]))
     assert vocab.get("voyage_id").sources == ["signature:rebook_voyage"]
 
 

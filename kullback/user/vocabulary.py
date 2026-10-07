@@ -113,8 +113,8 @@ GENERIC = Vocabulary(domain="generic", fields=[f.model_copy(deep=True) for f in 
 
 
 def _id_arg(name: str) -> bool:
-    """An argument that names one row: its name ends in `id`, as `order_id` or `userid` does."""
-    return name.lower().endswith("id") and len(name) > 2
+    """An argument that names one row: `id` itself, or a name ending in `_id` or `Id` (never `paid`, `valid`)."""
+    return name == "id" or name.endswith(("_id", "Id"))
 
 
 def from_signatures(sigs: Iterable[dict]) -> Vocabulary:

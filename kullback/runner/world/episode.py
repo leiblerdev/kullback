@@ -23,7 +23,6 @@ from typing import Any, Optional
 
 from kullback.runner import loop, route
 from kullback.runner.records import as_dict
-from kullback.runner.tool import runner_prompt
 from kullback.runner.verdict import load_run, verdict
 from kullback.runner.world import clock, loading
 from kullback.runner.world.environment import BuiltEnvironment, episode_message
@@ -123,6 +122,8 @@ class Episode:
         simulated = self._user_factory(self.env, task, self._router, rules, reference) \
             if rules is not None and self._user_factory is not None else None
         run_id = f"{task_id}-{seed}"
+        from kullback.runner.tool import runner_prompt  # tool imports the world package
+
         system_prompt = runner_prompt(self.env.system_prompt(task))  # the stop-short line, every Run shape (D326)
         self._tools = self.env.tool_specs()
         task_outdir = self.outdir / task_id
