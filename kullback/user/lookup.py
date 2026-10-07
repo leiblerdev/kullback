@@ -29,8 +29,12 @@ OVERLAP = "overlap"
 # Words that say which kind of value a field holds and never which thing it is about: an overlap on
 # one of these alone ("number", "new") names no field. They are the words of any domain's ids.
 KIND_WORDS = frozenset("id ids number numbers no code codes new old current total".split())
-# The shortest word an overlap reads, so "or" and "to" never name a field.
+# The shortest word an overlap reads, so "or" and "to" never name a field, and the shortest stem
+# two words may share ("item" and "items"; never "use" and "user").
 MIN_WORD = 3
+MIN_STEM = 4
+# What a question points at: up to four words after "which", "what" or "your" (stop words drop).
+POINTED = re.compile(r"\b(?:which|what|your)\s+((?:[a-z]+\s+){0,3}[a-z]+)")
 
 
 class Hit(Record):
@@ -98,8 +102,8 @@ class FactStore:
         A fact whose value the question already states is not asked for: an agent that reads back
         the order it is about to change names that order and is not asking for it. Where a field has
         two values, the one whose recorded sentence agrees with the question comes first (D44).
-        Overlap is read only where no held name or alias was heard, and never in a sentence asking for a
-        yes: "confirm the items in this order" asks for agreement, not for the items.
+        Overlap is read only where no held name or alias was heard, and only over what the question
+        points at: "confirm the items in this order" asks for agreement, not for the items.
         """
         text = rules_mod._norm(question)
         if not text.strip():
@@ -112,9 +116,13 @@ class FactStore:
                     break
         held = self.held()
         if not any(field in held for field in heard):
-            # A name heard that holds no value ("address") still asks for the held facts that share
-            # its words ("address 1"); nothing heard at all reads the overlap over every name.
-            over = self._overlapping(text, held) or ([] if heard else self._overlapping(text, self.names))
+            if heard:
+                # A name heard that holds no value ("address") reaches the held facts sharing its
+                # words ("address 1"), and nothing else the turn happens to point at.
+                words = {word for field in heard for phrase in self.phrases(field) for word in _content(phrase)}
+            else:
+                words = self._pointed(text)
+            over = self._overlapping(words, held) or ([] if heard else self._overlapping(words, self.names))
             if over:
                 heard = {field: OVERLAP for field in over}
         hits: list[Hit] = []
@@ -131,13 +139,30 @@ class FactStore:
                     hits.append(Hit(field=field, value=fact.value, how=how))
         return Found(question=question or "", hits=hits, missing=missing)
 
-    def _overlapping(self, text: str, fields: Iterable[str]) -> list[str]:
-        """Of `fields`, those whose content words the question shares the most of, outside yes-asks."""
+    @staticmethod
+    def _pointed(text: str) -> set[str]:
+        """The content words a question points at with "which", "what" or "your" ("which booking").
+
+        Only those words count, never in a closing question, and "your" not in an offer: on live
+        Candidate turns the whole sentence was too loose, "the only item you want to change" asks
+        for agreement, "use the card" is not an ask for a user id, "anything else, like your other
+        orders?" closes, and "shall I add bags to your booking?" asks for a yes.
+        """
         words: set[str] = set()
         for sentence in rules_mod._sentences(text) or [text]:
-            if not rules_mod.CONFIRM_REQUEST.search(sentence):
-                # A word the next word re-points ("the name of the product") names no field of ours.
-                words |= set(_content(re.sub(r"\b[a-z]+\s+of\b", " ", sentence)))
+            if rules_mod.CLOSE_CUE.search(sentence):
+                continue
+            offer = bool(rules_mod.CONFIRM_REQUEST.search(sentence))
+            # A word the next word re-points ("the name of the product") names no field of ours.
+            sentence = re.sub(r"\b[a-z]+\s+of\b", " ", sentence)
+            for match in POINTED.finditer(sentence):
+                if offer and match.group(0).startswith("your"):
+                    continue  # "shall I add bags to your booking?" offers, it does not ask
+                words |= set(_content(match.group(1)))
+        return words
+
+    def _overlapping(self, words: set[str], fields: Iterable[str]) -> list[str]:
+        """Of `fields`, those sharing the most content words with `words`."""
         scored: dict[str, int] = {}
         for field in fields:
             own = {word for phrase in self.phrases(field) for word in _content(phrase)}
@@ -168,10 +193,12 @@ def _content(text: str) -> list[str]:
 
 
 def _same_word(a: str, b: str) -> bool:
-    """One word, allowing a plural and a shared stem: "bags" and "baggage", "pay" and "payment"."""
+    """One word, allowing a plural and a shared stem: "items" and "item", "booking" and "bookings"."""
+    if a == b:
+        return True
     a, b = a.rstrip("s") or a, b.rstrip("s") or b
     short, long = sorted((a, b), key=len)
-    return len(short) >= MIN_WORD and long.startswith(short)
+    return len(short) >= MIN_STEM and long.startswith(short)
 
 
 def _best_first(facts: list[UserFact], text: str, field: str) -> list[UserFact]:

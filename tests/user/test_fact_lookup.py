@@ -31,7 +31,7 @@ def test_an_alias_from_the_signatures_finds_the_fact():
 def test_plain_word_overlap_finds_a_fact_no_name_or_alias_carries():
     found = store(("widget_id", "WG-17"), ("slot_count", "3")).lookup("Which widget is it about?")
     assert [(hit.field, hit.how) for hit in found.hits] == [("widget_id", OVERLAP)]
-    plural = store(("slot_count", "3")).lookup("How many slots do you need?")
+    plural = store(("slot_count", "3")).lookup("Which slots do you need?")
     assert [hit.field for hit in plural.hits] == ["slot_count"]
 
 
@@ -91,3 +91,16 @@ def test_no_trust_or_verifier_module_reads_the_users_goal():
     reads = re.compile(r"GOAL_SATISFIED|goal_satisfied|user_goal_met|user_end\b|goal_done|end_reason")
     offenders = [str(path.relative_to(root)) for path in paths if reads.search(path.read_text())]
     assert offenders == []
+
+
+def test_a_closing_question_or_an_offer_on_your_thing_asks_for_no_fact():
+    held = store(("widget_id", "WG-17"))
+    assert held.lookup("Anything else, like your other widgets?").hits == []
+    assert held.lookup("Would you like me to add a cover to your widget?").hits == []
+    assert [hit.field for hit in held.lookup("Which widget should I add the cover to? Reply yes to confirm.").hits] \
+        == ["widget_id"]
+
+
+def test_a_missing_name_reaches_only_held_facts_sharing_its_words():
+    found = store(("widget_id", "WG-17")).lookup("Before I change your widget I need your email.")
+    assert found.hits == [] and found.missing == ["email"]
