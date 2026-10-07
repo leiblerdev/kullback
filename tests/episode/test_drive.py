@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from kullback.runner import loop
+from kullback.runner.tool import STOP_SHORT_LINE
 
 pytestmark = pytest.mark.skipif(
     not (hasattr(loop, "ask") and hasattr(loop, "advance")),
@@ -58,7 +59,7 @@ def test_reset_hands_the_policy_what_it_needs_to_act():
         info = episode.reset("widget_task", seed=7)
         assert info.run_id == "widget_task-7"
         assert {spec["name"] for spec in info.tools} == {"describe_widget", "rename_widget"}
-        assert info.system_prompt is not None
+        assert info.system_prompt is not None and info.system_prompt.endswith(STOP_SHORT_LINE)
         assert info.opening is not None
         seeded = Episode(env, outdir=Path(tmp) / "out_seeded")
         assert seeded.reset("widget_task", seed=123).seed == 123
