@@ -57,9 +57,12 @@ class FindingArgs(BaseModel):
     path: str = Field(default="", description="The Environment file the Builder should edit, or empty.")
     change: str = Field(default="", description="One line saying what should differ.")
     edits: list[dict] = Field(default_factory=list, description=(
-        "The diff, each with its why: {kind: body, path, call_id, column, recorded, replayed, why}, "
-        "{kind: text, path: intents/<task>.json or tasks/<task>.json, where: verbatim text found "
-        "once, replace, why}, or {kind: atoms, task_id, drop: [atom ids], add: [atoms], why}."))
+        "The diff, each with its why, one of six kinds: {kind: atoms, task_id, drop: [atom ids i<n>], "
+        "add: [atoms], why}, {kind: text, path: intents/<task>.json or tasks/<task>.json, where: verbatim "
+        "text found once, replace, why}, {kind: body, path, call_id, column, recorded, replayed, why}, "
+        "{kind: cell, task_id, table, row_id?, field?, action: allow or drop, why}, {kind: conduct, task_id, "
+        "action: add or remove, conduct: handoff, refusal or confirm_before_write, tool, why}, or "
+        "{kind: reference, task_id, run_id, why}."))
     note_ruling: Optional[Literal["builder_right", "builder_wrong"]] = Field(
         default=None, description="Set to rule on the Builder's open note on this Task: whether the "
                                   "Builder is right, with the why in text.")
