@@ -101,10 +101,10 @@ class FactStore:
         """The facts this question asks for, by field name, alias and plain-word overlap.
 
         A fact whose value the question already states is not asked for: an agent that reads back
-        the order it is about to change names that order and is not asking for it. Where a field has
+        the record it is about to change names that record and is not asking for it. Where a field has
         two values, the one whose recorded sentence agrees with the question comes first (D44).
         Overlap is read only where no held name or alias was heard, and only over what the question
-        points at: "confirm the items in this order" asks for agreement, not for the items.
+        points at: "confirm the items on this account" asks for agreement, not for the items.
         """
         text = rules_mod._norm(question)
         if not text.strip():
@@ -142,12 +142,12 @@ class FactStore:
 
     @staticmethod
     def _pointed(text: str) -> set[str]:
-        """The content words a question points at with "which", "what" or "your" ("which booking").
+        """The content words a question points at with "which", "what" or "your" ("which plan").
 
         Only those words count, never in a closing question, and "your" not in an offer: on live
         Candidate turns the whole sentence was too loose, "the only item you want to change" asks
         for agreement, "use the card" is not an ask for a user id, "anything else, like your other
-        orders?" closes, and "shall I add bags to your booking?" asks for a yes.
+        accounts?" closes, and "shall I add a cover to your plan?" asks for a yes.
         """
         words: set[str] = set()
         for sentence in rules_mod._sentences(text) or [text]:
@@ -158,7 +158,7 @@ class FactStore:
             sentence = re.sub(r"\b[a-z]+\s+of\b", " ", sentence)
             for match in POINTED.finditer(sentence):
                 if offer and match.group(0).startswith("your"):
-                    continue  # "shall I add bags to your booking?" offers, it does not ask
+                    continue  # "shall I add a cover to your plan?" offers, it does not ask
                 words |= set(_content(match.group(1)))
         return words
 
@@ -194,7 +194,7 @@ def _content(text: str) -> list[str]:
 
 
 def _same_word(a: str, b: str) -> bool:
-    """One word, allowing a plural and a shared stem: "items" and "item", "booking" and "bookings"."""
+    """One word, allowing a plural and a shared stem: "items" and "item", "plans" and "plan"."""
     if a == b:
         return True
     a, b = a.rstrip("s") or a, b.rstrip("s") or b
