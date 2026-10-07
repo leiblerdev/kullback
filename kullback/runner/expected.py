@@ -363,7 +363,13 @@ def path_value(row: Any, field: str) -> Any:
 
 
 def cell_resolution(context: AtomContext, column: str, expected: Any, actual: Any) -> str:
-    """How an actual value meets an expected one: a plain value, or a value set ("one_of", "not")."""
+    """How an actual value meets an expected one: a plain value, a list (same members, any order), or a value
+    set ("one_of", "not")."""
+    if isinstance(expected, list):
+        def members(values: list) -> list[str]:
+            return sorted(json.dumps(context.c(v), sort_keys=True, default=str) for v in values)
+        same = isinstance(actual, list) and members(expected) == members(actual)
+        return EQUAL if same else DIFFERENT
     found = value_set(expected)
     if found is None:
         return context.resolution(column, expected, actual)

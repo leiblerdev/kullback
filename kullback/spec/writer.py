@@ -65,9 +65,11 @@ TOOLS_TEXT = """\
 - drop_items: remove items you added. Example: drop_items({"ids": ["s1"]})
 
 # Item kinds
-- row_is {table, find: {field: value}, expect: {field: value | {"one_of": [...]} | {"not": [...]}}}: \
-the row find names (exactly one) holds these values after the run. Use one_of where the policy or the \
-user allows several values, not where a value is forbidden.
+- row_is {table, find: {field: value}, expect: {field: value | [values] | {"one_of": [...]} | {"not": [...]}}, \
+free: [fields]}: the row find names (exactly one) holds these values after the run. A list value names \
+every member, in any order. Use one_of where the policy or the user allows several values, not where a \
+value is forbidden. List in free the fields of that row a correct run changes to a value you cannot find \
+(records a tool fills in, a balance it computes); code checks nothing in them but lets them move.
 - row_new {table, where: {field: value}, count}: the run makes count new rows holding these values.
 - row_keeps {table, find, fields: [...]}: these fields of that row must not change (one per "do not change").
 - called {tool, args?} / not_called {tool, args?}: a call that must or must not happen.

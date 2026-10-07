@@ -207,3 +207,22 @@ def test_counts_split_items_by_kind_gate_and_provenance():
     counts = I.counts_of(items + [I.sanity_item([])])
     assert counts["by_kind"] == {"nothing_else": 1, "row_is": 1, "said": 1}
     assert (counts["gate"], counts["scored"], counts["fact_backed"]) == (2, 1, 2)
+
+
+def test_a_list_value_matches_its_members_in_any_order_and_a_free_field_may_move_unchecked():
+    tagged = dict(MOVE, expect={"slot": "seven", "tags": ["four", "seven"]})
+    assert "scalars found in the world" in keep(dict(MOVE, expect={"slot": [{"a": 1}]}))[1]
+    assert "not in the world" in keep(dict(MOVE, expect={"slot": ["seven", "nine"]}))[1]
+    STATE["items"]["A1"]["tags"] = []
+    try:
+        verifier = _verifier(_kept(tagged, dict(MOVE, id="s2", find={"item_id": "B2"}, expect={}, free=["label"])))
+        b2 = dict(STATE["items"]["B2"], label="computed by a tool")
+        moved = {"items": {"A1": dict(STATE["items"]["A1"], slot="seven", tags=["seven", "four"]), "B2": b2},
+                 "notes": {}}
+        assert match_any(verifier.expected, AtomContext(_run(moved))).ok
+        assert score_items(verifier, AtomContext(_run(moved)))["sanity"] is True
+        short = {**moved, "items": {**moved["items"], "A1": dict(moved["items"]["A1"], tags=["seven"])}}
+        assert match_any(verifier.expected, AtomContext(_run(short))).ok is False
+        assert "is in expect and in free" in keep(dict(MOVE, free=["slot"]))[1]
+    finally:
+        del STATE["items"]["A1"]["tags"]

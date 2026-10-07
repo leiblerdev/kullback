@@ -2,7 +2,8 @@
 
 An item is one typed thing a correct Run shows, never a Reference's diff:
 
-    state : row_is    {table, find: {field: value}, expect: {field: value | {"one_of": [...]} | {"not": [...]}}}
+    state : row_is    {table, find: {field: value}, expect: {field: value | [values] | {"one_of": [...]} |
+                       {"not": [...]}}, free: [fields a tool sets to a value the writer cannot find]}
             row_new   {table, where: {field: value}, count}      a row the Run makes, its id minted, unnamed
             row_keeps {table, find, fields: [...]}               one per "do not change"
     event : called {tool, args?} | not_called {tool, args?} | before {first: "confirm_turn" | tool, then: tool}
@@ -242,7 +243,10 @@ class World:
                 return None, f"{what}: a value set is {{\"one_of\": [...]}} or {{\"not\": [...]}}"
             values = next(iter(value.values()))
         elif isinstance(value, list):
-            return None, f"{what}: a list is not a cell value; use one_of for alternatives"
+            if not value or any(isinstance(one, (dict, list)) for one in value):
+                return None, (f"{what}: a list value lists scalars found in the world; a field holding records "
+                              "a tool fills in goes in free")
+            values = value
         else:
             values = [value]
         for one in values:
@@ -286,14 +290,21 @@ class World:
 
     def _row_is(self, item: dict, kept: dict) -> str:
         why = self._one_row(item, kept)
-        expect = item.get("expect")
-        if why or not isinstance(expect, dict) or not expect:
-            return why or "expect names the fields the row holds after a correct Run: {field: value}"
+        expect, free = item.get("expect") or {}, item.get("free") or []
+        if why or not isinstance(expect, dict) or not isinstance(free, list) or not (expect or free):
+            return why or ("expect names the fields the row holds after a correct Run: {field: value}; free "
+                           "names fields it may change to a value no tool lets you find")
         for field, value in expect.items():
             why = self._field(kept["table"], field) or self._value(value, f"{field}")[1]
             if why:
                 return why
+        for field in free:
+            why = self._field(kept["table"], field)
+            if why or str(field) in expect:
+                return why or f"{field} is in expect and in free; name it once"
         kept["expect"] = dict(expect)
+        if free:
+            kept["free"] = [str(field) for field in free]
         return ""
 
     def _row_new(self, item: dict, kept: dict) -> str:
@@ -445,7 +456,8 @@ def _from(item: dict) -> dict:
 def _describe(item: dict) -> str:
     kind = item["kind"]
     if kind in ("row_is", "row_keeps"):
-        return f"{item['table']} row {item['row']} holds {sorted(item['expect'])}"
+        free = f", may change {sorted(item['free'])}" if item.get("free") else ""
+        return f"{item['table']} row {item['row']} holds {sorted(item['expect'])}{free}"
     if kind == "row_new":
         return f"{item.get('count', 1)} new {item['table']} row(s) where {sorted(item['where'])}"
     if kind in ("called", "not_called"):
@@ -472,7 +484,8 @@ def atom_of(item: dict) -> Atom:
 
 def _cell_source(value: Any, world: World) -> Optional[ValueSource]:
     found = None
-    for one in (next(iter(value.values())) if isinstance(value, dict) else [value]):
+    values = next(iter(value.values())) if isinstance(value, dict) else value if isinstance(value, list) else [value]
+    for one in values:
         found = world.source(one) if one is not None else ValueSource(kind="world", ptr={"removed": True})
         if found is None:
             return None
@@ -493,6 +506,7 @@ def end_states_of(items: list[dict], world: World, action_tables: Iterable[str] 
     for alt in alts:
         cells: list[ExpectedCell] = []
         new_rows: list[dict] = []
+        free: list[dict] = []
         for item in state:
             if item.get("alt") not in (None, alt):
                 continue
@@ -500,18 +514,22 @@ def end_states_of(items: list[dict], world: World, action_tables: Iterable[str] 
                 new_rows.append({"table": item["table"], "where": item["where"], "count": item["count"],
                                  "item": item["id"]})
                 continue
+            free += [{"table": item["table"], "row_id": item["row"], "field": field, "why": f"free: {item['id']}"}
+                     for field in item.get("free") or []]
             row_source = ValueSource(kind="world", ptr={"table": item["table"], "row": item["row"]})
             for field, value in item["expect"].items():
                 cells.append(ExpectedCell(table=item["table"], row_id=item["row"], field=field, value=value,
                                           source=_cell_source(value, world), row_source=row_source))
         cells.sort(key=lambda cell: (cell.table, cell.row_id, cell.field))
-        out.append(EndState(cells=cells, allowed=list(allowed), new_rows=new_rows))
+        out.append(EndState(cells=cells, allowed=list(allowed) + free, new_rows=new_rows))
     return out
 
 
 def sanity_item(end_states: list[EndState]) -> dict:
     """The generated sanity item: the declared rows of each end state, outside which nothing moves."""
-    rows = [sorted({f"{cell.table}.{cell.row_id}" for cell in state.cells}) for state in end_states]
+    rows = [sorted({f"{cell.table}.{cell.row_id}" for cell in state.cells}
+                   | {f"{rule['table']}.{rule['row_id']}" for rule in state.allowed if "row_id" in rule})
+            for state in end_states]
     new = [[{"table": spec["table"], "count": spec["count"]} for spec in state.new_rows] for state in end_states]
     return {"id": SANITY_ID, "kind": SANITY, "gate": True, "weight": 1.0, "rows": rows, "new": new,
             "fact_ids": [], "policy_line": None}
