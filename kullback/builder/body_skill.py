@@ -1,8 +1,7 @@
 """The body skill: how a tool body is written so it clears the gates, read off where bodies kept failing (D168).
 
 A skill is text the harness puts in the prompt and a gate enforces; this one is in the system prefix
-of every body-writing call (`compile_env._stable_system`), the way the triage skill is in every
-Builder session (D150). It names no domain, tool or value. It was written from four builds over
+of every body-writing call (`compile_env._stable_system`). It names no domain, tool or value. It was written from four builds over
 three customers' traces, body by body: a body that raised TypeError for an argument the recorded
 call never passed; a body that read a column no table holds; a body that answered null where the
 recording held a value from a related row; an appended history entry with the wrong sign, then the
