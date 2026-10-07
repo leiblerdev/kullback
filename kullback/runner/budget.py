@@ -28,11 +28,6 @@ from kullback.runner.records import Cost, Event, Usage
 # actually calls: a model priced by neither source is not priced at zero quietly, its calls
 # are counted under unpriced_calls in the totals file and the report shows that count.
 PRICES_CHECKED = "2026-09-23"
-PRICES_NOTE = (
-    "list prices per 1M tokens, checked by hand on "
-    + PRICES_CHECKED
-    + "; update me before trusting a build's cost, and add the models you call"
-)
 PRICES: dict[str, dict[str, float]] = {
     "anthropic/claude-opus-5": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
     "anthropic/claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},

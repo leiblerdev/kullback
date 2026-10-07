@@ -2517,3 +2517,23 @@ writer's tool, the Reference a witness only.
 Limits: until the sanity item lands (sh-reward), the stray write fails only where an expected end state's
 "nothing else moves" rule or a forbidden row catches it; a Verifier with atoms and no end state lets it pass.
 Status: built 2026-10-07 on shape-1007/trust.
+
+### D328. Dead code out: the Builder's memory tree, triage skill, body writer and Intent writer (2026-10-07)
+
+What changed: code no command, module or script reaches is deleted, found by vulture plus a reference count per
+name over kullback, tests, scripts and docs, then a module-aware pass for private names. Whole modules:
+`builder/memory.py` (D64, D69, D87 version tree and lessons file; nothing imported it), `builder/triage.py` (the D150
+skill text; nothing loaded it), `agent/reading.py` (G21 helpers; only its test), `builder/body_skill.py` (D168). In
+`compile_env` the model-written body path: `write_tool_body`, its prompt chain and the D117 lookup_rows and test_body
+loop, whose flag was always off. `builder/intent.py` loses the Intent writer and its grounding (D47, D83, D113,
+D143, D157 as code; the Spec stage writes Intents) and keeps a re-export, because `user/factory.py` loads it by
+name for the value strip and a missing module would silently switch the strip off. Smaller: helpers in mine,
+readers, lesson, feed, route, ingest and agent tools that only their own tests called, and three scripts that
+imported removed modules or measured removed code (`reroll_snapshot.py`, `user2_wider.py`, `request_snapshot.py`,
+`prompt_snapshot.py`). Tests of behaviour that still exists were kept or rewritten (apply_intent, the blocked lesson).
+Why: carve, never rewrite; dead code is read by every agent that greps the tree and costs review and mutation time.
+Kept on purpose: `builder/skills.py` and the container world and cheat suite, which D rows and ADR 0010 name as the
+mechanism for planned work; `runner/world/birth.py`, which the trust redesign may reuse for constructed Runs; the
+`kullback/ai` and `kullback/agent` surfaces that mirror tau; the hub package; documented CLI commands.
+Measured: 245 functions and classes and 80 tests removed (one test added), 5705 lines deleted; suite 4153 to 4074.
+Status: built 2026-10-07 on shape-1007/deadcode. Renumber at the fold if another stream took D328.

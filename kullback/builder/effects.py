@@ -1,7 +1,7 @@
 """What a write changed on rows its own arguments never named, read off the recording (D215).
 
 A write is judged on its own result and on nothing else. The body writer is shown the call, its
-arguments and the answer it came back with (`compile_env._tool_block`), and the replay scores that
+arguments and the answer it came back with, and the replay scores that
 answer against the recording (`runner/replay.ScoredRouter`). Neither says anything about the rows
 the write moved on the way: another table's row reached through a foreign key the customer's tool
 read inside itself, a history list appended on the same row, a total recomputed out of two

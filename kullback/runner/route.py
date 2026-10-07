@@ -90,7 +90,6 @@ class Router:
                  real_tools: Optional[dict[str, RealTool]] = None):
         self.tools = env_tools_module
         self.real_tools = dict(real_tools or {})
-        self._last_real_receipts: dict[str, list] = {}
         self.real_export_limit = REAL_EXPORT_LIMIT_BYTES
         self.real_end_states: dict[str, bytes] = {}
         # D40: a result that names a synthetic row was answered from a row no trace showed.
@@ -239,7 +238,6 @@ class Router:
         with the tool name and the world's own failure class and message on the record.
         """
         outcome = self.real_tools[name].call(args)
-        self._last_real_receipts[name] = list(outcome.receipts or [])
         if not outcome.world_answered:
             error = ToolCallError(class_="cannot_answer", payload={
                 "tool": name, "reason": CANNOT_ANSWER_REASON,
@@ -250,14 +248,6 @@ class Router:
             return RouteResult(outcome.result, "real", False, None, self._misses())
         return self._error(name, outcome.error_class, outcome.error_message or outcome.error_class,
                            route="real")
-
-    def last_real_receipts(self, name: str) -> list:
-        """The receipts of the latest real call of that tool, oldest first (D262).
-
-        The result stays the terminal text; the exit codes live here for the record, so a
-        later round can read them without re-running. Empty before any call of the tool.
-        """
-        return list(self._last_real_receipts.get(name) or [])
 
     def close_real(self) -> list[tuple[str, str]]:
         """Release every opened real world and keep each export, whatever fails (D262).

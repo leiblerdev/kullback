@@ -73,16 +73,6 @@ def test_a_value_only_a_held_out_run_witnessed_is_named_and_a_shared_or_unwitnes
     assert "x3" not in columns.get("crossings", {}), "a composed value was never learned from a Run"
 
 
-def test_the_body_writer_is_shown_the_column_and_not_the_value_it_was_not_given():
-    schema = compile_env.EntitySchema(tables=["crossings"])
-    columns = compile_env.holdout_columns(WITNESSES, ["run_held"])
-
-    text = compile_env._lookup_rows_text(schema, DB, [], None, "crossings", "x2", holdout=columns)
-
-    assert "windward" not in text, "the value only a held-out Run witnessed is not shown"
-    assert '"berth"' in text and compile_env.MASKED in text, "the column is still there"
-
-
 def test_the_memorised_values_gate_refuses_a_held_out_only_literal_and_leaves_a_seen_one_alone():
     source = ("class Tools:\n"
               "    def read_crossing(self, crossing_id):\n"
