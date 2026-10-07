@@ -41,7 +41,7 @@ from kullback.runner.target import as_run
 from kullback.runner.world.environment import BuiltEnvironment
 from kullback.spec.trust import in_sample, stored_tasks, workdir_ruling
 from kullback.user import fidelity as user_fidelity
-from kullback.user.rules import GOAL_SATISFIED, goal_write_set
+from kullback.user.rules import GOAL_SATISFIED, goal_write_counts, goal_write_set
 from kullback.user.simulated import SimulatedUser
 from kullback.user.value_strip import value_strip
 
@@ -734,6 +734,7 @@ def rule_user(workdir: Any, task_id: str, router: Any) -> Optional[SimulatedUser
         rules, starting_state_reader=router.state, vocab=user_fidelity.vocabulary_of(workdir),
         write_tools=writes,
         goal_writes=goal_write_set(reference, writes) if reference is not None else None,
+        goal_counts=goal_write_counts(reference, writes) if reference is not None else None,
         answer_strip=value_strip(members) if members else None)
 
 

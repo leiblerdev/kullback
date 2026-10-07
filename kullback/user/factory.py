@@ -49,7 +49,7 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
                ctx: Any = _MISSING, fallback: Any = _MISSING,
                record_values: Any = _MISSING, vocab: Any = _MISSING,
                write_tools: Any = _MISSING, goal_writes: Any = _MISSING,
-               answer_strip: Any = _MISSING, trace: Any = _MISSING,
+               answer_strip: Any = _MISSING, trace: Any = _MISSING, goal_counts: Any = _MISSING,
                bus: Any = None, choices: Any = None, account: Any = None) -> Optional[AgentUser]:
     """The Simulated user of one Task: the agent user over the rules floor, fully specified.
 
@@ -57,7 +57,8 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
     the CLI meet the same inputs real Runs do (`goal_writes`, `answer_strip`, `trace` included).
     A caller that passes everything (a real Run) never touches the disk. `choices` and `account`
     are the two readings (account.py); only a caller that built them passes them, so a user built
-    without them has the tools it always had.
+    without them has the tools it always had. `goal_counts` (D326) goes to the rules floor built
+    from disk; a caller passing its own `fallback` gives that floor its counts itself.
     """
     if purpose not in PURPOSES:
         raise ValueError(f"purpose is one of {list(PURPOSES)}, not {purpose!r}")
@@ -67,7 +68,7 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
     if all(value is not _MISSING for _, value in given):
         disk = {}
     else:
-        disk = _disk_state(workdir, task_id, purpose)
+        disk = _disk_state(workdir, task_id, purpose, goal_counts)
         if disk is None:
             return None
     for key, value in given:
@@ -83,7 +84,7 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
     )
 
 
-def _disk_state(workdir: Any, task_id: str, purpose: str) -> Optional[dict]:
+def _disk_state(workdir: Any, task_id: str, purpose: str, goal_counts: Any = _MISSING) -> Optional[dict]:
     """Everything the workdir knows about one Task's user, or None where the score has nothing.
 
     No live world exists here, so the fallback takes no starting_state_reader.
@@ -103,11 +104,14 @@ def _disk_state(workdir: Any, task_id: str, purpose: str) -> Optional[dict]:
     ctx = context_mod.curate(task_id, user_rules, trace, vocab=vocab, write_tools=writes,
                              record_fields=sorted(record), lessons=lessons)
     goal_writes = rules_mod.goal_write_set(trace, writes)
+    if goal_counts is _MISSING:
+        goal_counts = rules_mod.goal_write_counts(trace, writes)
     answer_strip = _strip_for(workdir, task_id, index)
     return {
         "ctx": ctx,
         "fallback": SimulatedUser(user_rules, vocab=vocab, write_tools=writes,
-                                  goal_writes=goal_writes, answer_strip=answer_strip),
+                                  goal_writes=goal_writes, answer_strip=answer_strip,
+                                  goal_counts=goal_counts),
         "record_values": record,
         "vocab": vocab,
         "write_tools": writes,

@@ -50,10 +50,12 @@ def _user_turns(path: Any) -> list[str]:
     return [str(event.payload.get("text")) for event in run.events if event.type == "user_turn"]
 
 
-def test_with_the_switch_off_the_reroll_user_is_the_rule_driven_user(tmp_path):
+def test_with_the_switch_off_the_reroll_user_is_the_rule_driven_user_with_the_builds_vocabulary_and_counts(tmp_path):
     root = _exam_env(tmp_path / "env")
     user = R._make_user(root, "widget_task", None, _Router(root))
     assert type(user) is SimulatedUser
+    assert user.goal_counts == {"rename_widget": 1}
+    assert "widget_id" in [field.field for field in user.vocab.fields]
 
 
 def test_with_the_switch_on_the_reroll_user_is_the_agent_user_over_the_rule_floor(tmp_path):
@@ -70,7 +72,8 @@ def test_the_builders_run_user_is_the_rule_user_alone_without_a_model(tmp_path):
     from kullback.builder import domain_tools as builder_tools
 
     root = _exam_env(tmp_path / "env")
-    assert type(builder_tools._run_user(root, "widget_task", _Router(root))) is SimulatedUser
+    user = builder_tools._run_user(root, "widget_task", _Router(root))
+    assert type(user) is SimulatedUser and user.goal_counts == {"rename_widget": 1}
 
 
 def test_the_builders_run_user_is_the_agent_user_over_the_floor_with_a_model(tmp_path):
