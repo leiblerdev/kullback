@@ -147,11 +147,12 @@ def test_an_applied_ruling_rewrites_both_verifier_copies_and_a_rebutted_one_keep
 def test_an_empty_rebuttal_keeps_what_code_refused_so_it_reads_apart_from_a_reasoned_one(tmp_path):
     root = _told(tmp_path)
     _ruling(root, 1)
-    model = TestModel([ModelReply(content=json.dumps({"checks": [{"id": "c1", "action": "add"}], "rebut": ""}))])
-    RV.answer_rulings(root, "t1", model, 2)
+    taken = ModelReply(content=json.dumps({"checks": [{"id": "c1", "action": "add"}], "rebut": ""}))
+    RV.answer_rulings(root, "t1", TestModel([taken, taken]), 2)
     [ruling] = RL.load_rulings(root, "t1")
     assert ruling.answer["action"] == "rebutted" and ruling.answer["why"] == RV.REBUT_NONE
-    assert ruling.answer["writer"] == {"refused": 1}
+    refusal = [{"id": "c1", "code": "id_taken"}]
+    assert ruling.answer["writer"] == {"refused": 1, "refusals": refusal, "retried": 1, "first_refusals": refusal}
 
 
 def test_a_ruling_that_the_reference_is_wrong_asks_nothing_of_the_writer(tmp_path):

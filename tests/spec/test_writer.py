@@ -217,6 +217,18 @@ def test_a_write_compile_drops_is_listed_as_a_gap_and_survives_a_repair():
     assert repaired.gaps == ["f2"]
 
 
+def test_a_repair_code_refused_whole_is_retried_once_with_each_refusal_and_its_why():
+    spec = W.write_spec("t1", inputs(), TestModel([answer("demands", [MOVE])])).spec
+    ruling = W.Ruling(check_ids=["c0"], reason="the move is not grounded")
+    model = TestModel([answer("checks", [dict(MOVE, id="c0", action="change", because="I think")]),
+                       answer("checks", [dict(MOVE, id="c0", action="change")])])
+    repaired = W.repair(spec, ruling, inputs(), model)
+    retry = model.calls[1]["messages"][-1]["content"]
+    assert "c0: " + W.REFUSAL_WHY["ungrounded"] in retry and "or rebut" in retry
+    assert repaired.counts["changed"] == 1 and repaired.counts["retried"] == 1
+    assert repaired.counts["first_refusals"] == [{"id": "c0", "code": "ungrounded"}]
+
+
 def test_write_verifier_writes_the_spec_and_one_verifier_the_runner_and_the_spec_share(tmp_path):
     spec = W.write_spec("t1", inputs(), TestModel([answer("demands", [MOVE])])).spec
     paths = W.write_verifier(spec, tmp_path, inputs())
@@ -241,6 +253,7 @@ def test_repair_changes_or_defends_only_ruled_checks_and_every_change_must_groun
     ])])
     repaired = W.repair(spec, ruling, inputs(), model)
     assert repaired.counts == {"changed": 1, "dropped": 0, "added": 0, "defended": 0, "refused": 1, "not_ruled": 1,
+                               "refusals": [{"id": "c0", "code": "ungrounded"}],
                                "parse_error": "", "truncated_chars": 0, "rebut": ""}
     assert repaired.spec.checks[0] == spec.checks[0]
     assert repaired.spec.checks[1].demand == {"demand": "cap", "count": 2}

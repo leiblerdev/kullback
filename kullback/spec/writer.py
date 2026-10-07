@@ -149,6 +149,17 @@ MAX_EXCERPT = 1000
 # The most checks one repair may add (D328): a fix covers a fact, it never rewrites the Spec.
 MAX_ADDS = 3
 _META = ("id", "kind", "because", "fact_ids", "action")
+# What each refusal of a repaired check means, shown to the writer for its one retry in the same round.
+REFUSAL_WHY = {
+    "bad_kind": "kind is not one of the check kinds",
+    "write_predicate": "a check states values, never a predicate over them",
+    "ungrounded": "the because neither quotes the Intent word for word (12 characters or more) nor names a policy section",
+    "unwitnessed": "the because or the fact ids rest only on facts the user never says",
+    "condition_unquoted": "a write's because must quote the Intent or the policy line that makes the write required",
+    "value_not_argument": "a write names a value that is not an argument of its tool",
+    "id_taken": "an added check needs a new id the Spec does not hold",
+    "too_many_adds": f"at most {MAX_ADDS} checks may be added",
+}
 
 
 class WriterInputs(NamedTuple):
@@ -527,17 +538,25 @@ def apply_repair(spec: Spec, ruling: Ruling, answers: Iterable[Any], inputs: Wri
     replaced: dict[str, Check] = {}
     dropped: set[str] = set()
     added: list[Check] = []
-    counts = {"changed": 0, "dropped": 0, "added": 0, "defended": 0, "refused": 0, "not_ruled": 0}
+    counts: dict = {"changed": 0, "dropped": 0, "added": 0, "defended": 0, "refused": 0, "not_ruled": 0,
+                    "refusals": []}
+
+    def refuse(code: str) -> None:
+        counts["refused"] += 1
+        counts["refusals"].append({"id": check_id, "code": code})
+
     for item in answers:
         check_id = str(item.get("id")) if isinstance(item, dict) else ""
         action = item.get("action") if isinstance(item, dict) else None
         if action == "add":
             if check_id in held or not check_id or len(added) >= MAX_ADDS:
-                counts["refused"] += 1
+                refuse("too_many_adds" if len(added) >= MAX_ADDS else "id_taken")
                 continue
-            check, _ = _check_of(check_id, item, inputs)
-            counts["added" if check else "refused"] += 1
-            if check is not None:
+            check, code = _check_of(check_id, item, inputs)
+            if check is None:
+                refuse(code)
+            else:
+                counts["added"] += 1
                 added.append(check)
                 held.add(check_id)
         elif check_id not in ruled:
@@ -548,9 +567,11 @@ def apply_repair(spec: Spec, ruling: Ruling, answers: Iterable[Any], inputs: Wri
             counts["dropped"] += 1
             dropped.add(check_id)
         else:
-            check, _ = _check_of(check_id, item, inputs)
-            counts["changed" if check else "refused"] += 1
-            if check is not None:
+            check, code = _check_of(check_id, item, inputs)
+            if check is None:
+                refuse(code)
+            else:
+                counts["changed"] += 1
                 replaced[check_id] = check
     checks = [replaced.get(check.id, check) for check in spec.checks if check.id not in dropped] + added
     repaired = spec.model_copy(update={"checks": checks, "version": spec.version + 1})
@@ -569,8 +590,26 @@ def repair(spec: Spec, ruling: Ruling, inputs: WriterInputs, model: Any, *,
                                        force_answer=True, ceiling_usd=ceiling_usd)
     answers, error = writer_tools.parse_list(session["text"], "checks")
     repaired, counts = apply_repair(spec, ruling, answers, inputs)
+    if counts["refused"] and not (counts["changed"] or counts["dropped"] or counts["added"]):
+        # One retry in the same round: the writer sees what code refused and why, then answers again.
+        messages = messages + [{"role": "assistant", "content": session["text"]},
+                               {"role": "user", "content": refusal_message(counts["refusals"])}]
+        session = writer_tools.run_session(model, messages, inputs.state, _config(config),
+                                           writer_tools.MAX_READ_ROUNDS, _price(model_id),
+                                           force_answer=True, ceiling_usd=ceiling_usd)
+        answers, error = writer_tools.parse_list(session["text"], "checks")
+        first = counts
+        repaired, counts = apply_repair(spec, ruling, answers, inputs)
+        counts.update(retried=1, first_refusals=first["refusals"])
     counts.update(parse_error=error, truncated_chars=cut, rebut=rebuttal_of(session["text"], answers))
     return Written(repaired, counts, session)
+
+
+def refusal_message(refusals: Iterable[dict]) -> str:
+    """What code refused in the writer's answer and why, one line each, and the ask to answer again."""
+    lines = [f"- {row.get('id') or '(no id)'}: {REFUSAL_WHY.get(row.get('code'), row.get('code'))}" for row in refusals]
+    return ("Code refused these checks, so nothing changed:\n" + "\n".join(lines) +
+            "\nAnswer again in the same JSON shape with the refusals fixed, or rebut with why.")
 
 
 def rebuttal_of(text: str, answers: Iterable[Any]) -> str:
