@@ -30,8 +30,8 @@ from kullback.runner.records import Atom, Run
 
 ITEM_JUDGE_VERSION = "1"
 ALL_ASSISTANT = "assistant_turns"
-TURN_CHARS = 1500  # each turn of evidence, clamped and marked when cut
-EVIDENCE_CHARS = 8000  # all the evidence of one item
+TURN_CHARS = 4000  # each turn of evidence, clamped and marked when cut
+EVIDENCE_CHARS = 24000  # all the evidence of one item; a long multi-turn Run fits
 WHY_CHARS = 25
 CUT_MARK = "[truncated]"
 TRUNCATED_WHY = "evidence truncated"
@@ -141,7 +141,7 @@ def build_evidence(run: Run, refs: Iterable[str], *, turn_chars: int = TURN_CHAR
             body, clipped = _clamp(text, turn_chars)
             block = f"<{label}>\n{body}\n</{label}>"
             if used + len(block) > total_chars:
-                blocks.append(CUT_MARK + " (further turns not shown)")
+                blocks.append(f"{CUT_MARK} (further turns not shown)")
                 return "\n\n".join(blocks), True, missing
             cut = cut or clipped
             used += len(block)
@@ -201,7 +201,7 @@ def judge_item(model: Model, atom: Atom, run: Run, *, model_id: Optional[str] = 
     result.cost_usd = call_cost(reply.usage, name) if name else 0.0
     result.score, result.why = _parse(reply.content, atom.id)
     if result.score is None:
-        result.error = result.why
+        result.error = f"{result.why}: {(reply.content or '')[:200]!r}"
     return result
 
 

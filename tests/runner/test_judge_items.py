@@ -7,6 +7,7 @@ from pathlib import Path
 
 from kullback.ai.provider import ModelReply, TestModel
 from kullback.ai.usage import Usage
+from kullback.judge import items
 from kullback.judge.items import (
     CUT_MARK,
     build_evidence,
@@ -19,11 +20,11 @@ from kullback.runner.records import Atom, Run, Verifier
 from kullback.runner.verdict import verdict
 
 ROOT = Path(__file__).resolve().parents[2]
-START = {"orders": {"A1": {"status": "pending"}}}
+START = {"rows": {"R1": {"state": "open"}}}
 
 
 def _run(assistant, end=START, tool_after=None):
-    events = [{"idx": 0, "type": "user_turn", "payload": {"text": "Where is my order A1?"}}]
+    events = [{"idx": 0, "type": "user_turn", "payload": {"text": "What is the total for R1?"}}]
     for text in assistant:
         if tool_after and text == tool_after[1]:
             n = len(events)
@@ -37,7 +38,7 @@ def _run(assistant, end=START, tool_after=None):
 
 
 def _item(item_id="j1", gate=False, evidence=None, anchor=None):
-    target = {"question": "Did the agent tell the user the order total?",
+    target = {"question": "Did the agent tell the user the total?",
               "anchor": anchor or {"answer": "42.50", "accepted": ["$42.5"], "reject": ["40.00"]}}
     if evidence is not None:
         target["evidence"] = evidence
@@ -49,8 +50,9 @@ def _says(score, why="ok", item_id="j1"):
                       usage=Usage(input=1000, output=20))
 
 
-def test_one_item_is_one_call_at_temperature_zero_and_the_anchor_reaches_only_the_judge():
-    model = TestModel([_says(1)], name="anthropic/claude-opus-5-5")
+def test_one_item_is_one_call_at_temperature_zero_and_the_anchor_reaches_only_the_judge(monkeypatch):
+    monkeypatch.setattr(items, "call_cost", lambda usage, name: usage.input / 1e6)
+    model = TestModel([_says(1)], name="m")
     result = judge_item(model, _item(), _run(["Your total is $42.50."]))
     assert (result.score, result.why) == (1, "ok")
     assert len(model.calls) == 1
@@ -82,8 +84,8 @@ def test_the_final_answer_is_the_default_evidence_and_named_turns_replace_it():
 
 
 def test_a_turn_after_a_named_call_is_found_without_an_event_index():
-    run = _run(["Let me look.", "It shipped on Monday.", "Bye."], tool_after=("lookup", "It shipped on Monday."))
-    text, _, missing = build_evidence(run, ["after_call:lookup"])
+    run = _run(["Let me look.", "It shipped on Monday.", "Bye."], tool_after=("read_row", "It shipped on Monday."))
+    text, _, missing = build_evidence(run, ["after_call:read_row"])
     assert "It shipped on Monday." in text and "Bye." not in text and not missing
     _, _, missing = build_evidence(run, ["after_call:never_called"])
     assert missing == ["after_call:never_called"]
