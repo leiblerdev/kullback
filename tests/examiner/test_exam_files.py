@@ -161,14 +161,11 @@ def test_current_reads_the_spec_verifier_and_ignores_a_stale_proposal_under_exam
     assert root.current("t1") == verifier and root.current("t2") is None
 
 
-def test_check_edit_takes_cell_conduct_and_reference_edits_and_names_what_is_missing(tmp_path):
-    cell = {"kind": "cell", "task_id": "t1", "table": "items", "action": "drop", "why": "no turn says it"}
-    conduct = {"kind": "conduct", "task_id": "t1", "action": "add", "conduct": "refusal", "why": "policy"}
-    reference = {"kind": "reference", "task_id": "t1", "run_id": "r2", "why": "it did what was asked"}
-    assert [F.check_edit(e, tmp_path) for e in (cell, conduct, reference)] == [cell, conduct, reference]
-    for edit, said in ((dict(cell, action="keep"), "action, one of allow, drop"),
-                       (dict(conduct, conduct="apology"), "conduct, one of handoff"),
-                       ({**reference, "run_id": ""}, "run_id")):
+def test_check_edit_takes_a_body_edit_only_and_names_what_is_missing(tmp_path):
+    body = {"kind": "body", "path": "env/tools/a.py", "call_id": "c1", "column": "slot", "recorded": "a",
+            "replayed": "b", "why": "w"}
+    assert F.check_edit(body, tmp_path) == body
+    for edit, said in (({"kind": "cell", "task_id": "t1"}, "is a ruling"), (dict(body, column=""), "column")):
         try:
             F.check_edit(edit, tmp_path)
         except ValueError as error:

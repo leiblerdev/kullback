@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from kullback.runner.records import AtomKind, Record
 from kullback.spec.must_not import tier_of as _atom_tier
 
 Stance = Literal["volunteered", "accepted"]
+# Spec fields retired with the Examiner's edit kinds (D325 to D328): dropped when an older file loads.
+RETIRED_KEYS = ("atom_edits", "end_state_edits")
 Tier = Literal["critical", "sanity", "important"]
 
 # The atom kind a demand compiles to when it is not the check's own kind (compile.py does the same).
@@ -74,17 +76,23 @@ class Spec(Record):
     rulings_open: int = 0
     round: int = 0
     version: int = 0
-    # Rulings the router could not hand to a writer yet (spec/router.py), and why the Task is set aside.
+    # Open blocking rulings (spec/rulings.py) and review rounds run; requests left by the retired router,
+    # and why the Task is set aside.
     pending_repair: list[dict] = Field(default_factory=list)
     set_aside: Optional[str] = None
     # The writer's session counts: demands, refusals, gaps, spend, read rounds, attempts, sent back.
     writer: dict = Field(default_factory=dict)
-    # The review edits to the compiled atoms, applied in order (spec/review.py): {drop, add, why}.
-    atom_edits: list[dict] = Field(default_factory=list)
-    # The review's cell and conduct edits, applied in order on the written Verifier (spec/review.py).
-    end_state_edits: list[dict] = Field(default_factory=list)
     # What the Verifier's gates came to: the Reference, end states, cells, unsupported (spec/end_state.py).
     end_state: dict = Field(default_factory=dict)
+
+
+    @model_validator(mode="before")
+    @classmethod
+    def _retired(cls, data: Any) -> Any:
+        """A Spec written before D328 loads: the Examiner's edit records are retired, never applied."""
+        if isinstance(data, dict) and any(key in data for key in RETIRED_KEYS):
+            data = {key: value for key, value in data.items() if key not in RETIRED_KEYS}
+        return data
 
 
 # Checks that specify a Task with no expected write: a Spec keeping one is never empty.

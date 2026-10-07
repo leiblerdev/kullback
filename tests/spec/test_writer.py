@@ -240,8 +240,8 @@ def test_repair_changes_or_defends_only_ruled_checks_and_every_change_must_groun
          "because": "per the moving items rules"},
     ])])
     repaired = W.repair(spec, ruling, inputs(), model)
-    assert repaired.counts == {"changed": 1, "defended": 0, "refused": 1, "not_ruled": 1, "parse_error": "",
-                               "truncated_chars": 0}
+    assert repaired.counts == {"changed": 1, "dropped": 0, "added": 0, "defended": 0, "refused": 1, "not_ruled": 1,
+                               "parse_error": "", "truncated_chars": 0, "rebut": ""}
     assert repaired.spec.checks[0] == spec.checks[0]
     assert repaired.spec.checks[1].demand == {"demand": "cap", "count": 2}
     assert repaired.spec.version == spec.version + 1 and len(repaired.spec.checks) == 2

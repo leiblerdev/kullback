@@ -11,8 +11,9 @@ is dropped, a check resting only on facts that were accepted and never witnessed
 whose because quotes neither a witnessed fact nor the policy text is dropped, facts no check names
 become gaps, and `must_not` adds the forbidden side. Demands refused on their because, and checks that
 make the Spec unpassable (compile.UNSATISFIABLE), go back to the writer once, in one follow-up turn of
-the same conversation, and the corrections that ground are kept. `repair` answers a ruling by changing
-or defending the ruled checks only, under the same rules.
+the same conversation, and the corrections that ground are kept. `repair` answers an Examiner ruling
+(D328): it applies the ruling's fix (change or drop a ruled check, add a check for an uncovered fact)
+or rebuts it with why, under the same rules.
 """
 
 from __future__ import annotations
@@ -122,20 +123,22 @@ SENT_BACK_RULES = {
     "value_not_argument": "a write's values name arguments of its tool only",
 }
 
-REPAIR_PROMPT = """A ruling says some checks you wrote for this customer request are wrong. You \
-still have never seen any agent run, and you must not ask for one. For each ruled check, either \
-change it or defend it; you may not touch any other check and you may not add checks.
+REPAIR_PROMPT = """The Examiner ruled on checks you wrote for this customer request. A ruling names \
+one item (a check id, an Intent fact id, or the task), what is wrong and a fix. You still have never \
+seen any agent run, and you must not ask for one. Apply the fix or rebut the ruling with why.
 
 Rules:
 - Every rule of the writer still holds: reason from the recorded policy, never memory; quote the \
 Intent word for word; take exact values only from Starting state reads; demand the shape when a \
 literal is unseen; at most 4 read rounds.
-- A changed check keeps its id and must still carry a because that quotes the Intent (at least 12 \
-characters) or names a policy section, or code keeps the old check.
-- Defend a check when the Intent or the policy still requires it; say why in because.
-- Output one JSON object only, no prose: {"checks": [{"id": "<ruled check id>", "action": \
-"change" | "defend", "kind": "required", "demand": "write" | "say" | "ask" | "no_write" | "cap" | \
-"shape", ...fields..., "fact_ids": ["f1"], "because": "..."}]}.
+- You may change or drop a ruled check, and add at most 3 new checks with new ids; you may not \
+touch any other check.
+- A changed or added check must carry a because that quotes the Intent (at least 12 characters) or \
+names a policy section, or code keeps the old check and counts the ruling rebutted.
+- Rebut when the Intent or the policy still requires the check as written; say why in one sentence.
+- Output one JSON object only, no prose: {"checks": [{"id": "<check id>", "action": \
+"change" | "drop" | "add", "kind": "required", "demand": "write" | "say" | "ask" | "no_write" | "cap" | \
+"shape", ...fields..., "fact_ids": ["f1"], "because": "..."}], "rebut": "<why, or empty>"}.
 """
 
 # The longest message body a session is sent, about 6000 tokens: it bounds one call's input cost
@@ -143,6 +146,8 @@ characters) or names a policy section, or code keeps the old check.
 BODY_CHARS = 24000
 # The longest ruling excerpt a repair session is shown: a quote, never a transcript.
 MAX_EXCERPT = 1000
+# The most checks one repair may add (D328): a fix covers a fact, it never rewrites the Spec.
+MAX_ADDS = 3
 _META = ("id", "kind", "because", "fact_ids", "action")
 
 
@@ -166,10 +171,13 @@ class WriterInputs(NamedTuple):
 
 
 class Ruling(Record):
-    """What a repair answers: the ruled check ids, the reason in words, and the Examiner's excerpt."""
+    """What a repair answers: the ruled check ids, the item ruled on, the reason and the fix (D328)."""
     check_ids: list[str]
     reason: str
     excerpt: str = ""
+    item: str = ""
+    fix: str = ""
+    kind: str = ""
 
 
 class Written(NamedTuple):
@@ -448,8 +456,7 @@ def verifier_of(spec: Spec, inputs: WriterInputs, gates: Optional[Gates] = None)
 
     With an expected end state the writes are its cells, so only fact and question checks compile to
     atoms and `must_not` adds nothing: the forbidden list and the collateral rule answer for it. With
-    none (no Reference yet) every check compiles as before, with the must-not atoms. The Spec's
-    review edits to its atoms (`atom_edits`) are applied last.
+    none (no Reference yet) every check compiles as before, with the must-not atoms.
     """
     if gates is not None and gates.expected:
         kept = spec.model_copy(update={"checks": [c for c in spec.checks if c.demand.get("demand") in ATOM_DEMANDS]})
@@ -459,24 +466,10 @@ def verifier_of(spec: Spec, inputs: WriterInputs, gates: Optional[Gates] = None)
         compiled = compile_spec(spec, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools)
         must = [atom for atom in compiled.verifier.atoms if atom.kind in ("required", "allowed")]
         atoms = compiled.verifier.atoms + must_not(must, spec.intent.text, inputs.constraints, sorted(inputs.write_tools))
-    update: dict = {"atoms": edited_atoms(atoms, spec.atom_edits)}
+    update: dict = {"atoms": atoms}
     if gates is not None:
         update.update(expected=gates.expected, forbidden=gates.forbidden, conduct=gates.conduct)
     return compiled._replace(verifier=compiled.verifier.model_copy(update=update))
-
-
-def edited_atoms(atoms: list, edits: Iterable[dict]) -> list:
-    """The atoms after each review edit in order: its drop ids out, its added atoms in (ids replaced)."""
-    from kullback.gates import verifier_suite
-
-    out = list(atoms)
-    for edit in edits or ():
-        dropped = {str(atom_id) for atom_id in edit.get("drop") or []}
-        added = [verifier_suite.make_atom(str(a["id"]), a["kind"], dict(a["payload"]),
-                                          description=a.get("description")) for a in edit.get("add") or []]
-        new_ids = {atom.id for atom in added}
-        out = [atom for atom in out if atom.id not in dropped and atom.id not in new_ids] + added
-    return out
 
 
 def runner_verifier_path(workdir: Path, task_id: str) -> Path:
@@ -497,10 +490,8 @@ def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = N
     """Saves the Spec and its whole Verifier, the gates derived by code from the Task's Reference.
 
     The Spec is the one writer of a Task's Verifier (D320): the Runner's file and the Spec's copy are
-    the same bytes. The end-state counts ride on the saved Spec as `end_state`. The review's kept cell
-    and conduct edits (D325) are applied after, so a router repair does not drop them.
+    the same bytes. The end-state counts ride on the saved Spec as `end_state`.
     """
-    from kullback.spec.review import apply_end_state_edits  # review imports this module
     inputs = inputs or load_inputs(workdir, spec.task_id, spec.intent)
     gates = gates if gates is not None else gates_of(workdir, spec, inputs.policy_text, inputs.canon,
                                                     write_tools=inputs.write_tools)
@@ -512,14 +503,13 @@ def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = N
     for path in paths[1:]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-    apply_end_state_edits(workdir, spec)
     return paths
 
 
 def _ruled_view(spec: Spec, ruling: Ruling) -> dict:
     ruled = [check.model_dump(mode="json") for check in spec.checks if check.id in set(ruling.check_ids)]
-    return {"ruled_checks": ruled, "ruling": {"reason": ruling.reason,
-                                              "excerpt": str(ruling.excerpt)[:MAX_EXCERPT]}}
+    return {"ruled_checks": ruled, "ruling": {"item": ruling.item, "kind": ruling.kind, "reason": ruling.reason,
+                                              "fix": ruling.fix, "excerpt": str(ruling.excerpt)[:MAX_EXCERPT]}}
 
 
 def repair_messages(spec: Spec, ruling: Ruling, inputs: WriterInputs) -> tuple[list[dict], int]:
@@ -527,22 +517,42 @@ def repair_messages(spec: Spec, ruling: Ruling, inputs: WriterInputs) -> tuple[l
 
 
 def apply_repair(spec: Spec, ruling: Ruling, answers: Iterable[Any], inputs: WriterInputs) -> tuple[Spec, dict]:
-    """The Spec after a repair: only ruled checks change, and only to grounded checks."""
+    """The Spec after a repair: ruled checks changed or dropped, at most MAX_ADDS new checks, all grounded.
+
+    A ruled check is changed only to a grounded check; an added check needs an id the Spec does not hold.
+    The counts say what changed, what was defended and what code refused.
+    """
     ruled = set(ruling.check_ids) & {check.id for check in spec.checks}
+    held = {check.id for check in spec.checks}
     replaced: dict[str, Check] = {}
-    counts = {"changed": 0, "defended": 0, "refused": 0, "not_ruled": 0}
+    dropped: set[str] = set()
+    added: list[Check] = []
+    counts = {"changed": 0, "dropped": 0, "added": 0, "defended": 0, "refused": 0, "not_ruled": 0}
     for item in answers:
         check_id = str(item.get("id")) if isinstance(item, dict) else ""
-        if check_id not in ruled:
+        action = item.get("action") if isinstance(item, dict) else None
+        if action == "add":
+            if check_id in held or not check_id or len(added) >= MAX_ADDS:
+                counts["refused"] += 1
+                continue
+            check, _ = _check_of(check_id, item, inputs)
+            counts["added" if check else "refused"] += 1
+            if check is not None:
+                added.append(check)
+                held.add(check_id)
+        elif check_id not in ruled:
             counts["not_ruled"] += 1
-        elif item.get("action") == "defend":
+        elif action == "defend":
             counts["defended"] += 1
+        elif action == "drop":
+            counts["dropped"] += 1
+            dropped.add(check_id)
         else:
             check, _ = _check_of(check_id, item, inputs)
             counts["changed" if check else "refused"] += 1
             if check is not None:
                 replaced[check_id] = check
-    checks = [replaced.get(check.id, check) for check in spec.checks]
+    checks = [replaced.get(check.id, check) for check in spec.checks if check.id not in dropped] + added
     repaired = spec.model_copy(update={"checks": checks, "version": spec.version + 1})
     return with_gaps(repaired, inputs), counts
 
@@ -559,8 +569,19 @@ def repair(spec: Spec, ruling: Ruling, inputs: WriterInputs, model: Any, *,
                                        force_answer=True, ceiling_usd=ceiling_usd)
     answers, error = writer_tools.parse_list(session["text"], "checks")
     repaired, counts = apply_repair(spec, ruling, answers, inputs)
-    counts.update(parse_error=error, truncated_chars=cut)
+    counts.update(parse_error=error, truncated_chars=cut, rebut=rebuttal_of(session["text"], answers))
     return Written(repaired, counts, session)
+
+
+def rebuttal_of(text: str, answers: Iterable[Any]) -> str:
+    """The writer's why when it rebuts: the answer's rebut text, else the becauses of the checks it defended."""
+    try:
+        body = json.loads(text[text.index("{"):text.rindex("}") + 1])
+    except (ValueError, IndexError):
+        body = {}
+    rebut = str(body.get("rebut") or "").strip() if isinstance(body, dict) else ""
+    defended = [str(a.get("because") or "") for a in answers if isinstance(a, dict) and a.get("action") == "defend"]
+    return " ".join((rebut or " ".join(defended)).split())
 
 
 def ruling_of(body: dict) -> Ruling:
@@ -570,8 +591,10 @@ def ruling_of(body: dict) -> Ruling:
     """
     quotes = body.get("quotes") or body.get("quoted") or []
     excerpt = body.get("excerpt") or "\n".join(str(q) for q in quotes if isinstance(q, str))
-    return Ruling(check_ids=[str(c) for c in body.get("check_ids") or []], reason=str(body.get("reason") or ""),
-                  excerpt=str(excerpt))
+    check_ids = body.get("check_ids") or ([body["item"]] if body.get("item") else [])
+    return Ruling(check_ids=[str(c) for c in check_ids], reason=str(body.get("reason") or ""),
+                  excerpt=str(excerpt), item=str(body.get("item") or ""), fix=str(body.get("fix") or ""),
+                  kind="/".join(str(body[key]) for key in ("kind", "code") if body.get(key)))
 
 
 def repair_for_ruling(workdir: Path, task_id: str, ruling: dict, model: Any,

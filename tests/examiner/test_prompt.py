@@ -15,23 +15,23 @@ def test_stop_rule_ends_with_one_line_and_no_tool_call():
     assert "one line and no tool call" in text
 
 
-def test_stop_rule_ends_when_every_task_has_one_review():
+def test_stop_rule_ends_when_every_task_is_examined_and_every_answer_ruled():
     text = P.stop_section()
-    assert "every Task has one review filed" in text
+    assert "every Task is examined and every answered ruling is closed or kept open" in text
 
 
-def test_prompt_names_files_never_verbs_and_no_dashes():
-    whole = P.render(P.sections()) + P.opening("Examine.", "rulings", ["runs/", "replays.json"])
+def test_prompt_names_files_with_finding_and_has_no_dashes():
+    from kullback.examiner.domain_tools import TOOL_NAMES
+
+    whole = P.render(P.sections(TOOL_NAMES)) + P.opening("Examine.", "rulings", ["runs/", "replays.json"])
     assert "env/tools/<name>.py" in whole
-    assert "never a verb" in whole
     assert "\u2014" not in whole and "\u2013" not in whole
 
 
-def test_receives_names_the_root_as_dot_and_its_first_write_dirs():
+def test_receives_names_the_root_as_dot_and_says_the_examiner_never_edits():
     text = P.receives_section()
     assert 'Your root is "."' in text
-    assert "never a host path" in text
-    assert "you write nothing and run nothing" in text
+    assert "You give feedback and never edit" in text
     assert P.WRITABLE_DIRS == ()
 
 
@@ -51,31 +51,21 @@ def test_the_system_prompt_is_the_same_whatever_the_rulings_and_the_root_hold():
     assert all("t1: runs" not in text and "runs/, tasks/" not in text for _, text in P.sections())
 
 
-def test_the_prompt_asks_for_one_review_per_task_with_rows_and_an_edit():
+def test_the_prompt_asks_for_rulings_with_a_fix_and_world_lookups_of_every_anchor():
     choice, tools = P.choice_section(), P.tools_section()
-    assert "File one review per Task" in choice
-    assert "A review without rows is not a finding" in choice
-    assert "never from which side has more Runs" in choice
-    assert "no_finding:" in tools and "every other kind goes to the Spec" in tools
+    assert "Look up in the world every anchor" in choice and "never from what a Run did" in choice
+    assert '"fix":' in tools and '"blocking": true' in tools
+    assert "finding:" not in tools and "no_finding:" not in tools
 
 
-def test_the_tools_name_atom_ids_for_drops_and_show_an_added_atom_the_spec_accepts():
-    import json
-    import re
-
-    from kullback.spec.review import _check_add
-
-    tools = P.tools_section()
-    assert '"drop": ["i2"]' in tools and "a check id or fact id is not an atom id" in tools
-    added = json.loads(re.search(r'"add": \[(\{"id": "said_total".*?\}\})\]', tools).group(1))
-    assert added["payload"]["kind"] == "communicate" and _check_add(added) == ""
-    assert all(f"{kind}:" in tools for kind in ("cell", "conduct", "reference"))
+def test_round_two_asks_to_close_or_keep_open_and_round_one_does_not():
+    assert "Close each answered ruling" in P.opening("Examine.", "t1", round_number=2)
+    assert "Close each answered ruling" not in P.opening("Examine.", "t1", round_number=1)
 
 
-def test_the_finding_tool_lists_the_same_six_edit_kinds_the_prompt_does():
+def test_the_finding_tool_takes_body_edits_only():
     from kullback.examiner.domain_tools import FindingArgs
     from kullback.examiner.exam_files import EDIT_KINDS
 
     described = FindingArgs.model_fields["edits"].description
-    assert len(EDIT_KINDS) == 6 and all(f"kind: {kind}," in described for kind in EDIT_KINDS)
-    assert all(f"{kind}:" in P.tools_section() for kind in EDIT_KINDS)
+    assert EDIT_KINDS == ("body",) and "kind: body," in described and "ruling" in described
