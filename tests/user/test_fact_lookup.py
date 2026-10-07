@@ -104,3 +104,9 @@ def test_a_closing_question_or_an_offer_on_your_thing_asks_for_no_fact():
 def test_a_missing_name_reaches_only_held_facts_sharing_its_words():
     found = store(("widget_id", "WG-17")).lookup("Before I change your widget I need your email.")
     assert found.hits == [] and found.missing == ["email"]
+
+
+def test_a_name_made_only_of_kind_words_is_never_heard():
+    vocab = from_signatures([{"name": "fetch", "args_fields": [{"name": "id"}, {"name": "widget_id"}]}])
+    found = FactStore([UserFact(field="widget_id", value="WG-17")], vocab).lookup("What is the widget id?")
+    assert found.fields() == ["widget_id"]

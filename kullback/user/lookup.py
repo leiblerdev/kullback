@@ -92,7 +92,8 @@ class FactStore:
         out: list[str] = []
         for word in words:
             word = rules_mod._norm(word).strip()
-            if word and word not in out:
+            # A name of kind words alone (an argument called "id") would be heard in every "item id".
+            if word and word not in out and not set(word.split()) <= KIND_WORDS:
                 out.append(word)
         return out
 
