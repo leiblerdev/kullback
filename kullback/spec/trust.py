@@ -34,10 +34,9 @@ from kullback.gates.trust import code_ruling, schema_of, workdir_trusted_ruling
 from kullback.runner.atom_context import AtomContext
 from kullback.runner.canon import load_rules
 from kullback.runner.code_hash import CODE_HASH
-from kullback.runner.expected import action_tables, attr_of
 from kullback.runner.records import Run, Verifier, load_run_jsonl, read_json, read_jsonl
 from kullback.runner.replay import RECORDED
-from kullback.spec.actions import action_tools_of, workdir_action_tools
+from kullback.spec.actions import _get, action_tables_of, action_tools_of, workdir_action_tools
 from kullback.spec.canfail import can_fail, judge_run
 from kullback.spec.events import TASK_SET_ASIDE
 from kullback.spec.ground import ground_spec
@@ -166,8 +165,8 @@ def writer_disagreement(spec: Spec, reference: Optional[Run], schema: Any = None
     if reference is None:
         return []
     context = AtomContext(reference)
-    separator = str(attr_of(schema, "key_separator") or "")
-    actions, action_tools = action_tables(schema), action_tools_of(schema or {})
+    separator = str(_get(schema, "key_separator") or "")
+    actions, action_tools = action_tables_of(schema or {}), action_tools_of(schema or {})
     rows = {key: _row_parts(key.partition(".")[2], separator) for key in context.diff()
             if key.partition(".")[0] not in actions}
     out = []

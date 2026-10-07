@@ -5,7 +5,7 @@ One model session reads the Intent facts, the policy, the tool list and, through
 (spec/items.py: state, event, text and judge items), each with gate, weight and provenance (the Intent
 facts it answers or a verbatim policy line). It never sees a Run, a Reference, a Verifier or an End
 state: the inputs come from the Environment's own files and `writer_tools.refuse_run_inputs` refuses
-anything else. Nothing here reads references.json.
+anything else. Nothing here reads the Reference index (spec/witness.py does, for the witness flag).
 
 Code decides what stands, in the tool: an item naming a value no world row, policy line or user turn
 holds is refused with the reason, as is an item with no provenance or resting on unwitnessed facts
@@ -73,9 +73,11 @@ user allows several values, not where a value is forbidden.
 - called {tool, args?} / not_called {tool, args?}: a call that must or must not happen.
 - before {first: "confirm_turn" | tool, then: tool}: the user confirms (or a tool is called) before then.
 - said {values: [...], not_values: [...]}: short values the agent must (not) state to the user.
-- judge {question, anchor: {answer, accepted: [...], reject: [...]}, evidence: ["final_answer" | \
-"assistant_turns" | "after_call:<tool>"]}: one yes or no question about what the agent told the user; \
-the anchor states the right answer with its values from the world or the policy.
+- judge {question, anchor: {answer, accepted: [...], reject: [...], row: {table, find, fields: [...]}}, \
+evidence: [...]}: one yes or no question about what the agent told the user. Find the anchor's row with \
+find_rows first, cite it in row, and state its fields in answer; only a refusal anchor that quotes the \
+item's policy_line goes without a row. Evidence: "after_call:<tool>" when the fact comes from a lookup, \
+"final_answer" otherwise, "assistant:<k>" for the k-th agent turn, "assistant_turns" only as a fallback.
 Every item: id, gate (true when a run failing it is wrong whatever else it does), weight (default 1), \
 and fact_ids or policy_line (a verbatim line of the policy, at least 12 characters). State items may \
 carry alt (0, 1, ...) when the policy allows different end states; an item without alt holds in all."""
@@ -87,8 +89,8 @@ with status closed (gate), before {first: "confirm_turn", then: "close_record"} 
 - The user asks for something the policy forbids: no state item (code already fails any change), and \
 one judge item asking whether the agent declined and why, the anchor quoting the policy line.
 - The user wants a new entry with a minted id: row_new with the fields the user gave, never the id.
-- The user asks what something costs: a judge item whose anchor is the amount read from the world, \
-and said with that amount if it is stored as is. Never compute a figure the world does not hold.
+- The user asks what something costs: a judge item whose anchor is the amount read from the row that \
+holds it (row cites that row, evidence after_call:<the lookup tool>), and said with that amount if it is stored as is. Never compute a figure the world does not hold.
 - The user says "leave the other one as it is": row_keeps on that row's fields."""
 
 CHOICE_RULE = """\
@@ -507,12 +509,14 @@ def repair_for_ruling(workdir: Path, task_id: str, ruling: dict, model: Any,
     write_verifier(written.spec, workdir, inputs)
     bus = Bus(Path(workdir) / "bus.jsonl", agent="spec")
     before = {check.id: check for check in spec.checks}
+    after = {check.id for check in written.spec.checks}
     changed = [check.id for check in written.spec.checks if before.get(check.id) != check]
+    changed += [check_id for check_id in before if check_id not in after]
     if changed:
         events.spec_repaired(bus, task_id, written.spec.version, changed)
     else:
         events.spec_defended(bus, task_id, ruled.check_ids, str(ruling.get("code") or "other"))
-    return written.spec
+    return load_spec(workdir, task_id)
 
 
 def spoken_intent(task_id: str, text: str) -> SpecIntent:

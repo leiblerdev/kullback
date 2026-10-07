@@ -81,12 +81,31 @@ def test_value_sets_event_text_and_judge_items_are_checked_by_their_own_rules():
                                           "args": {"colour": "red"}, "fact_ids": ["f1"]})[1]
     assert "sentence" in keep({"id": "t1", "kind": "said", "values": ["move item A1 to slot seven now please"],
                                "fact_ids": ["f1"]})[1]
-    judge = {"id": "j1", "kind": "judge", "question": "Did the agent say where A1 now is?",
-             "anchor": {"answer": "slot seven"}, "fact_ids": ["f1"]}
+    assert "yes or no" in keep({"id": "j0", "kind": "judge", "question": "Say where A1 is.",
+                                "anchor": {"answer": "x"}, "fact_ids": ["f1"]})[1]
+
+
+def test_a_judge_anchor_cites_the_one_row_it_was_found_in_and_its_answer_states_that_rows_fields():
+    judge = {"id": "j1", "kind": "judge", "question": "Did the agent say where B2 is?", "fact_ids": ["f1"],
+             "anchor": {"answer": "B2 is in slot four", "row": {"table": "items", "find": {"item_id": "B2"},
+                                                                 "fields": ["slot"]}}}
     kept, why = keep(judge)
     assert why == "" and kept["gate"] is False and kept["evidence"] == ["final_answer"]
-    assert "yes or no" in keep(dict(judge, question="Say where A1 is."))[1]
+    assert kept["anchor"]["row"] == {"table": "items", "find": {"item_id": "B2"}, "key": "B2",
+                                     "fields": {"slot": "four"}}
+    wrong_row = dict(judge, anchor=dict(judge["anchor"], row=dict(judge["anchor"]["row"], find={"item_id": "A1"})))
+    assert "does not state items row A1 slot" in keep(wrong_row)[1]
+    assert "anchor.row is" in keep(dict(judge, anchor={"answer": "slot four"}))[1]
+    assert "matches 2 rows" in keep(dict(judge, anchor=dict(judge["anchor"], row={
+        "table": "items", "find": {"label": "red"}, "fields": ["slot"]})))[1]
+    refusal = {"id": "j2", "kind": "judge", "question": "Did the agent decline?",
+               "policy_line": "Move an item only to a free slot",
+               "anchor": {"answer": "No: move an item only to a free slot."}}
+    assert keep(refusal)[1] == ""
+    for ref in ("after_call:list_items", "assistant:2", "assistant_turns"):
+        assert keep(dict(judge, evidence=[ref]))[1] == ""
     assert "evidence" in keep(dict(judge, evidence=["the third turn"]))[1]
+    assert "evidence" in keep(dict(judge, evidence=["after_call:teleport"]))[1]
 
 
 def _kept(*items: dict) -> list[dict]:

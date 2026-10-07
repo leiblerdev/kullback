@@ -1,7 +1,7 @@
 """An Examiner review reaches a rewritten Verifier through the Builder's examine tool, by code (D320).
 
 The findings are the examine result the Builder's `examine_fn` seam answers with; the workdir is
-tests/spec/test_roles.py's, its Verifier written from a Spec with one write and one fact told.
+tests/spec/test_roles.py's, its Verifier written from a Spec with one state item and one fact told.
 """
 
 from __future__ import annotations
@@ -14,9 +14,8 @@ from kullback.runner.records import Verifier
 from kullback.spec import review as RV
 from kullback.spec import writer as W
 from kullback.spec.schema import load_spec
-from tests.spec.fixtures import check, spec
-from tests.spec.test_roles import _workdir
-from tests.spec.test_writer import inputs
+from tests.spec.fixtures import check
+from tests.spec.test_roles import _workdir, inputs, spec
 
 TOLD = check("c2", demand={"demand": "say", "text": "slot seven"}, because="move item A1 to slot seven")
 HEARD = {"id": "said_item", "kind": "required", "payload": {"kind": "communicate", "text": "Item A1",
@@ -28,7 +27,7 @@ BODY = {"kind": "body", "path": "env/tools/update_item.py", "call_id": "c1", "co
 def _written(root):
     """The workdir with the Spec's Verifier written, and the Task's Intent file the text edit names."""
     _workdir(root)
-    W.write_verifier(spec(checks=[check(), TOLD]), root, inputs())
+    W.write_verifier(spec(checks=[TOLD]), root, inputs())
     (root / "intents").mkdir()
     (root / "intents" / "t1.json").write_text(json.dumps({"task_id": "t1", "text": load_spec(root, "t1").intent.text}))
     return root
@@ -49,7 +48,7 @@ def _examine(root, findings):
 
 def test_an_atoms_and_a_text_finding_rewrite_the_verifier_and_the_builder_reads_body_edits_and_one_line(tmp_path):
     root = _written(tmp_path)
-    [told] = [atom.id for atom in _verifier(root).atoms]
+    [told] = [atom.id for atom in _verifier(root).atoms if atom.kind == "communicate"]
     atoms = {"kind": "atoms", "drop": [told], "add": [HEARD], "why": "the user asked to hear the item"}
     text = {"kind": "text", "path": "intents/t1.json", "where": "urgent", "replace": "pressing"}
     result = _examine(root, [{"task_id": "t1", "kind": "other", "text": "atoms", "edits": [atoms]},
@@ -63,7 +62,7 @@ def test_an_atoms_and_a_text_finding_rewrite_the_verifier_and_the_builder_reads_
     assert saved.round == 1 and saved.atom_edits == [{"drop": [told], "add": [HEARD], "why": atoms["why"]}]
     verifier = _verifier(root)
     assert verifier.verifier_version == "spec1"
-    assert {atom.id for atom in verifier.atoms} == {"said_item"}
+    assert {atom.id for atom in verifier.atoms} == {"s1", "sanity", "said_item"}
     assert "pressing" in (root / "intents" / "t1.json").read_text() and "urgent" not in saved.intent.text
     # The fixture's Reference replay carries no fidelity, so the sourced gate is the first to fail.
     assert next(gate for gate, passed in row["gates"].items() if not passed) == "sourced"

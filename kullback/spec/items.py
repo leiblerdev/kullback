@@ -7,13 +7,15 @@ An item is one typed thing a correct Run shows, never a Reference's diff:
             row_keeps {table, find, fields: [...]}               one per "do not change"
     event : called {tool, args?} | not_called {tool, args?} | before {first: "confirm_turn" | tool, then: tool}
     text  : said {values: [...], not_values: [...]}              containment, negation aware
-    judge : {question, anchor: {answer, accepted, reject}, evidence: ["final_answer" | "assistant_turns"
-             | "after_call:<tool>"]}
+    judge : {question, anchor: {answer, accepted, reject, row: {table, find, fields}},
+             evidence: ["final_answer" | "after_call:<tool>" | "assistant:<k>" | "assistant_turns"]}
 
 Every item carries gate, weight and its provenance: fact_ids (Intent facts) or policy_line (a verbatim
 policy line). Code adds the sanity item (`nothing_else`): no row outside the declared rows changed.
 "Find, do not invent": `World.check` refuses a value no world row, policy line or user turn holds, a
-find that names no row or several, and a field the table does not have, each with the reason.
+find that names no row or several, and a field the table does not have, each with the reason. A judge
+anchor cites the row it was read from (one row by a world search) and its answer states those fields;
+only an anchor whose answer quotes the item's policy line goes without a row.
 State items may name an alternative end state (`alt`); one without belongs to every end state, and a
 Run passes the state items when any one end state matches.
 """
@@ -35,6 +37,7 @@ SANITY_ID = "sanity"
 CONFIRM_TURN = "confirm_turn"
 EVIDENCE = ("final_answer", "assistant_turns")
 AFTER_CALL = "after_call:"
+ASSISTANT = "assistant:"
 # Gate by default: what the world must hold and what the event log must show; text and judge items weigh.
 DEFAULT_GATE = {kind: kind in STATE_KINDS + EVENT_KINDS for kind in ITEM_KINDS}
 # The shortest policy line an item may rest on, as the because rule asks of an Intent quote (ground.MIN_QUOTE).
@@ -364,22 +367,63 @@ class World:
         kept.update(values=list(values), not_values=list(nots))
         return ""
 
+    def _evidence(self, evidence: Any) -> str:
+        """Each evidence ref is final_answer, assistant_turns, assistant:<k> or after_call:<tool>."""
+        if not isinstance(evidence, list) or not evidence:
+            return "evidence is a list of refs"
+        for ref in evidence:
+            text = str(ref)
+            if text in EVIDENCE or (text.startswith(ASSISTANT) and text[len(ASSISTANT):].isdigit()):
+                continue
+            if text.startswith(AFTER_CALL) and text[len(AFTER_CALL):] in self.tools:
+                continue
+            return (f"evidence is final_answer, {AFTER_CALL}<tool>, {ASSISTANT}<k> or assistant_turns; "
+                    f"not {text!r}")
+        return ""
+
+    def _anchor_row(self, anchor: dict, answer: str) -> tuple[Optional[dict], str]:
+        """The row the anchor cites, found by a world search: one row, its fields, each stated in the answer."""
+        cited = anchor.get("row")
+        if not isinstance(cited, dict):
+            return None, ("anchor.row is {table, find: {field: value}, fields: [...]}: the row you found the answer "
+                          "in with find_rows, and the fields the answer states")
+        kept: dict = {}
+        why = self._one_row(dict(cited, alt=None), kept)
+        fields = cited.get("fields")
+        if why or not isinstance(fields, list) or not fields:
+            return None, f"anchor.row: {why or 'fields lists the fields the answer states'}"
+        row, values = self.row(kept["table"], kept["row"]) or {}, {}
+        for field in fields:
+            why = self._field(kept["table"], field)
+            if why:
+                return None, f"anchor.row: {why}"
+            values[str(field)] = path_value(row, str(field))
+            if norm(values[str(field)]) not in norm(answer):
+                return None, (f"anchor.answer does not state {kept['table']} row {kept['row']} {field} "
+                              f"({json.dumps(values[str(field)])}); read the row again or cite the right one")
+        return {"table": kept["table"], "find": kept["find"], "key": kept["row"], "fields": values}, ""
+
     def _judge(self, item: dict, kept: dict) -> str:
         question = str(item.get("question") or "").strip()
         anchor = item.get("anchor")
         if not question.endswith("?"):
             return "question is one yes or no question ending with '?'"
         if not isinstance(anchor, dict) or not str(anchor.get("answer") or "").strip():
-            return "anchor is {answer, accepted: [...], reject: [...]}: what a met checkpoint states"
+            return "anchor is {answer, accepted: [...], reject: [...], row}: what a met checkpoint states"
+        answer = str(anchor["answer"]).strip()
         evidence = item.get("evidence") or ["final_answer"]
-        bad = [e for e in evidence if e not in EVIDENCE and not (isinstance(e, str) and e.startswith(AFTER_CALL)
-                                                                and e[len(AFTER_CALL):] in self.tools)]
-        if bad:
-            return f"evidence is final_answer, assistant_turns or {AFTER_CALL}<tool>; not {bad[0]!r}"
-        kept.update(question=question, anchor={"answer": str(anchor["answer"]).strip(),
+        why = self._evidence(evidence)
+        if why:
+            return why
+        cited, why = self._anchor_row(anchor, answer)
+        policy = item.get("policy_line") and _flat(item["policy_line"]) in _flat(answer)
+        if why and not (policy and anchor.get("row") is None):
+            return why
+        kept.update(question=question, anchor={"answer": answer,
                                                "accepted": [str(a) for a in anchor.get("accepted") or []],
-                                               "reject": [str(r) for r in anchor.get("reject") or []]},
-                    evidence=list(evidence))
+                                               "reject": [str(r) for r in anchor.get("reject") or []],
+                                               "row": cited},
+                    evidence=[str(e) for e in evidence])
         return ""
 
 
@@ -460,6 +504,7 @@ def end_states_of(items: list[dict], world: World, action_tables: Iterable[str] 
             for field, value in item["expect"].items():
                 cells.append(ExpectedCell(table=item["table"], row_id=item["row"], field=field, value=value,
                                           source=_cell_source(value, world), row_source=row_source))
+        cells.sort(key=lambda cell: (cell.table, cell.row_id, cell.field))
         out.append(EndState(cells=cells, allowed=list(allowed), new_rows=new_rows))
     return out
 

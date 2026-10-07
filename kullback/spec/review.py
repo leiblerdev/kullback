@@ -27,11 +27,13 @@ from typing import Any, Iterable, Optional
 
 from kullback.runner.canon import load_rules
 from kullback.runner.records import Conduct, ValueSource, Verifier, read_json, write_json
+from kullback.spec.items import SANITY_ID
 from kullback.spec.router import ROUNDS_CAP
 from kullback.spec.schema import Spec, intent_text, load_spec, save_spec, spec_verifier_path
 from kullback.spec.writer import (
     ATOM_DEMANDS,
     WRITE_PREDICATE,
+    is_item_check,
     load_inputs,
     runner_verifier_path,
     with_gaps,
@@ -92,15 +94,20 @@ def _text_edit(workdir: Path, spec: Spec, edit: dict) -> tuple[Spec, str]:
 
 
 def atom_checks(spec: Spec, verifier: Optional[Verifier]) -> dict[str, str]:
-    """Each atom id of the Verifier with the check that made it (compile names atoms i<n>, n the index
-    of the compiled check), or "review" for an atom a review added."""
+    """Each atom id of the Verifier with the check that made it: an item's atom is its check's id, the
+    sanity item is "code"; compile names an older check's atoms i<n>, n its index among the older checks;
+    "review" for an atom a review added."""
     if verifier is None:
         return {}
-    checks = spec.checks
-    if verifier.expected:
+    items = {check.id for check in spec.checks if is_item_check(check)}
+    checks = [check for check in spec.checks if not is_item_check(check)]
+    if verifier.expected and not items:
         checks = [check for check in checks if check.demand.get("demand") in ATOM_DEMANDS]
     out: dict[str, str] = {}
     for atom in verifier.atoms:
+        if atom.id in items or atom.id == SANITY_ID:
+            out[atom.id] = atom.id if atom.id in items else "code"
+            continue
         number = re.match(r"i(\d+)", atom.id)
         index = int(number.group(1)) if number else -1
         out[atom.id] = checks[index].id if 0 <= index < len(checks) else "review"
