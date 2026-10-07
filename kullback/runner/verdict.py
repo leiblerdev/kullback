@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, NamedTuple, Optional
 
-from kullback.judge.shape import is_item
+from kullback.judge.shape import NO_EVIDENCE, has_evidence, is_item
 from kullback.runner import target as _target
 from kullback.runner.atom_context import AtomContext, _evaluate, gate
 from kullback.runner.canon import UNRESOLVED, Unresolved, record_use
@@ -232,14 +232,17 @@ def _item(item_id: str, kind: str, source: Any, holds: Optional[bool], name: str
                             why=why, **judged), name, blocks)
 
 
-def _judge_item(atom: Atom, judge_results: Optional[dict], notes: list[str]) -> tuple[_Item, bool]:
+def _judge_item(atom: Atom, run: Run, judge_results: Optional[dict], notes: list[str]) -> tuple[_Item, bool]:
     """A judge item (D328): the item judge's score decides it like a code item, gate or scored.
 
-    An unjudged item (the judge failed or was not asked) is open: a gate leaves the Run not
-    verdicted, never failed, and a scored one masks the score.
+    A Run with no turn the item's evidence names scores 0 by code, judged or not. Otherwise an
+    unjudged item (the judge failed or was not asked) is open: a gate leaves the Run not verdicted,
+    never failed, and a scored one masks the score.
     """
     result = (judge_results or {}).get(atom.id)
     row = result.model_dump() if hasattr(result, "model_dump") else dict(result or {})
+    if row.get("score") is None and not has_evidence(run, atom.target or {}):
+        row = {"score": 0, "why": NO_EVIDENCE}
     score = row.get("score")
     notes.append(f"judge_item:{atom.id}:{'unjudged' if score is None else score}")
     holds = None if score is None else score == 1
@@ -275,7 +278,7 @@ def _atom_items(verifier: Verifier, context: AtomContext, judge_results: Optiona
     # so a hard atom placed first in the Verifier would see an empty list and hold vacuously.
     for atom in sorted(verifier.atoms, key=lambda a: a.kind == "hard"):
         if is_item(atom):
-            item, used = _judge_item(atom, judge_results, notes)
+            item, used = _judge_item(atom, context.run, judge_results, notes)
             judge_used = judge_used or used
             items.append(item)
             continue

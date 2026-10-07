@@ -2,8 +2,8 @@
 
 A Task is trusted when both constructed Runs score 0 under its Verifier and no blocking ruling is open:
 
-1. the do-nothing Run: the Task's start state left as it was, no call, no message (`empty_run`); a
-   refusal or no-write Verifier (`forbids_only`) is passed by it rightly, so it is not asked to fail;
+1. the do-nothing Run: the Task's start state left as it was, no call, no message (`empty_run`); every
+   Verifier must fail it, a refusal one too: its gated judge item has no evidence and scores 0;
 2. the stray-write Run: the same start state with one write to a row outside every row the Verifier
    declares (its expected cells and `allowed`), which must fail the sanity item (nothing outside the
    declared rows changed).
@@ -29,7 +29,7 @@ from typing import Any, Iterable, NamedTuple, Optional
 
 from kullback.gates.probes import write_tools_of
 from kullback.gates.trust import schema_of, workdir_trusted_ruling
-from kullback.gates.verifier_suite import empty_run, forbids_only
+from kullback.gates.verifier_suite import empty_run
 from kullback.runner.atom_context import AtomContext
 from kullback.runner.canon import load_rules
 from kullback.runner.code_hash import CODE_HASH
@@ -189,15 +189,13 @@ def _stray_base(runs: list[Run], passing: Iterable[str], empty: Optional[Run]) -
 
 def constructed_runs(verifier: Verifier, runs: list[Run], passing: Iterable[str], *, schema: Any = None,
                      canon: Any = None) -> dict[str, Optional[Run]]:
-    """name -> the constructed Run, None where it cannot be built; do_nothing is left out where it is right.
+    """name -> the constructed Run, None where it cannot be built; every Verifier gets both (D333, fold).
 
     The stray write is laid on `_stray_base`: on a passing base, the stray row is the one thing that can fail it.
     """
     empty = _do_nothing(runs)
     base, _passing = _stray_base(runs, passing, empty)
-    out: dict[str, Optional[Run]] = {}
-    if not forbids_only(verifier):
-        out["do_nothing"] = empty
+    out: dict[str, Optional[Run]] = {"do_nothing": empty}
     out["stray_write"] = stray_write_run(verifier, base, schema=schema, canon=canon)
     return out
 

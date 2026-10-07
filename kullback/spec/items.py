@@ -16,7 +16,8 @@ policy line). Code adds the sanity item (`nothing_else`): no row outside the dec
 "Find, do not invent": `World.check` refuses a value no world row, policy line or user turn holds, a
 find that names no row or several, and a field the table does not have, each with the reason. A judge
 anchor cites the row it was read from (one row by a world search) and its answer states those fields;
-only an anchor whose answer quotes the item's policy line goes without a row.
+only an anchor whose answer quotes the item's policy line goes without a row, and that refusal item
+always gates.
 State items may name an alternative end state (`alt`); one without belongs to every end state, and a
 Run passes the state items when any one end state matches.
 """
@@ -430,6 +431,8 @@ class World:
         policy = item.get("policy_line") and _flat(item["policy_line"]) in _flat(answer)
         if why and not (policy and anchor.get("row") is None):
             return why
+        if cited is None:
+            kept["gate"] = True  # a refusal is the item that decides: a silent Run must fail it (D330)
         kept.update(question=question, anchor={"answer": answer,
                                                "accepted": [str(a) for a in anchor.get("accepted") or []],
                                                "reject": [str(r) for r in anchor.get("reject") or []],

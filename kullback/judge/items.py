@@ -23,13 +23,11 @@ from typing import Iterable, Optional
 from pydantic import BaseModel, Field
 
 from kullback.ai.provider import Model, ModelConfig
-from kullback.judge.shape import FINAL_ANSWER, anchor_of, evidence_refs, is_item
-from kullback.runner.atom_context import _text_of
+from kullback.judge.shape import NO_EVIDENCE, anchor_of, evidence_refs, has_evidence, is_item, resolve
 from kullback.runner.budget import call_cost
 from kullback.runner.records import Atom, Run
 
 ITEM_JUDGE_VERSION = "1"
-ALL_ASSISTANT = "assistant_turns"
 TURN_CHARS = 4000  # each turn of evidence, clamped and marked when cut
 EVIDENCE_CHARS = 24000  # all the evidence of one item; a long multi-turn Run fits
 WHY_CHARS = 25
@@ -63,55 +61,6 @@ class JudgeScore(BaseModel):
     cost_usd: float = 0.0
     model: Optional[str] = None
     version: str = ITEM_JUDGE_VERSION
-
-
-def assistant_turns(run: Run) -> list[tuple[int, str]]:
-    """Every assistant message of a Run with text, as (event index, text), in order."""
-    out = []
-    for event in run.events:
-        if event.type == "model_call":
-            text = _text_of(event.payload or {}).strip()
-            if text:
-                out.append((event.idx, text))
-    return out
-
-
-def _turns_after_call(run: Run, tool: str) -> list[tuple[int, str]]:
-    """The assistant messages after the first result of `tool`, up to the next user turn."""
-    seen, out = False, []
-    for event in run.events:
-        payload = event.payload or {}
-        if event.type == "tool_result" and payload.get("name") == tool:
-            seen = True
-        elif seen and event.type == "user_turn" and out:
-            break
-        elif seen and event.type == "model_call":
-            text = _text_of(payload).strip()
-            if text:
-                out.append((event.idx, text))
-    return out
-
-
-def resolve(run: Run, ref: str) -> list[tuple[str, int, str]]:
-    """The turns one evidence ref names, as (label, event index, text).
-
-    Refs are written before any Run exists, so none names an event index: `final_answer` is the
-    last assistant message; `assistant_turns` is every one; `assistant:<k>` is the k-th (1-based,
-    negative from the end); `after_call:<tool>` is what the Candidate said after that tool answered.
-    """
-    turns = assistant_turns(run)
-    if ref == FINAL_ANSWER:
-        return [("final answer", *turns[-1])] if turns else []
-    if ref == ALL_ASSISTANT:
-        return [(f"assistant turn {i + 1}", idx, text) for i, (idx, text) in enumerate(turns)]
-    kind, _, arg = ref.partition(":")
-    if kind == "assistant" and re.fullmatch(r"-?\d+", arg or ""):
-        k = int(arg)
-        pos = k - 1 if k > 0 else len(turns) + k
-        return [(f"assistant turn {pos + 1}", *turns[pos])] if 0 <= pos < len(turns) else []
-    if kind == "after_call" and arg:
-        return [(f"after {arg}", idx, text) for idx, text in _turns_after_call(run, arg)]
-    return []
 
 
 def _clamp(text: str, limit: int) -> tuple[str, bool]:
@@ -191,6 +140,9 @@ def judge_item(model: Model, atom: Atom, run: Run, *, model_id: Optional[str] = 
     result = JudgeScore(id=atom.id, gate=bool(getattr(atom, "gate", True)),
                         weight=float(getattr(atom, "weight", 1.0)), truncated=cut,
                         evidence=refs, missing=missing, model=name)
+    if not has_evidence(run, target):  # nothing to read: 0 by code, no call (D328)
+        result.score, result.why = 0, NO_EVIDENCE
+        return result
     messages = [{"role": "system", "content": SYSTEM},
                 {"role": "user", "content": judge_message(atom.id, target, evidence)}]
     try:

@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from kullback.runner.records import EndState, Event, ExpectedCell, Forbidden, ValueSource, Verifier
+from kullback.runner.records import Atom, EndState, Event, ExpectedCell, Forbidden, ValueSource, Verifier
 from kullback.spec import trust as T
 from kullback.spec.compile import compile_demands, compile_spec
 from kullback.spec.events import TASK_SET_ASIDE
@@ -148,13 +148,21 @@ def test_no_stray_write_is_built_when_every_row_is_declared_and_trust_is_withhel
     assert row["constructed"]["stray_write"] == {"built": False, "failed": False, "atom": None, "run_id": None}
 
 
-def test_a_refusal_verifier_is_not_asked_to_fail_the_do_nothing_run():
+def test_a_refusal_verifier_with_only_a_forbidden_write_is_passed_by_the_do_nothing_run_so_untrusted():
     said = ValueSource(kind="policy", ptr={})
     refusal = Verifier(task_id="t1", expected=[EndState()],
                        forbidden=[Forbidden(kind="write", tool="update_item", table="items", row_id="A1", source=said)])
     tier, row = _tier([_replay(), _fresh()], verifier=refusal)
-    assert "do_nothing" not in row["constructed"] and row["constructed"]["stray_write"]["failed"] is True
-    assert tier == "trusted" and row["reference_passes"] is False
+    assert row["constructed"]["do_nothing"]["failed"] is False
+    assert tier == "untrusted" and row["reason"] == "constructed_run_passed"
+
+
+def test_a_refusal_verifier_fails_the_do_nothing_run_at_its_gated_judge_item():
+    declined = Atom(id="j1", kind="allowed", judge=True, gate=True,
+                    target={"question": "Did the agent decline the change?", "anchor": {"answer": "declined"}})
+    refusal = Verifier(task_id="t1", expected=[EndState()], atoms=[declined])
+    _, row = _tier([_replay(), _fresh()], verifier=refusal)
+    assert row["constructed"]["do_nothing"]["failed"] is True and row["constructed"]["do_nothing"]["atom"] == "j1"
 
 
 @pytest.mark.parametrize("update, rulings, tier", [

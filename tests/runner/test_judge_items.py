@@ -73,6 +73,17 @@ def test_a_failed_call_or_an_unreadable_reply_gives_no_score_never_a_zero():
     assert judge_item(TestModel([_says(0.5)]), _item(), _run(["hi"])).score is None
 
 
+def test_empty_evidence_scores_zero_by_code_with_no_model_call_also_after_a_tool_never_called():
+    silent = TestModel([])
+    for item, run in ((_item(), _run([])), (_item(evidence=["after_call:lookup"]), _run(["Your total is 42.50."]))):
+        result = judge_item(silent, item, run)
+        assert (result.score, result.why) == (0, "no evidence")
+    assert silent.calls == []
+    gated = Verifier(task_id="t", atoms=[_item(gate=True)])
+    unjudged = verdict(_run([]), gated)
+    assert unjudged.passed is False and unjudged.failing_atom == "j1" and _row(unjudged).score == 0
+
+
 def test_the_final_answer_is_the_default_evidence_and_named_turns_replace_it():
     run = _run(["The total is 42.50.", "Anything else?"])
     text, cut, missing = build_evidence(run, ["final_answer"])

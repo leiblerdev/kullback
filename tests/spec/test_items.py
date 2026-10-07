@@ -116,7 +116,7 @@ def test_a_judge_anchor_cites_the_one_row_it_was_found_in_and_its_answer_states_
     refusal = {"id": "j2", "kind": "judge", "question": "Did the agent decline?",
                "policy_line": "Move an item only to a free slot",
                "anchor": {"answer": "No: move an item only to a free slot."}}
-    assert keep(refusal)[1] == ""
+    assert keep(refusal)[1] == "" and keep(dict(refusal, gate=False))[0]["gate"] is True, "a refusal item gates"
     for ref in ("after_call:list_items", "assistant:2", "assistant_turns"):
         assert keep(dict(judge, evidence=[ref]))[1] == ""
     assert "evidence" in keep(dict(judge, evidence=["the third turn"]))[1]

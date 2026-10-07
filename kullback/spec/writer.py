@@ -91,7 +91,7 @@ EXAMPLES = """\
 - The user asks to close record R-1 and the policy says closing needs the user's yes: row_is on R-1 \
 with status closed (gate), before {first: "confirm_turn", then: "close_record"} (gate, policy_line).
 - The user asks for something the policy forbids: no state item (code already fails any change), and \
-one judge item asking whether the agent declined and why, the anchor quoting the policy line.
+one gated judge item asking whether the agent declined and why, the anchor quoting the policy line.
 - The user wants a new entry with a minted id: row_new with the fields the user gave, never the id.
 - The user asks what something costs: a judge item whose anchor is the amount read from the row that \
 holds it (row cites that row, evidence after_call:<the lookup tool>), and said with that amount if it is stored as is. Never compute a figure the world does not hold.
@@ -103,7 +103,7 @@ Write an item only for what the Intent asks for or the policy requires, never fo
 Every value comes from a world row you read, a policy line or the user's words: find it first, then add \
 it. Code adds the sanity item by itself (no row outside your state items may change), so list every \
 row a correct run changes, and only those. Gate what decides right or wrong; leave text and judge items \
-ungated unless the request is only to be told something."""
+ungated unless the request is only to be told something or refused (a refusal judge item always gates)."""
 
 FEEDBACK = """\
 # Feedback
