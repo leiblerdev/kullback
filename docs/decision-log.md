@@ -2369,8 +2369,10 @@ empty Spec, no Intent fact, a Verifier that checks nothing, no Verifier file, or
 ruling open, or set aside by the router's rule), constructed_run_passed (a constructed Run passed, or none could be
 built). The stray-write Run is built by code: a passing Run of the Task (a faithful kept Reference first, then a
 fresh Run, else the do-nothing Run) plus one write to a row outside every row the Verifier declares (expected
-cells, `allowed`, forbidden rows), skipping tables that record calls and exempt columns, so it can fail only at the
-sanity item. A refusal Verifier (`forbids_only`) is not asked to fail the do-nothing Run, as before. Two flags ride
+cells, `allowed`, forbidden rows), skipping tables that record calls and exempt columns. It counts as failed only
+when it fails at the sanity check (collateral) on a base the Verifier passes; failing at a cell or an atom, or on a
+failing do-nothing base, it never tested the sanity check, so the Task reads constructed_run_passed with the row's
+detail stray_untested (round 1 correction). A refusal Verifier (`forbids_only`) is not asked to fail the do-nothing Run, as before. Two flags ride
 on the row and never gate: reference_passes (every faithful replay of a kept Reference passes; None without one)
 and solvable (any fresh Run passed; None without one). A failing Reference becomes a code ruling for the Examiner
 (`examiner_rulings`, non-blocking), who rules which side is wrong. Counts (`round_snapshot.counts_of`,
