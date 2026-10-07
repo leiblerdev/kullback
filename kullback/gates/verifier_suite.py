@@ -802,6 +802,28 @@ def empty_run(reference: Run) -> Run:
                events=events, termination_reason="max_turns")
 
 
+def forbids_only(verifier: Verifier) -> bool:
+    """A refusal or no-write Task: no expected end state carries a cell and something is forbidden.
+
+    The empty Run passing such a Verifier is the right answer, so its wrong Run is a forbidden call.
+    """
+    return bool(verifier.forbidden) and not any(state.cells for state in verifier.expected)
+
+
+def forbidden_run(verifier: Verifier, reference: Run) -> Optional[Run]:
+    """The empty Run plus one successful call of the first forbidden entry's tool, on its row when it has one."""
+    rule = next((rule for rule in verifier.forbidden if rule.tool), None)
+    if rule is None:
+        return None
+    run = empty_run(reference)
+    run.run_id = f"{reference.run_id}.forbidden"
+    args = {"id": rule.row_id} if rule.row_id is not None else {}
+    run.events = [Event(idx=0, type="tool_call", payload={"id": "forbidden", "name": rule.tool, "args": args}),
+                  Event(idx=1, type="tool_result", payload={"id": "forbidden", "result": {}}),
+                  *(event.model_copy(update={"idx": 2 + i}) for i, event in enumerate(run.events))]
+    return run
+
+
 def _spans_gate(verifier: Verifier, runs: dict[str, Run], fn: Callable) -> GateResult:
     """Check 1: a user-stated value sits in a user turn, a system-derived value in an earlier tool result.
 

@@ -32,7 +32,16 @@ from kullback.gates import trust as T
 from kullback.gates.probes import version_hash
 from kullback.round_snapshot import counts_of
 from kullback.runner.canon import CanonRules
-from kullback.runner.records import Column, Conduct, EndState, EntitySchema, ExpectedCell, ValueSource, Verifier
+from kullback.runner.records import (
+    Column,
+    Conduct,
+    EndState,
+    EntitySchema,
+    ExpectedCell,
+    Forbidden,
+    ValueSource,
+    Verifier,
+)
 
 REFUSAL = {TASK: {"task_id": TASK, "reason": "no frontier Run reaches the End state", "round": 1}}
 NOTHING_FINISHED = ({TASK: {"tr1": replay_row("tr1", False)}}, {TASK: [reroll_row("reroll-t1-0", "max_steps")]})
@@ -368,6 +377,17 @@ def test_a_task_with_an_empty_expected_diff_and_one_conduct_is_not_trusted_when_
     ruling = T.trusted_gate(**world)
     assert ruling.metrics["trusted"] == [] and ruling.metrics["trust_tier"] == {TASK: "pending"}
     assert ruling.metrics["untrusted"] == {TASK: "pending: the empty Run passes"}
+
+
+def test_a_task_with_an_empty_expected_diff_and_a_forbidden_write_is_trusted_although_the_empty_run_passes():
+    """A refusal or no-write Verifier is passed by the empty Run rightly; its wrong Run is the forbidden call."""
+    still = _replay(end=START)
+    world = _code_world([], run=still)
+    world["verifiers"][0].expected[0].cells.clear()
+    world["verifiers"][0].forbidden.append(Forbidden(kind="write", tool="refund_order",
+                                                     source=ValueSource(kind="policy")))
+    ruling = T.trusted_gate(**world)
+    assert ruling.metrics["trust_tier"] == {TASK: "trusted"} and ruling.metrics["untrusted"] == {}
 
 
 def test_a_contradicted_cell_flags_the_row_and_does_not_change_the_tier():

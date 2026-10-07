@@ -6,7 +6,9 @@ suite is called with the Spec's Verifier in place of the derived one; nothing he
 
 A Verifier with gates (expected end states, forbidden, conduct, D316) is judged by the Verdict, which
 reads those gates first; its mutations are the empty Run and, per expected cell, the Reference with
-that cell left at its start value. Each must fail.
+that cell left at its start value, and with a forbidden list the empty Run plus one forbidden call.
+Each must fail. A refusal or no-write Verifier (no cell, something forbidden) drops the empty Run,
+which rightly passes it.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from kullback.runner.target import check_run
 from kullback.runner.verdict import verdict
 
 # The suite's checks that are mutations of the Reference, each expected to fail.
-CAN_FAIL_STAGES = ("verifier_empty_run", "verifier_wrong_run")
+CAN_FAIL_STAGES = ("verifier_empty_run", "verifier_wrong_run", "verifier_forbidden_run")
 
 
 class CanFailResult(NamedTuple):
@@ -96,7 +98,10 @@ def _cell_mutations(verifier: Verifier, reference: Run) -> list[tuple[str, Run]]
 def _gated_can_fail(verifier: Verifier, reference_run: Any, canon: Any,
                     write_tools: Optional[Iterable[str]]) -> CanFailResult:
     reference = verifier_suite.as_run(reference_run)
-    mutated = [("verifier_empty_run", verifier_suite._empty_run(reference))]
+    forbidden = verifier_suite.forbidden_run(verifier, reference) if verifier.forbidden else None
+    mutated = [] if verifier_suite.forbids_only(verifier) else [
+        ("verifier_empty_run", verifier_suite._empty_run(reference))]
+    mutated += [("verifier_forbidden_run", forbidden)] if forbidden is not None else []
     mutated += [("verifier_undone_cell", run) for _, run in _cell_mutations(verifier, reference)]
     rows = []
     for stage, run in mutated:

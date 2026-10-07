@@ -2252,8 +2252,7 @@ analysis put 42 airline and 27 retail unconfirmed Tasks on action-table cells, 3
 on agent-stated values. Re-derived on the vf-live copies, the unconfirmed Tasks whose fewest-unsupported end state has
 no unsupported cell go from 0 of 52 to 38 (airline) and 1 of 48 to 46 (retail); the code ruling then trusts 16 airline
 (2 on a wrong Reference) and 37 retail (5 wrong), and 22 airline and 8 retail land on "the empty Run passes": their only
-change was the hand-off, which is now conduct and gates only where the Spec demands it. Limits: `spec/end_state.py
-gates_of` does not pass the schema yet, so the action-table rule is off in a build until it does; the source kind is
+change was the hand-off, which is now conduct and gates only where the Spec demands it. Limits: the source kind is
 `tool_result` because `ValueSource.kind` has no `world`; a yes affirms every value of the turn before it; a short value
 is still found by plain containment. The wrong-trust bound must be re-measured before this ships.
 Status: built 2026-10-07 on fix-1007/cells.
