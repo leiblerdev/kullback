@@ -10,7 +10,7 @@ from kullback.runner import target as T
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import Atom, AtomKind, Column, EntitySchema, Event, Run, Verdict, Verifier, as_dict
 from kullback.runner.regrade import cache_key, regrade_run, verdict_path
-from kullback.runner.verdict import MUST_HOLD, verdict
+from kullback.runner.verdict import MUST_HOLD, VERDICT_VERSION, verdict
 
 WRITE_TOOLS = {"archive_entry"}
 
@@ -426,17 +426,17 @@ def test_legacy_judge_pass_cache_is_recomputed_under_new_semantics(tmp_path):
     assert out.passed is False
     assert out.class_ == "not_verdicted"
     assert out.failing_atom == "j"
-    assert out.verdict_version == "3"
+    assert out.verdict_version == VERDICT_VERSION
     assert "judge_reported:j:pass" in out.notes
     assert legacy_path.read_bytes() == before
-    new_key = cache_key("r", verifier, None, None, None, "3",
+    new_key = cache_key("r", verifier, None, None, None, VERDICT_VERSION,
                         judge_results={"j": True}, write_tools={"write_item"})
     assert verdict_path(tmp_path, "r", new_key) != legacy_path
     assert sorted(tmp_path.glob("r.*.json")) != [legacy_path]
     again = regrade_run(run, verifier, judge_results={"j": True}, write_tools={"write_item"},
                         out_dir=tmp_path)
     assert again.notes == out.notes
-    assert again.verdict_version == "3"
+    assert again.verdict_version == VERDICT_VERSION
     turned = regrade_run(run, verifier, judge_results={"j": False},
                          write_tools={"write_item"}, out_dir=tmp_path)
     assert turned.passed is False
