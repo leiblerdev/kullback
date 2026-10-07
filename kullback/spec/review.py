@@ -14,7 +14,7 @@ since the end states are derived by code. A reference edit promotes nothing: it 
 founder or a later stage answers, so the Task cannot be trusted meanwhile.
 
 Each call is one round, counted on the Spec (`round`). The Verifier is rewritten and the trust gates
-rule on it (`spec/trust.py`, the grounded, can-fail and Reference-replay gates); a Task still failing
+rule on it (`spec/trust.py`, the constructed Runs must fail, D328); a Task still failing
 at the ceiling is set aside as pending, never refused by the Examiner alone.
 """
 
@@ -51,8 +51,8 @@ REVIEWS_FILE = "examiner/reviews.json"
 TEXT_DIRS = ("intents", "tasks")
 # The atom payloads a review may add: facts told and questions asked, nothing a write decides.
 ADDABLE = ("communicate", "question")
-# The gates a repaired Verifier must pass: the ones no fresh Run is needed for.
-REPAIR_GATES = ("grounded", "can_fail", "reference_replay")
+# The gates a repaired Verifier must pass: the constructed Runs fail (spec/trust.py, D328).
+REPAIR_GATES = ("do_nothing_fails", "stray_write_fails")
 
 
 def task_of_edit(edit: dict, finding_task: Any = None) -> str:
@@ -221,23 +221,23 @@ def gate_row(workdir: Path, spec: Spec) -> dict:
     from kullback.gates.probes import write_tools_of
     from kullback.spec.actions import workdir_action_tools
     from kullback.spec.trust import faithful_references, load_spec_verifier, runs_on_disk, tier_of_task
-    from kullback.spec.writer_tools import policy_sections_of
 
     root = Path(workdir)
     verifier = load_spec_verifier(root, spec.task_id)
     if verifier is None:
-        return {"tier": "untrusted", "gates": {}, "failing": "no verifier file"}
+        return {"tier": "untrusted", "gates": {}, "reason": "no_intent", "why": "no verifier file"}
     sigs = read_json(root / "tool_sigs.json", None) or []
     tools = write_tools_of(sigs.get("sigs", []) if isinstance(sigs, dict) else sigs) - workdir_action_tools(root)
     tier = tier_of_task(spec, verifier, runs_on_disk(root).get(spec.task_id, []),
                         canon=load_rules(root / "canon-rules.json"), write_tools=tools,
-                        policy_sections=policy_sections_of(root),
                         references=faithful_references(root).get(spec.task_id, ()))
     return tier.row
 
 
 def gates_pass(row: dict) -> bool:
-    return all((row.get("gates") or {}).get(name) for name in REPAIR_GATES)
+    """Every constructed Run the row built fails; a refusal Verifier builds no do-nothing Run to ask."""
+    gates = row.get("gates") or {}
+    return bool(gates) and all(gates[name] for name in REPAIR_GATES if name in gates)
 
 
 def apply_review(workdir: Any, task_id: str, edits: Iterable[dict], *, ceiling: int = ROUNDS_CAP) -> dict:
@@ -282,7 +282,7 @@ def apply_review(workdir: Any, task_id: str, edits: Iterable[dict], *, ceiling: 
         spec = spec.model_copy(update={"set_aside": PENDING})
         save_spec(root, spec)
     return {"task_id": task_id, "applied": applied, "refused": refused, "round": spec.round, "passed": passed,
-            "failing": row.get("failing"), "pending": spec.set_aside == PENDING}
+            "failing": row.get("reason"), "pending": spec.set_aside == PENDING}
 
 
 def route_findings(workdir: Any, findings: list[dict]) -> tuple[list[dict], list[dict]]:

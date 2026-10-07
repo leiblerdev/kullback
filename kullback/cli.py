@@ -919,7 +919,7 @@ def status(
     for name in ("tasks", "fidelity", "reference", "verifier_passed", "trusted", "refused"):
         if name in counts:
             typer.echo(f"{name}: {counts[name]}")
-    if "unconfirmed" in counts:  # a round closed before D319 has no tiers to set side by side
+    if "untrusted" in counts:  # a round closed before D328 has no reasons and flags to print
         typer.echo(f"trust: {_entry('kullback.gates.trust', 'trust_row')(counts)}")
     for row in report.get("first") or ():
         typer.echo(f"moved: {row['task_id']} at {row['stage']}")
