@@ -352,19 +352,20 @@ def test_a_verifier_that_passes_every_code_gate_is_trusted_with_no_probe_pool_pr
     assert ruling.metrics["unsupported_cells"] == {TASK: 0} and ruling.metrics["legacy_only"] == []
 
 
-def test_a_verifier_with_one_unsupported_cell_is_unconfirmed_not_trusted_and_names_the_cell():
+def test_a_verifier_with_one_unsupported_cell_is_untrusted_and_names_the_cell():
     ruling = T.trusted_gate(**_code_world([_cell(sourced=False)]))
-    assert ruling.metrics["trusted"] == [] and ruling.metrics["trust_tier"] == {TASK: "unconfirmed"}
+    assert ruling.metrics["trusted"] == [] and ruling.metrics["trust_tier"] == {TASK: "untrusted"}
+    assert ruling.metrics["trust_reason"] == {TASK: "no_intent"}
     assert ruling.metrics["untrusted"] == {TASK: "unconfirmed: unsupported cell orders.W1.status"}
     assert ruling.metrics["unsupported_cells"] == {TASK: 1}
 
 
-def test_a_reference_run_whose_match_is_unsettled_leaves_the_task_unconfirmed_naming_the_column_kind():
+def test_a_reference_run_whose_match_is_unsettled_leaves_the_task_untrusted_naming_the_column_kind():
     schema = EntitySchema(tables=["orders"], columns=[Column(table="orders", name="note", **{"class": "semantic"})])
     replay = _replay(end={"orders": {"W1": {"status": "cancelled", "note": "item arrived broken"}}})
     cells = [_cell(), _cell(field="note", value="the item came damaged")]
     ruling = T.trusted_gate(**_code_world(cells, run=replay, schema=schema))
-    assert ruling.metrics["trust_tier"] == {TASK: "unconfirmed"}
+    assert ruling.metrics["trust_tier"] == {TASK: "untrusted"}
     assert ruling.metrics["untrusted"] == {TASK: "unconfirmed: unsettled orders.note on faithful replay ref"}
 
 
@@ -375,7 +376,7 @@ def test_a_task_with_an_empty_expected_diff_and_one_conduct_is_not_trusted_when_
     world = _code_world([], conduct=[rule], run=still)
     world["verifiers"][0].expected[0].cells.clear()
     ruling = T.trusted_gate(**world)
-    assert ruling.metrics["trusted"] == [] and ruling.metrics["trust_tier"] == {TASK: "pending"}
+    assert ruling.metrics["trusted"] == [] and ruling.metrics["trust_tier"] == {TASK: "untrusted"}
     assert ruling.metrics["untrusted"] == {TASK: "pending: the empty Run passes"}
 
 
@@ -416,36 +417,36 @@ def test_a_reference_write_no_user_turn_asked_for_is_flagged_by_its_tool_and_doe
     assert ruling.unasked == ["cancel_pending_order"] and ruling.tier == "trusted"
 
 
-def test_a_workdir_with_specs_reports_the_spec_tier_through_the_workdir_ruling(tmp_path):
-    spec_tiers = {"a": ("trusted", {"failing": None}),
-                  "b": ("unconfirmed", {"failing": "unsupported cell orders.W1.status", "contradicts": ["x"]}),
-                  "c": ("replay_only", {"failing": "not run: no fresh Run on disk", "fresh_runs": 0,
-                                        "writer_disagrees": ["c2: no call to remove_item"]}),
-                  "d": ("replay_only", {"failing": "no fresh Run passes", "fresh_runs": 2})}
+def test_a_workdir_with_specs_reports_the_spec_tier_reason_and_flags_through_the_workdir_ruling(tmp_path):
+    spec_tiers = {"a": ("trusted", {"reason": None, "reference_passes": True, "solvable": True}),
+                  "b": ("untrusted", {"reason": "open_ruling", "reference_passes": False, "solvable": None}),
+                  "c": ("untrusted", {"reason": "constructed_run_passed", "why": "", "solvable": False}),
+                  "d": ("untrusted", {"reason": "no_intent", "why": "no spec"})}
     ruling = T.workdir_trusted_ruling(tmp_path, spec_tiers=spec_tiers)
     assert ruling.metrics["trusted"] == ["a"]
-    assert ruling.metrics["trust_tier"] == {"a": "trusted", "b": "unconfirmed", "c": "replay_only", "d": "replay_only"}
-    assert ruling.metrics["untrusted"] == {"b": "unconfirmed: unsupported cell orders.W1.status",
-                                           "c": "replay_only: not run: no fresh Run on disk",
-                                           "d": "replay_only: no fresh Run passes"}
-    assert ruling.metrics["consistency_flags"] == {"a": 0, "b": 1, "c": 0, "d": 0}
+    assert ruling.metrics["trust_tier"] == {"a": "trusted", "b": "untrusted", "c": "untrusted", "d": "untrusted"}
+    assert ruling.metrics["untrusted"] == {"b": "open_ruling", "c": "constructed_run_passed", "d": "no_intent: no spec"}
+    assert ruling.metrics["reference_passes"] == {"a": True, "b": False, "c": None, "d": None}
     line = T.trust_row(T.tier_counts(ruling.metrics))
-    assert "| replay_only 2 (not run 1) |" in line and line.endswith("| writer disagrees 1")
+    assert line == ("trusted 1 | untrusted 3 (no_intent 1, open_ruling 1, constructed_run_passed 1) | "
+                    "reference passes 1 of 2 | solvable 1 of 2")
     rows = [task_row(task, round_number=1, row={}, replays=None, trusted=ruling, bodies=None, buckets=None)
             for task in "abcd"]
     assert T.trust_row(counts_of(rows)) == line, "a round snapshot shows the same row"
 
 
-def test_the_status_table_shows_trusted_unconfirmed_refused_and_the_legacy_count_on_one_row():
-    rows = [{"task_id": "a", "trust_tier": "trusted", "trusted": True, "legacy_trusted": True},
-            {"task_id": "b", "trust_tier": "unconfirmed", "legacy_trusted": True,
-             "false_rejection": 0.5, "false_rejection_pool": 4},
-            {"task_id": "c", "trust_tier": "refused", "refused": True},
-            {"task_id": "d", "trust_tier": "pending", "legacy_trusted": True, "consistency_flags": 2}]
+def test_a_refused_task_the_spec_trusts_is_untrusted_for_no_intent(tmp_path):
+    metrics = T._spec_ruling({"a": ("trusted", {"reason": None})}, {"a": "nobody finished"})
+    assert metrics["trust_tier"] == {"a": "untrusted"} and metrics["trust_reason"] == {"a": "no_intent"}
+
+
+def test_the_status_table_shows_trusted_untrusted_by_reason_and_the_flags_on_one_row():
+    rows = [{"task_id": "a", "trust_tier": "trusted", "trusted": True, "reference_passes": True, "solvable": True},
+            {"task_id": "b", "trust_tier": "untrusted", "trust_reason": "open_ruling", "reference_passes": False},
+            {"task_id": "c", "trust_tier": "untrusted", "trust_reason": "no_intent"}]
     line = T.trust_row(counts_of(rows))
     assert "\n" not in line
-    assert line == ("trusted 1 | unconfirmed 1 | refused 1 | pending 1 | replay_only 0 (not run 0) | "
-                    "legacy rule trusted 3 | valid other solutions failing 2 of 4 held-out Runs | "
-                    "consistency flags 1 | writer disagrees 0")
+    assert line == ("trusted 1 | untrusted 2 (no_intent 1, open_ruling 1, constructed_run_passed 0) | "
+                    "reference passes 1 of 2 | solvable 1 of 1")
     ruling = T.trusted_gate(**_code_world([_cell(sourced=False)]))
-    assert T.tier_counts(ruling.metrics)["unconfirmed"] == 1
+    assert T.tier_counts(ruling.metrics)["no_intent"] == 1

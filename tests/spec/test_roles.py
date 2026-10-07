@@ -12,8 +12,9 @@ from kullback.ai.provider import TestModel
 from kullback.runner.records import Run, Verifier, write_json
 from kullback.spec import review as RV
 from kullback.spec import writer as W
-from kullback.spec.canfail import can_fail, judge_run
+from kullback.spec.canfail import judge_run
 from kullback.spec.schema import load_spec
+from kullback.spec.trust import constructed_runs
 from tests.spec.fixtures import WRITE, check, spec
 from tests.spec.test_writer import MOVE, answer, inputs
 from tests.spec.test_writer import _workdir as _environment
@@ -125,12 +126,12 @@ def test_route_findings_sends_atoms_and_text_edits_to_the_spec_and_keeps_body_ed
     assert RV.rounds_line(rounds).startswith("spec repairs: 1 edits on 1 Tasks, ")
 
 
-def test_a_verifier_with_end_state_gates_passes_its_reference_and_fails_the_empty_and_undone_runs(tmp_path):
+def test_a_verifier_with_end_state_gates_passes_its_reference_and_fails_both_constructed_runs(tmp_path):
     _, verifier = _written(tmp_path)
     assert judge_run(verifier, _reference()) == (True, None)
-    result = can_fail(verifier, _reference())
-    assert result.passed
-    assert [row["stage"] for row in result.rows] == ["verifier_empty_run"] + ["verifier_undone_cell"] * 2
+    built = constructed_runs(verifier, [_reference()], [_reference().run_id])
+    assert sorted(built) == ["do_nothing", "stray_write"] and all(built.values())
+    assert not any(judge_run(verifier, run)[0] for run in built.values())
 
 
 TOLD = check("c2", demand={"demand": "say", "text": "slot seven"}, because="move item A1 to slot seven")
@@ -158,11 +159,8 @@ def test_an_atom_drop_naming_a_check_id_is_refused_with_the_atom_ids_and_more_th
     assert load_spec(root, "t1").atom_edits == [] and [a.id for a in _both_copies(root).atoms] == ["i0"]
 
 
-def test_cell_drop_and_allow_rewrite_both_verifier_copies_move_the_gate_row_and_outlive_a_rewrite(tmp_path):
+def test_cell_drop_and_allow_rewrite_both_verifier_copies_and_outlive_a_rewrite(tmp_path):
     root = _told(tmp_path)
-    undone = lambda: [r for r in RV.gate_row(root, load_spec(root, "t1"))["can_fail"]["rows"]  # noqa: E731
-                      if r["stage"] == "verifier_undone_cell"]
-    assert len(undone()) == 2
     out = RV.apply_review(root, "t1", [
         {"kind": "cell", "task_id": "t1", "table": "items", "row_id": "A1", "field": "label", "action": "drop",
          "why": "no turn says the label"},
@@ -171,7 +169,7 @@ def test_cell_drop_and_allow_rewrite_both_verifier_copies_move_the_gate_row_and_
     assert out["applied"] == 2 and out["refused"] == ["the Verifier has no table nowhere; tables are items"]
     [state] = _both_copies(root).expected
     assert [c.field for c in state.cells] == ["slot"] and state.allowed == [{"table": "items", "row_id": "B2"}]
-    assert _both_copies(root).verifier_version == "spec1.e2" and len(undone()) == 1
+    assert _both_copies(root).verifier_version == "spec1.e2"
     RV.apply_review(root, "t1", [])
     assert [c.field for c in _both_copies(root).expected[0].cells] == ["slot"], "a later round keeps the edits"
     W.write_verifier(load_spec(root, "t1"), root)

@@ -3,7 +3,8 @@
 The write goes through `gate_writes` wired as `builder/session.py` wires it, the Spec loader the only
 evidence. The workdir is tests/spec/test_trust.py's, laid out like a live one (task_status.json, one
 verifiers/<task>.json per Task, no verifiers.json, no reference.json): one Task whose Reference moves item
-A1 to slot seven, kept and faithfully replayed, with a fresh Run that reaches the same end state.
+A1 to slot seven, kept and faithfully replayed, with a fresh Run that reaches the same end state;
+the untrusted case is the same Task with a ruling open.
 """
 
 from __future__ import annotations
@@ -15,14 +16,17 @@ from types import SimpleNamespace
 from kullback.builder import env_files
 from kullback.gates.hook import gate_writes
 from kullback.runner.records import Verifier
+from kullback.spec.schema import save_spec
 from kullback.spec.trust import spec_tiers_of
 from tests.spec.test_trust import CODE_CHECKS, _fresh, _intent_workdir, _replay, _verifier, spec
 
 
-def _workdir(root, sourced=True, with_spec=True):
+def _workdir(root, ruling_open=False, with_spec=True):
     """The Spec workdir with one Task, and the Builder's copy of its Verifier under env/."""
-    verifier = _verifier(spec(gaps=["f2"]), sourced=sourced)
+    verifier = _verifier(spec(gaps=["f2"]))
     _intent_workdir(root, [_replay(), _fresh()], verifier=verifier)
+    if ruling_open:
+        save_spec(root, spec(gaps=["f2"]).model_copy(update={"rulings_open": 1}))
     (root / "task_status.json").write_text(json.dumps({"t1": CODE_CHECKS}))
     if not with_spec:
         shutil.rmtree(root / "spec")
@@ -58,12 +62,12 @@ def test_a_verifier_write_on_a_fully_sourced_spec_draws_a_trusted_ruling(tmp_pat
     assert ruling["accepted"] is True and ruling["line"] == "trusted pass" and ruling["rows"] == []
 
 
-def test_a_verifier_write_with_one_unsupported_cell_is_unconfirmed_naming_the_cell_and_not_trusted(tmp_path):
-    root = _workdir(tmp_path, sourced=False)
+def test_a_verifier_write_on_a_spec_with_a_ruling_open_is_not_trusted_and_names_the_reason(tmp_path):
+    root = _workdir(tmp_path, ruling_open=True)
     ruling = _trusted_ruling(root)
     assert ruling["accepted"] is False
-    assert ruling["rows"] == [{"task": "t1", "reason": "unconfirmed: unsupported cell items.A1.slot"}]
-    assert ruling["line"].startswith("trusted fail (task t1: unconfirmed: unsupported cell items.A1.slot)")
+    assert ruling["rows"] == [{"task": "t1", "reason": "open_ruling"}]
+    assert ruling["line"].startswith("trusted fail (task t1: open_ruling)")
 
 
 def test_a_verifier_write_in_a_workdir_without_specs_keeps_the_gates_legacy_ruling(tmp_path):
@@ -75,7 +79,7 @@ def test_a_verifier_write_in_a_workdir_without_specs_keeps_the_gates_legacy_ruli
 
 
 def test_a_verifier_write_in_a_workdir_keeping_verifiers_json_still_rules_from_the_spec(tmp_path):
-    root = _old_layout(_workdir(tmp_path, sourced=False))
+    root = _old_layout(_workdir(tmp_path, ruling_open=True))
     assert not (root / "verifiers").exists()
     ruling = _trusted_ruling(root)
-    assert ruling["rows"] == [{"task": "t1", "reason": "unconfirmed: unsupported cell items.A1.slot"}]
+    assert ruling["rows"] == [{"task": "t1", "reason": "open_ruling"}]

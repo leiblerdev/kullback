@@ -65,9 +65,8 @@ def test_an_atoms_and_a_text_finding_rewrite_the_verifier_and_the_builder_reads_
     assert verifier.verifier_version == "spec1"
     assert {atom.id for atom in verifier.atoms} == {"said_item"}
     assert "pressing" in (root / "intents" / "t1.json").read_text() and "urgent" not in saved.intent.text
-    # The fixture's Reference replay carries no fidelity, so the sourced gate is the first to fail.
-    assert next(gate for gate, passed in row["gates"].items() if not passed) == "sourced"
-    assert row["failing"] == "no faithful replay of a kept Reference"
+    # The fixture keeps no faithful replay of a Reference, so the flag is unscored and never gates.
+    assert row["reference_passes"] is None and set(row["gates"]) >= {"stray_write_fails", "no_open_ruling"}
 
 
 def test_an_atoms_finding_adding_a_write_predicate_is_refused_and_the_verifier_is_unchanged(tmp_path):
