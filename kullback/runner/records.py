@@ -558,6 +558,20 @@ class Atom(Record):
     predicate_src: Optional[str] = None
     target: dict = Field(default_factory=dict)
     judge: bool = False
+    # Shape contract (shape-1007): a gate item failing fails the Run; scored items are weighted.
+    gate: bool = False
+    weight: float = 1.0
+
+    @model_serializer(mode="wrap")
+    def _without_default_shape(self, handler):
+        # An Atom with the default gate and weight dumps, and so hashes, as it did before them.
+        data = handler(self)
+        if isinstance(data, dict):
+            if data.get("gate") is False:
+                data.pop("gate")
+            if data.get("weight") == 1.0:
+                data.pop("weight")
+        return data
 
 
 class ValueSource(Record):
@@ -837,6 +851,8 @@ class Verdict(Record):
     judge_used: bool = False
     environment_suspected: bool = False
     notes: list[str] = Field(default_factory=list)
+    # Per item results by atom id (D328): judge items carry score, why and truncated.
+    items: dict[str, dict] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _pass_matches_class(self) -> "Verdict":

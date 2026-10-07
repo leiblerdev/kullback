@@ -2360,3 +2360,29 @@ fires on 19 right and 0 wrong. Limit: it flags 1 of the 6 wrong-trusted retail T
 writer demanded what the Reference did; gating on it would hold back 5 right retail References with 22 wrong.
 Status: built 2026-10-07 on fix-1007/trust.
 Folded 2026-10-07 on fix-1007/fold
+
+### D328. Judge items: one call per item, 0 or 1, recorded on the Verdict (2026-10-07)
+
+What changed: a judge atom whose target is {question, anchor, evidence} is a judge item. `judge/items.py
+judge_item` asks one model call per item at temperature 0 with MiMo's checkpoint prompt nearly verbatim (one
+objective checkpoint, met 1 or not met 0, no partial credit, nothing guessed, a target in cut evidence scores 0 with
+"evidence truncated"), prices it and returns score, why, truncated. The anchor is {answer, accepted, reject} (a
+string is the answer alone); the prompt shows all three. Evidence refs are written before any Run exists, so none
+names an event index: `final_answer` (default), `assistant_turns`, `assistant:<k>`, `after_call:<tool>`; each turn
+is clamped at 4000 chars, the block at 24000, and cuts are marked. A failed call or an unreadable reply is score
+None, never 0. `Atom` gains `gate` and `weight` (dumped only when not the default, so old hashes hold). `Verdict`
+gains `items` keyed by atom id; `runner/verdict.py` records every judge item there. A scored item never moves
+pass; a gate item scored 0 fails the Run; a gate item with no score leaves it not verdicted; a scored item with no
+score blocks nothing. `cli._judged_atoms` sends item atoms to the item judge on the first judge's model, and
+`judge_atom_results` skips them. `judge/shape.py` holds the provider-free half so the Verdict still has no import
+path to a model (D76). The trust gates pass no judge results, so constructed Runs are judged by code only.
+`scripts/judge_calibrate.py` judges stored Runs and counts agreement with Examiner anchor rulings where present.
+Why: the redesign of 2026-10-07 (v2, v3) moves what the Candidate told the user into judge items derived from the
+Intent, one item per call, evidence from the event log, and lets the item's gate field decide whether it gates.
+Narrows D255: a judge's opinion enters the pass condition again, but only for an item the Spec marks gate; the
+two-judge agentic path (D76, D92) stays for older judge atoms, equivalence and cause.
+Measured (hand-written items, 8 Tasks, 23 Runs, 66 judged items, Opus 5.5 on Bedrock): 34 met, 32 not met,
+0 unjudged after the clamp fix, 0.36 USD; scores identical on 65 of 65 items judged twice. A hand check found 2 of
+23 hand-written anchors wrong (an ambiguous reference in the Intent), which the judge followed faithfully.
+Limit: no Examiner anchor ruling exists yet, so judge against Examiner agreement is not measured.
+Status: built 2026-10-07 on shape-1007/judge.
