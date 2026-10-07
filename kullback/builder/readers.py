@@ -903,13 +903,6 @@ def revealed_tables(schema: EntitySchema) -> dict[str, str]:
     return out
 
 
-def environment_flags(schema: EntitySchema) -> list[str]:
-    """One flag per revealed table, so the setup review sees what is not the customer's own system."""
-    return [f"{table}: revealed by the {who}'s own tools and not by the assistant's, so it is marked "
-            "in the export and is not part of the customer's system (R33)"
-            for table, who in sorted(revealed_tables(schema).items())]
-
-
 def starting_rows(traces: Iterable[Trace], proposal: Proposal, parsed: dict) -> dict[str, dict]:
     """Per trace, the row this proposal's requestor started that recording in."""
     return {trace.trace_id: starting_row(trace, proposal, parsed) for trace in traces}
