@@ -32,6 +32,7 @@ from kullback.spec import writer_tools
 from kullback.spec.actions import action_tables_of, action_tools_of
 from kullback.spec.compile import Compiled, compile_spec
 from kullback.spec.ground import coverage
+from kullback.spec.intent_tools import mark_echo, recordings_of
 from kullback.spec.must_not import must_not
 from kullback.spec.schema import (
     Check,
@@ -48,7 +49,8 @@ from kullback.spec.schema import (
 WHAT_YOU_RECEIVE = """\
 # What you receive
 One customer request as Intent facts (each with an id; a fact marked unwitnessed was only accepted by \
-the user, never volunteered), the policy the agent works under, the tools the agent may call, and \
+the user, never volunteered; a fact marked echo carries the agent's proposal, so a gate value may not \
+rest on it alone), the policy the agent works under, the tools the agent may call, and \
 read access to the world as it stands before the agent starts. You have never seen any agent run or \
 reference solution for this request, and you must not ask for one. Your job is the Verifier: the \
 items a correct run shows, each resting on an Intent fact or a policy line."""
@@ -198,6 +200,7 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
         if spec is None:
             raise FileNotFoundError(f"no Spec for Task {task_id}: mine its Intent first")
         intent = spec.intent
+    intent = intent.model_copy(update={"facts": mark_echo(intent.facts, recordings_of(workdir, task_id))})
     policy = env.system_prompt(env.task(task_id)) or ""
     overlay, rows = env.overlay(task_id)
     tools = writer_tools.tool_rows(env.sigs)
@@ -235,7 +238,7 @@ def unwitnessed(fact: IntentFact) -> bool:
 
 def _facts_view(intent: SpecIntent) -> list[dict]:
     return [dict({"id": fact.id, "text": fact.text, "stance": fact.stance},
-                 **({"unwitnessed": True} if unwitnessed(fact) else {}))
+                 **({"unwitnessed": True} if unwitnessed(fact) else {}), **({"echo": True} if fact.echo else {}))
             for fact in intent.facts]
 
 
@@ -361,6 +364,7 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
                   truncated_chars=cut, unfinished=bool(session.get("unfinished")))
     spec = _spec_of(task_id, items, counts, inputs)
     counts.update(I.counts_of(items + [I.sanity_item([])]))
+    counts["echo_facts"] = sum(1 for fact in inputs.intent.facts if fact.echo)
     return Written(spec, counts, session)
 
 
@@ -405,6 +409,8 @@ def end_state_counts(verifier: Verifier, spec: Optional[Spec] = None) -> dict:
            "forbidden": len(verifier.forbidden), "conduct": len(verifier.conduct)}
     if items:
         out.update(I.counts_of(items + [I.sanity_item(verifier.expected)]))
+    if spec is not None:
+        out["echo_facts"] = sum(1 for fact in spec.intent.facts if fact.echo)
     return out
 
 

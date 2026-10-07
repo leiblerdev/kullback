@@ -112,6 +112,28 @@ def volunteers(turn: UserTurn, words: set[str], share: float = WITNESS_SHARE) ->
     return share_in(words, own) >= share
 
 
+def _value_tokens(text: Optional[str]) -> set[str]:
+    return {token for token in content_tokens(text) if any(ch.isdigit() for ch in token)}
+
+
+def is_echo(text: str, stance: str, turn: UserTurn) -> bool:
+    """Whether a fact carries the agent's proposal rather than the user's words: the user only
+    accepted it, or a value of it (a token with a digit) was in the agent's line and not the user's."""
+    if stance == "accepted":
+        return True
+    return bool(_value_tokens(text) & (_value_tokens(turn.agent_before) - _value_tokens(turn.text)))
+
+
+def mark_echo(facts: list[IntentFact], found: TaskRecordings) -> list[IntentFact]:
+    """The facts with `echo` set from their own turns; a fact whose turn is gone keeps its flag."""
+    out = []
+    for fact in facts:
+        turn = next((t for t in found.recordings.get(fact.source.recording) or () if t.index == fact.source.turn),
+                    None)
+        out.append(fact if turn is None else fact.model_copy(update={"echo": is_echo(fact.text, fact.stance, turn)}))
+    return out
+
+
 def carried_share(text: str, turn: UserTurn) -> float:
     """The share of a fact's words its turn and the agent's line before it carry."""
     return share_in(content_tokens(text), content_tokens(turn.text) | content_tokens(turn.agent_before))
@@ -243,7 +265,8 @@ def _keep(state: MinerState, args: FactArgs) -> IntentFact:
     _check_words(args, turn)
     fact = IntentFact(id=f"f{len(state.facts) + 1}", text=text, stance=args.stance,
                       source=FactSource(recording=args.recording, turn=turn.index),
-                      witnesses=witnesses(text, args.recording, state.found))
+                      witnesses=witnesses(text, args.recording, state.found),
+                      echo=is_echo(text, args.stance, turn))
     state.facts.append(fact)
     return fact
 

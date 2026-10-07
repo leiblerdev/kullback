@@ -285,3 +285,30 @@ def test_a_free_field_holding_a_value_an_intent_fact_names_is_refused():
     item = dict(MOVE, expect={"label": "red"}, free={"slot": "a tool picks the slot"})
     assert "fact f3 names a value" in told.check(item, KNOWN, unwitnessed)[1]
     assert world().check(item, KNOWN, unwitnessed)[1] == "", "no fact names a slot the world holds"
+
+
+def test_an_echo_fact_is_never_the_sole_source_of_a_gate_value_but_a_scored_item_may_cite_it():
+    """Two turns: the agent proposes slot 9, the user says yes. The fact is echo by code."""
+    from kullback.spec.intent_tools import UserTurn, is_echo
+    turn = UserTurn(index=1, text="Yes, that works.", agent_before="I can move A1 to slot 9 for you, ok?")
+    assert is_echo("agrees to move A1 to slot 9", "accepted", turn)
+    assert is_echo("wants A1 in slot 9", "volunteered", turn)
+    assert not is_echo("wants A1 moved", "volunteered", UserTurn(index=1, text="Move A1 please.", agent_before="Hi."))
+    echo = IntentFact(id="f3", text="agrees to move A1 to slot 9", stance="accepted", witnesses=["rec2"],
+                      source=FactSource(recording="rec1", turn=1), echo=True)
+    known = {**KNOWN, "f3": echo}
+    item = {"id": "s9", "kind": "row_is", "table": "items", "find": {"item_id": "A1"}, "expect": {"slot": "9"},
+            "fact_ids": ["f3"]}
+    gate_world = I.World(STATE, POLICY, [*FACTS, echo], TOOLS)
+    kept, why = gate_world.check(item, known, unwitnessed)
+    assert kept is None and "echo" in why
+    kept, why = gate_world.check({**item, "gate": False}, known, unwitnessed)
+    assert why == "" and kept["gate"] is False
+
+
+def test_a_stored_intent_is_marked_echo_from_its_own_turns():
+    from kullback.spec.intent_tools import TaskRecordings, UserTurn, mark_echo
+    found = TaskRecordings(task_id="t", recordings={"rec1": [
+        UserTurn(index=1, text="Please move item A1 to slot seven.", agent_before="Hello."),
+        UserTurn(index=3, text="Sure.", agent_before="Shall I leave a note?")]})
+    assert [fact.echo for fact in mark_echo(FACTS, found)] == [False, True]

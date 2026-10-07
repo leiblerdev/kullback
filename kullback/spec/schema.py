@@ -34,6 +34,9 @@ class IntentFact(Record):
     source: FactSource
     stance: Stance
     witnesses: list[str] = Field(default_factory=list)
+    # The fact carries the agent's proposal: the user only said yes to it, or a value of it (a token
+    # with a digit) was in the agent's line before and not in the user's turn (spec/intent_tools.is_echo).
+    echo: bool = False
 
 
 class SpecIntent(Record):

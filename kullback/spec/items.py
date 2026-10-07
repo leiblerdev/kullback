@@ -122,6 +122,8 @@ class World:
         self.facts = list(facts)
         self.tools = {row["name"]: row for row in tools if isinstance(row, dict) and row.get("name")}
         self._values: Optional[dict[str, tuple[str, str]]] = None
+        # The item being checked, so a value can be read against its gate and its row.
+        self._kept: dict = {}
 
     # --- reading -------------------------------------------------------------------------------
     def columns(self, table: str) -> list[str]:
@@ -233,6 +235,7 @@ class World:
         if not isinstance(gate, bool) or not isinstance(weight, (int, float)) or weight <= 0:
             return None, "gate is true or false and weight a positive number"
         kept.update(gate=gate, weight=float(weight))
+        self._kept = kept
         why = getattr(self, f"_{item['kind']}")(item, kept)
         return (None, why) if why else (kept, "")
 
@@ -269,7 +272,25 @@ class World:
             if one is not None and self.source(one) is None:
                 return None, (f"{what}: value {json.dumps(one)} is not in the world, the policy or a user turn; "
                               "find it with the tools, or demand another field")
+            if one is not None and self._echo_only(one):
+                return None, (f"{what}: value {json.dumps(one)} rests only on echo facts (the user said yes to the "
+                              "agent's proposal); a gate value needs the user's own words, the policy or the row "
+                              "the item names: make the item scored (gate false) or demand another field")
         return value, ""
+
+    def _echo_only(self, value: Any) -> bool:
+        """A gate item's value whose only user source is an echo fact, found in neither the policy nor
+        the row the item names. A scored item may rest on an echo fact."""
+        if not self._kept.get("gate"):
+            return False
+        target = norm(value)
+        facts = [fact for fact in self.facts if _contains(_flat(fact.text), target)]
+        if not facts or not all(getattr(fact, "echo", False) for fact in facts):
+            return False
+        if _contains(_flat(self.policy), target):
+            return False
+        row = self.row(self._kept["table"], self._kept["row"]) if self._kept.get("row") else None
+        return not (row and any(norm(leaf) == target for leaf in _leaves(row)))
 
     def _table(self, item: dict) -> str:
         table = str(item.get("table") or "")
