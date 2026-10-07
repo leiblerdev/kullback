@@ -68,7 +68,6 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/agent/messages.py` | Re-exports the message types from `kullback.ai.messages`. |
 | `kullback/agent/prefix_check.py` | Checks that each request is a byte prefix extension of the last, so caches hold (G24). |
 | `kullback/agent/provider.py` | The provider contract as the loop sees it, and `provider_for` a model handle. |
-| `kullback/agent/reading.py` | Outline-first reading helpers: outline, page, locate, part, select, around (G21). |
 | `kullback/agent/session/__init__.py` | The session: an append-only JSONL tree and its active path. |
 | `kullback/agent/session/entries.py` | The session entry types, one pydantic model each. |
 | `kullback/agent/session/store.py` | The JSONL session store: load, append, branch, active path with compactions applied. |
