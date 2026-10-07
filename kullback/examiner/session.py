@@ -104,6 +104,34 @@ def _refuse_generic_writes() -> Callable:
     return refuse
 
 
+def unsourced_cells(verifier: Optional[Verifier]) -> list[str]:
+    """The cells of the Verifier's expected end states with no source for the value or for the row."""
+    if verifier is None:
+        return []
+    return sorted({".".join(str(part) for part in (cell.table, cell.row_id, cell.field) if part is not None)
+                   for state in verifier.expected for cell in state.cells
+                   if cell.source is None or cell.row_source is None})
+
+
+def _refuse_no_finding_on_unsourced(root: ExamRoot) -> Callable:
+    """A tool_call hook refusing no_finding on a Task whose Verifier holds an unsourced cell: the review
+    has something to say there (40 no-finding reviews sat on such Tasks)."""
+
+    def refuse(call: Any) -> None:
+        if getattr(call, "name", None) != "no_finding":
+            return None
+        task_id = str((getattr(call, "arguments", None) or {}).get("task_id") or "")
+        cells = unsourced_cells(root.current(task_id))
+        if cells:
+            raise PermissionError(
+                f"task {task_id} has unsourced cells: {', '.join(cells)}; file a finding instead, with a cell "
+                "edit (allow or drop), a reference edit, or an environment finding")
+        return None
+
+    refuse.hook_name = "examiner_no_finding_on_unsourced"  # type: ignore[attr-defined]
+    return refuse
+
+
 def rulings_line(root: ExamRoot, task_ids: Optional[Iterable[str]] = None) -> str:
     """One line per Task saying what it has, with the paths of its Runs and its Verifier.
 
@@ -140,13 +168,9 @@ def _runs_part(root: ExamRoot, task_id: str) -> str:
 
 
 def _verifier_part(root: ExamRoot, task_id: str) -> str:
-    """The Task's derived Verifier, its proposal and its user rules, as paths under the root (F33)."""
+    """The Task's Verifier (the Spec's) and its user rules, as paths under the root (F33)."""
     derived = f"{DERIVED_DIR}/{task_id}.json"
-    rel = f"verifiers/{task_id}.json"
-    parts = [f"derived verifier: {derived}" if (root.exam_dir / derived).is_file()
-             else "derived verifier: none copied"]
-    parts.append(f"proposal: {rel}" if (root.exam_dir / rel).is_file()
-                 else f"proposal: {rel} once you first propose one")
+    parts = [f"verifier: {derived}" if (root.exam_dir / derived).is_file() else "verifier: none copied"]
     trace_id = reference_trace_id(root, task_id)
     parts.append(f"user rules: user_rules/{trace_id}.json" if trace_id
                  else "user rules: no user rules until the Reference is confirmed")
@@ -220,6 +244,7 @@ def examiner_extension(root: ExamRoot, task_ids: Optional[Iterable[str]] = None)
             "examiner_protected_paths"))
         api.tool_call(_refuse_forbidden_paths())
         api.tool_call(_refuse_generic_writes())
+        api.tool_call(_refuse_no_finding_on_unsourced(root))
 
     return setup
 
@@ -584,8 +609,20 @@ def _session_tasks(candidates: Iterable[str], root: Path, store: dict) -> tuple[
 
 
 def intent_line(root: ExamRoot, task_id: str, view: Optional[str]) -> str:
-    """One Task's line in intent mode: its spec view, its Runs and its spoken file, as root paths."""
-    return f"{task_id}: spec view: {view or 'none'}; {_runs_part(root, task_id)}; {_spoken_part(root, task_id)}"
+    """One Task's line in intent mode: its spec view, its atoms with their checks, its Runs and its
+    spoken file, as root paths."""
+    return (f"{task_id}: spec view: {view or 'none'}; {_atoms_part(root, task_id)}; {_runs_part(root, task_id)}; "
+            f"{_spoken_part(root, task_id)}")
+
+
+def _atoms_part(root: ExamRoot, task_id: str) -> str:
+    """Each atom id of the Task's Verifier beside the check that made it: the ids an atoms edit drops."""
+    from kullback.spec.review import atom_checks
+    from kullback.spec.schema import load_spec
+
+    spec = load_spec(root.workdir, task_id)
+    pairs = atom_checks(spec, root.current(task_id)) if spec is not None else {}
+    return "atoms: " + (", ".join(f"{atom} from {check}" for atom, check in pairs.items()) or "none")
 
 
 def _opening(exam_root: ExamRoot, selected: list[str], model: Any = None,

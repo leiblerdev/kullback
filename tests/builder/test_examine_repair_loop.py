@@ -50,7 +50,7 @@ def _examine(root, findings):
 def test_an_atoms_and_a_text_finding_rewrite_the_verifier_and_the_builder_reads_body_edits_and_one_line(tmp_path):
     root = _written(tmp_path)
     [told] = [atom.id for atom in _verifier(root).atoms]
-    atoms = {"kind": "atoms", "drop": [told], "add": [HEARD], "why": "the user asked to hear the item"}
+    atoms = {"kind": "atoms", "drop": [], "add": [HEARD], "why": "the user asked to hear the item"}
     text = {"kind": "text", "path": "intents/t1.json", "where": "urgent", "replace": "pressing"}
     result = _examine(root, [{"task_id": "t1", "kind": "other", "text": "atoms", "edits": [atoms]},
                              {"task_id": "t1", "kind": "other", "text": "words", "edits": [text]},
@@ -60,10 +60,10 @@ def test_an_atoms_and_a_text_finding_rewrite_the_verifier_and_the_builder_reads_
     saved = load_spec(root, "t1")
     row = RV.gate_row(root, saved)
     assert RV.rounds_line([{"applied": 2, "passed": RV.gates_pass(row), "pending": False}]) in result.content
-    assert saved.round == 1 and saved.atom_edits == [{"drop": [told], "add": [HEARD], "why": atoms["why"]}]
+    assert saved.round == 1 and saved.atom_edits == [{"drop": [], "add": [HEARD], "why": atoms["why"]}]
     verifier = _verifier(root)
     assert verifier.verifier_version == "spec1"
-    assert {atom.id for atom in verifier.atoms} == {"said_item"}
+    assert {atom.id for atom in verifier.atoms} == {told, "said_item"}
     assert "pressing" in (root / "intents" / "t1.json").read_text() and "urgent" not in saved.intent.text
     # The fixture's Reference replay carries no fidelity, so the sourced gate is the first to fail.
     assert next(gate for gate, passed in row["gates"].items() if not passed) == "sourced"
