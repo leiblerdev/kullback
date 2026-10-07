@@ -222,7 +222,6 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/builder/ingest.py` | Stores customer files byte for byte and derives Traces with raw pointers (D66, D67, D95). |
 | `kullback/builder/intent.py` | Writes a Task's Intent and refuses any phrase without a span in every member Run (D47, D83). |
 | `kullback/builder/lesson.py` | What a stalled tool body is told: differing leaves, relations, unreached lines (D211). |
-| `kullback/builder/memory.py` | The Builder's version tree and the cross-customer lessons file with anonymization (D64, D87). |
 | `kullback/builder/mine.py` | Mines ToolSigs and the EntitySchema out of ingested traces (D68, D70, D72, D73). |
 | `kullback/builder/parallel.py` | Re-exports the worker pool that now lives in `kullback.runner.parallel`. |
 | `kullback/builder/policy.py` | Turns policy sentences into before-write Constraint predicates (D43, D76). |
