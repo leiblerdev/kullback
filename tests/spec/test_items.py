@@ -249,7 +249,8 @@ def test_a_list_value_matches_its_members_in_any_order_and_a_free_field_may_move
     assert "not in the world" in keep(dict(MOVE, expect={"slot": ["seven", "nine"]}))[1]
     STATE["items"]["A1"]["tags"] = []
     try:
-        verifier = _verifier(_kept(tagged, dict(MOVE, id="s2", find={"item_id": "B2"}, expect={}, free=["label"])))
+        verifier = _verifier(_kept(tagged, dict(MOVE, id="s2", find={"item_id": "B2"}, expect={"slot": "four"},
+                                                       free={"label": "a tool recolours it"})))
         b2 = dict(STATE["items"]["B2"], label="computed by a tool")
         moved = {"items": {"A1": dict(STATE["items"]["A1"], slot="seven", tags=["seven", "four"]), "B2": b2},
                  "notes": {}}
@@ -257,6 +258,30 @@ def test_a_list_value_matches_its_members_in_any_order_and_a_free_field_may_move
         assert _holds(verifier, _run(moved))["sanity"] is True
         short = {**moved, "items": {**moved["items"], "A1": dict(moved["items"]["A1"], tags=["seven"])}}
         assert _matches(verifier.expected, AtomContext(_run(short))) is False
-        assert "is in expect and in free" in keep(dict(MOVE, free=["slot"]))[1]
+        assert "is in expect and in free" in keep(dict(MOVE, free={"slot": "a tool sets it"}))[1]
     finally:
         del STATE["items"]["A1"]["tags"]
+
+
+def test_a_free_field_needs_a_one_line_reason_and_the_reason_rides_on_the_end_state():
+    for free in (["label"], {"label": ""}, {"label": "two\nlines"}):
+        assert "free is {field: one line" in keep(dict(MOVE, free=free))[1]
+    kept, why = keep(dict(MOVE, free={"label": "a tool recolours it"}))
+    assert why == "" and kept["free"] == {"label": "a tool recolours it"}
+    allowed = I.end_states_of([kept], world())[0].allowed
+    assert {"table": "items", "row_id": "A1", "field": "label", "why": "free: s1: a tool recolours it"} in allowed
+    assert I.counts_of([kept])["free_fields"] == 1
+
+
+def test_a_row_is_whose_expect_is_empty_or_only_its_find_key_is_refused():
+    assert "checks nothing" in keep(dict(MOVE, expect={}, free={"label": "a tool sets it"}))[1]
+    assert "checks nothing" in keep(dict(MOVE, expect={"item_id": "A1"}))[1]
+
+
+def test_a_free_field_holding_a_value_an_intent_fact_names_is_refused():
+    named = IntentFact(id="f3", text="Please put item A1 in slot four.", stance="volunteered",
+                       source=FactSource(recording="rec1", turn=1), witnesses=["rec2"])
+    told = I.World(STATE, POLICY, FACTS + [named], TOOLS)
+    item = dict(MOVE, expect={"label": "red"}, free={"slot": "a tool picks the slot"})
+    assert "fact f3 names a value" in told.check(item, KNOWN, unwitnessed)[1]
+    assert world().check(item, KNOWN, unwitnessed)[1] == "", "no fact names a slot the world holds"

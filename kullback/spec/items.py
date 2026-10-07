@@ -3,18 +3,20 @@
 An item is one typed thing a correct Run shows, never a Reference's diff:
 
     state : row_is    {table, find: {field: value}, expect: {field: value | [values] | {"one_of": [...]} |
-                       {"not": [...]}}, free: [fields a tool sets to a value the writer cannot find]}
+                       {"not": [...]}}, free: {field: why a tool sets it to a value the writer cannot find}}
             row_new   {table, where: {field: value}, count}      a row the Run makes, its id minted, unnamed
             row_keeps {table, find, fields: [...]}               one per "do not change"
     event : called {tool, args?} | not_called {tool, args?} | before {first: "confirm_turn" | tool, then: tool}
-    text  : said {values: [...], not_values: [...]}              containment, negation aware
+    text  : said {values: [...], not_values: [...]}              containment in an assistant message
     judge : {question, anchor: {answer, accepted, reject, row: {table, find, fields}},
              evidence: ["final_answer" | "after_call:<tool>" | "assistant:<k>" | "assistant_turns"]}
 
 Every item carries gate, weight and its provenance: fact_ids (Intent facts) or policy_line (a verbatim
 policy line). Code adds the sanity item (`nothing_else`): no row outside the declared rows changed.
 "Find, do not invent": `World.check` refuses a value no world row, policy line or user turn holds, a
-find that names no row or several, and a field the table does not have, each with the reason. A judge
+find that names no row or several, and a field the table does not have, each with the reason; a row_is
+whose expect is empty or holds only the find key, a free field with no reason, and a free field holding
+a value an Intent fact names elsewhere in the world (that value belongs in expect). A judge
 anchor cites the row it was read from (one row by a world search) and its answer states those fields;
 only an anchor whose answer quotes the item's policy line goes without a row, and that refusal item
 always gates.
@@ -78,6 +80,17 @@ def _leaves(value: Any) -> Iterable[Any]:
             yield from _leaves(item)
     elif value is not None:
         yield value
+
+
+def _keys(value: Any) -> Iterable[str]:
+    """Every dict key nested in a value."""
+    if isinstance(value, dict):
+        for name, item in value.items():
+            yield str(name)
+            yield from _keys(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _keys(item)
 
 
 def path_value(row: Any, field: str) -> Any:
@@ -291,22 +304,60 @@ class World:
 
     def _row_is(self, item: dict, kept: dict) -> str:
         why = self._one_row(item, kept)
-        expect, free = item.get("expect") or {}, item.get("free") or []
-        if why or not isinstance(expect, dict) or not isinstance(free, list) or not (expect or free):
-            return why or ("expect names the fields the row holds after a correct Run: {field: value}; free "
-                           "names fields it may change to a value no tool lets you find")
+        expect, free = item.get("expect") or {}, item.get("free") or {}
+        if why or not isinstance(expect, dict) or not set(expect) - set(kept["find"]):
+            return why or ("expect names a field the row holds after a correct Run beside the find key: "
+                           "{field: value}; a row checked on its find key alone checks nothing")
+        if not isinstance(free, dict) or any(not isinstance(r, str) or not r.strip() or "\n" in r
+                                             for r in free.values()):
+            return "free is {field: one line on why a tool sets it to a value you cannot find}"
         for field, value in expect.items():
             why = self._field(kept["table"], field) or self._value(value, f"{field}")[1]
             if why:
                 return why
         for field in free:
-            why = self._field(kept["table"], field)
+            why = self._field(kept["table"], field) or self._named_free(kept["table"], kept["row"], str(field))
             if why or str(field) in expect:
                 return why or f"{field} is in expect and in free; name it once"
         kept["expect"] = dict(expect)
         if free:
-            kept["free"] = [str(field) for field in free]
+            kept["free"] = {str(field): " ".join(reason.split()) for field, reason in free.items()}
         return ""
+
+    def _named_free(self, table: str, row_key: str, field: str) -> str:
+        """Why a free field is refused: an Intent fact names a value this field holds elsewhere in the world.
+
+        The values are those under the field's own key, or a key nested in it, in any row of any table,
+        less what the row holds there now; a fact naming one of them names the field's new value.
+        """
+        now = path_value((self.state.get(table) or {}).get(row_key) or {}, field)
+        keys = {field.split(".")[-1]} | set(_keys(now))
+        held = {norm(leaf) for leaf in _leaves(now)}
+        values = {value for value in self._values_under(keys) if len(value) >= 3} - held
+        for fact in self.facts:
+            text = _flat(fact.text)
+            named = next((value for value in sorted(values) if value in text and _contains(text, value)), None)
+            if named is not None:
+                return (f"free {field}: fact {fact.id} names a value this field holds elsewhere in the world; "
+                        "put the value the Intent names in expect")
+        return ""
+
+    def _values_under(self, keys: set[str]) -> set[str]:
+        """Every scalar the world holds under one of these keys, at any depth of any row."""
+        out: set[str] = set()
+
+        def walk(node: Any, key: Optional[str]) -> None:
+            if isinstance(node, dict):
+                for name, value in node.items():
+                    walk(value, str(name))
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value, key)
+            elif node is not None and key in keys:
+                out.add(norm(node))
+        for rows in self.state.values():
+            walk(rows, None)
+        return out
 
     def _row_new(self, item: dict, kept: dict) -> str:
         why = self._table(item) or self._alt(item, kept)
@@ -518,8 +569,8 @@ def end_states_of(items: list[dict], world: World, action_tables: Iterable[str] 
                 new_rows.append({"table": item["table"], "where": item["where"], "count": item["count"],
                                  "item": item["id"]})
                 continue
-            free += [{"table": item["table"], "row_id": item["row"], "field": field, "why": f"free: {item['id']}"}
-                     for field in item.get("free") or []]
+            free += [{"table": item["table"], "row_id": item["row"], "field": field,
+                      "why": f"free: {item['id']}: {reason}"} for field, reason in (item.get("free") or {}).items()]
             row_source = ValueSource(kind="world", ptr={"table": item["table"], "row": item["row"]})
             for field, value in item["expect"].items():
                 cells.append(ExpectedCell(table=item["table"], row_id=item["row"], field=field, value=value,
@@ -582,6 +633,7 @@ def counts_of(items: list[dict]) -> dict:
             "gate": sum(1 for item in items if item.get("gate")),
             "scored": sum(1 for item in items if not item.get("gate")),
             "fact_backed": sum(1 for item in items if item.get("fact_ids")),
+            "free_fields": sum(len(item.get("free") or {}) for item in items),
             "policy_backed": sum(1 for item in items if item.get("policy_line"))}
 
 

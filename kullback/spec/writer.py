@@ -68,10 +68,11 @@ TOOLS_TEXT = """\
 
 # Item kinds
 - row_is {table, find: {field: value}, expect: {field: value | [values] | {"one_of": [...]} | {"not": [...]}}, \
-free: [fields]}: the row find names (exactly one) holds these values after the run. A list value names \
+free: {field: why}}: the row find names (exactly one) holds these values after the run. A list value names \
 every member, in any order. Use one_of where the policy or the user allows several values, not where a \
-value is forbidden. List in free the fields of that row a correct run changes to a value you cannot find \
-(records a tool fills in, a balance it computes); code checks nothing in them but lets them move.
+value is forbidden. Put in free, each with one line on why, the fields of that row a correct run changes to a value you \
+cannot find (records a tool fills in, a balance it computes); code checks nothing in them but lets them \
+move. A value the user names goes in expect, never in free; expect names more than the find key.
 - row_new {table, where: {field: value}, count}: the run makes count new rows holding these values.
 - row_keeps {table, find, fields: [...]}: these fields of that row must not change (one per "do not change").
 - called {tool, args?} / not_called {tool, args?}: a call that must or must not happen.
