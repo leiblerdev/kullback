@@ -679,7 +679,8 @@ def judge_atom_results(
     """
     out: dict = {}
     for atom in getattr(verifier, "atoms", []) or []:
-        if not getattr(atom, "judge", False):
+        # An item-shaped judge atom is one call to the item judge, not two agentic judges (D328).
+        if not getattr(atom, "judge", False) or (getattr(atom, "target", None) or {}).get("question"):
             continue
         rule = getattr(atom, "description", None) or getattr(atom, "target", None) or atom.id
         result, _ = two_judges(

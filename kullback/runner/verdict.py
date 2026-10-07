@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
+from kullback.judge.shape import is_item
 from kullback.runner import target as _target
 from kullback.runner.atom_context import AtomContext, _evaluate, gate
 from kullback.runner.canon import UNRESOLVED, Unresolved, record_use
@@ -164,6 +165,31 @@ def _score_predicate(atom: Atom, context: AtomContext, notes: list[str],
     return None
 
 
+def _item_row(atom: Atom, result: Any) -> dict:
+    """One judge item's result as the Verdict records it (D328); a missing result is score None."""
+    row = result.model_dump() if hasattr(result, "model_dump") else dict(result or {})
+    row.update(id=atom.id, kind="judge", gate=atom.gate, weight=atom.weight)
+    row.setdefault("score", None)
+    return row
+
+
+def _score_item(atom: Atom, judge_results: Optional[dict], notes: list[str],
+                items: dict) -> tuple[Optional[bool], bool]:
+    """A judge item (D328): its score is recorded; a gate item's score decides like a code item.
+
+    A scored item never moves pass: the reward reads its score off verdict.items. A gate item
+    with no score (the judge failed or was not asked) leaves the Run not verdicted, never failed.
+    """
+    result = (judge_results or {}).get(atom.id)
+    row = _item_row(atom, result)
+    items[atom.id] = row
+    score = row["score"]
+    notes.append(f"judge_item:{atom.id}:{'unjudged' if score is None else score}")
+    if score is None or not atom.gate:
+        return None, result is not None
+    return score == 1, True
+
+
 def _score_judge_atom(atom: Atom, judge_results: Optional[dict], notes: list[str]) -> tuple[Optional[bool], bool]:
     if judge_results is None or atom.id not in judge_results:
         notes.append(f"judge_atom_unevaluated:{atom.id}")
@@ -181,6 +207,8 @@ def _tally_atom(atom: Atom, holds: Optional[bool], unresolved_ids: set[str],
         # An atom that could not be checked leaves the Run not verdicted; a counted pass here
         # would hide a Verifier defect, an unrun judge or an unsettled pair (D76, D79, D219).
         # A forbidden atom is included: nothing said its forbidden state is absent either.
+        if is_item(atom) and not atom.gate:
+            return
         if atom.kind in MUST_HOLD or (atom.kind == "forbidden" and not atom.judge) or atom.id in unresolved_ids:
             unevaluable.append(atom)
         return
@@ -191,7 +219,7 @@ def _tally_atom(atom: Atom, holds: Optional[bool], unresolved_ids: set[str],
 
 
 def _evaluate_atoms(verifier: Verifier, context: AtomContext, judge_results: Optional[dict],
-                    notes: list[str]) -> tuple[list[Atom], list[Atom], bool]:
+                    notes: list[str], items: Optional[dict] = None) -> tuple[list[Atom], list[Atom], bool]:
     """Every atom of one Verifier: the ones that failed, the ones nobody could check, judge_used.
 
     One scorer (G3): every atom that is not a Hard rule and not a judge atom is read off its
@@ -214,7 +242,10 @@ def _evaluate_atoms(verifier: Verifier, context: AtomContext, judge_results: Opt
     # so a hard atom placed first in the Verifier would see an empty list and hold vacuously.
     for atom in sorted(verifier.atoms, key=lambda a: a.kind == "hard"):
         holds: Optional[bool] = None
-        if atom.judge:
+        if is_item(atom):
+            holds, used = _score_item(atom, judge_results, notes, items if items is not None else {})
+            judge_used = judge_used or used
+        elif atom.judge:
             holds, used = _score_judge_atom(atom, judge_results, notes)
             judge_used = judge_used or used
         elif atom.kind == "hard":
@@ -428,7 +459,8 @@ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results
     run = load_run(run_jsonl)
     context = AtomContext(run, canon, write_tools, schema, rules=rules, equivalence=equivalence)
     notes: list[str] = []
-    failures, unevaluable, judge_used = _evaluate_atoms(verifier, context, judge_results, notes)
+    items: dict[str, dict] = {}
+    failures, unevaluable, judge_used = _evaluate_atoms(verifier, context, judge_results, notes, items)
 
     # A semantic pair the judge settled makes this a judged Verdict (D84), and a pair nobody has
     # settled is named so the report can put it in front of a person rather than bury it.
@@ -479,4 +511,5 @@ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results
         judge_used=judge_used,
         environment_suspected=suspected,
         notes=notes,
+        items=items,
     )

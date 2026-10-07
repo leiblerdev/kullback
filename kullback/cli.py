@@ -133,11 +133,14 @@ def _judged_atoms(verifier: Verifier, paths: list, judges, workdir: Path) -> dic
         return {}
     load_run = _entry("kullback.runner.verdict", "load_run")
     answer = _entry("kullback.runner.judge", "judge_atom_results")
+    items = _entry("kullback.judge.items", "judge_items")
     out = {}
     for path in paths:
         run = load_run(path)
         out[run.run_id] = answer(verifier, run, judges[0], judges[1],
                                  workdir=workdir, run_id=run.run_id)
+        # Judge items: one call each on the first judge's model (D328).
+        out[run.run_id].update(items(judges[0].model, verifier.atoms, run))
     return out
 
 
