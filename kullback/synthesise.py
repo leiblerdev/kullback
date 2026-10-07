@@ -72,9 +72,6 @@ FORMAT = 1
 ATTEMPTS_PER_TASK = 6
 # How many rewrites of a kept walk are run to look for a second path to the same End state (D199).
 SECOND_PATH_LIMIT = 4
-# A walk is bound and run before it is replayed; this is how deep an argument value is looked for in
-# an earlier answer before the walk gives up on the binding.
-MISSING_BINDING = "an earlier step's answer did not carry the value the edge names"
 
 REFUSED = "refused"
 CRASHED = "crashed"

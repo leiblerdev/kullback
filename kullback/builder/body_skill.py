@@ -13,8 +13,6 @@ the same way. Each line below is one of those, turned into the habit that avoids
 
 from __future__ import annotations
 
-BODY_SKILL_NAME = "body"
-
 BODY_SKILL = """Body skill: how to write a body that replays the recording, and what to do when it does not.
 
 The signature is the recorded call's. The method receives exactly the arguments the recorded calls
