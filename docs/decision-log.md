@@ -2360,3 +2360,33 @@ fires on 19 right and 0 wrong. Limit: it flags 1 of the 6 wrong-trusted retail T
 writer demanded what the Reference did; gating on it would hold back 5 right retail References with 22 wrong.
 Status: built 2026-10-07 on fix-1007/trust.
 Folded 2026-10-07 on fix-1007/fold
+
+### D328. Every item gates or scores; the Verdict carries pass and a weighted score; a sanity item for every Task (2026-10-07)
+
+What changed: `Atom`, `ExpectedCell`, `Forbidden` and `Conduct` (runner/records.py) and the Spec's `Check` carry
+`gate` and `weight`; a Check also carries `policy_line`, and `compile_spec` puts its gate and weight on every atom it
+compiles to. Left unsaid, an atom's gate follows its kind: the kinds that failed a Run before (required, question,
+communicate, hard, forbidden) gate, allowed does not; cells, forbidden and conduct rules gate. Both fields leave the
+dump at their default, so stored records dump and hash as before. `verdict` builds one item per end state cell (of
+the end state the Run matches; any one may match), the sanity item, each forbidden and conduct rule and each atom,
+and keeps them on the Verdict as `items`. Pass is every gate item holding; a definite gate failure wins over an open
+gate, and an open gate leaves the Run not verdicted, as D316. `score` is 0 when a gate failed, else the weighted
+mean of every item with the gate items counted as held and holding at least half the weight (agreed 2026-09-27);
+None when the Run is not verdicted or an env error, or when a scored item is open (an unrun judge), never a false
+0. The sanity item is code for every Task: with end states, nothing outside the matched end state's cells and
+`allowed` moved (the collateral half of `match`, now `expected.collateral`, named `gate:sanity:...`); with atoms
+only, no write that no atom declares (the old extra-write rule). `check_run` reads gate atoms only, so the two
+scorers agree. `Episode.reward` carries `passed` beside `score`; birth's walk and do-nothing checks and the solve
+table read the pass, and the solve table adds the mean score. The report's Task numbers and Verdict lines, the
+package manifest (`reward`, the Verdict version) and its Task rows (`items`: gate and scored counts) and the card
+glossary show both numbers. VERDICT_VERSION is 4.
+Why: the gated weighted reward agreed on 2026-09-27 and the v3 shape of 2026-10-07: correctness gates, process
+scores past the gates, and a stray write fails every Task by code.
+Measured (live Verifiers of verify-1006-live, 2659 stored Runs, base 4b11e3b8 against this code): pass and class
+identical on every Run; 77 failures are now named by the sanity item instead of `gate:expected:collateral`. No live
+item is scored yet, so every live score is 0 or 1. Scoring question and communicate atoms instead of gating them
+would flip 104 of 191 Runs on the 34 Tasks that carry them from fail to pass (mean score of those 0.74 retail,
+0.79 airline); that is the founder's open point, so the default stays the gate and the writer sets `gate` per item.
+Retired: the whole-Run binary reward of `Episode.reward` (1 or 0 from the class) and the score-blind
+`match_any` inside the verdict.
+Status: built 2026-10-07 on shape-1007/reward.

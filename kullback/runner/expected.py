@@ -415,16 +415,6 @@ def match(end_state: EndState, start: dict, end: dict, canon: Any = None, *, sch
     return match_context(end_state, AtomContext(run, canon, schema=schema, rules=rules, equivalence=equivalence))
 
 
-def match_any(end_states: list[EndState], context: AtomContext) -> Match:
-    """Any one end state matching passes; else an unsettled one blocks; else the first failure."""
-    results = [match_context(state, context) for state in end_states]
-    for result in results:
-        if result.ok:
-            return result
-    unsettled = [result for result in results if result.ok is None]
-    return unsettled[0] if unsettled else results[0]
-
-
 def _named(needle: str, text: str) -> bool:
     """The canonical value said as a whole word or phrase of the canonical turn, not inside another."""
     return bool(needle) and re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", text) is not None
