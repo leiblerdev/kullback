@@ -2257,3 +2257,30 @@ gates_of` does not pass the schema yet, so the action-table rule is off in a bui
 `tool_result` because `ValueSource.kind` has no `world`; a yes affirms every value of the turn before it; a short value
 is still found by plain containment. The wrong-trust bound must be re-measured before this ships.
 Status: built 2026-10-07 on fix-1007/cells.
+
+### D324. Refusals and no-writes are forbidden writes, say lists values, conduct must be in the Reference (2026-10-07)
+
+The failure analysis of 2026-10-07 found four Spec writer mechanisms. A refuse demand the Reference never recorded was
+counted unsupported and a no_write demand left no gate, so the empty Run passed (airline 22, retail 23 Tasks). A say
+demand was one sentence the final answer rarely held word for word (airline 3 untrusted and 8 of 117 right replays
+failing, retail 10). A hand-off or confirmation demand on a tool the Reference never called failed every faithful
+replay (airline 3, retail 9 "Verifier defect"). Write values named columns the tool does not take (airline 9, retail 17).
+
+Now `spec/end_state.py forbidden_of` turns a refuse demand with no recorded refusal, and a no_write demand, into
+`Forbidden(kind="write")` entries: one for the demand's tool, else one per write tool (`_forbidden_happened` reads a
+tool None with no table as unknown, not "any write"), with the demand's entity as the row. A tool the Reference
+called is never forbidden, so the Reference passes its own list. `conduct_of` drops a hand-off or confirmation whose
+tool the Reference never called and counts it in the new `Gates.unseen`, shown in `end_state_counts`; the writer gets
+it back in its one follow-up turn as `unseen_conduct`, read off `WriterInputs.reference_tools`, which the model never
+sees. `compile._say` compiles a say demand's `values` list to one communicate atom per value. `writer._check_of`
+refuses a write whose values name a key that is not an argument of its tool (`value_not_argument`) and sends it back
+with the tool's argument names. The prompt asks for say values, keeps a hand-off out of writes and caps, and says an
+id_field names a row. `gates_of` passes `schema.json` into `expected_from_run`.
+
+On the live Specs of verify-1006, read only: airline 77 of 128 Tasks gain 437 forbidden entries, retail 23 of 222
+gain 88; unseen conduct airline 4, retail 9; writes with values that are not arguments airline 14, retail 27.
+
+Limit: the empty Run still passes a Verifier whose expected diff is empty and whose forbidden list is non-empty
+(`gates/trust.py _empty_run_passes`, the return at line 412), since it writes nothing; such a Task is judged by its
+forbidden list on the wrong Run instead, which that function does not yet say. A tool signature with no argument
+list is read as unknown and never refuses a value. Status: built 2026-10-07 on fix-1007/demands.

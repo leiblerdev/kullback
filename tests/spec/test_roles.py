@@ -67,7 +67,7 @@ def test_write_verifier_on_a_reference_puts_its_two_sourced_cells_in_expected_an
     assert not any(atom.payload.get("kind") in {"write_value", "entity_count"} for atom in verifier.atoms)
     assert not any(getattr(atom, "predicate_src", None) for atom in verifier.atoms)
     assert load_spec(root, "t1").end_state == {"reference": "ref", "end_states": 1, "cells": 2, "unsupported": 0,
-                                               "forbidden": len(verifier.forbidden), "conduct": 0}
+                                               "forbidden": len(verifier.forbidden), "conduct": 0, "unseen": 0}
 
 
 def test_a_write_demand_carrying_a_python_predicate_is_refused_and_sent_back_once():
