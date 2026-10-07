@@ -16,7 +16,6 @@ from typing import Any, Iterable, Optional
 from kullback.agent.bus import Bus
 from kullback.runner.budget import BudgetedModel
 from kullback.spec import events
-from kullback.spec.end_state import reference_run
 from kullback.spec.intent import STAGE, mine_intent
 from kullback.spec.schema import SpecIntent, is_empty, load_spec, save_spec, spec_path
 from kullback.spec.writer import load_inputs, spec_verifier_path, write_spec, write_verifier
@@ -78,21 +77,6 @@ def write_one(workdir: Path, task_id: str, model: Any, ceiling_usd: float, bus: 
     return mined.spent_usd + write_from_intent(workdir, task_id, mined.intent, model, rest, bus)
 
 
-def refresh_gates(workdir: Path, task_id: str) -> bool:
-    """Rewrite a written Spec's Verifier by code when a Reference has come since: no model call.
-
-    A Spec written before its Task had a Reference carries no expected end state; once references.json
-    names one, the gates are derived from it (D320). True when the Verifier was rewritten.
-    """
-    spec = load_spec(workdir, task_id)
-    if spec is None or spec.set_aside or spec.end_state.get("reference"):
-        return False
-    if reference_run(workdir, task_id) is None:
-        return False
-    write_verifier(spec, workdir)
-    return True
-
-
 def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
                 ceiling_usd: Optional[float] = None, bus: Optional[Bus] = None) -> dict:
     """Write the Spec of every named Task that has none; counts of written, skipped, failed, empty, and the spend."""
@@ -100,11 +84,10 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
     bus = bus or Bus(workdir / "bus.jsonl", agent="spec")
     ceiling = SPEC_TASK_CEILING_USD if ceiling_usd is None else ceiling_usd
     counts: dict = {"written": 0, "skipped_existing": 0, "failed": 0, "spent_usd": 0.0, "failures": {},
-                    "empty_seen": 0, "retried": 0, "gates_refreshed": 0, "set_aside_empty": 0, "set_aside_unsatisfiable": 0}
+                    "empty_seen": 0, "retried": 0, "set_aside_empty": 0, "set_aside_unsatisfiable": 0}
     for task_id in task_ids:
         if written_already(workdir, task_id):
             counts["skipped_existing"] += 1
-            counts["gates_refreshed"] += int(refresh_gates(workdir, task_id))
             continue
         try:
             counts["spent_usd"] += write_one(workdir, task_id, model, ceiling, bus)
@@ -120,4 +103,4 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
     return counts
 
 
-__all__ = ["SPEC_TASK_CEILING_USD", "write_from_intent", "write_one", "refresh_gates", "write_specs", "written_already"]
+__all__ = ["SPEC_TASK_CEILING_USD", "write_from_intent", "write_one", "write_specs", "written_already"]

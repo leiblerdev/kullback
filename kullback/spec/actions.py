@@ -30,9 +30,15 @@ def action_tools_of(schema: Any) -> set[str]:
     return out
 
 
+def action_tables_of(schema: Any) -> set[str]:
+    """The tables whose columns record tool calls: a call's record, not a change of the world."""
+    return {str(_get(column, "table")) for column in _get(schema, "columns") or ()
+            if (_get(column, "evidence") or {}).get("actions_of") and _get(column, "table")}
+
+
 def workdir_action_tools(workdir: Any) -> set[str]:
     """The action tools of a workdir's schema.json; none when the file is missing."""
     return action_tools_of(read_json(Path(workdir) / "schema.json", None) or {})
 
 
-__all__ = ["action_tools_of", "workdir_action_tools"]
+__all__ = ["action_tables_of", "action_tools_of", "workdir_action_tools"]

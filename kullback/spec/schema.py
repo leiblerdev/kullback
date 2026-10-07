@@ -56,13 +56,20 @@ def tier_of(kind: str, demand: dict) -> Tier:
 
 
 class Check(Record):
-    """One demand of the Verifier, with the Intent quote or policy section it rests on."""
+    """One item of the Verifier, with the Intent facts (`fact_ids`) or the policy line it rests on.
+
+    `demand` holds the item as code kept it (spec/items.py), or a demand of the older grammar.
+    A failing gate check zeroes a Run's reward; the others are weighed by `weight`.
+    """
     id: str
     kind: AtomKind
     demand: dict
     because: str
     tier: Tier
     fact_ids: list[str] = Field(default_factory=list)
+    gate: bool = False
+    weight: float = 1.0
+    policy_line: Optional[str] = None
 
 
 class Spec(Record):
@@ -83,7 +90,7 @@ class Spec(Record):
     atom_edits: list[dict] = Field(default_factory=list)
     # The review's cell and conduct edits, applied in order on the written Verifier (spec/review.py).
     end_state_edits: list[dict] = Field(default_factory=list)
-    # What the Verifier's gates came to: the Reference, end states, cells, unsupported (spec/end_state.py).
+    # What the Verifier came to: its items by kind and gate, end states, cells (spec/items.py counts_of).
     end_state: dict = Field(default_factory=dict)
 
 
@@ -92,8 +99,14 @@ _NO_WRITE_DEMANDS = ("no_write", "cap")
 
 
 def is_empty(spec: Spec) -> bool:
-    """A Spec that keeps no check, or whose every Intent fact is a gap, unless it keeps a no_write or cap check."""
+    """A Spec that keeps no check, or whose every Intent fact is a gap, unless it keeps a no_write or cap check.
+
+    A Spec of items whose checks rest on the policy alone is not empty: a refusal is the sanity item and
+    one judge item on a policy line.
+    """
     if any(check.demand.get("demand") in _NO_WRITE_DEMANDS for check in spec.checks):
+        return False
+    if any(check.policy_line for check in spec.checks):
         return False
     gaps = set(spec.gaps)
     facts = spec.intent.facts
