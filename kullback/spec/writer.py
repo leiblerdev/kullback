@@ -11,10 +11,12 @@ Code decides what stands, in the tool: an item naming a value no world row, poli
 holds is refused with the reason, as is an item with no provenance or resting on unwitnessed facts
 alone, so the writer fixes it in the same session. Items no Run can pass together go back once in a
 follow-up turn. Code adds the sanity item. Facts no item names become gaps. `repair` answers an
-Examiner ruling (D331): it applies the ruling's fix (drop or replace a ruled item, add at most
-MAX_ADDS items for an uncovered fact) or rebuts it with why, under the same rules.
+Examiner ruling (D331): it applies the ruling's fix (drop or replace a ruled item, add items for an
+uncovered fact) or rebuts it with why, under the same rules; when code refused every answer it gets
+one retry in the same round, shown each refusal.
 
-A Spec of the older demand grammar still compiles (`compile_spec`, `must_not`, Reference-free gates).
+A Spec of the older demand grammar still compiles to atoms (`compile_spec`, `must_not`) and gates on
+nothing else; the Spec stage rewrites it as items.
 """
 
 from __future__ import annotations
@@ -29,7 +31,6 @@ from kullback.spec import items as I
 from kullback.spec import writer_tools
 from kullback.spec.actions import action_tables_of, action_tools_of
 from kullback.spec.compile import Compiled, compile_spec
-from kullback.spec.end_state import Gates, gates_of
 from kullback.spec.ground import coverage
 from kullback.spec.must_not import must_not
 from kullback.spec.schema import (
@@ -124,7 +125,7 @@ them under their ids so a correct run can pass, then reply that you are done.
 REPAIR_PROMPT = """The Examiner ruled on items you wrote for this customer request. A ruling names \
 one item (an item id, an Intent fact id, or the task), what is wrong and a fix. You still have never \
 seen any agent run, and you must not ask for one. Apply the fix: drop or replace the ruled items, or \
-add at most 3 items the ruling says are missing; you may not drop or replace any other item. Every \
+add the items the ruling says are missing; you may not drop or replace any other item. Every \
 rule of the writer still holds. Or rebut: when the Intent or the policy still requires the items as \
 written, change nothing and reply with one line starting "rebut:" and why in one sentence. Otherwise \
 reply that you are done when finished.
@@ -141,8 +142,10 @@ ATOM_DEMANDS = ("say", "ask")
 BODY_CHARS = 24000
 # The longest ruling excerpt a repair session is shown: a quote, never a transcript.
 MAX_EXCERPT = 1000
-# The most items one repair may add (D331): a fix covers a fact, it never rewrites the Spec.
-MAX_ADDS = 3
+RETRY_PROMPT = """Code refused every item you sent, so nothing changed. Each refusal and its reason:
+{refusals}
+Send the items again with the refusals fixed, or reply with one line starting "rebut:" and why.
+"""
 
 
 class WriterInputs(NamedTuple):
@@ -260,10 +263,10 @@ def world_of(inputs: WriterInputs) -> I.World:
     return I.World(inputs.state, inputs.policy_text, inputs.intent.facts, inputs.tools, inputs.columns)
 
 
-def store_of(inputs: WriterInputs, items: Iterable[dict] = (), ruled: Optional[set[str]] = None,
-             max_adds: Optional[int] = None) -> writer_tools.ItemStore:
+def store_of(inputs: WriterInputs, items: Iterable[dict] = (),
+             ruled: Optional[set[str]] = None) -> writer_tools.ItemStore:
     return writer_tools.ItemStore(world_of(inputs), {fact.id: fact for fact in inputs.intent.facts}, unwitnessed,
-                                  items, ruled, max_adds)
+                                  items, ruled)
 
 
 def is_item_check(check: Check) -> bool:
@@ -374,12 +377,11 @@ def item_checks(spec: Spec) -> list[dict]:
     return [check.demand | {"id": check.id} for check in spec.checks if is_item_check(check)]
 
 
-def verifier_of(spec: Spec, inputs: WriterInputs, gates: Optional[Gates] = None) -> Compiled:
+def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:
     """The Spec's Verifier: items to atoms (the verdict decides each), end states with the sanity item.
 
-    Checks of the older demand grammar compile as before, Reference-free, beside the items: their
-    atoms, the must-not atoms when the Spec has no item, and the forbidden writes and conduct they ask
-    for (`gates_of`).
+    Checks of the older demand grammar compile to atoms beside the items, with the must-not atoms when
+    the Spec has no item; nothing else gates on them (the Spec stage rewrites such a Spec as items).
     """
     items = item_checks(spec)
     legacy = spec.model_copy(update={"checks": [c for c in spec.checks if not is_item_check(c)]})
@@ -388,14 +390,12 @@ def verifier_of(spec: Spec, inputs: WriterInputs, gates: Optional[Gates] = None)
     if not items and legacy.checks:
         must = [atom for atom in atoms if atom.kind in ("required", "allowed")]
         atoms += must_not(must, spec.intent.text, inputs.constraints, sorted(inputs.write_tools))
-    gates = gates or gates_of(legacy, inputs.write_tools)
-    expected, forbidden, conduct = list(gates.expected), list(gates.forbidden), list(gates.conduct)
+    expected = []
     if items or not legacy.checks:
         expected = I.end_states_of(items, world_of(inputs), inputs.action_tables)
         atoms = [I.atom_of(item) for item in items] + [I.sanity_atom(expected)] + atoms
     verifier = Verifier(task_id=spec.task_id, atoms=atoms,
-                        verifier_version=f"spec{spec.version}", seed_run_ids=[], expected=expected,
-                        forbidden=forbidden, conduct=conduct)
+                        verifier_version=f"spec{spec.version}", seed_run_ids=[], expected=expected)
     return Compiled(verifier, compiled.dropped, compiled.reasons,
                     compiled.unsatisfiable + tuple(I.contradictions(items)))
 
@@ -417,15 +417,14 @@ def end_state_counts(verifier: Verifier, spec: Optional[Spec] = None) -> dict:
     return out
 
 
-def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = None,
-                   gates: Optional[Gates] = None) -> list[Path]:
+def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = None) -> list[Path]:
     """Saves the Spec and its whole Verifier, written from its items by code; no Reference is read.
 
     The Spec is the one writer of a Task's Verifier (D320): the Runner's file and the Spec's copy are
     the same bytes. The counts ride on the saved Spec as `end_state`.
     """
     inputs = inputs or load_inputs(workdir, spec.task_id, spec.intent)
-    verifier: Verifier = verifier_of(spec, inputs, gates).verifier
+    verifier: Verifier = verifier_of(spec, inputs).verifier
     text = json.dumps(verifier.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
     spec = spec.model_copy(update={"end_state": end_state_counts(verifier, spec)})
     paths = [save_spec(workdir, spec), spec_verifier_path(workdir, spec.task_id),
@@ -452,26 +451,34 @@ def repair(spec: Spec, ruling: Ruling, inputs: WriterInputs, model: Any, *,
            ceiling_usd: Optional[float] = None) -> Written:
     """One repair session answering a ruling: apply the fix or rebut it; no Run is shown, only the excerpt.
 
-    The session starts from the Spec's items; it may drop or replace only ruled items and add at most
-    MAX_ADDS new ones, under the same find-do-not-invent rule, and code answers each add with its
-    refusal reason inside the session. A Spec of the older grammar is rewritten as items. The counts
-    say what changed, dropped and was added, what code refused, and the writer's rebuttal when it
-    changed nothing.
+    The session starts from the Spec's items; it may drop or replace only ruled items and add new ones,
+    under the same find-do-not-invent rule, and code answers each add with its refusal reason inside
+    the session. When code refused everything and the writer neither changed anything nor rebutted,
+    it gets one retry in the same conversation, shown each refusal and its reason. A Spec of the older
+    grammar is rewritten as items. The counts say what changed, dropped and was added, what code
+    refused, whether it retried, and the writer's rebuttal when it changed nothing.
     """
     ruling = Ruling.model_validate(ruling.model_dump() if isinstance(ruling, Record) else ruling)
     writer_tools.refuse_run_inputs(inputs.intent, inputs.state, ruling.excerpt)
     messages, cut = repair_messages(spec, ruling, inputs)
     legacy = not all(is_item_check(check) for check in spec.checks)
-    store = store_of(inputs, item_checks(spec), None if legacy else set(ruling.check_ids),
-                     None if legacy else MAX_ADDS)
+    store = store_of(inputs, item_checks(spec), None if legacy else set(ruling.check_ids))
     before = {item["id"]: item for item in item_checks(spec)}
-    session = _session(model, messages, store, inputs, config, _price(model_id), ceiling_usd)
+    price = _price(model_id)
+    session = _session(model, messages, store, inputs, config, price, ceiling_usd)
+    retried = 0
+    if store.refused and store.items == before and not rebuttal_of(session.get("text") or ""):
+        refusals = "\n".join(f"- {row['id']}: {row['reason']}" for row in store.refused)
+        turn = messages + [{"role": "assistant", "content": session["text"] or "done"},
+                           {"role": "user", "content": RETRY_PROMPT.format(refusals=refusals)}]
+        left = None if ceiling_usd is None else max(ceiling_usd - float(session.get("usd") or 0.0), 0.0)
+        session, retried = _joined(session, _session(model, turn, store, inputs, config, price, left)), 1
     items = list(store.items.values())
     counts = _store_counts(store)
     counts.update(changed=sum(1 for item in items if item["id"] in before and before[item["id"]] != item),
                   dropped=sum(1 for check in spec.checks if check.id not in store.items),
                   added=sum(1 for item in items if item["id"] not in before),
-                  not_ruled=store.not_ruled, truncated_chars=cut,
+                  not_ruled=store.not_ruled, truncated_chars=cut, retried=retried,
                   refusals=[{"id": row["id"], "kind": row["kind"]} for row in store.refused],
                   rebut=rebuttal_of(session.get("text") or ""))
     repaired = _spec_of(spec.task_id, items, counts, inputs).model_copy(update={

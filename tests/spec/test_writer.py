@@ -299,18 +299,17 @@ def test_repair_drops_only_ruled_items_and_adds_under_the_same_rules():
     assert "s1: not ruled, kept" in model.calls[1]["messages"][-1]["content"]
 
 
-def test_a_repair_may_not_replace_an_unruled_item_and_adds_at_most_the_cap():
+def test_a_repair_may_not_replace_an_unruled_item_and_a_wholly_refused_answer_is_retried_once():
     told = {"id": "t1", "kind": "said", "values": ["seven"], "fact_ids": ["f1"]}
     spec = W.write_spec("t1", inputs(), TestModel([add(ROW, told), DONE])).spec
     ruling = W.Ruling(check_ids=["t1"], reason="a fact is uncovered", item="f2", kind="derivation/uncovered_fact")
-    extra = [dict(told, id=f"n{n}") for n in range(W.MAX_ADDS + 1)]
-    model = TestModel([add(dict(ROW, expect={"slot": "four"}), *extra), DONE])
+    model = TestModel([add(dict(ROW, expect={"slot": "four"})), DONE, add(dict(told, id="n1")), DONE])
     written = W.repair(spec, ruling, inputs(), model)
     kept = {check.id: check for check in written.spec.checks}
     assert kept["s1"] == spec.checks[0] and written.counts["not_ruled"] == 1
-    assert written.counts["added"] == W.MAX_ADDS and f"n{W.MAX_ADDS}" not in kept
-    shown = model.calls[1]["messages"][-1]["content"]
-    assert "s1: refused: not ruled" in shown and f"at most {W.MAX_ADDS} items" in shown
+    assert written.counts["retried"] == 1 and written.counts["added"] == 1 and "n1" in kept
+    retry = model.calls[2]["messages"][-1]["content"]
+    assert "Code refused every item" in retry and "s1: not ruled" in retry
     assert "uncovered_fact" in model.calls[0]["messages"][0]["content"]
 
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 SPEC = Path(__file__).resolve().parents[2] / "kullback" / "spec"
 # The writer's path: what writes, compiles and stages a Spec and its Verifier.
-WRITER_PATH = ("writer.py", "writer_tools.py", "items.py", "compile.py", "end_state.py", "stage.py", "intent.py",
+WRITER_PATH = ("writer.py", "writer_tools.py", "items.py", "compile.py", "stage.py", "intent.py",
                "intent_tools.py", "schema.py")
 
 
@@ -36,3 +36,9 @@ def test_the_writers_path_never_loads_a_reference_run():
         imports = _imports(SPEC / name)
         assert not any(i.startswith("kullback.spec.witness") for i in imports), name
         assert "references.json" not in (SPEC / name).read_text(encoding="utf-8"), name
+
+
+def test_no_module_on_the_writers_path_imports_the_reference_gates_or_the_end_state_matcher():
+    for name in WRITER_PATH:
+        imports = _imports(SPEC / name)
+        assert not any(i.startswith(("kullback.spec.end_state", "kullback.runner.expected")) for i in imports), name

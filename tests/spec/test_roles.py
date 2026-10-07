@@ -163,11 +163,12 @@ def test_an_empty_rebuttal_keeps_what_code_refused_so_it_reads_apart_from_a_reas
     RV.answer_rulings(root, "t1", TestModel([call("drop_items", ids=["c2"]), ModelReply(content="done")]), 2)
     _ruling(root, 2, item="s1", code="fixed_value")
     unfound = dict(ROW, expect={"slot": "nine_42"})
-    RV.answer_rulings(root, "t1", TestModel([call("add_items", items=[unfound]), ModelReply(content="done")]), 2)
+    twice = [call("add_items", items=[unfound]), ModelReply(content="done")] * 2
+    RV.answer_rulings(root, "t1", TestModel(twice), 2)
     ruling = RL.load_rulings(root, "t1")[1]
     assert ruling.answer["action"] == "rebutted" and ruling.answer["why"] == RV.REBUT_NONE
-    assert ruling.answer["writer"]["refused"] == 1
-    assert ruling.answer["writer"]["refusals"] == [{"id": "s1", "kind": "row_is"}]
+    assert ruling.answer["writer"]["refused"] == 2 and ruling.answer["writer"]["retried"] == 1
+    assert ruling.answer["writer"]["refusals"] == [{"id": "s1", "kind": "row_is"}] * 2
 
 
 def test_a_ruling_that_the_reference_is_wrong_asks_nothing_of_the_writer(tmp_path):
