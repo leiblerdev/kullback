@@ -1,4 +1,4 @@
-"""The per-build tier report: counts per tier, the trusted count split by Reference class, one table line.
+"""The per-build tier report: trusted, untrusted by reason, the two flags, trusted by Reference class.
 
 The split is kullback/spec/split.py's class of each Task's kept References, read off the benchmark's
 sidecar. The sidecar is measurement only: nothing in kullback/spec/trust.py reads it, and without the
@@ -17,12 +17,12 @@ from typing import Any, Optional
 
 from kullback.runner.code_hash import SHORT
 from kullback.spec.split import reference_classes
-from kullback.spec.trust import TIERS, TaskTier, workdir_tiers
+from kullback.spec.trust import FLAGS, REASONS, TIERS, TaskTier, workdir_tiers
 
 # The report file in the workdir, one per build.
 REPORT_FILE = "tiers.json"
-TABLE_HEADER = ("| Build | Corpus | Verifier from | Tasks | Trusted | Replay-only | Untrusted | Set aside "
-                "| Unconfirmed | Pending | Refused "
+TABLE_HEADER = ("| Build | Corpus | Verifier from | Tasks | Trusted | Untrusted "
+                "| No intent | Open ruling | Constructed Run passed | Reference passes | Solvable "
                 "| Trusted by Reference (right, wrong, mixed, unknown) | Code |")
 
 
@@ -44,10 +44,19 @@ def _hash_warnings(hashes: list[str], previous: Optional[str] = None) -> list[st
 
 def build_report(tiers: dict[str, TaskTier], *, corpus: Optional[str] = None,
                  build: Optional[str] = None, classes: Optional[dict[str, str]] = None) -> dict:
-    """Counts per tier and, given the classes, the trusted Tasks by Reference class; rows keep ids only."""
+    """Counts per tier, per reason and per flag (true and false; None is unscored) and, given the classes,
+    the trusted Tasks by Reference class; rows keep ids only."""
     counts = {tier: 0 for tier in TIERS}
+    reasons = {reason: 0 for reason in REASONS}
+    flags = {f"{flag}{end}": 0 for flag in FLAGS for end in ("", "_false")}
     for task_tier in tiers.values():
         counts[task_tier.tier] += 1
+        if task_tier.row.get("reason") in reasons:
+            reasons[task_tier.row["reason"]] += 1
+        for flag in FLAGS:
+            value = task_tier.row.get(flag)
+            if value is not None:
+                flags[flag if value else f"{flag}_false"] += 1
     split = None
     if classes is not None:
         split = {}
@@ -59,7 +68,7 @@ def build_report(tiers: dict[str, TaskTier], *, corpus: Optional[str] = None,
     hashes = code_hashes(rows)
     return {"build": build, "corpus": corpus, "tasks": len(tiers),
             "code_hash": hashes[0] if len(hashes) == 1 else None, "warnings": _hash_warnings(hashes),
-            "tiers": counts, "trusted_by_reference": split, "rows": rows}
+            "tiers": counts, "reasons": reasons, "flags": flags, "trusted_by_reference": split, "rows": rows}
 
 
 def header_line(report: dict) -> str:
@@ -75,12 +84,14 @@ def _code_cell(report: dict) -> str:
 
 def table_line(report: dict) -> str:
     """One row under TABLE_HEADER, the format docs/builds/README.md keeps."""
-    counts = report["tiers"]
+    counts, reasons, flags = report["tiers"], report.get("reasons") or {}, report.get("flags") or {}
     split = report.get("trusted_by_reference")
     by_class = ("n/a" if split is None else
                 ", ".join(str(split.get(cls, 0)) for cls in ("right", "wrong", "mixed", "unknown")))
     cells = [report.get("build") or "", report.get("corpus") or "", "spec", str(report["tasks"]),
-             *(str(counts[tier]) for tier in TIERS), by_class, _code_cell(report)]
+             *(str(counts[tier]) for tier in TIERS), *(str(reasons.get(reason, 0)) for reason in REASONS),
+             *(f"{flags.get(flag, 0)} of {flags.get(flag, 0) + flags.get(f'{flag}_false', 0)}" for flag in FLAGS),
+             by_class, _code_cell(report)]
     return "| " + " | ".join(cells) + " |"
 
 

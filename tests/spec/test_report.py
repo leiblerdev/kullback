@@ -5,19 +5,27 @@ from kullback.spec.trust import TaskTier
 
 
 def _tiers(code="c0de" * 16, **tiers):
-    return {task_id: TaskTier(tier, {"task_id": task_id, "tier": tier, "code_hash": code})
-            for task_id, tier in tiers.items()}
+    """task id -> tier, or (tier, extra row fields)."""
+    out = {}
+    for task_id, value in tiers.items():
+        tier, extra = value if isinstance(value, tuple) else (value, {})
+        out[task_id] = TaskTier(tier, {"task_id": task_id, "tier": tier, "code_hash": code, **extra})
+    return out
 
 
-def test_the_report_counts_every_tier_and_splits_the_trusted_tasks_by_reference_class():
-    tiers = _tiers(a="trusted", b="trusted", c="replay_only", d="untrusted", e="set_aside", f="trusted")
+def test_the_report_counts_tiers_reasons_and_flags_and_splits_the_trusted_tasks_by_reference_class():
+    tiers = _tiers(a=("trusted", {"reference_passes": True, "solvable": True}),
+                   b=("trusted", {"reference_passes": False, "solvable": None}),
+                   c=("untrusted", {"reason": "open_ruling"}), d=("untrusted", {"reason": "no_intent"}),
+                   e=("untrusted", {"reason": "constructed_run_passed", "solvable": False}), f="trusted")
     report = R.build_report(tiers, corpus="c1", build="b1",
                             classes={"a": "right", "b": "wrong"})
-    assert report["tiers"] == {"trusted": 3, "replay_only": 1, "untrusted": 1, "set_aside": 1,
-                               "unconfirmed": 0, "pending": 0, "refused": 0}
+    assert report["tiers"] == {"trusted": 3, "untrusted": 3}
+    assert report["reasons"] == {"no_intent": 1, "open_ruling": 1, "constructed_run_passed": 1}
+    assert report["flags"] == {"reference_passes": 1, "reference_passes_false": 1, "solvable": 1, "solvable_false": 1}
     assert report["trusted_by_reference"] == {"right": 1, "wrong": 1, "unknown": 1}
     assert [row["task_id"] for row in report["rows"]] == ["a", "b", "c", "d", "e", "f"]
-    assert R.table_line(report) == "| b1 | c1 | spec | 6 | 3 | 1 | 1 | 1 | 0 | 0 | 0 | 1, 1, 0, 1 | c0dec0dec0de |"
+    assert R.table_line(report) == "| b1 | c1 | spec | 6 | 3 | 3 | 1 | 1 | 1 | 1 of 2 | 1 of 2 | 1, 1, 0, 1 | c0dec0dec0de |"
     assert R.table_line(report).count("|") == R.TABLE_HEADER.count("|")
 
 

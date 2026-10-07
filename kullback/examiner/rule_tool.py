@@ -261,13 +261,14 @@ def _reference_run(workdir: Any, task_id: str) -> Optional[Run]:
 def verify_rows(workdir: Any, task_id: str, verifier: Verifier, reference: Optional[Run]) -> list[dict]:
     """What the Verifier says of each constructed Run and of the Reference.
 
-    A constructed Run (do nothing, one stray write, one expected cell undone) should fail; the Reference
-    passing says the Verifier is satisfiable. A Run the Verdict cannot read is a row with its error.
+    A constructed Run (do nothing, one stray write on the Reference, spec/trust.py) should fail; the
+    Reference passing says the Verifier is satisfiable. A Run the Verdict cannot read is a row with its error.
     """
     from kullback.gates.probes import write_tools_of
     from kullback.runner.canon import load_rules
     from kullback.runner.records import ToolSig
-    from kullback.spec.canfail import can_fail, judge_run
+    from kullback.spec.canfail import judge_run
+    from kullback.spec.trust import constructed_runs
 
     if reference is None:
         return [{"run": "reference", "error": "no faithful Reference on disk"}]
@@ -275,11 +276,13 @@ def verify_rows(workdir: Any, task_id: str, verifier: Verifier, reference: Optio
     sigs = sigs.get("sigs", []) if isinstance(sigs, dict) else sigs
     tools = write_tools_of([ToolSig.model_validate(s) for s in sigs])
     canon = load_rules(Path(workdir) / "canon-rules.json")
+    schema = read_json(Path(workdir) / "schema.json", None)
     rows = []
     try:
-        result = can_fail(verifier, reference, canon=canon, write_tools=tools)
-        rows += [{"run": row["stage"].replace("verifier_", ""), "verifier_fails_it": bool(row["passed"])}
-                 for row in result.rows]
+        built = constructed_runs(verifier, [reference], [reference.run_id], schema=schema, canon=canon)
+        for name, run in built.items():
+            if run is not None:
+                rows.append({"run": name, "verifier_fails_it": not judge_run(verifier, run, canon, tools)[0]})
     except Exception as exc:  # a constructed Run the Verdict cannot read says the code does not run
         rows.append({"run": "constructed", "error": type(exc).__name__})
     try:

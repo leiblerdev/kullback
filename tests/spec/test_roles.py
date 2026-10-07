@@ -16,8 +16,9 @@ from kullback.spec import review as RV
 from kullback.spec import rounds as RD
 from kullback.spec import rulings as RL
 from kullback.spec import writer as W
-from kullback.spec.canfail import can_fail, judge_run
+from kullback.spec.canfail import judge_run
 from kullback.spec.schema import FactSource, IntentFact, intent_text, load_spec
+from kullback.spec.trust import constructed_runs
 from tests.spec.fixtures import FACTS, check
 from tests.spec.fixtures import spec as _spec
 from tests.spec.test_writer import _workdir as _environment
@@ -94,12 +95,12 @@ def test_write_verifier_puts_the_items_two_sourced_cells_in_expected_and_no_writ
     assert (counts["end_states"], counts["cells"], counts["gate"]) == (1, 2, 2) and "reference" not in counts
 
 
-def test_a_verifier_with_end_state_gates_passes_its_reference_and_fails_the_empty_and_undone_runs(tmp_path):
+def test_a_verifier_with_end_state_gates_passes_its_reference_and_fails_both_constructed_runs(tmp_path):
     _, verifier = _written(tmp_path)
     assert judge_run(verifier, _reference()) == (True, None)
-    result = can_fail(verifier, _reference())
-    assert result.passed
-    assert [row["stage"] for row in result.rows] == ["verifier_empty_run"] + ["verifier_undone_cell"] * 2
+    built = constructed_runs(verifier, [_reference()], [_reference().run_id])
+    assert sorted(built) == ["do_nothing", "stray_write"] and all(built.values())
+    assert not any(judge_run(verifier, run)[0] for run in built.values())
 
 
 TOLD = check("c2", demand={"demand": "say", "text": "slot seven"}, because="move item A1 to slot seven")
@@ -183,9 +184,9 @@ def test_verify_says_the_do_nothing_run_fails_and_the_reference_passes(tmp_path)
     root, verifier = _written(tmp_path)
     rows = verify_rows(root, "t1", verifier, _reference())
     by_run = {row["run"]: row for row in rows}
-    assert by_run["empty_run"]["verifier_fails_it"] is True
+    assert by_run["do_nothing"]["verifier_fails_it"] is True and by_run["stray_write"]["verifier_fails_it"] is True
     assert by_run["reference"]["verifier_passes_it"] is True
-    assert verify_line(rows).startswith("empty_run: the Verifier fails 1 of 1;") and "reference: passes" in verify_line(rows)
+    assert verify_line(rows).startswith("do_nothing: the Verifier fails 1 of 1;") and "reference: passes" in verify_line(rows)
     assert verify_rows(root, "t1", verifier, None) == [{"run": "reference", "error": "no faithful Reference on disk"}]
 
 

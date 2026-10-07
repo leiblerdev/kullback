@@ -214,10 +214,10 @@ def _rounds(data: ReportData) -> list[str]:
         return lines
     lines += _rounds_table(data)
     metrics = (data.trusted.metrics or {}) if data.trusted is not None else {}
-    if "trust_tier" in metrics:  # a ruling written before D319 has no tiers
+    if "trust_reason" in metrics:  # a ruling written before D328 has no reasons
         from kullback.gates.trust import tier_counts, trust_row
 
-        lines += ["", f"Trust tiers (D319): {trust_row(tier_counts(metrics))}"]
+        lines += ["", f"Trust (D328): {trust_row(tier_counts(metrics))}"]
     return lines
 
 
