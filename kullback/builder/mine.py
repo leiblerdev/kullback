@@ -1329,30 +1329,6 @@ def _repeating_ids(rows: list[dict]) -> set[str]:
     return out
 
 
-def _id_distinct_refs(traces: list[Trace], observed: set) -> dict[str, list]:
-    """Per observed id column, the multi-row results where it held a distinct value per row.
-
-    The second half of the observed id fact (`id_columns`): addressing says the column is used as
-    a key, distinctness says it identifies. Whole lists here too; the caller caps and unions.
-    """
-    out: dict[str, list] = {}
-    if not observed:
-        return out
-    for trace in traces:
-        for call_index, call in enumerate(trace.tool_calls):
-            if not is_assistant_call(call) or call.error is not None or call.result is None:
-                continue
-            rows = _result_rows(_parse(call.result))
-            if len(rows) < 2:
-                continue
-            for name in sorted(observed):
-                if not any(name in row for row in rows):
-                    continue
-                if _distinct_across(name, rows):
-                    out.setdefault(name, []).append([trace.trace_id, call_index])
-    return out
-
-
 def _refuted_with_calls(traces: list[Trace]) -> dict[str, dict]:
     """Name-rule id columns seen repeating, with the results that show it, capped, and the count."""
     refs: dict[str, list] = {}
