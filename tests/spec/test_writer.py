@@ -1,7 +1,7 @@
 """The Verifier writer: a scripted model reads the world and adds items, code keeps what it finds and compiles it.
 
 The model is the harness TestModel with scripted replies; the Starting state, tools and facts are the
-invented ones of tests/spec/fixtures.py. Verdicts go through the real verdict gates and runner/items.py.
+invented ones of tests/spec/fixtures.py. Verdicts go through the real verdict.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from pydantic import ValidationError
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.runner.atom_context import AtomContext
 from kullback.runner.expected import match_context
-from kullback.runner.items import score_items
 from kullback.runner.records import Event, Run, Verifier
+from kullback.runner.verdict import verdict
 from kullback.spec import writer as W
 from kullback.spec import writer_tools as T
 from kullback.spec.schema import SpecIntent, intent_text, load_spec
@@ -233,12 +233,12 @@ def test_the_compiled_verifier_passes_the_right_run_and_fails_a_wrong_slot_and_a
 
     def ok(run):
         context = AtomContext(run)
-        return _matches(verifier.expected, context), score_items(verifier, context)
+        return _matches(verifier.expected, context), {item.id: item.holds for item in verdict(run, verifier).items}
 
     end = {"items": {"A1": {"item_id": "A1", "slot": "seven"}, "B2": STATE["items"]["B2"]}}
-    assert ok(_ended(end)) == (True, {"s1": True, "sanity": True})
+    assert ok(_ended(end)) == (True, {"state:items.A1.slot": True, "sanity": True})
     assert ok(_ended({"items": {**end["items"], "A1": {"item_id": "A1", "slot": "nine"}}}))[0] is False
-    assert ok(_ended({"items": {"A1": end["items"]["A1"]}})) == (False, {"s1": True, "sanity": False})
+    assert ok(_ended({"items": {"A1": end["items"]["A1"]}})) == (False, {"state:items.A1.slot": True, "sanity": False})
 
 
 def _ended(end: dict) -> Run:

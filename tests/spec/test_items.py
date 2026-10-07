@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from kullback.runner.atom_context import AtomContext
 from kullback.runner.expected import match_context
-from kullback.runner.items import score_items
 from kullback.runner.records import Event, Run, Verifier
+from kullback.runner.verdict import verdict
 from kullback.spec import items as I
 from kullback.spec.schema import FactSource, IntentFact
 
@@ -17,6 +17,14 @@ def _matches(end_states, context):
     """Any one end state matching passes; else an unsettled one is None; else False."""
     oks = [match_context(state, context).ok for state in end_states]
     return True if True in oks else (None if None in oks else False)
+
+
+def _holds(verifier, run):
+    """Each item of the Verdict on this Run: event and judge items by id, cells as state:table.row.field."""
+    return {item.id: item.holds for item in verdict(run, verifier).items}
+
+
+CELL = "state:items.A1.slot"
 
 
 STATE = {"items": {"A1": {"item_id": "A1", "slot": "two", "label": "red"},
@@ -139,9 +147,7 @@ def _run(end: dict, calls=(), said="Done.", user=("Yes please.",)) -> Run:
 
 def _verifier(items: list[dict]) -> Verifier:
     states = I.end_states_of(items, world())
-    conduct, forbidden = I.event_gates(items, KNOWN, {"update_item", "add_note"})
-    return Verifier(task_id="t1", atoms=[I.atom_of(i) for i in items] + [I.sanity_atom(states)],
-                    expected=states, conduct=conduct, forbidden=forbidden)
+    return Verifier(task_id="t1", atoms=[I.atom_of(i) for i in items] + [I.sanity_atom(states)], expected=states)
 
 
 def _moved(slot="seven", **extra) -> dict:
@@ -153,13 +159,12 @@ def _moved(slot="seven", **extra) -> dict:
 
 def test_the_sanity_item_fails_a_stray_write_and_holds_on_the_declared_row():
     verifier = _verifier(_kept(MOVE))
-    right = AtomContext(_run(_moved(), [("update_item", {"item_id": "A1", "slot": "seven"})]))
-    stray = AtomContext(_run(_moved(items={"B2": dict(STATE["items"]["B2"], label="blue")})))
-    assert _matches(verifier.expected, right) and score_items(verifier, right) == {"s1": True, "sanity": True}
-    assert _matches(verifier.expected, stray) is False
-    assert score_items(verifier, stray) == {"s1": True, "sanity": False}
-    nothing = AtomContext(_run(STATE))
-    assert score_items(verifier, nothing) == {"s1": False, "sanity": True}
+    right = _run(_moved(), [("update_item", {"item_id": "A1", "slot": "seven"})])
+    stray = _run(_moved(items={"B2": dict(STATE["items"]["B2"], label="blue")}))
+    assert _matches(verifier.expected, AtomContext(right)) and _holds(verifier, right) == {CELL: True, "sanity": True}
+    assert _matches(verifier.expected, AtomContext(stray)) is False
+    assert _holds(verifier, stray) == {CELL: True, "sanity": False}
+    assert _holds(verifier, _run(STATE)) == {CELL: False, "sanity": True}
 
 
 def test_with_no_state_item_the_one_end_state_has_no_cell_and_any_change_fails_it():
@@ -185,20 +190,42 @@ def test_alternative_end_states_pass_on_any_one_and_value_sets_and_new_rows_are_
     assert _matches(banned.expected, AtomContext(_run(STATE))) is False
 
 
-def test_event_items_become_conduct_and_forbidden_calls_and_are_scored_on_the_event_log():
+def test_event_items_are_decided_by_the_verdict_off_the_event_log_not_compiled_to_conduct():
     confirm = {"id": "e1", "kind": "before", "first": "confirm_turn", "then": "update_item",
                "policy_line": "after the user says yes"}
     never = {"id": "e2", "kind": "not_called", "tool": "add_note", "fact_ids": ["f1"]}
     told = {"id": "t1", "kind": "said", "values": ["seven"], "fact_ids": ["f1"]}
     verifier = _verifier(_kept(MOVE, confirm, never, told))
-    assert [(c.kind, c.tool) for c in verifier.conduct] == [("confirm_before_write", "update_item")]
-    assert [(f.kind, f.tool) for f in verifier.forbidden] == [("write", "add_note")]
+    assert verifier.conduct == [] and verifier.forbidden == []
     calls = [("update_item", {"item_id": "A1", "slot": "seven"})]
-    good = score_items(verifier, AtomContext(_run(_moved(), calls, said="A1 is now in slot seven.")))
-    assert good == {"s1": True, "e1": True, "e2": True, "t1": True, "sanity": True}
-    rushed = score_items(verifier, AtomContext(_run(_moved(), calls + [("add_note", {"text": "x"})], user=(),
-                                                    said="I could not use slot seven.")))
+    good = _holds(verifier, _run(_moved(), calls, said="A1 is now in slot seven."))
+    assert good == {CELL: True, "e1": True, "e2": True, "t1": True, "sanity": True}
+    rushed = _holds(verifier, _run(_moved(), calls + [("add_note", {"text": "x"})], user=(), said="Nothing done."))
     assert rushed["e1"] is False and rushed["e2"] is False and rushed["t1"] is False
+
+
+def test_a_gated_called_item_with_arguments_fails_a_run_that_called_the_tool_with_other_arguments():
+    called = {"id": "c1", "kind": "called", "tool": "update_item", "args": {"item_id": "A1", "slot": "seven"},
+              "fact_ids": ["f1"]}
+    verifier = _verifier(_kept(called))
+    assert verifier.atoms[0].kind == "allowed" and verifier.atoms[0].gate is True
+    other = verdict(_run(STATE, [("update_item", {"item_id": "B2", "slot": "seven"})]), verifier)
+    assert other.passed is False and other.failing_atom == "gate:called:c1" and other.score == 0.0
+    assert verdict(_run(STATE, [("update_item", {"item_id": "A1", "slot": "seven"})]), verifier).passed is True
+
+
+def test_a_gated_not_called_item_with_arguments_fails_only_on_a_matching_call():
+    never = {"id": "n1", "kind": "not_called", "tool": "update_item", "args": {"item_id": "B2"}, "fact_ids": ["f1"]}
+    verifier = _verifier(_kept(never))
+    assert verdict(_run(STATE, [("update_item", {"item_id": "A1", "slot": "four"})]), verifier).passed is True
+    hit = verdict(_run(STATE, [("update_item", {"item_id": "B2", "slot": "four"})]), verifier)
+    assert hit.passed is False and hit.failing_atom == "gate:not_called:n1"
+
+
+def test_a_scored_event_item_lowers_the_score_and_never_fails_the_run():
+    told = {"id": "t1", "kind": "said", "values": ["seven"], "fact_ids": ["f1"], "gate": False}
+    result = verdict(_run(STATE, said="Done."), _verifier(_kept(told)))
+    assert result.passed is True and 0.0 < result.score < 1.0
 
 
 def test_contradictions_name_a_tool_both_needed_and_forbidden_and_a_cell_expected_twice():
@@ -227,7 +254,7 @@ def test_a_list_value_matches_its_members_in_any_order_and_a_free_field_may_move
         moved = {"items": {"A1": dict(STATE["items"]["A1"], slot="seven", tags=["seven", "four"]), "B2": b2},
                  "notes": {}}
         assert _matches(verifier.expected, AtomContext(_run(moved)))
-        assert score_items(verifier, AtomContext(_run(moved)))["sanity"] is True
+        assert _holds(verifier, _run(moved))["sanity"] is True
         short = {**moved, "items": {**moved["items"], "A1": dict(moved["items"]["A1"], tags=["seven"])}}
         assert _matches(verifier.expected, AtomContext(_run(short))) is False
         assert "is in expect and in free" in keep(dict(MOVE, free=["slot"]))[1]

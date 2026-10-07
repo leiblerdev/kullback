@@ -375,7 +375,7 @@ def item_checks(spec: Spec) -> list[dict]:
 
 
 def verifier_of(spec: Spec, inputs: WriterInputs, gates: Optional[Gates] = None) -> Compiled:
-    """The Spec's Verifier: items to atoms, end states (the sanity item with them) and event gates.
+    """The Spec's Verifier: items to atoms (the verdict decides each), end states with the sanity item.
 
     Checks of the older demand grammar compile as before, Reference-free, beside the items: their
     atoms, the must-not atoms when the Spec has no item, and the forbidden writes and conduct they ask
@@ -392,9 +392,6 @@ def verifier_of(spec: Spec, inputs: WriterInputs, gates: Optional[Gates] = None)
     expected, forbidden, conduct = list(gates.expected), list(gates.forbidden), list(gates.conduct)
     if items or not legacy.checks:
         expected = I.end_states_of(items, world_of(inputs), inputs.action_tables)
-        more_conduct, more_forbidden = I.event_gates(items, {f.id: f for f in spec.intent.facts}, inputs.write_tools)
-        conduct += more_conduct
-        forbidden += more_forbidden
         atoms = [I.atom_of(item) for item in items] + [I.sanity_atom(expected)] + atoms
     verifier = Verifier(task_id=spec.task_id, atoms=atoms,
                         verifier_version=f"spec{spec.version}", seed_run_ids=[], expected=expected,
