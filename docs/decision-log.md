@@ -2238,3 +2238,22 @@ After the verify-1006 fold two rulings decided trust for the same Task: the Spec
 The consistency checks of D321 (`contradicts_user`, `unasked_writes`) leave the trusted decision: `code_ruling` still computes them and the row carries them as `contradicts` and `unasked`, counted in the status table as "consistency flags" and never gating. This is the fold's reading pending the founder's decision on D321, and it is reversible in one place: where `code_ruling` builds the flags it can return unconfirmed again.
 
 Rejected: two rulings on one Task, because a reader could not say which tier a Task has; unsupported cells passing the grounded gate, because a value nobody sourced is not evidence the Task is right; the consistency checks as gates until the founder decides, because D321 found they do not separate a wrong Reference.
+
+### D323. Cells only for what someone said or wrote; the world's own values ride with the write (2026-10-07)
+
+`kullback/runner/expected.py expected_from_run` changes three ways. With a schema, a table whose columns record tool
+calls (evidence.actions_of, D308) gives no cells and one `allowed` entry for the whole table ("action table: calls are
+conduct, not state"); with no schema nothing changes. A value no source holds and no call passed, on a row the last
+successful sourced call named (every key part among its arguments), showed in its result, or made (passed one of the
+new row's values), is the world's answer to that call: `_world_source`, a `tool_result` source with `world` in its ptr.
+A minted row id gets the same `row_source`. A value a call passed, which an assistant turn stated and the next user turn
+opened on a yes to (D306's cue), is sourced by that user turn (`affirmed` in the ptr). Why: the 2026-10-07 failure
+analysis put 42 airline and 27 retail unconfirmed Tasks on action-table cells, 30 and 21 on world-made values, 17 and 4
+on agent-stated values. Re-derived on the vf-live copies, the unconfirmed Tasks whose fewest-unsupported end state has
+no unsupported cell go from 0 of 52 to 38 (airline) and 1 of 48 to 46 (retail); the code ruling then trusts 16 airline
+(2 on a wrong Reference) and 37 retail (5 wrong), and 22 airline and 8 retail land on "the empty Run passes": their only
+change was the hand-off, which is now conduct and gates only where the Spec demands it. Limits: `spec/end_state.py
+gates_of` does not pass the schema yet, so the action-table rule is off in a build until it does; the source kind is
+`tool_result` because `ValueSource.kind` has no `world`; a yes affirms every value of the turn before it; a short value
+is still found by plain containment. The wrong-trust bound must be re-measured before this ships.
+Status: built 2026-10-07 on fix-1007/cells.
