@@ -27,6 +27,9 @@ from kullback.spec.items import SANITY_ID
 from kullback.spec.schema import Spec, load_spec
 
 REBUT_NONE = "the writer made no grounded change and gave no reason"
+# Spec fields the review loop and the Spec stage own, never the writer's repair: a repaired Spec keeps
+# them as they stood, so an examined Task stays examined (D343).
+REVIEW_FIELDS = ("rulings_open", "truth_open", "round", "examined_rounds", "pending_repair", "set_aside")
 
 
 def atom_checks(spec: Spec, verifier: Optional[Verifier]) -> dict[str, str]:
@@ -99,7 +102,7 @@ def _settle(root: Path, ruling: R.Ruling, spec: Spec, written: Any, used: Any) -
         return "rebutted", counts.get("rebut") or REBUT_NONE, []
     changed = [c.id for c in written.spec.checks if c not in spec.checks]
     changed += [c.id for c in spec.checks if c.id not in {k.id for k in written.spec.checks}]
-    update = {"rulings_open": spec.rulings_open, "round": spec.round}
+    update = {name: getattr(spec, name) for name in REVIEW_FIELDS}
     if ruling.code == R.UNFOUNDED_CODE:
         update["intent"] = unfounded_intent(written.spec.intent, ruling.item)
     write_verifier(written.spec.model_copy(update=update), root, used)
@@ -154,4 +157,4 @@ def answer_rulings(workdir: Any, task_id: str, model: Any, round_number: int, *,
     return out
 
 
-__all__ = ["REBUT_NONE", "answer_rulings", "atom_checks", "ruled_checks", "unfounded_intent"]
+__all__ = ["REBUT_NONE", "REVIEW_FIELDS", "answer_rulings", "atom_checks", "ruled_checks", "unfounded_intent"]
