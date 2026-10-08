@@ -21,11 +21,12 @@ def test_the_report_counts_tiers_reasons_and_flags_and_splits_the_trusted_tasks_
     report = R.build_report(tiers, corpus="c1", build="b1",
                             classes={"a": "right", "b": "wrong"})
     assert report["tiers"] == {"trusted": 3, "untrusted": 3}
-    assert report["reasons"] == {"no_intent": 1, "open_ruling": 1, "constructed_run_passed": 1}
+    assert report["reasons"] == {"no_intent": 1, "not_examined": 0, "open_ruling": 1, "constructed_run_passed": 1}
     assert report["flags"] == {"reference_passes": 1, "reference_passes_false": 1, "solvable": 1, "solvable_false": 1}
     assert report["trusted_by_reference"] == {"right": 1, "wrong": 1, "unknown": 1}
     assert [row["task_id"] for row in report["rows"]] == ["a", "b", "c", "d", "e", "f"]
-    assert R.table_line(report) == "| b1 | c1 | spec | 6 | 3 | 3 | 1 | 1 | 1 | 1 of 2 | 1 of 2 | 1, 1, 0, 1 | c0dec0dec0de |"
+    assert R.table_line(report) == ("| b1 | c1 | spec | 6 | 3 | 3 | 1 | 0 | 1 | 1 | 1 of 2 | 1 of 2 | "
+                                    "1, 1, 0, 1 | c0dec0dec0de |")
     assert R.table_line(report).count("|") == R.TABLE_HEADER.count("|")
 
 

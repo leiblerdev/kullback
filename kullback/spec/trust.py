@@ -9,7 +9,8 @@ A Task is trusted when both constructed Runs score 0 under its Verifier and no b
    declared rows changed).
 
 Otherwise the Task is untrusted with one reason, in this order: no_intent (no Spec, an empty Spec, no
-Verifier, or a Task refused), open_ruling (a ruling open, or the Task set aside by the router's rule),
+Verifier, or a Task refused), not_examined (no round's Examiner session ran over the Task),
+open_ruling (a ruling open, or the Task set aside by the router's rule),
 constructed_run_passed (a constructed Run passed, or none could be built: not shown to fail). A stray
 write that fails at a cell or an atom, or that sits on the do-nothing Run, never tested the sanity check:
 it counts as passed and the row's `detail` says stray_untested.
@@ -47,9 +48,9 @@ from kullback.spec.writer import spec_verifier_path
 
 TRUSTED, UNTRUSTED = "trusted", "untrusted"
 TIERS = (TRUSTED, UNTRUSTED)
-NO_INTENT, OPEN_RULING, CONSTRUCTED_RUN_PASSED = "no_intent", "open_ruling", "constructed_run_passed"
+NO_INTENT, NOT_EXAMINED, OPEN_RULING, CONSTRUCTED_RUN_PASSED = "no_intent", "not_examined", "open_ruling", "constructed_run_passed"
 # The reasons a Task is not trusted, in the order they are read.
-REASONS = (NO_INTENT, OPEN_RULING, CONSTRUCTED_RUN_PASSED)
+REASONS = (NO_INTENT, NOT_EXAMINED, OPEN_RULING, CONSTRUCTED_RUN_PASSED)
 # The two constructed Runs, each of which must fail.
 CONSTRUCTED = ("do_nothing", "stray_write")
 # How the Verdict names a failure at the sanity check: a row outside the declared ones moved.
@@ -258,6 +259,19 @@ def _flag(verdicts: dict[str, Outcome], run_ids: Iterable[str], every: bool) -> 
     return all(scored) if every else any(scored)
 
 
+def _untrusted_reason(spec: Spec, verifier: Verifier, gates: dict, constructed: dict) -> Optional[str]:
+    """The one reason the Task is not trusted, read in order, else None for trusted."""
+    if is_empty(spec) or not spec.intent.facts or not verifier_items(verifier):
+        return NO_INTENT
+    if not spec.examined_rounds:
+        return NOT_EXAMINED
+    if not gates["no_open_ruling"]:
+        return OPEN_RULING
+    if not all(gates[f"{name}_fails"] for name in constructed):
+        return CONSTRUCTED_RUN_PASSED
+    return None
+
+
 def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: Iterable[Any] = (), *,
                  canon: Any, write_tools: Optional[Iterable[str]] = None, references: Iterable[str] = (),
                  schema: Any = None) -> TaskTier:
@@ -276,14 +290,7 @@ def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: I
     set_aside = set_aside_of(spec, rulings)
     gates = {f"{name}_fails": constructed[name]["failed"] for name in constructed}
     gates["no_open_ruling"] = spec.rulings_open == 0 and not set_aside
-    if is_empty(spec) or not spec.intent.facts or not verifier_items(verifier):
-        reason = NO_INTENT
-    elif not gates["no_open_ruling"]:
-        reason = OPEN_RULING
-    elif not all(gates[f"{name}_fails"] for name in constructed):
-        reason = CONSTRUCTED_RUN_PASSED
-    else:
-        reason = None
+    reason = _untrusted_reason(spec, verifier, gates, constructed)
     failed_reference = next((run_id for run_id in kept if verdicts[run_id].failed), None)
     row = {"task_id": spec.task_id, "tier": UNTRUSTED if reason else TRUSTED, "reason": reason, "gates": gates,
            "constructed": constructed,

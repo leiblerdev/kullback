@@ -18,7 +18,8 @@ REPLAY_ID = "replay-rec1"
 def spec(checks=None, gaps=()):
     """The shared Spec with its write naming the row by its canonical id, the key check_run scores on."""
     written = check(demand=dict(WRITE, entity=fn(WRITE["entity"])))
-    return base_spec(checks=[written] if checks is None else checks, gaps=gaps)
+    return base_spec(checks=[written] if checks is None else checks, gaps=gaps).model_copy(
+        update={"examined_rounds": [1]})
 
 
 START = {"items": {"A1": {"slot": "two"}, "B2": {"slot": "four"}}}

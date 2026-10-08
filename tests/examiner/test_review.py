@@ -9,11 +9,13 @@ import pytest
 from examiner.worlds import make_world
 from kullback.agent.extensions import load_extensions
 from kullback.agent.harness import AgentHarness
-from kullback.ai.provider import TestModel
+from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.examiner import domain_tools as D
 from kullback.examiner import session as S
 from kullback.examiner.exam_files import ExamRoot
 from kullback.runner.canon import CanonRules
+from kullback.spec.schema import save_spec
+from tests.spec.fixtures import spec as make_spec
 
 # What a tool that writes a Verifier or plays a Run would be called, old names included.
 WRITERS_AND_RUNNERS = {"write", "edit", "bash", "edit_verifier", "propose_verifier", "try_atoms", "probe",
@@ -73,3 +75,47 @@ def test_the_rounds_examiner_can_file_a_finding_for_the_builder(tmp_path, monkey
     out = S.examine_rounds(root, ["t1"], model=TestModel([]), writer_model=TestModel([]))
     assert out["findings"] and out["findings"][0]["kind"] == "environment"
     assert out["findings"][0]["task_id"] == "t1"
+
+
+def _specced_world(tmp_path, task_ids=("t1", "t2")):
+    """The hand built world with one Spec file per named Task for the review round."""
+    root = make_world(tmp_path / "w", tasks=len(task_ids)).workdir
+    for task_id in task_ids:
+        save_spec(root, make_spec().model_copy(update={"task_id": task_id}))
+    return root
+
+
+def _opening_of(call):
+    """The review opening of one model call: the user message carrying the round ask."""
+    for message in call["messages"]:
+        content = message.get("content")
+        if isinstance(content, list):
+            content = "".join(block.get("text", "") for block in content if isinstance(block, dict))
+        if S.REVIEW_MESSAGE in str(content or ""):
+            return str(content)
+    raise AssertionError("no review opening in the model call")
+
+
+def test_each_task_gets_its_own_review_session(tmp_path):
+    root = _specced_world(tmp_path)
+    model = TestModel(["Nothing to rule here."], loop=True)
+    out = S.review_specs(root, ["t2", "t1"], model=model, round_number=3)
+    assert out["tasks"] == ["t1", "t2"] and out["examined"] == ["t1", "t2"]
+    assert out["capped"] is False and out["capped_tasks"] == []
+    assert len(model.calls) == 2
+    first, second = (_opening_of(call) for call in model.calls)
+    assert "t1" in first and "t2" not in first
+    assert "t2" in second and "t1" not in second
+
+
+def test_a_capped_session_names_its_task_and_the_others_still_run(tmp_path):
+    root = _specced_world(tmp_path)
+    filing = ModelReply(tool_calls=[ToolCallRequest(id="c1", name="finding", arguments={
+        "kind": "environment", "task_id": "t1", "text": "a tool body answers wrong",
+        "path": "env/tools/update_item.py", "change": "answer the recorded calls"})])
+    model = TestModel([filing, "Nothing to rule here."])
+    out = S.review_specs(root, ["t1", "t2"], model=model, round_number=1, max_turns=1)
+    assert out["capped"] is True and out["capped_tasks"] == ["t1"]
+    assert out["examined"] == ["t1", "t2"]
+    assert [finding["task_id"] for finding in out["findings"]] == ["t1"]
+    assert "t2" in _opening_of(model.calls[1]) and len(model.calls) == 2

@@ -18,8 +18,8 @@ from kullback.spec import rulings as RL
 from kullback.spec import writer as W
 from kullback.spec.canfail import judge_run
 from kullback.spec.schema import FactSource, IntentFact, intent_text, load_spec
-from kullback.spec.trust import constructed_runs
-from tests.spec.fixtures import FACTS, check
+from kullback.spec.trust import NOT_EXAMINED, constructed_runs, tier_of_task
+from tests.spec.fixtures import FACTS, check, fn
 from tests.spec.fixtures import spec as _spec
 from tests.spec.test_writer import _workdir as _environment
 from tests.spec.test_writer import call
@@ -241,3 +241,24 @@ def test_the_confirm_question_is_asked_before_the_examiners_first_round(tmp_path
     assert calls == [("confirm", "t1"), ("examiner", 1)]
     logged = [json.loads(line) for line in RD.log_path(root).read_text().splitlines()]
     assert logged[0] == {"side": "writer", "confirm_asked": ["t1"], "confirm_added": 1}
+
+
+def _trust_tier(root, verifier):
+    """The Task tier under the Spec file as the last round left it, scored over its Reference."""
+    return tier_of_task(load_spec(root, "t1"), verifier, [_reference()], (), canon=fn,
+                        write_tools={"update_item"}, references=("ref",))
+
+
+def test_a_task_no_round_examined_is_untrusted_as_not_examined(tmp_path):
+    root, verifier = _written(tmp_path)
+    assert load_spec(root, "t1").examined_rounds == []
+    tier, row = _trust_tier(root, verifier)
+    assert tier == "untrusted" and row["reason"] == NOT_EXAMINED
+
+
+def test_an_examined_task_with_no_open_ruling_keeps_its_tier(tmp_path):
+    root, verifier = _written(tmp_path)
+    RL.sync_spec(root, "t1", 1)
+    assert load_spec(root, "t1").examined_rounds == [1]
+    tier, row = _trust_tier(root, verifier)
+    assert tier == "trusted" and row["reason"] is None

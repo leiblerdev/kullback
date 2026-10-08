@@ -20,6 +20,7 @@ from kullback.spec import events
 from kullback.spec import rulings as R
 from kullback.spec.review import answer_rulings
 from kullback.spec.router import ROUNDS_CAP
+from kullback.spec.schema import load_spec
 
 LOG_FILE = "spec/state/rounds.jsonl"
 
@@ -36,11 +37,15 @@ def _log(workdir: Any, row: dict) -> None:
 
 
 def task_rows(workdir: Any, task_ids: Iterable[str]) -> dict[str, dict]:
-    """Per Task: its rulings' counts and whether an open blocking ruling holds it untrusted."""
+    """Per Task: its rulings' counts, whether an open blocking ruling holds it untrusted, and whether
+    any round's Examiner session ran over it (read off the Spec file)."""
     out = {}
     for task_id in task_ids:
         rulings = R.load_rulings(workdir, task_id)
-        out[task_id] = dict(R.counts(rulings), held=bool(R.open_blocking(rulings)))
+        spec = load_spec(workdir, task_id)
+        rounds = spec.examined_rounds if spec is not None else []
+        out[task_id] = dict(R.counts(rulings), held=bool(R.open_blocking(rulings)),
+                            examined=bool(rounds), examined_rounds=sorted(rounds))
     return out
 
 
@@ -60,6 +65,18 @@ def _ask_confirm(root: Path, task_id: str, model: Any, ceiling_usd: Optional[flo
     return ask_confirm(root, task_id, model, ceiling_usd)
 
 
+def _sync_round(root: Path, task_ids: list[str], exam: dict, number: int) -> set[str]:
+    """Sync each Spec after one Examiner round and return the Tasks the round examined.
+
+    Only an examined Task carries the round number, so the Spec file's examined rounds are the
+    rounds whose session ran over the Task. An examine result without the key examined every Task.
+    """
+    seen = set(exam.get("examined", exam.get("tasks", task_ids)) or ())
+    for task_id in task_ids:
+        R.sync_spec(root, task_id, number if task_id in seen else None)
+    return seen
+
+
 def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., dict], model: Any,
                writer_model: Any = None, rounds: int = ROUNDS_CAP, ceiling_usd: Optional[float] = None,
                answer: Callable[..., dict] = answer_rulings, confirm: Optional[Callable[..., dict]] = None) -> dict:
@@ -69,7 +86,7 @@ def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., 
     model, round_number, ceiling_usd=)` one writer answer per Task. Before the first round the
     writer is asked the fixed confirm question where a Spec writes with no confirm item (`confirm`,
     spec/writer.ask_confirm). Returns each round's counts, the findings the Examiner rounds filed
-    for the Builder, and each Task's row at the end.
+    for the Builder, the Tasks any round examined, and each Task's row at the end.
     """
     from kullback.agent.bus import Bus
 
@@ -79,6 +96,7 @@ def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., 
     rounds = min(int(rounds), ROUNDS_CAP)
     log: list[dict] = []
     found: list[dict] = []
+    examined_all: set[str] = set()
     routed = _route_reference_fails(root, task_ids)
     if routed:
         _log(root, {"side": "trust", "reference_fails_filed": routed})
@@ -89,8 +107,7 @@ def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., 
                     "confirm_added": sum(row.get("added", 0) for row in asked.values())})
     for number in range(1, rounds + 1):
         exam = examine(root, task_ids, model=model, round_number=number)
-        for task_id in task_ids:
-            R.sync_spec(root, task_id, number)
+        examined_all.update(_sync_round(root, task_ids, exam, number))
         row = {"round": number, "side": "examiner", "capped": exam.get("capped"), "counts": exam.get("counts", {})}
         found += exam.get("findings", [])
         events.review_round(bus, number, "examiner", row["counts"])
@@ -109,6 +126,7 @@ def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., 
         R.sync_spec(root, task_id)
     tasks = task_rows(root, task_ids)
     summary = {"rounds": log, "tasks": tasks, "held": sorted(t for t, row in tasks.items() if row["held"]),
+               "examined": sorted(examined_all),
                "total": R.counts(r for t in task_ids for r in R.load_rulings(root, t)), "findings": found}
     _log(root, {"side": "summary", "held": summary["held"], "total": summary["total"]})
     return summary

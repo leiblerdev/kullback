@@ -100,6 +100,8 @@ class Spec(Record):
     gaps: list[str] = Field(default_factory=list)
     rulings_open: int = 0
     round: int = 0
+    # Review rounds whose Examiner session ran over this Task, oldest first.
+    examined_rounds: list[int] = Field(default_factory=list)
     version: int = 0
     # Open blocking rulings (spec/rulings.py) and review rounds run; requests left by the retired router,
     # and why the Task is set aside.

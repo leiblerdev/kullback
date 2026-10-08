@@ -169,13 +169,16 @@ def close(workdir: Any, task_id: str, number: int, keep_open: bool, why: str, ro
 
 
 def sync_spec(workdir: Any, task_id: str, round_number: Optional[int] = None) -> Optional[Spec]:
-    """The Spec's rulings_open set to its open blocking rulings, and its round when one is given."""
+    """The Spec's rulings_open set to its open blocking rulings, its round when one is given, and the
+    round appended to its examined rounds: a call with a round number means that round's Examiner
+    session ran over this Task."""
     spec = load_spec(workdir, task_id)
     if spec is None:
         return None
     update: dict = {"rulings_open": len(open_blocking(load_rulings(workdir, task_id)))}
     if round_number is not None:
         update["round"] = max(spec.round, int(round_number))
+        update["examined_rounds"] = sorted(set(spec.examined_rounds) | {int(round_number)})
     spec = spec.model_copy(update=update)
     save_spec(workdir, spec)
     return spec

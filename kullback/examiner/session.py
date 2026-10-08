@@ -6,8 +6,8 @@ runs one review session over the Examiner's root when a model is given. The sess
 rulings on the Specs and findings on the Environment; it edits nothing (D331). It returns the findings
 and writes them to `findings.json` at once, never a round late (learnings 7).
 
-`review_specs` is one Examiner round of the review loop (spec/rounds.py) alone: the Spec views, the
-ruling tools, no Reference stage and no Environment findings.
+`review_specs` is one Examiner round of the review loop (spec/rounds.py) alone: one session per
+Task over the Spec views, the ruling tools, no Reference stage and no Environment findings.
 """
 
 from __future__ import annotations
@@ -735,6 +735,8 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding],
     save_history(exam_root, history)
     return exam_root
 REVIEW_MESSAGE = "Examine these Specs."
+# One Task review session's turn budget: reading its Runs, replays and Verifier before filing.
+REVIEW_TURNS_PER_TASK = 12
 
 
 def review_extension(root: ExamRoot) -> Callable[[ExtensionAPI], None]:
@@ -758,47 +760,67 @@ def review_extension(root: ExamRoot) -> Callable[[ExtensionAPI], None]:
     return setup
 
 
+def _review_one(root: Path, task_id: str, round_number: int, model: Any, turns: int, bus: Bus,
+                subscribers: list[Callable], session_path: Any = None) -> tuple[bool, list[Finding]]:
+    """One Task's review session: its root, its harness, its view and its opening line, played to the
+    cap. Returns whether the session stopped on its turn cap and the findings it filed."""
+    from kullback.examiner.rule_tool import write_views
+
+    exam_root = ExamRoot(workdir=root, round=round_number,
+                         replays=read_json(root / "replays.json", {}) or {},
+                         rerolls=read_json(root / "rerolls.json", {}) or {})
+    exam_root.bus = bus
+    harness = AgentHarness(model=model, max_turns=turns,
+                           session=SessionStore.load(session_path) if session_path is not None else None,
+                           context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
+                           bus=bus)
+    for subscriber in subscribers:
+        harness.subscribe(subscriber)
+    harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
+    load_extensions(harness, [review_extension(exam_root)])
+    views = write_views(exam_root, [task_id])
+    lines = f"{task_id}: view {views.get(task_id, 'none')}; {rulings_part(root, task_id)}"
+    entries = [f"review/{entry}" for entry in root_listing(exam_root.exam_dir / "review")]
+    text = prompt_mod.opening(REVIEW_MESSAGE, lines, entries, round_number=round_number)
+    capped = _run_session(harness, text, turns, [task_id])
+    return bool(capped), list(exam_root.findings)
+
+
 def review_specs(workdir: Any, task_ids: Iterable[str], *, model: Any, round_number: int,
                  max_turns: Optional[int] = None, subscribers: Iterable[Callable] = (),
                  session_path: Any = None) -> dict:
-    """One Examiner round over the Tasks with a Spec: views written, rulings filed or closed, Specs synced.
+    """One Examiner round over the Tasks with a Spec: one session per Task, in id order, over one
+    round bus. `max_turns` is one Task session's budget; the default is REVIEW_TURNS_PER_TASK.
 
-    Returns the Tasks examined, whether the session stopped on its turn cap, the rulings this round
-    filed, by kind, code and blocking (spec/rulings.py counts), and the findings the session filed
-    for the Builder.
+    Returns the Tasks examined, whether any session stopped on its turn cap, the capped Tasks, the
+    rulings this round filed, by kind, code and blocking (spec/rulings.py counts), and the findings
+    the sessions filed for the Builder.
     """
-    from kullback.examiner.rule_tool import write_views
     from kullback.spec.rulings import counts, load_rulings, sync_spec
     from kullback.spec.schema import spec_path
 
     root = Path(workdir)
     selected = sorted(t for t in set(task_ids) if spec_path(root, t).is_file())
     if not selected:
-        return {"round": round_number, "tasks": [], "capped": False, "counts": counts(()), "findings": []}
-
-    exam_root = ExamRoot(workdir=root, round=round_number,
-                         replays=read_json(root / "replays.json", {}) or {},
-                         rerolls=read_json(root / "rerolls.json", {}) or {})
-    exam_root.bus = Bus(root / "bus.jsonl", agent="examiner")
-    turns = max_turns or 8 * len(selected) + 10
-    harness = AgentHarness(model=model, max_turns=turns,
-                           session=SessionStore.load(session_path) if session_path is not None else None,
-                           context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
-                           bus=exam_root.bus)
-    for subscriber in subscribers:
-        harness.subscribe(subscriber)
-    harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
-    load_extensions(harness, [review_extension(exam_root)])
-    views = write_views(exam_root, selected)
-    lines = "\n".join(f"{t}: view {views.get(t, 'none')}; {rulings_part(root, t)}" for t in selected)
-    entries = [f"review/{entry}" for entry in root_listing(exam_root.exam_dir / "review")]
-    text = prompt_mod.opening(REVIEW_MESSAGE, lines, entries, round_number=round_number)
-    capped = _run_session(harness, text, turns, selected)
+        return {"round": round_number, "tasks": [], "capped": False, "capped_tasks": [], "examined": [],
+                "counts": counts(()), "findings": []}
+    bus = Bus(root / "bus.jsonl", agent="examiner")
+    turns = max_turns or REVIEW_TURNS_PER_TASK
+    watchers = list(subscribers)
+    capped_tasks = []
+    found: list[Finding] = []
+    for task_id in selected:
+        capped, findings = _review_one(root, task_id, round_number, model, turns, bus, watchers,
+                                       session_path)
+        found.extend(findings)
+        if capped:
+            capped_tasks.append(task_id)
     filed = [r for t in selected for r in load_rulings(root, t) if r.round == round_number]
     for task_id in selected:
         sync_spec(root, task_id, round_number)
-    return {"round": round_number, "tasks": selected, "capped": bool(capped), "counts": counts(filed),
-            "findings": list(map(Finding.as_dict, exam_root.findings))}
+    return {"round": round_number, "tasks": selected, "capped": bool(capped_tasks),
+            "capped_tasks": sorted(capped_tasks), "examined": selected,
+            "counts": counts(filed), "findings": list(map(Finding.as_dict, found))}
 
 
 __all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "REVIEW_MESSAGE", "review_extension", "review_specs", "rulings_part", "derive_findings", "examine", "examiner_extension", "session_opening",
