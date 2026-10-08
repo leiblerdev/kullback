@@ -10,6 +10,7 @@ from pydantic import Field, model_validator
 
 from kullback.runner.records import GATE_KINDS, AtomKind, Item, Record
 from kullback.spec.must_not import tier_of as _atom_tier
+from kullback.user.rules import spec_goal
 
 Stance = Literal["volunteered", "accepted"]
 # Spec fields retired with the Examiner's edit kinds (D325 to D331): dropped when an older file loads.
@@ -33,6 +34,9 @@ class IntentFact(Record):
     source: FactSource
     stance: Stance
     witnesses: list[str] = Field(default_factory=list)
+    # The fact carries the agent's proposal: the user only said yes to it, or a value of it (a token
+    # with a digit) was in the agent's line before and not in the user's turn (spec/intent_tools.is_echo).
+    echo: bool = False
 
 
 class SpecIntent(Record):
@@ -163,3 +167,12 @@ def load_spec(workdir: Path, task_id: str) -> Optional[Spec]:
     if not path.exists():
         return None
     return Spec.model_validate_json(path.read_text())
+
+
+def goal_of(workdir: Path, task_id: str, writes: Any) -> tuple[Optional[set], Optional[dict]]:
+    """The user's goal label from the Task's Spec (`user.rules.spec_goal`): its writes and counts.
+    With no Spec yet the goal is any write (None), never the Reference's calls."""
+    spec = load_spec(Path(workdir), task_id) if workdir is not None else None
+    if spec is None:
+        return None, None
+    return spec_goal([check.demand for check in spec.checks], writes)

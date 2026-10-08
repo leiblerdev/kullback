@@ -1196,10 +1196,13 @@ def _agent_user_factory(workdir: Path, model_id: str, base_url: Optional[str], c
         model = budget.BudgetedModel(model, stage="user_fidelity", workdir=workdir,
                                      model_id=model_id, ceiling=ceiling, cap_context=True)
     factory = importlib.import_module("kullback.user.factory")
+    goal_of = importlib.import_module("kullback.spec.schema").goal_of
+    writes = importlib.import_module("kullback.user.fidelity").write_tools_of(workdir)
 
     def make(ctx, fallback, record_values):
         return factory.build_user(workdir, ctx.task_id, model, factory.PURPOSE_SCORE, ctx=ctx,
-                                  fallback=fallback, record_values=record_values)
+                                  fallback=fallback, record_values=record_values,
+                                  goal_writes=goal_of(workdir, ctx.task_id, writes)[0])
 
     return make
 

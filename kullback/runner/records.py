@@ -11,7 +11,7 @@ import stat
 from pathlib import Path
 from typing import Any, Iterable, Literal, Optional, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from kullback.ai.usage import Usage
 
@@ -400,14 +400,6 @@ class UserRules(Record):
     confirmed_by_write: bool = False
 
 
-class UserBehaviour(Record):
-    """Stub: how the customer's real users behave, once we mine style across Runs (D44)."""
-    behaviour_id: str
-    style_notes: list[str] = Field(default_factory=list)
-    patience: Optional[str] = None
-    verbosity: Optional[str] = None
-    trace_ids: list[str] = Field(default_factory=list)
-
 # --- environment, categories, tasks ---
 
 class Environment(Record):
@@ -485,7 +477,7 @@ class Task(Record):
 
 # The Intent record and the one function that applies it to a Task live here rather than in the
 # Builder's intent.py (which keeps the stage, the prompt and the grounding) so the Examiner can read
-# an Intent without importing the Builder (D123); builder/intent.py re-exports the three names.
+# an Intent without importing the Builder (D123).
 
 SpanSource = Literal["user_utterance", "tool_arg", "written_value"]
 # Where a value the strip took out of an Intent was known from, and the shape left in its place
@@ -677,10 +669,18 @@ class Forbidden(Item):
 
 
 class Conduct(Item):
-    """Conduct the event log must show: a confirmation before a write, a refusal, a hand-off (D316)."""
-    kind: Literal["confirm_before_write", "refusal", "handoff"]
+    """Conduct the event log must show: a confirmation before a write, a refusal, a call made (D316).
+
+    `called` was `handoff` until the fold (D330); a stored rule of that kind reads as `called`.
+    """
+    kind: Literal["confirm_before_write", "refusal", "called"]
     tool: Optional[str] = None
     source: ValueSource
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _handoff_is_called(cls, kind: Any) -> Any:
+        return "called" if kind == "handoff" else kind
 
 
 class Verifier(Record):

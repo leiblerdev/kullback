@@ -1,12 +1,12 @@
-"""Tests for what builder/intent.py still re-exports: applying an Intent (D47) and the value strip (D196)."""
+"""Applying an Intent (D47) and the value strip (D196)."""
 
 from __future__ import annotations
 
 import json
 
 from conftest import PTR
-from kullback.builder.intent import Intent, apply_intent, strip_intent
-from kullback.runner.records import Column, EntitySchema, Task, ToolCall, Trace, Turn
+from kullback.runner.records import Column, EntitySchema, Intent, Task, ToolCall, Trace, Turn, apply_intent
+from kullback.user.value_strip import strip_intent
 
 
 def make_trace(trace_id: str, user_turns: list[str], calls: list[dict]) -> Trace:
@@ -82,7 +82,7 @@ def test_apply_intent_sets_the_task_name_intent_and_unguarded_mark():
 
 def test_apply_intent_leaves_an_ungrounded_intent_off_the_task():
     task, _ = two_run_task()
-    updated = apply_intent(task, Intent(task_id=task.id, text="refund to a gift card", grounded=False))
+    updated = apply_intent(task, Intent(task_id=task.id, text="move item A1 to slot seven", grounded=False))
     assert updated.intent is None
     assert updated.name is None
 

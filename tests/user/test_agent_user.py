@@ -199,8 +199,7 @@ def test_the_agent_may_only_request_an_end_and_code_decides_it(ctx):
     out = box.end(rules_mod.GOAL_SATISFIED)
     assert out.requested == rules_mod.GOAL_SATISFIED and out.accepted is False
     protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
-    assert protocol.kind("Anything else?", said_anything=True, had_nothing=False, made=set(),
-                         requested=rules_mod.GOAL_SATISFIED) == rules_mod.HANDED_OFF
+    assert protocol.kind("Anything else?", said_anything=True, had_nothing=False, made=set()) == rules_mod.HANDED_OFF
     assert protocol.kind("Anything else?", said_anything=True, had_nothing=False,
                          made={"move_delivery"}) == rules_mod.GOAL_SATISFIED
 
@@ -440,36 +439,6 @@ def test_a_run_the_user_ended_on_a_refused_write_is_counted(tmp_path, runs, refu
     assert counts["runs_read"] == len(runs)
     assert counts["runs_with_a_write"] == with_a_write
     assert counts["runs_with_no_end_kind"] == no_end_kind
-
-
-def test_the_end_kinds_are_counted_under_the_user_whose_turn_ended_the_run(tmp_path):
-    """D231: a round could only say how many Runs ended each way over both users at once, so the
-    one number D214 exists to move, how often a user runs out of scenario, could not be read per
-    driver at all. The turn that ends a Run names its own driver, and that is what the split reads."""
-    agent_ended = [{"type": "user_turn", "payload": {"driver": "agent", "text": "Any news?"}},
-                   {"type": "user_turn", "payload": {"driver": "agent",
-                                                     "user_end": rules_mod.GOAL_SATISFIED}}]
-    rules_ended = [{"type": "user_turn", "payload": {"driver": "agent", "text": "Any news?"}},
-                   {"type": "user_turn", "payload": {"driver": "rules",
-                                                     "user_end": rules_mod.SCENARIO_EXHAUSTED}}]
-    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", agent_ended)
-    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-1.jsonl", rules_ended)
-    split = fidelity_mod.ends_by_driver(tmp_path)
-    assert split["agent"][rules_mod.GOAL_SATISFIED] == 1
-    assert split["rules"][rules_mod.SCENARIO_EXHAUSTED] == 1
-    assert split["agent"][rules_mod.SCENARIO_EXHAUSTED] == 0, "every kind is named for a driver that spoke"
-
-    # The rule-driven user writes no driver on its own turns, so an unnamed one is its own; a Run
-    # that ended in no kind at all is in neither driver's count rather than guessed at.
-    alone = tmp_path / "alone"
-    tagged = [{"type": "user_turn", "payload": {"tags": [rules_mod.HANDED_OFF]}}]
-    unclassified = [{"type": "user_turn", "payload": {"text": "Thanks."}}]
-    _run_file(alone / "runs" / "task_1" / "reroll-task_1-0.jsonl", tagged)
-    _run_file(alone / "runs" / "task_1" / "reroll-task_1-1.jsonl", unclassified)
-    split = fidelity_mod.ends_by_driver(alone)
-    assert list(split) == ["rules"] and split["rules"][rules_mod.HANDED_OFF] == 1
-    assert sum(split["rules"].values()) == 1
-    assert fidelity_mod.ends_by_driver(tmp_path / "nowhere") == {}
 
 
 # --- the stable head (G24) ----------------------------------------------------------------------

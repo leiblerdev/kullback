@@ -3,20 +3,23 @@
 An item is one typed thing a correct Run shows, never a Reference's diff:
 
     state : row_is    {table, find: {field: value}, expect: {field: value | [values] | {"one_of": [...]} |
-                       {"not": [...]}}, free: [fields a tool sets to a value the writer cannot find]}
+                       {"not": [...]}}, free: {field: why a tool sets it to a value the writer cannot find}}
             row_new   {table, where: {field: value}, count}      a row the Run makes, its id minted, unnamed
             row_keeps {table, find, fields: [...]}               one per "do not change"
     event : called {tool, args?} | not_called {tool, args?} | before {first: "confirm_turn" | tool, then: tool}
-    text  : said {values: [...], not_values: [...]}              containment, negation aware
+    text  : said {values: [...], not_values: [...]}              containment in an assistant message
     judge : {question, anchor: {answer, accepted, reject, row: {table, find, fields}},
              evidence: ["final_answer" | "after_call:<tool>" | "assistant:<k>" | "assistant_turns"]}
 
 Every item carries gate, weight and its provenance: fact_ids (Intent facts) or policy_line (a verbatim
 policy line). Code adds the sanity item (`nothing_else`): no row outside the declared rows changed.
 "Find, do not invent": `World.check` refuses a value no world row, policy line or user turn holds, a
-find that names no row or several, and a field the table does not have, each with the reason. A judge
+find that names no row or several, and a field the table does not have, each with the reason; a row_is
+whose expect is empty or holds only the find key, a free field with no reason, and a free field holding
+a value an Intent fact names elsewhere in the world (that value belongs in expect). A judge
 anchor cites the row it was read from (one row by a world search) and its answer states those fields;
-only an anchor whose answer quotes the item's policy line goes without a row.
+only an anchor whose answer quotes the item's policy line goes without a row, and that refusal item
+always gates.
 State items may name an alternative end state (`alt`); one without belongs to every end state, and a
 Run passes the state items when any one end state matches.
 """
@@ -28,7 +31,8 @@ import math
 import re
 from typing import Any, Callable, Iterable, Optional
 
-from kullback.runner.records import Atom, Conduct, EndState, ExpectedCell, Forbidden, ValueSource
+from kullback.runner.atom_context import is_transfer
+from kullback.runner.records import Atom, EndState, ExpectedCell, ValueSource
 
 STATE_KINDS = ("row_is", "row_new", "row_keeps")
 EVENT_KINDS = ("called", "not_called", "before")
@@ -37,6 +41,8 @@ SANITY = "nothing_else"
 SANITY_ID = "sanity"
 CONFIRM_TURN = "confirm_turn"
 EVIDENCE = ("final_answer", "assistant_turns")
+# The default evidence: every agent turn up to the first transfer or hand-off call (judge/shape.py).
+WINDOW = "assistant_turns"
 AFTER_CALL = "after_call:"
 ASSISTANT = "assistant:"
 # Gate by default: what the world must hold and what the event log must show; text and judge items weigh.
@@ -79,6 +85,25 @@ def _leaves(value: Any) -> Iterable[Any]:
         yield value
 
 
+def _keys(value: Any) -> Iterable[str]:
+    """Every dict key nested in a value."""
+    if isinstance(value, dict):
+        for name, item in value.items():
+            yield str(name)
+            yield from _keys(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _keys(item)
+
+
+NUMBER_RE = re.compile(r"\d+(?:,\d{3})*(?:\.\d+)?")
+
+
+def _numbers(text: str) -> set[float]:
+    """The numbers a text states, thousands separators dropped."""
+    return {float(match.replace(",", "")) for match in NUMBER_RE.findall(text or "")}
+
+
 def path_value(row: Any, field: str) -> Any:
     node = row
     for part in str(field).split("."):
@@ -108,6 +133,8 @@ class World:
         self.facts = list(facts)
         self.tools = {row["name"]: row for row in tools if isinstance(row, dict) and row.get("name")}
         self._values: Optional[dict[str, tuple[str, str]]] = None
+        # The item being checked, so a value can be read against its gate and its row.
+        self._kept: dict = {}
 
     # --- reading -------------------------------------------------------------------------------
     def columns(self, table: str) -> list[str]:
@@ -218,7 +245,11 @@ class World:
         weight = item.get("weight", 1.0)
         if not isinstance(gate, bool) or not isinstance(weight, (int, float)) or weight <= 0:
             return None, "gate is true or false and weight a positive number"
+        if gate and item["kind"] == "called" and is_transfer(str(item.get("tool") or "")) \
+                and not is_transfer(kept["policy_line"] or ""):
+            gate = False  # a hand-off gates only where its policy line names one; else it is weighed
         kept.update(gate=gate, weight=float(weight))
+        self._kept = kept
         why = getattr(self, f"_{item['kind']}")(item, kept)
         return (None, why) if why else (kept, "")
 
@@ -255,7 +286,25 @@ class World:
             if one is not None and self.source(one) is None:
                 return None, (f"{what}: value {json.dumps(one)} is not in the world, the policy or a user turn; "
                               "find it with the tools, or demand another field")
+            if one is not None and self._echo_only(one):
+                return None, (f"{what}: value {json.dumps(one)} rests only on echo facts (the user said yes to the "
+                              "agent's proposal); a gate value needs the user's own words, the policy or the row "
+                              "the item names: make the item scored (gate false) or demand another field")
         return value, ""
+
+    def _echo_only(self, value: Any) -> bool:
+        """A gate item's value whose only user source is an echo fact, found in neither the policy nor
+        the row the item names. A scored item may rest on an echo fact."""
+        if not self._kept.get("gate"):
+            return False
+        target = norm(value)
+        facts = [fact for fact in self.facts if _contains(_flat(fact.text), target)]
+        if not facts or not all(getattr(fact, "echo", False) for fact in facts):
+            return False
+        if _contains(_flat(self.policy), target):
+            return False
+        row = self.row(self._kept["table"], self._kept["row"]) if self._kept.get("row") else None
+        return not (row and any(norm(leaf) == target for leaf in _leaves(row)))
 
     def _table(self, item: dict) -> str:
         table = str(item.get("table") or "")
@@ -290,22 +339,60 @@ class World:
 
     def _row_is(self, item: dict, kept: dict) -> str:
         why = self._one_row(item, kept)
-        expect, free = item.get("expect") or {}, item.get("free") or []
-        if why or not isinstance(expect, dict) or not isinstance(free, list) or not (expect or free):
-            return why or ("expect names the fields the row holds after a correct Run: {field: value}; free "
-                           "names fields it may change to a value no tool lets you find")
+        expect, free = item.get("expect") or {}, item.get("free") or {}
+        if why or not isinstance(expect, dict) or not set(expect) - set(kept["find"]):
+            return why or ("expect names a field the row holds after a correct Run beside the find key: "
+                           "{field: value}; a row checked on its find key alone checks nothing")
+        if not isinstance(free, dict) or any(not isinstance(r, str) or not r.strip() or "\n" in r
+                                             for r in free.values()):
+            return "free is {field: one line on why a tool sets it to a value you cannot find}"
         for field, value in expect.items():
             why = self._field(kept["table"], field) or self._value(value, f"{field}")[1]
             if why:
                 return why
         for field in free:
-            why = self._field(kept["table"], field)
+            why = self._field(kept["table"], field) or self._named_free(kept["table"], kept["row"], str(field))
             if why or str(field) in expect:
                 return why or f"{field} is in expect and in free; name it once"
         kept["expect"] = dict(expect)
         if free:
-            kept["free"] = [str(field) for field in free]
+            kept["free"] = {str(field): " ".join(reason.split()) for field, reason in free.items()}
         return ""
+
+    def _named_free(self, table: str, row_key: str, field: str) -> str:
+        """Why a free field is refused: an Intent fact names a value this field holds elsewhere in the world.
+
+        The values are those under the field's own key, or a key nested in it, in any row of any table,
+        less what the row holds there now; a fact naming one of them names the field's new value.
+        """
+        now = path_value((self.state.get(table) or {}).get(row_key) or {}, field)
+        keys = {field.split(".")[-1]} | set(_keys(now))
+        held = {norm(leaf) for leaf in _leaves(now)}
+        values = {value for value in self._values_under(keys) if len(value) >= 3} - held
+        for fact in self.facts:
+            text = _flat(fact.text)
+            named = next((value for value in sorted(values) if value in text and _contains(text, value)), None)
+            if named is not None:
+                return (f"free {field}: fact {fact.id} names a value this field holds elsewhere in the world; "
+                        "put the value the Intent names in expect")
+        return ""
+
+    def _values_under(self, keys: set[str]) -> set[str]:
+        """Every scalar the world holds under one of these keys, at any depth of any row."""
+        out: set[str] = set()
+
+        def walk(node: Any, key: Optional[str]) -> None:
+            if isinstance(node, dict):
+                for name, value in node.items():
+                    walk(value, str(name))
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value, key)
+            elif node is not None and key in keys:
+                out.add(norm(node))
+        for rows in self.state.values():
+            walk(rows, None)
+        return out
 
     def _row_new(self, item: dict, kept: dict) -> str:
         why = self._table(item) or self._alt(item, kept)
@@ -392,6 +479,16 @@ class World:
                     f"not {text!r}")
         return ""
 
+    def _narrowed(self, evidence: list, reason: Any) -> str:
+        """A ref narrower than the window (every agent turn up to the first transfer) needs its reason."""
+        if all(str(ref) == WINDOW for ref in evidence):
+            return ""
+        if isinstance(reason, str) and reason.strip() and "\n" not in reason.strip():
+            self._kept["evidence_why"] = " ".join(reason.split())
+            return ""
+        return (f"evidence narrower than {WINDOW} needs evidence_why: one line on why the answer can only "
+                f"come there; else leave evidence out and every agent turn up to a transfer is read")
+
     def _anchor_row(self, anchor: dict, answer: str) -> tuple[Optional[dict], str]:
         """The row the anchor cites, found by a world search: one row, its fields, each stated in the answer."""
         cited = anchor.get("row")
@@ -414,6 +511,18 @@ class World:
                               f"({json.dumps(values[str(field)])}); read the row again or cite the right one")
         return {"table": kept["table"], "find": kept["find"], "key": kept["row"], "fields": values}, ""
 
+    def _computed(self, answer: str, cited: Optional[dict]) -> str:
+        """Why an anchor answer is refused: it states a number that is no value of the cited row and is
+        not in the policy, so the writer computed it. The answer is looked up, never worked out."""
+        row = self.row(cited["table"], cited["key"]) or {} if cited else {}
+        found = {n for leaf in _leaves(row) for n in _numbers(str(leaf))} | _numbers(self.policy)
+        found |= _numbers(str(cited["key"])) if cited else set()
+        made = sorted(_numbers(answer) - found)
+        if made:
+            return (f"anchor.answer states {', '.join(f'{n:g}' for n in made)}, which is no value of the cited row "
+                    "and not in the policy; state the row's own value or a policy line, never a computed one")
+        return ""
+
     def _judge(self, item: dict, kept: dict) -> str:
         question = str(item.get("question") or "").strip()
         anchor = item.get("anchor")
@@ -422,14 +531,19 @@ class World:
         if not isinstance(anchor, dict) or not str(anchor.get("answer") or "").strip():
             return "anchor is {answer, accepted: [...], reject: [...], row}: what a met checkpoint states"
         answer = str(anchor["answer"]).strip()
-        evidence = item.get("evidence") or ["final_answer"]
-        why = self._evidence(evidence)
+        evidence = item.get("evidence") or [WINDOW]
+        why = self._evidence(evidence) or self._narrowed(evidence, item.get("evidence_why"))
         if why:
             return why
         cited, why = self._anchor_row(anchor, answer)
         policy = item.get("policy_line") and _flat(item["policy_line"]) in _flat(answer)
         if why and not (policy and anchor.get("row") is None):
             return why
+        why = self._computed(answer, cited)
+        if why:
+            return why
+        if cited is None:
+            kept["gate"] = True  # a refusal is the item that decides: a silent Run must fail it (D330)
         kept.update(question=question, anchor={"answer": answer,
                                                "accepted": [str(a) for a in anchor.get("accepted") or []],
                                                "reject": [str(r) for r in anchor.get("reject") or []],
@@ -472,8 +586,9 @@ def _describe(item: dict) -> str:
 def atom_of(item: dict) -> Atom:
     """One item as one atom: gate and weight on it, the item itself and its provenance as the target.
 
-    The legacy scorer never fails a Run on these (kind allowed); the end state, the forbidden list and
-    the conduct rules carry the gates, and runner/items.py scores every item.
+    The atom's kind stays allowed, so no older reader takes it for a required write; the verdict
+    decides it by its gate flag (runner/verdict.py): state items as the end state's cells, event
+    items off the calls and the log, judge items by the judge's score.
     """
     target = {key: value for key, value in item.items() if key not in ("id", "gate", "weight", "fact_ids",
                                                                          "policy_line")}
@@ -514,12 +629,13 @@ def end_states_of(items: list[dict], world: World, action_tables: Iterable[str] 
                 new_rows.append({"table": item["table"], "where": item["where"], "count": item["count"],
                                  "item": item["id"]})
                 continue
-            free += [{"table": item["table"], "row_id": item["row"], "field": field, "why": f"free: {item['id']}"}
-                     for field in item.get("free") or []]
+            free += [{"table": item["table"], "row_id": item["row"], "field": field,
+                      "why": f"free: {item['id']}: {reason}"} for field, reason in (item.get("free") or {}).items()]
             row_source = ValueSource(kind="world", ptr={"table": item["table"], "row": item["row"]})
             for field, value in item["expect"].items():
                 cells.append(ExpectedCell(table=item["table"], row_id=item["row"], field=field, value=value,
-                                          source=_cell_source(value, world), row_source=row_source))
+                                          source=_cell_source(value, world), row_source=row_source,
+                                          gate=bool(item["gate"]), weight=float(item["weight"]) / len(item["expect"])))
         cells.sort(key=lambda cell: (cell.table, cell.row_id, cell.field))
         out.append(EndState(cells=cells, allowed=list(allowed) + free, new_rows=new_rows))
     return out
@@ -541,37 +657,6 @@ def sanity_atom(end_states: list[EndState]) -> Atom:
                 description="no row outside the declared rows changed (generated by code)",
                 target={"kind": SANITY, "rows": item["rows"], "new": item["new"],
                         "from": {"fact_ids": [], "policy_line": None, "code": True}})
-
-
-def _source_of(item: dict, facts: dict) -> ValueSource:
-    fact = next((facts[f] for f in item.get("fact_ids") or [] if f in facts), None)
-    if fact is not None:
-        return ValueSource(kind="user_turn", ptr={"recording": fact.source.recording, "turn": fact.source.turn})
-    return ValueSource(kind="policy", ptr={"clause": item.get("policy_line")})
-
-
-def event_gates(items: list[dict], facts: dict, write_tools: Iterable[str]) -> tuple[list[Conduct], list[Forbidden]]:
-    """The gate event items as the Verifier's conduct rules and forbidden calls, read by today's verdict.
-
-    `before` with a confirmation turn first is confirm_before_write; `called` is a call that must
-    happen (the conduct kind that reads `called`); `not_called` is a forbidden call of the tool. A
-    tool-before-tool order has no conduct rule yet and is scored by runner/items.py alone.
-    """
-    writes = set(write_tools)
-    conduct: list[Conduct] = []
-    forbidden: list[Forbidden] = []
-    for item in items:
-        if not item.get("gate"):
-            continue
-        source = _source_of(item, facts)
-        if item["kind"] == "before" and item["first"] == CONFIRM_TURN:
-            conduct.append(Conduct(kind="confirm_before_write", tool=item["then"], source=source))
-        elif item["kind"] == "called" and not item.get("args"):
-            conduct.append(Conduct(kind="handoff", tool=item["tool"], source=source))
-        elif item["kind"] == "not_called" and not item.get("args"):
-            forbidden.append(Forbidden(kind="write" if item["tool"] in writes else "end_call", tool=item["tool"],
-                                       source=source))
-    return conduct, forbidden
 
 
 def contradictions(items: list[dict]) -> list[tuple[str, str]]:
@@ -608,9 +693,14 @@ def counts_of(items: list[dict]) -> dict:
             "gate": sum(1 for item in items if item.get("gate")),
             "scored": sum(1 for item in items if not item.get("gate")),
             "fact_backed": sum(1 for item in items if item.get("fact_ids")),
+            "free_fields": sum(len(item.get("free") or {}) for item in items),
+            "end_states": len({item.get("alt", 0) for item in items if item.get("kind") in STATE_KINDS}) or
+            int(any(item.get("kind") == SANITY for item in items)),
+            "anchors_without_lookup": sum(1 for item in items if item.get("kind") == "judge"
+                                          and not (item.get("anchor") or {}).get("row")),
             "policy_backed": sum(1 for item in items if item.get("policy_line"))}
 
 
 __all__ = ["CONFIRM_TURN", "DEFAULT_GATE", "EVENT_KINDS", "ITEM_KINDS", "SANITY", "SANITY_ID", "STATE_KINDS",
-           "World", "atom_of", "because_of", "contradictions", "counts_of", "end_states_of", "event_gates",
+           "World", "atom_of", "because_of", "contradictions", "counts_of", "end_states_of",
            "norm", "sanity_atom", "sanity_item"]

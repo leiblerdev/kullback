@@ -39,9 +39,10 @@ from kullback.runner.records import EXAM_DIR, read_json, run_path, write_json
 from kullback.runner.replay import AGREES, OURS_REFUSED, THEIRS_REFUSED
 from kullback.runner.target import as_run
 from kullback.runner.world.environment import BuiltEnvironment
+from kullback.spec.schema import goal_of
 from kullback.spec.trust import in_sample, stored_tasks, workdir_ruling
 from kullback.user import fidelity as user_fidelity
-from kullback.user.rules import GOAL_SATISFIED, goal_write_counts, goal_write_set
+from kullback.user.rules import GOAL_SATISFIED
 from kullback.user.simulated import SimulatedUser
 from kullback.user.value_strip import value_strip
 
@@ -728,13 +729,11 @@ def rule_user(workdir: Any, task_id: str, router: Any) -> Optional[SimulatedUser
     if rules is None:
         return None
     writes = env.write_tools()
-    reference = env.reference(task)
     members = env.members(task)
+    goal_writes, goal_counts = goal_of(workdir, task_id, writes)
     return SimulatedUser(
         rules, starting_state_reader=router.state, vocab=user_fidelity.vocabulary_of(workdir),
-        write_tools=writes,
-        goal_writes=goal_write_set(reference, writes) if reference is not None else None,
-        goal_counts=goal_write_counts(reference, writes) if reference is not None else None,
+        write_tools=writes, goal_writes=goal_writes, goal_counts=goal_counts,
         answer_strip=value_strip(members) if members else None)
 
 

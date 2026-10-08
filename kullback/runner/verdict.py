@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Iterable, NamedTuple, Optional
 
-from kullback.judge.shape import is_item
+from kullback.judge.shape import NO_EVIDENCE, has_evidence, is_item
 from kullback.runner import target as _target
-from kullback.runner.atom_context import AtomContext, _evaluate, gate
+from kullback.runner.atom_context import AtomContext, _evaluate, gate, is_transfer
 from kullback.runner.canon import UNRESOLVED, Unresolved, record_use
 from kullback.runner.expected import Match, cell_results, collateral
 from kullback.runner.records import (
@@ -28,7 +28,6 @@ from kullback.runner.records import (
 # this module's own top.
 
 MUST_HOLD = {"required", "question", "communicate", "hard"}
-TRANSFER_HINTS = ("transfer", "escalate", "handoff", "hand_off")
 GAVE_UP = {"transfer", "transferred", "agent_transfer", "gave_up", "no_action"}
 ENV_ERROR_REASONS = {"env_error", "environment_error", "environment_cannot_answer"}
 # How each judge use says "this holds", "this does not" and "I did not decide" (judge.py's _USES).
@@ -36,6 +35,12 @@ JUDGE_HOLDS = {"pass", "equivalent", "acceptable", "good_reference"}
 JUDGE_FAILS = {"fail", "not_equivalent", "unacceptable", "bad_reference"}
 _JUDGE_WORDS = {True: "pass", False: "fail", None: "abstain"}
 CAUSES = {"candidate", "environment", "simulated_user", "undetermined"}
+# The item kinds the Spec writer puts on an atom's target (spec/items.py). The state kinds and the
+# sanity item are read as the end state's cells; the event kinds are decided here, off the calls
+# and the log. Either way the item's gate flag decides, never the atom's kind (D330).
+STATE_ITEMS = ("row_is", "row_new", "row_keeps", "nothing_else")
+EVENT_ITEMS = ("called", "not_called", "before", "said")
+CONFIRM_TURN = "confirm_turn"
 
 
 # --- loading a stored Run ---
@@ -122,10 +127,6 @@ def _cannot_answer_tool(run: Run) -> str:
     return ""
 
 
-def _is_transfer(name: str) -> bool:
-    return any(hint in (name or "").lower() for hint in TRANSFER_HINTS)
-
-
 def _named_cause(cause_result: Any, notes: list[str]) -> Optional[str]:
     """The cause a judge named for this failure, with its cited spans kept beside it (D88)."""
     if cause_result is None:
@@ -179,6 +180,40 @@ def _judge_opinion(atom: Atom, judge_results: Optional[dict], notes: list[str]) 
     return opinion, True
 
 
+def _calls_with(context: AtomContext, tool: str, args: Optional[dict]) -> list[dict]:
+    """The calls of `tool` that answered without an error and carry every one of `args`."""
+    return [call for call in context.calls if call["name"] == tool and not call["error"]
+            and all(context.c((call["args"] or {}).get(k)) == context.c(v) for k, v in (args or {}).items())]
+
+
+def _event_item_holds(target: dict, context: AtomContext) -> bool:
+    """One event item on one Run: a call made or not made (with its arguments), an order, a value said.
+
+    An order whose later call never happened holds, as confirm_before_write does: whether the call had
+    to happen is the end state's question. A value is said when an assistant message contains it.
+    """
+    kind = target["kind"]
+    if kind == "called":
+        return bool(_calls_with(context, target["tool"], target.get("args")))
+    if kind == "not_called":
+        return not _calls_with(context, target["tool"], target.get("args"))
+    if kind == "said":
+        texts = [context.t(text) for _, text in context.assistant]
+
+        def stated(value: Any) -> bool:
+            needle = context.t(value)
+            return bool(needle) and any(needle in text for text in texts)
+        return (all(stated(v) for v in target.get("values") or [])
+                and not any(stated(v) for v in target.get("not_values") or []))
+    if target["first"] == CONFIRM_TURN:
+        return context.confirmed_before_first_write(target["then"])
+    then = _calls_with(context, target["then"], None)
+    if not then:
+        return True
+    first = _calls_with(context, target["first"], None)
+    return bool(first) and first[0]["idx"] < then[0]["idx"]
+
+
 class _Item(NamedTuple):
     """One item's result, the name a failure or an open gate reports, and whether an open gate blocks."""
     result: ItemResult
@@ -192,14 +227,17 @@ def _item(item_id: str, kind: str, source: Any, holds: Optional[bool], name: str
                             why=why, **judged), name, blocks)
 
 
-def _judge_item(atom: Atom, judge_results: Optional[dict], notes: list[str]) -> tuple[_Item, bool]:
+def _judge_item(atom: Atom, run: Run, judge_results: Optional[dict], notes: list[str]) -> tuple[_Item, bool]:
     """A judge item (D328): the item judge's score decides it like a code item, gate or scored.
 
-    An unjudged item (the judge failed or was not asked) is open: a gate leaves the Run not
-    verdicted, never failed, and a scored one masks the score.
+    A Run with no turn the item's evidence names scores 0 by code, judged or not. Otherwise an
+    unjudged item (the judge failed or was not asked) is open: a gate leaves the Run not verdicted,
+    never failed, and a scored one masks the score.
     """
     result = (judge_results or {}).get(atom.id)
     row = result.model_dump() if hasattr(result, "model_dump") else dict(result or {})
+    if row.get("score") is None and not has_evidence(run, atom.target or {}):
+        row = {"score": 0, "why": NO_EVIDENCE}
     score = row.get("score")
     notes.append(f"judge_item:{atom.id}:{'unjudged' if score is None else score}")
     holds = None if score is None else score == 1
@@ -215,8 +253,10 @@ def _atom_items(verifier: Verifier, context: AtomContext, judge_results: Optiona
     structured target by kullback/runner/target.py, the same interpreter the gates call. Hard
     rules keep their compiled predicate source, which is policy code by nature; judge atoms are
     answered by judge.py. An atom with no target kind (unit fixtures only; every stored atom
-    carries one) still evaluates its predicate. An allowed atom is a permission, not an item: it
-    is evaluated for the writes it covers and reports nothing. A forbidden atom holds as an item
+    carries one) still evaluates its predicate. An item the Spec writer wrote is decided by its own
+    gate flag: a state item is read as the end state's cells, an event item off the calls and the
+    log, a judge item by its score. An older allowed atom is a permission, not an item: it is
+    evaluated for the writes it covers and reports nothing. A forbidden atom holds as an item
     when its forbidden state is absent. An item-shaped judge atom is settled by the item judge's
     score, gate or scored, and stays open only when it went unjudged. An older judge atom is never
     settled in a gate: a gate one stays open (D76), a scored one carries the judge's opinion.
@@ -233,9 +273,16 @@ def _atom_items(verifier: Verifier, context: AtomContext, judge_results: Optiona
     # so a hard atom placed first in the Verifier would see an empty list and hold vacuously.
     for atom in sorted(verifier.atoms, key=lambda a: a.kind == "hard"):
         if is_item(atom):
-            item, used = _judge_item(atom, judge_results, notes)
+            item, used = _judge_item(atom, context.run, judge_results, notes)
             judge_used = judge_used or used
             items.append(item)
+            continue
+        kind = (atom.target or {}).get("kind")
+        if kind in STATE_ITEMS:
+            continue
+        if kind in EVENT_ITEMS:
+            items.append(_item(atom.id, "event", atom, _event_item_holds(atom.target, context),
+                               f"gate:{kind}:{atom.id}", atom.description))
             continue
         if atom.judge:
             opinion, used = _judge_opinion(atom, judge_results, notes)
@@ -305,7 +352,7 @@ def _forbidden_happened(rule: Forbidden, context: AtomContext, moved: dict) -> O
 def _conduct_holds(rule: Conduct, context: AtomContext) -> Optional[bool]:
     if rule.kind == "confirm_before_write":
         return None if rule.tool is None else context.confirmed_before_first_write(rule.tool)
-    if rule.kind == "handoff":
+    if rule.kind == "called":
         return None if rule.tool is None else context.called(rule.tool)
     message = (rule.source.ptr or {}).get("message")
     if not message:
@@ -383,9 +430,9 @@ def _classify(run: Run, context: AtomContext, cause_result: Any, marks: list[str
     if passed:
         return "pass", None, False
     # A transfer changes nothing even where mine.py classed the transfer tool as a write (D46).
-    acting = [call for call in context.write_calls() if not _is_transfer(call["name"])]
+    acting = [call for call in context.write_calls() if not is_transfer(call["name"])]
     transferred = not acting and (
-        any(_is_transfer(name) for name in names) or _termination(run).lower() in GAVE_UP
+        any(is_transfer(name) for name in names) or _termination(run).lower() in GAVE_UP
     )
     klass = "transferred_without_acting" if transferred else "fail"
     cause = _named_cause(cause_result, notes)  # code marks it, the judge names the cause (D88)
@@ -519,7 +566,9 @@ def item_counts(verifier: Verifier) -> dict:
     if verifier.expected:
         flags += [cell.gate for cell in max((state.cells for state in verifier.expected), key=len)]
     flags += [rule.gate for rule in verifier.forbidden] + [rule.gate for rule in verifier.conduct]
-    flags += [atom.gate for atom in verifier.atoms if atom.kind != "allowed"]
+    flags += [atom.gate for atom in verifier.atoms
+              if (atom.target or {}).get("kind") not in STATE_ITEMS
+              and (atom.kind != "allowed" or is_item(atom) or (atom.target or {}).get("kind") in EVENT_ITEMS)]
     return {"gate": sum(flags), "scored": len(flags) - sum(flags), "end_states": len(verifier.expected)}
 
 

@@ -16,6 +16,7 @@ from kullback.judge.items import (
     judge_items,
     tally,
 )
+from kullback.judge.shape import evidence_refs
 from kullback.runner.records import Atom, Run, Verifier
 from kullback.runner.verdict import verdict
 
@@ -42,7 +43,7 @@ def _item(item_id="j1", gate=False, evidence=None, anchor=None):
               "anchor": anchor or {"answer": "42.50", "accepted": ["$42.5"], "reject": ["40.00"]}}
     if evidence is not None:
         target["evidence"] = evidence
-    return Atom(id=item_id, kind="communicate", judge=True, gate=gate, target=target)
+    return Atom(id=item_id, kind="allowed", judge=True, gate=gate, target=target)
 
 
 def _says(score, why="ok", item_id="j1"):
@@ -60,7 +61,7 @@ def test_one_item_is_one_call_at_temperature_zero_and_the_anchor_reaches_only_th
     assert call["config"].temperature == 0 and call["tools"] is None
     prompt = call["messages"][1]["content"]
     assert "[j1]" in prompt and "met = 1: 42.50" in prompt and "reject (score 0): 40.00" in prompt
-    assert "<final answer>\nYour total is $42.50.\n</final answer>" in prompt
+    assert "<assistant turn 1>\nYour total is $42.50.\n</assistant turn 1>" in prompt
     assert result.cost_usd > 0
 
 
@@ -71,6 +72,17 @@ def test_a_failed_call_or_an_unreadable_reply_gives_no_score_never_a_zero():
     result = judge_item(silent, _item(), _run(["hi"]))
     assert result.score is None and result.error.startswith("IndexError")
     assert judge_item(TestModel([_says(0.5)]), _item(), _run(["hi"])).score is None
+
+
+def test_empty_evidence_scores_zero_by_code_with_no_model_call_also_after_a_tool_never_called():
+    silent = TestModel([])
+    for item, run in ((_item(), _run([])), (_item(evidence=["after_call:lookup"]), _run(["Your total is 42.50."]))):
+        result = judge_item(silent, item, run)
+        assert (result.score, result.why) == (0, "no evidence")
+    assert silent.calls == []
+    gated = Verifier(task_id="t", atoms=[_item(gate=True)])
+    unjudged = verdict(_run([]), gated)
+    assert unjudged.passed is False and unjudged.failing_atom == "j1" and _row(unjudged).score == 0
 
 
 def test_the_final_answer_is_the_default_evidence_and_named_turns_replace_it():
@@ -84,9 +96,20 @@ def test_the_final_answer_is_the_default_evidence_and_named_turns_replace_it():
 
 
 def test_a_turn_after_a_named_call_is_found_without_an_event_index():
+    """after_call reads every agent turn after the call's result, past the next user turn."""
     run = _run(["Let me look.", "It shipped on Monday.", "Bye."], tool_after=("read_row", "It shipped on Monday."))
     text, _, missing = build_evidence(run, ["after_call:read_row"])
-    assert "It shipped on Monday." in text and "Bye." not in text and not missing
+    assert "It shipped on Monday." in text and "Bye." in text and "Let me look." not in text and not missing
+
+
+def test_the_default_evidence_reads_an_answer_given_two_turns_before_the_end_and_nothing_after_a_transfer():
+    run = _run(["Your total is $42.50.", "Anything else?", "Goodbye."])
+    text, _, missing = build_evidence(run, evidence_refs({}))
+    assert "Your total is $42.50." in text and not missing
+    held = _run(["Let me check.", "Your total is $42.50.", "Please hold."], tool_after=("transfer_to_desk", "Please hold."))
+    text, _, _ = build_evidence(held, evidence_refs({}))
+    assert "Your total is $42.50." in text and "Please hold." not in text
+    assert "Please hold." not in build_evidence(held, ["final_answer"])[0]
     _, _, missing = build_evidence(run, ["after_call:never_called"])
     assert missing == ["after_call:never_called"]
 

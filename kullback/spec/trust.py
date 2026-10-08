@@ -2,8 +2,8 @@
 
 A Task is trusted when both constructed Runs score 0 under its Verifier and no blocking ruling is open:
 
-1. the do-nothing Run: the Task's start state left as it was, no call, no message (`empty_run`); a
-   refusal or no-write Verifier (`forbids_only`) is passed by it rightly, so it is not asked to fail;
+1. the do-nothing Run: the Task's start state left as it was, no call, no message (`empty_run`); every
+   Verifier must fail it, a refusal one too: its gated judge item has no evidence and scores 0;
 2. the stray-write Run: the same start state with one write to a row outside every row the Verifier
    declares (its expected cells and `allowed`), which must fail the sanity item (nothing outside the
    declared rows changed).
@@ -15,8 +15,8 @@ write that fails at a cell or an atom, or that sits on the do-nothing Run, never
 it counts as passed and the row's `detail` says stray_untested.
 
 Two flags ride on the row and never gate. reference_passes: every faithful replay of a kept Reference
-passes the Verifier (None without one); a fail is handed to the Examiner as a code ruling
-(`examiner_rulings`), who rules which side is wrong. solvable: any fresh Run passed (None without one).
+passes the Verifier (None without one); a fail is filed for the Examiner as a blocking
+code/fails_reference ruling (`route_reference_fails`), who rules which side is wrong. solvable: any fresh Run passed (None without one).
 Sourced is enforced in the writer's tool, not here. Every row names the Runs it scored and carries
 `code_hash` (runner/code_hash.py): two rows are comparable when their hashes match.
 """
@@ -29,14 +29,14 @@ from typing import Any, Iterable, NamedTuple, Optional
 
 from kullback.gates.probes import write_tools_of
 from kullback.gates.trust import schema_of, workdir_trusted_ruling
-from kullback.gates.verifier_suite import empty_run, forbids_only
+from kullback.gates.verifier_suite import empty_run
 from kullback.runner.atom_context import AtomContext
 from kullback.runner.canon import load_rules
 from kullback.runner.code_hash import CODE_HASH
 from kullback.runner.records import Run, Verifier, load_run_jsonl, read_json, read_jsonl
 from kullback.runner.replay import RECORDED
 from kullback.spec.actions import action_tables_of, workdir_action_tools
-from kullback.spec.canfail import judge_run
+from kullback.spec.canfail import Outcome, outcome_of
 from kullback.spec.events import TASK_SET_ASIDE
 from kullback.spec.router import (  # noqa: F401  (ROUNDS_CAP re-exported for readers of the tiers)
     ROUNDS_CAP,
@@ -53,7 +53,6 @@ REASONS = (NO_INTENT, OPEN_RULING, CONSTRUCTED_RUN_PASSED)
 # The two constructed Runs, each of which must fail.
 CONSTRUCTED = ("do_nothing", "stray_write")
 # How the Verdict names a failure at the sanity check: a row outside the declared ones moved.
-SANITY_MARKERS = ("collateral:", "sanity")
 STRAY_UNTESTED = "stray_untested"
 FLAGS = ("reference_passes", "solvable")
 # The build manifest in the workdir: the build's Task sample, kept for a resume.
@@ -172,11 +171,11 @@ def _do_nothing(runs: list[Run]) -> Optional[Run]:
     return empty_run(base) if base is not None else None
 
 
-def _judge(verifier: Verifier, run: Run, canon: Any, write_tools: Any) -> tuple[bool, Any]:
+def _judge(verifier: Verifier, run: Run, canon: Any, write_tools: Any) -> Outcome:
     try:
-        return judge_run(verifier, run, canon, write_tools)
-    except Exception:  # a Run the scorer cannot read is not a pass, and never stops the ruling
-        return False, None
+        return outcome_of(verifier, run, canon, write_tools)
+    except Exception:  # a Run the scorer cannot read neither passes nor fails, and never stops the ruling
+        return Outcome(False, None, False)
 
 
 def _stray_base(runs: list[Run], passing: Iterable[str], empty: Optional[Run]) -> tuple[Optional[Run], bool]:
@@ -189,45 +188,36 @@ def _stray_base(runs: list[Run], passing: Iterable[str], empty: Optional[Run]) -
 
 def constructed_runs(verifier: Verifier, runs: list[Run], passing: Iterable[str], *, schema: Any = None,
                      canon: Any = None) -> dict[str, Optional[Run]]:
-    """name -> the constructed Run, None where it cannot be built; do_nothing is left out where it is right.
+    """name -> the constructed Run, None where it cannot be built; every Verifier gets both (D333, fold).
 
     The stray write is laid on `_stray_base`: on a passing base, the stray row is the one thing that can fail it.
     """
     empty = _do_nothing(runs)
     base, _passing = _stray_base(runs, passing, empty)
-    out: dict[str, Optional[Run]] = {}
-    if not forbids_only(verifier):
-        out["do_nothing"] = empty
+    out: dict[str, Optional[Run]] = {"do_nothing": empty}
     out["stray_write"] = stray_write_run(verifier, base, schema=schema, canon=canon)
     return out
-
-
-def at_sanity(atom: Any) -> bool:
-    """Whether a failing atom is the sanity check: nothing outside the declared rows moved."""
-    return any(marker in str(atom or "") for marker in SANITY_MARKERS)
 
 
 def _constructed(verifier: Verifier, runs: list[Run], passing: list[str], canon: Any, tools: Any,
                  schema: Any) -> dict[str, dict]:
     """name -> {built, failed, atom, run_id}, and for the stray write `untested`.
 
-    The stray write counts as failed only when it fails at the sanity check on a base the Verifier passes.
-    On a failing base (the do-nothing Run, unless the Verifier rightly passes it), or failing at a cell or an
-    atom, the sanity check was never tested (`untested`).
+    A constructed Run counts as failed only on a definite failure, a gate item that holds False; a Run
+    left not verdicted has not failed (S1). The stray write counts as failed only when its sanity item
+    (read off Verdict.items) holds False; failing anywhere else, it never tested the sanity check.
     """
-    base, on_passing = _stray_base(runs, passing, _do_nothing(runs))
-    if not on_passing and base is not None:  # a refusal Verifier is passed by the do-nothing Run rightly
-        on_passing = _judge(verifier, base, canon, tools)[0]
     out = {}
     for name, run in constructed_runs(verifier, runs, passing, schema=schema, canon=canon).items():
         if run is None:
             out[name] = {"built": False, "failed": False, "atom": None, "run_id": None}
             continue
-        passed, atom = _judge(verifier, run, canon, tools)
-        out[name] = {"built": True, "failed": not passed, "atom": None if passed else atom, "run_id": run.run_id}
-        if name == "stray_write" and not passed:
-            untested = not on_passing or not at_sanity(atom)
-            out[name].update(failed=not untested, untested=untested)
+        outcome = _judge(verifier, run, canon, tools)
+        out[name] = {"built": True, "failed": outcome.failed is not None, "atom": outcome.failed,
+                     "run_id": run.run_id}
+        if name == "stray_write":
+            untested = not outcome.sanity_failed and not outcome.passed
+            out[name].update(failed=outcome.sanity_failed, untested=untested)
     return out
 
 
@@ -253,8 +243,10 @@ def set_aside_of(spec: Spec, rulings: Iterable[Any] = ()) -> bool:
                                      and _event_task(event) in (None, spec.task_id) for event in rulings or ())
 
 
-def _flag(verdicts: dict[str, tuple[bool, Any]], run_ids: Iterable[str], every: bool) -> Optional[bool]:
-    scored = [verdicts[run_id][0] for run_id in run_ids if run_id in verdicts]
+def _flag(verdicts: dict[str, Outcome], run_ids: Iterable[str], every: bool) -> Optional[bool]:
+    """A Run left not verdicted (no judge in trust, a gate open) says nothing either way."""
+    scored = [verdicts[run_id].passed for run_id in run_ids
+              if run_id in verdicts and (verdicts[run_id].passed or verdicts[run_id].failed)]
     if not scored:
         return None
     return all(scored) if every else any(scored)
@@ -286,13 +278,13 @@ def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: I
         reason = CONSTRUCTED_RUN_PASSED
     else:
         reason = None
-    failed_reference = next((run_id for run_id in kept if not verdicts[run_id][0]), None)
+    failed_reference = next((run_id for run_id in kept if verdicts[run_id].failed), None)
     row = {"task_id": spec.task_id, "tier": UNTRUSTED if reason else TRUSTED, "reason": reason, "gates": gates,
            "constructed": constructed,
            "detail": STRAY_UNTESTED if (constructed.get("stray_write") or {}).get("untested") else None,
            "reference_passes": _flag(verdicts, kept, every=True), "solvable": _flag(verdicts, fresh, every=False),
            "reference": {"runs": kept, "failed": failed_reference,
-                         "atom": verdicts[failed_reference][1] if failed_reference else None},
+                         "atom": verdicts[failed_reference].failed if failed_reference else None},
            "runs_scored": sorted(verdicts), "fresh_runs": len(fresh),
            "fresh_passed": sorted(r for r in fresh if verdicts[r][0]),
            "rulings_open": spec.rulings_open, "round": spec.round, "set_aside": set_aside,
@@ -331,6 +323,30 @@ def examiner_rulings(tiers: dict[str, TaskTier]) -> list[dict]:
             out.append({"task_id": task_id, "kind": REFERENCE_FAILS, "run_id": reference.get("failed"),
                         "atom": reference.get("atom"), "blocking": False})
     return out
+
+
+def route_reference_fails(workdir: Any, tiers: dict[str, TaskTier]) -> list[int]:
+    """Each `examiner_rulings` row filed as the Examiner's code/fails_reference ruling, blocking, with no
+    side named: the Examiner rules which side is wrong on its next round, and until it closes the ruling
+    the Task is held untrusted. A Task that already holds a fails_reference ruling gets no second one.
+    Returns the ruling numbers filed."""
+    from kullback.spec import rulings as R
+
+    filed = []
+    for row in examiner_rulings(tiers):
+        task_id = row["task_id"]
+        if any(r.code == "fails_reference" for r in R.load_rulings(workdir, task_id)):
+            continue
+        item = str(row.get("atom") or R.TASK_ITEM)
+        ruling = R.Ruling(task_id=task_id, number=R.next_number(workdir, task_id), round=0, item=item, kind="code",
+                          code="fails_reference", blocking=True,
+                          reason="The kept Reference fails this Verifier, found by code at the trust step.",
+                          fix="Rule which side is wrong: close this if the Reference is wrong, else file the fix.",
+                          verified=[{"run": "reference", "verifier_passes_it": False, "failing": row.get("atom")}])
+        R.save_ruling(workdir, ruling)
+        R.sync_spec(workdir, task_id)
+        filed.append(ruling.number)
+    return filed
 
 
 # --- the build manifest ----------------------------------------------------------------------------

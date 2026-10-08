@@ -13,7 +13,17 @@ from kullback.runner.state import StateView
 from kullback.runner.world.environment import BuiltEnvironment
 from kullback.user.agent import AgentUser
 from kullback.user.simulated import SimulatedUser
-from tests.examiner.test_runners import _exam_env
+from tests.examiner.test_runners import _exam_env as _bare_env
+
+
+def _exam_env(path: Path) -> Path:
+    """The examiner env with a Spec that names its one write, which the user's goal reads."""
+    from kullback.spec.schema import Check, Spec, SpecIntent, save_spec
+    root = _bare_env(path)
+    called = {"id": "c1", "kind": "called", "tool": "rename_widget"}
+    check = Check(id="c1", kind="allowed", demand=called, because="asked", tier="critical")
+    save_spec(root, Spec(task_id="widget_task", intent=SpecIntent(task_id="widget_task"), checks=[check]))
+    return root
 
 # A question no cue of the rule-driven user reads as one: it asks the user to pick, in words the
 # cues were never written for.

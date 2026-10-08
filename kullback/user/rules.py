@@ -569,29 +569,27 @@ def fact_class(rules: UserRules, field: str, value: Any = None) -> str:
                           for fact in rules.facts) else RECORD
 
 
-def goal_write_set(trace: Optional[Trace], writes: Iterable[str]) -> set[str]:
-    """The writes the Task's goal implies: the write-kind tools the Reference called and the world
-    did not refuse (D210).
+SPEC_WRITE_KINDS = ("row_is", "row_new")
 
-    `writes` names the tools that change the world (`ToolSig.kind`), which is the only class read
-    here; which tools those are is the build's answer, not this module's. A recording that changed
-    nothing gives the empty set, and a goal that implies no write is satisfied as soon as the
-    Candidate has nothing left to do, which is what the empty set says.
+
+def spec_goal(demands: Iterable[dict], writes: Iterable[str]) -> tuple[Optional[set], Optional[dict]]:
+    """The goal's writes and their counts, read off the Spec's write items, never the Reference's calls.
+
+    A `called` item naming a write tool names that write, once per item. A Spec whose writes are
+    end states alone names no tool, so the goal is any write (None, D158's reading). A Spec with no
+    write item has a goal of no write (the empty set). The goal is a label only (D332).
     """
     names = set(writes)
-    return {call.name for call in (trace.tool_calls if trace is not None else ())
-            if call.name in names and call.error is None}
-
-
-def goal_write_counts(trace: Optional[Trace], writes: Iterable[str]) -> dict[str, int]:
-    """How many times the Reference made each goal write, so a Run that cancelled one order of two
-    has not done the goal (D326). The same calls `goal_write_set` reads, counted rather than named."""
-    names = set(writes)
+    items = [d for d in demands if isinstance(d, dict)]
     counts: dict[str, int] = {}
-    for call in trace.tool_calls if trace is not None else ():
-        if call.name in names and call.error is None:
-            counts[call.name] = counts.get(call.name, 0) + 1
-    return counts
+    for item in items:
+        if item.get("kind") == "called" and str(item.get("tool")) in names:
+            counts[str(item["tool"])] = counts.get(str(item["tool"]), 0) + 1
+    if counts:
+        return set(counts), counts
+    if any(item.get("kind") in SPEC_WRITE_KINDS for item in items):
+        return None, None
+    return set(), None
 
 
 def _words(field: str) -> str:
@@ -602,4 +600,3 @@ def _words(field: str) -> str:
 # end protocol (kullback/user/guards.py) decides the same four kinds over the turns a model drove
 # and must read them exactly as the rule-driven user does, not with a second pair of cues (D214).
 closes = _closes
-names_change = _names_change

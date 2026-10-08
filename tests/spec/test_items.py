@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from kullback.runner.atom_context import AtomContext
 from kullback.runner.expected import match_context
-from kullback.runner.items import score_items
 from kullback.runner.records import Event, Run, Verifier
+from kullback.runner.verdict import verdict
 from kullback.spec import items as I
 from kullback.spec.schema import FactSource, IntentFact
 
@@ -17,6 +17,14 @@ def _matches(end_states, context):
     """Any one end state matching passes; else an unsettled one is None; else False."""
     oks = [match_context(state, context).ok for state in end_states]
     return True if True in oks else (None if None in oks else False)
+
+
+def _holds(verifier, run):
+    """Each item of the Verdict on this Run: event and judge items by id, cells as state:table.row.field."""
+    return {item.id: item.holds for item in verdict(run, verifier).items}
+
+
+CELL = "state:items.A1.slot"
 
 
 STATE = {"items": {"A1": {"item_id": "A1", "slot": "two", "label": "red"},
@@ -97,7 +105,7 @@ def test_a_judge_anchor_cites_the_one_row_it_was_found_in_and_its_answer_states_
              "anchor": {"answer": "B2 is in slot four", "row": {"table": "items", "find": {"item_id": "B2"},
                                                                  "fields": ["slot"]}}}
     kept, why = keep(judge)
-    assert why == "" and kept["gate"] is False and kept["evidence"] == ["final_answer"]
+    assert why == "" and kept["gate"] is False and kept["evidence"] == ["assistant_turns"]
     assert kept["anchor"]["row"] == {"table": "items", "find": {"item_id": "B2"}, "key": "B2",
                                      "fields": {"slot": "four"}}
     wrong_row = dict(judge, anchor=dict(judge["anchor"], row=dict(judge["anchor"]["row"], find={"item_id": "A1"})))
@@ -108,9 +116,12 @@ def test_a_judge_anchor_cites_the_one_row_it_was_found_in_and_its_answer_states_
     refusal = {"id": "j2", "kind": "judge", "question": "Did the agent decline?",
                "policy_line": "Move an item only to a free slot",
                "anchor": {"answer": "No: move an item only to a free slot."}}
-    assert keep(refusal)[1] == ""
-    for ref in ("after_call:list_items", "assistant:2", "assistant_turns"):
-        assert keep(dict(judge, evidence=[ref]))[1] == ""
+    assert keep(refusal)[1] == "" and keep(dict(refusal, gate=False))[0]["gate"] is True, "a refusal item gates"
+    assert keep(dict(judge, evidence=["assistant_turns"]))[1] == ""
+    for ref in ("after_call:list_items", "assistant:2", "final_answer"):
+        assert "evidence_why" in keep(dict(judge, evidence=[ref]))[1], "a narrower window needs its reason"
+        kept, why = keep(dict(judge, evidence=[ref], evidence_why="the slot is read by the lookup"))
+        assert why == "" and kept["evidence_why"] == "the slot is read by the lookup"
     assert "evidence" in keep(dict(judge, evidence=["the third turn"]))[1]
     assert "evidence" in keep(dict(judge, evidence=["after_call:teleport"]))[1]
 
@@ -139,9 +150,7 @@ def _run(end: dict, calls=(), said="Done.", user=("Yes please.",)) -> Run:
 
 def _verifier(items: list[dict]) -> Verifier:
     states = I.end_states_of(items, world())
-    conduct, forbidden = I.event_gates(items, KNOWN, {"update_item", "add_note"})
-    return Verifier(task_id="t1", atoms=[I.atom_of(i) for i in items] + [I.sanity_atom(states)],
-                    expected=states, conduct=conduct, forbidden=forbidden)
+    return Verifier(task_id="t1", atoms=[I.atom_of(i) for i in items] + [I.sanity_atom(states)], expected=states)
 
 
 def _moved(slot="seven", **extra) -> dict:
@@ -153,13 +162,12 @@ def _moved(slot="seven", **extra) -> dict:
 
 def test_the_sanity_item_fails_a_stray_write_and_holds_on_the_declared_row():
     verifier = _verifier(_kept(MOVE))
-    right = AtomContext(_run(_moved(), [("update_item", {"item_id": "A1", "slot": "seven"})]))
-    stray = AtomContext(_run(_moved(items={"B2": dict(STATE["items"]["B2"], label="blue")})))
-    assert _matches(verifier.expected, right) and score_items(verifier, right) == {"s1": True, "sanity": True}
-    assert _matches(verifier.expected, stray) is False
-    assert score_items(verifier, stray) == {"s1": True, "sanity": False}
-    nothing = AtomContext(_run(STATE))
-    assert score_items(verifier, nothing) == {"s1": False, "sanity": True}
+    right = _run(_moved(), [("update_item", {"item_id": "A1", "slot": "seven"})])
+    stray = _run(_moved(items={"B2": dict(STATE["items"]["B2"], label="blue")}))
+    assert _matches(verifier.expected, AtomContext(right)) and _holds(verifier, right) == {CELL: True, "sanity": True}
+    assert _matches(verifier.expected, AtomContext(stray)) is False
+    assert _holds(verifier, stray) == {CELL: True, "sanity": False}
+    assert _holds(verifier, _run(STATE)) == {CELL: False, "sanity": True}
 
 
 def test_with_no_state_item_the_one_end_state_has_no_cell_and_any_change_fails_it():
@@ -185,20 +193,42 @@ def test_alternative_end_states_pass_on_any_one_and_value_sets_and_new_rows_are_
     assert _matches(banned.expected, AtomContext(_run(STATE))) is False
 
 
-def test_event_items_become_conduct_and_forbidden_calls_and_are_scored_on_the_event_log():
+def test_event_items_are_decided_by_the_verdict_off_the_event_log_not_compiled_to_conduct():
     confirm = {"id": "e1", "kind": "before", "first": "confirm_turn", "then": "update_item",
                "policy_line": "after the user says yes"}
     never = {"id": "e2", "kind": "not_called", "tool": "add_note", "fact_ids": ["f1"]}
     told = {"id": "t1", "kind": "said", "values": ["seven"], "fact_ids": ["f1"]}
     verifier = _verifier(_kept(MOVE, confirm, never, told))
-    assert [(c.kind, c.tool) for c in verifier.conduct] == [("confirm_before_write", "update_item")]
-    assert [(f.kind, f.tool) for f in verifier.forbidden] == [("write", "add_note")]
+    assert verifier.conduct == [] and verifier.forbidden == []
     calls = [("update_item", {"item_id": "A1", "slot": "seven"})]
-    good = score_items(verifier, AtomContext(_run(_moved(), calls, said="A1 is now in slot seven.")))
-    assert good == {"s1": True, "e1": True, "e2": True, "t1": True, "sanity": True}
-    rushed = score_items(verifier, AtomContext(_run(_moved(), calls + [("add_note", {"text": "x"})], user=(),
-                                                    said="I could not use slot seven.")))
+    good = _holds(verifier, _run(_moved(), calls, said="A1 is now in slot seven."))
+    assert good == {CELL: True, "e1": True, "e2": True, "t1": True, "sanity": True}
+    rushed = _holds(verifier, _run(_moved(), calls + [("add_note", {"text": "x"})], user=(), said="Nothing done."))
     assert rushed["e1"] is False and rushed["e2"] is False and rushed["t1"] is False
+
+
+def test_a_gated_called_item_with_arguments_fails_a_run_that_called_the_tool_with_other_arguments():
+    called = {"id": "c1", "kind": "called", "tool": "update_item", "args": {"item_id": "A1", "slot": "seven"},
+              "fact_ids": ["f1"]}
+    verifier = _verifier(_kept(called))
+    assert verifier.atoms[0].kind == "allowed" and verifier.atoms[0].gate is True
+    other = verdict(_run(STATE, [("update_item", {"item_id": "B2", "slot": "seven"})]), verifier)
+    assert other.passed is False and other.failing_atom == "gate:called:c1" and other.score == 0.0
+    assert verdict(_run(STATE, [("update_item", {"item_id": "A1", "slot": "seven"})]), verifier).passed is True
+
+
+def test_a_gated_not_called_item_with_arguments_fails_only_on_a_matching_call():
+    never = {"id": "n1", "kind": "not_called", "tool": "update_item", "args": {"item_id": "B2"}, "fact_ids": ["f1"]}
+    verifier = _verifier(_kept(never))
+    assert verdict(_run(STATE, [("update_item", {"item_id": "A1", "slot": "four"})]), verifier).passed is True
+    hit = verdict(_run(STATE, [("update_item", {"item_id": "B2", "slot": "four"})]), verifier)
+    assert hit.passed is False and hit.failing_atom == "gate:not_called:n1"
+
+
+def test_a_scored_event_item_lowers_the_score_and_never_fails_the_run():
+    told = {"id": "t1", "kind": "said", "values": ["seven"], "fact_ids": ["f1"], "gate": False}
+    result = verdict(_run(STATE, said="Done."), _verifier(_kept(told)))
+    assert result.passed is True and 0.0 < result.score < 1.0
 
 
 def test_contradictions_name_a_tool_both_needed_and_forbidden_and_a_cell_expected_twice():
@@ -222,14 +252,98 @@ def test_a_list_value_matches_its_members_in_any_order_and_a_free_field_may_move
     assert "not in the world" in keep(dict(MOVE, expect={"slot": ["seven", "nine"]}))[1]
     STATE["items"]["A1"]["tags"] = []
     try:
-        verifier = _verifier(_kept(tagged, dict(MOVE, id="s2", find={"item_id": "B2"}, expect={}, free=["label"])))
+        verifier = _verifier(_kept(tagged, dict(MOVE, id="s2", find={"item_id": "B2"}, expect={"slot": "four"},
+                                                       free={"label": "a tool recolours it"})))
         b2 = dict(STATE["items"]["B2"], label="computed by a tool")
         moved = {"items": {"A1": dict(STATE["items"]["A1"], slot="seven", tags=["seven", "four"]), "B2": b2},
                  "notes": {}}
         assert _matches(verifier.expected, AtomContext(_run(moved)))
-        assert score_items(verifier, AtomContext(_run(moved)))["sanity"] is True
+        assert _holds(verifier, _run(moved))["sanity"] is True
         short = {**moved, "items": {**moved["items"], "A1": dict(moved["items"]["A1"], tags=["seven"])}}
         assert _matches(verifier.expected, AtomContext(_run(short))) is False
-        assert "is in expect and in free" in keep(dict(MOVE, free=["slot"]))[1]
+        assert "is in expect and in free" in keep(dict(MOVE, free={"slot": "a tool sets it"}))[1]
     finally:
         del STATE["items"]["A1"]["tags"]
+
+
+def test_a_free_field_needs_a_one_line_reason_and_the_reason_rides_on_the_end_state():
+    for free in (["label"], {"label": ""}, {"label": "two\nlines"}):
+        assert "free is {field: one line" in keep(dict(MOVE, free=free))[1]
+    kept, why = keep(dict(MOVE, free={"label": "a tool recolours it"}))
+    assert why == "" and kept["free"] == {"label": "a tool recolours it"}
+    allowed = I.end_states_of([kept], world())[0].allowed
+    assert {"table": "items", "row_id": "A1", "field": "label", "why": "free: s1: a tool recolours it"} in allowed
+    assert I.counts_of([kept])["free_fields"] == 1
+
+
+def test_a_row_is_whose_expect_is_empty_or_only_its_find_key_is_refused():
+    assert "checks nothing" in keep(dict(MOVE, expect={}, free={"label": "a tool sets it"}))[1]
+    assert "checks nothing" in keep(dict(MOVE, expect={"item_id": "A1"}))[1]
+
+
+def test_a_free_field_holding_a_value_an_intent_fact_names_is_refused():
+    named = IntentFact(id="f3", text="Please put item A1 in slot four.", stance="volunteered",
+                       source=FactSource(recording="rec1", turn=1), witnesses=["rec2"])
+    told = I.World(STATE, POLICY, FACTS + [named], TOOLS)
+    item = dict(MOVE, expect={"label": "red"}, free={"slot": "a tool picks the slot"})
+    assert "fact f3 names a value" in told.check(item, KNOWN, unwitnessed)[1]
+    assert world().check(item, KNOWN, unwitnessed)[1] == "", "no fact names a slot the world holds"
+
+
+def test_an_echo_fact_is_never_the_sole_source_of_a_gate_value_but_a_scored_item_may_cite_it():
+    """Two turns: the agent proposes slot 9, the user says yes. The fact is echo by code."""
+    from kullback.spec.intent_tools import UserTurn, is_echo
+    turn = UserTurn(index=1, text="Yes, that works.", agent_before="I can move A1 to slot 9 for you, ok?")
+    assert is_echo("agrees to move A1 to slot 9", "accepted", turn)
+    assert is_echo("wants A1 in slot 9", "volunteered", turn)
+    assert not is_echo("wants A1 moved", "volunteered", UserTurn(index=1, text="Move A1 please.", agent_before="Hi."))
+    echo = IntentFact(id="f3", text="agrees to move A1 to slot 9", stance="accepted", witnesses=["rec2"],
+                      source=FactSource(recording="rec1", turn=1), echo=True)
+    known = {**KNOWN, "f3": echo}
+    item = {"id": "s9", "kind": "row_is", "table": "items", "find": {"item_id": "A1"}, "expect": {"slot": "9"},
+            "fact_ids": ["f3"]}
+    gate_world = I.World(STATE, POLICY, [*FACTS, echo], TOOLS)
+    kept, why = gate_world.check(item, known, unwitnessed)
+    assert kept is None and "echo" in why
+    kept, why = gate_world.check({**item, "gate": False}, known, unwitnessed)
+    assert why == "" and kept["gate"] is False
+
+
+def test_a_stored_intent_is_marked_echo_from_its_own_turns():
+    from kullback.spec.intent_tools import TaskRecordings, UserTurn, mark_echo
+    found = TaskRecordings(task_id="t", recordings={"rec1": [
+        UserTurn(index=1, text="Please move item A1 to slot seven.", agent_before="Hello."),
+        UserTurn(index=3, text="Sure.", agent_before="Shall I leave a note?")]})
+    assert [fact.echo for fact in mark_echo(FACTS, found)] == [False, True]
+
+
+def test_an_anchor_answer_is_looked_up_never_computed():
+    """A number the cited row and the policy do not hold is the writer's arithmetic: refused."""
+    judge = {"id": "j1", "kind": "judge", "question": "Did the agent give both slots?", "fact_ids": ["f1"],
+             "anchor": {"answer": "B2 is in slot four, 6 slots in all", "row": {
+                 "table": "items", "find": {"item_id": "B2"}, "fields": ["slot"]}}}
+    kept, why = keep(judge)
+    assert kept is None and "states 6" in why and "computed" in why
+    assert keep(dict(judge, anchor=dict(judge["anchor"], answer="B2 is in slot four")))[1] == ""
+    counted = I.counts_of([{"kind": "judge", "anchor": {"row": None}}, {"kind": "judge", "anchor": {"row": {"t": 1}}}])
+    assert counted["anchors_without_lookup"] == 1
+
+
+def test_a_hand_off_item_gates_only_when_its_policy_line_demands_the_hand_off():
+    policy = POLICY + "\nTransfer the user to a person when the slot is taken.\n"
+    tools = [*TOOLS, {"name": "transfer_to_person", "kind": "write", "args": []}]
+    hand_off = {"id": "h1", "kind": "called", "tool": "transfer_to_person", "gate": True, "fact_ids": ["f1"]}
+    kept, why = I.World(STATE, policy, FACTS, tools).check(hand_off, KNOWN, unwitnessed)
+    assert why == "" and kept["gate"] is False, "no policy line: weighed"
+    grounded = dict(hand_off, policy_line="Transfer the user to a person when the slot is taken.")
+    kept, why = I.World(STATE, policy, FACTS, tools).check(grounded, KNOWN, unwitnessed)
+    assert why == "" and kept["gate"] is True
+    move = {"id": "c1", "kind": "called", "tool": "update_item", "gate": True, "fact_ids": ["f1"]}
+    assert I.World(STATE, policy, FACTS, tools).check(move, KNOWN, unwitnessed)[0]["gate"] is True
+
+
+def test_the_counts_report_one_end_state_per_branch():
+    branch = dict(MOVE, id="s2", alt=1, expect={"slot": "four"})
+    assert I.counts_of([MOVE, I.sanity_item([])])["end_states"] == 1
+    assert I.counts_of([MOVE, branch, I.sanity_item([])])["end_states"] == 2
+    assert I.counts_of([I.sanity_item([])])["end_states"] == 1

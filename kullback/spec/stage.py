@@ -1,7 +1,8 @@
 """The Spec stage of a build: each named Task's Intent mined, its Spec and Verifier written, the bus told.
 
 A Task whose Spec and Spec Verifier are both on disk is skipped, so a resumed build writes only
-what is missing. An empty Spec is written once more; empty again, the Task is set aside with no
+what is missing; a Spec of the older demand grammar (no item) is rewritten as items, Intent and all,
+so every Task gets the sanity item (automatic, no flag). An empty Spec is written once more; empty again, the Task is set aside with no
 Verifier. A Spec no Run can pass after its one send-back is set aside the same way, as
 unsatisfiable_spec. A set-aside Spec counts as done. Every call is priced under the `spec` stage of the workdir ledger (budget.json):
 the miner through the harness subscriber, the writer through BudgetedModel, the two seams every
@@ -18,17 +19,26 @@ from kullback.runner.budget import BudgetedModel
 from kullback.spec import events
 from kullback.spec.intent import STAGE, mine_intent
 from kullback.spec.schema import SpecIntent, is_empty, load_spec, save_spec, spec_path
-from kullback.spec.writer import load_inputs, spec_verifier_path, write_spec, write_verifier
+from kullback.spec.writer import is_item_check, load_inputs, spec_verifier_path, write_spec, write_verifier
 
 # What one Task's mining and writing may spend together when the caller names no ceiling.
 SPEC_TASK_CEILING_USD = 1.0
 
 
+def older_grammar(spec: Any) -> bool:
+    """A Spec of the older demand grammar: checks, none of them an item, so its Verifier has no sanity item."""
+    return spec is not None and bool(spec.checks) and not any(is_item_check(check) for check in spec.checks)
+
+
 def written_already(workdir: Path, task_id: str) -> bool:
-    """A Task whose Spec and its compiled Verifier are both on disk, or whose Spec is set aside."""
+    """A Task whose Spec and its compiled Verifier are both on disk, or whose Spec is set aside; a Spec of
+    the older grammar is not written yet: the stage rewrites it as items."""
     if not spec_path(workdir, task_id).is_file():
         return False
-    return spec_verifier_path(workdir, task_id).is_file() or load_spec(workdir, task_id).set_aside is not None
+    spec = load_spec(workdir, task_id)
+    if spec.set_aside is not None:
+        return True
+    return spec_verifier_path(workdir, task_id).is_file() and not older_grammar(spec)
 
 
 def _version(workdir: Path, task_id: str) -> int:
@@ -84,11 +94,13 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
     bus = bus or Bus(workdir / "bus.jsonl", agent="spec")
     ceiling = SPEC_TASK_CEILING_USD if ceiling_usd is None else ceiling_usd
     counts: dict = {"written": 0, "skipped_existing": 0, "failed": 0, "spent_usd": 0.0, "failures": {},
-                    "empty_seen": 0, "retried": 0, "set_aside_empty": 0, "set_aside_unsatisfiable": 0}
+                    "empty_seen": 0, "retried": 0, "set_aside_empty": 0, "set_aside_unsatisfiable": 0,
+                    "rewritten_older": 0}
     for task_id in task_ids:
         if written_already(workdir, task_id):
             counts["skipped_existing"] += 1
             continue
+        counts["rewritten_older"] += int(older_grammar(load_spec(workdir, task_id)))
         try:
             counts["spent_usd"] += write_one(workdir, task_id, model, ceiling, bus)
         except Exception as error:  # one Task's failure is recorded; the others are still written
@@ -103,4 +115,4 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
     return counts
 
 
-__all__ = ["SPEC_TASK_CEILING_USD", "write_from_intent", "write_one", "write_specs", "written_already"]
+__all__ = ["SPEC_TASK_CEILING_USD", "older_grammar", "write_from_intent", "write_one", "write_specs", "written_already"]

@@ -1,7 +1,7 @@
 """The Verifier writer: a scripted model reads the world and adds items, code keeps what it finds and compiles it.
 
 The model is the harness TestModel with scripted replies; the Starting state, tools and facts are the
-invented ones of tests/spec/fixtures.py. Verdicts go through the real verdict gates and runner/items.py.
+invented ones of tests/spec/fixtures.py. Verdicts go through the real verdict.
 """
 
 from __future__ import annotations
@@ -14,12 +14,12 @@ from pydantic import ValidationError
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.runner.atom_context import AtomContext
 from kullback.runner.expected import match_context
-from kullback.runner.items import score_items
 from kullback.runner.records import Event, Run, Verifier
+from kullback.runner.verdict import verdict
 from kullback.spec import writer as W
 from kullback.spec import writer_tools as T
 from kullback.spec.schema import SpecIntent, intent_text, load_spec
-from tests.spec.fixtures import FACTS, WRITE_TOOLS, fn, reference_run
+from tests.spec.fixtures import FACTS, WRITE_TOOLS, check, fn, reference_run
 
 STATE = {"items": {"A1": {"item_id": "A1", "slot": "two"}, "B2": {"item_id": "B2", "slot": "four"}}}
 SECTION = "section:moving items"
@@ -233,12 +233,25 @@ def test_the_compiled_verifier_passes_the_right_run_and_fails_a_wrong_slot_and_a
 
     def ok(run):
         context = AtomContext(run)
-        return _matches(verifier.expected, context), score_items(verifier, context)
+        return _matches(verifier.expected, context), {item.id: item.holds for item in verdict(run, verifier).items}
 
     end = {"items": {"A1": {"item_id": "A1", "slot": "seven"}, "B2": STATE["items"]["B2"]}}
-    assert ok(_ended(end)) == (True, {"s1": True, "sanity": True})
+    assert ok(_ended(end)) == (True, {"state:items.A1.slot": True, "sanity": True})
     assert ok(_ended({"items": {**end["items"], "A1": {"item_id": "A1", "slot": "nine"}}}))[0] is False
-    assert ok(_ended({"items": {"A1": end["items"]["A1"]}})) == (False, {"s1": True, "sanity": False})
+    assert ok(_ended({"items": {"A1": end["items"]["A1"]}})) == (False, {"state:items.A1.slot": True, "sanity": False})
+
+
+def test_an_added_said_or_judge_item_or_an_older_say_check_is_never_dropped_beside_end_states():
+    spec = W.write_spec("t1", inputs(), TestModel([add(ROW), DONE])).spec
+    ruling = W.Ruling(check_ids=[], reason="a fact is uncovered", item="f1", kind="derivation/uncovered_fact")
+    told = {"id": "t2", "kind": "said", "values": ["seven"], "fact_ids": ["f1"]}
+    declined = {"id": "j1", "kind": "judge", "question": "Did the agent refuse?", "policy_line": "Move an item only to "
+                "a free slot.", "anchor": {"answer": "Move an item only to a free slot."}}
+    repaired = W.repair(spec, ruling, inputs(), TestModel([add(told, declined), DONE])).spec
+    older = check("c9", kind="communicate", demand={"demand": "say", "values": ["seven"]})
+    verifier = W.verifier_of(repaired.model_copy(update={"checks": repaired.checks + [older]}), inputs()).verifier
+    assert verifier.expected and {"t2", "j1", "sanity"} <= {atom.id for atom in verifier.atoms}
+    assert len(verifier.atoms) == 5, "the older say check compiles to its own atom beside the items"
 
 
 def _ended(end: dict) -> Run:
@@ -299,18 +312,17 @@ def test_repair_drops_only_ruled_items_and_adds_under_the_same_rules():
     assert "s1: not ruled, kept" in model.calls[1]["messages"][-1]["content"]
 
 
-def test_a_repair_may_not_replace_an_unruled_item_and_adds_at_most_the_cap():
+def test_a_repair_may_not_replace_an_unruled_item_and_a_wholly_refused_answer_is_retried_once():
     told = {"id": "t1", "kind": "said", "values": ["seven"], "fact_ids": ["f1"]}
     spec = W.write_spec("t1", inputs(), TestModel([add(ROW, told), DONE])).spec
     ruling = W.Ruling(check_ids=["t1"], reason="a fact is uncovered", item="f2", kind="derivation/uncovered_fact")
-    extra = [dict(told, id=f"n{n}") for n in range(W.MAX_ADDS + 1)]
-    model = TestModel([add(dict(ROW, expect={"slot": "four"}), *extra), DONE])
+    model = TestModel([add(dict(ROW, expect={"slot": "four"})), DONE, add(dict(told, id="n1")), DONE])
     written = W.repair(spec, ruling, inputs(), model)
     kept = {check.id: check for check in written.spec.checks}
     assert kept["s1"] == spec.checks[0] and written.counts["not_ruled"] == 1
-    assert written.counts["added"] == W.MAX_ADDS and f"n{W.MAX_ADDS}" not in kept
-    shown = model.calls[1]["messages"][-1]["content"]
-    assert "s1: refused: not ruled" in shown and f"at most {W.MAX_ADDS} items" in shown
+    assert written.counts["retried"] == 1 and written.counts["added"] == 1 and "n1" in kept
+    retry = model.calls[2]["messages"][-1]["content"]
+    assert "Code refused every item" in retry and "s1: not ruled" in retry
     assert "uncovered_fact" in model.calls[0]["messages"][0]["content"]
 
 
@@ -358,8 +370,30 @@ def test_repair_for_ruling_publishes_defended_when_no_item_changes(tmp_path):
     assert event["name"] == "spec.defended" and event["payload"]["check_ids"] == ["s1"]
 
 
-def test_refusal_counts_keep_the_reasons_words_and_never_the_refused_value():
+def test_refusal_counts_name_a_family_of_code_wording_never_an_empty_key_or_a_value():
     store = W.store_of(inputs())
     store.add([{"id": "s1", "kind": "row_is", "table": "items", "find": {"item_id": "A1"},
                 "expect": {"slot": "nine_42"}, "fact_ids": ["f1"]}])
-    assert W._store_counts(store)["refused_why"] == {"value is not in the world the policy or": 1}
+    assert W._store_counts(store)["refused_why"] == {"value not found": 1}
+
+
+def test_every_reason_code_gives_lands_in_a_named_family_and_an_empty_one_reads_no_reason():
+    reasons = ["anchor is {answer, accepted: [...], reject: [...], row}: what a met checkpoint states",
+               "anchor.row is {table, find: {field: value}, fields: [...]}: the row you found the answer in",
+               "free is {field: one line on why a tool sets it to a value you cannot find}",
+               "name the Intent facts the item answers (fact_ids) or quote the policy line (policy_line)",
+               "slot: value \"paid by card\" rests only on echo facts (the user said yes to the agent's proposal)"]
+    assert [W.reason_family(r) for r in reasons] == ["anchor shape", "anchor shape", "free field", "no provenance",
+                                                     "echo value at a gate"]
+    assert W.reason_family("") == W.NO_REASON == "no reason"
+
+
+def test_a_writing_spec_with_no_confirm_item_is_asked_the_fixed_question_and_then_never_again(tmp_path):
+    _ruled_workdir(tmp_path)
+    confirm = {"id": "b1", "kind": "before", "first": "confirm_turn", "then": "update_item", "gate": True,
+               "policy_line": "Move an item only to a free slot."}
+    model = TestModel([add(confirm), DONE])
+    assert W.ask_confirm(tmp_path, "t1", model) == {"asked": True, "added": 1}
+    assert W.CONFIRM_QUESTION in json.dumps(model.calls[0]["messages"])
+    assert W.ask_confirm(tmp_path, "t1", TestModel([])) == {"asked": False}, "the Spec now waits for a yes"
+    assert W.ask_confirm(tmp_path, "t1", None) == {"asked": False}

@@ -31,7 +31,6 @@ from kullback.runner.records import disagreement_stats as _pair_counts
 JUDGE_VERSION = "1"
 QUEUE_FILE = "disagreement_queue.jsonl"
 PAIRS_FILE = "judge_pairs.jsonl"
-ASIDE_FILE = "tasks_aside.jsonl"
 
 # One row per judge use: the verdicts it may return, and which of them is its abstain.
 # D57 Reference confirmation, D76 policy atoms, D84 semantic equality, D88 failure cause,
@@ -152,17 +151,6 @@ def check_sources(use: str) -> tuple[str, ...]:
     read. A source the caller did not hand this judgement is simply not among its checks.
     """
     return tuple(name for name in sources_of(use) if name != "state_tools")
-
-
-def count_judgement(result: JudgeResult, counts: Optional[dict] = None) -> dict:
-    """Add one judgement to the round's judge counts (D222); every reader counts the same way."""
-    counts = {name: int((counts or {}).get(name) or 0) for name in JUDGE_COUNTS}
-    counts["judge_checks_prefilled"] += len(result.checks)
-    counts["judge_extra_tool_calls"] += int(result.extra_tool_calls)
-    counts["judge_refused_no_check"] += int(result.refused and result.reason == NO_CHECK)
-    counts["judge_tool_choice_forced"] += int(result.tool_choice_forced)
-    counts["judge_tool_choice_rejected"] += int(result.tool_choice_rejected)
-    return counts
 
 
 def checks_text(checks: list[dict]) -> str:
@@ -706,44 +694,9 @@ def judge_cause_result(
     return result
 
 
-def confirm_reference(
-    judge_a: AgenticJudge,
-    judge_b: AgenticJudge,
-    reference_run: Any,
-    intent: Any,
-    verifier_output: Any = None,
-    *,
-    workdir: Optional[Path] = None,
-    task_id: Optional[str] = None,
-) -> tuple[bool, JudgeResult]:
-    """D57 and D93: two judges confirm a Reference; if they split, the Task is set aside for a person."""
-    result, disagreement = two_judges(
-        judge_a, judge_b, "judge_reference", reference_run, intent, verifier_output,
-        workdir=workdir, item_id=task_id,
-    )
-    if result.verdict == "good_reference" and not disagreement:
-        return True, result
-    reason = "reference_disputed" if disagreement else "reference_unconfirmed"
-    if workdir is not None and task_id is not None:
-        _append_aside(workdir, task_id, reason, result.pair or [as_dict(result)] * 2)
-    return False, result
-
-
-def set_task_aside(
-    workdir: Path, task_id: str, reason: str, result_a: JudgeResult, result_b: JudgeResult
-) -> None:
-    """Record a Task as not gradeable until a person resolves it (D93)."""
-    _append_aside(workdir, task_id, reason, [as_dict(result_a), as_dict(result_b)])
-
-
 def read_disagreement_queue(workdir: Path) -> list[dict]:
     """Every judge disagreement, with both verdicts and both sets of cited spans."""
     return read_jsonl(Path(workdir) / QUEUE_FILE)
-
-
-def tasks_set_aside(workdir: Path) -> list[dict]:
-    """Every Task the report must list as not gradeable, Reference disputed (D93)."""
-    return read_jsonl(Path(workdir) / ASIDE_FILE)
 
 
 def pair_name(judge_a: str, judge_b: str) -> str:
@@ -904,11 +857,6 @@ def _as_list(value: Any) -> list:
 
 def _first_line(text: Optional[str]) -> str:
     return (text or "").strip().splitlines()[0].strip() if (text or "").strip() else ""
-
-
-def _append_aside(workdir: Path, task_id: str, reason: str, pair: list[dict]) -> None:
-    _append(Path(workdir) / ASIDE_FILE,
-            {"task_id": task_id, "reason": reason, "judge_a": pair[0], "judge_b": pair[1]})
 
 
 def _append(path: Path, row: dict) -> None:

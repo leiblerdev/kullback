@@ -94,6 +94,24 @@ def test_write_specs_skips_a_task_whose_spec_and_verifier_are_on_disk(tmp_path):
     assert _events(root) == ["spec.written"]
 
 
+def test_a_spec_of_the_older_demand_grammar_is_rewritten_as_items_with_its_sanity_item(tmp_path):
+    from kullback.runner.records import Verifier
+    from kullback.spec.schema import Check, save_spec
+
+    root = _workdir(tmp_path)
+    stage.write_specs(root, ["t1"], TestModel(_one_task_replies()))
+    item_spec = load_spec(root, "t1")
+    older = Check(id="c1", kind="required", demand={"demand": "write", "tool": "update_item"},
+                  because="move item A1 to slot seven", tier="critical", fact_ids=["f1"])
+    save_spec(root, item_spec.model_copy(update={"checks": [older]}))
+    assert stage.older_grammar(load_spec(root, "t1")) and not stage.written_already(root, "t1")
+    counts = stage.write_specs(root, ["t1"], TestModel(_one_task_replies()))
+    assert (counts["written"], counts["rewritten_older"]) == (1, 1)
+    verifier = Verifier.model_validate_json(spec_verifier_path(root, "t1").read_text())
+    assert [check.id for check in load_spec(root, "t1").checks] == ["s1"]
+    assert "sanity" in {atom.id for atom in verifier.atoms}
+
+
 def test_write_specs_records_a_failing_task_and_goes_on_to_the_next(tmp_path):
     root = _workdir(tmp_path, task_ids=("t1", "t2"))
     model = TestModel(_one_task_replies())

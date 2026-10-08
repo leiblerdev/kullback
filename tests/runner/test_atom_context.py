@@ -85,3 +85,14 @@ def test_the_diff_shows_a_pair_nobody_settled_and_says_that_is_what_it_is():
     context = _well_context("the pump is primed", "a primed pump")
     fields = context.diff()["wells.W1"]["fields"]
     assert fields["well_note"]["unresolved"] is True
+
+
+@pytest.mark.parametrize("said,confirms", [
+    ("**Yes**, please.", True), ("And yes, go ahead.", True), ("_Sure_ thing", True),
+    ("And no, not that one.", False), ("Maybe later.", False)])
+def test_a_markdown_yes_and_a_yes_after_a_conjunction_confirm_before_the_write(said, confirms):
+    run = Run(run_id="r1", events=[
+        {"idx": 0, "type": "user_turn", "payload": {"text": said}},
+        {"idx": 1, "type": "tool_call", "payload": {"id": "c", "name": "update_item", "args": {}}},
+        {"idx": 2, "type": "tool_result", "payload": {"id": "c", "name": "update_item", "result": {}}}])
+    assert AtomContext(run).confirmed_before_first_write("update_item") is confirms

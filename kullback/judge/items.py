@@ -3,9 +3,9 @@
 A judge item is a Verifier atom with `judge=True` whose target is {question, anchor, evidence}. The
 question is one objective checkpoint (one right answer, not taste); the anchor says what meets it:
 the answer, the equivalents to accept and the wrong answers to reject; the evidence names what the
-judge reads: the Candidate's final answer by default, or named assistant turns. The prompt follows
-MiMo's checkpoint judge nearly word for word: strict, no partial credit, nothing guessed, and a
-target that falls in cut evidence scores 0 with "evidence truncated".
+judge reads: the Candidate's final answer by default, or named assistant turns. The prompt is a
+strict checkpoint prompt: no partial credit, nothing guessed, and a target that falls in cut
+evidence scores 0 with "evidence truncated".
 
 The anchor lives on the Verifier, which the Candidate never sees. The judge sees the anchor and the
 evidence and nothing else: no Reference, no expected end state, no user goal.
@@ -23,13 +23,11 @@ from typing import Iterable, Optional
 from pydantic import BaseModel, Field
 
 from kullback.ai.provider import Model, ModelConfig
-from kullback.judge.shape import FINAL_ANSWER, anchor_of, evidence_refs, is_item
-from kullback.runner.atom_context import _text_of
+from kullback.judge.shape import NO_EVIDENCE, anchor_of, evidence_refs, has_evidence, is_item, resolve
 from kullback.runner.budget import call_cost
 from kullback.runner.records import Atom, Run
 
 ITEM_JUDGE_VERSION = "1"
-ALL_ASSISTANT = "assistant_turns"
 TURN_CHARS = 4000  # each turn of evidence, clamped and marked when cut
 EVIDENCE_CHARS = 24000  # all the evidence of one item; a long multi-turn Run fits
 WHY_CHARS = 25
@@ -48,11 +46,11 @@ SYSTEM = (
 )
 
 
-class ItemResult(BaseModel):
-    """One judge item judged on one Run, as the Verdict records it beside the code items."""
+class JudgeScore(BaseModel):
+    """One judge item judged on one Run: the Verdict reads its score into the item's holds (D328)."""
     id: str
     kind: str = "judge"
-    gate: bool = False
+    gate: bool = True
     weight: float = 1.0
     score: Optional[int] = None  # 0 or 1; None when the judge failed or was not asked
     why: str = ""
@@ -63,55 +61,6 @@ class ItemResult(BaseModel):
     cost_usd: float = 0.0
     model: Optional[str] = None
     version: str = ITEM_JUDGE_VERSION
-
-
-def assistant_turns(run: Run) -> list[tuple[int, str]]:
-    """Every assistant message of a Run with text, as (event index, text), in order."""
-    out = []
-    for event in run.events:
-        if event.type == "model_call":
-            text = _text_of(event.payload or {}).strip()
-            if text:
-                out.append((event.idx, text))
-    return out
-
-
-def _turns_after_call(run: Run, tool: str) -> list[tuple[int, str]]:
-    """The assistant messages after the first result of `tool`, up to the next user turn."""
-    seen, out = False, []
-    for event in run.events:
-        payload = event.payload or {}
-        if event.type == "tool_result" and payload.get("name") == tool:
-            seen = True
-        elif seen and event.type == "user_turn" and out:
-            break
-        elif seen and event.type == "model_call":
-            text = _text_of(payload).strip()
-            if text:
-                out.append((event.idx, text))
-    return out
-
-
-def resolve(run: Run, ref: str) -> list[tuple[str, int, str]]:
-    """The turns one evidence ref names, as (label, event index, text).
-
-    Refs are written before any Run exists, so none names an event index: `final_answer` is the
-    last assistant message; `assistant_turns` is every one; `assistant:<k>` is the k-th (1-based,
-    negative from the end); `after_call:<tool>` is what the Candidate said after that tool answered.
-    """
-    turns = assistant_turns(run)
-    if ref == FINAL_ANSWER:
-        return [("final answer", *turns[-1])] if turns else []
-    if ref == ALL_ASSISTANT:
-        return [(f"assistant turn {i + 1}", idx, text) for i, (idx, text) in enumerate(turns)]
-    kind, _, arg = ref.partition(":")
-    if kind == "assistant" and re.fullmatch(r"-?\d+", arg or ""):
-        k = int(arg)
-        pos = k - 1 if k > 0 else len(turns) + k
-        return [(f"assistant turn {pos + 1}", *turns[pos])] if 0 <= pos < len(turns) else []
-    if kind == "after_call" and arg:
-        return [(f"after {arg}", idx, text) for idx, text in _turns_after_call(run, arg)]
-    return []
 
 
 def _clamp(text: str, limit: int) -> tuple[str, bool]:
@@ -182,15 +131,18 @@ def _parse(content: Optional[str], item_id: str) -> tuple[Optional[int], str]:
     return int(score), str(row.get("why") or "")[:WHY_CHARS * 2]
 
 
-def judge_item(model: Model, atom: Atom, run: Run, *, model_id: Optional[str] = None) -> ItemResult:
+def judge_item(model: Model, atom: Atom, run: Run, *, model_id: Optional[str] = None) -> JudgeScore:
     """One judge item on one Run: one call, temperature 0, priced; score 0, 1 or None."""
     target = atom.target or {}
     refs = evidence_refs(target)
     evidence, cut, missing = build_evidence(run, refs)
     name = model_id or getattr(model, "name", None)
-    result = ItemResult(id=atom.id, gate=bool(getattr(atom, "gate", False)),
+    result = JudgeScore(id=atom.id, gate=bool(getattr(atom, "gate", True)),
                         weight=float(getattr(atom, "weight", 1.0)), truncated=cut,
                         evidence=refs, missing=missing, model=name)
+    if not has_evidence(run, target):  # nothing to read: 0 by code, no call (D328)
+        result.score, result.why = 0, NO_EVIDENCE
+        return result
     messages = [{"role": "system", "content": SYSTEM},
                 {"role": "user", "content": judge_message(atom.id, target, evidence)}]
     try:
@@ -205,12 +157,12 @@ def judge_item(model: Model, atom: Atom, run: Run, *, model_id: Optional[str] = 
     return result
 
 
-def judge_items(model: Model, atoms: Iterable[Atom], run: Run, **kwargs) -> dict[str, ItemResult]:
+def judge_items(model: Model, atoms: Iterable[Atom], run: Run, **kwargs) -> dict[str, JudgeScore]:
     """Every item-shaped judge atom of a Verifier on one Run, one call each, keyed by atom id."""
     return {atom.id: judge_item(model, atom, run, **kwargs) for atom in atoms if is_item(atom)}
 
 
-def tally(results: Iterable[ItemResult]) -> dict:
+def tally(results: Iterable[JudgeScore]) -> dict:
     """Counts a report prints: judged, scores, unjudged, truncated, spend."""
     rows = list(results)
     return {"items": len(rows),

@@ -159,32 +159,26 @@ WORLD_TOOLS = [
 class ItemStore:
     """The items a session has kept, by id, and every refusal it made, each with its reason.
 
-    `ruled` limits drops and replacements to the ruled items (a repair), and `max_adds` the new ids it
-    may add; None lets the writer drop or replace any item it added.
+    `ruled` limits drops and replacements to the ruled items (a repair); None lets the writer drop or
+    replace any item it added.
     """
 
     def __init__(self, world: World, facts: dict, unwitnessed: Callable[[Any], bool] = lambda fact: False,
-                 items: Iterable[dict] = (), ruled: Optional[set[str]] = None, max_adds: Optional[int] = None):
+                 items: Iterable[dict] = (), ruled: Optional[set[str]] = None):
         self.world, self.facts, self.unwitnessed = world, facts, unwitnessed
         self.items: dict[str, dict] = {item["id"]: item for item in items}
         self.held = set(self.items)
-        self.ruled, self.max_adds = ruled, max_adds
+        self.ruled = ruled
         self.refused: list[dict] = []
         self.dropped: list[str] = []
         self.offered = 0
         self.not_ruled = 0
 
     def _limit(self, item_id: str) -> str:
-        """Why a repair may not add this id: an unruled item it held, or past the add cap; else empty."""
-        if self.ruled is None:
-            return ""
-        if item_id in self.held and item_id not in self.ruled:
+        """Why a repair may not add this id: an unruled item it held; else empty."""
+        if self.ruled is not None and item_id in self.held and item_id not in self.ruled:
             self.not_ruled += 1
             return "not ruled: a repair may not replace an item the ruling does not name"
-        added = {i for i in self.items if i not in self.held}
-        if self.max_adds is not None and item_id not in self.held and item_id not in added \
-                and len(added) >= self.max_adds:
-            return f"at most {self.max_adds} items may be added in one repair"
         return ""
 
     def add(self, items: Any) -> str:
@@ -197,6 +191,7 @@ class ItemStore:
             limit = self._limit(item_id)
             kept, why = (None, limit) if limit else self.world.check(item, self.facts, self.unwitnessed)
             if kept is None:
+                why = why.strip() or "no reason"
                 self.refused.append({"id": item_id, "kind": item.get("kind") if isinstance(item, dict) else None,
                                      "reason": why})
                 lines.append(f"{item_id}: refused: {why}")

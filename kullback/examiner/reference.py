@@ -64,9 +64,9 @@ from kullback.gates import verifier_suite
 from kullback.gates.trust import POOL_FILE
 from kullback.gates.trust import pooled_tasks as _pooled_tasks
 from kullback.gates.verifier_suite import _key
+from kullback.runner.atom_context import TRANSFER_HINTS
 from kullback.runner.judge import sources_not_given
 from kullback.runner.records import EXAM_DIR, Atom, Constraint, load_task_run, read_json, write_json
-from kullback.runner.verdict import TRANSFER_HINTS
 
 RECORDING = "recording"
 REROLL = "reroll"

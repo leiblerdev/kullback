@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from kullback.runner.records import EndState, Event, ExpectedCell, Forbidden, ValueSource, Verifier
+from kullback.ai.provider import TestModel
+from kullback.runner.records import Atom, EndState, Event, ExpectedCell, Forbidden, ValueSource, Verifier
 from kullback.spec import trust as T
 from kullback.spec.compile import compile_demands, compile_spec
 from kullback.spec.events import TASK_SET_ASIDE
@@ -127,16 +128,16 @@ def test_the_stray_write_lands_on_a_passing_run_outside_the_declared_rows_and_fa
     assert run.events[-1].payload["end_state"]["items"]["A1"] == END["items"]["A1"]
 
 
-def test_a_stray_write_failing_at_a_cell_or_on_the_do_nothing_run_left_the_sanity_check_untested():
+def test_a_stray_write_on_the_do_nothing_run_is_read_by_its_sanity_item_not_by_the_first_failing_gate():
     tier, row = _tier([_fresh(right=False)], references=())
     stray = row["constructed"]["stray_write"]
-    assert stray["untested"] is True and stray["failed"] is False and stray["atom"].startswith("gate:expected:cell")
-    assert tier == "untrusted" and row["reason"] == "constructed_run_passed" and row["detail"] == "stray_untested"
+    assert stray["failed"] is True and stray["untested"] is False and stray["atom"].startswith("gate:expected:cell")
+    assert tier == "trusted" and row["detail"] is None
 
 
 def test_a_stray_write_on_a_passing_base_failing_at_the_sanity_check_is_tested():
     stray = _tier([_replay(), _fresh()])[1]["constructed"]["stray_write"]
-    assert stray["untested"] is False and stray["failed"] is True and T.at_sanity(stray["atom"])
+    assert stray["untested"] is False and stray["failed"] is True and stray["atom"].startswith("gate:sanity:")
 
 
 def test_no_stray_write_is_built_when_every_row_is_declared_and_trust_is_withheld():
@@ -148,13 +149,29 @@ def test_no_stray_write_is_built_when_every_row_is_declared_and_trust_is_withhel
     assert row["constructed"]["stray_write"] == {"built": False, "failed": False, "atom": None, "run_id": None}
 
 
-def test_a_refusal_verifier_is_not_asked_to_fail_the_do_nothing_run():
+def test_a_refusal_verifier_with_only_a_forbidden_write_is_passed_by_the_do_nothing_run_so_untrusted():
     said = ValueSource(kind="policy", ptr={})
     refusal = Verifier(task_id="t1", expected=[EndState()],
                        forbidden=[Forbidden(kind="write", tool="update_item", table="items", row_id="A1", source=said)])
     tier, row = _tier([_replay(), _fresh()], verifier=refusal)
-    assert "do_nothing" not in row["constructed"] and row["constructed"]["stray_write"]["failed"] is True
-    assert tier == "trusted" and row["reference_passes"] is False
+    assert row["constructed"]["do_nothing"]["failed"] is False
+    assert tier == "untrusted" and row["reason"] == "constructed_run_passed"
+
+
+def test_a_refusal_verifier_fails_the_do_nothing_run_at_its_gated_judge_item():
+    declined = Atom(id="j1", kind="allowed", judge=True, gate=True,
+                    target={"question": "Did the agent decline the change?", "anchor": {"answer": "declined"}})
+    refusal = Verifier(task_id="t1", expected=[EndState()], atoms=[declined])
+    tier, row = _tier([_replay(), _fresh()], verifier=refusal)
+    assert row["constructed"]["do_nothing"]["failed"] is True and row["constructed"]["do_nothing"]["atom"] == "j1"
+    assert tier == "trusted"
+
+
+def test_a_constructed_run_left_not_verdicted_has_not_failed():
+    opened = Atom(id="a1", kind="required", judge=True, gate=True, description="an older judge atom, never judged")
+    _, row = _tier([_replay(), _fresh()], verifier=Verifier(task_id="t1", expected=[EndState()], atoms=[opened]))
+    assert row["constructed"]["do_nothing"] == {"built": True, "failed": False, "atom": None,
+                                                "run_id": row["constructed"]["do_nothing"]["run_id"]}
 
 
 @pytest.mark.parametrize("update, rulings, tier", [
@@ -329,6 +346,24 @@ def test_a_verifier_failing_a_faithful_kept_reference_flags_it_and_hands_the_exa
     assert row["reference"]["atom"] == f"gate:expected:cell:{verifier.expected[0].cells[0].table}.A1.slot"
     assert T.examiner_rulings(tiers) == [{"task_id": "t1", "kind": "reference_fails", "run_id": REPLAY_ID,
                                           "atom": row["reference"]["atom"], "blocking": False}]
+
+
+def test_a_failing_kept_reference_is_routed_as_a_blocking_examiner_ruling_and_holds_the_task_untrusted(tmp_path):
+    from kullback.spec import rulings as RL
+    from kullback.spec.review import answer_rulings
+
+    _intent_workdir(tmp_path, [_failing_replay(), _fresh()])
+    _hold_reference(tmp_path)
+    assert T.route_reference_fails(tmp_path, T.intent_tiers(tmp_path)) == [1]
+    assert T.route_reference_fails(tmp_path, T.intent_tiers(tmp_path)) == [], "one ruling per Task"
+    ruling = RL.load_rulings(tmp_path, "t1")[0]
+    assert (ruling.kind, ruling.code, ruling.blocking, ruling.wrong_side) == ("code", "fails_reference", True, None)
+    tier, row = T.intent_tiers(tmp_path)["t1"]
+    assert tier == "untrusted" and row["reason"] == "open_ruling"
+    assert answer_rulings(tmp_path, "t1", TestModel([]), 1)["skipped"] == 1, "the Examiner rules first"
+    RL.close(tmp_path, "t1", 1, False, "The Reference wrote a slot the user never asked for.", 1)
+    RL.sync_spec(tmp_path, "t1")
+    assert T.intent_tiers(tmp_path)["t1"].tier == "trusted"
 
 
 @pytest.mark.parametrize("held", [{"fidelity": 0.8}, {"confirmed": False}, {"kept": False}],

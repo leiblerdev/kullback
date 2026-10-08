@@ -6,16 +6,14 @@ inputs (`goal_writes`, `answer_strip`, `trace`), so the scorer examined a differ
 one real Runs meet. Every caller now builds through `build_user`, which fills whatever the caller
 leaves out from the workdir on disk, so all three meet the same inputs the build passes today.
 
-`build_user` keeps no static edge back to the package that drives the Runs: the strip closure is
-loaded lazily through `importlib` (the CLI already loads modules that way), so the user package
-still imports only what D214 allows. Everything else comes from the workdir files the build
+`build_user` keeps no edge back to the package that drives the Runs: the strip closure is the
+user package's own (`user.value_strip`). Everything else comes from the workdir files the build
 writes (`replays.json`, `traces`, `user_rules`, `vocabulary.json`, `tool_sigs.json`,
 `user_lessons.json`, `schema.json`, `canon-rules.json`).
 """
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 from typing import Any, Optional
 
@@ -25,9 +23,9 @@ from kullback.runner.records import EntitySchema, read_json
 from kullback.user import context as context_mod
 from kullback.user import fidelity as fidelity_mod
 from kullback.user import lesson as lesson_mod
-from kullback.user import rules as rules_mod
 from kullback.user.agent import AgentUser
 from kullback.user.simulated import SimulatedUser
+from kullback.user.value_strip import value_strip
 
 # What the built user is for. The two purposes build the same user; they differ only in what a
 # Task with no reference recording on disk means. An examination has nothing to examine, so it
@@ -103,9 +101,11 @@ def _disk_state(workdir: Any, task_id: str, purpose: str, goal_counts: Any = _MI
     lessons = lesson_mod.lines_for(lesson_mod.load_lessons(workdir), task_id)
     ctx = context_mod.curate(task_id, user_rules, trace, vocab=vocab, write_tools=writes,
                              record_fields=sorted(record), lessons=lessons)
-    goal_writes = rules_mod.goal_write_set(trace, writes)
+    # The goal is the Spec's (`spec.schema.goal_of`), which this layer cannot read: a caller passes
+    # it, and without one the goal is any write (None), never the Reference's calls.
+    goal_writes = None
     if goal_counts is _MISSING:
-        goal_counts = rules_mod.goal_write_counts(trace, writes)
+        goal_counts = None
     answer_strip = _strip_for(workdir, task_id, index)
     return {
         "ctx": ctx,
@@ -126,16 +126,12 @@ def _strip_for(workdir: Any, task_id: str, index: dict) -> Any:
 
     A caller that names no recordings gets no strip (the build does the same), and a workdir with
     no evidence files reads as no strip rather than failing the score. The closure is the build's
-    own, loaded lazily so this module keeps no static import the D214 test forbids.
+    own, imported from the user package where it lives.
     """
     members = _members_of(workdir, task_id, index)
     if not members:
         return None
-    try:
-        intent = importlib.import_module("kullback.builder.intent")
-    except ImportError:
-        return None
-    return intent.value_strip(members, schema=_schema_of(workdir), rules=_canon_of(workdir))
+    return value_strip(members, schema=_schema_of(workdir), rules=_canon_of(workdir))
 
 
 def _members_of(workdir: Any, task_id: str, index: dict) -> list:

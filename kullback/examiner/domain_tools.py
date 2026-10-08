@@ -110,8 +110,6 @@ RULING_SUFFIX = ".ruling.json"
 #: Why a Task is not verifiable as written: the only reasons a note may give.
 NOTE_REASONS = ("outcome_not_in_state", "intent_contradicts_reference", "fact_unavailable_to_user",
                 "needs_action_record")
-NoteReason = Literal["outcome_not_in_state", "intent_contradicts_reference", "fact_unavailable_to_user",
-                     "needs_action_record"]
 NOTE_SENTENCE_CHARS = 300
 # What a note's sentence may not carry: structure or check source, which is an atom or Verifier text.
 _NOTE_FORBIDDEN = ("{", "}", "[", "]", "predicate", "atom", "def ", "lambda", "return ")

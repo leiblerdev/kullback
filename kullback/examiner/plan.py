@@ -23,7 +23,6 @@ from kullback.gates.ledger import GateLedger
 from kullback.gates.verifier_suite import load_run
 from kullback.runner.canon import rules_of
 from kullback.runner.records import (
-    Finding,
     ProbePool,
     Refusal,
     Verifier,
@@ -158,31 +157,8 @@ class ExaminerPlan:
         """The Task's live Verifier, or None when its Reference was withdrawn and it was retired (D208)."""
         return next((v for v in self.store.get("verifiers", []) if v.task_id == task_id), None)
 
-    def set_current(self, verifier: Verifier) -> None:
-        """Replace the Task's Verifier in the store and on disk (an accepted repair)."""
-        others = [v for v in self.store.get("verifiers", []) if v.task_id != verifier.task_id]
-        self.store["verifiers"] = others + [verifier]
-        write_json(self.workdir / "verifiers" / f"{verifier.task_id}.json", as_dict(verifier))
 
-    def close_findings(self, finding_ids: Iterable[str]) -> list[str]:
-        """Mark findings closed (the Builder acted on them) and release the entries they protected."""
-        wanted = set(finding_ids)
-        closed: list[str] = []
-        released: list[str] = []
-        for row in self.store.get("findings", []):
-            if row.get("finding_id") in wanted and row.get("status") != "closed":
-                row["status"] = "closed"
-                closed.append(row["finding_id"])
-                if row.get("about_entry_id"):
-                    released.append(row["about_entry_id"])
-        if released:
-            self.unprotect(released)
-        if closed:
-            self.write_state()
-        return closed
 
-    def open_findings(self) -> list[Finding]:
-        return [Finding.model_validate(row) for row in self.store.get("findings", []) if row.get("status") == "open"]
 
     def refusal(self, task_id: str) -> Optional[Refusal]:
         row = self.store.get("refusals", {}).get(task_id)

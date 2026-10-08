@@ -44,14 +44,31 @@ def task_rows(workdir: Any, task_ids: Iterable[str]) -> dict[str, dict]:
     return out
 
 
+def _route_reference_fails(root: Path, task_ids: list[str]) -> dict[str, list[int]]:
+    """Trust's kept-Reference failures filed as rulings before the Examiner's first round (D333, fold)."""
+    from kullback.spec.trust import intent_tiers, route_reference_fails
+
+    if not (root / "runs").is_dir():
+        return {}
+    tiers = {task_id: tier for task_id, tier in intent_tiers(root).items() if task_id in task_ids}
+    return {task_id: [n] for task_id in tiers for n in route_reference_fails(root, {task_id: tiers[task_id]})}
+
+
+def _ask_confirm(root: Path, task_id: str, model: Any, ceiling_usd: Optional[float] = None) -> dict:
+    from kullback.spec.writer import ask_confirm
+
+    return ask_confirm(root, task_id, model, ceiling_usd)
+
+
 def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., dict], model: Any,
                writer_model: Any = None, rounds: int = ROUNDS_CAP, ceiling_usd: Optional[float] = None,
-               answer: Callable[..., dict] = answer_rulings) -> dict:
+               answer: Callable[..., dict] = answer_rulings, confirm: Optional[Callable[..., dict]] = None) -> dict:
     """Examiner and writer rounds over the Tasks until no ruling is open or `rounds` Examiner rounds ran.
 
     `examine(workdir, task_ids, model=, round_number=)` is one Examiner round; `answer(workdir, task_id,
-    model, round_number, ceiling_usd=)` one writer answer per Task. Returns each round's counts and
-    each Task's row at the end.
+    model, round_number, ceiling_usd=)` one writer answer per Task. Before the first round the
+    writer is asked the fixed confirm question where a Spec writes with no confirm item (`confirm`,
+    spec/writer.ask_confirm). Returns each round's counts and each Task's row at the end.
     """
     from kullback.agent.bus import Bus
 
@@ -60,6 +77,14 @@ def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., 
     bus = Bus(root / "bus.jsonl", agent="spec")
     rounds = min(int(rounds), ROUNDS_CAP)
     log: list[dict] = []
+    routed = _route_reference_fails(root, task_ids)
+    if routed:
+        _log(root, {"side": "trust", "reference_fails_filed": routed})
+    confirm = confirm or _ask_confirm
+    asked = {task_id: confirm(root, task_id, writer_model or model, ceiling_usd=ceiling_usd) for task_id in task_ids}
+    if any(row.get("asked") for row in asked.values()):
+        _log(root, {"side": "writer", "confirm_asked": sorted(t for t, row in asked.items() if row.get("asked")),
+                    "confirm_added": sum(row.get("added", 0) for row in asked.values())})
     for number in range(1, rounds + 1):
         exam = examine(root, task_ids, model=model, round_number=number)
         for task_id in task_ids:

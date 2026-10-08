@@ -6,8 +6,8 @@ the fix (changes or drops the ruled check, adds a check for an uncovered fact) o
 An applied answer rewrites the Verifier; the answer is kept on the ruling for the Examiner's next round,
 which closes the ruling or keeps it open.
 
-A ruling that says the Reference is wrong (fails_reference, wrong side reference) asks nothing of the
-writer: it is a note for the witness flag and is left for the Examiner.
+A ruling that says the Reference is wrong (fails_reference, wrong side reference), or one trust filed
+with no side named yet, asks nothing of the writer: it is left for the Examiner.
 """
 
 from __future__ import annotations
@@ -29,14 +29,12 @@ def atom_checks(spec: Spec, verifier: Optional[Verifier]) -> dict[str, str]:
     """Each atom id of the Verifier with the check that made it: an item's atom is its check's id, the
     sanity item is "code"; compile names an older check's atoms i<n>, n its index among the older checks;
     "unknown" for an atom no check made."""
-    from kullback.spec.writer import ATOM_DEMANDS, is_item_check
+    from kullback.spec.writer import is_item_check
 
     if verifier is None:
         return {}
     items = {check.id for check in spec.checks if is_item_check(check)}
     checks = [check for check in spec.checks if not is_item_check(check)]
-    if verifier.expected and not items:
-        checks = [check for check in checks if check.demand.get("demand") in ATOM_DEMANDS]
     out: dict[str, str] = {}
     for atom in verifier.atoms:
         if atom.id in items or atom.id == SANITY_ID:
@@ -67,6 +65,11 @@ def _writer_ruling(spec: Spec, verifier: Optional[Verifier], ruling: R.Ruling) -
                   fix=ruling.fix, kind=f"{ruling.kind}/{ruling.code}")
 
 
+def _examiners_side(ruling: R.Ruling) -> bool:
+    """A Reference ruling asks nothing of the writer: ruled wrong, or not yet ruled on (a routed trust row)."""
+    return ruling.code == "fails_reference" and ruling.wrong_side != "verifier"
+
+
 def answer_rulings(workdir: Any, task_id: str, model: Any, round_number: int, *,
                    ceiling_usd: Optional[float] = None, repair: Optional[Callable] = None) -> dict:
     """The writer's answer to every open ruling on one Task it has not answered; returns the counts.
@@ -91,7 +94,7 @@ def answer_rulings(workdir: Any, task_id: str, model: Any, round_number: int, *,
             return writer_repair(spec, ruled, inputs, m, model_id=model_id, ceiling_usd=ceiling_usd)
 
     out = {"task_id": task_id, "answered": 0, "applied": 0, "rebutted": 0, "skipped": 0}
-    todo = [r for r in R.unanswered(R.load_rulings(root, task_id)) if r.wrong_side != "reference"]
+    todo = [r for r in R.unanswered(R.load_rulings(root, task_id)) if not _examiners_side(r)]
     out["skipped"] = len(R.unanswered(R.load_rulings(root, task_id))) - len(todo)
     if not todo:
         return out

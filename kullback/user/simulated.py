@@ -87,11 +87,11 @@ class SimulatedUser:
         # carries the calls and their results, so nothing new has to be plumbed to the user; the
         # vocabulary knows fields and not tool kinds, which is why the names are passed in here.
         self.write_tools = frozenset(write_tools or ())
-        # The writes the Task's goal implies (D210, `goal_write_set`). None means the caller named
+        # The writes the Task's goal implies (D210), read off its Spec (`rules.spec_goal`). None means the caller named
         # none, and the end then falls back to D158's reading, that any write is the Run acting; an
         # empty set is a goal that implies no write and is satisfied without one.
         self.goal_writes = None if goal_writes is None else frozenset(goal_writes)
-        # How many times the Reference made each goal write (`goal_write_counts`), so a Run that made
+        # How many `called` items name each goal write (`rules.spec_goal`), so a Run that made
         # one of two requested writes of one tool is not done (D326). None reads tool names only.
         self.goal_counts = dict(goal_counts) if goal_counts else None
         self._made: dict[str, int] = {}
@@ -308,8 +308,8 @@ class SimulatedUser:
     def _end_kind(self, question: str, satisfied: bool) -> Optional[str]:
         """Which kind this end is reported as, or nothing where the user has not ended (D210, D332).
 
-        The goal never ends a Run (D332): it is read off the Reference's writes, and nothing the
-        Reference holds may decide a Run that trust or the Verifier reads. What ends one is the
+        The goal never ends a Run (D332): it is read off the Spec's write items, and a user label
+        may not decide a Run that trust or the Verifier reads. What ends one is the
         Candidate's own stop (it closes or passes the conversation on), the scenario running out
         (twice asked for what nobody told this user, or nothing left to say) and the turn limit the
         loop holds. Where one of those ends the Run with the goal's writes made, the end is reported

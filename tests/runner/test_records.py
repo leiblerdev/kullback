@@ -14,6 +14,7 @@ from kullback.runner.records import (
     ALL_RECORDS,
     Atom,
     Column,
+    Conduct,
     Cost,
     Environment,
     Event,
@@ -351,3 +352,8 @@ def test_the_run_loader_refuses_a_file_that_holds_two_runs_instead_of_splicing_t
                      {"run_id": "shared", "task_id": "t2"})
     with pytest.raises(records_module.ForeignRunError, match="more than one Run: task_id t1 and t2"):
         records_module.load_run_jsonl(path)
+
+
+def test_a_stored_handoff_conduct_rule_reads_as_called():
+    rule = Conduct.model_validate({"kind": "handoff", "tool": "call_person", "source": {"kind": "policy"}})
+    assert rule.kind == "called"

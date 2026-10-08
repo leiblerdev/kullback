@@ -163,11 +163,12 @@ def test_an_empty_rebuttal_keeps_what_code_refused_so_it_reads_apart_from_a_reas
     RV.answer_rulings(root, "t1", TestModel([call("drop_items", ids=["c2"]), ModelReply(content="done")]), 2)
     _ruling(root, 2, item="s1", code="fixed_value")
     unfound = dict(ROW, expect={"slot": "nine_42"})
-    RV.answer_rulings(root, "t1", TestModel([call("add_items", items=[unfound]), ModelReply(content="done")]), 2)
+    twice = [call("add_items", items=[unfound]), ModelReply(content="done")] * 2
+    RV.answer_rulings(root, "t1", TestModel(twice), 2)
     ruling = RL.load_rulings(root, "t1")[1]
     assert ruling.answer["action"] == "rebutted" and ruling.answer["why"] == RV.REBUT_NONE
-    assert ruling.answer["writer"]["refused"] == 1
-    assert ruling.answer["writer"]["refusals"] == [{"id": "s1", "kind": "row_is"}]
+    assert ruling.answer["writer"]["refused"] == 2 and ruling.answer["writer"]["retried"] == 1
+    assert ruling.answer["writer"]["refusals"] == [{"id": "s1", "kind": "row_is"}] * 2
 
 
 def test_a_ruling_that_the_reference_is_wrong_asks_nothing_of_the_writer(tmp_path):
@@ -228,3 +229,15 @@ def test_the_loop_stops_after_one_examiner_round_when_nothing_is_ruled(tmp_path)
                         answer=lambda *a, **k: calls.append("writer"))
     assert calls == [1] and out["held"] == []
 
+
+
+def test_the_confirm_question_is_asked_before_the_examiners_first_round(tmp_path):
+    root = _told(tmp_path)
+    calls = []
+    RD.run_rounds(root, ["t1"], model="m",
+                  confirm=lambda w, t, model, ceiling_usd=None: calls.append(("confirm", t)) or {"asked": True, "added": 1},
+                  examine=lambda w, t, *, model, round_number: calls.append(("examiner", round_number)) or {"counts": {}},
+                  answer=lambda *a, **k: calls.append("writer"))
+    assert calls == [("confirm", "t1"), ("examiner", 1)]
+    logged = [json.loads(line) for line in RD.log_path(root).read_text().splitlines()]
+    assert logged[0] == {"side": "writer", "confirm_asked": ["t1"], "confirm_added": 1}

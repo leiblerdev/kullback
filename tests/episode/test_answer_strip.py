@@ -46,7 +46,6 @@ def test_episode_does_not_build_strip_from_held_out_trace(tmp_path):
 @pytest.mark.parametrize("owner_name,dependency_name", [
     ("kullback.builder.compile_env", "kullback.runner.world.loading"),
     ("kullback.builder.sandbox", "kullback.runner.world.loading"),
-    ("kullback.builder.intent", "kullback.user.value_strip"),
 ])
 def test_closure_hash_of_owner_follows_the_moved_module(owner_name, dependency_name):
     """The G1 move put the implementation in episode.loading and user.value_strip; the closure

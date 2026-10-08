@@ -274,13 +274,11 @@ class EndProtocol:
                                   acted=acted, closed=closed)
 
     def kind(self, question: Optional[str], *, said_anything: bool, had_nothing: bool,
-             made: Iterable[str] = (), requested: Optional[str] = None,
-             acted: bool = False) -> Optional[str]:
+             made: Iterable[str] = (), acted: bool = False) -> Optional[str]:
         """Which kind this turn ends on, or nothing where it does not end the Run.
 
-        `requested` is what the model asked for through `end_run`; it is read as evidence that the
-        user had nothing left, never as the answer, because a model that would rather stop than keep
-        asking is exactly the failure this protocol exists to catch.
+        What the model asked for through `end_run` is never read here: a model that would rather
+        stop than keep asking is exactly the failure this protocol exists to catch.
         """
         self.unanswerable += int(bool(had_nothing))
         self.silent = 0 if said_anything else self.silent + 1

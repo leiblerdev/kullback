@@ -7,7 +7,6 @@ import json
 import pytest
 
 from conftest import PTR
-from kullback.builder import intent as intent_mod
 from kullback.builder import user_sim
 from kullback.builder.user_sim import (
     ASKABLE,
@@ -30,7 +29,7 @@ from kullback.builder.user_sim import (
     end_of_run,
     extracted_values,
     fact_class,
-    goal_write_set,
+    spec_goal,
 )
 from kullback.builder.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
 from kullback.runner.records import (
@@ -43,6 +42,7 @@ from kullback.runner.records import (
     UserFact,
     UserRules,
 )
+from kullback.user import value_strip as intent_mod
 
 # What the retail build derives (D115): the generic core plus the fields retail's users state.
 RETAIL = Vocabulary(domain="retail", fields=[f.model_copy(deep=True) for f in GENERIC_FIELDS] + [
@@ -1215,24 +1215,22 @@ def test_a_fact_a_user_of_the_task_did_say_is_left_alone_by_the_strip():
     assert user.stripped == 0
 
 
-def test_the_goal_write_set_is_the_writes_the_recording_made_and_the_world_took():
-    trace = library_trace(
-        [
-            ("assistant", "Hi! How can I help you today?"),
-            ("user", "Please renew loan L2201 and pay the fine on it."),
-            ("assistant", None),
-            ("assistant", None),
-            ("assistant", None),
-        ],
-        calls=[
-            made(2, "get_member", {"member_id": "M400318"}, result={"loans": ["L2201"]}),
-            made(3, "renew_loan", {"loan_id": "L2201"}, result={"due": "2026-10-01"}),
-            made(4, "pay_fine", {"loan_id": "L2201"},
-                 error=ToolCallError(**{"class": "not_found_entity"}, payload="no fine")),
-        ],
-    )
-    assert goal_write_set(trace, {"renew_loan", "pay_fine"}) == {"renew_loan"}
-    assert goal_write_set(None, {"renew_loan"}) == set()
+def test_the_goal_is_the_specs_write_items_never_the_recordings_calls():
+    writes = {"renew_loan", "pay_fine"}
+    called = [{"kind": "called", "tool": "renew_loan"}, {"kind": "called", "tool": "get_member"}]
+    assert spec_goal(called, writes) == ({"renew_loan"}, {"renew_loan": 1})
+    assert spec_goal([{"kind": "row_is", "table": "loans"}], writes) == (None, None)
+    assert spec_goal([{"kind": "said", "text": "renewed"}], writes) == (set(), None)
+
+
+def test_the_goal_is_read_off_the_tasks_spec_on_disk(tmp_path):
+    """With a Spec on disk the goal is its called write items, counted; with none, any write."""
+    from kullback.spec.schema import Check, Spec, SpecIntent, goal_of, save_spec
+    assert goal_of(tmp_path, "t1", {"renew_loan"}) == (None, None)
+    called = {"id": "c1", "kind": "called", "tool": "renew_loan"}
+    check = Check(id="c1", kind="allowed", demand=called, because="asked", tier="critical")
+    save_spec(tmp_path, Spec(task_id="t1", intent=SpecIntent(task_id="t1"), checks=[check, check]))
+    assert goal_of(tmp_path, "t1", {"renew_loan"}) == ({"renew_loan"}, {"renew_loan": 2})
 
 
 # --- D227: a write counts as made only when its result shows it took effect --------------------
