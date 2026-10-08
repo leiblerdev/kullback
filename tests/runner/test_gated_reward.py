@@ -72,6 +72,15 @@ def test_an_alternative_whose_gates_hold_is_read_before_a_heavier_one_whose_gate
     assert out.passed and _items(out)["state:items.A1.status"] is True
 
 
+def test_a_scored_new_row_count_fails_its_item_not_the_run():
+    state = EndState(cells=[ExpectedCell(table="items", row_id="A1", field="status", value="closed")],
+                     new_rows=[{"table": "items", "where": {"status": "closed"}, "count": 1,
+                                "item": "n1", "gate": False, "weight": 2.0}])
+    out = verdict(_run(_end(A1__status="closed")), Verifier(task_id="t", expected=[state]))
+    assert out.passed is True
+    assert _items(out)["new_rows:items:1"] is False
+    assert out.score == 1 / 2
+
 def test_a_scored_item_that_fails_lowers_the_score_and_never_the_pass():
     verifier = Verifier(task_id="t", expected=[_closed()], atoms=[_said("say", "closed", gate=False)])
     quiet = verdict(_run(_end(A1__status="closed")), verifier)

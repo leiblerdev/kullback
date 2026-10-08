@@ -627,7 +627,8 @@ def end_states_of(items: list[dict], world: World, action_tables: Iterable[str] 
                 continue
             if item["kind"] == "row_new":
                 new_rows.append({"table": item["table"], "where": item["where"], "count": item["count"],
-                                 "item": item["id"]})
+                                 "item": item["id"], "gate": bool(item["gate"]),
+                                 "weight": float(item["weight"])})
                 continue
             free += [{"table": item["table"], "row_id": item["row"], "field": field,
                       "why": f"free: {item['id']}: {reason}"} for field, reason in (item.get("free") or {}).items()]

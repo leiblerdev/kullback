@@ -185,9 +185,11 @@ def test_alternative_end_states_pass_on_any_one_and_value_sets_and_new_rows_are_
     assert len(verifier.expected) == 2 and all(s.new_rows for s in verifier.expected)
     with_note = {"N-9": {"item": "A1", "text": "moved"}}
     assert _matches(verifier.expected, AtomContext(_run(_moved("four", notes=with_note))))
-    assert _matches(verifier.expected, AtomContext(_run(_moved("four")))) is False, "the note is missing"
+    missing = _holds(verifier, _run(_moved("four")))
+    assert missing["new_rows:notes:1"] is False  # the count is its own gated item now, not sanity
+    assert verdict(_run(_moved("four")), verifier).passed is False
     two = {"N-9": {"item": "A1"}, "N-10": {"item": "A1"}}
-    assert _matches(verifier.expected, AtomContext(_run(_moved("seven", notes=two)))) is False
+    assert _holds(verifier, _run(_moved("seven", notes=two)))["new_rows:notes:1"] is False
     banned = _verifier(_kept(dict(MOVE, expect={"slot": {"not": ["two", "four"]}})))
     assert _matches(banned.expected, AtomContext(_run(_moved("seven"))))
     assert _matches(banned.expected, AtomContext(_run(STATE))) is False
@@ -347,3 +349,11 @@ def test_the_counts_report_one_end_state_per_branch():
     assert I.counts_of([MOVE, I.sanity_item([])])["end_states"] == 1
     assert I.counts_of([MOVE, branch, I.sanity_item([])])["end_states"] == 2
     assert I.counts_of([I.sanity_item([])])["end_states"] == 1
+
+
+def test_row_new_carries_its_gate_and_weight_into_new_rows():
+    [state] = I.end_states_of([{"id": "n1", "kind": "row_new", "table": "notes",
+                                "where": {"text": "hi"}, "count": 1, "gate": False, "weight": 2.0}],
+                              world())
+    assert state.new_rows == [{"table": "notes", "where": {"text": "hi"}, "count": 1, "item": "n1",
+                               "gate": False, "weight": 2.0}]

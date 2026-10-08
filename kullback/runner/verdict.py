@@ -8,7 +8,7 @@ from kullback.judge.shape import NO_EVIDENCE, has_evidence, is_item
 from kullback.runner import target as _target
 from kullback.runner.atom_context import AtomContext, _evaluate, gate, is_transfer
 from kullback.runner.canon import UNRESOLVED, Unresolved, record_use
-from kullback.runner.expected import Match, cell_results, collateral
+from kullback.runner.expected import Match, cell_results, collateral, new_row_counts
 from kullback.runner.records import (
     VERDICT_VERSION,
     Atom,
@@ -383,12 +383,20 @@ def _best_end_state(verifier: Verifier, context: AtomContext) -> tuple[EndState,
 
 
 def _state_items(verifier: Verifier, context: AtomContext) -> list[_Item]:
-    """The end state's cells and the sanity item; with no end state the sanity item is read later."""
+    """The end state's cells, each declared new row's count, and the sanity item."""
     if not verifier.expected:
         return []
-    _, cells, rest = _best_end_state(verifier, context)
+    state, cells, rest = _best_end_state(verifier, context)
     items = [_item(f"state:{cell.table}.{cell.row_id}.{cell.field}", "state", cell, ok, f"gate:expected:{why}", why)
              for cell, ok, why in cells]
+    for spec, made in new_row_counts(state, context):
+        want = int(spec.get("count") or 1)
+        holds = made == want
+        item_id = f"new_rows:{spec.get('table')}:{want}"
+        items.append(_Item(ItemResult(id=item_id, kind="state", gate=bool(spec.get("gate", True)),
+                                      weight=float(spec.get("weight", 1.0)), holds=holds,
+                                      why=None if holds else f"new:{spec.get('table')}:{made}"),
+                           f"gate:{item_id}"))
     why = rest.why[0] if rest.why else None
     items.append(_Item(ItemResult(id="sanity", kind="sanity", gate=True, holds=rest.ok, why=why),
                        f"gate:sanity:{why}"))

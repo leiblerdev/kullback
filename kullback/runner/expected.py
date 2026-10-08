@@ -388,6 +388,25 @@ def _new_row_matches(spec: dict, row: Any, context: AtomContext) -> bool:
                                          for field, value in where.items())
 
 
+def _match_new_row(end_state: EndState, context: AtomContext, table: str, row_id: str) -> Optional[int]:
+    """The index of the declared new-row spec a made row answers, or None where it answers none."""
+    row = (context.end_state.get(table) or {}).get(row_id)
+    return next((n for n, s in enumerate(end_state.new_rows)
+                 if s.get("table") == table and _new_row_matches(s, row, context)), None)
+
+
+def new_row_counts(end_state: EndState, context: AtomContext) -> list[tuple[dict, int]]:
+    """Each declared new-row spec with how many made rows answered it."""
+    made = [0] * len(end_state.new_rows)
+    for key, moved in context.diff().items():
+        table, row_id = _split_key(key)
+        if moved["present_before"] and moved["present_after"]:
+            continue
+        spec = _match_new_row(end_state, context, table, row_id)
+        if spec is not None:
+            made[spec] += 1
+    return list(zip(end_state.new_rows, made, strict=True))
+
 def cell_results(end_state: EndState, context: AtomContext) -> list[tuple[ExpectedCell, Optional[bool], str]]:
     """Each cell of one end state on the Run's end: held, failed or unsettled (None), and its name.
 
@@ -418,29 +437,23 @@ def cell_results(end_state: EndState, context: AtomContext) -> list[tuple[Expect
 def collateral(end_state: EndState, context: AtomContext) -> Match:
     """The sanity item (D329): nothing outside the end state's declared rows, cells and `allowed` moved.
 
-    A row made or removed is declared by any cell on it or by a declared new row, which must be
-    made as many times as it says; a row kept is declared field by field (a dotted cell declares
-    its top-level column).
+    A row made or removed is declared by any cell on it or by a declared new row; a row kept is
+    declared field by field (a dotted cell declares its top-level column). Whether a declared new
+    row was made as many times as it says is its own item, not sanity.
     """
     failed: list[str] = []
     open_pairs: list[str] = []
     cells = {(c.table, c.row_id, str(c.field).split(".")[0] if c.field is not None else None)
              for c in end_state.cells}
     touched = {(table, row_id) for table, row_id, _ in cells}
-    made = [0] * len(end_state.new_rows)
     for key, moved in context.diff().items():
         table, row_id = _split_key(key)
         if not (moved["present_before"] and moved["present_after"]):
-            # A row made or removed: any cell on it speaks for it, a declared new row counts it, else collateral.
+            # A row made or removed: any cell on it speaks for it, a declared new row answers it.
             if (table, row_id) in touched or _allowed(end_state.allowed, table, row_id, None):
                 continue
-            row = (context.end_state.get(table) or {}).get(row_id) if moved["present_after"] else None
-            spec = next((n for n, s in enumerate(end_state.new_rows)
-                         if s.get("table") == table and _new_row_matches(s, row, context)), None)
-            if spec is None:
+            if _match_new_row(end_state, context, table, row_id) is None:
                 failed.append(f"collateral:{table}.{row_id}")
-            else:
-                made[spec] += 1
             continue
         for name, change in moved["fields"].items():
             if (table, row_id, name) in cells or _allowed(end_state.allowed, table, row_id, name):
@@ -449,9 +462,6 @@ def collateral(end_state: EndState, context: AtomContext) -> Match:
                 open_pairs.append(f"unsettled:{table}.{name}")
             else:
                 failed.append(f"collateral:{table}.{row_id}.{name}")
-    for spec, count in zip(end_state.new_rows, made, strict=True):
-        if count != int(spec.get("count") or 1):
-            failed.append(f"new:{spec.get('table')}:{count}")
     if failed:
         return Match(False, failed)
     if open_pairs:
