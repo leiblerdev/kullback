@@ -122,7 +122,7 @@ def test_existing_scorer_fails_a_run_missing_a_demanded_write():
                 "because": "change my default address to my daughter's place"}]
     verifier, _ = compile_verifier(demands, INTENT, POLICY, {"modify_user_address"}, _fn())
     run = _run_dict()
-    run["events"][0]["payload"]["name"] = "get_user_details"
+    run["events"][0]["payload"]["name"] = "lookup_account"
     result = verdict(run, verifier, write_tools={"modify_user_address"})
     assert result.passed is False
 

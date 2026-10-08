@@ -6,6 +6,7 @@ import json
 
 from kullback.agent.bus import Bus
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
+from kullback.runner import budget
 from kullback.runner.records import Usage
 from kullback.spec import stage
 from kullback.spec.schema import FactSource, IntentFact, SpecIntent, intent_text, load_spec, spec_path
@@ -69,9 +70,11 @@ def _events(root) -> list[str]:
     return [json.loads(line)["event"]["name"] for line in (root / "bus.jsonl").read_text().splitlines()]
 
 
-def test_write_specs_writes_the_spec_both_verifiers_and_publishes_spec_written(tmp_path):
+def test_write_specs_writes_the_spec_both_verifiers_and_publishes_spec_written(tmp_path, monkeypatch):
+    monkeypatch.setitem(budget.PRICES, "test/model",
+                        {"input": 10.0, "output": 10.0, "cache_read": 0.0, "cache_write": 0.0})
     root = _workdir(tmp_path)
-    counts = stage.write_specs(root, ["t1"], TestModel(_one_task_replies(), name="anthropic/claude-opus-5-5"))
+    counts = stage.write_specs(root, ["t1"], TestModel(_one_task_replies(), name="test/model"))
     assert {k: counts[k] for k in ("written", "skipped_existing", "failed")} == \
         {"written": 1, "skipped_existing": 0, "failed": 0}
     spec = load_spec(root, "t1")
