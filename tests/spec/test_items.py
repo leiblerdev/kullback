@@ -105,7 +105,7 @@ def test_a_judge_anchor_cites_the_one_row_it_was_found_in_and_its_answer_states_
              "anchor": {"answer": "B2 is in slot four", "row": {"table": "items", "find": {"item_id": "B2"},
                                                                  "fields": ["slot"]}}}
     kept, why = keep(judge)
-    assert why == "" and kept["gate"] is False and kept["evidence"] == ["final_answer"]
+    assert why == "" and kept["gate"] is False and kept["evidence"] == ["assistant_turns"]
     assert kept["anchor"]["row"] == {"table": "items", "find": {"item_id": "B2"}, "key": "B2",
                                      "fields": {"slot": "four"}}
     wrong_row = dict(judge, anchor=dict(judge["anchor"], row=dict(judge["anchor"]["row"], find={"item_id": "A1"})))
@@ -117,8 +117,11 @@ def test_a_judge_anchor_cites_the_one_row_it_was_found_in_and_its_answer_states_
                "policy_line": "Move an item only to a free slot",
                "anchor": {"answer": "No: move an item only to a free slot."}}
     assert keep(refusal)[1] == "" and keep(dict(refusal, gate=False))[0]["gate"] is True, "a refusal item gates"
-    for ref in ("after_call:list_items", "assistant:2", "assistant_turns"):
-        assert keep(dict(judge, evidence=[ref]))[1] == ""
+    assert keep(dict(judge, evidence=["assistant_turns"]))[1] == ""
+    for ref in ("after_call:list_items", "assistant:2", "final_answer"):
+        assert "evidence_why" in keep(dict(judge, evidence=[ref]))[1], "a narrower window needs its reason"
+        kept, why = keep(dict(judge, evidence=[ref], evidence_why="the slot is read by the lookup"))
+        assert why == "" and kept["evidence_why"] == "the slot is read by the lookup"
     assert "evidence" in keep(dict(judge, evidence=["the third turn"]))[1]
     assert "evidence" in keep(dict(judge, evidence=["after_call:teleport"]))[1]
 

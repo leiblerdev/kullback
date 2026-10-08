@@ -40,6 +40,8 @@ SANITY = "nothing_else"
 SANITY_ID = "sanity"
 CONFIRM_TURN = "confirm_turn"
 EVIDENCE = ("final_answer", "assistant_turns")
+# The default evidence: every agent turn up to the first transfer or hand-off call (judge/shape.py).
+WINDOW = "assistant_turns"
 AFTER_CALL = "after_call:"
 ASSISTANT = "assistant:"
 # Gate by default: what the world must hold and what the event log must show; text and judge items weigh.
@@ -473,6 +475,16 @@ class World:
                     f"not {text!r}")
         return ""
 
+    def _narrowed(self, evidence: list, reason: Any) -> str:
+        """A ref narrower than the window (every agent turn up to the first transfer) needs its reason."""
+        if all(str(ref) == WINDOW for ref in evidence):
+            return ""
+        if isinstance(reason, str) and reason.strip() and "\n" not in reason.strip():
+            self._kept["evidence_why"] = " ".join(reason.split())
+            return ""
+        return (f"evidence narrower than {WINDOW} needs evidence_why: one line on why the answer can only "
+                f"come there; else leave evidence out and every agent turn up to a transfer is read")
+
     def _anchor_row(self, anchor: dict, answer: str) -> tuple[Optional[dict], str]:
         """The row the anchor cites, found by a world search: one row, its fields, each stated in the answer."""
         cited = anchor.get("row")
@@ -515,8 +527,8 @@ class World:
         if not isinstance(anchor, dict) or not str(anchor.get("answer") or "").strip():
             return "anchor is {answer, accepted: [...], reject: [...], row}: what a met checkpoint states"
         answer = str(anchor["answer"]).strip()
-        evidence = item.get("evidence") or ["final_answer"]
-        why = self._evidence(evidence)
+        evidence = item.get("evidence") or [WINDOW]
+        why = self._evidence(evidence) or self._narrowed(evidence, item.get("evidence_why"))
         if why:
             return why
         cited, why = self._anchor_row(anchor, answer)

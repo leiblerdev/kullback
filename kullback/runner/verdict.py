@@ -6,7 +6,7 @@ from typing import Any, Iterable, NamedTuple, Optional
 
 from kullback.judge.shape import NO_EVIDENCE, has_evidence, is_item
 from kullback.runner import target as _target
-from kullback.runner.atom_context import AtomContext, _evaluate, gate
+from kullback.runner.atom_context import AtomContext, _evaluate, gate, is_transfer
 from kullback.runner.canon import UNRESOLVED, Unresolved, record_use
 from kullback.runner.expected import Match, cell_results, collateral
 from kullback.runner.records import (
@@ -28,7 +28,6 @@ from kullback.runner.records import (
 # this module's own top.
 
 MUST_HOLD = {"required", "question", "communicate", "hard"}
-TRANSFER_HINTS = ("transfer", "escalate", "handoff", "hand_off")
 GAVE_UP = {"transfer", "transferred", "agent_transfer", "gave_up", "no_action"}
 ENV_ERROR_REASONS = {"env_error", "environment_error", "environment_cannot_answer"}
 # How each judge use says "this holds", "this does not" and "I did not decide" (judge.py's _USES).
@@ -126,10 +125,6 @@ def _cannot_answer_tool(run: Run) -> str:
                 or payload.get("reason") == "environment_cannot_answer"):
             return str(payload.get("name") or (error.get("payload") or {}).get("tool") or "")
     return ""
-
-
-def _is_transfer(name: str) -> bool:
-    return any(hint in (name or "").lower() for hint in TRANSFER_HINTS)
 
 
 def _named_cause(cause_result: Any, notes: list[str]) -> Optional[str]:
@@ -435,9 +430,9 @@ def _classify(run: Run, context: AtomContext, cause_result: Any, marks: list[str
     if passed:
         return "pass", None, False
     # A transfer changes nothing even where mine.py classed the transfer tool as a write (D46).
-    acting = [call for call in context.write_calls() if not _is_transfer(call["name"])]
+    acting = [call for call in context.write_calls() if not is_transfer(call["name"])]
     transferred = not acting and (
-        any(_is_transfer(name) for name in names) or _termination(run).lower() in GAVE_UP
+        any(is_transfer(name) for name in names) or _termination(run).lower() in GAVE_UP
     )
     klass = "transferred_without_acting" if transferred else "fail"
     cause = _named_cause(cause_result, notes)  # code marks it, the judge names the cause (D88)

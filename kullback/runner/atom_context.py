@@ -33,6 +33,14 @@ def _reply(payload: dict) -> dict:
     return reply if isinstance(reply, dict) else payload
 
 
+# Words in a tool name that hand the conversation on (verdict.py reads a Run as given up by them).
+TRANSFER_HINTS = ("transfer", "escalate", "handoff", "hand_off")
+
+
+def is_transfer(name: str) -> bool:
+    return any(hint in (name or "").lower() for hint in TRANSFER_HINTS)
+
+
 def _text_of(payload: dict) -> str:
     """The text of a message event, in the shapes loop.py and RecordedModel both write."""
     for value in (payload.get(key) for key in ("content", "text", "message", "reply")):

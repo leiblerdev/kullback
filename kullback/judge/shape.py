@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from kullback.runner.atom_context import _text_of
+from kullback.runner.atom_context import _text_of, is_transfer
 from kullback.runner.records import Atom, Run
 
 FINAL_ANSWER = "final_answer"
@@ -28,14 +28,25 @@ def anchor_of(target: dict) -> dict:
 
 
 def evidence_refs(target: dict) -> list[str]:
-    refs = target.get("evidence") or [FINAL_ANSWER]
+    refs = target.get("evidence") or [ALL_ASSISTANT]
     return [str(r) for r in (refs if isinstance(refs, list) else [refs])]
 
 
-def assistant_turns(run: Run) -> list[tuple[int, str]]:
-    """Every assistant message of a Run with text, as (event index, text), in order."""
+def _window(run: Run) -> list:
+    """The Run's events up to its first transfer or hand-off call: what the agent said while it
+    still served the user. The message that makes the call is inside; anything after it is not."""
     out = []
     for event in run.events:
+        if event.type == "tool_call" and is_transfer((event.payload or {}).get("name")):
+            break
+        out.append(event)
+    return out
+
+
+def assistant_turns(run: Run) -> list[tuple[int, str]]:
+    """Every assistant message with text inside the window, as (event index, text), in order."""
+    out = []
+    for event in _window(run):
         if event.type == "model_call":
             text = _text_of(event.payload or {}).strip()
             if text:
@@ -44,14 +55,12 @@ def assistant_turns(run: Run) -> list[tuple[int, str]]:
 
 
 def _turns_after_call(run: Run, tool: str) -> list[tuple[int, str]]:
-    """The assistant messages after the first result of `tool`, up to the next user turn."""
+    """The assistant messages after the first result of `tool`, to the end of the window."""
     seen, out = False, []
-    for event in run.events:
+    for event in _window(run):
         payload = event.payload or {}
         if event.type == "tool_result" and payload.get("name") == tool:
             seen = True
-        elif seen and event.type == "user_turn" and out:
-            break
         elif seen and event.type == "model_call":
             text = _text_of(payload).strip()
             if text:
@@ -62,9 +71,10 @@ def _turns_after_call(run: Run, tool: str) -> list[tuple[int, str]]:
 def resolve(run: Run, ref: str) -> list[tuple[str, int, str]]:
     """The turns one evidence ref names, as (label, event index, text).
 
-    Refs are written before any Run exists, so none names an event index: `final_answer` is the
-    last assistant message; `assistant_turns` is every one; `assistant:<k>` is the k-th (1-based,
-    negative from the end); `after_call:<tool>` is what the Candidate said after that tool answered.
+    Refs are written before any Run exists, so none names an event index. Every ref reads inside the
+    window (up to the first transfer call): `assistant_turns` (the default) is every assistant
+    message; `final_answer` is the last; `assistant:<k>` is the k-th (1-based, negative from the
+    end); `after_call:<tool>` is what the Candidate said after that tool first answered.
     """
     turns = assistant_turns(run)
     if ref == FINAL_ANSWER:

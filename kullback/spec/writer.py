@@ -83,8 +83,9 @@ move. A value the user names goes in expect, never in free; expect names more th
 - judge {question, anchor: {answer, accepted: [...], reject: [...], row: {table, find, fields: [...]}}, \
 evidence: [...]}: one yes or no question about what the agent told the user. Find the anchor's row with \
 find_rows first, cite it in row, and state its fields in answer; only a refusal anchor that quotes the \
-item's policy_line goes without a row. Evidence: "after_call:<tool>" when the fact comes from a lookup, \
-"final_answer" otherwise, "assistant:<k>" for the k-th agent turn, "assistant_turns" only as a fallback.
+item's policy_line goes without a row. Leave evidence out: every agent turn up to the first transfer is \
+read. Narrow it ("after_call:<tool>", "final_answer", "assistant:<k>") only with evidence_why, one line on \
+why the answer can come nowhere else.
 Every item: id, gate (true when a run failing it is wrong whatever else it does), weight (default 1), \
 and fact_ids or policy_line (a verbatim line of the policy, at least 12 characters). State items may \
 carry alt (0, 1, ...) when the policy allows different end states; an item without alt holds in all."""
@@ -97,7 +98,7 @@ with status closed (gate), before {first: "confirm_turn", then: "close_record"} 
 one gated judge item asking whether the agent declined and why, the anchor quoting the policy line.
 - The user wants a new entry with a minted id: row_new with the fields the user gave, never the id.
 - The user asks what something costs: a judge item whose anchor is the amount read from the row that \
-holds it (row cites that row, evidence after_call:<the lookup tool>), and said with that amount if it is stored as is. Never compute a figure the world does not hold.
+holds it (row cites that row), and said with that amount if it is stored as is. Never compute a figure the world does not hold.
 - The user says "leave the other one as it is": row_keeps on that row's fields."""
 
 CHOICE_RULE = """\
