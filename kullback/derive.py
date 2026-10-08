@@ -175,8 +175,8 @@ SHAPE_RUNG_ORDERS = {
                                  _TIGHT + (SHAPE_SOURCES,)),
 }
 SHAPE_RUNG_ORDERS["tightest_first_strict"] = SHAPE_RUNG_ORDERS["tightest_first"]._replace(strict=True)
-# Which order the derivation uses: tightest_first, chosen 2026-09-25 on the offline measure (airline +17,
-# retail 0, none lost). Reversible: row_first is the order before it.
+# Which order the derivation uses: tightest_first, chosen 2026-09-25 on the offline measure (one corpus +17,
+# the other 0, none lost). Reversible: row_first is the order before it.
 SHAPE_RUNG_ORDER = "tightest_first"
 
 def shape_for(atom_id: str, tool: str, field: str, id_field: str, tools: Iterable[str],

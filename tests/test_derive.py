@@ -1,4 +1,4 @@
-"""Tests for kullback/derive.py: derivation from re-runs on disk and the tau2 export.
+"""Tests for kullback/derive.py: derivation from re-runs on disk and the benchmark export.
 
 The module moved here from builder/verifier.py in phase 5 (D123) with its behaviour unchanged, which
 the hash pin at the top holds. Reading a Run, scoring one against a Verifier and the D79 suite live in
