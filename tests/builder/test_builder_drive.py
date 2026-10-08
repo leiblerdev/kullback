@@ -144,3 +144,13 @@ def test_the_opening_lists_what_the_root_holds_and_nothing_else(tmp_path):
     assert all((env / name.rstrip("/")).exists() for name in names)
     assert all((env / name.rstrip("/")).is_dir() == name.endswith("/") for name in names)
     assert opening.endswith(session_mod.OPENING)
+
+
+def test_replay_with_no_task_id_replays_only_the_build_sample_when_a_manifest_names_one(tmp_path):
+    root = _workdir(tmp_path)
+    (root / "build.json").write_text(json.dumps({"tasks": ["widget_task"]}), encoding="utf-8")
+    result = _run(_tools(root)["replay"], {})
+    assert not result.is_error, result.content
+    assert sorted(task["task_id"] for task in result.details["tasks"]) == ["widget_task"]
+    stored = json.loads((root / "replays.json").read_text(encoding="utf-8"))
+    assert sorted(stored) == ["widget_task"]

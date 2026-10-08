@@ -373,3 +373,17 @@ def test_the_builders_opening_shows_the_examiners_ruling_on_its_note(tmp_path):
     assert ("t1: needs_action_record: the hand off leaves no row to check. (ruled by finding, builder_wrong: "
             "the hand off writes a ticket row)") in session_mod.opening(root)
     assert session_mod.opening(root).endswith(session_mod.OPENING)
+
+
+def test_a_refusal_for_a_task_outside_the_build_sample_is_refused(tmp_path):
+    root = _task_workdir(tmp_path)
+    hook = session_mod.sample_fence(root)
+    inside = SimpleNamespace(name="write", arguments={"path": "refusals/t1.json", "content": "{}"})
+    assert hook(inside) is None, "without a manifest every Task is in scope"
+    (root / "build.json").write_text(json.dumps({"tasks": ["t1"]}), encoding="utf-8")
+    assert hook(inside) is None
+    outside = SimpleNamespace(name="write", arguments={"path": "refusals/t2.json", "content": "{}"})
+    with pytest.raises(PermissionError, match="outside the build's Task sample"):
+        hook(outside)
+    other = SimpleNamespace(name="write", arguments={"path": "tools/a.py", "content": "x = 1"})
+    assert hook(other) is None, "the fence guards refusals only"

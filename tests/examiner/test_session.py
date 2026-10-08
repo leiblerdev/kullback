@@ -419,3 +419,11 @@ def test_no_finding_is_refused_naming_the_unsourced_cell_and_files_once_every_ce
     root.verifiers["t1"] = Verifier(task_id="t1", expected=[EndState(cells=cells[:1])])
     assert drive_tool(harness, "no_finding", {"task_id": "t1", "reason": "too short"}).is_error
     assert not drive_tool(harness, "no_finding", reason).is_error
+
+
+def test_derive_pick_without_ids_returns_only_the_build_sample_when_a_manifest_names_one(tmp_path):
+    world = make_world(tmp_path, tasks=2)
+    materialize(world)
+    assert S.derive_pick(world.workdir, S.load_store(world.workdir), None) == ["t1", "t2"]
+    write_json(world.workdir / "build.json", {"tasks": ["t1"]})
+    assert S.derive_pick(world.workdir, S.load_store(world.workdir), None) == ["t1"]

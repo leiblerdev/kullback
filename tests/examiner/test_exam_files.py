@@ -172,3 +172,25 @@ def test_check_edit_takes_a_body_edit_only_and_names_what_is_missing(tmp_path):
             assert said in str(error)
         else:
             raise AssertionError(f"{edit} was taken")
+
+
+def test_expose_with_task_ids_copies_runs_derived_and_spoken_for_those_tasks_only(tmp_path):
+    world = make_world(tmp_path, tasks=2)
+    workdir = world.workdir
+    write_json(workdir / "replays.json", world.inputs["replays"])
+    write_json(workdir / "rerolls.json", world.inputs["rerolls"])
+    refs = {task_id: [{"run_id": row["run_id"]} for row in rows.values()]
+            for task_id, rows in world.inputs["replays"].items()}
+    write_json(workdir / "references.json", {task_id: {"references": rows} for task_id, rows in refs.items()})
+    (tmp_path / "v").mkdir()
+    for task_id in ("t1", "t2"):
+        write_json(workdir / "verifiers" / f"{task_id}.json", as_dict(VF.derive(tmp_path / "v")))
+    out = F.expose(workdir, ["t1"])
+    assert (workdir / "exam" / "spoken" / "t1.txt").is_file()
+    assert not (workdir / "exam" / "spoken" / "t2.txt").exists()
+    assert (workdir / "exam" / "derived" / "t1.json").is_file()
+    assert not (workdir / "exam" / "derived" / "t2.json").exists()
+    assert (workdir / "exam" / "runs" / "t1").is_dir()
+    assert not (workdir / "exam" / "runs" / "t2").exists()
+    assert out["spoken"] == ["spoken/t1.txt"]
+    assert "derived/t2.json" not in out["copied"]

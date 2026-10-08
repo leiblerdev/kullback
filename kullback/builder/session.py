@@ -41,7 +41,7 @@ from kullback.builder.world_tools import ingest_files
 from kullback.gates import names_protected_path
 from kullback.gates.hook import PATH_KEYS, gate_writes
 from kullback.runner import budget
-from kullback.spec.trust import spec_tiers_of
+from kullback.spec.trust import in_sample, spec_tiers_of, stored_tasks
 
 #: The directories under env/ the model may write; everything else there is read-only for it.
 WRITABLE_PREFIXES = ("tools/", "intents/", "refusals/", "policy/")
@@ -188,6 +188,33 @@ def refusal_waits_for_note(workdir: Any) -> Callable[[Any], None]:
     return refuse
 
 
+def sample_fence(workdir: Any) -> Callable[[Any], None]:
+    """Refuse a write or edit of refusals/<task>.json for a Task outside the build's sample.
+
+    Without a manifest (--tasks never passed) every write goes through. With one, the Builder
+    can only refuse the Tasks the build plays and examines; the examine and run tools already
+    refuse those Tasks the same way through in_sample.
+    """
+    def fence(call: Any) -> None:
+        if getattr(call, "name", None) not in ("write", "edit"):
+            return None
+        if stored_tasks(workdir) is None:
+            return None
+        path = _written_path(call)
+        text = (path or "").replace("\\", "/").lstrip("/")
+        if not text.startswith("refusals/"):
+            return None
+        task_id = Path(text).stem
+        if task_id in in_sample(workdir, [task_id]):
+            return None
+        raise PermissionError(
+            f"task {task_id} is outside the build's Task sample (--tasks); "
+            "work on the sampled Tasks only")
+
+    fence.hook_name = "builder_sample_fence"  # type: ignore[attr-defined]
+    return fence
+
+
 def _rel_in_env(env: Path, written_path: str) -> Optional[str]:
     try:
         return str(Path(env, written_path).resolve().relative_to(env.resolve())).replace("\\", "/")
@@ -252,6 +279,7 @@ def builder_extension(root: BuilderRoot) -> Callable[[ExtensionAPI], None]:
         api.tool_call(no_agent_writes_gates_or_runner)
         api.tool_call(write_fence)
         api.tool_call(refusal_waits_for_note(root.workdir))
+        api.tool_call(sample_fence(root.workdir))
         # The trusted gate rules by the Spec's tiers (D322), loaded here since the gates sit below the Spec.
         api.tool_result(gate_writes(root=env, workdir=root.workdir,
                                     execute=env_files.executor(root.workdir, env),
@@ -373,6 +401,8 @@ def continuation(status: dict, spent: float, ceiling_usd: Optional[float]) -> Op
             "Replay every Task, examine the confirmed ones, run them, "
             "or state in one sentence why you cannot go further.")
 
+
+
 __all__ = ["BUILDER_BASE_TOOLS", "BuilderRoot", "CEILING_STAGE", "CONTINUATIONS", "OPENING", "WRITABLE_NAMES", "WRITABLE_PREFIXES", "build",
            "builder_extension", "ceiling_guard", "continuation", "no_agent_writes_gates_or_runner", "opening", "refusal_waits_for_note", "regenerate_and_guard",
-           "spent_in", "write_fence"]
+           "sample_fence", "spent_in", "write_fence"]

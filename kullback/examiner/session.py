@@ -277,7 +277,10 @@ def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> lis
     has no status row because no call has read it, or references.json keeps no Reference for it and
     either its row holds a confirmed Reference or replays.json now holds a confirmed replay for it,
     read the way select_for_session reads one, so a Task left unconfirmed is revisited once evidence
-    confirms it."""
+    confirms it. On a workdir carrying a build sample (--tasks), the unsettled Tasks are intersected
+    with the sample, so a sampled build derives sampled Tasks only; without a manifest every
+    unsettled Task is picked, as before.
+    """
     known = sorted(task.id for task in store.get("tasks") or [])
     if task_ids is not None:
         wanted = set(task_ids)
@@ -296,7 +299,9 @@ def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> lis
         return bool((status[task_id] or {}).get("reference_confirmed")
                     or finished_run_ids(task_id, replays, {}))
 
-    return [task_id for task_id in known if pending(task_id)]
+    from kullback.spec.trust import in_sample
+
+    return in_sample(workdir, [task_id for task_id in known if pending(task_id)])
 
 
 def spec_owned(store: dict) -> list[str]:
@@ -554,7 +559,7 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     if now:
         stage_mod.derive_all(ctx, store, judge_model=judge_model, round_number=0, only=now,
                              workers=workers if workers is not None else default_workers())
-    expose(workdir)
+    expose(workdir, picked)
     findings = derive_findings(workdir, store) + ([not_derived_finding(later, limit)] if later else [])
     if task_ids is not None:
         wanted = set(task_ids)
@@ -563,9 +568,13 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     write_json(root / "findings.json", [f.as_dict() for f in findings])
     if model is None:
         return findings
-    candidates = task_ids if task_ids is not None else {
-        *(t.id for t in store.get("tasks") or []), *(store.get("replays") or {}),
-        *(store.get("rerolls") or {})}
+    if task_ids is not None:
+        candidates = task_ids
+    else:
+        from kullback.spec.trust import in_sample
+
+        candidates = in_sample(workdir, [*(t.id for t in store.get("tasks") or []),
+                                         *(store.get("replays") or {}), *(store.get("rerolls") or {})])
     selected, left_out = _session_tasks(candidates, root, store)
     note = [left_out_finding(left_out, len(selected))] if left_out else []
     if not selected:

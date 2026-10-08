@@ -916,8 +916,8 @@ def domain_tools(*, workdir: Any, model: Any = None,
         return GateLedger(root).record("replay_reference", reference_replay_gate(replays))
 
     def replay_every_task() -> ReplayResult:
-        task_ids = [path.stem for path in sorted((root / "tasks").glob("*.json"))
-                    if path.name != "tasks.json"]
+        task_ids = in_sample(root, [path.stem for path in sorted((root / "tasks").glob("*.json"))
+                                    if path.name != "tasks.json"])
         replayed: dict[str, list] = {}
         tasks: list[ReplayTask] = []
         rows: list[ReplayRow] = []

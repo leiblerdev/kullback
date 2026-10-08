@@ -210,19 +210,25 @@ def seeded_history(history: dict, task_id: str, current: Verifier, round_number:
     return hist
 
 
-def expose(workdir: Any) -> dict:
+def expose(workdir: Any, task_ids: Optional[list] = None) -> dict:
     """Copy the read surface into `exam/`: the Runs, the JSON files, the records, the spoken turns.
 
     Never a forbidden file: a source naming one is skipped, and the copy is refused outright
-    when the workdir itself holds a forbidden name under the copied roots.
+    when the workdir itself holds a forbidden name under the copied roots. With task_ids, the
+    per-Task copies (Runs, derived Verifiers, spoken turns) cover those Tasks only, so a sampled
+    build leaves every other Task's files alone; the shared JSON files and record directories
+    are still copied whole. Without task_ids, every Task is copied.
     """
     root = Path(workdir)
     exam = root / EXAM_DIR
+    wanted = set(task_ids) if task_ids is not None else None
     copied: list[str] = []
     spoken: list[str] = []
     for path in sorted((root / RUNS_DIR).rglob("*.jsonl")) if (root / RUNS_DIR).is_dir() else []:
         rel = path.relative_to(root)
         if names_forbidden_path(str(rel)) is not None:
+            continue
+        if wanted is not None and len(rel.parts) > 2 and rel.parts[1] not in wanted:
             continue
         target = exam / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -250,20 +256,22 @@ def expose(workdir: Any) -> dict:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(path.read_bytes())
             copied.append(str(rel))
-    copied += copy_derived(root, exam)
-    spoken = write_spoken(root, exam)
+    copied += copy_derived(root, exam, wanted)
+    spoken = write_spoken(root, exam, wanted)
     return {"copied": copied, "spoken": spoken}
 
 
-def copy_derived(root: Path, exam: Path) -> list[str]:
+def copy_derived(root: Path, exam: Path, wanted: Optional[set] = None) -> list[str]:
     """Each Task's derived Verifier (workdir/verifiers/<task>.json) as exam/derived/<task>.json.
 
     The derived file only, never a proposal, and never into exam/verifiers/, which is the
-    proposal path the gates rule on.
+    proposal path the gates rule on. With wanted, only those Tasks are copied.
     """
     source = root / "verifiers"
     written: list[str] = []
     for path in sorted(source.glob("*.json")) if source.is_dir() else []:
+        if wanted is not None and path.stem not in wanted:
+            continue
         rel = f"{DERIVED_DIR}/{path.name}"
         if names_forbidden_path(rel) is not None:
             continue
@@ -274,12 +282,17 @@ def copy_derived(root: Path, exam: Path) -> list[str]:
     return written
 
 
-def write_spoken(root: Path, exam: Path) -> list[str]:
-    """One file per Task with the user turns of its References, the way derive reads them."""
+def write_spoken(root: Path, exam: Path, wanted: Optional[set] = None) -> list[str]:
+    """One file per Task with the user turns of its References, the way derive reads them.
+
+    With wanted, only those Tasks get a file.
+    """
     references = read_json(root / "references.json", {}) or {}
     replays = read_json(root / "replays.json", {}) or {}
     rerolls = read_json(root / "rerolls.json", {}) or {}
     task_ids = sorted({*(references or {}), *(replays or {}), *(rerolls or {})})
+    if wanted is not None:
+        task_ids = [task_id for task_id in task_ids if task_id in wanted]
     written: list[str] = []
     for task_id in task_ids:
         runs = reference_runs(root, references.get(task_id) or {}, replays.get(task_id),
