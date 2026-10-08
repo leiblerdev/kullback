@@ -154,3 +154,12 @@ def test_replay_with_no_task_id_replays_only_the_build_sample_when_a_manifest_na
     assert sorted(task["task_id"] for task in result.details["tasks"]) == ["widget_task"]
     stored = json.loads((root / "replays.json").read_text(encoding="utf-8"))
     assert sorted(stored) == ["widget_task"]
+
+
+def test_status_rows_cover_only_the_build_sample_when_a_manifest_names_one(tmp_path):
+    root = _workdir(tmp_path)
+    rows = domain_tools_mod.status_of(root)["tasks"]
+    assert sorted(row["task_id"] for row in rows) == ["orphan_task", "second_task", "widget_task"]
+    (root / "build.json").write_text(json.dumps({"tasks": ["widget_task"]}), encoding="utf-8")
+    rows = domain_tools_mod.status_of(root)["tasks"]
+    assert [row["task_id"] for row in rows] == ["widget_task"]

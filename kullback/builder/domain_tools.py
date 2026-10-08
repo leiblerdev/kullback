@@ -634,7 +634,8 @@ def status_of(workdir: Any) -> dict[str, Any]:
     not there yet read as empty, so a Task with no Verifier is open with its reason.
     """
     root = Path(workdir)
-    task_ids = [path.stem for path in sorted((root / "tasks").glob("*.json")) if path.name != "tasks.json"]
+    task_ids = in_sample(root, [path.stem for path in sorted((root / "tasks").glob("*.json"))
+                                if path.name != "tasks.json"])
     ruling = workdir_ruling(root)
     trusted = set(ruling.metrics.get("trusted") or [])
     refused = ruling.metrics.get("refused") or {}
