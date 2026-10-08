@@ -549,9 +549,11 @@ def stage_of(workdir: Any) -> dict[str, Any]:
     traces = root / "traces"
     tools_dir = root / "env" / env_files.TOOLS_DIR
     tool_files = sorted(tools_dir.glob("*.py")) if tools_dir.is_dir() else []
-    tasks = [path for path in (root / "tasks").glob("*.json") if path.name != "tasks.json"]
+    tasks = in_sample(root, [path.stem for path in (root / "tasks").glob("*.json")
+                             if path.name != "tasks.json"])
     runs = legitimate_runs(read_json(root / "replays.json", None) or {},
                            read_json(root / "rerolls.json", None) or {})
+    runs = {task_id: run_ids for task_id, run_ids in runs.items() if task_id in set(tasks)}
     return {
         "traces": sum(1 for path in traces.rglob("*") if path.is_file()) if traces.is_dir() else 0,
         "world_derived": (root / env_files.SCHEMA_FILE).is_file() and (root / env_files.SIGS_FILE).is_file(),
@@ -593,14 +595,18 @@ def opening_for(workdir: Any, default: str) -> str:
 
 
 def notes_lines(workdir: Any) -> list[str]:
-    """Your notes on Tasks with the Examiner's ruling on each, or open while it has not ruled."""
+    """Your notes on Tasks with the Examiner's ruling on each, or open while it has not ruled.
+
+    On a build with a manifest (--tasks), notes on Tasks outside the sample are not shown.
+    """
     from kullback.examiner.domain_tools import note_line, notes_of
 
     notes = notes_of(workdir)
     if not notes:
         return []
+    shown = in_sample(workdir, sorted(notes))
     return ["Your notes and the Examiner's rulings on them:"] + [
-        note_line(task_id, note, ruling) for task_id, (note, ruling) in sorted(notes.items())]
+        note_line(task_id, *notes[task_id]) for task_id in shown]
 
 
 class NoteArgs(BaseModel):

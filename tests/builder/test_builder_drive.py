@@ -163,3 +163,16 @@ def test_status_rows_cover_only_the_build_sample_when_a_manifest_names_one(tmp_p
     (root / "build.json").write_text(json.dumps({"tasks": ["widget_task"]}), encoding="utf-8")
     rows = domain_tools_mod.status_of(root)["tasks"]
     assert [row["task_id"] for row in rows] == ["widget_task"]
+
+
+def test_opening_counts_and_notes_cover_only_the_build_sample_when_a_manifest_names_one(tmp_path):
+    from kullback.examiner import domain_tools as exam_tools
+
+    root = _workdir(tmp_path)
+    exam_tools.write_note(root, "widget_task", "outcome_not_in_state", "only said, never written.")
+    exam_tools.write_note(root, "second_task", "outcome_not_in_state", "only said, never written.")
+    assert domain_tools_mod.stage_of(root)["tasks"] == 3
+    (root / "build.json").write_text(json.dumps({"tasks": ["widget_task"]}), encoding="utf-8")
+    assert domain_tools_mod.stage_of(root)["tasks"] == 1
+    shown = "\n".join(domain_tools_mod.notes_lines(root))
+    assert "widget_task" in shown and "second_task" not in shown
