@@ -3,9 +3,9 @@
 A judge item is a Verifier atom with `judge=True` whose target is {question, anchor, evidence}. The
 question is one objective checkpoint (one right answer, not taste); the anchor says what meets it:
 the answer, the equivalents to accept and the wrong answers to reject; the evidence names what the
-judge reads: the Candidate's final answer by default, or named assistant turns. The prompt follows
-MiMo's checkpoint judge nearly word for word: strict, no partial credit, nothing guessed, and a
-target that falls in cut evidence scores 0 with "evidence truncated".
+judge reads: the Candidate's final answer by default, or named assistant turns. The prompt is a
+strict checkpoint prompt: no partial credit, nothing guessed, and a target that falls in cut
+evidence scores 0 with "evidence truncated".
 
 The anchor lives on the Verifier, which the Candidate never sees. The judge sees the anchor and the
 evidence and nothing else: no Reference, no expected end state, no user goal.
