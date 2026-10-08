@@ -1,8 +1,11 @@
-"""The writer's only tools: two read-only lookups over the Starting state, and the bounded session.
+"""The writer's only tools: world search, the policy, and the one tool that adds items; the bounded session.
 
-Ported from the intentv experiment (its `_read_impl` and `run_writer`). The tools close over one
-Starting state dict and nothing else, so a writer session can read no Run, Reference, Verifier or
-End state: `refuse_run_inputs` refuses such records before a session starts.
+The world tools (`WORLD_TOOLS`) close over one `items.World` (the Starting state, the policy, the
+Intent's facts and the tool list) and nothing else, so a writer session can read no Run, Reference,
+Verifier or End state: `refuse_run_inputs` refuses such records before a session starts. `add_items`
+keeps an item only when code finds every value it names in the world, the policy or a user turn,
+and says why when it does not ("find, do not invent"). The two lookups ported from the intentv
+experiment (`READ_TOOLS`) stay for that frozen experiment only.
 """
 
 from __future__ import annotations
@@ -11,6 +14,8 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
+
+from kullback.spec.items import World
 
 # The most read rounds a writer session may spend before it must write (intentv r1).
 MAX_READ_ROUNDS = 4
@@ -117,6 +122,126 @@ def _assistant_tool_turn(reply: object) -> dict:
                            for c in reply.tool_calls]}
 
 
+# The most tool rounds an item-writing session may spend: reads and adds share them.
+MAX_ITEM_ROUNDS = 14
+
+_OBJECT = {"type": "object"}
+WORLD_TOOLS = [
+    {"name": "read_schema",
+     "description": "The world's tables (row count, fields) and the tools (kind, argument names). Read-only.",
+     "parameters": {"type": "object", "properties": {}}},
+    {"name": "find_rows",
+     "description": ("Find rows holding a value: in one field (dotted path) or any field, in one table or "
+                     "every table. Read-only. Returns at most 10 {table, key}."),
+     "parameters": {"type": "object",
+                    "properties": {"value": {"type": "string"}, "table": {"type": "string"},
+                                   "field": {"type": "string"}},
+                    "required": ["value"]}},
+    {"name": "read_row",
+     "description": "One row of the world by table and key. Read-only.",
+     "parameters": {"type": "object", "properties": {"table": {"type": "string"}, "key": {"type": "string"}},
+                    "required": ["table", "key"]}},
+    {"name": "read_policy",
+     "description": "The policy's section headings, or with section, the text under that heading. Read-only.",
+     "parameters": {"type": "object", "properties": {"section": {"type": "string"}}}},
+    {"name": "add_items",
+     "description": ("Add Verifier items. Each value must be found in the world, the policy or a user turn; "
+                     "a refused item comes back with the reason, fix it and add it again under its id."),
+     "parameters": {"type": "object", "properties": {"items": {"type": "array", "items": _OBJECT}},
+                    "required": ["items"]}},
+    {"name": "drop_items",
+     "description": "Remove items you added, by id.",
+     "parameters": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}},
+                    "required": ["ids"]}},
+]
+
+
+class ItemStore:
+    """The items a session has kept, by id, and every refusal it made, each with its reason.
+
+    `ruled` limits drops and replacements to the ruled items (a repair), and `max_adds` the new ids it
+    may add; None lets the writer drop or replace any item it added.
+    """
+
+    def __init__(self, world: World, facts: dict, unwitnessed: Callable[[Any], bool] = lambda fact: False,
+                 items: Iterable[dict] = (), ruled: Optional[set[str]] = None, max_adds: Optional[int] = None):
+        self.world, self.facts, self.unwitnessed = world, facts, unwitnessed
+        self.items: dict[str, dict] = {item["id"]: item for item in items}
+        self.held = set(self.items)
+        self.ruled, self.max_adds = ruled, max_adds
+        self.refused: list[dict] = []
+        self.dropped: list[str] = []
+        self.offered = 0
+        self.not_ruled = 0
+
+    def _limit(self, item_id: str) -> str:
+        """Why a repair may not add this id: an unruled item it held, or past the add cap; else empty."""
+        if self.ruled is None:
+            return ""
+        if item_id in self.held and item_id not in self.ruled:
+            self.not_ruled += 1
+            return "not ruled: a repair may not replace an item the ruling does not name"
+        added = {i for i in self.items if i not in self.held}
+        if self.max_adds is not None and item_id not in self.held and item_id not in added \
+                and len(added) >= self.max_adds:
+            return f"at most {self.max_adds} items may be added in one repair"
+        return ""
+
+    def add(self, items: Any) -> str:
+        if not isinstance(items, list):
+            return "items is a list of item objects"
+        lines = []
+        for item in items:
+            self.offered += 1
+            item_id = str(item.get("id")) if isinstance(item, dict) else "?"
+            limit = self._limit(item_id)
+            kept, why = (None, limit) if limit else self.world.check(item, self.facts, self.unwitnessed)
+            if kept is None:
+                self.refused.append({"id": item_id, "kind": item.get("kind") if isinstance(item, dict) else None,
+                                     "reason": why})
+                lines.append(f"{item_id}: refused: {why}")
+                continue
+            self.items[kept["id"]] = kept
+            lines.append(f"{item_id}: kept" + (f" (row {kept['row']})" if "row" in kept else ""))
+        return "\n".join(lines) or "no items"
+
+    def drop(self, ids: Any) -> str:
+        out = []
+        for item_id in [str(i) for i in ids or []]:
+            if self.ruled is not None and item_id not in self.ruled and item_id in self.held:
+                self.not_ruled += 1
+                out.append(f"{item_id}: not ruled, kept")
+            elif self.items.pop(item_id, None) is not None:
+                self.dropped.append(item_id)
+                out.append(f"{item_id}: dropped")
+            else:
+                out.append(f"{item_id}: no such item")
+        return "\n".join(out) or "no ids"
+
+
+def world_tools(store: ItemStore) -> dict[str, Callable[..., str]]:
+    """The world tools bound to one store and its world."""
+    world = store.world
+
+    def read_schema() -> str:
+        return json.dumps(world.schema())[:6000]
+
+    def find_rows(value: str, table: str = "", field: str = "") -> str:
+        if table and table not in world.state:
+            return f"no such table; tables: {', '.join(sorted(world.state))}"
+        return json.dumps(world.search(value, table, field))
+
+    def read_row(table: str, key: str) -> str:
+        row = world.row(table, key)
+        return "no such row" if row is None else json.dumps(row, default=str)[:3000]
+
+    def read_policy(section: str = "") -> str:
+        return world.policy_section(section)[:6000]
+
+    return {"read_schema": read_schema, "find_rows": find_rows, "read_row": read_row, "read_policy": read_policy,
+            "add_items": lambda items=None: store.add(items), "drop_items": lambda ids=None: store.drop(ids)}
+
+
 def _answer(impl: dict, call: Any) -> str:
     fn = impl.get(call.name)
     try:
@@ -128,14 +253,17 @@ def _answer(impl: dict, call: Any) -> str:
 def run_session(model: Any, messages: list[dict], state: dict, config: Any,
                 max_rounds: int = MAX_READ_ROUNDS,
                 price: Optional[Callable[[dict], float]] = None, force_answer: bool = False,
-                ceiling_usd: Optional[float] = None) -> dict:
-    """One bounded writer session: the read-only tools, then a final answer.
+                ceiling_usd: Optional[float] = None, tools: Optional[list[dict]] = None,
+                impl: Optional[dict[str, Callable[..., str]]] = None) -> dict:
+    """One bounded writer session: the tools, then a final answer.
 
-    `price` turns summed usage into dollars; without one the session reports 0. A session that
-    is still reading after `max_rounds`, or once its spend reaches `ceiling_usd`, ends unfinished
-    with no text, unless `force_answer` makes that last call one where no tool may be called.
+    `tools` and `impl` default to the two read-only lookups over `state`. `price` turns summed usage
+    into dollars; without one the session reports 0. A session that is still calling tools after
+    `max_rounds`, or once its spend reaches `ceiling_usd`, ends unfinished with no text, unless
+    `force_answer` makes that last call one where no tool may be called.
     """
-    impl = read_tools(state)
+    tools = READ_TOOLS if tools is None else tools
+    impl = read_tools(state) if impl is None else impl
     working = list(messages)
     usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
     rounds, thinking, uses = 0, [], []
@@ -144,7 +272,7 @@ def run_session(model: Any, messages: list[dict], state: dict, config: Any,
         if spent_out and not force_answer:
             break
         last = force_answer and (number == max_rounds or spent_out)
-        reply = model.query(working, tools=READ_TOOLS, config=_forced(config) if last else config)
+        reply = model.query(working, tools=tools, config=_forced(config) if last else config)
         for key, value in _usage_of(reply).items():
             usage[key] += value
         thinking += _thinking_of(reply)

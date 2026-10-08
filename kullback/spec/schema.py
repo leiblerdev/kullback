@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from kullback.runner.records import AtomKind, Record
+from kullback.runner.records import GATE_KINDS, AtomKind, Item, Record
 from kullback.spec.must_not import tier_of as _atom_tier
 
 Stance = Literal["volunteered", "accepted"]
+# Spec fields retired with the Examiner's edit kinds (D325 to D331): dropped when an older file loads.
+RETIRED_KEYS = ("atom_edits", "end_state_edits")
 Tier = Literal["critical", "sanity", "important"]
 
 # The atom kind a demand compiles to when it is not the check's own kind (compile.py does the same).
@@ -55,14 +57,35 @@ def tier_of(kind: str, demand: dict) -> Tier:
     return _atom_tier({"kind": compiled})
 
 
-class Check(Record):
-    """One demand of the Verifier, with the Intent quote or policy section it rests on."""
+class Check(Item):
+    """One item of the Verifier, with the Intent facts (`fact_ids`) or the policy line it rests on.
+
+    `demand` holds the item as code kept it (spec/items.py), or a demand of the older grammar.
+    `gate` and `weight` go onto every atom it compiles to (D329); left unsaid, the gate follows
+    the kind as an atom's does. A failing gate check zeroes a Run's reward; the others are weighed.
+    """
     id: str
     kind: AtomKind
     demand: dict
     because: str
     tier: Tier
     fact_ids: list[str] = Field(default_factory=list)
+    policy_line: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _gate_from_kind(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "gate" not in data:
+            data = dict(data, gate=data.get("kind") in GATE_KINDS)
+        return data
+
+    def _gate_default(self) -> bool:
+        return self.kind in GATE_KINDS
+
+    def _drop_defaults(self, data: dict) -> dict:
+        if data.get("policy_line") is None:
+            data.pop("policy_line", None)
+        return super()._drop_defaults(data)
 
 
 class Spec(Record):
@@ -74,17 +97,23 @@ class Spec(Record):
     rulings_open: int = 0
     round: int = 0
     version: int = 0
-    # Rulings the router could not hand to a writer yet (spec/router.py), and why the Task is set aside.
+    # Open blocking rulings (spec/rulings.py) and review rounds run; requests left by the retired router,
+    # and why the Task is set aside.
     pending_repair: list[dict] = Field(default_factory=list)
     set_aside: Optional[str] = None
     # The writer's session counts: demands, refusals, gaps, spend, read rounds, attempts, sent back.
     writer: dict = Field(default_factory=dict)
-    # The review edits to the compiled atoms, applied in order (spec/review.py): {drop, add, why}.
-    atom_edits: list[dict] = Field(default_factory=list)
-    # The review's cell and conduct edits, applied in order on the written Verifier (spec/review.py).
-    end_state_edits: list[dict] = Field(default_factory=list)
-    # What the Verifier's gates came to: the Reference, end states, cells, unsupported (spec/end_state.py).
+    # What the Verifier came to: its items by kind and gate, end states, cells (spec/items.py counts_of).
     end_state: dict = Field(default_factory=dict)
+
+
+    @model_validator(mode="before")
+    @classmethod
+    def _retired(cls, data: Any) -> Any:
+        """A Spec written before D331 loads: the Examiner's edit records are retired, never applied."""
+        if isinstance(data, dict) and any(key in data for key in RETIRED_KEYS):
+            data = {key: value for key, value in data.items() if key not in RETIRED_KEYS}
+        return data
 
 
 # Checks that specify a Task with no expected write: a Spec keeping one is never empty.
@@ -92,8 +121,14 @@ _NO_WRITE_DEMANDS = ("no_write", "cap")
 
 
 def is_empty(spec: Spec) -> bool:
-    """A Spec that keeps no check, or whose every Intent fact is a gap, unless it keeps a no_write or cap check."""
+    """A Spec that keeps no check, or whose every Intent fact is a gap, unless it keeps a no_write or cap check.
+
+    A Spec of items whose checks rest on the policy alone is not empty: a refusal is the sanity item and
+    one judge item on a policy line.
+    """
     if any(check.demand.get("demand") in _NO_WRITE_DEMANDS for check in spec.checks):
+        return False
+    if any(check.policy_line for check in spec.checks):
         return False
     gaps = set(spec.gaps)
     facts = spec.intent.facts

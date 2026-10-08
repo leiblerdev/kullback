@@ -1,12 +1,11 @@
-"""The Examiner's domain tools over its root: rule, finding, no_finding, check_reference, reject_reference.
+"""The Examiner's domain tools over its root: the ruling tools, finding, no_finding, check_reference.
 
-The Examiner reads and reviews; it writes no Verifier and runs nothing (D320). `finding` files one
-review of a Task: what is wrong, why, the rows, and the edit to apply (D317); its atoms and text
-edits go to the Spec by code, its body edits to the Builder. `no_finding` files a review that found
-nothing, with the one reason the Examiner is satisfied. `rule` files a ruling the router moves on,
-`check_reference` shows the evidence on a Reference, and `reject_reference` rules on a Reference
-whose End state is inconsistent with the user's confirmed action, with the rows. Every result
-carries rows, never a count alone.
+The Examiner reads and gives feedback; it edits nothing and writes no Verifier (D320, D331). The
+ruling tools (rule_tool.py: rule, close, verify, lookup_rows, search_rows) carry its feedback on a
+Spec, which the writer applies or rebuts. `finding` files what is wrong with the Environment for the
+Builder: the rows and a body edit (D317). `no_finding` files a review that found nothing, with the
+one reason the Examiner is satisfied. `check_reference` shows the evidence on a Reference. Every
+result carries rows, never a count alone.
 
 The Builder's notes (one per Task under the workdir's notes/, a reason from NOTE_REASONS and one
 sentence) are read here too: a finding with `note_ruling` on the Task rules the note, and the ruling
@@ -57,12 +56,8 @@ class FindingArgs(BaseModel):
     path: str = Field(default="", description="The Environment file the Builder should edit, or empty.")
     change: str = Field(default="", description="One line saying what should differ.")
     edits: list[dict] = Field(default_factory=list, description=(
-        "The diff, each with its why, one of six kinds: {kind: atoms, task_id, drop: [atom ids i<n>], "
-        "add: [atoms], why}, {kind: text, path: intents/<task>.json or tasks/<task>.json, where: verbatim "
-        "text found once, replace, why}, {kind: body, path, call_id, column, recorded, replayed, why}, "
-        "{kind: cell, task_id, table, row_id?, field?, action: allow or drop, why}, {kind: conduct, task_id, "
-        "action: add or remove, conduct: handoff, refusal or confirm_before_write, tool, why}, or "
-        "{kind: reference, task_id, run_id, why}."))
+        "The Environment diff, each with its why: {kind: body, path, call_id, column, recorded, replayed, why}. "
+        "What is wrong with a Spec is a ruling, never an edit."))
     note_ruling: Optional[Literal["builder_right", "builder_wrong"]] = Field(
         default=None, description="Set to rule on the Builder's open note on this Task: whether the "
                                   "Builder is right, with the why in text.")
@@ -354,9 +349,9 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
     from kullback.examiner import rule_tool as R
 
     return [
-        R.rule_tool(root),
-        AgentTool("finding", "File one review of a Task: what is wrong in `text`, the rows, the file in "
-                  "`path`, the one line in `change`, and the edits to apply, each with its why.",
+        *R.rule_tools(root),
+        AgentTool("finding", "File what is wrong with the Environment for the Builder: what in `text`, the rows, "
+                  "the file in `path`, the one line in `change`, and the body edits, each with its why.",
                   FindingArgs, FindingResult, _finding(root), render=render),
         AgentTool("no_finding", "File a review of a Task that found nothing wrong, with the one reason.",
                   NoFindingArgs, NoFindingResult, _no_finding(root), render=render),
@@ -364,12 +359,11 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
                   "the reads before it, whether it wrote nothing, whether the recordings agree, and any "
                   "Builder note. Code only, no model call.",
                   RC.CheckReferenceArgs, RC.CheckReferenceResult, RC._check_reference(root), render=render),
-        R.reject_tool(root),
     ]
 
 
-#: The tools the Examiner holds, so tests pin its surface: none writes a Verifier or runs a Run.
-TOOL_NAMES = ("rule", "finding", "no_finding", "check_reference", "reject_reference")
+#: The tools the Examiner holds, so tests pin its surface: none edits a Spec or writes a Verifier.
+TOOL_NAMES = ("rule", "close", "verify", "lookup_rows", "search_rows", "finding", "no_finding", "check_reference")
 
 
 def tool_names() -> tuple[str, ...]:

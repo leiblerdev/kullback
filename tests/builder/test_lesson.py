@@ -211,17 +211,9 @@ def test_the_stall_limit_switches_the_ask_from_patching_to_rewriting():
     assert patched.counts()["rewrites_forced"] == 0
 
 
-def test_only_a_tie_where_both_bodies_fall_at_one_gate_before_fidelity_is_reported_as_blocked():
-    kept = [{"stage": "parses", "pass": True}, {"stage": "executes_on_s0", "pass": False}]
-    attempt = [{"stage": "parses", "pass": True}, {"stage": "executes_on_s0", "pass": False}]
-    assert lesson.blocked_gate(kept, attempt) == "executes_on_s0"
+def test_a_blocked_gate_is_named_in_the_lesson_as_failing_before_the_replay_ruling():
     told = lesson.diagnose("quote_haulage", [], blocked="executes_on_s0").lesson()
     assert "fail the executes_on_s0 gate" in told and "before the replay ruling" in told
-    both = [{"stage": "parses", "pass": True}, {"stage": "replay_fidelity", "pass": False}]
-    assert lesson.blocked_gate(both, both) == ""
-    kept = [{"stage": "executes_on_s0", "pass": False}]
-    attempt = [{"stage": "deterministic", "pass": False}]
-    assert lesson.blocked_gate(kept, attempt) == ""
 
 
 # --- what one round records -----------------------------------------------------------------

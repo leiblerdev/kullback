@@ -266,15 +266,14 @@ def test_a_turn_that_fell_to_the_floor_still_records_what_was_called():
     assert payload["user_tools"] == [{"tool": "my_account", "args": []}]
 
 
-def test_a_facts_call_logs_asked_only_when_fields_were_passed():
+def test_a_facts_call_logs_the_question_and_the_fields_found_never_the_values():
     user = _agent(["Thanks, noted."])
-    user.box.facts([])
-    user.box.facts(["ident_a"])
+    user.box.facts("")
+    user.box.facts("What is your ident a?")
     user.reply([{"role": "assistant", "content": "How can I help you today?"}])
-    assert user.events[-1].payload["user_tools"] == [
-        {"tool": "my_facts", "args": []},
-        {"tool": "my_facts", "args": ["asked"]},
-    ]
+    calls = user.events[-1].payload["user_tools"]
+    assert [call["args"] for call in calls] == [[], ["question"]]
+    assert calls[1]["found"] == ["ident_a"] and calls[1]["missing"] == []
 
 
 def test_a_turn_records_what_the_model_weighed_before_it_wrote():

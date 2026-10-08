@@ -212,9 +212,9 @@ def test_session_prompt_names_dot_as_root_lists_entries_and_the_paths_of_each_ta
     system = " ".join(str(m.get("content")) for m in call["messages"])
     assert 'Your root is "."' in system
     assert str(world.workdir) not in system
-    assert ("The root holds: history.json, references.json, replays.json, rerolls.json, runs/, spec_view/, "
+    assert ("The root holds: history.json, references.json, replays.json, rerolls.json, review/, runs/, "
             "spoken/, task_status.json, tasks/.") in system
-    assert "you write nothing and run nothing" in system
+    assert "You give feedback and never edit" in system
     assert "runs/t1/ref.jsonl" in system and "spec view:" in system
 
 
@@ -414,9 +414,8 @@ def test_no_finding_is_refused_naming_the_unsourced_cell_and_files_once_every_ce
     load_extensions(harness, [S.examiner_extension(root)])
     reason = {"task_id": "t1", "reason": "every check matches the facts said"}
     refused = drive_tool(harness, "no_finding", reason)
-    assert refused.is_error and "items.A1.label" in refused.content and "cell edit" in refused.content
-    from kullback.spec.review import REVIEWS_FILE
-    assert REVIEWS_FILE == exam_tools.REVIEWS_FILE and not (world.workdir / REVIEWS_FILE).exists()
+    assert refused.is_error and "items.A1.label" in refused.content and "file a ruling" in refused.content
+    assert not (world.workdir / exam_tools.REVIEWS_FILE).exists()
     root.verifiers["t1"] = Verifier(task_id="t1", expected=[EndState(cells=cells[:1])])
     assert drive_tool(harness, "no_finding", {"task_id": "t1", "reason": "too short"}).is_error
     assert not drive_tool(harness, "no_finding", reason).is_error

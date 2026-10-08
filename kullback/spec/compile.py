@@ -24,7 +24,7 @@ FORBIDDEN_EQUALS_REQUIRED = "forbidden_equals_required"
 WRITE_WITHOUT_ROW = "required_write_without_row"
 UNSATISFIABLE = (NO_WRITE_BESIDE_REQUIRED, FORBIDDEN_EQUALS_REQUIRED, WRITE_WITHOUT_ROW)
 # The keys of a demand dict that say why and how strongly, not what is demanded.
-_NOT_DEMANDED = ("kind", "because", "check_id")
+_NOT_DEMANDED = ("kind", "because", "check_id", "gate", "weight")
 
 
 class Compiled(NamedTuple):
@@ -140,8 +140,11 @@ def unsatisfiable(demands: list[tuple[str, dict]], write_tools: set, action_tool
     return sorted(dict.fromkeys(out), key=lambda pair: (order[pair[0]], pair[1]))
 
 
-def _because(atom: Atom, because: str) -> Atom:
-    return atom.model_copy(update={"description": f"{atom.description or ''} because: {because}"})
+def _because(atom: Atom, demand: dict) -> Atom:
+    """The atom with its check's because appended, and the check's gate and weight where it set them (D329)."""
+    update = {"description": f"{atom.description or ''} because: {demand['because']}"}
+    update.update({key: demand[key] for key in ("gate", "weight") if key in demand})
+    return atom.model_copy(update=update)
 
 
 def compile_demands(demands: list, intent: str, sections: Iterable[str], write_tools: Iterable[str],
@@ -161,7 +164,7 @@ def compile_demands(demands: list, intent: str, sections: Iterable[str], write_t
             continue
         grounded.append((str(demand.get("check_id") or f"i{number}"), demand))
         if demand.get("tool") in actions and demand.get("demand") in ("write", "no_write"):
-            atoms += [_because(atom, str(demand["because"])) for atom in _action(f"i{number}", demand)]
+            atoms += [_because(atom, demand) for atom in _action(f"i{number}", demand)]
             continue
         if demand.get("demand") == "write" and not demand.get("entity"):
             # An empty entity never matches a row, so the atom would fail every Run, the Reference included.
@@ -173,7 +176,7 @@ def compile_demands(demands: list, intent: str, sections: Iterable[str], write_t
         if not built:
             dropped += 1
             continue
-        atoms += [_because(atom, str(demand["because"])) for atom in built]
+        atoms += [_because(atom, demand) for atom in built]
     return Compiled(Verifier(task_id=task_id, atoms=atoms, verifier_version=version, seed_run_ids=[]), dropped,
                     tuple(reasons), tuple(unsatisfiable(grounded, tools, actions)))
 
@@ -181,6 +184,9 @@ def compile_demands(demands: list, intent: str, sections: Iterable[str], write_t
 def compile_spec(spec, write_tools: Iterable[str], canon_fn: Callable,
                  policy_sections: Iterable[str] = (), action_tools: Iterable[str] = ()) -> Compiled:
     """The Spec's checks as a Verifier; a check whose because is not grounded is dropped and counted."""
-    demands = [dict(check.demand, kind=check.kind, because=check.because, check_id=check.id) for check in spec.checks]
+    demands = [dict(check.demand, kind=check.kind, because=check.because, check_id=check.id,
+                    **({"gate": check.gate} if check.gate != check._gate_default() else {}),
+                    **({"weight": check.weight} if check.weight != 1.0 else {}))
+               for check in spec.checks]
     return compile_demands(demands, spec.intent.text, policy_sections, write_tools, canon_fn,
                            task_id=spec.task_id, version=f"spec{spec.version}", action_tools=action_tools)

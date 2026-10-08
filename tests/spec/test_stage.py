@@ -15,9 +15,8 @@ STATE = {"items": {"A1": {"item_id": "A1", "slot": "two"}}}
 POLICY = "# Store policy\n\n## Moving items\n\nMove an item only to a free slot.\n"
 USER_LINE = "Please move item A1 to slot seven today."
 FACT = {"text": "move item A1 to slot seven", "recording": "rec-a", "turn": 1, "stance": "volunteered"}
-DEMAND = {"id": "d0", "kind": "required", "demand": "write", "tool": "update_item", "entity": "A1",
-          "id_field": "item_id", "values": {"slot": "seven"}, "fact_ids": ["f1"],
-          "because": "move item A1 to slot seven"}
+ITEM = {"id": "s1", "kind": "row_is", "table": "items", "find": {"item_id": "A1"}, "expect": {"slot": "seven"},
+        "fact_ids": ["f1"]}
 
 
 def _trace(task_id: str) -> dict:
@@ -49,14 +48,21 @@ def _call(name: str, arguments: dict) -> ModelReply:
                       usage=Usage(input=100, output=20))
 
 
+DONE = ModelReply(content="done", usage=Usage(input=300, output=5))
+
+
+def _items(*items: dict) -> list[ModelReply]:
+    """One writer session: add the items, then say done."""
+    return [_call("add_items", {"items": list(items)}), DONE]
+
+
 def _one_task_replies() -> list[ModelReply]:
-    """Mining: read the recording, keep one fact, stop. Writing: one demand grounded on that fact."""
+    """Mining: read the recording, keep one fact, stop. Writing: one state item resting on that fact."""
     return [_call("user_turns", {"recording": "rec-a"}), _call("add_facts", {"facts": [FACT]}),
-            ModelReply(content="1 fact kept.", usage=Usage(input=100, output=5)),
-            ModelReply(content=json.dumps({"demands": [DEMAND]}), usage=Usage(input=300, output=50))]
+            ModelReply(content="1 fact kept.", usage=Usage(input=100, output=5))] + _items(ITEM)
 
 
-EMPTY = ModelReply(content=json.dumps({"demands": []}), usage=Usage(input=300, output=5))
+EMPTY = DONE
 
 
 def _events(root) -> list[str]:
@@ -69,14 +75,14 @@ def test_write_specs_writes_the_spec_both_verifiers_and_publishes_spec_written(t
     assert {k: counts[k] for k in ("written", "skipped_existing", "failed")} == \
         {"written": 1, "skipped_existing": 0, "failed": 0}
     spec = load_spec(root, "t1")
-    assert [check.id for check in spec.checks] == ["c0"] and spec.version == 1
-    assert {k: spec.writer[k] for k in ("demands", "kept", "attempts", "empty_first", "sent_back")} == \
-        {"demands": 1, "kept": 1, "attempts": 1, "empty_first": False, "sent_back": 0}
-    assert spec.writer["usd"] > 0 and spec.writer["read_rounds"] == 0 and "first_attempt" not in spec.writer
+    assert [check.id for check in spec.checks] == ["s1"] and spec.version == 1
+    assert {k: spec.writer[k] for k in ("offered", "kept", "attempts", "empty_first", "sent_back")} == \
+        {"offered": 1, "kept": 1, "attempts": 1, "empty_first": False, "sent_back": 0}
+    assert spec.writer["usd"] > 0 and spec.writer["read_rounds"] == 1 and "first_attempt" not in spec.writer
     assert spec_verifier_path(root, "t1").read_text() == runner_verifier_path(root, "t1").read_text()
     assert _events(root) == ["spec.written"]
     ledger = json.loads((root / "budget.json").read_text())["stages"]["spec"]
-    assert ledger["calls"] == 4 and counts["spent_usd"] > 0
+    assert ledger["calls"] == 5 and counts["spent_usd"] > 0
 
 
 def test_write_specs_skips_a_task_whose_spec_and_verifier_are_on_disk(tmp_path):
@@ -100,13 +106,13 @@ def test_write_specs_records_a_failing_task_and_goes_on_to_the_next(tmp_path):
 def test_an_empty_first_spec_is_written_once_more_and_the_second_stands(tmp_path):
     root = _workdir(tmp_path)
     replies = _one_task_replies()
-    counts = stage.write_specs(root, ["t1"], TestModel(replies[:3] + [EMPTY, replies[3]]))
+    counts = stage.write_specs(root, ["t1"], TestModel(replies[:3] + [EMPTY] + replies[3:]))
     assert {k: counts[k] for k in ("written", "empty_seen", "retried", "set_aside_empty")} == \
         {"written": 1, "empty_seen": 1, "retried": 1, "set_aside_empty": 0}
     spec = load_spec(root, "t1")
     assert spec.set_aside is None and (spec.writer["attempts"], spec.writer["empty_first"]) == (2, True)
     first = spec.writer["first_attempt"]
-    assert (first["demands"], first["kept"], first["usd"]) == (0, 0, 0.0) and spec.writer["kept"] == 1
+    assert (first["offered"], first["kept"]) == (0, 0) and spec.writer["kept"] == 1
     assert _events(root) == ["spec.written"]
 
 
@@ -128,21 +134,21 @@ def test_write_from_intent_writes_the_spec_from_a_given_intent_without_mining(tm
     root = _workdir(tmp_path)
     facts = [IntentFact(id="f1", text=FACT["text"], stance="volunteered", source=FactSource(recording="rec-a", turn=1))]
     intent = SpecIntent(task_id="t1", facts=facts, text=intent_text(facts))
-    model = TestModel([ModelReply(content=json.dumps({"demands": [DEMAND]}), usage=Usage(input=300, output=50))])
+    model = TestModel(_items(ITEM))
     spent = stage.write_from_intent(root, "t1", intent, model, 1.0, Bus(root / "bus.jsonl", agent="spec"))
-    assert len(model.calls) == 1 and spent == 0.0
+    assert len(model.calls) == 2 and spent == 0.0
     assert load_spec(root, "t1").intent == intent and spec_verifier_path(root, "t1").is_file()
 
 
 def test_a_spec_no_run_can_pass_goes_back_once_and_still_unpassable_is_set_aside_with_no_verifier(tmp_path):
     root = _workdir(tmp_path)
-    clash = {"demands": [DEMAND, dict(DEMAND, id="d1", kind="forbidden")]}
-    reply = ModelReply(content=json.dumps(clash), usage=Usage(input=300, output=50))
-    model = TestModel(_one_task_replies()[:3] + [reply, reply])
+    clash = _items({"id": "e1", "kind": "called", "tool": "update_item", "fact_ids": ["f1"]},
+                   {"id": "e2", "kind": "not_called", "tool": "update_item", "fact_ids": ["f1"]})
+    model = TestModel(_one_task_replies()[:3] + clash + [DONE])
     counts = stage.write_specs(root, ["t1"], model)
-    assert (counts["written"], counts["set_aside_unsatisfiable"], len(model.calls)) == (0, 1, 5)
+    assert (counts["written"], counts["set_aside_unsatisfiable"], len(model.calls)) == (0, 1, 6)
     spec = load_spec(root, "t1")
-    assert spec.set_aside == "unsatisfiable_spec" and spec.writer["unsatisfiable"] == ["forbidden_equals_required"]
+    assert spec.set_aside == "unsatisfiable_spec" and spec.writer["unsatisfiable"] == ["e2"]
     assert not spec_verifier_path(root, "t1").exists() and not runner_verifier_path(root, "t1").exists()
     (line,) = (root / "bus.jsonl").read_text().splitlines()
     assert json.loads(line)["event"]["payload"] == {"task_id": "t1", "reason": "unsatisfiable_spec", "rounds": 0}

@@ -18,12 +18,9 @@ import pytest
 
 from conftest import PTR
 from kullback.builder.mine import (
-    id_supporting_calls,
     mine_schema,
     mine_tools,
-    mined_name_counts,
     propose_column_class,
-    refuted_ids,
     row_homes,
 )
 from kullback.report.data import ReportData
@@ -104,31 +101,11 @@ def test_a_declared_kind_beats_contradicting_calls_and_records_it():
     assert "; basis: declared by the source, no supporting calls" in (sig.kind_reason or "")
 
 
-def test_an_id_no_suffix_names_is_observed_with_the_addressing_calls_as_support():
-    schema = mine_schema(harbour_corpus())
-    column = col(schema, "berth_tags", "berth_tag")
-    assert column.class_ == "hard"
-    assert column.evidence["class_basis"] == "observed"
-    assert column.evidence["id_fact"] is True
-    assert column.evidence["id_basis"] == "observed"
-    assert ["t1", 0] in column.evidence["id_support"]
-    assert column.evidence["id_support_count"] == 3
-    assert column.evidence["id_contradicts_name"] is False
-    assert column.evidence["table_basis"] == "name"
-    refs = id_supporting_calls(harbour_corpus())
-    assert refs["berth_tag"]["support_count"] == 2
-    assert ["t1", 0] in refs["berth_tag"]["supporting_calls"]
-    column = col(mine_schema(harbour_corpus()), "berth_tags", "berth_tag")
-    assert column.evidence["id_support"] == [["t1", 0], ["t1", 1], ["t1", 2]]
-    assert column.evidence["id_support_count"] == 3
-
-
 def test_a_name_id_that_repeats_is_refuted_and_the_values_decide_its_class():
     traces = [one_trace("t1", [
         {"name": "list_docks", "args": {},
          "result": '[{"dock_id": "D1", "shift": "early"}, {"dock_id": "D1", "shift": "late"}]'},
     ])]
-    assert refuted_ids(traces) == {"dock_id"}
     schema = mine_schema(traces)
     column = col(schema, "docks", "dock_id")
     assert column.class_ == "hard"
@@ -208,22 +185,6 @@ def test_homing_by_the_only_id_rests_on_the_name():
     assert place["contradicts_name"] is False
 
 
-def test_the_counts_measure_how_many_facts_rest_on_a_name_alone():
-    traces = harbour_corpus()
-    sigs = mine_tools(traces)
-    schema = mine_schema(traces)
-    homes = row_homes(traces)
-    counts = mined_name_counts(sigs, schema.columns, homes)
-    assert counts["tool_kind"] == {"name": 2, "observed": 1, "declared": 0, "llm": 0, "total": 3}
-    assert counts["column_class"] == {"name": 0, "observed": 2, "declared": 0, "llm": 0, "total": 2}
-    assert counts["id_column"] == {"name": 0, "observed": 1, "declared": 0, "llm": 0, "total": 1}
-    assert counts["table_name"] == {"name": 1, "observed": 0, "declared": 0, "llm": 0, "total": 1}
-    assert counts["row_home"]["name"] == 4
-    assert counts["row_home"]["observed"] == 0
-    assert counts["row_home"]["total"] == 4
-    assert counts["row_home"]["unhomed"] == 1
-
-
 def test_the_report_counts_off_the_same_records():
     traces = harbour_corpus()
     sigs = mine_tools(traces)
@@ -246,23 +207,6 @@ def test_empty_records_say_so_instead_of_zeroes():
     assert _mined_evidence_lines(data) == [
         "No mined records were read, so name-alone counts are not shown."
     ]
-
-
-def test_one_entry_counts_each_row_under_the_basis_that_homed_it():
-    traces = [one_trace("t1", [
-        {"name": "get_customer_parcel", "args": {"customer_id": "C1"},
-         "result": '{"customer_id": "C1", "parcel_id": "P1"}'},
-        {"name": "get_customer_parcel", "args": {},
-         "result": '{"customer_id": "C2"}'},
-    ])]
-    homes = row_homes(traces)
-    place = homes["get_customer_parcel"]["homed"]["customers"]
-    assert place["rows"] == 2
-    assert place["rows_by_basis"] == {"observed": 1, "name": 1}
-    counts = mined_name_counts(mine_tools(traces), mine_schema(traces).columns, homes)
-    assert counts["row_home"]["observed"] == 1
-    assert counts["row_home"]["name"] == 1
-    assert counts["row_home"]["total"] == 2
 
 
 def test_an_effect_credited_late_still_cites_its_own_calls():

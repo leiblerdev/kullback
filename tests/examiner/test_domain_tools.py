@@ -114,34 +114,14 @@ def _intent_in_exam(root, text: str) -> None:
     (root.exam_dir / "intents" / "t1.json").write_text(text, encoding="utf-8")
 
 
-def test_a_text_edit_whose_where_is_absent_or_repeated_is_refused_and_one_found_once_is_filed(tmp_path):
-    root, _, _ = _root(tmp_path)
-    _intent_in_exam(root, '{"intent": "cancel the order and the order note"}')
-    [tool] = [t for t in D.domain_tools(root) if t.name == "finding"]
-
-    def file(where):
-        return _run(tool.execute(D.FindingArgs(task_id="t1", kind="other", text="the Intent says more", edits=[
-            {"kind": "text", "path": "intents/t1.json", "where": where, "replace": "the order",
-             "why": "the user named one order"}])))
-
-    with pytest.raises(ValueError, match="text not found"):
-        file("refund the order")
-    with pytest.raises(ValueError, match="found 2 times"):
-        file("the order")
-    result = file("the order and the order note")
-    assert result.finding["edits"][0]["where"] == "the order and the order note"
-    assert root.findings[-1].edits == result.finding["edits"]
-
-
-def test_an_atoms_edit_with_neither_drop_nor_add_is_refused(tmp_path):
+def test_a_spec_edit_on_a_finding_is_refused_naming_rulings_and_a_short_body_edit_is_refused(tmp_path):
     root, _, _ = _root(tmp_path)
     [tool] = [t for t in D.domain_tools(root) if t.name == "finding"]
-    with pytest.raises(ValueError, match="at least one atom to drop or add"):
-        _run(tool.execute(D.FindingArgs(task_id="t1", kind="other", text="x", edits=[
-            {"kind": "atoms", "task_id": "t1", "drop": [], "add": [], "why": "too tight"}])))
+    for kind in ("atoms", "text", "cell", "conduct", "reference"):
+        with pytest.raises(ValueError, match="is a ruling"):
+            _run(tool.execute(D.FindingArgs(task_id="t1", kind="other", text="x", edits=[
+                {"kind": kind, "task_id": "t1", "drop": ["i0"], "why": "too tight"}])))
     with pytest.raises(ValueError, match="a body edit names"):
         _run(tool.execute(D.FindingArgs(task_id="t1", kind="other", text="x", edits=[
             {"kind": "body", "path": "env/tools/a.py", "call_id": "c1", "why": "w"}])))
     assert not root.findings
-
-

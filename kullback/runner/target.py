@@ -616,14 +616,15 @@ def _one_atom(atom: Atom, payload: dict, kind: Any, effects: dict, asked: set, s
 def evaluated_atoms(atoms: Iterable[Atom]) -> list[Atom]:
     """The atoms check_run evaluates on a Run, in order; every other atom is skipped there.
 
-    A code atom is evaluated when it is Hard, required, a forbidden write, or a question or
-    communicate atom of any kind. Judge atoms and the rest (an allowed count, a forbidden
+    A code atom is evaluated when it gates (D329) and is Hard, required, a forbidden write, or a
+    question or communicate atom. Judge atoms and the rest (an allowed count, a forbidden
     value) carry no check a Run can fail here, so nothing may name them as passed (F37).
     """
     kept = []
     for atom in atoms:
         kind = atom_payload(atom).get("kind")
-        if atom.judge:
+        if atom.judge or not atom.gate:
+            # A scored atom never fails a Run (D329): it moves the score past the gates, not the pass.
             continue
         if (atom.kind in ("hard", "required") or (atom.kind == "forbidden" and kind == "write")
                 or kind in ("question", "communicate")):

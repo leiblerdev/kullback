@@ -1034,11 +1034,12 @@ def domain_tools(*, workdir: Any, model: Any = None,
         # The Examiner session owns its own event loop, so it runs off the Builder's, on a thread.
         examined, outside = _examined(root, args.task_ids)
         result = _coerce_examine(await asyncio.to_thread(examine_call, root, examined))
-        # Atoms and text edits go to the Spec by code; the Builder reads body edits and one count (D320).
-        from kullback.spec.review import rounds_line, route_findings
+        # The Examiner's rulings go to the Spec writer's round; the Builder reads body edits and one count (D331).
+        from kullback.examiner.domain_tools import task_ids_of
+        from kullback.spec.rulings import rulings_line
 
-        result.findings, rounds = route_findings(root, result.findings)
-        result.summary = "; ".join(filter(None, [result.summary, rounds_line(rounds)]))
+        ruled = examined if examined is not None else task_ids_of(root)
+        result.summary = "; ".join(filter(None, [result.summary, rulings_line(root, ruled)]))
         # The Tasks the Examiner session left out, and why, lead the summary (F24).
         left_out = [f.get("change") for f in result.findings
                     if any(isinstance(r, dict) and "left_out" in r for r in f.get("rows") or [])]

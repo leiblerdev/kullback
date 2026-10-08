@@ -24,7 +24,10 @@ Under intent, each examine first writes the Spec and Verifier of every examined 
 (default `--model`), priced under the `spec` stage. `--tasks a,b` or `--tasks @ids.txt` stores a Task sample in `build.json`;
 the Builder's run and examine tools then touch no Task outside it.
 
-| Build | Corpus | Verifier from | Tasks | Trusted | Replay-only | Untrusted | Set aside | Unconfirmed | Pending | Refused | Trusted by Reference (right, wrong, mixed, unknown) | Code |
+Since D333 a Task is trusted or untrusted; the untrusted are split by reason (no intent, open ruling, constructed
+Run passed). Reference passes and Solvable are flags, never gates, written "true of scored".
+
+| Build | Corpus | Verifier from | Tasks | Trusted | Untrusted | No intent | Open ruling | Constructed Run passed | Reference passes | Solvable | Trusted by Reference (right, wrong, mixed, unknown) | Code |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 
 ## Index

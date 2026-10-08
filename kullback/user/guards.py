@@ -284,17 +284,16 @@ class EndProtocol:
         """
         self.unanswerable += int(bool(had_nothing))
         self.silent = 0 if said_anything else self.silent + 1
-        if self.goal_done(made, acted=acted, closed=rules_mod.closes(question)):
-            return rules_mod.GOAL_SATISFIED
         if self.unanswerable >= rules_mod.UNANSWERABLE_LIMIT:
-            return rules_mod.SCENARIO_EXHAUSTED
-        if rules_mod.closes(question):
-            return rules_mod.HANDED_OFF
-        if self.silent >= rules_mod.SILENCE_LIMIT:
-            return rules_mod.SCENARIO_EXHAUSTED
-        if requested == rules_mod.HANDED_OFF and rules_mod.closes(question):
-            return rules_mod.HANDED_OFF
-        return None
+            kind = rules_mod.SCENARIO_EXHAUSTED
+        elif rules_mod.closes(question):
+            kind = rules_mod.HANDED_OFF
+        elif self.silent >= rules_mod.SILENCE_LIMIT:
+            kind = rules_mod.SCENARIO_EXHAUSTED
+        else:
+            return None  # the goal never ends a Run on its own (D332)
+        done = self.goal_done(made, acted=acted, closed=rules_mod.closes(question))
+        return rules_mod.GOAL_SATISFIED if done else kind
 
 
 def _unchanged_words(sentence: str, stripped: str) -> str:

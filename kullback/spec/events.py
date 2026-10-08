@@ -8,22 +8,25 @@ hash, so the bus can be read by any report without carrying what a user or the E
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Iterable, Literal, Optional
+from typing import Any, Iterable, Optional
+
+from kullback.spec.rulings import RULING_KINDS
 
 SPEC_WRITTEN = "spec.written"
 SPEC_REPAIRED = "spec.repaired"
 SPEC_DEFENDED = "spec.defended"
 SPEC_REPAIR_DEFERRED = "spec.repair_deferred"
 RULING_FILED = "ruling.filed"
+RULING_ANSWERED = "ruling.answered"
+RULING_CLOSED = "ruling.closed"
+REVIEW_ROUND = "review.round"
 TASK_SET_ASIDE = "task.set_aside"
-EVENT_NAMES = (SPEC_WRITTEN, SPEC_REPAIRED, SPEC_DEFENDED, SPEC_REPAIR_DEFERRED, RULING_FILED, TASK_SET_ASIDE)
+EVENT_NAMES = (SPEC_WRITTEN, SPEC_REPAIRED, SPEC_DEFENDED, SPEC_REPAIR_DEFERRED, RULING_FILED, RULING_ANSWERED,
+               RULING_CLOSED, REVIEW_ROUND, TASK_SET_ASIDE)
 
-# What a ruling says is wrong: a Run, a check of the Verifier, the Intent, or the Environment.
-TARGETS = ("run", "check", "intent", "environment")
-Target = Literal["run", "check", "intent", "environment"]
-
-# Every reason a payload may carry; the whole ruling, in the Examiner's words, stays in its file.
-RULING_CODES = ("check_unpassable", "run_contradicts_intent", "reference_wrong", "environment_defect", "other")
+# Every reason a payload may carry: a ruling's kind and code (spec/rulings.py), never its words, which
+# stay in the ruling's file.
+RULING_CODES = (*RULING_KINDS, *(code for codes in RULING_KINDS.values() for code in codes), "other")
 QUOTE_MISSING = "quote_missing"
 NO_AGREEMENT = "no_agreement"
 # The writer kept no check twice running (spec/stage.py).
@@ -31,7 +34,6 @@ EMPTY_SPEC = "empty_spec"
 # No Run could pass the Spec, still so after one send-back (spec/compile.py UNSATISFIABLE).
 UNSATISFIABLE_SPEC = "unsatisfiable_spec"
 REASON_CODES = (QUOTE_MISSING, *RULING_CODES, NO_AGREEMENT, EMPTY_SPEC, UNSATISFIABLE_SPEC)
-RulingCode = Literal["check_unpassable", "run_contradicts_intent", "reference_wrong", "environment_defect", "other"]
 
 
 def code_of(value: Any) -> str:
@@ -68,16 +70,28 @@ def spec_repair_deferred(bus: Any, task_id: str, number: Any):
     return bus.publish_custom(SPEC_REPAIR_DEFERRED, {"task_id": task_id, "number": number})
 
 
-def ruling_payload(task_id: str, target: str, check_ids: Iterable[str], run_id: Optional[str],
-                   reason: str, quoted: Iterable[str], excerpt: Optional[str], round_number: int,
-                   number: int) -> dict:
-    return {"task_id": task_id, "target": target, "check_ids": _ids(check_ids), "run_id": run_id,
-            "reason": code_of(reason), "quoted": [f"[{label}]" for label in quoted],
-            "excerpt": excerpt_ref(excerpt), "round": int(round_number), "number": int(number)}
+def ruling_payload(ruling: Any) -> dict:
+    """A ruling as the bus carries it: ids, kind, code, blocking and round; its sentences stay in its file."""
+    return {"task_id": ruling.task_id, "number": int(ruling.number), "round": int(ruling.round),
+            "item": ruling.item, "kind": ruling.kind, "code": code_of(ruling.code), "blocking": bool(ruling.blocking)}
 
 
 def ruling_filed(bus: Any, payload: dict):
     return bus.publish_custom(RULING_FILED, dict(payload))
+
+
+def ruling_answered(bus: Any, task_id: str, number: int, action: str, changed: Iterable[str] = ()):
+    return bus.publish_custom(RULING_ANSWERED, {"task_id": task_id, "number": int(number), "action": action,
+                                                "changed": _ids(changed)})
+
+
+def ruling_closed(bus: Any, task_id: str, number: int, kept_open: bool):
+    return bus.publish_custom(RULING_CLOSED, {"task_id": task_id, "number": int(number), "kept_open": bool(kept_open)})
+
+
+def review_round(bus: Any, round_number: int, side: str, counts: dict):
+    """One round of the review loop: whose round (examiner or writer) and its counts, numbers only."""
+    return bus.publish_custom(REVIEW_ROUND, {"round": int(round_number), "side": side, "counts": dict(counts)})
 
 
 def task_set_aside(bus: Any, task_id: str, reason: str, rounds: int):
@@ -85,7 +99,8 @@ def task_set_aside(bus: Any, task_id: str, reason: str, rounds: int):
                                                "rounds": int(rounds)})
 
 
-__all__ = ["EMPTY_SPEC", "EVENT_NAMES", "NO_AGREEMENT", "QUOTE_MISSING", "REASON_CODES", "RULING_CODES", "RULING_FILED",
-           "SPEC_DEFENDED", "SPEC_REPAIRED", "SPEC_REPAIR_DEFERRED", "SPEC_WRITTEN", "TARGETS", "TASK_SET_ASIDE", "UNSATISFIABLE_SPEC",
-           "RulingCode", "Target", "code_of", "excerpt_ref", "ruling_filed", "ruling_payload", "spec_defended",
+__all__ = ["EMPTY_SPEC", "EVENT_NAMES", "NO_AGREEMENT", "QUOTE_MISSING", "REASON_CODES", "REVIEW_ROUND",
+           "RULING_ANSWERED", "RULING_CLOSED", "RULING_CODES", "RULING_FILED", "SPEC_DEFENDED", "SPEC_REPAIRED",
+           "SPEC_REPAIR_DEFERRED", "SPEC_WRITTEN", "TASK_SET_ASIDE", "UNSATISFIABLE_SPEC", "code_of", "excerpt_ref",
+           "review_round", "ruling_answered", "ruling_closed", "ruling_filed", "ruling_payload", "spec_defended",
            "spec_repair_deferred", "spec_repaired", "spec_written", "task_set_aside"]

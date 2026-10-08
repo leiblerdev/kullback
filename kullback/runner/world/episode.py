@@ -57,11 +57,17 @@ class StepOut:
 
 @dataclass
 class Reward:
-    """The stored Run scored by code alone: 1 for pass, 0 for fail, no number where code cannot say."""
+    """The stored Run scored by code alone: pass and score, no number where code cannot say (D329).
 
-    score: Optional[int]
+    `passed` is every gate item holding; `score` is 0 when a gate failed, else the weighted score
+    past the gates. Both are None when the Run is not verdicted or an env error; `score` alone is
+    None when a scored item (an unrun judge) is open.
+    """
+
+    score: Optional[float]
     class_: str
     reason: str
+    passed: Optional[bool] = None
 
 
 def _needs_world_step() -> None:
@@ -101,7 +107,7 @@ class Episode:
         if self._state is not None and not self._state.stopped:
             raise EpisodeError("finish the current Run before resetting")
         task = self.env.task(task_id)
-        if self.env.agent_driven(task_id):
+        if not task.facts_in_instruction and self.env.agent_driven(task_id):
             raise EpisodeError(f"Task {task_id} is driven by the agent user, which needs a model "
                                "the interface does not have")
         overlay, overlay_rows = self.env.overlay(task_id)
@@ -120,7 +126,8 @@ class Episode:
         # its recordings, the write set the reference implies); without a factory, or where
         # the directory carries no rules, the Run has no Simulated user.
         simulated = self._user_factory(self.env, task, self._router, rules, reference) \
-            if rules is not None and self._user_factory is not None else None
+            if rules is not None and self._user_factory is not None and not task.facts_in_instruction \
+            else None
         run_id = f"{task_id}-{seed}"
         from kullback.runner.tool import runner_prompt  # tool imports the world package
 
@@ -133,11 +140,11 @@ class Episode:
             run_id, workdir=recording_dir, env_id=self.env.env_id, task_id=task_id,
             model="episode", seed=seed, user=simulated,
             user_rules=rules, max_turns=self.max_turns, system_prompt=system_prompt,
-            first_user=task.intent if simulated is None else None)
+            first_user=self.env.opening(task) if simulated is None else None)
         self._state.tools = copy.deepcopy(self._tools)
         opening = loop.open_with_user(self._state)
         if simulated is None:
-            opening = task.intent
+            opening = self.env.opening(task)
         self.task_id, self.run_id = task_id, run_id
         return Reset(run_id=run_id, seed=self._state.run.seed, system_prompt=system_prompt,
                      tools=copy.deepcopy(self._tools), opening=opening)
@@ -200,7 +207,7 @@ class Episode:
         loop.finish(self._state, self._router)
 
     def reward(self) -> Reward:
-        """Score the stored Run with the Verdict by code alone: 1, 0, or no number with the reason.
+        """Score the stored Run with the Verdict by code alone: pass and score, or no number with the reason.
 
         Judge atoms arrive with no judge results, so a Verifier holding a must-hold judge atom
         comes out not verdicted: no number at all, with the class and the reason. An environment
@@ -223,12 +230,12 @@ class Episode:
         result = verdict(run, verifier, self.env.canon_rules, None,
                          schema=self.env.schema, write_tools=write_tools or None,
                          flagged_tools=flagged)
-        if result.class_ == "pass":
-            return Reward(score=1, class_=result.class_, reason="")
         if result.class_ in ("not_verdicted", "env_error"):
             return Reward(score=None, class_=result.class_,
                           reason=result.failing_atom or "; ".join(result.notes[-2:]))
-        return Reward(score=0, class_=result.class_, reason=result.failing_atom or "")
+        masked = next((note for note in result.notes if note.startswith("score_masked:")), "")
+        return Reward(score=result.score, class_=result.class_, reason=result.failing_atom or masked,
+                      passed=result.passed)
 
     def run_file(self) -> Optional[Path]:
         """Where this Run is recorded, under the Episode's own folder.

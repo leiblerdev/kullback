@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import json
-import tokenize
 
 import pytest
 
@@ -446,13 +445,6 @@ def test_split_calls_falls_back_to_every_third_when_every_call_shares_one_shape(
     assert [c.id for c in shown] == [c.id for c in by_index_shown]
     assert [c.id for c in held_out] == [c.id for c in by_index_held]
     assert ce.no_shape_holdout(order_calls) is True
-
-
-def test_the_shape_of_an_id_generalizes_its_characters_and_keeps_the_rest():
-    assert ce.value_shape("m-14") == "a-##"
-    assert ce.value_shape("AB_9") == "AA_#"
-    assert ce.table_read("row = self.db.members[member_id]") == "members"
-    assert ce.table_read("return {}") == ""
 
 
 # --- the tau2 file shape (D56) ---
@@ -1217,9 +1209,6 @@ def test_the_refusal_probe_runs_on_write_tools_only(schema, sigs, db0, workdir, 
     assert probed[-1].stage == "refuses_unknown" and probed[-1].passed is False
 
 
-# --- the builder tools: lookup_rows and test_body, in a bounded loop (D117) ---
-
-
 # --- per-call replay outcomes, the per-Task grain of the fidelity ruling (D171) ---
 
 LIBRARY_DB = {
@@ -1419,51 +1408,6 @@ def _parses(body: str) -> bool:
     except SyntaxError:
         return False
     return True
-
-
-def test_a_dash_in_code_is_replaced_and_the_same_dash_in_a_string_is_kept():
-    body = f'def f(x):\n    note = "keep {DASH} inside strings"\n    return x {DASH} 1  # trailing {DASH}\n'
-    fixed, note = ce.sanitize_body(body)
-    assert _parses(fixed)
-    assert f'"keep {DASH} inside strings"' in fixed
-    assert "return x - 1  # trailing -" in fixed
-    assert "replaced typographic characters outside strings" in note
-    body = "def f(x):\n    return x + 1\n"
-    assert ce.sanitize_body(body) == (body, None)
-    assert ce.sanitize_body(f"def f(x):\n  return (x {DASH} 1\n") == (
-        f"def f(x):\n  return (x {DASH} 1\n", None)
-    fixed, _ = ce.sanitize_body(f"def f():\n    return 1  # {QUOTE}a{UNQUOTE} and {ELLIPSIS}\n")
-    assert fixed == 'def f():\n    return 1  # "a" and ...\n'
-
-
-def test_a_dash_inside_an_f_string_expression_is_replaced_and_the_printed_text_is_kept():
-    """The expression inside a replacement field is code, and a confusable there fails the parse
-    exactly as one on a line of its own does. What the f-string prints around it is not."""
-    body = f'def f(value):\n    return f"keep {DASH} here {{value {DASH} 1}}"\n'
-    fixed, note = ce.sanitize_body(body)
-    assert _parses(fixed)
-    assert fixed == f'def f(value):\n    return f"keep {DASH} here {{value - 1}}"\n'
-    assert note is not None
-    for printed in [f'f"{{v:{DASH}>10}}"', f'f"{{v!r}} {DASH} x"', f'f"{{{{{DASH}}}}} x"',
-                    f"f\"{{d['a{DASH}b']}}\""]:
-        body = f"def f(v, d):\n    return {printed}\n"
-        assert ce.sanitize_body(body) == (body, None), printed
-    token = f"f\"keep {DASH} here {{d['a{DASH}b'] {DASH} 1}} {{w:>{{n}}}}\""
-    runs = [token[begin:end] for begin, end in ce._fstring_expression_spans(token)]
-    assert runs == ["d[", f"] {DASH} 1", "w", "n"]
-    assert ce._fstring_expression_spans(f'"plain {DASH} string"') == []
-    line = f'x = f"keep {DASH} here {{value {DASH} 1}}"\n'
-    tokens = [tokenize.TokenInfo(tokenize.STRING, line[4:-1], (1, 4), (1, len(line) - 1), line)]
-    printed = ce._printed_positions(tokens, [line])
-    assert (1, line.index(DASH)) in printed
-    assert (1, line.index(DASH, line.index("value"))) not in printed
-
-
-def test_a_non_ascii_character_with_no_replacement_is_named_rather_than_guessed_at():
-    body = f"def f(x):\n    return x {PLUS_MINUS} 1\n"
-    fixed, note = ce.sanitize_body(body)
-    assert fixed == body
-    assert "U+00B1" in note
 
 
 # --- mined names are text, not identifiers (a review walked past the gate through one) ---

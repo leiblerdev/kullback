@@ -80,7 +80,18 @@ def test_once_the_goal_writes_are_made_a_would_you_like_question_does_not_reuse_
     user.reply(ask("Hello, how can I help?"))
     assert user.reply(ask("Shall I go ahead and rebook?")) == "Yes, go ahead."
     text = user.reply(ask("Done. Would you like me to add a cabin as well?", *wrote(1)))
-    assert text != "Yes, go ahead." and user.end_reason == GOAL_SATISFIED
+    assert text != "Yes, go ahead." and not user.done
+
+
+def test_the_goal_never_ends_a_run_and_is_reported_when_the_candidate_closes():
+    user = SimulatedUser(rules(confirmations=1), write_tools={"rebook_voyage"},
+                         goal_writes={"rebook_voyage"})
+    user.reply(ask("Hello, how can I help?"))
+    user.reply(ask("Shall I go ahead and rebook?"))
+    user.reply(ask("Done, you are rebooked.", *wrote(1)))
+    assert not user.done
+    user.reply(ask("Is there anything else I can help with?", *wrote(1)))
+    assert user.done and user.end_reason == GOAL_SATISFIED
 
 
 def test_a_line_said_three_times_without_a_write_asks_what_is_missing_then_ends_the_run():

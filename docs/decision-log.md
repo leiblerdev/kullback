@@ -2360,3 +2360,180 @@ fires on 19 right and 0 wrong. Limit: it flags 1 of the 6 wrong-trusted retail T
 writer demanded what the Reference did; gating on it would hold back 5 right retail References with 22 wrong.
 Status: built 2026-10-07 on fix-1007/trust.
 Folded 2026-10-07 on fix-1007/fold
+
+### D328. Judge items: one call per item, 0 or 1, recorded on the Verdict (2026-10-07)
+
+What changed: a judge atom whose target is {question, anchor, evidence} is a judge item. `judge/items.py
+judge_item` asks one model call per item at temperature 0 with MiMo's checkpoint prompt nearly verbatim (one
+objective checkpoint, met 1 or not met 0, no partial credit, nothing guessed, a target in cut evidence scores 0 with
+"evidence truncated"), prices it and returns score, why, truncated. The anchor is {answer, accepted, reject} (a
+string is the answer alone); the prompt shows all three. Evidence refs are written before any Run exists, so none
+names an event index: `final_answer` (default), `assistant_turns`, `assistant:<k>`, `after_call:<tool>`; each turn
+is clamped at 4000 chars, the block at 24000, and cuts are marked. A failed call or an unreadable reply is score
+None, never 0. `Atom` gains `gate` and `weight` (dumped only when not the default, so old hashes hold). `Verdict`
+gains `items` keyed by atom id; `runner/verdict.py` records every judge item there. A scored item never moves
+pass; a gate item scored 0 fails the Run; a gate item with no score leaves it not verdicted; a scored item with no
+score blocks nothing. `cli._judged_atoms` sends item atoms to the item judge on the first judge's model, and
+`judge_atom_results` skips them. `judge/shape.py` holds the provider-free half so the Verdict still has no import
+path to a model (D76). The trust gates pass no judge results, so constructed Runs are judged by code only.
+`scripts/judge_calibrate.py` judges stored Runs and counts agreement with Examiner anchor rulings where present.
+Why: the redesign of 2026-10-07 (v2, v3) moves what the Candidate told the user into judge items derived from the
+Intent, one item per call, evidence from the event log, and lets the item's gate field decide whether it gates.
+Narrows D255: a judge's opinion enters the pass condition again, but only for an item the Spec marks gate; the
+two-judge agentic path (D76, D92) stays for older judge atoms, equivalence and cause.
+Measured (hand-written items, 8 Tasks, 23 Runs, 66 judged items, Opus 5.5 on Bedrock): 34 met, 32 not met,
+0 unjudged after the clamp fix, 0.36 USD; scores identical on 65 of 65 items judged twice. A hand check found 2 of
+23 hand-written anchors wrong (an ambiguous reference in the Intent), which the judge followed faithfully.
+Limit: no Examiner anchor ruling exists yet, so judge against Examiner agreement is not measured.
+Status: built 2026-10-07 on shape-1007/judge.
+
+### D329. Every item gates or scores; the Verdict carries pass and a weighted score; a sanity item for every Task (2026-10-07)
+
+What changed: `Atom`, `ExpectedCell`, `Forbidden` and `Conduct` (runner/records.py) and the Spec's `Check` carry
+`gate` and `weight`; a Check also carries `policy_line`, and `compile_spec` puts its gate and weight on every atom it
+compiles to. Left unsaid, an atom's gate follows its kind: the kinds that failed a Run before (required, question,
+communicate, hard, forbidden) gate, allowed does not; cells, forbidden and conduct rules gate. Both fields leave the
+dump at their default, so stored records dump and hash as before. `verdict` builds one item per end state cell (of
+the end state the Run matches; any one may match), the sanity item, each forbidden and conduct rule and each atom,
+and keeps them on the Verdict as `items`. Pass is every gate item holding; a definite gate failure wins over an open
+gate, and an open gate leaves the Run not verdicted, as D316. `score` is 0 when a gate failed, else the weighted
+mean of every item with the gate items counted as held and holding at least half the weight (agreed 2026-09-27);
+None when the Run is not verdicted or an env error, or when a scored item is open (an unrun judge), never a false
+0. The sanity item is code for every Task: with end states, nothing outside the matched end state's cells and
+`allowed` moved (the collateral half of `match`, now `expected.collateral`, named `gate:sanity:...`); with atoms
+only, no write that no atom declares (the old extra-write rule). `check_run` reads gate atoms only, so the two
+scorers agree. `Episode.reward` carries `passed` beside `score`; birth's walk and do-nothing checks and the solve
+table read the pass, and the solve table adds the mean score. The report's Task numbers and Verdict lines, the
+package manifest (`reward`, the Verdict version) and its Task rows (`items`: gate and scored counts) and the card
+glossary show both numbers. VERDICT_VERSION is 4.
+Why: the gated weighted reward agreed on 2026-09-27 and the v3 shape of 2026-10-07: correctness gates, process
+scores past the gates, and a stray write fails every Task by code.
+Measured (live Verifiers of verify-1006-live, 2659 stored Runs, base 4b11e3b8 against this code): pass and class
+identical on every Run; 77 failures are now named by the sanity item instead of `gate:expected:collateral`. No live
+item is scored yet, so every live score is 0 or 1. Scoring question and communicate atoms instead of gating them
+would flip 104 of 191 Runs on the 34 Tasks that carry them from fail to pass (mean score of those 0.74 retail,
+0.79 airline); that is the founder's open point, so the default stays the gate and the writer sets `gate` per item.
+Retired: the whole-Run binary reward of `Episode.reward` (1 or 0 from the class) and the score-blind
+`match_any` inside the verdict.
+Status: built 2026-10-07 on shape-1007/reward.
+
+### D330. The Spec writer is blind to the Reference: items from the Intent, the policy and the world (2026-10-07)
+
+What changed: the writer writes typed items (`spec/items.py`): state (`row_is`, `row_new`, `row_keeps`), event
+(`called`, `not_called`, `before`), text (`said`) and judge (`{question, anchor, evidence}`), each with gate, weight
+and provenance (fact_ids or a verbatim policy_line). It searches the world with tools (`read_schema`, `find_rows`,
+`read_row`, `read_policy`) and adds items with `add_items`, which refuses a value no world row, policy line or user
+turn holds, a find matching no row or several, a field the table lacks, and says why ("find, do not invent").
+A judge anchor cites the one row it was read from and its answer states that row's fields; only an anchor quoting
+the item's policy line goes without a row. Code adds the sanity item (`nothing_else`) to every Task: no row outside
+the declared rows changes. A cell value may be a list (members in any order); `free` on a row_is names
+fields a tool sets to a value no search finds (records it fills in, a computed balance), allowed to move
+unchecked. Items with `alt` make several end states, any one may match. `runner/items.py` scores
+each item on a Run (None for judge items). Contradicting items go back once; any left set the Task aside.
+Retired: the Reference path of the Spec package. D320's Reference-derived `write_verifier` and `refresh_gates`;
+D315's `expected_from_run` as the Verifier source (it stays for fidelity measurement); D323's Reference reading
+on the Verifier path; D324's unseen conduct (`reference_tools`) and the demand send-back. `gates_of` takes no
+Reference; `reference_run` moved to `spec/witness.py` for the witness flag. A source test fails if `kullback/spec`
+imports `kullback.runner.expected` or the writer path reads references.json. A refusal is the sanity item plus a
+judge item, with no refusal kind. Older demand Specs still compile, Reference-free.
+Why: COMMON shape-1007: Verifier items come from the Intent, the policy and the world, never from the Reference
+Run, so a wrong Reference can no longer write its own Verifier.
+Limit: D327's `writer_disagreement` reads write demands, which item Specs no longer carry; it reads nothing on
+them until sh-trust compares items with the Reference.
+Status: built 2026-10-07 on shape-1007/writer.
+
+### D331. The Examiner gives feedback and never edits; rulings, two rounds (2026-10-07)
+
+What changed: the Examiner files rulings (`spec/rulings.py`), one file each under exam/rulings/<task>: the item (a check,
+atom, Intent fact or the task), a kind and code (derivation, judge, code, scope), the reason and the fix in one sentence
+each, blocking or note. `examiner/rule_tool.py` holds rule, close, verify (the do-nothing Run, a stray write and the
+Reference end state through the Verifier, cited by a passes_do_nothing or fails_reference ruling, which names the wrong
+side) and the writer's world tools lookup_rows and search_rows, so a judge anchor is checked against the world.
+`spec/review.py answer_rulings` has the writer apply (Verifier rewritten) or rebut each ruling with why;
+`spec/rounds.py run_rounds` runs Examiner, writer, Examiner (ROUNDS_CAP 2), logged to spec/state/rounds.jsonl and the
+bus. The Spec's `rulings_open` counts open blocking rulings and `round` the last round: an open blocking ruling after
+the last round holds the Task untrusted. A ruling that the Reference is wrong is a note, never asked of the writer.
+Retired: the D325 edit kinds (atoms, text, cell, conduct, reference) and `reference_proposed`; the D317 text and atoms
+edit shape on the Spec (`atom_edits`, `end_state_edits`, dropped on load); the bus-driven Router and its moves on run,
+check, intent and environment targets (`spec/router.py` keeps the set-aside state); reject_reference; the quote
+requirement on rulings. A finding keeps body edits for the Builder only.
+Why: sh-examiner (shape-1007): an Examiner that edits the Spec grades its own work; feedback the writer answers keeps
+one author per Verifier and leaves a trail.
+Status: built 2026-10-07 on shape-1007/examiner.
+
+### D332. The user looks facts up; its goal never ends a Run; a single-turn Task shape (2026-10-07)
+
+What changed: `user/lookup.py` holds the user's facts (rules facts and argument facts) keyed by field name, with
+the Vocabulary's aliases, from the signatures where no build Vocabulary exists (D326). One lookup takes question
+text and returns the facts it asks for: field words, then an alias, then plain-word overlap with the words a
+question points at ("which", "what", "your"; not "your" in an offer, never in a closing question). A fact whose
+value the question states is not asked for; a field named but held nowhere comes back `missing`, which the rule
+user hands to its Starting state reader (the seam for the user reading its own rows later). The rule user's
+`_asked` and the agent user's asked fields call it on the turn's request sentences; `my_facts(question=...)`
+replaces `my_facts(asked=[fields])`, and each call logs the fields found and missing, never values.
+Run ending: `goal_done` no longer ends a Run in `SimulatedUser._end_kind` or `guards.EndProtocol.kind`. The
+Candidate's close, the scenario running out and the turn limit end Runs; where one of them ends a Run with the
+goal's writes made, the end is reported `goal_satisfied` (a label), and every user turn carries `user_goal_met`.
+No module in spec/, gates/, runner/verdict.py or runner/records.py read the goal (a source test keeps it so).
+Single-turn shape: `Task.facts_in_instruction` (default off) folds the user's facts into the opening message
+(`world/environment.py facts_instruction`) and runs with no Simulated user in `runner/tool.py run` and
+`Episode.reset`. The spoken field names moved to `runner/records.py` so the world folds without importing the user.
+Why: the cue lists heard an ask only in the words a corpus showed, and the goal that ended Runs is read off the
+Reference's writes, which may decide nothing trust or the Verifier reads (verifier-redesign-1007 v2).
+Measured (live replay, every fresh Run of verify-1006-live, same Candidate request sentences): retail 176
+questions, answered 43 by the lookup vs 27 by the cues; airline 212, 14 vs 5; no question the cues answered was
+lost. By hand about 5 of the 25 new hits are wrong (yes/no asks, a statement, another traveller's name). One live
+Run per corpus with the agent user on Muse contributor: 4 and 2 `my_facts` calls, found and missing logged.
+Retired: the cue matching of D115 in both users' hearing (`asked_fields` and `named_fields` stay for rule
+derivation), D210's "a Run whose goal writes are confirmed is done whatever the Candidate said next", and the D214
+`my_facts(asked=[...])` argument. Limits: the overlap has no labelled truth beyond the hand read; derivation in
+`rules.py` still mines asks with the cues; a goal met is still read off the Reference's writes, as a label.
+Status: built 2026-10-07 on shape-1007/user.
+
+### D333. Trust is two constructed Runs failing and no open ruling; Reference and solvable are flags (2026-10-07)
+
+What changed: `spec/trust.py tier_of_task` rules a Task trusted when the do-nothing Run and a stray-write Run both
+fail its Verifier and no ruling is open; otherwise untrusted with one reason, read in order: no_intent (no Spec, an
+empty Spec, no Intent fact, a Verifier that checks nothing, no Verifier file, or a refused Task), open_ruling (a
+ruling open, or set aside by the router's rule), constructed_run_passed (a constructed Run passed, or none could be
+built). The stray-write Run is built by code: a passing Run of the Task (a faithful kept Reference first, then a
+fresh Run, else the do-nothing Run) plus one write to a row outside every row the Verifier declares (expected
+cells, `allowed`, forbidden rows), skipping tables that record calls and exempt columns. It counts as failed only
+when it fails at the sanity check (collateral) on a base the Verifier passes; failing at a cell or an atom, or on a
+failing do-nothing base, it never tested the sanity check, so the Task reads constructed_run_passed with the row's
+detail stray_untested (round 1 correction). A refusal Verifier (`forbids_only`) is not asked to fail the do-nothing Run, as before. Two flags ride
+on the row and never gate: reference_passes (every faithful replay of a kept Reference passes; None without one)
+and solvable (any fresh Run passed; None without one). A failing Reference becomes a code ruling for the Examiner
+(`examiner_rulings`, non-blocking), who rules which side is wrong. Counts (`round_snapshot.counts_of`,
+`gates.trust.tier_counts` and `trust_row`), the tier report and its README table, the Spec review's repair gates
+and the package rows and manifest read the tier, the reason and the flags; round snapshots move to format 2.
+Retired: the grounded, sourced, can_fail (the D79 mutation suite, `spec/canfail.py can_fail`), reference_replay
+(D312) and independent_pass gates; the tiers replay_only, set_aside, unconfirmed, pending and refused as Task tiers
+(D319's words stay only in the untrusted text of a workdir with no Spec, whose untrusted Tasks read no_intent);
+the code ruling as a gate inside the Spec's tiers (D322's sourced gate); D327 in full (the not-run split and
+`writer_disagreement`, replaced by the reference_passes flag).
+Why: the founder's v3 shape (verifier-redesign-1007.md): trust by code with no model, sourced enforced in the
+writer's tool, the Reference a witness only.
+Limits: until the sanity item lands (sh-reward), the stray write fails only where an expected end state's
+"nothing else moves" rule or a forbidden row catches it; a Verifier with atoms and no end state lets it pass.
+Status: built 2026-10-07 on shape-1007/trust.
+
+### D334. Dead code out: the Builder's memory tree, triage skill, body writer and Intent writer (2026-10-07)
+
+What changed: code no command, module or script reaches is deleted, found by vulture plus a reference count per
+name over kullback, tests, scripts and docs, then a module-aware pass for private names. Whole modules:
+`builder/memory.py` (D64, D69, D87 version tree and lessons file; nothing imported it), `builder/triage.py` (the D150
+skill text; nothing loaded it), `agent/reading.py` (G21 helpers; only its test), `builder/body_skill.py` (D168). In
+`compile_env` the model-written body path: `write_tool_body`, its prompt chain and the D117 lookup_rows and test_body
+loop, whose flag was always off. `builder/intent.py` loses the Intent writer and its grounding (D47, D83, D113,
+D143, D157 as code; the Spec stage writes Intents) and keeps a re-export, because `user/factory.py` loads it by
+name for the value strip and a missing module would silently switch the strip off. Smaller: helpers in mine,
+readers, lesson, feed, route, ingest and agent tools that only their own tests called, and three scripts that
+imported removed modules or measured removed code (`reroll_snapshot.py`, `user2_wider.py`, `request_snapshot.py`,
+`prompt_snapshot.py`). Tests of behaviour that still exists were kept or rewritten (apply_intent, the blocked lesson).
+Why: carve, never rewrite; dead code is read by every agent that greps the tree and costs review and mutation time.
+Kept on purpose: `builder/skills.py` and the container world and cheat suite, which D rows and ADR 0010 name as the
+mechanism for planned work; `runner/world/birth.py`, which the trust redesign may reuse for constructed Runs; the
+`kullback/ai` and `kullback/agent` surfaces that mirror tau; the hub package; documented CLI commands.
+Measured: 245 functions and classes and 80 tests removed (one test added), 5705 lines deleted; suite 4153 to 4074.
+Status: built 2026-10-07 on shape-1007/deadcode. Renumbered D334 at the fold.

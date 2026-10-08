@@ -1,8 +1,9 @@
 """The agent user's own tools: what a person on the phone can reach, and nothing else (D214 rule 2).
 
 The Builder reads the build's artifacts and the Examiner reads the Runs; this one reads its own
-memory. `my_facts` is what it knows about itself, filtered by what it was actually asked, so a Task
-with forty facts does not put forty in front of a model answering a question about one. `my_goal` is
+memory. `my_facts` is what it knows about itself, looked up by the question it was asked through the
+same lookup the rule user answers from (lookup.py, D332), so a Task with forty facts does not put
+forty in front of a model answering a question about one, and the model never guesses field names. `my_goal` is
 why it called. `what_i_said` is its own earlier turns, which is the cheapest way to stop a model
 contradicting itself two turns later. `end_run` is the only way to ask for an ending, and code
 decides whether the ending holds (guards.EndProtocol). `consult` exists only on a Task whose
@@ -30,6 +31,8 @@ from kullback.agent.tools import AgentTool, NoArgs
 from kullback.user import rules as rules_mod
 from kullback.user.account import AccountView, ChoiceBook
 from kullback.user.context import TaskContext
+from kullback.user.lookup import FactStore
+from kullback.user.vocabulary import GENERIC, Vocabulary
 
 NO_FACT = "You have no record of that."
 NOT_CONSULTED = "You have nothing to look that up in."
@@ -38,8 +41,8 @@ NOT_CONSULTED = "You have nothing to look that up in."
 class FactsArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    asked: list[str] = Field(default_factory=list,
-                             description="The fields the other side asked for. Empty is everything you hold.")
+    question: str = Field(default="", description="The other side's question, in its own words. "
+                                                  "Empty is everything you hold.")
 
 
 class EndArgs(BaseModel):
@@ -88,8 +91,10 @@ class Toolbox:
     """
 
     def __init__(self, ctx: TaskContext, said: Optional[list[str]] = None, *,
-                 choices: Optional[ChoiceBook] = None, account: Optional[AccountView] = None):
+                 choices: Optional[ChoiceBook] = None, account: Optional[AccountView] = None,
+                 vocab: Vocabulary = GENERIC):
         self.ctx = ctx
+        self.store = FactStore(ctx.askable(), vocab, ctx.record_fields)
         self.said: list[str] = list(said or [])
         self.requested: Optional[str] = None
         self.consulted: list[str] = []
@@ -104,21 +109,27 @@ class Toolbox:
         # to the floor. Each recorded turn takes the list and clears it (agent.py).
         self.tool_calls: list[dict[str, Any]] = []
 
-    def _used(self, tool: str, args: Iterable[str]) -> None:
-        self.tool_calls.append({"tool": tool, "args": sorted(args)})
+    def _used(self, tool: str, args: Iterable[str], **seen: Any) -> None:
+        self.tool_calls.append({"tool": tool, "args": sorted(args), **seen})
 
-    def facts(self, asked: list[str]) -> str:
-        self._used("my_facts", ("asked",) if asked else ())
-        wanted = [field for field in asked if field]
-        rows = [f for f in self.ctx.askable() if not wanted or f.field in wanted]
-        if not rows:
-            return NO_FACT
-        lines = [f"{f.field}: {f.value}" for f in rows]
-        missing = [field for field in wanted if not any(f.field == field for f in rows)]
-        for field in missing:
+    def facts(self, question: str = "") -> str:
+        """The facts the question asks for, through the shared lookup; empty is everything held.
+
+        The call is logged with the fields found and missing, never the values, so a Run file
+        counts what the model looked up and what the store had nothing for.
+        """
+        found = self.store.lookup(question) if question.strip() else self.store.everything()
+        self._used("my_facts", ("question",) if question.strip() else (),
+                   found=sorted({hit.field for hit in found.hits}), missing=list(found.missing))
+        lines = [f"{hit.field}: {hit.value}" for hit in found.hits]
+        for field in found.missing:
             lines.append(f"{field}: " + (rules_mod.RECORD_LINE.format(rules_mod._words(field))
                                          if field in self.ctx.record_fields else NO_FACT))
-        return "\n".join(lines)
+        if lines:
+            return "\n".join(lines)
+        held = self.store.held()
+        return NO_FACT + (" You hold facts about: " + ", ".join(rules_mod._words(f) for f in held) + "."
+                          if held else "")
 
     def goal(self) -> str:
         self._used("my_goal", ())
@@ -173,7 +184,7 @@ def user_tools(box: Toolbox) -> list[AgentTool]:
     """The tools of one Run's user; `consult` only where the recording justified it (D214 rule 2)."""
 
     async def facts(args: FactsArgs) -> TextOut:
-        return TextOut(text=box.facts(list(args.asked)))
+        return TextOut(text=box.facts(args.question))
 
     async def goal(_: NoArgs) -> TextOut:
         return TextOut(text=box.goal())
@@ -194,8 +205,8 @@ def user_tools(box: Toolbox) -> list[AgentTool]:
         return TextOut(text=box.my_account(args.what))
 
     tools = [
-        AgentTool("my_facts", "What you know about yourself. Pass the fields the other side asked for; "
-                              "pass nothing to see everything you hold.",
+        AgentTool("my_facts", "Look up what you know about yourself. Pass the other side's question "
+                              "in its own words; pass nothing to see everything you hold.",
                   FactsArgs, TextOut, facts, render=_text),
         AgentTool("my_goal", "Why you got in touch, in the words you used.", NoArgs, TextOut, goal,
                   render=_text),

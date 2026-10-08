@@ -17,6 +17,7 @@ from kullback.user.ends import (
     write_took_effect,
     writes_made,
 )
+from kullback.user.lookup import FactStore, Found, asked_in
 from kullback.user.rules import (
     ASKABLE,
     CHOICE,
@@ -47,14 +48,11 @@ from kullback.user.rules import (
     _names_change,
     _norm,
     _request_sentences,
-    _said_in,
     _shared,
     _tokens,
     _words,
-    asked_fields,
     extracted_values,
     fact_class,
-    named_fields,
 )
 from kullback.user.vocabulary import GENERIC, Vocabulary
 
@@ -80,6 +78,10 @@ class SimulatedUser:
         self.reader = starting_state_reader
         self.model = model
         self.vocab = vocab
+        # The facts this user can be asked for, by field name and alias, and every lookup this Run
+        # made, so a report counts the asks answered and the asks the store held nothing for (D332).
+        self.store = FactStore.from_rules(rules, vocab)
+        self.lookups: list[Found] = []
         # The tools that change the world (`ToolSig.kind`), so this user can tell a Run that has
         # done what it came for from one that has not. The transcript `reply` is handed already
         # carries the calls and their results, so nothing new has to be plumbed to the user; the
@@ -204,6 +206,8 @@ class SimulatedUser:
                 "refused": refused,
                 "refused_so_far": self._refused,
                 "user_end": self.end_reason,
+                # Reported, never read by trust or the Verifier, and never a reason to end (D332).
+                "user_goal_met": self._goal_done(self._writes_made(transcript), question),
                 "stripped_so_far": self.stripped,
             },
             assisted=assisted,
@@ -211,25 +215,20 @@ class SimulatedUser:
         return text
 
     def _asked(self, question: str) -> list[str]:
-        """The fields this question asks for: the vocabulary's cues, plus the facts the recording
-        holds that the question names in words no cue carries.
+        """The fields this question asks for, through the one lookup both users share (D332).
 
-        A field the question states itself is not an ask for it. An agent that lists the action it
-        is about to take and asks "do you confirm" names the order it is confirming, and answering
-        with that order id instead of confirming is what build 8's Simulated user did.
+        Only the turn's request sentences are looked up, so a turn that reports what was done and
+        asks nothing asks for no fact. A field whose value the turn states is not asked for: an
+        agent that lists the action it is about to take and asks "do you confirm" names the order
+        it is confirming, and answering with that order id instead of confirming is what build 8's
+        Simulated user did.
         """
-        stated = {field for field, _ in extracted_values(question, vocab=self.vocab)}
-        stated |= {fact.field for fact in self.rules.facts
-                   if fact.value is not None and _said_in(question, str(fact.value))}
-        fields = [field for field in asked_fields(question, vocab=self.vocab) if field not in stated]
-        # A confirm cue does not hide a held fact the turn names and does not state: "please confirm
-        # your user id" asks for it (D326), where "confirm cancelling order X" states it.
-        held: list[str] = []
-        for fact in self.rules.facts:
-            if fact.field not in SPOKEN_FIELDS and fact.field not in stated and fact.field not in held:
-                held.append(fact.field)
-        return fields + [field for field in named_fields(question, held, vocab=self.vocab)
-                         if field not in fields]
+        asked = asked_in(question)
+        if not asked:
+            return []
+        found = self.store.lookup(asked)
+        self.lookups.append(found)
+        return found.fields()
 
     def _open(self, answers: dict, sources: dict, spoken: list) -> None:
         """The opening reply: the goal the recorded user stated, then what it volunteered (D44)."""
@@ -307,25 +306,24 @@ class SimulatedUser:
         self.done = True
 
     def _end_kind(self, question: str, satisfied: bool) -> Optional[str]:
-        """Which of the four kinds this end is, or nothing where the user has not ended (D210).
+        """Which kind this end is reported as, or nothing where the user has not ended (D210, D332).
 
-        More than one can hold at once, so they are read in one order. A Run whose goal writes are
-        all confirmed is done whatever the Candidate said next. A Candidate that twice asks for
-        what nobody ever told this user has run the scenario out, whatever it says while doing it.
-        A Candidate that then closes or passes the conversation on ended it, and that is a handoff
-        rather than the user running dry. Last comes the user with nothing left to say and no close
-        to answer, which is the scenario out in the other way. The closing cue and the silence
-        counter are still read, but each is an input to a kind and neither is the end on its own.
-        `gave_up` is never reached here: it is the turn limit, which the loop holds and the user
-        never sees.
+        The goal never ends a Run (D332): it is read off the Reference's writes, and nothing the
+        Reference holds may decide a Run that trust or the Verifier reads. What ends one is the
+        Candidate's own stop (it closes or passes the conversation on), the scenario running out
+        (twice asked for what nobody told this user, or nothing left to say) and the turn limit the
+        loop holds. Where one of those ends the Run with the goal's writes made, the end is reported
+        `goal_satisfied`, so a report still reads how many Runs got there; it is a label only.
         """
-        if satisfied:
-            return GOAL_SATISFIED
         if self._unanswerable >= UNANSWERABLE_LIMIT:
-            return SCENARIO_EXHAUSTED
-        if _closes(question):
-            return HANDED_OFF
-        return SCENARIO_EXHAUSTED if (self._restated or self._silent >= SILENCE_LIMIT) else None
+            kind = SCENARIO_EXHAUSTED
+        elif _closes(question):
+            kind = HANDED_OFF
+        elif self._restated or self._silent >= SILENCE_LIMIT:
+            kind = SCENARIO_EXHAUSTED
+        else:
+            return None
+        return GOAL_SATISFIED if satisfied else kind
 
     def _goal_done(self, made: set, question: str = "") -> bool:
         """The Task's goal is done in this Run, through the one predicate both users read (D210).

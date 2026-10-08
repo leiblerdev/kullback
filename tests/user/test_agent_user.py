@@ -315,10 +315,10 @@ def test_the_agent_drives_a_task_only_where_it_beats_the_rules():
 
 # --- what the table says ------------------------------------------------------------------------
 
-def test_a_facts_tool_answers_only_what_was_asked(ctx):
+def test_a_facts_tool_answers_only_what_the_question_asks(ctx):
     box = Toolbox(ctx)
-    assert "PLOT-4471" in box.facts(["plot_id"])
-    assert "16:00" not in box.facts(["plot_id"])
+    assert "PLOT-4471" in box.facts("Which plot id is it?")
+    assert "16:00" not in box.facts("Which plot id is it?")
 
 
 def test_the_user_never_holds_a_tool_that_reads_the_world(ctx):
@@ -596,16 +596,21 @@ def test_the_run_path_and_the_scorer_path_send_identical_requests(ctx, rules, re
 
 
 def test_the_guards_read_the_writes_the_transcript_carries(ctx, rules, recorded):
-    """A write the world refused cannot satisfy the goal; one that took effect does."""
+    """A write the world refused leaves the goal open; one that took effect is reported as the goal
+    met, on the turn the Candidate itself closes, and never ends the Run before it (D332)."""
     moved = {"role": "tool", "tool_call_id": "c1", "name": "move_delivery", "content": "{}"}
     refused = dict(moved, content="that slot is full", error={"class": "business_error"})
     question = [{"role": "assistant", "content": "What delivery slot would you like?"}]
-    user_moved = agent_for(ctx, rules, ["Yes, 16:00."], recorded)
+    close = [{"role": "assistant", "content": "Your delivery is moved. Anything else?"}]
+    user_moved = agent_for(ctx, rules, ["Yes, 16:00.", "No, thanks."], recorded)
     user_moved.reply(question + [moved])
+    assert not user_moved.done
+    user_moved.reply(question + [moved] + close)
     assert user_moved.done and user_moved.end_reason == rules_mod.GOAL_SATISFIED
-    user_refused = agent_for(ctx, rules, ["Yes, 16:00."], recorded)
+    user_refused = agent_for(ctx, rules, ["Yes, 16:00.", "No, thanks."], recorded)
     user_refused.reply(question + [refused])
-    assert not user_refused.done
+    user_refused.reply(question + [refused] + close)
+    assert user_refused.done and user_refused.end_reason == rules_mod.HANDED_OFF
 
 
 # --- the prefix check over a real conversation (G24) ------------------------------------------------

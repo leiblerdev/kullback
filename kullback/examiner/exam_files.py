@@ -67,17 +67,10 @@ def names_forbidden_path(value: Any) -> Optional[str]:
 FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "suite",
                       "false_rejection", "environment", "other"]
 FindingSource = Literal["derive", "model"]
-# The shapes one edit takes (D317): what a body answered differently on one recorded call,
-# an exact-match-once replacement in an Intent or Task file, a Verifier diff in atoms, a cell of the
-# expected end states to allow or drop, a conduct rule to add or remove, and a Run proposed as Reference.
-EDIT_KINDS = ("body", "text", "atoms", "cell", "conduct", "reference")
-# What each end-state or reference edit names besides its kind and why: key and allowed values (None any).
-EDIT_FIELDS = {"cell": {"task_id": None, "table": None, "action": ("allow", "drop")},
-               "conduct": {"task_id": None, "action": ("add", "remove"),
-                           "conduct": ("handoff", "refusal", "confirm_before_write")},
-               "reference": {"task_id": None, "run_id": None}}
-# The files a text edit may name: the ones the Examiner reads whole and can quote (COPIED_DIRS).
-TEXT_EDIT_DIRS = ("intents", "tasks")
+# The one shape an edit takes (D317): what a body answered differently on one recorded call, for the
+# Builder. The Spec's edit kinds (text, atoms, cell, conduct, reference; D325) are gone: the Examiner
+# rules on a Spec and the writer applies or rebuts (D331).
+EDIT_KINDS = ("body",)
 BODY_EDIT_KEYS = ("call_id", "column", "recorded", "replayed")
 
 
@@ -115,37 +108,15 @@ class Finding:
 def check_edit(edit: Any, exam_dir: Path) -> dict:
     """One edit as filed, or a ValueError naming what is missing (D317).
 
-    A text edit is applied by exact match, so its `where` has to occur exactly once in the named
-    file as the Examiner reads it under exam/; anything else is a guess the Builder would have to
-    interpret. A body edit has to name the call, the column and both values, and an atoms edit at
-    least one atom to drop or add.
+    A body edit has to name the call, the column and both values; anything else is a guess the
+    Builder would have to interpret. What is wrong with a Spec is a ruling, never an edit (D331).
     """
     if not isinstance(edit, dict) or edit.get("kind") not in EDIT_KINDS:
-        raise ValueError(f"an edit is one of the kinds {', '.join(EDIT_KINDS)}")
-    if edit["kind"] == "body":
-        missing = [key for key in ("path", *BODY_EDIT_KEYS) if edit.get(key) in (None, "")]
-        if missing:
-            raise ValueError(f"a body edit names {', '.join(missing)}")
-    elif edit["kind"] == "text":
-        path, where = str(edit.get("path") or ""), str(edit.get("where") or "")
-        if path.split("/")[0] not in TEXT_EDIT_DIRS or ".." in path.split("/"):
-            raise ValueError(f"a text edit names a file under {' or '.join(TEXT_EDIT_DIRS)}/")
-        if not where or "replace" not in edit:
-            raise ValueError("a text edit names where (the verbatim current text) and replace")
-        try:
-            found = (exam_dir / path).read_text(encoding="utf-8").count(where)
-        except OSError:
-            raise ValueError(f"{path} does not exist") from None
-        if found == 0:
-            raise ValueError(f"text not found in {path}")
-        if found > 1:
-            raise ValueError(f"found {found} times in {path}; quote enough to match once")
-    elif edit["kind"] in EDIT_FIELDS:
-        for key, allowed in EDIT_FIELDS[edit["kind"]].items():
-            if not edit.get(key) or (allowed and edit[key] not in allowed):
-                raise ValueError(f"a {edit['kind']} edit names {key}" + (f", one of {', '.join(allowed)}" if allowed else ""))
-    elif not (edit.get("drop") or edit.get("add")) or not edit.get("task_id"):
-        raise ValueError("an atoms edit names task_id and at least one atom to drop or add")
+        raise ValueError(f"an edit is one of the kinds {', '.join(EDIT_KINDS)}; what is wrong with a Spec is a "
+                         "ruling (rule), never an edit")
+    missing = [key for key in ("path", *BODY_EDIT_KEYS) if edit.get(key) in (None, "")]
+    if missing:
+        raise ValueError(f"a body edit names {', '.join(missing)}")
     return dict(edit)
 
 
@@ -191,6 +162,9 @@ class ExamRoot:
     probe_model: Any = None
     run_probe: Any = None
     reroll_user: Any = None   # runners_for's re-roll user factory: rule user, or agent user when on
+    round: int = 0            # the review round this session is (D331); 0 reads the Spec's round plus one
+    verified: dict = field(default_factory=dict)   # the verify rows per Task, which a code ruling cites
+    states: dict = field(default_factory=dict)     # each Task's Starting state, loaded once for the lookups
 
     @property
     def exam_dir(self) -> Path:

@@ -10,6 +10,7 @@ its own guards, its own fidelity score and its own lesson loop.
                  drives a Task only where it beats this offline, and this answers every beat a guard
                  drops the agent's turn on
   vocabulary.py  what a fact is and the generic core, which both halves read
+  lookup.py      the fact store and the one lookup both users answer a question from (D332)
   context.py     what is curated for one Task, all mined, each item a tagged prompt section
   skills.py      the system prompt in this harness's order
   tools.py       my_facts, my_goal, what_i_said, end_run, and consult where a recording justifies it

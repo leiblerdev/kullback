@@ -68,7 +68,6 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/agent/messages.py` | Re-exports the message types from `kullback.ai.messages`. |
 | `kullback/agent/prefix_check.py` | Checks that each request is a byte prefix extension of the last, so caches hold (G24). |
 | `kullback/agent/provider.py` | The provider contract as the loop sees it, and `provider_for` a model handle. |
-| `kullback/agent/reading.py` | Outline-first reading helpers: outline, page, locate, part, select, around (G21). |
 | `kullback/agent/session/__init__.py` | The session: an append-only JSONL tree and its active path. |
 | `kullback/agent/session/entries.py` | The session entry types, one pydantic model each. |
 | `kullback/agent/session/store.py` | The JSONL session store: load, append, branch, active path with compactions applied. |
@@ -211,7 +210,6 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | Module | What it does |
 |---|---|
 | `kullback/builder/__init__.py` | Package marker for the Builder. |
-| `kullback/builder/body_skill.py` | The body skill: how a tool body is written so it clears the gates (D168). |
 | `kullback/builder/cache_reach.py` | Hashes a module's import closure so code-keyed caches invalidate (G29). |
 | `kullback/builder/run_user.py` | The Simulated user the run tool meets: the rule-driven user, or the agent user over it with a model, from the Reference's user rules (D214). |
 | `kullback/builder/cluster.py` | Groups Runs into Categories by write-tool set, then Tasks by intent (D83). |
@@ -220,9 +218,8 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/builder/effects.py` | What a write changed on rows its arguments never named, read off the recording (D215). |
 | `kullback/builder/env_files.py` | The Environment on disk under `env/`: one file per tool body, rendered modules, read surface. |
 | `kullback/builder/ingest.py` | Stores customer files byte for byte and derives Traces with raw pointers (D66, D67, D95). |
-| `kullback/builder/intent.py` | Writes a Task's Intent and refuses any phrase without a span in every member Run (D47, D83). |
+| `kullback/builder/intent.py` | Re-exports the Intent record and the value strip under their old import path; the Spec stage writes Intents. |
 | `kullback/builder/lesson.py` | What a stalled tool body is told: differing leaves, relations, unreached lines (D211). |
-| `kullback/builder/memory.py` | The Builder's version tree and the cross-customer lessons file with anonymization (D64, D87). |
 | `kullback/builder/mine.py` | Mines ToolSigs and the EntitySchema out of ingested traces (D68, D70, D72, D73). |
 | `kullback/builder/parallel.py` | Re-exports the worker pool that now lives in `kullback.runner.parallel`. |
 | `kullback/builder/policy.py` | Turns policy sentences into before-write Constraint predicates (D43, D76). |
@@ -242,7 +239,6 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/builder/sources/terminus_2.py` | Adapter for terminus-2 terminal recordings, one shell tool. |
 | `kullback/builder/synth.py` | Grows the Starting state past the ids the traces named (D40, D107). |
 | `kullback/builder/templates.py` | Aligns a reader for homed prose results out of the tool's own results (D176, D180). |
-| `kullback/builder/triage.py` | The triage skill: how the Builder works a red light to green (D150). |
 | `kullback/builder/user_sim.py` | Re-exports the rule-driven Simulated user from `kullback.user.rules` (D214). |
 | `kullback/builder/vocabulary.py` | Derives the facts users state and the words agents ask for them with (D115). |
 | `kullback/builder/world_tools.py` | The first pass as two functions: `ingest_files` and `derive_world`. |

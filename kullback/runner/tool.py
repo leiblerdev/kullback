@@ -211,12 +211,15 @@ def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, mak
     """
     env = BuiltEnvironment(environment_dir)
     task = env.task(task_id)
-    if env.agent_driven(task_id):
+    single = task.facts_in_instruction  # the facts ride in the opening and no user answers (D332)
+    if not single and env.agent_driven(task_id):
         raise EnvironmentError(f"Task {task_id} is driven by the agent user, which needs a model "
                                "the runner is not given")
     router = _router_for(env, task_id, seed)
     _refuse_stand_in(router)
-    if user is None and make_user is not None:
+    if single:
+        user = None
+    elif user is None and make_user is not None:
         user = make_user(router)
     runs_dir = Path(workdir) / RUNS_DIR
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -226,7 +229,7 @@ def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, mak
         model=_model_name(model), seed=seed, user=user,
         user_rules=env.rules(task),
         max_turns=MAX_TURNS, system_prompt=runner_prompt(env.system_prompt(task)),
-        first_user=task.intent if user is None else None)
+        first_user=env.opening(task) if user is None else None)
     run_id = state.run.run_id
     loop.open_with_user(state)
     loop.run(state, model, tools=specs, router=router)

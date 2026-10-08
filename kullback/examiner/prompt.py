@@ -1,8 +1,8 @@
-"""The Examiner's prompt in GEPA order: receives, tools, examples, choice, feedback, stop (D320).
+"""The Examiner's prompt in GEPA order: receives, tools, examples, choice, feedback, stop (D320, D331).
 
-The Examiner reads and reviews: it files one review per Task, a finding with the rows and the edit
-or no_finding with its reason. It writes no Verifier and runs nothing; the Spec applies the edits.
-General only: no corpus, publisher, tool, table or column name appears here. The stop rule is last.
+The Examiner gives feedback and never edits: it reads the Intent, the policy and the Spec and files
+rulings the writer applies or rebuts, then closes or keeps them open. General only: no corpus,
+publisher, tool, table or column name appears here. The stop rule is last.
 """
 
 from __future__ import annotations
@@ -10,130 +10,120 @@ from __future__ import annotations
 from typing import Iterable
 
 from kullback.examiner.skills import REVIEW_SKILL
+from kullback.spec.rulings import RULING_KINDS
 
 #: The Examiner writes nothing under its root (D320).
 WRITABLE_DIRS: tuple[str, ...] = ()
+#: The tools a review session holds; the full examine session adds the Environment ones.
+REVIEW_TOOLS = ("rule", "close", "verify", "lookup_rows", "search_rows")
 
 
 def receives_section() -> str:
-    """What the session receives, the part that is the same in every session: its root as ".".
-
-    What the root holds and the Tasks differ per session, so they arrive in the opening message,
-    after the system prompt, where they leave the cached prefix of tools and system intact.
-    """
-    return ("You review Tasks whose Verifier the Spec wrote: the expected end states with each cell's "
-            "source, the forbidden list, the conduct rules and the fact and question checks. Each Task has "
-            "a spec view: the Intent facts, the checks with their because, and one verdict row per Run. "
-            'Your root is ".", the exam directory: every path you pass is relative to it, never a host '
-            "path. It holds the Runs as JSONL, the replay and re-roll rows, the References, the task "
-            "status, the Verifiers, the task, intent and user-rule records, and one spoken file per Task. "
-            "You read and review; you write nothing and run nothing. What the root holds and the Tasks "
-            "are in the opening message.")
+    """What the session receives, the part that is the same in every session: its root as "."."""
+    return ("You examine Specs. A Spec is the Verifier of one Task written from the user's Intent and the policy: "
+            "items (end-state checks on rows and fields, checks on the calls made, and judge items, yes or no "
+            "questions a model answers about what the agent told the user, each with an anchor value and the "
+            "evidence it reads), each item citing the Intent facts or the policy line it comes from. Each Task "
+            "has a view: the Intent facts, the items with their provenance, the Verifier's compiled items, the "
+            "facts no item covers, and every ruling so far with the writer's answer. The policy and the tool "
+            'list sit beside the views. Your root is ".", the exam directory: every path is relative to it. '
+            "You give feedback and never edit: you file rulings, the writer applies or rebuts them. The Tasks "
+            "and the round are in the opening message.")
 
 
-def received(rulings: str, entries: Iterable[str] = (), notes: str = "") -> str:
-    """This session's own facts: what the root held when it opened, the Tasks with their paths, and the
-    Builder's notes. Said in the opening message, never the system prompt."""
+def received(lines: str, entries: Iterable[str] = (), notes: str = "", round_number: int = 1) -> str:
+    """This session's own facts: the round, what the root holds, the Tasks with their views, the Builder's
+    notes. Said in the opening message, never the system prompt."""
     listed = ", ".join(entries) or "nothing yet"
-    text = (f"The root holds: {listed}.\n"
-            "The Tasks to review, each with the paths of its Runs and its Verifier; open those paths "
-            f"rather than searching for them:\n{rulings}")
+    text = (f"Round {round_number}. The root holds: {listed}.\n"
+            f"The Tasks, each with its view; open those paths rather than searching:\n{lines}")
+    if round_number > 1:
+        text += ("\nThe writer has answered the rulings of the last round. Close each answered ruling the answer "
+                 "settles and keep open, with why, each it does not; file a new ruling only for what the "
+                 "writer's change broke.")
     if notes:
-        text += ("\nThe Builder's notes, each saying a Task is not verifiable as written; rule on "
-                 f"every open one:\n{notes}")
+        text += f"\nThe Builder's notes, each saying a Task is not verifiable as written:\n{notes}"
     return text
 
 
-def opening(ask: str, rulings: str, entries: Iterable[str] = (), notes: str = "") -> str:
+def opening(ask: str, lines: str, entries: Iterable[str] = (), notes: str = "", round_number: int = 1) -> str:
     """The opening message: the ask, then this session's facts."""
-    return f"{ask}\n\n{received(rulings, entries, notes)}"
+    return f"{ask}\n\n{received(lines, entries, notes, round_number)}"
 
 
-def tools_section() -> str:
-    """The tools with one example call each."""
-    return ("Tools, one example call each. Besides these you hold read, ls, grep and find.\n"
-            "finding: file what is wrong with a Task, "
-            'e.g. {"task_id": "t1", "kind": "fidelity", "text": "what differs and why", "rows": [...], '
-            '"edits": [{"kind": "atoms", "task_id": "t1", "drop": ["i2"], "add": [], '
-            '"why": "the check demands what no fact says"}]}. An edit is the diff, one of these kinds.\n'
-            "atoms: task_id, drop and add. Drop names atom ids (i<n>), which each Task's line lists beside "
-            "the check (c<n>) that made it; a check id or fact id is not an atom id, and an edit dropping "
-            "more than half the atoms, its adds counted, is refused. An added atom is a fact told or a question asked, never "
-            'a write, e.g. {"kind": "atoms", "task_id": "t1", "drop": [], "add": [{"id": "said_total", '
-            '"kind": "required", "payload": {"kind": "communicate", "text": "<the words said>", '
-            '"id": "said_total"}}], "why": "the user asked to hear the total"}.\n'
-            "text: path intents/<task>.json or tasks/<task>.json, where the verbatim current text, found "
-            "exactly once, and replace the new text.\n"
-            "body: path env/tools/<name>.py, the call, the column and both values.\n"
-            "cell: a cell of the expected end states to allow (it may differ) or drop (it is not expected), "
-            'e.g. {"kind": "cell", "task_id": "t1", "table": "<table>", "row_id": "<row>", "field": "<field>", '
-            '"action": "drop", "why": "no turn or policy says this value"}; row_id and field are optional.\n'
-            "conduct: a conduct rule to add or remove, the conduct one of handoff, refusal, "
-            'confirm_before_write, e.g. {"kind": "conduct", "task_id": "t1", "action": "add", '
-            '"conduct": "confirm_before_write", "tool": "<write tool>", "why": "policy says <the words>"}.\n'
-            "reference: a Run on disk that should be the Reference, "
-            'e.g. {"kind": "reference", "task_id": "t1", "run_id": "r2", "why": "it does what the user '
-            'asked and the Reference does not"}; it opens a ruling, nothing is promoted by code.\n'
-            "Body edits go to the Builder; every other kind goes to the Spec. Add "
-            'note_ruling ("builder_right" or "builder_wrong") when the finding answers a Builder note.\n'
-            "no_finding: file a review that found nothing wrong, "
-            'e.g. {"task_id": "t1", "reason": "every cell has a source and the Runs agree with the facts"}.\n'
-            "rule: file one ruling on a Task, "
-            'e.g. {"task_id": "t1", "target": "check", "check_ids": ["c2"], "code": "check_unpassable", '
-            '"reason": "the check demands a second write, but its because says only \\"<the words>\\""}; '
-            "target is run, check, intent or environment, and the reason quotes verbatim, in quotation "
-            "marks and at least twelve characters, a because of the Spec or a turn of the Run.\n"
-            "check_reference: the evidence on a Task's Reference in one view, "
-            'e.g. {"task_id": "t1"}.\n'
-            "reject_reference: rule on a Reference Run whose End state is wrong for the Intent, "
-            'e.g. {"task_id": "t1", "run_id": "r1", "why": "the user said <their words> and it wrote nothing"}.')
+_TOOL_EXAMPLES = {
+    "rule": ('rule: file one ruling on one item, e.g. {"task_id": "t1", "item": "c2", "kind": "derivation", '
+             '"code": "unasked_item", "reason": "No Intent fact or policy line asks for the second write.", '
+             '"fix": "Drop c2 or cite the fact that asks for it.", "blocking": true}. item is a check, atom or '
+             "fact id from the view, or task for the Task as a whole. The codes per kind: "
+             + "; ".join(f"{kind}: {', '.join(codes)}" for kind, codes in RULING_KINDS.items())
+             + ". A fails_reference ruling names wrong_side, reference or verifier."),
+    "close": ('close: close an answered ruling or keep it open, e.g. {"task_id": "t1", "number": 1, '
+              '"keep_open": false, "why": "The writer dropped the write no fact asked for."}.'),
+    "verify": ('verify: run the do-nothing Run, a stray write and the Reference\'s end state through the '
+               'Verifier, e.g. {"task_id": "t1"}; a passes_do_nothing or fails_reference ruling cites it.'),
+    "lookup_rows": ('lookup_rows: read a row of the Task\'s world, the one the writer read, e.g. '
+                    '{"task_id": "t1", "table": "<table>", "key": "<row key>"}.'),
+    "search_rows": ('search_rows: find row keys whose field equals a value, e.g. {"task_id": "t1", '
+                    '"table": "<table>", "field": "<field>", "value": "<value>"}.'),
+    "finding": ('finding: what is wrong with the Environment, for the Builder, e.g. {"task_id": "t1", "kind": '
+                '"fidelity", "text": "what differs", "rows": [...], "path": "env/tools/<name>.py", "edits": '
+                '[{"kind": "body", "path": "env/tools/<name>.py", "call_id": "<id>", "column": "<column>", '
+                '"recorded": "<value>", "replayed": "<value>", "why": "<why>"}]}.'),
+    "no_finding": 'no_finding: a review that found nothing wrong, e.g. {"task_id": "t1", "reason": "<the reason>"}.',
+    "check_reference": 'check_reference: the evidence on a Task\'s Reference in one view, e.g. {"task_id": "t1"}.',
+}
+
+
+def tools_section(tool_names: Iterable[str] = REVIEW_TOOLS) -> str:
+    """The tools the session holds, one example call each."""
+    lines = [_TOOL_EXAMPLES[name] for name in tool_names if name in _TOOL_EXAMPLES]
+    return "Tools, one example call each. Besides these you hold read, ls, grep and find.\n" + "\n".join(lines)
 
 
 def examples_section() -> str:
-    """General examples of what a review finds and the call that files it."""
-    return ("Examples of a review and the call that files it.\n"
-            "A check demands what no fact of the Intent says: finding with an atoms edit dropping it.\n"
-            "An Intent fact misquotes the user's turn: finding with a text edit quoting both.\n"
-            "A replayed call differs from the recorded one on a column: finding with a body edit naming "
-            "the call, the column and both values.\n"
-            "A cell has no source in any turn, policy or tool result: finding with a cell edit dropping it, "
-            "or allowing it when any value is fine; a no_finding is refused while a cell is unsourced.\n"
-            "The Reference wrote the wrong thing and another Run did what the user asked: finding with a "
-            "reference edit naming that Run.\n"
-            "Every cell has a source, the checks match the facts and the Runs agree: no_finding with "
-            "the reason.")
+    """General examples of what a ruling says, one per kind."""
+    return ("Examples of rulings.\n"
+            "derivation: an item checks something no Intent fact or policy line asks for; an Intent fact has no "
+            "item; an item fixes one value where the policy allows several (fix: a value set); the instruction "
+            "forbids something and no item checks it; an item forbids something nothing in the Intent or policy "
+            "forbids.\n"
+            "judge: the question is not answerable yes or no; it asks about taste; its anchor is not the value "
+            "the world holds or goes against the policy (look the value up first); its evidence cannot answer it; "
+            "it leads or is ambiguous.\n"
+            "code: the check reads the wrong table or field; it does not run; verify shows the do-nothing Run "
+            "passes it; verify shows the Reference fails it, and you rule which side is wrong from the Intent.\n"
+            "scope: the request is not doable under the policy (fix: a refusal, the sanity item plus a judge item "
+            "citing the policy line); the Intent is too vague to check; the instruction lacks a fact the Task "
+            "needs.")
 
 
 def choice_section() -> str:
-    """The choice rule: one review per Task, then the order."""
-    return ("Choosing. File one review per Task: a finding with what is wrong, why, the rows and the edit, "
-            "or no_finding with its reason. A review without rows is not a finding, and a finding names "
-            "the file and what differs, never a verb. Read each Task's spec "
-            "view first and its Verifier's cells and sources; act first on Tasks where Runs and checks "
-            "disagree or a cell has no source. Decide which side is wrong from the Intent and the policy, "
-            "never from which side has more Runs. A Builder note is ruled before anything else on its "
-            "Task. Prefer an edit whenever you can name the values or quote the text.\n" + REVIEW_SKILL)
+    """The choice rule: what to read, what blocks, then the order."""
+    return ("Choosing. Read each Task's view, then the policy where an item cites it. Look up in the world every "
+            "anchor and every value an item fixes before you accept it. Call verify once per Task before any "
+            "code ruling. Block when a correct solve could fail or a wrong one pass; file a note when the item "
+            "is weak but the verdict would stand. One ruling per problem, on the item it is about. Decide from "
+            "the Intent and the policy, never from what a Run did.\n" + REVIEW_SKILL)
 
 
 def feedback_section() -> str:
     """The shape of the feedback."""
-    return ("Feedback. A filed review answers with what it recorded; a refusal says what was missing. "
-            "Code routes each edit: atoms, text, cell, conduct and reference to the Spec, which rewrites "
-            "the Verifier and runs the gates, body to the Builder. A Task the gates still refuse at the round ceiling is set aside "
-            "as pending.")
+    return ("Feedback. A filed ruling answers with its number; a refusal says what was missing. The writer "
+            "answers each ruling next round, applied or rebutted with why. Two rounds at most: a blocking ruling "
+            "still open after the last round holds the Task untrusted.")
 
 
 def stop_section() -> str:
     """The stop rule, last: one line and no tool call when nothing is left to do."""
-    return ("Stopping. Answer with one line and no tool call when every Task has one review filed and "
-            "every Builder note is ruled. Say which Tasks got a finding, with which edit kinds, and which "
-            "got no_finding.")
+    return ("Stopping. Answer with one line and no tool call when every Task is examined and every answered "
+            "ruling is closed or kept open. Say how many rulings you filed per Task and how many block.")
 
 
-def sections() -> list[tuple[str, str]]:
+def sections(tool_names: Iterable[str] = REVIEW_TOOLS) -> list[tuple[str, str]]:
     """Every prompt section in GEPA order, the stop rule last. The same text in every session."""
     return [("receives", receives_section()),
-            ("tools", tools_section()),
+            ("tools", tools_section(tool_names)),
             ("examples", examples_section()),
             ("choice", choice_section()),
             ("feedback", feedback_section()),
@@ -145,5 +135,5 @@ def render(sections_list: list[tuple[str, str]]) -> str:
     return "\n\n".join(text for _, text in sections_list)
 
 
-__all__ = ["WRITABLE_DIRS", "choice_section", "examples_section", "feedback_section", "opening",
+__all__ = ["REVIEW_TOOLS", "WRITABLE_DIRS", "choice_section", "examples_section", "feedback_section", "opening",
            "receives_section", "received", "render", "sections", "stop_section", "tools_section"]

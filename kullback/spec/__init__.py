@@ -2,5 +2,5 @@
 
 Code only, no model call. `schema` holds the records, `ground` the because and coverage rules
 (trust gate 1), `compile` turns checks into Verifier atoms with the existing builders, and
-`canfail` asks whether the compiled Verifier can fail at all (trust gate 2).
+`canfail` scores one Run under the Spec's Verifier (`judge_run`).
 """

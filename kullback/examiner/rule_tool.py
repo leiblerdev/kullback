@@ -1,21 +1,20 @@
-"""The Examiner's ruling tool: `rule` files a ruling with a target (DESIGN.md rule 3, D320).
+"""The Examiner's ruling tools: rule, close, verify and the world lookups (DESIGN.md rule 3, D320, D331).
 
-The Examiner judges only. It reads the Spec of a Task (facts with stance, checks with because and
-tier), each Run's verdict rows against the Spec's checks, and the Runs, and files a ruling that
-says what is wrong: a Run, a check, the Intent, or the Environment. Code moves on the ruling
-(kullback/spec/router.py); the Examiner holds no pen over the Verifier.
+The Examiner gives feedback and never edits. It reads the Intent, the policy and the Spec (items with
+their provenance) and files rulings: one item, a kind and code (spec/rulings.py RULING_KINDS), the reason
+in one sentence, the fix the writer should make, blocking or note. The writer applies or rebuts each in
+its next round; `close` then closes the ruling or keeps it open, with why.
 
-A ruling argues from evidence: its reason must quote, verbatim and at least MIN_QUOTE characters, a
-because of the Task's Spec or a turn of the Run it names. Code checks the quote and refuses a
-ruling without one. The ruling is written whole to exam/rulings/<task>/<n>.json and published as
-ruling.filed with ids, counts and the reason with each quote replaced by where it came from.
+`verify` runs the constructed Runs (do nothing, one stray write) and the Reference's end state through
+the Task's Verifier by code and keeps the rows, so a code ruling can cite them. `lookup_rows` and
+`search_rows` are the writer's own two lookups over the Task's Starting state: the Examiner checks every
+anchor and value with the same world the writer had.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -23,33 +22,32 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.tools import AgentTool
 from kullback.examiner.exam_files import ExamRoot
-from kullback.gates.probes import write_tools_of
 from kullback.runner.records import EXAM_DIR, Run, Verifier, read_json, run_path, write_json
-from kullback.runner.target import atom_payload, canon_fn, check_run, load_run
-from kullback.spec import compile as compile_mod
+from kullback.runner.target import load_run
 from kullback.spec import events
-from kullback.spec.ground import MIN_QUOTE
+from kullback.spec import rulings as R
 from kullback.spec.schema import Spec, load_spec
 
-RULINGS_DIR = "rulings"
-VIEW_DIR = "spec_view"
+RULINGS_DIR = R.RULINGS_DIR
+REVIEW_DIR = "review"
+VIEW_DIR = f"{REVIEW_DIR}/views"
+POLICY_FILE = f"{REVIEW_DIR}/policy.md"
+TOOLS_FILE = f"{REVIEW_DIR}/tools.json"
 REFUSED_FILE = "refused.jsonl"
-#: The evidence a quote may come from: a because of the Spec, or a turn of the named Run.
-BECAUSE, TURN = "because", "turn"
-# Where a quoted span ends: sentence ends, quote marks, colons, semicolons and brackets.
-_SPAN_ENDS = r"[.!?\n\"\u201c\u201d:;()\[\]]+"
 
 
 class RuleArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task_id: str
-    target: events.Target = Field(description="What is wrong: run, check, intent or environment.")
-    reason: str = Field(description="Why, quoting verbatim a because of the Task's Spec or a turn of the named Run.")
-    code: events.RulingCode = Field(default="other", description="The kind of reason: " + ", ".join(events.RULING_CODES))
-    check_ids: list[str] = Field(default_factory=list, description="The checks the ruling is about.")
-    run_id: Optional[str] = Field(default=None, description="The Run the ruling is about or quotes.")
-    excerpt: Optional[str] = Field(default=None, description="The quoted evidence, verbatim, when it is long.")
+    item: str = Field(description="The id the ruling is about: a check, an atom, an Intent fact, or task.")
+    kind: R.RulingKind = Field(description="derivation, judge, code or scope.")
+    code: str = Field(description="How, one of the kind's codes: " + "; ".join(
+        f"{kind}: {', '.join(codes)}" for kind, codes in R.RULING_KINDS.items()))
+    reason: str = Field(description="What is wrong, in one sentence.")
+    fix: str = Field(description="What the writer should do, in one sentence.")
+    blocking: bool = Field(description="True when the Task must not be trusted until this is fixed; false for a note.")
+    wrong_side: Optional[str] = Field(default=None, description="For fails_reference: reference or verifier.")
 
 
 class RuleResult(BaseModel):
@@ -59,11 +57,60 @@ class RuleResult(BaseModel):
     task_id: str
     number: int
     path: str
-    quoted: list[str] = Field(default_factory=list)
 
 
-def _norm(text: Any) -> str:
-    return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+class CloseArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    number: int
+    keep_open: bool = Field(description="True when the writer's answer does not settle the ruling.")
+    why: str = Field(description="Why, in one sentence.")
+
+
+class CloseResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+
+
+class VerifyArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+
+
+class VerifyResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    rows: list[dict] = Field(default_factory=list)
+
+
+class LookupArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    table: str
+    key: str = ""
+
+
+class SearchArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    table: str
+    field: str
+    value: str
+
+
+class TextResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+
+
+# --- Runs, as other readers of the Examiner's root open them ---
 
 
 def turn_texts(run: Run) -> list[str]:
@@ -101,228 +148,288 @@ def open_run(root: ExamRoot, task_id: str, run_id: str) -> Optional[Run]:
     return None
 
 
-def evidence(spec: Optional[Spec], run: Optional[Run]) -> list[tuple[str, str]]:
-    """Every text a reason may quote, each with where it came from."""
-    out = [(f"{BECAUSE} {check.id}", check.because) for check in (spec.checks if spec else ())]
-    out += [(f"{TURN} {index}", text) for index, text in enumerate(turn_texts(run) if run else ())]
-    return out
-
-
-def quoted_spans(text: str, sources: Iterable[tuple[str, str]]) -> list[tuple[str, str]]:
-    """The spans of `text` (split at sentence ends, quote marks, colons and brackets) found verbatim in a source."""
-    flat = [(label, _norm(body)) for label, body in sources]
-    found = []
-    for span in re.split(_SPAN_ENDS, str(text or "")):
-        key = _norm(span.strip("' "))
-        if len(key) < MIN_QUOTE:
-            continue
-        label = next((label for label, body in flat if key in body), None)
-        if label is not None:
-            found.append((span.strip("' "), label))
-    return found
-
-
-def rulings_dir(workdir: Any, task_id: str) -> Path:
-    return Path(workdir) / EXAM_DIR / RULINGS_DIR / task_id
-
-
-def next_number(workdir: Any, task_id: str) -> int:
-    folder = rulings_dir(workdir, task_id)
-    numbers = [int(p.stem) for p in folder.glob("*.json") if p.stem.isdigit()] if folder.is_dir() else []
-    return max(numbers, default=0) + 1
-
-
-def _refuse(workdir: Any, args: "RuleArgs", why: str) -> None:
-    """Count the refusal where a report reads it (the code, the ids, a hash of the reason), then raise it."""
-    path = Path(workdir) / EXAM_DIR / RULINGS_DIR / REFUSED_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    row = {"task_id": args.task_id, "code": why, "target": args.target, "check_ids": list(args.check_ids),
-           "run_id": args.run_id, "reason_sha256": hashlib.sha256(args.reason.encode("utf-8")).hexdigest()}
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row) + "\n")
-    raise ValueError(REFUSALS[why])
-
-
-REFUSALS = {
-    "no_spec": "the Task has no Spec to rule on; rule on a Task whose Spec is listed in the opening",
-    "unknown_run": "run_id is not a Run of this Task; name one of the Runs the opening lists",
-    "no_run": "a ruling on a Run names it in run_id",
-    "unknown_check": "a check id is not on the Task's Spec; name checks from its spec view",
-    "no_check": "a ruling on a check names it in check_ids",
-    events.QUOTE_MISSING: ("the reason quotes no evidence: copy verbatim, in quotation marks and at least %d characters, "
-                 "a because of the Spec or a turn of the Run in run_id" % MIN_QUOTE),
-    "bad_excerpt": "the excerpt is not verbatim in a because of the Spec or a turn of the Run in run_id",
-}
-
-
-def _checked(root: ExamRoot, args: RuleArgs) -> tuple[Spec, Optional[Run], list[tuple[str, str]]]:
-    """The Spec, the named Run and the quoted spans, or a counted refusal."""
-    task_id, workdir = args.task_id, root.workdir
-    spec = load_spec(workdir, task_id)
-    if spec is None:
-        _refuse(workdir, args, "no_spec")
-    run = None
-    if args.run_id is not None:
-        run = open_run(root, task_id, args.run_id)
-        if run is None:
-            _refuse(workdir, args, "unknown_run")
-    elif args.target == "run":
-        _refuse(workdir, args, "no_run")
-    known = {check.id for check in spec.checks}
-    if any(check_id not in known for check_id in args.check_ids):
-        _refuse(workdir, args, "unknown_check")
-    if args.target == "check" and not args.check_ids:
-        _refuse(workdir, args, "no_check")
-    sources = evidence(spec, run)
-    if args.excerpt and not quoted_spans(args.excerpt, sources):
-        _refuse(workdir, args, "bad_excerpt")
-    spans = quoted_spans(args.reason, sources)
-    if not spans:
-        _refuse(workdir, args, events.QUOTE_MISSING)
-    return spec, run, spans
-
-
-def file_ruling(root: ExamRoot, args: RuleArgs) -> dict:
-    """Write the ruling whole under exam/rulings/<task>/<n>.json and publish ruling.filed."""
-    spec, _, spans = _checked(root, args)
-    number = next_number(root.workdir, args.task_id)
-    labels = [label for _, label in spans]
-    payload = events.ruling_payload(args.task_id, args.target, args.check_ids, args.run_id, args.code, labels,
-                                    args.excerpt, spec.round, number)
-    body = dict(payload, code=args.code, reason=args.reason, excerpt=args.excerpt, quoted=labels)
-    path = rulings_dir(root.workdir, args.task_id) / f"{number}.json"
-    write_json(path, body)
-    if root.bus is not None:
-        events.ruling_filed(root.bus, payload)
-    return dict(body, path=path.relative_to(root.exam_dir).as_posix())
-
-
-def _rule(root: ExamRoot):
-    async def rule(args: RuleArgs) -> RuleResult:
-        body = file_ruling(root, args)
-        summary = (f"ruling {body['number']} on task {args.task_id} filed: target {args.target}, "
-                   f"quoting {', '.join(body['quoted'])}; code routes it")
-        return RuleResult(summary=summary, task_id=args.task_id, number=body["number"], path=body["path"],
-                          quoted=body["quoted"])
-
-    return rule
-
-
-# --- the view: the Spec and each Run's verdict rows against its checks ---
-
-
-def _check_atoms(check: Any, write_tools: set, fn: Any) -> list:
-    build = compile_mod.BUILDERS.get(str(check.demand.get("demand")))
-    return (build(check.id, check.kind, check.demand, write_tools, fn) or []) if build else []
-
-
-def _expected(atoms: list) -> list[dict]:
-    rows = []
-    for atom in atoms:
-        payload = atom_payload(atom)
-        if "raw" in payload or "value" in payload:
-            rows.append({"atom": atom.id, "field": payload.get("field"),
-                         "expected": payload.get("raw", payload.get("value"))})
-    return rows
-
-
-def verdict_rows(spec: Spec, run: Run, canon: Any, write_tools: set) -> dict:
-    """Which checks the Run fails and the values they expect; a check no builder compiles says so."""
-    fn = canon_fn(canon)
-    failed, unscored = [], []
-    for check in spec.checks:
-        atoms = _check_atoms(check, write_tools, fn)
-        if not atoms:
-            unscored.append(check.id)
-            continue
-        ok, atom_id = check_run(Verifier(task_id=spec.task_id, atoms=atoms), run, canon, write_tools=write_tools)
-        if not ok and atom_id in {atom.id for atom in atoms}:
-            failed.append({"check": check.id, "tier": check.tier, "atom": atom_id, "values": _expected(atoms)})
-    return {"run_id": run.run_id, "termination_reason": run.termination_reason, "failed": failed,
-            "unscored": unscored, "passed": not failed and not unscored}
-
-
-def spec_view(root: ExamRoot, task_id: str) -> Optional[dict]:
-    """The Task's view: the Spec's facts and checks, the Verifier's gates, then each Run's verdict rows."""
-    spec = load_spec(root.workdir, task_id)
-    if spec is None:
-        return None
-    tools = write_tools_of(root.sigs)
-    runs = []
-    for run_id, stored in sorted(run_rows(root, task_id).items()):
-        run = open_run(root, task_id, run_id)
-        if run is not None:
-            runs.append(dict(verdict_rows(spec, run, root.canon_rules, tools), path=stored))
-    return {"task_id": task_id, "round": spec.round, "version": spec.version,
-            "facts": [{"id": f.id, "stance": f.stance, "text": f.text} for f in spec.intent.facts],
-            "checks": [{"id": c.id, "kind": c.kind, "tier": c.tier, "because": c.because,
-                        "demand": c.demand, "fact_ids": c.fact_ids} for c in spec.checks],
-            "gaps": spec.gaps, "end_state": spec.end_state, **_gates_view(root, task_id), "runs": runs}
-
-
-def _gates_view(root: ExamRoot, task_id: str) -> dict:
-    """The Spec Verifier's gates as the review reads them: each expected cell with its source (D320)."""
-    from kullback.spec.trust import load_spec_verifier
-
-    verifier = load_spec_verifier(root.workdir, task_id)
-    if verifier is None:
-        return {"expected": [], "forbidden": [], "conduct": []}
-    return {name: [item.model_dump(mode="json") for item in getattr(verifier, name)]
-            for name in ("expected", "forbidden", "conduct")}
-
-
-def write_views(root: ExamRoot, task_ids: Iterable[str]) -> dict[str, str]:
-    """Write each Task's view under exam/spec_view/; returns the root-relative path per Task with a Spec."""
-    out = {}
-    for task_id in task_ids:
-        view = spec_view(root, task_id)
-        if view is not None:
-            path = root.exam_dir / VIEW_DIR / f"{task_id}.json"
-            write_json(path, view)
-            out[task_id] = path.relative_to(root.exam_dir).as_posix()
-    return out
-
-
-def rule_tool(root: ExamRoot) -> AgentTool:
-    from kullback.examiner.domain_tools import render
-
-    return AgentTool("rule", "File one ruling on a Task: target run, check, intent or environment, with a reason "
-                     "that quotes verbatim a because of its Spec or a turn of the Run in run_id. Code routes it.",
-                     RuleArgs, RuleResult, _rule(root), render=render)
-
-
-def reject_tool(root: ExamRoot) -> AgentTool:
-    """reject_reference in intent mode: a ruling on the Reference Run, so one path excludes it (the router)."""
-    from kullback.examiner import reference_check as RC
-    from kullback.examiner.domain_tools import render
-
-    async def reject(args: RC.RejectReferenceArgs) -> RC.RejectReferenceResult:
-        body = file_ruling(root, RuleArgs(task_id=args.task_id, target="run", run_id=args.run_id, reason=args.why,
-                                          code="reference_wrong"))
-        refs = sorted(reference_ids_of(root.workdir, args.task_id))
-        summary = (f"ruling {body['number']} on task {args.task_id} filed against Run {args.run_id}; "
-                   f"the References are now {', '.join(refs) or 'none'}")
-        return RC.RejectReferenceResult(summary=summary, task_id=args.task_id, excluded=[args.run_id],
-                                        references=refs, pooled=not refs)
-
-    return AgentTool("reject_reference", "Reject a Reference Run the Spec says is wrong: files rule(target=run) "
-                     "on it, so the why must quote a because of the Spec or a turn of that Run.",
-                     RC.RejectReferenceArgs, RC.RejectReferenceResult, reject, render=render)
-
-
 def reference_ids_of(workdir: Any, task_id: str) -> set[str]:
     row = (read_json(Path(workdir) / "references.json", {}) or {}).get(task_id) or {}
     return {str(r.get("run_id")) for r in row.get("references") or [] if isinstance(r, dict)}
 
 
 def read_rulings(workdir: Any, task_id: str) -> list[dict]:
-    """The Task's rulings in number order."""
-    folder = rulings_dir(workdir, task_id)
-    paths = sorted((p for p in folder.glob("*.json") if p.stem.isdigit()), key=lambda p: int(p.stem)) \
-        if folder.is_dir() else []
-    return [read_json(p, {}) for p in paths]
+    """The Task's rulings in number order, as dicts."""
+    return [r.model_dump(mode="json") for r in R.load_rulings(workdir, task_id)]
 
 
-__all__ = ["REFUSALS", "RULINGS_DIR", "VIEW_DIR", "RuleArgs", "RuleResult", "evidence", "file_ruling",
-           "open_run", "quoted_spans", "read_rulings", "reference_ids_of", "reject_tool", "rule_tool", "run_rows", "spec_view",
-           "turn_texts", "verdict_rows", "write_views"]
+# --- filing ---
+
+
+def _refuse(workdir: Any, task_id: str, code: str, why: str, text: str = "") -> None:
+    """Count the refusal where a report reads it (the code, the Task, a hash of the text), then raise it."""
+    path = Path(workdir) / EXAM_DIR / RULINGS_DIR / REFUSED_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {"task_id": task_id, "code": code, "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row) + "\n")
+    raise ValueError(why)
+
+
+def _spec_and_verifier(workdir: Any, task_id: str) -> tuple[Optional[Spec], Optional[Verifier]]:
+    from kullback.spec.trust import load_spec_verifier
+
+    return load_spec(workdir, task_id), load_spec_verifier(workdir, task_id)
+
+
+def checked_ruling(root: ExamRoot, args: RuleArgs) -> R.Ruling:
+    """The ruling as it will be filed, or a counted refusal naming what is missing."""
+    workdir, task_id = root.workdir, args.task_id
+    spec, verifier = _spec_and_verifier(workdir, task_id)
+    if spec is None:
+        _refuse(workdir, task_id, "no_spec", "the Task has no Spec to rule on; rule on a Task the opening lists")
+    why = R.code_refusal(args.kind, args.code)
+    if why:
+        _refuse(workdir, task_id, "bad_code", why)
+    known = R.item_ids(spec, verifier)
+    if args.item not in known:
+        _refuse(workdir, task_id, "unknown_item", f"item {args.item!r} is not on the Task; items are {', '.join(known)}")
+    for text, what in ((args.reason, "reason"), (args.fix, "fix")):
+        why = R.sentence_refusal(text, what)
+        if why:
+            _refuse(workdir, task_id, f"bad_{what}", why, text)
+    if args.code == "fails_reference" and args.wrong_side not in R.WRONG_SIDES:
+        _refuse(workdir, task_id, "no_side", "a fails_reference ruling says which side is wrong: wrong_side "
+                "reference or verifier")
+    verified = list(root.verified.get(task_id) or [])
+    if args.code in R.VERIFY_CODES and not verified:
+        _refuse(workdir, task_id, "not_verified", f"call verify on task {task_id} first: a {args.code} ruling "
+                "cites what the Verifier did")
+    # A wrong Reference leaves the Verifier standing: the ruling is a note for the witness flag, never blocking.
+    blocking = bool(args.blocking) and args.wrong_side != "reference"
+    return R.Ruling(task_id=task_id, number=R.next_number(workdir, task_id), round=root.round or spec.round + 1,
+                    item=args.item, kind=args.kind, code=args.code, reason=" ".join(args.reason.split()),
+                    fix=" ".join(args.fix.split()), blocking=blocking, wrong_side=args.wrong_side,
+                    verified=verified if args.kind == "code" else [])
+
+
+def file_ruling(root: ExamRoot, args: RuleArgs) -> dict:
+    """Write the ruling under exam/rulings/<task>/<n>.json, count it on the Spec, publish ruling.filed."""
+    ruling = checked_ruling(root, args)
+    path = R.save_ruling(root.workdir, ruling)
+    R.sync_spec(root.workdir, ruling.task_id)
+    if root.bus is not None:
+        events.ruling_filed(root.bus, events.ruling_payload(ruling))
+    return dict(ruling.model_dump(mode="json"), path=path.relative_to(root.exam_dir).as_posix())
+
+
+def _rule(root: ExamRoot):
+    async def rule(args: RuleArgs) -> RuleResult:
+        body = file_ruling(root, args)
+        side = " (the Reference is ruled wrong: a note)" if body.get("wrong_side") == "reference" else ""
+        summary = (f"ruling {body['number']} on task {args.task_id} filed: {args.kind}/{args.code} on "
+                   f"{args.item}, {'blocking' if body['blocking'] else 'note'}{side}; the writer answers it next round")
+        return RuleResult(summary=summary, task_id=args.task_id, number=body["number"], path=body["path"])
+
+    return rule
+
+
+def _close(root: ExamRoot):
+    async def close(args: CloseArgs) -> CloseResult:
+        why = R.sentence_refusal(args.why, "why")
+        if why:
+            _refuse(root.workdir, args.task_id, "bad_why", why, args.why)
+        try:
+            ruling = R.close(root.workdir, args.task_id, args.number, args.keep_open, args.why, root.round)
+        except (OSError, ValueError) as exc:
+            _refuse(root.workdir, args.task_id, "bad_close", str(exc) or f"no ruling {args.number} on task {args.task_id}")
+        R.sync_spec(root.workdir, args.task_id)
+        if root.bus is not None:
+            events.ruling_closed(root.bus, args.task_id, args.number, args.keep_open)
+        state = "kept open" if args.keep_open else "closed"
+        return CloseResult(summary=f"ruling {ruling.number} on task {args.task_id} {state}")
+
+    return close
+
+
+# --- verify: the constructed Runs and the Reference through the Verifier, by code ---
+
+
+def _reference_run(workdir: Any, task_id: str) -> Optional[Run]:
+    """The Task's first faithful Reference replay on disk, else None."""
+    from kullback.spec.trust import faithful_references, runs_on_disk
+
+    wanted = set(faithful_references(workdir).get(task_id) or ())
+    return next((run for run in runs_on_disk(workdir).get(task_id, []) if run.run_id in wanted), None)
+
+
+def verify_rows(workdir: Any, task_id: str, verifier: Verifier, reference: Optional[Run]) -> list[dict]:
+    """What the Verifier says of each constructed Run and of the Reference.
+
+    A constructed Run (do nothing, one stray write on the Reference, spec/trust.py) should fail; the
+    Reference passing says the Verifier is satisfiable. A Run the Verdict cannot read is a row with its error.
+    """
+    from kullback.gates.probes import write_tools_of
+    from kullback.runner.canon import load_rules
+    from kullback.runner.records import ToolSig
+    from kullback.spec.canfail import judge_run
+    from kullback.spec.trust import constructed_runs
+
+    if reference is None:
+        return [{"run": "reference", "error": "no faithful Reference on disk"}]
+    sigs = read_json(Path(workdir) / "tool_sigs.json", None) or []
+    sigs = sigs.get("sigs", []) if isinstance(sigs, dict) else sigs
+    tools = write_tools_of([ToolSig.model_validate(s) for s in sigs])
+    canon = load_rules(Path(workdir) / "canon-rules.json")
+    schema = read_json(Path(workdir) / "schema.json", None)
+    rows = []
+    try:
+        built = constructed_runs(verifier, [reference], [reference.run_id], schema=schema, canon=canon)
+        for name, run in built.items():
+            if run is not None:
+                rows.append({"run": name, "verifier_fails_it": not judge_run(verifier, run, canon, tools)[0]})
+    except Exception as exc:  # a constructed Run the Verdict cannot read says the code does not run
+        rows.append({"run": "constructed", "error": type(exc).__name__})
+    try:
+        passed, failing = judge_run(verifier, reference, canon, tools)
+        rows.append({"run": "reference", "verifier_passes_it": bool(passed),
+                     "failing": None if passed else str(getattr(failing, "id", failing))})
+    except Exception as exc:
+        rows.append({"run": "reference", "error": type(exc).__name__})
+    return rows
+
+
+def verify_line(rows: list[dict]) -> str:
+    """The verify rows in one line: each kind of Run with how many the Verifier failed, the Reference's word."""
+    parts, kinds = [], {}
+    for row in rows:
+        if "error" in row:
+            parts.append(f"{row['run']}: {row['error']}")
+        elif row["run"] == "reference":
+            parts.append("reference: " + ("passes" if row["verifier_passes_it"] else f"fails on {row['failing']}"))
+        else:
+            failed, total = kinds.get(row["run"], (0, 0))
+            kinds[row["run"]] = (failed + bool(row["verifier_fails_it"]), total + 1)
+    lines = [f"{run}: the Verifier fails {failed} of {total}" for run, (failed, total) in kinds.items()]
+    return "; ".join(lines + parts)
+
+
+def _verify(root: ExamRoot):
+    async def verify(args: VerifyArgs) -> VerifyResult:
+        from kullback.spec.trust import load_spec_verifier
+
+        verifier = load_spec_verifier(root.workdir, args.task_id)
+        if verifier is None:
+            raise ValueError(f"task {args.task_id} has no Verifier to run")
+        rows = verify_rows(root.workdir, args.task_id, verifier, _reference_run(root.workdir, args.task_id))
+        root.verified[args.task_id] = rows
+        return VerifyResult(summary=verify_line(rows), rows=rows)
+
+    return verify
+
+
+# --- the writer's own world lookups, per Task ---
+
+
+def _state(root: ExamRoot, task_id: str) -> dict:
+    """The Task's Starting state as the writer read it, loaded once per session."""
+    if task_id not in root.states:
+        from kullback.spec.writer import load_inputs
+
+        root.states[task_id] = load_inputs(Path(root.workdir), task_id).state
+    return root.states[task_id]
+
+
+def _lookups(root: ExamRoot) -> list[AgentTool]:
+    from kullback.examiner.domain_tools import render
+    from kullback.spec.writer_tools import READ_TOOLS, read_tools
+
+    described = {tool["name"]: tool["description"] for tool in READ_TOOLS}
+
+    async def lookup_rows(args: LookupArgs) -> TextResult:
+        return TextResult(summary=read_tools(_state(root, args.task_id))["lookup_rows"](args.table, args.key))
+
+    async def search_rows(args: SearchArgs) -> TextResult:
+        found = read_tools(_state(root, args.task_id))["search_rows"](args.table, args.field, args.value)
+        return TextResult(summary=found)
+
+    return [AgentTool("lookup_rows", described["lookup_rows"] + " Names the Task.", LookupArgs, TextResult,
+                      lookup_rows, render=render),
+            AgentTool("search_rows", described["search_rows"] + " Names the Task.", SearchArgs, TextResult,
+                      search_rows, render=render)]
+
+
+# --- the view: what the Examiner reads of a Task ---
+
+
+def _item(check: Any) -> dict:
+    """One check of the Spec with its provenance and, when the record carries them, gate and weight."""
+    row = {"id": check.id, "kind": check.kind, "tier": check.tier, "demand": check.demand,
+           "because": check.because, "fact_ids": check.fact_ids}
+    for name in ("gate", "weight", "policy_line"):
+        if getattr(check, name, None) is not None:
+            row[name] = getattr(check, name)
+    return row
+
+
+def spec_view(root: ExamRoot, task_id: str) -> Optional[dict]:
+    """The Task as the Examiner reads it: the Intent facts, the Spec's items with provenance, the
+    Verifier's items, the facts no item covers, and every ruling so far with the writer's answer."""
+    spec, verifier = _spec_and_verifier(root.workdir, task_id)
+    if spec is None:
+        return None
+    covered = {fact_id for check in spec.checks for fact_id in check.fact_ids}
+    view = {"task_id": task_id, "round": spec.round, "version": spec.version,
+            "facts": [{"id": f.id, "stance": f.stance, "text": f.text} for f in spec.intent.facts],
+            "items": [_item(check) for check in spec.checks],
+            "facts_without_item": [f.id for f in spec.intent.facts if f.id not in covered],
+            "rulings": read_rulings(root.workdir, task_id)}
+    if verifier is not None:
+        view["verifier"] = {"atoms": [{"id": a.id, "kind": a.kind, "judge": a.judge, "description": a.description,
+                                       "target": a.target} for a in verifier.atoms],
+                            **{name: [item.model_dump(mode="json") for item in getattr(verifier, name)]
+                               for name in ("expected", "forbidden", "conduct")}}
+    return view
+
+
+def write_views(root: ExamRoot, task_ids: Iterable[str]) -> dict[str, str]:
+    """Each Task's view, the policy and the tool list under exam/review/; the root-relative view paths."""
+    from kullback.spec.writer import load_inputs
+
+    out: dict[str, str] = {}
+    for task_id in task_ids:
+        view = spec_view(root, task_id)
+        if view is None:
+            continue
+        path = root.exam_dir / VIEW_DIR / f"{task_id}.json"
+        write_json(path, view)
+        out[task_id] = path.relative_to(root.exam_dir).as_posix()
+        if not (root.exam_dir / POLICY_FILE).is_file():
+            try:
+                inputs = load_inputs(Path(root.workdir), task_id)
+                policy, tools = inputs.policy_text, inputs.tools
+            except Exception:  # a workdir without a built world still gets its views
+                policy, tools = "", []
+            (root.exam_dir / POLICY_FILE).write_text(policy or "no policy recorded", encoding="utf-8")
+            write_json(root.exam_dir / TOOLS_FILE, tools)
+    return out
+
+
+def rule_tools(root: ExamRoot) -> list[AgentTool]:
+    """rule, close, verify, lookup_rows and search_rows over one root."""
+    from kullback.examiner.domain_tools import render
+
+    return [
+        AgentTool("rule", "File one ruling on one item of a Task: kind and code, the reason and the fix in one "
+                  "sentence each, blocking or note. You never edit; the writer applies or rebuts it.",
+                  RuleArgs, RuleResult, _rule(root), render=render),
+        AgentTool("close", "Close a ruling the writer answered, or keep it open, with why in one sentence.",
+                  CloseArgs, CloseResult, _close(root), render=render),
+        AgentTool("verify", "Run the constructed Runs (do nothing, one stray write, an expected cell undone) and the "
+                  "Reference's end state through the Task's Verifier, by code. A code ruling cites it.",
+                  VerifyArgs, VerifyResult, _verify(root), render=render),
+        *_lookups(root),
+    ]
+
+
+RULE_TOOL_NAMES = ("rule", "close", "verify", "lookup_rows", "search_rows")
+
+__all__ = ["POLICY_FILE", "REFUSED_FILE", "REVIEW_DIR", "RULE_TOOL_NAMES", "RULINGS_DIR", "TOOLS_FILE", "VIEW_DIR",
+           "CloseArgs", "RuleArgs", "RuleResult", "VerifyArgs", "checked_ruling", "file_ruling", "open_run",
+           "read_rulings", "reference_ids_of", "rule_tools", "run_rows", "spec_view", "turn_texts", "verify_rows",
+           "write_views"]

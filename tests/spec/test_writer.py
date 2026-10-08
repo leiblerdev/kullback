@@ -1,7 +1,7 @@
-"""The Verifier writer: a scripted model writes demands, code keeps what is grounded and compiles it.
+"""The Verifier writer: a scripted model reads the world and adds items, code keeps what it finds and compiles it.
 
 The model is the harness TestModel with scripted replies; the Starting state, tools and facts are the
-invented ones of tests/spec/fixtures.py. Verdicts go through the real check_run.
+invented ones of tests/spec/fixtures.py. Verdicts go through the real verdict gates and runner/items.py.
 """
 
 from __future__ import annotations
@@ -12,12 +12,14 @@ import pytest
 from pydantic import ValidationError
 
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
+from kullback.runner.atom_context import AtomContext
+from kullback.runner.expected import match_context
+from kullback.runner.items import score_items
 from kullback.runner.records import Event, Run, Verifier
-from kullback.runner.target import check_run
 from kullback.spec import writer as W
 from kullback.spec import writer_tools as T
 from kullback.spec.schema import SpecIntent, intent_text, load_spec
-from tests.spec.fixtures import FACTS, WRITE, WRITE_TOOLS, fn, reference_run
+from tests.spec.fixtures import FACTS, WRITE_TOOLS, fn, reference_run
 
 STATE = {"items": {"A1": {"item_id": "A1", "slot": "two"}, "B2": {"item_id": "B2", "slot": "four"}}}
 SECTION = "section:moving items"
@@ -25,7 +27,12 @@ POLICY = "# Store policy\n\n## Moving items\n\nMove an item only to a free slot.
 TOOLS = [{"name": "list_items", "kind": "read", "args": []},
          {"name": "update_item", "kind": "write", "args": ["item_id", "slot"]},
          {"name": "delete_item", "kind": "write", "args": ["item_id"]}]
-MOVE = dict(WRITE, kind="required", fact_ids=["f1"], because="move item A1 to slot seven")
+
+
+def _matches(end_states, context):
+    """Any one end state matching passes; else an unsettled one is None; else False."""
+    oks = [match_context(state, context).ok for state in end_states]
+    return True if True in oks else (None if None in oks else False)
 
 
 def inputs(facts=FACTS, state=STATE) -> W.WriterInputs:
@@ -36,6 +43,19 @@ def inputs(facts=FACTS, state=STATE) -> W.WriterInputs:
 
 def answer(key: str, items: list) -> ModelReply:
     return ModelReply(content=json.dumps({key: items}))
+
+
+def add(*items: dict) -> ModelReply:
+    return ModelReply(tool_calls=[ToolCallRequest(id="a1", name="add_items", arguments={"items": list(items)})])
+
+
+def call(name: str, **arguments) -> ModelReply:
+    return ModelReply(tool_calls=[ToolCallRequest(id=f"{name}-1", name=name, arguments=arguments)])
+
+
+DONE = ModelReply(content="done")
+ROW = {"id": "s1", "kind": "row_is", "table": "items", "find": {"item_id": "A1"}, "expect": {"slot": "seven"},
+       "fact_ids": ["f1"]}
 
 
 def lookup(key: str = "A1") -> ModelReply:
@@ -63,112 +83,11 @@ def test_policy_sections_are_the_headed_lines_of_two_words_or_more():
     assert T.policy_sections(POLICY) == ["section:store policy", SECTION]
 
 
-def test_writer_reads_the_starting_state_then_keeps_only_grounded_witnessed_checks():
-    model = TestModel([lookup(), answer("demands", [
-        MOVE,
-        dict(WRITE, kind="allowed", fact_ids=["f1"], because="it seems sensible"),
-        {"kind": "required", "demand": "say", "text": "urgent", "fact_ids": ["f2"],
-         "because": "I also want a note saying it was urgent"},
-        {"kind": "made_up", "demand": "cap", "count": 1, "because": "move item A1 to slot seven"},
-        {"kind": "required", "demand": "cap", "count": 1, "because": "per the moving items rules"},
-    ]), answer("demands", [])])
-    written = W.write_spec("t1", inputs(), model)
-    assert [check.id for check in written.spec.checks] == ["c0", "c4"]
-    assert written.counts == {"demands": 5, "kept": 2, "ungrounded": 1, "unwitnessed": 1, "condition_unquoted": 0,
-                              "bad_kind": 1, "gaps": 1, "sent_back": 2, "sent_back_kept": 0, "parse_error": "",
-                              "truncated_chars": 0, "unsatisfiable_sent_back": 0, "unsatisfiable": [],
-                              "write_predicate": 0, "value_not_argument": 0, "unseen_sent_back": 0}
-    assert written.spec.gaps == ["f2"]
-    assert written.session["tool_uses"] == ["lookup_rows"]
-    tool_turn = model.calls[1]["messages"][-1]
-    assert json.loads(tool_turn["content"]) == STATE["items"]["A1"]
-
-
-def test_a_write_naming_only_a_section_goes_back_once_and_its_grounded_correction_keeps_its_check_id():
-    by_section = dict(WRITE, id="d1", kind="allowed", fact_ids=["f1"], because="per the moving items rules")
-    cap = {"id": "d0", "kind": "required", "demand": "cap", "count": 1, "because": "per the moving items rules"}
-    fixed = dict(by_section, because='per the moving items rules: "Move an item only to a free slot."')
-    stray = dict(MOVE, id="d7")
-    model = TestModel([answer("demands", [cap, by_section]), answer("demands", [fixed, stray])])
-    written = W.write_spec("t1", inputs(), model)
-    assert [check.id for check in written.spec.checks] == ["c0", "c1"]
-    assert written.spec.checks[1].because == fixed["because"]
-    assert (written.counts["condition_unquoted"], written.counts["sent_back"], written.counts["sent_back_kept"]) \
-        == (1, 1, 1)
-    first, second = model.calls[0]["messages"], model.calls[1]["messages"]
-    assert second[:1] == first and second[1]["role"] == "assistant" and second[2]["role"] == "user"
-    refused = json.loads(second[2]["content"][len(W.FOLLOWUP_PROMPT):])["refused"]
-    assert refused == [{"id": "d1", "reason": "condition_unquoted", "rule": W.SENT_BACK_RULES["condition_unquoted"]}]
-
-
-def test_a_no_write_beside_a_required_write_goes_back_once_and_the_kept_correction_stands():
-    no_write = {"id": "d1", "kind": "required", "demand": "no_write", "fact_ids": ["f1"],
-                "because": "move item A1 to slot seven"}
-    model = TestModel([answer("demands", [dict(MOVE, id="d0"), no_write]), answer("demands", [dict(MOVE, id="d0")])])
-    written = W.write_spec("t1", inputs(), model)
-    assert [check.id for check in written.spec.checks] == ["c0"]
-    assert (written.counts["unsatisfiable_sent_back"], written.counts["unsatisfiable"]) == (2, [])
-    refused = json.loads(model.calls[1]["messages"][-1]["content"][len(W.FOLLOWUP_PROMPT):])["refused"]
-    assert [(row["id"], row["reason"]) for row in refused] == \
-        [("d0", "no_write_beside_required_write"), ("d1", "no_write_beside_required_write")]
-
-
-def test_a_write_quoting_the_policy_without_naming_a_section_is_still_ungrounded():
-    quoted = dict(WRITE, kind="required", fact_ids=["f1"], because="Move an item only to a free slot.")
-    written = W.write_spec("t1", inputs(), TestModel([answer("demands", [quoted]), answer("demands", [])]))
-    assert written.counts["ungrounded"] == 1 and written.counts["sent_back"] == 1
-
-
-def test_a_correction_that_still_names_only_a_section_is_dropped():
-    by_section = dict(WRITE, id="d0", kind="required", fact_ids=["f1"], because="per the moving items rules")
-    model = TestModel([answer("demands", [by_section]), answer("demands", [by_section])])
-    written = W.write_spec("t1", inputs(), model)
-    assert written.spec.checks == [] and written.counts["sent_back_kept"] == 0 and len(model.calls) == 2
-
-
-def test_the_write_rule_line_is_short_and_asks_for_the_section_and_its_quoted_sentence():
-    (line,) = [row for row in W.SYSTEM_PROMPT.splitlines() if row.startswith("- A write's")]
-    assert len(line) < 150 and "names the policy section and quotes the sentence" in line
-    assert "a section alone fails" in line
-
-
-def test_an_accepted_fact_with_a_witness_may_carry_a_check_alone():
-    witnessed = [FACTS[0], FACTS[1].model_copy(update={"witnesses": ["rec3"]})]
-    note = {"kind": "required", "demand": "say", "text": "urgent", "fact_ids": ["f2"],
-            "because": "I also want a note saying it was urgent"}
-    written = W.write_spec("t1", inputs(witnessed), TestModel([answer("demands", [MOVE, note])]))
-    assert written.counts["kept"] == 2 and written.spec.gaps == []
-
-
-def test_the_prompt_marks_unwitnessed_facts_and_carries_policy_and_tools():
-    model = TestModel([answer("demands", [])])
-    W.write_spec("t1", inputs(), model)
-    content = model.calls[0]["messages"][0]["content"]
-    body = json.loads(content[len(W.SYSTEM_PROMPT) + 1:])
-    assert body["intent"][1] == {"id": "f2", "text": FACTS[1].text, "stance": "accepted", "unwitnessed": True}
-    assert "unwitnessed" not in body["intent"][0]
-    assert body["policy_text"] == POLICY and body["tools"] == TOOLS
-    assert model.calls[0]["tools"] == T.READ_TOOLS
-
-
-def test_a_silent_writer_yields_an_empty_spec_with_every_fact_a_gap():
-    written = W.write_spec("t1", inputs(), TestModel([ModelReply(content="I cannot decide.")]))
-    assert written.spec.checks == [] and written.spec.gaps == ["f1", "f2"]
-    assert written.counts["parse_error"] == "no JSON object"
-
-
 def test_the_session_ends_unfinished_after_the_read_budget():
     model = TestModel([lookup()], loop=True)
     session = T.run_session(model, [{"role": "user", "content": "x"}], STATE, None, max_rounds=2)
     assert session["unfinished"] and session["text"] == "" and session["tool_rounds"] == 3
     assert len(model.calls) == 3
-
-
-def test_the_writer_is_made_to_answer_when_its_read_budget_is_spent():
-    model = TestModel([lookup()] * 4 + [answer("demands", [MOVE])])
-    written = W.write_spec("t1", inputs(), model)
-    assert written.counts["kept"] == 1 and written.session["tool_rounds"] == 4
-    assert [call["config"].tool_choice for call in model.calls] == [None] * 4 + ["none"]
 
 
 def test_a_tool_the_writer_was_not_given_is_answered_as_unknown():
@@ -185,81 +104,15 @@ def test_no_run_reference_verifier_or_end_state_reaches_the_writer(bad):
         T.refuse_run_inputs(bad)
     with pytest.raises(T.WriterInputError):
         W.write_spec("t1", inputs(state=bad) if isinstance(bad, dict) else inputs()._replace(state=bad),
-                     TestModel([answer("demands", [])]))
+                     TestModel([DONE]))
 
 
 def test_a_starting_state_table_named_like_a_run_field_is_still_a_table():
     T.refuse_run_inputs({"events": {"e1": {"id": "e1"}}, "atoms": {}})
 
 
-def test_the_verifier_passes_the_right_run_and_fails_a_swapped_value_and_a_write_beyond_scope():
-    written = W.write_spec("t1", inputs(), TestModel([answer("demands", [MOVE])]))
-    assert written.spec.checks[0].demand["entity"] == "A1"  # kept raw: compile canonicalises, as check_run does
-    compiled = W.verifier_of(written.spec, inputs())
-    assert {atom.kind for atom in compiled.verifier.atoms} == {"required", "forbidden"}
-    forbidden = [atom for atom in compiled.verifier.atoms if atom.kind == "forbidden"]
-    assert [atom.id for atom in forbidden] == ["forbidden.delete_item"]
-    tools = set(WRITE_TOOLS) | {"delete_item"}
-    assert check_run(compiled.verifier, reference_run(), fn, write_tools=tools)[0]
-    assert not check_run(compiled.verifier, moved_run("nine"), fn, write_tools=tools)[0]
-    passed, failing = check_run(compiled.verifier, deleting_run(), fn, write_tools=tools)
-    assert not passed and failing == "forbidden.delete_item"
-
-
-def test_a_write_compile_drops_is_listed_as_a_gap_and_survives_a_repair():
-    no_entity = dict(MOVE, entity="")
-    written = W.write_spec("t1", inputs(), TestModel([answer("demands", [no_entity])]))
-    assert [check.id for check in written.spec.checks] == ["c0"]
-    assert written.spec.gaps == ["f2", "c0: write without entity"]
-    assert W.verifier_of(written.spec, inputs()).reasons == ("c0: write without entity",)
-    ruling = W.Ruling(check_ids=["c0"], reason="no entity")
-    repaired, _ = W.apply_repair(written.spec, ruling, [dict(MOVE, id="c0")], inputs())
-    assert repaired.gaps == ["f2"]
-
-
-def test_write_verifier_writes_the_spec_and_one_verifier_the_runner_and_the_spec_share(tmp_path):
-    spec = W.write_spec("t1", inputs(), TestModel([answer("demands", [MOVE])])).spec
-    paths = W.write_verifier(spec, tmp_path, inputs())
-    assert paths == [tmp_path / "spec" / "t1.json", tmp_path / "spec" / "verifiers" / "t1.json",
-                     W.runner_verifier_path(tmp_path, "t1")]
-    runner = Verifier.model_validate_json(W.runner_verifier_path(tmp_path, "t1").read_text())
-    assert runner == Verifier.model_validate_json(W.spec_verifier_path(tmp_path, "t1").read_text())
-    assert runner.task_id == "t1" and runner.atoms
-    assert load_spec(tmp_path, "t1").end_state["reference"] is None
-
-
-def test_repair_changes_or_defends_only_ruled_checks_and_every_change_must_ground():
-    first = [MOVE, {"kind": "required", "demand": "cap", "count": 1, "because": "per the moving items rules"}]
-    spec = W.write_spec("t1", inputs(), TestModel([answer("demands", first)])).spec
-    ruling = W.Ruling(check_ids=["c0", "c1"], reason="the cap is too tight", excerpt="x" * 5000)
-    model = TestModel([answer("checks", [
-        {"id": "c1", "action": "change", "kind": "required", "demand": "cap", "count": 2,
-         "because": "per the moving items rules"},
-        {"id": "c0", "action": "change", "kind": "required", "demand": "cap", "count": 3, "because": "I think"},
-        {"id": "c9", "action": "change", "kind": "required", "demand": "cap", "count": 3,
-         "because": "per the moving items rules"},
-    ])])
-    repaired = W.repair(spec, ruling, inputs(), model)
-    assert repaired.counts == {"changed": 1, "defended": 0, "refused": 1, "not_ruled": 1, "parse_error": "",
-                               "truncated_chars": 0}
-    assert repaired.spec.checks[0] == spec.checks[0]
-    assert repaired.spec.checks[1].demand == {"demand": "cap", "count": 2}
-    assert repaired.spec.version == spec.version + 1 and len(repaired.spec.checks) == 2
-    body = json.loads(model.calls[0]["messages"][0]["content"][len(W.REPAIR_PROMPT) + 1:])
-    assert len(body["ruling"]["excerpt"]) == W.MAX_EXCERPT
-    assert [check["id"] for check in body["ruled_checks"]] == ["c0", "c1"]
-
-
-def test_a_defended_check_stands_unchanged():
-    spec = W.write_spec("t1", inputs(), TestModel([answer("demands", [MOVE])])).spec
-    ruling = W.Ruling(check_ids=["c0"], reason="not asked for")
-    model = TestModel([answer("checks", [{"id": "c0", "action": "defend", "because": "move item A1"}])])
-    repaired = W.repair(spec, ruling, inputs(), model)
-    assert repaired.counts["defended"] == 1 and repaired.spec.checks == spec.checks
-
-
 def test_a_ruling_excerpt_may_not_be_a_run():
-    spec = W.write_spec("t1", inputs(), TestModel([answer("demands", [MOVE])])).spec
+    spec = W.write_spec("t1", inputs(), TestModel([add(ROW), DONE])).spec
     with pytest.raises(ValidationError):
         W.repair(spec, {"check_ids": ["c0"], "reason": "r", "excerpt": reference_run()}, inputs(),
                  TestModel([answer("checks", [])]))
@@ -294,7 +147,7 @@ def test_inputs_come_from_the_environment_files_and_never_from_runs_or_verifiers
     loaded = W.load_inputs(tmp_path, "t1", inputs().intent)
     assert loaded.policy_text == POLICY and loaded.sections == T.policy_sections_of(tmp_path)
     assert loaded.state == STATE and loaded.write_tools == {"update_item"}
-    model = TestModel([answer("demands", [])])
+    model = TestModel([call("read_row", table="items", key="A1"), DONE])
     W.write_spec("t1", loaded, model)
     assert "SEEN" not in json.dumps(model.calls[0]["messages"])
 
@@ -328,11 +181,11 @@ def test_policy_sections_of_reads_the_recorded_prompts_when_no_policy_is_shipped
 
 def test_a_cut_body_is_counted_and_the_prompt_says_so():
     long = inputs()._replace(policy_text="x" * (W.BODY_CHARS + 500))
-    model = TestModel([answer("demands", [])])
+    model = TestModel([DONE])
     written = W.write_spec("t1", long, model)
     content = model.calls[0]["messages"][0]["content"]
-    assert written.counts["truncated_chars"] > 500 and content.endswith("\n(inputs truncated)")
-    assert W.write_spec("t1", inputs(), TestModel([answer("demands", [])])).counts["truncated_chars"] == 0
+    assert written.counts["truncated_chars"] > 500 and content.endswith("read_policy shows any section whole)")
+    assert W.write_spec("t1", inputs(), TestModel([DONE])).counts["truncated_chars"] == 0
 
 
 def test_a_spent_ceiling_makes_the_next_call_the_answer():
@@ -343,11 +196,137 @@ def test_a_spent_ceiling_makes_the_next_call_the_answer():
     assert session["tool_uses"] == [] and "unfinished" in session
 
 
+
+
+def test_the_writer_reads_the_world_adds_items_and_a_refused_value_comes_back_with_its_reason():
+    invented = dict(ROW, id="s2", expect={"slot": "nine"})
+    model = TestModel([call("find_rows", value="A1"), add(ROW, invented), DONE])
+    written = W.write_spec("t1", inputs(), model)
+    assert [check.id for check in written.spec.checks] == ["s1"]
+    told = model.calls[2]["messages"][-1]["content"]
+    assert "s1: kept (row A1)" in told and "s2: refused" in told and "not in the world" in told
+    assert json.loads(model.calls[1]["messages"][-1]["content"]) == [{"table": "items", "key": "A1"}]
+    check = written.spec.checks[0]
+    assert (check.gate, check.weight, check.fact_ids, check.tier) == (True, 1.0, ["f1"], "critical")
+    assert written.counts["offered"] == 2 and written.counts["refused"] == 1 and written.spec.gaps == ["f2"]
+    assert written.counts["by_kind"] == {"nothing_else": 1, "row_is": 1}
+    assert model.calls[0]["tools"] == T.WORLD_TOOLS
+
+
+def test_a_value_set_and_a_policy_line_item_keep_their_provenance_on_the_check():
+    either = dict(ROW, expect={"slot": {"one_of": ["seven", "four"]}})
+    confirm = {"id": "e1", "kind": "before", "first": "confirm_turn", "then": "update_item",
+               "policy_line": "Move an item only to a free slot."}
+    spec = W.write_spec("t1", inputs(), TestModel([add(either, confirm), DONE])).spec
+    by_id = {check.id: check for check in spec.checks}
+    assert by_id["e1"].policy_line == "Move an item only to a free slot." and by_id["e1"].fact_ids == []
+    assert by_id["e1"].because.startswith("section:Moving items: ")
+    assert by_id["s1"].demand["expect"] == {"slot": {"one_of": ["seven", "four"]}}
+
+
+def test_the_compiled_verifier_passes_the_right_run_and_fails_a_wrong_slot_and_a_stray_delete():
+    spec = W.write_spec("t1", inputs(), TestModel([add(ROW), DONE])).spec
+    verifier = W.verifier_of(spec, inputs()).verifier
+    assert [atom.id for atom in verifier.atoms] == ["s1", "sanity"]
+    assert all(atom.kind == "allowed" and atom.gate for atom in verifier.atoms)
+    assert verifier.atoms[0].target["from"] == {"fact_ids": ["f1"], "policy_line": None}
+
+    def ok(run):
+        context = AtomContext(run)
+        return _matches(verifier.expected, context), score_items(verifier, context)
+
+    end = {"items": {"A1": {"item_id": "A1", "slot": "seven"}, "B2": STATE["items"]["B2"]}}
+    assert ok(_ended(end)) == (True, {"s1": True, "sanity": True})
+    assert ok(_ended({"items": {**end["items"], "A1": {"item_id": "A1", "slot": "nine"}}}))[0] is False
+    assert ok(_ended({"items": {"A1": end["items"]["A1"]}})) == (False, {"s1": True, "sanity": False})
+
+
+def _ended(end: dict) -> Run:
+    return Run(run_id="r", task_id="t1", events=[Event(idx=0, type="stop", payload={"start_state": STATE,
+                                                                                    "end_state": end})])
+
+
+def test_items_no_run_can_pass_together_go_back_once_and_a_left_clash_is_named_unsatisfiable():
+    other = dict(ROW, id="s2", expect={"slot": "four"})
+    fixed = TestModel([add(ROW, other), DONE, call("drop_items", ids=["s2"]), DONE])
+    written = W.write_spec("t1", inputs(), fixed)
+    assert written.counts["sent_back"] == 1 and written.counts["unsatisfiable"] == []
+    assert "s2" in fixed.calls[2]["messages"][-1]["content"] and [c.id for c in written.spec.checks] == ["s1"]
+    stuck = W.write_spec("t1", inputs(), TestModel([add(ROW, other), DONE, DONE]))
+    assert stuck.counts["unsatisfiable"] == ["s2"]
+
+
+def test_a_silent_writer_yields_an_empty_spec_with_every_fact_a_gap():
+    written = W.write_spec("t1", inputs(), TestModel([ModelReply(content="I cannot decide.")]))
+    assert written.spec.checks == [] and written.spec.gaps == ["f1", "f2"]
+
+
+def test_the_prompt_marks_unwitnessed_facts_and_carries_policy_tools_and_the_item_grammar():
+    model = TestModel([DONE])
+    W.write_spec("t1", inputs(), model)
+    content = model.calls[0]["messages"][0]["content"]
+    body = json.loads(content[content.index("\n{") + 1:])
+    assert body["intent"][1]["unwitnessed"] is True and body["policy_text"] == POLICY and body["tools"] == TOOLS
+    assert body["policy_sections"] == ["Store policy", "Moving items"]
+    for kind in ("row_is", "row_new", "row_keeps", "called", "not_called", "before", "said", "judge"):
+        assert kind in content
+    assert "never seen any agent run" in content and content.index("# Stop") > content.index("# Feedback")
+
+
+def test_write_verifier_writes_the_spec_and_one_verifier_the_runner_and_the_spec_share(tmp_path):
+    spec = W.write_spec("t1", inputs(), TestModel([add(ROW), DONE])).spec
+    paths = W.write_verifier(spec, tmp_path, inputs())
+    assert paths == [tmp_path / "spec" / "t1.json", tmp_path / "spec" / "verifiers" / "t1.json",
+                     W.runner_verifier_path(tmp_path, "t1")]
+    runner = Verifier.model_validate_json(W.runner_verifier_path(tmp_path, "t1").read_text())
+    assert runner == Verifier.model_validate_json(W.spec_verifier_path(tmp_path, "t1").read_text())
+    counts = load_spec(tmp_path, "t1").end_state
+    assert "reference" not in counts and counts["end_states"] == 1 and counts["cells"] == 1
+    assert counts["gate"] == 2 and counts["by_kind"] == {"nothing_else": 1, "row_is": 1}
+
+
+def test_repair_drops_only_ruled_items_and_adds_under_the_same_rules():
+    told = {"id": "t1", "kind": "said", "values": ["seven"], "fact_ids": ["f1"]}
+    spec = W.write_spec("t1", inputs(), TestModel([add(ROW, told), DONE])).spec
+    ruling = W.Ruling(check_ids=["t1"], reason="the value is not what the user hears", excerpt="x" * 5000)
+    model = TestModel([call("drop_items", ids=["t1", "s1"]),
+                       add(dict(told, id="t2", values=["slot seven"]), dict(told, id="t3", values=["eleven"])), DONE])
+    written = W.repair(spec, ruling, inputs(), model)
+    assert [check.id for check in written.spec.checks] == ["s1", "t2"]
+    assert written.spec.version == spec.version + 1 and written.counts["refused"] == 1
+    shown = model.calls[0]["messages"][0]["content"]
+    assert "x" * W.MAX_EXCERPT in shown and "x" * (W.MAX_EXCERPT + 1) not in shown
+    assert "s1: not ruled, kept" in model.calls[1]["messages"][-1]["content"]
+
+
+def test_a_repair_may_not_replace_an_unruled_item_and_adds_at_most_the_cap():
+    told = {"id": "t1", "kind": "said", "values": ["seven"], "fact_ids": ["f1"]}
+    spec = W.write_spec("t1", inputs(), TestModel([add(ROW, told), DONE])).spec
+    ruling = W.Ruling(check_ids=["t1"], reason="a fact is uncovered", item="f2", kind="derivation/uncovered_fact")
+    extra = [dict(told, id=f"n{n}") for n in range(W.MAX_ADDS + 1)]
+    model = TestModel([add(dict(ROW, expect={"slot": "four"}), *extra), DONE])
+    written = W.repair(spec, ruling, inputs(), model)
+    kept = {check.id: check for check in written.spec.checks}
+    assert kept["s1"] == spec.checks[0] and written.counts["not_ruled"] == 1
+    assert written.counts["added"] == W.MAX_ADDS and f"n{W.MAX_ADDS}" not in kept
+    shown = model.calls[1]["messages"][-1]["content"]
+    assert "s1: refused: not ruled" in shown and f"at most {W.MAX_ADDS} items" in shown
+    assert "uncovered_fact" in model.calls[0]["messages"][0]["content"]
+
+
+def test_a_rebuttal_changes_nothing_and_carries_the_writers_why():
+    spec = W.write_spec("t1", inputs(), TestModel([add(ROW), DONE])).spec
+    ruling = W.Ruling(check_ids=["s1"], reason="not asked for", fix="drop s1")
+    written = W.repair(spec, ruling, inputs(), TestModel([ModelReply(content="rebut: the user asks for slot seven.")]))
+    assert written.spec.checks == spec.checks
+    assert written.counts["rebut"] == "the user asks for slot seven."
+    assert not (written.counts["changed"] or written.counts["dropped"] or written.counts["added"])
+
+
 def _ruled_workdir(tmp_path):
     _workdir(tmp_path)
     loaded = W.load_inputs(tmp_path, "t1", inputs().intent)
-    first = [MOVE, {"kind": "required", "demand": "cap", "count": 1, "because": "per the moving items rules"}]
-    spec = W.write_spec("t1", loaded, TestModel([answer("demands", first)])).spec
+    spec = W.write_spec("t1", loaded, TestModel([add(ROW), DONE])).spec
     W.write_verifier(spec, tmp_path, loaded)
     return spec
 
@@ -359,57 +338,28 @@ def _bus_events(tmp_path):
 
 def test_repair_for_ruling_saves_the_changed_spec_rewrites_both_verifiers_and_publishes_repaired(tmp_path):
     spec = _ruled_workdir(tmp_path)
-    ruling = {"number": 1, "target": "check", "check_ids": ["c1"], "reason": "the cap is too tight",
-              "code": "check_unpassable", "quoted": ["because c1"], "excerpt": "per the moving items rules"}
-    model = TestModel([answer("checks", [{"id": "c1", "action": "change", "kind": "required", "demand": "cap",
-                                          "count": 2, "because": "per the moving items rules"}])])
+    ruling = {"number": 1, "target": "check", "check_ids": ["s1"], "reason": "either slot is fine",
+              "code": "other", "excerpt": "policy allows several"}
+    model = TestModel([add(dict(ROW, expect={"slot": {"one_of": ["seven", "four"]}})), DONE])
     repaired = W.repair_for_ruling(tmp_path, "t1", ruling, model, 1.0)
     assert repaired.version == spec.version + 1 and load_spec(tmp_path, "t1") == repaired
     runner = W.runner_verifier_path(tmp_path, "t1").read_text()
-    assert runner == W.spec_verifier_path(tmp_path, "t1").read_text() and '"count": 2' in runner
+    assert runner == W.spec_verifier_path(tmp_path, "t1").read_text() and '"one_of"' in runner
     (event,) = _bus_events(tmp_path)
-    assert event["name"] == "spec.repaired" and event["payload"]["check_ids"] == ["c1"]
-    assert event["payload"]["version"] == repaired.version
+    assert event["name"] == "spec.repaired" and event["payload"]["check_ids"] == ["s1"]
 
 
-def test_repair_for_ruling_publishes_defended_when_every_ruled_check_stands(tmp_path):
+def test_repair_for_ruling_publishes_defended_when_no_item_changes(tmp_path):
     spec = _ruled_workdir(tmp_path)
-    before = W.runner_verifier_path(tmp_path, "t1").read_text()
-    ruling = {"number": 2, "target": "check", "check_ids": ["c0"], "reason": "not asked", "code": "other"}
-    model = TestModel([answer("checks", [{"id": "c0", "action": "defend", "because": "move item A1"}])])
-    defended = W.repair_for_ruling(tmp_path, "t1", ruling, model)
+    ruling = {"number": 2, "target": "check", "check_ids": ["s1"], "reason": "not asked", "code": "other"}
+    defended = W.repair_for_ruling(tmp_path, "t1", ruling, TestModel([DONE]))
     assert defended.checks == spec.checks
-    after = W.runner_verifier_path(tmp_path, "t1").read_text()
-    assert json.loads(after)["atoms"] == json.loads(before)["atoms"]
     (event,) = _bus_events(tmp_path)
-    assert event["name"] == "spec.defended" and event["payload"]["check_ids"] == ["c0"]
+    assert event["name"] == "spec.defended" and event["payload"]["check_ids"] == ["s1"]
 
 
-def test_a_handoff_the_reference_never_made_goes_back_as_unseen_conduct_and_is_dropped():
-    handoff = {"id": "d1", "kind": "required", "demand": "handoff", "tool": "call_person", "fact_ids": ["f1"],
-               "because": "move item A1 to slot seven"}
-    model = TestModel([answer("demands", [dict(MOVE, id="d0"), handoff]), answer("demands", [])])
-    written = W.write_spec("t1", inputs()._replace(reference_tools=frozenset({"update_item"})), model)
-    assert [check.id for check in written.spec.checks] == ["c0"] and written.counts["unseen_sent_back"] == 1
-    refused = json.loads(model.calls[1]["messages"][-1]["content"][len(W.FOLLOWUP_PROMPT):])["refused"]
-    assert refused == [{"id": "d1", "reason": "unseen_conduct", "rule": W.SENT_BACK_RULES["unseen_conduct"]}]
-    kept = W.write_spec("t1", inputs(), TestModel([answer("demands", [dict(MOVE, id="d0"), handoff])]))
-    assert [check.id for check in kept.spec.checks] == ["c0", "c1"]
-
-
-def test_a_write_value_that_is_no_argument_of_its_tool_goes_back_with_the_tools_arguments():
-    stray = dict(MOVE, id="d0", values={"slot": "seven", "shelf": "top"})
-    model = TestModel([answer("demands", [stray]), answer("demands", [])])
-    written = W.write_spec("t1", inputs(), model)
-    assert written.spec.checks == [] and written.counts["value_not_argument"] == 1
-    refused = json.loads(model.calls[1]["messages"][-1]["content"][len(W.FOLLOWUP_PROMPT):])["refused"]
-    assert refused == [{"id": "d0", "reason": "value_not_argument",
-                        "rule": W.SENT_BACK_RULES["value_not_argument"] + "; update_item takes item_id, slot"}]
-
-
-def test_the_prompt_asks_for_say_values_handoffs_not_writes_caps_on_data_writes_and_row_naming_id_fields():
-    assert "list the values the agent must state (an amount, an id, a status word), one each, never a sentence" \
-        in " ".join(W.SYSTEM_PROMPT.split())
-    assert "A transfer or hand-off is the handoff demand, never a write." in W.SYSTEM_PROMPT
-    assert "A cap counts data writes only, never a hand-off." in W.SYSTEM_PROMPT
-    assert "The id_field of a write is an argument that names a row." in W.SYSTEM_PROMPT
+def test_refusal_counts_keep_the_reasons_words_and_never_the_refused_value():
+    store = W.store_of(inputs())
+    store.add([{"id": "s1", "kind": "row_is", "table": "items", "find": {"item_id": "A1"},
+                "expect": {"slot": "nine_42"}, "fact_ids": ["f1"]}])
+    assert W._store_counts(store)["refused_why"] == {"value is not in the world the policy or": 1}

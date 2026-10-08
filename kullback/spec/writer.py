@@ -1,18 +1,20 @@
-"""The Verifier writer: checks from the Intent, the recorded policy, the tool schemas and the Starting state.
+"""The Verifier writer: items from the Intent, the policy and the world, never from a Reference.
 
-Ported from the intentv experiment, prompt revision r1 (DESIGN.md, the Spec role). One model session
-reads the Intent facts, the recorded agent policy, the tool list and, through two read-only lookups,
-the Starting state; it writes demands, each with a because and the ids of the facts it answers. It
-never sees a Run, a Reference, a Verifier or an End state: the inputs come from the Environment's own
-files and `writer_tools.refuse_run_inputs` refuses anything else.
+One model session reads the Intent facts, the policy, the tool list and, through the world tools
+(`writer_tools.WORLD_TOOLS`), the Starting state and the policy sections; it writes typed items
+(spec/items.py: state, event, text and judge items), each with gate, weight and provenance (the Intent
+facts it answers or a verbatim policy line). It never sees a Run, a Reference, a Verifier or an End
+state: the inputs come from the Environment's own files and `writer_tools.refuse_run_inputs` refuses
+anything else. Nothing here reads the Reference index (spec/witness.py does, for the witness flag).
 
-Code then decides what stands: a check whose because quotes neither the Intent nor a policy section
-is dropped, a check resting only on facts that were accepted and never witnessed is dropped, a write
-whose because quotes neither a witnessed fact nor the policy text is dropped, facts no check names
-become gaps, and `must_not` adds the forbidden side. Demands refused on their because, and checks that
-make the Spec unpassable (compile.UNSATISFIABLE), go back to the writer once, in one follow-up turn of
-the same conversation, and the corrections that ground are kept. `repair` answers a ruling by changing
-or defending the ruled checks only, under the same rules.
+Code decides what stands, in the tool: an item naming a value no world row, policy line or user turn
+holds is refused with the reason, as is an item with no provenance or resting on unwitnessed facts
+alone, so the writer fixes it in the same session. Items no Run can pass together go back once in a
+follow-up turn. Code adds the sanity item. Facts no item names become gaps. `repair` answers an
+Examiner ruling (D331): it applies the ruling's fix (drop or replace a ruled item, add at most
+MAX_ADDS items for an uncovered fact) or rebuts it with why, under the same rules.
+
+A Spec of the older demand grammar still compiles (`compile_spec`, `must_not`, Reference-free gates).
 """
 
 from __future__ import annotations
@@ -23,18 +25,12 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 from kullback.runner.records import Record, Verifier
+from kullback.spec import items as I
 from kullback.spec import writer_tools
-from kullback.spec.actions import action_tools_of
-from kullback.spec.compile import (
-    ATOM_KINDS,
-    FORBIDDEN_EQUALS_REQUIRED,
-    NO_WRITE_BESIDE_REQUIRED,
-    WRITE_WITHOUT_ROW,
-    Compiled,
-    compile_spec,
-)
-from kullback.spec.end_state import Gates, called_tools, gates_of, reference_run, unseen_demand
-from kullback.spec.ground import coverage, valid_because, valid_write_because
+from kullback.spec.actions import action_tables_of, action_tools_of
+from kullback.spec.compile import Compiled, compile_spec
+from kullback.spec.end_state import Gates, gates_of
+from kullback.spec.ground import coverage
 from kullback.spec.must_not import must_not
 from kullback.spec.schema import (
     Check,
@@ -46,112 +42,111 @@ from kullback.spec.schema import (
     load_spec,
     save_spec,
     spec_verifier_path,
-    tier_of,
 )
 
-# The one prompt of the r1 arm, with fact ids and unwitnessed facts added (DESIGN.md rule 5).
-SYSTEM_PROMPT = """You write the end-state demands for one customer request. You have never seen \
-any agent run, reference solution, or existing check for this task, and you must not ask for one: \
-derive everything from the Intent, the policy, the tool list, and the Starting state reads below.
+WHAT_YOU_RECEIVE = """\
+# What you receive
+One customer request as Intent facts (each with an id; a fact marked unwitnessed was only accepted by \
+the user, never volunteered), the policy the agent works under, the tools the agent may call, and \
+read access to the world as it stands before the agent starts. You have never seen any agent run or \
+reference solution for this request, and you must not ask for one. Your job is the Verifier: the \
+items a correct run shows, each resting on an Intent fact or a policy line."""
 
-Rules:
-- Demand only what the Intent asks for or the policy requires. Never demand a step just because \
-it would be a sensible way to do the job.
-- The recorded agent policy below is the standing policy. Reason from it, never from memory of \
-how such systems work. Name its section in because when it decides.
-- Spend at most 4 read rounds, then write the JSON with what you have. A truncated list is not a \
-reason to keep reading; demand the shape instead of the literal you could not see.
-- Say only what the Intent states word for word: the because must quote the Intent span that IS \
-the fact. Never demand a computed, read, or rephrased figure as a say; if the answer must convey \
-it some other way, leave it out.
-- List every write an acceptable run may make: required where the Intent or policy demands it, \
-allowed everywhere else it is acceptable. Set cap to the number of entities listed, so a run that \
-stays inside the listed writes never fails on coverage.
-- Every exact value (ids, names, amounts, codes) must come from a Starting state read in this \
-session, never from memory or guesswork. If a value is not in the Starting state, demand the \
-shape (which tool and field) rather than a literal, or leave it out.
-- The Intent is a list of facts, each with an id. Every demand names in fact_ids the facts it \
-answers. A fact marked unwitnessed was only accepted by the user, never volunteered: a demand may \
-name it, but a demand resting on unwitnessed facts alone is dropped.
-- Output one JSON object only, no prose: {"demands": [{"id": "d0", "kind": "required", \
-"demand": "write" | "say" | "ask" | "no_write" | "cap" | "shape", ...fields..., \
-"fact_ids": ["f1"], "because": "quote of the Intent span or the policy rule name"}]}.
-- write needs tool, id_field, entity, values (an object of field to value read from the state).
-- say needs values: list the values the agent must state (an amount, an id, a status word), one \
-each, never a sentence.
-- ask needs field (a field of the request the agent must ask the user about) or confirm_tool.
-- no_write needs no fields: the end state is the starting state.
-- cap needs count: the number of entities listed above.
-- shape needs tool, field, id_field: the write must carry a value the run read for that column.
-- refuse needs nothing, or tool: the policy or the user refuses the request, and the agent must say so.
-- handoff needs tool: the user asks for a person, and the agent must hand the conversation over.
-- A transfer or hand-off is the handoff demand, never a write.
-- A cap counts data writes only, never a hand-off.
-- The id_field of a write is an argument that names a row.
-- Never write code, a predicate or a lambda: a write is a cell of the end state (tool, row, values).
-- because must quote the Intent span word for word (at least 12 characters) or name the policy \
-rule or policy section. A demand with no valid because is dropped.
-- A write's because quotes the user's words asking for it, or names the policy section and \
-quotes the sentence requiring it; a section alone fails.
+TOOLS_TEXT = """\
+# Tools
+- read_schema: tables with their fields and row counts, tools with their argument names.
+  Example: read_schema({})
+- find_rows: rows holding a value, in one field or any field, one table or all.
+  Example: find_rows({"value": "the id the user gave", "table": "records"})
+- read_row: one row by table and key. Example: read_row({"table": "records", "key": "R-1"})
+- read_policy: the policy headings, or one section's text. Example: read_policy({"section": "Changes"})
+- add_items: add items; each comes back kept (with the row it resolved) or refused with the reason.
+  Example: add_items({"items": [{"id": "s1", "kind": "row_is", "table": "records", \
+"find": {"record_id": "R-1"}, "expect": {"status": "closed"}, "gate": true, "fact_ids": ["f1"]}]})
+- drop_items: remove items you added. Example: drop_items({"ids": ["s1"]})
+
+# Item kinds
+- row_is {table, find: {field: value}, expect: {field: value | [values] | {"one_of": [...]} | {"not": [...]}}, \
+free: [fields]}: the row find names (exactly one) holds these values after the run. A list value names \
+every member, in any order. Use one_of where the policy or the user allows several values, not where a \
+value is forbidden. List in free the fields of that row a correct run changes to a value you cannot find \
+(records a tool fills in, a balance it computes); code checks nothing in them but lets them move.
+- row_new {table, where: {field: value}, count}: the run makes count new rows holding these values.
+- row_keeps {table, find, fields: [...]}: these fields of that row must not change (one per "do not change").
+- called {tool, args?} / not_called {tool, args?}: a call that must or must not happen.
+- before {first: "confirm_turn" | tool, then: tool}: the user confirms (or a tool is called) before then.
+- said {values: [...], not_values: [...]}: short values the agent must (not) state to the user.
+- judge {question, anchor: {answer, accepted: [...], reject: [...], row: {table, find, fields: [...]}}, \
+evidence: [...]}: one yes or no question about what the agent told the user. Find the anchor's row with \
+find_rows first, cite it in row, and state its fields in answer; only a refusal anchor that quotes the \
+item's policy_line goes without a row. Evidence: "after_call:<tool>" when the fact comes from a lookup, \
+"final_answer" otherwise, "assistant:<k>" for the k-th agent turn, "assistant_turns" only as a fallback.
+Every item: id, gate (true when a run failing it is wrong whatever else it does), weight (default 1), \
+and fact_ids or policy_line (a verbatim line of the policy, at least 12 characters). State items may \
+carry alt (0, 1, ...) when the policy allows different end states; an item without alt holds in all."""
+
+EXAMPLES = """\
+# Examples
+- The user asks to close record R-1 and the policy says closing needs the user's yes: row_is on R-1 \
+with status closed (gate), before {first: "confirm_turn", then: "close_record"} (gate, policy_line).
+- The user asks for something the policy forbids: no state item (code already fails any change), and \
+one judge item asking whether the agent declined and why, the anchor quoting the policy line.
+- The user wants a new entry with a minted id: row_new with the fields the user gave, never the id.
+- The user asks what something costs: a judge item whose anchor is the amount read from the row that \
+holds it (row cites that row, evidence after_call:<the lookup tool>), and said with that amount if it is stored as is. Never compute a figure the world does not hold.
+- The user says "leave the other one as it is": row_keeps on that row's fields."""
+
+CHOICE_RULE = """\
+# Choosing items
+Write an item only for what the Intent asks for or the policy requires, never for a sensible step. \
+Every value comes from a world row you read, a policy line or the user's words: find it first, then add \
+it. Code adds the sanity item by itself (no row outside your state items may change), so list every \
+row a correct run changes, and only those. Gate what decides right or wrong; leave text and judge items \
+ungated unless the request is only to be told something."""
+
+FEEDBACK = """\
+# Feedback
+add_items answers each item: kept, or refused with the reason (a value not found, a find matching no \
+row or several, a field the table lacks, no provenance). Fix a refused item and add it again under its \
+id, or leave it out."""
+
+STOP_RULE = """\
+# Stop
+When every Intent fact has its items (or none fits), reply with one line saying you are done, no tool \
+call. Spend at most 14 tool rounds."""
+
+SYSTEM_PROMPT = "\n\n".join((WHAT_YOU_RECEIVE, TOOLS_TEXT, EXAMPLES, CHOICE_RULE, FEEDBACK, STOP_RULE)) + "\n"
+
+FOLLOWUP_PROMPT = """Code found items no run can pass together, each with the reason. Drop or re-add \
+them under their ids so a correct run can pass, then reply that you are done.
 """
 
-FOLLOWUP_PROMPT = """Code refused these demands of yours, each for the reason and rule named. Send a \
-corrected version of each, under the same id, or leave it out to drop it. Send only these demands, \
-as one JSON object, no prose: {"demands": [...]}.
+REPAIR_PROMPT = """The Examiner ruled on items you wrote for this customer request. A ruling names \
+one item (an item id, an Intent fact id, or the task), what is wrong and a fix. You still have never \
+seen any agent run, and you must not ask for one. Apply the fix: drop or replace the ruled items, or \
+add at most 3 items the ruling says are missing; you may not drop or replace any other item. Every \
+rule of the writer still holds. Or rebut: when the Intent or the policy still requires the items as \
+written, change nothing and reply with one line starting "rebut:" and why in one sentence. Otherwise \
+reply that you are done when finished.
+
 """
 
-# Why a demand carrying code is refused (D320): what a Run must write is the end state's cells, read by code.
+# Why a demand carrying code is refused (D320): what a Run must write is the end state's cells.
 WRITE_PREDICATE = "write demands are end-state cells"
-# The keys a demand may not carry: code the Runner would evaluate in place of the end state.
-_PREDICATE_KEYS = ("predicate", "predicate_src", "code", "lambda")
-
-# The rule each refusal a writer is told about breaks, in the words the follow-up turn shows it.
-SENT_BACK_RULES = {
-    "ungrounded": "because must quote the Intent word for word (at least 12 characters) or name a policy section",
-    "unwitnessed": "a demand may not rest on unwitnessed facts alone; its because must quote a witnessed fact",
-    "condition_unquoted": "a write's because must quote the user's own words asking for that action, or name "
-                          "the policy section and quote the sentence of it that requires the action; naming a "
-                          "section alone is not enough",
-    NO_WRITE_BESIDE_REQUIRED: "a no_write forbids every write of the tools it covers, so it cannot stand beside a "
-                              "required write on one of them; keep the one the Intent asks for",
-    FORBIDDEN_EQUALS_REQUIRED: "one demand cannot be both required and forbidden; keep the one the Intent asks for",
-    WRITE_WITHOUT_ROW: "a required write names one row: id_field, and entity as that single id value, not an object",
-    "write_predicate": WRITE_PREDICATE,
-    "unseen_conduct": "a hand-off or confirmation demand must be one the Reference shows; the Reference made no "
-                      "such call",
-    "value_not_argument": "a write's values name arguments of its tool only",
-}
-
-REPAIR_PROMPT = """A ruling says some checks you wrote for this customer request are wrong. You \
-still have never seen any agent run, and you must not ask for one. For each ruled check, either \
-change it or defend it; you may not touch any other check and you may not add checks.
-
-Rules:
-- Every rule of the writer still holds: reason from the recorded policy, never memory; quote the \
-Intent word for word; take exact values only from Starting state reads; demand the shape when a \
-literal is unseen; at most 4 read rounds.
-- A changed check keeps its id and must still carry a because that quotes the Intent (at least 12 \
-characters) or names a policy section, or code keeps the old check.
-- Defend a check when the Intent or the policy still requires it; say why in because.
-- Output one JSON object only, no prose: {"checks": [{"id": "<ruled check id>", "action": \
-"change" | "defend", "kind": "required", "demand": "write" | "say" | "ask" | "no_write" | "cap" | \
-"shape", ...fields..., "fact_ids": ["f1"], "because": "..."}]}.
-"""
+# The demands of the older grammar that stay atoms beside an expected end state (D320).
+ATOM_DEMANDS = ("say", "ask")
 
 # The longest message body a session is sent, about 6000 tokens: it bounds one call's input cost
 # whatever the policy or tool list holds (held-out bodies ran 12000 to 18000 characters).
 BODY_CHARS = 24000
 # The longest ruling excerpt a repair session is shown: a quote, never a transcript.
 MAX_EXCERPT = 1000
-_META = ("id", "kind", "because", "fact_ids", "action")
+# The most items one repair may add (D331): a fix covers a fact, it never rewrites the Spec.
+MAX_ADDS = 3
 
 
 class WriterInputs(NamedTuple):
-    """Everything one writer session may see; none of it comes from a Run, `reference_tools` aside.
-
-    `reference_tools` is never shown: code alone reads it to send back a hand-off or confirmation the
-    Reference never made (None: no Reference, nothing sent back).
-    """
+    """Everything one writer session may see; none of it comes from a Run or a Reference."""
     intent: SpecIntent
     policy_text: str
     sections: list[str]
@@ -162,14 +157,20 @@ class WriterInputs(NamedTuple):
     canon: Callable[[Any], Any]
     # The tools the world records as actions (spec/actions.py): never in write_tools.
     action_tools: frozenset = frozenset()
-    reference_tools: Optional[frozenset] = None
+    # The tables those actions are recorded in: a call's record, never a change the sanity item reads.
+    action_tables: frozenset = frozenset()
+    # The schema's column names per table, for tables the Starting state holds no row of.
+    columns: dict = {}
 
 
 class Ruling(Record):
-    """What a repair answers: the ruled check ids, the reason in words, and the Examiner's excerpt."""
+    """What a repair answers: the ruled check ids, the item ruled on, the reason and the fix (D331)."""
     check_ids: list[str]
     reason: str
     excerpt: str = ""
+    item: str = ""
+    fix: str = ""
+    kind: str = ""
 
 
 class Written(NamedTuple):
@@ -183,7 +184,7 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
 
     The policy is the recorded agent's own system prompt, else the Environment's policy.md. The
     Starting state is the shared world with the Task's overlay laid over it, never a Run's record.
-    An action tool (spec/actions.py) is kept out of the write tools.
+    An action tool (spec/actions.py) is kept out of the write tools. No Reference is read.
     """
     from kullback.runner.state import StateView
     from kullback.runner.target import canon_fn
@@ -199,12 +200,21 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
     overlay, rows = env.overlay(task_id)
     tools = writer_tools.tool_rows(env.sigs)
     actions = frozenset(action_tools_of(env.schema))
-    called = called_tools(reference_run(workdir, task_id))
     return WriterInputs(intent=intent, policy_text=policy, sections=writer_tools.policy_sections_of(workdir),
                         tools=tools, write_tools={row["name"] for row in tools if row["kind"] == "write"} - actions,
                         state=StateView(env.db, overlay, rows).shared, constraints=_constraints(workdir),
                         canon=canon_fn(env.canon_rules), action_tools=actions,
-                        reference_tools=None if called is None else frozenset(called))
+                        action_tables=frozenset(action_tables_of(env.schema)), columns=_columns(env.schema))
+
+
+def _columns(schema: Any) -> dict:
+    out: dict = {}
+    for column in (schema.get("columns") if isinstance(schema, dict) else getattr(schema, "columns", None)) or ():
+        table, name = (column.get("table"), column.get("name")) if isinstance(column, dict) else (
+            getattr(column, "table", None), getattr(column, "name", None))
+        if table and name:
+            out.setdefault(str(table), []).append(str(name).split(".")[0])
+    return {table: sorted(set(names)) for table, names in out.items()}
 
 
 def _constraints(workdir: Path) -> list[dict]:
@@ -229,7 +239,7 @@ def _facts_view(intent: SpecIntent) -> list[dict]:
 
 def _body(inputs: WriterInputs) -> dict:
     return {"intent": _facts_view(inputs.intent), "tools": inputs.tools,
-            "policy": inputs.sections or ["no policy sections; the Intent alone governs"],
+            "policy_sections": json.loads(world_of(inputs).policy_section()) or "no policy sections",
             "policy_text": inputs.policy_text or "no recorded agent policy found"}
 
 
@@ -237,7 +247,7 @@ def _message(prompt: str, body: dict) -> tuple[list[dict], int]:
     """The one user message, its body cut at BODY_CHARS; the count of characters cut, 0 when whole."""
     text = json.dumps(body)
     cut = max(len(text) - BODY_CHARS, 0)
-    tail = "\n(inputs truncated)" if cut else ""
+    tail = "\n(inputs truncated; read_policy shows any section whole)" if cut else ""
     return [{"role": "user", "content": prompt + "\n" + text[:BODY_CHARS] + tail}], cut
 
 
@@ -245,137 +255,52 @@ def writer_messages(inputs: WriterInputs) -> tuple[list[dict], int]:
     return _message(SYSTEM_PROMPT, _body(inputs))
 
 
-def _refusal(item: Any, fact_ids: list[str], inputs: WriterInputs) -> str:
-    """Why code refuses a demand before it becomes a Check, or empty when it stands."""
-    if not isinstance(item, dict) or item.get("kind") not in ATOM_KINDS:
-        return "bad_kind"
-    if any(key in item for key in _PREDICATE_KEYS):
-        return "write_predicate"
-    because = str(item.get("because") or "")
-    if not valid_because(because, inputs.intent.text, inputs.sections):
-        return "ungrounded"
+def world_of(inputs: WriterInputs) -> I.World:
+    """The world the writer's tools read and its values are sourced from."""
+    return I.World(inputs.state, inputs.policy_text, inputs.intent.facts, inputs.tools, inputs.columns)
+
+
+def store_of(inputs: WriterInputs, items: Iterable[dict] = (), ruled: Optional[set[str]] = None,
+             max_adds: Optional[int] = None) -> writer_tools.ItemStore:
+    return writer_tools.ItemStore(world_of(inputs), {fact.id: fact for fact in inputs.intent.facts}, unwitnessed,
+                                  items, ruled, max_adds)
+
+
+def is_item_check(check: Check) -> bool:
+    """A check written as an item (spec/items.py), not a demand of the older grammar."""
+    return check.demand.get("kind") in I.ITEM_KINDS
+
+
+def check_of(item: dict, inputs: WriterInputs, world: Optional[I.World] = None) -> Check:
+    """One kept item as a Check: its gate decides the kind and tier, its provenance the because."""
     facts = {fact.id: fact for fact in inputs.intent.facts}
-    witnessed = intent_text([fact for fact in inputs.intent.facts if not unwitnessed(fact)])
-    if fact_ids and all(unwitnessed(facts[f]) for f in fact_ids):
-        return "unwitnessed"
-    if not valid_because(because, witnessed, inputs.sections):
-        return "unwitnessed"
-    if item.get("demand") == "write" and not valid_write_because(because, witnessed, inputs.policy_text):
-        return "condition_unquoted"
-    if item.get("demand") == "write" and _not_arguments(item, inputs):
-        return "value_not_argument"
-    return ""
+    return Check(id=item["id"], kind="required" if item["gate"] else "allowed", demand=dict(item),
+                 because=I.because_of(item, facts, world or world_of(inputs)),
+                 tier="critical" if item["gate"] else "important", fact_ids=list(item.get("fact_ids") or []),
+                 gate=bool(item["gate"]), weight=float(item["weight"]), policy_line=item.get("policy_line"))
 
 
-def _arguments(tool: Any, inputs: WriterInputs) -> Optional[list[str]]:
-    """The argument names of a listed tool, or None when the tool is not listed or lists none (unknown)."""
-    return next((list(row["args"]) for row in inputs.tools if row.get("name") == tool and row.get("args")), None)
-
-
-def _not_arguments(item: dict, inputs: WriterInputs) -> list[str]:
-    """The keys of a write's values that are not arguments of its tool (none when the tool is not listed)."""
-    args = _arguments(item.get("tool"), inputs)
-    values = item.get("values")
-    if args is None or not isinstance(values, dict):
-        return []
-    return sorted(str(key) for key in values if key not in args)
-
-
-def _check_of(number: Any, item: Any, inputs: WriterInputs) -> tuple[Optional[Check], str]:
-    """One demand as a Check, or the reason code refuses it."""
-    known = {fact.id for fact in inputs.intent.facts}
-    raw_ids = item.get("fact_ids") if isinstance(item, dict) else None
-    fact_ids = [str(f) for f in raw_ids or [] if str(f) in known]
-    refusal = _refusal(item, fact_ids, inputs)
-    if refusal:
-        return None, refusal
-    demand = {key: value for key, value in item.items() if key not in _META}
-    check_id = number if isinstance(number, str) else f"c{number}"
-    return Check(id=check_id, kind=item["kind"], demand=demand, because=str(item["because"]),
-                 tier=tier_of(item["kind"], demand), fact_ids=fact_ids), ""
-
-
-def _keep(demands: Iterable[Any], inputs: WriterInputs) -> tuple[list[Check], dict, list[tuple[int, Any, str]]]:
-    """The checks code keeps, how many of each refusal it made, and each refused demand with its code."""
-    checks, refused = [], []
-    counts = {"demands": 0, "kept": 0, "ungrounded": 0, "unwitnessed": 0, "condition_unquoted": 0, "bad_kind": 0,
-              "write_predicate": 0, "value_not_argument": 0}
-    for number, item in enumerate(demands):
-        counts["demands"] += 1
-        check, refusal = _check_of(number, item, inputs)
-        if check is None:
-            counts[refusal] += 1
-            refused.append((number, item, refusal))
-            continue
-        counts["kept"] += 1
-        checks.append(check)
-    return checks, counts, refused
-
-
-def _spec_of(task_id: str, checks: list[Check], counts: dict, inputs: WriterInputs) -> Spec:
+def _spec_of(task_id: str, items: Iterable[dict], counts: dict, inputs: WriterInputs) -> Spec:
+    world = world_of(inputs)
+    checks = [check_of(item, inputs, world) for item in items]
     spec = with_gaps(Spec(task_id=task_id, intent=inputs.intent, checks=checks), inputs)
     counts["gaps"] = len(spec.gaps)
     return spec
 
 
-def build_spec(task_id: str, demands: Iterable[Any], inputs: WriterInputs) -> tuple[Spec, dict]:
-    """The Spec code keeps from the writer's demands, and how many of each refusal it made."""
-    checks, counts, _ = _keep(demands, inputs)
-    return _spec_of(task_id, checks, counts, inputs), counts
-
-
-def _writer_id(number: int, item: Any) -> str:
-    return str(item.get("id") or f"d{number}") if isinstance(item, dict) else f"d{number}"
-
-
-def _rule(code: str, item: Any, inputs: Optional[WriterInputs]) -> str:
-    """The rule line a refused demand is sent back with; a value_not_argument names its tool's arguments."""
-    rule = SENT_BACK_RULES[code]
-    if code == "value_not_argument" and inputs is not None and isinstance(item, dict):
-        rule += f"; {item.get('tool')} takes {', '.join(_arguments(item.get('tool'), inputs) or [])}"
-    return rule
-
-
-def followup_message(refused: list[tuple[int, Any, str]], inputs: Optional[WriterInputs] = None) -> str:
-    """The one follow-up turn: each refused demand's id, its reason code and the rule it broke."""
-    rows = [{"id": _writer_id(number, item), "reason": code, "rule": _rule(code, item, inputs)}
-            for number, item, code in refused]
-    return FOLLOWUP_PROMPT + json.dumps({"refused": rows})
-
-
-def _send_back(messages: list[dict], session: dict, refused: list[tuple[int, Any, str]], inputs: WriterInputs,
-               model: Any, config: Any, price: Callable[[dict], float],
-               ceiling_usd: Optional[float]) -> tuple[list[Check], dict]:
-    """One follow-up turn in the same conversation; the corrected demands code keeps, and that turn's session.
-
-    A corrected demand keeps the check id of the demand it corrects; one under an id never sent back is ignored.
-    """
-    numbers = {_writer_id(number, item): number for number, item, _ in refused}
-    turn = messages + [{"role": "assistant", "content": session["text"]},
-                       {"role": "user", "content": followup_message(refused, inputs)}]
-    remaining = None if ceiling_usd is None else max(ceiling_usd - float(session.get("usd") or 0.0), 0.0)
-    again = writer_tools.run_session(model, turn, inputs.state, _config(config), writer_tools.MAX_READ_ROUNDS,
-                                     price, force_answer=True, ceiling_usd=remaining)
-    corrected, _ = writer_tools.parse_list(again["text"], "demands")
-    kept: dict[int, Check] = {}
-    for item in corrected:
-        number = numbers.get(str(item.get("id"))) if isinstance(item, dict) else None
-        if number is None or number in kept:
-            continue
-        check, _ = _check_of(number, item, inputs)
-        if check is not None:
-            kept[number] = check
-    return [kept[number] for number in sorted(kept)], again
+def build_spec(task_id: str, items: Iterable[Any], inputs: WriterInputs) -> tuple[Spec, dict]:
+    """The Spec code keeps from offered items (no model), and the counts of kept and refused."""
+    store = store_of(inputs)
+    store.add(list(items))
+    counts = _store_counts(store)
+    return _spec_of(task_id, store.items.values(), counts, inputs), counts
 
 
 def with_gaps(spec: Spec, inputs: WriterInputs) -> Spec:
-    """The Spec with its gaps: facts no check covers, then one line per check compile names as dropped.
-
-    A compile reason (a write with no entity, say) is a check the Verifier silently lacks, so it is shown
-    where the Examiner and the trust report already look.
-    """
+    """The Spec with its gaps: facts no check covers, then, for older demands, what compile drops."""
     spec = spec.model_copy(update={"gaps": []})
-    reasons = compile_spec(spec, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools).reasons
+    legacy = spec.model_copy(update={"checks": [check for check in spec.checks if not is_item_check(check)]})
+    reasons = compile_spec(legacy, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools).reasons
     return spec.model_copy(update={"gaps": coverage(spec) + list(reasons)})
 
 
@@ -389,94 +314,93 @@ def _price(model_id: Optional[str]) -> Callable[[dict], float]:
 def _config(config: Any) -> Any:
     from kullback.ai.provider import ModelConfig
 
-    return config or ModelConfig(thinking={"type": "adaptive", "display": "summarized"}, max_tokens=2000)
+    return config or ModelConfig(thinking={"type": "adaptive", "display": "summarized"}, max_tokens=4000)
+
+
+def _store_counts(store: writer_tools.ItemStore) -> dict:
+    reasons: dict[str, int] = {}
+    for row in store.refused:
+        # The reason's words only: quoted values and the leading field name are cut, so no value is kept.
+        text = re.sub(r"\"[^\"]*\"|'[^']*'|\([^)]*\)", "", row["reason"]).split(";")[0]
+        text = re.sub(r"^[\w.]+:\s*", "", text.strip())
+        key = re.sub(r"\s+", " ", re.sub(r"[^a-z_ ]", "", text.casefold())).strip()[:40].strip()
+        reasons[key] = reasons.get(key, 0) + 1
+    return {"offered": store.offered, "kept": len(store.items), "refused": len(store.refused),
+            "refused_why": dict(sorted(reasons.items())), "dropped": len(store.dropped)}
+
+
+def _session(model: Any, messages: list[dict], store: writer_tools.ItemStore, inputs: WriterInputs, config: Any,
+             price: Callable[[dict], float], ceiling_usd: Optional[float]) -> dict:
+    return writer_tools.run_session(model, messages, inputs.state, _config(config), writer_tools.MAX_ITEM_ROUNDS,
+                                    price, force_answer=True, ceiling_usd=ceiling_usd,
+                                    tools=writer_tools.WORLD_TOOLS, impl=writer_tools.world_tools(store))
+
+
+def _joined(first: dict, again: dict) -> dict:
+    return dict(again, usd=float(first.get("usd") or 0.0) + float(again.get("usd") or 0.0),
+                tool_rounds=first.get("tool_rounds", 0) + again.get("tool_rounds", 0),
+                tool_uses=first.get("tool_uses", []) + again.get("tool_uses", []))
 
 
 def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Optional[str] = None,
                config: Any = None, ceiling_usd: Optional[float] = None) -> Written:
-    """One writer session for one Task, and the Spec code keeps from it; past `ceiling_usd` it answers at once."""
+    """One writer session for one Task, and the Spec code keeps from it; past `ceiling_usd` it answers at once.
+
+    Items that contradict each other (`items.contradictions`) go back once in a follow-up turn of the same
+    conversation; any still there are named in counts["unsatisfiable"].
+    """
     writer_tools.refuse_run_inputs(inputs.intent, inputs.state)
     messages, cut = writer_messages(inputs)
-    session = writer_tools.run_session(model, messages, inputs.state, _config(config),
-                                       writer_tools.MAX_READ_ROUNDS, _price(model_id),
-                                       force_answer=True, ceiling_usd=ceiling_usd)
-    demands, error = writer_tools.parse_list(session["text"], "demands")
-    checks, counts, refused = _keep(demands, inputs)
-    refused = [row for row in refused if row[2] in SENT_BACK_RULES]
-    clashing = _clashing(task_id, checks, demands, inputs)
-    clashed = {f"c{number}" for number, _, _ in clashing}
-    unseen = [(int(check.id[1:]), demands[int(check.id[1:])], "unseen_conduct") for check in checks
-              if check.id not in clashed and unseen_demand(check, inputs.reference_tools)]
-    out = clashed | {f"c{number}" for number, _, _ in unseen}
-    checks = [check for check in checks if check.id not in out]
-    counts.update(sent_back=len(refused), sent_back_kept=0, unsatisfiable_sent_back=len(clashing),
-                  unseen_sent_back=len(unseen))
-    refused = sorted(refused + clashing + unseen, key=lambda row: row[0])
-    if refused:
-        corrected, again = _send_back(messages, session, refused, inputs, model, config, _price(model_id),
-                                      ceiling_usd)
-        counts["sent_back_kept"] = len(corrected)
-        checks = sorted(checks + corrected, key=lambda check: int(check.id[1:]))
-        session = dict(again, usd=float(session.get("usd") or 0.0) + float(again.get("usd") or 0.0),
-                       tool_rounds=session.get("tool_rounds", 0) + again.get("tool_rounds", 0),
-                       tool_uses=session.get("tool_uses", []) + again.get("tool_uses", []))
-    counts["unsatisfiable"] = sorted({code for _, code in _unpassable(task_id, checks, inputs)})
-    spec = _spec_of(task_id, checks, counts, inputs)
-    counts.update(parse_error=error, truncated_chars=cut)
+    store = store_of(inputs)
+    price = _price(model_id)
+    session = _session(model, messages, store, inputs, config, price, ceiling_usd)
+    clashes = I.contradictions(list(store.items.values()))
+    if clashes:
+        turn = messages + [{"role": "assistant", "content": session["text"] or "done"},
+                           {"role": "user", "content": FOLLOWUP_PROMPT + json.dumps(
+                               [{"id": item_id, "reason": why} for item_id, why in clashes])}]
+        left = None if ceiling_usd is None else max(ceiling_usd - float(session.get("usd") or 0.0), 0.0)
+        session = _joined(session, _session(model, turn, store, inputs, config, price, left))
+    items = list(store.items.values())
+    counts = _store_counts(store)
+    counts.update(sent_back=len(clashes), unsatisfiable=sorted({item_id for item_id, _ in I.contradictions(items)}),
+                  truncated_chars=cut, unfinished=bool(session.get("unfinished")))
+    spec = _spec_of(task_id, items, counts, inputs)
+    counts.update(I.counts_of(items + [I.sanity_item([])]))
     return Written(spec, counts, session)
 
 
-def _unpassable(task_id: str, checks: list[Check], inputs: WriterInputs) -> tuple[tuple[str, str], ...]:
-    spec = Spec(task_id=task_id, intent=inputs.intent, checks=checks)
-    return compile_spec(spec, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools).unsatisfiable
-
-
-def _clashing(task_id: str, checks: list[Check], demands: list, inputs: WriterInputs) -> list[tuple[int, Any, str]]:
-    """Each check that makes the Spec unpassable (compile.UNSATISFIABLE) as a demand to send back, with its reason."""
-    first: dict[str, str] = {}
-    for check_id, code in _unpassable(task_id, checks, inputs):
-        first.setdefault(check_id, code)
-    return [(int(check_id[1:]), demands[int(check_id[1:])], code) for check_id, code in first.items()]
-
-
-# The demands that stay weighted atoms beside an expected end state: facts told and questions asked (D320).
-ATOM_DEMANDS = ("say", "ask")
+def item_checks(spec: Spec) -> list[dict]:
+    return [check.demand | {"id": check.id} for check in spec.checks if is_item_check(check)]
 
 
 def verifier_of(spec: Spec, inputs: WriterInputs, gates: Optional[Gates] = None) -> Compiled:
-    """The Spec's checks compiled, with its gates when it has an expected end state.
+    """The Spec's Verifier: items to atoms, end states (the sanity item with them) and event gates.
 
-    With an expected end state the writes are its cells, so only fact and question checks compile to
-    atoms and `must_not` adds nothing: the forbidden list and the collateral rule answer for it. With
-    none (no Reference yet) every check compiles as before, with the must-not atoms. The Spec's
-    review edits to its atoms (`atom_edits`) are applied last.
+    Checks of the older demand grammar compile as before, Reference-free, beside the items: their
+    atoms, the must-not atoms when the Spec has no item, and the forbidden writes and conduct they ask
+    for (`gates_of`).
     """
-    if gates is not None and gates.expected:
-        kept = spec.model_copy(update={"checks": [c for c in spec.checks if c.demand.get("demand") in ATOM_DEMANDS]})
-        compiled = compile_spec(kept, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools)
-        atoms = compiled.verifier.atoms
-    else:
-        compiled = compile_spec(spec, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools)
-        must = [atom for atom in compiled.verifier.atoms if atom.kind in ("required", "allowed")]
-        atoms = compiled.verifier.atoms + must_not(must, spec.intent.text, inputs.constraints, sorted(inputs.write_tools))
-    update: dict = {"atoms": edited_atoms(atoms, spec.atom_edits)}
-    if gates is not None:
-        update.update(expected=gates.expected, forbidden=gates.forbidden, conduct=gates.conduct)
-    return compiled._replace(verifier=compiled.verifier.model_copy(update=update))
-
-
-def edited_atoms(atoms: list, edits: Iterable[dict]) -> list:
-    """The atoms after each review edit in order: its drop ids out, its added atoms in (ids replaced)."""
-    from kullback.gates import verifier_suite
-
-    out = list(atoms)
-    for edit in edits or ():
-        dropped = {str(atom_id) for atom_id in edit.get("drop") or []}
-        added = [verifier_suite.make_atom(str(a["id"]), a["kind"], dict(a["payload"]),
-                                          description=a.get("description")) for a in edit.get("add") or []]
-        new_ids = {atom.id for atom in added}
-        out = [atom for atom in out if atom.id not in dropped and atom.id not in new_ids] + added
-    return out
+    items = item_checks(spec)
+    legacy = spec.model_copy(update={"checks": [c for c in spec.checks if not is_item_check(c)]})
+    compiled = compile_spec(legacy, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools)
+    atoms = list(compiled.verifier.atoms)
+    if not items and legacy.checks:
+        must = [atom for atom in atoms if atom.kind in ("required", "allowed")]
+        atoms += must_not(must, spec.intent.text, inputs.constraints, sorted(inputs.write_tools))
+    gates = gates or gates_of(legacy, inputs.write_tools)
+    expected, forbidden, conduct = list(gates.expected), list(gates.forbidden), list(gates.conduct)
+    if items or not legacy.checks:
+        expected = I.end_states_of(items, world_of(inputs), inputs.action_tables)
+        more_conduct, more_forbidden = I.event_gates(items, {f.id: f for f in spec.intent.facts}, inputs.write_tools)
+        conduct += more_conduct
+        forbidden += more_forbidden
+        atoms = [I.atom_of(item) for item in items] + [I.sanity_atom(expected)] + atoms
+    verifier = Verifier(task_id=spec.task_id, atoms=atoms,
+                        verifier_version=f"spec{spec.version}", seed_run_ids=[], expected=expected,
+                        forbidden=forbidden, conduct=conduct)
+    return Compiled(verifier, compiled.dropped, compiled.reasons,
+                    compiled.unsatisfiable + tuple(I.contradictions(items)))
 
 
 def runner_verifier_path(workdir: Path, task_id: str) -> Path:
@@ -484,83 +408,85 @@ def runner_verifier_path(workdir: Path, task_id: str) -> Path:
     return Path(workdir) / "verifiers" / f"{task_id}.json"
 
 
-def end_state_counts(gates: Gates) -> dict:
-    """What the Spec record keeps of its gates: the Reference, the cells, how many are unsupported."""
-    cells = gates.expected[0].cells if gates.expected else []
-    return {"reference": gates.reference, "end_states": len(gates.expected), "cells": len(cells),
-            "unsupported": gates.unsupported, "forbidden": len(gates.forbidden), "conduct": len(gates.conduct),
-            "unseen": gates.unseen}
+def end_state_counts(verifier: Verifier, spec: Optional[Spec] = None) -> dict:
+    """What the Spec record keeps of its Verifier: items by kind and gate, end states, cells, gates."""
+    cells = verifier.expected[0].cells if verifier.expected else []
+    items = item_checks(spec) if spec is not None else []
+    out = {"end_states": len(verifier.expected), "cells": len(cells),
+           "new_rows": sum(len(state.new_rows) for state in verifier.expected),
+           "forbidden": len(verifier.forbidden), "conduct": len(verifier.conduct)}
+    if items:
+        out.update(I.counts_of(items + [I.sanity_item(verifier.expected)]))
+    return out
 
 
 def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = None,
                    gates: Optional[Gates] = None) -> list[Path]:
-    """Saves the Spec and its whole Verifier, the gates derived by code from the Task's Reference.
+    """Saves the Spec and its whole Verifier, written from its items by code; no Reference is read.
 
     The Spec is the one writer of a Task's Verifier (D320): the Runner's file and the Spec's copy are
-    the same bytes. The end-state counts ride on the saved Spec as `end_state`. The review's kept cell
-    and conduct edits (D325) are applied after, so a router repair does not drop them.
+    the same bytes. The counts ride on the saved Spec as `end_state`.
     """
-    from kullback.spec.review import apply_end_state_edits  # review imports this module
     inputs = inputs or load_inputs(workdir, spec.task_id, spec.intent)
-    gates = gates if gates is not None else gates_of(workdir, spec, inputs.policy_text, inputs.canon,
-                                                    write_tools=inputs.write_tools)
     verifier: Verifier = verifier_of(spec, inputs, gates).verifier
     text = json.dumps(verifier.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-    spec = spec.model_copy(update={"end_state": end_state_counts(gates)})
+    spec = spec.model_copy(update={"end_state": end_state_counts(verifier, spec)})
     paths = [save_spec(workdir, spec), spec_verifier_path(workdir, spec.task_id),
              runner_verifier_path(workdir, spec.task_id)]
     for path in paths[1:]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-    apply_end_state_edits(workdir, spec)
     return paths
 
 
 def _ruled_view(spec: Spec, ruling: Ruling) -> dict:
     ruled = [check.model_dump(mode="json") for check in spec.checks if check.id in set(ruling.check_ids)]
-    return {"ruled_checks": ruled, "ruling": {"reason": ruling.reason,
-                                              "excerpt": str(ruling.excerpt)[:MAX_EXCERPT]}}
+    return {"items": item_checks(spec), "ruled_items": ruled,
+            "ruling": {"item": ruling.item, "kind": ruling.kind, "reason": ruling.reason, "fix": ruling.fix,
+                       "excerpt": str(ruling.excerpt)[:MAX_EXCERPT]}}
 
 
 def repair_messages(spec: Spec, ruling: Ruling, inputs: WriterInputs) -> tuple[list[dict], int]:
-    return _message(REPAIR_PROMPT, dict(_body(inputs), **_ruled_view(spec, ruling)))
-
-
-def apply_repair(spec: Spec, ruling: Ruling, answers: Iterable[Any], inputs: WriterInputs) -> tuple[Spec, dict]:
-    """The Spec after a repair: only ruled checks change, and only to grounded checks."""
-    ruled = set(ruling.check_ids) & {check.id for check in spec.checks}
-    replaced: dict[str, Check] = {}
-    counts = {"changed": 0, "defended": 0, "refused": 0, "not_ruled": 0}
-    for item in answers:
-        check_id = str(item.get("id")) if isinstance(item, dict) else ""
-        if check_id not in ruled:
-            counts["not_ruled"] += 1
-        elif item.get("action") == "defend":
-            counts["defended"] += 1
-        else:
-            check, _ = _check_of(check_id, item, inputs)
-            counts["changed" if check else "refused"] += 1
-            if check is not None:
-                replaced[check_id] = check
-    checks = [replaced.get(check.id, check) for check in spec.checks]
-    repaired = spec.model_copy(update={"checks": checks, "version": spec.version + 1})
-    return with_gaps(repaired, inputs), counts
+    return _message(SYSTEM_PROMPT + "\n" + REPAIR_PROMPT, dict(_body(inputs), **_ruled_view(spec, ruling)))
 
 
 def repair(spec: Spec, ruling: Ruling, inputs: WriterInputs, model: Any, *,
            model_id: Optional[str] = None, config: Any = None,
            ceiling_usd: Optional[float] = None) -> Written:
-    """One repair session answering a ruling; no Run is shown, only the ruling's excerpt."""
+    """One repair session answering a ruling: apply the fix or rebut it; no Run is shown, only the excerpt.
+
+    The session starts from the Spec's items; it may drop or replace only ruled items and add at most
+    MAX_ADDS new ones, under the same find-do-not-invent rule, and code answers each add with its
+    refusal reason inside the session. A Spec of the older grammar is rewritten as items. The counts
+    say what changed, dropped and was added, what code refused, and the writer's rebuttal when it
+    changed nothing.
+    """
     ruling = Ruling.model_validate(ruling.model_dump() if isinstance(ruling, Record) else ruling)
     writer_tools.refuse_run_inputs(inputs.intent, inputs.state, ruling.excerpt)
     messages, cut = repair_messages(spec, ruling, inputs)
-    session = writer_tools.run_session(model, messages, inputs.state, _config(config),
-                                       writer_tools.MAX_READ_ROUNDS, _price(model_id),
-                                       force_answer=True, ceiling_usd=ceiling_usd)
-    answers, error = writer_tools.parse_list(session["text"], "checks")
-    repaired, counts = apply_repair(spec, ruling, answers, inputs)
-    counts.update(parse_error=error, truncated_chars=cut)
+    legacy = not all(is_item_check(check) for check in spec.checks)
+    store = store_of(inputs, item_checks(spec), None if legacy else set(ruling.check_ids),
+                     None if legacy else MAX_ADDS)
+    before = {item["id"]: item for item in item_checks(spec)}
+    session = _session(model, messages, store, inputs, config, _price(model_id), ceiling_usd)
+    items = list(store.items.values())
+    counts = _store_counts(store)
+    counts.update(changed=sum(1 for item in items if item["id"] in before and before[item["id"]] != item),
+                  dropped=sum(1 for check in spec.checks if check.id not in store.items),
+                  added=sum(1 for item in items if item["id"] not in before),
+                  not_ruled=store.not_ruled, truncated_chars=cut,
+                  refusals=[{"id": row["id"], "kind": row["kind"]} for row in store.refused],
+                  rebut=rebuttal_of(session.get("text") or ""))
+    repaired = _spec_of(spec.task_id, items, counts, inputs).model_copy(update={
+        "version": spec.version + 1, "round": spec.round, "rulings_open": spec.rulings_open,
+        "writer": spec.writer})
     return Written(repaired, counts, session)
+
+
+def rebuttal_of(text: str) -> str:
+    """The writer's why when it rebuts: the text after "rebut:" in its last reply, else empty."""
+    found = re.search(r"rebut:\s*(.+)", text or "", re.IGNORECASE | re.DOTALL)
+    return " ".join(found.group(1).split()) if found else ""
 
 
 def ruling_of(body: dict) -> Ruling:
@@ -570,8 +496,10 @@ def ruling_of(body: dict) -> Ruling:
     """
     quotes = body.get("quotes") or body.get("quoted") or []
     excerpt = body.get("excerpt") or "\n".join(str(q) for q in quotes if isinstance(q, str))
-    return Ruling(check_ids=[str(c) for c in body.get("check_ids") or []], reason=str(body.get("reason") or ""),
-                  excerpt=str(excerpt))
+    check_ids = body.get("check_ids") or ([body["item"]] if body.get("item") else [])
+    return Ruling(check_ids=[str(c) for c in check_ids], reason=str(body.get("reason") or ""),
+                  excerpt=str(excerpt), item=str(body.get("item") or ""), fix=str(body.get("fix") or ""),
+                  kind="/".join(str(body[key]) for key in ("kind", "code") if body.get(key)))
 
 
 def repair_for_ruling(workdir: Path, task_id: str, ruling: dict, model: Any,
@@ -595,12 +523,14 @@ def repair_for_ruling(workdir: Path, task_id: str, ruling: dict, model: Any,
     write_verifier(written.spec, workdir, inputs)
     bus = Bus(Path(workdir) / "bus.jsonl", agent="spec")
     before = {check.id: check for check in spec.checks}
+    after = {check.id for check in written.spec.checks}
     changed = [check.id for check in written.spec.checks if before.get(check.id) != check]
+    changed += [check_id for check_id in before if check_id not in after]
     if changed:
         events.spec_repaired(bus, task_id, written.spec.version, changed)
     else:
         events.spec_defended(bus, task_id, ruled.check_ids, str(ruling.get("code") or "other"))
-    return written.spec
+    return load_spec(workdir, task_id)
 
 
 def spoken_intent(task_id: str, text: str) -> SpecIntent:

@@ -1,8 +1,8 @@
 """The refuse ruling (the solvability judge as code, D128) and what a trusted Verifier is (D126, D319).
 
 D319: a Verifier carrying expected end states is trusted by code alone (`code_ruling`), and every
-Task gets a tier: trusted, unconfirmed, refused or pending. No model's judgment and no probe pool
-is read on that path, and the faithful replay is read only as the Run the end states describe,
+Task gets a ruling: trusted, unconfirmed, refused or pending, read as trusted or untrusted (D333).
+No model's judgment and no probe pool is read on that path, and the faithful replay is read only as the Run the end states describe,
 never as evidence that the recorded agent was right. What follows to the next marker is the
 pre-D319 rule, kept as `_legacy_trusted` this release so its count prints beside the tiers, and
 still ruling a Verifier that carries no expected end state.
@@ -359,10 +359,9 @@ def _legacy_trusted(task_status: dict, verifiers: list[Verifier], probes: dict[s
                 untrusted_seeds=foreign_seeds)
 
 
-#: The tiers a Task's row carries (D319). Trusted is decided by code alone; unconfirmed is a value
-#: nobody sourced, a pair nobody settled or a gate that answered unknown; refused is D128; pending is
-#: a defect ruled back to the Spec, a check that did not pass or no Reference to read yet.
-TIERS = ("trusted", "unconfirmed", "refused", "pending")
+#: The tiers a Task's row carries (D333): trusted or not. A workdir with no Spec has no Intent, so its
+#: untrusted Tasks carry the reason no_intent; `code_ruling`'s words (D319) stay in the untrusted text.
+TIERS = ("trusted", "untrusted")
 
 
 def unsupported_cells(state: EndState) -> list[str]:
@@ -485,8 +484,9 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     workdir has Specs (D322): they replace trusted, untrusted and the tier, and the rule below stays
     for the legacy column only.
 
-    A refused Task is refused; a Task waiting in the Reference pool, or whose seeds are not Runs of
-    it (D281), is pending; a Verifier carrying expected end states is ruled by `code_ruling`. One
+    The tier is trusted or untrusted (D333); the words below ride in `untrusted`. A refused Task is
+    refused; a Task waiting in the Reference pool, or whose seeds are not Runs of it (D281), is pending;
+    a Verifier carrying expected end states is ruled by `code_ruling`. One
     with none (written before D315) keeps the pre-D319 ruling and its words this release, and its
     Task is named in `legacy_only`. The pre-D319 rule runs
     beside it as `legacy_trusted` (its probe and false-rejection numbers are reported, never read
@@ -512,7 +512,7 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
             # Until the Spec writes end states for every Verifier, an atom-only one keeps the old
             # ruling and its words, counted in `legacy_only` so its count is never read as code's.
             old = legacy.metrics["untrusted"].get(task_id)
-            tiers[task_id] = "trusted" if old is None else "refused" if task_id in refused else "pending"
+            tiers[task_id] = "trusted" if old is None else "untrusted"
             unsupported[task_id] = 0
             if old is None:
                 trusted.append(task_id)
@@ -535,7 +535,7 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
                                  (task_status or {}).get(task_id) or {}, canon_rules, write_tools, schema)
             tier, reason, count = ruling.tier, ruling.reason, ruling.unsupported
             flags[task_id] = len(ruling.contradicts) + len(ruling.unasked)
-        tiers[task_id] = tier
+        tiers[task_id] = "trusted" if tier == "trusted" else "untrusted"
         unsupported[task_id] = count
         if tier == "trusted":
             trusted.append(task_id)
@@ -543,7 +543,8 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
         untrusted[task_id] = f"{tier}: {reason}"
         failures.append(f"task {task_id}: {untrusted[task_id]}")
     metrics = dict(legacy.metrics, trusted=trusted, untrusted=untrusted, untrusted_seeds=foreign_seeds,
-                   trust_tier=tiers, unsupported_cells=unsupported, legacy_trusted=list(legacy.metrics["trusted"]),
+                   trust_tier=tiers, trust_reason={t: None if v == "trusted" else "no_intent" for t, v in tiers.items()},
+                   unsupported_cells=unsupported, legacy_trusted=list(legacy.metrics["trusted"]),
                    legacy_only=sorted(v.task_id for v in map(as_verifier, verifiers or ()) if not v.expected),
                    consistency_flags=flags)
     if spec_tiers:
@@ -553,53 +554,49 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
 
 
 def _spec_ruling(spec_tiers: dict[str, Any], refused: dict) -> dict:
-    """The Spec's tiers as the one trusted ruling (D322): trusted stays trusted, every other tier is
-    untrusted with its word and the first failing gate or reason; refused Tasks stay refused."""
-    trusted, untrusted, tiers, flags, not_run, disagrees = [], {}, {}, {}, [], {}
+    """The Spec's tiers as the one trusted ruling (D322, D333): trusted or untrusted with one reason, and
+    the two flags; a refused Task is untrusted for no_intent."""
+    trusted, untrusted, tiers, reasons = [], {}, {}, {}
+    flags: dict[str, dict] = {"reference_passes": {}, "solvable": {}}
     for task_id, (tier, row) in sorted(spec_tiers.items()):
-        tiers[task_id] = tier
-        flags[task_id] = len(row.get("contradicts") or ()) + len(row.get("unasked") or ())
-        disagrees[task_id] = len(row.get("writer_disagrees") or ())
-        if tier == "replay_only" and not row.get("fresh_runs"):
-            not_run.append(task_id)
-        if tier == "trusted" and task_id not in refused:
+        reason = row.get("reason")
+        if tier == "trusted" and task_id in refused:
+            tier, reason = "untrusted", "no_intent"
+        tiers[task_id], reasons[task_id] = tier, reason
+        for flag in flags:
+            flags[flag][task_id] = row.get(flag)
+        if tier == "trusted":
             trusted.append(task_id)
         else:
-            untrusted[task_id] = f"{tier}: {row.get('failing') or row.get('reason') or ''}".rstrip(": ")
-    return {"trusted": trusted, "untrusted": untrusted, "trust_tier": tiers, "consistency_flags": flags,
-            "not_run": not_run, "writer_disagrees": disagrees}
+            untrusted[task_id] = f"{reason or 'untrusted'}: {row.get('why') or ''}".rstrip(": ")
+    return {"trusted": trusted, "untrusted": untrusted, "trust_tier": tiers, "trust_reason": reasons, **flags}
+
+
+#: The reasons a Task is not trusted (spec/trust.py REASONS) and the two flags (D333).
+REASONS = ("no_intent", "open_ruling", "constructed_run_passed")
+FLAGS = ("reference_passes", "solvable")
 
 
 def tier_counts(metrics: dict) -> dict[str, int]:
-    """The tiers side by side with the legacy count and the held-out false rejection, as numbers.
-
-    "Valid other solutions failing" is D133's number over every Task's pool, unchanged: the held-out
-    Runs that reached the Reference and that the required atoms reject, of all held out.
-    """
+    """Trusted and untrusted, untrusted by reason, and each flag's true and false counts, as numbers."""
     tiers = list((metrics.get("trust_tier") or {}).values())
-    fractions = metrics.get("false_rejection") or {}
-    pools = metrics.get("false_rejection_pool") or {}
-    return {**{tier: tiers.count(tier) for tier in TIERS},
-            "legacy_trusted": len(metrics.get("legacy_trusted") or ()),
-            "valid_other_failing": sum(round((fractions.get(t) or 0.0) * int(n or 0)) for t, n in pools.items()),
-            "held_out": sum(int(n or 0) for n in pools.values()),
-            "consistency_flags": sum(1 for n in (metrics.get("consistency_flags") or {}).values() if n),
-            "replay_only": tiers.count("replay_only"), "not_run": len(metrics.get("not_run") or ()),
-            "writer_disagrees": sum(1 for n in (metrics.get("writer_disagrees") or {}).values() if n)}
+    reasons = list((metrics.get("trust_reason") or {}).values())
+    counts = {"trusted": tiers.count("trusted"), "untrusted": len(tiers) - tiers.count("trusted"),
+              **{reason: reasons.count(reason) for reason in REASONS}}
+    for flag in FLAGS:
+        values = list((metrics.get(flag) or {}).values())
+        counts[flag], counts[f"{flag}_false"] = values.count(True), values.count(False)
+    return counts
 
 
 def trust_row(counts: dict) -> str:
-    """One line: trusted, unconfirmed, refused, pending and replay_only with the Tasks of it never run (no
-    fresh Run on disk, apart from the ones whose fresh Runs failed), the legacy count, the over-strictness,
-    the Tasks carrying a consistency flag (D322) and the Tasks the writer disagrees with the Reference on
-    (D327); the flags are counted, never gating."""
-    return (f"trusted {counts.get('trusted', 0)} | unconfirmed {counts.get('unconfirmed', 0)} | "
-            f"refused {counts.get('refused', 0)} | pending {counts.get('pending', 0)} | "
-            f"replay_only {counts.get('replay_only', 0)} (not run {counts.get('not_run', 0)}) | "
-            f"legacy rule trusted {counts.get('legacy_trusted', 0)} | valid other solutions failing "
-            f"{counts.get('valid_other_failing', 0)} of {counts.get('held_out', 0)} held-out Runs | "
-            f"consistency flags {counts.get('consistency_flags', 0)} | "
-            f"writer disagrees {counts.get('writer_disagrees', 0)}")
+    """One line: trusted, untrusted by reason, and the two flags (true of scored); flags never gate."""
+    def flag(name: str) -> str:
+        yes, no = counts.get(name, 0), counts.get(f"{name}_false", 0)
+        return f"{name.replace('_', ' ')} {yes} of {yes + no}"
+    return (f"trusted {counts.get('trusted', 0)} | untrusted {counts.get('untrusted', 0)} ("
+            + ", ".join(f"{reason} {counts.get(reason, 0)}" for reason in REASONS)
+            + f") | {flag('reference_passes')} | {flag('solvable')}")
 
 
 def _live_verifiers(root: Path) -> list[dict]:

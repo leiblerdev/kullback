@@ -193,3 +193,24 @@ def test_reset_step_and_transcript_outputs_cannot_mutate_world_or_recording(tmp_
     assistant = next(m for m in episode.transcript() if m.get("tool_calls"))
     assistant["tool_calls"][0]["name"] = "changed_by_caller"
     assert next(m for m in episode.transcript() if m.get("tool_calls"))["tool_calls"][0]["name"] == "describe_widget"
+
+
+def test_a_single_turn_task_opens_with_its_facts_folded_in_and_runs_with_no_user(tmp_path):
+    """D332: `facts_in_instruction` folds the user's facts into the opening; no user is built."""
+    import json
+
+    from kullback.runner.world.environment import FACTS_LEAD
+
+    root = write_env(tmp_path / "env")
+    task_path = root / "tasks" / "widget_task.json"
+    task_path.write_text(json.dumps({**json.loads(task_path.read_text()), "facts_in_instruction": True}))
+
+    def no_user(*_):
+        raise AssertionError("a single-turn Task builds no Simulated user")
+
+    episode = Episode(BuiltEnvironment(root), outdir=tmp_path / "out", user_factory=no_user)
+    reset = episode.reset("widget_task", seed=7)
+    assert reset.opening.startswith("give widget w1 the label striped")
+    assert FACTS_LEAD in reset.opening and "- widget id: w1" in reset.opening
+    assert episode._state.user is None
+    assert episode.transcript()[-1] == {"role": "user", "content": reset.opening}

@@ -34,13 +34,14 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from kullback.gates.fidelity import unconfirmed_reason
+from kullback.gates.trust import FLAGS, REASONS
 from kullback.gates.verifier_suite import D79_STAGES
 from kullback.runner.gate_support import _get
 from kullback.runner.records import read_json, write_json
 
 # The shape of rounds/<n>/tasks.json. Bumped when a row's fields or their meaning change, so a
 # snapshot written under an older meaning reads as an older file rather than as today's answer.
-SNAPSHOT_FORMAT = 1
+SNAPSHOT_FORMAT = 2
 ROUNDS_DIR = "rounds"
 TASKS_NAME = "tasks.json"
 
@@ -147,14 +148,14 @@ def task_row(task_id: str, *, round_number: int, row: Any, replays: Optional[dic
         "false_rejection_ruling": str((metrics.get("false_rejection_ruling") or {}).get(task_id) or ""),
         "trusted": task_id in set(metrics.get("trusted") or ()),
         "trusted_reason": str(untrusted.get(task_id) or ""),
-        # D319: the tier code ruled, the cells nobody sourced, and what the pre-D319 rule said.
-        "trust_tier": str((metrics.get("trust_tier") or {}).get(task_id) or "pending"),
+        # D333: trusted or untrusted with one reason, and the two flags (never gating, None unscored).
+        "trust_tier": str((metrics.get("trust_tier") or {}).get(task_id) or "untrusted"),
+        "trust_reason": (metrics.get("trust_reason") or {}).get(task_id),
+        "reference_passes": (metrics.get("reference_passes") or {}).get(task_id),
+        "solvable": (metrics.get("solvable") or {}).get(task_id),
         "unsupported_cells": int((metrics.get("unsupported_cells") or {}).get(task_id) or 0),
         "legacy_trusted": task_id in set(metrics.get("legacy_trusted") or ()),
         "consistency_flags": int((metrics.get("consistency_flags") or {}).get(task_id) or 0),
-        # D327: replay_only with no fresh Run on disk, and the writer's disagreement flags (never gating).
-        "not_run": task_id in set(metrics.get("not_run") or ()),
-        "writer_disagrees": int((metrics.get("writer_disagrees") or {}).get(task_id) or 0),
         "refused": task_id in refused,
         "refused_reason": str(refused.get(task_id) or ""),
         "difficulty": str((buckets or {}).get(task_id) or ""),
@@ -185,19 +186,17 @@ def counts_of(rows: Iterable[dict]) -> dict:
             "verifier_passed": sum(1 for row in rows if row.get("verifier_passed")),
             "trusted": sum(1 for row in rows if row.get("trusted")),
             "refused": sum(1 for row in rows if row.get("refused")),
-            # D319: the tiers side by side with the old rule's count and D133's held-out number.
-            "unconfirmed": sum(1 for row in rows if row.get("trust_tier") == "unconfirmed"),
-            "pending": sum(1 for row in rows if row.get("trust_tier") == "pending"),
+            # D333: untrusted by reason and the two flags, beside the old rule's count and D133's number.
+            "untrusted": sum(1 for row in rows if row.get("trust_tier") != "trusted"),
+            **{reason: sum(1 for row in rows if row.get("trust_reason") == reason) for reason in REASONS},
+            **{name: sum(1 for row in rows if row.get(flag) is value) for flag in FLAGS
+               for name, value in ((flag, True), (f"{flag}_false", False))},
             "legacy_trusted": sum(1 for row in rows if row.get("legacy_trusted")),
             "valid_other_failing": sum(round(float(row.get("false_rejection") or 0.0)
                                              * int(row.get("false_rejection_pool") or 0)) for row in rows),
             "held_out": sum(int(row.get("false_rejection_pool") or 0) for row in rows),
             # D322: Tasks a consistency check flags, counted and never gating.
-            "consistency_flags": sum(1 for row in rows if row.get("consistency_flags")),
-            # D327: replay_only split by not run, and Tasks the writer's disagreement flags.
-            "replay_only": sum(1 for row in rows if row.get("trust_tier") == "replay_only"),
-            "not_run": sum(1 for row in rows if row.get("not_run")),
-            "writer_disagrees": sum(1 for row in rows if row.get("writer_disagrees"))}
+            "consistency_flags": sum(1 for row in rows if row.get("consistency_flags"))}
 
 
 def buckets_by_task(body: Optional[dict]) -> dict[str, str]:

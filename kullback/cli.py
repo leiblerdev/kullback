@@ -133,11 +133,14 @@ def _judged_atoms(verifier: Verifier, paths: list, judges, workdir: Path) -> dic
         return {}
     load_run = _entry("kullback.runner.verdict", "load_run")
     answer = _entry("kullback.runner.judge", "judge_atom_results")
+    items = _entry("kullback.judge.items", "judge_items")
     out = {}
     for path in paths:
         run = load_run(path)
         out[run.run_id] = answer(verifier, run, judges[0], judges[1],
                                  workdir=workdir, run_id=run.run_id)
+        # Judge items: one call each on the first judge's model (D328).
+        out[run.run_id].update(items(judges[0].model, verifier.atoms, run))
     return out
 
 
@@ -919,7 +922,7 @@ def status(
     for name in ("tasks", "fidelity", "reference", "verifier_passed", "trusted", "refused"):
         if name in counts:
             typer.echo(f"{name}: {counts[name]}")
-    if "unconfirmed" in counts:  # a round closed before D319 has no tiers to set side by side
+    if "untrusted" in counts:  # a round closed before D333 has no reasons and flags to print
         typer.echo(f"trust: {_entry('kullback.gates.trust', 'trust_row')(counts)}")
     for row in report.get("first") or ():
         typer.echo(f"moved: {row['task_id']} at {row['stage']}")

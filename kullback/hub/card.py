@@ -178,6 +178,8 @@ WORDS: tuple[str, ...] = (
     "Call fidelity: agreeing calls over all recorded calls.",
     "Verifier: a Task's End-state check, written only by the Examiner, never by the Builder.",
     "Atom: one Verifier check: required, allowed, forbidden, question, communicate or hard.",
+    "Reward: pass when every gate item holds (the sanity item, nothing else changed, is one); score 0 when a "
+    "gate fails, else the weighted mean of every item, the gates holding at least half.",
     "Gates: oracle replay, suite, loosening, false rejection, trusted.",
     "Trusted: suite passed, probes fail, last version, no loosening, not over strict, not refused.",
     "Open: neither trusted nor refused.",
