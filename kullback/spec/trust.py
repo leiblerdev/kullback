@@ -203,11 +203,14 @@ def _constructed(verifier: Verifier, runs: list[Run], passing: list[str], canon:
                  schema: Any) -> dict[str, dict]:
     """name -> {built, failed, atom, run_id}, and for the stray write `untested`.
 
+    A stray write laid on a base that did not pass never tested the sanity check: untested, not failed.
+
     A constructed Run counts as failed only on a definite failure, a gate item that holds False; a Run
     left not verdicted has not failed (S1). The stray write counts as failed only when its sanity item
     (read off Verdict.items) holds False; failing anywhere else, it never tested the sanity check.
     """
     out = {}
+    _, base_passed = _stray_base(runs, passing, None)
     for name, run in constructed_runs(verifier, runs, passing, schema=schema, canon=canon).items():
         if run is None:
             out[name] = {"built": False, "failed": False, "atom": None, "run_id": None}
@@ -216,8 +219,11 @@ def _constructed(verifier: Verifier, runs: list[Run], passing: list[str], canon:
         out[name] = {"built": True, "failed": outcome.failed is not None, "atom": outcome.failed,
                      "run_id": run.run_id}
         if name == "stray_write":
-            untested = not outcome.sanity_failed and not outcome.passed
-            out[name].update(failed=outcome.sanity_failed, untested=untested)
+            if not base_passed:
+                out[name].update(failed=False, untested=True)
+            else:
+                untested = not outcome.sanity_failed and not outcome.passed
+                out[name].update(failed=outcome.sanity_failed, untested=untested)
     return out
 
 

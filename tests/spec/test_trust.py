@@ -143,11 +143,12 @@ def test_the_stray_write_lands_on_a_passing_run_outside_the_declared_rows_and_fa
     assert run.events[-1].payload["end_state"]["items"]["A1"] == END["items"]["A1"]
 
 
-def test_a_stray_write_on_the_do_nothing_run_is_read_by_its_sanity_item_not_by_the_first_failing_gate():
+def test_a_stray_write_on_a_failing_base_is_untested_not_failed():
     tier, row = _tier([_fresh(right=False)], references=())
     stray = row["constructed"]["stray_write"]
-    assert stray["failed"] is True and stray["untested"] is False and stray["atom"].startswith("gate:expected:cell")
-    assert tier == "trusted" and row["detail"] is None
+    assert stray["built"] and stray["untested"] is True and stray["failed"] is False
+    assert tier == "untrusted" and row["reason"] == "constructed_run_passed"
+    assert row["detail"] == "stray_untested"
 
 
 def test_a_stray_write_on_a_passing_base_failing_at_the_sanity_check_is_tested():
@@ -179,7 +180,8 @@ def test_a_refusal_verifier_fails_the_do_nothing_run_at_its_gated_judge_item():
     refusal = Verifier(task_id="t1", expected=[EndState()], atoms=[declined])
     tier, row = _tier([_replay(), _fresh()], verifier=refusal)
     assert row["constructed"]["do_nothing"]["failed"] is True and row["constructed"]["do_nothing"]["atom"] == "j1"
-    assert tier == "trusted"
+    assert row["constructed"]["stray_write"]["untested"] is True
+    assert tier == "untrusted" and row["reason"] == "constructed_run_passed"
 
 
 def test_a_constructed_run_left_not_verdicted_has_not_failed():
