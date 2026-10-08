@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 from kullback.runner.records import Record, Verifier
+from kullback.spec import effects as tool_effects
 from kullback.spec import items as I
 from kullback.spec import writer_tools
 from kullback.spec.actions import action_tables_of, action_tools_of
@@ -168,6 +169,9 @@ class WriterInputs(NamedTuple):
     action_tables: frozenset = frozenset()
     # The schema's column names per table, for tables the Starting state holds no row of.
     columns: dict = {}
+    # What each write tool always moves and what each tool's recorded calls passed (spec/effects.py).
+    effects: dict = {}
+    signatures: dict = {}
 
 
 class Ruling(Record):
@@ -208,11 +212,13 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
     overlay, rows = env.overlay(task_id)
     tools = writer_tools.tool_rows(env.sigs)
     actions = frozenset(action_tools_of(env.schema))
+    learned = tool_effects.load(workdir)
     return WriterInputs(intent=intent, policy_text=policy, sections=writer_tools.policy_sections_of(workdir),
                         tools=tools, write_tools={row["name"] for row in tools if row["kind"] == "write"} - actions,
                         state=StateView(env.db, overlay, rows).shared, constraints=_constraints(workdir),
                         canon=canon_fn(env.canon_rules), action_tools=actions,
-                        action_tables=frozenset(action_tables_of(env.schema)), columns=_columns(env.schema))
+                        action_tables=frozenset(action_tables_of(env.schema)), columns=_columns(env.schema),
+                        effects=learned.get("effects") or {}, signatures=learned.get("signatures") or {})
 
 
 def _columns(schema: Any) -> dict:
@@ -265,7 +271,8 @@ def writer_messages(inputs: WriterInputs) -> tuple[list[dict], int]:
 
 def world_of(inputs: WriterInputs) -> I.World:
     """The world the writer's tools read and its values are sourced from."""
-    return I.World(inputs.state, inputs.policy_text, inputs.intent.facts, inputs.tools, inputs.columns)
+    return I.World(inputs.state, inputs.policy_text, inputs.intent.facts, inputs.tools, inputs.columns,
+                   inputs.signatures)
 
 
 def store_of(inputs: WriterInputs, items: Iterable[dict] = (),
@@ -410,7 +417,7 @@ def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:
         atoms += must_not(must, spec.intent.text, inputs.constraints, sorted(inputs.write_tools))
     expected = []
     if items or not legacy.checks:
-        expected = I.end_states_of(items, world_of(inputs), inputs.action_tables)
+        expected = I.end_states_of(items, world_of(inputs), inputs.action_tables, inputs.effects)
         atoms = [I.atom_of(item) for item in items] + [I.sanity_atom(expected)] + atoms
     verifier = Verifier(task_id=spec.task_id, atoms=atoms,
                         verifier_version=f"spec{spec.version}", seed_run_ids=[], expected=expected)

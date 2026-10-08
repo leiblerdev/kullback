@@ -418,7 +418,7 @@ def _spec_switch(adapter: Any, judge_adapter: Any, spec_adapter: Any) -> dict:
     """The Builder's examine call: References chosen, the Specs written, then the Examiner's review (D320).
 
     The named Tasks, else every runnable Task of the build's sample, get their References by code,
-    then a Spec and its Verifier on `spec_adapter` (a Task that has both keeps them, its gates
+    the build's tool effects are learned (builder/tool_effects.py), then a Spec and its Verifier on `spec_adapter` (a Task that has both keeps them, its gates
     refreshed once a Reference has come); then the Examiner reviews them on `adapter` in rounds,
     the writer answering open rulings between rounds, so one call runs round one and, where rulings
     stand open, round two.
@@ -427,10 +427,13 @@ def _spec_switch(adapter: Any, judge_adapter: Any, spec_adapter: Any) -> dict:
     examine_rounds = _entry("kullback.examiner.session", "examine_rounds")
     write_specs = _entry("kullback.spec.stage", "write_specs")
     spec_candidates = _entry("kullback.builder.domain_tools", "confirmed_task_ids")
+    tool_effects = _entry("kullback.builder.tool_effects", "store")
 
     def examine_fn(workdir: Any, task_ids: Any) -> Any:
         ids = list(task_ids) if task_ids is not None else list(spec_candidates(Path(workdir)))
         code = examine(Path(workdir), task_ids=ids, model=None, judge_model=judge_adapter or adapter)
+        # What each tool always moves and what its calls pass, for the Spec writer's checks (D341).
+        tool_effects(Path(workdir))
         counts = write_specs(Path(workdir), ids, spec_adapter)
         typer.echo(f"spec: {json.dumps(counts, default=str, sort_keys=True)}")
         rounds = examine_rounds(Path(workdir), ids, model=adapter, writer_model=spec_adapter)
