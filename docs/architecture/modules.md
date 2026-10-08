@@ -275,4 +275,4 @@ The top-level modules sit outside the import-linter layers contract. The last co
 
 | Module | What it does |
 |---|---|
-| `scripts/measure/trust_split.py` | Every build's trusted Tasks split by whether the Reference is right, read afterwards off the round file, the status rows, the references record and the benchmark sidecars (which the build never reads). |
+| `scripts/measure/trust_split.py` | Every build's trusted Tasks split by whether the Reference is right, read afterwards off the latest round file, the status rows, the references record and the benchmark sidecars (which the build never reads). |

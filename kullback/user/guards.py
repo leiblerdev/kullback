@@ -282,6 +282,7 @@ class EndProtocol:
         """
         self.unanswerable += int(bool(had_nothing))
         self.silent = 0 if said_anything else self.silent + 1
+
         if self.unanswerable >= rules_mod.UNANSWERABLE_LIMIT:
             kind = rules_mod.SCENARIO_EXHAUSTED
         elif rules_mod.closes(question):

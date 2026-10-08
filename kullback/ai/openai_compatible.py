@@ -6,7 +6,7 @@ both; only the transport and the reading of the answer are here.
 
 Kullback reaches openrouter, the cheaper inference hosts, OpenCode Go and any local server through
 this module, because they all speak one of these two shapes. Which shape a model takes is the
-handle's business (provider.RESPONSES_API_MODELS), not this module's.
+handle's business (provider.model_for, from the catalogue row), not this module's.
 """
 
 from __future__ import annotations
@@ -151,6 +151,9 @@ class OpenAICompatibleProvider:
             max_retries=self.max_retries,
             read_timeout_s=self.handle.timeout,
             signal=signal,
+            retry_policy=self.handle.retry,
+            rng=self.handle.rng,
+            rate_bucket=self.handle.rate_bucket,
         )
 
     def _get_client(self) -> httpx.AsyncClient:

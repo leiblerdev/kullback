@@ -400,7 +400,7 @@ def _unknown(name: str) -> str:
 def _empty_run_passes(verifier: Verifier, reference: Run, canon_rules: Any, write_tools: Any) -> Optional[str]:
     """Why the empty Run (no write, none of the required conduct) is not failed, or None when it fails.
 
-    It fails when an atom fails it or a gate does (D295: a Task whose expected diff is empty still
+    It fails when an atom fails it or a gate does (D294: a Task whose expected diff is empty still
     demands its conduct, so a Verifier only an empty end state speaks for is not evidence). A refusal
     or no-write Verifier (`forbids_only`) is passed by the empty Run rightly; can_fail's forbidden
     Run is its wrong Run.

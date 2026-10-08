@@ -370,7 +370,7 @@ def test_a_reference_run_whose_match_is_unsettled_leaves_the_task_untrusted_nami
 
 
 def test_a_task_with_an_empty_expected_diff_and_one_conduct_is_not_trusted_when_the_empty_run_passes_it():
-    """The confirmation rule holds vacuously where nothing is written, so the empty Run passes (D295)."""
+    """The confirmation rule holds vacuously where nothing is written, so the empty Run passes (D294)."""
     still = _replay(end=START)
     rule = Conduct(kind="confirm_before_write", tool="cancel_order", source=ValueSource(kind="policy"))
     world = _code_world([], conduct=[rule], run=still)

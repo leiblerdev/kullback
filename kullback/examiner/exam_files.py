@@ -161,7 +161,7 @@ class ExamRoot:
     reroll_model: Any = None
     probe_model: Any = None
     run_probe: Any = None
-    reroll_user: Any = None   # runners_for's re-roll user factory: rule user, or agent user when on
+    reroll_user: Any = None   # the re-rolls' user factory for the reroll tool
     round: int = 0            # the review round this session is (D331); 0 reads the Spec's round plus one
     verified: dict = field(default_factory=dict)   # the verify rows per Task, which a code ruling cites
     states: dict = field(default_factory=dict)     # each Task's Starting state, loaded once for the lookups

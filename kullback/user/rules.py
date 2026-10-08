@@ -569,6 +569,20 @@ def fact_class(rules: UserRules, field: str, value: Any = None) -> str:
                           for fact in rules.facts) else RECORD
 
 
+def goal_write_set(trace: Optional[Trace], writes: Iterable[str]) -> set[str]:
+    """The writes the Task's goal implies: the write-kind tools the Reference called and the world
+    did not refuse (D210).
+
+    `writes` names the tools that change the world (`ToolSig.kind`), which is the only class read
+    here; which tools those are is the build's answer, not this module's. A recording that changed
+    nothing gives the empty set, and a goal that implies no write is satisfied as soon as the
+    Candidate has nothing left to do, which is what the empty set says.
+    """
+    names = set(writes)
+    return {call.name for call in (trace.tool_calls if trace is not None else ())
+            if call.name in names and call.error is None}
+
+
 SPEC_WRITE_KINDS = ("row_is", "row_new")
 
 

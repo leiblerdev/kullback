@@ -117,7 +117,7 @@ class SimulatedUser:
         self._silent = 0
         self._refused = 0
         self._restated = False
-        self._acted = False  # the Candidate has used a tool in this Run (D295)
+        self._acted = False  # the Candidate has used a tool in this Run (D294)
         # Turns this user had nothing at all for what was asked on: the scenario running out,
         # counted (D210). One turn, however many fields it named: the rule is a Candidate asking
         # twice, so a single turn naming two unknown fields is one ask and not two.
@@ -274,7 +274,7 @@ class SimulatedUser:
             return
         satisfied = self._goal_done(made or set(), question)
         goal = self._fact(GOAL)
-        # A goal naming no writes has nothing left to restate once the Candidate closes (D295).
+        # A goal naming no writes has nothing left to restate once the Candidate closes (D294).
         no_write_close = self.goal_writes is not None and not self.goal_writes and _closes(question)
         if goal is not None and not self._restated and not satisfied and not no_write_close:
             spoken.append(str(goal.value))

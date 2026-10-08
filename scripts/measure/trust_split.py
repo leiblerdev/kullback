@@ -5,7 +5,9 @@ reads it afterwards from the sidecars set aside next to the workdir and prints
 the split. Kept: of the trusted Tasks, the share resting on a wrong Reference.
 Also printed, with no sidecar at all, is the proxy the harness can use itself:
 for each trusted Task, whether independent re-runs reached the Reference's End
-state, and how well that proxy tracks the sidecar split.
+state, and how well that proxy tracks the sidecar split. A Task counts as right,
+wrong or mixed only when every Reference has a sidecar reward; any unscored
+Reference leaves the Task unknown.
 
     python scripts/measure/trust_split.py <workdir> [--round N] [--json out.json]
 
@@ -15,7 +17,8 @@ each Task's Reference run ids from its status row (`reference_run_ids`), the
 run-to-recording map and the re-run evidence from the references record, the
 needs-a-Reference pool from its pool file, and refusals from the round file.
 The sidecar location and the reward field inside it are arguments with the
-current layout as defaults. The script writes nothing inside the workdir.
+current layout as defaults. The script writes nothing inside the workdir, and
+refuses a result path inside it.
 """
 
 from __future__ import annotations
@@ -56,6 +59,7 @@ def _read(path: Path, fallback: Any = None) -> Any:
         return fallback
 
 
+
 def _first_existing(workdir: Path, names: tuple[str, ...]) -> Optional[Path]:
     for name in names:
         path = workdir / name
@@ -73,16 +77,27 @@ def round_names(workdir: Path) -> list[str]:
 
 
 def trusted_from_round(workdir: Path, name: Optional[str]) -> tuple[str, list[str], list[str]]:
-    """(round, trusted ids, refused ids) out of the build's own round file."""
+    """(round, trusted ids, refused ids) out of the build's own round file.
+
+    A missing round file is an error, and so is one that cannot be read:
+    an unreadable snapshot never reports an empty round.
+    """
     names = round_names(workdir)
     if not names:
         raise FileNotFoundError(f"no rounds/*/tasks.json under {workdir}")
     if name is not None and name not in names:
         raise FileNotFoundError(f"no round {name} under {workdir}; have {', '.join(names)}")
     chosen = name if name is not None else names[-1]
-    rows = (_read(workdir / "rounds" / chosen / "tasks.json", {}) or {}).get("rows") or []
-    trusted = sorted(str(r.get("task_id")) for r in rows if r.get("trusted"))
-    refused = sorted(str(r.get("task_id")) for r in rows if r.get("refused"))
+    path = workdir / "rounds" / chosen / "tasks.json"
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"unreadable round file {path}") from exc
+    rows = doc.get("rows") or [] if isinstance(doc, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError(f"malformed round file {path}")
+    trusted = sorted(str(r.get("task_id")) for r in rows if isinstance(r, dict) and r.get("trusted"))
+    refused = sorted(str(r.get("task_id")) for r in rows if isinstance(r, dict) and r.get("refused"))
     return chosen, trusted, refused
 
 
@@ -254,6 +269,12 @@ def source_word(result: dict) -> str:
     return f"round {result['round']}, {result['source']}" if result["round"] else result["source"]
 
 
+def _inside(child: Path, parent: Path) -> bool:
+    """Whether one path sits inside another, following links on both sides."""
+    child, parent = child.resolve(), parent.resolve()
+    return child == parent or parent in child.parents
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -274,10 +295,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--json", type=Path, default=None,
                         help="Also write the machine-readable result here (outside the workdir).")
     args = parser.parse_args(argv)
+    if args.json is not None and _inside(args.json, args.workdir):
+        print(f"refusing to write {args.json} inside the workdir")
+        return 2
     try:
         result = measure(args.workdir, args.round_name, args.sidecar_dir,
                          args.reward_field, args.traces_dir, args.pool)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         print(str(exc))
         return 2
     print(report(result), end="")

@@ -1065,3 +1065,8 @@ def test_status_and_the_counts_line_print_one_trusted_count_on_a_workdir_with_sp
     out = runner.invoke(cli.app, ["status", "--workdir", str(tmp_path)]).output
     assert "trusted: 1" in out and "trust: trusted 1 |" in out
     assert cli._counts_line(tmp_path).startswith("trusted 1,")
+# --- train --------------------------------------------------------------------
+
+def test_train_refuses_without_a_run_id(workdir):
+    result = invoke("train", "--workdir", str(workdir))
+    assert result.exit_code != 0

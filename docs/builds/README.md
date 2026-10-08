@@ -29,7 +29,6 @@ Run passed). Reference passes and Solvable are flags, never gates, written "true
 
 | Build | Corpus | Verifier from | Tasks | Trusted | Untrusted | No intent | Open ruling | Constructed Run passed | Reference passes | Solvable | Trusted by Reference (right, wrong, mixed, unknown) | Code |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-
 ## Index
 
 | Build | Notes |

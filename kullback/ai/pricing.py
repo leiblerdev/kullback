@@ -21,6 +21,7 @@ import httpx
 
 # LIVE_ENV_VAR is re-exported: a caller reading prices names the switch through this module
 # rather than reaching past it into the adapters.
+from kullback.ai.limits import RateSpec
 from kullback.ai.provider import LIVE_ENV_VAR, live_calls_requested  # noqa: F401
 
 MODELS_DEV_URL = "https://models.dev/api.json"
@@ -496,6 +497,9 @@ def refresh(
 # @ai-sdk/openai-compatible only in the SDK layer above the wire, and it is the wire this table is
 # about. A provider is added here after its docs are read, never because its name is familiar.
 OPENAI_SHAPED = ("@ai-sdk/openai-compatible", "@ai-sdk/openai", "@openrouter/ai-sdk-provider")
+# A MODEL row carrying this npm speaks the Responses API, not chat. At provider level the same
+# string still means the chat shape; only the row switches.
+RESPONSES_NPM = "@ai-sdk/openai"
 
 
 class Endpoint(NamedTuple):
@@ -549,6 +553,26 @@ def model_adapter_for(catalog: Optional[dict], model_id: Optional[str]) -> str:
     return npm if isinstance(npm, str) else ""
 
 
+def speaks_responses(catalog: Optional[dict], model_id: Optional[str]) -> bool:
+    """Whether a MODEL row says it speaks the Responses API rather than chat completions.
+
+    Only the row's own provider.npm override counts; the provider entry alone never switches.
+    The local registry is laid over the snapshot before this is read, so a person marks a model
+    Responses by giving its row the same override beside the snapshot.
+    """
+    provider, _, wire = str(model_id or "").partition("/")
+    entry = (catalog or {}).get(provider)
+    if not isinstance(entry, dict):
+        return False
+    row = model_row(entry, wire)
+    if not isinstance(row, dict):
+        return False
+    override = row.get("provider")
+    if not isinstance(override, dict):
+        return False
+    return override.get("npm") == RESPONSES_NPM
+
+
 def model_row(provider_entry: Any, wire_id: str) -> Optional[dict]:
     """One provider's row for a wire id: its own key, else the one whose last segment matches.
 
@@ -578,6 +602,44 @@ def model_row_key(models: Any, wire_id: str) -> Optional[str]:
     found = [key for key, candidate in models.items()
              if isinstance(candidate, dict) and key.rpartition("/")[2] == tail]
     return found[0] if len(found) == 1 else None
+
+
+def _rate_numbers(rate: Any) -> Optional[dict[str, int]]:
+    """One rate object read as caps, or None when it names none.
+
+    Either cap may be missing; a cap that is not a positive whole number reads as missing
+    rather than raising, the way an unreadable price leaves the model unpriced instead of
+    taking the call down.
+    """
+    if not isinstance(rate, dict):
+        return None
+    caps = {}
+    for key in ("requests_per_minute", "in_flight"):
+        value = rate.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            continue
+        caps[key] = value
+    return caps or None
+
+
+def rate_from_catalog(catalog: Optional[dict], model_id: Optional[str]) -> Optional[RateSpec]:
+    """The limiter caps for one model: its row's rate wins over its provider's.
+
+    A row rate gets that model's own bucket; a provider rate is one bucket shared by all
+    that provider's models without a row rate. None means no limiter, today's behaviour.
+    """
+    provider, _, wire_id = str(model_id or "").partition("/")
+    entry = (catalog or {}).get(provider) if wire_id else None
+    if not isinstance(entry, dict):
+        return None
+    row = model_row(entry, wire_id)
+    numbers = _rate_numbers(row.get("rate")) if isinstance(row, dict) else None
+    if numbers is not None:
+        return RateSpec(model_specific=True, **numbers)
+    numbers = _rate_numbers(entry.get("rate"))
+    if numbers is not None:
+        return RateSpec(model_specific=False, **numbers)
+    return None
 
 
 def window_from_catalog(catalog: Optional[dict], model_id: Optional[str]) -> Optional[int]:

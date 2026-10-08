@@ -21,6 +21,7 @@ read off this module by name from elsewhere in the Harness.
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import json
 import os
@@ -29,6 +30,7 @@ import re
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterable, Optional, Protocol, Sequence, runtime_checkable
 from urllib.parse import urlparse
@@ -61,11 +63,13 @@ from kullback.ai.http_errors import (
     error_text,
     is_context_overflow,
 )
+from kullback.ai.limits import Bucket, bucket_for, note_cooldown
 from kullback.ai.messages import Message
 from kullback.ai.model_limits import RequestRules, request_rules_for, split_vendor
 from kullback.ai.retry import (
     RetryPolicy,
     backoff_delay,
+    rate_limit_delay,
     retry_after_seconds,
     retryable_status,
 )
@@ -515,6 +519,10 @@ def _reply_from_dict(data: dict) -> ModelReply:
     output = int(usage.get("output", usage.get("completion_tokens", 0)) or 0)
     return ModelReply(
         content=content,
+        thinking=data.get("thinking"),
+        thinking_blocks=copy.deepcopy(data.get("thinking_blocks"))
+        if isinstance(data.get("thinking_blocks"), list)
+        else None,
         tool_calls=[
             ToolCallRequest(
                 id=c.get("id"),
@@ -763,6 +771,25 @@ class HttpModel(Model):
         # Request-shape fields an endpoint's 400 taught this instance (see `shape_adjustment`).
         self.shape_fixes: set[str] = set()
 
+    @functools.cached_property
+    def rate_bucket(self) -> Optional[Bucket]:
+        """The shared limiter for this handle's provider key, or None when the catalogue names
+        no rate for it: every request takes a slot from it first. Read on the first request
+        and cached after, so construction never fetches. The bucket is process-wide, read off
+        the same snapshot model_for resolves the host from. A provider gains a limiter by
+        gaining a rate row, with no branch per provider here. The lookups below already
+        tolerate anything unreadable, so no limiter, not a failed call, is what comes back."""
+        from kullback.ai import pricing
+
+        spec = pricing.rate_from_catalog(
+            pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=self.env), self.name)
+        if spec is None:
+            return None
+        host = urlparse(self.base_url).hostname or self.base_url
+        fingerprint = hashlib.sha256(self.api_key.encode()).hexdigest()[:12] if self.api_key else ""
+        return bucket_for(provider=self.provider, host=host, key=fingerprint,
+                          key_name=self.key_env_var or "", model=self.name, spec=spec)
+
     @classmethod
     def for_model(cls, model_id: str) -> type:
         """The adapter class that serves this id; a provider serving several shapes picks here."""
@@ -862,13 +889,18 @@ class HttpModel(Model):
         require_live_calls_enabled()
         url = self.base_url + self.path
         content = self.encode_body(body)
+        bucket = self.rate_bucket
         for attempt in range(1, self.retry.attempts + 1):
             last_attempt = attempt == self.retry.attempts
-            # Per attempt: a signed request carries its time, and a retry after a long wait
-            # would otherwise send a signature the endpoint has stopped accepting.
-            headers = self.headers(content)
+            # One slot per request: taken just before the post, handed back with the
+            # response read, so a retry counts against the minute cap and waits the
+            # shared cooldown like any other caller, and a backoff sleep holds no slot.
             try:
-                response = self.client().post(url, headers=headers, content=content, timeout=self.request_timeout)
+                with bucket.slot() if bucket is not None else nullcontext():
+                    # After the slot, per attempt: a signed request carries its time, and a
+                    # queue before it must not send a signature the endpoint stopped accepting.
+                    headers = self.headers(content)
+                    response = self.client().post(url, headers=headers, content=content, timeout=self.request_timeout)
             except httpx.HTTPError as exc:
                 if last_attempt:
                     # A timeout names the budget that was in force, so the log line that lands
@@ -903,6 +935,8 @@ class HttpModel(Model):
             error.attempts = attempt
             if isinstance(error, ContextOverflowError) or not retryable_status(response.status_code):
                 raise error
+            note_cooldown(bucket, response.status_code,
+                          rate_limit_delay(response.headers, attempt, self.retry, self.rng))
             if last_attempt:
                 raise RetryExhausted(
                     f"{self.name}: {self.retry.attempts} attempts failed: {error}",
@@ -948,6 +982,21 @@ class HttpModel(Model):
         raise NotImplementedError
 
 
+def _collect_anthropic_thinking(block: dict, thinking: list[dict], thinking_text: list[str]) -> bool:
+    """File one thinking block. True when the block was thinking and is now filed."""
+    if block.get("type") not in THINKING_BLOCK_TYPES:
+        return False
+    # Kept whole, signature and all: the next request of a tool loop sends them back
+    # unchanged (preserved thinking), and an edited block is a 400. The readable
+    # text goes on the reply beside them, so a reader sees the summary.
+    if block.get("signature") or block.get("data"):
+        thinking.append(copy.deepcopy(block))
+    summary = block.get("thinking")
+    if isinstance(summary, str):
+        thinking_text.append(summary or "")
+    return True
+
+
 class AnthropicModel(HttpModel):
     """Anthropic Messages API: system split out, cache points, tool_use blocks."""
 
@@ -986,7 +1035,7 @@ class AnthropicModel(HttpModel):
             body["temperature"] = config.temperature
         if config.stop:
             body["stop_sequences"] = list(config.stop)
-        # Reasoning branch one of three: Anthropic takes thinking as its own block and the
+        # Reasoning branch one of four: Anthropic takes thinking as its own block and the
         # depth as output_config.effort. budget_tokens is not sent: the current models reject it.
         thinking = _anthropic_thinking(config.thinking, rules)
         if thinking:
@@ -1004,15 +1053,13 @@ class AnthropicModel(HttpModel):
         text: list[str] = []
         calls: list[ToolCallRequest] = []
         thinking: list[dict] = []
+        thinking_text: list[str] = []
         for block in data.get("content") or []:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") in THINKING_BLOCK_TYPES:
-                # Kept whole, signature and all: the next request of a tool loop sends them back
-                # unchanged (preserved thinking), and an edited block is a 400.
-                if block.get("signature") or block.get("data"):
-                    thinking.append(copy.deepcopy(block))
-            elif block.get("type") == "text":
+            if _collect_anthropic_thinking(block, thinking, thinking_text):
+                continue
+            if block.get("type") == "text":
                 text.append(block.get("text") or "")
             elif block.get("type") == "tool_use":
                 calls.append(
@@ -1024,6 +1071,7 @@ class AnthropicModel(HttpModel):
                 )
         return ModelReply(
             content="".join(text) or None,
+            thinking="".join(thinking_text) or None,
             tool_calls=calls,
             usage=usage_from_anthropic(data.get("usage")),
             model=data.get("model") or self.wire_id,
@@ -1274,7 +1322,7 @@ class OpenAIModel(HttpModel):
         return True
 
     def reasoning_fields(self, config: ModelConfig) -> dict:
-        """Reasoning branch two of three: OpenAI takes one reasoning_effort field."""
+        """Reasoning branch two of four: OpenAI takes one reasoning_effort field."""
         return {"reasoning_effort": config.reasoning_effort} if config.reasoning_effort else {}
 
     def parse_reply(self, data: dict) -> ModelReply:
@@ -1399,7 +1447,7 @@ class OpenAICompatibleModel(OpenAIModel):
         return opencode_headers(self.base_url, super().headers(body))
 
     def reasoning_fields(self, config: ModelConfig) -> dict:
-        """Reasoning branch three of three: a local endpoint gets none of it. Servers that do
+        """Reasoning branch three of four: a local endpoint gets none of it. Servers that do
         not know the field reject the whole request, and there is no effort table to guess from."""
         return {}
 
@@ -1436,14 +1484,6 @@ class RegistryModel(OpenAICompatibleModel):
         super().__init__(model_id, base_url=base_url, key_env_var=key_env_var or None, **kwargs)
 
 
-# Models OpenCode serves through the Responses API (/v1/responses) rather than chat completions,
-# from its Go docs' Endpoints table. The models.dev snapshot carries no per-model shape field
-# (and does not list 1.3 at all yet), so the docs are the source of truth here. Delete an entry
-# when the snapshot carries that model with a shape the resolver can read; never add one the
-# docs' table does not name. gpt-5.6-luna is deliberately absent: it answers chat bodies live.
-RESPONSES_API_MODELS = frozenset({"opencode-go/muse-spark-1.3-contributor"})
-
-
 class OpenAIResponsesModel(HttpModel):
     """OpenAI's Responses API: input items in, output items out, one round trip per query.
 
@@ -1462,6 +1502,11 @@ class OpenAIResponsesModel(HttpModel):
         self.key_env_var = key_env_var
         self.key_required = bool(key_env_var)
         super().__init__(model_id, base_url=base_url, **kwargs)
+        # Whether this model reasons comes from its catalogue row, read on the first request
+        # and cached after: construction never fetches, so an explicit endpoint pays nothing.
+        # A plain chat model behind a gateway may refuse the reasoning field, so the row gates it.
+        self.sends_reasoning: Optional[bool] = None
+        self._reasoning_known = False
 
     def headers(self, body: Optional[bytes] = None) -> dict:
         headers = {"content-type": "application/json"}
@@ -1481,13 +1526,14 @@ class OpenAIResponsesModel(HttpModel):
                 body["tool_choice"] = config.tool_choice
         if config.max_tokens is not None:
             body["max_output_tokens"] = config.max_tokens
-        # Reasoning branch three of three: the effort comes from the config and a summary is
+        # Reasoning branch four of four: the effort comes from the config and a summary is
         # always asked for, so the reasoning text is kept like the summarized thinking.
-        effort = config.reasoning_effort or config.effort
-        reasoning: dict[str, Any] = {"summary": "auto"}
-        if effort:
-            reasoning["effort"] = effort
-        body["reasoning"] = reasoning
+        if not self._reasoning_known:
+            self.sends_reasoning = _catalogue_reasoning(self.provider, self.wire_id, self.env)
+            self._reasoning_known = True
+        reasoning = _responses_reasoning(config, self.sends_reasoning)
+        if reasoning is not None:
+            body["reasoning"] = reasoning
         if config.logprobs or config.top_logprobs is not None:
             if config.top_logprobs is not None:
                 body["top_logprobs"] = config.top_logprobs
@@ -1504,23 +1550,15 @@ class OpenAIResponsesModel(HttpModel):
                 f"{self.name}: the Responses API ended as {data.get('status')}: "
                 f"{error.get('message') or error or 'no reason given'}"
             )
-        texts: list[str] = []
+        output = data.get("output") or []
+        texts = _responses_text_of(output, "message", "content", "output_text")
+        # The summary text is kept; the encrypted blob never is (read, never echo).
+        thinking = _responses_text_of(output, "reasoning", "summary", "summary_text")
         calls: list[ToolCallRequest] = []
-        thinking: list[str] = []
-        for item in data.get("output") or []:
+        for item in output:
             if not isinstance(item, dict):
                 continue
-            kind = item.get("type")
-            if kind == "message":
-                for part in item.get("content") or []:
-                    if isinstance(part, dict) and part.get("type") == "output_text":
-                        texts.append(part.get("text") or "")
-            elif kind == "reasoning":
-                # The summary text is kept; the encrypted blob never is (read, never echo).
-                for part in item.get("summary") or []:
-                    if isinstance(part, dict) and part.get("type") == "summary_text":
-                        thinking.append(part.get("text") or "")
-            elif kind == "function_call":
+            if item.get("type") == "function_call":
                 calls.append(
                     ToolCallRequest(
                         id=clean_tool_call_id(item.get("call_id") or item.get("id")),
@@ -1537,6 +1575,50 @@ class OpenAIResponsesModel(HttpModel):
             stop_reason=data.get("status"),
             raw=data,
         )
+
+def _catalogue_reasoning(provider: str, wire_id: str, env: dict) -> Optional[bool]:
+    """What the catalogue row says about reasoning: True, False, or None when no row says.
+
+    The same lookup price_from_catalog reads from, through the snapshot model_for already
+    uses: the provider entry, then the row for the wire id. Anything but a boolean reads
+    as no row, so a row that predates the field takes the cautious path below.
+    """
+    from kullback.ai import pricing
+    entry = (pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=env) or {}).get(provider)
+    row = pricing.model_row(entry, wire_id)
+    verdict = row.get("reasoning") if isinstance(row, dict) else None
+    return verdict if isinstance(verdict, bool) else None
+
+
+def _responses_reasoning(config: ModelConfig, sends: Optional[bool]) -> Optional[dict[str, Any]]:
+    """The reasoning field for one Responses request, or None when this model gets none.
+
+    A model whose row says it reasons always asks for a summary; one whose row says it does
+    not sends no reasoning field. With no row the field goes only when the config sets an
+    effort, since a plain chat model behind a gateway may refuse it.
+    """
+    if sends is False:
+        return None
+    effort = config.reasoning_effort or config.effort
+    if sends is None and not effort:
+        return None
+    reasoning: dict[str, Any] = {"summary": "auto"}
+    if effort:
+        reasoning["effort"] = effort
+    return reasoning
+
+
+
+def _responses_text_of(output: Any, item_type: str, parts_key: str, text_type: str) -> list[str]:
+    """Text parts of one Responses output kind: message content or reasoning summaries."""
+    texts: list[str] = []
+    for item in output or []:
+        if not isinstance(item, dict) or item.get("type") != item_type:
+            continue
+        for part in item.get(parts_key) or []:
+            if isinstance(part, dict) and part.get("type") == text_type:
+                texts.append(part.get("text") or "")
+    return texts
 
 
 class BedrockOpenAIResponsesModel(BedrockAuth, OpenAIResponsesModel):
@@ -1658,11 +1740,15 @@ def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     adapter = ADAPTERS.get(provider)
     if adapter is not None:
         return adapter.for_model(model_id)(model_id, base_url=base_url, **kwargs)
-    if model_id in RESPONSES_API_MODELS and base_url:
-        # An explicit endpoint never changes the wire shape: a Responses model speaks
-        # Responses wherever it lives, so this check sits before the base_url branch.
-        return OpenAIResponsesModel(model_id, base_url=base_url, **kwargs)
     if base_url:
+        from kullback.ai import pricing
+
+        catalog = pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=kwargs.get("env"))
+        if pricing.speaks_responses(catalog, model_id):
+            # An explicit endpoint never changes the wire shape: a Responses model speaks
+            # Responses wherever it lives, so this check sits before the chat branch.
+            # An unreadable catalogue reads as chat.
+            return OpenAIResponsesModel(model_id, base_url=base_url, **kwargs)
         return OpenAICompatibleModel(model_id, base_url=base_url, **kwargs)
     endpoint = registry_endpoint(model_id, env=kwargs.get("env"))
     if endpoint is None:
@@ -1670,12 +1756,12 @@ def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
             f"{model_id} has no adapter of its own and the models.dev snapshot names no host for "
             f"{provider!r}; pass base_url, or refresh the snapshot with live calls on"
         )
-    if model_id in RESPONSES_API_MODELS:
-        return OpenAIResponsesModel(model_id, base_url=endpoint.base_url,
-                                     key_env_var=endpoint.key_env_var, **kwargs)
     from kullback.ai import pricing
 
     catalog = pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=kwargs.get("env"))
+    if pricing.speaks_responses(catalog, model_id):
+        return OpenAIResponsesModel(model_id, base_url=endpoint.base_url,
+                                     key_env_var=endpoint.key_env_var, **kwargs)
     per_model = pricing.model_adapter_for(catalog, model_id)
     shape = per_model or endpoint.adapter
     if shape not in pricing.OPENAI_SHAPED:

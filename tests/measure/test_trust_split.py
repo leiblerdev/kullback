@@ -25,7 +25,7 @@ def _ref(run_id: str, trace_id: str | None, kind: str) -> dict:
     return {"run_id": run_id, "trace_id": trace_id, "kind": kind}
 
 
-def fixture(root: Path, *, pool: bool = True, sidecars: bool = True) -> Path:
+def fixture(root: Path, *, pool: bool = True, sidecars: bool = True, rounds: bool = True) -> Path:
     wd = root / "wd"
     status = {
         "t_right": {"reference_run_ids": ["run-r1", "re-a"]},
@@ -66,14 +66,15 @@ def fixture(root: Path, *, pool: bool = True, sidecars: bool = True) -> Path:
                     "failed": {}},
     }
     # Round 1 trusts the five; round 2 additionally trusts t_extra and refuses t_out.
-    for name, trusted in (("1", ["t_right", "t_wrong", "t_mixed", "t_reroll_only", "t_no_sidecar"]),
-                          ("2", ["t_right", "t_wrong", "t_mixed", "t_reroll_only",
-                                 "t_no_sidecar", "t_extra"])):
-        rows = [{"task_id": tid, "trusted": tid in trusted, "refused": False}
-                for tid in [*status, "t_out"]]
-        rows.append({"task_id": "t_out", "trusted": False, "refused": name == "2"})
-        _write(wd / "rounds" / name / "tasks.json",
-               {"counts": {}, "rows": rows})
+    if rounds:
+        for name, trusted in (("1", ["t_right", "t_wrong", "t_mixed", "t_reroll_only", "t_no_sidecar"]),
+                              ("2", ["t_right", "t_wrong", "t_mixed", "t_reroll_only",
+                                     "t_no_sidecar", "t_extra"])):
+            rows = [{"task_id": tid, "trusted": tid in trusted, "refused": False}
+                    for tid in [*status, "t_out"]]
+            rows.append({"task_id": "t_out", "trusted": False, "refused": name == "2"})
+            _write(wd / "rounds" / name / "tasks.json",
+                   {"counts": {}, "rows": rows})
     _write(wd / "task_status.json", status)
     _write(wd / "references.json", refs)
     if sidecars:
@@ -175,3 +176,30 @@ def test_the_run_writes_nothing_inside_the_workdir(tmp_path):
     after = sorted(p.relative_to(wd).as_posix() for p in wd.rglob("*") if p.is_file())
     assert before == after
     assert json.loads(out.read_text(encoding="utf-8"))["trusted_count"] == 5
+
+
+def test_a_workdir_without_a_round_file_is_an_error(tmp_path, capsys):
+    assert T.main([str(fixture(tmp_path, rounds=False))]) == 2
+    assert "no rounds" in capsys.readouterr().out
+
+
+def test_a_corrupt_round_file_is_an_error(tmp_path, capsys):
+    wd = fixture(tmp_path)
+    (wd / "rounds" / "2" / "tasks.json").write_text('{"rows": [{"task_id":', encoding="utf-8")
+    assert T.main([str(wd)]) == 2
+    assert "unreadable round file" in capsys.readouterr().out
+
+
+def test_a_round_file_with_the_wrong_shape_is_an_error(tmp_path, capsys):
+    wd = fixture(tmp_path)
+    (wd / "rounds" / "2" / "tasks.json").write_text("[1, 2]", encoding="utf-8")
+    assert T.main([str(wd)]) == 2
+    assert "malformed round file" in capsys.readouterr().out
+
+
+def test_a_json_output_inside_the_workdir_is_refused(tmp_path, capsys):
+    wd = fixture(tmp_path)
+    out = wd / "out.json"
+    assert T.main([str(wd), "--round", "1", "--json", str(out)]) == 2
+    assert "inside the workdir" in capsys.readouterr().out
+    assert not out.exists()
