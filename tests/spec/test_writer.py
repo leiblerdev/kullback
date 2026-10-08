@@ -370,8 +370,19 @@ def test_repair_for_ruling_publishes_defended_when_no_item_changes(tmp_path):
     assert event["name"] == "spec.defended" and event["payload"]["check_ids"] == ["s1"]
 
 
-def test_refusal_counts_keep_the_reasons_words_and_never_the_refused_value():
+def test_refusal_counts_name_a_family_of_code_wording_never_an_empty_key_or_a_value():
     store = W.store_of(inputs())
     store.add([{"id": "s1", "kind": "row_is", "table": "items", "find": {"item_id": "A1"},
                 "expect": {"slot": "nine_42"}, "fact_ids": ["f1"]}])
-    assert W._store_counts(store)["refused_why"] == {"value is not in the world the policy or": 1}
+    assert W._store_counts(store)["refused_why"] == {"value not found": 1}
+
+
+def test_every_reason_code_gives_lands_in_a_named_family_and_an_empty_one_reads_no_reason():
+    reasons = ["anchor is {answer, accepted: [...], reject: [...], row}: what a met checkpoint states",
+               "anchor.row is {table, find: {field: value}, fields: [...]}: the row you found the answer in",
+               "free is {field: one line on why a tool sets it to a value you cannot find}",
+               "name the Intent facts the item answers (fact_ids) or quote the policy line (policy_line)",
+               "slot: value \"paid by card\" rests only on echo facts (the user said yes to the agent's proposal)"]
+    assert [W.reason_family(r) for r in reasons] == ["anchor shape", "anchor shape", "free field", "no provenance",
+                                                     "echo value at a gate"]
+    assert W.reason_family("") == W.NO_REASON == "no reason"

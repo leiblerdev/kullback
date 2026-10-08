@@ -327,3 +327,23 @@ def test_an_anchor_answer_is_looked_up_never_computed():
     assert keep(dict(judge, anchor=dict(judge["anchor"], answer="B2 is in slot four")))[1] == ""
     counted = I.counts_of([{"kind": "judge", "anchor": {"row": None}}, {"kind": "judge", "anchor": {"row": {"t": 1}}}])
     assert counted["anchors_without_lookup"] == 1
+
+
+def test_a_hand_off_item_gates_only_when_its_policy_line_demands_the_hand_off():
+    policy = POLICY + "\nTransfer the user to a person when the slot is taken.\n"
+    tools = [*TOOLS, {"name": "transfer_to_person", "kind": "write", "args": []}]
+    hand_off = {"id": "h1", "kind": "called", "tool": "transfer_to_person", "gate": True, "fact_ids": ["f1"]}
+    kept, why = I.World(STATE, policy, FACTS, tools).check(hand_off, KNOWN, unwitnessed)
+    assert why == "" and kept["gate"] is False, "no policy line: weighed"
+    grounded = dict(hand_off, policy_line="Transfer the user to a person when the slot is taken.")
+    kept, why = I.World(STATE, policy, FACTS, tools).check(grounded, KNOWN, unwitnessed)
+    assert why == "" and kept["gate"] is True
+    move = {"id": "c1", "kind": "called", "tool": "update_item", "gate": True, "fact_ids": ["f1"]}
+    assert I.World(STATE, policy, FACTS, tools).check(move, KNOWN, unwitnessed)[0]["gate"] is True
+
+
+def test_the_counts_report_one_end_state_per_branch():
+    branch = dict(MOVE, id="s2", alt=1, expect={"slot": "four"})
+    assert I.counts_of([MOVE, I.sanity_item([])])["end_states"] == 1
+    assert I.counts_of([MOVE, branch, I.sanity_item([])])["end_states"] == 2
+    assert I.counts_of([I.sanity_item([])])["end_states"] == 1

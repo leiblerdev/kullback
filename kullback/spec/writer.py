@@ -87,8 +87,10 @@ item's policy_line goes without a row. Leave evidence out: every agent turn up t
 read. Narrow it ("after_call:<tool>", "final_answer", "assistant:<k>") only with evidence_why, one line on \
 why the answer can come nowhere else.
 Every item: id, gate (true when a run failing it is wrong whatever else it does), weight (default 1), \
-and fact_ids or policy_line (a verbatim line of the policy, at least 12 characters). State items may \
-carry alt (0, 1, ...) when the policy allows different end states; an item without alt holds in all."""
+and fact_ids or policy_line (a verbatim line of the policy, at least 12 characters). A hand-off item \
+gates only when its policy_line demands the hand-off. When the Intent or the policy names a condition \
+(if this, do that; else the other), write each branch as its own end state: its state items carry alt \
+(0, 1, ...); an item without alt holds in all."""
 
 EXAMPLES = """\
 # Examples
@@ -315,13 +317,33 @@ def _config(config: Any) -> Any:
     return config or ModelConfig(thinking={"type": "adaptive", "display": "summarized"}, max_tokens=4000)
 
 
+# Each refusal counted under the family of code wording it carries (spec/items.py), never its text:
+# a cut of the text kept values (a field's value, a quoted sentence) and left some keys empty.
+REASON_FAMILIES = (
+    ("rests only on echo facts", "echo value at a gate"), ("is not in the world", "value not found"),
+    ("unwitnessed facts", "unwitnessed facts alone"), ("evidence_why", "narrow evidence without why"),
+    ("which is no value of the cited row", "computed anchor"), ("anchor.answer does not state", "anchor misses row"),
+    ("anchor", "anchor shape"), ("evidence", "evidence ref"), ("a list value", "list value"),
+    ("value set", "value set shape"), ("scalar field", "nested value"), ("find matches", "find not one row"),
+    ("find names", "find shape"), ("has no field", "unknown field"), ("no table", "unknown table"),
+    ("no tool", "unknown tool"), (" takes ", "unknown argument"), ("free ", "free field"),
+    ("expect", "expect shape"), ("said", "said shape"), ("fact_ids", "no provenance"),
+    ("policy_line", "policy line"), ("not ruled", "not ruled"), ("question", "question shape"),
+    ("count", "count"), ("alt ", "alt"), ("gate", "gate or weight"), ("kind", "kind"), ("id", "id"))
+NO_REASON = "no reason"
+
+
+def reason_family(reason: str) -> str:
+    text = (reason or "").strip()
+    if not text:
+        return NO_REASON
+    return next((key for phrase, key in REASON_FAMILIES if phrase in text), "other")
+
+
 def _store_counts(store: writer_tools.ItemStore) -> dict:
     reasons: dict[str, int] = {}
     for row in store.refused:
-        # The reason's words only: quoted values and the leading field name are cut, so no value is kept.
-        text = re.sub(r"\"[^\"]*\"|'[^']*'|\([^)]*\)", "", row["reason"]).split(";")[0]
-        text = re.sub(r"^[\w.]+:\s*", "", text.strip())
-        key = re.sub(r"\s+", " ", re.sub(r"[^a-z_ ]", "", text.casefold())).strip()[:40].strip()
+        key = reason_family(row["reason"])
         reasons[key] = reasons.get(key, 0) + 1
     return {"offered": store.offered, "kept": len(store.items), "refused": len(store.refused),
             "refused_why": dict(sorted(reasons.items())), "dropped": len(store.dropped)}
@@ -409,7 +431,7 @@ def end_state_counts(verifier: Verifier, spec: Optional[Spec] = None) -> dict:
            "new_rows": sum(len(state.new_rows) for state in verifier.expected),
            "forbidden": len(verifier.forbidden), "conduct": len(verifier.conduct)}
     if items:
-        out.update(I.counts_of(items + [I.sanity_item(verifier.expected)]))
+        out = {**I.counts_of(items + [I.sanity_item(verifier.expected)]), **out}
     if spec is not None:
         out["echo_facts"] = sum(1 for fact in spec.intent.facts if fact.echo)
     return out

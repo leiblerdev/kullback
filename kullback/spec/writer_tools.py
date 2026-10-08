@@ -191,6 +191,7 @@ class ItemStore:
             limit = self._limit(item_id)
             kept, why = (None, limit) if limit else self.world.check(item, self.facts, self.unwitnessed)
             if kept is None:
+                why = why.strip() or "no reason"
                 self.refused.append({"id": item_id, "kind": item.get("kind") if isinstance(item, dict) else None,
                                      "reason": why})
                 lines.append(f"{item_id}: refused: {why}")

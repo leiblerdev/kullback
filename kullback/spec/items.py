@@ -31,6 +31,7 @@ import math
 import re
 from typing import Any, Callable, Iterable, Optional
 
+from kullback.runner.atom_context import is_transfer
 from kullback.runner.records import Atom, EndState, ExpectedCell, ValueSource
 
 STATE_KINDS = ("row_is", "row_new", "row_keeps")
@@ -244,6 +245,9 @@ class World:
         weight = item.get("weight", 1.0)
         if not isinstance(gate, bool) or not isinstance(weight, (int, float)) or weight <= 0:
             return None, "gate is true or false and weight a positive number"
+        if gate and item["kind"] == "called" and is_transfer(str(item.get("tool") or "")) \
+                and not is_transfer(kept["policy_line"] or ""):
+            gate = False  # a hand-off gates only where its policy line names one; else it is weighed
         kept.update(gate=gate, weight=float(weight))
         self._kept = kept
         why = getattr(self, f"_{item['kind']}")(item, kept)
@@ -690,6 +694,8 @@ def counts_of(items: list[dict]) -> dict:
             "scored": sum(1 for item in items if not item.get("gate")),
             "fact_backed": sum(1 for item in items if item.get("fact_ids")),
             "free_fields": sum(len(item.get("free") or {}) for item in items),
+            "end_states": len({item.get("alt", 0) for item in items if item.get("kind") in STATE_KINDS}) or
+            int(any(item.get("kind") == SANITY for item in items)),
             "anchors_without_lookup": sum(1 for item in items if item.get("kind") == "judge"
                                           and not (item.get("anchor") or {}).get("row")),
             "policy_backed": sum(1 for item in items if item.get("policy_line"))}
