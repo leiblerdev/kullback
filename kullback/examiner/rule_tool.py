@@ -177,6 +177,17 @@ def _spec_and_verifier(workdir: Any, task_id: str) -> tuple[Optional[Spec], Opti
     return load_spec(workdir, task_id), load_spec_verifier(workdir, task_id)
 
 
+def _filed_as(workdir: Any, spec: Spec, args: RuleArgs) -> tuple[bool, str]:
+    """Whether the ruling blocks and its fix as filed, or a counted refusal: an intent_unfounded ruling
+    names an Intent fact; the scope codes on the user's ask always block; not_enough_truth's fix is fixed."""
+    if args.code == R.UNFOUNDED_CODE and args.item not in {fact.id for fact in spec.intent.facts}:
+        _refuse(workdir, args.task_id, "not_a_fact", f"an {R.UNFOUNDED_CODE} ruling names one Intent fact id "
+                "from the view")
+    # A wrong Reference leaves the Verifier standing: the ruling is a note for the witness flag, never blocking.
+    blocking = (bool(args.blocking) or args.code in R.BLOCKING_CODES) and args.wrong_side != "reference"
+    return blocking, R.NO_TRUTH_FIX if args.code == R.NO_TRUTH_CODE else " ".join(args.fix.split())
+
+
 def checked_ruling(root: ExamRoot, args: RuleArgs) -> R.Ruling:
     """The ruling as it will be filed, or a counted refusal naming what is missing."""
     workdir, task_id = root.workdir, args.task_id
@@ -196,15 +207,14 @@ def checked_ruling(root: ExamRoot, args: RuleArgs) -> R.Ruling:
     if args.code == "fails_reference" and args.wrong_side not in R.WRONG_SIDES:
         _refuse(workdir, task_id, "no_side", "a fails_reference ruling says which side is wrong: wrong_side "
                 "reference or verifier")
+    blocking, fix = _filed_as(workdir, spec, args)
     verified = list(root.verified.get(task_id) or [])
     if args.code in R.VERIFY_CODES and not verified:
         _refuse(workdir, task_id, "not_verified", f"call verify on task {task_id} first: a {args.code} ruling "
                 "cites what the Verifier did")
-    # A wrong Reference leaves the Verifier standing: the ruling is a note for the witness flag, never blocking.
-    blocking = bool(args.blocking) and args.wrong_side != "reference"
     return R.Ruling(task_id=task_id, number=R.next_number(workdir, task_id), round=root.round or spec.round + 1,
                     item=args.item, kind=args.kind, code=args.code, reason=" ".join(args.reason.split()),
-                    fix=" ".join(args.fix.split()), blocking=blocking, wrong_side=args.wrong_side,
+                    fix=fix, blocking=blocking, wrong_side=args.wrong_side,
                     verified=verified if args.kind == "code" else [])
 
 
@@ -368,15 +378,37 @@ def _item(check: Any) -> dict:
     return row
 
 
+def _fact(fact: Any) -> dict:
+    """One Intent fact with where the user said it, its stance and its echo and unfounded flags."""
+    return {"id": fact.id, "stance": fact.stance, "text": fact.text,
+            "source": {"recording": fact.source.recording, "turn": fact.source.turn},
+            "echo": fact.echo, "unfounded": fact.unfounded}
+
+
+def user_turns(workdir: Any, task_id: str) -> dict[str, list[dict]]:
+    """Every recording's user turns by recording id: the turn index, the agent's last line before it and
+    what the user said (spec/intent_tools.py, the Intent miner's own reader). Empty without recordings."""
+    from kullback.spec.intent_tools import recordings_of
+
+    try:
+        found = recordings_of(Path(workdir), task_id)
+    except (OSError, ValueError):
+        return {}
+    return {recording: [{"turn": t.index, "agent_before": t.agent_before, "user": t.text} for t in turns]
+            for recording, turns in sorted(found.recordings.items())}
+
+
 def spec_view(root: ExamRoot, task_id: str) -> Optional[dict]:
-    """The Task as the Examiner reads it: the Intent facts, the Spec's items with provenance, the
-    Verifier's items, the facts no item covers, and every ruling so far with the writer's answer."""
+    """The Task as the Examiner reads it: every recording's user turns, the Intent facts with their
+    source turn, the Spec's items with provenance, the Verifier's items, the facts no item covers, and
+    every ruling so far with the writer's answer."""
     spec, verifier = _spec_and_verifier(root.workdir, task_id)
     if spec is None:
         return None
     covered = {fact_id for check in spec.checks for fact_id in check.fact_ids}
     view = {"task_id": task_id, "round": spec.round, "version": spec.version,
-            "facts": [{"id": f.id, "stance": f.stance, "text": f.text} for f in spec.intent.facts],
+            "user_turns": user_turns(root.workdir, task_id),
+            "facts": [_fact(f) for f in spec.intent.facts],
             "items": [_item(check) for check in spec.checks],
             "facts_without_item": [f.id for f in spec.intent.facts if f.id not in covered],
             "rulings": read_rulings(root.workdir, task_id)}
@@ -432,5 +464,5 @@ RULE_TOOL_NAMES = ("rule", "close", "verify", "lookup_rows", "search_rows")
 
 __all__ = ["POLICY_FILE", "REFUSED_FILE", "REVIEW_DIR", "RULE_TOOL_NAMES", "RULINGS_DIR", "TOOLS_FILE", "VIEW_DIR",
            "CloseArgs", "RuleArgs", "RuleResult", "VerifyArgs", "checked_ruling", "file_ruling", "open_run",
-           "read_rulings", "reference_ids_of", "rule_tools", "run_rows", "spec_view", "turn_texts", "verify_rows",
-           "write_views"]
+           "read_rulings", "reference_ids_of", "rule_tools", "run_rows", "spec_view", "turn_texts", "user_turns",
+           "verify_rows", "write_views"]

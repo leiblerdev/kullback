@@ -22,7 +22,7 @@ from kullback.spec.trust import FLAGS, REASONS, TIERS, TaskTier, workdir_tiers
 # The report file in the workdir, one per build.
 REPORT_FILE = "tiers.json"
 TABLE_HEADER = ("| Build | Corpus | Verifier from | Tasks | Trusted | Untrusted "
-                "| No intent | Not examined | Open ruling | Constructed Run passed | Reference passes "
+                "| No intent | Not examined | Not enough truth | Open ruling | Constructed Run passed | Reference passes "
                 "| Solvable | Trusted by Reference (right, wrong, mixed, unknown) | Code |")
 
 

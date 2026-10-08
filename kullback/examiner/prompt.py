@@ -1,7 +1,7 @@
 """The Examiner's prompt in GEPA order: receives, tools, examples, choice, feedback, stop (D320, D331).
 
-The Examiner gives feedback and never edits: it reads the Intent, the policy and the Spec and files
-rulings the writer applies or rebuts, then closes or keeps them open. General only: no corpus,
+The Examiner gives feedback and never edits: it reads the user turns, the Intent, the policy and the
+Spec and files rulings the writer applies or rebuts, then closes or keeps them open. General only: no corpus,
 publisher, tool, table or column name appears here. The stop rule is last.
 """
 
@@ -15,7 +15,7 @@ from kullback.spec.rulings import RULING_KINDS
 #: The Examiner writes nothing under its root (D320).
 WRITABLE_DIRS: tuple[str, ...] = ()
 #: The tools a review session holds; the full examine session adds the Environment ones.
-REVIEW_TOOLS = ("rule", "close", "verify", "lookup_rows", "search_rows")
+REVIEW_TOOLS = ("rule", "close", "verify", "lookup_rows", "search_rows", "how_it_works")
 
 
 def receives_section() -> str:
@@ -24,8 +24,10 @@ def receives_section() -> str:
             "items (end-state checks on rows and fields, checks on the calls made, and judge items, yes or no "
             "questions a model answers about what the agent told the user, each with an anchor value and the "
             "evidence it reads), each item citing the Intent facts or the policy line it comes from. Each Task "
-            "has a view: the Intent facts, the items with their provenance, the Verifier's compiled items, the "
-            "facts no item covers, and every ruling so far with the writer's answer. The policy and the tool "
+            "has a view: the user turns of every recording (each with its index and the agent's last line "
+            "before it), the Intent facts with the recording and turn each was read from, its stance and its "
+            "echo flag, the items with their provenance, the Verifier's compiled items, the facts no item "
+            "covers, and every ruling so far with the writer's answer. The policy and the tool "
             'list sit beside the views. Your root is ".", the exam directory: every path is relative to it. '
             "You give feedback and never edit: you file rulings, the writer applies or rebuts them. The Tasks "
             "and the round are in the opening message.")
@@ -66,6 +68,8 @@ _TOOL_EXAMPLES = {
                     '{"task_id": "t1", "table": "<table>", "key": "<row key>"}.'),
     "search_rows": ('search_rows: find row keys whose field equals a value, e.g. {"task_id": "t1", '
                     '"table": "<table>", "field": "<field>", "value": "<value>"}.'),
+    "how_it_works": ('how_it_works: the policy paragraphs and the tools that match a few words, e.g. '
+                     '{"query": "change after payment"}.'),
     "finding": ('finding: what is wrong with the Environment, for the Builder, e.g. {"task_id": "t1", "kind": '
                 '"fidelity", "text": "what differs", "rows": [...], "path": "env/tools/<name>.py", "edits": '
                 '[{"kind": "body", "path": "env/tools/<name>.py", "call_id": "<id>", "column": "<column>", '
@@ -95,7 +99,13 @@ def examples_section() -> str:
             "passes it; verify shows the Reference fails it, and you rule which side is wrong from the Intent.\n"
             "scope: the request is not doable under the policy (fix: a refusal, the sanity item plus a judge item "
             "citing the policy line); the Intent is too vague to check; the instruction lacks a fact the Task "
-            "needs.")
+            "needs.\n"
+            "intent_unfounded: an Intent fact no user turn says, or one said only after the agent refused, failed "
+            "or stalled (fix: drop the fact from every gate).\n"
+            "gated_against_ask: a gate works against what the user volunteered while the policy and the world "
+            "allow a path to it, such as a refusal gated where the policy offers a paid way.\n"
+            "not_enough_truth: the turns never show what the user wants at the point the Verifier must decide "
+            "(fix: keep untrusted).")
 
 
 def choice_section() -> str:
@@ -104,7 +114,12 @@ def choice_section() -> str:
             "anchor and every value an item fixes before you accept it. Call verify once per Task before any "
             "code ruling. Block when a correct solve could fail or a wrong one pass; file a note when the item "
             "is weak but the verdict would stand. One ruling per problem, on the item it is about. Decide from "
-            "the Intent and the policy, never from what a Run did.\n" + REVIEW_SKILL)
+            "what the user said (the user turns), the world and the policy, never from what a Run did. The "
+            "Intent is the writer's reading of the user turns: check every fact against its turn first. A fact "
+            "said only after the agent refused, failed or stalled is not the ask. Users ask for things the world "
+            "or the policy may not allow; serve the ask only as far as they allow, and look up how things work "
+            "before you accept or rule. When the turns never show what the user wants at the point that "
+            "matters, rule not_enough_truth.\n" + REVIEW_SKILL)
 
 
 def feedback_section() -> str:

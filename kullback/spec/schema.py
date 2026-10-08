@@ -37,6 +37,9 @@ class IntentFact(Record):
     # The fact carries the agent's proposal: the user only said yes to it, or a value of it (a token
     # with a digit) was in the agent's line before and not in the user's turn (spec/intent_tools.is_echo).
     echo: bool = False
+    # The Examiner ruled the user never asked for it (an intent_unfounded ruling the writer applied):
+    # no gate item may rest on it alone (spec/items.py).
+    unfounded: bool = False
 
 
 class SpecIntent(Record):
@@ -99,6 +102,8 @@ class Spec(Record):
     checks: list[Check] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
     rulings_open: int = 0
+    # Open not_enough_truth rulings: the Task stays untrusted for that reason (spec/trust.py).
+    truth_open: int = 0
     round: int = 0
     # Review rounds whose Examiner session ran over this Task, oldest first.
     examined_rounds: list[int] = Field(default_factory=list)

@@ -32,12 +32,24 @@ RULING_KINDS: dict[str, tuple[str, ...]] = {
     "judge": ("not_yes_no", "taste", "anchor_wrong", "unanswerable", "leading"),
     # A code check is wrong as code: wrong place read, does not run, or the constructed Runs say so.
     "code": ("wrong_field", "does_not_run", "passes_do_nothing", "fails_reference"),
-    # The Task itself: not doable under the policy, too vague, or missing a fact the Task needs.
-    "scope": ("not_doable", "vague_intent", "missing_fact"),
+    # The Task itself: not doable under the policy, too vague, or missing a fact the Task needs; an Intent
+    # fact the user never asked for (said nowhere, or only after the agent refused, failed or stalled); a
+    # gate against what the user volunteered where the policy and the world allow a path to it; or the
+    # recordings never show what the user wants at the point the Verifier must decide.
+    "scope": ("not_doable", "vague_intent", "missing_fact", "intent_unfounded", "gated_against_ask",
+              "not_enough_truth"),
 }
 RulingKind = Literal["derivation", "judge", "code", "scope"]
 # The codes that rest on what the Verifier did to a constructed Run or the Reference: the verify tool first.
 VERIFY_CODES = ("passes_do_nothing", "fails_reference")
+# The codes that always block, whatever the Examiner says.
+BLOCKING_CODES = ("intent_unfounded", "gated_against_ask", "not_enough_truth")
+# Applying it marks the ruled Intent fact unfounded: no gate may rest on it alone.
+UNFOUNDED_CODE = "intent_unfounded"
+# The writer cannot apply it: it stays open until a rebuttal citing a user turn settles it and the
+# Examiner closes it. An open one holds the Task untrusted for its own reason (spec/trust.py).
+NO_TRUTH_CODE = "not_enough_truth"
+NO_TRUTH_FIX = "keep untrusted"
 WRONG_SIDES = ("reference", "verifier")
 ANSWER_ACTIONS = ("applied", "rebutted")
 # One sentence: no line break, between these lengths.
@@ -133,6 +145,11 @@ def open_blocking(rulings: Iterable[Ruling]) -> list[Ruling]:
     return [r for r in rulings if r.status == "open" and r.blocking]
 
 
+def open_no_truth(rulings: Iterable[Ruling]) -> list[Ruling]:
+    """The open rulings saying the recordings never show what the user wants where it matters."""
+    return [r for r in rulings if r.status == "open" and r.code == NO_TRUTH_CODE]
+
+
 def unanswered(rulings: Iterable[Ruling]) -> list[Ruling]:
     """The open rulings the writer has not answered yet: its work for the next writer round."""
     return [r for r in rulings if r.status == "open" and r.answer is None]
@@ -145,6 +162,9 @@ def answer(workdir: Any, task_id: str, number: int, action: str, why: str, round
     if action not in ANSWER_ACTIONS:
         raise ValueError(f"an answer is one of {', '.join(ANSWER_ACTIONS)}")
     ruling = Ruling.model_validate(read_json(ruling_path(workdir, task_id, number)))
+    if action == "applied" and ruling.code == NO_TRUTH_CODE:
+        raise ValueError(f"a {NO_TRUTH_CODE} ruling cannot be applied: rebut it by citing the user turn that "
+                         "settles the point, or leave it open")
     ruling = ruling.model_copy(update={"answer": {"action": action, "why": " ".join(str(why or "").split()),
                                                   "round": int(round_number), "changed": list(changed),
                                                   "writer": dict(writer or {})}})
@@ -175,7 +195,8 @@ def sync_spec(workdir: Any, task_id: str, round_number: Optional[int] = None) ->
     spec = load_spec(workdir, task_id)
     if spec is None:
         return None
-    update: dict = {"rulings_open": len(open_blocking(load_rulings(workdir, task_id)))}
+    rulings = load_rulings(workdir, task_id)
+    update: dict = {"rulings_open": len(open_blocking(rulings)), "truth_open": len(open_no_truth(rulings))}
     if round_number is not None:
         update["round"] = max(spec.round, int(round_number))
         update["examined_rounds"] = sorted(set(spec.examined_rounds) | {int(round_number)})
@@ -213,7 +234,7 @@ def rulings_line(workdir: Any, task_ids: Iterable[str]) -> str:
             "answers them in the review loop")
 
 
-__all__ = ["ANSWER_ACTIONS", "rulings_line", "MAX_SENTENCE", "MIN_SENTENCE", "RULINGS_DIR", "RULING_KINDS", "TASK_ITEM",
+__all__ = ["ANSWER_ACTIONS", "BLOCKING_CODES", "NO_TRUTH_CODE", "NO_TRUTH_FIX", "UNFOUNDED_CODE", "open_no_truth", "rulings_line", "MAX_SENTENCE", "MIN_SENTENCE", "RULINGS_DIR", "RULING_KINDS", "TASK_ITEM",
            "VERIFY_CODES", "WRONG_SIDES", "Ruling", "answer", "close", "code_refusal", "counts", "item_ids",
            "load_rulings", "next_number", "open_blocking", "ruling_path", "rulings_dir", "save_ruling",
            "sentence_refusal", "sync_spec", "unanswered"]

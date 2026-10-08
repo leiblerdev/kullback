@@ -121,6 +121,16 @@ def _contains(haystack: str, needle: str) -> bool:
     return bool(needle) and re.search(rf"(?<![\w.]){re.escape(needle)}(?![\w]|\.\d)", haystack) is not None
 
 
+def _unfounded_gate(item: dict, facts: list) -> str:
+    """Why a gate item may not rest on these facts: every one was ruled unfounded (the Examiner ruled the
+    user never asked for it, spec/review.py); else empty. A scored item may."""
+    gate = item.get("gate", DEFAULT_GATE[item["kind"]]) is True
+    if gate and facts and all(getattr(fact, "unfounded", False) for fact in facts):
+        return ("a gate may not rest on unfounded facts alone (the Examiner ruled the user never asked for "
+                "them); cite a fact the user said or make the item scored (gate false)")
+    return ""
+
+
 class World:
     """The Starting state, the policy and the user turns, for finding rows and sourcing values."""
 
@@ -264,7 +274,7 @@ class World:
             return "an item may not rest on unwitnessed facts alone; add a witnessed fact or a policy line"
         kept["fact_ids"] = fact_ids
         kept["policy_line"] = str(item.get("policy_line")).strip() if line else None
-        return ""
+        return _unfounded_gate(item, [known[f] for f in fact_ids])
 
     def _value(self, value: Any, what: str) -> tuple[Any, str]:
         """A value or value set with every value sourced, or why not."""

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from kullback.ai.provider import ModelReply, TestModel
 from kullback.examiner.rule_tool import verify_line, verify_rows
 from kullback.runner.records import Run, Verifier, write_json
@@ -262,3 +264,67 @@ def test_an_examined_task_with_no_open_ruling_keeps_its_tier(tmp_path):
     assert load_spec(root, "t1").examined_rounds == [1]
     tier, row = _trust_tier(root, verifier)
     assert tier == "trusted" and row["reason"] is None
+
+
+def _unfounded_ruling(root):
+    return _ruling(root, 1, item="f3", kind="scope", code=RL.UNFOUNDED_CODE)
+
+
+def test_an_applied_intent_unfounded_ruling_stops_the_fact_backing_a_gate(tmp_path):
+    root, _ = _written(tmp_path)
+    _unfounded_ruling(root)
+    regate = [call("drop_items", ids=["s1"]), call("add_items", items=[ROW]), ModelReply(content="done")]
+    assert RV.answer_rulings(root, "t1", TestModel(regate), 2)["applied"] == 1
+    after = load_spec(root, "t1")
+    assert [f.id for f in after.intent.facts if f.unfounded] == ["f3"] and after.checks == []
+    store = W.store_of(inputs()._replace(intent=after.intent))
+    assert "unfounded facts" in store.add([ROW]) and not store.items
+    assert store.add([dict(ROW, gate=False, expect={"slot": "seven"})]) == "s1: kept (row A1)"
+
+
+def test_a_rebutted_intent_unfounded_ruling_leaves_the_fact_founded(tmp_path):
+    root, _ = _written(tmp_path)
+    _unfounded_ruling(root)
+    RV.answer_rulings(root, "t1", TestModel([ModelReply(content="rebut: The user said it in turn 0.")]), 2)
+    assert not any(f.unfounded for f in load_spec(root, "t1").intent.facts)
+
+
+def _no_truth(root, blocking=False):
+    from kullback.examiner.exam_files import ExamRoot
+    from kullback.examiner.rule_tool import RuleArgs, file_ruling
+
+    return file_ruling(ExamRoot(workdir=root, round=1), RuleArgs(
+        task_id="t1", item=RL.TASK_ITEM, kind="scope", code=RL.NO_TRUTH_CODE, blocking=blocking,
+        reason="No recording shows what the user wants once the slot is taken.",
+        fix="Gate the move to slot seven anyway."))
+
+
+def test_an_open_not_enough_truth_ruling_leaves_the_task_untrusted_with_that_reason(tmp_path):
+    from kullback.spec.report import build_report
+    from kullback.spec.trust import NOT_ENOUGH_TRUTH
+
+    root, verifier = _written(tmp_path)
+    filed = _no_truth(root)
+    assert filed["blocking"] is True and filed["fix"] == RL.NO_TRUTH_FIX
+    RL.sync_spec(root, "t1", 1)
+    assert load_spec(root, "t1").truth_open == 1
+    tier, row = _trust_tier(root, verifier)
+    assert tier == "untrusted" and row["reason"] == NOT_ENOUGH_TRUTH
+    assert build_report({"t1": _trust_tier(root, verifier)})["reasons"][NOT_ENOUGH_TRUTH] == 1
+    RL.answer(root, "t1", 1, "rebutted", "The user says in turn 0 any free slot will do.", 2)
+    RL.close(root, "t1", 1, False, "The cited turn settles what the user wants.", 2)
+    RL.sync_spec(root, "t1", 2)
+    assert _trust_tier(root, verifier)[1]["reason"] is None
+
+
+def test_the_writer_cannot_apply_not_enough_truth(tmp_path):
+    root, _ = _written(tmp_path)
+    _no_truth(root)
+    before = _both_copies(root)
+    out = RV.answer_rulings(root, "t1", TestModel([call("drop_items", ids=["s1"]), ModelReply(content="done")]), 2)
+    assert out["applied"] == 0 and out["rebutted"] == 1
+    [ruling] = RL.load_rulings(root, "t1")
+    assert ruling.answer["action"] == "rebutted" and ruling.answer["changed"] == [] and ruling.status == "open"
+    assert [c.id for c in load_spec(root, "t1").checks] == ["s1"] and _both_copies(root) == before
+    with pytest.raises(ValueError, match="cannot be applied"):
+        RL.answer(root, "t1", 1, "applied", "Kept the move as asked.", 2)

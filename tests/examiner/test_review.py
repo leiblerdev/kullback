@@ -119,3 +119,14 @@ def test_a_capped_session_names_its_task_and_the_others_still_run(tmp_path):
     assert out["examined"] == ["t1", "t2"]
     assert [finding["task_id"] for finding in out["findings"]] == ["t1"]
     assert "t2" in _opening_of(model.calls[1]) and len(model.calls) == 2
+
+
+def test_a_task_session_gets_twenty_turns(tmp_path, monkeypatch):
+    root = _specced_world(tmp_path, task_ids=("t1",))
+    budgets = []
+    monkeypatch.setattr(S, "_run_session", lambda harness, text, turns, selected: budgets.append(turns) or [])
+    S.review_specs(root, ["t1"], model=TestModel([]), round_number=1)
+    assert S.REVIEW_TURNS_PER_TASK == 20 and budgets == [20]
+    harness = AgentHarness(model=TestModel([]))
+    load_extensions(harness, [S.review_extension(_root(tmp_path / "again"))])
+    assert harness.registry.get("how_it_works") is not None

@@ -736,18 +736,20 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding],
     return exam_root
 REVIEW_MESSAGE = "Examine these Specs."
 # One Task review session's turn budget: reading its Runs, replays and Verifier before filing.
-REVIEW_TURNS_PER_TASK = 12
+REVIEW_TURNS_PER_TASK = 20
 
 
 def review_extension(root: ExamRoot) -> Callable[[ExtensionAPI], None]:
     """One review round's setup: base tools over exam/, the ruling tools, the finding tool for
     Builder-side faults, the prompt, the read and write hooks."""
+    from kullback.examiner.domain_tools import how_it_works_tool
     from kullback.examiner.rule_tool import rule_tools
 
     def setup(api: ExtensionAPI) -> None:
         register_base_tools(api, root.exam_dir, only=BASE_ONLY)
         for tool in rule_tools(root):
             api.register_tool(tool)
+        api.register_tool(how_it_works_tool(root))
         api.register_tool(finding_tool(root))
         for name, text in prompt_mod.sections([*prompt_mod.REVIEW_TOOLS, "finding"]):
             api.add_prompt_section(f"examiner_{name}", prompt_block(name, text))

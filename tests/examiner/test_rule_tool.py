@@ -140,7 +140,7 @@ def test_the_view_holds_the_items_with_provenance_the_uncovered_facts_and_the_ru
 def test_the_examiner_offers_its_ruling_tools_and_no_edit_tool(tmp_path):
     names = [tool.name for tool in D.domain_tools(_root(tmp_path))]
     assert names == list(D.tool_names())
-    assert names[:5] == ["rule", "close", "verify", "lookup_rows", "search_rows"]
+    assert names[:6] == ["rule", "close", "verify", "lookup_rows", "search_rows", "how_it_works"]
     assert not {"reject_reference", "edit_verifier"} & set(names)
 
 
@@ -153,3 +153,79 @@ def test_the_prompt_names_every_offered_tool_every_ruling_kind_and_no_edit_tool(
     assert not any(f"{name}:" in text for name in ("edit_verifier", "propose_verifier", "try_atoms", "probe",
                                                     "reroll", "reject_reference"))
     assert chr(0x2014) not in text and chr(0x2013) not in text
+
+
+TOOL_SECRET = "a row value only the tool returned"
+
+
+def _turn(idx, role, content=None):
+    return {"idx": idx, "role": role, "content": content, "tool_call_ids": [], "raw_ptr": {"file_hash": "h"}}
+
+
+def _recordings(tmp_path):
+    """Two recordings of t1: one where the user asks, a tool answers and the user accepts a proposal."""
+    traces = {"rec1": [_turn(0, "user", TURN), _turn(1, "tool", TOOL_SECRET),
+                       _turn(2, "assistant", "Shall I add an urgent note too?"), _turn(3, "user", "Yes please.")],
+              "rec2": [_turn(0, "assistant", "How can I help?"), _turn(1, "user", "Move A1 to slot seven.")]}
+    (tmp_path / "traces").mkdir()
+    for trace_id, turns in traces.items():
+        (tmp_path / "traces" / f"{trace_id}.json").write_text(json.dumps(
+            {"trace_id": trace_id, "raw_hash": "h", "ingest_version": "v", "source": "s", "turns": turns,
+             "raw_ptr": {"file_hash": "h"}}))
+    (tmp_path / "tasks").mkdir()
+    (tmp_path / "tasks" / "t1.json").write_text(json.dumps({"id": "t1", "run_ids": ["rec1", "rec2"]}))
+
+
+def test_the_view_holds_every_recordings_user_turns_and_each_facts_source(tmp_path):
+    root = _root(tmp_path)
+    _recordings(tmp_path)
+    view = R.spec_view(root, "t1")
+    assert view["user_turns"] == {
+        "rec1": [{"turn": 0, "agent_before": "", "user": TURN},
+                 {"turn": 3, "agent_before": "Shall I add an urgent note too?", "user": "Yes please."}],
+        "rec2": [{"turn": 1, "agent_before": "How can I help?", "user": "Move A1 to slot seven."}]}
+    assert view["facts"][1] == {"id": "f2", "stance": "accepted", "text": "I also want a note saying it was urgent.",
+                                "source": {"recording": "rec1", "turn": 2}, "echo": False, "unfounded": False}
+    assert TOOL_SECRET not in json.dumps(view)
+    written = R.write_views(root, ["t1"])
+    assert json.loads((root.exam_dir / written["t1"]).read_text())["user_turns"] == view["user_turns"]
+
+
+POLICY = """# Changes
+An order can be changed while it is pending.
+
+A paid upgrade changes the seat class after payment.
+
+# Refunds
+Refunds go back to the original payment method."""
+
+
+def test_how_it_works_returns_matching_policy_lines_and_tools(tmp_path):
+    root = _root(tmp_path)
+    (root.exam_dir / R.REVIEW_DIR).mkdir(parents=True)
+    (root.exam_dir / R.POLICY_FILE).write_text(POLICY)
+    (tmp_path / "tool_sigs.json").write_text(json.dumps([
+        {"name": "upgrade_seat", "kind": "write", "description": "Upgrade the seat class for a fee.",
+         "args_fields": [{"name": "order_id"}, {"name": "seat_class"}]},
+        {"name": "list_items", "kind": "read"}]))
+    tool = D.how_it_works_tool(root)
+    found = asyncio.run(tool.execute(D.HowArgs(query="upgrade the seat class")))
+    assert found.policy == [{"heading": "Changes", "text": "A paid upgrade changes the seat class after payment."}]
+    assert found.tools == [{"name": "upgrade_seat", "kind": "write", "args": ["order_id", "seat_class"],
+                            "description": "Upgrade the seat class for a fee."}]
+    assert "[Changes] A paid upgrade" in tool.render(found)
+    nothing = asyncio.run(tool.execute(D.HowArgs(query="weather forecast")))
+    assert nothing.policy == [] and nothing.tools == [] and "nothing" in nothing.summary
+
+
+def test_the_choice_rule_names_the_user_turns_and_not_the_intent_as_ground():
+    choice = P.choice_section()
+    assert "Decide from what the user said (the user turns), the world and the policy" in choice
+    assert "Decide from the Intent" not in choice
+    assert "check every fact against its turn first" in choice and "not_enough_truth" in choice
+    assert "user turns" in P.receives_section()
+    examples = P.examples_section()
+    for code in (RL.UNFOUNDED_CODE, "gated_against_ask", RL.NO_TRUTH_CODE):
+        assert sum(line.startswith(f"{code}:") for line in examples.splitlines()) == 1
+    assert [name for name, _ in P.sections()] == ["receives", "tools", "examples", "choice", "feedback", "stop"]
+    assert "how_it_works:" in P.tools_section()

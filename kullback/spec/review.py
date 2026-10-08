@@ -6,6 +6,10 @@ the fix (changes or drops the ruled check, adds a check for an uncovered fact) o
 An applied answer rewrites the Verifier; the answer is kept on the ruling for the Examiner's next round,
 which closes the ruling or keeps it open.
 
+An intent_unfounded ruling the writer applies marks its fact `unfounded` on the Spec: the writer's tool
+then refuses any gate resting on it alone (spec/items.py). A not_enough_truth ruling cannot be applied:
+whatever the repair changed is not kept, and the answer is the writer's rebuttal, or none.
+
 A ruling that says the Reference is wrong (fails_reference, wrong side reference), or one trust filed
 with no side named yet, asks nothing of the writer: it is left for the Examiner.
 """
@@ -70,6 +74,38 @@ def _examiners_side(ruling: R.Ruling) -> bool:
     return ruling.code == "fails_reference" and ruling.wrong_side != "verifier"
 
 
+def unfounded_intent(intent: Any, fact_id: str) -> Any:
+    """The Intent with one fact marked unfounded: the Examiner ruled the user never asked for it."""
+    facts = [f.model_copy(update={"unfounded": True}) if f.id == fact_id else f for f in intent.facts]
+    return intent.model_copy(update={"facts": facts})
+
+
+def _inputs_for(inputs: Any, ruling: R.Ruling) -> Any:
+    """The writer's inputs for one ruling: an intent_unfounded ruling's fact marked unfounded."""
+    if ruling.code != R.UNFOUNDED_CODE:
+        return inputs
+    return inputs._replace(intent=unfounded_intent(inputs.intent, ruling.item))
+
+
+def _settle(root: Path, ruling: R.Ruling, spec: Spec, written: Any, used: Any) -> tuple[str, str, list[str]]:
+    """The answer to one ruling from the repair: applied when it changed, dropped or added a check (the
+    Verifier rewritten, an unfounded fact kept marked), else rebutted; a not_enough_truth ruling is never
+    applied, whatever the repair did."""
+    from kullback.spec.writer import write_verifier
+
+    counts = written.counts
+    moved = counts.get("changed", 0) + counts.get("dropped", 0) + counts.get("added", 0)
+    if ruling.code == R.NO_TRUTH_CODE or not moved:
+        return "rebutted", counts.get("rebut") or REBUT_NONE, []
+    changed = [c.id for c in written.spec.checks if c not in spec.checks]
+    changed += [c.id for c in spec.checks if c.id not in {k.id for k in written.spec.checks}]
+    update = {"rulings_open": spec.rulings_open, "round": spec.round}
+    if ruling.code == R.UNFOUNDED_CODE:
+        update["intent"] = unfounded_intent(written.spec.intent, ruling.item)
+    write_verifier(written.spec.model_copy(update=update), root, used)
+    return "applied", counts.get("rebut") or ruling.fix, changed
+
+
 def answer_rulings(workdir: Any, task_id: str, model: Any, round_number: int, *,
                    ceiling_usd: Optional[float] = None, repair: Optional[Callable] = None) -> dict:
     """The writer's answer to every open ruling on one Task it has not answered; returns the counts.
@@ -82,7 +118,7 @@ def answer_rulings(workdir: Any, task_id: str, model: Any, round_number: int, *,
     from kullback.runner.budget import BudgetedModel
     from kullback.spec.stage import STAGE
     from kullback.spec.trust import load_spec_verifier
-    from kullback.spec.writer import load_inputs, write_verifier
+    from kullback.spec.writer import load_inputs
     from kullback.spec.writer import repair as writer_repair
 
     root = Path(workdir)
@@ -105,17 +141,11 @@ def answer_rulings(workdir: Any, task_id: str, model: Any, round_number: int, *,
         if spec is None:
             break
         inputs = inputs or load_inputs(root, task_id, spec.intent)
-        written = repair(spec, _writer_ruling(spec, load_spec_verifier(root, task_id), ruling), inputs, model)
-        counts = written.counts
-        changed = [c.id for c in written.spec.checks if c not in spec.checks]
-        changed += [c.id for c in spec.checks if c.id not in {k.id for k in written.spec.checks}]
-        if counts.get("changed", 0) + counts.get("dropped", 0) + counts.get("added", 0):
-            write_verifier(written.spec.model_copy(update={"rulings_open": spec.rulings_open, "round": spec.round}),
-                           root, inputs)
-            action, why = "applied", counts.get("rebut") or ruling.fix
-        else:
-            action, why = "rebutted", counts.get("rebut") or REBUT_NONE
-        kept = {k: v for k, v in counts.items() if k != "rebut" and v}
+        used = _inputs_for(inputs, ruling)
+        written = repair(spec, _writer_ruling(spec, load_spec_verifier(root, task_id), ruling), used, model)
+        action, why, changed = _settle(root, ruling, spec, written, used)
+        inputs = used if action == "applied" else inputs
+        kept = {k: v for k, v in written.counts.items() if k != "rebut" and v}
         R.answer(root, task_id, ruling.number, action, why, round_number, changed, writer=kept)
         events.ruling_answered(bus, task_id, ruling.number, action, changed)
         out["answered"] += 1
@@ -124,4 +154,4 @@ def answer_rulings(workdir: Any, task_id: str, model: Any, round_number: int, *,
     return out
 
 
-__all__ = ["REBUT_NONE", "answer_rulings", "atom_checks", "ruled_checks"]
+__all__ = ["REBUT_NONE", "answer_rulings", "atom_checks", "ruled_checks", "unfounded_intent"]

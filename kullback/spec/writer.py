@@ -50,7 +50,7 @@ WHAT_YOU_RECEIVE = """\
 # What you receive
 One customer request as Intent facts (each with an id; a fact marked unwitnessed was only accepted by \
 the user, never volunteered; a fact marked echo carries the agent's proposal, so a gate value may not \
-rest on it alone), the policy the agent works under, the tools the agent may call, and \
+rest on it alone; a fact marked unfounded was ruled never asked for, so no gate may rest on it alone), the policy the agent works under, the tools the agent may call, and \
 read access to the world as it stands before the agent starts. You have never seen any agent run or \
 reference solution for this request, and you must not ask for one. Your job is the Verifier: the \
 items a correct run shows, each resting on an Intent fact or a policy line."""
@@ -241,7 +241,8 @@ def unwitnessed(fact: IntentFact) -> bool:
 
 def _facts_view(intent: SpecIntent) -> list[dict]:
     return [dict({"id": fact.id, "text": fact.text, "stance": fact.stance},
-                 **({"unwitnessed": True} if unwitnessed(fact) else {}), **({"echo": True} if fact.echo else {}))
+                 **({"unwitnessed": True} if unwitnessed(fact) else {}), **({"echo": True} if fact.echo else {}),
+                 **({"unfounded": True} if fact.unfounded else {}))
             for fact in intent.facts]
 
 
@@ -320,7 +321,8 @@ def _config(config: Any) -> Any:
 # Each refusal counted under the family of code wording it carries (spec/items.py), never its text:
 # a cut of the text kept values (a field's value, a quoted sentence) and left some keys empty.
 REASON_FAMILIES = (
-    ("rests only on echo facts", "echo value at a gate"), ("is not in the world", "value not found"),
+    ("rests only on echo facts", "echo value at a gate"), ("unfounded facts", "unfounded facts at a gate"),
+    ("is not in the world", "value not found"),
     ("unwitnessed facts", "unwitnessed facts alone"), ("evidence_why", "narrow evidence without why"),
     ("which is no value of the cited row", "computed anchor"), ("anchor.answer does not state", "anchor misses row"),
     ("anchor", "anchor shape"), ("evidence", "evidence ref"), ("a list value", "list value"),

@@ -10,7 +10,8 @@ A Task is trusted when both constructed Runs score 0 under its Verifier and no b
 
 Otherwise the Task is untrusted with one reason, in this order: no_intent (no Spec, an empty Spec, no
 Verifier, or a Task refused), not_examined (no round's Examiner session ran over the Task),
-open_ruling (a ruling open, or the Task set aside by the router's rule),
+not_enough_truth (a not_enough_truth ruling open: the recordings never show what the user wants where
+the Verifier must decide), open_ruling (a ruling open, or the Task set aside by the router's rule),
 constructed_run_passed (a constructed Run passed, or none could be built: not shown to fail). A stray
 write that fails at a cell or an atom, or that sits on the do-nothing Run, never tested the sanity check:
 it counts as passed and the row's `detail` says stray_untested.
@@ -49,8 +50,9 @@ from kullback.spec.writer import spec_verifier_path
 TRUSTED, UNTRUSTED = "trusted", "untrusted"
 TIERS = (TRUSTED, UNTRUSTED)
 NO_INTENT, NOT_EXAMINED, OPEN_RULING, CONSTRUCTED_RUN_PASSED = "no_intent", "not_examined", "open_ruling", "constructed_run_passed"
+NOT_ENOUGH_TRUTH = "not_enough_truth"
 # The reasons a Task is not trusted, in the order they are read.
-REASONS = (NO_INTENT, NOT_EXAMINED, OPEN_RULING, CONSTRUCTED_RUN_PASSED)
+REASONS = (NO_INTENT, NOT_EXAMINED, NOT_ENOUGH_TRUTH, OPEN_RULING, CONSTRUCTED_RUN_PASSED)
 # The two constructed Runs, each of which must fail.
 CONSTRUCTED = ("do_nothing", "stray_write")
 # How the Verdict names a failure at the sanity check: a row outside the declared ones moved.
@@ -265,6 +267,8 @@ def _untrusted_reason(spec: Spec, verifier: Verifier, gates: dict, constructed: 
         return NO_INTENT
     if not spec.examined_rounds:
         return NOT_EXAMINED
+    if spec.truth_open:
+        return NOT_ENOUGH_TRUTH
     if not gates["no_open_ruling"]:
         return OPEN_RULING
     if not all(gates[f"{name}_fails"] for name in constructed):
@@ -300,7 +304,8 @@ def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: I
                          "atom": verdicts[failed_reference].failed if failed_reference else None},
            "runs_scored": sorted(verdicts), "fresh_runs": len(fresh),
            "fresh_passed": sorted(r for r in fresh if verdicts[r][0]),
-           "rulings_open": spec.rulings_open, "round": spec.round, "set_aside": set_aside,
+           "rulings_open": spec.rulings_open, "truth_open": spec.truth_open, "round": spec.round,
+           "set_aside": set_aside,
            "code_hash": CODE_HASH}
     return TaskTier(row["tier"], row)
 
