@@ -33,13 +33,13 @@ from kullback.gates.fidelity import reference_replay_gate
 from kullback.gates.hook import compact, ruled, ruling_line
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import legitimate_runs
-from kullback.gates.trust import workdir_trusted_ruling
 from kullback.runner import budget
 from kullback.runner import tool as runner_tool
 from kullback.runner.records import EXAM_DIR, read_json, run_path, write_json
 from kullback.runner.replay import AGREES, OURS_REFUSED, THEIRS_REFUSED
 from kullback.runner.target import as_run
 from kullback.runner.world.environment import BuiltEnvironment
+from kullback.spec.trust import in_sample, stored_tasks, workdir_ruling
 from kullback.user import fidelity as user_fidelity
 from kullback.user.rules import GOAL_SATISFIED, goal_write_set
 from kullback.user.simulated import SimulatedUser
@@ -258,7 +258,9 @@ def fidelity_index(replays: Any) -> dict[str, Any]:
 
     Carried shape from build.py `attribute_fidelity` (D171), keyed on the runner's ReplayCall
     rows instead of the deleted call outcomes: `tools` counts every recorded call once,
-    `tasks` keeps the first three differing calls per Task per tool, already worded.
+    `tasks` keeps the first three differing calls per Task per tool, already worded in `reasons`
+    and as data in `differing_calls` (call_id, column, recorded, ours), which the body edits of a
+    finding are read from (D317).
     A call counts as replayed when its verdict is in the runner's AGREES, else as
     differing; a tool with a differing call is assisted.
     """
@@ -278,7 +280,7 @@ def fidelity_index(replays: Any) -> dict[str, Any]:
                 entry = tools.setdefault(
                     name, {"calls": 0, "replayed": 0, "differing": 0, "assisted": False})
                 task_row = tasks.setdefault(str(task_id), {}).setdefault(
-                    name, {"replayed": 0, "differing": 0, "reasons": []})
+                    name, {"replayed": 0, "differing": 0, "reasons": [], "differing_calls": []})
                 entry["calls"] += 1
                 if str(call.get("verdict") or "") in AGREES:
                     entry["replayed"] += 1
@@ -288,6 +290,9 @@ def fidelity_index(replays: Any) -> dict[str, Any]:
                     entry["assisted"] = True
                     task_row["differing"] += 1
                     if len(task_row["reasons"]) < 3:
+                        task_row["differing_calls"].append(
+                            {"call_id": call.get("call_id"), "column": call.get("first_differing_column"),
+                             "recorded": call.get("recorded"), "ours": call.get("ours")})
                         task_row["reasons"].append(
                             f"call {call.get('call_id')}: {call.get('first_differing_column')} "
                             f"recorded {call.get('recorded')} ours {call.get('ours')}")
@@ -336,6 +341,8 @@ class RunResult(BaseModel):
                                "in the same order.")
     no_verifier: int = Field(default=0, description="Open Tasks with a confirmed Reference left out "
                              "because no Verifier is derived for them yet.")
+    outside_sample: int = Field(default=0, description="Named Tasks left out as outside the build's "
+                                "Task sample (--tasks).")
 
 
 # Why a named Task was not played: past the per-call cap, or no Simulated user to answer it (F34).
@@ -376,6 +383,7 @@ def _render_run(result: RunResult) -> str:
         lines.append(f"not run, {reason}: {shown}" + (f" and {more} more" if more > 0 else ""))
     if result.no_verifier:
         lines.append(f"{result.no_verifier} open Tasks skipped for no Verifier: examine derives them first")
+    lines.extend(filter(None, [outside_line(result.outside_sample)]))
     return "\n".join(lines)
 
 
@@ -405,6 +413,20 @@ def _one_line(text: Any) -> str:
     return compact(" ".join(str(text or "").split()))
 
 
+def _edit_line(edit: dict) -> str:
+    """One edit of a finding on its own line, in the order the Builder acts: path, values, why (D317)."""
+    kind = edit.get("kind")
+    if kind == "body":
+        what = (f"call {edit.get('call_id')} column {edit.get('column')}: recorded "
+                f"{_one_line(edit.get('recorded'))}, replayed {_one_line(edit.get('replayed'))}")
+    elif kind == "text":
+        what = f"where {json.dumps(edit.get('where'))} replace {json.dumps(edit.get('replace'))}"
+    else:
+        what = f"drop {edit.get('drop') or []} add {len(edit.get('add') or [])} atoms"
+    where = edit.get("path") or f"task {edit.get('task_id')}"
+    return f"  edit {kind} {where}: {what}; why: {_one_line(edit.get('why'))}"
+
+
 def _render_examine(result: ExamineResult) -> str:
     lines = [result.summary]
     for finding in result.findings:
@@ -412,6 +434,7 @@ def _render_examine(result: ExamineResult) -> str:
         lines.append(f"{finding.get('task_id') or 'no task'}: {finding.get('kind')}: "
                      f"{_one_line(finding.get('change') or finding.get('text'))}"
                      + (f" ({finding.get('path')})" if finding.get("path") else "") + f" [{len(rows)} rows]")
+        lines += [_edit_line(edit) for edit in finding.get("edits") or [] if isinstance(edit, dict)]
     lines += result.held[:HELD_SHOWN]
     if len(result.held) > HELD_SHOWN:
         lines.append(f"and {len(result.held) - HELD_SHOWN} more held Tasks")
@@ -444,15 +467,15 @@ def default_examine_fn(workdir: Any, task_ids: Any, *, model: Any = None, judge_
                        probe_model: Any = None, reroll_model: Any = None) -> Any:
     """The examination stream 6 delivers, resolved lazily so this module never imports it.
 
-    `model` runs the Examiner session; with None the call is derivation only. The judges, the
-    loophole probe and the re-rolls run on their own models when named, else on `model`.
+    `model` runs the Examiner's review; with None the call is the Reference stage only. The judges
+    run on their own model when named, else on `model`. `probe_model` and `reroll_model` are taken
+    and unused: the Examiner runs nothing (D320).
     With no finished Run among the named Tasks the examination opens no Examiner session: its
     selection hands the session only Tasks with a finished Run and a confirmed Reference (F24).
     """
     from kullback.examiner.session import examine
 
-    return examine(Path(workdir), task_ids=task_ids, model=model, judge_model=judge_model or model,
-                   probe_model=probe_model or model, reroll_model=reroll_model or model)
+    return examine(Path(workdir), task_ids=task_ids, model=model, judge_model=judge_model or model)
 
 
 def priced_model(model: Any, workdir: Any, stage: str, *, cap_context: bool = True) -> Any:
@@ -604,14 +627,14 @@ def _render_note(result: NoteResult) -> str:
 def status_of(workdir: Any) -> dict[str, Any]:
     """One row per Task (trusted, refused or open, with its reason) and per tool (last replay fidelity).
 
-    Read off the workdir files through `workdir_trusted_ruling`, the one trusted ruling the round's
-    snapshot reads as well (D281). The Examiner's artefacts (its proposed Verifiers, the version
+    Read off the workdir files through `spec.trust.workdir_ruling`, the one trusted ruling the round's
+    snapshot reads as well (D281, D322). The Examiner's artefacts (its proposed Verifiers, the version
     histories, the task runs, the probe pools) are read where the Examiner wrote them (F22). Files
     not there yet read as empty, so a Task with no Verifier is open with its reason.
     """
     root = Path(workdir)
     task_ids = [path.stem for path in sorted((root / "tasks").glob("*.json")) if path.name != "tasks.json"]
-    ruling = workdir_trusted_ruling(root)
+    ruling = workdir_ruling(root)
     trusted = set(ruling.metrics.get("trusted") or [])
     refused = ruling.metrics.get("refused") or {}
     untrusted = ruling.metrics.get("untrusted") or {}
@@ -714,6 +737,16 @@ def rule_user(workdir: Any, task_id: str, router: Any) -> Optional[SimulatedUser
         answer_strip=value_strip(members) if members else None)
 
 
+def _run_user(root: Any, task_id: str, router: Any, user_model: Any = None) -> Optional[SimulatedUser]:
+    """The Simulated user of a fresh Run: the agent user over the rule floor where a user
+    model was named, else the rule-driven user alone, exactly as before the switch existed."""
+    if user_model is None:
+        return rule_user(root, task_id, router)
+    from kullback.builder.run_user import run_user
+
+    return run_user(root, task_id, router, user_model)
+
+
 def call_arguments(env: Any) -> dict[str, Any]:
     """The arguments of every shown recorded call, by call id, off the calls files under env/."""
     folder = Path(env) / env_files.CALLS_DIR
@@ -747,16 +780,40 @@ def _replay_rows(reference: Any, arguments: dict[str, Any]) -> list[ReplayRow]:
 
 
 def _runnable_tasks(root: Path) -> tuple[list[str], int]:
-    """Every open Task whose reference Trace replayed confirmed and that has a Verifier file, in
-    Task order, and how many confirmed open Tasks were left out for no Verifier (F54)."""
+    """Every open Task of the build's sample whose reference Trace replayed confirmed and that has a
+    Verifier file, in Task order, and how many confirmed open Tasks were left out for no Verifier (F54)."""
     replays = read_json(root / REPLAYS_FILE, None) or {}
-    open_ids = [row["task_id"] for row in status_of(root)["tasks"] if row["state"] == "open"]
+    open_ids = in_sample(root, [row["task_id"] for row in status_of(root)["tasks"] if row["state"] == "open"])
     confirmed = [task_id for task_id in open_ids
                  if any(isinstance(trace, dict) and trace.get("reference") and trace.get("confirmed")
                         for trace in ((replays.get(task_id) or {}) if isinstance(replays, dict)
                                       else {}).values())]
     verified = [task_id for task_id in confirmed if (root / "verifiers" / f"{task_id}.json").is_file()]
     return verified, len(confirmed) - len(verified)
+
+
+def _sampled(root: Path, named: list[str]) -> tuple[list[str], int]:
+    """The named Tasks inside the build's sample, and how many were left out as outside it."""
+    kept = in_sample(root, named)
+    return kept, len(named) - len(kept)
+
+
+def outside_line(count: int) -> str:
+    """The one line saying how many named Tasks the build's sample left out, or empty at zero."""
+    return f"{count} named Tasks left out as outside the build's Task sample (--tasks)" if count else ""
+
+
+def _examined(root: Path, named: Optional[list[str]]) -> tuple[Optional[list[str]], int]:
+    """The Tasks an examine call covers, and how many named ones fell outside the sample.
+
+    A sampled build examines its sample only, named or not.
+    """
+    return _sampled(root, named) if named is not None else (stored_tasks(root), 0)
+
+
+def runnable_task_ids(root: Path) -> list[str]:
+    """The Tasks a run or an examination with no Task named covers: `_runnable_tasks` without the count."""
+    return _runnable_tasks(Path(root))[0]
 
 
 def _run_row(root: Path, task_id: str, item: Any) -> RunRow:
@@ -784,16 +841,20 @@ def _run_summary(task_ids: list[str], named: Any, *, played: list[str], runs: in
 
 def domain_tools(*, workdir: Any, model: Any = None,
                  examine_fn: Optional[Callable[[Any, Any], Any]] = None, judge_model: Any = None,
-                 probe_model: Any = None, reroll_model: Any = None, env: Any = None) -> list[AgentTool]:
+                 probe_model: Any = None, reroll_model: Any = None, run_model: Any = None,
+                 user_model: Any = None, env: Any = None) -> list[AgentTool]:
     """The nine domain tools bound to one workdir and the Builder's root `env` (workdir/env by default).
 
-    `model` drives the fresh Runs `run` buys and the Examiner session the default
-    `examine` runs; `examine_fn(workdir, task_ids)` answers `examine` and defaults to
-    the lazily resolved examination stream 6 delivers, which hands the judges, the probe
-    and the re-rolls their own models (each `model` when not named).
+    `model` drives the session's own calls, the readers and the Examiner session the default
+    `examine` runs; `examine_fn(workdir, task_ids)` answers `examine` and defaults to the lazily
+    resolved examination stream 6 delivers, which hands the judges, the probe and the re-rolls
+    their own models (each `model` when not named). `run_model` plays the fresh Runs `run` buys;
+    it is `model` when not named. `user_model` meets those Runs as the agent user over the
+    rule floor; without it they meet the rule-driven user alone, as before.
     """
     root = Path(workdir)
     env_root = Path(env) if env is not None else root / "env"
+    priced_user = priced_model(user_model, root, "user", cap_context=False)
     if examine_fn is not None:
         examine_call = examine_fn
     else:
@@ -925,14 +986,14 @@ def domain_tools(*, workdir: Any, model: Any = None,
                              path=path, rulings=[_ruling_record(ruling) for ruling in drawn])
 
     async def run(args: RunArgs) -> RunResult:
-        if model is None:
+        if run_model is None and model is None:
             raise ValueError("run needs the session model to play fresh Runs with")
         named = args.task_ids if args.task_ids is not None else [args.task_id] if args.task_id else None
         runnable, no_verifier = _runnable_tasks(root) if named is None else ([], 0)
         task_ids = list(named) if named is not None else runnable
         from kullback.examiner.domain_tools import known_task
 
-        task_ids = [known_task(root, task_id) for task_id in task_ids]
+        task_ids, outside = _sampled(root, [known_task(root, task_id) for task_id in task_ids])
         # A Task without user rules would be played against no Simulated user: the candidate
         # gets its system prompt alone and invents a customer. It is named, never played (F34).
         env = BuiltEnvironment(root)
@@ -942,12 +1003,13 @@ def domain_tools(*, workdir: Any, model: Any = None,
         played, capped = playable[:fits], playable[fits:]
         not_run = userless + capped
         reasons = [NO_USER_REASON] * len(userless) + [CAP_REASON] * len(capped)
-        priced = runner_model(model, root)
+        priced = runner_model(run_model or model, root)
         rows: list[RunRow] = []
         finished = 0
         for task_id in played:
             reports = runner_tool.reroll(root, task_id, priced, count=args.count, workdir=root,
-                                         make_user=lambda router, task_id=task_id: rule_user(root, task_id, router))
+                                         make_user=lambda router, task_id=task_id: _run_user(
+                                             root, task_id, router, priced_user))
             rows += [_run_row(root, task_id, item) for item in reports]
             # A Run is finished when its Simulated user ended it with the goal met (D210); the loop's
             # own end reason says only who stopped, never whether the goal was reached.
@@ -955,7 +1017,8 @@ def domain_tools(*, workdir: Any, model: Any = None,
         summary = _run_summary(task_ids, named, played=played, runs=len(rows), finished=finished,
                                reasons=reasons, not_run=not_run, no_verifier=no_verifier)
         return RunResult(summary=summary, task_id=task_ids[0] if len(task_ids) == 1 else "",
-                         runs=rows, not_run=not_run, reasons=reasons, no_verifier=no_verifier)
+                         runs=rows, not_run=not_run, reasons=reasons, no_verifier=no_verifier,
+                         outside_sample=outside)
 
     async def note_task(args: NoteArgs) -> NoteResult:
         from kullback.examiner.domain_tools import known_task, write_note
@@ -968,7 +1031,13 @@ def domain_tools(*, workdir: Any, model: Any = None,
 
     async def examine(args: ExamineArgs) -> ExamineResult:
         # The Examiner session owns its own event loop, so it runs off the Builder's, on a thread.
-        result = _coerce_examine(await asyncio.to_thread(examine_call, root, args.task_ids))
+        examined, outside = _examined(root, args.task_ids)
+        result = _coerce_examine(await asyncio.to_thread(examine_call, root, examined))
+        # Atoms and text edits go to the Spec by code; the Builder reads body edits and one count (D320).
+        from kullback.spec.review import rounds_line, route_findings
+
+        result.findings, rounds = route_findings(root, result.findings)
+        result.summary = "; ".join(filter(None, [result.summary, rounds_line(rounds)]))
         # The Tasks the Examiner session left out, and why, lead the summary (F24).
         left_out = [f.get("change") for f in result.findings
                     if any(isinstance(r, dict) and "left_out" in r for r in f.get("rows") or [])]
@@ -983,6 +1052,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
             if not stage["finished"]:
                 why += ", so there is nothing to examine yet: replay or run the Tasks first"
             result.summary = f"{result.summary}: {why}" if result.summary else why
+        result.summary = "; ".join(filter(None, [result.summary, outside_line(outside)]))
         result.held = held_tasks(root)
         return result
 
@@ -1014,4 +1084,5 @@ def domain_tools(*, workdir: Any, model: Any = None,
 
 
 __all__ = ["HELD_SHOWN", "ROWS_SHOWN", "RUNS_PER_CALL", "call_arguments", "default_examine_fn", "domain_tools",
-           "fidelity_index", "held_tasks", "notes_lines", "opening_for", "root_line", "stage_line", "stage_of", "status_of"]
+           "fidelity_index", "held_tasks", "notes_lines", "opening_for", "outside_line", "root_line",
+           "runnable_task_ids", "stage_line", "stage_of", "status_of"]

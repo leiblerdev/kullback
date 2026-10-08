@@ -20,6 +20,7 @@ every turn is a context that is wrong and not a model that is bad.
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import Any, Callable, Iterable, Optional, Sequence
 
 from kullback.runner.records import Record
@@ -33,6 +34,9 @@ STRIPPED = "agent_user_stripped"
 OVER_DISCLOSED = "agent_user_over_disclosed"
 SAID_NOTHING = "agent_user_said_nothing"
 DROP_REASONS = (INVENTED, RECORD_FACT, STRIPPED, OVER_DISCLOSED, SAID_NOTHING)
+# A turn that states a value read off the account when the Candidate's last turn did not ask for it.
+# Counted apart from DROP_REASONS so a user with no account reports the counters it always did.
+ACCOUNT_UNASKED = "agent_user_account_unasked"
 
 # What counts as a value-shaped token: the things a customer gets wrong by inventing them. Anything
 # carrying a digit (an amount, a count, a date, an id with a number in it), a run of capitals or
@@ -139,24 +143,28 @@ class Guards:
         self.counts: dict[str, int] = {reason: 0 for reason in DROP_REASONS}
 
     def check(self, text: str, *, facts_allowed: int = -1, facts_said: int = 0,
-              asked: Iterable[str] = ()) -> GuardOutcome:
+              asked: Iterable[str] = (), granted: Iterable[str] = ()) -> GuardOutcome:
         """One model turn through every guard, in order.
 
         `facts_allowed` is how many facts the recorded user had volunteered by this point and
         `facts_said` how many this Run's user has volunteered already; a negative allowance is no
         limit, which is the Task with no recording to measure against. `asked` are the fields the
         question asked for: answering the question is always allowed, and only what a turn adds
-        beyond the answer is a disclosure counted against the allowance.
+        beyond the answer is a disclosure counted against the allowance. `granted` are values a
+        tool of this user handed it this Run and a guard already cleared (`account_leak`): they are
+        this user's to say, neither invented nor a record fact.
         """
         said = (text or "").strip()
         if not said:
             return self._drop(SAID_NOTHING)
+        cleared = {canonical(str(value)) for value in granted or () if canonical(str(value))}
         changed: list[str] = []
-        said = self._replace_record_facts(said, changed)
+        said = self._replace_record_facts(said, changed, cleared)
         said = self._strip_values(said, changed)
         if not said.strip():
             return self._drop(STRIPPED if STRIPPED in changed else RECORD_FACT)
-        invented = [t for t in value_tokens(said) if not self.grounding.allows(t)]
+        invented = [t for t in value_tokens(said)
+                    if not self.grounding.allows(t) and not _within(canonical(t), cleared)]
         if invented:
             return self._drop(INVENTED)
         said = self._cut_surplus(said, facts_allowed, facts_said, changed,
@@ -169,7 +177,7 @@ class Guards:
         self.counts[reason] = self.counts.get(reason, 0) + 1
         return GuardOutcome(text="", dropped=True, reason=reason)
 
-    def _replace_record_facts(self, text: str, changed: list[str]) -> str:
+    def _replace_record_facts(self, text: str, changed: list[str], cleared: set[str] = frozenset()) -> str:
         """A sentence naming a value only the world holds becomes the sentence that points at it."""
         if not self.record_values:
             return text
@@ -177,7 +185,8 @@ class Guards:
         hit = False
         for sentence in _sentences(text):
             field = next((f for f, value in self.record_values.items()
-                          if value is not None and rules_mod._said_in(sentence, str(value))), None)
+                          if value is not None and canonical(str(value)) not in cleared
+                          and rules_mod._said_in(sentence, str(value))), None)
             if field is None:
                 out.append(sentence)
                 continue
@@ -189,17 +198,24 @@ class Guards:
         return " ".join(out)
 
     def _strip_values(self, text: str, changed: list[str]) -> str:
-        """D196's strip: a sentence it takes something out of is a sentence this user cannot say."""
+        """D196's strip: the value it takes out goes, and the rest of its sentence stays (D307).
+
+        A sentence that names a flagged value often names the ids, the reason or the items the
+        Candidate needs beside it, and dropping the whole sentence lost those too. The strip's own
+        stand-ins (a month, a code's last characters) still say part of the value, so nothing stands
+        in: the words the strip changed go and the words it left are kept.
+        """
         if self.strip is None:
             return text
         kept = []
         for sentence in _sentences(text):
-            _, taken = self.strip(sentence)
+            stripped, taken = self.strip(sentence)
             if taken:
                 changed.append(STRIPPED)
                 self.counts[STRIPPED] = self.counts.get(STRIPPED, 0) + 1
-                continue
-            kept.append(sentence)
+                sentence = _unchanged_words(sentence, stripped)
+            if sentence:
+                kept.append(sentence)
         return " ".join(kept)
 
     def _cut_surplus(self, text: str, allowed: int, said: int, changed: list[str],
@@ -253,14 +269,13 @@ class EndProtocol:
         self.unanswerable = 0
         self.silent = 0
 
-    def goal_done(self, made: Iterable[str]) -> bool:
-        made = set(made or ())
-        if self.goal_writes is not None:
-            return self.goal_writes <= made
-        return bool(self.write_tools) and bool(made)
+    def goal_done(self, made: Iterable[str], *, acted: bool = False, closed: bool = False) -> bool:
+        return ends_mod.goal_done(self.goal_writes, self.write_tools, set(made or ()),
+                                  acted=acted, closed=closed)
 
     def kind(self, question: Optional[str], *, said_anything: bool, had_nothing: bool,
-             made: Iterable[str] = (), requested: Optional[str] = None) -> Optional[str]:
+             made: Iterable[str] = (), requested: Optional[str] = None,
+             acted: bool = False) -> Optional[str]:
         """Which kind this turn ends on, or nothing where it does not end the Run.
 
         `requested` is what the model asked for through `end_run`; it is read as evidence that the
@@ -269,7 +284,7 @@ class EndProtocol:
         """
         self.unanswerable += int(bool(had_nothing))
         self.silent = 0 if said_anything else self.silent + 1
-        if self.goal_done(made):
+        if self.goal_done(made, acted=acted, closed=rules_mod.closes(question)):
             return rules_mod.GOAL_SATISFIED
         if self.unanswerable >= rules_mod.UNANSWERABLE_LIMIT:
             return rules_mod.SCENARIO_EXHAUSTED
@@ -280,6 +295,73 @@ class EndProtocol:
         if requested == rules_mod.HANDED_OFF and rules_mod.closes(question):
             return rules_mod.HANDED_OFF
         return None
+
+
+def _unchanged_words(sentence: str, stripped: str) -> str:
+    """The words of a sentence the strip left as they were, in order.
+
+    Words compare as `canonical` spells them, so the punctuation the strip tidies away is not a
+    change. A sentence the strip flagged but changed nowhere has no span to take, so it goes whole.
+    """
+    words = sentence.split()
+    matcher = SequenceMatcher(a=[canonical(w) for w in words],
+                              b=[canonical(w) for w in (stripped or "").split()], autojunk=False)
+    kept = [word for op, start, end, _, _ in matcher.get_opcodes() if op == "equal"
+            for word in words[start:end]]
+    return "" if len(kept) == len(words) else " ".join(kept)
+
+
+def confirms(text: Optional[str], question: Optional[str]) -> bool:
+    """This turn agrees to what the Candidate asked to do: it asked for a yes and got one (D306).
+
+    A confirmation carries no fact and needs none, so it is an answered turn and never counts
+    toward the unanswerable limit; a turn that says no is not a confirmation.
+    """
+    if not rules_mod.CONFIRM_REQUEST.search(question or ""):
+        return False
+    said = [sentence.strip() for sentence in _sentences(text or "")]
+    return (any(rules_mod.AFFIRM_CUE.match(sentence) for sentence in said)
+            and not any(rules_mod.NEGATIVE_CUE.match(sentence) for sentence in said))
+
+
+def _within(token: str, cleared: set[str]) -> bool:
+    return bool(token) and any(token in value or value in token for value in cleared if value)
+
+
+def account_said(text: str, given: dict[str, str], grounding: Grounding) -> dict[str, str]:
+    """The account values this turn states, by value, with their column.
+
+    A value the user already holds as its own (its grounding) is its own word and not an account
+    read: a customer that says its own id has not looked anything up.
+    """
+    out: dict[str, str] = {}
+    for value, column in (given or {}).items():
+        if len(value) < 3 or canonical(value) in grounding.tokens or canonical(value) in grounding.values:
+            continue
+        if rules_mod._said_in(text, value):
+            out[value] = column
+    return out
+
+
+def asked_for(column: str, question: Optional[str], asked: Iterable[str] = ()) -> bool:
+    """The Candidate's last turn asked for this column: by the field the cues read, or in its words."""
+    if column in set(asked or ()):
+        return True
+    words = rules_mod._words(column).lower().strip()
+    return bool(words) and re.search(r"\b" + re.escape(words) + r"\b", rules_mod._norm(question)) is not None
+
+
+def account_leak(text: str, given: dict[str, str], grounding: Grounding, question: Optional[str],
+                 asked: Iterable[str] = ()) -> tuple[list[str], list[str]]:
+    """The account values a turn may state (asked for) and the columns it states unasked.
+
+    A user that can read its account and says what is on it before anyone asks is handing the
+    Candidate a lookup it was supposed to make itself; with any unasked column the turn goes to the
+    floor (agent.py) and ACCOUNT_UNASKED is counted.
+    """
+    said = account_said(text, given, grounding)
+    unasked = sorted({column for column in said.values() if not asked_for(column, question, asked)})
+    return list(said), unasked
 
 
 def grounding_for(facts: Iterable[Any], sentences: Iterable[str] = ()) -> Grounding:

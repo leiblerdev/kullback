@@ -5,8 +5,8 @@ JSON files by name, the task, intent and user-rule records, and one spoken file 
 with the user turns of its References. It never copies the Builder's compiled side
 (bodies, the db, the schema, `env/`, the sandbox, the overlays): the derivation's
 `FORBIDDEN_INPUTS` and the old extension's `FORBIDDEN_READS` below. `Finding` is what
-the session returns for each loss: the Environment file the Builder should edit and
-the one line saying what should differ, never a verb.
+the session returns for each loss: the Environment file the Builder should edit, the one
+line saying what should differ, and the edits, the diff with its why and its rows (D317).
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from kullback.examiner import derive as derive_mod
+from kullback import derive as derive_mod
 from kullback.examiner.plan import task_runs_of
 from kullback.gates import PROTECTED_PATH, first_string
 from kullback.gates.probes import version_hash, write_tools_of
@@ -68,6 +68,12 @@ def names_forbidden_path(value: Any) -> Optional[str]:
 FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "suite",
                       "false_rejection", "environment", "other"]
 FindingSource = Literal["derive", "model"]
+# The three shapes one edit takes (D317): what a body answered differently on one recorded call,
+# an exact-match-once replacement in an Intent or Task file, and a Verifier diff in atoms.
+EDIT_KINDS = ("body", "text", "atoms")
+# The files a text edit may name: the ones the Examiner reads whole and can quote (COPIED_DIRS).
+TEXT_EDIT_DIRS = ("intents", "tasks")
+BODY_EDIT_KEYS = ("call_id", "column", "recorded", "replayed")
 
 
 @dataclass
@@ -77,6 +83,9 @@ class Finding:
     `rows` is the evidence, one record per call or Task, never a bare count (learnings 7).
     `path` is empty when no Environment file answers the loss (a Verifier of the Examiner's
     own that failed its suite). `source` says whether the code derivation or the model filed it.
+    `edits` is the diff itself, each edit with its why (D317): a body edit names the call, the
+    column and both values, a text edit the verbatim text and its replacement, an atoms edit
+    the atoms to drop and add. `change` stays the one-line summary.
     """
 
     task_id: Optional[str] = None
@@ -86,14 +95,49 @@ class Finding:
     path: str = ""
     change: str = ""
     source: FindingSource = "derive"
+    edits: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         """This finding as JSON-ready data, with a stable finding id derived from its key."""
         body = {"finding_id": finding_id_of(self), "task_id": self.task_id, "kind": self.kind,
                 "text": self.text, "rows": [dict(row) for row in self.rows], "path": self.path,
                 "change": self.change, "source": self.source,
+                "edits": [dict(edit) for edit in self.edits],
                 "key": finding_key(self.kind, subject_of(self), self.task_id or "")}
         return body
+
+
+def check_edit(edit: Any, exam_dir: Path) -> dict:
+    """One edit as filed, or a ValueError naming what is missing (D317).
+
+    A text edit is applied by exact match, so its `where` has to occur exactly once in the named
+    file as the Examiner reads it under exam/; anything else is a guess the Builder would have to
+    interpret. A body edit has to name the call, the column and both values, and an atoms edit at
+    least one atom to drop or add.
+    """
+    if not isinstance(edit, dict) or edit.get("kind") not in EDIT_KINDS:
+        raise ValueError(f"an edit is one of the kinds {', '.join(EDIT_KINDS)}")
+    if edit["kind"] == "body":
+        missing = [key for key in ("path", *BODY_EDIT_KEYS) if edit.get(key) in (None, "")]
+        if missing:
+            raise ValueError(f"a body edit names {', '.join(missing)}")
+    elif edit["kind"] == "text":
+        path, where = str(edit.get("path") or ""), str(edit.get("where") or "")
+        if path.split("/")[0] not in TEXT_EDIT_DIRS or ".." in path.split("/"):
+            raise ValueError(f"a text edit names a file under {' or '.join(TEXT_EDIT_DIRS)}/")
+        if not where or "replace" not in edit:
+            raise ValueError("a text edit names where (the verbatim current text) and replace")
+        try:
+            found = (exam_dir / path).read_text(encoding="utf-8").count(where)
+        except OSError:
+            raise ValueError(f"{path} does not exist") from None
+        if found == 0:
+            raise ValueError(f"text not found in {path}")
+        if found > 1:
+            raise ValueError(f"found {found} times in {path}; quote enough to match once")
+    elif not (edit.get("drop") or edit.get("add")) or not edit.get("task_id"):
+        raise ValueError("an atoms edit names task_id and at least one atom to drop or add")
+    return dict(edit)
 
 
 def subject_of(finding: Finding) -> str:
@@ -137,6 +181,7 @@ class ExamRoot:
     reroll_model: Any = None
     probe_model: Any = None
     run_probe: Any = None
+    reroll_user: Any = None   # runners_for's re-roll user factory: rule user, or agent user when on
 
     @property
     def exam_dir(self) -> Path:

@@ -5,7 +5,7 @@ A gate is a plain function over an artifact (or two) that returns a `GateResult`
 an agent reads, `metrics` the numbers behind it. Nothing here executes a Run, reads a file it was
 not handed, calls a model or keeps state between calls, so any gate can later run inside an
 agent's `tool_result` hook (phase 4) exactly as the pipeline calls it today. The package is
-written by people, hashed per release beside `RunnerVersion` (`gates_version`), importable by both
+written by people, hashed with the Runner and the Spec into one code hash (runner/code_hash.py), importable by both
 agents and writable by neither; it imports `kullback.runner` for the records and the primitives
 it rules with, and never `kullback.builder`, `kullback.examiner` or `kullback.agent`.
 

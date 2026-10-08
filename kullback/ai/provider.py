@@ -150,14 +150,21 @@ class ModelReply(BaseModel):
     # What the adapter sent to get this reply. None on the three offline models: TestModel and
     # RecordedModel never touch a wire, and a MemoModel hit carries the original call's exchange.
     exchange: Optional[Exchange] = None
+    # What the model reasoned before it answered, when the endpoint reports a reasoning summary.
+    # Kept for a reader and never sent back: replaying reasoning we did not produce would be
+    # fabrication, so no adapter echoes it. Omitted from a dump when absent, by the same rule as
+    # thinking_blocks. Readers must use attribute access, never key access on a dumped dict.
+    thinking: Optional[str] = None
     # The Messages API's signed thinking blocks, exactly as they came, for the next request of the
     # conversation to send back unchanged (see AnthropicModel.parse_reply). A reply without them
     # omits the key when dumped, so a memo or recording written before the field is unchanged.
     thinking_blocks: Optional[list[dict]] = None
 
     @model_serializer(mode="wrap")
-    def _omit_absent_thinking_blocks(self, handler):
+    def _omit_absent_thinking(self, handler):
         data = handler(self)
+        if self.thinking is None:
+            data.pop("thinking", None)
         if self.thinking_blocks is None:
             data.pop("thinking_blocks", None)
         return data
@@ -1069,13 +1076,23 @@ def _put_anthropic_tool_choice(body: dict[str, Any], choice: Optional[str], rule
 
 
 def _anthropic_thinking(requested: Optional[dict], rules: RequestRules) -> dict:
-    """The thinking block to send, empty when the model's rules leave the field out."""
+    """The thinking block to send, empty when the model's rules leave the field out.
+
+    Adaptive thinking asks for the summarized display, so the thinking text comes back
+    readable instead of encrypted: without it the block carries only a signature.
+    """
     thinking = dict(requested or {})
     if rules.thinking_always_on:
         # Disabled or budgeted thinking is a 400 here; leaving the field out is adaptive.
         thinking.pop("budget_tokens", None)
-        if thinking.get("type") != "adaptive":
+        if thinking.get("type") == "adaptive":
+            thinking.setdefault("display", "summarized")
+        elif not thinking:
+            thinking = {"type": "adaptive", "display": "summarized"}
+        else:
             thinking = {}
+    elif thinking.get("type") == "adaptive":
+        thinking.setdefault("display", "summarized")
     return thinking
 
 
@@ -1299,8 +1316,35 @@ class BedrockOpenAIModel(BedrockAuth, OpenAIModel):
         vendor = split_vendor(self.wire_id)
         return reasoning_family(vendor[1] if vendor else self.wire_id or "")
 
+    def query(
+        self,
+        messages: list[dict],
+        tools: Optional[list[dict]] = None,
+        config: Optional[ModelConfig] = None,
+    ) -> ModelReply:
+        """A call with tools or a reasoning effort goes to the Responses route; any other stays on chat.
+
+        Bedrock's Chat Completions route refuses function tools together with a reasoning effort
+        (HTTP 400, live pilot 2026-10-05); its Responses route on the same host takes both.
+        """
+        config = config or ModelConfig()
+        if tools or config.effort or config.reasoning_effort:
+            return self.responses().query(messages, tools, config)
+        return super().query(messages, tools, config)
+
+    def responses(self) -> "BedrockOpenAIResponsesModel":
+        """The Responses sibling of this adapter: same host, wire id, keys, client and retry rules."""
+        sibling = getattr(self, "_responses", None)
+        if sibling is None:
+            sibling = BedrockOpenAIResponsesModel(
+                self.name, api_key=self.api_key, base_url=self.base_url, client=self._client, retry=self.retry,
+                env=self.env, sleep=self.sleep, rng=self.rng, timeout=self.timeout)
+            self._responses = sibling
+        return sibling
+
 
 # The Bedrock adapter per vendor segment of the wire id; a vendor with no row speaks the Messages API.
+# The openai row routes per call: Chat Completions, or Responses when the call carries tools or an effort.
 BEDROCK_VENDOR_ADAPTERS: dict[str, type] = {"openai": BedrockOpenAIModel}
 
 
@@ -1425,6 +1469,7 @@ class OpenAIResponsesModel(HttpModel):
             headers["authorization"] = f"Bearer {self.api_key}"
         return opencode_headers(self.base_url, headers)
 
+
     def build_body(self, messages: list[dict], tools: Optional[list[dict]], config: ModelConfig) -> dict:
         body: dict[str, Any] = {
             "model": self.wire_id,
@@ -1436,9 +1481,14 @@ class OpenAIResponsesModel(HttpModel):
                 body["tool_choice"] = config.tool_choice
         if config.max_tokens is not None:
             body["max_output_tokens"] = config.max_tokens
+        # Reasoning branch three of three: the effort comes from the config and a summary is
+        # always asked for, so the reasoning text is kept like the summarized thinking.
+        effort = config.reasoning_effort or config.effort
+        reasoning: dict[str, Any] = {"summary": "auto"}
+        if effort:
+            reasoning["effort"] = effort
+        body["reasoning"] = reasoning
         if config.logprobs or config.top_logprobs is not None:
-            # This endpoint returns logprobs only for what `include` asks for, so asking for them
-            # is two fields, not one.
             if config.top_logprobs is not None:
                 body["top_logprobs"] = config.top_logprobs
             include = list(body.get("include") or [])
@@ -1456,6 +1506,7 @@ class OpenAIResponsesModel(HttpModel):
             )
         texts: list[str] = []
         calls: list[ToolCallRequest] = []
+        thinking: list[str] = []
         for item in data.get("output") or []:
             if not isinstance(item, dict):
                 continue
@@ -1464,6 +1515,11 @@ class OpenAIResponsesModel(HttpModel):
                 for part in item.get("content") or []:
                     if isinstance(part, dict) and part.get("type") == "output_text":
                         texts.append(part.get("text") or "")
+            elif kind == "reasoning":
+                # The summary text is kept; the encrypted blob never is (read, never echo).
+                for part in item.get("summary") or []:
+                    if isinstance(part, dict) and part.get("type") == "summary_text":
+                        thinking.append(part.get("text") or "")
             elif kind == "function_call":
                 calls.append(
                     ToolCallRequest(
@@ -1474,12 +1530,32 @@ class OpenAIResponsesModel(HttpModel):
                 )
         return ModelReply(
             content="".join(texts) or None,
+            thinking="".join(thinking) or None,
             tool_calls=calls,
             usage=usage_from_openai_responses(data.get("usage")),
             model=data.get("model") or self.wire_id,
             stop_reason=data.get("status"),
             raw=data,
         )
+
+
+class BedrockOpenAIResponsesModel(BedrockAuth, OpenAIResponsesModel):
+    """OpenAI's models through Amazon Bedrock's `/openai/v1/responses`: the Responses body, AWS authentication.
+
+    The body and the parsing are OpenAIResponsesModel's; the host, the wire id and the keys are
+    BedrockAuth's. BedrockOpenAIModel hands it every call that carries tools or a reasoning effort.
+    """
+
+    bedrock_route = "openai/v1"
+    path = "/responses"
+
+    def __init__(self, model_id: str, base_url: Optional[str] = None, **kwargs):
+        super().__init__(model_id, base_url=base_url, **kwargs)
+        # Bedrock never answers without credentials, so a missing key is refused before the call.
+        self.key_required = True
+
+    def headers(self, body: Optional[bytes] = None) -> dict:
+        return self.authorized({"content-type": "application/json"}, body)
 
 
 def _responses_tool(tool: dict) -> dict:

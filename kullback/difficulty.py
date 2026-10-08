@@ -41,8 +41,8 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from kullback import claims
+from kullback import variants as variants_mod
 from kullback.examiner import lifecycle
-from kullback.examiner import variants as variants_mod
 from kullback.gates import verifier_suite
 from kullback.gates.probes import write_tools_of
 from kullback.runner.records import Verifier, read_json, read_jsonl, write_json

@@ -54,14 +54,18 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from kullback.examiner import derive as verifier_mod
+from kullback import derive as verifier_mod
 from kullback.gates import verifier_suite
+from kullback.gates.trust import POOL_FILE
+from kullback.gates.trust import pooled_tasks as _pooled_tasks
 from kullback.gates.verifier_suite import _key
 from kullback.runner.judge import sources_not_given
-from kullback.runner.records import Atom, Constraint, load_task_run
+from kullback.runner.records import EXAM_DIR, Atom, Constraint, load_task_run, read_json, write_json
 from kullback.runner.verdict import TRANSFER_HINTS
 
 RECORDING = "recording"
@@ -216,6 +220,75 @@ class Judgement:
     @property
     def abstained(self) -> bool:
         return bool(self.unavailable) or bool(self.uncited)
+
+
+# --- the recordings the Examiner rejected as a Reference --------------------
+
+#: The one exclusion file under the exam folder: per Task, one row per excluded recording.
+EXCLUSIONS_FILE = "reference_exclusions.json"
+
+
+def exclusions_path(workdir: Any) -> Path:
+    return Path(workdir) / EXAM_DIR / EXCLUSIONS_FILE
+
+
+def exclusions(workdir: Any) -> dict[str, list[dict]]:
+    """Every excluded recording by Task, as rows with the run id, the reason and the evidence line."""
+    body = read_json(exclusions_path(workdir), {}) or {}
+    return body if isinstance(body, dict) else {}
+
+
+def excluded_runs(workdir: Any, task_id: str) -> dict[str, str]:
+    """The Task's excluded run ids with the reason each was excluded, which `confirm` honours.
+
+    Read here, beside the rule, so every derivation after a rejection skips the same recordings
+    (reference_check writes the file).
+    """
+    return {str(row.get("run_id")): str(row.get("why") or "")
+            for row in exclusions(workdir).get(task_id) or [] if row.get("run_id")}
+
+
+# --- the Tasks waiting on a Reference -----------------------------------------
+
+#: The pool file moves under parallel derivations, so every read and write here holds it.
+_POOL_LOCK = threading.Lock()
+
+
+def pool_path(workdir: Any) -> Path:
+    return Path(workdir) / EXAM_DIR / POOL_FILE
+
+
+def pool(workdir: Any) -> dict[str, dict]:
+    """Every Task waiting on a Reference, with why and the excluded runs, or empty."""
+    with _POOL_LOCK:
+        body = read_json(pool_path(workdir), {}) or {}
+    return body if isinstance(body, dict) else {}
+
+
+def pooled_tasks(workdir: Any) -> list[str]:
+    """The sorted ids of the Tasks waiting on a Reference, read the one way the gates read them."""
+    return _pooled_tasks(workdir)
+
+
+def join_pool(workdir: Any, task_id: str, why: str, excluded: Iterable[str]) -> None:
+    """Keep the Task for a later Run to rescue: the reason and the runs rejected so far."""
+    with _POOL_LOCK:
+        body = read_json(pool_path(workdir), {}) or {}
+        if not isinstance(body, dict):
+            body = {}
+        body[task_id] = {"why": why, "excluded": sorted(set(excluded))}
+        write_json(pool_path(workdir), body)
+
+
+def leave_pool(workdir: Any, task_id: str) -> bool:
+    """Drop the Task from the pool, True when it was waiting."""
+    with _POOL_LOCK:
+        body = read_json(pool_path(workdir), {}) or {}
+        if not isinstance(body, dict) or task_id not in body:
+            return False
+        del body[task_id]
+        write_json(pool_path(workdir), body)
+        return True
 
 
 # --- what a Run wrote -------------------------------------------------------
@@ -545,7 +618,8 @@ def required_of_all(citations: dict[str, dict]) -> Optional[tuple[str, str]]:
 
 
 def confirm(recordings: Iterable[Recording], *, intent: str = "", policy_lines: Iterable[str] = (),
-            judge: Any = None, phrases: Iterable[str] = ()) -> Confirmation:
+            judge: Any = None, phrases: Iterable[str] = (),
+            excluded: Optional[dict[str, str]] = None) -> Confirmation:
     """D111 over one Task's Runs: constraint violations out, then one agreeing End state, judge as residue.
 
     The judge is fail-only (D110), so one pass over three or more states may drop some and leave two
@@ -553,19 +627,35 @@ def confirm(recordings: Iterable[Recording], *, intent: str = "", policy_lines: 
     them may remain (D193); what that pass leaves is the answer, and anything but one state left is
     an abstention naming the keys the survivors were not told apart on. A judgement that fails every
     state is read once more too, through what its failures cited.
+
+    `excluded` names the recordings the Examiner rejected as a Reference, with why (reference_check):
+    they are failed before grouping, so the rule picks among the rest and never picks them again.
     """
     out = Confirmation()
     recordings = list(recordings)
     out.recordings = list(recordings)
+    rejected = dict(excluded or {})
     for rec in recordings:
         if rec.violated:
             out.failed[rec.run_id] = "violates " + ", ".join(rec.violated)
-    live = [r for r in recordings if not r.violated]
+        elif rec.run_id in rejected:
+            out.failed[rec.run_id] = f"rejected: {rejected[rec.run_id]}"
+    # A rejected answer stays rejected: a later Run that reached an excluded End state fails with
+    # it, so only an End state nobody rejected can rescue a Task waiting on a Reference.
+    rejected_states: dict = {}
+    for rec in recordings:
+        if rec.run_id in rejected:
+            rejected_states.setdefault(rec.end_state, rec.run_id)
+    for rec in recordings:
+        if rec.run_id not in out.failed and rec.end_state in rejected_states:
+            out.failed[rec.run_id] = f"rejected: same End state as {rejected_states[rec.end_state]}"
+    live = [r for r in recordings if r.run_id not in out.failed]
     if not recordings:
         out.reason = "no Run to confirm"
         return out
     if not live:
-        out.reason = "every recording broke a Hard constraint"
+        out.reason = ("every recording broke a Hard constraint" if not rejected
+                      else "every recording broke a Hard constraint or was rejected")
         return out
     groups = group(live)
     out.groups = [{k: v for k, v in g.items() if k != "members"} for g in groups]

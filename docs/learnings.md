@@ -48,6 +48,8 @@ Evidence shown to a writer is filtered by held-out membership, never by value. G
 
 Counters over claims. Every decision ships the counters a reader needs to see it work on the next build (auto_loosen_*, second_path_synthesised, cosmetic_by_judge, status_drift, tasks_frozen_only). A mechanism whose counter reads zero live is reported as shipped and unexercised, not as working.
 
+The writer of a test and its judge never share a hand (D320). While the Examiner derived Verifiers, edited their atoms, wrote the probes against them and then ruled on the result, a Verifier fitted to the Reference passed its own author's probes and the review could not see what the author had not imagined. The Spec now writes and repairs every Verifier, its end-state gates by code from the Reference, and the Examiner only reads and files a review with rows and an edit; the Spec applies the edit and the gates, not the reviewer, decide whether it stands.
+
 ## 4. What outside work contributed
 
 Repo2RLEnv (huggingface): a sensitivity gate that a body must answer differently when the state moves (D195), and Intents written from symptoms only (D196). The harness design survey (pi.dev and others): transactional repairs (D201). TaskPilot (FrogNano): an objective difficulty record and buckets so the Task distribution can be shifted as training proceeds (D209; the knob's second half is in todo.md). tau-tau-Bench: typed facts the simulated user holds and an explicit end protocol with end kinds (D210). Mastra: keyed sampling so membership never depends on iteration order (D212). The agent-as-user question: an agent user grounded in the curated context as a fallback first (D214), primary where its fidelity beats the rules, then its own loop and gate.

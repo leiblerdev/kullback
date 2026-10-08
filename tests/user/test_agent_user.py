@@ -25,6 +25,7 @@ from kullback.user import guards as guards_mod
 from kullback.user import lesson as lesson_mod
 from kullback.user import rules as rules_mod
 from kullback.user import simulated as simulated_mod
+from kullback.user import tools as tools_mod
 from kullback.user.agent import AgentUser
 from kullback.user.tools import Toolbox, user_tools
 from kullback.user.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
@@ -123,6 +124,12 @@ def test_the_reference_write_arguments_are_the_values_this_user_chooses(ctx):
     assert ctx.choices["slot"] == "16:00"
 
 
+def test_what_i_said_answers_the_earlier_turns_numbered_in_order(ctx):
+    assert Toolbox(ctx).what_i_said() == tools_mod.NO_FACT
+    box = Toolbox(ctx, said=["first thing", "second thing"])
+    assert box.what_i_said() == "1. first thing\n2. second thing"
+
+
 # --- the guards ------------------------------------------------------------------------------
 
 def guards_for(ctx, record=None, strip=None) -> guards_mod.Guards:
@@ -145,11 +152,27 @@ def test_a_record_fact_is_replaced_by_the_sentence_that_points_at_it(ctx, record
     assert guards_mod.RECORD_FACT in outcome.changed
 
 
-def test_the_strip_takes_a_sentence_this_user_could_never_have_said(ctx):
-    def strip(text):
+def code_tail_strip(text):
+    """The D196 strip's shape for a code: the value goes and its last characters stand in."""
+    if "PLOT-4471" not in text:
+        return text, []
+    return text.replace("PLOT-4471", "ending 4471"), ["a value only the system knew"]
+
+
+def test_the_strip_takes_out_only_the_flagged_value_and_keeps_the_rest_of_the_sentence(ctx):
+    guards = guards_for(ctx, strip=code_tail_strip)
+    outcome = guards.check("Please move plot PLOT-4471 to the 16:00 slot.")
+    assert not outcome.dropped
+    assert "16:00" in outcome.text and "move" in outcome.text
+    assert "4471" not in outcome.text
+    assert guards_mod.STRIPPED in outcome.changed and guards.counts[guards_mod.STRIPPED] == 1
+
+
+def test_a_strip_that_flags_a_sentence_without_changing_it_drops_that_sentence(ctx):
+    def flags_only(text):
         return (text, ["a value only the system knew"]) if "PLOT-4471" in text else (text, [])
 
-    outcome = guards_for(ctx, strip=strip).check("My plot number is PLOT-4471.")
+    outcome = guards_for(ctx, strip=flags_only).check("My plot number is PLOT-4471.")
     assert outcome.dropped and outcome.reason == guards_mod.STRIPPED
 
 
@@ -189,6 +212,13 @@ def test_a_candidate_that_twice_asks_what_nobody_told_this_user_runs_the_scenari
                          had_nothing=True) == rules_mod.SCENARIO_EXHAUSTED
 
 
+def test_a_yes_to_what_the_candidate_asked_to_do_confirms_and_a_no_does_not():
+    asked = "Shall I move your delivery to the later slot? Please confirm."
+    assert guards_mod.confirms("Yes, please go ahead.", asked)
+    assert not guards_mod.confirms("No, wait.", asked)
+    assert not guards_mod.confirms("Yes, please go ahead.", "What is your tier?")
+
+
 # --- the agent user ---------------------------------------------------------------------------
 
 def agent_for(ctx, rules, replies, recorded=None, record=None) -> AgentUser:
@@ -212,6 +242,18 @@ def test_the_rule_driven_user_answers_the_beat_a_guard_dropped(ctx, rules, recor
     assert user.counts["fallback_turns"] == 1
     assert user.guards.counts[guards_mod.INVENTED] == 1
     assert user.events[-1].payload["agent_turn_dropped"] == guards_mod.INVENTED
+
+
+def test_confirming_twice_is_answering_and_never_runs_the_scenario_out(ctx, rules, recorded):
+    user = agent_for(ctx, rules, ["Yes, please go ahead."], recorded)
+    asked = "I will move your delivery to the later slot. Shall I proceed? Please confirm."
+    transcript = [{"role": "assistant", "content": asked}]
+    user.reply(transcript)
+    transcript += [{"role": "user", "content": "Yes, please go ahead."},
+                   {"role": "assistant", "content": "Just to be sure, please confirm once more."}]
+    user.reply(transcript)
+    assert user.counts["agent_user_turns"] == 2
+    assert not user.done and user.end_reason is None
 
 
 # --- the fidelity score -----------------------------------------------------------------------

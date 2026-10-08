@@ -37,12 +37,12 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from kullback import derive as derive_mod
 from kullback import difficulty
 from kullback import graph as graph_mod
+from kullback import variants as variants_mod
 from kullback.builder import compile_env, mine, synth
-from kullback.examiner import derive as derive_mod
 from kullback.examiner import reference as reference_mod
-from kullback.examiner import variants as variants_mod
 from kullback.gates import tool_runs, verifier_suite
 from kullback.gates.tool_runs import CRASH_ERRORS
 from kullback.runner import canon, route

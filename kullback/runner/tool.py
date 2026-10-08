@@ -16,7 +16,6 @@ JSONL; the core harness cutover is left to the agent stream.
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +25,7 @@ from kullback import sampling
 from kullback.gates import tool_runs
 from kullback.runner import canon, loop, route
 from kullback.runner import replay as replay_mod
+from kullback.runner.code_hash import CODE_HASH
 from kullback.runner.real_tools import default_world_factory, real_tools_from
 from kullback.runner.records import (
     RawPtr,
@@ -129,26 +129,12 @@ class ReplayReport:
 
 
 def version() -> str:
-    """sha256 over the bytes of every module under kullback/runner plus the core loop it runs on.
+    """The code hash of runner/code_hash.py, the same one every Verdict and tier row carries.
 
     Stored beside every Verdict (`runner_version`) and in every report, so a cached artifact
-    graded under an older runner is told apart from a fresh one.
+    graded under other code is told apart from a fresh one.
     """
-    package = Path(__file__).resolve().parent.parent
-    runner_dir = package / "runner"
-    digest = hashlib.sha256()
-    for path in sorted(runner_dir.rglob("*.py")):
-        digest.update(path.relative_to(package).as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    for name in ("agent/loop.py", "agent/harness.py"):
-        path = package / name
-        digest.update(name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
+    return CODE_HASH
 
 
 def _router_for(env: BuiltEnvironment, task_id: str, seed: int,

@@ -2,6 +2,17 @@
 
 > Status (2026-09-10): open todo; questions 2 to 13 are unanswered.
 
+## Formats read today
+
+Every format enters through one adapter in `kullback/builder/sources/`; all four map to Traces.
+
+| Format | Adapter | Reads | Rejects |
+|--------|---------|-------|---------|
+| tau2 export | `tau2_native` | the simulations list, one messages list per recording, `info.environment_info` | a recording the records refuse |
+| terminus-2 rows | `terminus_2` | the `conversations` turn list, shell batches as JSON in assistant text | a recording the records refuse |
+| OpenTelemetry GenAI spans | `otel_genai` (mapped, D318) | OTLP JSON or a flat span list, one recording per `traceId`; `gen_ai.input.messages`, `gen_ai.output.messages` (text, `tool_call`, `tool_call_response` parts), `gen_ai.system_instructions`, the `gen_ai.system.message`, `gen_ai.user.message`, `gen_ai.assistant.message`, `gen_ai.tool.message` and `gen_ai.choice` events, `execute_tool` spans (`gen_ai.tool.call.id`, `gen_ai.tool.name`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`, `error.type`, span status), `gen_ai.tool.definitions` or `gen_ai.request.tools` | a trace whose GenAI spans carry no message, event or tool call |
+| Claude Code JSONL | `claude_code_jsonl` (mapped, D318) | one recording per `sessionId`; user, assistant and system lines with a `message` (text, `tool_use`, `tool_result` with `is_error`), ordered by `parentUuid`; other line types counted in the sidecar as `non_turn_lines` | a recording the records refuse |
+
 Questions to answer when a customer's traces arrive (first: the vendor export expected in early September 2026, D56). Fill in the answers here; the ingestion todo is written around them.
 
 | # | Question | Answer | Why it matters |

@@ -6,6 +6,8 @@ Rows are sorted by date sent or read, newest first. "Taken as" names the decisio
 
 | Date | Reference | Link | Taken as | Reading |
 | --- | --- | --- | --- | --- |
+| 2026-10-05 | GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning (reflective prompt evolution, Pareto over Tasks), founder 2026-10-05 | https://arxiv.org/abs/2507.19457 | reading pending | |
+| 2026-10-05 | AlphaEvolve: A coding agent for scientific and algorithmic discovery (evolutionary search against an automated evaluator), founder 2026-10-05 | https://arxiv.org/abs/2506.13131 | reading pending | |
 | 2026-09-24 | AgentLogs: A Dataset for Opening the Black Box of GitHub's Cloud Agent | https://huggingface.co/datasets/risenlab/agentlogs, paper https://arxiv.org/abs/2608.29204 | strongest new trace-source candidate found this pass: real Copilot cloud-agent activity, CC BY 4.0, 64M log entries | docs/trace-sources/agentlogs.md |
 | 2026-09-24 | SWE-agent-trajectories (Nebius) | https://huggingface.co/datasets/nebius/SWE-agent-trajectories | eligible-now trace source: 80,036 trajectories, CC-BY-4.0, SWE-bench's own Docker images as reference env | docs/trace-sources/swebench-nebius-trajectories.md |
 | 2026-09-24 | SWE-rebench-OpenHands-Trajectories (Nebius) | https://huggingface.co/datasets/nebius/SWE-rebench-openhands-trajectories | sibling to the above, cleaner single CC-BY-4.0 licence, 67,074 trajectories over 1,823 real repos | docs/trace-sources/swebench-nebius-trajectories.md (addendum) |

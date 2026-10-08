@@ -44,7 +44,7 @@ def test_the_mechanic_row_counts_the_builders_tool_calls_by_name(tmp_path):
     session = [{"type": "session_info", "id": "e1"},
                {"type": "message", "id": "e2", "message": {"role": "assistant", "content": None,
                 "tool_calls": [{"id": "c1", "name": "build", "arguments": {}},
-                               {"id": "c2", "name": "repair_recompile", "arguments": {}}],
+                               {"id": "c2", "name": "rebuild", "arguments": {}}],
                 "usage": {"input": 900, "cache_read": 100}}},
                {"type": "message", "id": "e3", "message": {"role": "assistant", "content": "done",
                 "tool_calls": [{"id": "c3", "name": "build", "arguments": {}}],
@@ -52,7 +52,7 @@ def test_the_mechanic_row_counts_the_builders_tool_calls_by_name(tmp_path):
     (workdir / "builder" / "session.jsonl").write_text(
         "\n".join(json.dumps(row) for row in session) + "\n", encoding="utf-8")
     values = {cells(row)[0]: cells(row)[1] for row in rows_of(B.render(B.Build(workdir)), "")}
-    assert values["What the mechanic called"] == "3 over 2 model turns: build 2, repair_recompile 1"
+    assert values["What the mechanic called"] == "3 over 2 model turns: build 2, rebuild 1"
     assert "the largest input a turn recorded is 1,000 tokens" in values["Peak context fill, Builder"]
 
 

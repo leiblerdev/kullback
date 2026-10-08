@@ -119,6 +119,31 @@ def test_examine_calls_the_function_the_session_passed_in(tmp_path):
     assert "widget_task: fidelity: answer the recorded call (tools/a.py) [1 rows]" in result.content
 
 
+
+def test_examine_renders_each_edit_on_its_own_line_path_then_values_then_why():
+    finding = {"task_id": "widget_task", "kind": "fidelity", "change": "label differs", "path": "env/tools/a.py",
+               "rows": [{"call_id": "c1"}], "edits": [
+                   {"kind": "body", "path": "env/tools/a.py", "call_id": "c1", "column": "label",
+                    "recorded": "striped", "replayed": "plain", "why": "the recording is the standard"},
+                   {"kind": "text", "path": "intents/widget_task.json", "where": "the widget",
+                    "replace": "widget w1", "why": "the user named it"}]}
+    lines = domain_tools_mod._render_examine(domain_tools_mod.ExamineResult(summary="1 finding",
+                                                                            findings=[finding])).splitlines()
+    assert lines[1] == "widget_task: fidelity: label differs (env/tools/a.py) [1 rows]"
+    assert lines[2] == ("  edit body env/tools/a.py: call c1 column label: recorded striped, replayed plain; "
+                        "why: the recording is the standard")
+    assert lines[3] == ('  edit text intents/widget_task.json: where "the widget" replace "widget w1"; '
+                        "why: the user named it")
+
+
+def test_the_builder_prompt_says_findings_carry_edits_and_how_each_is_applied():
+    from kullback.builder import prompt
+
+    text = prompt.EXAMPLES + prompt.FEEDBACK
+    assert "may carry edits" in text and "A text edit is applied with edit exactly as given" in text
+    assert "moves the replayed value to the recorded one" in text
+
+
 RENAME_BODY = (
     "row = self.db.widgets.get(widget_id)\n"
     "if row is None:\n"
@@ -234,7 +259,7 @@ def test_a_task_whose_traces_all_fail_is_named_by_the_ruling(tmp_path):
     assert "replay_reference fail (task widget_task:" in ruling["line"]
 
 
-def test_fidelity_index_counts_both_grains_with_worded_reasons():
+def test_fidelity_index_counts_both_grains_with_worded_reasons_and_the_differing_calls_as_data():
     replays = {"task-1": {"trace-1": {"task_id": "task-1", "trace_id": "trace-1",
                                       "confirmed": False, "calls": [
                 {"call_id": "c1", "tool": "a-tool", "verdict": "same",
@@ -247,6 +272,7 @@ def test_fidelity_index_counts_both_grains_with_worded_reasons():
     task_row = index["tasks"]["task-1"]["a-tool"]
     assert (task_row["replayed"], task_row["differing"]) == (1, 1)
     assert task_row["reasons"] == ["call c2: label recorded plain ours smudged"]
+    assert task_row["differing_calls"] == [{"call_id": "c2", "column": "label", "recorded": "plain", "ours": "smudged"}]
 
 
 def test_status_answers_one_row_per_task_and_per_tool(tmp_path):
@@ -301,21 +327,20 @@ def _record_examine(monkeypatch):
     return seen
 
 
-def test_default_examine_runs_judges_probe_and_rerolls_on_the_builder_model(tmp_path, monkeypatch):
+def test_default_examine_runs_the_judges_on_the_builder_model_and_hands_no_probe_or_reroll(
+        tmp_path, monkeypatch):
     seen = _record_examine(monkeypatch)
     builder = object()
-    domain_tools_mod.default_examine_fn(tmp_path, None, model=builder)
-    assert seen == {"model": builder, "judge_model": builder, "probe_model": builder,
-                    "reroll_model": builder}
+    domain_tools_mod.default_examine_fn(tmp_path, None, model=builder, probe_model=object(),
+                                        reroll_model=object())
+    assert seen == {"model": builder, "judge_model": builder, "probe_model": None, "reroll_model": None}
 
 
-def test_default_examine_hands_a_named_judge_probe_or_reroll_model_its_own_role(tmp_path, monkeypatch):
+def test_default_examine_hands_a_named_judge_model_its_own_role(tmp_path, monkeypatch):
     seen = _record_examine(monkeypatch)
-    builder, judge, probe, reroll = object(), object(), object(), object()
-    domain_tools_mod.default_examine_fn(tmp_path, None, model=builder, judge_model=judge,
-                                        probe_model=probe, reroll_model=reroll)
-    assert seen == {"model": builder, "judge_model": judge, "probe_model": probe,
-                    "reroll_model": reroll}
+    builder, judge = object(), object()
+    domain_tools_mod.default_examine_fn(tmp_path, None, model=builder, judge_model=judge)
+    assert seen == {"model": builder, "judge_model": judge, "probe_model": None, "reroll_model": None}
 
 
 def test_default_examine_with_no_model_leaves_every_model_none(tmp_path, monkeypatch):
@@ -522,3 +547,60 @@ def test_examine_names_each_finding_by_task_and_each_held_task_by_the_check_hold
     lines = result.content.splitlines()
     assert "task_c: suite: tighten the atom [0 rows]" in lines
     assert lines[-2:] == ["task_a: loophole_probe_fails not run", "task_c: empty_fails failed"]
+
+
+# --- the build's Task sample (--tasks) ---------------------------------------------------------------
+
+OUTSIDE = "1 named Tasks left out as outside the build's Task sample (--tasks)"
+
+
+def _replayed(tmp_path):
+    root = _workdir(tmp_path)
+    _run(_tool(root, "replay"), {"task_id": "widget_task"})
+    return root
+
+
+def test_a_stored_sample_narrows_the_runnable_tasks_to_the_sample(tmp_path):
+    from kullback.spec.trust import store_tasks
+
+    root = _replayed(tmp_path)
+    assert domain_tools_mod._runnable_tasks(root) == (["widget_task"], 0)
+    store_tasks(root, ["widget_task"])
+    assert domain_tools_mod._runnable_tasks(root) == (["widget_task"], 0)
+    store_tasks(root, ["other_task"])
+    assert domain_tools_mod._runnable_tasks(root) == ([], 0)
+
+
+def test_run_drops_a_named_task_outside_the_sample_and_says_how_many_it_left_out(tmp_path):
+    from kullback.spec.trust import store_tasks
+
+    root = _replayed(tmp_path)
+    store_tasks(root, ["other_task"])
+    model = TestModel([reply("Done.")], loop=True)
+    result = _run(_tool(root, "run", model=model), {"task_ids": ["widget_task"], "count": 1})
+    assert not result.is_error, result.content
+    assert result.details["runs"] == [] and model.calls == []
+    assert result.details["outside_sample"] == 1 and result.content.splitlines()[-1] == OUTSIDE
+
+
+def test_examine_drops_a_named_task_outside_the_sample_and_says_how_many_it_left_out(tmp_path):
+    from kullback.spec.trust import store_tasks
+
+    root = _workdir(tmp_path)
+    store_tasks(root, ["other_task"])
+    seen = []
+    result = _run(_tool(root, "examine", examine_fn=lambda workdir, task_ids: seen.append(task_ids) or []),
+                  {"task_ids": ["widget_task"]})
+    assert seen == [[]] and OUTSIDE in result.content
+
+
+def test_without_a_sample_run_and_examine_keep_every_named_task_and_say_nothing_of_one(tmp_path):
+    root = _replayed(tmp_path)
+    seen = []
+    examined = _run(_tool(root, "examine", examine_fn=lambda workdir, task_ids: seen.append(task_ids) or []),
+                    {"task_ids": ["widget_task"]})
+    model = TestModel([reply(None, ("rename_widget", {"widget_id": "w1", "label": "striped"})), reply("Done.")],
+                      loop=True)
+    ran = _run(_tool(root, "run", model=model), {"task_ids": ["widget_task"], "count": 1})
+    assert seen == [["widget_task"]] and "sample" not in examined.content
+    assert len(ran.details["runs"]) == 1 and ran.details["outside_sample"] == 0 and "sample" not in ran.content

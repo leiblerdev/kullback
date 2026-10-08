@@ -796,6 +796,33 @@ class Ceiling:
         save_totals(self.workdir, totals)
 
 
+class EffortModel(Model):
+    """A Model that carries one reasoning effort into ModelConfig on every call.
+
+    The flag value lands on both effort fields, so each adapter sends what it knows
+    and ignores the rest: Anthropic reads effort, OpenAI chat reads reasoning_effort.
+    A caller that already named an effort keeps it. The name is the inner model's,
+    so pricing, windows and the ledger read what they always read.
+    """
+
+    def __init__(self, inner: Model, effort: Optional[str] = None):
+        self.inner = inner
+        self.effort = effort
+        self.name = getattr(inner, "name", "model")
+
+    def query(
+        self,
+        messages: list[dict],
+        tools: Optional[list[dict]] = None,
+        config: Optional[ModelConfig] = None,
+    ) -> ModelReply:
+        if self.effort is not None and (config is None or (config.effort is None
+                                                           and config.reasoning_effort is None)):
+            config = (config or ModelConfig()).model_copy(
+                update={"effort": self.effort, "reasoning_effort": self.effort})
+        return self.inner.query(messages, tools=tools, config=config)
+
+
 class BudgetedModel(Model):
     """Every model call the Harness makes, priced, capped and charged, at the one seam it crosses.
 

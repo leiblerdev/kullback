@@ -9,7 +9,8 @@ import pytest
 from typer.testing import CliRunner
 
 from kullback import cli
-from kullback.runner.records import Environment, RunnerVersion, Task, Verdict, Verifier, as_dict
+from kullback.runner.code_hash import CODE_HASH
+from kullback.runner.records import Environment, Task, Verdict, Verifier, as_dict
 
 runner = CliRunner()
 
@@ -186,7 +187,8 @@ def test_build_prints_one_line_per_tool_result_and_the_counts_before_the_json(wo
     assert lines[1] == "examine: 2 findings filed"
     assert lines[2] == "  ruling replay_fidelity: accepted (12)"
     assert lines[3] == "trusted 0, refused 0, fidelity 0/0"
-    body = json.loads("\n".join(lines[4:]))
+    assert lines[4].startswith("tier report, verifier from the Spec, code ") and lines[5].startswith("tiers trusted ")
+    body = json.loads("\n".join(lines[lines.index("{"):]))
     assert (body["trusted"], body["refused"]) == (1, 0) and body["stopped"] == "no tool call"
 
 
@@ -195,20 +197,12 @@ def version_file(workdir: Path) -> Path:
 
 
 @pytest.mark.parametrize("flags, answer", [([], "y\n"), (["--yes"], None)], ids=["after_a_yes", "with_yes"])
-def test_freeze_runner_writes_the_runner_version_after_a_yes_or_with_yes(workdir, flags, answer):
+def test_freeze_runner_records_the_live_code_hash_after_a_yes_or_with_yes(workdir, flags, answer):
     result = invoke("freeze-runner", "--workdir", str(workdir), *flags, input=answer)
     assert result.exit_code == 0
     body = json.loads(version_file(workdir).read_text(encoding="utf-8"))
-    assert body["runner_version"]
-    assert set(body["file_hashes"]) >= {"loop.py", "route.py", "verdict.py"}
-    # The gates package is hashed beside the Runner, not into it (D122).
-    assert body["gates_version"] and body["gates_version"] != body["runner_version"]
-    assert set(body["gates_file_hashes"]) >= {"__init__.py", "artifacts.py", "verifier_suite.py"}
-    assert "gates version" in result.output
-    # The version written is the hash of the runner files, read back.
-    again = cli.runner_version()
-    assert again.runner_version == body["runner_version"]
-    assert again.gates_version == body["gates_version"]
+    assert body["runner_version"] == CODE_HASH
+    assert "code hash" in result.output
 
 
 def test_freeze_runner_writes_nothing_on_a_no(workdir):
@@ -216,15 +210,6 @@ def test_freeze_runner_writes_nothing_on_a_no(workdir):
     assert result.exit_code != 0
     assert not version_file(workdir).exists()
     assert "not frozen" in result.output
-
-
-def test_a_routing_config_changes_the_version(workdir, tmp_path):
-    config = tmp_path / "routing.json"
-    config.write_text('{"llm_standin": false}', encoding="utf-8")
-    plain = cli.runner_version()
-    with_config = cli.runner_version(config)
-    assert with_config.runner_version != plain.runner_version
-    assert with_config.routing_config_hash
 
 
 # --- run, verdict, regrade --------------------------------------------------
@@ -241,10 +226,6 @@ def seed_task(workdir: Path, task_id: str = "t1", run_id: str = "r1") -> None:
     (workdir / "runs" / task_id / f"{run_id}.jsonl").write_text(
         json.dumps({"idx": 0, "type": "stop", "payload": {"run_id": run_id}}) + "\n", encoding="utf-8")
     (workdir / "environment.json").write_text(json.dumps(as_dict(Environment(env_id="env-1"))), encoding="utf-8")
-    # regrade_gate (D97) refuses a Verdict with no runner_version, so the real regrade path (the
-    # one test below that does not fake cli._entry) needs a frozen RunnerVersion on disk too.
-    (workdir / "runner_version.json").write_text(
-        json.dumps(as_dict(RunnerVersion(runner_version="rv-1"))), encoding="utf-8")
 
 
 def seed_runs(workdir: Path, runs: list) -> None:
@@ -389,14 +370,14 @@ def test_the_report_computes_task_coverage_when_no_stage_wrote_it(workdir):
     assert "t1: not covered, no Reference confirmation is recorded for this Task (D57, D93)" in text
 
 
-def test_the_verdict_carries_the_environment_and_runner_versions(workdir):
+def test_the_verdict_carries_the_environment_version_and_the_live_code_hash(workdir):
+    """No freeze is needed: verdict stamps the hash of the code that scored, the one a Run carries."""
     seed_task(workdir)
-    invoke("freeze-runner", "--workdir", str(workdir), "--yes")
-    frozen = json.loads((workdir / "runner_version.json").read_text(encoding="utf-8"))["runner_version"]
+    assert not version_file(workdir).exists()
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
     body = stored_verdicts(workdir)[0]
     assert body["env_id"] == "env-1"
-    assert body["runner_version"] == frozen
+    assert body["runner_version"] == CODE_HASH
 
 
 # --- what the Verdict is actually given (D39, D73, D84) ---------------------
@@ -442,22 +423,6 @@ def test_regrade_reads_the_queue_and_verdict_leaves_it_alone(workdir):
     assert "1 re-scored from the regrade queue" in result.output
     assert canon.queued_regrades(workdir) == []
     assert json.loads(stored[0].read_text(encoding="utf-8"))["notes"] != ["stale"]
-
-
-def test_a_verdict_missing_its_runner_version_is_refused_not_counted(workdir):
-    """D97: regrade_gate refuses a Verdict that never copied its Runner version (row 18).
-
-    The regrade cache has already written the Verdict to disk by the time the gate sees it (D97's
-    own cache path), so refusal is what happens next: the Task is not counted as scored and the
-    command exits non-zero, rather than the file being retracted.
-    """
-    seed_task(workdir)
-    (workdir / "runner_version.json").unlink()
-    result = invoke("verdict", "--workdir", str(workdir))
-    assert result.exit_code == 1
-    assert "refused" in result.output
-    assert "runner_version is not on the Verdict" in result.output
-    assert "nothing was scored" in result.output
 
 
 def test_nothing_scored_is_a_failure_not_a_silent_success(workdir):
@@ -941,3 +906,162 @@ def test_a_build_that_ended_on_a_provider_error_beats_failed_and_exits_one(workd
     assert result.exit_code == 1, result.output
     assert '"stopped": "error"' in result.output
     assert [record["status"] for record in heartbeat.read_all()] == ["failed"]
+
+
+# --- the run-model split ---
+
+def _build_start(workdir):
+    from kullback.runner import feed
+
+    rows, _ = feed.read_since(workdir, 0)
+    (row,) = [row for row in rows if row.get("kind") == "build_start"]
+    return row
+
+
+def test_build_without_run_model_runs_the_candidate_on_the_builder_model(workdir, fake_modules,
+                                                                         monkeypatch):
+    from kullback.runner import budget as budget_mod
+
+    built = _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    builder = built["vendor/large"]
+    assert call["kwargs"]["run_model"] is builder
+    assert call["kwargs"]["reroll_model"] is builder
+    assert not isinstance(builder, budget_mod.EffortModel)
+    record = _build_start(workdir)
+    assert (record["model"], record["run_model"]) == ("vendor/large", "vendor/large")
+    assert record["run_effort"] is None
+    assert (record["user_model"], record["user_kind"]) == ("vendor/large", "agent")
+    assert call["kwargs"]["user_model"] is builder
+
+
+def test_build_with_run_model_and_effort_runs_the_candidate_on_them_not_the_builder(
+        workdir, fake_modules, monkeypatch):
+    from kullback.runner import budget as budget_mod
+
+    built = _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large",
+                    "--run-model", "cheap/small", "--run-effort", "low")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    assert call["kwargs"]["probe_model"] is built["vendor/large"]
+    run = call["kwargs"]["run_model"]
+    assert call["kwargs"]["reroll_model"] is run
+    assert isinstance(run, budget_mod.EffortModel)
+    assert run.inner is built["cheap/small"] and run.effort == "low"
+    assert not isinstance(call["kwargs"]["probe_model"], budget_mod.EffortModel)
+    record = _build_start(workdir)
+    assert (record["run_model"], record["run_effort"]) == ("cheap/small", "low")
+def test_default_build_meets_every_run_with_the_agent_user_on_the_run_model(workdir, fake_modules,
+                                                                             monkeypatch):
+    built = _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    assert call["kwargs"]["user_model"] is built["vendor/large"]
+    record = _build_start(workdir)
+    assert (record["user_model"], record["user_kind"]) == ("vendor/large", "agent")
+
+
+def test_rule_user_keeps_the_rule_driven_user_alone(workdir, fake_modules, monkeypatch):
+    _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large",
+                    "--run-model", "cheap/small", "--run-effort", "low", "--rule-user")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]["kwargs"]
+    assert call["user_model"] is None
+    record = _build_start(workdir)
+    assert record["user_model"] is None and record["user_kind"] == "rule"
+
+
+def test_bare_user_model_switches_the_agent_user_on_with_the_run_model(workdir, fake_modules,
+                                                                       monkeypatch):
+    _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large",
+                    "--run-model", "cheap/small", "--run-effort", "low", "--user-model")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    assert call["kwargs"]["user_model"] is call["kwargs"]["run_model"]
+    assert call["kwargs"]["user_model"].effort == "low"
+    assert _build_start(workdir)["user_model"] == "cheap/small"
+    assert _build_start(workdir)["user_kind"] == "agent"
+
+
+def test_valued_user_model_names_its_own_model_with_the_run_effort(workdir, fake_modules, monkeypatch):
+    from kullback.runner import budget as budget_mod
+
+    built = _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large",
+                    "--run-model", "cheap/small", "--run-effort", "low",
+                    "--user-model", "other/id")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    user = call["kwargs"]["user_model"]
+    assert isinstance(user, budget_mod.EffortModel)
+    assert user.inner is built["other/id"] and user.effort == "low"
+    assert _build_start(workdir)["user_model"] == "other/id"
+    assert _build_start(workdir)["user_kind"] == "agent"
+
+
+def test_build_ends_with_the_tier_report_and_takes_no_verifier_from_flag(workdir, fake_modules):
+    result = invoke("build", "--workdir", str(workdir))
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[4].startswith("tier report, verifier from the Spec, code ") and lines[5].startswith("tiers trusted ")
+    assert json.loads((Path(workdir) / "tiers.json").read_text())["tasks"] == 0
+    refused = invoke("build", "--workdir", str(workdir), "--verifier-from", "intent")
+    assert refused.exit_code == 2 and len(fake_modules["kullback.builder.session.build"]) == 1
+
+
+def test_build_stores_a_task_sample_from_a_comma_list_and_a_file_and_reads_it_back(workdir, fake_modules, tmp_path):
+    from kullback.spec.trust import in_sample, stored_tasks
+
+    result = invoke("build", "--workdir", str(workdir), "--tasks", "t2, t1,")
+    assert result.exit_code == 0, result.output
+    assert stored_tasks(workdir) == ["t2", "t1"] and in_sample(workdir, ["t1", "t3"]) == ["t1"]
+    listed = tmp_path / "sample.txt"
+    listed.write_text("t5\n\n t4 \n")
+    result = invoke("build", "--workdir", str(workdir), "--tasks", f"@{listed}")
+    assert result.exit_code == 0, result.output
+    assert stored_tasks(workdir) == ["t5", "t4"]
+
+
+def test_build_without_tasks_stores_no_sample_and_filters_nothing(workdir, fake_modules):
+    from kullback.spec.trust import in_sample, stored_tasks
+
+    assert invoke("build", "--workdir", str(workdir)).exit_code == 0
+    assert stored_tasks(workdir) is None and in_sample(workdir, ["t1", "t3"]) == ["t1", "t3"]
+
+
+def test_examine_chooses_references_then_writes_the_specs_on_the_builder_model_then_reviews(
+        workdir, fake_modules, monkeypatch):
+    built = _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large")
+    assert result.exit_code == 0, result.output
+    fake_modules["kullback.builder.session.build"][0]["kwargs"]["examine_fn"](workdir, ["t1"])
+    (written,) = fake_modules["kullback.spec.stage.write_specs"]
+    assert written["args"][1] == ["t1"] and written["args"][2] is built["vendor/large"]
+    first, second = (call["kwargs"] for call in fake_modules["kullback.examiner.session.examine"])
+    assert first["model"] is None and second["model"] is built["vendor/large"]
+    assert second["task_ids"] == ["t1"] and "verifier_from" not in second
+    assert not {"probe_model", "reroll_model", "user_model"} & set(second)
+
+
+def test_examine_writes_the_specs_on_a_named_spec_model(workdir, fake_modules, monkeypatch):
+    built = _named_adapters(monkeypatch)
+    invoke("build", "--workdir", str(workdir), "--model", "vendor/large", "--spec-model", "other/writer")
+    fake_modules["kullback.builder.session.build"][0]["kwargs"]["examine_fn"](workdir, ["t1"])
+    assert fake_modules["kullback.spec.stage.write_specs"][0]["args"][2] is built["other/writer"]
+
+
+def test_status_and_the_counts_line_print_one_trusted_count_on_a_workdir_with_specs(tmp_path):
+    from kullback import round_snapshot
+    from tests.spec.test_trust import _fresh, _intent_workdir, _replay
+
+    _intent_workdir(tmp_path, [_replay(), _fresh()])
+    round_snapshot.checkpoint(tmp_path, 1)
+    out = runner.invoke(cli.app, ["status", "--workdir", str(tmp_path)]).output
+    assert "trusted: 1" in out and "trust: trusted 1 |" in out
+    assert cli._counts_line(tmp_path).startswith("trusted 1,")

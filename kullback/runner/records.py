@@ -5,10 +5,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import secrets
+import stat
 from pathlib import Path
 from typing import Any, Iterable, Literal, Optional, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from kullback.ai.usage import Usage
 
@@ -69,10 +72,42 @@ def as_dict(obj: BaseModel) -> dict:
 def write_json(path: Any, body: Any) -> Path:
     """One JSON artifact on disk the way every workdir file is written: parents made, keys sorted,
     two-space indent, anything JSON cannot carry rendered with str. The Builder and the Examiner
-    write their artifacts through this one function so the bytes agree (D130)."""
+    write their artifacts through this one function so the bytes agree (D130). The bytes reach the
+    final path through a temporary file in the same directory and an os.replace swap, so a kill
+    during the write leaves the old file intact and no torn artifact behind. The temporary file is
+    created with 0o666, so the kernel applies the umask exactly as the old direct write did, and a
+    destination that already exists keeps its mode. Any failure, including a KeyboardInterrupt
+    between staging and swap, removes the temporary file and re-raises."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(body, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    text = json.dumps(body, indent=2, sort_keys=True, default=str)
+    try:
+        kept_mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        kept_mode = None
+    for _ in range(100):
+        tmp_path = path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+        try:
+            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise FileExistsError(f"cannot stage a temporary file beside {path}")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            if kept_mode is not None:
+                os.fchmod(handle.fileno(), kept_mode)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -414,7 +449,7 @@ class TaskOverlay(Record):
 
 
 class Category(Record):
-    """The Runs whose References write through the same tool set (D83)."""
+    """The Tasks whose Runs mostly write through the same tool set: a summary, not a cut (D83, D313)."""
     id: str
     name: Optional[str] = None
     write_tools: list[str] = Field(default_factory=list)
@@ -422,7 +457,11 @@ class Category(Record):
 
 
 class Task(Record):
-    """A cluster of Runs sharing one Intent, inside a Category (D83); unguarded when too small to hold out (D81)."""
+    """A cluster of Runs sharing one request (D83, D313); unguarded when too small to hold out (D81).
+
+    `write_labels` is each Run's confirmed write set: a label, never the cut, so Runs of one request
+    that wrote differently sit in one Task and their disagreement stays visible.
+    """
     id: str
     category_id: Optional[str] = None
     run_ids: list[str] = Field(default_factory=list)
@@ -430,6 +469,7 @@ class Task(Record):
     unguarded: bool = False
     name: Optional[str] = None
     anchor_run_ids: list[str] = Field(default_factory=list)
+    write_labels: dict[str, list[str]] = Field(default_factory=dict)
 
 # --- intent ---
 
@@ -520,12 +560,77 @@ class Atom(Record):
     judge: bool = False
 
 
+class ValueSource(Record):
+    """Where one expected value came from (D315).
+
+    `ptr` for a user_turn holds the recording and the turn index; for a policy, the clause quoted;
+    for a tool_result, the event index, call id and tool of the result that first showed the value.
+    `unchanged` is a nested value none of whose leaves is new (reordered only): nothing to source.
+    """
+    kind: Literal["user_turn", "policy", "tool_result", "unchanged"]
+    ptr: dict = Field(default_factory=dict)
+
+
+class ExpectedCell(Record):
+    """One cell of an expected end state; `field` None is the row itself, gone when `value` is None.
+
+    `source is None` means the value is unsupported, and `row_source is None` that the row is.
+    """
+    table: str
+    row_id: str
+    field: Optional[str] = None
+    value: Any = None
+    source: Optional[ValueSource] = None
+    row_source: Optional[ValueSource] = None
+    # A nested value is sourced by its changed leaves: each leaf path and its source, None if unsupported.
+    leaf_sources: dict[str, Optional[ValueSource]] = Field(default_factory=dict)
+
+
+class EndState(Record):
+    """One expected end state: its cells, and what else may differ (`allowed`); nothing else moves."""
+    cells: list[ExpectedCell] = Field(default_factory=list)
+    allowed: list[dict] = Field(default_factory=list)
+
+
+class Forbidden(Record):
+    """A write or a Run-ending call that must not happen (D315). Reads are never forbidden."""
+    kind: Literal["write", "end_call"]
+    tool: Optional[str] = None
+    table: Optional[str] = None
+    row_id: Optional[str] = None
+    field: Optional[str] = None
+    value: Any = None
+    source: ValueSource
+
+
+class Conduct(Record):
+    """Conduct the event log must show: a confirmation before a write, a refusal, a hand-off (D316)."""
+    kind: Literal["confirm_before_write", "refusal", "handoff"]
+    tool: Optional[str] = None
+    source: ValueSource
+
+
 class Verifier(Record):
-    """The End-state check for one Task, derived from confirmed References."""
+    """The End-state check for one Task, derived from confirmed References.
+
+    The end state and the event log decide (`expected`, `forbidden`, `conduct`); atoms guide (D316).
+    """
     task_id: str
     atoms: list[Atom] = Field(default_factory=list)
     verifier_version: str = "0"
     seed_run_ids: list[str] = Field(default_factory=list)
+    expected: list[EndState] = Field(default_factory=list)  # any one may match
+    forbidden: list[Forbidden] = Field(default_factory=list)
+    conduct: list[Conduct] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def _without_empty_gates(self, handler):
+        # An old Verifier dumps, and so hashes, byte for byte as it did before the gates existed.
+        data = handler(self)
+        for key in ("expected", "forbidden", "conduct"):
+            if isinstance(data, dict) and not data.get(key):
+                data.pop(key, None)
+        return data
 
 # --- runs, events, verdicts, gates ---
 
@@ -697,18 +802,11 @@ def disagreement_stats(rows: Iterable[dict]) -> dict:
 
 
 class RunnerVersion(Record):
-    """Content hash of the Runner files and routing config, written by freeze-runner.
+    """The code hash a build recorded it ran on (runner/code_hash.py), written by freeze-runner.
 
-    `gates_version` is the hash of the gates package, recorded beside the Runner's own so a regrade
-    can name which gates accepted an artifact (D122); it is not folded into `runner_version`,
-    which stays the hash of what executes and grades a Run. It is optional because a
-    RunnerVersion frozen before phase 3 has none.
+    A record of the build, read by the export; no Verdict reads it, each carries the live hash.
     """
     runner_version: str
-    file_hashes: dict[str, str] = Field(default_factory=dict)
-    routing_config_hash: Optional[str] = None
-    gates_version: Optional[str] = None
-    gates_file_hashes: dict[str, str] = Field(default_factory=dict)
     created_at: Optional[str] = None
     confirmed_by: Optional[str] = None
 
@@ -781,11 +879,6 @@ VersionBy = Literal["derive", "repair", "auto_loosen"]
 # reached the Builder (D227).
 FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "suite", "false_rejection",
                       "environment", "intent_leak", "runs_disagree", "other"]
-# `repair` is the Examiner's own verb, the one answer to a Verifier the Builder cannot touch (D123),
-# and `reroll_then_derive` is its other one, for a check that had no second Run to score (D173);
-# `repair_refuse_task` is the Builder's, for a Task the corpus itself does not settle.
-FindingVerb = Literal["compile_tool", "replay", "reroll", "repair_intent", "repair_recompile",
-                      "repair_refuse_task", "repair", "reroll_then_derive", "none"]
 FindingStatus = Literal["open", "delivered", "closed"]
 
 
@@ -845,9 +938,10 @@ class Refusal(Record):
 class Finding(Record):
     """What the Examiner found wrong on the Builder's side, delivered to the Builder as a follow-up (D123).
 
-    `suggested` is the Builder verb that answers it and `hint` the one line that verb is given: the
-    repair verbs take a hint, so a finding that names one without a hint asks for the same repair
-    again with nothing new to go on. The round driver renders the two together as a callable line.
+    `change` is the one line saying what should differ and `edits` the diff itself, each edit with
+    its why and the values behind it, in the one shape the Builder and the Spec both read (D317).
+    The repair verbs are gone: a file written before D317 still loads, its `suggested` dropped and
+    its `hint` read as the change.
 
     `task_ids` is every Task the finding costs and `task_id` the first of them, so one loss that
     blocks fifty Tasks is one finding with a count rather than fifty (D170). `key` is what makes two
@@ -860,13 +954,24 @@ class Finding(Record):
     text: str
     run_id: Optional[str] = None
     tool: Optional[str] = None
-    suggested: FindingVerb = "none"
-    hint: str = ""
+    change: str = ""
+    edits: list[dict] = Field(default_factory=list)
     about_entry_id: Optional[str] = None
     round: int = 0
     status: FindingStatus = "open"
     task_ids: list[str] = Field(default_factory=list)
     key: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _before_d317(cls, data: Any) -> Any:
+        """A finding written with the old verb and hint: the verb is dropped, the hint is the change."""
+        if isinstance(data, dict) and ("suggested" in data or "hint" in data):
+            data = dict(data)
+            data.pop("suggested", None)
+            hint = data.pop("hint", "")
+            data.setdefault("change", hint or "")
+        return data
 
     @property
     def cost(self) -> int:

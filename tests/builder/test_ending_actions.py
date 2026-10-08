@@ -9,8 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from kullback import derive
 from kullback.builder import compile_env, env_files, mine
-from kullback.examiner import derive
 from kullback.runner import route
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import Event, RawPtr, Run, ToolCall, Trace, as_dict, write_json

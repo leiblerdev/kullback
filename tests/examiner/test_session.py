@@ -14,10 +14,9 @@ from kullback.examiner import domain_tools as exam_tools
 from kullback.examiner import session as S
 from kullback.examiner import stage as stage_mod
 from kullback.examiner.exam_files import ExamRoot
-from kullback.gates.probes import version_hash
 from kullback.runner import budget, tool
 from kullback.runner.canon import CanonRules
-from kullback.runner.records import Verifier, as_dict, read_json, write_json
+from kullback.runner.records import as_dict, read_json, write_json
 from tests.runner.test_tool import _env_with_trace
 
 
@@ -27,9 +26,18 @@ def reply(content, *calls) -> ModelReply:
                                                   for i, (n, a) in enumerate(calls)])
 
 
+def with_specs(world) -> None:
+    """One bare Spec per Task, so the review session opens on each (D320)."""
+    from kullback.spec.schema import Spec, SpecIntent, save_spec
+
+    for task in world.inputs["tasks"]:
+        save_spec(world.workdir, Spec(task_id=task.id, intent=SpecIntent(task_id=task.id)))
+
+
 def materialize(world) -> None:
-    """The derivation's store as workdir files: tasks, sigs, replays, re-rolls, rules."""
+    """The derivation's store as workdir files: tasks, sigs, replays, re-rolls, rules, a Spec per Task."""
     workdir = world.workdir
+    with_specs(world)
     (workdir / "tasks").mkdir(exist_ok=True)
     for task in world.inputs["tasks"]:
         write_json(workdir / "tasks" / f"{task.id}.json", as_dict(task))
@@ -63,45 +71,16 @@ def _ends(events, tool):
     return [e for e in events if isinstance(e, ToolExecutionEnd) and e.tool_name == tool]
 
 
-def test_fresh_session_seeds_version_1_accepted_for_each_derived_verifier(tmp_path):
-    world = make_world(tmp_path)
-    materialize(world)
-    _scripted_events(world, [reply("done")])
-    derived = Verifier.model_validate(read_json(world.workdir / "verifiers" / "t1.json"))
-    written = read_json(world.workdir / "exam" / "history.json")
-    [row] = written["t1"]["versions"]
-    assert (row["verifier_version"], row["accepted"], row["by"]) == ("1", True, "derive")
-    assert row["reason"] == "the Verifier on disk before any repair"
-    assert row["content_hash"] == version_hash(derived)
-
-
 # A proposal that changes the atoms and none of the rulings: a write cap no Run reaches, which
 # no check can mutate. A proposal of no change is refused before the suite (F37).
 _WIDE_CAP = {"id": "wide_cap", "kind": "allowed", "payload": {"kind": "entity_count", "count": 1000}}
 
 
-def test_model_propose_verifier_lands_while_the_loophole_probe_cannot_run(tmp_path):
-    world = make_world(tmp_path)
-    materialize(world)
-    events = _scripted_events(world, [
-        reply("proposing", ("propose_verifier", {"task_id": "t1", "reason": "tighten",
-                                                 "add": [_WIDE_CAP]})),
-        reply("done"),
-    ])
-    [proposed] = _ends(events, "propose_verifier")
-    assert proposed.is_error is False
-    assert "verifier_loophole not run (no model" in proposed.result.content
-    assert (world.workdir / "exam" / "verifiers" / "t1.json").is_file()
-    written = read_json(world.workdir / "exam" / "history.json")
-    assert [v["accepted"] for v in written["t1"]["versions"]] == [True, True]
-    row = read_json(world.workdir / "exam" / "task_status.json")["t1"]
-    assert row["verifier_passed"] is False and "verifier_loophole" in row["not_run"]
-
-
 def test_a_model_write_or_edit_under_verifiers_is_refused_and_names_the_tools_that_write(tmp_path):
     world = make_world(tmp_path)
     materialize(world)
-    before = read_json(world.workdir / "exam" / "verifiers" / "t1.json")
+    S.examine(world.workdir, model=None)
+    before = read_json(world.workdir / "exam" / "verifiers" / "t1.json", None)
     events = _scripted_events(world, [
         reply("proposing", ("write", {"path": "verifiers/t1.json", "content": "{}"})),
         reply("editing", ("edit", {"path": "verifiers/t1.json", "old": "t1", "new": "t2"})),
@@ -110,9 +89,8 @@ def test_a_model_write_or_edit_under_verifiers_is_refused_and_names_the_tools_th
     refused = _ends(events, "write") + _ends(events, "edit")
     assert [end.is_error for end in refused] == [True, True]
     for end in refused:
-        assert ("the Examiner writes Verifiers through edit_verifier and probes through probe, "
-                "not with write or edit") in end.result.content
-    assert read_json(world.workdir / "exam" / "verifiers" / "t1.json") == before
+        assert S.EXAMINER_WRITES in end.result.content
+    assert read_json(world.workdir / "exam" / "verifiers" / "t1.json", None) == before
 
 
 def test_model_finding_publishes_and_duplicates_are_refused_with_the_id(tmp_path):
@@ -143,8 +121,8 @@ def test_bash_write_and_edit_are_not_registered_and_base_tools_are_scoped_to_exa
     load_extensions(harness, [S.examiner_extension(root)])
     names = harness.registry.names()
     assert not {"bash", "write", "edit"} & set(names)
-    assert {"read", "grep", "find", "ls", "web_search",
-            "edit_verifier", "propose_verifier", "probe", "finding", "reroll"} <= set(names)
+    assert {"read", "grep", "find", "ls", "web_search", "finding", "no_finding", "rule"} <= set(names)
+    assert not {"edit_verifier", "propose_verifier", "try_atoms", "probe", "reroll"} & set(names)
     S.expose(world.workdir)
     refused = drive_tool(harness, "write", {"path": "runs/x.jsonl", "content": "{}"})
     assert refused.is_error is True
@@ -159,6 +137,17 @@ def test_the_examiner_gets_inspect_among_its_base_tools_and_still_no_write_edit_
     assert not {"write", "edit", "bash"} & names
 
 
+def test_an_examiner_session_prices_its_model_calls_into_the_ledger_under_its_stage(tmp_path):
+    world = make_world(tmp_path)
+    materialize(world)
+    usage = {"input": 1890, "output": 17, "cache_write": 1887}
+    model = TestModel([reply("done").model_copy(update={"usage": usage})],
+                      name=next(iter(budget.PRICES)))
+    S.examine(world.workdir, model=model)
+    stage = budget.load_totals(world.workdir)["stages"]["examiner"]
+    assert stage["calls"] == 1 and stage["usd"] > 0
+
+
 def _rename_loop() -> TestModel:
     """A model that reads the widget and writes the striped label, then stops, on every Run."""
     return TestModel([
@@ -169,73 +158,6 @@ def _rename_loop() -> TestModel:
                             arguments={"widget_id": "w1", "label": "striped"})]),
         ModelReply(content="Done.", model="test"),
     ], loop=True)
-
-
-def test_examine_with_a_reroll_model_buys_second_path_rerolls(tmp_path):
-    """A lone Reference buys re-rolls through the runner callable: Runs on disk, rows kept."""
-    root = _env_with_trace(tmp_path / "env")
-    seed = tool.run(root, "widget_task", _rename_loop(), workdir=root)
-    write_json(root / "replays.json", {"widget_task": {
-        "rec1": {"trace_id": "rec1", "run_id": seed.run_id,
-                 "confirmed": True, "path": seed.path}}})
-    write_json(root / "rerolls.json", {"widget_task": []})
-    write_json(root / "constraints.json", [])
-    S.examine(root, model=None, reroll_model=_rename_loop())
-    bought = sorted((root / "runs").glob("second-path-*.jsonl"))
-    assert bought, "a Reference standing alone buys re-rolls through the callable"
-    rows = (read_json(root / "examiner" / "rerolls.json", {}) or {}).get("widget_task") or []
-    assert rows and all(row.get("reason") == "second_path" for row in rows)
-
-
-def _proposed_over_a_runner_world(tmp_path, probe_model):
-    """A built Environment with two Runs of one Task on disk, examined with a probe model, and
-    a scripted Examiner that proposes the derived Verifier with a wide write cap through propose_verifier."""
-    root = _env_with_trace(tmp_path / "work")
-    seed = tool.run(root, "widget_task", _rename_loop(), workdir=root)
-    other = tool.run(root, "widget_task", _rename_loop(), workdir=root / "second")
-    write_json(root / "replays.json", {"widget_task": {
-        "rec1": {"trace_id": "rec1", "run_id": seed.run_id, "confirmed": True, "path": seed.path}}})
-    write_json(root / "rerolls.json", {"widget_task": [
-        {"run_id": other.run_id, "path": str(root / "second" / other.path),
-         "termination_reason": "user_stop"}]})
-    write_json(root / "constraints.json", [])
-    events: list = []
-    S.examine(root, model=TestModel([
-        reply("proposing", ("propose_verifier", {"task_id": "widget_task", "reason": "again",
-                                                 "add": [_WIDE_CAP]})),
-        reply("done")]), probe_model=probe_model, subscribers=[events.append])
-    [proposed] = _ends(events, "propose_verifier")
-    return root, proposed
-
-
-def test_session_proposal_runs_the_loophole_probe_through_the_runner_and_is_trusted(tmp_path):
-    root, proposed = _proposed_over_a_runner_world(tmp_path, TestModel(["I will not."], loop=True))
-    assert proposed.is_error is False
-    assert "verifier_loophole pass" in proposed.result.content
-    assert "trusted pass" in proposed.result.content
-    status = read_json(root / "exam" / "task_status.json")
-    assert status["widget_task"]["verifier_passed"] is True
-    assert list((root / "probes").glob("*.jsonl")), "the probe is a Run the runner played"
-
-
-def test_session_proposal_whose_probe_reaches_the_end_state_is_refused_at_the_loophole(tmp_path):
-    root, proposed = _proposed_over_a_runner_world(tmp_path, _rename_loop())
-    assert proposed.is_error is True
-    assert "verifier_loophole fail" in proposed.result.content
-    written = read_json(root / "exam" / "history.json")
-    assert written["widget_task"]["versions"][-1]["rejected_by"] == ["verifier_loophole"]
-
-
-
-def test_an_examiner_session_prices_its_model_calls_into_the_ledger_under_its_stage(tmp_path):
-    world = make_world(tmp_path)
-    materialize(world)
-    usage = {"input": 1890, "output": 17, "cache_write": 1887}
-    model = TestModel([reply("done").model_copy(update={"usage": usage})],
-                      name=next(iter(budget.PRICES)))
-    S.examine(world.workdir, model=model)
-    stage = budget.load_totals(world.workdir)["stages"]["examiner"]
-    assert stage["calls"] == 1 and stage["usd"] > 0
 
 
 def _replayed_root(tmp_path):
@@ -257,20 +179,6 @@ def test_every_run_path_in_the_exam_replays_opens_under_the_exam_root(tmp_path):
     paths = [row["path"] for rows in replays.values() for row in rows.values()]
     assert paths and all(not Path(path).is_absolute() for path in paths)
     assert all((root / "exam" / path).is_file() for path in paths)
-
-
-def test_examine_from_another_cwd_opens_the_runs_and_stores_bought_rows_relative(tmp_path, monkeypatch):
-    """Run rows resolve against the workdir, not the cwd: second paths are bought and stored as runs/..."""
-    root = _replayed_root(tmp_path)
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    monkeypatch.chdir(elsewhere)
-    S.examine(root, model=None, reroll_model=_rename_loop())
-    rows = (read_json(root / "examiner" / "rerolls.json", {}) or {}).get("widget_task") or []
-    assert rows and all(row["path"].startswith("runs/") for row in rows)
-    assert all((root / row["path"]).is_file() for row in rows)
-    status = read_json(root / "task_status.json")
-    assert status["widget_task"]["reference_confirmed"] is True
 
 
 def test_an_examiner_stopped_on_its_turn_cap_says_its_findings_are_partial(tmp_path):
@@ -304,11 +212,10 @@ def test_session_prompt_names_dot_as_root_lists_entries_and_the_paths_of_each_ta
     system = " ".join(str(m.get("content")) for m in call["messages"])
     assert 'Your root is "."' in system
     assert str(world.workdir) not in system
-    assert ("The root holds: derived/, history.json, references.json, replays.json, rerolls.json, "
-            "runs/, spoken/, task_status.json, tasks/.") in system
-    assert "on your first write under them: verifiers/, probes/" in system
-    assert "runs: runs/t1/ref.jsonl, runs/t1/alt.jsonl" in system
-    assert "proposal: verifiers/t1.json once you first propose one" in system
+    assert ("The root holds: history.json, references.json, replays.json, rerolls.json, runs/, spec_view/, "
+            "spoken/, task_status.json, tasks/.") in system
+    assert "you write nothing and run nothing" in system
+    assert "runs/t1/ref.jsonl" in system and "spec view:" in system
 
 
 def test_examine_with_no_finished_run_opens_no_session_and_names_the_task_left_out(tmp_path):
@@ -389,7 +296,8 @@ def test_a_session_capped_after_a_refused_proposal_files_its_note_on_that_task_w
 
 
 def _derived(world) -> list[str]:
-    return sorted(path.stem for path in (world.workdir / "verifiers").glob("*.json"))
+    """The Tasks the Reference stage ruled on: it writes their status rows and no Verifier (D320)."""
+    return sorted(read_json(world.workdir / "task_status.json", {}) or {})
 
 
 def _not_derived(findings) -> list:
@@ -406,7 +314,7 @@ def test_one_examine_call_derives_all_twelve_confirmed_tasks_and_files_no_not_de
     assert S.derive_pick(world.workdir, S.load_store(world.workdir), None) == []
 
 
-def test_the_exam_view_after_examine_holds_the_verifiers_and_status_this_call_derived(tmp_path):
+def test_the_exam_view_after_examine_holds_the_status_this_call_wrote(tmp_path):
     """F52: expose runs after the derivation, so the first call's session reads current files."""
     world = make_world(tmp_path, tasks=2)
     materialize(world)
@@ -414,7 +322,6 @@ def test_the_exam_view_after_examine_holds_the_verifiers_and_status_this_call_de
     exam = world.workdir / "exam"
     assert sorted(read_json(exam / "task_status.json")) == ["t1", "t2"]
     assert read_json(exam / "task_status.json") == read_json(world.workdir / "task_status.json")
-    assert sorted(p.stem for p in (exam / "derived").glob("*.json")) == ["t1", "t2"]
 
 
 def test_examine_with_a_limit_derives_that_many_and_names_the_rest_until_a_second_call(tmp_path):
@@ -491,3 +398,5 @@ def test_the_examiners_opening_lists_the_builders_open_notes_on_its_tasks(world)
     assert "The Builder's notes" in opening
     assert "t1: fact_unavailable_to_user: the user never learns the code. (open)" in opening
     assert "t9:" not in opening
+
+

@@ -15,6 +15,11 @@ def test_stop_rule_ends_with_one_line_and_no_tool_call():
     assert "one line and no tool call" in text
 
 
+def test_stop_rule_ends_when_every_task_has_one_review():
+    text = P.stop_section()
+    assert "every Task has one review filed" in text
+
+
 def test_prompt_names_files_never_verbs_and_no_dashes():
     whole = P.render(P.sections()) + P.opening("Examine.", "rulings", ["runs/", "replays.json"])
     assert "env/tools/<name>.py" in whole
@@ -26,7 +31,8 @@ def test_receives_names_the_root_as_dot_and_its_first_write_dirs():
     text = P.receives_section()
     assert 'Your root is "."' in text
     assert "never a host path" in text
-    assert "on your first write under them: verifiers/, probes/" in text
+    assert "you write nothing and run nothing" in text
+    assert P.WRITABLE_DIRS == ()
 
 
 def test_the_opening_lists_the_root_entries_and_the_rulings_after_the_ask():
@@ -43,3 +49,11 @@ def test_the_system_prompt_is_the_same_whatever_the_rulings_and_the_root_hold():
     second = P.opening("Examine.", "t2: runs: b", ["runs/", "tasks/"])
     assert first != second
     assert all("t1: runs" not in text and "runs/, tasks/" not in text for _, text in P.sections())
+
+
+def test_the_prompt_asks_for_one_review_per_task_with_rows_and_an_edit():
+    choice, tools = P.choice_section(), P.tools_section()
+    assert "File one review per Task" in choice
+    assert "A review without rows is not a finding" in choice
+    assert "never from which side has more Runs" in choice
+    assert "no_finding:" in tools and "Atoms and text edits go to the Spec" in tools

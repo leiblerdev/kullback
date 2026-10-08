@@ -216,6 +216,21 @@ def load_task_runs(workdir: Path, path: str) -> Optional[dict]:
     return load_exam_task_runs(workdir) or None
 
 
+def load_verifiers(workdir: Path, path: str) -> Optional[list]:
+    """Every Task's Verifier from the verifiers/ folder (one file per Task), else verifiers.json, else None."""
+    _ = path
+    folder = workdir / "verifiers"
+    rows = [_read_json(folder, file.name) for file in sorted(folder.glob("*.json"))] if folder.is_dir() else []
+    return [row for row in rows if isinstance(row, dict)] or _read_json(workdir, "verifiers.json")
+
+
+def load_task_status(workdir: Path, path: str) -> Optional[dict]:
+    """The Tasks' status rows (task_status.json), or None when there is none."""
+    _ = path
+    status = _read_json(workdir, "task_status.json")
+    return status if isinstance(status, dict) else None
+
+
 def load_probes(workdir: Path, path: str) -> Optional[dict]:
     """Every probe pool on disk (records.load_probe_pools), or None when there are none."""
     _ = path
@@ -247,7 +262,8 @@ BINDINGS: tuple[Binding, ...] = (
     Binding("verifiers/*.json", VERIFIER_GATES,
             {"replays": _file_loader("replays.json"), "rerolls": _file_loader("rerolls.json"),
              "history": load_history, "task_runs": load_task_runs,
-             "reference": _file_loader("reference.json"), "verifiers": _file_loader("verifiers.json"),
+             "reference": _file_loader("reference.json"), "verifiers": load_verifiers,
+             "task_status": load_task_status,
              "probes": load_probes, "sigs": _file_loader("tool_sigs.json"),
              "rules": load_rules}),
     Binding("refusals/*.json", ("refuse",),
@@ -510,19 +526,24 @@ def _suite_status(evidence: dict) -> Optional[tuple[str, dict]]:
 
 def _gate_trusted(evidence: dict) -> Optional[list[GateResult]]:
     """The trusted gate rules on the suite that just ran on the write: its row overlays the Task's
-    status for this ruling only. With no suite in this ruling it falls back to the file row."""
+    status for this ruling only. With no suite in this ruling it falls back to the file row.
+    "spec_tiers" (D322), a dict or a loader the layer above the gates hands in, makes the Spec's tiers
+    the ruling; the gates never read the Spec themselves. A Spec tier is a ruling in itself: it needs
+    no status row and no suite."""
     task_status = evidence.get("task_status")
     suite = _suite_status(evidence)
     if suite is not None:
         task_id, row = suite
         task_status = {**(task_status or {}), task_id: {**((task_status or {}).get(task_id) or {}), **row}}
-    if evidence.get("verifiers") is None or task_status is None:
+    spec_tiers = evidence.get("spec_tiers")
+    spec_tiers = spec_tiers() if callable(spec_tiers) else spec_tiers
+    if evidence.get("verifiers") is None or (task_status is None and not spec_tiers):
         return None
-    return [trusted_gate(task_status, evidence["verifiers"], evidence.get("probes") or {},
+    return [trusted_gate(task_status or {}, evidence["verifiers"], evidence.get("probes") or {},
                          evidence.get("history") or {}, evidence.get("refusals") or {},
                          evidence.get("task_runs") or {}, evidence.get("replays") or {},
                          evidence.get("rerolls") or {}, evidence.get("rules"), evidence.get("sigs") or [],
-                         workdir=evidence.get("workdir"))]
+                         workdir=evidence.get("workdir"), spec_tiers=spec_tiers)]
 
 
 def _gate_refuse(evidence: dict) -> Optional[list[GateResult]]:
@@ -659,41 +680,185 @@ def _memorised_rows(evidence: dict, result: GateResult) -> list[dict]:
 
 
 def _atom_text(evidence: dict, atom_id: Any) -> str:
+    """The atom's full text, never cut: the refusal names the whole rule, not a prefix of it."""
     verifier = _verifier_of(evidence)
     atoms = getattr(verifier, "atoms", None) or []
     for atom in atoms:
         if getattr(atom, "id", None) == atom_id:
             payload = getattr(atom, "payload", None)
             if isinstance(payload, dict) and payload.get("raw") is not None:
-                return str(payload["raw"])[:200]
+                return str(payload["raw"])
             text = getattr(atom, "text", None)
             if text:
-                return str(text)[:200]
-            return str(atom)[:200]
+                return str(text)
+            return str(atom)
     return ""
+
+
+def _evidence_run_id(evidence: dict, *keys: str) -> Optional[str]:
+    """The first run id the evidence names under these keys, whether a Run or a row."""
+    for key in keys:
+        run = evidence.get(key)
+        if run is None:
+            continue
+        run_id = getattr(run, "run_id", None)
+        if run_id is None and isinstance(run, dict):
+            run_id = run.get("run_id")
+        if run_id:
+            return str(run_id)
+    return None
+
+
+def _evidence_run(evidence: dict, run_id: Optional[str]) -> Any:
+    """The evidence Run with this id, else the reference it ruled on."""
+    for key in ("reference", "alt_path_run", "wrong_run"):
+        run = evidence.get(key)
+        if run is not None and getattr(run, "run_id", None) == run_id:
+            return run
+    return evidence.get("reference")
+
+
+def _atom_case(evidence: dict, atom_id: Any, run: Any) -> dict:
+    """Where the failing atom ruled: its call, tool and demanded against actual values.
+
+    Generic over every atom shape: a write names its call index and tool with the demanded
+    value against what that call carried; a cap names the demanded count against the calls
+    the Run made; a stated fact names the answer turn its span points at with the demanded
+    wording against what that turn said. Shapes with no single call carry no call.
+    """
+    from kullback.gates.verifier_suite import atom_payload as _atom_payload
+    from kullback.runner.target import _args as _call_args
+    from kullback.runner.target import _payload as _call_payload
+
+    verifier = _verifier_of(evidence)
+    payload: dict = {}
+    spans: Any = []
+    for atom in getattr(verifier, "atoms", None) or []:
+        target = _atom_payload(atom)
+        if getattr(atom, "id", None) == atom_id and isinstance(target, dict):
+            payload = target
+            spans = getattr(atom, "spans", None) or []
+            break
+    if not payload:
+        return {}
+    events = list(getattr(run, "events", None) or [])
+    at, tool = payload.get("at"), payload.get("tool")
+    if isinstance(at, int) and isinstance(tool, str):
+        case: dict = {"call": at, "tool": tool}
+        args = next((_call_args(e) for e in events if e.idx == at), {})
+        field = payload.get("field") if payload.get("kind") == "write_value" else payload.get("id_field")
+        if field and field in (args or {}):
+            case.update({"field": field, "old": payload.get("value", payload.get("raw")),
+                         "new": (args or {}).get(field), "args": args})
+        elif payload.get("kind") == "write" and payload.get("entity") is not None and field:
+            case.update({"field": field, "old": payload.get("entity_raw", payload.get("entity")),
+                         "new": (args or {}).get(field), "args": args})
+        return case
+    if payload.get("kind") == "entity_count" and payload.get("count") is not None:
+        tools = evidence.get("write_tools") or set()
+        calls = [e for e in events if not tools or _call_payload(e).get("name") in tools]
+        return {"field": "count", "old": payload.get("count"), "new": len(calls)}
+    from kullback.runner.target import _assistant_text as _said
+    from kullback.runner.target import _user_text as _asked
+
+    demand = payload.get("text", payload.get("value", payload.get("raw")))
+    if payload.get("kind") in ("communicate", "question"):
+        turns = [e for e in getattr(run, "events", None) or []
+                 if e.type == "model_call" and _said(e).strip()]
+        if turns:
+            event = turns[0]
+            case = {"call": event.idx, "tool": "model_call"}
+            if demand is not None or _said(event):
+                case.update({"field": payload.get("field"), "old": demand, "new": _said(event)})
+            return case
+    msg = getattr(spans[0], "msg_index", None) if spans else None
+    if isinstance(msg, int):
+        event = next((e for e in getattr(run, "events", None) or [] if e.idx == msg), None)
+        if event is not None:
+            case = {"call": msg, "tool": event.type}
+            said = _said(event) or _asked(event) or None
+            if demand is not None or said is not None:
+                case.update({"field": payload.get("field"), "old": demand, "new": said})
+            return case
+    return {}
 
 
 def _suite_rows(evidence: dict, result: GateResult) -> list[dict]:
     import re as _re
 
-    if (result.metrics or {}).get(WAIVED_ROW):
-        return [{"check": result.stage, WAIVED_ROW: (result.metrics or {}).get("not_run_reason", ""),
+    from kullback.gates.verifier_suite import first_diff as _first_diff
+
+    metrics = result.metrics or {}
+    if metrics.get(WAIVED_ROW):
+        return [{"check": result.stage, WAIVED_ROW: metrics.get("not_run_reason", ""),
                  "why": "D199: single path by structure, a held-out Run reached the Reference"}]
-    atom_id = (result.metrics or {}).get("failing_atom")
+    run_id = metrics.get("run_id") or _evidence_run_id(evidence, "reference")
+    expected, got = metrics.get("expected"), metrics.get("got")
+    atom_id = metrics.get("failing_atom")
     if atom_id:
-        return [{"check": result.stage, "atom": atom_id, "text": _atom_text(evidence, atom_id)}]
+        run = _evidence_run(evidence, run_id)
+        try:
+            case = _atom_case(evidence, atom_id, run)
+        except Exception:
+            case = {}
+        return [{"check": result.stage, "atom": atom_id, "text": _atom_text(evidence, atom_id),
+                 "run": run_id, "expected": expected, "got": got, **case}]
+    swap_detail = {entry.get("atom"): entry for entry in metrics.get("swap_detail") or []
+                   if isinstance(entry, dict)}
+    mutated = {entry.get("atom"): entry for entry in metrics.get("mutated") or []
+               if isinstance(entry, dict)}
+    try:
+        diff = _first_diff(evidence.get("reference"), evidence.get("wrong_run"))
+    except Exception:
+        diff = {}
     rows = []
     for line in result.failures:
+        swap = _re.match(r"swap of (\S+) \((.*)\) scored pass", line)
+        if swap and swap.group(1) in swap_detail:
+            entry = swap_detail[swap.group(1)]
+            rows.append({"check": result.stage, "atom": entry.get("atom"),
+                         "text": _atom_text(evidence, entry.get("atom")), "swap": entry.get("swap"),
+                         "run": entry.get("run"), "expected": "fail", "got": "pass",
+                         "call": entry.get("call"), "tool": entry.get("tool"),
+                         "field": entry.get("field"), "old": entry.get("old"),
+                         "new": entry.get("new")})
+            continue
+        mutation = _re.match(r"(\S+): the Reference still passes", line)
+        if mutation and mutation.group(1) in mutated:
+            entry = mutated[mutation.group(1)]
+            try:
+                place = _atom_case(evidence, entry.get("atom"), _evidence_run(evidence, run_id))
+            except Exception:
+                place = {}
+            rows.append({"check": result.stage, "atom": entry.get("atom"),
+                         "text": _atom_text(evidence, entry.get("atom")),
+                         "run": entry.get("run") or run_id, "expected": "fail", "got": "pass",
+                         "field": entry.get("field"), "old": entry.get("old"),
+                         "new": entry.get("new"),
+                         **{key: place[key] for key in ("call", "tool", "args") if place.get(key) is not None}})
+            continue
         found = _re.match(r"(\S+):", line)
         atom = found.group(1) if found else ""
-        if atom and atom != "not":
-            rows.append({"check": result.stage, "atom": atom, "text": _atom_text(evidence, atom)})
+        if atom and atom not in ("not", "expected", "swap", "no"):
+            try:
+                case = _atom_case(evidence, atom, _evidence_run(evidence, run_id))
+            except Exception:
+                case = {}
+            rows.append({"check": result.stage, "atom": atom, "text": _atom_text(evidence, atom),
+                         "run": run_id, "expected": expected, "got": got, **case})
+        elif line.startswith("expected "):
+            rows.append({"check": result.stage, "run": run_id or _evidence_run_id(evidence, "wrong_run"),
+                         "expected": expected, "got": got, **diff})
         else:
-            rows.append({"check": result.stage, "failure": line})
+            rows.append({"check": result.stage, "failure": line, "run": run_id,
+                         "expected": expected, "got": got})
     if not result.passed:
         # F37: an expected-fail Run that passed passed every atom; each is a row the refusal names.
-        rows += [{"check": result.stage, "atom": atom["id"], "kind": atom["kind"]}
-                 for atom in (result.metrics or {}).get("passing_atoms") or []]
+        rows += [{"check": result.stage, "atom": atom["id"], "kind": atom["kind"],
+                  "text": _atom_text(evidence, atom["id"]),
+                  "run": run_id or _evidence_run_id(evidence, "wrong_run"),
+                  "expected": expected or "fail", "got": got or "pass", **diff}
+                 for atom in metrics.get("passing_atoms") or []]
     return rows
 
 

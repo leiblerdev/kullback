@@ -112,8 +112,7 @@ def _commit_message(manifest: dict, tag: str) -> str:
             f"{manifest.get('tasks_total', 0)} Tasks, {manifest.get('trusted', 0)} trusted; "
             f"env {str(manifest.get('env_id') or '')[:12]}, "
             f"content {str(manifest.get('content_hash') or '')[:12]}, "
-            f"runner {str(manifest.get('runner_version') or '')[:12]}, "
-            f"gates {str(manifest.get('gates_version') or '')[:12]}")
+            f"code {str(manifest.get('runner_version') or '')[:12]}")
 
 
 def fetch(repo_id: str, out: Any, *, client: Optional[HubClient] = None,

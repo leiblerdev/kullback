@@ -50,12 +50,14 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
                record_values: Any = _MISSING, vocab: Any = _MISSING,
                write_tools: Any = _MISSING, goal_writes: Any = _MISSING,
                answer_strip: Any = _MISSING, trace: Any = _MISSING,
-               bus: Any = None) -> Optional[AgentUser]:
+               bus: Any = None, choices: Any = None, account: Any = None) -> Optional[AgentUser]:
     """The Simulated user of one Task: the agent user over the rules floor, fully specified.
 
     The caller passes what it has live and the workdir supplies the rest, so the round scorer and
     the CLI meet the same inputs real Runs do (`goal_writes`, `answer_strip`, `trace` included).
-    A caller that passes everything (a real Run) never touches the disk.
+    A caller that passes everything (a real Run) never touches the disk. `choices` and `account`
+    are the two readings (account.py); only a caller that built them passes them, so a user built
+    without them has the tools it always had.
     """
     if purpose not in PURPOSES:
         raise ValueError(f"purpose is one of {list(PURPOSES)}, not {purpose!r}")
@@ -77,7 +79,7 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
         disk["ctx"], disk["fallback"], model, vocab=disk["vocab"],
         write_tools=disk["write_tools"], goal_writes=disk["goal_writes"],
         answer_strip=disk["answer_strip"], record_values=disk["record_values"],
-        trace=disk["trace"], bus=bus,
+        trace=disk["trace"], bus=bus, choices=choices, account=account,
     )
 
 

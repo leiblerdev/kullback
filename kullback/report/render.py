@@ -213,6 +213,11 @@ def _rounds(data: ReportData) -> list[str]:
         lines.append("No rounds recorded: this build ran no Builder and Examiner rounds, or rounds.json is missing.")
         return lines
     lines += _rounds_table(data)
+    metrics = (data.trusted.metrics or {}) if data.trusted is not None else {}
+    if "trust_tier" in metrics:  # a ruling written before D319 has no tiers
+        from kullback.gates.trust import tier_counts, trust_row
+
+        lines += ["", f"Trust tiers (D319): {trust_row(tier_counts(metrics))}"]
     return lines
 
 

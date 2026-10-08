@@ -12,17 +12,16 @@ from pathlib import Path
 
 import pytest
 
+from kullback import derive as verifier_mod
 from kullback import report
 from kullback.ai.provider import RecordedModel, TestModel
 from kullback.builder import cluster, compile_env, ingest, mine, policy, user_sim
-from kullback.examiner import derive as verifier_mod
 from kullback.runner import canon, loop, regrade, route
 from kullback.runner import verdict as verdict_mod
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import (
     Environment,
     GateResult,
-    RunnerVersion,
     Trace,
     UserFact,
     UserRules,
@@ -457,8 +456,6 @@ def _lay_out_the_build(build) -> Path:
     """The records this build produced, in the workdir layout cli.py and report.py read (D85)."""
     workdir = build["workdir"]
     _write(workdir / "environment.json", as_dict(_environment(build)))
-    # regrade_gate (D97) refuses a Verdict with no runner_version, so cli verdict needs one frozen.
-    _write(workdir / "runner_version.json", as_dict(RunnerVersion(runner_version="rv-1")))
     _write(workdir / "gates.json", [as_dict(g) for g in _gates(build)])
     _write(workdir / "schema.json", as_dict(build["schema"]))
     _write(workdir / "tool_sigs.json", [as_dict(sig) for sig in build["sigs"]])
