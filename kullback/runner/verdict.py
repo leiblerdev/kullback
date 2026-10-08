@@ -363,20 +363,29 @@ def _conduct_holds(rule: Conduct, context: AtomContext) -> Optional[bool]:
     return any(context.t(message) in context.t(text) for text in said)
 
 
+def _count_keys(counts: list) -> tuple[bool, bool]:
+    """(gated new-row counts hold, all hold): ranking reads ties on counts, not cells alone."""
+    gated = all(made == int(spec.get("count") or 1) for spec, made in counts if spec.get("gate", True))
+    whole = all(made == int(spec.get("count") or 1) for spec, made in counts)
+    return gated, whole
+
+
 def _best_end_state(verifier: Verifier, context: AtomContext) -> tuple[EndState, list, Match]:
     """The end state the Run is read against: any one matching whole, else the closest (D329).
 
-    Closest is an end state whose gate cells and sanity all hold, then all cells held, then no
-    cell failed (only unsettled), then the most cell weight held.
+    Closest is an end state whose gate cells, gated new-row counts and sanity all hold, then all
+    cells and every new-row count held, then no cell failed (only unsettled), then the most cell
+    weight held.
     """
     best = None
     for state in verifier.expected:
         cells = cell_results(state, context)
         rest = collateral(state, context)
+        rows_ok, rows_all = _count_keys(new_row_counts(state, context))
         held = sum(cell.weight for cell, ok, _ in cells if ok)
-        gates = all(ok for cell, ok, _ in cells if cell.gate) and rest.ok is True
-        key = (gates, all(ok for _, ok, _ in cells) and rest.ok is True, all(ok for _, ok, _ in cells),
-               all(ok is not False for _, ok, _ in cells), held)
+        gates = all(ok for cell, ok, _ in cells if cell.gate) and rest.ok is True and rows_ok
+        key = (gates, all(ok for _, ok, _ in cells) and rest.ok is True and rows_all,
+               all(ok for _, ok, _ in cells), all(ok is not False for _, ok, _ in cells), held)
         if best is None or key > best[0]:
             best = (key, state, cells, rest)
     return best[1], best[2], best[3]

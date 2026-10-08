@@ -195,6 +195,19 @@ def test_alternative_end_states_pass_on_any_one_and_value_sets_and_new_rows_are_
     assert _matches(banned.expected, AtomContext(_run(STATE))) is False
 
 
+def test_an_alternative_whose_new_row_count_holds_beats_an_earlier_tie():
+    move0 = dict(MOVE, id="s1", alt=0)
+    move1 = dict(MOVE, id="s2", alt=1)
+    two = {"id": "n1", "kind": "row_new", "table": "notes", "where": {"item": "A1"}, "count": 2,
+           "fact_ids": ["f1"], "alt": 0}
+    one = {"id": "n2", "kind": "row_new", "table": "notes", "where": {"item": "A1"}, "count": 1,
+           "fact_ids": ["f1"], "alt": 1}
+    verifier = _verifier(_kept(move0, move1, two, one))
+    assert len(verifier.expected) == 2
+    run = _run(_moved("seven", notes={"N-9": {"item": "A1", "text": "moved"}}))
+    assert verdict(run, verifier).passed is True
+
+
 def test_event_items_are_decided_by_the_verdict_off_the_event_log_not_compiled_to_conduct():
     confirm = {"id": "e1", "kind": "before", "first": "confirm_turn", "then": "update_item",
                "policy_line": "after the user says yes"}
