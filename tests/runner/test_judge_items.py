@@ -74,6 +74,12 @@ def test_a_failed_call_or_an_unreadable_reply_gives_no_score_never_a_zero():
     assert judge_item(TestModel([_says(0.5)]), _item(), _run(["hi"])).score is None
 
 
+def test_a_results_list_leaves_the_item_unjudged_with_unreadable_reply():
+    listed = TestModel([ModelReply(content=json.dumps({"results": [{"score": 1}]}))])
+    result = judge_item(listed, _item(), _run(["Your total is $42.50."]))
+    assert result.score is None and result.why == "unreadable reply"
+
+
 def test_empty_evidence_scores_zero_by_code_with_no_model_call_also_after_a_tool_never_called():
     silent = TestModel([])
     for item, run in ((_item(), _run([])), (_item(evidence=["after_call:lookup"]), _run(["Your total is 42.50."]))):

@@ -434,6 +434,20 @@ def cell_results(end_state: EndState, context: AtomContext) -> list[tuple[Expect
     return out
 
 
+def _kept_row_moves(end_state: EndState, cells: set, table: str, row_id: str,
+                    fields: dict) -> tuple[list[str], list[str]]:
+    """(failed, open) names for fields of a kept row that moved outside the declared cells."""
+    failed, open_pairs = [], []
+    for name, change in fields.items():
+        if (table, row_id, name) in cells or _allowed(end_state.allowed, table, row_id, name):
+            continue
+        if change.get("unresolved"):
+            open_pairs.append(f"unsettled:{table}.{name}")
+        else:
+            failed.append(f"collateral:{table}.{row_id}.{name}")
+    return failed, open_pairs
+
+
 def collateral(end_state: EndState, context: AtomContext) -> Match:
     """The sanity item (D329): nothing outside the end state's declared rows, cells and `allowed` moved.
 
@@ -455,13 +469,9 @@ def collateral(end_state: EndState, context: AtomContext) -> Match:
             if _match_new_row(end_state, context, table, row_id) is None:
                 failed.append(f"collateral:{table}.{row_id}")
             continue
-        for name, change in moved["fields"].items():
-            if (table, row_id, name) in cells or _allowed(end_state.allowed, table, row_id, name):
-                continue
-            if change.get("unresolved"):
-                open_pairs.append(f"unsettled:{table}.{name}")
-            else:
-                failed.append(f"collateral:{table}.{row_id}.{name}")
+        more, open_here = _kept_row_moves(end_state, cells, table, row_id, moved["fields"])
+        failed += more
+        open_pairs += open_here
     if failed:
         return Match(False, failed)
     if open_pairs:

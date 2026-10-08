@@ -122,7 +122,8 @@ def _parse(content: Optional[str], item_id: str) -> tuple[Optional[int], str]:
         body = json.loads(match.group(0)) if match else None
     except ValueError:
         body = None
-    row = ((body or {}).get("results") or {}).get(item_id) if isinstance(body, dict) else None
+    results = body.get("results") if isinstance(body, dict) else None
+    row = results.get(item_id) if isinstance(results, dict) else None
     if not isinstance(row, dict):
         return None, "unreadable reply"
     score = row.get("score")
