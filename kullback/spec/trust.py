@@ -145,7 +145,7 @@ def stray_write_run(verifier: Verifier, base: Optional[Run], *, schema: Any = No
     end = base.events[at].payload["end_state"]
     rows, whole = declared_rows(verifier)
     skip = action_tables_of(schema) | whole
-    before = set(AtomContext(base, canon).diff())
+    before = set(AtomContext(base, canon, schema=schema).diff())
     for table in sorted(end, key=str):
         if table in skip or not isinstance(end[table], dict):
             continue
@@ -160,7 +160,7 @@ def stray_write_run(verifier: Verifier, base: Optional[Run], *, schema: Any = No
                 run = base.model_copy(deep=True)
                 run.run_id = f"{base.run_id}.stray_write"
                 run.events[at].payload["end_state"][table][row_id][field] = value
-                if set(AtomContext(run, canon).diff()) - before:
+                if set(AtomContext(run, canon, schema=schema).diff()) - before:
                     return run
     return None
 
@@ -171,9 +171,9 @@ def _do_nothing(runs: list[Run]) -> Optional[Run]:
     return empty_run(base) if base is not None else None
 
 
-def _judge(verifier: Verifier, run: Run, canon: Any, write_tools: Any) -> Outcome:
+def _judge(verifier: Verifier, run: Run, canon: Any, write_tools: Any, schema: Any = None) -> Outcome:
     try:
-        return outcome_of(verifier, run, canon, write_tools)
+        return outcome_of(verifier, run, canon, write_tools, schema=schema)
     except Exception:  # a Run the scorer cannot read neither passes nor fails, and never stops the ruling
         return Outcome(False, None, False)
 
@@ -212,7 +212,7 @@ def _constructed(verifier: Verifier, runs: list[Run], passing: list[str], canon:
         if run is None:
             out[name] = {"built": False, "failed": False, "atom": None, "run_id": None}
             continue
-        outcome = _judge(verifier, run, canon, tools)
+        outcome = _judge(verifier, run, canon, tools, schema)
         out[name] = {"built": True, "failed": outcome.failed is not None, "atom": outcome.failed,
                      "run_id": run.run_id}
         if name == "stray_write":
@@ -262,7 +262,7 @@ def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: I
     """
     runs = list(runs or ())
     tools = set(write_tools) if write_tools is not None else None
-    verdicts = {run.run_id: _judge(verifier, run, canon, tools) for run in runs}
+    verdicts = {run.run_id: _judge(verifier, run, canon, tools, schema) for run in runs}
     fresh = [run.run_id for run in runs if is_fresh(run)]
     kept = sorted(set(references) & set(verdicts))
     passing = [run_id for run_id in [*kept, *fresh] if verdicts[run_id][0]]

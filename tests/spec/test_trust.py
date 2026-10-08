@@ -63,6 +63,21 @@ def _tier(runs, the_spec=None, rulings=(), verifier=None, references=(REPLAY_ID,
                           write_tools=WRITE_TOOLS, references=references)
 
 
+def test_a_run_changing_only_an_exempt_column_passes_live_and_in_trust():
+    from types import SimpleNamespace
+
+    from kullback.runner.verdict import verdict
+    from kullback.spec.canfail import outcome_of
+
+    schema = SimpleNamespace(columns=[SimpleNamespace(table="items", name="note", class_="exempt")])
+    end = {"items": {"A1": {"slot": "seven", "note": "v2"}, "B2": {"slot": "four"}}}
+    run, verifier = _stopped(reference_run(), end), _verifier()
+    assert verdict(run, verifier, fn, write_tools=WRITE_TOOLS, schema=schema).passed is True
+    assert outcome_of(verifier, run, fn, WRITE_TOOLS, schema=schema).passed is True
+    assert verdict(run, verifier, fn, write_tools=WRITE_TOOLS).passed is False
+    assert outcome_of(verifier, run, fn, WRITE_TOOLS).passed is False
+
+
 def test_a_verifier_both_constructed_runs_fail_with_no_ruling_open_is_trusted_and_names_the_runs_scored():
     tier, row = _tier([_replay(), _fresh()])
     assert tier == "trusted" and row["reason"] is None and all(row["gates"].values())
