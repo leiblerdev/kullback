@@ -82,7 +82,7 @@ def test_apply_intent_sets_the_task_name_intent_and_unguarded_mark():
 
 def test_apply_intent_leaves_an_ungrounded_intent_off_the_task():
     task, _ = two_run_task()
-    updated = apply_intent(task, Intent(task_id=task.id, text="refund to a gift card", grounded=False))
+    updated = apply_intent(task, Intent(task_id=task.id, text="move item A1 to slot seven", grounded=False))
     assert updated.intent is None
     assert updated.name is None
 
