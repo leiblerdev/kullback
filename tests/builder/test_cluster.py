@@ -1,4 +1,4 @@
-"""Tests for builder/cluster.py: Categories by write-tool signature, Tasks by intent similarity."""
+"""Tests for builder/cluster.py: Tasks by the user's request alone, each Run labelled with its write set."""
 
 from __future__ import annotations
 
@@ -9,10 +9,12 @@ import pytest
 
 from conftest import PTR
 from kullback.builder.cluster import (
+    GROUPING_FORMAT,
     UnexplainedRegrouping,
     category_signature,
     cluster_runs,
     confirmed_write_calls,
+    dissents,
     grouping_fingerprint,
     idf_weights,
     moved_input,
@@ -117,7 +119,23 @@ def test_category_signature_is_the_confirmed_assistant_write_tools_only():
     assert category_signature(trace, WRITES) == ()
 
 
-def test_same_write_set_is_one_category_different_write_sets_are_two_and_each_lists_its_tasks():
+def test_runs_of_one_request_share_a_task_whatever_each_wrote_and_the_task_shows_the_dissent():
+    """D313: the write set is a label, never the cut. A Run that skipped the write stays with its
+    sibling of the same request, so it cannot become a Reference with nobody to disagree."""
+    wrote = cancel_trace("t1", "W1")
+    skipped = make_trace("t2", ["i want to cancel order W1", "cancel it, the delivery was late"],
+                         [{"name": "get_order", "args": {"order_id": "W1"}, "result": {"status": "pending"}}])
+    other = address_trace("t3", "W3")
+    _, tasks = cluster_runs([wrote, skipped, other], SIGS)
+    assert sorted(t.run_ids for t in tasks) == [["t1", "t2"], ["t3"]]
+    together = next(t for t in tasks if t.run_ids == ["t1", "t2"])
+    assert together.write_labels == {"t1": ["cancel_order"], "t2": []}
+    assert dissents(together)
+    alone = next(t for t in tasks if t.run_ids == ["t3"])
+    assert alone.write_labels == {"t3": ["modify_address"]} and not dissents(alone)
+
+
+def test_a_category_gathers_tasks_by_the_write_set_most_of_their_runs_carry():
     traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2"), address_trace("t3", "W3")]
     categories, tasks = cluster_runs(traces, SIGS)
     assert len(categories) == 2
@@ -610,6 +628,13 @@ def test_no_reader_reaches_the_world_a_run_started_in():
     worlds = worlds_of(traces)
     assert len(split_by_world(traces, worlds)) == 2
     assert not any(isinstance(key, str) for world in worlds.values() for key in world)
+
+
+def test_a_grouping_frozen_under_an_older_rule_names_the_rule_as_what_moved():
+    """D313 changed the cut, so a grouping.json written before it moved for that reason, not by a bug."""
+    tasks = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
+    frozen = {"format": GROUPING_FORMAT - 1, "fingerprint": "older", "recordings": "r", "homing": "h"}
+    assert moved_input(grouping_fingerprint(tasks), {"recordings": "r", "homing": "h"}, frozen) == "format"
 
 
 def test_the_fingerprint_names_the_input_that_moved():

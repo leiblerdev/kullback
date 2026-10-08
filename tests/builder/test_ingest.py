@@ -130,12 +130,17 @@ def test_format_detect_tau2_and_otel():
     assert ingest.format_detect({"nothing": 1}) == "unknown"
 
 
-def test_an_otel_file_is_stored_and_detected_and_then_refused_because_no_mapper_reads_it_yet(workdir, tmp_path):
-    otel = [{"name": "gen_ai.client.inference.operation.details", "attributes": {"gen_ai.system": "anthropic"}}]
+def test_an_otel_file_is_stored_detected_and_mapped_to_a_trace(workdir, tmp_path):
+    otel = [{"traceId": "t1", "name": "chat toy", "attributes": {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.input.messages": json.dumps([{"role": "user", "parts": [{"type": "text", "content": "hi"}]}]),
+        "gen_ai.output.messages": json.dumps([{"role": "assistant", "parts": [
+            {"type": "tool_call", "id": "c1", "name": "lookup", "arguments": {}}]}])}}]
     raw = ingest.store_raw(write_json(tmp_path / "otel.json", otel), workdir)
     assert raw.format_detected == "otel_genai"
-    with pytest.raises(NotImplementedError, match="OpenTelemetry"):
-        ingest.derive_traces(raw.raw_hash, workdir)
+    [trace] = ingest.derive_traces(raw.raw_hash, workdir)
+    assert [turn.role for turn in trace.turns] == ["user", "assistant"]
+    assert [(call.id, call.name) for call in trace.tool_calls] == [("c1", "lookup")]
 
 
 # --- derive_traces on the small file ---------------------------------------
@@ -623,20 +628,22 @@ def test_an_unusable_llm_reply_leaves_the_rule_class_standing(workdir, tmp_path)
         assert (error.class_, error.classified_by) == ("unknown", "rule")
 
 
-# --- formats we have not mapped yet (ingest-8) -----------------------------
+# --- Claude Code transcripts (ingest-8) --------------------------------------
 
 
-def test_claude_code_jsonl_is_labelled_and_says_it_is_not_mapped(workdir, tmp_path):
+def test_claude_code_jsonl_is_labelled_and_mapped_to_a_trace(workdir, tmp_path):
     path = tmp_path / "cc.jsonl"
     path.write_text(
-        '{"type":"user","message":{"role":"user","content":"hi"}}\n'
-        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1"}]}}\n',
+        '{"type":"user","sessionId":"s1","message":{"role":"user","content":"hi"}}\n'
+        '{"type":"assistant","sessionId":"s1","message":{"role":"assistant",'
+        '"content":[{"type":"tool_use","id":"t1","name":"lookup","input":{}}]}}\n',
         encoding="utf-8",
     )
     raw = ingest.store_raw(path, workdir)
     assert raw.format_detected == "claude_code_jsonl"
-    with pytest.raises(NotImplementedError, match="claude_code_jsonl"):
-        ingest.derive_traces(raw.raw_hash, workdir)
+    [trace] = ingest.derive_traces(raw.raw_hash, workdir)
+    assert [turn.role for turn in trace.turns] == ["user", "assistant"]
+    assert [(call.id, call.resolved) for call in trace.tool_calls] == [("t1", False)]
 
 
 def test_a_json_array_of_records_is_not_read_as_jsonl():

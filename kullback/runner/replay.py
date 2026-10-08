@@ -74,10 +74,6 @@ BY_COLUMNS, BY_TOKEN_SET, BY_PRESENCE, BY_VALUE, BY_ERROR = "columns", "token_se
 # anyone found, it is a question nobody answered, and a build cannot repair what it cannot name
 # (D219).
 BY_UNRESOLVED = "unresolved"
-# The meaning of a recorded verdict. Bump it where that meaning changes, so a cached replay written
-# under the older rule is recomputed rather than read back (D217): the stage's code version carries
-# it, beside the hashes of the modules the scoring is done by.
-VERDICT_FORMAT = 3
 
 
 class _Script:

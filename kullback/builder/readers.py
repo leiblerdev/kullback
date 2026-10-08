@@ -180,9 +180,6 @@ class Proposal:
     def reader_for(self, tool: str) -> Optional[ToolReader]:
         return next((r for r in self.readers if r.tool == tool), None)
 
-    def render_for(self, tool: str) -> Optional[ToolRender]:
-        return next((r for r in self.renders if r.tool == tool), None)
-
     def changes_of(self, tool: str) -> list[str]:
         return list(self.effects.get(tool) or [])
 
@@ -904,47 +901,6 @@ def revealed_tables(schema: EntitySchema) -> dict[str, str]:
         if who:
             out[column.table] = str(who)
     return out
-
-
-def environment_flags(schema: EntitySchema) -> list[str]:
-    """One flag per revealed table, so the setup review sees what is not the customer's own system."""
-    return [f"{table}: revealed by the {who}'s own tools and not by the assistant's, so it is marked "
-            "in the export and is not part of the customer's system (R33)"
-            for table, who in sorted(revealed_tables(schema).items())]
-
-
-def body_note(proposals: Iterable[Proposal]) -> str:
-    """What a body writer has to know about a revealed table: how to reach its row, what it holds,
-    and the render that writes each of these tools' results back out of it.
-
-    It sits in the stable system prefix beside the tables block, so it is the same bytes for every
-    tool of a build. The row is reached without naming its key, because the key is the requestor's
-    name and a literal id in a body is refused by the memorised_values gate (D162).
-
-    The render's own source is here because it is the answer, checked against every recorded result
-    of its tool by round trip. A body that writes the sentence again from the columns gets a word
-    wrong on the values the recording never showed it; a body that renders the row the way the
-    render does cannot.
-    """
-    parts: list[str] = []
-    for proposal in proposals:
-        if not proposal.table:
-            continue
-        lines = [f"Table {proposal.table} holds what the {proposal.requestor}'s own tools read and "
-                 f"write, not what the assistant's do. It holds exactly one row: read it with "
-                 f"next(iter(self.db.{proposal.table}.values())), never by key.",
-                 "Its columns are: " + (", ".join(proposal.columns) or "(none)") + "."]
-        changed = {tool: proposal.changes_of(tool) for tool in sorted(proposal.effects)}
-        for tool, columns in changed.items():
-            lines.append(f"The recording shows {tool} changing: {', '.join(columns)}.")
-        for render in sorted(proposal.renders, key=lambda r: r.tool):
-            lines.append(f"\nThe result of {render.tool} is this function of the row, which writes "
-                         f"every recorded result of it back out of the row it came from. Read the "
-                         f"row into a plain dict of its columns, apply this tool's own effect to "
-                         f"that dict and to the row, and answer what this function answers:\n"
-                         f"{render.source.rstrip()}")
-        parts.append("\n".join(lines))
-    return "\n\n".join(parts)
 
 
 def starting_rows(traces: Iterable[Trace], proposal: Proposal, parsed: dict) -> dict[str, dict]:

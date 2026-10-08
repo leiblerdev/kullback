@@ -87,11 +87,6 @@ def format_detect(obj: Any, jsonl: bool = False) -> str:
     return sources.detect_format(obj, jsonl).winner
 
 
-def detect_reasons(obj: Any, jsonl: bool = False) -> list[str]:
-    """Why the adapters voted as they did, in words; an unknown payload is refused with these."""
-    return sources.detect_format(obj, jsonl).reasons
-
-
 def _decode(payload: bytes) -> tuple[Any, bool]:
     """Parse the stored bytes as one JSON document, or line by line as JSONL; (None, False) when neither."""
     try:
@@ -249,7 +244,8 @@ def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = N
             + "; ".join(decision.reasons)
         )
     if not adapter.maps:
-        raise NotImplementedError(adapter.unmapped_message())  # type: ignore[attr-defined]
+        raise NotImplementedError(f"{adapter.display} ingest ({adapter.name}) only detects the "
+                                  "format; no mapper reads it yet")
     environment = adapter.environment(document)
     traces, rejects = [], []
     recordings = list(adapter.recordings(document))

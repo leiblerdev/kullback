@@ -5,10 +5,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import secrets
+import stat
 from pathlib import Path
 from typing import Any, Iterable, Literal, Optional, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from kullback.ai.usage import Usage
 
@@ -69,10 +72,42 @@ def as_dict(obj: BaseModel) -> dict:
 def write_json(path: Any, body: Any) -> Path:
     """One JSON artifact on disk the way every workdir file is written: parents made, keys sorted,
     two-space indent, anything JSON cannot carry rendered with str. The Builder and the Examiner
-    write their artifacts through this one function so the bytes agree (D130)."""
+    write their artifacts through this one function so the bytes agree (D130). The bytes reach the
+    final path through a temporary file in the same directory and an os.replace swap, so a kill
+    during the write leaves the old file intact and no torn artifact behind. The temporary file is
+    created with 0o666, so the kernel applies the umask exactly as the old direct write did, and a
+    destination that already exists keeps its mode. Any failure, including a KeyboardInterrupt
+    between staging and swap, removes the temporary file and re-raises."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(body, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    text = json.dumps(body, indent=2, sort_keys=True, default=str)
+    try:
+        kept_mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        kept_mode = None
+    for _ in range(100):
+        tmp_path = path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+        try:
+            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise FileExistsError(f"cannot stage a temporary file beside {path}")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            if kept_mode is not None:
+                os.fchmod(handle.fileno(), kept_mode)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -328,6 +363,13 @@ class Constraint(Record):
     residual_reason: Optional[str] = None
 
 
+# Whole sentences the recorded user said, kept verbatim: the goal it opened with, the confirmations
+# a write needs, the choices it stated and the line it closed on (D44). They live beside the record
+# so the world can fold a user's facts into an instruction without importing the user (D332).
+GOAL, CONFIRMATION, CHOICE, CLOSING = "goal", "confirmation", "choice", "closing"
+SPOKEN_FIELDS = (GOAL, CONFIRMATION, CHOICE, CLOSING)
+
+
 class UserFact(Record):
     """A fact the recorded user gave, exact (D44)."""
     field: str
@@ -357,14 +399,6 @@ class UserRules(Record):
     # whatever else it said elsewhere, so a later confirmation question gets a yes (D44).
     confirmed_by_write: bool = False
 
-
-class UserBehaviour(Record):
-    """Stub: how the customer's real users behave, once we mine style across Runs (D44)."""
-    behaviour_id: str
-    style_notes: list[str] = Field(default_factory=list)
-    patience: Optional[str] = None
-    verbosity: Optional[str] = None
-    trace_ids: list[str] = Field(default_factory=list)
 
 # --- environment, categories, tasks ---
 
@@ -414,7 +448,7 @@ class TaskOverlay(Record):
 
 
 class Category(Record):
-    """The Runs whose References write through the same tool set (D83)."""
+    """The Tasks whose Runs mostly write through the same tool set: a summary, not a cut (D83, D313)."""
     id: str
     name: Optional[str] = None
     write_tools: list[str] = Field(default_factory=list)
@@ -422,7 +456,11 @@ class Category(Record):
 
 
 class Task(Record):
-    """A cluster of Runs sharing one Intent, inside a Category (D83); unguarded when too small to hold out (D81)."""
+    """A cluster of Runs sharing one request (D83, D313); unguarded when too small to hold out (D81).
+
+    `write_labels` is each Run's confirmed write set: a label, never the cut, so Runs of one request
+    that wrote differently sit in one Task and their disagreement stays visible.
+    """
     id: str
     category_id: Optional[str] = None
     run_ids: list[str] = Field(default_factory=list)
@@ -430,12 +468,16 @@ class Task(Record):
     unguarded: bool = False
     name: Optional[str] = None
     anchor_run_ids: list[str] = Field(default_factory=list)
+    write_labels: dict[str, list[str]] = Field(default_factory=dict)
+    # The single-turn shape (D332): the user's facts are folded into the opening message and the
+    # Run has no Simulated user. Off by default, so every Task keeps its conversation.
+    facts_in_instruction: bool = False
 
 # --- intent ---
 
 # The Intent record and the one function that applies it to a Task live here rather than in the
 # Builder's intent.py (which keeps the stage, the prompt and the grounding) so the Examiner can read
-# an Intent without importing the Builder (D123); builder/intent.py re-exports the three names.
+# an Intent without importing the Builder (D123).
 
 SpanSource = Literal["user_utterance", "tool_arg", "written_value"]
 # Where a value the strip took out of an Intent was known from, and the shape left in its place
@@ -503,7 +545,39 @@ def apply_intent(task: Task, intent: Intent) -> Task:
 
 # --- verifier ---
 
-class Atom(Record):
+# The atom kinds that gate when the writer did not say (D329): every kind that failed a Run before
+# items had a gate flag, so no stored Verifier changes its pass. Whether a question or a stated fact
+# may fail a whole Task is the founder's open point (2026-09-27); the writer sets `gate` per item.
+GATE_KINDS = frozenset({"required", "question", "communicate", "hard", "forbidden"})
+
+
+class Item(Record):
+    """What every Verifier item carries (D329): does it gate the Run, and its weight past the gates.
+
+    A failing gate item fails the Run and its reward is 0; the other items are scored, and the
+    reward of a Run whose gates all hold is their weighted mean. Both fields are left out of the
+    dump at their default, so a record written before they existed dumps and hashes as it did.
+    """
+    gate: bool = True
+    weight: float = Field(default=1.0, ge=0)
+
+    def _gate_default(self) -> bool:
+        return True
+
+    def _drop_defaults(self, data: dict) -> dict:
+        if data.get("gate") == self._gate_default():
+            data.pop("gate", None)
+        if data.get("weight") == 1.0:
+            data.pop("weight", None)
+        return data
+
+    @model_serializer(mode="wrap")
+    def _without_default_weighting(self, handler):
+        data = handler(self)
+        return self._drop_defaults(data) if isinstance(data, dict) else data
+
+
+class Atom(Item):
     """One check in a Task's Verifier.
 
     `predicate_src` is the code the Runner evaluates; `target` is the same check as structured data
@@ -519,13 +593,117 @@ class Atom(Record):
     target: dict = Field(default_factory=dict)
     judge: bool = False
 
+    @model_validator(mode="before")
+    @classmethod
+    def _gate_from_kind(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "gate" not in data:
+            data = dict(data, gate=data.get("kind") in GATE_KINDS)
+        return data
+
+    def _gate_default(self) -> bool:
+        return self.kind in GATE_KINDS
+
+    def model_copy(self, *, update: Optional[dict] = None, deep: bool = False) -> "Atom":
+        """A copy; a new kind brings its default gate along unless this atom's gate was set apart."""
+        if update and "kind" in update and "gate" not in update and self.gate == self._gate_default():
+            update = dict(update, gate=update["kind"] in GATE_KINDS)
+        return super().model_copy(update=update, deep=deep)
+
+
+class ValueSource(Record):
+    """Where one expected value came from (D315).
+
+    `ptr` for a user_turn holds the recording and the turn index; for a policy, the clause quoted;
+    for a tool_result, the event index, call id and tool of the result that first showed the value.
+    `unchanged` is a nested value none of whose leaves is new (reordered only): nothing to source.
+    `world` is a value found in the Starting state: the table, row and field it was read from.
+    """
+    kind: Literal["user_turn", "policy", "tool_result", "unchanged", "world"]
+    ptr: dict = Field(default_factory=dict)
+
+
+class ExpectedCell(Item):
+    """One cell of an expected end state; `field` None is the row itself, gone when `value` is None.
+
+    `field` may be a dotted path into a nested value; the top-level column is what it declares. A
+    `value` of {"one_of": [...]} holds when the cell is any listed value, {"not": [...]} when none.
+
+    `source is None` means the value is unsupported, and `row_source is None` that the row is.
+    """
+    table: str
+    row_id: str
+    field: Optional[str] = None
+    value: Any = None
+    source: Optional[ValueSource] = None
+    row_source: Optional[ValueSource] = None
+    # A nested value is sourced by its changed leaves: each leaf path and its source, None if unsupported.
+    leaf_sources: dict[str, Optional[ValueSource]] = Field(default_factory=dict)
+
+
+class EndState(Record):
+    """One expected end state: its cells, and what else may differ (`allowed`); nothing else moves.
+
+    `new_rows` names rows a Run must make whose ids it mints: {table, where: {field: value}, count}.
+    """
+    cells: list[ExpectedCell] = Field(default_factory=list)
+    allowed: list[dict] = Field(default_factory=list)
+    new_rows: list[dict] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def _without_empty_new_rows(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and not data.get("new_rows"):
+            data.pop("new_rows", None)
+        return data
+
+
+class Forbidden(Item):
+    """A write or a Run-ending call that must not happen (D315). Reads are never forbidden."""
+    kind: Literal["write", "end_call"]
+    tool: Optional[str] = None
+    table: Optional[str] = None
+    row_id: Optional[str] = None
+    field: Optional[str] = None
+    value: Any = None
+    source: ValueSource
+
+
+class Conduct(Item):
+    """Conduct the event log must show: a confirmation before a write, a refusal, a call made (D316).
+
+    `called` was `handoff` until the fold (D330); a stored rule of that kind reads as `called`.
+    """
+    kind: Literal["confirm_before_write", "refusal", "called"]
+    tool: Optional[str] = None
+    source: ValueSource
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _handoff_is_called(cls, kind: Any) -> Any:
+        return "called" if kind == "handoff" else kind
+
 
 class Verifier(Record):
-    """The End-state check for one Task, derived from confirmed References."""
+    """The End-state check for one Task, derived from confirmed References.
+
+    The end state and the event log decide (`expected`, `forbidden`, `conduct`); atoms guide (D316).
+    """
     task_id: str
     atoms: list[Atom] = Field(default_factory=list)
     verifier_version: str = "0"
     seed_run_ids: list[str] = Field(default_factory=list)
+    expected: list[EndState] = Field(default_factory=list)  # any one may match
+    forbidden: list[Forbidden] = Field(default_factory=list)
+    conduct: list[Conduct] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def _without_empty_gates(self, handler):
+        # An old Verifier dumps, and so hashes, byte for byte as it did before the gates existed.
+        data = handler(self)
+        for key in ("expected", "forbidden", "conduct"):
+            if isinstance(data, dict) and not data.get(key):
+                data.pop(key, None)
+        return data
 
 # --- runs, events, verdicts, gates ---
 
@@ -697,24 +875,37 @@ def disagreement_stats(rows: Iterable[dict]) -> dict:
 
 
 class RunnerVersion(Record):
-    """Content hash of the Runner files and routing config, written by freeze-runner.
+    """The code hash a build recorded it ran on (runner/code_hash.py), written by freeze-runner.
 
-    `gates_version` is the hash of the gates package, recorded beside the Runner's own so a regrade
-    can name which gates accepted an artifact (D122); it is not folded into `runner_version`,
-    which stays the hash of what executes and grades a Run. It is optional because a
-    RunnerVersion frozen before phase 3 has none.
+    A record of the build, read by the export; no Verdict reads it, each carries the live hash.
     """
     runner_version: str
-    file_hashes: dict[str, str] = Field(default_factory=dict)
-    routing_config_hash: Optional[str] = None
-    gates_version: Optional[str] = None
-    gates_file_hashes: dict[str, str] = Field(default_factory=dict)
     created_at: Optional[str] = None
     confirmed_by: Optional[str] = None
 
 
 # The version of the scoring rules a Verdict was computed under; bump it when the rules change so cached Verdicts are not reused and reports prefer the current one.
-VERDICT_VERSION = "3"
+# "4": pass reads the gate items only and the Verdict carries the weighted score (D329).
+VERDICT_VERSION = "4"
+
+ItemKind = Literal["state", "sanity", "event", "atom", "judge"]
+
+
+class ItemResult(Record):
+    """One Verifier item on one Run: what it is, whether it gates, its weight, and whether it held.
+
+    `holds` None is an item nobody could settle: on a gate it leaves the Run not verdicted, on a
+    scored item it masks the score (None, never a false 0).
+    """
+    id: str
+    kind: ItemKind
+    gate: bool
+    weight: float = 1.0
+    holds: Optional[bool] = None
+    why: Optional[str] = None
+    # A judge item's score (0, 1 or None when unjudged) and whether its evidence was cut.
+    score: Optional[float] = None
+    truncated: bool = False
 
 
 class Verdict(Record):
@@ -739,6 +930,10 @@ class Verdict(Record):
     judge_used: bool = False
     environment_suspected: bool = False
     notes: list[str] = Field(default_factory=list)
+    # The reward past the gates (D329): 0 when a gate failed, else the weighted mean of the scored
+    # items (1.0 with none); None when the Run is not verdicted, an env error, or a scored item is open.
+    score: Optional[float] = None
+    items: list[ItemResult] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _pass_matches_class(self) -> "Verdict":
@@ -781,11 +976,6 @@ VersionBy = Literal["derive", "repair", "auto_loosen"]
 # reached the Builder (D227).
 FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "suite", "false_rejection",
                       "environment", "intent_leak", "runs_disagree", "other"]
-# `repair` is the Examiner's own verb, the one answer to a Verifier the Builder cannot touch (D123),
-# and `reroll_then_derive` is its other one, for a check that had no second Run to score (D173);
-# `repair_refuse_task` is the Builder's, for a Task the corpus itself does not settle.
-FindingVerb = Literal["compile_tool", "replay", "reroll", "repair_intent", "repair_recompile",
-                      "repair_refuse_task", "repair", "reroll_then_derive", "none"]
 FindingStatus = Literal["open", "delivered", "closed"]
 
 
@@ -845,9 +1035,10 @@ class Refusal(Record):
 class Finding(Record):
     """What the Examiner found wrong on the Builder's side, delivered to the Builder as a follow-up (D123).
 
-    `suggested` is the Builder verb that answers it and `hint` the one line that verb is given: the
-    repair verbs take a hint, so a finding that names one without a hint asks for the same repair
-    again with nothing new to go on. The round driver renders the two together as a callable line.
+    `change` is the one line saying what should differ and `edits` the diff itself, each edit with
+    its why and the values behind it, in the one shape the Builder and the Spec both read (D317).
+    The repair verbs are gone: a file written before D317 still loads, its `suggested` dropped and
+    its `hint` read as the change.
 
     `task_ids` is every Task the finding costs and `task_id` the first of them, so one loss that
     blocks fifty Tasks is one finding with a count rather than fifty (D170). `key` is what makes two
@@ -860,13 +1051,24 @@ class Finding(Record):
     text: str
     run_id: Optional[str] = None
     tool: Optional[str] = None
-    suggested: FindingVerb = "none"
-    hint: str = ""
+    change: str = ""
+    edits: list[dict] = Field(default_factory=list)
     about_entry_id: Optional[str] = None
     round: int = 0
     status: FindingStatus = "open"
     task_ids: list[str] = Field(default_factory=list)
     key: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _before_d317(cls, data: Any) -> Any:
+        """A finding written with the old verb and hint: the verb is dropped, the hint is the change."""
+        if isinstance(data, dict) and ("suggested" in data or "hint" in data):
+            data = dict(data)
+            data.pop("suggested", None)
+            hint = data.pop("hint", "")
+            data.setdefault("change", hint or "")
+        return data
 
     @property
     def cost(self) -> int:

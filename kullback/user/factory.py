@@ -6,16 +6,14 @@ inputs (`goal_writes`, `answer_strip`, `trace`), so the scorer examined a differ
 one real Runs meet. Every caller now builds through `build_user`, which fills whatever the caller
 leaves out from the workdir on disk, so all three meet the same inputs the build passes today.
 
-`build_user` keeps no static edge back to the package that drives the Runs: the strip closure is
-loaded lazily through `importlib` (the CLI already loads modules that way), so the user package
-still imports only what D214 allows. Everything else comes from the workdir files the build
+`build_user` keeps no edge back to the package that drives the Runs: the strip closure is the
+user package's own (`user.value_strip`). Everything else comes from the workdir files the build
 writes (`replays.json`, `traces`, `user_rules`, `vocabulary.json`, `tool_sigs.json`,
 `user_lessons.json`, `schema.json`, `canon-rules.json`).
 """
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 from typing import Any, Optional
 
@@ -25,9 +23,9 @@ from kullback.runner.records import EntitySchema, read_json
 from kullback.user import context as context_mod
 from kullback.user import fidelity as fidelity_mod
 from kullback.user import lesson as lesson_mod
-from kullback.user import rules as rules_mod
 from kullback.user.agent import AgentUser
 from kullback.user.simulated import SimulatedUser
+from kullback.user.value_strip import value_strip
 
 # What the built user is for. The two purposes build the same user; they differ only in what a
 # Task with no reference recording on disk means. An examination has nothing to examine, so it
@@ -49,13 +47,16 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
                ctx: Any = _MISSING, fallback: Any = _MISSING,
                record_values: Any = _MISSING, vocab: Any = _MISSING,
                write_tools: Any = _MISSING, goal_writes: Any = _MISSING,
-               answer_strip: Any = _MISSING, trace: Any = _MISSING,
-               bus: Any = None) -> Optional[AgentUser]:
+               answer_strip: Any = _MISSING, trace: Any = _MISSING, goal_counts: Any = _MISSING,
+               bus: Any = None, choices: Any = None, account: Any = None) -> Optional[AgentUser]:
     """The Simulated user of one Task: the agent user over the rules floor, fully specified.
 
     The caller passes what it has live and the workdir supplies the rest, so the round scorer and
     the CLI meet the same inputs real Runs do (`goal_writes`, `answer_strip`, `trace` included).
-    A caller that passes everything (a real Run) never touches the disk.
+    A caller that passes everything (a real Run) never touches the disk. `choices` and `account`
+    are the two readings (account.py); only a caller that built them passes them, so a user built
+    without them has the tools it always had. `goal_counts` (D326) goes to the rules floor built
+    from disk; a caller passing its own `fallback` gives that floor its counts itself.
     """
     if purpose not in PURPOSES:
         raise ValueError(f"purpose is one of {list(PURPOSES)}, not {purpose!r}")
@@ -65,7 +66,7 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
     if all(value is not _MISSING for _, value in given):
         disk = {}
     else:
-        disk = _disk_state(workdir, task_id, purpose)
+        disk = _disk_state(workdir, task_id, purpose, goal_counts)
         if disk is None:
             return None
     for key, value in given:
@@ -77,11 +78,11 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
         disk["ctx"], disk["fallback"], model, vocab=disk["vocab"],
         write_tools=disk["write_tools"], goal_writes=disk["goal_writes"],
         answer_strip=disk["answer_strip"], record_values=disk["record_values"],
-        trace=disk["trace"], bus=bus,
+        trace=disk["trace"], bus=bus, choices=choices, account=account,
     )
 
 
-def _disk_state(workdir: Any, task_id: str, purpose: str) -> Optional[dict]:
+def _disk_state(workdir: Any, task_id: str, purpose: str, goal_counts: Any = _MISSING) -> Optional[dict]:
     """Everything the workdir knows about one Task's user, or None where the score has nothing.
 
     No live world exists here, so the fallback takes no starting_state_reader.
@@ -100,12 +101,17 @@ def _disk_state(workdir: Any, task_id: str, purpose: str) -> Optional[dict]:
     lessons = lesson_mod.lines_for(lesson_mod.load_lessons(workdir), task_id)
     ctx = context_mod.curate(task_id, user_rules, trace, vocab=vocab, write_tools=writes,
                              record_fields=sorted(record), lessons=lessons)
-    goal_writes = rules_mod.goal_write_set(trace, writes)
+    # The goal is the Spec's (`spec.schema.goal_of`), which this layer cannot read: a caller passes
+    # it, and without one the goal is any write (None), never the Reference's calls.
+    goal_writes = None
+    if goal_counts is _MISSING:
+        goal_counts = None
     answer_strip = _strip_for(workdir, task_id, index)
     return {
         "ctx": ctx,
         "fallback": SimulatedUser(user_rules, vocab=vocab, write_tools=writes,
-                                  goal_writes=goal_writes, answer_strip=answer_strip),
+                                  goal_writes=goal_writes, answer_strip=answer_strip,
+                                  goal_counts=goal_counts),
         "record_values": record,
         "vocab": vocab,
         "write_tools": writes,
@@ -120,16 +126,12 @@ def _strip_for(workdir: Any, task_id: str, index: dict) -> Any:
 
     A caller that names no recordings gets no strip (the build does the same), and a workdir with
     no evidence files reads as no strip rather than failing the score. The closure is the build's
-    own, loaded lazily so this module keeps no static import the D214 test forbids.
+    own, imported from the user package where it lives.
     """
     members = _members_of(workdir, task_id, index)
     if not members:
         return None
-    try:
-        intent = importlib.import_module("kullback.builder.intent")
-    except ImportError:
-        return None
-    return intent.value_strip(members, schema=_schema_of(workdir), rules=_canon_of(workdir))
+    return value_strip(members, schema=_schema_of(workdir), rules=_canon_of(workdir))
 
 
 def _members_of(workdir: Any, task_id: str, index: dict) -> list:

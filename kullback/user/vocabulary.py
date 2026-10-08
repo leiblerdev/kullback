@@ -110,3 +110,35 @@ GENERIC_FIELDS: list[FieldSpec] = [
 ]
 
 GENERIC = Vocabulary(domain="generic", fields=[f.model_copy(deep=True) for f in GENERIC_FIELDS])
+
+
+def _id_arg(name: str) -> bool:
+    """An argument that names one row: `id` itself, or a name ending in `_id` or `Id` (never `paid`, `valid`)."""
+    return name == "id" or name.endswith(("_id", "Id"))
+
+
+def from_signatures(sigs: Iterable[dict]) -> Vocabulary:
+    """The generic core plus every id argument the mined tool signatures carry (fix-1007, D326).
+
+    The build's own Vocabulary is derived from the corpus; a workdir without one used to fall back
+    to the generic core alone, and an agent that asked for any id was not heard at all. The names
+    come from the signatures at run time, the cues from `_base_cues`, so no field is typed here.
+    """
+    vocab = Vocabulary(domain="signatures", fields=[f.model_copy(deep=True) for f in GENERIC_FIELDS])
+    for row in sigs or ():
+        if not isinstance(row, dict):
+            continue
+        names = [f.get("name") for f in row.get("args_fields") or () if isinstance(f, dict)]
+        names += list(((row.get("args_schema") or {}).get("properties") or {}))
+        for name in names:
+            if not isinstance(name, str) or not _id_arg(name):
+                continue
+            source = f"signature:{row.get('name')}"
+            spec = vocab.get(name) or _folds_into(name, vocab.fields)
+            if spec is None:
+                cues, aliases = _base_cues(name)
+                spec = FieldSpec(field=name, kind="reference", cues=cues, aliases=aliases)
+                vocab.fields.append(spec)
+            if source not in spec.sources:
+                spec.sources.append(source)
+    return vocab

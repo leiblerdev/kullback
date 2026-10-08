@@ -12,6 +12,23 @@ workdirs by an internal number (`.work-b9-agent`); those are file names, not bui
 Every build is followed by `scripts/measure/trust_split.py` over its workdirs: the trusted Tasks split by
 whether the Reference is right, read afterwards off the build's own records and the benchmark sidecars.
 
+## Tier table
+
+A build under `--verifier-from intent` writes `tiers.json` in its workdir (kullback/spec/report.py) and adds one
+line per corpus here. Trusted by Reference is the trusted count split by `kullback/spec/split.py`'s class
+of the kept References; n/a when the build had no sidecar. Code is the first 12 characters of the content hash
+of the Runner, gates and Spec code that scored the rows (kullback/runner/code_hash.py): two lines compare only
+when their Code matches.
+
+Under intent, each examine first writes the Spec and Verifier of every examined Task that lacks them, on `--spec-model`
+(default `--model`), priced under the `spec` stage. `--tasks a,b` or `--tasks @ids.txt` stores a Task sample in `build.json`;
+the Builder's run and examine tools then touch no Task outside it.
+
+Since D333 a Task is trusted or untrusted; the untrusted are split by reason (no intent, open ruling, constructed
+Run passed). Reference passes and Solvable are flags, never gates, written "true of scored".
+
+| Build | Corpus | Verifier from | Tasks | Trusted | Untrusted | No intent | Open ruling | Constructed Run passed | Reference passes | Solvable | Trusted by Reference (right, wrong, mixed, unknown) | Code |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
 ## Index
 
 | Build | Notes |

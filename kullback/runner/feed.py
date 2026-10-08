@@ -168,56 +168,6 @@ def _cached_call_row(mtime: float, entry: Path) -> dict:
     return row
 
 
-def event_row(event: Any) -> Optional[dict]:
-    """A typed event of the agent core as a feed row, or None when it is not for the feed.
-
-    The message and tool events are tau's and only exist in the agent arm, where a model drives
-    the session; the round, beat and stage events are ours and are emitted in both arms. Partial
-    message updates are deliberately absent: one row per token would be a feed nobody can read
-    and a file nobody wants on disk."""
-    kind = getattr(event, "type", None)
-    if kind in ("stage_start", "stage_end"):
-        return {"kind": "stage", "stage": getattr(event, "name", None),
-                "state": "start" if kind == "stage_start" else "end"}
-    if kind in ("round_start", "round_end"):
-        return {"kind": "round", "round": getattr(event, "round", None),
-                "state": "start" if kind == "round_start" else "end",
-                "exit": getattr(event, "exit", None)}
-    if kind in ("beat_start", "beat_end"):
-        return {"kind": "beat", "agent": getattr(event, "agent", None),
-                "round": getattr(event, "round", None),
-                "state": "start" if kind == "beat_start" else "end"}
-    if kind in ("message_start", "message_end"):
-        message = getattr(event, "message", None)
-        return {"kind": "message", "state": "start" if kind == "message_start" else "end",
-                "role": getattr(message, "role", None)}
-    if kind in ("tool_execution_start", "tool_execution_end"):
-        return {"kind": "tool", "state": "start" if kind == "tool_execution_start" else "end",
-                "name": getattr(event, "name", None) or getattr(event, "tool", None)}
-    if kind == "error":
-        return {"kind": "error", "note": str(getattr(event, "message", "") or event)[:400]}
-    return None
-
-
-def from_event(workdir: Any, event: Any) -> None:
-    """Append a typed agent-core event, if it is one the feed carries."""
-    row = event_row(event)
-    if row is not None:
-        append(workdir, str(row.pop("kind")), **row)
-
-
-def pid_of(workdir: Any) -> Optional[int]:
-    """The pid recorded on this feed's first line, when it has one."""
-    rows, _ = read_since(workdir, 0)
-    for row in rows:
-        if row.get("pid"):
-            try:
-                return int(row["pid"])
-            except (TypeError, ValueError):
-                return None
-    return None
-
-
 def start(workdir: Any, **fields: Any) -> None:
     """Open a build's feed. Truncates, because a feed is one build's story and a workdir that is
     built again is a new one; the ledger keeps the history."""

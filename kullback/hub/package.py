@@ -35,9 +35,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from kullback import difficulty, domain
+from kullback import difficulty, domain, round_snapshot
 from kullback.gates.verifier_suite import PROSE_MIN_LENGTH, elide_verifier_prose
-from kullback.runner.records import Verifier, as_dict, content_hash, read_json, write_json
+from kullback.runner.records import VERDICT_VERSION, Verifier, as_dict, content_hash, read_json, write_json
+from kullback.runner.verdict import REWARD_SHAPE, item_counts
 
 # 2: the manifest carries what the domain reading attests and what this Environment cannot execute
 # of it, so a card's numbers say how much of the domain the package covers (D225).
@@ -288,11 +289,13 @@ def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
     trusted = trusted_ids(workdir, counts)
     refused = set((counts.get("refused") or {}))
     records = _difficulty_records(workdir)
+    trust = _trust_rows(workdir)
     rows = []
     for task_id in task_ids:
         row = status.get(task_id) or {}
         confirmed = any(_confirmed(entry) for entry in (replays.get(task_id) or {}).values())
-        has_verifier = (workdir / "verifiers" / f"{task_id}.json").is_file()
+        verifier_file = workdir / "verifiers" / f"{task_id}.json"
+        has_verifier = verifier_file.is_file()
         stage = funnel_stage(task_id, status_row=row, replay_confirmed=confirmed, has_verifier=has_verifier,
                              trusted_ids=trusted, refused=refused)
         record = records.get(task_id) or {}
@@ -302,15 +305,28 @@ def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
             "refused": stage == REFUSED_STAGE,
             "stage": stage,
             "stopped_because": stopped_because(stage, row),
+            # D333: why a Task is not trusted, and the two flags that never gate (None: unscored).
+            **{key: (trust.get(task_id) or {}).get(key) for key in TRUST_FIELDS},
             "replay_confirmed": confirmed,
             # A Task with any confirmed replay, the count replay fidelity reports, so the two agree.
             "reference_confirmed": confirmed,
             "verifier": has_verifier,
+            # The Verifier's gate and scored items (D329), so a reader sees which Tasks score past pass.
+            "items": item_counts(Verifier.model_validate(read_json(verifier_file))) if has_verifier else None,
             "recordings": int(row.get("recordings") or 0),
             "difficulty": {key: value for key, value in record.items() if key != "task_id"} or None,
             "bucket": record.get("bucket"),
         })
     return rows
+
+
+TRUST_FIELDS = ("trust_reason", "reference_passes", "solvable")
+
+
+def _trust_rows(workdir: Path) -> dict[str, dict]:
+    """Each Task's trust reason and flags off the last closed round's table; none where no round closed."""
+    snapshot = round_snapshot.read_snapshot(workdir) or {}
+    return {str(row.get("task_id")): row for row in snapshot.get("rows") or () if isinstance(row, dict)}
 
 
 def _difficulty_records(workdir: Path) -> dict[str, dict]:
@@ -721,6 +737,10 @@ def _row_counts(rows: list[dict]) -> dict:
         "verifier_derived": sum(1 for row in rows if row["verifier"]),
         "trusted": sum(1 for row in rows if row["trusted"]),
         "refused": sum(1 for row in rows if row["refused"]),
+        "trust_reasons": {reason: sum(1 for row in rows if row.get("trust_reason") == reason)
+                          for reason in sorted({row["trust_reason"] for row in rows if row.get("trust_reason")})},
+        **{flag: {"true": sum(1 for row in rows if row.get(flag) is True),
+                  "false": sum(1 for row in rows if row.get(flag) is False)} for flag in TRUST_FIELDS[1:]},
         "funnel": {stage: sum(1 for row in rows if row["stage"] == stage)
                    for stage in FUNNEL + (REFUSED_STAGE,)},
     }
@@ -767,6 +787,8 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         **_row_counts(rows),
         "buckets": _buckets(rows),
         "untrusted": untrusted_reasons(rows),
+        # D329: what a Run's reward is, pass and score, under the Verdict version the graders score at.
+        "reward": dict(REWARD_SHAPE, verdict_version=VERDICT_VERSION),
         # D225: what the domain's own public material was read to attest, and how much of it this
         # Environment holds no tool for. Both are counts and nothing of any page travels with them.
         "domain": _domain_counts(workdir),
@@ -776,7 +798,6 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         "tools_version": environment.get("tools_version"),
         "assisted_tools": list(environment.get("assisted_tools") or ()),
         "runner_version": versions.get("runner_version"),
-        "gates_version": versions.get("gates_version"),
         "kullback_version": kullback_version(),
         "git_sha": git_sha(),
         "leak_scan": leak_scan(out, workdir / "raw") if scan else {"baseline": LEAK_BASELINE, "leaks": 0,

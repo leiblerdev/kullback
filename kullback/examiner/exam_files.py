@@ -5,8 +5,8 @@ JSON files by name, the task, intent and user-rule records, and one spoken file 
 with the user turns of its References. It never copies the Builder's compiled side
 (bodies, the db, the schema, `env/`, the sandbox, the overlays): the derivation's
 `FORBIDDEN_INPUTS` and the old extension's `FORBIDDEN_READS` below. `Finding` is what
-the session returns for each loss: the Environment file the Builder should edit and
-the one line saying what should differ, never a verb.
+the session returns for each loss: the Environment file the Builder should edit, the one
+line saying what should differ, and the edits, the diff with its why and its rows (D317).
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from kullback.examiner import derive as derive_mod
+from kullback import derive as derive_mod
 from kullback.examiner.plan import task_runs_of
 from kullback.gates import PROTECTED_PATH, first_string
 from kullback.gates.probes import version_hash, write_tools_of
@@ -32,7 +32,6 @@ from kullback.runner.records import (
     as_probe_pool,
     exam_history_path,
     exam_task_runs_path,
-    exam_verifier_path,
     load_exam_history,
     read_json,
     write_json,
@@ -68,6 +67,11 @@ def names_forbidden_path(value: Any) -> Optional[str]:
 FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "suite",
                       "false_rejection", "environment", "other"]
 FindingSource = Literal["derive", "model"]
+# The one shape an edit takes (D317): what a body answered differently on one recorded call, for the
+# Builder. The Spec's edit kinds (text, atoms, cell, conduct, reference; D325) are gone: the Examiner
+# rules on a Spec and the writer applies or rebuts (D331).
+EDIT_KINDS = ("body",)
+BODY_EDIT_KEYS = ("call_id", "column", "recorded", "replayed")
 
 
 @dataclass
@@ -77,6 +81,9 @@ class Finding:
     `rows` is the evidence, one record per call or Task, never a bare count (learnings 7).
     `path` is empty when no Environment file answers the loss (a Verifier of the Examiner's
     own that failed its suite). `source` says whether the code derivation or the model filed it.
+    `edits` is the diff itself, each edit with its why (D317): a body edit names the call, the
+    column and both values, a text edit the verbatim text and its replacement, an atoms edit
+    the atoms to drop and add. `change` stays the one-line summary.
     """
 
     task_id: Optional[str] = None
@@ -86,14 +93,31 @@ class Finding:
     path: str = ""
     change: str = ""
     source: FindingSource = "derive"
+    edits: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         """This finding as JSON-ready data, with a stable finding id derived from its key."""
         body = {"finding_id": finding_id_of(self), "task_id": self.task_id, "kind": self.kind,
                 "text": self.text, "rows": [dict(row) for row in self.rows], "path": self.path,
                 "change": self.change, "source": self.source,
+                "edits": [dict(edit) for edit in self.edits],
                 "key": finding_key(self.kind, subject_of(self), self.task_id or "")}
         return body
+
+
+def check_edit(edit: Any, exam_dir: Path) -> dict:
+    """One edit as filed, or a ValueError naming what is missing (D317).
+
+    A body edit has to name the call, the column and both values; anything else is a guess the
+    Builder would have to interpret. What is wrong with a Spec is a ruling, never an edit (D331).
+    """
+    if not isinstance(edit, dict) or edit.get("kind") not in EDIT_KINDS:
+        raise ValueError(f"an edit is one of the kinds {', '.join(EDIT_KINDS)}; what is wrong with a Spec is a "
+                         "ruling (rule), never an edit")
+    missing = [key for key in ("path", *BODY_EDIT_KEYS) if edit.get(key) in (None, "")]
+    if missing:
+        raise ValueError(f"a body edit names {', '.join(missing)}")
+    return dict(edit)
 
 
 def subject_of(finding: Finding) -> str:
@@ -138,6 +162,9 @@ class ExamRoot:
     probe_model: Any = None
     run_probe: Any = None
     reroll_user: Any = None   # the re-rolls' user factory for the reroll tool
+    round: int = 0            # the review round this session is (D331); 0 reads the Spec's round plus one
+    verified: dict = field(default_factory=dict)   # the verify rows per Task, which a code ruling cites
+    states: dict = field(default_factory=dict)     # each Task's Starting state, loaded once for the lookups
 
     @property
     def exam_dir(self) -> Path:
@@ -145,13 +172,7 @@ class ExamRoot:
         return Path(self.workdir) / EXAM_DIR
 
     def current(self, task_id: str) -> Optional[Verifier]:
-        """The Task's live Verifier: the exam proposal first, else the derived one."""
-        path = exam_verifier_path(self.workdir, task_id)
-        if path.is_file():
-            try:
-                return Verifier.model_validate(read_json(path))
-            except ValueError:
-                pass
+        """The Task's live Verifier: the Spec's, as written to verifiers/; never a file under exam/."""
         return self.verifiers.get(task_id)
 
 

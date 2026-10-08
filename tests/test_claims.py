@@ -236,6 +236,6 @@ def test_a_flagged_task_is_filed_as_a_finding_pointing_at_the_end_protocol():
     rows = findings.claimed_unwritten_rows({"flagged": ["task_1"],
                                             "tasks": {"task_1": {"failing_runs": 2, "claims_unwritten": 2}}})
     assert [row["task_id"] for row in rows] == ["task_1"]
-    assert rows[0]["suggested"] == "none", "no Builder or Examiner verb owns the end protocol"
+    assert "edits" not in rows[0], "no Builder or Examiner file owns the end protocol"
     assert "end protocol" in rows[0]["text"]
     assert findings.claimed_unwritten_rows({}) == []

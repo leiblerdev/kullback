@@ -15,6 +15,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/container_cheats.py` | The cheat suite and birth scan for container Tasks: faked tests, faked exit codes, leaked ground truth. Not yet called from a command. |
 | `kullback/container_grader.py` | Grades an exported end state as an opaque tar inside a fresh, locked-down container. |
 | `kullback/container_world.py` | The disposable container backend: one fresh container per world, commands, limits, export. |
+| `kullback/derive.py` | Derives one Task's Verifier from its Reference and stored re-runs (D42, D43, D91); the Reference stage's survivor choice and `synthesise` use it, the Examiner never writes with it (D320). |
 | `kullback/difficulty.py` | Every Task's objective difficulty and the buckets a round reports trusted coverage over (D209). |
 | `kullback/domain.py` | Reads a domain's public material into task archetypes and coverage gaps, with a guarded fetcher (D225). |
 | `kullback/graph.py` | The tool-call dependency graph the recordings show, and walks over it (D224). |
@@ -24,6 +25,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/store.py` | `WorkdirStore`: the durable, locked read and write of a declared workdir artifact. |
 | `kullback/store_specs.py` | Declares every single-file workdir artifact once, with its path, owner and shape check (D267). |
 | `kullback/synthesise.py` | Turns a graph walk into a synthetic Task: bind arguments, run in the rebuilt world, derive and store apart (D224). |
+| `kullback/variants.py` | Second paths synthesised from a Run's own calls, code only (D199). |
 
 ## kullback/ai
 
@@ -66,7 +68,6 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/agent/messages.py` | Re-exports the message types from `kullback.ai.messages`. |
 | `kullback/agent/prefix_check.py` | Checks that each request is a byte prefix extension of the last, so caches hold (G24). |
 | `kullback/agent/provider.py` | The provider contract as the loop sees it, and `provider_for` a model handle. |
-| `kullback/agent/reading.py` | Outline-first reading helpers: outline, page, locate, part, select, around (G21). |
 | `kullback/agent/session/__init__.py` | The session: an append-only JSONL tree and its active path. |
 | `kullback/agent/session/entries.py` | The session entry types, one pydantic model each. |
 | `kullback/agent/session/store.py` | The JSONL session store: load, append, branch, active path with compactions applied. |
@@ -132,6 +133,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/gates/stages.py` | Rulings over each Builder stage's artifact: cluster, compile, intent, readers, rerolls, export, vocabulary. |
 | `kullback/gates/tool_runs.py` | The eight rulings over what a generated tool body did in the sandbox. |
 | `kullback/gates/trust.py` | The refuse ruling (D128) and what a trusted Verifier is (D126). |
+| `kullback/gates/trust.py` | The Reference pool: Tasks waiting on a Reference, untrusted until a later Run earns one. |
 | `kullback/gates/verifier_suite.py` | The nine D79 checks over a Verifier. |
 
 ## kullback/user
@@ -139,6 +141,7 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | Module | What it does |
 |---|---|
 | `kullback/user/__init__.py` | The Simulated user as an agent beside the Builder and the Examiner (D214). |
+| `kullback/user/account.py` | The agent user's two readings: choices from recordings, tagged by source, and its own account, read only, cut to its rows and to columns recorded users stated. |
 | `kullback/user/agent.py` | `AgentUser`: a model-driven Simulated user, one turn per call, the rules as its floor. |
 | `kullback/user/context.py` | The mined, per-Task context the agent user is given: persona, facts, consultations. |
 | `kullback/user/ends.py` | How a Run ended and whether a write moved the world. |
@@ -146,14 +149,14 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/user/extension.py` | The agent user as an extension on the core. |
 | `kullback/user/factory.py` | The one place a Simulated user is built, for every caller (G5). |
 | `kullback/user/fidelity.py` | User fidelity: how close a driver's turns are to the recorded ones (D214 rule 5). |
-| `kullback/user/guards.py` | Code guards after every model turn: grounding, no invented values, end protocol (D214 rule 4). |
+| `kullback/user/guards.py` | Code guards after every model turn: grounding, no invented values, account values only when asked, end protocol (D214 rule 4). |
 | `kullback/user/lesson.py` | What the fidelity score teaches the next round's user context (D214 rule 6). |
 | `kullback/user/population.py` | Which recordings of a Task may seed a user, and a seeded pick among them. Not yet called from the package. |
 | `kullback/user/rules.py` | Derives the rule-driven user's rules from one trace (D44, D77). |
 | `kullback/user/signals.py` | Mines how a recording ended from its turns, with model labels accepted or dropped. Not yet called from the package. |
 | `kullback/user/simulated.py` | `SimulatedUser`: replies as the recorded user from the rules and the world. |
 | `kullback/user/skills.py` | The agent user's system prompt, in the harness's section order. |
-| `kullback/user/tools.py` | The agent user's own tools: my_facts, my_goal, what_i_said, end_run, and consult where the recording looked something up. |
+| `kullback/user/tools.py` | The agent user's own tools: my_facts, my_goal, what_i_said, end_run, consult where the recording looked something up, and my_choices and my_account where the caller built them. |
 | `kullback/user/value_strip.py` | Takes system-known values out of an Intent or a user answer, so the user says only what a user said (D196, D210). |
 | `kullback/user/vocabulary.py` | `FieldSpec` and `Vocabulary`: how a fact is stated, asked for and stored (D115). |
 
@@ -161,39 +164,62 @@ The top-level modules sit outside the import-linter layers contract. The last co
 
 | Module | What it does |
 |---|---|
-| `kullback/examiner/__init__.py` | The Examiner: one Verifier per Task, probes, repairs, refusals, findings. |
-| `kullback/examiner/derive.py` | Derives one Task's Verifier from its Reference and stored re-runs (D42, D43, D91). |
-| `kullback/examiner/domain_tools.py` | The Examiner's tools: edit_verifier, probe, finding, reroll. |
+| `kullback/examiner/__init__.py` | The Examiner: reads and reviews, one review per Task, findings with rows and the edit; it writes no Verifier (D320). |
+| `kullback/examiner/domain_tools.py` | The Examiner's tools: rule, finding (with edits and note_ruling), no_finding (a review that found nothing, with its reason, in `examiner/reviews.json`), check_reference, reject_reference. None writes a Verifier or runs a Run (D320). |
 | `kullback/examiner/exam_files.py` | The Examiner's root `exam/`: the read surface it is given and its findings file. |
 | `kullback/examiner/findings.py` | Findings the round's records file by themselves before the model speaks (D170). |
 | `kullback/examiner/judge.py` | The reference judge as a bounded agent, one-shot judge as fallback (D12, D92). |
 | `kullback/examiner/lifecycle.py` | Retires a derived artefact whose source was withdrawn (D208). |
-| `kullback/examiner/loosen.py` | Code-only loosening of an over-strict Verifier, gated like any repair (D205). |
 | `kullback/examiner/plan.py` | `ExaminerPlan`: what one Examiner session is given and the store its gates rule over. |
-| `kullback/examiner/prompt.py` | The Examiner's prompt sections in GEPA order. |
+| `kullback/examiner/prompt.py` | The Examiner's review prompt in GEPA order: one review per Task, writes nothing, runs nothing. |
 | `kullback/examiner/reference.py` | Chooses References by the D111 rule and checks constraints against them. |
-| `kullback/examiner/runners.py` | Builds the probe, re-roll and variant runners over the runner tool (D120). |
+| `kullback/examiner/reference_check.py` | `check_reference`: the evidence on a Task's Reference in one view, code only, for the Examiner to judge. |
+| `kullback/examiner/reference_check.py` | `reject_reference`: excludes a wrong Reference's End state, re-picks, and pools the Task in `exam/reference_pool.json` when none is left. |
+| `kullback/examiner/rule_tool.py` | The `rule` tool: a ruling must quote a because or a Run turn, lands whole in exam/rulings/ and on the bus as a code; the per-Task spec view with the Verifier's expected cells and their sources. |
 | `kullback/examiner/session.py` | The Examiner extension and `examine`, called by the Builder. |
-| `kullback/examiner/skills.py` | The probe skill: the eight Verifier bug classes (D127, D133). |
-| `kullback/examiner/stage.py` | The derive_verifier stage body and its helpers, writing `verifiers/`, `task_status.json`, `references.json`. |
-| `kullback/examiner/variants.py` | Second paths synthesised from a Run's own calls, code only (D199). |
+| `kullback/examiner/skills.py` | The review skill: what one review per Task reads and files (D320). |
+| `kullback/examiner/stage.py` | The Reference stage: chooses References by the D111 rule and writes `references.json`, `task_status.json`, `constraints_check.json`; under D320 it writes no Verifier (every Task is the Spec's). |
+
+## kullback/spec
+
+| Module | What it does |
+|---|---|
+| `kullback/spec/__init__.py` | The Spec package: the Spec writes and repairs every Verifier (D320). |
+| `kullback/spec/schema.py` | `IntentFact`, `SpecIntent`, `Check`, `Spec` and `tier_of`; one file per Task at `workdir/spec/<task_id>.json`. |
+| `kullback/spec/ground.py` | Trust gate 1: `valid_because` (an Intent quote of 12 characters or a named policy section), `coverage`, `ground_spec`. |
+| `kullback/spec/compile.py` | `compile_spec`: checks to Verifier atoms with the existing builders, no new kinds, ungrounded checks dropped and counted. |
+| `kullback/spec/canfail.py` | Trust gate 2: `can_fail` scores the D79 empty, wrong entity and swapped value Runs against the Spec's Verifier. |
+| `kullback/spec/events.py` | The Spec and ruling events on the workdir bus: spec.written, spec.repaired, spec.defended, spec.repair_deferred, ruling.filed, task.set_aside; ids, counts and reason codes from `REASON_CODES`, never free text. |
+| `kullback/spec/router.py` | `Router`, a bus subscriber that moves each ruling once by target (run re-roll, check or intent to `writer.repair_for_ruling`, environment Builder note), counts rounds and sets a Task aside past `ROUNDS_CAP`; `is_set_aside` is the one set-aside rule. |
+| `kullback/spec/trust.py` | The four gates in order (grounded, can fail, an independent Run passes, no open ruling) and `tier_of_task`: trusted, replay_only, untrusted, set_aside, each row naming the failing gate and the Runs scored; gates 2 and 3 score the Verifier file the Spec writer wrote (`spec/verifiers/<task_id>.json`), and a Task without one is untrusted; the replay prefix is read off the Runner's replay index. |
+| `kullback/spec/split.py` | The Reference class of a Task from the benchmark sidecar (right, wrong, mixed, unknown), measurement only; scripts/measure/trust_split.py imports it. |
+| `kullback/spec/report.py` | The per-build tier report (`tiers.json`): counts per tier, trusted split by Reference class (`split.py`) when the sidecar is there, one table line in docs/builds/README.md's format. |
+| `kullback/spec/writer.py` | The Verifier writer (intentv r1): checks with becauses and fact ids from the Intent, the recorded policy, the tool schemas and the Starting state; `write_verifier` saves the Spec and its whole Verifier (expected, forbidden, conduct from `end_state.py`, fact and question atoms), the Runner's file the same bytes; `repair` answers a ruling on the ruled checks only; `repair_for_ruling` is the router's entry point, which saves, rewrites the Verifier files and publishes spec.repaired or spec.defended. |
+| `kullback/spec/writer_tools.py` | The writer's two read-only Starting state lookups, the bounded session (4 read rounds, a spend ceiling, a forced final answer), `refuse_run_inputs`, which keeps every Run, Reference, Verifier and End state out, and `policy_sections_of`, the one list of policy names a because may cite (policy headings plus compiled rule names). |
+| `kullback/spec/must_not.py` | The forbidden side of the writer's Verifier: scope atoms for uncovered write tools and the compiled policy prohibitions; `tier_of` by atom kind. `kullback/examiner/must_not.py` re-exports it. |
+| `kullback/spec/atoms.py` | `shape_atom` and `no_write_atom`, the two generated Hard rules, moved from the Examiner so the Spec never reads it; `derive` re-exports them. |
+| `kullback/spec/text.py` | `STOPWORDS`, `APOSTROPHE_RE`, `TOKEN_RE` and `normalise`, moved from the Builder so the Spec never reads it; `cluster` and `intent` re-export them. |
+| `kullback/spec/intent.py` | The intent miner: `mine_intent` runs one agent session per Task on the Examiner's model path, capped in calls and USD, and writes the SpecIntent part of `workdir/spec/<task_id>.json`. |
+| `kullback/spec/stage.py` | `write_specs`: the build's Spec stage; for each named Task without a Spec and Spec Verifier, mines the Intent, writes the Spec and both Verifier files and publishes spec.written, priced under the `spec` stage, a failing Task counted and skipped; a written Spec whose Task gained a Reference since has its gates rewritten by code (`refresh_gates`). |
+| `kullback/spec/end_state.py` | A Task's end-state gates by code from its Reference Run (D315, D320): `reference_run`, `gates_of` (expected end states with alternatives, forbidden list) and `conduct_of` (confirmation, refusal, hand-off from grounded demands, each with its source). |
+| `kullback/spec/review.py` | The Spec answers a review (D320): atoms and text edits applied by code, the Verifier rewritten, the gates run; one round per call on the Spec, pending at the ceiling; `route_findings` is the Builder examine tool's seam. |
+| `kullback/spec/intent_tools.py` | The miner's view and tools: user turns of every recording with the agent's line before, never a tool call or result; `add_facts` checks each fact's words against its turn; witnesses and `counts` (rule 5) in code. |
 
 ## kullback/builder
 
 | Module | What it does |
 |---|---|
 | `kullback/builder/__init__.py` | Package marker for the Builder. |
-| `kullback/builder/body_skill.py` | The body skill: how a tool body is written so it clears the gates (D168). |
 | `kullback/builder/cache_reach.py` | Hashes a module's import closure so code-keyed caches invalidate (G29). |
+| `kullback/builder/run_user.py` | The Simulated user the run tool meets: the rule-driven user, or the agent user over it with a model, from the Reference's user rules (D214). |
 | `kullback/builder/cluster.py` | Groups Runs into Categories by write-tool set, then Tasks by intent (D83). |
 | `kullback/builder/compile_env.py` | Builds the world: `db.json` by inverse replay, per-Task overlays, the tau2 shape, each body through its gates. |
 | `kullback/builder/domain_tools.py` | The Builder's tools: ingest, derive_world, grow, replay, rulings, run, status, examine, note_task. |
 | `kullback/builder/effects.py` | What a write changed on rows its arguments never named, read off the recording (D215). |
 | `kullback/builder/env_files.py` | The Environment on disk under `env/`: one file per tool body, rendered modules, read surface. |
 | `kullback/builder/ingest.py` | Stores customer files byte for byte and derives Traces with raw pointers (D66, D67, D95). |
-| `kullback/builder/intent.py` | Writes a Task's Intent and refuses any phrase without a span in every member Run (D47, D83). |
+| `kullback/builder/intent.py` | Re-exports the Intent record and the value strip under their old import path; the Spec stage writes Intents. |
 | `kullback/builder/lesson.py` | What a stalled tool body is told: differing leaves, relations, unreached lines (D211). |
-| `kullback/builder/memory.py` | The Builder's version tree and the cross-customer lessons file with anonymization (D64, D87). |
 | `kullback/builder/mine.py` | Mines ToolSigs and the EntitySchema out of ingested traces (D68, D70, D72, D73). |
 | `kullback/builder/parallel.py` | Re-exports the worker pool that now lives in `kullback.runner.parallel`. |
 | `kullback/builder/policy.py` | Turns policy sentences into before-write Constraint predicates (D43, D76). |
@@ -213,8 +239,6 @@ The top-level modules sit outside the import-linter layers contract. The last co
 | `kullback/builder/sources/terminus_2.py` | Adapter for terminus-2 terminal recordings, one shell tool. |
 | `kullback/builder/synth.py` | Grows the Starting state past the ids the traces named (D40, D107). |
 | `kullback/builder/templates.py` | Aligns a reader for homed prose results out of the tool's own results (D176, D180). |
-| `kullback/builder/transaction.py` | Every repair as a transaction: lands only if it fixed its target and broke nothing (D201). |
-| `kullback/builder/triage.py` | The triage skill: how the Builder works a red light to green (D150). |
 | `kullback/builder/user_sim.py` | Re-exports the rule-driven Simulated user from `kullback.user.rules` (D214). |
 | `kullback/builder/vocabulary.py` | Derives the facts users state and the words agents ask for them with (D115). |
 | `kullback/builder/world_tools.py` | The first pass as two functions: `ingest_files` and `derive_world`. |

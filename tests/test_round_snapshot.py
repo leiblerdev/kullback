@@ -15,7 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 from kullback import cli, round_snapshot
-from kullback.examiner import loosen, stage
+from kullback.examiner import stage
 from kullback.gates.ledger import COMPILE_NAME, GateLedger
 from kullback.gates.verifier_suite import D79_STAGES
 from kullback.runner.records import GateResult
@@ -133,21 +133,6 @@ def test_a_second_path_search_that_finds_nothing_must_write_its_reason():
                           what="the second path search", task_id="lend_a_copy")
     with pytest.raises(stage.MissingReason):
         stage.with_reason(None, what="the second path search", task_id="lend_a_copy")
-
-
-def test_a_loosening_that_can_propose_nothing_says_which_of_the_three_ways_it_ended():
-    assert loosen.nothing_proposed(None, object()) == loosen.NO_VERIFIER
-    assert loosen.nothing_proposed(object(), None) == loosen.NO_REJECTED_RUN
-    assert loosen.nothing_proposed(object(), object()) is None
-
-
-def test_a_row_written_because_nothing_could_be_proposed_is_not_an_attempt():
-    rows = [{"task_id": "lend_a_copy", "round": 1, "proposed": False, "reason": loosen.NO_RELAXATION},
-            {"task_id": "lend_a_copy", "round": 2, "proposed": True, "kinds": ["read"], "accepted": True}]
-    assert loosen.attempts(rows, "lend_a_copy") == [rows[1]]
-    assert loosen.may_propose(rows, "lend_a_copy", 3) is True
-    counts = loosen.round_counts(rows, 1)
-    assert counts["auto_loosen_proposed"] == 0 and counts["auto_loosen_unproposed"] == 1
 
 
 # --- rule 4: the reader names the round and the drift ------------------------------------

@@ -1387,7 +1387,6 @@ def test_a_responses_request_with_no_catalogue_row_sends_reasoning_only_with_an_
             "effort": "low", "summary": "auto"}
     assert "reasoning" not in responses_body_for("rs-test/stranger", pv.ModelConfig(), sleeps)
 
-
 def test_a_responses_reply_keeps_the_summary_and_drops_the_encrypted_blob(live, sleeps):
     """Summary text lands on the reply for a reader; encrypted reasoning is never kept,
     so no follow-up can echo it."""

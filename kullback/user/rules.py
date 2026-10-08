@@ -19,14 +19,21 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Iterable, NamedTuple, Optional  # noqa: F401  - the surface holds
 
-from kullback.runner.records import DisclosureRule, Event, Trace, UserFact, UserRules  # noqa: F401  - as above
+# The spoken sentences (D44), named beside the record since D332; the wording model never touches
+# these, so a confirmation is repeated exactly as it was given.
+from kullback.runner.records import (  # noqa: F401  - as above  # noqa: F401
+    CHOICE,
+    CLOSING,
+    CONFIRMATION,
+    GOAL,
+    SPOKEN_FIELDS,
+    DisclosureRule,
+    Event,
+    Trace,
+    UserFact,
+    UserRules,
+)
 from kullback.user.vocabulary import GENERIC, Vocabulary
-
-# Whole sentences the recorded user said, kept verbatim: the goal it opened with, the confirmations
-# a write needs, the choices it stated and the line it closed on (D44). The wording model never
-# touches these, so a confirmation is repeated exactly as it was given.
-GOAL, CONFIRMATION, CHOICE, CLOSING = "goal", "confirmation", "choice", "closing"
-SPOKEN_FIELDS = (GOAL, CONFIRMATION, CHOICE, CLOSING)
 
 # A sentence is an ask only when it is a question or asks in so many words.
 REQUEST_CUE = re.compile(
@@ -576,6 +583,29 @@ def goal_write_set(trace: Optional[Trace], writes: Iterable[str]) -> set[str]:
             if call.name in names and call.error is None}
 
 
+SPEC_WRITE_KINDS = ("row_is", "row_new")
+
+
+def spec_goal(demands: Iterable[dict], writes: Iterable[str]) -> tuple[Optional[set], Optional[dict]]:
+    """The goal's writes and their counts, read off the Spec's write items, never the Reference's calls.
+
+    A `called` item naming a write tool names that write, once per item. A Spec whose writes are
+    end states alone names no tool, so the goal is any write (None, D158's reading). A Spec with no
+    write item has a goal of no write (the empty set). The goal is a label only (D332).
+    """
+    names = set(writes)
+    items = [d for d in demands if isinstance(d, dict)]
+    counts: dict[str, int] = {}
+    for item in items:
+        if item.get("kind") == "called" and str(item.get("tool")) in names:
+            counts[str(item["tool"])] = counts.get(str(item["tool"]), 0) + 1
+    if counts:
+        return set(counts), counts
+    if any(item.get("kind") in SPEC_WRITE_KINDS for item in items):
+        return None, None
+    return set(), None
+
+
 def _words(field: str) -> str:
     return field.replace("_", " ")
 
@@ -584,4 +614,3 @@ def _words(field: str) -> str:
 # end protocol (kullback/user/guards.py) decides the same four kinds over the turns a model drove
 # and must read them exactly as the rule-driven user does, not with a second pair of cues (D214).
 closes = _closes
-names_change = _names_change

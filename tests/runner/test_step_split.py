@@ -1,7 +1,7 @@
 """The Runner's step is two functions: ask the policy, advance the world (G2).
 
-Needs the step-split patch (docs/frozen-patches/step-split.patch): ask and advance live in
-the frozen runner tree, so this module skips unless the patch is applied.
+Ask and advance live in runner/loop.py (step-split landed); the guard below skips on a tree
+without them.
 """
 
 from __future__ import annotations

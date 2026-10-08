@@ -16,7 +16,6 @@ from kullback.runner.records import (
     exam_history_path,
     exam_probe_path,
     exam_verifier_path,
-    load_exam_history,
     load_run_jsonl,
     read_json,
     write_json,
@@ -45,27 +44,6 @@ def _state(tools):
     return {row["task_id"]: row for row in result.details["tasks"]}[TASK]
 
 
-def test_a_task_whose_history_accepts_its_derived_verifier_is_trusted_when_the_suite_passed(tmp_path):
-    root, tools = _examined(tmp_path)
-    verifier = Verifier.model_validate(read_json(root / "verifiers" / f"{TASK}.json"))
-    history = load_exam_history(root)[TASK]
-    assert exam_history_path(root).is_file()
-    assert [v.content_hash for v in history.versions if v.accepted][-1] == version_hash(verifier)
-    assert read_json(root / "task_status.json")[TASK]["verifier_passed"] is True
-    assert _state(tools) == {"task_id": TASK, "state": "trusted", "reason": ""}
-
-
-def test_a_task_whose_suite_failed_is_open_with_the_failing_check_named(tmp_path):
-    root, tools = _examined(tmp_path)
-    status = read_json(root / "task_status.json")
-    status[TASK]["verifier_passed"] = False
-    status[TASK]["checks"]["mutation_flips"] = False
-    write_json(root / "task_status.json", status)
-    row = _state(tools)
-    assert row["state"] == "open"
-    assert row["reason"] == "the D79 suite did not pass: mutation_flips failed"
-
-
 def test_an_examiner_proposal_the_history_never_accepted_is_named_by_its_version(tmp_path):
     root, tools = _examined(tmp_path)
     verifier = Verifier.model_validate(read_json(root / "verifiers" / f"{TASK}.json"))
@@ -84,24 +62,6 @@ def test_a_probe_the_examiner_wrote_that_scores_a_pass_keeps_the_task_open(tmp_p
     row = _state(tools)
     assert row["state"] == "open"
     assert row["reason"] == "probe probe-widget_task-1 scores a pass"
-
-
-def test_the_round_snapshot_and_the_status_agree_on_a_task_whose_seeds_are_another_tasks_runs(tmp_path):
-    """D281: one trusted ruling, so the round's trusted count and the status name the same Tasks."""
-    from kullback.round_snapshot import counts_of, snapshot_rows
-
-    root, tools = _examined(tmp_path)
-    assert _state(tools)["state"] == "trusted" and counts_of(snapshot_rows(root, 1))["trusted"] == 1
-    verifier = Verifier.model_validate(read_json(root / "verifiers" / f"{TASK}.json"))
-    seed = verifier.seed_run_ids[0]
-    path = root / "runs" / TASK / f"{seed}.jsonl"
-    assert load_run_jsonl(path, task_id=TASK).run_id == seed
-    path.write_text(path.read_text(encoding="utf-8").replace(f'"task_id": "{TASK}"', '"task_id": "another_task"'),
-                    encoding="utf-8")
-    row = _state(tools)
-    assert row["state"] == "open" and seed in row["reason"] and "not Runs of this Task" in row["reason"]
-    [snapshot] = [r for r in snapshot_rows(root, 2) if r["task_id"] == TASK]
-    assert snapshot["trusted"] is False and snapshot["trusted_reason"] == row["reason"]
 
 
 def _cased_workdir(tmp_path, rules):

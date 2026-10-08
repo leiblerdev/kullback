@@ -1,9 +1,13 @@
-"""The Examiner as an extension on the core, called by the Builder (D79, D111, D122-D124, D128, D230).
+"""The Examiner as an extension on the core, called by the Builder (D79, D111, D122-D124, D230, D320).
 
-`examine` derives one Verifier per Task from its References through the suite by code,
-files what the records already say as findings with rows, then runs one model session
-over the Examiner's root when a model is given. It returns the findings and writes them
-to `findings.json` at once, never a round late (learnings 7).
+`examine` chooses each Task's References by code (the Reference stage, which writes no Verifier:
+the Spec writes every Verifier), files what the records already say as findings with rows, then
+runs one review session over the Examiner's root when a model is given. The session reads, files
+rulings on the Specs and findings on the Environment; it edits nothing (D331). It returns the findings
+and writes them to `findings.json` at once, never a round late (learnings 7).
+
+`review_specs` is one Examiner round of the review loop (spec/rounds.py) alone: the Spec views, the
+ruling tools, no Reference stage and no Environment findings.
 """
 
 from __future__ import annotations
@@ -21,9 +25,8 @@ from kullback.agent.harness import AgentHarness
 from kullback.agent.session import SessionStore
 from kullback.examiner import findings as findings_mod
 from kullback.examiner import prompt as prompt_mod
-from kullback.examiner import runners as runners_mod
 from kullback.examiner import stage as stage_mod
-from kullback.examiner.domain_tools import domain_tools, note_line, notes_of
+from kullback.examiner.domain_tools import TOOL_NAMES, domain_tools, finding_tool, note_line, notes_of
 from kullback.examiner.exam_files import (
     DERIVED_DIR,
     SPOKEN_DIR,
@@ -64,6 +67,7 @@ MAX_DERIVE_WORKERS = 8
 NOT_DERIVED_SHOWN = 10
 NO_FINISHED_RUN = "no finished Run"
 NO_CONFIRMED_REFERENCE = "no confirmed Reference"
+NO_SPEC = "no Spec"
 
 
 def _refuse_forbidden_paths() -> Callable:
@@ -84,15 +88,14 @@ def _refuse_forbidden_paths() -> Callable:
     return refuse
 
 
-EXAMINER_WRITES = ("the Examiner writes Verifiers through edit_verifier and probes through probe, "
-                   "not with write or edit")
+EXAMINER_WRITES = ("the Examiner writes nothing: it files rulings the writer applies or rebuts, and findings "
+                   "for the Builder (D320, D331)")
 
 
 def _refuse_generic_writes() -> Callable:
     """A tool_call hook refusing write and edit everywhere, so a model that asks for them hears why.
 
-    The Examiner has no write and no edit: a generic write under verifiers/ would land before the
-    gates ruled and stay live when they refused it; propose_verifier and probe run the gates first.
+    The Examiner has no write and no edit: it reads and reviews, and the Spec writes (D320).
     """
 
     def refuse(call: Any) -> None:
@@ -101,6 +104,33 @@ def _refuse_generic_writes() -> Callable:
         return None
 
     refuse.hook_name = "examiner_writes_through_its_tools"  # type: ignore[attr-defined]
+    return refuse
+
+
+def unsourced_cells(verifier: Optional[Verifier]) -> list[str]:
+    """The cells of the Verifier's expected end states with no source for the value or for the row."""
+    if verifier is None:
+        return []
+    return sorted({".".join(str(part) for part in (cell.table, cell.row_id, cell.field) if part is not None)
+                   for state in verifier.expected for cell in state.cells
+                   if cell.source is None or cell.row_source is None})
+
+
+def _refuse_no_finding_on_unsourced(root: ExamRoot) -> Callable:
+    """A tool_call hook refusing no_finding on a Task whose Verifier holds an unsourced cell: the review
+    has something to say there (40 no-finding reviews sat on such Tasks)."""
+
+    def refuse(call: Any) -> None:
+        if getattr(call, "name", None) != "no_finding":
+            return None
+        task_id = str((getattr(call, "arguments", None) or {}).get("task_id") or "")
+        cells = unsourced_cells(root.current(task_id))
+        if cells:
+            raise PermissionError(
+                f"task {task_id} has unsourced cells: {', '.join(cells)}; file a ruling on the item instead")
+        return None
+
+    refuse.hook_name = "examiner_no_finding_on_unsourced"  # type: ignore[attr-defined]
     return refuse
 
 
@@ -140,13 +170,9 @@ def _runs_part(root: ExamRoot, task_id: str) -> str:
 
 
 def _verifier_part(root: ExamRoot, task_id: str) -> str:
-    """The Task's derived Verifier, its proposal and its user rules, as paths under the root (F33)."""
+    """The Task's Verifier (the Spec's) and its user rules, as paths under the root (F33)."""
     derived = f"{DERIVED_DIR}/{task_id}.json"
-    rel = f"verifiers/{task_id}.json"
-    parts = [f"derived verifier: {derived}" if (root.exam_dir / derived).is_file()
-             else "derived verifier: none copied"]
-    parts.append(f"proposal: {rel}" if (root.exam_dir / rel).is_file()
-                 else f"proposal: {rel} once you first propose one")
+    parts = [f"verifier: {derived}" if (root.exam_dir / derived).is_file() else "verifier: none copied"]
     trace_id = reference_trace_id(root, task_id)
     parts.append(f"user rules: user_rules/{trace_id}.json" if trace_id
                  else "user rules: no user rules until the Reference is confirmed")
@@ -202,8 +228,7 @@ def notes_line(root: ExamRoot, task_ids: Optional[Iterable[str]] = None) -> str:
                      if wanted is None or task_id in wanted)
 
 
-def examiner_extension(root: ExamRoot,
-                       task_ids: Optional[Iterable[str]] = None) -> Callable[[ExtensionAPI], None]:
+def examiner_extension(root: ExamRoot, task_ids: Optional[Iterable[str]] = None) -> Callable[[ExtensionAPI], None]:
     """The setup the harness loads: base tools over exam/, domain tools, prompt, hooks.
 
     The prompt names the root as "." (F18); what the root holds and the rulings (F25) are this
@@ -214,13 +239,14 @@ def examiner_extension(root: ExamRoot,
         register_base_tools(api, root.exam_dir, only=BASE_ONLY)
         for tool in domain_tools(root):
             api.register_tool(tool)
-        for name, text in prompt_mod.sections():
+        for name, text in prompt_mod.sections(TOOL_NAMES):
             api.add_prompt_section(f"examiner_{name}", prompt_block(name, text))
         api.tool_call(refuse_paths(
             names_protected_path, "under the gates or the Runner, which no agent writes (D122)",
             "examiner_protected_paths"))
         api.tool_call(_refuse_forbidden_paths())
         api.tool_call(_refuse_generic_writes())
+        api.tool_call(_refuse_no_finding_on_unsourced(root))
 
     return setup
 
@@ -247,10 +273,11 @@ def select_for_session(task_ids: Iterable[str], replays: dict, rerolls: dict,
 def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> list[str]:
     """The Tasks this examine call is about, in id order (F40).
 
-    With task_ids, those that name a Task. Without, every Task not derived yet: it has no status
-    row because no derivation has read it, or its Verifier file is absent and either its row holds
-    a confirmed Reference or replays.json now holds a confirmed replay for it, read the way
-    select_for_session reads one, so a Task left unconfirmed is revisited once evidence confirms it."""
+    With task_ids, those that name a Task. Without, every Task the Reference stage has not settled: it
+    has no status row because no call has read it, or references.json keeps no Reference for it and
+    either its row holds a confirmed Reference or replays.json now holds a confirmed replay for it,
+    read the way select_for_session reads one, so a Task left unconfirmed is revisited once evidence
+    confirms it."""
     known = sorted(task.id for task in store.get("tasks") or [])
     if task_ids is not None:
         wanted = set(task_ids)
@@ -259,16 +286,22 @@ def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> lis
     status = read_json(root / "task_status.json", {}) or {}
     status = status if isinstance(status, dict) else {}
     replays = store.get("replays") or {}
+    references = read_json(root / "references.json", {}) or {}
 
     def pending(task_id: str) -> bool:
         if task_id not in status:
             return True
-        if (root / "verifiers" / f"{task_id}.json").is_file():
+        if ((references.get(task_id) or {}) if isinstance(references, dict) else {}).get("references"):
             return False
         return bool((status[task_id] or {}).get("reference_confirmed")
                     or finished_run_ids(task_id, replays, {}))
 
     return [task_id for task_id in known if pending(task_id)]
+
+
+def spec_owned(store: dict) -> list[str]:
+    """Every Task of the store: the Spec writes each Verifier, so the Reference stage writes none (D320)."""
+    return [task.id for task in store.get("tasks") or []]
 
 
 def default_workers() -> int:
@@ -464,7 +497,7 @@ def finding_from_row(row: dict) -> Finding:
     task_id = row.get("task_id") or (task_ids[0] if len(task_ids) == 1 else None)
     kind = str(row.get("kind") or "other")
     tool = row.get("tool")
-    hint = _one_line(str(row.get("hint") or ""))
+    hint = _one_line(str(row.get("change") or ""))
     if kind in ("fidelity", "assisted_tool") and tool:
         path = f"env/tools/{tool}.py"
         change = hint or f"the body of {tool} answers its recorded calls"
@@ -472,7 +505,7 @@ def finding_from_row(row: dict) -> Finding:
         path, change = "", hint
     return Finding(task_id=task_id, kind=kind, text=str(row.get("text") or ""),
                    rows=_evidence_rows(kind, row, task_ids), path=path, change=change,
-                   source="derive")
+                   source="derive", edits=list(row.get("edits") or []))
 
 
 def _evidence_rows(kind: str, row: dict, task_ids: list[str]) -> list[dict]:
@@ -481,10 +514,10 @@ def _evidence_rows(kind: str, row: dict, task_ids: list[str]) -> list[dict]:
         return [{"task_id": task_id, "check": check, "passed": False} for task_id in task_ids]
     if kind in ("fidelity", "assisted_tool"):
         return [{"task_id": task_id, "tool": row.get("tool"),
-                 "detail": _one_line(str(row.get("hint") or ""))} for task_id in task_ids]
+                 "detail": _one_line(str(row.get("change") or ""))} for task_id in task_ids]
     if kind == "false_rejection":
         return [{"task_id": task_id, "run_id": row.get("run_id")} for task_id in task_ids]
-    return [{"task_id": task_id, "reason": _one_line(str(row.get("hint") or ""))}
+    return [{"task_id": task_id, "reason": _one_line(str(row.get("change") or ""))}
             for task_id in task_ids]
 
 
@@ -493,43 +526,33 @@ def _one_line(text: str, limit: int = HINT_CHARS) -> str:
 
 
 def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: Any,
-            judge_model: Any = None, probe_model: Any = None, reroll_model: Any = None,
-            allowance_usd: Optional[float] = None, session_path: Any = None,
+            judge_model: Any = None, allowance_usd: Optional[float] = None, session_path: Any = None,
             subscribers: Iterable[Callable] = (), max_turns: int = EXAMINE_MAX_TURNS,
             workers: Optional[int] = None, limit: Optional[int] = None) -> list[Finding]:
-    """Derive the Verifiers by code, file what the records say, then run one model session.
+    """Choose References by code, file what the records say, then run one review session.
 
-    With `model=None` the session is code only: the derivation and its findings. With a model,
-    one message over the Examiner's root, capped at `max_turns`; the Builder decides when to
-    call again. A session stopped on the cap adds one finding saying so, so the Builder reads the
-    rest as partial. Returns every finding, derive-filed and model-filed, and writes findings.json.
-    The session seeds one Verifier history per Task at version 1 from the derived files, so the
-    trusted and loosening gates rule on proposals (D127).
+    With `model=None` the call is code only: the Reference stage and its findings. The Reference
+    stage writes references.json, task_status.json and constraints_check.json and no Verifier: the
+    Spec writes every Verifier (D320), so every Task's verifiers/ file is kept as the Spec left it.
+    It runs no probe, buys no Run and synthesises no variant.
 
-    The probe, re-roll and variant runners come from the runner tool over the workdir (D120):
-    without a re-roll model the derivation stays code only and buys no Runs.
+    With a model, one review session over the Examiner's root, capped at `max_turns`, over the Tasks
+    with a Spec; one finding of kind other names the rest. The session holds the ruling tools,
+    finding, no_finding and check_reference; the writer answers its rulings in the review loop. A session stopped on the cap adds one finding saying so. Returns every finding and
+    writes findings.json.
 
-    Every Task derive_pick returns is derived in this call, `workers` at a time (default: the
-    cores, at most eight); `limit`, when given, derives only the first that many and files one
-    note naming the rest (F40, F55). The exam view is copied after the derivation, so the
-    session reads this call's Verifiers and task status, never the last call's (F52).
-
-    The session sees only the Tasks with a finished Run and a confirmed Reference; one finding
-    of kind other names the rest and why, and when none is left no session opens at all (F24).
+    Every Task the pick returns goes through the Reference stage in this call, `workers` at a time;
+    `limit`, when given, takes only the first that many and files one note naming the rest (F40).
     """
     root = Path(workdir)
     task_ids = list(task_ids) if task_ids is not None else None
     store = load_store(workdir)
     anchor = _load_anchor(root)
-    ctx = stage_mod.ExamContext(root, GateLedger(root), anchor=anchor)
-    runners = runners_mod.runners_for(root, reroll_model=reroll_model, anchor=anchor)
+    ctx = stage_mod.ExamContext(root, GateLedger(root), anchor=anchor, kept=spec_owned(store))
     picked = derive_pick(root, store, task_ids)
     now, later = (picked, []) if limit is None else (picked[:limit], picked[limit:])
     if now:
-        stage_mod.derive_all(ctx, store, probe_model=probe_model, judge_model=judge_model,
-                             run_probe=runners["run_probe"],
-                             run_rerolls=runners["run_rerolls"] if reroll_model is not None else None,
-                             run_variant=runners["run_variant"], round_number=0, only=now,
+        stage_mod.derive_all(ctx, store, judge_model=judge_model, round_number=0, only=now,
                              workers=workers if workers is not None else default_workers())
     expose(workdir)
     findings = derive_findings(workdir, store) + ([not_derived_finding(later, limit)] if later else [])
@@ -543,30 +566,82 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     candidates = task_ids if task_ids is not None else {
         *(t.id for t in store.get("tasks") or []), *(store.get("replays") or {}),
         *(store.get("rerolls") or {})}
-    status = read_json(root / "task_status.json", {}) or {}
-    selected, left_out = select_for_session(candidates, store.get("replays") or {},
-                                            store.get("rerolls") or {},
-                                            status if isinstance(status, dict) else {})
+    selected, left_out = _session_tasks(candidates, root, store)
     note = [left_out_finding(left_out, len(selected))] if left_out else []
     if not selected:
         out = findings + note
         write_json(root / "findings.json", [f.as_dict() for f in out])
         return out
-    exam_root = _exam_root(workdir, store, findings, reroll_model=reroll_model,
-                           probe_model=probe_model, run_probe=runners["run_probe"],
-                           allowance_usd=allowance_usd, reroll_user=runners.get("reroll_user"))
+    exam_root = _exam_root(workdir, store, findings, allowance_usd=allowance_usd)
     harness = AgentHarness(model=model, max_turns=max_turns,
                            session=SessionStore.load(session_path) if session_path is not None else None,
                            context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
-                           bus=Bus(root / "bus.jsonl", agent="examiner"))
+                           bus=_exam_bus(exam_root))
     for subscriber in subscribers:
         harness.subscribe(subscriber)
     harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
     load_extensions(harness, [examiner_extension(exam_root, selected)])
-    cap_notes = _run_session(harness, session_opening(exam_root, selected), max_turns, selected)
+    opening_message, detach = _opening(exam_root, selected, model, allowance_usd)
+    try:
+        cap_notes = _run_session(harness, opening_message, max_turns, selected)
+    finally:
+        detach()
     out = list(exam_root.findings) + note + cap_notes
     write_json(root / "findings.json", [f.as_dict() for f in out])
     return out
+
+
+def _exam_bus(exam_root: ExamRoot) -> Bus:
+    """The one bus of the session: the harness's events and the rule tool's rulings on one log."""
+    exam_root.bus = Bus(Path(exam_root.workdir) / "bus.jsonl", agent="examiner")
+    return exam_root.bus
+
+
+def _session_tasks(candidates: Iterable[str], root: Path, store: dict) -> tuple[list[str], list[tuple[str, str]]]:
+    """The Tasks the session reviews: a finished Run, a confirmed Reference and a Spec (F24, D320);
+    the rest left out with why."""
+    from kullback.spec.schema import spec_path
+
+    status = read_json(root / "task_status.json", {}) or {}
+    ready, left_out = select_for_session(candidates, store.get("replays") or {},
+                                         store.get("rerolls") or {}, status)
+    return ([t for t in ready if spec_path(root, t).is_file()],
+            left_out + [(t, NO_SPEC) for t in ready if not spec_path(root, t).is_file()])
+
+
+def intent_line(root: ExamRoot, task_id: str, view: Optional[str]) -> str:
+    """One Task's line: its spec view, its rulings so far, its Runs and its spoken file, as root paths."""
+    return (f"{task_id}: spec view: {view or 'none'}; {rulings_part(root.workdir, task_id)}; "
+            f"{_runs_part(root, task_id)}; {_spoken_part(root, task_id)}")
+
+
+def rulings_part(workdir: Any, task_id: str) -> str:
+    """The Task's rulings in a few words: how many, how many open, and the writer's answers to close or keep."""
+    from kullback.spec.rulings import load_rulings
+
+    rulings = load_rulings(workdir, task_id)
+    if not rulings:
+        return "rulings: none"
+    answered = [f"{r.number} {r.answer['action']}" for r in rulings if r.status == "open" and r.answer]
+    unruled = [str(r.number) for r in rulings
+               if r.status == "open" and r.code == "fails_reference" and r.wrong_side is None]
+    text = f"rulings: {len(rulings)}, {sum(r.status == 'open' for r in rulings)} open"
+    text += f"; answered, to close or keep open: {', '.join(answered)}" if answered else ""
+    return text + (f"; the Reference fails the Verifier, rule which side is wrong: {', '.join(unruled)}"
+                   if unruled else "")
+
+
+def _opening(exam_root: ExamRoot, selected: list[str], model: Any = None,
+             ceiling_usd: Optional[float] = None) -> tuple[str, Callable[[], None]]:
+    """The opening message with the spec views written. Nothing moves on a ruling inside the session:
+    the writer answers rulings in its own round (spec/rounds.py, D331)."""
+    from kullback.examiner import rule_tool
+
+    views = rule_tool.write_views(exam_root, selected)
+    lines = "\n".join(intent_line(exam_root, task_id, views.get(task_id)) for task_id in selected)
+    text = prompt_mod.opening(EXAMINE_MESSAGE, lines, root_listing(exam_root.exam_dir),
+                              notes_line(exam_root, selected), exam_root.round or 1)
+    return text, lambda: None
 
 
 def _run_session(harness: AgentHarness, opening_message: str, max_turns: int,
@@ -607,11 +682,11 @@ def turns_ran_out(max_turns: int, task_id: Optional[str] = None,
 
 
 # The tools whose task_id says which Task a session is working on (F36).
-TASK_TOOLS = ("edit_verifier", "propose_verifier", "probe")
+TASK_TOOLS = ("finding", "no_finding", "rule", "close", "verify")
 
 
 def _last_task(messages: Iterable[Any], selected: list[str]) -> Optional[str]:
-    """The task_id of the session's last propose or probe call, else the first selected Task."""
+    """The task_id of the session's last review call, else the first selected Task."""
     last = None
     for message in messages:
         for call in getattr(message, "tool_calls", None) or []:
@@ -629,18 +704,12 @@ def _last_refusal(messages: Iterable[Any]) -> Optional[str]:
     return last
 
 
-def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model: Any = None,
-               probe_model: Any = None, run_probe: Any = None,
-               allowance_usd: Optional[float] = None, reroll_user: Any = None) -> ExamRoot:
+def _exam_root(workdir: Any, store: dict, findings: list[Finding],
+               allowance_usd: Optional[float] = None) -> ExamRoot:
     """The session root: live Verifiers, signatures, rules, rows, task status and version history.
 
-    Task status is what derive_all wrote to task_status.json in this same examine call, and the
-    re-roll rows join the derivation's own (the second path Runs it bought) to the workdir's, and the
-    history is the exam history.json with every live Verifier seeded as version 1 by derive and
-    saved. The trusted gate reads each derived file as the current accepted version from that
-    seed, and the loosening gate compares each proposal against the version before it (D127).
-    The probe model and the probe runner examine built let the suite run its loophole check on
-    each proposal (D79). `reroll_user` is the re-rolls' user factory for the reroll tool.
+    Task status is what the Reference stage wrote to task_status.json in this same examine call; the
+    re-roll rows join the workdir's own. The root holds what the Examiner reads; it runs nothing.
     """
     root = Path(workdir)
     verifiers: dict[str, Verifier] = {}
@@ -658,15 +727,90 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
                          rerolls=merged_rerolls(store.get("rerolls") or {},
                                                 read_json(stage_mod.extra_rerolls_path(root), {}) or {}),
                          task_status=status if isinstance(status, dict) else {},
-                         findings=list(findings), reroll_model=reroll_model,
-                         probe_model=probe_model, run_probe=run_probe,
-                         allowance_remaining=allowance_usd, reroll_user=reroll_user)
+                         findings=list(findings), allowance_remaining=allowance_usd)
     history = load_history(exam_root)
     for task_id, verifier in verifiers.items():
         seeded_history(history, task_id, verifier)
     exam_root.history = history
     save_history(exam_root, history)
     return exam_root
-__all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "derive_findings", "examine", "examiner_extension", "session_opening",
+REVIEW_MESSAGE = "Examine these Specs."
+
+
+def review_extension(root: ExamRoot) -> Callable[[ExtensionAPI], None]:
+    """One review round's setup: base tools over exam/, the ruling tools, the finding tool for
+    Builder-side faults, the prompt, the read and write hooks."""
+    from kullback.examiner.rule_tool import rule_tools
+
+    def setup(api: ExtensionAPI) -> None:
+        register_base_tools(api, root.exam_dir, only=BASE_ONLY)
+        for tool in rule_tools(root):
+            api.register_tool(tool)
+        api.register_tool(finding_tool(root))
+        for name, text in prompt_mod.sections([*prompt_mod.REVIEW_TOOLS, "finding"]):
+            api.add_prompt_section(f"examiner_{name}", prompt_block(name, text))
+        api.tool_call(refuse_paths(
+            names_protected_path, "under the gates or the Runner, which no agent writes (D122)",
+            "examiner_protected_paths"))
+        api.tool_call(_refuse_forbidden_paths())
+        api.tool_call(_refuse_generic_writes())
+
+    return setup
+
+
+def review_specs(workdir: Any, task_ids: Iterable[str], *, model: Any, round_number: int,
+                 max_turns: Optional[int] = None, subscribers: Iterable[Callable] = (),
+                 session_path: Any = None) -> dict:
+    """One Examiner round over the Tasks with a Spec: views written, rulings filed or closed, Specs synced.
+
+    Returns the Tasks examined, whether the session stopped on its turn cap, the rulings this round
+    filed, by kind, code and blocking (spec/rulings.py counts), and the findings the session filed
+    for the Builder.
+    """
+    from kullback.examiner.rule_tool import write_views
+    from kullback.spec.rulings import counts, load_rulings, sync_spec
+    from kullback.spec.schema import spec_path
+
+    root = Path(workdir)
+    selected = sorted(t for t in set(task_ids) if spec_path(root, t).is_file())
+    if not selected:
+        return {"round": round_number, "tasks": [], "capped": False, "counts": counts(()), "findings": []}
+
+    exam_root = ExamRoot(workdir=root, round=round_number,
+                         replays=read_json(root / "replays.json", {}) or {},
+                         rerolls=read_json(root / "rerolls.json", {}) or {})
+    exam_root.bus = Bus(root / "bus.jsonl", agent="examiner")
+    turns = max_turns or 8 * len(selected) + 10
+    harness = AgentHarness(model=model, max_turns=turns,
+                           session=SessionStore.load(session_path) if session_path is not None else None,
+                           context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
+                           bus=exam_root.bus)
+    for subscriber in subscribers:
+        harness.subscribe(subscriber)
+    harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
+    load_extensions(harness, [review_extension(exam_root)])
+    views = write_views(exam_root, selected)
+    lines = "\n".join(f"{t}: view {views.get(t, 'none')}; {rulings_part(root, t)}" for t in selected)
+    entries = [f"review/{entry}" for entry in root_listing(exam_root.exam_dir / "review")]
+    text = prompt_mod.opening(REVIEW_MESSAGE, lines, entries, round_number=round_number)
+    capped = _run_session(harness, text, turns, selected)
+    filed = [r for t in selected for r in load_rulings(root, t) if r.round == round_number]
+    for task_id in selected:
+        sync_spec(root, task_id, round_number)
+    return {"round": round_number, "tasks": selected, "capped": bool(capped), "counts": counts(filed),
+            "findings": list(map(Finding.as_dict, exam_root.findings))}
+
+
+__all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "REVIEW_MESSAGE", "review_extension", "review_specs", "rulings_part", "derive_findings", "examine", "examiner_extension", "session_opening",
            "finding_from_row", "left_out_finding", "load_store", "notes_line", "root_listing", "rulings_line",
-           "select_for_session", "task_runs_of", "turns_ran_out"]
+           "select_for_session", "spec_owned", "task_runs_of", "turns_ran_out"]
+
+
+def examine_rounds(workdir: Any, task_ids: Iterable[str], *, model: Any, writer_model: Any = None,
+                   rounds: Optional[int] = None, ceiling_usd: Optional[float] = None) -> dict:
+    """The review loop over the Tasks with the Examiner's round wired in (spec/rounds.py, D331)."""
+    from kullback.spec.rounds import run_rounds
+    from kullback.spec.router import ROUNDS_CAP
+
+    return run_rounds(workdir, task_ids, examine=review_specs, model=model, writer_model=writer_model,
+                      rounds=rounds or ROUNDS_CAP, ceiling_usd=ceiling_usd)

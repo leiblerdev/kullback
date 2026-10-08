@@ -26,8 +26,8 @@ from kullback.examiner import lifecycle
 from kullback.report.load import load_tool_sigs, run_from_jsonl
 from kullback.runner import target as T
 from kullback.runner.atom_context import AtomContext, _evaluate, gate
-from kullback.runner.boundary import runner_version as compute_runner_version
 from kullback.runner.canon import Unresolved, load_rules
+from kullback.runner.code_hash import code_hash
 from kullback.runner.records import EntitySchema, Environment, Task, Verifier
 from kullback.runner.verdict import MUST_HOLD, verdict
 
@@ -225,8 +225,7 @@ def measure(workdir: Path) -> dict:
 
 
 def main(argv: list[str]) -> int:
-    out: dict = {"code_runner_version": compute_runner_version(
-        Path(__import__("kullback").__file__).parent).runner_version,
+    out: dict = {"code_runner_version": code_hash(),
         "code_path": str(Path(__import__("kullback").__file__).parent),
         "corpora": []}
     for name in [a for a in argv if not a.startswith("--")]:

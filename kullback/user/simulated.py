@@ -8,7 +8,16 @@ from __future__ import annotations
 from typing import Any, Callable, Iterable, Optional
 
 from kullback.runner.records import Event, UserFact, UserRules
-from kullback.user.ends import FactLookup, _field_of, _row_value, goal_done, tool_called, writes_made
+from kullback.user.ends import (
+    FactLookup,
+    _field_of,
+    _row_value,
+    goal_done,
+    tool_called,
+    write_took_effect,
+    writes_made,
+)
+from kullback.user.lookup import FactStore, Found, asked_in
 from kullback.user.rules import (
     ASKABLE,
     CHOICE,
@@ -31,6 +40,7 @@ from kullback.user.rules import (
     SPOKEN_FIELDS,
     STRIPPED_SOURCE,
     STRIPPED_TAG,
+    TRANSFER_MARKER,
     UNANSWERABLE_LIMIT,
     _agrees,
     _asks_stored,
@@ -41,12 +51,19 @@ from kullback.user.rules import (
     _shared,
     _tokens,
     _words,
-    asked_fields,
     extracted_values,
     fact_class,
-    named_fields,
 )
 from kullback.user.vocabulary import GENERIC, Vocabulary
+
+# A line said again with no write made in between is a loop and not a conversation (D326): the
+# second time the user asks what is missing instead, the third time it ends the Run.
+REPEAT_ASK = "What else do you need from me to finish this?"
+REPEAT_LIMIT = 3
+USER_REPEAT = "user_repeat"
+# What the user says on the turn it would have sent the transfer token, so the agent keeps one turn
+# to make its hand-off call; the token itself goes on the next turn (D326).
+TRANSFER_ACCEPT = "Okay, please transfer me."
 
 
 class SimulatedUser:
@@ -55,20 +72,31 @@ class SimulatedUser:
     def __init__(self, rules: UserRules, starting_state_reader: Any = None, model: Any = None,
                  identity: Optional[dict] = None, vocab: Vocabulary = GENERIC,
                  write_tools: Iterable[str] = (), goal_writes: Optional[Iterable[str]] = None,
-                 answer_strip: Optional[Callable[[str], tuple[str, list]]] = None):
+                 answer_strip: Optional[Callable[[str], tuple[str, list]]] = None,
+                 goal_counts: Optional[dict] = None):
         self.rules = rules
         self.reader = starting_state_reader
         self.model = model
         self.vocab = vocab
+        # The facts this user can be asked for, by field name and alias, and every lookup this Run
+        # made, so a report counts the asks answered and the asks the store held nothing for (D332).
+        self.store = FactStore.from_rules(rules, vocab)
+        self.lookups: list[Found] = []
         # The tools that change the world (`ToolSig.kind`), so this user can tell a Run that has
         # done what it came for from one that has not. The transcript `reply` is handed already
         # carries the calls and their results, so nothing new has to be plumbed to the user; the
         # vocabulary knows fields and not tool kinds, which is why the names are passed in here.
         self.write_tools = frozenset(write_tools or ())
-        # The writes the Task's goal implies (D210, `goal_write_set`). None means the caller named
+        # The writes the Task's goal implies (D210), read off its Spec (`rules.spec_goal`). None means the caller named
         # none, and the end then falls back to D158's reading, that any write is the Run acting; an
         # empty set is a goal that implies no write and is satisfied without one.
         self.goal_writes = None if goal_writes is None else frozenset(goal_writes)
+        # How many `called` items name each goal write (`rules.spec_goal`), so a Run that made
+        # one of two requested writes of one tool is not done (D326). None reads tool names only.
+        self.goal_counts = dict(goal_counts) if goal_counts else None
+        self._made: dict[str, int] = {}
+        self._said_lines: dict[str, tuple[int, int]] = {}
+        self._transfer_end: Optional[tuple[str, str]] = None  # (kind, line) for the next turn
         # D196's strip, prepared over this Task's own evidence and applied to what this user is
         # about to say. Without one the user speaks its facts unchecked, as it did before D210.
         self.answer_strip = answer_strip
@@ -89,7 +117,7 @@ class SimulatedUser:
         self._silent = 0
         self._refused = 0
         self._restated = False
-        self._acted = False  # the Candidate has used a tool in this Run (p3)
+        self._acted = False  # the Candidate has used a tool in this Run (D294)
         # Turns this user had nothing at all for what was asked on: the scenario running out,
         # counted (D210). One turn, however many fields it named: the rule is a Candidate asking
         # twice, so a single turn naming two unknown fields is one ask and not two.
@@ -102,6 +130,9 @@ class SimulatedUser:
             if _field_of(message, "role") == "assistant":
                 question = _field_of(message, "content")
         self._acted = tool_called(transcript)
+        self._made = self._write_counts(transcript)
+        if self._transfer_end is not None:
+            return self._end_after_transfer()
         answers: dict[str, Any] = {}
         sources: dict[str, str] = {}
         spoken: list[str] = []
@@ -147,6 +178,7 @@ class SimulatedUser:
         if not self.done and unavailable and not (answers or record or spoken):
             self._close(question, sources, spoken, self._writes_made(transcript))
         text = self._say(question, answers, sources, spoken, unavailable, record)
+        text, repeated = self._unrepeated(text, sources)
         # How many of this turn's asks went unanswered, and how many the Run has left unanswered so
         # far: the refusal rate a build reports, read off the Simulated user's own turns. A record
         # fact counts here too: the Candidate asked and got no value, whoever holds it.
@@ -156,6 +188,8 @@ class SimulatedUser:
         tags = (["fact_unavailable"] if unavailable else []) + ([IN_RECORD_TAG] if record else [])
         if any(source == STRIPPED_SOURCE for source in sources.values()):
             tags.append(STRIPPED_TAG)
+        if repeated:
+            tags.append(USER_REPEAT)
         if self.end_reason is not None and not self._end_tagged:
             tags.append(self.end_reason)
             self._end_tagged = True
@@ -172,6 +206,8 @@ class SimulatedUser:
                 "refused": refused,
                 "refused_so_far": self._refused,
                 "user_end": self.end_reason,
+                # Reported, never read by trust or the Verifier, and never a reason to end (D332).
+                "user_goal_met": self._goal_done(self._writes_made(transcript), question),
                 "stripped_so_far": self.stripped,
             },
             assisted=assisted,
@@ -179,23 +215,20 @@ class SimulatedUser:
         return text
 
     def _asked(self, question: str) -> list[str]:
-        """The fields this question asks for: the vocabulary's cues, plus the facts the recording
-        holds that the question names in words no cue carries.
+        """The fields this question asks for, through the one lookup both users share (D332).
 
-        A field the question states itself is not an ask for it. An agent that lists the action it
-        is about to take and asks "do you confirm" names the order it is confirming, and answering
-        with that order id instead of confirming is what build 8's Simulated user did.
+        Only the turn's request sentences are looked up, so a turn that reports what was done and
+        asks nothing asks for no fact. A field whose value the turn states is not asked for: an
+        agent that lists the action it is about to take and asks "do you confirm" names the order
+        it is confirming, and answering with that order id instead of confirming is what build 8's
+        Simulated user did.
         """
-        stated = {field for field, _ in extracted_values(question, vocab=self.vocab)}
-        fields = [field for field in asked_fields(question, vocab=self.vocab) if field not in stated]
-        if CONFIRM_REQUEST.search(question or ""):
-            return fields
-        held: list[str] = []
-        for fact in self.rules.facts:
-            if fact.field not in SPOKEN_FIELDS and fact.field not in stated and fact.field not in held:
-                held.append(fact.field)
-        return fields + [field for field in named_fields(question, held, vocab=self.vocab)
-                         if field not in fields]
+        asked = asked_in(question)
+        if not asked:
+            return []
+        found = self.store.lookup(asked)
+        self.lookups.append(found)
+        return found.fields()
 
     def _open(self, answers: dict, sources: dict, spoken: list) -> None:
         """The opening reply: the goal the recorded user stated, then what it volunteered (D44)."""
@@ -226,6 +259,8 @@ class SimulatedUser:
                                        (CHOICE, False, OPEN_REQUEST)):
             if not cue.search(question or ""):
                 continue
+            if field == CONFIRMATION and self._spent(CONFIRMATION) and self._goal_done(made or set(), question):
+                break  # no write is left to confirm: the goal again or the close, never a reused yes
             fact = self._next(field, reuse_last=reuse_last)
             if fact is not None:
                 spoken.append(str(fact.value))
@@ -239,7 +274,7 @@ class SimulatedUser:
             return
         satisfied = self._goal_done(made or set(), question)
         goal = self._fact(GOAL)
-        # A goal naming no writes has nothing left to restate once the Candidate closes (p3).
+        # A goal naming no writes has nothing left to restate once the Candidate closes (D294).
         no_write_close = self.goal_writes is not None and not self.goal_writes and _closes(question)
         if goal is not None and not self._restated and not satisfied and not no_write_close:
             spoken.append(str(goal.value))
@@ -258,31 +293,37 @@ class SimulatedUser:
         if kind is None:
             return
         closing = self._fact(CLOSING)
-        spoken.append(str(closing.value) if closing is not None else GENERIC_CLOSE)
+        line = str(closing.value) if closing is not None else GENERIC_CLOSE
         sources[CLOSING] = "rules" if closing is not None else "generic_close"
+        if TRANSFER_MARKER in line:
+            # The token ends the Run on the turn it is said, so the agent never makes the hand-off
+            # call it just promised (6 Runs of one build). Agree now, send the token on the next turn.
+            spoken.append(line.replace(TRANSFER_MARKER, "").strip() or TRANSFER_ACCEPT)
+            self._transfer_end = (kind, line)
+            return
+        spoken.append(line)
         self.end_reason = kind
         self.done = True
 
     def _end_kind(self, question: str, satisfied: bool) -> Optional[str]:
-        """Which of the four kinds this end is, or nothing where the user has not ended (D210).
+        """Which kind this end is reported as, or nothing where the user has not ended (D210, D332).
 
-        More than one can hold at once, so they are read in one order. A Run whose goal writes are
-        all confirmed is done whatever the Candidate said next. A Candidate that twice asks for
-        what nobody ever told this user has run the scenario out, whatever it says while doing it.
-        A Candidate that then closes or passes the conversation on ended it, and that is a handoff
-        rather than the user running dry. Last comes the user with nothing left to say and no close
-        to answer, which is the scenario out in the other way. The closing cue and the silence
-        counter are still read, but each is an input to a kind and neither is the end on its own.
-        `gave_up` is never reached here: it is the turn limit, which the loop holds and the user
-        never sees.
+        The goal never ends a Run (D332): it is read off the Spec's write items, and a user label
+        may not decide a Run that trust or the Verifier reads. What ends one is the
+        Candidate's own stop (it closes or passes the conversation on), the scenario running out
+        (twice asked for what nobody told this user, or nothing left to say) and the turn limit the
+        loop holds. Where one of those ends the Run with the goal's writes made, the end is reported
+        `goal_satisfied`, so a report still reads how many Runs got there; it is a label only.
         """
-        if satisfied:
-            return GOAL_SATISFIED
         if self._unanswerable >= UNANSWERABLE_LIMIT:
-            return SCENARIO_EXHAUSTED
-        if _closes(question):
-            return HANDED_OFF
-        return SCENARIO_EXHAUSTED if (self._restated or self._silent >= SILENCE_LIMIT) else None
+            kind = SCENARIO_EXHAUSTED
+        elif _closes(question):
+            kind = HANDED_OFF
+        elif self._restated or self._silent >= SILENCE_LIMIT:
+            kind = SCENARIO_EXHAUSTED
+        else:
+            return None
+        return GOAL_SATISFIED if satisfied else kind
 
     def _goal_done(self, made: set, question: str = "") -> bool:
         """The Task's goal is done in this Run, through the one predicate both users read (D210).
@@ -291,8 +332,61 @@ class SimulatedUser:
         only when the Candidate has used a tool and its latest turn closes; D158's reading holds
         where the caller named no goal writes at all.
         """
-        return goal_done(self.goal_writes, self.write_tools, made,
+        done = goal_done(self.goal_writes, self.write_tools, made,
                          acted=self._acted, closed=_closes(question))
+        if done and self.goal_counts:
+            # Every requested write, not one of each tool: one order cancelled of two is not done.
+            return all(self._made.get(tool, 0) >= int(count) for tool, count in self.goal_counts.items())
+        return done
+
+    def _write_counts(self, transcript: list) -> dict[str, int]:
+        """How many write calls of each tool took effect in this Run, read as `writes_made` reads."""
+        counts: dict[str, int] = {}
+        for message in transcript or ():
+            name = _field_of(message, "name")
+            if name in self.write_tools and write_took_effect(message):
+                counts[name] = counts.get(name, 0) + 1
+        return counts
+
+    def _spent(self, field: str) -> bool:
+        """Every recorded answer of this field has been given once already."""
+        return self._used.get(field, 0) >= sum(1 for fact in self.rules.facts if fact.field == field)
+
+    def _unrepeated(self, text: str, sources: dict) -> tuple[str, bool]:
+        """The line to say, and whether a repeat ended the Run (D326).
+
+        A line already said word for word, with no write made since, is a loop: the second time
+        the user asks what is missing, the third time it closes and the Run ends `user_repeat`.
+        The closing line and the one restatement of the goal (said once by design) are never replaced.
+        """
+        if self.done or self._transfer_end is not None or sources.get(GOAL) == GOAL_RESTATED:
+            return text, False
+        made = sum(self._made.values())
+        count, at = self._said_lines.get(text, (0, made))
+        count = (count if at == made else 0) + 1
+        self._said_lines[text] = (count, made)
+        if count == 1:
+            return text, False
+        if count < REPEAT_LIMIT:
+            return REPEAT_ASK, False
+        closing = self._fact(CLOSING)
+        line = str(closing.value) if closing is not None else GENERIC_CLOSE
+        sources[CLOSING] = "rules" if closing is not None else "generic_close"
+        self.end_reason = SCENARIO_EXHAUSTED
+        self.done = True
+        return line, True
+
+    def _end_after_transfer(self) -> str:
+        """The turn after the user agreed to a transfer: the token, and the Run ends here."""
+        kind, line = self._transfer_end
+        self._transfer_end = None
+        self.end_reason, self.done = kind, True
+        self.events.append(Event(idx=len(self.events), type="user_turn", payload={
+            "text": line, "fields": [CLOSING], "sources": {CLOSING: "rules"},
+            "unavailable_fields": [], "record_fields": [], "tags": [kind], "refused": 0,
+            "refused_so_far": self._refused, "user_end": kind, "stripped_so_far": self.stripped}))
+        self._end_tagged = True
+        return line
 
     def _writes_made(self, transcript: list) -> set[str]:
         """The write-kind tools this Run has made so far, so the user can tell a Run that has done

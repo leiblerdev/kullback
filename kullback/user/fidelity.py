@@ -206,13 +206,6 @@ def _band_counts(scores: Sequence[float]) -> dict[str, int]:
     return counts
 
 
-def write_scores(workdir: Any, rows: Iterable[dict], round: int = 0) -> Path:
-    """user_fidelity.json beside tool_fidelity.json: the per-Task rows and the corpus summary."""
-    rows = [dict(row) for row in rows or ()]
-    body = {"format": FORMAT, "round": round, "tasks": rows, "summary": summarise(rows)}
-    return write_json(Path(workdir) / FILE_NAME, body)
-
-
 def load_scores(workdir: Any) -> dict:
     body = read_json(Path(workdir) / FILE_NAME, {}) or {}
     return body if isinstance(body, dict) and body.get("format") == FORMAT else {}
@@ -259,15 +252,19 @@ def write_tools_of(workdir: Any) -> list[str]:
 
 
 def vocabulary_of(workdir: Any):
-    """This build's Vocabulary, or the generic core where the build has not derived one."""
-    from kullback.user.vocabulary import GENERIC, Vocabulary
+    """This build's Vocabulary, else one built from the mined signatures' id arguments (D326).
+
+    The generic core alone cannot hear an ask for any id, which left 260 exam Runs of one build restating the
+    goal to an agent asking for one; with no signatures either, the generic core is what is left.
+    """
+    from kullback.user.vocabulary import Vocabulary, from_signatures
     body = _json(Path(workdir) / VOCABULARY, None)
-    if not isinstance(body, dict):
-        return GENERIC
-    try:
-        return Vocabulary.model_validate(body)
-    except ValueError:
-        return GENERIC
+    if isinstance(body, dict):
+        try:
+            return Vocabulary.model_validate(body)
+        except ValueError:
+            pass
+    return from_signatures(_json(Path(workdir) / SIGS, []) or [])
 
 
 def references(workdir: Any) -> dict[str, str]:
@@ -432,48 +429,6 @@ def refused_write_ends(workdir: Any, write_tools: Optional[Iterable[str]] = None
         out["runs_with_no_end_kind"] += int(called and not classified)
         out[REFUSED_WRITE_ENDS] += int(called and not took_effect and satisfied)
     return out
-
-
-ENDS_BY_DRIVER = "user_ends_by_kind"
-
-
-def ends_by_driver(workdir: Any) -> dict[str, dict[str, int]]:
-    """How the stored Runs ended, in the kinds of D210, under the user that ended each of them (D231).
-
-    The turn a Run ends on names its own driver, so the split is read off the same payload the end
-    kind is read off and never off which driver the Task was assigned. A Task the agent user drives
-    still ends on a rules turn wherever that turn was dropped or the model could not answer, and a
-    split taken off the assignment would file those Runs under the user that did not speak them. A
-    turn that names no driver is the rule-driven user's own, which is the only one that writes none.
-
-    Every kind is named for every driver that ended a Run, zero included, so a driver that stopped
-    ending one way says so rather than dropping the line, and a driver that ended nothing is absent
-    rather than a row of zeros: two thirds of Runs running out of scenario under one user is the
-    reading this exists for, and it cannot be had from a count that has already summed the two.
-
-    Off the stored Runs and nothing else, so it costs no model call and no Run. Those are the Runs
-    the workdir holds now, not a pile that grows with each round: a stage replaces a Task's Runs
-    whole before it writes its own (`_discard_runs`), and a Task this round left alone keeps the
-    Runs it was last given, which is the same reading runs.json and the scorecard's Task coverage
-    are taken off.
-    """
-    out: dict[str, dict[str, int]] = {}
-    folder = Path(workdir) / RUNS_DIR
-    for path in sorted(folder.glob("*/*.jsonl")) if folder.is_dir() else ():
-        ended: Optional[tuple[str, str]] = None
-        for event in _events(path):
-            if event.get("type") != "user_turn":
-                continue
-            payload = event.get("payload") or {}
-            kind = ends_mod.end_kind_of(payload)
-            if kind is not None:
-                ended = (str(payload.get("driver") or RULES_DRIVER), kind)
-        if ended is None:
-            continue
-        driver, kind = ended
-        counts = out.setdefault(driver, {name: 0 for name in rules_mod.USER_END_KINDS})
-        counts[kind] = counts.get(kind, 0) + 1
-    return {driver: counts for driver, counts in sorted(out.items())}
 
 
 def _events(path: Path) -> Iterator[dict]:

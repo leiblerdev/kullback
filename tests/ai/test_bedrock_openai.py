@@ -58,7 +58,7 @@ def test_an_openai_id_on_bedrock_gets_the_chat_completions_adapter_and_an_anthro
     assert pv.BedrockOpenAIModel.credential_vars() == pv.BedrockAnthropicModel.credential_vars()
 
 
-def test_a_call_sends_the_wire_id_unchanged_with_openai_tools_and_reads_the_cache_counts(live):
+def test_a_call_with_no_tools_and_no_effort_stays_on_chat_completions_and_reads_the_cache_counts(live):
     seen = []
     reply = httpx.Response(200, json={
         "model": "gpt-6-sol",
@@ -66,10 +66,10 @@ def test_a_call_sends_the_wire_id_unchanged_with_openai_tools_and_reads_the_cach
             {"id": "c1", "type": "function", "function": {"name": "look_up", "arguments": "{\"key\": \"a\"}"}}]}}],
         "usage": USAGE})
     got = bedrock_openai(handle_for(seen, reply)).query(
-        [{"role": "user", "content": "hi"}], tools=[TOOL], config=pv.ModelConfig(max_tokens=64))
+        [{"role": "user", "content": "hi"}], config=pv.ModelConfig(max_tokens=64))
     body = json.loads(seen[0].content)
+    assert str(seen[0].url).endswith("/openai/v1/chat/completions")
     assert body["model"] == "global.openai.gpt-6-sol"
-    assert body["tools"][0]["type"] == "function" and body["tools"][0]["function"]["name"] == "look_up"
     assert body["max_completion_tokens"] == 64 and "max_tokens" not in body
     assert [(call.name, call.arguments) for call in got.tool_calls] == [("look_up", {"key": "a"})]
     assert (got.usage.input, got.usage.cache_read, got.usage.cache_write, got.usage.output) == (50, 600, 250, 7)

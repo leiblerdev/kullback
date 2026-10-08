@@ -70,6 +70,17 @@ def _field(item: Any, key: str) -> Any:
     return getattr(item, key, None)
 
 
+def _passed_score(reward: Any) -> Any:
+    """1 for a pass, 0 for a fail, None for no signal: the pass decides, not the weighted score (D329).
+
+    A reward that carries no pass (an older shape) is read by its score as before.
+    """
+    passed = _field(reward, "passed")
+    if passed is None:
+        return _field(reward, "score")
+    return 1 if passed else 0
+
+
 def _leaf_paths(value: Any, segments: list) -> Any:
     if isinstance(value, dict):
         for key, item in value.items():
@@ -150,17 +161,17 @@ def _drive(episode: Any, task_id: str, calls: list, *, seed: int, closing: str,
 
 def check_walk_passes(episode: Any, task_id: str, walk: Any, *, seed: int = 0,
                       closing: str = "Done.", max_steps: int = 8) -> WalkResult:
-    """Drive the walk's calls in one message; holds only when the reward scores 1."""
+    """Drive the walk's calls in one message; holds only when the reward passes (every gate holds)."""
     try:
         results = _drive(episode, task_id, list(walk or []), seed=seed, closing=closing,
                          max_steps=max_steps)
         reward = episode.reward()
     except EpisodeError as exc:
         return WalkResult(name="walk_passes", outcome=FAILED, reason=str(exc), results=[])
-    score = _field(reward, "score")
+    score = _passed_score(reward)
     words = _field(reward, "reason") or _field(reward, "class_") or ""
     if score == 1:
-        return WalkResult(name="walk_passes", outcome=HELD, reason="walk scored 1",
+        return WalkResult(name="walk_passes", outcome=HELD, reason="walk passed",
                           results=results)
     if score is None:
         return WalkResult(name="walk_passes", outcome=NO_SIGNAL,
@@ -171,13 +182,13 @@ def check_walk_passes(episode: Any, task_id: str, walk: Any, *, seed: int = 0,
 
 def check_do_nothing_fails(episode: Any, task_id: str, *, seed: int = 0,
                            closing: str = "Done.", max_steps: int = 8) -> CheckResult:
-    """Drive a run with no tool calls; holds only when the reward scores 0."""
+    """Drive a run with no tool calls; holds only when the reward fails (a gate failed, score 0)."""
     try:
         _drive(episode, task_id, [], seed=seed, closing=closing, max_steps=max_steps)
         reward = episode.reward()
     except EpisodeError as exc:
         return CheckResult(name="do_nothing_fails", outcome=FAILED, reason=str(exc))
-    score = _field(reward, "score")
+    score = _passed_score(reward)
     words = _field(reward, "reason") or _field(reward, "class_") or ""
     if score == 0:
         return CheckResult(name="do_nothing_fails", outcome=HELD, reason="do-nothing scored 0")

@@ -75,3 +75,10 @@ def test_the_round_counts_say_what_the_strip_took_out_and_what_the_leak_check_st
     result = counts.round_counts(**world)
     assert result["intents_stripped"] == 1 and result["values_stripped"] == 2
     assert result["leak_misses"] == 1
+
+
+def test_round_counts_with_spec_tiers_report_the_specs_trusted_list(tmp_path):
+    spec_tiers = {TASK: ("unconfirmed", {"failing": "unsupported cell orders.W1.status"}),
+                  "t2": ("trusted", {"failing": None})}
+    result = counts.round_counts(**_world(tmp_path), spec_tiers=spec_tiers)
+    assert result["trusted_ids"] == ["t2"] and result["trusted"] == 1
