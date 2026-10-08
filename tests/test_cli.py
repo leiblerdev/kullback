@@ -1043,10 +1043,11 @@ def test_examine_chooses_references_then_writes_the_specs_on_the_builder_model_t
     fake_modules["kullback.builder.session.build"][0]["kwargs"]["examine_fn"](workdir, ["t1"])
     (written,) = fake_modules["kullback.spec.stage.write_specs"]
     assert written["args"][1] == ["t1"] and written["args"][2] is built["vendor/large"]
-    first, second = (call["kwargs"] for call in fake_modules["kullback.examiner.session.examine"])
-    assert first["model"] is None and second["model"] is built["vendor/large"]
-    assert second["task_ids"] == ["t1"] and "verifier_from" not in second
-    assert not {"probe_model", "reroll_model", "user_model"} & set(second)
+    (first,) = (call["kwargs"] for call in fake_modules["kullback.examiner.session.examine"])
+    assert first["model"] is None and first["task_ids"] == ["t1"]
+    (rounds,) = (call for call in fake_modules["kullback.examiner.session.examine_rounds"])
+    assert rounds["args"][1] == ["t1"] and rounds["kwargs"]["model"] is built["vendor/large"]
+    assert rounds["kwargs"]["writer_model"] is built["vendor/large"]
 
 
 def test_examine_writes_the_specs_on_a_named_spec_model(workdir, fake_modules, monkeypatch):
