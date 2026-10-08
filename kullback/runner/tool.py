@@ -51,6 +51,16 @@ EQUIVALENCE_FILE = "equivalence.json"
 WORLD_PROVENANCE_FILE = "world_provenance.json"
 PROBES_DIR = "probes"
 MAX_TURNS = 30
+# One general line after the Task's instructions, for the Runner's Candidate only (D326): Candidates
+# ended with part of the user's requests undone on 173 Runs of one build. The Spec writer reads the same
+# instructions as policy text, so the line is added here and not where the instructions are loaded.
+STOP_SHORT_LINE = ("Before you end the conversation, list every item the user asked for and say for each "
+                   "whether it was done or why not.")
+
+
+def runner_prompt(instructions: Optional[str]) -> Optional[str]:
+    """The system prompt a Runner Candidate gets: the Task's instructions, then the stop-short line."""
+    return f"{instructions}\n\n{STOP_SHORT_LINE}" if instructions else None
 PROBE_TURNS = 6
 
 
@@ -215,7 +225,7 @@ def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, mak
         run_id, f"{task_id}-{seed}", workdir=runs_dir, env_id=env.env_id, task_id=task_id,
         model=_model_name(model), seed=seed, user=user,
         user_rules=env.rules(task),
-        max_turns=MAX_TURNS, system_prompt=env.system_prompt(task),
+        max_turns=MAX_TURNS, system_prompt=runner_prompt(env.system_prompt(task)),
         first_user=task.intent if user is None else None)
     run_id = state.run.run_id
     loop.open_with_user(state)

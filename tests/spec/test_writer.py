@@ -77,7 +77,7 @@ def test_writer_reads_the_starting_state_then_keeps_only_grounded_witnessed_chec
     assert written.counts == {"demands": 5, "kept": 2, "ungrounded": 1, "unwitnessed": 1, "condition_unquoted": 0,
                               "bad_kind": 1, "gaps": 1, "sent_back": 2, "sent_back_kept": 0, "parse_error": "",
                               "truncated_chars": 0, "unsatisfiable_sent_back": 0, "unsatisfiable": [],
-                              "write_predicate": 0}
+                              "write_predicate": 0, "value_not_argument": 0, "unseen_sent_back": 0}
     assert written.spec.gaps == ["f2"]
     assert written.session["tool_uses"] == ["lookup_rows"]
     tool_turn = model.calls[1]["messages"][-1]
@@ -383,3 +383,33 @@ def test_repair_for_ruling_publishes_defended_when_every_ruled_check_stands(tmp_
     assert json.loads(after)["atoms"] == json.loads(before)["atoms"]
     (event,) = _bus_events(tmp_path)
     assert event["name"] == "spec.defended" and event["payload"]["check_ids"] == ["c0"]
+
+
+def test_a_handoff_the_reference_never_made_goes_back_as_unseen_conduct_and_is_dropped():
+    handoff = {"id": "d1", "kind": "required", "demand": "handoff", "tool": "call_person", "fact_ids": ["f1"],
+               "because": "move item A1 to slot seven"}
+    model = TestModel([answer("demands", [dict(MOVE, id="d0"), handoff]), answer("demands", [])])
+    written = W.write_spec("t1", inputs()._replace(reference_tools=frozenset({"update_item"})), model)
+    assert [check.id for check in written.spec.checks] == ["c0"] and written.counts["unseen_sent_back"] == 1
+    refused = json.loads(model.calls[1]["messages"][-1]["content"][len(W.FOLLOWUP_PROMPT):])["refused"]
+    assert refused == [{"id": "d1", "reason": "unseen_conduct", "rule": W.SENT_BACK_RULES["unseen_conduct"]}]
+    kept = W.write_spec("t1", inputs(), TestModel([answer("demands", [dict(MOVE, id="d0"), handoff])]))
+    assert [check.id for check in kept.spec.checks] == ["c0", "c1"]
+
+
+def test_a_write_value_that_is_no_argument_of_its_tool_goes_back_with_the_tools_arguments():
+    stray = dict(MOVE, id="d0", values={"slot": "seven", "shelf": "top"})
+    model = TestModel([answer("demands", [stray]), answer("demands", [])])
+    written = W.write_spec("t1", inputs(), model)
+    assert written.spec.checks == [] and written.counts["value_not_argument"] == 1
+    refused = json.loads(model.calls[1]["messages"][-1]["content"][len(W.FOLLOWUP_PROMPT):])["refused"]
+    assert refused == [{"id": "d0", "reason": "value_not_argument",
+                        "rule": W.SENT_BACK_RULES["value_not_argument"] + "; update_item takes item_id, slot"}]
+
+
+def test_the_prompt_asks_for_say_values_handoffs_not_writes_caps_on_data_writes_and_row_naming_id_fields():
+    assert "list the values the agent must state (an amount, an id, a status word), one each, never a sentence" \
+        in " ".join(W.SYSTEM_PROMPT.split())
+    assert "A transfer or hand-off is the handoff demand, never a write." in W.SYSTEM_PROMPT
+    assert "A cap counts data writes only, never a hand-off." in W.SYSTEM_PROMPT
+    assert "The id_field of a write is an argument that names a row." in W.SYSTEM_PROMPT

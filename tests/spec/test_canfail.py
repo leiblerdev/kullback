@@ -1,4 +1,4 @@
-from kullback.runner.records import Verifier
+from kullback.runner.records import EndState, Forbidden, ValueSource, Verifier
 from kullback.spec.canfail import can_fail
 from kullback.spec.compile import compile_spec
 from tests.spec.fixtures import WRITE_TOOLS, fn, reference_run, spec
@@ -23,3 +23,11 @@ def test_an_empty_verifier_cannot_fail():
     result = can_fail(Verifier(task_id="t1"), reference_run(), canon=fn, write_tools=WRITE_TOOLS)
     assert not result.passed
     assert not {row["stage"]: row for row in result.rows}["verifier_empty_run"]["passed"]
+
+
+def test_a_refusal_verifier_fails_the_forbidden_call_run_and_is_not_asked_to_fail_the_empty_run():
+    refusal = Verifier(task_id="t1", expected=[EndState(cells=[])],
+                       forbidden=[Forbidden(kind="write", tool="update_item", source=ValueSource(kind="policy"))])
+    result = can_fail(refusal, reference_run(), canon=fn, write_tools=WRITE_TOOLS)
+    assert result.passed, result.rows
+    assert [row["stage"] for row in result.rows] == ["verifier_forbidden_run"]

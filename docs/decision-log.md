@@ -2238,3 +2238,125 @@ After the verify-1006 fold two rulings decided trust for the same Task: the Spec
 The consistency checks of D321 (`contradicts_user`, `unasked_writes`) leave the trusted decision: `code_ruling` still computes them and the row carries them as `contradicts` and `unasked`, counted in the status table as "consistency flags" and never gating. This is the fold's reading pending the founder's decision on D321, and it is reversible in one place: where `code_ruling` builds the flags it can return unconfirmed again.
 
 Rejected: two rulings on one Task, because a reader could not say which tier a Task has; unsupported cells passing the grounded gate, because a value nobody sourced is not evidence the Task is right; the consistency checks as gates until the founder decides, because D321 found they do not separate a wrong Reference.
+
+### D323. Cells only for what someone said or wrote; the world's own values ride with the write (2026-10-07)
+
+`kullback/runner/expected.py expected_from_run` changes three ways. With a schema, a table whose columns record tool
+calls (evidence.actions_of, D308) gives no cells and one `allowed` entry for the whole table ("action table: calls are
+conduct, not state"); with no schema nothing changes. A value no source holds and no call passed, on a row the last
+successful sourced call named (every key part among its arguments), showed in its result, or made (passed one of the
+new row's values), is the world's answer to that call: `_world_source`, a `tool_result` source with `world` in its ptr.
+A minted row id gets the same `row_source`. A value a call passed, which an assistant turn stated and the next user turn
+opened on a yes to (D306's cue), is sourced by that user turn (`affirmed` in the ptr). Why: the 2026-10-07 failure
+analysis put 42 airline and 27 retail unconfirmed Tasks on action-table cells, 30 and 21 on world-made values, 17 and 4
+on agent-stated values. Re-derived on the vf-live copies, the unconfirmed Tasks whose fewest-unsupported end state has
+no unsupported cell go from 0 of 52 to 38 (airline) and 1 of 48 to 46 (retail); the code ruling then trusts 16 airline
+(2 on a wrong Reference) and 37 retail (5 wrong), and 22 airline and 8 retail land on "the empty Run passes": their only
+change was the hand-off, which is now conduct and gates only where the Spec demands it. Limits: the source kind is
+`tool_result` because `ValueSource.kind` has no `world`; a yes affirms every value of the turn before it; a short value
+is still found by plain containment. The wrong-trust bound must be re-measured before this ships.
+Status: built 2026-10-07 on fix-1007/cells.
+Folded 2026-10-07 on fix-1007/fold
+
+### D324. Refusals and no-writes are forbidden writes, say lists values, conduct must be in the Reference (2026-10-07)
+
+The failure analysis of 2026-10-07 found four Spec writer mechanisms. A refuse demand the Reference never recorded was
+counted unsupported and a no_write demand left no gate, so the empty Run passed (airline 22, retail 23 Tasks). A say
+demand was one sentence the final answer rarely held word for word (airline 3 untrusted and 8 of 117 right replays
+failing, retail 10). A hand-off or confirmation demand on a tool the Reference never called failed every faithful
+replay (airline 3, retail 9 "Verifier defect"). Write values named columns the tool does not take (airline 9, retail 17).
+
+Now `spec/end_state.py forbidden_of` turns a refuse demand with no recorded refusal, and a no_write demand, into
+`Forbidden(kind="write")` entries: one for the demand's tool, else one per write tool (`_forbidden_happened` reads a
+tool None with no table as unknown, not "any write"), with the demand's entity as the row. A tool the Reference
+called is never forbidden, so the Reference passes its own list. `conduct_of` drops a hand-off or confirmation whose
+tool the Reference never called and counts it in the new `Gates.unseen`, shown in `end_state_counts`; the writer gets
+it back in its one follow-up turn as `unseen_conduct`, read off `WriterInputs.reference_tools`, which the model never
+sees. `compile._say` compiles a say demand's `values` list to one communicate atom per value. `writer._check_of`
+refuses a write whose values name a key that is not an argument of its tool (`value_not_argument`) and sends it back
+with the tool's argument names. The prompt asks for say values, keeps a hand-off out of writes and caps, and says an
+id_field names a row. `gates_of` passes `schema.json` into `expected_from_run`.
+
+On the live Specs of verify-1006, read only: airline 77 of 128 Tasks gain 437 forbidden entries, retail 23 of 222
+gain 88; unseen conduct airline 4, retail 9; writes with values that are not arguments airline 14, retail 27.
+
+Limit: the empty Run still passes a Verifier whose expected diff is empty and whose forbidden list is non-empty
+(`gates/trust.py _empty_run_passes`, the return at line 412), since it writes nothing; such a Task is judged by its
+forbidden list on the wrong Run instead, which that function does not yet say. A tool signature with no argument
+list is read as unknown and never refuses a value. Status: built 2026-10-07 on fix-1007/demands.
+Folded 2026-10-07 on fix-1007/fold
+
+### D325. Examiner edits reach what gates: atom ids that exist, end-state and conduct edits, no silent no-finding (2026-10-07)
+
+The analysis of the verify-1006 live run (analyze-1007) found the Examiner's review edits mostly reached nothing. 179 atom
+drops named check ids (c<n>) or fact ids while the compiled atoms are i<n>; `spec/review.py` stored every drop and counted it
+applied, and 0 atoms were removed. 116 findings carried no edit because no kind existed for what they asked (re-pick a
+Reference 23, a conduct rule 18, a cell to drop or allow 17, among others). 40 no-finding reviews sat on Tasks with an
+unsupported cell, and `ExamRoot.current` read stale proposals under exam/verifiers/ before the Spec's Verifier.
+
+Now an atoms edit whose drop names no atom of the live Verifier is refused with the atom ids, and one dropping more than
+half of the atoms at once (its adds counted, since the fold) is refused.
+Each Task's line in the opening shows every atom id beside the check that made it, and the
+prompt shows an added atom in the shape the Spec accepts. Three edit kinds join body, text and atoms: `cell` (allow or drop a
+cell of every expected end state), `conduct` (add or remove a handoff, refusal or confirm_before_write rule; the conduct's
+kind sits under the key `conduct`, since `kind` names the edit) and `reference` (a Run on disk proposed as the Reference).
+Cell and conduct edits are kept on the Spec as `end_state_edits` and applied by code after each rewrite, both Verifier copies
+written with the version marked; an added conduct's source is a policy source whose clause is the review's why, since
+ValueSource has no examiner kind. A reference edit promotes nothing: it writes a `reference_proposed` row to
+examiner/reviews.json and opens a ruling on the Spec, so the Task's no_open_ruling gate fails until someone acts.
+`no_finding` is refused while the Task's Verifier holds a cell without a value or row source, naming the cells.
+`ExamRoot.current` reads the Spec's Verifier only.
+
+Limit: only `apply_review` reapplies the end-state edits; another rewrite of the Verifier (a router repair through
+`spec/writer.py write_verifier`) drops them until the next review round. Nothing closes a reference ruling yet. The finding
+tool's own field description (examiner/domain_tools.py) still lists the three old edit kinds; the prompt lists all six.
+Rejected: an examiner kind on ValueSource, a records change for one pointer; promoting the proposed Run by code, which would
+let the Examiner pick the Reference it is then judged against.
+Status: built 2026-10-07 on fix-1007/examiner.
+Folded 2026-10-07 on fix-1007/fold
+
+### D326. The rule user hears id asks, confirms only a pending write, and ends only when the job is done (2026-10-07)
+
+The fix-1007 failure analysis put 273 of 334 failing airline Runner Runs on the rule user and 57 of 213 retail Runs on a
+goal marked satisfied after part of the job. Six changes, all over names read at run time:
+- `user/fidelity.py vocabulary_of`: with no valid vocabulary.json, the Vocabulary is the generic core plus every id
+  argument of the mined signatures (`user/vocabulary.py from_signatures`, cues from `_base_cues`). The generic core alone
+  heard no id ask, and the user restated its goal and closed (260 Runs).
+- `user/simulated.py _asked`: a held fact the agent's turn names is answered under a confirm cue too; a fact whose value
+  the turn states is a confirmation, not an ask.
+- `_respond`: once the goal's writes are made, a confirm cue past the recorded confirmations gets the goal or the close,
+  never the reused yes (5 Runs looped to max_turns). A line said again with no write in between is replaced by one
+  generic "what else do you need" line; the third time the user closes, `scenario_exhausted` with the tag `user_repeat`.
+- `_close`: a closing line that carries the transfer token is said without it, and the token goes on the next turn, so
+  the agent keeps one turn for its hand-off call (6 Runs ended `transfer` with no hand-off).
+- `_goal_done`: with `goal_counts` (`user/rules.py goal_write_counts`, the Reference's successful writes per tool), the
+  goal is done only when every requested write is made, not one of each tool.
+- `runner/tool.py runner_prompt`: the Runner prompt ends with one line asking the agent to list every item the user
+  asked for and say whether it was done (173 retail Runs stopped short). Not in `_system_prompt_for`, which the Spec
+  writer reads as policy text; `runner/world/episode.py` still passes the bare instructions.
+
+Limits: `builder/run_user.py` builds the exam user with the generic core and no `goal_counts`, and `user/factory.py` and
+`builder/domain_tools.py` pass no `goal_counts`; until they pass `vocabulary_of(workdir)` and
+`goal_write_counts(reference, writes)` those Runs keep the old behaviour. A count per tool stands in for a count per
+entity, so the same row written twice satisfies a count of two. "Pending write" is read as the goal not done, not as the
+turn naming the write. No Run was made to measure the change.
+
+Status: built 2026-10-07 on fix-1007/user.
+Folded 2026-10-07 on fix-1007/fold
+
+### D327. Not run apart from failed; the writer's disagreement with the Reference as a flag (2026-10-07)
+
+What changed: `spec/trust.py tier_of_task` puts `fresh_runs` on the row, and a replay_only Task with no fresh Run
+says "not run: no fresh Run on disk" while one whose fresh Runs all fail keeps "no fresh Run passes"; the
+independent pass was `any()` over nothing, so 40 retail and 3 airline Tasks never played read like failures.
+`writer_disagreement` compares the Spec's write demands with the Reference's diff by code: a required write demand
+whose tool the Reference never called or whose row is in no diffed row (the demand half; a row half, a diffed row
+no write demand names, was dropped at the fold). It rides on the row as `writer_disagrees` beside `contradicts`
+and `unasked`, never gating. The trust row prints "replay_only N (not run M)" and "writer disagrees N".
+Why: the failure analysis of 2026-10-07 found the blind writer named a write the Reference never made on 18 wrong
+retail References against 1 right one, and nothing read it. Measured (docs/validation/trust-1007.md): the demand
+half has precision 0.82 and recall 0.45 for a wrong retail Reference (22 of 27 flagged Tasks wrong); the row half
+fires on 19 right and 0 wrong. Limit: it flags 1 of the 6 wrong-trusted retail Tasks, since on the other 5 the
+writer demanded what the Reference did; gating on it would hold back 5 right retail References with 22 wrong.
+Status: built 2026-10-07 on fix-1007/trust.
+Folded 2026-10-07 on fix-1007/fold

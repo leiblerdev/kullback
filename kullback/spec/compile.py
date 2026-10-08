@@ -57,13 +57,18 @@ def _write(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable
 
 
 def _say(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable) -> Optional[list[Atom]]:
-    if not demand.get("text"):
+    """One communicate atom per listed value (`values`, a list of strings), else one for `text`."""
+    values = demand.get("values")
+    if isinstance(values, list) and values:
+        texts = [(f"{atom_id}.{n}", str(value)) for n, value in enumerate(values) if str(value).strip()]
+    elif demand.get("text"):
+        texts = [(atom_id, str(demand["text"]))]
+    else:
         return None
-    text = str(demand["text"])
     return [verifier_suite.make_atom(
-        atom_id, "communicate",
+        said_id, "communicate",
         {"kind": "communicate", "value": canon_key(fn, text), "text": text, "field": None, "source_tool": None},
-        description=f"the final answer states {text}")]
+        description=f"the final answer states {text}") for said_id, text in texts] or None
 
 
 def _ask(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable) -> Optional[list[Atom]]:

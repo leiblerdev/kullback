@@ -88,6 +88,67 @@ def _source(value: Any, context: AtomContext, turns: list[str], clauses: list[st
     return None
 
 
+def _passed(value: Any, context: AtomContext) -> bool:
+    return any(context.c(leaf) == context.c(value) for call in context.calls for leaf in _leaves(call["args"]))
+
+
+def _affirmed_source(value: Any, context: AtomContext, recording: Optional[str]) -> Optional[ValueSource]:
+    """A value a call passed, an assistant turn stated, and the next user turn opened on a yes to (no no).
+
+    The confirmation is D306's cue (AFFIRM_OPEN, NEGATIVE_OPEN). It does not read what was affirmed:
+    a yes to a turn holding several values affirms each of them.
+    """
+    needle = context.t(value)
+    if needle in ("", "null", "[]", "{}") or not _passed(value, context):
+        return None
+    for said_at, text in context.assistant:
+        if needle not in context.t(text):
+            continue
+        reply = next(((i, turn) for i, (idx, turn) in enumerate(context.user) if idx > said_at), None)
+        if reply is None:
+            return None
+        sentences = [part.strip() for part in re.split(r"[.!?\n]+", reply[1]) if part.strip()]
+        if any(AFFIRM_OPEN.match(s) for s in sentences) and not any(NEGATIVE_OPEN.match(s) for s in sentences):
+            return ValueSource(kind="user_turn", ptr={"recording": recording, "turn": reply[0],
+                                                      "affirmed": said_at})
+    return None
+
+
+def _touching_write(row_id: str, made: Any, context: AtomContext, separator: str,
+                    turns: list[str], clauses: list[str], recording: Optional[str]) -> Optional[dict]:
+    """The last successful sourced call that names the row (every part of its key among its arguments),
+    shows the row's id in its result, or, for a row the Run made (`made`, its end values), passed one of
+    its values; sourced means at least one of its arguments has a source."""
+    parts = {context.c(part) for part in str(row_id).split(separator)}
+    values = {context.c(leaf) for leaf in _leaves(made or {}) if context.t(leaf) not in ("", "null", "none")}
+    for call in reversed(context.calls):
+        if call["error"]:
+            continue
+        args = {context.c(leaf) for leaf in _leaves(call["args"])}
+        result = next((result for idx, result in context.results if idx > call["idx"]), None)
+        shown = any(context.c(leaf) == context.c(row_id) for leaf in _leaves(result))
+        if not (parts <= args or shown or values & args):
+            continue
+        if any(_source(leaf, context, turns, clauses, recording) for leaf in _leaves(call["args"])):
+            return call
+    return None
+
+
+def _world_source(value: Any, write: Optional[dict], context: AtomContext) -> Optional[ValueSource]:
+    """A value nobody said and nobody passed, on a row a sourced write made or touched, is the world's
+    answer to that write (D323)."""
+    if write is None or _passed(value, context):
+        return None
+    return ValueSource(kind="tool_result", ptr={"event_idx": write["idx"], "tool": write["name"], "world": True})
+
+
+def _sourced(value: Any, context: AtomContext, turns: list[str], clauses: list[str], recording: Optional[str],
+             write: Optional[dict]) -> Optional[ValueSource]:
+    """`_source`, then a user affirmation of what the agent stated, then the world's answer to a write."""
+    return (_source(value, context, turns, clauses, recording) or _affirmed_source(value, context, recording)
+            or _world_source(value, write, context))
+
+
 def _paths(value: Any, prefix: str = "") -> dict[str, Any]:
     """Every leaf of a nested value by its path ("items.0.price"); an empty container is a leaf."""
     if isinstance(value, dict) and value:
@@ -103,20 +164,31 @@ def _paths(value: Any, prefix: str = "") -> dict[str, Any]:
 
 
 def _nested_source(before: Any, after: Any, context: AtomContext, turns: list[str], clauses: list[str],
-                   recording: Optional[str]) -> tuple[Optional[ValueSource], dict]:
+                   recording: Optional[str], write: Optional[dict] = None) -> tuple[Optional[ValueSource], dict]:
     """A nested value sourced leaf by leaf: only a leaf new or changed at its path needs a source."""
     was = _paths(before) if isinstance(before, type(after)) else {}
     changed = {path: leaf for path, leaf in _paths(after).items()
                if path not in was or context.c(was[path]) != context.c(leaf)}
     if not changed:
         return ValueSource(kind="unchanged"), {}
-    leaves = {path: _source(leaf, context, turns, clauses, recording) for path, leaf in changed.items()}
+    leaves = {path: _sourced(leaf, context, turns, clauses, recording, write) for path, leaf in changed.items()}
     return (None if None in leaves.values() else next(iter(leaves.values()))), leaves
 
 
 def _split_key(key: str) -> tuple[str, str]:
     table, _, row_id = key.partition(".")
     return table, row_id
+
+
+def attr_of(item: Any, name: str) -> Any:
+    """A dict's key or a model's attribute, so a schema reads the same from JSON or from EntitySchema."""
+    return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
+
+
+def action_tables(schema: Any) -> set[str]:
+    """Tables whose columns record tool calls (evidence.actions_of), read as spec/actions.py reads them (D308)."""
+    return {str(attr_of(column, "table")) for column in attr_of(schema, "columns") or ()
+            if (attr_of(column, "evidence") or {}).get("actions_of")}
 
 
 def expected_from_run(run_events: Any, user_turns: Iterable[Any], policy_text: Optional[str] = None,
@@ -129,28 +201,42 @@ def expected_from_run(run_events: Any, user_turns: Iterable[Any], policy_text: O
     are new or changed at their path, each the same way, kept in `leaf_sources`; the cell is sourced
     when every such leaf is, and is `unchanged` when none is new (reordered only). Short values (a digit, a yes) are found by plain
     containment and may be sourced by a turn that says them for another reason.
+
+    Neither found, a value a call passed is sourced by a user turn that opened on a yes right after
+    the agent stated it; and a value no call passed, on a row a sourced call named or whose result
+    showed the row's id, is the world's answer to that call (`tool_result` with `world` in its ptr,
+    D323). With a schema, a table whose columns record tool calls (an actions table, D308) gives no
+    cells: its rows are conduct, not state, so the whole table is `allowed`.
     """
     context = AtomContext(_as_run(run_events), canon, schema=schema)
     turns, clauses = _turns(user_turns), _clauses(policy_text)
+    actions = action_tables(schema) if schema is not None else set()
+    separator = attr_of(schema, "key_separator") or "|"
     cells: list[ExpectedCell] = []
+    allowed = [{"table": table, "why": "action table: calls are conduct, not state"} for table in sorted(actions)]
     for key, moved in context.diff().items():
         table, row_id = _split_key(key)
-        row_source = _source(row_id, context, turns, clauses, recording)
+        if table in actions:
+            continue
+        row = (context.end_state.get(table) or {}).get(row_id) or {}
+        created = moved["present_after"] and not moved["present_before"]
+        write = _touching_write(row_id, row if created else None, context, separator, turns, clauses, recording)
+        row_source = _sourced(row_id, context, turns, clauses, recording, write if created else None)
         if not moved["present_after"]:
             cells.append(ExpectedCell(table=table, row_id=row_id, row_source=row_source,
                                       source=row_source))
             continue
-        row = (context.end_state.get(table) or {}).get(row_id) or {}
         start_row = (context.start_state.get(table) or {}).get(row_id) or {}
         for name in moved["fields"]:
             value, leaves = row.get(name), {}
             if isinstance(value, (list, dict)):
-                source, leaves = _nested_source(start_row.get(name), value, context, turns, clauses, recording)
+                source, leaves = _nested_source(start_row.get(name), value, context, turns, clauses, recording,
+                                                write)
             else:
-                source = _source(value, context, turns, clauses, recording)
+                source = _sourced(value, context, turns, clauses, recording, write)
             cells.append(ExpectedCell(table=table, row_id=row_id, field=name, value=value, source=source,
                                       row_source=row_source, leaf_sources=leaves))
-    return EndState(cells=cells)
+    return EndState(cells=cells, allowed=allowed)
 
 
 def alternatives_from_turns(end_state: EndState, user_turns: Iterable[Any], canon: Any = None) -> list[EndState]:

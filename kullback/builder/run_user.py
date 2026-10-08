@@ -14,10 +14,10 @@ from kullback.runner.world.environment import BuiltEnvironment
 from kullback.user import account as account_mod
 from kullback.user import context as context_mod
 from kullback.user import factory as user_factory
-from kullback.user.rules import goal_write_set
+from kullback.user.fidelity import vocabulary_of
+from kullback.user.rules import goal_write_counts, goal_write_set
 from kullback.user.simulated import SimulatedUser
 from kullback.user.value_strip import value_strip
-from kullback.user.vocabulary import GENERIC
 
 
 def _seed_ids(anchor: Any, task_id: str, run_ids: Iterable[str]) -> list[str]:
@@ -84,7 +84,7 @@ def _make_user(workdir: Any, task_id: str, anchor: Any, router: Any, user_model:
 
     Built from the derivation's own inputs, the replay rows, the rules and the recordings, over
     the state reader of the Router the runner built: the Examiner never opens the compiled side
-    itself (D123). The vocabulary is the generic core, the way a Run without a mined one reads.
+    itself (D123). The vocabulary is the build's (`vocabulary_of`, D326), the one a fresh Run reads.
 
     With a `user_model` the rule-driven user built here is the floor under the agent user (D214),
     which answers the questions the rules' cues miss instead of restating the goal. Without one
@@ -101,17 +101,19 @@ def _make_user(workdir: Any, task_id: str, anchor: Any, router: Any, user_model:
     reference = traces.get(reference_id) if reference_id is not None else None
     members = [traces[run_id] for run_id in task.run_ids if run_id in traces]
     goal_writes = goal_write_set(reference, writes) if reference is not None else None
+    goal_counts = goal_write_counts(reference, writes) if reference is not None else None
     answer_strip = value_strip(members) if members else None
+    vocab = vocabulary_of(workdir)
     floor = SimulatedUser(
-        rules, starting_state_reader=router.state, write_tools=writes,
-        goal_writes=goal_writes, answer_strip=answer_strip)
+        rules, starting_state_reader=router.state, vocab=vocab, write_tools=writes,
+        goal_writes=goal_writes, answer_strip=answer_strip, goal_counts=goal_counts)
     if user_model is None:
         return floor
     corpus = corpus if corpus is not None else _Corpus(env)
     record = context_mod.mine_record_values(reference)
-    ctx = context_mod.curate(task_id, rules, reference, vocab=GENERIC, write_tools=writes,
+    ctx = context_mod.curate(task_id, rules, reference, vocab=vocab, write_tools=writes,
                              record_fields=sorted(record))
-    identity_fields = GENERIC.by_kind("identity")
+    identity_fields = vocab.by_kind("identity")
     choices = account_mod.choice_book(
         reference, writes, customer=account_mod.customer_keys(rules, identity_fields),
         traces=corpus.traces, rules=corpus.rules, identity_fields=identity_fields)
@@ -121,8 +123,8 @@ def _make_user(workdir: Any, task_id: str, anchor: Any, router: Any, user_model:
                                        keys=account_mod.id_keys(rules, identity_fields))
     return user_factory.build_user(
         workdir, task_id, user_model, user_factory.PURPOSE_RUN, ctx=ctx, fallback=floor,
-        record_values=record, vocab=GENERIC, write_tools=writes, goal_writes=goal_writes,
-        answer_strip=answer_strip, trace=reference, choices=choices, account=account)
+        record_values=record, vocab=vocab, write_tools=writes, goal_writes=goal_writes,
+        answer_strip=answer_strip, trace=reference, goal_counts=goal_counts, choices=choices, account=account)
 
 
 def run_user(workdir: Any, task_id: str, router: Any, user_model: Any) -> Any:

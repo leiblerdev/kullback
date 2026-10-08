@@ -259,15 +259,19 @@ def write_tools_of(workdir: Any) -> list[str]:
 
 
 def vocabulary_of(workdir: Any):
-    """This build's Vocabulary, or the generic core where the build has not derived one."""
-    from kullback.user.vocabulary import GENERIC, Vocabulary
+    """This build's Vocabulary, else one built from the mined signatures' id arguments (D326).
+
+    The generic core alone cannot hear an ask for any id, which left 260 exam Runs of one build restating the
+    goal to an agent asking for one; with no signatures either, the generic core is what is left.
+    """
+    from kullback.user.vocabulary import Vocabulary, from_signatures
     body = _json(Path(workdir) / VOCABULARY, None)
-    if not isinstance(body, dict):
-        return GENERIC
-    try:
-        return Vocabulary.model_validate(body)
-    except ValueError:
-        return GENERIC
+    if isinstance(body, dict):
+        try:
+            return Vocabulary.model_validate(body)
+        except ValueError:
+            pass
+    return from_signatures(_json(Path(workdir) / SIGS, []) or [])
 
 
 def references(workdir: Any) -> dict[str, str]:

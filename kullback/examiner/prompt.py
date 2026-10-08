@@ -54,12 +54,27 @@ def tools_section() -> str:
     return ("Tools, one example call each. Besides these you hold read, ls, grep and find.\n"
             "finding: file what is wrong with a Task, "
             'e.g. {"task_id": "t1", "kind": "fidelity", "text": "what differs and why", "rows": [...], '
-            '"edits": [{"kind": "atoms", "task_id": "t1", "drop": ["atom-3"], "add": [], '
-            '"why": "the check demands what no fact says"}]}. An edit is the diff: atoms (task_id, drop '
-            "and add; an added atom is a fact told or a question asked, never a write), text (path "
-            "intents/<task>.json or tasks/<task>.json, where the verbatim current text, found exactly "
-            "once, and replace the new text) or body (path env/tools/<name>.py, the call, the column and "
-            "both values). Atoms and text edits go to the Spec, body edits to the Builder. Add "
+            '"edits": [{"kind": "atoms", "task_id": "t1", "drop": ["i2"], "add": [], '
+            '"why": "the check demands what no fact says"}]}. An edit is the diff, one of these kinds.\n'
+            "atoms: task_id, drop and add. Drop names atom ids (i<n>), which each Task's line lists beside "
+            "the check (c<n>) that made it; a check id or fact id is not an atom id, and an edit dropping "
+            "more than half the atoms, its adds counted, is refused. An added atom is a fact told or a question asked, never "
+            'a write, e.g. {"kind": "atoms", "task_id": "t1", "drop": [], "add": [{"id": "said_total", '
+            '"kind": "required", "payload": {"kind": "communicate", "text": "<the words said>", '
+            '"id": "said_total"}}], "why": "the user asked to hear the total"}.\n'
+            "text: path intents/<task>.json or tasks/<task>.json, where the verbatim current text, found "
+            "exactly once, and replace the new text.\n"
+            "body: path env/tools/<name>.py, the call, the column and both values.\n"
+            "cell: a cell of the expected end states to allow (it may differ) or drop (it is not expected), "
+            'e.g. {"kind": "cell", "task_id": "t1", "table": "<table>", "row_id": "<row>", "field": "<field>", '
+            '"action": "drop", "why": "no turn or policy says this value"}; row_id and field are optional.\n'
+            "conduct: a conduct rule to add or remove, the conduct one of handoff, refusal, "
+            'confirm_before_write, e.g. {"kind": "conduct", "task_id": "t1", "action": "add", '
+            '"conduct": "confirm_before_write", "tool": "<write tool>", "why": "policy says <the words>"}.\n'
+            "reference: a Run on disk that should be the Reference, "
+            'e.g. {"kind": "reference", "task_id": "t1", "run_id": "r2", "why": "it does what the user '
+            'asked and the Reference does not"}; it opens a ruling, nothing is promoted by code.\n'
+            "Body edits go to the Builder; every other kind goes to the Spec. Add "
             'note_ruling ("builder_right" or "builder_wrong") when the finding answers a Builder note.\n'
             "no_finding: file a review that found nothing wrong, "
             'e.g. {"task_id": "t1", "reason": "every cell has a source and the Runs agree with the facts"}.\n'
@@ -81,6 +96,10 @@ def examples_section() -> str:
             "An Intent fact misquotes the user's turn: finding with a text edit quoting both.\n"
             "A replayed call differs from the recorded one on a column: finding with a body edit naming "
             "the call, the column and both values.\n"
+            "A cell has no source in any turn, policy or tool result: finding with a cell edit dropping it, "
+            "or allowing it when any value is fine; a no_finding is refused while a cell is unsourced.\n"
+            "The Reference wrote the wrong thing and another Run did what the user asked: finding with a "
+            "reference edit naming that Run.\n"
             "Every cell has a source, the checks match the facts and the Runs agree: no_finding with "
             "the reason.")
 
@@ -99,8 +118,8 @@ def choice_section() -> str:
 def feedback_section() -> str:
     """The shape of the feedback."""
     return ("Feedback. A filed review answers with what it recorded; a refusal says what was missing. "
-            "Code routes each edit: atoms and text to the Spec, which rewrites the Verifier and runs the "
-            "gates, body to the Builder. A Task the gates still refuse at the round ceiling is set aside "
+            "Code routes each edit: atoms, text, cell, conduct and reference to the Spec, which rewrites "
+            "the Verifier and runs the gates, body to the Builder. A Task the gates still refuse at the round ceiling is set aside "
             "as pending.")
 
 

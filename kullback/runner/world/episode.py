@@ -122,7 +122,9 @@ class Episode:
         simulated = self._user_factory(self.env, task, self._router, rules, reference) \
             if rules is not None and self._user_factory is not None else None
         run_id = f"{task_id}-{seed}"
-        system_prompt = self.env.system_prompt(task)
+        from kullback.runner.tool import runner_prompt  # tool imports the world package
+
+        system_prompt = runner_prompt(self.env.system_prompt(task))  # the stop-short line, every Run shape (D326)
         self._tools = self.env.tool_specs()
         task_outdir = self.outdir / task_id
         task_outdir.mkdir(parents=True, exist_ok=True)

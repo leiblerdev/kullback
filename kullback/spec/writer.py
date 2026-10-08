@@ -33,7 +33,7 @@ from kullback.spec.compile import (
     Compiled,
     compile_spec,
 )
-from kullback.spec.end_state import Gates, gates_of
+from kullback.spec.end_state import Gates, called_tools, gates_of, reference_run, unseen_demand
 from kullback.spec.ground import coverage, valid_because, valid_write_because
 from kullback.spec.must_not import must_not
 from kullback.spec.schema import (
@@ -77,13 +77,17 @@ name it, but a demand resting on unwitnessed facts alone is dropped.
 "demand": "write" | "say" | "ask" | "no_write" | "cap" | "shape", ...fields..., \
 "fact_ids": ["f1"], "because": "quote of the Intent span or the policy rule name"}]}.
 - write needs tool, id_field, entity, values (an object of field to value read from the state).
-- say needs text (the Intent's own words for the fact).
+- say needs values: list the values the agent must state (an amount, an id, a status word), one \
+each, never a sentence.
 - ask needs field (a field of the request the agent must ask the user about) or confirm_tool.
 - no_write needs no fields: the end state is the starting state.
 - cap needs count: the number of entities listed above.
 - shape needs tool, field, id_field: the write must carry a value the run read for that column.
 - refuse needs nothing, or tool: the policy or the user refuses the request, and the agent must say so.
 - handoff needs tool: the user asks for a person, and the agent must hand the conversation over.
+- A transfer or hand-off is the handoff demand, never a write.
+- A cap counts data writes only, never a hand-off.
+- The id_field of a write is an argument that names a row.
 - Never write code, a predicate or a lambda: a write is a cell of the end state (tool, row, values).
 - because must quote the Intent span word for word (at least 12 characters) or name the policy \
 rule or policy section. A demand with no valid because is dropped.
@@ -113,6 +117,9 @@ SENT_BACK_RULES = {
     FORBIDDEN_EQUALS_REQUIRED: "one demand cannot be both required and forbidden; keep the one the Intent asks for",
     WRITE_WITHOUT_ROW: "a required write names one row: id_field, and entity as that single id value, not an object",
     "write_predicate": WRITE_PREDICATE,
+    "unseen_conduct": "a hand-off or confirmation demand must be one the Reference shows; the Reference made no "
+                      "such call",
+    "value_not_argument": "a write's values name arguments of its tool only",
 }
 
 REPAIR_PROMPT = """A ruling says some checks you wrote for this customer request are wrong. You \
@@ -140,7 +147,11 @@ _META = ("id", "kind", "because", "fact_ids", "action")
 
 
 class WriterInputs(NamedTuple):
-    """Everything one writer session may see; none of it comes from a Run."""
+    """Everything one writer session may see; none of it comes from a Run, `reference_tools` aside.
+
+    `reference_tools` is never shown: code alone reads it to send back a hand-off or confirmation the
+    Reference never made (None: no Reference, nothing sent back).
+    """
     intent: SpecIntent
     policy_text: str
     sections: list[str]
@@ -151,6 +162,7 @@ class WriterInputs(NamedTuple):
     canon: Callable[[Any], Any]
     # The tools the world records as actions (spec/actions.py): never in write_tools.
     action_tools: frozenset = frozenset()
+    reference_tools: Optional[frozenset] = None
 
 
 class Ruling(Record):
@@ -187,10 +199,12 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
     overlay, rows = env.overlay(task_id)
     tools = writer_tools.tool_rows(env.sigs)
     actions = frozenset(action_tools_of(env.schema))
+    called = called_tools(reference_run(workdir, task_id))
     return WriterInputs(intent=intent, policy_text=policy, sections=writer_tools.policy_sections_of(workdir),
                         tools=tools, write_tools={row["name"] for row in tools if row["kind"] == "write"} - actions,
                         state=StateView(env.db, overlay, rows).shared, constraints=_constraints(workdir),
-                        canon=canon_fn(env.canon_rules), action_tools=actions)
+                        canon=canon_fn(env.canon_rules), action_tools=actions,
+                        reference_tools=None if called is None else frozenset(called))
 
 
 def _constraints(workdir: Path) -> list[dict]:
@@ -248,7 +262,23 @@ def _refusal(item: Any, fact_ids: list[str], inputs: WriterInputs) -> str:
         return "unwitnessed"
     if item.get("demand") == "write" and not valid_write_because(because, witnessed, inputs.policy_text):
         return "condition_unquoted"
+    if item.get("demand") == "write" and _not_arguments(item, inputs):
+        return "value_not_argument"
     return ""
+
+
+def _arguments(tool: Any, inputs: WriterInputs) -> Optional[list[str]]:
+    """The argument names of a listed tool, or None when the tool is not listed or lists none (unknown)."""
+    return next((list(row["args"]) for row in inputs.tools if row.get("name") == tool and row.get("args")), None)
+
+
+def _not_arguments(item: dict, inputs: WriterInputs) -> list[str]:
+    """The keys of a write's values that are not arguments of its tool (none when the tool is not listed)."""
+    args = _arguments(item.get("tool"), inputs)
+    values = item.get("values")
+    if args is None or not isinstance(values, dict):
+        return []
+    return sorted(str(key) for key in values if key not in args)
 
 
 def _check_of(number: Any, item: Any, inputs: WriterInputs) -> tuple[Optional[Check], str]:
@@ -269,7 +299,7 @@ def _keep(demands: Iterable[Any], inputs: WriterInputs) -> tuple[list[Check], di
     """The checks code keeps, how many of each refusal it made, and each refused demand with its code."""
     checks, refused = [], []
     counts = {"demands": 0, "kept": 0, "ungrounded": 0, "unwitnessed": 0, "condition_unquoted": 0, "bad_kind": 0,
-              "write_predicate": 0}
+              "write_predicate": 0, "value_not_argument": 0}
     for number, item in enumerate(demands):
         counts["demands"] += 1
         check, refusal = _check_of(number, item, inputs)
@@ -298,9 +328,17 @@ def _writer_id(number: int, item: Any) -> str:
     return str(item.get("id") or f"d{number}") if isinstance(item, dict) else f"d{number}"
 
 
-def followup_message(refused: list[tuple[int, Any, str]]) -> str:
+def _rule(code: str, item: Any, inputs: Optional[WriterInputs]) -> str:
+    """The rule line a refused demand is sent back with; a value_not_argument names its tool's arguments."""
+    rule = SENT_BACK_RULES[code]
+    if code == "value_not_argument" and inputs is not None and isinstance(item, dict):
+        rule += f"; {item.get('tool')} takes {', '.join(_arguments(item.get('tool'), inputs) or [])}"
+    return rule
+
+
+def followup_message(refused: list[tuple[int, Any, str]], inputs: Optional[WriterInputs] = None) -> str:
     """The one follow-up turn: each refused demand's id, its reason code and the rule it broke."""
-    rows = [{"id": _writer_id(number, item), "reason": code, "rule": SENT_BACK_RULES[code]}
+    rows = [{"id": _writer_id(number, item), "reason": code, "rule": _rule(code, item, inputs)}
             for number, item, code in refused]
     return FOLLOWUP_PROMPT + json.dumps({"refused": rows})
 
@@ -314,7 +352,7 @@ def _send_back(messages: list[dict], session: dict, refused: list[tuple[int, Any
     """
     numbers = {_writer_id(number, item): number for number, item, _ in refused}
     turn = messages + [{"role": "assistant", "content": session["text"]},
-                       {"role": "user", "content": followup_message(refused)}]
+                       {"role": "user", "content": followup_message(refused, inputs)}]
     remaining = None if ceiling_usd is None else max(ceiling_usd - float(session.get("usd") or 0.0), 0.0)
     again = writer_tools.run_session(model, turn, inputs.state, _config(config), writer_tools.MAX_READ_ROUNDS,
                                      price, force_answer=True, ceiling_usd=remaining)
@@ -366,9 +404,14 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
     checks, counts, refused = _keep(demands, inputs)
     refused = [row for row in refused if row[2] in SENT_BACK_RULES]
     clashing = _clashing(task_id, checks, demands, inputs)
-    checks = [check for check in checks if check.id not in {f"c{number}" for number, _, _ in clashing}]
-    counts.update(sent_back=len(refused), sent_back_kept=0, unsatisfiable_sent_back=len(clashing))
-    refused = sorted(refused + clashing, key=lambda row: row[0])
+    clashed = {f"c{number}" for number, _, _ in clashing}
+    unseen = [(int(check.id[1:]), demands[int(check.id[1:])], "unseen_conduct") for check in checks
+              if check.id not in clashed and unseen_demand(check, inputs.reference_tools)]
+    out = clashed | {f"c{number}" for number, _, _ in unseen}
+    checks = [check for check in checks if check.id not in out]
+    counts.update(sent_back=len(refused), sent_back_kept=0, unsatisfiable_sent_back=len(clashing),
+                  unseen_sent_back=len(unseen))
+    refused = sorted(refused + clashing + unseen, key=lambda row: row[0])
     if refused:
         corrected, again = _send_back(messages, session, refused, inputs, model, config, _price(model_id),
                                       ceiling_usd)
@@ -445,7 +488,8 @@ def end_state_counts(gates: Gates) -> dict:
     """What the Spec record keeps of its gates: the Reference, the cells, how many are unsupported."""
     cells = gates.expected[0].cells if gates.expected else []
     return {"reference": gates.reference, "end_states": len(gates.expected), "cells": len(cells),
-            "unsupported": gates.unsupported, "forbidden": len(gates.forbidden), "conduct": len(gates.conduct)}
+            "unsupported": gates.unsupported, "forbidden": len(gates.forbidden), "conduct": len(gates.conduct),
+            "unseen": gates.unseen}
 
 
 def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = None,
@@ -453,10 +497,13 @@ def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = N
     """Saves the Spec and its whole Verifier, the gates derived by code from the Task's Reference.
 
     The Spec is the one writer of a Task's Verifier (D320): the Runner's file and the Spec's copy are
-    the same bytes. The end-state counts ride on the saved Spec as `end_state`.
+    the same bytes. The end-state counts ride on the saved Spec as `end_state`. The review's kept cell
+    and conduct edits (D325) are applied after, so a router repair does not drop them.
     """
+    from kullback.spec.review import apply_end_state_edits  # review imports this module
     inputs = inputs or load_inputs(workdir, spec.task_id, spec.intent)
-    gates = gates if gates is not None else gates_of(workdir, spec, inputs.policy_text, inputs.canon)
+    gates = gates if gates is not None else gates_of(workdir, spec, inputs.policy_text, inputs.canon,
+                                                    write_tools=inputs.write_tools)
     verifier: Verifier = verifier_of(spec, inputs, gates).verifier
     text = json.dumps(verifier.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
     spec = spec.model_copy(update={"end_state": end_state_counts(gates)})
@@ -465,6 +512,7 @@ def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = N
     for path in paths[1:]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+    apply_end_state_edits(workdir, spec)
     return paths
 
 

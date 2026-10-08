@@ -81,6 +81,8 @@ class Spec(Record):
     writer: dict = Field(default_factory=dict)
     # The review edits to the compiled atoms, applied in order (spec/review.py): {drop, add, why}.
     atom_edits: list[dict] = Field(default_factory=list)
+    # The review's cell and conduct edits, applied in order on the written Verifier (spec/review.py).
+    end_state_edits: list[dict] = Field(default_factory=list)
     # What the Verifier's gates came to: the Reference, end states, cells, unsupported (spec/end_state.py).
     end_state: dict = Field(default_factory=dict)
 

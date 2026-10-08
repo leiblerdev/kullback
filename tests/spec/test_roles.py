@@ -67,7 +67,7 @@ def test_write_verifier_on_a_reference_puts_its_two_sourced_cells_in_expected_an
     assert not any(atom.payload.get("kind") in {"write_value", "entity_count"} for atom in verifier.atoms)
     assert not any(getattr(atom, "predicate_src", None) for atom in verifier.atoms)
     assert load_spec(root, "t1").end_state == {"reference": "ref", "end_states": 1, "cells": 2, "unsupported": 0,
-                                               "forbidden": len(verifier.forbidden), "conduct": 0}
+                                               "forbidden": len(verifier.forbidden), "conduct": 0, "unseen": 0}
 
 
 def test_a_write_demand_carrying_a_python_predicate_is_refused_and_sent_back_once():
@@ -131,3 +131,72 @@ def test_a_verifier_with_end_state_gates_passes_its_reference_and_fails_the_empt
     result = can_fail(verifier, _reference())
     assert result.passed
     assert [row["stage"] for row in result.rows] == ["verifier_empty_run"] + ["verifier_undone_cell"] * 2
+
+
+TOLD = check("c2", demand={"demand": "say", "text": "slot seven"}, because="move item A1 to slot seven")
+
+
+def _told(tmp_path):
+    """The workdir with a Verifier of two cells and one fact-told atom, i0, made by check c2."""
+    root = _workdir(tmp_path)
+    W.write_verifier(spec(checks=[check(), TOLD]), root, inputs())
+    return root
+
+
+def _both_copies(root) -> Verifier:
+    text = W.runner_verifier_path(root, "t1").read_text()
+    assert (root / "spec" / "verifiers" / "t1.json").read_text() == text
+    return Verifier.model_validate_json(text)
+
+
+def test_an_atom_drop_naming_a_check_id_is_refused_with_the_atom_ids_and_more_than_half_is_refused(tmp_path):
+    root = _told(tmp_path)
+    assert RV.atom_checks(load_spec(root, "t1"), _both_copies(root)) == {"i0": "c2"}
+    out = RV.apply_review(root, "t1", [{"kind": "atoms", "drop": ["c2"]}, {"kind": "atoms", "drop": ["i0"]}])
+    assert out["applied"] == 0
+    assert out["refused"] == ["drop names no atom of the Verifier: c2; atoms are i0", "drops 1 of 1 atoms and adds 0"]
+    assert load_spec(root, "t1").atom_edits == [] and [a.id for a in _both_copies(root).atoms] == ["i0"]
+
+
+def test_cell_drop_and_allow_rewrite_both_verifier_copies_move_the_gate_row_and_outlive_a_rewrite(tmp_path):
+    root = _told(tmp_path)
+    undone = lambda: [r for r in RV.gate_row(root, load_spec(root, "t1"))["can_fail"]["rows"]  # noqa: E731
+                      if r["stage"] == "verifier_undone_cell"]
+    assert len(undone()) == 2
+    out = RV.apply_review(root, "t1", [
+        {"kind": "cell", "task_id": "t1", "table": "items", "row_id": "A1", "field": "label", "action": "drop",
+         "why": "no turn says the label"},
+        {"kind": "cell", "task_id": "t1", "table": "items", "row_id": "B2", "action": "allow", "why": "any is fine"},
+        {"kind": "cell", "task_id": "t1", "table": "nowhere", "action": "allow", "why": "x"}])
+    assert out["applied"] == 2 and out["refused"] == ["the Verifier has no table nowhere; tables are items"]
+    [state] = _both_copies(root).expected
+    assert [c.field for c in state.cells] == ["slot"] and state.allowed == [{"table": "items", "row_id": "B2"}]
+    assert _both_copies(root).verifier_version == "spec1.e2" and len(undone()) == 1
+    RV.apply_review(root, "t1", [])
+    assert [c.field for c in _both_copies(root).expected[0].cells] == ["slot"], "a later round keeps the edits"
+    W.write_verifier(load_spec(root, "t1"), root)
+    assert [c.field for c in _both_copies(root).expected[0].cells] == ["slot"], "a router rewrite keeps them"
+
+
+def test_conduct_add_and_remove_rewrite_the_verifier_and_a_remove_of_a_missing_rule_is_refused(tmp_path):
+    root = _told(tmp_path)
+    add = {"kind": "conduct", "task_id": "t1", "action": "add", "conduct": "confirm_before_write",
+           "tool": "update_item", "why": "policy says confirm before any change"}
+    kept, _ = RV.route_findings(root, [{"task_id": "t1", "finding_id": "f-1", "edits": [add]}])
+    [rule] = _both_copies(root).conduct
+    assert kept == [] and rule.kind == "confirm_before_write" and rule.tool == "update_item"
+    assert rule.source.kind == "policy" and rule.source.ptr == {"clause": add["why"], "finding": "f-1"}
+    out = RV.apply_review(root, "t1", [dict(add, action="remove"), dict(add, action="remove", conduct="handoff")])
+    assert out["refused"] == ["the Verifier has no handoff conduct on update_item"]
+    assert _both_copies(root).conduct == []
+
+
+def test_a_reference_edit_promotes_nothing_and_leaves_an_open_ruling_on_the_trust_row(tmp_path):
+    root = _told(tmp_path)
+    out = RV.apply_review(root, "t1", [{"kind": "reference", "run_id": "ref", "why": "it did what was asked"},
+                                       {"kind": "reference", "run_id": "gone", "why": "no such Run"}])
+    assert out["applied"] == 1 and out["refused"][0].endswith("gone is not one")
+    review = json.loads((root / "examiner" / "reviews.json").read_text())["t1"]
+    assert review["outcome"] == RV.REFERENCE_PROPOSED and review["run_id"] == "ref"
+    assert RV.gate_row(root, load_spec(root, "t1"))["gates"]["no_open_ruling"] is False
+    assert json.loads((root / "references.json").read_text())["t1"]["references"][0]["run_id"] == "ref"

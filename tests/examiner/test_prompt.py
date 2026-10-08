@@ -56,4 +56,26 @@ def test_the_prompt_asks_for_one_review_per_task_with_rows_and_an_edit():
     assert "File one review per Task" in choice
     assert "A review without rows is not a finding" in choice
     assert "never from which side has more Runs" in choice
-    assert "no_finding:" in tools and "Atoms and text edits go to the Spec" in tools
+    assert "no_finding:" in tools and "every other kind goes to the Spec" in tools
+
+
+def test_the_tools_name_atom_ids_for_drops_and_show_an_added_atom_the_spec_accepts():
+    import json
+    import re
+
+    from kullback.spec.review import _check_add
+
+    tools = P.tools_section()
+    assert '"drop": ["i2"]' in tools and "a check id or fact id is not an atom id" in tools
+    added = json.loads(re.search(r'"add": \[(\{"id": "said_total".*?\}\})\]', tools).group(1))
+    assert added["payload"]["kind"] == "communicate" and _check_add(added) == ""
+    assert all(f"{kind}:" in tools for kind in ("cell", "conduct", "reference"))
+
+
+def test_the_finding_tool_lists_the_same_six_edit_kinds_the_prompt_does():
+    from kullback.examiner.domain_tools import FindingArgs
+    from kullback.examiner.exam_files import EDIT_KINDS
+
+    described = FindingArgs.model_fields["edits"].description
+    assert len(EDIT_KINDS) == 6 and all(f"kind: {kind}," in described for kind in EDIT_KINDS)
+    assert all(f"{kind}:" in P.tools_section() for kind in EDIT_KINDS)

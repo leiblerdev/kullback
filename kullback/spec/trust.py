@@ -10,12 +10,17 @@
 
 A replay's verdict is a condition only for a faithful kept Reference (gate 3); every other replay
 verdict rides on the row as evidence. The tiers are
-trusted (all five), replay_only (1 to 3, a replay passes, no fresh Run passes yet), set_aside
+trusted (all five), replay_only (1 to 3, a replay passes, no fresh Run passes yet; its reason says whether
+no fresh Run is on disk, "not run", or every fresh Run failed), set_aside
 (the router's rule, spec/router.py: marked on the Spec, or ROUNDS_CAP rounds with a ruling open;
 a set-aside event on the bus counts too) and untrusted
 (everything else). Every row names the first failing gate and the ids of the Runs it scored, and carries
 `code_hash`, the content hash of the Runner, gates and Spec code that scored it (runner/code_hash.py): two
 rows are comparable when their hashes match.
+
+The row also carries `writer_disagrees` (D327): where the Spec writer, who never sees a Run, and the kept
+Reference disagree on what was written. Trust by agreement cannot see a Reference the fresh Runs copy; the
+writer's blind reading is the one signal that can, so it rides on the row as a flag and never gates.
 """
 
 from __future__ import annotations
@@ -26,11 +31,13 @@ from typing import Any, Iterable, NamedTuple, Optional
 
 from kullback.gates.probes import write_tools_of
 from kullback.gates.trust import code_ruling, schema_of, workdir_trusted_ruling
+from kullback.runner.atom_context import AtomContext
 from kullback.runner.canon import load_rules
 from kullback.runner.code_hash import CODE_HASH
+from kullback.runner.expected import action_tables, attr_of
 from kullback.runner.records import Run, Verifier, load_run_jsonl, read_json, read_jsonl
 from kullback.runner.replay import RECORDED
-from kullback.spec.actions import workdir_action_tools
+from kullback.spec.actions import action_tools_of, workdir_action_tools
 from kullback.spec.canfail import can_fail, judge_run
 from kullback.spec.events import TASK_SET_ASIDE
 from kullback.spec.ground import ground_spec
@@ -50,6 +57,9 @@ _CODE_TIERS = ("unconfirmed", "refused", "pending")
 BUILD_MANIFEST = "build.json"
 # How many grounding refusals a row repeats; the count is always whole.
 _REASONS_KEPT = 5
+# Why a Task is replay_only: nothing was played, or what was played failed (D327).
+NOT_RUN = "not run: no fresh Run on disk"
+NO_FRESH_PASS = "no fresh Run passes"
 
 
 class TaskTier(NamedTuple):
@@ -139,6 +149,39 @@ def _event_task(event: Any) -> Optional[str]:
     return payload.get("task_id")
 
 
+def _row_parts(row_id: str, separator: str) -> set[str]:
+    """A diffed row's id and, for a composite key, each of its parts, compared without case or spacing."""
+    parts = {row_id, *row_id.split(separator)} if separator else {row_id}
+    return {" ".join(part.split()).lower() for part in parts}
+
+
+def writer_disagreement(spec: Spec, reference: Optional[Run], schema: Any = None) -> list[str]:
+    """Where the Spec's write demands and the Reference's diff disagree, by code (D327); empty without one.
+
+    Each required write demand whose tool the Reference never called, or whose named row is in no diffed
+    row, is named by its check id. An action tool's demand is read by its call alone: its rows are the
+    harness's record of the call, never a change, so they never count. A diffed row no demand names is
+    not flagged: it fired on right References only (docs/validation/trust-1007.md). A flag, never a gate.
+    """
+    if reference is None:
+        return []
+    context = AtomContext(reference)
+    separator = str(attr_of(schema, "key_separator") or "")
+    actions, action_tools = action_tables(schema), action_tools_of(schema or {})
+    rows = {key: _row_parts(key.partition(".")[2], separator) for key in context.diff()
+            if key.partition(".")[0] not in actions}
+    out = []
+    for check in spec.checks:
+        if check.demand.get("demand") != "write" or check.kind != "required":
+            continue
+        entity = " ".join(str(check.demand.get("entity") or "").split()).lower()
+        if not context.called(str(check.demand.get("tool") or "")):
+            out.append(f"{check.id}: no call to {check.demand.get('tool')}")
+        elif check.demand.get("tool") not in action_tools and not any(entity in parts for parts in rows.values()):
+            out.append(f"{check.id}: its row is in no diffed row")
+    return out
+
+
 def set_aside_of(spec: Spec, rulings: Iterable[Any] = ()) -> bool:
     """The router's rule on the Spec first (`router.is_set_aside`), then a set-aside event about the Task on
     the bus, for a Spec file written before the router marked it."""
@@ -183,17 +226,21 @@ def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: I
     set_aside = set_aside_of(spec, rulings)
     kept = set(references)
     code = code_ruling(verifier, [run for run in runs if run.run_id in kept], status or {}, canon, tools, schema)
+    disagrees = writer_disagreement(spec, next((run for run in runs if run.run_id in kept), None), schema)
     gates = {"grounded": not refusals, "sourced": code.tier == "trusted", "can_fail": failed_ok, "reference_replay": reference["failed"] is None,
              "independent_pass": any(scores[run_id] for run_id in fresh),
              "no_open_ruling": spec.rulings_open == 0 and not set_aside}
     tier = _tier(gates, any(replay.values()), set_aside, code.tier)
     failing = code.reason if tier in _CODE_TIERS else next((name for name in GATES if not gates[name]), None)
+    if tier == "replay_only":  # not run is not failed: the reason says which (D327)
+        failing = NO_FRESH_PASS if fresh else NOT_RUN
     row = {"task_id": spec.task_id, "tier": tier, "failing": failing, "gates": gates,
            "sourced": {"tier": code.tier, "reason": code.reason, "unsupported": code.unsupported},
-           "contradicts": list(code.contradicts), "unasked": list(code.unasked),
+           "contradicts": list(code.contradicts), "unasked": list(code.unasked), "writer_disagrees": disagrees,
            "grounding": {"refusals": len(refusals), "first": refusals[:_REASONS_KEPT]},
            "can_fail": {"from": mutated_from, "rows": mutation_rows}, "reference_replay": reference,
-           "runs_scored": sorted(scores), "fresh_passed": sorted(r for r in fresh if scores[r]),
+           "runs_scored": sorted(scores), "fresh_runs": len(fresh),
+           "fresh_passed": sorted(r for r in fresh if scores[r]),
            "replay": replay, "rulings_open": spec.rulings_open, "round": spec.round, "set_aside": set_aside,
            "code_hash": CODE_HASH}
     return TaskTier(tier, row)
@@ -203,7 +250,8 @@ def unruled_row(task_id: str, failing: str, reason: str) -> TaskTier:
     """A Task the gates cannot rule on: untrusted at `failing`, with the reason and no Run scored."""
     gates = {name: False for name in GATES}
     return TaskTier("untrusted", {"task_id": task_id, "tier": "untrusted", "failing": failing, "gates": gates,
-                                  "reason": reason, "runs_scored": [], "fresh_passed": [], "replay": {},
+                                  "reason": reason, "runs_scored": [], "fresh_runs": 0, "fresh_passed": [],
+                                  "replay": {}, "writer_disagrees": [],
                                   "set_aside": False, "code_hash": CODE_HASH})
 
 

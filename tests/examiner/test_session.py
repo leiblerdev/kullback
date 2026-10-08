@@ -252,7 +252,7 @@ def test_the_rulings_line_covers_only_the_tasks_the_session_examines(tmp_path):
     assert [line.split(":")[0] for line in lines] == ["t2"]
 
 
-def test_the_rulings_line_names_the_derived_verifier_and_the_user_rules_of_a_confirmed_replay(tmp_path):
+def test_the_rulings_line_names_the_spec_verifier_and_no_proposal_and_the_user_rules_of_a_confirmed_replay(tmp_path):
     world = make_world(tmp_path, tasks=2)
     write_json(world.workdir / "verifiers" / "t1.json", {"task_id": "t1"})
     S.expose(world.workdir)
@@ -260,8 +260,7 @@ def test_the_rulings_line_names_the_derived_verifier_and_the_user_rules_of_a_con
     replays["t2"] = {"ref": {**replays["t2"]["ref"], "confirmed": False}}
     root = ExamRoot(workdir=world.workdir, replays=replays, canon_rules=CanonRules())
     lines = dict(line.split(": ", 1) for line in S.rulings_line(root).splitlines())
-    assert "derived verifier: derived/t1.json" in lines["t1"]
-    assert "proposal: verifiers/t1.json once you first propose one" in lines["t1"]
+    assert "verifier: derived/t1.json" in lines["t1"] and "proposal" not in lines["t1"]
     assert "user rules: user_rules/ref.json" in lines["t1"]
     assert "no user rules until the Reference is confirmed" in lines["t2"]
 
@@ -400,3 +399,24 @@ def test_the_examiners_opening_lists_the_builders_open_notes_on_its_tasks(world)
     assert "t9:" not in opening
 
 
+
+
+def test_no_finding_is_refused_naming_the_unsourced_cell_and_files_once_every_cell_has_a_source(tmp_path):
+    from kullback.runner.records import EndState, ExpectedCell, ValueSource, Verifier
+
+    world = make_world(tmp_path)
+    said = ValueSource(kind="user_turn", ptr={"turn": 0})
+    cells = [ExpectedCell(table="items", row_id="A1", field="slot", value="seven", source=said, row_source=said),
+             ExpectedCell(table="items", row_id="A1", field="label", value="blue", source=None, row_source=said)]
+    verifier = Verifier(task_id="t1", expected=[EndState(cells=cells)])
+    root = ExamRoot(workdir=world.workdir, canon_rules=CanonRules(), verifiers={"t1": verifier})
+    harness = AgentHarness(model=TestModel([]))
+    load_extensions(harness, [S.examiner_extension(root)])
+    reason = {"task_id": "t1", "reason": "every check matches the facts said"}
+    refused = drive_tool(harness, "no_finding", reason)
+    assert refused.is_error and "items.A1.label" in refused.content and "cell edit" in refused.content
+    from kullback.spec.review import REVIEWS_FILE
+    assert REVIEWS_FILE == exam_tools.REVIEWS_FILE and not (world.workdir / REVIEWS_FILE).exists()
+    root.verifiers["t1"] = Verifier(task_id="t1", expected=[EndState(cells=cells[:1])])
+    assert drive_tool(harness, "no_finding", {"task_id": "t1", "reason": "too short"}).is_error
+    assert not drive_tool(harness, "no_finding", reason).is_error

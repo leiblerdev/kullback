@@ -71,8 +71,13 @@ def test_a_grounded_spec_that_can_fail_with_a_fresh_pass_and_no_ruling_is_truste
 
 def test_a_replay_pass_without_a_fresh_pass_is_replay_only_and_the_replay_verdict_is_evidence_not_the_condition():
     tier, row = _tier([_replay(), _fresh(right=False)])
-    assert tier == "replay_only" and row["failing"] == "independent_pass"
+    assert tier == "replay_only" and row["failing"] == "no fresh Run passes" and row["fresh_runs"] == 1
     assert row["replay"] == {REPLAY_ID: True} and row["fresh_passed"] == []
+
+
+def test_a_replay_pass_with_no_fresh_run_on_disk_is_replay_only_as_not_run_never_as_failed():
+    tier, row = _tier([_replay()])
+    assert tier == "replay_only" and row["failing"] == "not run: no fresh Run on disk" and row["fresh_runs"] == 0
 
 
 def test_a_failing_recording_that_is_not_the_kept_reference_with_a_fresh_pass_is_trusted():
@@ -243,7 +248,7 @@ def _recorded_elsewhere(on_reply_only=False):
 @pytest.mark.parametrize("on_reply_only", [False, True], ids=["run_model", "reply_model"])
 def test_a_recorded_model_run_under_any_id_is_a_replay_and_never_an_independent_pass(on_reply_only):
     tier, row = _tier([_recorded_elsewhere(on_reply_only), _fresh(right=False)], references=("synth-rec1",))
-    assert tier == "replay_only" and row["failing"] == "independent_pass"
+    assert tier == "replay_only" and row["failing"] == "no fresh Run passes"
     assert row["replay"] == {"synth-rec1": True} and row["fresh_passed"] == []
 
 
@@ -301,3 +306,56 @@ def test_the_workdir_ruling_reads_the_spec_tiers_where_the_workdir_has_specs(tmp
     ruling = T.workdir_ruling(tmp_path)
     assert ruling.metrics["trust_tier"] == {"t1": "trusted", "t2": "untrusted"}
     assert ruling.metrics["trusted"] == ["t1"] and ruling.metrics["untrusted"] == {"t2": "untrusted: grounded"}
+
+
+# --- the writer's disagreement with the Reference (D327): a flag on the row, never a gate -------------------
+
+ACTIONS_SCHEMA = {"key_separator": "|", "columns": [
+    {"table": "actions", "name": "tool", "evidence": {"actions_of": ["hand_over"]}}]}
+
+
+def _write(check_id, tool="update_item", entity="b2"):
+    return check(check_id, demand=dict(WRITE, tool=tool, entity=entity))
+
+
+def _reference(end=END, calls=()):
+    run = _replay()
+    extra = [Event(idx=100 + i, type="tool_call", payload={"id": f"x{i}", "name": name, "args": {}})
+             for i, name in enumerate(calls)]
+    return _stopped(run.model_copy(update={"events": run.events[:-1] + extra}), end)
+
+
+def test_the_writer_and_a_reference_that_wrote_the_demanded_row_agree_and_the_trusted_row_carries_no_flag():
+    tier, row = _tier([_replay(), _fresh()])
+    assert tier == "trusted" and row["writer_disagrees"] == []
+
+
+def test_a_required_write_the_reference_never_called_is_flagged_by_its_check_id_and_does_not_gate():
+    the_spec = spec(gaps=["f2"]).model_copy(update={"checks": [*spec().checks, _write("c2", tool="remove_item")]})
+    assert T.writer_disagreement(the_spec, _reference()) == ["c2: no call to remove_item"]
+    tier, row = _tier([_replay(), _fresh()], the_spec=the_spec, verifier=_verifier())
+    assert tier == "trusted" and row["writer_disagrees"] == ["c2: no call to remove_item"]
+
+
+def test_a_required_write_on_a_row_the_reference_left_unchanged_is_flagged_and_an_allowed_one_is_not():
+    required = spec().model_copy(update={"checks": [*spec().checks, _write("c2")]})
+    allowed = spec().model_copy(update={"checks": [*spec().checks, check("c2", kind="allowed",
+                                                                         demand=dict(WRITE, entity="b2"))]})
+    assert T.writer_disagreement(required, _reference()) == ["c2: its row is in no diffed row"]
+    assert T.writer_disagreement(allowed, _reference()) == []
+
+
+def test_a_diffed_row_no_write_demand_names_is_not_flagged():
+    end = {"items": {"A1": {"slot": "seven"}, "B2": {"slot": "nine"}}}
+    assert T.writer_disagreement(spec(), _reference(end)) == []
+
+
+def test_action_table_rows_never_count_and_an_action_demand_is_read_by_its_call_alone():
+    end = dict(END, actions={"0": {"tool": "hand_over"}})
+    handed = spec().model_copy(update={"checks": [*spec().checks, _write("c2", tool="hand_over", entity="desk")]})
+    assert T.writer_disagreement(handed, _reference(end, calls=["hand_over"]), ACTIONS_SCHEMA) == []
+    assert T.writer_disagreement(handed, _reference(end), ACTIONS_SCHEMA) == ["c2: no call to hand_over"]
+
+
+def test_without_a_reference_the_writer_cannot_disagree():
+    assert T.writer_disagreement(spec(), None) == []
