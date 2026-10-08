@@ -571,6 +571,13 @@ def test_a_stored_sample_narrows_the_runnable_tasks_to_the_sample(tmp_path):
     assert domain_tools_mod._runnable_tasks(root) == ([], 0)
 
 
+def test_confirmed_tasks_list_before_the_verifier_filter(tmp_path):
+    root = _replayed(tmp_path)
+    (root / "verifiers" / "widget_task.json").unlink()
+    assert domain_tools_mod.confirmed_task_ids(root) == ["widget_task"]
+    assert domain_tools_mod._runnable_tasks(root) == ([], 1)
+
+
 def test_run_drops_a_named_task_outside_the_sample_and_says_how_many_it_left_out(tmp_path):
     from kullback.spec.trust import store_tasks
 

@@ -779,15 +779,23 @@ def _replay_rows(reference: Any, arguments: dict[str, Any]) -> list[ReplayRow]:
     return rows
 
 
+def confirmed_task_ids(root: Path) -> list[str]:
+    """Every open Task of the build's sample whose reference Trace replayed confirmed, in Task
+    order, whether or not it has a Verifier file yet: the writer's candidates."""
+    root = Path(root)
+    replays = read_json(root / REPLAYS_FILE, None) or {}
+    open_ids = in_sample(root, [row["task_id"] for row in status_of(root)["tasks"] if row["state"] == "open"])
+    return [task_id for task_id in open_ids
+            if any(isinstance(trace, dict) and trace.get("reference") and trace.get("confirmed")
+                   for trace in ((replays.get(task_id) or {}) if isinstance(replays, dict)
+                                 else {}).values())]
+
+
 def _runnable_tasks(root: Path) -> tuple[list[str], int]:
     """Every open Task of the build's sample whose reference Trace replayed confirmed and that has a
     Verifier file, in Task order, and how many confirmed open Tasks were left out for no Verifier (F54)."""
-    replays = read_json(root / REPLAYS_FILE, None) or {}
-    open_ids = in_sample(root, [row["task_id"] for row in status_of(root)["tasks"] if row["state"] == "open"])
-    confirmed = [task_id for task_id in open_ids
-                 if any(isinstance(trace, dict) and trace.get("reference") and trace.get("confirmed")
-                        for trace in ((replays.get(task_id) or {}) if isinstance(replays, dict)
-                                      else {}).values())]
+    root = Path(root)
+    confirmed = confirmed_task_ids(root)
     verified = [task_id for task_id in confirmed if (root / "verifiers" / f"{task_id}.json").is_file()]
     return verified, len(confirmed) - len(verified)
 

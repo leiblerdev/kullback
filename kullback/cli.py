@@ -423,14 +423,14 @@ def _spec_switch(adapter: Any, judge_adapter: Any, spec_adapter: Any) -> dict:
     """
     examine = _entry("kullback.examiner.session", "examine")
     write_specs = _entry("kullback.spec.stage", "write_specs")
-    runnable = _entry("kullback.builder.domain_tools", "runnable_task_ids")
+    spec_candidates = _entry("kullback.builder.domain_tools", "confirmed_task_ids")
 
     def examine_fn(workdir: Any, task_ids: Any) -> Any:
-        examine(Path(workdir), task_ids=task_ids, model=None, judge_model=judge_adapter or adapter)
-        ids = list(task_ids) if task_ids is not None else list(runnable(Path(workdir)))
+        ids = list(task_ids) if task_ids is not None else list(spec_candidates(Path(workdir)))
+        examine(Path(workdir), task_ids=ids, model=None, judge_model=judge_adapter or adapter)
         counts = write_specs(Path(workdir), ids, spec_adapter)
         typer.echo(f"spec: {json.dumps(counts, default=str, sort_keys=True)}")
-        return examine(Path(workdir), task_ids=task_ids, model=adapter, judge_model=judge_adapter or adapter)
+        return examine(Path(workdir), task_ids=ids, model=adapter, judge_model=judge_adapter or adapter)
 
     return {"examine_fn": examine_fn}
 

@@ -1056,6 +1056,24 @@ def test_examine_writes_the_specs_on_a_named_spec_model(workdir, fake_modules, m
     assert fake_modules["kullback.spec.stage.write_specs"][0]["args"][2] is built["other/writer"]
 
 
+def test_examine_with_no_task_named_covers_confirmed_tasks_missing_verifiers(tmp_path, monkeypatch):
+    from kullback.examiner import session as session_mod
+    from kullback.spec import stage as stage_mod
+
+    root = tmp_path / "work"
+    (root / "tasks").mkdir(parents=True)
+    (root / "tasks" / "t1.json").write_text("{}")
+    (root / "replays.json").write_text(json.dumps({"t1": {"r1": {"reference": True, "confirmed": True}}}))
+    seen = {}
+    monkeypatch.setattr(session_mod, "examine",
+                        lambda *args, **kwargs: seen.setdefault("examine", []).append(kwargs) or [])
+    monkeypatch.setattr(stage_mod, "write_specs",
+                        lambda *args, **kwargs: seen.setdefault("specs", []).append(args) or {})
+    cli._spec_switch(None, None, "spec-adapter")["examine_fn"](root, None)
+    assert [args[1] for args in seen["specs"]] == [["t1"]]
+    assert [kwargs["task_ids"] for kwargs in seen["examine"]] == [["t1"], ["t1"]]
+
+
 def test_status_and_the_counts_line_print_one_trusted_count_on_a_workdir_with_specs(tmp_path):
     from kullback import round_snapshot
     from tests.spec.test_trust import _fresh, _intent_workdir, _replay
