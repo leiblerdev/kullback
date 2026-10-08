@@ -419,9 +419,12 @@ def _spec_switch(adapter: Any, judge_adapter: Any, spec_adapter: Any) -> dict:
 
     The named Tasks, else every runnable Task of the build's sample, get their References by code,
     then a Spec and its Verifier on `spec_adapter` (a Task that has both keeps them, its gates
-    refreshed once a Reference has come); then the Examiner reviews them on `adapter`.
+    refreshed once a Reference has come); then the Examiner reviews them on `adapter` in rounds,
+    the writer answering open rulings between rounds, so one call runs round one and, where rulings
+    stand open, round two.
     """
     examine = _entry("kullback.examiner.session", "examine")
+    examine_rounds = _entry("kullback.examiner.session", "examine_rounds")
     write_specs = _entry("kullback.spec.stage", "write_specs")
     spec_candidates = _entry("kullback.builder.domain_tools", "confirmed_task_ids")
 
@@ -430,7 +433,9 @@ def _spec_switch(adapter: Any, judge_adapter: Any, spec_adapter: Any) -> dict:
         examine(Path(workdir), task_ids=ids, model=None, judge_model=judge_adapter or adapter)
         counts = write_specs(Path(workdir), ids, spec_adapter)
         typer.echo(f"spec: {json.dumps(counts, default=str, sort_keys=True)}")
-        return examine(Path(workdir), task_ids=ids, model=adapter, judge_model=judge_adapter or adapter)
+        rounds = examine_rounds(Path(workdir), ids, model=adapter, writer_model=spec_adapter)
+        held, total = rounds.get("held"), rounds.get("total")
+        return {"summary": f"examiner rounds ran, held {held}; rulings {total}", "findings": []}
 
     return {"examine_fn": examine_fn}
 

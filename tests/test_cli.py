@@ -1043,10 +1043,11 @@ def test_examine_chooses_references_then_writes_the_specs_on_the_builder_model_t
     fake_modules["kullback.builder.session.build"][0]["kwargs"]["examine_fn"](workdir, ["t1"])
     (written,) = fake_modules["kullback.spec.stage.write_specs"]
     assert written["args"][1] == ["t1"] and written["args"][2] is built["vendor/large"]
-    first, second = (call["kwargs"] for call in fake_modules["kullback.examiner.session.examine"])
-    assert first["model"] is None and second["model"] is built["vendor/large"]
-    assert second["task_ids"] == ["t1"] and "verifier_from" not in second
-    assert not {"probe_model", "reroll_model", "user_model"} & set(second)
+    (first,) = (call["kwargs"] for call in fake_modules["kullback.examiner.session.examine"])
+    assert first["model"] is None and first["task_ids"] == ["t1"]
+    (rounds,) = (call for call in fake_modules["kullback.examiner.session.examine_rounds"])
+    assert rounds["args"][1] == ["t1"] and rounds["kwargs"]["model"] is built["vendor/large"]
+    assert rounds["kwargs"]["writer_model"] is built["vendor/large"]
 
 
 def test_examine_writes_the_specs_on_a_named_spec_model(workdir, fake_modules, monkeypatch):
@@ -1067,11 +1068,16 @@ def test_examine_with_no_task_named_covers_confirmed_tasks_missing_verifiers(tmp
     seen = {}
     monkeypatch.setattr(session_mod, "examine",
                         lambda *args, **kwargs: seen.setdefault("examine", []).append(kwargs) or [])
+    monkeypatch.setattr(session_mod, "examine_rounds",
+                        lambda *args, **kwargs: seen.setdefault("rounds", []).append((args, kwargs))
+                        or {"held": [], "total": {}})
     monkeypatch.setattr(stage_mod, "write_specs",
                         lambda *args, **kwargs: seen.setdefault("specs", []).append(args) or {})
     cli._spec_switch(None, None, "spec-adapter")["examine_fn"](root, None)
     assert [args[1] for args in seen["specs"]] == [["t1"]]
-    assert [kwargs["task_ids"] for kwargs in seen["examine"]] == [["t1"], ["t1"]]
+    assert [kwargs["task_ids"] for kwargs in seen["examine"]] == [["t1"]]
+    (rounds_args, rounds_kwargs) = seen["rounds"][0]
+    assert rounds_args[1] == ["t1"] and rounds_kwargs["writer_model"] == "spec-adapter"
 
 
 def test_status_and_the_counts_line_print_one_trusted_count_on_a_workdir_with_specs(tmp_path):
