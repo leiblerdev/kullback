@@ -26,7 +26,7 @@ from kullback.agent.session import SessionStore
 from kullback.examiner import findings as findings_mod
 from kullback.examiner import prompt as prompt_mod
 from kullback.examiner import stage as stage_mod
-from kullback.examiner.domain_tools import TOOL_NAMES, domain_tools, note_line, notes_of
+from kullback.examiner.domain_tools import TOOL_NAMES, domain_tools, finding_tool, note_line, notes_of
 from kullback.examiner.exam_files import (
     DERIVED_DIR,
     SPOKEN_DIR,
@@ -738,14 +738,16 @@ REVIEW_MESSAGE = "Examine these Specs."
 
 
 def review_extension(root: ExamRoot) -> Callable[[ExtensionAPI], None]:
-    """One review round's setup: base tools over exam/, the ruling tools, the prompt, the read and write hooks."""
+    """One review round's setup: base tools over exam/, the ruling tools, the finding tool for
+    Builder-side faults, the prompt, the read and write hooks."""
     from kullback.examiner.rule_tool import rule_tools
 
     def setup(api: ExtensionAPI) -> None:
         register_base_tools(api, root.exam_dir, only=BASE_ONLY)
         for tool in rule_tools(root):
             api.register_tool(tool)
-        for name, text in prompt_mod.sections(prompt_mod.REVIEW_TOOLS):
+        api.register_tool(finding_tool(root))
+        for name, text in prompt_mod.sections([*prompt_mod.REVIEW_TOOLS, "finding"]):
             api.add_prompt_section(f"examiner_{name}", prompt_block(name, text))
         api.tool_call(refuse_paths(
             names_protected_path, "under the gates or the Runner, which no agent writes (D122)",
@@ -761,8 +763,9 @@ def review_specs(workdir: Any, task_ids: Iterable[str], *, model: Any, round_num
                  session_path: Any = None) -> dict:
     """One Examiner round over the Tasks with a Spec: views written, rulings filed or closed, Specs synced.
 
-    Returns the Tasks examined, whether the session stopped on its turn cap, and the rulings this round
-    filed, by kind, code and blocking (spec/rulings.py counts).
+    Returns the Tasks examined, whether the session stopped on its turn cap, the rulings this round
+    filed, by kind, code and blocking (spec/rulings.py counts), and the findings the session filed
+    for the Builder.
     """
     from kullback.examiner.rule_tool import write_views
     from kullback.spec.rulings import counts, load_rulings, sync_spec
@@ -771,7 +774,8 @@ def review_specs(workdir: Any, task_ids: Iterable[str], *, model: Any, round_num
     root = Path(workdir)
     selected = sorted(t for t in set(task_ids) if spec_path(root, t).is_file())
     if not selected:
-        return {"round": round_number, "tasks": [], "capped": False, "counts": counts(())}
+        return {"round": round_number, "tasks": [], "capped": False, "counts": counts(()), "findings": []}
+
     exam_root = ExamRoot(workdir=root, round=round_number,
                          replays=read_json(root / "replays.json", {}) or {},
                          rerolls=read_json(root / "rerolls.json", {}) or {})
@@ -793,7 +797,8 @@ def review_specs(workdir: Any, task_ids: Iterable[str], *, model: Any, round_num
     filed = [r for t in selected for r in load_rulings(root, t) if r.round == round_number]
     for task_id in selected:
         sync_spec(root, task_id, round_number)
-    return {"round": round_number, "tasks": selected, "capped": bool(capped), "counts": counts(filed)}
+    return {"round": round_number, "tasks": selected, "capped": bool(capped), "counts": counts(filed),
+            "findings": list(map(Finding.as_dict, exam_root.findings))}
 
 
 __all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "REVIEW_MESSAGE", "review_extension", "review_specs", "rulings_part", "derive_findings", "examine", "examiner_extension", "session_opening",

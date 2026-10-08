@@ -60,6 +60,8 @@ def fake_modules(monkeypatch):
                 return None
             if name == "reroll":
                 return reroll(*args, **kwargs)
+            if name == "examine":
+                return []
             return session_build(*args, **kwargs) if name == "build" else {"ok": True}
         return fn
 
@@ -1078,6 +1080,25 @@ def test_examine_with_no_task_named_covers_confirmed_tasks_missing_verifiers(tmp
     assert [kwargs["task_ids"] for kwargs in seen["examine"]] == [["t1"]]
     (rounds_args, rounds_kwargs) = seen["rounds"][0]
     assert rounds_args[1] == ["t1"] and rounds_kwargs["writer_model"] == "spec-adapter"
+
+
+def test_examine_returns_the_code_findings_to_the_builder(tmp_path, monkeypatch):
+    from kullback.examiner import session as session_mod
+    from kullback.examiner.exam_files import Finding
+    from kullback.spec import stage as stage_mod
+
+    root = tmp_path / "work"
+    (root / "tasks").mkdir(parents=True)
+    (root / "tasks" / "t1.json").write_text("{}")
+    (root / "replays.json").write_text(json.dumps({"t1": {"r1": {"reference": True, "confirmed": True}}}))
+    code = [Finding(task_id="t1", kind="suite", text="the suite fails", rows=[{"task_id": "t1"}])]
+    filed = {"task_id": "t1", "kind": "environment", "text": "a tool body", "rows": []}
+    monkeypatch.setattr(session_mod, "examine", lambda *args, **kwargs: code)
+    monkeypatch.setattr(session_mod, "examine_rounds",
+                        lambda *args, **kwargs: {"held": [], "total": {}, "findings": [filed]})
+    monkeypatch.setattr(stage_mod, "write_specs", lambda *args, **kwargs: {})
+    out = cli._spec_switch(None, None, "spec-adapter")["examine_fn"](root, ["t1"])
+    assert out["findings"] == [code[0].as_dict(), filed]
 
 
 def test_status_and_the_counts_line_print_one_trusted_count_on_a_workdir_with_specs(tmp_path):

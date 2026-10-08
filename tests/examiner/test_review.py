@@ -45,3 +45,31 @@ def test_a_review_that_finds_nothing_is_filed_as_no_finding_with_its_reason(tmp_
     assert D.reviews_of(root.workdir) == {"t1": result.review}
     with pytest.raises(ValueError, match="reason"):
         asyncio.run(tool.execute(D.NoFindingArgs(task_id="t1", reason="fine")))
+
+
+def test_the_review_session_holds_the_finding_tool_for_the_builder(tmp_path):
+    harness = AgentHarness(model=TestModel([]))
+    load_extensions(harness, [S.review_extension(_root(tmp_path))])
+    assert harness.registry.get("finding") is not None
+
+
+def test_the_rounds_examiner_can_file_a_finding_for_the_builder(tmp_path, monkeypatch):
+    import asyncio
+
+    from kullback.spec import rounds as RD
+    from tests.spec.test_roles import _written
+
+    root, _ = _written(tmp_path)
+
+    def file_one(harness, opening, turns, selected):
+        tool = harness.registry.get("finding")
+        asyncio.run(tool.execute(D.FindingArgs(kind="environment", task_id="t1", text="a tool body answers wrong",
+                                               path="env/tools/update_item.py", change="answer the recorded calls")))
+        return []
+
+    monkeypatch.setattr(S, "_run_session", file_one)
+    monkeypatch.setattr(RD, "_ask_confirm", lambda *args, **kwargs: {"asked": False, "added": 0})
+    monkeypatch.setattr(RD, "_route_reference_fails", lambda *args, **kwargs: {})
+    out = S.examine_rounds(root, ["t1"], model=TestModel([]), writer_model=TestModel([]))
+    assert out["findings"] and out["findings"][0]["kind"] == "environment"
+    assert out["findings"][0]["task_id"] == "t1"

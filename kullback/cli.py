@@ -430,12 +430,13 @@ def _spec_switch(adapter: Any, judge_adapter: Any, spec_adapter: Any) -> dict:
 
     def examine_fn(workdir: Any, task_ids: Any) -> Any:
         ids = list(task_ids) if task_ids is not None else list(spec_candidates(Path(workdir)))
-        examine(Path(workdir), task_ids=ids, model=None, judge_model=judge_adapter or adapter)
+        code = examine(Path(workdir), task_ids=ids, model=None, judge_model=judge_adapter or adapter)
         counts = write_specs(Path(workdir), ids, spec_adapter)
         typer.echo(f"spec: {json.dumps(counts, default=str, sort_keys=True)}")
         rounds = examine_rounds(Path(workdir), ids, model=adapter, writer_model=spec_adapter)
         held, total = rounds.get("held"), rounds.get("total")
-        return {"summary": f"examiner rounds ran, held {held}; rulings {total}", "findings": []}
+        rows = [f.as_dict() for f in code] + list(rounds.get("findings", []))
+        return {"summary": f"examiner rounds ran, held {held}; rulings {total}", "findings": rows}
 
     return {"examine_fn": examine_fn}
 

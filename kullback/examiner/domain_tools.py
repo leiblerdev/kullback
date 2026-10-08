@@ -341,6 +341,14 @@ def _no_finding(root: ExamRoot):
     return no_finding
 
 
+def finding_tool(root: ExamRoot) -> AgentTool:
+    """The finding tool alone, so a review session can file Builder-side faults with the same
+    arguments and the same bus event as the full examine session."""
+    return AgentTool("finding", "File what is wrong with the Environment for the Builder: what in `text`, the rows, "
+                     "the file in `path`, the one line in `change`, and the body edits, each with its why.",
+                     FindingArgs, FindingResult, _finding(root), render=render)
+
+
 def domain_tools(root: ExamRoot) -> list[AgentTool]:
     """The Examiner's tools over one ExamRoot: it reads and files, nothing here writes a Verifier or runs."""
     from kullback.examiner import reference_check as RC  # it imports this module's note readers
@@ -348,9 +356,7 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
 
     return [
         *R.rule_tools(root),
-        AgentTool("finding", "File what is wrong with the Environment for the Builder: what in `text`, the rows, "
-                  "the file in `path`, the one line in `change`, and the body edits, each with its why.",
-                  FindingArgs, FindingResult, _finding(root), render=render),
+        finding_tool(root),
         AgentTool("no_finding", "File a review of a Task that found nothing wrong, with the one reason.",
                   NoFindingArgs, NoFindingResult, _no_finding(root), render=render),
         AgentTool("check_reference", "Show the evidence on a Task's Reference: the Intent, each write with "
@@ -362,6 +368,11 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
 
 #: The tools the Examiner holds, so tests pin its surface: none edits a Spec or writes a Verifier.
 TOOL_NAMES = ("rule", "close", "verify", "lookup_rows", "search_rows", "finding", "no_finding", "check_reference")
+
+__all__ = ["MIN_REASON_CHARS", "NOTES_DIR", "NOTE_REASONS", "NO_FINDING", "REVIEWS_FILE", "TOOL_NAMES",
+           "FindingArgs", "FindingResult", "NoFindingArgs", "NoFindingResult", "domain_tools", "finding_tool",
+           "known_task", "note_line", "note_refusal", "notes_of", "open_note", "read_note", "read_ruling",
+           "reviews_of", "rule_note", "ruling_path", "task_ids_of", "task_path", "tool_names", "write_note"]
 
 
 def tool_names() -> tuple[str, ...]:

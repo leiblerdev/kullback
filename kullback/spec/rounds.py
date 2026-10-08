@@ -68,7 +68,8 @@ def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., 
     `examine(workdir, task_ids, model=, round_number=)` is one Examiner round; `answer(workdir, task_id,
     model, round_number, ceiling_usd=)` one writer answer per Task. Before the first round the
     writer is asked the fixed confirm question where a Spec writes with no confirm item (`confirm`,
-    spec/writer.ask_confirm). Returns each round's counts and each Task's row at the end.
+    spec/writer.ask_confirm). Returns each round's counts, the findings the Examiner rounds filed
+    for the Builder, and each Task's row at the end.
     """
     from kullback.agent.bus import Bus
 
@@ -77,6 +78,7 @@ def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., 
     bus = Bus(root / "bus.jsonl", agent="spec")
     rounds = min(int(rounds), ROUNDS_CAP)
     log: list[dict] = []
+    found: list[dict] = []
     routed = _route_reference_fails(root, task_ids)
     if routed:
         _log(root, {"side": "trust", "reference_fails_filed": routed})
@@ -90,6 +92,7 @@ def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., 
         for task_id in task_ids:
             R.sync_spec(root, task_id, number)
         row = {"round": number, "side": "examiner", "capped": exam.get("capped"), "counts": exam.get("counts", {})}
+        found += exam.get("findings", [])
         events.review_round(bus, number, "examiner", row["counts"])
         _log(root, row)
         log.append(row)
@@ -106,7 +109,7 @@ def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., 
         R.sync_spec(root, task_id)
     tasks = task_rows(root, task_ids)
     summary = {"rounds": log, "tasks": tasks, "held": sorted(t for t, row in tasks.items() if row["held"]),
-               "total": R.counts(r for t in task_ids for r in R.load_rulings(root, t))}
+               "total": R.counts(r for t in task_ids for r in R.load_rulings(root, t)), "findings": found}
     _log(root, {"side": "summary", "held": summary["held"], "total": summary["total"]})
     return summary
 
