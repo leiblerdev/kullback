@@ -33,6 +33,7 @@ from typing import Any, Callable, Iterable, Optional
 
 from kullback.runner.atom_context import is_transfer
 from kullback.runner.records import Atom, EndState, ExpectedCell, ValueSource
+from kullback.spec.effects import type_of
 
 STATE_KINDS = ("row_is", "row_new", "row_keeps")
 EVENT_KINDS = ("called", "not_called", "before")
@@ -51,6 +52,8 @@ DEFAULT_GATE = {kind: kind in STATE_KINDS + EVENT_KINDS for kind in ITEM_KINDS}
 MIN_POLICY_LINE = 12
 MAX_ALTERNATIVES = 8
 FIND_LIMIT = 10
+# What `World._arg_shape` answers for a list of objects the recordings show: check it on its key field.
+OBJECTS = "objects"
 
 
 def _flat(text: Any) -> str:
@@ -135,13 +138,16 @@ class World:
     """The Starting state, the policy and the user turns, for finding rows and sourcing values."""
 
     def __init__(self, state: dict, policy_text: str = "", facts: Iterable[Any] = (), tools: Iterable[dict] = (),
-                 columns: Optional[dict] = None):
+                 columns: Optional[dict] = None, signatures: Optional[dict] = None):
         self.state = {table: rows for table, rows in (state or {}).items() if isinstance(rows, dict)}
         # The schema's columns per table, for a table the Starting state holds no row of.
         self.declared = {table: list(names) for table, names in (columns or {}).items()}
         self.policy = policy_text or ""
         self.facts = list(facts)
         self.tools = {row["name"]: row for row in tools if isinstance(row, dict) and row.get("name")}
+        # Per tool, what its recorded calls passed (spec/effects.py signatures): a called item no
+        # recorded call could have made is refused.
+        self.signatures = dict(signatures or {})
         self._values: Optional[dict[str, tuple[str, str]]] = None
         # The item being checked, so a value can be read against its gate and its row.
         self._kept: dict = {}
@@ -441,13 +447,56 @@ class World:
         if why or not isinstance(args, dict):
             return why or "args is {argument: value}"
         allowed = self.tools[item["tool"]].get("args") or []
+        recorded = (self.signatures.get(item["tool"]) or {}).get("args") or {}
         for name, value in args.items():
             if allowed and name not in allowed:
                 return f"{item['tool']} takes {', '.join(allowed)}"
-            why = self._value(value, name)[1]
+            why = self._arg_shape(item["tool"], name, value, recorded.get(name))
+            if why == OBJECTS:
+                why = self._objects(name, value, recorded[name])
+            elif not why:
+                why = self._value(value, name)[1]
             if why:
                 return why
+        why = self._never_equal(item["tool"], args)
+        if why:
+            return why
         kept.update(tool=item["tool"], args=dict(args))
+        return ""
+
+    def _arg_shape(self, tool: str, name: str, value: Any, recorded: Optional[dict]) -> str:
+        """Why no recorded call of the tool passed an argument like this one; OBJECTS for a list of objects
+        the recordings show, which is checked on its key field; empty when the shape is one recorded."""
+        if not recorded or value_set_of(value):
+            return ""
+        why = _type_refusal(tool, name, value, set(recorded.get("types") or []))
+        keys = recorded.get("required_keys") or []
+        if why or not keys or not isinstance(value, (list, dict)):
+            return why
+        entries = value if isinstance(value, list) else list(value.values())
+        if entries and all(isinstance(one, dict) for one in entries):
+            return OBJECTS
+        return (f"{tool} {name}: every recorded call passes objects with keys {', '.join(keys)}; "
+                "write each entry as such an object")
+
+    def _objects(self, name: str, value: Any, recorded: dict) -> str:
+        """A list of objects compared on its key field: each object carries the keys every recorded one did,
+        no key none did, and its key field names a value the world or the Intent holds."""
+        need, known = set(recorded.get("required_keys") or []), set(recorded.get("keys") or [])
+        for one in value if isinstance(value, list) else value.values():
+            if not need <= set(one) or not set(one) <= known:
+                return (f"{name}: each object carries the keys {', '.join(sorted(need))}"
+                        + (f" (and may carry {', '.join(sorted(known - need))})" if known - need else ""))
+            for key in recorded.get("key_fields") or []:
+                why = self._value(one[key], f"{name}.{key}")[1]
+                if why:
+                    return why
+        return ""
+
+    def _never_equal(self, tool: str, args: dict) -> str:
+        for one, two in (self.signatures.get(tool) or {}).get("never_equal") or []:
+            if one in args and two in args and norm(args[one]) and norm(args[one]) == norm(args[two]):
+                return f"{tool}: no recorded call gives {one} and {two} the same value"
         return ""
 
     _not_called = _called
@@ -607,6 +656,20 @@ def atom_of(item: dict) -> Atom:
                 judge=item["kind"] == "judge", gate=bool(item["gate"]), weight=float(item["weight"]))
 
 
+def value_set_of(value: Any) -> bool:
+    """A value set ({"one_of": [...]} or {"not": [...]}), not a value."""
+    return isinstance(value, dict) and len(value) == 1 and next(iter(value)) in ("one_of", "not")
+
+
+def _type_refusal(tool: str, name: str, value: Any, types: set) -> str:
+    """Why a value's JSON type is none the recorded calls passed (a number stands for a number); else empty."""
+    kind = type_of(value)
+    numeric = {"int", "float"}
+    if not types or kind in types or kind == "NoneType" or (kind in numeric and types & numeric):
+        return ""
+    return f"{tool} {name}: every recorded call passes {' or '.join(sorted(types))}, not {kind}"
+
+
 def _cell_source(value: Any, world: World) -> Optional[ValueSource]:
     found = None
     values = next(iter(value.values())) if isinstance(value, dict) else value if isinstance(value, list) else [value]
@@ -617,12 +680,72 @@ def _cell_source(value: Any, world: World) -> Optional[ValueSource]:
     return found
 
 
-def end_states_of(items: list[dict], world: World, action_tables: Iterable[str] = ()) -> list[EndState]:
+def _answers(item: dict, effects: dict) -> list[str]:
+    """The tools that could answer one state item: for a row_is, every tool that always moves each column
+    it expects on that table; for a row_new, every tool that always makes rows in that table."""
+    if item["kind"] == "row_new":
+        return [tool for tool, learned in effects.items() if item["table"] in (learned.get("makes") or [])]
+    if item["kind"] != "row_is":
+        return []
+    wanted = {str(field).split(".")[0] for field in item.get("expect") or {}} - set(item.get("find") or {})
+    return [tool for tool, learned in effects.items() if wanted and wanted <= {
+        column["column"] for column in learned.get("columns") or [] if column["table"] == item["table"]}]
+
+
+def expected_tools(items: list[dict], effects: dict) -> list[str]:
+    """The write tools an end state's items expect to run.
+
+    A called item names its tool. A state item implies the one tool that alone answers it (`_answers`);
+    an item two tools could answer implies neither.
+    """
+    out = {item["tool"] for item in items if item["kind"] == "called" and item.get("tool") in effects}
+    for item in items:
+        fits = _answers(item, effects)
+        if len(fits) == 1:
+            out.add(fits[0])
+    return sorted(out)
+
+
+def _declared_rows(items: list[dict]) -> tuple[dict[str, set[str]], set[tuple]]:
+    """(table to the rows a row_is declares, the (table, row, column) cells expect)."""
+    declared: dict[str, set[str]] = {}
+    for item in items:
+        if item["kind"] == "row_is" and item.get("row") is not None:
+            declared.setdefault(item["table"], set()).add(item["row"])
+    expected = {(item["table"], item["row"], str(field).split(".")[0]) for item in items
+                if item["kind"] in ("row_is", "row_keeps") for field in item.get("expect") or {}}
+    return declared, expected
+
+
+def effect_rules(items: list[dict], effects: Optional[dict], alt: Any = None) -> list[dict]:
+    """Allowed rules for what each write tool an end state expects always moves (spec/effects.py).
+
+    The items are those of the end state `alt` (those without `alt` and those with it). On a table whose
+    rows the end state declares, the rule frees the column on those rows; on a table it declares no row
+    of (a count on a related row), on every row of it. A column a cell expects stays checked by its
+    cell; no rule is added there.
+    """
+    items = [item for item in items if item.get("alt") in (None, alt)]
+    declared, expected = _declared_rows(items)
+    rules: dict[tuple, dict] = {}
+    for tool in expected_tools(items, effects or {}):
+        for column in effects[tool].get("columns") or []:
+            table, field = column["table"], column["column"]
+            for row in sorted(declared.get(table) or ()) or [None]:
+                rule = {"table": table, "field": field, "why": f"free: tool effect: {tool}"}
+                if (table, row, field) not in expected:
+                    rules.setdefault((table, row, field), dict(rule, row_id=row) if row is not None else rule)
+    return [rules[key] for key in sorted(rules, key=lambda key: tuple(str(part) for part in key))]
+
+
+def end_states_of(items: list[dict], world: World, action_tables: Iterable[str] = (),
+                  effects: Optional[dict] = None) -> list[EndState]:
     """One EndState per alternative: the state items without `alt` in each, those with `alt` in theirs.
 
-    Every EndState allows the action tables (a call's record, not the world's change); nothing else
-    outside its cells and new rows may move, which is the sanity item. With no state item at all there
-    is one EndState with no cells: the Run must leave the world as it found it.
+    Every EndState allows the action tables (a call's record, not the world's change) and what each write
+    tool it expects always moves (`effect_rules`); nothing else outside its cells and new rows may move,
+    which is the sanity item. With no state item at all there is one EndState with no cells: the Run
+    must leave the world as it found it.
     """
     state = [item for item in items if item["kind"] in STATE_KINDS]
     alts = sorted({item["alt"] for item in state if item.get("alt") is not None}) or [None]
@@ -631,7 +754,7 @@ def end_states_of(items: list[dict], world: World, action_tables: Iterable[str] 
     for alt in alts:
         cells: list[ExpectedCell] = []
         new_rows: list[dict] = []
-        free: list[dict] = []
+        free: list[dict] = effect_rules(items, effects, alt)
         for item in state:
             if item.get("alt") not in (None, alt):
                 continue
@@ -713,5 +836,6 @@ def counts_of(items: list[dict]) -> dict:
 
 
 __all__ = ["CONFIRM_TURN", "DEFAULT_GATE", "EVENT_KINDS", "ITEM_KINDS", "SANITY", "SANITY_ID", "STATE_KINDS",
-           "World", "atom_of", "because_of", "contradictions", "counts_of", "end_states_of",
+           "World", "atom_of", "because_of", "contradictions", "counts_of", "effect_rules", "end_states_of",
+           "expected_tools",
            "norm", "sanity_atom", "sanity_item"]
