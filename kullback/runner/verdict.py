@@ -366,14 +366,16 @@ def _conduct_holds(rule: Conduct, context: AtomContext) -> Optional[bool]:
 def _best_end_state(verifier: Verifier, context: AtomContext) -> tuple[EndState, list, Match]:
     """The end state the Run is read against: any one matching whole, else the closest (D329).
 
-    Closest is all cells held, then no cell failed (only unsettled), then the most cell weight held.
+    Closest is an end state whose gate cells and sanity all hold, then all cells held, then no
+    cell failed (only unsettled), then the most cell weight held.
     """
     best = None
     for state in verifier.expected:
         cells = cell_results(state, context)
         rest = collateral(state, context)
         held = sum(cell.weight for cell, ok, _ in cells if ok)
-        key = (all(ok for _, ok, _ in cells) and rest.ok is True, all(ok for _, ok, _ in cells),
+        gates = all(ok for cell, ok, _ in cells if cell.gate) and rest.ok is True
+        key = (gates, all(ok for _, ok, _ in cells) and rest.ok is True, all(ok for _, ok, _ in cells),
                all(ok is not False for _, ok, _ in cells), held)
         if best is None or key > best[0]:
             best = (key, state, cells, rest)

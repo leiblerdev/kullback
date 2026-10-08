@@ -61,6 +61,17 @@ def test_a_run_matching_any_one_of_several_end_states_passes_on_that_one():
     assert not verdict(_run(_end(A1__status="gone")), verifier).passed
 
 
+def test_an_alternative_whose_gates_hold_is_read_before_a_heavier_one_whose_gate_fails():
+    gated = EndState(cells=[ExpectedCell(table="items", row_id="A1", field="status", value=1, gate=True),
+                            ExpectedCell(table="items", row_id="A1", field="note", value=1, gate=False)])
+    heavier = EndState(cells=[ExpectedCell(table="items", row_id="A1", field="status", value=2, gate=True),
+                              ExpectedCell(table="items", row_id="A1", field="note", value=0, gate=False,
+                                           weight=10.0)])
+    end = _end(A1__status=1, A1__note=0)
+    out = verdict(_run(end), Verifier(task_id="t", expected=[gated, heavier]))
+    assert out.passed and _items(out)["state:items.A1.status"] is True
+
+
 def test_a_scored_item_that_fails_lowers_the_score_and_never_the_pass():
     verifier = Verifier(task_id="t", expected=[_closed()], atoms=[_said("say", "closed", gate=False)])
     quiet = verdict(_run(_end(A1__status="closed")), verifier)
