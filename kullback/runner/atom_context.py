@@ -25,6 +25,15 @@ CONFIRM_WORDS = ("yes", "confirm", "go ahead")
 # A sentence that opens on a yes, and one that opens on a no, the way D306 reads a confirmation.
 AFFIRM_OPEN = re.compile(r"^(yes|yeah|yep|sure|ok|okay|confirm|confirmed|go ahead|please do|correct)\b", re.I)
 NEGATIVE_OPEN = re.compile(r"^(no|nope|don'?t|do not|not yet|hold on|wait|stop)\b", re.I)
+# Markdown emphasis and a leading conjunction, stripped before a sentence is read: "**Yes**", "And yes".
+EMPHASIS = re.compile(r"[*_`~]+")
+LEADING_CONJUNCTION = re.compile(r"^(and|but|so|then|well|oh|ah|um)\b[\s,]*", re.I)
+
+
+def _opening(sentence: str) -> str:
+    """The sentence as its opening word reads it: emphasis gone, a leading conjunction dropped."""
+    text = EMPHASIS.sub("", sentence).strip()
+    return LEADING_CONJUNCTION.sub("", text).strip()
 
 
 def _reply(payload: dict) -> dict:
@@ -202,7 +211,7 @@ class AtomContext:
         for idx, text in self.user:
             if idx >= first:
                 continue
-            sentences = [part.strip() for part in re.split(r"[.!?\n]+", text) if part.strip()]
+            sentences = [_opening(part) for part in re.split(r"[.!?\n]+", text) if _opening(part)]
             if any(AFFIRM_OPEN.match(s) for s in sentences) and not any(NEGATIVE_OPEN.match(s) for s in sentences):
                 return True
         return False
