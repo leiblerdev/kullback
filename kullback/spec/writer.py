@@ -557,6 +557,39 @@ def repair_for_ruling(workdir: Path, task_id: str, ruling: dict, model: Any,
     return load_spec(workdir, task_id)
 
 
+# The one fixed question code asks when a Spec writes and no item waits for the user's yes (item 22).
+CONFIRM_QUESTION = ("This Spec has a write item and no before item with first confirm_turn. Does the policy "
+                    "require the user's explicit yes before this write?")
+CONFIRM_FIX = ("If it does, add a before item {first: \"confirm_turn\", then: <the write tool>}, gated, with the "
+               "policy line that requires the yes as its policy_line. If it does not, reply with one line "
+               "starting \"rebut:\" saying none.")
+
+
+def lacks_confirm(spec: Spec, write_tools: Iterable[str]) -> bool:
+    """A Spec with a write item (a state change, or a call of a write tool) and no confirm-turn before item."""
+    items, writes = item_checks(spec), set(write_tools)
+    wrote = any(item["kind"] in ("row_is", "row_new") or (item["kind"] == "called" and item.get("tool") in writes)
+                for item in items)
+    return wrote and not any(item["kind"] == "before" and item.get("first") == I.CONFIRM_TURN for item in items)
+
+
+def ask_confirm(workdir: Path, task_id: str, model: Any, ceiling_usd: Optional[float] = None) -> dict:
+    """Ask the writer the fixed confirm question when the Spec needs it, before the Examiner's round.
+
+    The question goes as a ruling on the Task (no item ruled), so the writer may only add items or rebut.
+    No model, no Spec, or a Spec that does not need the question: nothing is asked.
+    """
+    spec = load_spec(workdir, task_id) if model is not None else None
+    if spec is None or not lacks_confirm(spec, load_inputs(workdir, task_id, spec.intent).write_tools):
+        return {"asked": False}
+    held = {check.id for check in spec.checks}
+    after = repair_for_ruling(workdir, task_id, {"item": "", "reason": CONFIRM_QUESTION, "fix": CONFIRM_FIX,
+                                                 "kind": "confirm_coverage"}, model, ceiling_usd)
+    added = [check for check in after.checks if check.id not in held and check.demand.get("kind") == "before"
+             and check.demand.get("first") == I.CONFIRM_TURN]
+    return {"asked": True, "added": len(added)}
+
+
 def spoken_intent(task_id: str, text: str) -> SpecIntent:
     """Spoken user text as one volunteered fact per sentence: the stand-in until a mined Intent exists."""
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", text or "") if s.strip()]

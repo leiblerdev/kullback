@@ -386,3 +386,14 @@ def test_every_reason_code_gives_lands_in_a_named_family_and_an_empty_one_reads_
     assert [W.reason_family(r) for r in reasons] == ["anchor shape", "anchor shape", "free field", "no provenance",
                                                      "echo value at a gate"]
     assert W.reason_family("") == W.NO_REASON == "no reason"
+
+
+def test_a_writing_spec_with_no_confirm_item_is_asked_the_fixed_question_and_then_never_again(tmp_path):
+    _ruled_workdir(tmp_path)
+    confirm = {"id": "b1", "kind": "before", "first": "confirm_turn", "then": "update_item", "gate": True,
+               "policy_line": "Move an item only to a free slot."}
+    model = TestModel([add(confirm), DONE])
+    assert W.ask_confirm(tmp_path, "t1", model) == {"asked": True, "added": 1}
+    assert W.CONFIRM_QUESTION in json.dumps(model.calls[0]["messages"])
+    assert W.ask_confirm(tmp_path, "t1", TestModel([])) == {"asked": False}, "the Spec now waits for a yes"
+    assert W.ask_confirm(tmp_path, "t1", None) == {"asked": False}
