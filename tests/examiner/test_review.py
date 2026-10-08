@@ -129,4 +129,4 @@ def test_a_task_session_gets_twenty_turns(tmp_path, monkeypatch):
     assert S.REVIEW_TURNS_PER_TASK == 20 and budgets == [20]
     harness = AgentHarness(model=TestModel([]))
     load_extensions(harness, [S.review_extension(_root(tmp_path / "again"))])
-    assert harness.registry.get("how_it_works") is not None
+    assert harness.registry.get("find_tools") is not None

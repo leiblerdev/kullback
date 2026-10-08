@@ -15,7 +15,7 @@ from kullback.spec.rulings import RULING_KINDS
 #: The Examiner writes nothing under its root (D320).
 WRITABLE_DIRS: tuple[str, ...] = ()
 #: The tools a review session holds; the full examine session adds the Environment ones.
-REVIEW_TOOLS = ("rule", "close", "verify", "lookup_rows", "search_rows", "how_it_works")
+REVIEW_TOOLS = ("rule", "close", "verify", "lookup_rows", "search_rows", "find_tools")
 
 
 def receives_section() -> str:
@@ -68,8 +68,8 @@ _TOOL_EXAMPLES = {
                     '{"task_id": "t1", "table": "<table>", "key": "<row key>"}.'),
     "search_rows": ('search_rows: find row keys whose field equals a value, e.g. {"task_id": "t1", '
                     '"table": "<table>", "field": "<field>", "value": "<value>"}.'),
-    "how_it_works": ('how_it_works: the policy paragraphs and the tools that match a few words, e.g. '
-                     '{"query": "change after payment"}.'),
+    "find_tools": ('find_tools: the tools whose name or description match a few words, e.g. '
+                   '{"query": "change after payment"}.'),
     "finding": ('finding: what is wrong with the Environment, for the Builder, e.g. {"task_id": "t1", "kind": '
                 '"fidelity", "text": "what differs", "rows": [...], "path": "env/tools/<name>.py", "edits": '
                 '[{"kind": "body", "path": "env/tools/<name>.py", "call_id": "<id>", "column": "<column>", '
@@ -117,8 +117,9 @@ def choice_section() -> str:
             "what the user said (the user turns), the world and the policy, never from what a Run did. The "
             "Intent is the writer's reading of the user turns: check every fact against its turn first. A fact "
             "said only after the agent refused, failed or stalled is not the ask. Users ask for things the world "
-            "or the policy may not allow; serve the ask only as far as they allow, and look up how things work "
-            "before you accept or rule. When the turns never show what the user wants at the point that "
+            "or the policy may not allow; serve the ask only as far as they allow. The whole policy is in this "
+            "prompt: read the part that governs the ask before you accept or rule, and check the world rows "
+            "(lookup_rows, search_rows) for what the world allows. When the turns never show what the user wants at the point that "
             "matters, rule not_enough_truth.\n" + REVIEW_SKILL)
 
 

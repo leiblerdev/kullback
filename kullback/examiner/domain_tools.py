@@ -1,8 +1,8 @@
 """The Examiner's domain tools over its root: the ruling tools, finding, no_finding, check_reference.
 
 The Examiner reads and gives feedback; it edits nothing and writes no Verifier (D320, D331).
-`how_it_works` looks up what the policy and the tools say about a few words, so the Examiner knows
-what the world allows before it accepts an ask or rules on it. The ruling tools (rule_tool.py: rule, close, verify, lookup_rows, search_rows) carry its feedback on a
+The whole policy is in the Examiner's prompt (D342); `find_tools` finds the tools whose name or
+description match a few words. The ruling tools (rule_tool.py: rule, close, verify, lookup_rows, search_rows) carry its feedback on a
 Spec, which the writer applies or rebuts. `finding` files what is wrong with the Environment for the
 Builder: the rows and a body edit (D317). `no_finding` files a review that found nothing, with the
 one reason the Examiner is satisfied. `check_reference` shows the evidence on a Reference. Every
@@ -342,25 +342,22 @@ def _no_finding(root: ExamRoot):
     return no_finding
 
 
-# --- how_it_works: what the policy and the tools say about a few words ---
+# --- find_tools: the tools whose name or description match a few words ---
 
-# The most policy paragraphs and tools one lookup returns, best match first.
-MAX_PARAGRAPHS, MAX_TOOLS = 6, 8
-# A paragraph matches when it carries this share of the query's content words.
-PARAGRAPH_SHARE = 0.5
+# The most tools one search returns, best match first.
+MAX_TOOLS = 8
 
 
-class HowArgs(BaseModel):
+class FindToolsArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    query: str = Field(description="A few words about what the user asked for or how something works.")
+    query: str = Field(description="A few words about what the user asked for or what a tool does.")
 
 
-class HowResult(BaseModel):
+class FindToolsResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     summary: str
-    policy: list[dict] = Field(default_factory=list)
     tools: list[dict] = Field(default_factory=list)
 
 
@@ -370,37 +367,18 @@ def _words(text: Any) -> set[str]:
     return content_tokens(str(text or "").replace("_", " "))
 
 
-def policy_paragraphs(policy: str) -> list[tuple[str, str]]:
-    """The policy as (heading, paragraph) pairs: blank-line blocks, each under the last heading above it."""
-    heading, out, block = "", [], []
-    for line in [*(policy or "").splitlines(), ""]:
-        if line.startswith("#"):
-            if block:
-                out.append((heading, "\n".join(block)))
-            heading, block = line.strip().strip("#").replace("**", "").strip(), []
-        elif line.strip():
-            block.append(line)
-        elif block:
-            out.append((heading, "\n".join(block)))
-            block = []
-    return out
-
-
-def how_it_works(query: str, policy: str, tools: list[dict]) -> HowResult:
-    """The policy paragraphs (with their heading) and the tools whose name or description match the words."""
-    from kullback.spec.intent_tools import share_in
-
+def find_tools(query: str, tools: list[dict]) -> FindToolsResult:
+    """The tools whose name or description match the words, best match first, at most MAX_TOOLS."""
     words = _words(query)
-    scored = [(share_in(words, _words(f"{head} {text}")), head, text) for head, text in policy_paragraphs(policy)]
-    paragraphs = [{"heading": head, "text": text} for share, head, text in
-                  sorted(scored, key=lambda row: -row[0]) if share >= PARAGRAPH_SHARE][:MAX_PARAGRAPHS]
-    found = [tool for tool in tools if words & _words(f"{tool.get('name')} {tool.get('description') or ''}")]
-    found = sorted(found, key=lambda tool: -len(words & _words(f"{tool.get('name')} {tool.get('description') or ''}")))
+
+    def overlap(tool: dict) -> int:
+        return len(words & _words(f"{tool.get('name')} {tool.get('description') or ''}"))
+
+    found = sorted((tool for tool in tools if overlap(tool)), key=lambda tool: -overlap(tool))
     rows = [{key: tool[key] for key in ("name", "kind", "args", "description") if tool.get(key) is not None}
             for tool in found[:MAX_TOOLS]]
-    summary = (f"{len(paragraphs)} policy paragraphs and {len(rows)} tools match"
-               if paragraphs or rows else "nothing in the policy or the tools matches; try other words")
-    return HowResult(summary=summary, policy=paragraphs, tools=rows)
+    summary = f"{len(rows)} tools match" if rows else "no tool matches; try other words"
+    return FindToolsResult(summary=summary, tools=rows)
 
 
 def _environment_tools(workdir: Any) -> list[dict]:
@@ -416,32 +394,18 @@ def _environment_tools(workdir: Any) -> list[dict]:
     return out
 
 
-def _policy_text(root: ExamRoot) -> str:
-    """The policy the views sit beside, else the Environment's own (spec/writer_tools.py)."""
-    from kullback.examiner.rule_tool import POLICY_FILE
-    from kullback.spec.writer_tools import _policy_texts
+def find_tools_tool(root: ExamRoot) -> AgentTool:
+    async def run(args: FindToolsArgs) -> FindToolsResult:
+        return find_tools(args.query, _environment_tools(root.workdir))
 
-    path = root.exam_dir / POLICY_FILE
-    if path.is_file():
-        return path.read_text(encoding="utf-8")
-    return "\n\n".join(sorted(_policy_texts(Path(root.workdir))))
+    return AgentTool("find_tools", "Find the tools (name, read or write, arguments, description) whose name or "
+                     "description match a few words. The policy is in your prompt; this finds tools only.",
+                     FindToolsArgs, FindToolsResult, run, render=_find_render)
 
 
-def how_it_works_tool(root: ExamRoot) -> AgentTool:
-    async def run(args: HowArgs) -> HowResult:
-        return how_it_works(args.query, _policy_text(root), _environment_tools(root.workdir))
-
-    return AgentTool("how_it_works", "Look up how things work: the policy paragraphs (with their heading) and the "
-                     "tools (name, read or write, arguments, description) that match a few words. Use it before you "
-                     "accept or rule on what the user asked for.", HowArgs, HowResult, run, render=_how_render)
-
-
-def _how_render(result: HowResult) -> str:
-    """The summary, then each paragraph and tool: the Examiner reads what matched, not a count."""
-    lines = [result.summary]
-    lines += [f"[{row['heading'] or 'no heading'}] {row['text']}" for row in result.policy]
-    lines += [json.dumps(row) for row in result.tools]
-    return "\n".join(lines)
+def _find_render(result: FindToolsResult) -> str:
+    """The summary, then each tool: the Examiner reads what matched, not a count."""
+    return "\n".join([result.summary, *(json.dumps(row) for row in result.tools)])
 
 
 def finding_tool(root: ExamRoot) -> AgentTool:
@@ -459,7 +423,7 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
 
     return [
         *R.rule_tools(root),
-        how_it_works_tool(root),
+        find_tools_tool(root),
         finding_tool(root),
         AgentTool("no_finding", "File a review of a Task that found nothing wrong, with the one reason.",
                   NoFindingArgs, NoFindingResult, _no_finding(root), render=render),
@@ -471,14 +435,14 @@ def domain_tools(root: ExamRoot) -> list[AgentTool]:
 
 
 #: The tools the Examiner holds, so tests pin its surface: none edits a Spec or writes a Verifier.
-TOOL_NAMES = ("rule", "close", "verify", "lookup_rows", "search_rows", "how_it_works", "finding", "no_finding",
+TOOL_NAMES = ("rule", "close", "verify", "lookup_rows", "search_rows", "find_tools", "finding", "no_finding",
               "check_reference")
 
 __all__ = ["MIN_REASON_CHARS", "NOTES_DIR", "NOTE_REASONS", "NO_FINDING", "REVIEWS_FILE", "TOOL_NAMES",
            "FindingArgs", "FindingResult", "NoFindingArgs", "NoFindingResult", "domain_tools", "finding_tool",
            "known_task", "note_line", "note_refusal", "notes_of", "open_note", "read_note", "read_ruling",
            "reviews_of", "rule_note", "ruling_path", "task_ids_of", "task_path", "tool_names", "write_note",
-           "how_it_works", "how_it_works_tool", "policy_paragraphs"]
+           "find_tools", "find_tools_tool"]
 
 
 def tool_names() -> tuple[str, ...]:
@@ -489,5 +453,5 @@ def tool_names() -> tuple[str, ...]:
 __all__ = ["MIN_REASON_CHARS", "NOTES_DIR", "NOTE_REASONS", "NO_FINDING", "REVIEWS_FILE", "TOOL_NAMES",
            "FindingArgs", "FindingResult", "NoFindingArgs", "NoFindingResult", "domain_tools", "known_task",
            "note_line", "note_refusal", "notes_of", "open_note", "read_note", "read_ruling", "reviews_of",
-           "rule_note", "ruling_path", "task_ids_of", "task_path", "tool_names", "write_note", "how_it_works",
-           "how_it_works_tool", "policy_paragraphs"]
+           "rule_note", "ruling_path", "task_ids_of", "task_path", "tool_names", "write_note", "find_tools",
+           "find_tools_tool"]
