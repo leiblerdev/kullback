@@ -40,9 +40,10 @@ def received(lines: str, entries: Iterable[str] = (), notes: str = "", round_num
     text = (f"Round {round_number}. The root holds: {listed}.\n"
             f"The Tasks, each with its view; open those paths rather than searching:\n{lines}")
     if round_number > 1:
-        text += ("\nThe writer has answered the rulings of the last round. Close each answered ruling the answer "
-                 "settles and keep open, with why, each it does not; file a new ruling only for what the "
-                 "writer's change broke or a goal the Intent still gets wrong.")
+        text += ("\nThe writer has answered the rulings of the last round. First question the goal again as in "
+                 "round one; then close each answered ruling the answer settles and keep open, with why, each it "
+                 "does not; file a new ruling only for what the writer's change broke or a goal the Intent still "
+                 "gets wrong.")
     if notes:
         text += f"\nThe Builder's notes, each saying a Task is not verifiable as written:\n{notes}"
     return text
@@ -114,7 +115,8 @@ def choice_section() -> str:
             "as made before the agent refused, failed or proposed anything, and from the policy alone, say in one "
             "or two lines what a correct agent leaves behind. Hold the Intent against that: a fact the user only "
             "accepted after the agent's proposal, refusal or failure is not the user's wish (rule "
-            "intent_unfounded); a request the user made that no fact or item carries is an uncovered ask (rule "
+            "intent_unfounded only where a gate, or an item that decides the verdict, rests on it; where nothing "
+            "does, say so in your review text and file nothing); a request the user made that no fact or item carries is an uncovered ask (rule "
             "missing_fact, or uncovered_fact where a fact has no item); where the turns never show what the user "
             "would want once the policy allows the request, rule not_enough_truth. Users ask for things the world "
             "or the policy may not allow; serve the ask only as far as they allow. Only then check the items "

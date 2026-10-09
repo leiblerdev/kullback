@@ -59,8 +59,8 @@ def test_the_prompt_asks_for_rulings_with_a_fix_and_world_lookups_of_every_ancho
 
 
 def test_round_two_asks_to_close_or_keep_open_and_round_one_does_not():
-    assert "Close each answered ruling" in P.opening("Examine.", "t1", round_number=2)
-    assert "Close each answered ruling" not in P.opening("Examine.", "t1", round_number=1)
+    assert "close each answered ruling" in P.opening("Examine.", "t1", round_number=2)
+    assert "close each answered ruling" not in P.opening("Examine.", "t1", round_number=1)
 
 
 def test_the_finding_tool_takes_body_edits_only():
@@ -103,3 +103,15 @@ def test_the_goal_step_comes_before_the_review_skill_that_reads_the_items():
 def test_a_later_round_still_lets_the_examiner_rule_on_a_goal_the_intent_gets_wrong():
     text = P.opening("Examine.", "t1", round_number=2)
     assert "only for what the writer's change broke or a goal the Intent still gets wrong" in text
+
+
+def test_a_later_round_opens_with_the_goal_step_before_closing_rulings():
+    text = P.opening("Examine.", "t1", round_number=2)
+    assert text.index("First question the goal again as in round one") < text.index("close each answered ruling")
+    assert "First question the goal again" not in P.opening("Examine.", "t1", round_number=1)
+
+
+def test_an_accepted_fact_is_ruled_unfounded_only_when_a_gate_or_deciding_item_rests_on_it():
+    choice = P.choice_section()
+    rule = choice.index("intent_unfounded only where a gate, or an item that decides the verdict, rests on it")
+    assert rule < choice.index("where nothing does, say so in your review text and file nothing")
