@@ -290,6 +290,16 @@ def test_regrade_re_scores_without_re_executing(workdir):
     assert run.read_bytes() == before
 
 
+def test_regrade_records_which_verifier_scored_each_run_beside_its_verdicts(workdir):
+    from kullback.runner.records import Verifier
+    from kullback.spec.judged import scored_with, verifier_hash
+
+    seed_task(workdir)
+    assert invoke("regrade", "--workdir", str(workdir)).exit_code == 0
+    verifier = Verifier.model_validate_json((workdir / "verifiers" / "t1.json").read_text())
+    assert scored_with(workdir / "verdicts" / "t1") == {"r1": verifier_hash(verifier)}
+
+
 # --- report -----------------------------------------------------------------
 
 def test_report_writes_markdown_under_the_workdir_or_the_output_path(workdir, tmp_path):

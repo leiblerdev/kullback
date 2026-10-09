@@ -249,6 +249,8 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
                          judge_results=_judged_atoms(verifier, paths, judges, Path(workdir)),
                          judge_version=judge_version,
                          queue_dir=Path(workdir) if use_queue else None, **common)
+        # Which Verifier scored each Run, so trust lends its judge answers to that Verifier only (D347).
+        _entry("kullback.spec.judged", "record_scored")(out_dir, verdicts, verifier)
         gated = regrade_gate(verdicts)
         # getattr, not gated.passed: a test double that stands in for regrade_gate (fake_modules)
         # answers neither attribute, and a stand-in gate must not read as a refusal (D97).
