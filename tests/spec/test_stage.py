@@ -127,7 +127,7 @@ def test_write_specs_records_a_failing_task_and_goes_on_to_the_next(tmp_path):
 def test_an_empty_first_spec_is_written_once_more_and_the_second_stands(tmp_path):
     root = _workdir(tmp_path)
     replies = _one_task_replies()
-    counts = stage.write_specs(root, ["t1"], TestModel(replies[:3] + [EMPTY] + replies[3:]))
+    counts = stage.write_specs(root, ["t1"], TestModel(replies[:3] + [EMPTY, EMPTY] + replies[3:]))
     assert {k: counts[k] for k in ("written", "empty_seen", "retried", "set_aside_empty")} == \
         {"written": 1, "empty_seen": 1, "retried": 1, "set_aside_empty": 0}
     spec = load_spec(root, "t1")
@@ -139,7 +139,7 @@ def test_an_empty_first_spec_is_written_once_more_and_the_second_stands(tmp_path
 
 def test_an_empty_spec_twice_sets_the_task_aside_with_no_verifier_and_a_resume_skips_it(tmp_path):
     root = _workdir(tmp_path)
-    counts = stage.write_specs(root, ["t1"], TestModel(_one_task_replies()[:3] + [EMPTY, EMPTY]))
+    counts = stage.write_specs(root, ["t1"], TestModel(_one_task_replies()[:3] + [EMPTY] * 4))
     assert {k: counts[k] for k in ("written", "empty_seen", "retried", "set_aside_empty")} == \
         {"written": 0, "empty_seen": 1, "retried": 1, "set_aside_empty": 1}
     spec = load_spec(root, "t1")

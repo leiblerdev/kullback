@@ -117,9 +117,9 @@ first, then add it. Code adds the sanity item by itself (no row outside your sta
 list every row a correct run changes, and only those. Gate what the user asked for and the policy requires. \
 What the user only accepted after the agent proposed it or refused something is weighted, not gated. Where \
 the user left a choice open and the policy allows several, accept any allowed one or weight it. A forbid \
-(not_called, row_keeps) gates only with the policy line that forbids it; else weight it. Leave text and \
-judge items ungated unless the request is only to be told something or refused (a refusal judge item \
-always gates)."""
+(not_called, row_keeps) gates only with the policy line that forbids it; else weight it. A value the user \
+asked to be told is a gated judge item anchored on the world row holding it. A variant or payment method the \
+user named is a gated check on that field. A refusal judge item always gates."""
 
 FEEDBACK = """\
 # Feedback
@@ -137,6 +137,35 @@ SYSTEM_PROMPT = "\n\n".join((WHAT_YOU_RECEIVE, TOOLS_TEXT, EXAMPLES, CHOICE_RULE
 FOLLOWUP_PROMPT = """Code found items no run can pass together, each with the reason. Drop or re-add \
 them under their ids so a correct run can pass, then reply that you are done.
 """
+
+# Volunteered facts no gated item covers go back in one follow-up turn of the same conversation.
+ASKED_FOLLOWUP_PROMPT = """Code lists volunteered facts no gated item covers, each with its id and why \
+(uncovered, or weighted only). Add one gated item for each, or reply with one line quoting the policy or \
+the user's words why it needs none, then reply that you are done.
+"""
+
+
+def asked_missing(items: Iterable[dict], intent: SpecIntent) -> list[dict]:
+    """Volunteered facts (not after pushback, not unfounded) no gated item covers.
+
+    Each row names the fact id and why it is missing: uncovered (no item names it) or
+    weighted only (named only by scored items). A gate counts as set where the item says
+    so, else by the kind default, as code keeps it. D353 after-pushback and accepted facts
+    are out of scope here by design.
+    """
+    rows = list(items or [])
+    named = {fact_id for item in rows for fact_id in item.get("fact_ids") or []}
+    gated = {fact_id for item in rows
+             if item.get("gate", I.DEFAULT_GATE.get(item.get("kind"), False)) is True
+             for fact_id in item.get("fact_ids") or []}
+    out = []
+    for fact in intent.facts:
+        if fact.stance != "volunteered" or fact.after_pushback or fact.unfounded:
+            continue
+        if fact.id in gated:
+            continue
+        out.append({"id": fact.id, "reason": "uncovered" if fact.id not in named else "weighted only"})
+    return out
 
 REPAIR_PROMPT = """The Examiner ruled on items you wrote for this customer request. A ruling names \
 one item (an item id, an Intent fact id, or the task), what is wrong and a fix. You still have never \
@@ -446,24 +475,33 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
     """One writer session for one Task, and the Spec code keeps from it; past `ceiling_usd` it answers at once.
 
     Items that contradict each other (`items.contradictions`) go back once in a follow-up turn of the same
-    conversation; any still there are named in counts["unsatisfiable"].
+    conversation; any still there are named in counts["unsatisfiable"]. Volunteered facts no gated item
+    covers (`asked_missing`) go back once the same way; the writer gates each or answers why not.
     """
     writer_tools.refuse_run_inputs(inputs.intent, inputs.state)
     messages, cut = writer_messages(inputs)
     store = store_of(inputs)
     price = _price(model_id)
     session = _session(model, messages, store, inputs, config, price, ceiling_usd)
+    turn = list(messages)
     clashes = I.contradictions(list(store.items.values()))
     if clashes:
-        turn = messages + [{"role": "assistant", "content": session["text"] or "done"},
-                           {"role": "user", "content": FOLLOWUP_PROMPT + json.dumps(
-                               [{"id": item_id, "reason": why} for item_id, why in clashes])}]
+        turn = turn + [{"role": "assistant", "content": session["text"] or "done"},
+                       {"role": "user", "content": FOLLOWUP_PROMPT + json.dumps(
+                           [{"id": item_id, "reason": why} for item_id, why in clashes])}]
+        left = None if ceiling_usd is None else max(ceiling_usd - float(session.get("usd") or 0.0), 0.0)
+        session = _joined(session, _session(model, turn, store, inputs, config, price, left))
+    missing = asked_missing(list(store.items.values()), inputs.intent)
+    if missing:
+        turn = turn + [{"role": "assistant", "content": session["text"] or "done"},
+                       {"role": "user", "content": ASKED_FOLLOWUP_PROMPT + json.dumps(missing)}]
         left = None if ceiling_usd is None else max(ceiling_usd - float(session.get("usd") or 0.0), 0.0)
         session = _joined(session, _session(model, turn, store, inputs, config, price, left))
     items = list(store.items.values())
     counts = _store_counts(store)
-    counts.update(sent_back=len(clashes), unsatisfiable=sorted({item_id for item_id, _ in I.contradictions(items)}),
-                  truncated_chars=cut, unfinished=bool(session.get("unfinished")))
+    counts.update(sent_back=len(clashes), unsatisfiable=sorted(
+        {item_id for item_id, _ in I.contradictions(items)}),
+        asked_sent_back=len(missing), truncated_chars=cut, unfinished=bool(session.get("unfinished")))
     spec = _spec_of(task_id, items, counts, inputs)
     counts.update(I.counts_of(items + [I.sanity_item([])]))
     counts["echo_facts"] = sum(1 for fact in inputs.intent.facts if fact.echo)

@@ -147,7 +147,7 @@ def test_inputs_come_from_the_environment_files_and_never_from_runs_or_verifiers
     loaded = W.load_inputs(tmp_path, "t1", inputs().intent)
     assert loaded.policy_text == POLICY and loaded.sections == T.policy_sections_of(tmp_path)
     assert loaded.state == STATE and loaded.write_tools == {"update_item"}
-    model = TestModel([call("read_row", table="items", key="A1"), DONE])
+    model = TestModel([call("read_row", table="items", key="A1"), DONE, DONE])
     W.write_spec("t1", loaded, model)
     assert "SEEN" not in json.dumps(model.calls[0]["messages"])
 
@@ -181,11 +181,11 @@ def test_policy_sections_of_reads_the_recorded_prompts_when_no_policy_is_shipped
 
 def test_a_cut_body_is_counted_and_the_prompt_says_so():
     long = inputs()._replace(policy_text="x" * (W.BODY_CHARS + 500))
-    model = TestModel([DONE])
+    model = TestModel([DONE, DONE])
     written = W.write_spec("t1", long, model)
     content = model.calls[0]["messages"][0]["content"]
     assert written.counts["truncated_chars"] > 500 and content.endswith("read_policy shows any section whole)")
-    assert W.write_spec("t1", inputs(), TestModel([DONE])).counts["truncated_chars"] == 0
+    assert W.write_spec("t1", inputs(), TestModel([DONE, DONE])).counts["truncated_chars"] == 0
 
 
 def test_a_spent_ceiling_makes_the_next_call_the_answer():
@@ -270,12 +270,12 @@ def test_items_no_run_can_pass_together_go_back_once_and_a_left_clash_is_named_u
 
 
 def test_a_silent_writer_yields_an_empty_spec_with_every_fact_a_gap():
-    written = W.write_spec("t1", inputs(), TestModel([ModelReply(content="I cannot decide.")]))
+    written = W.write_spec("t1", inputs(), TestModel([ModelReply(content="I cannot decide."), DONE]))
     assert written.spec.checks == [] and written.spec.gaps == ["f1", "f2"]
 
 
 def test_the_prompt_marks_unwitnessed_facts_and_carries_policy_tools_and_the_item_grammar():
-    model = TestModel([DONE])
+    model = TestModel([DONE, DONE])
     W.write_spec("t1", inputs(), model)
     content = model.calls[0]["messages"][0]["content"]
     body = json.loads(content[content.index("\n{") + 1:])
@@ -372,7 +372,7 @@ def test_the_repair_session_fixes_what_the_ruling_names_and_never_copies_an_item
 
 
 def test_the_writer_session_gates_only_what_the_user_asked_and_the_policy_requires():
-    model = TestModel([DONE])
+    model = TestModel([DONE, DONE])
     W.write_spec("t1", inputs(), model)
     prompt = model.calls[0]["messages"][0]["content"]
     assert "Gate what the user asked for and the policy requires" in prompt
@@ -380,6 +380,52 @@ def test_the_writer_session_gates_only_what_the_user_asked_and_the_policy_requir
     assert "accept any allowed one or weight it" in prompt
     assert "gates only with the policy line that forbids it; else weight it" in prompt
     assert "one item per ask" in prompt
+
+def test_a_refusal_judge_item_is_still_gated_by_the_prompt_rule():
+    assert "A refusal judge item always gates." in W.CHOICE_RULE
+    assert "A refusal judge item always gates." in W.SYSTEM_PROMPT
+
+def test_a_value_the_user_asked_to_be_told_is_required_not_only_scored():
+    weighted = dict(ROW, gate=False)
+    model = TestModel([add(weighted), DONE, add(ROW), DONE])
+    written = W.write_spec("t1", inputs(), model)
+    assert written.counts["asked_sent_back"] == 1
+    assert [c.id for c in written.spec.checks] == ["s1"]
+    assert written.spec.checks[0].gate is True
+    sent = json.dumps(model.calls[2]["messages"])
+    assert "f1" in sent and "weighted only" in sent
+
+
+def test_a_volunteered_fact_with_no_item_goes_back_as_uncovered():
+    missing = W.asked_missing([], inputs().intent)
+    assert missing == [{"id": "f1", "reason": "uncovered"}]
+    assert W.asked_missing([dict(ROW, gate=False)], inputs().intent) == [
+        {"id": "f1", "reason": "weighted only"}]
+    assert W.asked_missing([ROW], inputs().intent) == []
+
+
+def test_after_pushback_accepted_and_unfounded_facts_are_never_sent_back():
+    intent = inputs().intent
+    pushed = intent.facts[0].model_copy(update={"after_pushback": True})
+    intent = intent.model_copy(update={"facts": [pushed, intent.facts[1]]})
+    assert W.asked_missing([], intent) == []
+    stray = intent.facts[0].model_copy(update={"after_pushback": False, "unfounded": True})
+    intent = intent.model_copy(update={"facts": [stray, intent.facts[1]]})
+    assert W.asked_missing([], intent) == []
+
+
+def test_a_writer_with_nothing_to_gate_answers_why_not_and_leaves_the_spec():
+    model = TestModel([add(dict(ROW, gate=False)), DONE, DONE])
+    written = W.write_spec("t1", inputs(), model)
+    assert written.counts["asked_sent_back"] == 1
+    assert written.spec.checks[0].gate is False
+    assert "quoting the policy" in model.calls[2]["messages"][-1]["content"]
+
+
+def test_the_prompt_gates_a_told_value_and_a_named_option():
+    assert "A value the user" in W.CHOICE_RULE and "anchored on the world row holding it" in W.CHOICE_RULE
+    assert "A variant or payment method the" in W.CHOICE_RULE
+    assert "Leave text and judge items ungated" not in W.CHOICE_RULE
 
 
 def _ruled_workdir(tmp_path):
