@@ -2649,3 +2649,13 @@ examiner/rule_tool.py _fact). Live feasibility on the 8 goal-wrong Tasks plus 6 
 re-run after review: report .claude/herdr/truth-1008/gread-report.md, section r1.
 Code backing from the agent line was tried, fired zero times on the 14 re-mined Tasks, and was
 removed; the miner's mark is the only source of the flag.
+
+### D350. Three writer rounds per Task; the cap counts writer rounds (2026-10-09)
+
+With ROUNDS_CAP at 2 the review loop ran Examiner round one, writer round two, Examiner round two and stopped, so a ruling filed in Examiner round two could never be answered: on the 2026-10-09 airline re-review two Tasks stayed held on rulings filed on a false verify message. ROUNDS_CAP is now 3 (spec/router.py). In `run_rounds` the writer's first write is writer round one and each Examiner round short of the cap is followed by a writer round, so the cap gives the writer three rounds (the write and two answers) and the Examiner three.
+
+The Spec's `round` is the last Examiner round, which an Examiner-only re-review moves without a writer round. So the set-aside rule now counts writer rounds where it has the Task's rulings: `router.writer_rounds` is one plus the distinct rounds in which the writer answered a ruling, and `is_set_aside(spec, rulings)` holds a Task at the cap only when that count reaches it with a ruling open. Without ruling records it falls back to the Spec's round, which the loop keeps equal to the writer rounds. `rounds.task_rows` reports both. Trust still holds any Task with an open blocking ruling, cap or no cap, so the rule changes the set-aside label, never a tier.
+
+### D351. Every writer session is saved whole (2026-10-09)
+
+Only the writer's token rows were kept, so what it read, tried and was refused could not be traced when a round went wrong. Each writer session (the first write, every repair, the confirm question) now appends one line to exam/writer/<task>.jsonl: kind, round (1 for the write, the Spec's round plus one for a repair), the ruling answered, spend, counts, the final text, and every conversation it held in full (messages, tool calls with their answers, replies with summarized thinking; a follow-up or retry turn is a second conversation). The model is wrapped to keep its last call, so nothing in the session loop changed. The writer is never shown these files: its inputs come from `load_inputs`, which reads no exam/ path, and the Examiner's root copies no writer directory.

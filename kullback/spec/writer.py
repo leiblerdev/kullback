@@ -15,6 +15,10 @@ Examiner ruling (D331): it applies the ruling's fix (drop or replace a ruled ite
 uncovered fact) or rebuts it with why, under the same rules; when code refused every answer it gets
 one retry in the same round, shown each refusal.
 
+Every session (a first write, each repair) is saved whole under exam/writer/<task>.jsonl, one line per
+session: the messages, the tool calls and answers, the replies (D351). Nothing the writer is shown is read
+from there.
+
 A Spec of the older demand grammar still compiles to atoms (`compile_spec`, `must_not`) and gates on
 nothing else; the Spec stage rewrites it as items.
 """
@@ -181,6 +185,8 @@ class WriterInputs(NamedTuple):
     # What each write tool always moves and what each tool's recorded calls passed (spec/effects.py).
     effects: dict = {}
     signatures: dict = {}
+    # Where the sessions are saved (exam/writer); None saves nothing. Never shown to the writer.
+    workdir: Optional[Path] = None
 
 
 class Ruling(Record):
@@ -227,7 +233,8 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
                         state=StateView(env.db, overlay, rows).shared, constraints=_constraints(workdir),
                         canon=canon_fn(env.canon_rules), action_tools=actions,
                         action_tables=frozenset(action_tables_of(env.schema)), columns=_columns(env.schema),
-                        effects=learned.get("effects") or {}, signatures=learned.get("signatures") or {})
+                        effects=learned.get("effects") or {}, signatures=learned.get("signatures") or {},
+                        workdir=Path(workdir))
 
 
 def _columns(schema: Any) -> dict:
@@ -368,17 +375,70 @@ def _store_counts(store: writer_tools.ItemStore) -> dict:
             "refused_why": dict(sorted(reasons.items())), "dropped": len(store.dropped)}
 
 
+# One file per Task, one line per writer session: the first write and every repair (D351).
+SESSIONS_DIR = Path("exam") / "writer"
+
+
+def sessions_path(workdir: Path, task_id: str) -> Path:
+    return Path(workdir) / SESSIONS_DIR / f"{task_id}.jsonl"
+
+
+class _Recorded:
+    """The model with the conversation of its last call kept: the messages sent and the reply."""
+
+    def __init__(self, model: Any):
+        self.model, self.last = model, None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.model, name)
+
+    def query(self, messages: list[dict], **kwargs: Any) -> Any:
+        reply = self.model.query(messages, **kwargs)
+        self.last = (list(messages), reply)
+        return reply
+
+    def transcript(self) -> list[dict]:
+        if self.last is None:
+            return []
+        messages, reply = self.last
+        turn = writer_tools._assistant_tool_turn(reply) if reply.tool_calls else \
+            {"role": "assistant", "content": reply.content}
+        return messages + [dict(turn, thinking=writer_tools._thinking_of(reply))]
+
+
 def _session(model: Any, messages: list[dict], store: writer_tools.ItemStore, inputs: WriterInputs, config: Any,
              price: Callable[[dict], float], ceiling_usd: Optional[float]) -> dict:
-    return writer_tools.run_session(model, messages, inputs.state, _config(config), writer_tools.MAX_ITEM_ROUNDS,
-                                    price, force_answer=True, ceiling_usd=ceiling_usd,
-                                    tools=writer_tools.WORLD_TOOLS, impl=writer_tools.world_tools(store))
+    recorded = _Recorded(model)
+    session = writer_tools.run_session(recorded, messages, inputs.state, _config(config),
+                                       writer_tools.MAX_ITEM_ROUNDS, price, force_answer=True,
+                                       ceiling_usd=ceiling_usd, tools=writer_tools.WORLD_TOOLS,
+                                       impl=writer_tools.world_tools(store))
+    return dict(session, transcripts=[recorded.transcript()])
 
 
 def _joined(first: dict, again: dict) -> dict:
     return dict(again, usd=float(first.get("usd") or 0.0) + float(again.get("usd") or 0.0),
                 tool_rounds=first.get("tool_rounds", 0) + again.get("tool_rounds", 0),
-                tool_uses=first.get("tool_uses", []) + again.get("tool_uses", []))
+                tool_uses=first.get("tool_uses", []) + again.get("tool_uses", []),
+                transcripts=first.get("transcripts", []) + again.get("transcripts", []))
+
+
+def save_session(inputs: WriterInputs, task_id: str, kind: str, round_number: int, session: dict,
+                 counts: dict, ruling: Optional[Ruling] = None) -> Optional[Path]:
+    """Append one writer session to the Task's file: what it was (a write or a repair, the round, the
+    ruling answered), each conversation it held (a follow-up turn is a second one), its spend and counts."""
+    if inputs.workdir is None:
+        return None
+    path = sessions_path(inputs.workdir, task_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {"task_id": task_id, "kind": kind, "round": int(round_number),
+           "ruling": None if ruling is None else {"item": ruling.item, "kind": ruling.kind,
+                                                  "check_ids": list(ruling.check_ids)},
+           "usd": float(session.get("usd") or 0.0), "unfinished": bool(session.get("unfinished")),
+           "text": session.get("text") or "", "counts": counts, "transcripts": session.get("transcripts", [])}
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, default=str) + "\n")
+    return path
 
 
 def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Optional[str] = None,
@@ -407,6 +467,7 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
     spec = _spec_of(task_id, items, counts, inputs)
     counts.update(I.counts_of(items + [I.sanity_item([])]))
     counts["echo_facts"] = sum(1 for fact in inputs.intent.facts if fact.echo)
+    save_session(inputs, task_id, "write", 1, session, counts)
     return Written(spec, counts, session)
 
 
@@ -523,6 +584,7 @@ def repair(spec: Spec, ruling: Ruling, inputs: WriterInputs, model: Any, *,
     repaired = _spec_of(spec.task_id, items, counts, inputs).model_copy(update={
         "version": spec.version + 1, "round": spec.round, "rulings_open": spec.rulings_open,
         "writer": spec.writer})
+    save_session(inputs, spec.task_id, "repair", spec.round + 1, session, counts, ruling)
     return Written(repaired, counts, session)
 
 

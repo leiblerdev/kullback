@@ -444,3 +444,21 @@ def test_a_writing_spec_with_no_confirm_item_is_asked_the_fixed_question_and_the
     assert W.CONFIRM_QUESTION in json.dumps(model.calls[0]["messages"])
     assert W.ask_confirm(tmp_path, "t1", TestModel([])) == {"asked": False}, "the Spec now waits for a yes"
     assert W.ask_confirm(tmp_path, "t1", None) == {"asked": False}
+
+
+def test_every_writer_session_is_saved_whole_and_the_next_session_is_never_shown_it(tmp_path):
+    _ruled_workdir(tmp_path)
+    ruling = {"number": 1, "check_ids": ["s1"], "reason": "not asked", "code": "unasked_item", "kind": "derivation"}
+    model = TestModel([call("read_row", table="items", key="A1"),
+                       ModelReply(content="rebut: the user asks for slot seven, said once.")])
+    W.repair_for_ruling(tmp_path, "t1", ruling, model)
+    first, second = [json.loads(line) for line in W.sessions_path(tmp_path, "t1").read_text().splitlines()]
+    assert (first["kind"], first["round"], second["kind"], second["round"]) == ("write", 1, "repair", 1)
+    assert second["ruling"]["check_ids"] == ["s1"] and second["counts"]["rebut"].startswith("the user asks")
+    (conversation,) = second["transcripts"]
+    assert [m["role"] for m in conversation] == ["system", "user", "assistant", "tool", "assistant"][-len(conversation):]
+    assert conversation[-3]["tool_calls"][0]["name"] == "read_row" and "A1" in conversation[-2]["content"]
+    assert conversation[-1]["content"].startswith("rebut:")
+    assert first["transcripts"][0][-1]["content"] == "done"
+    shown = json.dumps([c["messages"] for c in model.calls])
+    assert "exam/writer" not in shown and '"kind": "write"' not in shown

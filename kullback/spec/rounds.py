@@ -1,6 +1,7 @@
 """The review loop: Examiner round, writer round, Examiner round, at most ROUNDS_CAP rounds (D331).
 
-The writer's first round is the Spec itself. Each Examiner round files rulings (and from round two
+The writer's first round is the Spec itself, so ROUNDS_CAP rounds give the writer ROUNDS_CAP rounds
+and the Examiner as many (D350). Each Examiner round files rulings (and from round two
 closes or keeps open the ones the writer answered); each writer round answers every open ruling,
 applied or rebutted. The loop stops early when no ruling is open. The Spec's `round` and
 `rulings_open` carry the state; every round's counts go to the bus (review.round) and to
@@ -19,7 +20,7 @@ from typing import Any, Callable, Iterable, Optional
 from kullback.spec import events
 from kullback.spec import rulings as R
 from kullback.spec.review import answer_rulings
-from kullback.spec.router import ROUNDS_CAP
+from kullback.spec.router import ROUNDS_CAP, is_set_aside, writer_rounds
 from kullback.spec.schema import load_spec
 
 LOG_FILE = "spec/state/rounds.jsonl"
@@ -37,15 +38,18 @@ def _log(workdir: Any, row: dict) -> None:
 
 
 def task_rows(workdir: Any, task_ids: Iterable[str]) -> dict[str, dict]:
-    """Per Task: its rulings' counts, whether an open blocking ruling holds it untrusted, and whether
-    any round's Examiner session ran over it (read off the Spec file)."""
+    """Per Task: its rulings' counts, whether an open blocking ruling holds it untrusted, whether any
+    round's Examiner session ran over it (read off the Spec file), its writer rounds and whether it is
+    set aside at the cap."""
     out = {}
     for task_id in task_ids:
         rulings = R.load_rulings(workdir, task_id)
         spec = load_spec(workdir, task_id)
         rounds = spec.examined_rounds if spec is not None else []
         out[task_id] = dict(R.counts(rulings), held=bool(R.open_blocking(rulings)),
-                            examined=bool(rounds), examined_rounds=sorted(rounds))
+                            examined=bool(rounds), examined_rounds=sorted(rounds),
+                            writer_rounds=writer_rounds(rulings),
+                            set_aside=spec is not None and is_set_aside(spec, rulings))
     return out
 
 
