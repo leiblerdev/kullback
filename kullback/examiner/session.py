@@ -785,15 +785,20 @@ def _review_one(root: Path, task_id: str, round_number: int, model: Any, turns: 
                            session=SessionStore.load(session_path) if session_path is not None else None,
                            context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
                            bus=bus)
-    for subscriber in subscribers:
-        harness.subscribe(subscriber)
-    harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
-    views = write_views(exam_root, [task_id])  # first: the policy file the prompt carries
-    load_extensions(harness, [review_extension(exam_root)])
-    lines = f"{task_id}: view {views.get(task_id, 'none')}; {rulings_part(root, task_id)}"
-    entries = [f"review/{entry}" for entry in root_listing(exam_root.exam_dir / "review")]
-    text = prompt_mod.opening(REVIEW_MESSAGE, lines, entries, round_number=round_number)
-    capped = _run_session(harness, text, turns, [task_id])
+    # The round's sessions share one bus: each session's subscribers come off when it ends, so a
+    # later session's calls are priced and watched once, not once per earlier session (D344).
+    detach = [harness.subscribe(subscriber) for subscriber in subscribers]
+    detach.append(harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None))))
+    try:
+        views = write_views(exam_root, [task_id])  # first: the policy file the prompt carries
+        load_extensions(harness, [review_extension(exam_root)])
+        lines = f"{task_id}: view {views.get(task_id, 'none')}; {rulings_part(root, task_id)}"
+        entries = [f"review/{entry}" for entry in root_listing(exam_root.exam_dir / "review")]
+        text = prompt_mod.opening(REVIEW_MESSAGE, lines, entries, round_number=round_number)
+        capped = _run_session(harness, text, turns, [task_id])
+    finally:
+        for unsubscribe in detach:
+            unsubscribe()
     return bool(capped), list(exam_root.findings)
 
 

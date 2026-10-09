@@ -108,6 +108,20 @@ def test_each_task_gets_its_own_review_session(tmp_path):
     assert "t2" in second and "t1" not in second
 
 
+def test_three_review_sessions_on_one_bus_book_each_model_call_once(tmp_path):
+    from kullback.ai.usage import Usage
+    from kullback.runner import budget
+
+    root = _specced_world(tmp_path, task_ids=("t1", "t2", "t3"))
+    model = TestModel([ModelReply(content="Nothing to rule here.", usage=Usage(input=100, output=10))], loop=True)
+    seen = []
+    S.review_specs(root, ["t1", "t2", "t3"], model=model, round_number=1,
+                   subscribers=[lambda event: seen.append(event.type) if event.type == "message_end" else None])
+    assert len(model.calls) == 3
+    assert budget.load_totals(root)["stages"]["examiner"]["calls"] == 3
+    assert len(seen) == 6  # each session's user and assistant message, watched once
+
+
 def test_a_capped_session_names_its_task_and_the_others_still_run(tmp_path):
     root = _specced_world(tmp_path)
     filing = ModelReply(tool_calls=[ToolCallRequest(id="c1", name="finding", arguments={
