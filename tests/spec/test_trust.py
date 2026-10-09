@@ -144,11 +144,11 @@ def test_the_stray_write_lands_on_a_passing_run_outside_the_declared_rows_and_fa
     assert run.events[-1].payload["end_state"]["items"]["A1"] == END["items"]["A1"]
 
 
-def test_a_stray_write_on_a_failing_base_is_untested_not_failed():
+def test_a_stray_write_with_no_passing_base_holds_the_task_as_stray_untested():
     tier, row = _tier([_fresh(right=False)], references=())
     stray = row["constructed"]["stray_write"]
-    assert stray["built"] and stray["untested"] is True and stray["failed"] is False
-    assert tier == "untrusted" and row["reason"] == "constructed_run_passed"
+    assert stray["built"] and stray["untested"] is True and stray["failed"] is False and stray["no_base"] is True
+    assert tier == "untrusted" and row["reason"] == "stray_untested"
     assert row["detail"] == "stray_untested"
 
 
@@ -182,7 +182,20 @@ def test_a_refusal_verifier_fails_the_do_nothing_run_at_its_gated_judge_item():
     tier, row = _tier([_replay(), _fresh()], verifier=refusal)
     assert row["constructed"]["do_nothing"]["failed"] is True and row["constructed"]["do_nothing"]["atom"] == "j1"
     assert row["constructed"]["stray_write"]["untested"] is True
-    assert tier == "untrusted" and row["reason"] == "constructed_run_passed"
+    assert tier == "untrusted" and row["reason"] == "stray_untested"
+
+
+def test_trust_scores_runs_with_their_saved_judge_answers_and_the_stray_write_carries_its_base():
+    told = Atom(id="j1", kind="allowed", judge=True, gate=True,
+                target={"question": "Did the agent say the new slot?", "anchor": {"answer": "seven"}})
+    judged_item = Verifier(task_id="t1", expected=[EndState(cells=[_cell()])], atoms=[told])
+    the_spec = spec(gaps=["f2"])
+    _, row = T.tier_of_task(the_spec, judged_item, [_replay(), _fresh()], canon=fn, write_tools=WRITE_TOOLS,
+                            references=(REPLAY_ID,), judged={REPLAY_ID: {"j1": {"score": 1, "why": "declined"}}})
+    assert row["reference_passes"] is True and row["judged_runs"] == [REPLAY_ID]
+    stray = row["constructed"]["stray_write"]
+    assert stray["run_id"] == f"{REPLAY_ID}.stray_write" and stray["untested"] is False
+    assert stray["atom"].startswith("gate:sanity:") and stray["failed"] is True
 
 
 def test_a_constructed_run_left_not_verdicted_has_not_failed():

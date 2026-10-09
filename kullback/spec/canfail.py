@@ -29,21 +29,25 @@ class Outcome(NamedTuple):
 
 
 def outcome_of(verifier: Verifier, run: Any, canon: Any = None,
-               write_tools: Optional[Iterable[str]] = None, schema: Any = None) -> Outcome:
+               write_tools: Optional[Iterable[str]] = None, schema: Any = None,
+               judge_results: Optional[dict] = None) -> Outcome:
+    """`judge_results` are the judge items' answers kept for this Run (spec/judged.py); without them a
+    judge item is open."""
     if not has_gates(verifier):
         passed, atom = check_run(verifier, run, canon, write_tools=write_tools)
         return Outcome(bool(passed), None if passed else str(getattr(atom, "id", atom) or "atom"), False)
-    result = verdict(run, verifier, canon, write_tools=write_tools, schema=schema)
+    result = verdict(run, verifier, canon, judge_results, write_tools=write_tools, schema=schema)
     definite = any(item.gate and item.holds is False for item in result.items)
     sanity = any(item.id == "sanity" and item.holds is False for item in result.items)
     return Outcome(bool(result.passed), result.failing_atom if definite else None, sanity)
 
 
 def judge_run(verifier: Verifier, run: Any, canon: Any = None,
-              write_tools: Optional[Iterable[str]] = None, schema: Any = None) -> tuple[bool, Any]:
+              write_tools: Optional[Iterable[str]] = None, schema: Any = None,
+              judge_results: Optional[dict] = None) -> tuple[bool, Any]:
     """(passed, the failing atom or gate): the Verdict for a gated Verifier, else the atoms alone."""
     if not has_gates(verifier):
         passed, atom = check_run(verifier, run, canon, write_tools=write_tools)
         return bool(passed), atom
-    result = verdict(run, verifier, canon, write_tools=write_tools, schema=schema)
+    result = verdict(run, verifier, canon, judge_results, write_tools=write_tools, schema=schema)
     return bool(result.passed), result.failing_atom or (None if result.passed else "not verdicted")

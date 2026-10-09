@@ -772,14 +772,16 @@ def _add_policy_section(api: ExtensionAPI, path: Path) -> None:
 
 
 def _review_one(root: Path, task_id: str, round_number: int, model: Any, turns: int, bus: Bus,
-                subscribers: list[Callable], session_path: Any = None) -> tuple[bool, list[Finding]]:
+                subscribers: list[Callable], session_path: Any = None,
+                judge_model: Any = None) -> tuple[bool, list[Finding]]:
     """One Task's review session: its root, its harness, its view and its opening line, played to the
     cap. Returns whether the session stopped on its turn cap and the findings it filed."""
     from kullback.examiner.rule_tool import write_views
 
     exam_root = ExamRoot(workdir=root, round=round_number,
                          replays=read_json(root / "replays.json", {}) or {},
-                         rerolls=read_json(root / "rerolls.json", {}) or {})
+                         rerolls=read_json(root / "rerolls.json", {}) or {},
+                         judge_model=judge_model if judge_model is not None else model)
     exam_root.bus = bus
     harness = AgentHarness(model=model, max_turns=turns,
                            session=SessionStore.load(session_path) if session_path is not None else None,
@@ -804,9 +806,10 @@ def _review_one(root: Path, task_id: str, round_number: int, model: Any, turns: 
 
 def review_specs(workdir: Any, task_ids: Iterable[str], *, model: Any, round_number: int,
                  max_turns: Optional[int] = None, subscribers: Iterable[Callable] = (),
-                 session_path: Any = None) -> dict:
+                 session_path: Any = None, judge_model: Any = None) -> dict:
     """One Examiner round over the Tasks with a Spec: one session per Task, in id order, over one
     round bus. `max_turns` is one Task session's budget; the default is REVIEW_TURNS_PER_TASK.
+    `judge_model` answers the Reference's judge items in verify (D346); the default is `model`.
 
     Returns the Tasks examined, whether any session stopped on its turn cap, the capped Tasks, the
     rulings this round filed, by kind, code and blocking (spec/rulings.py counts), and the findings
@@ -827,7 +830,7 @@ def review_specs(workdir: Any, task_ids: Iterable[str], *, model: Any, round_num
     found: list[Finding] = []
     for task_id in selected:
         capped, findings = _review_one(root, task_id, round_number, model, turns, bus, watchers,
-                                       session_path)
+                                       session_path, judge_model)
         found.extend(findings)
         if capped:
             capped_tasks.append(task_id)

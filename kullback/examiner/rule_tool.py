@@ -6,7 +6,9 @@ in one sentence, the fix the writer should make, blocking or note. The writer ap
 its next round; `close` then closes the ruling or keeps it open, with why.
 
 `verify` runs the constructed Runs (do nothing, one stray write) and the Reference's end state through
-the Task's Verifier by code and keeps the rows, so a code ruling can cite them. `lookup_rows` and
+the Task's Verifier by code, with the Reference's judge items answered once by the judge (D346), and
+keeps the rows, so a code ruling can cite them. A judge item with no answer reads "not judged", never
+"fails" (D345). The judge's reason is for the Examiner only. `lookup_rows` and
 `search_rows` are the writer's own two lookups over the Task's Starting state: the Examiner checks every
 anchor and value with the same world the writer had.
 """
@@ -208,7 +210,8 @@ def checked_ruling(root: ExamRoot, args: RuleArgs) -> R.Ruling:
         _refuse(workdir, task_id, "no_side", "a fails_reference ruling says which side is wrong: wrong_side "
                 "reference or verifier")
     blocking, fix = _filed_as(workdir, spec, args)
-    verified = list(root.verified.get(task_id) or [])
+    # The judge's answers are the Examiner's to read; a ruling keeps the Verifier's rows without them (D346).
+    verified = [row for row in root.verified.get(task_id) or [] if row.get("run") != "reference_judge"]
     if args.code in R.VERIFY_CODES and not verified:
         _refuse(workdir, task_id, "not_verified", f"call verify on task {task_id} first: a {args.code} ruling "
                 "cites what the Verifier did")
@@ -268,16 +271,50 @@ def _reference_run(workdir: Any, task_id: str) -> Optional[Run]:
     return next((run for run in runs_on_disk(workdir).get(task_id, []) if run.run_id in wanted), None)
 
 
-def verify_rows(workdir: Any, task_id: str, verifier: Verifier, reference: Optional[Run]) -> list[dict]:
+def _reference_word(verifier: Verifier, run: Run, canon: Any, tools: Any, judge_results: Optional[dict]) -> dict:
+    """The Reference under the Verifier: passes, fails on a gate item that holds False, or not judged
+    on a gate item left open (a judge item with no judge answer, or an item code could not settle)."""
+    from kullback.runner.verdict import verdict
+    from kullback.spec.canfail import has_gates, judge_run
+
+    if not has_gates(verifier):
+        passed, failing = judge_run(verifier, run, canon, tools)
+        return {"run": "reference", "verifier_passes_it": bool(passed),
+                "failing": None if passed else str(getattr(failing, "id", failing))}
+    result = verdict(run, verifier, canon, judge_results, write_tools=tools)
+    gates = [item for item in result.items if item.gate]
+    failed = next((item for item in gates if item.holds is False), None)
+    if result.passed or failed is not None:
+        return {"run": "reference", "verifier_passes_it": result.passed,
+                "failing": None if failed is None else failed.id, "kind": None if failed is None else failed.kind}
+    open_gate = next((item for item in gates if item.holds is None), None)
+    return {"run": "reference", "verifier_passes_it": None, "open": None if open_gate is None else open_gate.id,
+            "kind": None if open_gate is None else open_gate.kind}
+
+
+def judge_rows(verifier: Verifier, answers: Optional[dict]) -> list[dict]:
+    """One row per judge item the judge answered on the Reference: held or not, its one-line reason and
+    the agent lines it read. For the Examiner only: these never reach a file the writer reads."""
+    return [{"run": "reference_judge", "item": atom_id, "holds": None if row.get("score") is None
+             else row["score"] == 1, "why": row.get("why") or "", "lines": list(row.get("lines") or [])}
+            for atom_id, row in sorted((answers or {}).items())]
+
+
+def verify_rows(workdir: Any, task_id: str, verifier: Verifier, reference: Optional[Run],
+                judge: Any = None) -> list[dict]:
     """What the Verifier says of each constructed Run and of the Reference.
 
     A constructed Run (do nothing, one stray write on the Reference, spec/trust.py) should fail; the
-    Reference passing says the Verifier is satisfiable. A Run the Verdict cannot read is a row with its error.
+    Reference passing says the Verifier is satisfiable. The Reference's judge items are answered by
+    `judge` (verifier, run) -> {atom id: JudgeScore}, kept once per Verifier and Run under exam/judged/
+    (spec/judged.py); without `judge` or a kept answer a judge item is not judged, never failed.
+    A Run the Verdict cannot read is a row with its error.
     """
     from kullback.gates.probes import write_tools_of
     from kullback.runner.canon import load_rules
     from kullback.runner.records import ToolSig
-    from kullback.spec.canfail import judge_run, outcome_of
+    from kullback.spec.canfail import outcome_of
+    from kullback.spec.judged import judge_reference
     from kullback.spec.trust import constructed_runs
 
     if reference is None:
@@ -287,37 +324,67 @@ def verify_rows(workdir: Any, task_id: str, verifier: Verifier, reference: Optio
     tools = write_tools_of([ToolSig.model_validate(s) for s in sigs])
     canon = load_rules(Path(workdir) / "canon-rules.json")
     schema = read_json(Path(workdir) / "schema.json", None)
+    answers = judge_reference(workdir, task_id, verifier, reference, judge)
     rows = []
     try:
         built = constructed_runs(verifier, [reference], [reference.run_id], schema=schema, canon=canon)
         for name, run in built.items():
             if run is not None:
-                failed = outcome_of(verifier, run, canon, tools).failed
+                # The stray write copies the Reference's turns, so it carries the Reference's judge answers.
+                results = answers if name == "stray_write" else None
+                failed = outcome_of(verifier, run, canon, tools, judge_results=results).failed
                 rows.append({"run": name, "verifier_fails_it": failed is not None, "at": failed})
     except Exception as exc:  # a constructed Run the Verdict cannot read says the code does not run
         rows.append({"run": "constructed", "error": type(exc).__name__})
     try:
-        passed, failing = judge_run(verifier, reference, canon, tools)
-        rows.append({"run": "reference", "verifier_passes_it": bool(passed),
-                     "failing": None if passed else str(getattr(failing, "id", failing))})
+        rows.append(_reference_word(verifier, reference, canon, tools, answers))
     except Exception as exc:
         rows.append({"run": "reference", "error": type(exc).__name__})
-    return rows
+    return rows + judge_rows(verifier, answers)
+
+
+def _reference_part(row: dict) -> str:
+    if row["verifier_passes_it"]:
+        return "reference: passes"
+    if row["verifier_passes_it"] is False:
+        kind = f" ({row['kind']} item)" if row.get("kind") else ""
+        return f"reference: fails on {row['failing']}{kind}"
+    if row.get("kind") == "judge":
+        return f"reference: not judged on {row['open']} (no judge answer)"
+    return f"reference: not settled on {row.get('open')} ({row.get('kind')} item, code could not evaluate it)"
+
+
+def _judge_part(row: dict) -> str:
+    word = {True: "holds", False: "does not hold", None: "not judged"}[row["holds"]]
+    lines = " | ".join(row["lines"])
+    return f"judge on {row['item']}: {word}, {row['why'] or 'no reason given'}" + (f"; read: {lines}" if lines else "")
 
 
 def verify_line(rows: list[dict]) -> str:
-    """The verify rows in one line: each kind of Run with how many the Verifier failed, the Reference's word."""
+    """The verify rows in one line: each kind of Run with how many the Verifier failed, the Reference's word,
+    then each judge item's answer on the Reference with the lines the judge read."""
     parts, kinds = [], {}
     for row in rows:
         if "error" in row:
             parts.append(f"{row['run']}: {row['error']}")
         elif row["run"] == "reference":
-            parts.append("reference: " + ("passes" if row["verifier_passes_it"] else f"fails on {row['failing']}"))
+            parts.append(_reference_part(row))
+        elif row["run"] == "reference_judge":
+            parts.append(_judge_part(row))
         else:
             failed, total = kinds.get(row["run"], (0, 0))
             kinds[row["run"]] = (failed + bool(row["verifier_fails_it"]), total + 1)
     lines = [f"{run}: the Verifier fails {failed} of {total}" for run, (failed, total) in kinds.items()]
     return "; ".join(lines + parts)
+
+
+def reference_judge(model: Any) -> Any:
+    """The judge verify asks of the Reference: kullback/judge/items.judge_items on `model`, one call per item."""
+    if model is None:
+        return None
+    from kullback.judge.items import judge_items
+
+    return lambda verifier, run: judge_items(model, verifier.atoms, run)
 
 
 def _verify(root: ExamRoot):
@@ -327,7 +394,8 @@ def _verify(root: ExamRoot):
         verifier = load_spec_verifier(root.workdir, args.task_id)
         if verifier is None:
             raise ValueError(f"task {args.task_id} has no Verifier to run")
-        rows = verify_rows(root.workdir, args.task_id, verifier, _reference_run(root.workdir, args.task_id))
+        rows = verify_rows(root.workdir, args.task_id, verifier, _reference_run(root.workdir, args.task_id),
+                           judge=reference_judge(root.judge_model))
         root.verified[args.task_id] = rows
         return VerifyResult(summary=verify_line(rows), rows=rows)
 
@@ -454,7 +522,8 @@ def rule_tools(root: ExamRoot) -> list[AgentTool]:
         AgentTool("close", "Close a ruling the writer answered, or keep it open, with why in one sentence.",
                   CloseArgs, CloseResult, _close(root), render=render),
         AgentTool("verify", "Run the constructed Runs (do nothing, one stray write, an expected cell undone) and the "
-                  "Reference's end state through the Task's Verifier, by code. A code ruling cites it.",
+                  "Reference's end state through the Task's Verifier, by code, with each judge item answered on the "
+                  "Reference by the judge (its reason and the lines it read). A code ruling cites it.",
                   VerifyArgs, VerifyResult, _verify(root), render=render),
         *_lookups(root),
     ]
@@ -465,4 +534,4 @@ RULE_TOOL_NAMES = ("rule", "close", "verify", "lookup_rows", "search_rows")
 __all__ = ["POLICY_FILE", "REFUSED_FILE", "REVIEW_DIR", "RULE_TOOL_NAMES", "RULINGS_DIR", "TOOLS_FILE", "VIEW_DIR",
            "CloseArgs", "RuleArgs", "RuleResult", "VerifyArgs", "checked_ruling", "file_ruling", "open_run",
            "read_rulings", "reference_ids_of", "rule_tools", "run_rows", "spec_view", "turn_texts", "user_turns",
-           "verify_rows", "write_views"]
+           "verify_line", "verify_rows", "write_views"]

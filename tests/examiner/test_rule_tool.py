@@ -109,6 +109,16 @@ def test_a_reference_ruled_wrong_is_a_note_carrying_the_verify_rows(tmp_path):
     assert load_spec(tmp_path, "t1").rulings_open == 0
 
 
+def test_a_ruling_keeps_the_verify_rows_but_never_the_judges_reason(tmp_path):
+    root = _root(tmp_path)
+    reference = {"run": "reference", "verifier_passes_it": False, "failing": "i0"}
+    root.verified["t1"] = [reference, {"run": "reference_judge", "item": "j1", "holds": False,
+                                       "why": "never said", "lines": ["an agent line"]}]
+    _rule(root, kind="code", code="fails_reference", wrong_side="verifier")
+    [ruling] = RL.load_rulings(tmp_path, "t1")
+    assert ruling.verified == [reference]
+
+
 def test_close_needs_a_later_round_and_keeping_open_holds_the_task(tmp_path):
     root = _root(tmp_path)
     _rule(root)

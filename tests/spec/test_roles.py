@@ -12,8 +12,8 @@ import json
 import pytest
 
 from kullback.ai.provider import ModelReply, TestModel
-from kullback.examiner.rule_tool import verify_line, verify_rows
-from kullback.runner.records import Run, Verifier, write_json
+from kullback.examiner.rule_tool import reference_judge, verify_line, verify_rows
+from kullback.runner.records import Atom, Run, Verifier, write_json
 from kullback.spec import review as RV
 from kullback.spec import rounds as RD
 from kullback.spec import rulings as RL
@@ -191,6 +191,44 @@ def test_verify_says_the_do_nothing_run_fails_and_the_reference_passes(tmp_path)
     assert by_run["reference"]["verifier_passes_it"] is True
     assert verify_line(rows).startswith("do_nothing: the Verifier fails 1 of 1;") and "reference: passes" in verify_line(rows)
     assert verify_rows(root, "t1", verifier, None) == [{"run": "reference", "error": "no faithful Reference on disk"}]
+
+
+SAID_SLOT = {"id": "j1", "kind": "allowed", "judge": True, "gate": True,
+             "target": {"question": "Did the agent tell the user the new slot?", "anchor": {"answer": "slot seven"}}}
+
+
+def _judged(tmp_path):
+    root, verifier = _written(tmp_path)
+    return root, verifier.model_copy(update={"atoms": [*verifier.atoms, Atom.model_validate(SAID_SLOT)]})
+
+
+def test_verify_says_a_judge_item_nobody_answered_is_not_judged_never_failed(tmp_path):
+    root, verifier = _judged(tmp_path)
+    rows = verify_rows(root, "t1", verifier, _reference())
+    reference = next(row for row in rows if row["run"] == "reference")
+    assert reference["verifier_passes_it"] is None and reference["open"] == "j1"
+    assert "reference: not judged on j1 (no judge answer)" in verify_line(rows)
+    assert "fails on" not in verify_line(rows)
+
+
+def test_verify_judges_the_reference_once_and_shows_the_examiner_the_reason_and_the_lines_read(tmp_path):
+    root, verifier = _judged(tmp_path)
+    model = TestModel([ModelReply(content='{"results": {"j1": {"score": 1, "why": "slot named"}}}')])
+    judge = reference_judge(model)
+    rows = verify_rows(root, "t1", verifier, _reference(), judge=judge)
+    line = verify_line(rows)
+    assert "reference: passes" in line
+    assert "judge on j1: holds, slot named; read: Item A1 is in slot seven." in line
+    assert "stray_write: the Verifier fails 1 of 1" in line
+    again = verify_rows(root, "t1", verifier, _reference(), judge=judge)
+    assert again == rows and len(model.calls) == 1
+
+
+def test_a_reference_judged_not_holding_fails_on_the_judge_item_by_name(tmp_path):
+    root, verifier = _judged(tmp_path)
+    model = TestModel([ModelReply(content='{"results": {"j1": {"score": 0, "why": "slot never said"}}}')])
+    line = verify_line(verify_rows(root, "t1", verifier, _reference(), judge=reference_judge(model)))
+    assert "reference: fails on j1 (judge item)" in line and "judge on j1: does not hold, slot never said" in line
 
 
 def test_the_loop_runs_examiner_writer_examiner_and_a_ruling_kept_open_holds_the_task(tmp_path):

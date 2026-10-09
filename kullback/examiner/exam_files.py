@@ -165,6 +165,7 @@ class ExamRoot:
     round: int = 0            # the review round this session is (D331); 0 reads the Spec's round plus one
     verified: dict = field(default_factory=dict)   # the verify rows per Task, which a code ruling cites
     states: dict = field(default_factory=dict)     # each Task's Starting state, loaded once for the lookups
+    judge_model: Any = None   # the model verify asks to answer the Reference's judge items (D346)
 
     @property
     def exam_dir(self) -> Path:
