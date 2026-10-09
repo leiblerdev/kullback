@@ -288,6 +288,13 @@ def _untrusted_reason(spec: Spec, verifier: Verifier, gates: dict, constructed: 
     return None
 
 
+def _scored(verifier: Verifier, runs: list[Run], canon: Any, tools: Any, schema: Any,
+            judged: Optional[dict]) -> tuple[dict, dict[str, Outcome]]:
+    """(the judge answers by run id, each Run's outcome scored with its own answers)."""
+    judged = judged or {}
+    return judged, {run.run_id: _judge(verifier, run, canon, tools, schema, judged.get(run.run_id)) for run in runs}
+
+
 def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: Iterable[Any] = (), *,
                  canon: Any, write_tools: Optional[Iterable[str]] = None, references: Iterable[str] = (),
                  schema: Any = None, judged: Optional[dict] = None) -> TaskTier:
@@ -299,9 +306,8 @@ def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: I
     its judge items passes here too.
     """
     runs = list(runs or ())
-    judged = judged or {}
     tools = set(write_tools) if write_tools is not None else None
-    verdicts = {run.run_id: _judge(verifier, run, canon, tools, schema, judged.get(run.run_id)) for run in runs}
+    judged, verdicts = _scored(verifier, runs, canon, tools, schema, judged)
     fresh = [run.run_id for run in runs if is_fresh(run)]
     kept = sorted(set(references) & set(verdicts))
     passing = [run_id for run_id in [*kept, *fresh] if verdicts[run_id][0]]
