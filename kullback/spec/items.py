@@ -33,6 +33,7 @@ from typing import Any, Callable, Iterable, Optional
 
 from kullback.runner.atom_context import is_transfer
 from kullback.runner.records import Atom, EndState, ExpectedCell, ValueSource
+from kullback.spec.atoms import called_set_atom
 from kullback.spec.effects import type_of
 
 STATE_KINDS = ("row_is", "row_new", "row_keeps")
@@ -642,13 +643,27 @@ def _describe(item: dict) -> str:
     return f"judge: {item['question']}"
 
 
+def _one_of_args(args: Any) -> bool:
+    """Whether these called args carry a {"one_of": [...]} set the Verdict cannot match."""
+    return isinstance(args, dict) and any(
+        isinstance(value, dict) and len(value) == 1 and isinstance(value.get("one_of"), list)
+        for value in args.values())
+
+
 def atom_of(item: dict) -> Atom:
     """One item as one atom: gate and weight on it, the item itself and its provenance as the target.
 
     The atom's kind stays allowed, so no older reader takes it for a required write; the verdict
     decides it by its gate flag (runner/verdict.py): state items as the end state's cells, event
-    items off the calls and the log, judge items by the judge's score.
+    items off the calls and the log, judge items by the judge's score. A called item naming a set
+    of allowed values is the one exception: the Verdict exact-matches a called target, so the set
+    compiles to a rule matching any member instead (spec/atoms.py, D352).
     """
+    if item["kind"] in ("called", "not_called") and _one_of_args(item.get("args")):
+        return called_set_atom(
+            item["id"], item["tool"], dict(item.get("args") or {}), item["kind"] == "not_called",
+            [item["tool"]], _describe(item), gate=bool(item["gate"]), weight=float(item["weight"]),
+            extra={"item_kind": item["kind"], "from": _from(item)})
     target = {key: value for key, value in item.items() if key not in ("id", "gate", "weight", "fact_ids",
                                                                          "policy_line")}
     target["from"] = _from(item)

@@ -186,6 +186,43 @@ _COUNT = {count!r}
 def check(pre_state, write_call, transcript):
     return sum(1 for call in calls if call.get("name") == _TOOL and not call.get("error")) <= _COUNT
 '''
+# A call that must carry these arguments, where a {"one_of": [...]} value accepts any member.
+# The rule reads the Run's own `calls` the way the action rules do, instead of judging one call
+# at a time, so one predicate says whether the call happened at all. Each other argument keeps
+# the Verdict's own meaning: canon on scalars, exact keys on objects, order and length on lists.
+_CALLED_SET_SRC = '''
+_TOOL = {tool!r}
+_WANT = {want!r}
+_NEGATE = {negate!r}
+
+
+def _same(left, right):
+    return str(canon(left)) == str(canon(right))
+
+
+def _matches(want, got):
+    if isinstance(want, dict) and len(want) == 1 and "one_of" in want and isinstance(want["one_of"], list):
+        return any(_same(one, got) for one in want["one_of"])
+    if isinstance(want, dict) and isinstance(got, dict) and set(got) == set(want):
+        return all(_matches(want[key], got[key]) for key in want)
+    if isinstance(want, (list, tuple)) and isinstance(got, (list, tuple)) and len(want) == len(got):
+        return all(_matches(one, other) for one, other in zip(want, got))
+    if isinstance(want, (dict, list, tuple)):
+        return False
+    return _same(want, got)
+
+
+def _hit(call):
+    if call.get("name") != _TOOL or call.get("error"):
+        return False
+    args = call.get("args") or call.get("arguments") or {{}}
+    return all(_matches(want, args.get(key)) for key, want in _WANT.items())
+
+
+def check(pre_state, write_call, transcript):
+    found = any(_hit(call) for call in calls)
+    return (not found) if _NEGATE else found
+'''
 
 
 def _rule_atom(atom_id: str, source: str, tools: Iterable[str], derived_as: str, description: str) -> Atom:
@@ -233,6 +270,28 @@ def tool_cap_atom(atom_id: str, tool: str, count: int) -> Atom:
     """A cap on one tool: the Run makes at most `count` successful calls of it."""
     return _rule_atom(atom_id, _TOOL_CAP_SRC.format(tool=tool, count=count), [tool], TOOL_CAP_ATOM,
                       f"the Run makes at most {count} {tool} calls")
+
+
+CALLED_SET_ATOM = "called_set"
+
+
+def called_set_atom(atom_id: str, tool: str, want: dict, negate: bool, write_tools: Iterable[str],
+                    description: str, gate: bool = True, weight: float = 1.0,
+                    extra: Optional[dict] = None) -> Atom:
+    """A call carrying these arguments, a {"one_of": [...]} value accepting any member.
+
+    A Verdict exact-matches a called target, so a set value in it never matches and the check
+    fails whatever the Run calls with. This rule matches the Verdict's own way instead, with
+    the set widened to any member. `negate` asks that no call matches, for what must not happen.
+    """
+    source = _CALLED_SET_SRC.format(tool=tool, want=dict(want), negate=bool(negate))
+    payload = {"kind": "hard", "constraint_id": atom_id, "judge": False, "predicate_src": source,
+               "write_tools": sorted(write_tools), "read_tools": [], "derived_as": CALLED_SET_ATOM,
+               "tool": tool, "want": dict(want), "negate": bool(negate)}
+    if extra:
+        payload.update(extra)
+    return _atom(atom_id, "hard", payload, judge=False, description=description,
+                 gate=bool(gate), weight=float(weight))
 
 
 def action_atoms(atom_id: str, kind: str, tool: str) -> list[Atom]:

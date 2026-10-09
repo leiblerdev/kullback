@@ -1,9 +1,11 @@
 import sys
 from pathlib import Path
 
-from kullback.runner.records import Event, Run
+from kullback.runner.records import Event, Run, Verifier
 from kullback.runner.target import atom_holds, check_run, hard_holds, text_of
+from kullback.runner.verdict import verdict
 from kullback.spec.compile import compile_spec
+from kullback.spec.items import atom_of
 from tests.spec.fixtures import WRITE, WRITE_TOOLS, check, fn, reference_run, spec
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "experiments"))
@@ -130,3 +132,95 @@ def test_a_say_demand_listing_values_compiles_to_one_communicate_atom_per_value(
     assert len({atom.id for atom in atoms}) == 2
     assert len(compile_spec(spec([check(demand={"demand": "say", "text": "slot seven"})]), WRITE_TOOLS,
                             fn).verifier.atoms) == 1
+
+
+def _writing_slot(item, slot) -> Run:
+    """A Run writing one slot value onto one row, answered without an error."""
+    return Run(run_id="r", task_id="t1", termination_reason="success", events=[
+        Event(idx=0, type="tool_call", payload={"id": "c0", "name": "update_item",
+                                                "args": {"item_id": item, "slot": slot}}),
+        Event(idx=1, type="tool_result", payload={"id": "c0", "result": {"item_id": item, "slot": slot}})])
+
+
+SET_VALUES = {"slot": {"one_of": ["seven", "eight"]}}
+
+
+def _set_atom():
+    """The compiled atom for a write value naming allowed values, beside its write atom."""
+    demand = dict(WRITE, values=SET_VALUES)
+    atoms = compile_spec(spec([check("c0", "required", demand)]), TWO_WRITES, fn).verifier.atoms
+    assert [atom.target["kind"] for atom in atoms] == ["write", "hard"]
+    return next(atom for atom in atoms if atom.id == "i0.slot")
+
+
+def test_a_write_value_naming_allowed_values_passes_for_each_of_them():
+    atom = _set_atom()
+    assert hard_holds(atom, _writing_slot("A1", "seven"), TWO_WRITES, fn)
+    assert hard_holds(atom, _writing_slot("A1", "eight"), TWO_WRITES, fn)
+
+
+def test_a_write_value_naming_allowed_values_fails_outside_the_set():
+    assert not hard_holds(_set_atom(), _writing_slot("A1", "nine"), TWO_WRITES, fn)
+
+
+def test_a_write_value_naming_allowed_values_reads_them_off_the_demanded_row():
+    atom = _set_atom()
+    assert not hard_holds(atom, _writing_slot("B2", "seven"), TWO_WRITES, fn)
+    other = _writing_slot("B2", "seven")
+    both = Run(run_id="r", task_id="t1", termination_reason="success",
+               events=list(other.events) + [
+                   Event(idx=2, type="tool_call", payload={"id": "c1", "name": "update_item",
+                                                           "args": {"item_id": "A1", "slot": "nine"}}),
+                   Event(idx=3, type="tool_result", payload={"id": "c1",
+                                                             "result": {"item_id": "A1", "slot": "nine"}})])
+    assert not hard_holds(atom, both, TWO_WRITES, fn)
+
+
+def test_a_write_demand_naming_allowed_values_passes_its_run_whole():
+    demand = dict(WRITE, values=SET_VALUES)
+    verifier = compile_spec(spec([check("c0", "required", demand)]), TWO_WRITES, fn).verifier
+    assert check_run(verifier, _writing_slot("A1", "eight"), canon=fn)[0]
+    assert not check_run(verifier, _writing_slot("A1", "nine"), canon=fn)[0]
+
+
+def _called_holds(args, slot):
+    item = {"id": "k1", "kind": "called", "tool": "update_item", "args": args,
+            "gate": True, "weight": 1.0, "fact_ids": [], "policy_line": None}
+    verifier = Verifier(task_id="t1", atoms=[atom_of(item)], verifier_version="v", seed_run_ids=[])
+    return next(item for item in verdict(_writing_slot("A1", slot), verifier, None).items
+                if item.id == "k1").holds
+
+
+CALLED_SET = {"item_id": "A1", "slot": {"one_of": ["seven", "eight"]}}
+
+
+def test_a_called_check_passes_for_each_allowed_value():
+    assert _called_holds(CALLED_SET, "seven") is True
+    assert _called_holds(CALLED_SET, "eight") is True
+
+
+def test_a_called_check_fails_for_a_value_outside_the_set():
+    assert _called_holds(CALLED_SET, "nine") is False
+
+
+def test_a_called_check_without_a_set_still_compiles_to_a_called_target():
+    atom = atom_of({"id": "k1", "kind": "called", "tool": "update_item",
+                    "args": {"item_id": "A1", "slot": "seven"},
+                    "gate": True, "weight": 1.0, "fact_ids": [], "policy_line": None})
+    assert atom.target["kind"] == "called"
+
+
+def _not_called_holds(args, slot):
+    item = {"id": "k2", "kind": "not_called", "tool": "update_item", "args": args,
+            "gate": True, "weight": 1.0, "fact_ids": [], "policy_line": None}
+    verifier = Verifier(task_id="t1", atoms=[atom_of(item)], verifier_version="v", seed_run_ids=[])
+    return next(item for item in verdict(_writing_slot("A1", slot), verifier, None).items
+                if item.id == "k2").holds
+
+
+NOT_CALLED_SET = {"item_id": "A1", "slot": {"one_of": ["seven", "eight"]}}
+
+
+def test_a_not_called_check_fails_only_for_a_value_in_the_set():
+    assert _not_called_holds(NOT_CALLED_SET, "seven") is False
+    assert _not_called_holds(NOT_CALLED_SET, "nine") is True

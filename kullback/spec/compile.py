@@ -7,12 +7,12 @@ no-write demand on an action tool (spec/actions.py, D308) compiles to an action 
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, NamedTuple, Optional
+from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 from kullback.gates import verifier_suite
 from kullback.runner.records import Atom, Verifier
 from kullback.runner.target import _key as canon_key
-from kullback.spec.atoms import action_atoms, no_write_atom, shape_atom, tool_cap_atom
+from kullback.spec.atoms import action_atoms, called_set_atom, no_write_atom, shape_atom, tool_cap_atom
 from kullback.spec.ground import valid_because
 
 ATOM_KINDS = ("required", "allowed", "forbidden", "question", "communicate", "hard")
@@ -25,6 +25,13 @@ WRITE_WITHOUT_ROW = "required_write_without_row"
 UNSATISFIABLE = (NO_WRITE_BESIDE_REQUIRED, FORBIDDEN_EQUALS_REQUIRED, WRITE_WITHOUT_ROW)
 # The keys of a demand dict that say why and how strongly, not what is demanded.
 _NOT_DEMANDED = ("kind", "because", "check_id", "gate", "weight")
+
+
+def _one_of(value: Any) -> Optional[list]:
+    """The allowed values when this is a {"one_of": [...]} set, else None."""
+    if isinstance(value, dict) and len(value) == 1 and isinstance(value.get("one_of"), list):
+        return value["one_of"]
+    return None
 
 
 class Compiled(NamedTuple):
@@ -49,10 +56,20 @@ def _write(atom_id: str, kind: str, demand: dict, write_tools: set, fn: Callable
     values = demand.get("values") or {}
     if isinstance(values, dict):
         for field in sorted(values):
-            atoms.append(verifier_suite.make_atom(
-                f"{atom_id}.{field}", kind,
-                dict(base, kind="write_value", field=field, value=canon_key(fn, values[field]), raw=values[field]),
-                description=f"{tool} {field} is {values[field]}"))
+            allowed = _one_of(values[field])
+            if allowed is None:
+                atoms.append(verifier_suite.make_atom(
+                    f"{atom_id}.{field}", kind,
+                    dict(base, kind="write_value", field=field, value=canon_key(fn, values[field]),
+                         raw=values[field]),
+                    description=f"{tool} {field} is {values[field]}"))
+                continue
+            # A set has no single canonical key: the exact-match atom would fail whatever the Run
+            # calls with, so the value compiles to a rule matching any member on the row instead.
+            atoms.append(called_set_atom(
+                f"{atom_id}.{field}", tool, {demand["id_field"]: demand.get("entity"), field: values[field]},
+                kind == "forbidden", write_tools, f"{tool} {field} is one of {allowed}",
+                gate=kind != "allowed"))
     return atoms
 
 
