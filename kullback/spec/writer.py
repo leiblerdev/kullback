@@ -102,15 +102,20 @@ one gated judge item asking whether the agent declined and why, the anchor quoti
 - The user wants a new entry with a minted id: row_new with the fields the user gave, never the id.
 - The user asks what something costs: a judge item whose anchor is the amount read from the row that \
 holds it (row cites that row), and said with that amount if it is stored as is. Never compute a figure the world does not hold.
-- The user says "leave the other one as it is": row_keeps on that row's fields."""
+- The user asks for one of several options the policy allows and does not say which: the item accepts \
+every allowed one (one_of), never only the one an agent might pick."""
 
 CHOICE_RULE = """\
 # Choosing items
-Write an item only for what the Intent asks for or the policy requires, never for a sensible step. \
-Every value comes from a world row you read, a policy line or the user's words: find it first, then add \
-it. Code adds the sanity item by itself (no row outside your state items may change), so list every \
-row a correct run changes, and only those. Gate what decides right or wrong; leave text and judge items \
-ungated unless the request is only to be told something or refused (a refusal judge item always gates)."""
+Write an item only for what the Intent asks for or the policy requires, never for a sensible step, and \
+one item per ask. Every value comes from a world row you read, a policy line or the user's words: find it \
+first, then add it. Code adds the sanity item by itself (no row outside your state items may change), so \
+list every row a correct run changes, and only those. Gate what the user asked for and the policy requires. \
+What the user only accepted after the agent proposed it or refused something is weighted, not gated. Where \
+the user left a choice open and the policy allows several, accept any allowed one or weight it. A forbid \
+(not_called, row_keeps) gates only with the policy line that forbids it; else weight it. Leave text and \
+judge items ungated unless the request is only to be told something or refused (a refusal judge item \
+always gates)."""
 
 FEEDBACK = """\
 # Feedback
@@ -131,11 +136,15 @@ them under their ids so a correct run can pass, then reply that you are done.
 
 REPAIR_PROMPT = """The Examiner ruled on items you wrote for this customer request. A ruling names \
 one item (an item id, an Intent fact id, or the task), what is wrong and a fix. You still have never \
-seen any agent run, and you must not ask for one. Apply the fix: drop or replace the ruled items, or \
-add the items the ruling says are missing; you may not drop or replace any other item. Every \
-rule of the writer still holds. Or rebut: when the Intent or the policy still requires the items as \
-written, change nothing and reply with one line starting "rebut:" and why in one sentence. Otherwise \
-reply that you are done when finished.
+seen any agent run, and you must not ask for one. Every rule of the writer still holds.
+Apply: fix what the ruling names in the ruled items (a value, a gate, an anchor), or add the items it says \
+are missing; you may not drop or replace any other item. Drop a ruled item only when it asks for \
+something the user never asked for, and say so. Cover a missing fact in the fact_ids of a ruled item \
+that checks it, or with one new item for what no item checks; never add a copy of an item.
+Rebut: when the user's words or a policy line require the items as written, change nothing and reply \
+with one line starting "rebut:" that quotes those words or that line. With neither, apply the ruling. \
+A reply that changes nothing always starts with "rebut:", also when the ruling asks for no item change.
+Reply that you are done when finished.
 
 """
 

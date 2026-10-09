@@ -335,6 +335,36 @@ def test_a_rebuttal_changes_nothing_and_carries_the_writers_why():
     assert not (written.counts["changed"] or written.counts["dropped"] or written.counts["added"])
 
 
+def test_the_repair_session_asks_a_rebuttal_to_quote_the_user_or_the_policy_else_apply():
+    spec = W.write_spec("t1", inputs(), TestModel([add(ROW), DONE])).spec
+    model = TestModel([ModelReply(content="rebut: the user asks for slot seven.")])
+    W.repair(spec, W.Ruling(check_ids=["s1"], reason="not asked for", fix="drop s1"), inputs(), model)
+    prompt = model.calls[0]["messages"][0]["content"]
+    assert "quotes those words or that line" in prompt and "With neither, apply the ruling." in prompt
+    assert 'A reply that changes nothing always starts with "rebut:"' in prompt
+
+
+def test_the_repair_session_fixes_what_the_ruling_names_and_never_copies_an_item():
+    spec = W.write_spec("t1", inputs(), TestModel([add(ROW), DONE])).spec
+    model = TestModel([DONE])
+    W.repair(spec, W.Ruling(check_ids=["s1"], reason="wrong slot", fix="expect slot four"), inputs(), model)
+    prompt = model.calls[0]["messages"][0]["content"]
+    assert "fix what the ruling names" in prompt
+    assert "Drop a ruled item only when it asks for something the user never asked for" in prompt
+    assert "never add a copy of an item" in prompt
+
+
+def test_the_writer_session_gates_only_what_the_user_asked_and_the_policy_requires():
+    model = TestModel([DONE])
+    W.write_spec("t1", inputs(), model)
+    prompt = model.calls[0]["messages"][0]["content"]
+    assert "Gate what the user asked for and the policy requires" in prompt
+    assert "only accepted after the agent proposed it or refused something is weighted, not gated" in prompt
+    assert "accept any allowed one or weight it" in prompt
+    assert "gates only with the policy line that forbids it; else weight it" in prompt
+    assert "one item per ask" in prompt
+
+
 def _ruled_workdir(tmp_path):
     _workdir(tmp_path)
     loaded = W.load_inputs(tmp_path, "t1", inputs().intent)
