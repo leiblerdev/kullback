@@ -42,7 +42,7 @@ def received(lines: str, entries: Iterable[str] = (), notes: str = "", round_num
     if round_number > 1:
         text += ("\nThe writer has answered the rulings of the last round. Close each answered ruling the answer "
                  "settles and keep open, with why, each it does not; file a new ruling only for what the "
-                 "writer's change broke.")
+                 "writer's change broke or a goal the Intent still gets wrong.")
     if notes:
         text += f"\nThe Builder's notes, each saying a Task is not verifiable as written:\n{notes}"
     return text
@@ -100,8 +100,8 @@ def examples_section() -> str:
             "scope: the request is not doable under the policy (fix: a refusal, the sanity item plus a judge item "
             "citing the policy line); the Intent is too vague to check; the instruction lacks a fact the Task "
             "needs.\n"
-            "intent_unfounded: an Intent fact no user turn says, or one said only after the agent refused, failed "
-            "or stalled (fix: drop the fact from every gate).\n"
+            "intent_unfounded: an Intent fact no user turn says, or one the user only accepted after the agent "
+            "refused, failed or proposed it (fix: drop the fact from every gate).\n"
             "gated_against_ask: a gate works against what the user volunteered while the policy and the world "
             "allow a path to it, such as a refusal gated where the policy offers a paid way.\n"
             "not_enough_truth: the turns never show what the user wants at the point the Verifier must decide "
@@ -110,17 +110,20 @@ def examples_section() -> str:
 
 def choice_section() -> str:
     """The choice rule: what to read, what blocks, then the order."""
-    return ("Choosing. Read each Task's view, then the policy where an item cites it. Look up in the world every "
-            "anchor and every value an item fixes before you accept it. Call verify once per Task before any "
-            "code ruling. Block when a correct solve could fail or a wrong one pass; file a note when the item "
-            "is weak but the verdict would stand. One ruling per problem, on the item it is about. Decide from "
-            "what the user said (the user turns), the world and the policy, never from what a Run did. The "
-            "Intent is the writer's reading of the user turns: check every fact against its turn first. A fact "
-            "said only after the agent refused, failed or stalled is not the ask. Users ask for things the world "
-            "or the policy may not allow; serve the ask only as far as they allow. The whole policy is in this "
-            "prompt: read the part that governs the ask before you accept or rule, and check the world rows "
-            "(lookup_rows, search_rows) for what the world allows. When the turns never show what the user wants at the point that "
-            "matters, rule not_enough_truth.\n" + REVIEW_SKILL)
+    return ("Choosing. Question the goal first, on every Task, before the items. From the user's own requests, "
+            "as made before the agent refused, failed or proposed anything, and from the policy alone, say in one "
+            "or two lines what a correct agent leaves behind. Hold the Intent against that: a fact the user only "
+            "accepted after the agent's proposal, refusal or failure is not the user's wish (rule "
+            "intent_unfounded); a request the user made that no fact or item carries is an uncovered ask (rule "
+            "missing_fact, or uncovered_fact where a fact has no item); where the turns never show what the user "
+            "would want once the policy allows the request, rule not_enough_truth. Users ask for things the world "
+            "or the policy may not allow; serve the ask only as far as they allow. Only then check the items "
+            "against the Intent and the policy. The whole policy is in this prompt: read the part that governs "
+            "the ask before you accept or rule. Look up in the world every anchor and every value an "
+            "item fixes (lookup_rows, search_rows) before you accept it. Call verify once per Task before any code ruling. "
+            "Block when a correct solve could fail or a wrong one pass; file a note when the item is weak but the "
+            "verdict would stand. One ruling per problem, on the item it is about. Decide from what the user said "
+            "(the user turns), the world and the policy, never from what a Run did.\n" + REVIEW_SKILL)
 
 
 def feedback_section() -> str:

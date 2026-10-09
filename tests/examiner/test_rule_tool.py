@@ -206,7 +206,7 @@ def test_the_choice_rule_names_the_user_turns_and_not_the_intent_as_ground():
     choice = P.choice_section()
     assert "Decide from what the user said (the user turns), the world and the policy" in choice
     assert "Decide from the Intent" not in choice
-    assert "check every fact against its turn first" in choice and "not_enough_truth" in choice
+    assert "Hold the Intent against that" in choice and "not_enough_truth" in choice
     assert "user turns" in P.receives_section()
     examples = P.examples_section()
     for code in (RL.UNFOUNDED_CODE, "gated_against_ask", RL.NO_TRUTH_CODE):

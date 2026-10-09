@@ -69,3 +69,37 @@ def test_the_finding_tool_takes_body_edits_only():
 
     described = FindingArgs.model_fields["edits"].description
     assert EDIT_KINDS == ("body",) and "kind: body," in described and "ruling" in described
+
+
+def test_the_choice_rule_asks_for_the_correct_end_state_before_the_items():
+    choice = P.choice_section()
+    goal = choice.index("what a correct agent leaves behind")
+    assert choice.index("Question the goal first, on every Task") < goal
+    assert goal < choice.index("Hold the Intent against that") < choice.index("Only then check the items")
+    assert "before the agent refused, failed or proposed anything" in choice
+
+
+def test_the_goal_step_names_a_ruling_code_for_each_way_the_intent_departs_from_the_ask():
+    from kullback.spec.rulings import RULING_KINDS
+
+    choice = P.choice_section()
+    accepted = choice.index("only accepted after the agent's proposal, refusal or failure")
+    uncovered = choice.index("no fact or item carries is an uncovered ask")
+    unseen = choice.index("never show what the user would want once the policy allows the request")
+    assert accepted < choice.index("intent_unfounded") < uncovered
+    assert uncovered < choice.index("missing_fact") < unseen < choice.index("not_enough_truth")
+    named = {"intent_unfounded", "missing_fact", "uncovered_fact", "not_enough_truth"}
+    assert named <= {code for codes in RULING_KINDS.values() for code in codes}
+
+
+def test_the_goal_step_comes_before_the_review_skill_that_reads_the_items():
+    from kullback.examiner.skills import REVIEW_SKILL
+
+    choice = P.choice_section()
+    assert choice.endswith(REVIEW_SKILL)
+    assert choice.index("Question the goal first") < choice.index(REVIEW_SKILL)
+
+
+def test_a_later_round_still_lets_the_examiner_rule_on_a_goal_the_intent_gets_wrong():
+    text = P.opening("Examine.", "t1", round_number=2)
+    assert "only for what the writer's change broke or a goal the Intent still gets wrong" in text
