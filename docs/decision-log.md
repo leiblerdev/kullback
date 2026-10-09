@@ -2647,3 +2647,5 @@ fires first); mixed support still gates. The kept line tells the writer in one l
 gate was weighed. Both views show the flag (spec/writer.py _facts_view,
 examiner/rule_tool.py _fact). Live feasibility on the 8 goal-wrong Tasks plus 6 controls,
 re-run after review: report .claude/herdr/truth-1008/gread-report.md, section r1.
+Code backing from the agent line was tried, fired zero times on the 14 re-mined Tasks, and was
+removed; the miner's mark is the only source of the flag.
