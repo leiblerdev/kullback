@@ -150,9 +150,18 @@ def open_no_truth(rulings: Iterable[Ruling]) -> list[Ruling]:
     return [r for r in rulings if r.status == "open" and r.code == NO_TRUTH_CODE]
 
 
+def kept_open_after_answer(ruling: Ruling) -> bool:
+    """The Examiner kept the ruling open after the writer's answer: Examiner round n follows writer round n,
+    so a keep in the answer's round or later (D350)."""
+    closed, answered = ruling.closed or {}, ruling.answer or {}
+    return bool(answered) and bool(closed.get("kept_open")) and \
+        int(closed.get("round") or 0) >= int(answered.get("round") or 0)
+
+
 def unanswered(rulings: Iterable[Ruling]) -> list[Ruling]:
-    """The open rulings the writer has not answered yet: its work for the next writer round."""
-    return [r for r in rulings if r.status == "open" and r.answer is None]
+    """The open rulings waiting on the writer: never answered, or kept open by the Examiner after its
+    answer. Its work for the next writer round."""
+    return [r for r in rulings if r.status == "open" and (r.answer is None or kept_open_after_answer(r))]
 
 
 def answer(workdir: Any, task_id: str, number: int, action: str, why: str, round_number: int,

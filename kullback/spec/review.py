@@ -69,7 +69,15 @@ def _writer_ruling(spec: Spec, verifier: Optional[Verifier], ruling: R.Ruling) -
     from kullback.spec.writer import Ruling
 
     return Ruling(check_ids=ruled_checks(spec, verifier, ruling.item), reason=ruling.reason, item=ruling.item,
-                  fix=ruling.fix, kind=f"{ruling.kind}/{ruling.code}")
+                  fix=ruling.fix, kind=f"{ruling.kind}/{ruling.code}", excerpt=_kept_open_note(ruling))
+
+
+def _kept_open_note(ruling: R.Ruling) -> str:
+    """For a ruling the Examiner kept open after the writer's answer: that answer and the Examiner's why."""
+    if not R.kept_open_after_answer(ruling):
+        return ""
+    return (f"Your last answer ({ruling.answer.get('action')}): {ruling.answer.get('why') or 'none'}. "
+            f"The Examiner kept the ruling open: {ruling.closed.get('why') or 'no reason given'}.")
 
 
 def _examiners_side(ruling: R.Ruling) -> bool:

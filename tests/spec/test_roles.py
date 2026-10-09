@@ -159,6 +159,19 @@ def test_an_applied_ruling_rewrites_both_verifier_copies_and_a_rebutted_one_keep
     assert load_spec(root, "t1").rulings_open == 2  # answered is not closed: the Examiner closes
 
 
+def test_a_ruling_kept_open_after_the_answer_goes_back_with_that_answer_and_the_examiners_why(tmp_path):
+    root = _told(tmp_path)
+    _ruling(root, 1)
+    RV.answer_rulings(root, "t1", TestModel([ModelReply(content="rebut: The user named slot seven.")]), 2)
+    assert RL.unanswered(RL.load_rulings(root, "t1")) == []
+    RL.close(root, "t1", 1, True, "No user turn names that slot.", 2)
+    model = TestModel([ModelReply(content="rebut: The user named slot seven in turn two.")])
+    assert RV.answer_rulings(root, "t1", model, 3)["rebutted"] == 1
+    shown = model.calls[0]["messages"][-1]["content"]
+    assert "The user named slot seven." in shown and "No user turn names that slot." in shown
+    assert RL.load_rulings(root, "t1")[0].answer["round"] == 3
+
+
 def test_an_empty_rebuttal_keeps_what_code_refused_so_it_reads_apart_from_a_reasoned_one(tmp_path):
     root = _told(tmp_path)
     _ruling(root, 1)
@@ -231,7 +244,7 @@ def test_a_reference_judged_not_holding_fails_on_the_judge_item_by_name(tmp_path
     assert "reference: fails on j1 (judge item)" in line and "judge on j1: does not hold, slot never said" in line
 
 
-def test_the_loop_runs_examiner_writer_examiner_and_a_ruling_kept_open_holds_the_task(tmp_path):
+def test_the_loop_gives_a_ruling_kept_open_back_to_the_writer_until_three_writer_rounds_then_holds(tmp_path):
     root = _told(tmp_path)
     seen = []
 
@@ -246,19 +259,21 @@ def test_the_loop_runs_examiner_writer_examiner_and_a_ruling_kept_open_holds_the
                                                       if r.round == round_number)}
 
     def answer(workdir, task_id, model, round_number, ceiling_usd=None):
-        seen.append(("writer", round_number))
-        for ruling in RL.unanswered(RL.load_rulings(workdir, task_id)):
+        todo = RL.unanswered(RL.load_rulings(workdir, task_id))
+        seen.append(("writer", round_number, [ruling.number for ruling in todo]))
+        for ruling in todo:
             RL.answer(workdir, task_id, ruling.number, "rebutted", "The policy asks it.", round_number)
-        return {"answered": 2, "applied": 0, "rebutted": 2, "skipped": 0}
+        return {"answered": len(todo), "applied": 0, "rebutted": len(todo), "skipped": 0}
 
     out = RD.run_rounds(root, ["t1"], examine=examine, model=None, answer=answer)
-    assert seen == [("examiner", 1), ("writer", 2), ("examiner", 2)]
+    assert seen == [("examiner", 1), ("writer", 2, [1, 2]), ("examiner", 2), ("writer", 3, [1]), ("examiner", 3)]
     assert out["held"] == ["t1"] and out["tasks"]["t1"]["open_blocking"] == 1
+    assert out["tasks"]["t1"]["writer_rounds"] == 3 and out["tasks"]["t1"]["set_aside"]
     assert out["total"]["by_kind"] == {"derivation": 2} and out["total"]["kept_open"] == 1
     spec_now = load_spec(root, "t1")
-    assert spec_now.round == 2 and spec_now.rulings_open == 1
+    assert spec_now.round == 3 and spec_now.rulings_open == 1
     logged = [json.loads(line) for line in RD.log_path(root).read_text().splitlines()]
-    assert [row["side"] for row in logged] == ["examiner", "writer", "examiner", "summary"]
+    assert [row["side"] for row in logged] == ["examiner", "writer", "examiner", "writer", "examiner", "summary"]
 
 
 def test_the_loop_stops_after_one_examiner_round_when_nothing_is_ruled(tmp_path):
