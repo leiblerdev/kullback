@@ -244,10 +244,8 @@ def test_a_reference_judged_not_holding_fails_on_the_judge_item_by_name(tmp_path
     assert "reference: fails on j1 (judge item)" in line and "judge on j1: does not hold, slot never said" in line
 
 
-def test_the_loop_gives_a_ruling_kept_open_back_to_the_writer_until_three_writer_rounds_then_holds(tmp_path):
-    root = _told(tmp_path)
-    seen = []
-
+def _keeping_examiner(seen):
+    """Rules twice in round one, then keeps ruling 1 open every later round."""
     def examine(workdir, task_ids, *, model, round_number):
         seen.append(("examiner", round_number))
         if round_number == 1:
@@ -257,13 +255,24 @@ def test_the_loop_gives_a_ruling_kept_open_back_to_the_writer_until_three_writer
             RL.close(workdir, "t1", 1, True, "The check still tells a value nobody asked for.", round_number)
         return {"capped": False, "counts": RL.counts(r for r in RL.load_rulings(workdir, "t1")
                                                       if r.round == round_number)}
+    return examine
 
+
+def _rebutting_writer(seen):
+    """Rebuts every ruling waiting on the writer, noting which."""
     def answer(workdir, task_id, model, round_number, ceiling_usd=None):
         todo = RL.unanswered(RL.load_rulings(workdir, task_id))
         seen.append(("writer", round_number, [ruling.number for ruling in todo]))
         for ruling in todo:
             RL.answer(workdir, task_id, ruling.number, "rebutted", "The policy asks it.", round_number)
         return {"answered": len(todo), "applied": 0, "rebutted": len(todo), "skipped": 0}
+    return answer
+
+
+def test_the_loop_gives_a_ruling_kept_open_back_to_the_writer_until_three_writer_rounds_then_holds(tmp_path):
+    root = _told(tmp_path)
+    seen = []
+    examine, answer = _keeping_examiner(seen), _rebutting_writer(seen)
 
     out = RD.run_rounds(root, ["t1"], examine=examine, model=None, answer=answer)
     assert seen == [("examiner", 1), ("writer", 2, [1, 2]), ("examiner", 2), ("writer", 3, [1]), ("examiner", 3)]
