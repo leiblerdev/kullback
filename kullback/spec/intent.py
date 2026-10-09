@@ -66,7 +66,9 @@ make the line stand alone. Keep the details a user gives to identify themselves 
 acting from the Intent needs them. Leave out follow-up questions that react to the agent's last
 answer, greetings and thanks. Mark a fact accepted
 when the user only said yes to the agent's line; volunteered when the user raised it or supplied
-the value. One fact per thing, kept once, at the turn where a user first says it."""
+the value. Mark a fact after_pushback when the user says it in reply to the agent declining, failing,
+or offering another way, before what the user first asked for was met. One fact per thing, kept once,
+at the turn where a user first says it."""
 
 FEEDBACK_SHAPE = """\
 # What the tools answer

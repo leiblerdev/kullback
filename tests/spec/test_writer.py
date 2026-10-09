@@ -286,6 +286,15 @@ def test_the_prompt_marks_unwitnessed_facts_and_carries_policy_tools_and_the_ite
     assert "never seen any agent run" in content and content.index("# Stop") > content.index("# Feedback")
 
 
+def test_the_facts_view_shows_the_after_pushback_flag():
+    flagged = FACTS[0].model_copy(update={"after_pushback": True})
+    model = TestModel([DONE])
+    W.write_spec("t1", inputs(facts=[flagged, FACTS[1]]), model)
+    content = model.calls[0]["messages"][0]["content"]
+    body = json.loads(content[content.index("\n{") + 1:])
+    assert body["intent"][0]["after_pushback"] is True and "after_pushback" not in body["intent"][1]
+
+
 def test_write_verifier_writes_the_spec_and_one_verifier_the_runner_and_the_spec_share(tmp_path):
     spec = W.write_spec("t1", inputs(), TestModel([add(ROW), DONE])).spec
     paths = W.write_verifier(spec, tmp_path, inputs())

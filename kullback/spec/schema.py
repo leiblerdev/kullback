@@ -37,6 +37,9 @@ class IntentFact(Record):
     # The fact carries the agent's proposal: the user only said yes to it, or a value of it (a token
     # with a digit) was in the agent's line before and not in the user's turn (spec/intent_tools.is_echo).
     echo: bool = False
+    # The user said it in reply to the agent declining, failing, or offering another way, before
+    # what the user first asked for was met: no gate item may rest on such facts alone (spec/items.py).
+    after_pushback: bool = False
     # The Examiner ruled the user never asked for it (an intent_unfounded ruling the writer applied):
     # no gate item may rest on it alone (spec/items.py).
     unfounded: bool = False

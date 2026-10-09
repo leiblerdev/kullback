@@ -257,6 +257,7 @@ def unwitnessed(fact: IntentFact) -> bool:
 def _facts_view(intent: SpecIntent) -> list[dict]:
     return [dict({"id": fact.id, "text": fact.text, "stance": fact.stance},
                  **({"unwitnessed": True} if unwitnessed(fact) else {}), **({"echo": True} if fact.echo else {}),
+                 **({"after_pushback": True} if fact.after_pushback else {}),
                  **({"unfounded": True} if fact.unfounded else {}))
             for fact in intent.facts]
 

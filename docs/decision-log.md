@@ -2634,3 +2634,16 @@ Round two of the 2026-10-08 run showed the writer rebutting all 12 scope rulings
 ### D352. A called check honours a set of allowed values (2026-10-09)
 
 When the user leaves a choice open, the writer accepts every allowed value as a set (D348), but the check never honoured it. A called target is exact-matched, so a set value compared as a literal never equals the scalar the Run called with, and the item fails whatever the value, even one in the set; seen live on d3a4 k10, whose Reference value is allowed. A called item with a set-valued argument now compiles to a Hard rule that matches the Verdict's own way with the set widened to any member, and a legacy write value naming a set compiles to the same rule scoped to its row. State cells already match sets and are unchanged. A Run calling with any allowed value now holds the check, and any other value fails it. The live spec has since dropped the set argument, so the proof reconstructs that item in memory and scores the Reference with it.
+### D353. A wish said after pushback is weighed, never gated alone (2026-10-09)
+
+The Intent miner flagged volunteered-or-accepted wishes as required goals when the user said
+them only after the agent declined, failed, or offered another way. IntentFact carries
+after_pushback (spec/schema.py): the miner marks it under one prompt sentence, and code backs
+it from the agent line before the turn with general words only, and only before the agent's
+first completed tool call in that recording (spec/intent_tools.py is_after_pushback). A gate
+resting only on after-pushback or accepted facts, with no policy line beside them, is weighed
+by code (spec/items.py _pushback_only, placed after the kind checks so the echo refusal still
+fires first); mixed support still gates. The kept line tells the writer in one line why its
+gate was weighed. Both views show the flag (spec/writer.py _facts_view,
+examiner/rule_tool.py _fact). Live feasibility on the 8 goal-wrong Tasks plus 6 controls,
+re-run after review: report .claude/herdr/truth-1008/gread-report.md, section r1.

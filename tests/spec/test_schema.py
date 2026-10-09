@@ -30,6 +30,16 @@ def test_a_spec_file_written_before_the_writer_counts_still_loads_with_none(tmp_
     assert load_spec(tmp_path, "t1").writer == {}
 
 
+def test_a_spec_file_written_before_the_pushback_flag_loads_it_as_false(tmp_path):
+    save_spec(tmp_path, spec())
+    path = spec_path(tmp_path, "t1")
+    data = json.loads(path.read_text())
+    for fact in data["intent"]["facts"]:
+        fact.pop("after_pushback", None)
+    path.write_text(json.dumps(data))
+    assert [fact.after_pushback for fact in load_spec(tmp_path, "t1").intent.facts] == [False, False]
+
+
 def test_a_spec_with_no_check_or_every_fact_a_gap_is_empty_unless_it_keeps_a_no_write_or_cap_check():
     assert is_empty(spec([]))
     assert is_empty(spec([check(fact_ids=())], gaps=["f1", "f2"]))

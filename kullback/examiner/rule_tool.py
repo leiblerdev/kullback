@@ -447,10 +447,10 @@ def _item(check: Any) -> dict:
 
 
 def _fact(fact: Any) -> dict:
-    """One Intent fact with where the user said it, its stance and its echo and unfounded flags."""
+    """One Intent fact with where the user said it, its stance and its echo, pushback and unfounded flags."""
     return {"id": fact.id, "stance": fact.stance, "text": fact.text,
             "source": {"recording": fact.source.recording, "turn": fact.source.turn},
-            "echo": fact.echo, "unfounded": fact.unfounded}
+            "echo": fact.echo, "after_pushback": fact.after_pushback, "unfounded": fact.unfounded}
 
 
 def user_turns(workdir: Any, task_id: str) -> dict[str, list[dict]]:

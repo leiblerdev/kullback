@@ -135,6 +135,13 @@ def _unfounded_gate(item: dict, facts: list) -> str:
     return ""
 
 
+def _pushback_only(kept: dict, facts: list) -> bool:
+    """Whether a gate item rests only on facts no gate may demand alone: each said after pushback
+    or only accepted, with no policy line beside them (the shape of _unfounded_gate, weighed)."""
+    return bool(facts) and not kept.get("policy_line") and all(
+        getattr(fact, "after_pushback", False) or fact.stance == "accepted" for fact in facts)
+
+
 class World:
     """The Starting state, the policy and the user turns, for finding rows and sourcing values."""
 
@@ -268,7 +275,11 @@ class World:
         kept.update(gate=gate, weight=float(weight))
         self._kept = kept
         why = getattr(self, f"_{item['kind']}")(item, kept)
-        return (None, why) if why else (kept, "")
+        if why:
+            return None, why
+        if kept["gate"] and _pushback_only(kept, [known_facts[f] for f in kept["fact_ids"]]):
+            kept["gate"] = False  # a gate never rests on after-pushback or accepted facts alone; it is weighed
+        return kept, ""
 
     def _provenance(self, item: dict, kept: dict, known: dict, unwitnessed: Callable[[Any], bool]) -> str:
         fact_ids = [str(f) for f in item.get("fact_ids") or [] if str(f) in known]

@@ -15,6 +15,7 @@ Witnesses are code: another recording whose user volunteers the same content wor
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional
@@ -134,6 +135,32 @@ def mark_echo(facts: list[IntentFact], found: TaskRecordings) -> list[IntentFact
     return out
 
 
+# General words in which an agent declines, fails, or offers another way. Ordinary English only:
+# nothing naming what is done, with what, or where (no corpus, tool, table, or field words).
+_PUSHBACK_MARKS = (
+    "cannot", "can't", "can not", "could not", "couldn't", "unable", "not able to",
+    "not possible", "impossible", "no way to", "not allowed",
+    "fail", "failed", "fails", "failing", "failure",
+    "error", "went wrong", "not working", "does not work", "doesn't work", "do not work",
+    "instead", "alternative", "alternatives", "another way", "other way", "different way",
+    "another option", "other option", "different option",
+)
+
+
+def _pushback_line(agent_before: str) -> bool:
+    """Whether the agent's line before a turn declines, fails, or offers another way."""
+    line = re.sub(r"\s+", " ", (agent_before or "").replace("\u2019", "'")).strip().casefold()
+    return any(re.search(rf"(?<![\w]){re.escape(mark)}(?![\w])", line) for mark in _PUSHBACK_MARKS)
+
+
+def is_after_pushback(turn: UserTurn, first_index: Optional[int]) -> bool:
+    """Whether a turn answers the agent declining, failing, or offering another way: a later user
+    turn whose agent line before it carries one of the general marks. The user's first turn never is."""
+    if first_index is None or turn.index == first_index or not (turn.agent_before or "").strip():
+        return False
+    return _pushback_line(turn.agent_before)
+
+
 def carried_share(text: str, turn: UserTurn) -> float:
     """The share of a fact's words its turn and the agent's line before it carry."""
     return share_in(content_tokens(text), content_tokens(turn.text) | content_tokens(turn.agent_before))
@@ -196,6 +223,10 @@ class FactArgs(BaseModel):
     stance: Literal["volunteered", "accepted"] = Field(
         description="volunteered: the user raised it. accepted: the user agreed to what the agent's "
                     "line before the turn offered.")
+    after_pushback: bool = Field(
+        default=False,
+        description="True when the user says it in reply to the agent declining, failing, or offering "
+                    "another way, before what the user first asked for was met.")
 
 
 class AddFactsArgs(BaseModel):
@@ -263,10 +294,13 @@ def _keep(state: MinerState, args: FactArgs) -> IntentFact:
     if any(content_tokens(f.text) == words for f in state.facts):
         raise ValueError("this fact is already kept")
     _check_words(args, turn)
+    turns = state.found.recordings.get(args.recording) or ()
+    first = turns[0].index if turns else None
     fact = IntentFact(id=f"f{len(state.facts) + 1}", text=text, stance=args.stance,
                       source=FactSource(recording=args.recording, turn=turn.index),
                       witnesses=witnesses(text, args.recording, state.found),
-                      echo=is_echo(text, args.stance, turn))
+                      echo=is_echo(text, args.stance, turn),
+                      after_pushback=bool(args.after_pushback) or is_after_pushback(turn, first))
     state.facts.append(fact)
     return fact
 
@@ -335,6 +369,6 @@ def tool_names() -> tuple[str, ...]:
 
 
 __all__ = ["CARRIED_SHARE", "WITNESS_SHARE", "MinerState", "TaskRecordings", "UserTurn", "carried_share", "content_tokens",
-           "counts", "miner_tools", "recordings_of", "share_in", "task_of", "tool_names", "trace_index",
-           "user_turns_of", "volunteers", "witnesses"]
+           "counts", "is_after_pushback", "miner_tools", "recordings_of", "share_in", "task_of", "tool_names",
+           "trace_index", "user_turns_of", "volunteers", "witnesses"]
 

@@ -215,3 +215,40 @@ def test_refused_facts_are_counted_on_the_result_and_in_the_spec_file_as_a_numbe
     written = load_spec(workdir, "t1")
     assert out.refusals == 2 and written.intent.refusals == 2
     assert "green chair" not in (workdir / "spec" / "t1.json").read_text()
+
+
+def _pushback_state():
+    """Two user turns: the ask, then a fallback after the agent says it cannot do the ask."""
+    return T.MinerState(found=T.TaskRecordings(task_id="t", recordings={"rec": [
+        T.UserTurn(index=0, text="Please move my blue lamp order to Oak street.", agent_before="Hello."),
+        T.UserTurn(index=2, text="Then cancel the blue lamp order.",
+                   agent_before="I cannot move the lamp to that street.")]}))
+
+
+def test_a_fact_the_miner_marks_after_pushback_keeps_the_flag():
+    state = _pushback_state()
+    result = _add(state, text="Then cancel the blue lamp order.", recording="rec", turn=2,
+                  stance="volunteered", after_pushback=True)
+    assert result.details["rows"][0]["fact_id"] == "f1" and state.facts[0].after_pushback is True
+
+
+def test_code_marks_a_fallback_after_a_refusal_even_when_the_miner_does_not():
+    state = _pushback_state()
+    _add(state, text="Then cancel the blue lamp order.", recording="rec", turn=2, stance="volunteered")
+    assert state.facts[0].after_pushback is True
+
+
+def test_the_first_turn_is_never_after_pushback_by_code_and_a_plain_follow_up_is_not():
+    assert T.is_after_pushback(
+        T.UserTurn(index=0, text="Please move my lamp.", agent_before="I cannot help."), 0) is False
+    assert T.is_after_pushback(
+        T.UserTurn(index=2, text="Move the lamp to Oak street.", agent_before="Which street is that?"), 0) is False
+    assert T.is_after_pushback(
+        T.UserTurn(index=2, text="Then cancel it.", agent_before="I cannot do that."), 0) is True
+
+
+def test_the_prompt_marks_a_fact_after_pushback_in_one_general_sentence():
+    sentence = ("Mark a fact after_pushback when the user says it in reply to the agent declining, failing, "
+                "or offering another way, before what the user first asked for was met.")
+    flat = " ".join(intent_system_prompt().split())
+    assert sentence in flat and flat.count("after_pushback") == 1

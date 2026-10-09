@@ -357,6 +357,25 @@ def test_a_hand_off_item_gates_only_when_its_policy_line_demands_the_hand_off():
     assert I.World(STATE, policy, FACTS, tools).check(move, KNOWN, unwitnessed)[0]["gate"] is True
 
 
+def test_a_fallback_said_after_the_agent_refused_cannot_hold_a_gate_alone():
+    """A volunteered fallback after a refusal, and an accepted fact another user volunteers too:
+    a gate citing only them is weighed; sharing a solid fact, or a policy line, still gates."""
+    fallback = IntentFact(id="f3", text="Cancel the A1 order instead.", stance="volunteered",
+                          source=FactSource(recording="rec1", turn=3), after_pushback=True)
+    agreed = IntentFact(id="f4", text="Maybe leave a note.", stance="accepted",
+                        source=FactSource(recording="rec1", turn=3), witnesses=["rec2"])
+    known = {**KNOWN, "f3": fallback, "f4": agreed}
+    world = I.World(STATE, POLICY, FACTS + [fallback, agreed], TOOLS)
+
+    def weighed(fact_ids, **extra):
+        return world.check(dict(MOVE, id="s9", fact_ids=fact_ids, **extra), known, unwitnessed)
+    assert weighed(["f3"])[0]["gate"] is False
+    assert weighed(["f4"])[0]["gate"] is False
+    assert weighed(["f3", "f4"])[0]["gate"] is False
+    assert weighed(["f1", "f3"])[0]["gate"] is True
+    assert weighed(["f3"], policy_line="Move an item only to a free slot")[0]["gate"] is True
+
+
 def test_the_counts_report_one_end_state_per_branch():
     branch = dict(MOVE, id="s2", alt=1, expect={"slot": "four"})
     assert I.counts_of([MOVE, I.sanity_item([])])["end_states"] == 1
