@@ -20,7 +20,7 @@ from kullback.spec import rulings as RL
 from kullback.spec import writer as W
 from kullback.spec.canfail import judge_run
 from kullback.spec.schema import FactSource, IntentFact, intent_text, load_spec
-from kullback.spec.trust import NOT_EXAMINED, constructed_runs, tier_of_task
+from kullback.spec.trust import NOT_EXAMINED, OPEN_RULING, constructed_runs, tier_of_task
 from tests.spec.fixtures import FACTS, check, fn
 from tests.spec.fixtures import spec as _spec
 from tests.spec.test_writer import _workdir as _environment
@@ -264,6 +264,18 @@ def test_an_examined_task_with_no_open_ruling_keeps_its_tier(tmp_path):
     assert load_spec(root, "t1").examined_rounds == [1]
     tier, row = _trust_tier(root, verifier)
     assert tier == "trusted" and row["reason"] is None
+
+
+def test_an_examined_task_whose_ruling_the_writer_applies_stays_examined_and_waits_on_the_ruling(tmp_path):
+    root = _told(tmp_path)
+    _ruling(root, 1)
+    RL.sync_spec(root, "t1", 1)
+    model = TestModel([call("drop_items", ids=["c2"]), ModelReply(content="done")])
+    assert RV.answer_rulings(root, "t1", model, 1)["applied"] == 1
+    after = load_spec(root, "t1")
+    assert after.examined_rounds == [1] and after.rulings_open == 1
+    tier, row = _trust_tier(root, _both_copies(root))
+    assert tier == "untrusted" and row["reason"] == OPEN_RULING
 
 
 def _unfounded_ruling(root):
