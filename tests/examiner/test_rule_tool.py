@@ -140,7 +140,7 @@ def test_the_view_holds_the_items_with_provenance_the_uncovered_facts_and_the_ru
 def test_the_examiner_offers_its_ruling_tools_and_no_edit_tool(tmp_path):
     names = [tool.name for tool in D.domain_tools(_root(tmp_path))]
     assert names == list(D.tool_names())
-    assert names[:6] == ["rule", "close", "verify", "lookup_rows", "search_rows", "how_it_works"]
+    assert names[:6] == ["rule", "close", "verify", "lookup_rows", "search_rows", "find_tools"]
     assert not {"reject_reference", "edit_verifier"} & set(names)
 
 
@@ -191,33 +191,6 @@ def test_the_view_holds_every_recordings_user_turns_and_each_facts_source(tmp_pa
     assert json.loads((root.exam_dir / written["t1"]).read_text())["user_turns"] == view["user_turns"]
 
 
-POLICY = """# Changes
-An order can be changed while it is pending.
-
-A paid upgrade changes the seat class after payment.
-
-# Refunds
-Refunds go back to the original payment method."""
-
-
-def test_how_it_works_returns_matching_policy_lines_and_tools(tmp_path):
-    root = _root(tmp_path)
-    (root.exam_dir / R.REVIEW_DIR).mkdir(parents=True)
-    (root.exam_dir / R.POLICY_FILE).write_text(POLICY)
-    (tmp_path / "tool_sigs.json").write_text(json.dumps([
-        {"name": "upgrade_seat", "kind": "write", "description": "Upgrade the seat class for a fee.",
-         "args_fields": [{"name": "order_id"}, {"name": "seat_class"}]},
-        {"name": "list_items", "kind": "read"}]))
-    tool = D.how_it_works_tool(root)
-    found = asyncio.run(tool.execute(D.HowArgs(query="upgrade the seat class")))
-    assert found.policy == [{"heading": "Changes", "text": "A paid upgrade changes the seat class after payment."}]
-    assert found.tools == [{"name": "upgrade_seat", "kind": "write", "args": ["order_id", "seat_class"],
-                            "description": "Upgrade the seat class for a fee."}]
-    assert "[Changes] A paid upgrade" in tool.render(found)
-    nothing = asyncio.run(tool.execute(D.HowArgs(query="weather forecast")))
-    assert nothing.policy == [] and nothing.tools == [] and "nothing" in nothing.summary
-
-
 def test_the_choice_rule_names_the_user_turns_and_not_the_intent_as_ground():
     choice = P.choice_section()
     assert "Decide from what the user said (the user turns), the world and the policy" in choice
@@ -228,4 +201,4 @@ def test_the_choice_rule_names_the_user_turns_and_not_the_intent_as_ground():
     for code in (RL.UNFOUNDED_CODE, "gated_against_ask", RL.NO_TRUTH_CODE):
         assert sum(line.startswith(f"{code}:") for line in examples.splitlines()) == 1
     assert [name for name, _ in P.sections()] == ["receives", "tools", "examples", "choice", "feedback", "stop"]
-    assert "how_it_works:" in P.tools_section()
+    assert "find_tools:" in P.tools_section()

@@ -742,17 +742,19 @@ REVIEW_TURNS_PER_TASK = 20
 def review_extension(root: ExamRoot) -> Callable[[ExtensionAPI], None]:
     """One review round's setup: base tools over exam/, the ruling tools, the finding tool for
     Builder-side faults, the prompt, the read and write hooks."""
-    from kullback.examiner.domain_tools import how_it_works_tool
-    from kullback.examiner.rule_tool import rule_tools
+    from kullback.examiner.domain_tools import find_tools_tool
+    from kullback.examiner.rule_tool import POLICY_FILE, rule_tools
 
     def setup(api: ExtensionAPI) -> None:
         register_base_tools(api, root.exam_dir, only=BASE_ONLY)
         for tool in rule_tools(root):
             api.register_tool(tool)
-        api.register_tool(how_it_works_tool(root))
+        api.register_tool(find_tools_tool(root))
         api.register_tool(finding_tool(root))
         for name, text in prompt_mod.sections([*prompt_mod.REVIEW_TOOLS, "finding"]):
             api.add_prompt_section(f"examiner_{name}", prompt_block(name, text))
+            if name == "receives":
+                _add_policy_section(api, root.exam_dir / POLICY_FILE)
         api.tool_call(refuse_paths(
             names_protected_path, "under the gates or the Runner, which no agent writes (D122)",
             "examiner_protected_paths"))
@@ -760,6 +762,13 @@ def review_extension(root: ExamRoot) -> Callable[[ExtensionAPI], None]:
         api.tool_call(_refuse_generic_writes())
 
     return setup
+
+
+def _add_policy_section(api: ExtensionAPI, path: Path) -> None:
+    """The whole policy as a system prompt section, cached across turns (D342); none without the file."""
+    if path.is_file():
+        api.add_prompt_section("examiner_policy", prompt_block(
+            "policy", "The policy (the whole text).\n" + path.read_text(encoding="utf-8")))
 
 
 def _review_one(root: Path, task_id: str, round_number: int, model: Any, turns: int, bus: Bus,
@@ -776,15 +785,20 @@ def _review_one(root: Path, task_id: str, round_number: int, model: Any, turns: 
                            session=SessionStore.load(session_path) if session_path is not None else None,
                            context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
                            bus=bus)
-    for subscriber in subscribers:
-        harness.subscribe(subscriber)
-    harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
-    load_extensions(harness, [review_extension(exam_root)])
-    views = write_views(exam_root, [task_id])
-    lines = f"{task_id}: view {views.get(task_id, 'none')}; {rulings_part(root, task_id)}"
-    entries = [f"review/{entry}" for entry in root_listing(exam_root.exam_dir / "review")]
-    text = prompt_mod.opening(REVIEW_MESSAGE, lines, entries, round_number=round_number)
-    capped = _run_session(harness, text, turns, [task_id])
+    # The round's sessions share one bus: each session's subscribers come off when it ends, so a
+    # later session's calls are priced and watched once, not once per earlier session (D344).
+    detach = [harness.subscribe(subscriber) for subscriber in subscribers]
+    detach.append(harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None))))
+    try:
+        views = write_views(exam_root, [task_id])  # first: the policy file the prompt carries
+        load_extensions(harness, [review_extension(exam_root)])
+        lines = f"{task_id}: view {views.get(task_id, 'none')}; {rulings_part(root, task_id)}"
+        entries = [f"review/{entry}" for entry in root_listing(exam_root.exam_dir / "review")]
+        text = prompt_mod.opening(REVIEW_MESSAGE, lines, entries, round_number=round_number)
+        capped = _run_session(harness, text, turns, [task_id])
+    finally:
+        for unsubscribe in detach:
+            unsubscribe()
     return bool(capped), list(exam_root.findings)
 
 

@@ -125,3 +125,22 @@ def test_a_spec_edit_on_a_finding_is_refused_naming_rulings_and_a_short_body_edi
         _run(tool.execute(D.FindingArgs(task_id="t1", kind="other", text="x", edits=[
             {"kind": "body", "path": "env/tools/a.py", "call_id": "c1", "why": "w"}])))
     assert not root.findings
+
+
+def test_the_tool_search_returns_matching_tools_and_no_policy_text(tmp_path):
+    root, world, _ = _root(tmp_path)
+    write_json(root.workdir / "tool_sigs.json", [
+        {"name": "move_item", "kind": "write", "description": "Move an item to another slot for a fee.",
+         "args_fields": [{"name": "item_id"}, {"name": "slot"}]},
+        {"name": "list_slots", "kind": "read"}])
+    (root.exam_dir / "review").mkdir(parents=True, exist_ok=True)
+    (root.exam_dir / "review" / "policy.md").write_text("# Moves\nA paid move changes the slot of an item.\n")
+    tool = D.find_tools_tool(root)
+    found = asyncio.run(tool.execute(D.FindToolsArgs(query="move the item to a slot")))
+    assert found.tools[0] == {"name": "move_item", "kind": "write", "args": ["item_id", "slot"],
+                              "description": "Move an item to another slot for a fee."}
+    assert set(found.model_dump()) == {"summary", "tools"}
+    assert "paid move" not in tool.render(found)
+    nothing = asyncio.run(tool.execute(D.FindToolsArgs(query="weather forecast")))
+    assert nothing.tools == [] and "no tool" in nothing.summary
+

@@ -419,3 +419,31 @@ def test_no_finding_is_refused_naming_the_unsourced_cell_and_files_once_every_ce
     root.verifiers["t1"] = Verifier(task_id="t1", expected=[EndState(cells=cells[:1])])
     assert drive_tool(harness, "no_finding", {"task_id": "t1", "reason": "too short"}).is_error
     assert not drive_tool(harness, "no_finding", reason).is_error
+
+
+POLICY = """# Moves
+A pending item can be moved to another slot.
+
+A paid move changes the slot after payment.
+
+# Returns
+Returns go back to the original payment method."""
+
+
+def test_a_review_sessions_prompt_carries_every_policy_paragraph(tmp_path):
+    from kullback.examiner.rule_tool import POLICY_FILE
+
+    root = ExamRoot(workdir=make_world(tmp_path / "w").workdir, canon_rules=CanonRules())
+    (root.exam_dir / POLICY_FILE).parent.mkdir(parents=True, exist_ok=True)
+    (root.exam_dir / POLICY_FILE).write_text(POLICY)
+    harness = AgentHarness(model=TestModel([]))
+    load_extensions(harness, [S.review_extension(root)])
+    for paragraph in POLICY.split("\n\n"):
+        assert paragraph in harness.system
+    names = [section.name for section in harness.sections]
+    assert names.index("examiner_policy") < names.index("examiner_stop") == len(names) - 1
+    bare = AgentHarness(model=TestModel([]))
+    load_extensions(bare, [S.review_extension(ExamRoot(workdir=make_world(tmp_path / "b").workdir,
+                                                       canon_rules=CanonRules()))])
+    assert "examiner_policy" not in [section.name for section in bare.sections]
+
