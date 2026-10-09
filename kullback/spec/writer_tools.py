@@ -197,7 +197,8 @@ class ItemStore:
                 lines.append(f"{item_id}: refused: {why}")
                 continue
             self.items[kept["id"]] = kept
-            lines.append(f"{item_id}: kept" + (f" (row {kept['row']})" if "row" in kept else ""))
+            note = f" ({why})" if why else ""
+            lines.append(f"{item_id}: kept" + (f" (row {kept['row']})" if "row" in kept else "") + note)
         return "\n".join(lines) or "no items"
 
     def drop(self, ids: Any) -> str:

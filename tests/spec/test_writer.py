@@ -295,6 +295,14 @@ def test_the_facts_view_shows_the_after_pushback_flag():
     assert body["intent"][0]["after_pushback"] is True and "after_pushback" not in body["intent"][1]
 
 
+def test_a_weighed_gate_tells_the_writer_why_on_the_kept_line():
+    flagged = FACTS[0].model_copy(update={"after_pushback": True})
+    store = W.store_of(inputs(facts=[flagged, FACTS[1]]))
+    out = store.add([dict(ROW, fact_ids=["f1"])])
+    assert "kept" in out and "gate weighed" in out and "volunteered fact" in out
+    assert store.items["s1"]["gate"] is False and store.refused == []
+
+
 def test_write_verifier_writes_the_spec_and_one_verifier_the_runner_and_the_spec_share(tmp_path):
     spec = W.write_spec("t1", inputs(), TestModel([add(ROW), DONE])).spec
     paths = W.write_verifier(spec, tmp_path, inputs())

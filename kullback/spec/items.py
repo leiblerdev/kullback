@@ -142,6 +142,16 @@ def _pushback_only(kept: dict, facts: list) -> bool:
         getattr(fact, "after_pushback", False) or fact.stance == "accepted" for fact in facts)
 
 
+def _weighed_gate(kept: dict, known: dict) -> str:
+    """One line for the writer when its gate is weighed: it rests only on facts said after pushback
+    or only accepted, with no policy line beside them; else empty. A scored item may rest on them."""
+    if kept.get("gate") and _pushback_only(kept, [known[f] for f in kept.get("fact_ids") or []]):
+        kept["gate"] = False
+        return ("gate weighed: it rests only on facts said after pushback or only accepted; "
+                "a gate needs a volunteered fact or a policy line")
+    return ""
+
+
 class World:
     """The Starting state, the policy and the user turns, for finding rows and sourcing values."""
 
@@ -256,7 +266,8 @@ class World:
     # --- checking one item ---------------------------------------------------------------------
     def check(self, item: Any, known_facts: dict, unwitnessed: Callable[[Any], bool] = lambda fact: False
               ) -> tuple[Optional[dict], str]:
-        """The item as code keeps it (row ids resolved, gate, weight, sources), or why it is refused."""
+        """The item as code keeps it (row ids resolved, gate, weight, sources), with a note when its
+        gate is weighed, or why it is refused."""
         if not isinstance(item, dict) or item.get("kind") not in ITEM_KINDS:
             return None, f"kind must be one of {', '.join(ITEM_KINDS)}"
         kept = {"id": str(item.get("id") or ""), "kind": item["kind"]}
@@ -277,9 +288,7 @@ class World:
         why = getattr(self, f"_{item['kind']}")(item, kept)
         if why:
             return None, why
-        if kept["gate"] and _pushback_only(kept, [known_facts[f] for f in kept["fact_ids"]]):
-            kept["gate"] = False  # a gate never rests on after-pushback or accepted facts alone; it is weighed
-        return kept, ""
+        return kept, _weighed_gate(kept, known_facts)
 
     def _provenance(self, item: dict, kept: dict, known: dict, unwitnessed: Callable[[Any], bool]) -> str:
         fact_ids = [str(f) for f in item.get("fact_ids") or [] if str(f) in known]

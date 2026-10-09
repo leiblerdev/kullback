@@ -245,6 +245,35 @@ def test_the_first_turn_is_never_after_pushback_by_code_and_a_plain_follow_up_is
         T.UserTurn(index=2, text="Move the lamp to Oak street.", agent_before="Which street is that?"), 0) is False
     assert T.is_after_pushback(
         T.UserTurn(index=2, text="Then cancel it.", agent_before="I cannot do that."), 0) is True
+    assert T.is_after_pushback(
+        T.UserTurn(index=2, text="Then cancel it.", agent_before="I cannot do that.", acted_before=1),
+        0) is False
+
+
+def _trace_with_calls():
+    from kullback.runner.records import Trace
+
+    return Trace.model_validate(_trace("rec", [
+        _turn(0, "assistant", "Hello."),
+        _turn(1, "user", "Please move my blue lamp order."),
+        _turn(2, "assistant", "Let me look that up.", calls=["c1"]),
+        _turn(3, "tool", "found it", calls=["c1"]),
+        _turn(4, "assistant", "I cannot move it there."),
+        _turn(5, "user", "Then cancel it.")]))
+
+
+def test_user_turns_count_the_agents_completed_calls_before_each_turn():
+    assert [(t.index, t.acted_before) for t in T.user_turns_of(_trace_with_calls())] == [(1, 0), (5, 1)]
+
+
+def test_the_miners_own_mark_stays_even_after_the_agent_has_acted():
+    state = T.MinerState(found=T.TaskRecordings(task_id="t", recordings={"rec": [
+        T.UserTurn(index=0, text="Please move my blue lamp order.", agent_before="Hello."),
+        T.UserTurn(index=2, text="Then cancel the blue lamp order.",
+                   agent_before="I cannot move the lamp.", acted_before=1)]}))
+    _add(state, text="Then cancel the blue lamp order.", recording="rec", turn=2,
+         stance="volunteered", after_pushback=True)
+    assert state.facts[0].after_pushback is True
 
 
 def test_the_prompt_marks_a_fact_after_pushback_in_one_general_sentence():

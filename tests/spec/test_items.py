@@ -369,10 +369,11 @@ def test_a_fallback_said_after_the_agent_refused_cannot_hold_a_gate_alone():
 
     def weighed(fact_ids, **extra):
         return world.check(dict(MOVE, id="s9", fact_ids=fact_ids, **extra), known, unwitnessed)
-    assert weighed(["f3"])[0]["gate"] is False
-    assert weighed(["f4"])[0]["gate"] is False
+    kept, why = weighed(["f3"])
+    assert kept["gate"] is False and "gate weighed" in why and "volunteered fact" in why
+    assert weighed(["f4"])[0]["gate"] is False and "gate weighed" in weighed(["f4"])[1]
     assert weighed(["f3", "f4"])[0]["gate"] is False
-    assert weighed(["f1", "f3"])[0]["gate"] is True
+    assert weighed(["f1", "f3"])[0]["gate"] is True and weighed(["f1", "f3"])[1] == ""
     assert weighed(["f3"], policy_line="Move an item only to a free slot")[0]["gate"] is True
 
 

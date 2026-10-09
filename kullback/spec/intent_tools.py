@@ -35,10 +35,12 @@ WITNESS_SHARE = 0.6
 
 @dataclass(frozen=True)
 class UserTurn:
-    """One user turn: its index in the recording, its text, and the agent's last line before it."""
+    """One user turn: its index in the recording, its text, the agent's last line before it, and
+    how many of the agent's completed tool calls came before it."""
     index: int
     text: str
     agent_before: str = ""
+    acted_before: int = 0
 
 
 @dataclass
@@ -60,19 +62,28 @@ def share_in(words: set[str], other: set[str]) -> float:
 
 
 def user_turns_of(trace: Trace) -> list[UserTurn]:
-    """The user turns of a recording, each with the agent's last spoken text before it.
+    """The user turns of a recording, each with the agent's last spoken text before it and how
+    many of the agent's completed tool calls came before it.
 
     Only a turn's `content` is read, and only for user and assistant turns: tool turns and the
-    assistant's tool calls are never part of what this returns.
+    assistant's tool calls are never part of what this returns, beyond the count.
     """
     out: list[UserTurn] = []
     agent_said = ""
+    made = {call.id for call in trace.tool_calls or () if call.error is None and call.id is not None}
+    seen: set[str] = set()
+    acted = 0
     for turn in trace.turns:
         text = (turn.content or "").strip()
-        if turn.role == "assistant" and text:
-            agent_said = text
+        if turn.role == "assistant":
+            for call_id in turn.tool_call_ids or ():
+                if call_id in made and call_id not in seen:
+                    seen.add(call_id)
+                    acted += 1
+            if text:
+                agent_said = text
         elif turn.role == "user" and text:
-            out.append(UserTurn(index=turn.idx, text=text, agent_before=agent_said))
+            out.append(UserTurn(index=turn.idx, text=text, agent_before=agent_said, acted_before=acted))
             agent_said = ""
     return out
 
@@ -155,7 +166,10 @@ def _pushback_line(agent_before: str) -> bool:
 
 def is_after_pushback(turn: UserTurn, first_index: Optional[int]) -> bool:
     """Whether a turn answers the agent declining, failing, or offering another way: a later user
-    turn whose agent line before it carries one of the general marks. The user's first turn never is."""
+    turn before the agent's first completed tool call, whose agent line before it carries one of
+    the general marks. The user's first turn never is, nor one after the agent has acted."""
+    if turn.acted_before:
+        return False
     if first_index is None or turn.index == first_index or not (turn.agent_before or "").strip():
         return False
     return _pushback_line(turn.agent_before)
