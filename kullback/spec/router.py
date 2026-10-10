@@ -8,7 +8,7 @@ stays is the one source of the round cap and the set-aside rule, which the trust
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 from kullback.runner.records import read_json
 from kullback.spec import events
@@ -37,6 +37,20 @@ def writer_rounds(rulings: Iterable[Any]) -> int:
     return 1 + len(answered)
 
 
+# Why a Task ends with no Verifier, never a check bent to pass: the Examiner found the Reference wrong,
+# or the turns never show what the user wants and no answer settled it. Recorded on the Spec's set_aside.
+REFERENCE_WRONG, INTENT_UNCLEAR = "reference_wrong", "intent_unclear"
+NO_VERIFIER_WHYS = (REFERENCE_WRONG, INTENT_UNCLEAR)
+
+
+def no_verifier_why(spec: Spec, rulings: Iterable[Any] = ()) -> Optional[str]:
+    """Why no Verifier can be made for the Task, else None: marked so on the Spec, or a not_enough_truth
+    ruling still open when the router sets the Task aside at the cap."""
+    if spec.set_aside in NO_VERIFIER_WHYS:
+        return spec.set_aside
+    return INTENT_UNCLEAR if spec.truth_open and is_set_aside(spec, rulings) else None
+
+
 def is_set_aside(spec: Spec, rulings: Iterable[Any] = ()) -> bool:
     """Is the Task set aside? Marked so, or at ROUNDS_CAP writer rounds with a ruling still open.
 
@@ -50,5 +64,5 @@ def is_set_aside(spec: Spec, rulings: Iterable[Any] = ()) -> bool:
     return done >= ROUNDS_CAP and spec.rulings_open > 0
 
 
-__all__ = ["NO_AGREEMENT", "ROUNDS_CAP", "STATE_FILE", "is_set_aside", "load_state", "state_path",
-           "writer_rounds"]
+__all__ = ["INTENT_UNCLEAR", "NO_AGREEMENT", "NO_VERIFIER_WHYS", "REFERENCE_WRONG", "ROUNDS_CAP", "STATE_FILE",
+           "is_set_aside", "load_state", "no_verifier_why", "state_path", "writer_rounds"]

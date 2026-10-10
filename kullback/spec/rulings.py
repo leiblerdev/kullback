@@ -69,6 +69,9 @@ class Ruling(Record):
     blocking: bool
     # For fails_reference: which side the Examiner rules wrong, the Reference or the Verifier.
     wrong_side: Optional[Literal["reference", "verifier"]] = None
+    # For fails_reference: the Reference event index the diagnosis rests on, the call, write or row
+    # the failing check reads. None on every other ruling.
+    ref_step: Optional[int] = None
     # The verify rows the ruling cites (constructed Runs and the Reference through the Verifier).
     verified: list[dict] = Field(default_factory=list)
     status: Literal["open", "closed"] = "open"

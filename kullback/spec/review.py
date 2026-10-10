@@ -24,6 +24,7 @@ from kullback.runner.records import Verifier
 from kullback.spec import events
 from kullback.spec import rulings as R
 from kullback.spec.items import SANITY_ID
+from kullback.spec.router import no_verifier_why
 from kullback.spec.schema import Spec, load_spec
 
 REBUT_NONE = "the writer made no grounded change and gave no reason"
@@ -141,7 +142,10 @@ def answer_rulings(workdir: Any, task_id: str, model: Any, round_number: int, *,
             return writer_repair(spec, ruled, inputs, m, model_id=model_id, ceiling_usd=ceiling_usd)
 
     out = {"task_id": task_id, "answered": 0, "applied": 0, "rebutted": 0, "skipped": 0}
-    todo = [r for r in R.unanswered(R.load_rulings(root, task_id)) if not _examiners_side(r)]
+    spec = load_spec(root, task_id)
+    # No Verifier can be made for the Task: nothing asks the writer to change a check to pass the Reference.
+    ended = spec is not None and no_verifier_why(spec) is not None
+    todo = [r for r in R.unanswered(R.load_rulings(root, task_id)) if not ended and not _examiners_side(r)]
     out["skipped"] = len(R.unanswered(R.load_rulings(root, task_id))) - len(todo)
     if not todo:
         return out

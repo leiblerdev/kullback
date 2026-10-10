@@ -177,6 +177,8 @@ that checks it, or with one new item for what no item checks; never add a copy o
 Rebut: when the user's words or a policy line require the items as written, change nothing and reply \
 with one line starting "rebut:" that quotes those words or that line. With neither, apply the ruling. \
 A reply that changes nothing always starts with "rebut:", also when the ruling asks for no item change.
+When the only fix would loosen a check so the recorded run passes, apply nothing and reply with one line \
+"rebut: cannot verify: <why>", quoting the user's words or the policy line the check rests on.
 Reply that you are done when finished.
 
 """

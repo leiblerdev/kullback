@@ -9,7 +9,8 @@ A Task is trusted when both constructed Runs score 0 under its Verifier and no b
    declared rows changed).
 
 Otherwise the Task is untrusted with one reason, in this order: no_intent (no Spec, an empty Spec, no
-Verifier, or a Task refused), not_examined (no round's Examiner session ran over the Task),
+Verifier, or a Task refused), no_verifier (the Examiner found the Reference wrong or the intent unclear:
+no Verifier for this Task, its `why` reference_wrong or intent_unclear, never a check bent to pass), not_examined (no round's Examiner session ran over the Task),
 not_enough_truth (a not_enough_truth ruling open: the recordings never show what the user wants where
 the Verifier must decide), open_ruling (a ruling open, or the Task set aside by the router's rule),
 constructed_run_passed (a constructed Run passed, or none could be built: not shown to fail),
@@ -49,6 +50,7 @@ from kullback.spec.judged import judge_results_of
 from kullback.spec.router import (  # noqa: F401  (ROUNDS_CAP re-exported for readers of the tiers)
     ROUNDS_CAP,
     is_set_aside,
+    no_verifier_why,
 )
 from kullback.spec.schema import Spec, is_empty, load_spec, spec_ids
 from kullback.spec.writer import spec_verifier_path
@@ -57,6 +59,10 @@ TRUSTED, UNTRUSTED = "trusted", "untrusted"
 TIERS = (TRUSTED, UNTRUSTED)
 NO_INTENT, NOT_EXAMINED, OPEN_RULING, CONSTRUCTED_RUN_PASSED = "no_intent", "not_examined", "open_ruling", "constructed_run_passed"
 NOT_ENOUGH_TRUTH = "not_enough_truth"
+# No Verifier can be made for the Task (the Reference ruled wrong, or the intent unclear): an honest
+# outcome, neither trusted nor an error; the row's `why` says which (router.NO_VERIFIER_WHYS).
+# Read right after no_intent; kept out of REASONS, the build table's columns, which stay as recorded.
+NO_VERIFIER = "no_verifier"
 # The reasons a Task is not trusted, in the order they are read.
 # How the Verdict names a failure at the sanity check: a row outside the declared ones moved; also the
 # reason a Task is held when no Run passed to lay the stray write on.
@@ -293,6 +299,8 @@ def _untrusted_reason(spec: Spec, verifier: Verifier, gates: dict, constructed: 
     """The one reason the Task is not trusted, read in order, else None for trusted."""
     if is_empty(spec) or not spec.intent.facts or not verifier_items(verifier):
         return NO_INTENT
+    if no_verifier_why(spec):
+        return NO_VERIFIER
     if not spec.examined_rounds:
         return NOT_EXAMINED
     if spec.truth_open:
@@ -344,7 +352,7 @@ def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: I
            "runs_scored": sorted(verdicts), "fresh_runs": len(fresh),
            "fresh_passed": sorted(r for r in fresh if verdicts[r][0]),
            "judged_runs": sorted(set(judged) & set(verdicts)), "rulings_open": spec.rulings_open, "truth_open": spec.truth_open, "round": spec.round,
-           "set_aside": set_aside,
+           "set_aside": set_aside, "why": no_verifier_why(spec),
            "code_hash": CODE_HASH}
     return TaskTier(row["tier"], row)
 
@@ -518,6 +526,9 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
             out[task_id] = missing_spec_row(task_id)
             continue
         verifier = load_spec_verifier(root, task_id)
+        if verifier is None and no_verifier_why(spec):
+            out[task_id] = unruled_row(task_id, NO_VERIFIER, no_verifier_why(spec))
+            continue
         if verifier is None:  # an empty Spec is set aside before any Verifier is written
             reason = OPEN_RULING if set_aside_of(spec, events) and not is_empty(spec) else NO_INTENT
             out[task_id] = unruled_row(task_id, reason, spec.set_aside or "no verifier file")

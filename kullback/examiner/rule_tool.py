@@ -28,7 +28,8 @@ from kullback.runner.records import EXAM_DIR, Run, Verifier, read_json, run_path
 from kullback.runner.target import load_run
 from kullback.spec import events
 from kullback.spec import rulings as R
-from kullback.spec.schema import Spec, load_spec
+from kullback.spec.router import INTENT_UNCLEAR, REFERENCE_WRONG
+from kullback.spec.schema import Spec, load_spec, save_spec
 
 RULINGS_DIR = R.RULINGS_DIR
 REVIEW_DIR = "review"
@@ -50,6 +51,7 @@ class RuleArgs(BaseModel):
     fix: str = Field(description="What the writer should do, in one sentence.")
     blocking: bool = Field(description="True when the Task must not be trusted until this is fixed; false for a note.")
     wrong_side: Optional[str] = Field(default=None, description="For fails_reference: reference or verifier.")
+    ref_step: Optional[int] = Field(default=None, description="For fails_reference: the Reference event index the diagnosis rests on.")
 
 
 class RuleResult(BaseModel):
@@ -190,6 +192,25 @@ def _filed_as(workdir: Any, spec: Spec, args: RuleArgs) -> tuple[bool, str]:
     return blocking, R.NO_TRUTH_FIX if args.code == R.NO_TRUTH_CODE else " ".join(args.fix.split())
 
 
+def _check_diagnosis(workdir: Any, task_id: str, args: RuleArgs) -> None:
+    """A fails_reference ruling names the side at fault and rests on one step of the Task's faithful
+    Reference, else a counted refusal."""
+    if args.wrong_side not in R.WRONG_SIDES:
+        _refuse(workdir, task_id, "no_side", "a fails_reference ruling says which side is wrong: wrong_side "
+                "reference or verifier")
+    ref_step = args.ref_step
+    reference = _reference_run(workdir, task_id)
+    if reference is None:
+        _refuse(workdir, task_id, "no_reference", f"no faithful Reference on disk for task {task_id}: "
+                "a fails_reference ruling names a step of it")
+    if ref_step is None:
+        _refuse(workdir, task_id, "no_step", "a fails_reference ruling names the Reference step it rests "
+                "on: ref_step, one of the verify answer's reference steps")
+    if ref_step not in {event.idx for event in reference.events}:
+        _refuse(workdir, task_id, "bad_step", f"step {ref_step} is not in the Reference for task "
+                f"{task_id}: ref_step is one of its event indexes")
+
+
 def checked_ruling(root: ExamRoot, args: RuleArgs) -> R.Ruling:
     """The ruling as it will be filed, or a counted refusal naming what is missing."""
     workdir, task_id = root.workdir, args.task_id
@@ -206,19 +227,28 @@ def checked_ruling(root: ExamRoot, args: RuleArgs) -> R.Ruling:
         why = R.sentence_refusal(text, what)
         if why:
             _refuse(workdir, task_id, f"bad_{what}", why, text)
-    if args.code == "fails_reference" and args.wrong_side not in R.WRONG_SIDES:
-        _refuse(workdir, task_id, "no_side", "a fails_reference ruling says which side is wrong: wrong_side "
-                "reference or verifier")
+    if args.code == "fails_reference":
+        _check_diagnosis(workdir, task_id, args)
     blocking, fix = _filed_as(workdir, spec, args)
-    # The judge's answers are the Examiner's to read; a ruling keeps the Verifier's rows without them (D346).
-    verified = [row for row in root.verified.get(task_id) or [] if row.get("run") != "reference_judge"]
+    # The judge's answers and the Reference steps are the Examiner's to read; a ruling keeps the
+    # Verifier's rows without them (D346). The step the diagnosis rests on travels as ref_step.
+    verified = [row for row in root.verified.get(task_id) or []
+                if row.get("run") not in ("reference_judge", "reference_step")]
     if args.code in R.VERIFY_CODES and not verified:
         _refuse(workdir, task_id, "not_verified", f"call verify on task {task_id} first: a {args.code} ruling "
                 "cites what the Verifier did")
     return R.Ruling(task_id=task_id, number=R.next_number(workdir, task_id), round=root.round or spec.round + 1,
                     item=args.item, kind=args.kind, code=args.code, reason=" ".join(args.reason.split()),
-                    fix=fix, blocking=blocking, wrong_side=args.wrong_side,
+                    fix=fix, blocking=blocking, wrong_side=args.wrong_side, ref_step=args.ref_step,
                     verified=verified if args.kind == "code" else [])
+
+
+def no_verifier(workdir: Any, task_id: str, why: str) -> None:
+    """Record once on the Spec that no Verifier can be made for the Task (spec/router.py NO_VERIFIER_WHYS):
+    an honest outcome trust reads as no_verifier, never a check bent until the Reference passes."""
+    spec = load_spec(workdir, task_id)
+    if spec is not None and spec.set_aside is None:
+        save_spec(workdir, spec.model_copy(update={"set_aside": why}))
 
 
 def file_ruling(root: ExamRoot, args: RuleArgs) -> dict:
@@ -226,6 +256,8 @@ def file_ruling(root: ExamRoot, args: RuleArgs) -> dict:
     ruling = checked_ruling(root, args)
     path = R.save_ruling(root.workdir, ruling)
     R.sync_spec(root.workdir, ruling.task_id)
+    if ruling.code == "fails_reference" and ruling.wrong_side == "reference":
+        no_verifier(root.workdir, ruling.task_id, REFERENCE_WRONG)
     if root.bus is not None:
         events.ruling_filed(root.bus, events.ruling_payload(ruling))
     return dict(ruling.model_dump(mode="json"), path=path.relative_to(root.exam_dir).as_posix())
@@ -234,9 +266,10 @@ def file_ruling(root: ExamRoot, args: RuleArgs) -> dict:
 def _rule(root: ExamRoot):
     async def rule(args: RuleArgs) -> RuleResult:
         body = file_ruling(root, args)
-        side = " (the Reference is ruled wrong: a note)" if body.get("wrong_side") == "reference" else ""
+        side = " (the Reference is ruled wrong: no Verifier for this Task)" if body.get("wrong_side") == "reference" else ""
+        step = f" at step {body['ref_step']}" if args.code == "fails_reference" else ""
         summary = (f"ruling {body['number']} on task {args.task_id} filed: {args.kind}/{args.code} on "
-                   f"{args.item}, {'blocking' if body['blocking'] else 'note'}{side}; the writer answers it next round")
+                   f"{args.item}{step}, {'blocking' if body['blocking'] else 'note'}{side}; the writer answers it next round")
         return RuleResult(summary=summary, task_id=args.task_id, number=body["number"], path=body["path"])
 
     return rule
@@ -252,6 +285,8 @@ def _close(root: ExamRoot):
         except (OSError, ValueError) as exc:
             _refuse(root.workdir, args.task_id, "bad_close", str(exc) or f"no ruling {args.number} on task {args.task_id}")
         R.sync_spec(root.workdir, args.task_id)
+        if args.keep_open and ruling.code == R.NO_TRUTH_CODE and R.kept_open_after_answer(ruling):
+            no_verifier(root.workdir, args.task_id, INTENT_UNCLEAR)
         if root.bus is not None:
             events.ruling_closed(root.bus, args.task_id, args.number, args.keep_open)
         state = "kept open" if args.keep_open else "closed"
@@ -299,13 +334,50 @@ def judge_rows(verifier: Verifier, answers: Optional[dict]) -> list[dict]:
              else row["score"] == 1, "why": row.get("why") or "", "lines": list(row.get("lines") or [])}
             for atom_id, row in sorted((answers or {}).items())]
 
+STEP_TEXT_LEN = 160
+
+
+def _step_text(text: Any) -> str:
+    """One step's text on one line, capped: never a whole log in the verify answer."""
+    return " ".join(str(text or "").split())[:STEP_TEXT_LEN]
+
+
+def _reply_text(payload: dict) -> str:
+    """A model call's reply, or the tools it called when it said nothing."""
+    reply = payload.get("reply") if isinstance(payload.get("reply"), dict) else payload
+    text = _step_text(reply.get("content") or payload.get("content"))
+    calls = reply.get("tool_calls") or payload.get("tool_calls") or []
+    names = [call.get("name") for call in calls if isinstance(call, dict) and call.get("name")]
+    return text or (_step_text(f"calls {', '.join(names)}") if names else "")
+
+
+def _step_of(event: Any) -> str:
+    """One event's step text; empty for a tool result, the stop event or an event with nothing said."""
+    payload = event.payload or {}
+    if event.type == "user_turn":
+        return _step_text(payload.get("text") or payload.get("content"))
+    if event.type == "tool_call":
+        return _step_text(f"{payload.get('name')} {payload.get('args') or {}}")
+    return _reply_text(payload) if event.type == "model_call" else ""
+
+
+def reference_steps(run: Any) -> list[dict]:
+    """The Reference as steps the Examiner can investigate: its user turns, the agent's tool calls
+    and its replies, in event order. Tool results and the stop event are left out: the call names
+    the write or row the failing check reads, and the world lookups show what the world holds."""
+    steps = [(event, _step_of(event)) for event in (run.events or [])] if run is not None else []
+    return [{"run": "reference_step", "step": event.idx, "kind": event.type, "text": text}
+            for event, text in steps if text]
+
 
 def verify_rows(workdir: Any, task_id: str, verifier: Verifier, reference: Optional[Run],
                 judge: Any = None) -> list[dict]:
-    """What the Verifier says of each constructed Run and of the Reference.
+    """What the Verifier says of each constructed Run and of the Reference, with the Reference steps.
 
     A constructed Run (do nothing, one stray write on the Reference, spec/trust.py) should fail; the
-    Reference passing says the Verifier is satisfiable. The Reference's judge items are answered by
+    Reference passing says the Verifier is satisfiable. The steps are the Reference's user turns, the
+    agent's tool calls and its replies around the failing check: the investigation input a
+    fails_reference ruling names its step from. The Reference's judge items are answered by
     `judge` (verifier, run) -> {atom id: JudgeScore}, kept once per Verifier and Run under exam/judged/
     (spec/judged.py); without `judge` or a kept answer a judge item is not judged, never failed.
     A Run the Verdict cannot read is a row with its error.
@@ -340,7 +412,7 @@ def verify_rows(workdir: Any, task_id: str, verifier: Verifier, reference: Optio
         rows.append(_reference_word(verifier, reference, canon, tools, answers))
     except Exception as exc:
         rows.append({"run": "reference", "error": type(exc).__name__})
-    return rows + judge_rows(verifier, answers)
+    return rows + reference_steps(reference) + judge_rows(verifier, answers)
 
 
 def _reference_part(row: dict) -> str:
@@ -362,10 +434,13 @@ def _judge_part(row: dict) -> str:
 
 def verify_line(rows: list[dict]) -> str:
     """The verify rows in one line: each kind of Run with how many the Verifier failed, the Reference's word,
-    then each judge item's answer on the Reference with the lines the judge read."""
-    parts, kinds = [], {}
+    how many Reference steps the answer carries for investigation, then each judge item's answer on the
+    Reference with the lines the judge read."""
+    parts, kinds, steps = [], {}, 0
     for row in rows:
-        if "error" in row:
+        if row.get("run") == "reference_step":
+            steps += 1
+        elif "error" in row:
             parts.append(f"{row['run']}: {row['error']}")
         elif row["run"] == "reference":
             parts.append(_reference_part(row))
@@ -375,6 +450,8 @@ def verify_line(rows: list[dict]) -> str:
             failed, total = kinds.get(row["run"], (0, 0))
             kinds[row["run"]] = (failed + bool(row["verifier_fails_it"]), total + 1)
     lines = [f"{run}: the Verifier fails {failed} of {total}" for run, (failed, total) in kinds.items()]
+    if steps:
+        lines.append(f"reference steps: {steps}")
     return "; ".join(lines + parts)
 
 
@@ -523,7 +600,9 @@ def rule_tools(root: ExamRoot) -> list[AgentTool]:
                   CloseArgs, CloseResult, _close(root), render=render),
         AgentTool("verify", "Run the constructed Runs (do nothing, one stray write, an expected cell undone) and the "
                   "Reference's end state through the Task's Verifier, by code, with each judge item answered on the "
-                  "Reference by the judge (its reason and the lines it read). A code ruling cites it.",
+                  "Reference by the judge (its reason and the lines it read) and the Reference steps (user turns, "
+                  "tool calls, replies) to investigate a failing check. A code ruling cites it; a fails_reference "
+                  "ruling names the step.",
                   VerifyArgs, VerifyResult, _verify(root), render=render),
         *_lookups(root),
     ]
@@ -533,5 +612,5 @@ RULE_TOOL_NAMES = ("rule", "close", "verify", "lookup_rows", "search_rows")
 
 __all__ = ["POLICY_FILE", "REFUSED_FILE", "REVIEW_DIR", "RULE_TOOL_NAMES", "RULINGS_DIR", "TOOLS_FILE", "VIEW_DIR",
            "CloseArgs", "RuleArgs", "RuleResult", "VerifyArgs", "checked_ruling", "file_ruling", "open_run",
-           "read_rulings", "reference_ids_of", "rule_tools", "run_rows", "spec_view", "turn_texts", "user_turns",
-           "verify_line", "verify_rows", "write_views"]
+           "no_verifier", "read_rulings", "reference_ids_of", "reference_steps", "rule_tools", "run_rows", "spec_view",
+           "turn_texts", "user_turns", "verify_line", "verify_rows", "write_views"]
