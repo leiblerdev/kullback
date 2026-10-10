@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -51,7 +51,9 @@ class RuleArgs(BaseModel):
     fix: str = Field(description="What the writer should do, in one sentence.")
     blocking: bool = Field(description="True when the Task must not be trusted until this is fixed; false for a note.")
     wrong_side: Optional[str] = Field(default=None, description="For fails_reference: reference or verifier.")
-    ref_step: Optional[int] = Field(default=None, description="For fails_reference: the Reference event index the diagnosis rests on.")
+    ref_step: Optional[Union[int, Literal["never"]]] = Field(
+        default=None, description="For fails_reference: the Reference step the diagnosis rests on, one the verify answer "
+        "shows, or never when the check reads a write or call the Reference never made.")
 
 
 class RuleResult(BaseModel):
@@ -192,23 +194,47 @@ def _filed_as(workdir: Any, spec: Spec, args: RuleArgs) -> tuple[bool, str]:
     return blocking, R.NO_TRUTH_FIX if args.code == R.NO_TRUTH_CODE else " ".join(args.fix.split())
 
 
-def _check_diagnosis(workdir: Any, task_id: str, args: RuleArgs) -> None:
-    """A fails_reference ruling names the side at fault and rests on one step of the Task's faithful
-    Reference, else a counted refusal."""
+REFILE = ("The ruling still stands: call rule again with ref_step set to one of the steps the verify answer "
+          "shows (a user turn, a tool call or a reply), or never when the failing check reads a write or call "
+          "the Reference never made.")
+
+
+def _failing_check(rows: Iterable[dict]) -> Optional[str]:
+    """The check verify showed the Reference failing, else None."""
+    return next((row.get("failing") for row in rows if row.get("run") == "reference" and row.get("failing")), None)
+
+
+def _omission_check(verifier: Optional[Verifier], failing: Optional[str]) -> bool:
+    """Whether the failing check can fail by omission: a state cell, or a check that a tool was called."""
+    if failing is None:
+        return False
+    if failing.startswith("state:"):
+        return True
+    atom = next((atom for atom in (verifier.atoms if verifier else []) if atom.id == failing), None)
+    return atom is not None and (atom.target or {}).get("kind") == "called"
+
+
+def _check_diagnosis(root: ExamRoot, verifier: Optional[Verifier], args: RuleArgs) -> None:
+    """A fails_reference ruling names the side at fault and rests on one step the verify answer shows,
+    or on never for a state cell or called check the Reference never made, else a counted refusal."""
+    workdir, task_id, ref_step = root.workdir, args.task_id, args.ref_step
     if args.wrong_side not in R.WRONG_SIDES:
         _refuse(workdir, task_id, "no_side", "a fails_reference ruling says which side is wrong: wrong_side "
                 "reference or verifier")
-    ref_step = args.ref_step
     reference = _reference_run(workdir, task_id)
     if reference is None:
         _refuse(workdir, task_id, "no_reference", f"no faithful Reference on disk for task {task_id}: "
                 "a fails_reference ruling names a step of it")
     if ref_step is None:
-        _refuse(workdir, task_id, "no_step", "a fails_reference ruling names the Reference step it rests "
-                "on: ref_step, one of the verify answer's reference steps")
-    if ref_step not in {event.idx for event in reference.events}:
-        _refuse(workdir, task_id, "bad_step", f"step {ref_step} is not in the Reference for task "
-                f"{task_id}: ref_step is one of its event indexes")
+        _refuse(workdir, task_id, "no_step", "a fails_reference ruling names the Reference step it rests on. " + REFILE)
+    failing = _failing_check(root.verified.get(task_id) or [])
+    if ref_step == R.NEVER_STEP and not _omission_check(verifier, failing):
+        _refuse(workdir, task_id, "bad_never", f"never fits only a state cell or a called check the Reference "
+                f"never made, and the failing check {failing} is neither: name one of the steps the verify "
+                "answer shows. The ruling still stands.")
+    if ref_step != R.NEVER_STEP and ref_step not in {row["step"] for row in reference_steps(reference)}:
+        _refuse(workdir, task_id, "bad_step", f"step {ref_step} is not one the verify answer shows for task "
+                f"{task_id}. " + REFILE)
 
 
 def checked_ruling(root: ExamRoot, args: RuleArgs) -> R.Ruling:
@@ -228,7 +254,7 @@ def checked_ruling(root: ExamRoot, args: RuleArgs) -> R.Ruling:
         if why:
             _refuse(workdir, task_id, f"bad_{what}", why, text)
     if args.code == "fails_reference":
-        _check_diagnosis(workdir, task_id, args)
+        _check_diagnosis(root, verifier, args)
     blocking, fix = _filed_as(workdir, spec, args)
     # The judge's answers and the Reference steps are the Examiner's to read; a ruling keeps the
     # Verifier's rows without them (D346). The step the diagnosis rests on travels as ref_step.
@@ -267,7 +293,8 @@ def _rule(root: ExamRoot):
     async def rule(args: RuleArgs) -> RuleResult:
         body = file_ruling(root, args)
         side = " (the Reference is ruled wrong: no Verifier for this Task)" if body.get("wrong_side") == "reference" else ""
-        step = f" at step {body['ref_step']}" if args.code == "fails_reference" else ""
+        step = "" if args.code != "fails_reference" else (
+            " on a step never made" if body["ref_step"] == R.NEVER_STEP else f" at step {body['ref_step']}")
         summary = (f"ruling {body['number']} on task {args.task_id} filed: {args.kind}/{args.code} on "
                    f"{args.item}{step}, {'blocking' if body['blocking'] else 'note'}{side}; the writer answers it next round")
         return RuleResult(summary=summary, task_id=args.task_id, number=body["number"], path=body["path"])

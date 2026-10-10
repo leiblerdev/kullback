@@ -60,7 +60,8 @@ _TOOL_EXAMPLES = {
              '"fix": "Drop c2 or cite the fact that asks for it.", "blocking": true}. item is a check, atom or '
              "fact id from the view, or task for the Task as a whole. The codes per kind: "
              + "; ".join(f"{kind}: {', '.join(codes)}" for kind, codes in RULING_KINDS.items())
-             + ". A fails_reference ruling names wrong_side, reference or verifier, and ref_step, the Reference step."),
+             + ". A fails_reference ruling names wrong_side, reference or verifier, and ref_step, a step the verify answer "
+             "shows, or never for a write or call the Reference never made."),
     "close": ('close: close an answered ruling or keep it open, e.g. {"task_id": "t1", "number": 1, '
               '"keep_open": false, "why": "The writer dropped the write no fact asked for."}.'),
     "verify": ('verify: run the do-nothing Run, a stray write and the Reference\'s end state through the '
@@ -127,7 +128,9 @@ def choice_section() -> str:
             "item fixes (lookup_rows, search_rows) before you accept it. Call verify once per Task before any code ruling. "
             "When verify shows the Reference failing a check, investigate before ruling: read the Reference steps in "
             "the verify answer, find what the agent did at the step the failing check reads, hold it against the "
-            "user's own requests and the policy, then name the side and the step. A Reference passing is never a "
+            "user's own requests and the policy, then name the side and the step. Before you name a side, ask whether "
+            "a right solve of the user's own requests, under the policy, would pass this check: if not, the check "
+            "is wrong (wrong_side verifier), whatever the Reference did. A Reference passing is never a "
             "reason to change a check: a wrong Reference ends the Task with no Verifier, an honest outcome. "
             "Block when a correct solve could fail or a wrong one pass; file a note when the item is weak but the "
             "verdict would stand. One ruling per problem, on the item it is about. Decide from what the user said "

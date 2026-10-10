@@ -1,6 +1,7 @@
 """When the Reference fails a check the Examiner investigates its steps before naming a side."""
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,11 +65,45 @@ def test_a_fails_reference_ruling_without_a_side_or_a_step_is_refused(tmp_path):
         _rule(root, wrong_side="verifier")
 
 
-def test_a_fails_reference_ruling_on_a_step_outside_the_reference_is_refused(tmp_path):
+def test_a_fails_reference_ruling_on_a_step_the_verify_answer_does_not_show_is_refused(tmp_path):
     root = _live_root(tmp_path)
     root.verified["t1"] = [{"run": "reference", "verifier_passes_it": False, "failing": "s1"}]
-    with pytest.raises(ValueError, match="not in the Reference"):
+    with pytest.raises(ValueError, match="not one the verify answer shows"):
         _rule(root, wrong_side="verifier", ref_step=99)
+    with pytest.raises(ValueError, match="not one the verify answer shows"):
+        _rule(root, wrong_side="verifier", ref_step=2)  # the tool result, which verify leaves out
+
+
+@pytest.mark.parametrize("step", [None, 99])
+def test_a_refused_step_says_the_ruling_stands_and_how_to_refile(tmp_path, step):
+    root = _live_root(tmp_path)
+    root.verified["t1"] = [{"run": "reference", "verifier_passes_it": False, "failing": "s1"}]
+    with pytest.raises(ValueError) as refused:
+        _rule(root, wrong_side="reference", ref_step=step)
+    assert "still stands" in str(refused.value) and "never" in str(refused.value)
+    assert "a user turn, a tool call or a reply" in str(refused.value)
+
+
+def test_never_names_an_omission_on_a_state_cell(tmp_path):
+    root = _live_root(tmp_path)
+    root.verified["t1"] = [{"run": "reference", "verifier_passes_it": False, "failing": "state:items.A1.label"}]
+    _rule(root, wrong_side="reference", ref_step="never")
+    [ruling] = RL.load_rulings(tmp_path, "t1")
+    assert ruling.ref_step == RL.NEVER_STEP
+
+
+def test_never_is_refused_when_the_failing_check_cannot_fail_by_omission(tmp_path):
+    root = _live_root(tmp_path)
+    root.verified["t1"] = [{"run": "reference", "verifier_passes_it": False, "failing": "sanity"}]
+    with pytest.raises(ValueError, match="never fits only"):
+        _rule(root, wrong_side="reference", ref_step="never")
+
+
+def test_a_called_check_can_fail_by_omission_and_a_said_one_cannot():
+    verifier = SimpleNamespace(atoms=[SimpleNamespace(id="c1", target={"kind": "called"}),
+                                      SimpleNamespace(id="c2", target={"kind": "say"})])
+    assert R._omission_check(verifier, "c1") and not R._omission_check(verifier, "c2")
+    assert R._omission_check(None, "state:items.A1.slot") and not R._omission_check(verifier, None)
 
 
 def test_a_fails_reference_ruling_without_a_reference_on_disk_is_refused(tmp_path):
@@ -116,6 +151,12 @@ def test_the_choice_rule_investigates_before_ruling_and_never_loosens_on_a_pass(
     assert "investigate before ruling" in P.choice_section()
     assert "never a reason to change a check" in P.choice_section()
     assert "ref_step" in P.tools_section()
+
+
+def test_the_choice_rule_asks_whether_a_right_solve_would_pass_before_naming_a_side():
+    rule = P.choice_section()
+    assert "a right solve of the user's own requests, under the policy, would pass this check" in rule
+    assert rule.index("would pass this check") < rule.index("A Reference passing is never")
 
 
 def test_a_reference_side_ruling_ends_the_task_with_no_verifier_once(tmp_path):

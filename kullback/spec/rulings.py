@@ -13,7 +13,7 @@ writer, so the Spec side never imports the Examiner.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, Literal, Optional
+from typing import Any, Iterable, Literal, Optional, Union
 
 from pydantic import Field
 
@@ -48,6 +48,8 @@ BLOCKING_CODES = ("intent_unfounded", "gated_against_ask", "not_enough_truth")
 UNFOUNDED_CODE = "intent_unfounded"
 # The writer cannot apply it: it stays open until a rebuttal citing a user turn settles it and the
 # Examiner closes it. An open one holds the Task untrusted for its own reason (spec/trust.py).
+# A fails_reference ruling on a failure by omission: the check reads a write or call the Reference never made.
+NEVER_STEP = "never"
 NO_TRUTH_CODE = "not_enough_truth"
 NO_TRUTH_FIX = "keep untrusted"
 WRONG_SIDES = ("reference", "verifier")
@@ -69,9 +71,9 @@ class Ruling(Record):
     blocking: bool
     # For fails_reference: which side the Examiner rules wrong, the Reference or the Verifier.
     wrong_side: Optional[Literal["reference", "verifier"]] = None
-    # For fails_reference: the Reference event index the diagnosis rests on, the call, write or row
-    # the failing check reads. None on every other ruling.
-    ref_step: Optional[int] = None
+    # For fails_reference: the Reference step the diagnosis rests on, the user turn, call or reply the
+    # failing check reads, or NEVER_STEP for a write or call the Reference never made. None on every other ruling.
+    ref_step: Optional[Union[int, Literal["never"]]] = None
     # The verify rows the ruling cites (constructed Runs and the Reference through the Verifier).
     verified: list[dict] = Field(default_factory=list)
     status: Literal["open", "closed"] = "open"
@@ -246,7 +248,7 @@ def rulings_line(workdir: Any, task_ids: Iterable[str]) -> str:
             "answers them in the review loop")
 
 
-__all__ = ["ANSWER_ACTIONS", "BLOCKING_CODES", "NO_TRUTH_CODE", "NO_TRUTH_FIX", "UNFOUNDED_CODE", "open_no_truth", "rulings_line", "MAX_SENTENCE", "MIN_SENTENCE", "RULINGS_DIR", "RULING_KINDS", "TASK_ITEM",
+__all__ = ["ANSWER_ACTIONS", "BLOCKING_CODES", "NEVER_STEP", "NO_TRUTH_CODE", "NO_TRUTH_FIX", "UNFOUNDED_CODE", "open_no_truth", "rulings_line", "MAX_SENTENCE", "MIN_SENTENCE", "RULINGS_DIR", "RULING_KINDS", "TASK_ITEM",
            "VERIFY_CODES", "WRONG_SIDES", "Ruling", "answer", "close", "code_refusal", "counts", "item_ids",
            "load_rulings", "next_number", "open_blocking", "ruling_path", "rulings_dir", "save_ruling",
            "sentence_refusal", "sync_spec", "unanswered"]
