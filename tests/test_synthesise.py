@@ -440,3 +440,37 @@ def test_the_synthesise_command_builds_a_store_with_the_store_flag(kite_world: P
     assert result.exit_code == 0, result.output
     assert "kept" in result.output
     assert (kite_world / synthesise.DIR / synthesise.STORE / synthesise.STORE_INDEX).is_file()
+
+
+def _id_first_walk() -> list[dict]:
+    """A walk whose first call names a row by id: no earlier answer carried it."""
+    return [{"name": "get_kite", "args": {"kite_id": "k2"},
+             "result": {"kite_id": "k2", "colour": "teal2", "spool_id": "s2", "length": "32"},
+             "error": None},
+            {"name": "retie_kite", "args": {"kite_id": "k2", "length": "40"},
+             "result": {"kite_id": "k2", "length": "40"}, "error": None}]
+
+
+def test_an_id_no_answer_carried_is_stated_in_the_description_and_the_walk_kept(kite_world: Path):
+    store = synthesise._link_store(kite_world)
+    world = synthesise.World(store)
+    references: dict = {}
+    row, drop = synthesise._store_task(world, kite_world, store, _id_first_walk(), {}, "w1t2p1",
+                                       "id-first", _EchoModel(), [], False, references, {}, {})
+    assert drop == "" and row is not None
+    task = json.loads((store / "tasks" / f"{row['task_id']}.json").read_text())
+    assert "k2" in task["intent"], "the id the customer gives never reached the description"
+
+
+def test_a_walk_naming_an_id_the_description_leaves_out_fails_the_fairness_check():
+    from kullback.runner.world import birth
+
+    calls = _id_first_walk()
+    walk = [{"args": call["args"]} for call in calls]
+    results = [{"id": f"call-{n + 1}", "result": call["result"]} for n, call in enumerate(calls)]
+    held = birth.check_arguments_trace(walk=walk, results=results,
+                                       intent="Please retie kite k2 at 40.", user_facts=[])
+    dropped = birth.check_arguments_trace(walk=walk, results=results,
+                                          intent="Please retie my kite at 40.", user_facts=[])
+    assert held.outcome == birth.HELD
+    assert dropped.outcome == birth.FAILED and [item.value for item in dropped.untraced] == ["k2"]

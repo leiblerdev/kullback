@@ -308,6 +308,7 @@ def _supplier(graph: dict, write: str, arg: str, writes: set[str], used: set[str
                 best = edge
     return best
 
+
 def bind(world: World, step: dict, answers: list[Any], observed: dict, sigs: dict,
          ident: str, *, is_write: bool = False) -> Optional[dict]:
     """One step's arguments, in the order the evidence for them gets weaker.
@@ -1091,8 +1092,8 @@ DESCRIPTION_PROMPT = (
     "What they want done:\n{ask}\n\n"
     "Things only they know, to state in their own words:\n{facts}\n\n"
     "{extra}"
-    "Do not name any tool, any system, any table or any step, and do not include any id the "
-    "customer would not know. Write the message and nothing else.")
+    "State every value listed above exactly as written. Do not name any tool, system, table or "
+    "step, and add no value that is not listed. Write the message and nothing else.")
 
 
 def store_path(workdir: Any) -> Path:
@@ -1192,19 +1193,14 @@ def _trace_of(parent: Path, run_id: str) -> Optional[dict]:
     return trace if isinstance(trace, dict) else None
 
 
-def _is_row_name(field: str) -> bool:
-    """Whether an argument names a row the customer would not know: an id in any spelling."""
-    name = str(field)
-    return name in ("id", "ids") or name.endswith("_id") or name.endswith("_ids")
-
-
 def _description_inputs(calls: list[dict], refused: list[str]) -> tuple[list[dict], list[dict],
                                                                          list[str]]:
     """The description's matter: customer-known values, the ask per write, and refused values.
 
-    A bound value the walk already read from an earlier answer is not the customer's to state, and
-    neither is a row name in any spelling. The ask is each write's other arguments: the change the
-    customer wants. A refused value the walk never read is the customer's own constraint."""
+    A bound value the walk already read from an earlier answer is not the customer's to state;
+    every other value is, ids included: an id no answer carried is the customer's own. The ask is
+    each write's arguments: the change the customer wants. A refused value the walk never read is
+    the customer's own constraint."""
     facts, read_values = _customer_facts(calls)
     ask = _ask_for(calls)
     seen: set[str] = set()
@@ -1222,8 +1218,8 @@ def _leaf_field(path: str) -> str:
 def _customer_facts(calls: list[dict]) -> tuple[list[dict], set[str]]:
     """The bound values the customer states, and every value the walk read from the world.
 
-    A value an earlier answer already carried is not the customer's to state, and neither is a
-    row name in any spelling.
+    A value an earlier answer already carried is not the customer's to state; every other value
+    is, ids included.
     """
     facts: list[dict] = []
     pairs: set[tuple[str, str]] = set()
@@ -1233,7 +1229,7 @@ def _customer_facts(calls: list[dict]) -> tuple[list[dict], set[str]]:
             field = _leaf_field(path)
             if value and (field, value) not in pairs:
                 pairs.add((field, value))
-                if value not in read_values and not _is_row_name(field):
+                if value not in read_values:
                     facts.append({"field": field, "value": value})
         for _path, text in graph_mod._leaves(call.get("result")):  # noqa: SLF001
             read_values.add(text)
@@ -1241,21 +1237,24 @@ def _customer_facts(calls: list[dict]) -> tuple[list[dict], set[str]]:
 
 
 def _ask_for(calls: list[dict]) -> list[dict]:
-    """Each call's non-row arguments: the change the customer wants, field by field."""
+    """Each call's arguments: the change the customer wants, field by field."""
     ask: list[dict] = []
     asked: set[tuple[str, str]] = set()
     for call in calls or ():
         for path, value in graph_mod.argument_leaves(call):
             field = _leaf_field(path)
-            if value and not _is_row_name(field) and (field, value) not in asked:
+            if value and (field, value) not in asked:
                 asked.add((field, value))
                 ask.append({"field": field, "value": value})
     return ask
 
 
 def description_text(model: Any, facts: list[dict], ask: list[dict], refusals: list[str], *,
-                     consent: bool = False, example: str = "") -> tuple[str, str]:
-    """The customer's first-person message from the walk's matter, or nothing and why not."""
+                     consent: bool = False, example: str = "",
+                     avoid: str = "") -> tuple[str, str]:
+    """The customer's first-person message from the walk's matter, or nothing and why not.
+
+    `avoid` names a text the last draft repeated: the writer is told to write again without it."""
     if model is None:
         return "", "no description writer was given"
     lines = "\n".join(f"- {row['field']}: {row['value']}" for row in facts) or "- nothing"
@@ -1269,6 +1268,9 @@ def description_text(model: Any, facts: list[dict], ask: list[dict], refusals: l
         extra += "They give their go-ahead to proceed.\n\n"
     if example:
         extra += ("Match the tone of this unrelated request, never its details:\n" + example
+                  + "\n\n")
+    if avoid:
+        extra += ("Your message repeated this text; write it again without it: " + avoid
                   + "\n\n")
     try:
         reply = model.query([{"role": "user", "content": DESCRIPTION_PROMPT.format(
@@ -1302,10 +1304,10 @@ def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = 
     observed = body.get("args") or {}
     strings = domain_mod.corpus_strings(parent)
     consent = _store_consent(store)
-    world_values = {text for _path, text in graph_mod._leaves(world.db)}  # noqa: SLF001
     _grow_for(world, max(int(count) for count in buckets.values()) if buckets else 0)
     counts = {"walks_tried": 0, "walks_refused": 0, "walks_unbound": 0, "walks_crashed": 0,
-              "walks_contaminated": 0, "walks_unfair": 0, "tasks_kept": 0}
+              "walks_contaminated": 0, "walks_unfair": 0, "walks_undescribed": 0,
+              "tasks_kept": 0}
     per_bucket: dict[str, int] = {}
     rows: list[dict] = []
     references: dict[str, dict] = {}
@@ -1326,7 +1328,7 @@ def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = 
             if not calls:
                 continue
             row, drop = _store_task(world, parent, store, calls, note, bucket, ident,
-                                    model, strings, consent, world_values,
+                                    model, strings, consent,
                                     references, replays, status)
             if row is None:
                 counts[f"walks_{drop}"] += 1
@@ -1381,7 +1383,7 @@ def _write_store_index(store: Path, buckets: dict, salt: str, counts: dict,
 
 def _store_task(world: World, parent: Path, store: Path, calls: list[dict], note: dict,
                 bucket: str, ident: str, model: Any, strings: list[str],
-                consent: bool, world_values: set[str], references: dict, replays: dict,
+                consent: bool, references: dict, replays: dict,
                 status: dict) -> tuple[Optional[dict], str]:
     """One kept walk as a store Task, or nothing and the count to raise."""
     from kullback import domain as domain_mod
@@ -1393,17 +1395,20 @@ def _store_task(world: World, parent: Path, store: Path, calls: list[dict], note
     text, _why = description_text(model, facts, ask, refusals, consent=consent,
                                   example=_style_example(parent, writes))
     if not text:
-        return None, "crashed"
-    if domain_mod.contaminated({"goal": text}, strings):
+        return None, "undescribed"
+    leaked = domain_mod.contaminated({"goal": text}, strings)
+    if leaked:
         text, _why = description_text(model, facts, ask, refusals, consent=consent,
-                                      example=_style_example(parent, writes))
-        if not text or domain_mod.contaminated({"goal": text}, strings):
+                                      example=_style_example(parent, writes), avoid=leaked)
+        if not text:
+            return None, "undescribed"
+        if domain_mod.contaminated({"goal": text}, strings):
             return None, "contaminated"
     trace = birth_mod.check_arguments_trace(
         walk=[{"args": call.get("args")} for call in calls],
         results=[{"id": f"call-{index + 1}", "result": call.get("result")}
                  for index, call in enumerate(calls)],
-        intent=text, user_facts=list(world_values))
+        intent=text, user_facts=[])
     if trace.outcome != birth_mod.HELD:
         return None, "unfair"
     transcript, spoken = spoken_for(text, calls)

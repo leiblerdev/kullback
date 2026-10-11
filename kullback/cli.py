@@ -1028,7 +1028,7 @@ def _store_lines(body: dict) -> list[str]:
     lines = [f"walks tried {counts.get('walks_tried', 0)}, refused {counts.get('walks_refused', 0)}, "
              f"crashed {counts.get('walks_crashed', 0)}, unbound {counts.get('walks_unbound', 0)}, "
              f"contaminated {counts.get('walks_contaminated', 0)}, unfair {counts.get('walks_unfair', 0)}, "
-             f"kept {counts.get('tasks_kept', 0)}",
+             f"undescribed {counts.get('walks_undescribed', 0)}, kept {counts.get('tasks_kept', 0)}",
              "", "| bucket asked | Tasks kept |",
              "| --- | --- |"]
     per_bucket = counts.get("per_bucket") or {}

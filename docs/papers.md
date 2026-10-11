@@ -6,6 +6,7 @@ Rows are sorted by date sent or read, newest first. "Taken as" names the decisio
 
 | Date | Reference | Link | Taken as | Reading |
 | --- | --- | --- | --- | --- |
+| 2026-10-11 | Trace2Env: From Traces to Agentic Worlds: Agentic Language World Models for Interactive Environment Simulation (a model plays the environment from rules and evidence induced from traces; Apache 2.0), founder 2026-10-11 | https://arxiv.org/abs/2610.06100, code https://github.com/ruyue0001/trace2env | reading: held-out fidelity by task folds, every gated atom exercised by a Run or mutant, a no-regression gate before publish | .claude/reports/trace2env-2026-10-11.md |
 | 2026-10-05 | GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning (reflective prompt evolution, Pareto over Tasks), founder 2026-10-05 | https://arxiv.org/abs/2507.19457 | reading pending | |
 | 2026-10-05 | AlphaEvolve: A coding agent for scientific and algorithmic discovery (evolutionary search against an automated evaluator), founder 2026-10-05 | https://arxiv.org/abs/2506.13131 | reading pending | |
 | 2026-09-24 | AgentLogs: A Dataset for Opening the Black Box of GitHub's Cloud Agent | https://huggingface.co/datasets/risenlab/agentlogs, paper https://arxiv.org/abs/2608.29204 | strongest new trace-source candidate found this pass: real Copilot cloud-agent activity, CC BY 4.0, 64M log entries | docs/trace-sources/agentlogs.md |

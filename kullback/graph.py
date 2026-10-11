@@ -124,6 +124,7 @@ def argument_leaves(call: dict) -> list[tuple[str, str]]:
     """The values one call's arguments carry, as (argument path, value)."""
     return _leaves(call.get("args"))
 
+
 def _producer(calls: list[dict], upto: int, text: str) -> Optional[tuple[int, str]]:
     """The nearest earlier call whose answer carried this value, and the path it sat under.
 
