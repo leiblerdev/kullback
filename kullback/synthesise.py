@@ -328,32 +328,47 @@ def bind(world: World, step: dict, answers: list[Any], observed: dict, sigs: dic
     properties, required = declared(sigs.get(tool))
     if not properties:
         return None
-    args: dict = {}
-    for binding in step.get("bindings") or ():
-        head = graph_mod.head(binding["arg"])
-        if head not in properties:
-            continue
-        source = answers[int(binding["from"])]
-        found = graph_mod.values_at(source, str(binding["column"]))
-        if not found:
-            # The edge is what the recordings showed; this answer did not carry it, so the argument
-            # falls back to the sources below rather than the walk falling over on one binding.
-            continue
-        _set_path(args, str(binding["arg"]),
-                  found[sample_key("synth-edge-value", f"{ident}:{binding['arg']}", "") % len(found)])
+    args = _edge_args(step, answers, properties, ident)
     owed = [name for name in required if name not in args]
     seen = _read_leaves(answers) if is_write else (named_leaves(answers[-1]) if answers else {})
     row = _row_source(world, [name for name in owed if name not in seen], ident)
     for name in owed:
-        spec = properties.get(name) or {}
-        if is_write and (name.endswith("_id") or name.endswith("_ids")):
-            pool = seen.get(name) or []
-        else:
-            pool = seen.get(name) or row.get(name) or _observed_pool(observed, tool, name)
+        pool = _arg_pool(is_write, name, seen, row, observed, tool)
         if not pool:
             return None
+        spec = properties.get(name) or {}
         args[name] = _typed(spec, pool[sample_key("synth-arg", f"{ident}:{tool}:{name}", "") % len(pool)])
     return {name: value for name, value in args.items() if name in properties}
+
+
+def _edge_args(step: dict, answers: list[Any], properties: dict, ident: str) -> dict:
+    """What the step's edge bindings fill: the values the recordings showed travelling that way.
+
+    An edge whose answer does not carry its column falls back to the sources below rather than
+    failing the walk on one binding.
+    """
+    args: dict = {}
+    for binding in step.get("bindings") or ():
+        if graph_mod.head(binding["arg"]) not in properties:
+            continue
+        found = graph_mod.values_at(answers[int(binding["from"])], str(binding["column"]))
+        if not found:
+            continue
+        _set_path(args, str(binding["arg"]),
+                  found[sample_key("synth-edge-value", f"{ident}:{binding['arg']}", "") % len(found)])
+    return args
+
+
+def _arg_pool(is_write: bool, name: str, seen: dict, row: dict, observed: dict,
+              tool: str) -> list:
+    """The values one owed argument binds from, weakest evidence last.
+
+    A row-naming argument of a write reads only what the walk has read; every other argument then
+    reads one row of the rebuilt world, then the values the recordings showed for it.
+    """
+    if is_write and (name.endswith("_id") or name.endswith("_ids")):
+        return seen.get(name) or []
+    return seen.get(name) or row.get(name) or _observed_pool(observed, tool, name)
 
 
 # --- running one walk ---------------------------------------------------------------
@@ -472,13 +487,7 @@ def _insert_reads(world: World, graph: dict, writes: set[str], observed: dict, s
         if edge is None:
             return False
         used.add(str(edge["from"]))
-        names = [call["name"] for call in calls] + [call["name"] for call in local_calls]
-        reader = {"tool": str(edge["from"]), "bindings": [
-            {"arg": str(item.get("arg")), "column": str(item.get("column")), "from": pos}
-            for item in graph.get("edges") or ()
-            if str(item.get("to")) == str(edge["from"]) and item.get("kind") == graph_mod.VALUE_EDGE
-            and item.get("arg")
-            for pos, seen in enumerate(names) if seen == str(item.get("from"))]}
+        reader = _reader_step(graph, edge, calls, local_calls)
         rargs = bind(world, reader, answers, observed, sigs, f"{sub}:ins{len(used)}")
         if rargs is None:
             return False
@@ -492,6 +501,18 @@ def _insert_reads(world: World, graph: dict, writes: set[str], observed: dict, s
              "from": len(answers) - 1}]
         local_calls.append({"name": str(edge["from"]), "args": rargs, "result": found})
     return not _missing_row_args(step, answers, sigs)
+
+
+def _reader_step(graph: dict, edge: dict, calls: list[dict], local_calls: list[dict]) -> dict:
+    """One inserted read as a step: the value edges into it from the tools the walk holds."""
+    names = [call["name"] for call in calls] + [call["name"] for call in local_calls]
+    source = str(edge["from"])
+    return {"tool": source, "bindings": [
+        {"arg": str(item.get("arg")), "column": str(item.get("column")), "from": pos}
+        for item in graph.get("edges") or ()
+        if str(item.get("to")) == source and item.get("kind") == graph_mod.VALUE_EDGE
+        and item.get("arg")
+        for pos, seen in enumerate(names) if seen == str(item.get("from"))]}
 
 
 DONE = "Done."
@@ -1128,26 +1149,41 @@ def _style_example(parent: Path, writes: set[str]) -> str:
     paths = sorted(folder.glob("*.json"))[:STYLE_SEARCH_LIMIT] if folder.is_dir() else []
     kinds = _write_names_of(parent)
     for path in paths:
-        try:
-            task = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        for run_id in (task.get("run_ids") or ()) if isinstance(task, dict) else ():
-            try:
-                trace = json.loads((parent / "traces" / f"{run_id}.json").read_text(
-                    encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if not isinstance(trace, dict):
-                continue
-            made = {str(call.get("name")) for call in trace.get("tool_calls") or ()} & kinds
-            if made != targets:
-                continue
-            for turn in trace.get("turns") or ():
-                if isinstance(turn, dict) and turn.get("role") == "user" \
-                        and str(turn.get("content") or "").strip():
-                    return str(turn["content"])
+        opening = _trace_opening(parent, path, targets, kinds)
+        if opening:
+            return opening
     return ""
+
+
+def _trace_opening(parent: Path, path: Path, targets: set[str], kinds: set[str]) -> str:
+    """One recorded Task's opening user turn where its writes match the walk's, or nothing."""
+    try:
+        task = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(task, dict):
+        return ""
+    for run_id in task.get("run_ids") or ():
+        trace = _trace_of(parent, run_id)
+        if trace is None:
+            continue
+        made = {str(call.get("name")) for call in trace.get("tool_calls") or ()} & kinds
+        if made != targets:
+            continue
+        for turn in trace.get("turns") or ():
+            if isinstance(turn, dict) and turn.get("role") == "user" \
+                    and str(turn.get("content") or "").strip():
+                return str(turn["content"])
+    return ""
+
+
+def _trace_of(parent: Path, run_id: str) -> Optional[dict]:
+    """One recorded trace, or nothing where it is missing or torn."""
+    try:
+        trace = json.loads((parent / "traces" / f"{run_id}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return trace if isinstance(trace, dict) else None
 
 
 def _is_row_name(field: str) -> bool:
@@ -1163,31 +1199,52 @@ def _description_inputs(calls: list[dict], refused: list[str]) -> tuple[list[dic
     A bound value the walk already read from an earlier answer is not the customer's to state, and
     neither is a row name in any spelling. The ask is each write's other arguments: the change the
     customer wants. A refused value the walk never read is the customer's own constraint."""
+    facts, read_values = _customer_facts(calls)
+    ask = _ask_for(calls)
+    seen: set[str] = set()
+    refusals = [value for value in refused or ()
+                if value and value not in read_values and value not in seen
+                and not seen.add(value)]
+    return facts, ask, refusals
+
+
+def _leaf_field(path: str) -> str:
+    """One argument path's field: the last name, a list marker collapsed."""
+    return str(path).split(".")[-1].replace("[]", "")
+
+
+def _customer_facts(calls: list[dict]) -> tuple[list[dict], set[str]]:
+    """The bound values the customer states, and every value the walk read from the world.
+
+    A value an earlier answer already carried is not the customer's to state, and neither is a
+    row name in any spelling.
+    """
     facts: list[dict] = []
-    ask: list[dict] = []
     pairs: set[tuple[str, str]] = set()
-    asked: set[tuple[str, str]] = set()
     read_values: set[str] = set()
     for call in calls or ():
         for path, value in graph_mod.argument_leaves(call):
-            field = str(path).split(".")[-1].replace("[]", "")
+            field = _leaf_field(path)
             if value and (field, value) not in pairs:
                 pairs.add((field, value))
                 if value not in read_values and not _is_row_name(field):
                     facts.append({"field": field, "value": value})
         for _path, text in graph_mod._leaves(call.get("result")):  # noqa: SLF001
             read_values.add(text)
+    return facts, read_values
+
+
+def _ask_for(calls: list[dict]) -> list[dict]:
+    """Each call's non-row arguments: the change the customer wants, field by field."""
+    ask: list[dict] = []
+    asked: set[tuple[str, str]] = set()
     for call in calls or ():
         for path, value in graph_mod.argument_leaves(call):
-            field = str(path).split(".")[-1].replace("[]", "")
+            field = _leaf_field(path)
             if value and not _is_row_name(field) and (field, value) not in asked:
                 asked.add((field, value))
                 ask.append({"field": field, "value": value})
-    seen: set[str] = set()
-    refusals = [value for value in refused or ()
-                if value and value not in read_values and value not in seen
-                and not seen.add(value)]
-    return facts, ask, refusals
+    return ask
 
 
 def description_text(model: Any, facts: list[dict], ask: list[dict], refusals: list[str], *,
@@ -1261,18 +1318,8 @@ def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = 
             steps = graph_mod.walk(body, bucket, ident)
             if not steps:
                 break
-            counts["walks_tried"] += 1
-            note: dict = {}
-            calls, why = run_walk(world, steps, observed, ident, graph=body,
-                                  write_tools=world.write_tools, note=note)
-            if why == REFUSED:
-                counts["walks_refused"] += 1
-                continue
-            if why == CRASHED:
-                counts["walks_crashed"] += 1
-                continue
-            if why == UNBOUND or not calls:
-                counts["walks_unbound"] += 1
+            calls, note = _attempt_walk(world, body, observed, steps, ident, counts)
+            if not calls:
                 continue
             row, drop = _store_task(world, parent, store, calls, note, bucket, ident,
                                     model, strings, consent, world_values,
@@ -1283,6 +1330,33 @@ def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = 
             rows.append(row)
             made += 1
             per_bucket[bucket] = per_bucket.get(bucket, 0) + 1
+    return _write_store_index(store, buckets, salt, counts, per_bucket, rows,
+                              references, replays, status)
+
+
+def _attempt_walk(world: World, body: dict, observed: dict, steps: list[dict], ident: str,
+                  counts: dict) -> tuple[list[dict], dict]:
+    """One walk bound and run through the bodies, counted; no calls where the walk fell."""
+    note: dict = {}
+    counts["walks_tried"] += 1
+    calls, why = run_walk(world, steps, observed, ident, graph=body,
+                          write_tools=world.write_tools, note=note)
+    if why == REFUSED:
+        counts["walks_refused"] += 1
+        return [], note
+    if why == CRASHED:
+        counts["walks_crashed"] += 1
+        return [], note
+    if why == UNBOUND or not calls:
+        counts["walks_unbound"] += 1
+        return [], note
+    return calls, note
+
+
+def _write_store_index(store: Path, buckets: dict, salt: str, counts: dict,
+                       per_bucket: dict, rows: list[dict], references: dict,
+                       replays: dict, status: dict) -> dict:
+    """The store's references, replays, status and index, written once every walk is kept."""
     write_json(store / "references.json", references)
     write_json(store / "replays.json", replays)
     write_json(store / "task_status.json", status)

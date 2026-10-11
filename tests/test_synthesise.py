@@ -390,36 +390,44 @@ class _EchoModel:
                                   + ". You have my go-ahead.")
 
 
-def test_build_store_keeps_a_described_walk_the_chain_reads_unchanged(kite_world: Path):
-    from kullback.runner.records import Task as TaskRecord
-    from kullback.spec import intent_tools, trust
-    from kullback.spec.schema import SpecIntent
-    from kullback.spec.writer import load_inputs
-
+def _kept_store(kite_world: Path):
+    """One store Task built with the echoing description writer, with its task id and run id."""
     model = _EchoModel()
     body = synthesise.build_store(kite_world, {"w1t3p1": 1}, seed="store-e2e", model=model)
     assert body["counts"]["tasks_kept"] == 1, body["counts"]
     assert model.calls, "the description was never written by the model"
     store = kite_world / synthesise.DIR / synthesise.STORE
-    task_id = body["tasks"][0]["task_id"]
+    return store, body["tasks"][0]["task_id"], body["tasks"][0]["run_id"]
+
+
+def test_build_store_keeps_a_described_walk_apart_from_the_d224_store(kite_world: Path):
+    from kullback.spec import intent_tools
+
+    store, task_id, _run_id = _kept_store(kite_world)
     assert (store / intent_tools.SYNTHETIC_MARKER).is_file()
     assert (store / "db.json").is_symlink(), "the database must be linked, never copied"
     assert not (store / "verifiers").exists(), "the store path never derives a Verifier"
     assert not (kite_world / synthesise.DIR / "tasks").exists(), \
         "the D224 store stays as it is"
+    index = json.loads((store / synthesise.STORE_INDEX).read_text())
+    assert index["counts"]["tasks_kept"] == 1 and index["counts"]["per_bucket"] == {"w1t3p1": 1}
 
+
+def test_a_store_task_reads_through_the_chain_unchanged(kite_world: Path):
+    from kullback.runner.records import Task as TaskRecord
+    from kullback.spec import intent_tools, trust
+    from kullback.spec.schema import SpecIntent
+    from kullback.spec.writer import load_inputs
+
+    store, task_id, run_id = _kept_store(kite_world)
     task = TaskRecord.model_validate(json.loads((store / "tasks" / f"{task_id}.json").read_text()))
     assert task.intent and task.facts_in_instruction is False
     found = intent_tools.recordings_of(store, task_id)
     assert [turn.text for turn in found.recordings["description"]] == [task.intent]
     inputs = load_inputs(store, task_id, intent=SpecIntent(task_id=task_id, text=task.intent))
     assert inputs.tools and inputs.state is not None
-    tiers = trust.intent_tiers(store)
-    assert task_id in tiers
-    assert trust.faithful_references(store)[task_id] == task.run_ids == \
-        [body["tasks"][0]["run_id"]]
-    index = json.loads((store / synthesise.STORE_INDEX).read_text())
-    assert index["counts"]["tasks_kept"] == 1 and index["counts"]["per_bucket"] == {"w1t3p1": 1}
+    assert task_id in trust.intent_tiers(store)
+    assert trust.faithful_references(store)[task_id] == [run_id] == task.run_ids
 
 
 def test_the_synthesise_command_builds_a_store_with_the_store_flag(kite_world: Path):
