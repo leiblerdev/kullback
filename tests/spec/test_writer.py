@@ -591,3 +591,29 @@ def test_a_recorded_workdir_with_no_told_facts_is_unchanged_byte_for_byte_throug
     got["body"] = hashlib.sha256(content[content.index("\n{") + 1:].encode()).hexdigest()
     assert got == NO_KIND_HASHES
     assert "side_facts" not in written.counts and "side_weighed" not in written.counts
+
+
+# --- the clash check after the asked turn ----------------------------------------------------------
+
+def test_an_item_the_asked_followup_adds_that_clashes_is_sent_back_once():
+    clashing = dict(ROW, id="s2", expect={"slot": "four"})
+    model = TestModel([add(dict(ROW, gate=False)), DONE, add(clashing), DONE, call("drop_items", ids=["s1"]), DONE])
+    written = W.write_spec("t1", inputs(), model)
+    assert written.counts["asked_sent_back"] == 1 and written.counts["asked_clash_sent_back"] == 1
+    assert written.counts["unsatisfiable"] == [] and [c.id for c in written.spec.checks] == ["s2"]
+    assert "no run can pass together" in model.calls[4]["messages"][-1]["content"]
+    assert len(model.calls) == 6
+
+
+def test_an_asked_followup_with_no_clash_runs_no_second_send_back():
+    model = TestModel([add(dict(ROW, gate=False)), DONE, add(ROW), DONE])
+    written = W.write_spec("t1", inputs(), model)
+    assert written.counts["asked_sent_back"] == 1 and "asked_clash_sent_back" not in written.counts
+    assert len(model.calls) == 4
+
+
+def test_a_task_with_no_asked_followup_never_runs_the_second_clash_check():
+    model = TestModel([add(ROW), DONE])
+    written = W.write_spec("t1", inputs(), model)
+    assert written.counts["asked_sent_back"] == 0 and "asked_clash_sent_back" not in written.counts
+    assert len(model.calls) == 2

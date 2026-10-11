@@ -487,33 +487,42 @@ def _side_counts(intent: SpecIntent, items: list[dict]) -> dict:
     return {"side_facts": side, "side_weighed": sum(1 for item in items if item.get("weighed") == I.SIDE_WEIGHED)}
 
 
+def _clash_rows(store: writer_tools.ItemStore) -> list[dict]:
+    """Items no run can pass together, each with why, as one send-back turn lists them."""
+    return [{"id": item_id, "reason": why} for item_id, why in I.contradictions(list(store.items.values()))]
+
+
 def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Optional[str] = None,
                config: Any = None, ceiling_usd: Optional[float] = None) -> Written:
     """One writer session for one Task, and the Spec code keeps from it; past `ceiling_usd` it answers at once.
 
     Items that contradict each other (`items.contradictions`) go back once in a follow-up turn of the same
     conversation; any still there are named in counts["unsatisfiable"]. Volunteered facts no gated item
-    covers (`asked_missing`) go back once the same way; the writer gates each or answers why not.
+    covers (`asked_missing`) go back once the same way; the writer gates each or answers why not. Items
+    that answer clashing with others go back once more, so an added gate is never left unpassable unseen.
     """
     writer_tools.refuse_run_inputs(inputs.intent, inputs.state)
     messages, cut = writer_messages(inputs)
     store = store_of(inputs)
     price = _price(model_id)
     session = _session(model, messages, store, inputs, config, price, ceiling_usd)
+
+    def again(turn: list, done: dict, prompt: str, rows: list) -> tuple[list, dict]:
+        turn = turn + [{"role": "assistant", "content": done["text"] or "done"},
+                       {"role": "user", "content": prompt + json.dumps(rows)}]
+        left = None if ceiling_usd is None else max(ceiling_usd - float(done.get("usd") or 0.0), 0.0)
+        return turn, _joined(done, _session(model, turn, store, inputs, config, price, left))
+
     turn = list(messages)
-    clashes = I.contradictions(list(store.items.values()))
+    clashes = _clash_rows(store)
     if clashes:
-        turn = turn + [{"role": "assistant", "content": session["text"] or "done"},
-                       {"role": "user", "content": FOLLOWUP_PROMPT + json.dumps(
-                           [{"id": item_id, "reason": why} for item_id, why in clashes])}]
-        left = None if ceiling_usd is None else max(ceiling_usd - float(session.get("usd") or 0.0), 0.0)
-        session = _joined(session, _session(model, turn, store, inputs, config, price, left))
+        turn, session = again(turn, session, FOLLOWUP_PROMPT, clashes)
     missing = asked_missing(list(store.items.values()), inputs.intent)
     if missing:
-        turn = turn + [{"role": "assistant", "content": session["text"] or "done"},
-                       {"role": "user", "content": ASKED_FOLLOWUP_PROMPT + json.dumps(missing)}]
-        left = None if ceiling_usd is None else max(ceiling_usd - float(session.get("usd") or 0.0), 0.0)
-        session = _joined(session, _session(model, turn, store, inputs, config, price, left))
+        turn, session = again(turn, session, ASKED_FOLLOWUP_PROMPT, missing)
+    asked_clashes = _clash_rows(store) if missing else []
+    if asked_clashes:
+        turn, session = again(turn, session, FOLLOWUP_PROMPT, asked_clashes)
     items = list(store.items.values())
     counts = _store_counts(store)
     counts.update(sent_back=len(clashes), unsatisfiable=sorted(
@@ -523,6 +532,8 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
     counts.update(I.counts_of(items + [I.sanity_item([])]))
     counts["echo_facts"] = sum(1 for fact in inputs.intent.facts if fact.echo)
     counts.update(_side_counts(inputs.intent, items))
+    if asked_clashes:
+        counts["asked_clash_sent_back"] = len(asked_clashes)
     save_session(inputs, task_id, "write", 1, session, counts)
     return Written(spec, counts, session)
 
