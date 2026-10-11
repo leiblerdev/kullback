@@ -19,6 +19,7 @@ from kullback.spec import rounds as RD
 from kullback.spec import rulings as RL
 from kullback.spec import writer as W
 from kullback.spec.canfail import judge_run
+from kullback.spec.router import ROUNDS_CAP_ENV as ROUTER_CAP_ENV
 from kullback.spec.schema import FactSource, IntentFact, intent_text, load_spec
 from kullback.spec.trust import NOT_EXAMINED, OPEN_RULING, constructed_runs, tier_of_task
 from tests.spec.fixtures import FACTS, check, fn
@@ -269,7 +270,8 @@ def _rebutting_writer(seen):
     return answer
 
 
-def test_the_loop_gives_a_ruling_kept_open_back_to_the_writer_until_three_writer_rounds_then_holds(tmp_path):
+def test_the_loop_gives_a_ruling_kept_open_back_to_the_writer_until_three_writer_rounds_then_holds(tmp_path, monkeypatch):
+    monkeypatch.setenv(ROUTER_CAP_ENV, "3")
     root = _told(tmp_path)
     seen = []
     examine, answer = _keeping_examiner(seen), _rebutting_writer(seen)
@@ -283,6 +285,18 @@ def test_the_loop_gives_a_ruling_kept_open_back_to_the_writer_until_three_writer
     assert spec_now.round == 3 and spec_now.rulings_open == 1
     logged = [json.loads(line) for line in RD.log_path(root).read_text().splitlines()]
     assert [row["side"] for row in logged] == ["examiner", "writer", "examiner", "writer", "examiner", "summary"]
+
+
+def test_a_round_cap_of_four_gives_the_writer_a_third_answer_before_the_task_is_held(tmp_path, monkeypatch):
+    from kullback.spec.router import ROUNDS_CAP_ENV
+
+    monkeypatch.setenv(ROUNDS_CAP_ENV, "4")
+    root = _told(tmp_path)
+    seen = []
+    out = RD.run_rounds(root, ["t1"], examine=_keeping_examiner(seen), model=None, answer=_rebutting_writer(seen))
+    assert seen[-3:] == [("examiner", 3), ("writer", 4, [1]), ("examiner", 4)]
+    assert out["tasks"]["t1"]["writer_rounds"] == 4 and out["tasks"]["t1"]["set_aside"]
+    assert load_spec(root, "t1").round == 4
 
 
 def test_the_loop_stops_after_one_examiner_round_when_nothing_is_ruled(tmp_path):

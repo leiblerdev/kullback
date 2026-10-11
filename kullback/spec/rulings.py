@@ -169,6 +169,15 @@ def unanswered(rulings: Iterable[Ruling]) -> list[Ruling]:
     return [r for r in rulings if r.status == "open" and (r.answer is None or kept_open_after_answer(r))]
 
 
+def answer_rounds(ruling: Any) -> list[int]:
+    """Every writer round that answered the ruling: a ruling kept open is answered again in a later round,
+    and the last answer keeps the earlier rounds (D359); an answer saved before that names only its round."""
+    body = getattr(ruling, "answer", None)
+    if not isinstance(body, dict) or body.get("round") is None:
+        return []
+    return sorted({int(n) for n in body.get("rounds") or ()} | {int(body["round"])})
+
+
 def answer(workdir: Any, task_id: str, number: int, action: str, why: str, round_number: int,
            changed: Iterable[str] = (), writer: Optional[dict] = None) -> Ruling:
     """The writer's answer on one ruling: applied (with the checks it changed) or rebutted, with why, and
@@ -179,9 +188,10 @@ def answer(workdir: Any, task_id: str, number: int, action: str, why: str, round
     if action == "applied" and ruling.code == NO_TRUTH_CODE:
         raise ValueError(f"a {NO_TRUTH_CODE} ruling cannot be applied: rebut it by citing the user turn that "
                          "settles the point, or leave it open")
+    rounds = sorted(set(answer_rounds(ruling)) | {int(round_number)})
     ruling = ruling.model_copy(update={"answer": {"action": action, "why": " ".join(str(why or "").split()),
-                                                  "round": int(round_number), "changed": list(changed),
-                                                  "writer": dict(writer or {})}})
+                                                  "round": int(round_number), "rounds": rounds,
+                                                  "changed": list(changed), "writer": dict(writer or {})}})
     save_ruling(workdir, ruling)
     return ruling
 
@@ -249,6 +259,6 @@ def rulings_line(workdir: Any, task_ids: Iterable[str]) -> str:
 
 
 __all__ = ["ANSWER_ACTIONS", "BLOCKING_CODES", "NEVER_STEP", "NO_TRUTH_CODE", "NO_TRUTH_FIX", "UNFOUNDED_CODE", "open_no_truth", "rulings_line", "MAX_SENTENCE", "MIN_SENTENCE", "RULINGS_DIR", "RULING_KINDS", "TASK_ITEM",
-           "VERIFY_CODES", "WRONG_SIDES", "Ruling", "answer", "close", "code_refusal", "counts", "item_ids",
+           "VERIFY_CODES", "WRONG_SIDES", "Ruling", "answer", "answer_rounds", "close", "code_refusal", "counts", "item_ids",
            "load_rulings", "next_number", "open_blocking", "ruling_path", "rulings_dir", "save_ruling",
            "sentence_refusal", "sync_spec", "unanswered"]
