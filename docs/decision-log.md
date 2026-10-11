@@ -2716,3 +2716,5 @@ fails, 1 of 2 where mutants ran, and that one is contested. Bar b holds: no appl
 stray_untested Tasks, 1 (f25a) left it and is trusted: the forced verify judged its Reference, and 10 of 10 untouched
 mutants were killed. 5 stayed, and 1 became no_verifier. With the sample gate on versus off over all 50, 1 retail Task
 moves from trusted to stray_untested. Report .claude/herdr/truth-1008/fix-mutants-report.md.
+
+D358 r3 (2026-10-11): a dotted number after a list (field.0.key) goes back like a bracketed index; after a dict it stays a key. Three runs per arm on the same 50 Tasks: mean wrong r1 5.30 percent (range 1.9), r3 5.83 (range 1.6), so no difference shown by the pre-registered rule and the r2 gain was within run-to-run noise. Wrong cells sit on four fallback and open-call Tasks in both arms; that rule is next, measured on hard Tasks.
