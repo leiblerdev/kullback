@@ -474,3 +474,13 @@ def test_a_walk_naming_an_id_the_description_leaves_out_fails_the_fairness_check
                                           intent="Please retie my kite at 40.", user_facts=[])
     assert held.outcome == birth.HELD
     assert dropped.outcome == birth.FAILED and [item.value for item in dropped.untraced] == ["k2"]
+
+
+def test_the_description_never_states_an_id_an_earlier_answer_carried(kite_world: Path):
+    walk = [{"name": "find_kite", "args": {"colour": "teal5"}, "result": {"kite_id": "k5"},
+             "error": None},
+            {"name": "retie_kite", "args": {"kite_id": "k5", "length": "32"},
+             "result": {"kite_id": "k5", "length": "32"}, "error": None}]
+    facts, ask, _refusals = synthesise._description_inputs(walk, [], {"retie_kite"})
+    assert [row["value"] for row in facts] == ["teal5", "32"]
+    assert ask == [{"field": "length", "value": "32"}]

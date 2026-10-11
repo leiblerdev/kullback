@@ -1193,16 +1193,16 @@ def _trace_of(parent: Path, run_id: str) -> Optional[dict]:
     return trace if isinstance(trace, dict) else None
 
 
-def _description_inputs(calls: list[dict], refused: list[str]) -> tuple[list[dict], list[dict],
-                                                                         list[str]]:
+def _description_inputs(calls: list[dict], refused: list[str], writes: Iterable[str] = ()
+                        ) -> tuple[list[dict], list[dict], list[str]]:
     """The description's matter: customer-known values, the ask per write, and refused values.
 
     A bound value the walk already read from an earlier answer is not the customer's to state;
     every other value is, ids included: an id no answer carried is the customer's own. The ask is
-    each write's arguments: the change the customer wants. A refused value the walk never read is
-    the customer's own constraint."""
+    each write's own values no earlier answer carried: the change the customer wants. A refused
+    value the walk never read is the customer's own constraint."""
     facts, read_values = _customer_facts(calls)
-    ask = _ask_for(calls)
+    ask = _ask_for(calls, set(writes))
     seen: set[str] = set()
     refusals = [value for value in refused or ()
                 if value and value not in read_values and value not in seen
@@ -1236,16 +1236,21 @@ def _customer_facts(calls: list[dict]) -> tuple[list[dict], set[str]]:
     return facts, read_values
 
 
-def _ask_for(calls: list[dict]) -> list[dict]:
-    """Each call's arguments: the change the customer wants, field by field."""
+def _ask_for(calls: list[dict], writes: set[str]) -> list[dict]:
+    """Each write's values no earlier answer carried: the change the customer wants, by field.
+
+    A value the walk read first (a row the agent finds) is the agent's to look up, never asked."""
     ask: list[dict] = []
     asked: set[tuple[str, str]] = set()
+    read_values: set[str] = set()
     for call in calls or ():
-        for path, value in graph_mod.argument_leaves(call):
-            field = _leaf_field(path)
-            if value and (field, value) not in asked:
-                asked.add((field, value))
-                ask.append({"field": field, "value": value})
+        if str(call.get("name")) in writes:
+            for path, value in graph_mod.argument_leaves(call):
+                field = _leaf_field(path)
+                if value and value not in read_values and (field, value) not in asked:
+                    asked.add((field, value))
+                    ask.append({"field": field, "value": value})
+        read_values.update(text for _path, text in graph_mod._leaves(call.get("result")))  # noqa: SLF001
     return ask
 
 
@@ -1391,7 +1396,7 @@ def _store_task(world: World, parent: Path, store: Path, calls: list[dict], note
 
     task_id = _task_id(ident)
     writes = {str(call.get("name")) for call in calls} & set(world.write_tools)
-    facts, ask, refusals = _description_inputs(calls, note.get("refused") or [])
+    facts, ask, refusals = _description_inputs(calls, note.get("refused") or [], writes)
     text, _why = description_text(model, facts, ask, refusals, consent=consent,
                                   example=_style_example(parent, writes))
     if not text:
