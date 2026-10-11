@@ -1,6 +1,6 @@
-"""The review loop: Examiner round, writer round, Examiner round, at most ROUNDS_CAP rounds (D331).
+"""The review loop: Examiner round, writer round, Examiner round, at most the round cap (D331, D358).
 
-The writer's first round is the Spec itself, so ROUNDS_CAP rounds give the writer ROUNDS_CAP rounds
+The writer's first round is the Spec itself, so a cap of n rounds gives the writer n rounds
 and the Examiner as many (D350). Each Examiner round files rulings (and from round two
 closes or keeps open the ones the writer answered); each writer round answers every open ruling,
 applied or rebutted. The loop stops early when no ruling is open. The Spec's `round` and
@@ -20,7 +20,7 @@ from typing import Any, Callable, Iterable, Optional
 from kullback.spec import events
 from kullback.spec import rulings as R
 from kullback.spec.review import answer_rulings
-from kullback.spec.router import ROUNDS_CAP, is_set_aside, writer_rounds
+from kullback.spec.router import is_set_aside, rounds_cap, writer_rounds
 from kullback.spec.schema import load_spec
 
 LOG_FILE = "spec/state/rounds.jsonl"
@@ -82,7 +82,7 @@ def _sync_round(root: Path, task_ids: list[str], exam: dict, number: int) -> set
 
 
 def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., dict], model: Any,
-               writer_model: Any = None, rounds: int = ROUNDS_CAP, ceiling_usd: Optional[float] = None,
+               writer_model: Any = None, rounds: Optional[int] = None, ceiling_usd: Optional[float] = None,
                answer: Callable[..., dict] = answer_rulings, confirm: Optional[Callable[..., dict]] = None) -> dict:
     """Examiner and writer rounds over the Tasks until no ruling is open or `rounds` Examiner rounds ran.
 
@@ -97,7 +97,7 @@ def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., 
     root = Path(workdir)
     task_ids = sorted(set(task_ids))
     bus = Bus(root / "bus.jsonl", agent="spec")
-    rounds = min(int(rounds), ROUNDS_CAP)
+    rounds = min(int(rounds or rounds_cap()), rounds_cap())
     log: list[dict] = []
     found: list[dict] = []
     examined_all: set[str] = set()

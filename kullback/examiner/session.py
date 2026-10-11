@@ -851,7 +851,6 @@ def examine_rounds(workdir: Any, task_ids: Iterable[str], *, model: Any, writer_
                    rounds: Optional[int] = None, ceiling_usd: Optional[float] = None) -> dict:
     """The review loop over the Tasks with the Examiner's round wired in (spec/rounds.py, D331)."""
     from kullback.spec.rounds import run_rounds
-    from kullback.spec.router import ROUNDS_CAP
 
     return run_rounds(workdir, task_ids, examine=review_specs, model=model, writer_model=writer_model,
-                      rounds=rounds or ROUNDS_CAP, ceiling_usd=ceiling_usd)
+                      rounds=rounds, ceiling_usd=ceiling_usd)

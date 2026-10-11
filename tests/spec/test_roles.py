@@ -285,6 +285,18 @@ def test_the_loop_gives_a_ruling_kept_open_back_to_the_writer_until_three_writer
     assert [row["side"] for row in logged] == ["examiner", "writer", "examiner", "writer", "examiner", "summary"]
 
 
+def test_a_round_cap_of_four_gives_the_writer_a_third_answer_before_the_task_is_held(tmp_path, monkeypatch):
+    from kullback.spec.router import ROUNDS_CAP_ENV
+
+    monkeypatch.setenv(ROUNDS_CAP_ENV, "4")
+    root = _told(tmp_path)
+    seen = []
+    out = RD.run_rounds(root, ["t1"], examine=_keeping_examiner(seen), model=None, answer=_rebutting_writer(seen))
+    assert seen[-3:] == [("examiner", 3), ("writer", 4, [1]), ("examiner", 4)]
+    assert out["tasks"]["t1"]["writer_rounds"] == 4 and out["tasks"]["t1"]["set_aside"]
+    assert load_spec(root, "t1").round == 4
+
+
 def test_the_loop_stops_after_one_examiner_round_when_nothing_is_ruled(tmp_path):
     root = _told(tmp_path)
     calls = []
