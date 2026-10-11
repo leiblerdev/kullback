@@ -173,7 +173,7 @@ def test_a_required_cell_also_listed_unknown_goes_back_once_and_a_settled_answer
     model = TestModel([answer(required=[MOVE], unknown=[UNSURE]), answer(required=[MOVE])])
     goal = G.write_goal("t1", G.load_goal_inputs(tmp_path, "t1"), model)
     assert goal["asked"] == ["clash"] and goal["moved"] == 0 and goal["required"] == [MOVE]
-    assert model.calls[-1]["messages"][-1]["content"].startswith(G.CLASH_PROMPT)
+    assert model.calls[-1]["messages"][-1]["content"].startswith(G.BACK_PROMPT)
 
 
 def test_a_clash_still_there_after_the_ask_is_moved_to_unknown_by_code(tmp_path):
@@ -181,10 +181,43 @@ def test_a_clash_still_there_after_the_ask_is_moved_to_unknown_by_code(tmp_path)
     clash = answer(required=[MOVE], unknown=[UNSURE])
     goal = G.write_goal("t1", G.load_goal_inputs(tmp_path, "t1"), TestModel([clash, clash]))
     assert goal["moved"] == 1 and goal["required"] == []
-    assert goal["unknown"][-1] == {"table": "items", "row": "A1", "field": "slot", "what": G.MOVED}
+    assert goal["unknown"][-1] == {"table": "items", "row": "A1", "field": "slot", "what": G.MOVED + G.CLASH}
 
 
 def test_an_unknown_on_another_row_or_field_is_no_clash():
     other = [dict(UNSURE, row="B2"), dict(UNSURE, field="label"), "a plain unknown"]
     assert G.clashes({"required": [MOVE], "unknown": other}) == []
     assert G.clashes({"required": [MOVE], "unknown": [dict(UNSURE, field="")]}) != []
+
+
+INDEXED = {"table": "items", "row": "A1", "field": "parts[0].slot", "value": "seven", "user": ASK}
+ELSEWHERE = {"table": "orders", "row": "new:1", "field": "tool", "value": "update_item", "user": ASK}
+
+
+def test_the_output_rule_says_a_list_is_whole_or_an_append_never_an_indexed_path():
+    assert "never an indexed path" in G.OUTPUT and "names a table the Starting state holds" in G.OUTPUT
+
+
+def test_an_indexed_path_or_a_table_the_starting_state_lacks_goes_back_once_and_a_fixed_answer_stands(tmp_path):
+    _workdir(tmp_path)
+    model = TestModel([answer(required=[INDEXED, ELSEWHERE]), answer(required=[MOVE])])
+    goal = G.write_goal("t1", G.load_goal_inputs(tmp_path, "t1"), model)
+    asked = model.calls[-1]["messages"][-1]["content"]
+    assert goal["asked"] == ["indexed", "table"] and goal["moved"] == 0 and goal["required"] == [MOVE]
+    assert asked.startswith(G.BACK_PROMPT) and G.INDEXED in asked and G.NO_TABLE in asked
+
+
+def test_a_sent_back_cell_still_there_after_the_ask_moves_to_unknown_from_required_or_choice(tmp_path):
+    _workdir(tmp_path)
+    choice = {"table": "items", "row": "B2", "field": "parts[1]", "allowed": "any valid"}
+    again = answer(required=[MOVE, INDEXED], choice=[choice])
+    goal = G.write_goal("t1", G.load_goal_inputs(tmp_path, "t1"), TestModel([again, again]))
+    assert goal["moved"] == 2 and goal["required"] == [MOVE] and goal["choice"] == []
+    assert [u["what"] for u in goal["unknown"][-2:]] == [G.MOVED + G.INDEXED] * 2
+
+
+def test_a_dotted_path_and_a_table_the_schema_declares_are_not_sent_back():
+    world = G.I.World(STATE, columns={"orders": ["order_id"]})
+    dotted = dict(MOVE, field="slot.name")
+    declared = dict(ELSEWHERE, field="order_id")
+    assert G.sent_back({"required": [dotted, declared], "unknown": []}, world) == []

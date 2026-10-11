@@ -74,8 +74,8 @@ of the request itself is unclear; then list what you can still say."""
 OUTPUT = """\
 Answer with one JSON object and nothing else:
 {"cannot_tell": false, "why": "<the goal in one or two lines>",
- "required": [{"table": "", "row": "<key, or new:1 for a row the solve creates>", "field": "<field or \
-dotted path>", "value": <the value after the solve>, "user": "<the user's words it rests on>", "policy": \
+ "required": [{"table": "", "row": "<key, or new:1 for a row the solve creates>", "field": "<field, or a \
+dotted path into a dict>", "value": <the value after the solve>, "user": "<the user's words it rests on>", "policy": \
 "<or the policy line>"}],
  "choice": [{"table": "", "row": "", "field": "", "allowed": [<values>] or "any valid", "why": ""}],
  "untouched": ["everything else"] or [{"table": "", "row": "", "field": "<optional>"}],
@@ -83,8 +83,8 @@ dotted path>", "value": <the value after the solve>, "user": "<the user's words 
  "refuse": [{"what": "<the request>", "policy": "<the line>"}],
  "unknown": [{"what": "<what cannot be decided, and why>", "table": "<when it is about one row>", "row": "", \
 "field": "<optional>"}]}
-For a list field give the whole list after the solve, or {"append": [<elements>]} for what the solve adds. \
-A value null means the solve removes the field. A value may name a created row as new:1. Quote user \
+For a list field give the whole list after the solve, or {"append": [<elements>]} for what the solve adds, \
+never an indexed path such as items[2].price. A cell names a table the Starting state holds. A value null means the solve removes the field. A value may name a created row as new:1. Quote user \
 words and policy lines exactly, short."""
 
 STOP_RULE = """\
@@ -93,13 +93,17 @@ you name rests on what you read. Then answer with the JSON object alone."""
 
 SYSTEM_PROMPT = "\n\n".join((WHAT_YOU_RECEIVE, TOOLS_TEXT, RULES, CHOICE_RULE, OUTPUT, STOP_RULE)) + "\n"
 
-CLASH_PROMPT = """These required cells are also listed under unknown. Keep a cell required only if the evidence \
-settles it, and then drop it from unknown; else move it to choice or unknown. Answer with the whole goal object \
-again, alone. The cells: """
+BACK_PROMPT = """Code sends these cells back, each with why. A required cell also listed under unknown stays \
+required only if the evidence settles it (then drop it from unknown); else move it to choice or unknown. A cell \
+with an indexed path gives its list field as the whole list or an append. A cell on a table the Starting state \
+lacks names a table it holds, or goes to unknown. Answer with the whole goal object again, alone. The cells: """
+# Why code sends a cell back once; still there after that ask, the cell moves to unknown.
+CLASH, INDEXED, NO_TABLE = "listed under unknown", "indexed path", "no such table in the Starting state"
+TAGS = {CLASH: "clash", INDEXED: "indexed", NO_TABLE: "table"}
 EMPTY_PROMPT = "Answer now with the goal object alone, as one JSON object."
 # The assistant turn kept before a follow-up when the last answer was empty: an empty text turn is refused.
 NO_ANSWER = "(no answer)"
-MOVED = "moved to unknown by code: listed under unknown and required again after one ask"
+MOVED = "moved to unknown by code, sent back once and still there: "
 
 
 class GoalInputs(NamedTuple):
@@ -261,12 +265,36 @@ def _overlaps(one: str, other: str) -> bool:
     return one == other or one.startswith(other + ".") or other.startswith(one + ".")
 
 
+def sent_back(goal: dict, world: I.World) -> list[dict]:
+    """The cells code sends back, each with why: a required cell an unknown also names, and a required or
+    choice cell with an indexed path or on a table the Starting state lacks."""
+    clashing = {(c["table"], c["row"], c["field"]) for c in clashes(goal)}
+    out = []
+    for kind in ("required", "choice"):
+        for cell in goal.get(kind) or []:
+            if not isinstance(cell, dict):
+                continue
+            spot = {"kind": kind, "table": cell.get("table"), "row": cell.get("row"),
+                    "field": str(cell.get("field") or "")}
+            table = str(cell.get("table") or "")
+            if table not in world.state and table not in world.declared:
+                out.append(dict(spot, why=NO_TABLE))
+            elif re.search(r"\[\d*\]", spot["field"]):
+                out.append(dict(spot, why=INDEXED))
+            elif kind == "required" and (spot["table"], spot["row"], spot["field"]) in clashing:
+                out.append(dict(spot, why=CLASH))
+    return out
+
+
 def moved_to_unknown(goal: dict, found: list[dict]) -> dict:
-    """The goal with each clashing required cell taken out of required and named under unknown."""
-    keys = {(c["table"], c["row"], c["field"]) for c in found}
-    kept = [c for c in goal["required"] if not isinstance(c, dict) or
-            (c.get("table"), c.get("row"), str(c.get("field") or "")) not in keys]
-    return dict(goal, required=kept, unknown=list(goal["unknown"]) + [dict(c, what=MOVED) for c in found])
+    """The goal with each cell code sent back taken out of required or choice and named under unknown."""
+    keys = {(c["kind"], c["table"], c["row"], c["field"]) for c in found}
+    out = dict(goal, unknown=list(goal["unknown"]) + [
+        {"table": c["table"], "row": c["row"], "field": c["field"], "what": MOVED + c["why"]} for c in found])
+    for kind in ("required", "choice"):
+        out[kind] = [c for c in goal[kind] if not isinstance(c, dict) or
+                     (kind, c.get("table"), c.get("row"), str(c.get("field") or "")) not in keys]
+    return out
 
 
 class _Recorded:
@@ -298,8 +326,9 @@ def write_goal(task_id: str, inputs: GoalInputs, model: Any, *, model_id: Option
                config: Any = None, ceiling_usd: Optional[float] = None) -> dict:
     """One goal session for one Task: the reads, then the goal object, with what it spent.
 
-    An empty answer gets one plain ask for the goal object. A required cell also listed under unknown
-    goes back once in the same conversation; still there after that, code moves it to unknown.
+    An empty answer gets one plain ask for the goal object. A required cell also listed under unknown,
+    and a cell with an indexed path or on a table the Starting state lacks, goes back once in the same
+    conversation; still there after that, code moves it to unknown.
     """
     from kullback.spec.writer import _price
 
@@ -310,16 +339,17 @@ def write_goal(task_id: str, inputs: GoalInputs, model: Any, *, model_id: Option
                                        price, force_answer=True, ceiling_usd=ceiling_usd, tools=GOAL_TOOLS,
                                        impl=read_tools(inputs))
     text, usd, thinking = session.get("text") or "", float(session.get("usd") or 0.0), session.get("thinking", [])
-    goal, asked = parse_goal(text, inputs), []
+    goal, asked, world = parse_goal(text, inputs), [], world_of(inputs)
     for kind, ask in (("empty", lambda g: EMPTY_PROMPT if not g["answered"] else ""),
-                      ("clash", lambda g: CLASH_PROMPT + json.dumps(clashes(g)) if clashes(g) else "")):
+                      ("back", lambda g: BACK_PROMPT + json.dumps(sent_back(g, world)) if sent_back(g, world)
+                       else "")):
         prompt = ask(goal)
         if prompt and recorded.last is not None:
+            asked += [kind] if kind == "empty" else sorted({TAGS[c["why"]] for c in sent_back(goal, world)})
             again, spent, more = _follow_up(recorded, prompt, config, price)
             text, usd, thinking = again or text, usd + spent, thinking + more
             goal = parse_goal(text, inputs) if again else goal
-            asked.append(kind)
-    left = clashes(goal)
+    left = sent_back(goal, world)
     if left:
         goal = moved_to_unknown(goal, left)
     return dict(goal, task_id=task_id, model=model_id, usd=usd, asked=asked, moved=len(left),
