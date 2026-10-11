@@ -1314,11 +1314,10 @@ def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = 
         for attempt in range(wanted * ATTEMPTS_PER_TASK):
             if made >= wanted:
                 break
-            ident = f"{salt}:{bucket}:{attempt}"
-            steps = graph_mod.walk(body, bucket, ident)
-            if not steps:
+            calls, note, ident = _attempt_walk(world, body, observed, bucket, salt, attempt,
+                                              counts)
+            if ident is None:
                 break
-            calls, note = _attempt_walk(world, body, observed, steps, ident, counts)
             if not calls:
                 continue
             row, drop = _store_task(world, parent, store, calls, note, bucket, ident,
@@ -1334,23 +1333,29 @@ def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = 
                               references, replays, status)
 
 
-def _attempt_walk(world: World, body: dict, observed: dict, steps: list[dict], ident: str,
-                  counts: dict) -> tuple[list[dict], dict]:
-    """One walk bound and run through the bodies, counted; no calls where the walk fell."""
+def _attempt_walk(world: World, body: dict, observed: dict, bucket: str, salt: str,
+                  attempt: int, counts: dict) -> tuple[list[dict], dict, Optional[str]]:
+    """One walk proposed, bound and run through the bodies, counted.
+
+    No ident where the graph offers no walk for the bucket; no calls where the walk fell."""
+    ident = f"{salt}:{bucket}:{attempt}"
+    steps = graph_mod.walk(body, bucket, ident)
     note: dict = {}
+    if not steps:
+        return [], note, None
     counts["walks_tried"] += 1
     calls, why = run_walk(world, steps, observed, ident, graph=body,
                           write_tools=world.write_tools, note=note)
     if why == REFUSED:
         counts["walks_refused"] += 1
-        return [], note
+        return [], note, ident
     if why == CRASHED:
         counts["walks_crashed"] += 1
-        return [], note
+        return [], note, ident
     if why == UNBOUND or not calls:
         counts["walks_unbound"] += 1
-        return [], note
-    return calls, note
+        return [], note, ident
+    return calls, note, ident
 
 
 def _write_store_index(store: Path, buckets: dict, salt: str, counts: dict,
