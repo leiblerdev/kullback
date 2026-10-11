@@ -56,13 +56,15 @@ infer. A wish the user only reached after the agent declined or proposed somethi
 2. Hold each request against the policy. A request the policy forbids is refused, not done; a request the \
 policy allows is done the way the policy says, with the values the user fixed.
 3. Find every row a request touches in the Starting state. Derive each written value from the user's words, \
-the policy and the rows you read: compute what a tool would set (a status, an amount, a list after the \
-change) from the row as it stands. Never invent a value you did not read or compute.
+the policy and the rows you read. A value only a tool sets (a status label, a list the tool rebuilds, an \
+amount the tool computes) is choice or unknown unless the policy states it. Never invent a value you did \
+not read.
 4. Be honest about what you cannot settle. An unknown beats a guess."""
 
 CHOICE_RULE = """\
 Where each cell goes:
-- required: a right solve writes exactly this value, and the user's words or a policy line fix it.
+- required: a right solve writes exactly this value, and the user's words or a policy line fix it. A cell \
+you also list under unknown is not required.
 - choice: a right solve writes this cell, but more than one value is right (the user left it open, or \
 the policy allows several); give the allowed set, or "any valid" when any value a tool accepts is right.
 - unknown: what this evidence cannot decide (the user's wish is unclear, a row you need is not there, \
@@ -79,7 +81,8 @@ dotted path>", "value": <the value after the solve>, "user": "<the user's words 
  "untouched": ["everything else"] or [{"table": "", "row": "", "field": "<optional>"}],
  "told": [{"item": "<a yes or no question: did the agent tell the user ...>", "user": "<the user's words>"}],
  "refuse": [{"what": "<the request>", "policy": "<the line>"}],
- "unknown": ["<what cannot be decided, and why>"]}
+ "unknown": [{"what": "<what cannot be decided, and why>", "table": "<when it is about one row>", "row": "", \
+"field": "<optional>"}]}
 For a list field give the whole list after the solve, or {"append": [<elements>]} for what the solve adds. \
 A value null means the solve removes the field. A value may name a created row as new:1. Quote user \
 words and policy lines exactly, short."""
@@ -89,6 +92,14 @@ Stop when every request the user made is placed (required, choice, refused or un
 you name rests on what you read. Then answer with the JSON object alone."""
 
 SYSTEM_PROMPT = "\n\n".join((WHAT_YOU_RECEIVE, TOOLS_TEXT, RULES, CHOICE_RULE, OUTPUT, STOP_RULE)) + "\n"
+
+CLASH_PROMPT = """These required cells are also listed under unknown. Keep a cell required only if the evidence \
+settles it, and then drop it from unknown; else move it to choice or unknown. Answer with the whole goal object \
+again, alone. The cells: """
+EMPTY_PROMPT = "Answer now with the goal object alone, as one JSON object."
+# The assistant turn kept before a follow-up when the last answer was empty: an empty text turn is refused.
+NO_ANSWER = "(no answer)"
+MOVED = "moved to unknown by code: listed under unknown and required again after one ask"
 
 
 class GoalInputs(NamedTuple):
@@ -229,21 +240,91 @@ def goal_path(workdir: Path, task_id: str, folder: Path = GOAL_DIR) -> Path:
     return Path(workdir) / folder / f"{task_id}.json"
 
 
+def clashes(goal: dict) -> list[dict]:
+    """The required cells whose row (and field, when the unknown names one) an unknown entry also names."""
+    spots = [u for u in goal.get("unknown") or [] if isinstance(u, dict) and u.get("table") and u.get("row")]
+    out = []
+    for cell in goal.get("required") or []:
+        if not isinstance(cell, dict):
+            continue
+        field = str(cell.get("field") or "")
+        for spot in spots:
+            other = str(spot.get("field") or "")
+            same_row = (str(spot["table"]), str(spot["row"])) == (str(cell.get("table")), str(cell.get("row")))
+            if same_row and (not other or _overlaps(field, other)):
+                out.append({"table": cell.get("table"), "row": cell.get("row"), "field": field})
+                break
+    return out
+
+
+def _overlaps(one: str, other: str) -> bool:
+    return one == other or one.startswith(other + ".") or other.startswith(one + ".")
+
+
+def moved_to_unknown(goal: dict, found: list[dict]) -> dict:
+    """The goal with each clashing required cell taken out of required and named under unknown."""
+    keys = {(c["table"], c["row"], c["field"]) for c in found}
+    kept = [c for c in goal["required"] if not isinstance(c, dict) or
+            (c.get("table"), c.get("row"), str(c.get("field") or "")) not in keys]
+    return dict(goal, required=kept, unknown=list(goal["unknown"]) + [dict(c, what=MOVED) for c in found])
+
+
+class _Recorded:
+    """The model with the messages of its last call and the reply kept, so a follow-up continues them."""
+
+    def __init__(self, model: Any):
+        self.model, self.last = model, None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.model, name)
+
+    def query(self, messages: list[dict], **kwargs: Any) -> Any:
+        reply = self.model.query(messages, **kwargs)
+        self.last = (list(messages), reply)
+        return reply
+
+
+def _follow_up(recorded: _Recorded, ask: str, config: Any, price: Any) -> tuple[str, float, list]:
+    """One more turn of the same conversation with no tool allowed: the answer text, its usd, its thinking."""
+    messages, reply = recorded.last
+    turn = {"role": "assistant", "content": reply.content or NO_ANSWER}
+    answer = recorded.query(messages + [turn, {"role": "user", "content": ask}], tools=GOAL_TOOLS,
+                                  config=writer_tools._forced(config))
+    usd = price(writer_tools._usage_of(answer)) if price else 0.0
+    return answer.content or "", usd, writer_tools._thinking_of(answer)
+
+
 def write_goal(task_id: str, inputs: GoalInputs, model: Any, *, model_id: Optional[str] = None,
                config: Any = None, ceiling_usd: Optional[float] = None) -> dict:
-    """One goal session for one Task: the reads, then the goal object, with what it spent."""
+    """One goal session for one Task: the reads, then the goal object, with what it spent.
+
+    An empty answer gets one plain ask for the goal object. A required cell also listed under unknown
+    goes back once in the same conversation; still there after that, code moves it to unknown.
+    """
     from kullback.spec.writer import _price
 
     writer_tools.refuse_run_inputs(inputs.state)
-    price = _price(model_id)
-    session = writer_tools.run_session(model, goal_messages(inputs), inputs.state, _config(config), MAX_GOAL_ROUNDS,
+    price, config = _price(model_id), _config(config)
+    recorded = _Recorded(model)
+    session = writer_tools.run_session(recorded, goal_messages(inputs), inputs.state, config, MAX_GOAL_ROUNDS,
                                        price, force_answer=True, ceiling_usd=ceiling_usd, tools=GOAL_TOOLS,
                                        impl=read_tools(inputs))
-    goal = parse_goal(session.get("text") or "", inputs)
-    return dict(goal, task_id=task_id, model=model_id, usd=float(session.get("usd") or 0.0),
+    text, usd, thinking = session.get("text") or "", float(session.get("usd") or 0.0), session.get("thinking", [])
+    goal, asked = parse_goal(text, inputs), []
+    for kind, ask in (("empty", lambda g: EMPTY_PROMPT if not g["answered"] else ""),
+                      ("clash", lambda g: CLASH_PROMPT + json.dumps(clashes(g)) if clashes(g) else "")):
+        prompt = ask(goal)
+        if prompt and recorded.last is not None:
+            again, spent, more = _follow_up(recorded, prompt, config, price)
+            text, usd, thinking = again or text, usd + spent, thinking + more
+            goal = parse_goal(text, inputs) if again else goal
+            asked.append(kind)
+    left = clashes(goal)
+    if left:
+        goal = moved_to_unknown(goal, left)
+    return dict(goal, task_id=task_id, model=model_id, usd=usd, asked=asked, moved=len(left),
                 tool_rounds=session.get("tool_rounds", 0), tool_uses=session.get("tool_uses", []),
-                unfinished=bool(session.get("unfinished")), text=session.get("text") or "",
-                thinking=session.get("thinking", []))
+                unfinished=bool(session.get("unfinished")), text=text, thinking=thinking)
 
 
 def goals(workdir: Any, task_ids: Iterable[str], model: Any, *, folder: Path = GOAL_DIR,

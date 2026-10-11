@@ -87,7 +87,7 @@ def test_the_session_is_given_only_the_read_tools():
 
 def test_a_tool_outside_the_reads_is_answered_as_unknown(tmp_path):
     _workdir(tmp_path)
-    model = TestModel([call("add_items", items=[]), answer()])
+    model = TestModel([call("add_items", items=[]), answer(required=[])])
     G.write_goal("t1", G.load_goal_inputs(tmp_path, "t1"), model)
     assert model.calls[1]["messages"][-1]["content"] == "unknown tool"
 
@@ -148,3 +148,43 @@ def test_goals_writes_one_file_per_task_and_skips_one_already_written(tmp_path):
     saved = json.loads(G.goal_path(tmp_path, "t1").read_text())
     assert first["written"] == 1 and again == dict(again, written=0, skipped=1)
     assert saved["required"] == [MOVE] and saved["task_id"] == "t1"
+
+
+def test_the_prompt_says_a_value_only_a_tool_sets_is_choice_or_unknown_unless_the_policy_states_it():
+    assert "A value only a tool sets" in G.RULES and "is choice or unknown unless the policy states it" in G.RULES
+    assert "you also list under unknown is not required" in G.CHOICE_RULE
+
+
+def test_an_empty_last_answer_gets_one_plain_ask_for_the_goal_object(tmp_path):
+    _workdir(tmp_path)
+    model = TestModel([call("read_row", table="items", key="A1"), ModelReply(content=""), answer(required=[MOVE])])
+    goal = G.write_goal("t1", G.load_goal_inputs(tmp_path, "t1"), model)
+    last = model.calls[-1]["messages"]
+    assert goal["asked"] == ["empty"] and goal["required"] == [MOVE] and goal["answered"] is True
+    assert last[-1]["content"] == G.EMPTY_PROMPT and last[-2] == {"role": "assistant", "content": G.NO_ANSWER}
+    assert model.calls[-1]["config"].tool_choice == "none"
+
+
+UNSURE = {"what": "the slot may be taken", "table": "items", "row": "A1", "field": "slot"}
+
+
+def test_a_required_cell_also_listed_unknown_goes_back_once_and_a_settled_answer_stands(tmp_path):
+    _workdir(tmp_path)
+    model = TestModel([answer(required=[MOVE], unknown=[UNSURE]), answer(required=[MOVE])])
+    goal = G.write_goal("t1", G.load_goal_inputs(tmp_path, "t1"), model)
+    assert goal["asked"] == ["clash"] and goal["moved"] == 0 and goal["required"] == [MOVE]
+    assert model.calls[-1]["messages"][-1]["content"].startswith(G.CLASH_PROMPT)
+
+
+def test_a_clash_still_there_after_the_ask_is_moved_to_unknown_by_code(tmp_path):
+    _workdir(tmp_path)
+    clash = answer(required=[MOVE], unknown=[UNSURE])
+    goal = G.write_goal("t1", G.load_goal_inputs(tmp_path, "t1"), TestModel([clash, clash]))
+    assert goal["moved"] == 1 and goal["required"] == []
+    assert goal["unknown"][-1] == {"table": "items", "row": "A1", "field": "slot", "what": G.MOVED}
+
+
+def test_an_unknown_on_another_row_or_field_is_no_clash():
+    other = [dict(UNSURE, row="B2"), dict(UNSURE, field="label"), "a plain unknown"]
+    assert G.clashes({"required": [MOVE], "unknown": other}) == []
+    assert G.clashes({"required": [MOVE], "unknown": [dict(UNSURE, field="")]}) != []
