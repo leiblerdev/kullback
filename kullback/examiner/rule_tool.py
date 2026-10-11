@@ -277,10 +277,25 @@ def no_verifier(workdir: Any, task_id: str, why: str) -> None:
         save_spec(workdir, spec.model_copy(update={"set_aside": why}))
 
 
+def _unsided(ruling: R.Ruling) -> bool:
+    """A fails_reference ruling with no side named: trust's routed row, waiting for the Examiner's diagnosis."""
+    return ruling.code == "fails_reference" and ruling.wrong_side is None
+
+
+def _answer_unsided(root: ExamRoot, ruling: R.Ruling) -> None:
+    """A fails_reference ruling with its side and step answers the Task's routed rows: they close on it."""
+    for routed in R.load_rulings(root.workdir, ruling.task_id):
+        if routed.status == "open" and _unsided(routed) and routed.round < ruling.round:
+            R.close(root.workdir, ruling.task_id, routed.number, False,
+                    f"Diagnosed by ruling {ruling.number}: wrong side {ruling.wrong_side}.", ruling.round)
+
+
 def file_ruling(root: ExamRoot, args: RuleArgs) -> dict:
     """Write the ruling under exam/rulings/<task>/<n>.json, count it on the Spec, publish ruling.filed."""
     ruling = checked_ruling(root, args)
     path = R.save_ruling(root.workdir, ruling)
+    if ruling.code == "fails_reference":
+        _answer_unsided(root, ruling)
     R.sync_spec(root.workdir, ruling.task_id)
     if ruling.code == "fails_reference" and ruling.wrong_side == "reference":
         no_verifier(root.workdir, ruling.task_id, REFERENCE_WRONG)
@@ -307,6 +322,11 @@ def _close(root: ExamRoot):
         why = R.sentence_refusal(args.why, "why")
         if why:
             _refuse(root.workdir, args.task_id, "bad_why", why, args.why)
+        held = next((r for r in R.load_rulings(root.workdir, args.task_id) if r.number == args.number), None)
+        if held is not None and _unsided(held) and not args.keep_open:
+            _refuse(root.workdir, args.task_id, "unsided_close", "a Reference failure is not closed: rule it. File "
+                    "rule with code fails_reference on the failing check, wrong_side and ref_step; this ruling "
+                    "closes on it.")
         try:
             ruling = R.close(root.workdir, args.task_id, args.number, args.keep_open, args.why, root.round)
         except (OSError, ValueError) as exc:

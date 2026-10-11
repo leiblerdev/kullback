@@ -212,3 +212,30 @@ def test_the_writer_is_never_asked_about_a_task_with_no_verifier(tmp_path):
 def test_the_repair_prompt_says_cannot_verify_instead_of_loosening_a_check():
     assert "cannot verify: <why>" in WR.REPAIR_PROMPT
     assert "loosen a check" in WR.REPAIR_PROMPT
+
+
+def _routed(root):
+    RL.save_ruling(root, RL.Ruling(task_id="t1", number=1, round=0, item="s1", kind="code", code="fails_reference",
+                                   reason="The kept Reference fails this Verifier, found by code at the trust step.",
+                                   fix="File a fails_reference ruling naming wrong_side and ref_step.", blocking=True))
+    RL.sync_spec(root, "t1")
+
+
+def test_a_routed_reference_failure_cannot_be_closed_without_a_side(tmp_path):
+    root = _live_root(tmp_path)
+    _routed(tmp_path)
+    with pytest.raises(ValueError, match="rule it"):
+        asyncio.run(R._close(root)(R.CloseArgs(task_id="t1", number=1, keep_open=False,
+                                                why="The Reference is the wrong side here.")))
+    assert RL.load_rulings(tmp_path, "t1")[0].status == "open"
+
+
+def test_a_sided_ruling_closes_the_routed_row_and_ends_the_task_with_no_verifier(tmp_path):
+    root = _live_root(tmp_path)
+    _routed(tmp_path)
+    root.verified["t1"] = [{"run": "reference", "verifier_passes_it": False, "failing": "s1"}]
+    _rule(root, wrong_side="reference", ref_step=1)
+    routed, sided = RL.load_rulings(tmp_path, "t1")
+    assert routed.status == "closed" and sided.ref_step == 1
+    spec = load_spec(tmp_path, "t1")
+    assert spec.rulings_open == 0 and spec.set_aside == ROUTER.REFERENCE_WRONG

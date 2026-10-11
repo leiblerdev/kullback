@@ -406,7 +406,7 @@ def route_reference_fails(workdir: Any, tiers: dict[str, TaskTier]) -> list[int]
         ruling = R.Ruling(task_id=task_id, number=R.next_number(workdir, task_id), round=0, item=item, kind="code",
                           code="fails_reference", blocking=True,
                           reason="The kept Reference fails this Verifier, found by code at the trust step.",
-                          fix="Rule which side is wrong: close this if the Reference is wrong, else file the fix.",
+                          fix="File a fails_reference ruling naming wrong_side and ref_step; this one closes on it.",
                           verified=[{"run": "reference", "verifier_passes_it": False, "failing": row.get("atom")}])
         R.save_ruling(workdir, ruling)
         R.sync_spec(workdir, task_id)
