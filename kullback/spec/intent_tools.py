@@ -138,12 +138,26 @@ def mark_echo(facts: list[IntentFact], found: TaskRecordings) -> list[IntentFact
 ASK_KINDS = ("do", "keep")
 
 
+def opening_turns(facts: list[IntentFact]) -> dict[str, int]:
+    """Per recording, the opening ask: the first user turn carrying a do, keep or told fact. A greeting
+    or a turn with only details carries no ask and does not count."""
+    out: dict[str, int] = {}
+    for fact in facts:
+        if fact.kind in ASK_KINDS + ("told",):
+            source = fact.source
+            out[source.recording] = min(out.get(source.recording, source.turn), source.turn)
+    return out
+
+
 def mark_side(facts: list[IntentFact]) -> list[IntentFact]:
     """The facts with `side` set by code: a told fact is side when another fact of the Task asks for a
-    change or for something left undone. A Task whose only asks are told facts has none; turn order
-    never decides it."""
+    change or for something left undone and the user did not say it in the opening ask. A Task whose
+    only asks are told facts has none."""
     asks = any(fact.kind in ASK_KINDS for fact in facts)
-    return [fact.model_copy(update={"side": asks and fact.kind == "told"}) for fact in facts]
+    opening = opening_turns(facts)
+    return [fact.model_copy(update={"side": asks and fact.kind == "told"
+                                    and fact.source.turn != opening.get(fact.source.recording)})
+            for fact in facts]
 
 
 def carried_share(text: str, turn: UserTurn) -> float:
@@ -356,6 +370,6 @@ def tool_names() -> tuple[str, ...]:
 
 
 __all__ = ["ASK_KINDS", "CARRIED_SHARE", "WITNESS_SHARE", "MinerState", "TaskRecordings", "UserTurn", "carried_share", "content_tokens",
-           "counts", "mark_side", "miner_tools", "recordings_of", "share_in", "task_of", "tool_names", "trace_index",
+           "counts", "mark_side", "miner_tools", "opening_turns", "recordings_of", "share_in", "task_of", "tool_names", "trace_index",
            "user_turns_of", "volunteers", "witnesses"]
 

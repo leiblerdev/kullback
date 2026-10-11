@@ -248,17 +248,34 @@ def _fact(fact_id, kind, turn=0):
                         source=T.FactSource(recording="rec", turn=turn))
 
 
-def test_a_told_fact_beside_a_write_ask_is_side_whatever_turn_says_it_first():
+def test_a_told_fact_in_the_opening_turn_beside_a_later_write_stays_core():
     facts = T.mark_side([_fact("f1", "told", turn=0), _fact("f2", "detail", turn=1), _fact("f3", "do", turn=2)])
-    assert [fact.side for fact in facts] == [True, False, False]
+    assert not any(fact.side for fact in facts)
 
 
-def test_a_told_fact_beside_an_ask_to_leave_something_undone_is_side():
-    assert [fact.side for fact in T.mark_side([_fact("f1", "keep"), _fact("f2", "told")])] == [False, True]
+def test_a_told_fact_after_the_opening_turn_beside_a_write_is_side():
+    facts = T.mark_side([_fact("f1", "do", turn=0), _fact("f2", "told", turn=0), _fact("f3", "told", turn=3)])
+    assert [fact.side for fact in facts] == [False, False, True]
+
+
+def test_a_greeting_turn_before_the_ask_does_not_make_the_asks_told_facts_side():
+    facts = T.mark_side([_fact("f1", "detail", turn=0), _fact("f2", "told", turn=2), _fact("f3", "do", turn=4)])
+    assert T.opening_turns(facts) == {"rec": 2} and not facts[1].side
+
+
+def test_a_told_fact_after_the_opening_turn_beside_an_ask_to_leave_something_undone_is_side():
+    facts = T.mark_side([_fact("f1", "keep", turn=0), _fact("f2", "told", turn=1)])
+    assert [fact.side for fact in facts] == [False, True]
+
+
+def test_each_recording_has_its_own_opening_turn():
+    later = _fact("f3", "told", turn=0).model_copy(update={"source": T.FactSource(recording="rec-b", turn=5)})
+    facts = T.mark_side([_fact("f1", "do", turn=0), _fact("f2", "told", turn=3), later])
+    assert [fact.side for fact in facts] == [False, True, False]
 
 
 def test_a_task_whose_only_asks_are_told_facts_has_no_side_facts():
-    facts = T.mark_side([_fact("f1", "detail"), _fact("f2", "told"), _fact("f3", "told")])
+    facts = T.mark_side([_fact("f1", "detail"), _fact("f2", "told"), _fact("f3", "told", turn=4)])
     assert not any(fact.side for fact in facts)
 
 
@@ -272,12 +289,14 @@ def test_a_fact_mined_before_kinds_were_read_is_never_side_and_saves_without_kin
 def test_the_miner_keeps_each_facts_kind_and_code_sets_side_on_the_saved_intent(workdir):
     move = {"text": "move the blue lamp order to Oak street", "recording": "rec-a", "turn": 1,
             "stance": "volunteered", "kind": "do"}
-    fee = {"text": "refund the shipping fee to my card", "recording": "rec-c", "turn": 0,
-           "stance": "volunteered", "kind": "told"}
-    model = TestModel([_call("a", "add_facts", {"facts": [move, fee]}), ModelReply(content="2 kept.")])
+    sent = {"text": "need the blue lamp order sent to Oak street instead", "recording": "rec-b", "turn": 0,
+            "stance": "volunteered", "kind": "do"}
+    fee = {"text": "refund the shipping fee to my card", "recording": "rec-b", "turn": 2,
+           "stance": "accepted", "kind": "told"}
+    model = TestModel([_call("a", "add_facts", {"facts": [move, sent, fee]}), ModelReply(content="3 kept.")])
     mine_intent(workdir, "t1", model, ceiling_usd=1.0)
     saved = load_spec(workdir, "t1").intent.facts
-    assert [(fact.kind, fact.side) for fact in saved] == [("do", False), ("told", True)]
+    assert [(fact.kind, fact.side) for fact in saved] == [("do", False), ("do", False), ("told", True)]
 
 
 def test_the_miner_may_not_set_side_itself(workdir):
