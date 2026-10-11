@@ -538,10 +538,16 @@ def test_a_policy_line_does_not_lift_a_gate_resting_on_a_side_fact():
     assert store.items["t1"]["gate"] is False
 
 
-def test_a_gate_citing_a_side_fact_beside_the_write_ask_stays_a_gate():
+def test_a_told_item_citing_a_side_fact_beside_the_write_ask_is_weighed():
     store = W.store_of(inputs(facts=_side_facts()))
-    store.add([dict(SAID_SLOT, fact_ids=["f1", "f3"])])
-    assert store.items["t1"]["gate"] is True and "weighed" not in store.items["t1"]
+    out = store.add([dict(SAID_SLOT, fact_ids=["f1", "f3"])])
+    assert store.items["t1"]["gate"] is False and "citing only the ask's facts" in out
+
+
+def test_a_state_item_citing_a_side_fact_beside_the_write_ask_stays_a_gate():
+    store = W.store_of(inputs(facts=_side_facts()))
+    store.add([dict(ROW, fact_ids=["f1", "f3"])])
+    assert store.items["s1"]["gate"] is True and "weighed" not in store.items["s1"]
 
 
 def test_a_told_fact_in_a_task_with_no_write_ask_still_gates():
