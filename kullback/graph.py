@@ -111,10 +111,18 @@ def values_at(result: Any, column: str) -> list[str]:
     return [text for path, text in _leaves(result) if path == str(column)]
 
 
+def head(path: str) -> str:
+    """One argument path's top name, a list marker collapsed: `items[].id` binds as `items`.
+
+    The graph stores a list argument under its marked path (`name[]`); the binder looks the top
+    name up. Both read this, so the two spellings agree in one place.
+    """
+    return str(path).split(".")[0].replace("[]", "")
+
+
 def argument_leaves(call: dict) -> list[tuple[str, str]]:
     """The values one call's arguments carry, as (argument path, value)."""
     return _leaves(call.get("args"))
-
 
 def _producer(calls: list[dict], upto: int, text: str) -> Optional[tuple[int, str]]:
     """The nearest earlier call whose answer carried this value, and the path it sat under.
@@ -360,5 +368,5 @@ def reached(steps: Iterable[dict], write_tools: Iterable[str]) -> tuple[int, int
 
 
 __all__ = ["FILE_NAME", "FORMAT", "KINDS", "MAX_ARG_VALUES", "MAX_STEPS", "ROW_EDGE", "VALUE_EDGE",
-           "argument_leaves", "bands", "is_collection", "mine", "out_edges", "reached", "result_leaves",
+           "argument_leaves", "bands", "head", "is_collection", "mine", "out_edges", "reached", "result_leaves",
            "start_names", "summary", "values_at", "walk", "write_names"]

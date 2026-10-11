@@ -1022,6 +1022,24 @@ def _shaped_lines(body: dict) -> list[str]:
     return lines
 
 
+def _store_lines(body: dict) -> list[str]:
+    """What a store request kept, as the lines the command prints: counts only, never Task text."""
+    counts = dict(body.get("counts") or {})
+    lines = [f"walks tried {counts.get('walks_tried', 0)}, refused {counts.get('walks_refused', 0)}, "
+             f"crashed {counts.get('walks_crashed', 0)}, unbound {counts.get('walks_unbound', 0)}, "
+             f"contaminated {counts.get('walks_contaminated', 0)}, unfair {counts.get('walks_unfair', 0)}, "
+             f"kept {counts.get('tasks_kept', 0)}",
+             "", "| bucket asked | Tasks kept |",
+             "| --- | --- |"]
+    per_bucket = counts.get("per_bucket") or {}
+    if per_bucket:
+        for bucket in sorted(per_bucket):
+            lines.append(f"| {bucket} | {per_bucket[bucket]} |")
+    else:
+        lines.append("| none |  |")
+    return lines
+
+
 def _synthesis_lines(body: dict) -> list[str]:
     """What a synthesis request generated, as the lines both commands print."""
     counts = dict(body.get("counts") or {})
@@ -1093,6 +1111,10 @@ def synthesise(
                                      help="Shape walks to every mapped archetype the domain "
                                           "reading extracted (D225)."),
     per_archetype: int = typer.Option(1, "--per-archetype", help="How many Tasks per archetype."),
+    store: bool = typer.Option(False, "--store",
+                               help="Keep walks as description Tasks in a workdir-shaped store "
+                                    "linked to this one, with the walk as each Task's Reference (D360). "
+                                    "Nothing is derived; no Verifier is written."),
 ):
     """Walk the mined tool-call graph, run the walks in the rebuilt world and store them apart (D224).
 
@@ -1124,6 +1146,12 @@ def synthesise(
     if writer is not None:
         writer = _wrapped_model(writer, "synthetic_intent", Path(workdir), ceiling_usd,
                                 model_id=model)
+    if store:
+        made = _entry("kullback.synthesise", "build_store")(workdir, targets, seed=seed,
+                                                            model=writer)
+        for line in _store_lines(made):
+            typer.echo(line)
+        return
     body = _entry("kullback.synthesise", "synthesise")(workdir, targets, seed=seed, model=writer)
     for line in _synthesis_lines(body):
         typer.echo(line)

@@ -277,3 +277,158 @@ def test_the_report_carries_the_archetype_counts(kite_world: Path):
     text = report.render(report.load(kite_world))
     assert "archetypes extracted" in text and "Tasks shaped" in text
     assert "realism rung" in text
+
+
+# --- binding fixes: list spellings agree, writes name rows the walk read (D360) -----------
+
+
+def _world_and_graph(kite_world: Path):
+    world = synthesise.World(kite_world)
+    body = json.loads((kite_world / graph.FILE_NAME).read_text())
+    sigs = {sig.name: sig for sig in world.sigs}
+    return world, body, sigs
+
+
+def test_a_list_argument_binds_from_values_stored_under_the_marked_spelling(kite_world: Path):
+    world, _body, sigs = _world_and_graph(kite_world)
+    sigs = dict(sigs, retie_kite=_sig("retie_kite", "write", "kite_id", "handle"))
+    answers = [{"kite_id": "k1"}]
+    step = {"tool": "retie_kite",
+            "bindings": [{"arg": "kite_id", "column": "kite_id", "from": 0}]}
+    observed = {"retie_kite": {"handle[]": {"values": ["h7"]}}}
+    args = synthesise.bind(world, step, answers, observed, sigs, "t", is_write=True)
+    assert args == {"kite_id": "k1", "handle": "h7"}
+
+
+def test_a_write_names_the_row_the_walk_read_and_not_the_recorded_pool(kite_world: Path):
+    world, _body, sigs = _world_and_graph(kite_world)
+    answers = [{"kite_id": "k1", "colour": "teal1"}]
+    step = {"tool": "retie_kite", "bindings": []}
+    observed = {"retie_kite": {"kite_id": {"values": ["k9"]}, "length": {"values": ["77"]}}}
+    args = synthesise.bind(world, step, answers, observed, sigs, "t", is_write=True)
+    assert args["kite_id"] == "k1"
+
+
+def test_a_write_naming_a_row_nothing_read_is_unbound_despite_the_pool(kite_world: Path):
+    world, _body, sigs = _world_and_graph(kite_world)
+    step = {"tool": "retie_kite", "bindings": []}
+    observed = {"retie_kite": {"kite_id": {"values": ["k9"]}, "length": {"values": ["77"]}}}
+    assert synthesise.bind(world, step, [], observed, sigs, "t", is_write=True) is None
+
+
+def test_a_write_with_no_row_to_name_pulls_in_the_read_the_graph_feeds_it_from(kite_world: Path):
+    from kullback.sampling import sample_key
+
+    world, _body, _sigs = _world_and_graph(kite_world)
+    keys = ["k1", "k2", "k3", "k4", "k5"]
+    colour = keys[sample_key("synth-row", "ins-0:0:ins1:kites", "") % 5]
+    length = keys[sample_key("synth-row", "ins-0:0:kites", "") % 5]
+    assert (colour, length) == ("k5", "k3"), "the draws moved; pick another ident"
+    direct = [{"name": "find_kite", "args": {"colour": "teal1"}, "result": {"kite_id": "k1"},
+               "error": None},
+              {"name": "retie_kite", "args": {"kite_id": "k1", "length": "99"},
+               "result": {"kite_id": "k1"}, "error": None}]
+    body = graph.mine([direct], write_tools=["retie_kite"])
+    calls, why = synthesise.run_walk(world, [{"tool": "retie_kite", "bindings": []}],
+                                      body["args"], "ins-0", graph=body,
+                                      write_tools=["retie_kite"])
+    assert why == "", why
+    assert [call["name"] for call in calls] == ["find_kite", "retie_kite"]
+    assert calls[1]["args"]["kite_id"] == calls[0]["result"]["kite_id"]
+    assert calls[1]["args"]["length"] == "33"
+
+
+def test_a_write_with_no_feeding_read_is_unbound(kite_world: Path):
+    world, _body, _sigs = _world_and_graph(kite_world)
+    calls, why = synthesise.run_walk(world, [{"tool": "retie_kite", "bindings": []}], {},
+                                      "unbound-t", graph={"edges": []},
+                                      write_tools=["retie_kite"])
+    assert why == synthesise.UNBOUND and calls == []
+
+
+def test_a_refused_write_is_retried_with_a_new_draw(kite_world: Path):
+    from kullback.sampling import sample_key
+
+    world, _body, _sigs = _world_and_graph(kite_world)
+    keys = ["k1", "k2", "k3", "k4", "k5"]
+    colour = keys[sample_key("synth-row", "retry-7:0:kites", "") % 5]
+    first = keys[sample_key("synth-row", "retry-7:1:kites", "") % 5]
+    second = keys[sample_key("synth-row", "retry-7:1:r1:kites", "") % 5]
+    assert (colour, first, second) == ("k2", "k2", "k4"), "the draws moved; pick another ident"
+    steps = [{"tool": "find_kite", "bindings": []},
+             {"tool": "retie_kite",
+              "bindings": [{"arg": "kite_id", "column": "kite_id", "from": 0}]}]
+    note: dict = {}
+    calls, why = synthesise.run_walk(world, steps, {}, "retry-7",
+                                      graph={"edges": []}, write_tools=["retie_kite"], note=note)
+    assert why == "", why
+    assert [call["name"] for call in calls] == ["find_kite", "retie_kite"]
+    assert calls[1]["args"] == {"kite_id": "k2", "length": "34"}
+    assert set(note["refused"]) == {"k2", "32"}
+
+
+# --- the synthetic store: a description over a kept walk, chain unchanged (D360) -----------
+
+
+class _EchoModel:
+    """A test double for the description writer only: it states back the values it is given."""
+
+    def __init__(self):
+        self.calls = []
+
+    def query(self, messages, tools=None, config=None):
+        from kullback.ai.provider import ModelReply
+
+        self.calls.append(messages)
+        values = []
+        for line in messages[0]["content"].splitlines():
+            if line.startswith("- ") and ": " in line:
+                value = line.split(": ", 1)[1].strip()
+                if value and value != "nothing" and value not in values:
+                    values.append(value)
+        return ModelReply(content="Please sort this out: " + ", ".join(values)
+                                  + ". You have my go-ahead.")
+
+
+def test_build_store_keeps_a_described_walk_the_chain_reads_unchanged(kite_world: Path):
+    from kullback.runner.records import Task as TaskRecord
+    from kullback.spec import intent_tools, trust
+    from kullback.spec.schema import SpecIntent
+    from kullback.spec.writer import load_inputs
+
+    model = _EchoModel()
+    body = synthesise.build_store(kite_world, {"w1t3p1": 1}, seed="store-e2e", model=model)
+    assert body["counts"]["tasks_kept"] == 1, body["counts"]
+    assert model.calls, "the description was never written by the model"
+    store = kite_world / synthesise.DIR / synthesise.STORE
+    task_id = body["tasks"][0]["task_id"]
+    assert (store / intent_tools.SYNTHETIC_MARKER).is_file()
+    assert (store / "db.json").is_symlink(), "the database must be linked, never copied"
+    assert not (store / "verifiers").exists(), "the store path never derives a Verifier"
+    assert not (kite_world / synthesise.DIR / "tasks").exists(), \
+        "the D224 store stays as it is"
+
+    task = TaskRecord.model_validate(json.loads((store / "tasks" / f"{task_id}.json").read_text()))
+    assert task.intent and task.facts_in_instruction is False
+    found = intent_tools.recordings_of(store, task_id)
+    assert [turn.text for turn in found.recordings["description"]] == [task.intent]
+    inputs = load_inputs(store, task_id, intent=SpecIntent(task_id=task_id, text=task.intent))
+    assert inputs.tools and inputs.state is not None
+    tiers = trust.intent_tiers(store)
+    assert task_id in tiers
+    assert trust.faithful_references(store)[task_id] == task.run_ids == \
+        [body["tasks"][0]["run_id"]]
+    index = json.loads((store / synthesise.STORE_INDEX).read_text())
+    assert index["counts"]["tasks_kept"] == 1 and index["counts"]["per_bucket"] == {"w1t3p1": 1}
+
+
+def test_the_synthesise_command_builds_a_store_with_the_store_flag(kite_world: Path):
+    from typer.testing import CliRunner
+
+    from kullback import cli
+
+    result = CliRunner().invoke(cli.app, ["synthesise", "--workdir", str(kite_world),
+                                          "--bucket", "w1t3p1=1", "--store"])
+    assert result.exit_code == 0, result.output
+    assert "kept" in result.output
+    assert (kite_world / synthesise.DIR / synthesise.STORE / synthesise.STORE_INDEX).is_file()

@@ -34,6 +34,7 @@ edited, so the model cannot leak what the world alone knows.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -257,8 +258,58 @@ def _id_name(world: World, table: str) -> str:
     return f"{table.rstrip('s')}_id"
 
 
+# How many reads one write may pull in when its row-naming arguments have nothing to bind from,
+# and how many fresh draws a refused write is retried with before the walk is discarded.
+MAX_INSERTED_READS = 3
+WRITE_RETRIES = 8
+
+
+def _observed_pool(observed: dict, tool: str, name: str) -> list:
+    """The values the recordings showed for one argument, under either spelling of a list."""
+    rec = observed.get(tool) or {}
+    for key in (name, name + "[]"):
+        values = (rec.get(key) or {}).get("values") or []
+        if values:
+            return list(values)
+    return []
+
+
+def _read_leaves(answers: list[Any]) -> dict[str, list[str]]:
+    """Every name the walk's earlier answers carry, the latest answer's values first."""
+    seen: dict[str, list[str]] = {}
+    for answer in reversed(answers):
+        for name, values in named_leaves(answer).items():
+            seen.setdefault(name, values)
+    return seen
+
+
+def _missing_row_args(step: dict, answers: list[Any], sigs: dict) -> list[str]:
+    """Required row-naming arguments of one write no edge binding and no earlier answer can fill."""
+    _properties, required = declared(sigs.get(str(step.get("tool"))))
+    bound = set()
+    for binding in step.get("bindings") or ():
+        if graph_mod.values_at(answers[int(binding["from"])], str(binding["column"])):
+            bound.add(graph_mod.head(binding["arg"]))
+    read = _read_leaves(answers)
+    return [name for name in required
+            if name not in bound and name not in read
+            and (name.endswith("_id") or name.endswith("_ids"))]
+
+
+def _supplier(graph: dict, write: str, arg: str, writes: set[str], used: set[str]) -> Optional[dict]:
+    """The read the recordings most often fed this argument from: the heaviest edge into the write."""
+    best = None
+    for edge in graph.get("edges") or ():
+        if (str(edge.get("to")) == write and graph_mod.head(edge.get("arg") or "") == arg
+                and edge.get("kind") == graph_mod.VALUE_EDGE
+                and str(edge.get("from")) not in writes and str(edge.get("from")) != write
+                and str(edge.get("from")) not in used):
+            if best is None or int(edge.get("weight") or 0) > int(best.get("weight") or 0):
+                best = edge
+    return best
+
 def bind(world: World, step: dict, answers: list[Any], observed: dict, sigs: dict,
-         ident: str) -> Optional[dict]:
+         ident: str, *, is_write: bool = False) -> Optional[dict]:
     """One step's arguments, in the order the evidence for them gets weaker.
 
     An edge first, because the recordings showed the value travelling that way; then the nearest
@@ -266,6 +317,12 @@ def bind(world: World, step: dict, answers: list[Any], observed: dict, sigs: dic
     together; then one row of the rebuilt world, all of whose values belong to each other; then the
     values the recordings showed for this argument. An argument the signature requires and none of
     the four can fill leaves the walk unbound, which is counted and never guessed at.
+
+    A list argument is looked up under both spellings: the graph stores it as `name[]` and the
+    signature names it `name`, and the two are one argument's evidence. A row-naming argument of
+    a write (a name ending in `_id` or `_ids`) binds only from what the walk has read, an edge or
+    an earlier answer, never from a row drawn for the occasion or the recorded pool: a write that
+    names a row the walk never touched is a walk that does not hang together.
     """
     tool = str(step.get("tool"))
     properties, required = declared(sigs.get(tool))
@@ -273,7 +330,7 @@ def bind(world: World, step: dict, answers: list[Any], observed: dict, sigs: dic
         return None
     args: dict = {}
     for binding in step.get("bindings") or ():
-        head = str(binding["arg"]).split(".")[0].replace("[]", "")
+        head = graph_mod.head(binding["arg"])
         if head not in properties:
             continue
         source = answers[int(binding["from"])]
@@ -285,12 +342,14 @@ def bind(world: World, step: dict, answers: list[Any], observed: dict, sigs: dic
         _set_path(args, str(binding["arg"]),
                   found[sample_key("synth-edge-value", f"{ident}:{binding['arg']}", "") % len(found)])
     owed = [name for name in required if name not in args]
-    seen = named_leaves(answers[-1]) if answers else {}
+    seen = _read_leaves(answers) if is_write else (named_leaves(answers[-1]) if answers else {})
     row = _row_source(world, [name for name in owed if name not in seen], ident)
     for name in owed:
         spec = properties.get(name) or {}
-        pool = seen.get(name) or row.get(name) or list(
-            ((observed.get(tool) or {}).get(name) or {}).get("values") or [])
+        if is_write and (name.endswith("_id") or name.endswith("_ids")):
+            pool = seen.get(name) or []
+        else:
+            pool = seen.get(name) or row.get(name) or _observed_pool(observed, tool, name)
         if not pool:
             return None
         args[name] = _typed(spec, pool[sample_key("synth-arg", f"{ident}:{tool}:{name}", "") % len(pool)])
@@ -299,34 +358,140 @@ def bind(world: World, step: dict, answers: list[Any], observed: dict, sigs: dic
 
 # --- running one walk ---------------------------------------------------------------
 
-def run_walk(world: World, steps: list[dict], observed: dict, ident: str) -> tuple[list[dict], str]:
+def run_walk(world: World, steps: list[dict], observed: dict, ident: str, *,
+             graph: Optional[dict] = None, write_tools: Iterable[str] = (),
+             note: Optional[dict] = None) -> tuple[list[dict], str]:
     """Bind and run the walk through the Builder's own tool bodies; the calls it made, and why not.
 
     One toolkit per walk, so what a step wrote the next step sees, which is the whole point of a
     walk. An exception whose class the harness already reads as a body fault (`CRASH_ERRORS`) is a
     crash; every other exception is the body refusing the call, which is the world saying this path
-    does not exist. Either way the walk is discarded, never repaired.
+    does not exist.
+
+    A write whose row-naming arguments nothing the walk read can fill pulls in the read the graph
+    says feeds each one, heaviest edge first, up to MAX_INSERTED_READS reads: a write that still
+    names nothing is unbound and the walk is discarded. A refused write is retried with a new draw,
+    up to WRITE_RETRIES tries, each on a toolkit holding the accepted prefix and nothing refused.
+    `note`, when given, is filled with the refused argument values, so a description can carry them.
     """
+    body = dict(graph) if graph is not None else load_graph(world.workdir)
+    writes = {str(tool) for tool in write_tools} or set(world.write_tools)
     toolkit = world.toolkit(world.fresh_db())
     sigs = {sig.name: sig for sig in world.sigs}
     answers: list[Any] = []
     calls: list[dict] = []
+    refused: list[str] = []
     for index, step in enumerate(steps):
         name = str(step.get("tool"))
+        if name in writes:
+            why, toolkit = _run_write(world, body, writes, observed, sigs, steps, index,
+                                      answers, calls, refused, ident)
+            if why:
+                _take_note(note, refused)
+                return calls, why
+            continue
         args = bind(world, step, answers, observed, sigs, f"{ident}:{index}")
         if args is None:
+            _take_note(note, refused)
             return calls, UNBOUND
-        body = getattr(toolkit, name, None)
-        if body is None:
+        runner = getattr(toolkit, name, None)
+        if runner is None:
+            _take_note(note, refused)
             return calls, CRASHED
         try:
-            answer = body(**args)
+            answer = runner(**args)
         except Exception as error:  # noqa: BLE001 - the class is the ruling, see CRASH_ERRORS
+            _take_note(note, refused)
             return calls, CRASHED if type(error).__name__ in CRASH_ERRORS else REFUSED
         answers.append(answer)
         calls.append({"id": f"{ident}-{index}", "name": name, "args": args,
                       "requestor": "assistant", "turn": index, "result": answer, "error": None})
+    _take_note(note, refused)
     return calls, ""
+
+
+def _take_note(note: Optional[dict], refused: list[str]) -> None:
+    """The refused argument values into the caller's note, where one was given."""
+    if note is not None:
+        note["refused"] = list(refused)
+
+
+def _run_write(world: World, graph: dict, writes: set[str], observed: dict, sigs: dict,
+               steps: list[dict], index: int, answers: list[Any], calls: list[dict],
+               refused: list[str], ident: str) -> tuple[str, Any]:
+    """One write step with its missing reads inserted; "" and the toolkit holding it on success."""
+    name = str(steps[index].get("tool"))
+    for attempt in range(WRITE_RETRIES):
+        sub = f"{ident}:{index}" if attempt == 0 else f"{ident}:{index}:r{attempt}"
+        toolkit = world.toolkit(world.fresh_db())
+        for call in calls:
+            getattr(toolkit, call["name"])(**call["args"])
+        local_answers = list(answers)
+        local_calls: list[dict] = []
+        step = dict(steps[index])
+        step["bindings"] = list(step.get("bindings") or ())
+        if not _insert_reads(world, graph, writes, observed, sigs, toolkit, name, step,
+                             local_answers, local_calls, calls, sub):
+            return UNBOUND, toolkit
+        args = bind(world, step, local_answers, observed, sigs, sub, is_write=True)
+        if args is None:
+            return UNBOUND, toolkit
+        runner = getattr(toolkit, name, None)
+        if runner is None:
+            return CRASHED, toolkit
+        try:
+            answer = runner(**args)
+        except Exception as error:  # noqa: BLE001 - the class is the ruling, see CRASH_ERRORS
+            if type(error).__name__ in CRASH_ERRORS:
+                return CRASHED, toolkit
+            refused.extend(text for _path, text in graph_mod._leaves(args))  # noqa: SLF001
+            continue
+        for call in local_calls:
+            calls.append({"id": f"{ident}-{len(calls)}", "name": call["name"], "args": call["args"],
+                          "requestor": "assistant", "turn": len(calls),
+                          "result": call["result"], "error": None})
+        answers.extend(local_answers[len(answers):])
+        answers.append(answer)
+        calls.append({"id": f"{ident}-{len(calls)}", "name": name, "args": args,
+                      "requestor": "assistant", "turn": len(calls), "result": answer,
+                      "error": None})
+        return "", toolkit
+    return REFUSED, world.toolkit(world.fresh_db())
+
+
+def _insert_reads(world: World, graph: dict, writes: set[str], observed: dict, sigs: dict,
+                  toolkit: Any, name: str, step: dict, answers: list[Any], local_calls: list[dict],
+                  calls: list[dict], sub: str) -> bool:
+    """Pull in the reads feeding one write's row-naming arguments; False when one stays unfed."""
+    used: set[str] = set()
+    for _ in range(MAX_INSERTED_READS):
+        missing = _missing_row_args(step, answers, sigs)
+        if not missing:
+            return True
+        edge = _supplier(graph, name, missing[0], writes, used)
+        if edge is None:
+            return False
+        used.add(str(edge["from"]))
+        names = [call["name"] for call in calls] + [call["name"] for call in local_calls]
+        reader = {"tool": str(edge["from"]), "bindings": [
+            {"arg": str(item.get("arg")), "column": str(item.get("column")), "from": pos}
+            for item in graph.get("edges") or ()
+            if str(item.get("to")) == str(edge["from"]) and item.get("kind") == graph_mod.VALUE_EDGE
+            and item.get("arg")
+            for pos, seen in enumerate(names) if seen == str(item.get("from"))]}
+        rargs = bind(world, reader, answers, observed, sigs, f"{sub}:ins{len(used)}")
+        if rargs is None:
+            return False
+        try:
+            found = getattr(toolkit, str(edge["from"]))(**rargs)
+        except Exception:  # noqa: BLE001 - a read that will not run feeds nothing
+            return False
+        answers.append(found)
+        step["bindings"] = list(step.get("bindings") or ()) + [
+            {"arg": str(edge.get("arg")), "column": str(edge.get("column")),
+             "from": len(answers) - 1}]
+        local_calls.append({"name": str(edge["from"]), "args": rargs, "result": found})
+    return not _missing_row_args(step, answers, sigs)
 
 
 DONE = "Done."
@@ -350,11 +515,12 @@ def spoken_for(intent: str, calls: Iterable[dict]) -> tuple[list[dict], list[dic
 
 
 def record_run(world: World, task_id: str, calls: list[dict], run_id: str,
-               transcript: list[dict]) -> Optional[dict]:
+               transcript: list[dict], *, runs_at: Optional[Path] = None) -> Optional[dict]:
     """The walk replayed once more from a fresh world, so it lands on disk as a Run like any other.
 
     The same replay every recorded Trace goes through, over the same Router and the same scoring;
     what is different is only where the Trace came from, which is code and not a recording.
+    `runs_at` is where the Run lands; by default under the workdir's own synthetic runs.
     """
     from kullback.runner.tool import call_trace  # imported late: this module's peers import the runner
 
@@ -364,7 +530,8 @@ def record_run(world: World, task_id: str, calls: list[dict], run_id: str,
                           canon_rules=world.canon_rules, synthetic_rows=world.schema.synthetic_rows)
     route.refuse_stand_in(router)  # G28: a scored synthetic walk is never answered by a model
     trace = call_trace(task_id, calls, transcript, run_id)
-    result = replay_mod.replay_trace(trace, router, workdir=world.workdir / DIR / "runs" / task_id,
+    target = Path(runs_at) if runs_at is not None else world.workdir / DIR / "runs" / task_id
+    result = replay_mod.replay_trace(trace, router, workdir=target,
                                      task_id=task_id, env_id=world.environment.get("env_id"),
                                      write_tools=world.write_tools, canon_rules=world.canon_rules,
                                      comparer=world.comparer, run_id=run_id)
@@ -586,7 +753,8 @@ def synthesise(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = N
             if not steps:
                 break
             tried += 1
-            calls, why = run_walk(world, steps, observed, ident)
+            calls, why = run_walk(world, steps, observed, ident, graph=body,
+                                  write_tools=world.write_tools)
             if why == REFUSED:
                 refused += 1
                 continue
@@ -783,7 +951,8 @@ def shape(workdir: Any, *, archetype_ids: Iterable[str] = (), per_archetype: int
             if not steps:
                 fell["attested"] += 1
                 continue
-            calls, why = run_walk(world, steps, observed, ident)
+            calls, why = run_walk(world, steps, observed, ident, graph=body,
+                                  write_tools=world.write_tools)
             if why or not calls:
                 fell["executable"] += 1
                 continue
@@ -872,9 +1041,313 @@ def shaped_counts(workdir: Any) -> dict:
             "shaped_per_source": list(counts.get("per_source") or [])}
 
 
-__all__ = ["ARCHETYPE_INTENT", "ATTEMPTS_PER_TASK", "CRASHED", "DIR", "FORMAT", "INDEX",
-           "READ_ONLY_REFUSED", "REFUSED", "RUNGS", "SECOND_PATH_LIMIT", "SHAPED_PATHS", "UNBOUND",
-           "World", "archetype_intent", "askable_fields", "bind", "counts_of", "facts_of",
+# --- the synthetic store: a task description over a kept walk (D360) ----------------------
+
+# The store is a workdir-shaped directory with its own tasks, runs, references and replays, linked
+# against the parent's Environment files. The Spec writer, the Examiner and the trust chain run on
+# it unchanged: a Task with no recording reads its instruction as one source (intent_tools seam).
+# The walk is the Task's Reference. This path never derives a Verifier.
+STORE = "store"
+STORE_INDEX = "index.json"
+
+# The parent's Environment files the store links to: symlinks, never copies of the database. The
+# store holds its own tasks, runs, references, replays, overlays and index beside these links.
+STORE_LINKS = ("env", "schema.json", "tool_sigs.json", "bodies.json", "canon-rules.json",
+               "db.json", "environment.json", "readers.json", "user_facts.json", "anchor.json")
+
+# Words in the shipped policy that ask the customer to confirm before a write. Plain words of the
+# harness's own language, never a corpus name: where the policy asks, the description carries the
+# customer's go-ahead, so a confirm-before-write gate has something to rest on.
+CONFIRM_WORDS = ("confirm", "approval", "consent", "permission", "go-ahead", "authorize",
+                 "authorise")
+
+# How many recorded Tasks are read looking for a style example of the walk's own write tools.
+STYLE_SEARCH_LIMIT = 200
+
+DESCRIPTION_PROMPT = (
+    "A person is writing to a support agent about a problem they want solved. Write their first "
+    "message, in the first person.\n\n"
+    "What they want done:\n{ask}\n\n"
+    "Things only they know, to state in their own words:\n{facts}\n\n"
+    "{extra}"
+    "Do not name any tool, any system, any table or any step, and do not include any id the "
+    "customer would not know. Write the message and nothing else.")
+
+
+def store_path(workdir: Any) -> Path:
+    """Where the synthetic store lives: a workdir-shaped directory under the parent's synthetic one."""
+    return store_dir(workdir) / STORE
+
+
+def _link_store(parent: Path) -> Path:
+    """Lay out the store on first use: the marker, the links to the parent's Environment, and the
+    store's own directories. Later runs find the marker and only repair missing links."""
+    from kullback.spec.intent_tools import SYNTHETIC_MARKER
+
+    store = store_path(parent)
+    store.mkdir(parents=True, exist_ok=True)
+    if not (store / SYNTHETIC_MARKER).is_file():
+        write_json(store / SYNTHETIC_MARKER, {"format": FORMAT, "parent": ".."})
+    for name in STORE_LINKS:
+        source, link = parent / name, store / name
+        if source.exists() and not link.exists() and not link.is_symlink():
+            link.symlink_to(os.path.relpath(source, store),
+                            target_is_directory=source.is_dir())
+    for folder in ("tasks", "runs", "overlays"):
+        (store / folder).mkdir(parents=True, exist_ok=True)
+    return store
+
+
+def _store_policy(store: Path) -> str:
+    """The shipped policy text the store links to, or nothing where the parent ships none."""
+    try:
+        return (store / "env" / "policy.md").read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return ""
+
+
+def _write_names_of(parent: Path) -> set[str]:
+    """The parent's write tools, read off its signatures, so a style example matches the walk."""
+    try:
+        sigs = read_json(parent / "tool_sigs.json", []) or []
+    except (OSError, ValueError):
+        return set()
+    return {str(row.get("name")) for row in sigs if isinstance(row, dict)
+            and row.get("kind") == "write"}
+
+
+def _style_example(parent: Path, writes: set[str]) -> str:
+    """The opening user turn of one recorded Task with the walk's own write tools, or nothing.
+
+    Style only: the prompt tells the model never to carry its details over. A workdir with no
+    recordings, or none with the same writes, writes its descriptions without an example."""
+    if not writes:
+        return ""
+    targets = set(writes)
+    folder = parent / "tasks"
+    paths = sorted(folder.glob("*.json"))[:STYLE_SEARCH_LIMIT] if folder.is_dir() else []
+    kinds = _write_names_of(parent)
+    for path in paths:
+        try:
+            task = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for run_id in (task.get("run_ids") or ()) if isinstance(task, dict) else ():
+            try:
+                trace = json.loads((parent / "traces" / f"{run_id}.json").read_text(
+                    encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(trace, dict):
+                continue
+            made = {str(call.get("name")) for call in trace.get("tool_calls") or ()} & kinds
+            if made != targets:
+                continue
+            for turn in trace.get("turns") or ():
+                if isinstance(turn, dict) and turn.get("role") == "user" \
+                        and str(turn.get("content") or "").strip():
+                    return str(turn["content"])
+    return ""
+
+
+def _is_row_name(field: str) -> bool:
+    """Whether an argument names a row the customer would not know: an id in any spelling."""
+    name = str(field)
+    return name in ("id", "ids") or name.endswith("_id") or name.endswith("_ids")
+
+
+def _description_inputs(calls: list[dict], refused: list[str]) -> tuple[list[dict], list[dict],
+                                                                         list[str]]:
+    """The description's matter: customer-known values, the ask per write, and refused values.
+
+    A bound value the walk already read from an earlier answer is not the customer's to state, and
+    neither is a row name in any spelling. The ask is each write's other arguments: the change the
+    customer wants. A refused value the walk never read is the customer's own constraint."""
+    facts: list[dict] = []
+    ask: list[dict] = []
+    pairs: set[tuple[str, str]] = set()
+    asked: set[tuple[str, str]] = set()
+    read_values: set[str] = set()
+    for call in calls or ():
+        for path, value in graph_mod.argument_leaves(call):
+            field = str(path).split(".")[-1].replace("[]", "")
+            if value and (field, value) not in pairs:
+                pairs.add((field, value))
+                if value not in read_values and not _is_row_name(field):
+                    facts.append({"field": field, "value": value})
+        for _path, text in graph_mod._leaves(call.get("result")):  # noqa: SLF001
+            read_values.add(text)
+    for call in calls or ():
+        for path, value in graph_mod.argument_leaves(call):
+            field = str(path).split(".")[-1].replace("[]", "")
+            if value and not _is_row_name(field) and (field, value) not in asked:
+                asked.add((field, value))
+                ask.append({"field": field, "value": value})
+    seen: set[str] = set()
+    refusals = [value for value in refused or ()
+                if value and value not in read_values and value not in seen
+                and not seen.add(value)]
+    return facts, ask, refusals
+
+
+def description_text(model: Any, facts: list[dict], ask: list[dict], refusals: list[str], *,
+                     consent: bool = False, example: str = "") -> tuple[str, str]:
+    """The customer's first-person message from the walk's matter, or nothing and why not."""
+    if model is None:
+        return "", "no description writer was given"
+    lines = "\n".join(f"- {row['field']}: {row['value']}" for row in facts) or "- nothing"
+    wanted = "\n".join(f"- {row['field']}: {row['value']}" for row in ask) \
+        or "what the values above point to"
+    extra = ""
+    if refusals:
+        extra += "It must refuse this, as their own constraint:\n" + "\n".join(
+            f"- {value}" for value in refusals) + "\n\n"
+    if consent:
+        extra += "They give their go-ahead to proceed.\n\n"
+    if example:
+        extra += ("Match the tone of this unrelated request, never its details:\n" + example
+                  + "\n\n")
+    try:
+        reply = model.query([{"role": "user", "content": DESCRIPTION_PROMPT.format(
+            ask=wanted, facts=lines, extra=extra)}])
+    except Exception as error:  # noqa: BLE001 - a provider failure drops the walk, never guesses
+        return "", f"the description writer failed: {type(error).__name__}"
+    text = str(getattr(reply, "content", "") or "").strip()
+    if not text:
+        return "", "the description writer answered nothing"
+    return text, ""
+
+
+def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = None,
+                model: Any = None) -> dict:
+    """Keep walks as Tasks carrying a description, in a workdir-shaped store linked to this one.
+
+    For each kept walk: bind and run it through the bodies as today; write its description from one
+    model call over the walk's matter; scan the description against the corpus strings, rewriting it
+    once and dropping the walk where it stays contaminated; hold every walk argument against the
+    description, an earlier result or the world by code, dropping unfair walks; then store the Task
+    with the walk as its recorded Run and its Reference rows. Never derives a Verifier."""
+    from kullback import domain as domain_mod
+
+    parent = Path(workdir)
+    store = _link_store(parent)
+    world = World(store)
+    salt = seed if seed is not None else build_salt(parent)
+    body = load_graph(parent)
+    if not body.get("edges"):
+        body = mine_graph(parent, World(parent))
+    observed = body.get("args") or {}
+    strings = domain_mod.corpus_strings(parent)
+    policy = _store_policy(store)
+    consent = bool(policy) and any(word in policy.casefold() for word in CONFIRM_WORDS)
+    world_values = {text for _path, text in graph_mod._leaves(world.db)}  # noqa: SLF001
+    _grow_for(world, max(int(count) for count in buckets.values()) if buckets else 0)
+    counts = {"walks_tried": 0, "walks_refused": 0, "walks_unbound": 0, "walks_crashed": 0,
+              "walks_contaminated": 0, "walks_unfair": 0, "tasks_kept": 0}
+    per_bucket: dict[str, int] = {}
+    rows: list[dict] = []
+    references: dict[str, dict] = {}
+    replays: dict[str, dict] = {}
+    status: dict[str, dict] = {}
+    for bucket in sorted(buckets):
+        if graph_mod.bands(bucket)[0] == 0:
+            continue
+        wanted = int(buckets[bucket])
+        made = 0
+        for attempt in range(wanted * ATTEMPTS_PER_TASK):
+            if made >= wanted:
+                break
+            ident = f"{salt}:{bucket}:{attempt}"
+            steps = graph_mod.walk(body, bucket, ident)
+            if not steps:
+                break
+            counts["walks_tried"] += 1
+            note: dict = {}
+            calls, why = run_walk(world, steps, observed, ident, graph=body,
+                                  write_tools=world.write_tools, note=note)
+            if why == REFUSED:
+                counts["walks_refused"] += 1
+                continue
+            if why == CRASHED:
+                counts["walks_crashed"] += 1
+                continue
+            if why == UNBOUND or not calls:
+                counts["walks_unbound"] += 1
+                continue
+            row, drop = _store_task(world, parent, store, calls, note, bucket, ident,
+                                    model, strings, consent, world_values,
+                                    references, replays, status)
+            if row is None:
+                counts[f"walks_{drop}"] += 1
+                continue
+            rows.append(row)
+            made += 1
+            per_bucket[bucket] = per_bucket.get(bucket, 0) + 1
+    write_json(store / "references.json", references)
+    write_json(store / "replays.json", replays)
+    write_json(store / "task_status.json", status)
+    counts["tasks_kept"] = len(rows)
+    index = {"format": FORMAT, "requested": {str(k): int(v) for k, v in buckets.items()},
+             "salt": str(salt),
+             "counts": dict(counts, per_bucket={str(k): int(v) for k, v in per_bucket.items()}),
+             "tasks": rows}
+    write_json(store / STORE_INDEX, index)
+    return index
+
+
+def _store_task(world: World, parent: Path, store: Path, calls: list[dict], note: dict,
+                bucket: str, ident: str, model: Any, strings: list[str],
+                consent: bool, world_values: set[str], references: dict, replays: dict,
+                status: dict) -> tuple[Optional[dict], str]:
+    """One kept walk as a store Task, or nothing and the count to raise."""
+    from kullback import domain as domain_mod
+    from kullback.runner.world import birth as birth_mod
+
+    task_id = _task_id(ident)
+    writes = {str(call.get("name")) for call in calls} & set(world.write_tools)
+    facts, ask, refusals = _description_inputs(calls, note.get("refused") or [])
+    text, _why = description_text(model, facts, ask, refusals, consent=consent,
+                                  example=_style_example(parent, writes))
+    if not text:
+        return None, "crashed"
+    if domain_mod.contaminated({"goal": text}, strings):
+        text, _why = description_text(model, facts, ask, refusals, consent=consent,
+                                      example=_style_example(parent, writes))
+        if not text or domain_mod.contaminated({"goal": text}, strings):
+            return None, "contaminated"
+    trace = birth_mod.check_arguments_trace(
+        walk=[{"args": call.get("args")} for call in calls],
+        results=[{"id": f"call-{index + 1}", "result": call.get("result")}
+                 for index, call in enumerate(calls)],
+        intent=text, user_facts=list(world_values))
+    if trace.outcome != birth_mod.HELD:
+        return None, "unfair"
+    transcript, spoken = spoken_for(text, calls)
+    run = record_run(world, task_id, spoken, f"synth-{task_id}", transcript,
+                      runs_at=store / "runs" / task_id)
+    if run is None:
+        return None, "crashed"
+    run_id = str(run["run_id"])
+    write_json(store / "tasks" / f"{task_id}.json",
+               as_dict(Task(id=task_id, run_ids=[run_id], intent=text,
+                            facts_in_instruction=False)))
+    write_json(store / "overlays" / f"{task_id}.json",
+               {"overlay": {"task_id": task_id, "rows": []}, "values": {}})
+    references[task_id] = {"references": [{"kind": "recording", "run_id": run_id,
+                                            "trace_id": run_id}]}
+    replays[task_id] = {run_id: {"task_id": task_id, "trace_id": run_id, "run_id": run_id,
+                                 "confirmed": True, "fidelity": 1}}
+    status[task_id] = {}
+    tools = {str(call.get("name")) for call in calls}
+    return {"task_id": task_id, "bucket_requested": bucket, "writes": len(writes),
+            "tools": len(tools), "run_id": run_id}, ""
+
+
+__all__ = ["ARCHETYPE_INTENT", "ATTEMPTS_PER_TASK", "CONFIRM_WORDS", "CRASHED", "DIR", "FORMAT",
+           "INDEX", "MAX_INSERTED_READS", "READ_ONLY_REFUSED", "REFUSED", "RUNGS",
+           "SECOND_PATH_LIMIT", "SHAPED_PATHS", "STORE", "STORE_INDEX", "STORE_LINKS", "UNBOUND",
+           "WRITE_RETRIES", "World", "archetype_intent", "askable_fields", "bind", "build_store",
+           "counts_of", "description_text", "facts_of",
            "intent_text", "load_graph", "mine_graph", "read_index", "record_run", "run_walk",
            "second_paths", "shape", "shaped_bucket", "shaped_counts", "spoken_for", "store_dir",
-           "synthesise", "user_rules_for", "written_intent"]
+           "store_path", "synthesise", "user_rules_for", "written_intent"]

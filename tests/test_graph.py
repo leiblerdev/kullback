@@ -107,3 +107,14 @@ def test_a_bucket_nobody_spells_that_way_asks_for_nothing():
 
 def test_a_graph_with_no_recording_offers_no_walk():
     assert graph.walk(graph.mine([], write_tools=[]), "w1t1p1", "seed-5") is None
+
+
+def test_a_list_argument_is_stored_under_its_marked_path():
+    call = {"name": "tie_kites", "args": {"kite_id": ["k1", "k2"]}, "result": {}}
+    body = graph.mine([_run(call)], write_tools=[])
+    assert body["args"]["tie_kites"]["kite_id[]"]["values"] == ["k1", "k2"]
+
+
+def test_an_argument_path_heads_to_its_top_name_without_the_list_mark():
+    assert graph.head("items[].id") == "items"
+    assert graph.head("colour") == "colour"
