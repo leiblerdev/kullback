@@ -6,6 +6,7 @@ invented ones of tests/spec/fixtures.py. Verdicts go through the real verdict.
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -18,7 +19,9 @@ from kullback.runner.records import Event, Run, Verifier
 from kullback.runner.verdict import verdict
 from kullback.spec import writer as W
 from kullback.spec import writer_tools as T
-from kullback.spec.schema import SpecIntent, intent_text, load_spec
+from kullback.spec.intent_tools import mark_side
+from kullback.spec.items import SIDE_WEIGHED
+from kullback.spec.schema import FactSource, IntentFact, SpecIntent, intent_text, load_spec
 from tests.spec.fixtures import FACTS, WRITE_TOOLS, check, fn, reference_run
 
 STATE = {"items": {"A1": {"item_id": "A1", "slot": "two"}, "B2": {"item_id": "B2", "slot": "four"}}}
@@ -508,3 +511,77 @@ def test_every_writer_session_is_saved_whole_and_the_next_session_is_never_shown
     assert first["transcripts"][0][-1]["content"] == "done"
     shown = json.dumps([c["messages"] for c in model.calls])
     assert "exam/writer" not in shown and '"kind": "write"' not in shown
+
+
+# --- side facts (D361) -----------------------------------------------------------------------------
+
+TOLD = IntentFact(id="f3", text="Tell me which slot item B2 sits in.", stance="volunteered", kind="told",
+                  source=FactSource(recording="rec1", turn=4))
+SAID_SLOT = {"id": "t1", "kind": "said", "values": ["seven"], "gate": True}
+
+
+def _side_facts():
+    """A write ask, an accepted fact and a told fact beside them: code marks the told fact side."""
+    return mark_side([FACTS[0].model_copy(update={"kind": "do"}), FACTS[1].model_copy(update={"kind": "do"}), TOLD])
+
+
+def test_a_gate_resting_on_a_side_fact_is_weighed_with_the_reason_kept_on_the_item():
+    store = W.store_of(inputs(facts=_side_facts()))
+    out = store.add([dict(SAID_SLOT, fact_ids=["f3"])])
+    assert "kept" in out and "gate weighed" in out and "side fact" in out and store.refused == []
+    assert store.items["t1"]["gate"] is False and store.items["t1"]["weighed"] == SIDE_WEIGHED
+
+
+def test_a_policy_line_does_not_lift_a_gate_resting_on_a_side_fact():
+    store = W.store_of(inputs(facts=_side_facts()))
+    store.add([dict(SAID_SLOT, fact_ids=["f3"], policy_line="Move an item only to a free slot.")])
+    assert store.items["t1"]["gate"] is False
+
+
+def test_a_gate_citing_a_side_fact_beside_the_write_ask_stays_a_gate():
+    store = W.store_of(inputs(facts=_side_facts()))
+    store.add([dict(SAID_SLOT, fact_ids=["f1", "f3"])])
+    assert store.items["t1"]["gate"] is True and "weighed" not in store.items["t1"]
+
+
+def test_a_told_fact_in_a_task_with_no_write_ask_still_gates():
+    facts = mark_side([TOLD])
+    store = W.store_of(inputs(facts=facts))
+    store.add([dict(SAID_SLOT, values=["four"], fact_ids=["f3"])])
+    assert store.items["t1"]["gate"] is True and not facts[0].side
+
+
+def test_a_side_fact_is_never_sent_back_by_the_asked_followup():
+    intent = SpecIntent(task_id="t1", facts=_side_facts())
+    assert W.asked_missing([ROW], intent) == []
+
+
+def test_the_writer_shows_the_side_flag_and_counts_side_facts_and_weighed_gates():
+    model = TestModel([add(ROW, dict(SAID_SLOT, fact_ids=["f3"])), DONE])
+    written = W.write_spec("t1", inputs(facts=_side_facts()), model)
+    content = model.calls[0]["messages"][0]["content"]
+    body = json.loads(content[content.index("\n{") + 1:])
+    assert body["intent"][2]["side"] is True and "side" not in body["intent"][0]
+    assert written.counts["side_facts"] == 1 and written.counts["side_weighed"] == 1
+    assert written.counts["asked_sent_back"] == 0
+    assert "never gated" in W.CHOICE_RULE
+
+
+# The writer's files and message body over facts with no kind, as the code before D361 wrote them.
+NO_KIND_HASHES = {
+    "spec/t1.json": "88e62b785b57b54a39605ce61995981ee8580988ba1c6f5b7464beccc7f58f3c",
+    "spec/verifiers/t1.json": "bd0af6959ddecaffb4f476e5272f6de475d2543901cb262a1a2f1ce21116153a",
+    "verifiers/t1.json": "bd0af6959ddecaffb4f476e5272f6de475d2543901cb262a1a2f1ce21116153a",
+    "body": "4c4054e384426bc357e4a8de56900537c75443d3576f74d8bcb600a063ca088a",
+}
+
+
+def test_a_recorded_workdir_with_no_told_facts_is_unchanged_byte_for_byte_through_the_writer(tmp_path):
+    model = TestModel([add(ROW, dict(SAID_SLOT, fact_ids=["f1"])), DONE])
+    written = W.write_spec("t1", inputs(), model)
+    paths = W.write_verifier(written.spec, tmp_path, inputs())
+    got = {path.relative_to(tmp_path).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+    content = model.calls[0]["messages"][0]["content"]
+    got["body"] = hashlib.sha256(content[content.index("\n{") + 1:].encode()).hexdigest()
+    assert got == NO_KIND_HASHES
+    assert "side_facts" not in written.counts and "side_weighed" not in written.counts

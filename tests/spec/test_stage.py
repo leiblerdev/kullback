@@ -15,7 +15,7 @@ from kullback.spec.writer import runner_verifier_path, spec_verifier_path
 STATE = {"items": {"A1": {"item_id": "A1", "slot": "two"}}}
 POLICY = "# Store policy\n\n## Moving items\n\nMove an item only to a free slot.\n"
 USER_LINE = "Please move item A1 to slot seven today."
-FACT = {"text": "move item A1 to slot seven", "recording": "rec-a", "turn": 1, "stance": "volunteered"}
+FACT = {"text": "move item A1 to slot seven", "recording": "rec-a", "turn": 1, "stance": "volunteered", "kind": "do"}
 ITEM = {"id": "s1", "kind": "row_is", "table": "items", "find": {"item_id": "A1"}, "expect": {"slot": "seven"},
         "fact_ids": ["f1"]}
 

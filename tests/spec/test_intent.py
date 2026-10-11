@@ -97,7 +97,7 @@ def test_a_task_that_is_not_under_tasks_is_refused_by_name(workdir):
 # --- what a fact must carry ------------------------------------------------------------------------
 
 def _add(state, **fact):
-    return _run(_tools(state)["add_facts"], facts=[fact])
+    return _run(_tools(state)["add_facts"], facts=[{"kind": "do", **fact}])
 
 
 def test_a_fact_whose_words_the_named_turn_does_not_say_is_refused_with_the_missing_words(workdir):
@@ -143,7 +143,8 @@ def test_an_accepted_fact_no_other_user_volunteers_is_kept_but_does_not_count(wo
 
 def test_one_call_keeps_the_good_facts_and_refuses_a_repeat_and_a_turn_that_is_no_user_turn(workdir):
     state = _state(workdir)
-    first = dict(text="move the blue lamp order to Oak street", recording="rec-a", turn=1, stance="volunteered")
+    first = dict(text="move the blue lamp order to Oak street", recording="rec-a", turn=1, stance="volunteered",
+                 kind="do")
     result = _run(_tools(state)["add_facts"], facts=[first, first, {**first, "turn": 3}])
     rows = result.details["rows"]
     assert rows[0]["fact_id"] == "f1"
@@ -159,7 +160,8 @@ def test_the_miner_reads_the_recordings_keeps_facts_and_writes_them_to_the_spec_
         _call("a", "list_recordings", {"task_id": "t1"}),
         _call("b", "user_turns", {"recording": "rec-a"}),
         _call("c", "add_facts", {"facts": [{"text": "move the blue lamp order to Oak street",
-                                            "recording": "rec-a", "turn": 1, "stance": "volunteered"}]}),
+                                            "recording": "rec-a", "turn": 1, "stance": "volunteered",
+                                            "kind": "do"}]}),
         ModelReply(content="1 fact kept."),
     ])
     out = mine_intent(workdir, "t1", model, ceiling_usd=1.0)
@@ -199,7 +201,7 @@ def test_the_prompt_names_each_tool_with_an_example_and_ends_on_the_stop_rule():
 
 def test_the_cap_stops_the_session_and_the_facts_kept_before_it_are_saved(workdir):
     kept = {"text": "move the blue lamp order to Oak street", "recording": "rec-a", "turn": 1,
-            "stance": "volunteered"}
+            "stance": "volunteered", "kind": "do"}
     model = TestModel([_call("a", "add_facts", {"facts": [kept]}),
                        _call("b", "user_turns", {"recording": "rec-b"})], loop=True)
     out = mine_intent(workdir, "t1", model, ceiling_usd=1.0, max_calls=1)
@@ -208,7 +210,7 @@ def test_the_cap_stops_the_session_and_the_facts_kept_before_it_are_saved(workdi
 
 
 def test_refused_facts_are_counted_on_the_result_and_in_the_spec_file_as_a_number(workdir):
-    bad = {"text": "wants a green chair", "recording": "rec-a", "turn": 1, "stance": "volunteered"}
+    bad = {"text": "wants a green chair", "recording": "rec-a", "turn": 1, "stance": "volunteered", "kind": "do"}
     good = {**bad, "text": "move the blue lamp order to Oak street"}
     model = TestModel([_call("a", "add_facts", {"facts": [bad, good, good]}), ModelReply(content="1 kept.")])
     out = mine_intent(workdir, "t1", model, ceiling_usd=1.0)
@@ -237,3 +239,49 @@ def test_the_prompt_marks_a_fact_after_pushback_in_one_general_sentence():
                 "or offering another way, before what the user first asked for was met.")
     flat = " ".join(intent_system_prompt().split())
     assert sentence in flat and flat.count("after_pushback") == 1
+
+
+# --- side facts (D361) -----------------------------------------------------------------------------
+
+def _fact(fact_id, kind, turn=0):
+    return T.IntentFact(id=fact_id, text=f"fact {fact_id}", stance="volunteered", kind=kind,
+                        source=T.FactSource(recording="rec", turn=turn))
+
+
+def test_a_told_fact_beside_a_write_ask_is_side_whatever_turn_says_it_first():
+    facts = T.mark_side([_fact("f1", "told", turn=0), _fact("f2", "detail", turn=1), _fact("f3", "do", turn=2)])
+    assert [fact.side for fact in facts] == [True, False, False]
+
+
+def test_a_told_fact_beside_an_ask_to_leave_something_undone_is_side():
+    assert [fact.side for fact in T.mark_side([_fact("f1", "keep"), _fact("f2", "told")])] == [False, True]
+
+
+def test_a_task_whose_only_asks_are_told_facts_has_no_side_facts():
+    facts = T.mark_side([_fact("f1", "detail"), _fact("f2", "told"), _fact("f3", "told")])
+    assert not any(fact.side for fact in facts)
+
+
+def test_a_fact_mined_before_kinds_were_read_is_never_side_and_saves_without_kind_or_side():
+    facts = T.mark_side([_fact("f1", None), _fact("f2", "do")])
+    assert not any(fact.side for fact in facts)
+    assert set(facts[0].model_dump(mode="json")) == {"id", "text", "source", "stance", "witnesses", "echo",
+                                                     "after_pushback", "unfounded"}
+
+
+def test_the_miner_keeps_each_facts_kind_and_code_sets_side_on_the_saved_intent(workdir):
+    move = {"text": "move the blue lamp order to Oak street", "recording": "rec-a", "turn": 1,
+            "stance": "volunteered", "kind": "do"}
+    fee = {"text": "refund the shipping fee to my card", "recording": "rec-c", "turn": 0,
+           "stance": "volunteered", "kind": "told"}
+    model = TestModel([_call("a", "add_facts", {"facts": [move, fee]}), ModelReply(content="2 kept.")])
+    mine_intent(workdir, "t1", model, ceiling_usd=1.0)
+    saved = load_spec(workdir, "t1").intent.facts
+    assert [(fact.kind, fact.side) for fact in saved] == [("do", False), ("told", True)]
+
+
+def test_the_miner_may_not_set_side_itself(workdir):
+    state = _state(workdir)
+    result = _add(state, text="move the blue lamp order to Oak street", recording="rec-a", turn=1,
+                  stance="volunteered", side=True)
+    assert result.is_error and state.facts == []

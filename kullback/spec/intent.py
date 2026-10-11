@@ -21,7 +21,7 @@ from kullback.agent.harness import AgentHarness
 from kullback.agent.loop import Hooks
 from kullback.runner import budget
 from kullback.runner.records import Usage
-from kullback.spec.intent_tools import MinerState, miner_tools, recordings_of
+from kullback.spec.intent_tools import MinerState, mark_side, miner_tools, recordings_of
 from kullback.spec.schema import Spec, SpecIntent, intent_text, load_spec, save_spec
 
 STAGE = "spec"
@@ -43,16 +43,16 @@ TOOLS_TEXT = """\
   Example: user_turns({"recording": "rec-a"})
 - add_facts: keep facts, each naming the recording and user turn that say it, and its stance.
   Example: add_facts({"facts": [{"text": "wants the second shipment sent to the new flat",
-  "recording": "rec-a", "turn": 3, "stance": "volunteered"}]})"""
+  "recording": "rec-a", "turn": 3, "stance": "volunteered", "kind": "do"}]})"""
 
 EXAMPLES = """\
 # Examples
 - The user says "I moved, please send the parcel to my new flat". Fact: "wants the parcel sent to
-  the new flat", volunteered.
+  the new flat", volunteered, do.
 - The agent says "Shall I also refund the fee to your card?" and the user says "Yes please".
-  Fact: "agrees to the fee refunded to the card", accepted, on the user's turn.
+  Fact: "agrees to the fee refunded to the card", accepted, do, on the user's turn.
 - The user says "don't cancel the other booking". Fact: "does not want the other booking
-  cancelled", volunteered. A refusal is a fact too.
+  cancelled", volunteered, keep. A refusal is a fact too.
 - The agent explains a delay and the user asks "so when will it arrive then?". That reacts to the
   agent's answer; it is not what the user came for. No fact."""
 
@@ -68,7 +68,9 @@ answer, greetings and thanks. Mark a fact accepted
 when the user only said yes to the agent's line; volunteered when the user raised it or supplied
 the value. Mark a fact after_pushback when the user says it in reply to the agent declining, failing,
 or offering another way, before what the user first asked for was met. One fact per thing, kept once,
-at the turn where a user first says it."""
+at the turn where a user first says it. Give each fact its kind: do (a change to make), keep (something
+not to do or not to change), told (only something to be told), detail (who the user is, or a value or
+condition that shapes another fact)."""
 
 FEEDBACK_SHAPE = """\
 # What the tools answer
@@ -171,7 +173,8 @@ def mine_intent(workdir: Path, task_id: str, model: Any, ceiling_usd: float,
         asyncio.run(go())
     else:
         watch.stopped = "no recording with a user turn"
-    intent = SpecIntent(task_id=task_id, facts=list(state.facts), text=intent_text(state.facts),
+    facts = mark_side(state.facts)
+    intent = SpecIntent(task_id=task_id, facts=facts, text=intent_text(facts),
                         refusals=state.refused,
                         model=model_id, written_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
     return MineResult(intent=intent, tool_calls=dict(watch.calls), refusals=state.refused, spent_usd=watch.spent,

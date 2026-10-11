@@ -26,7 +26,8 @@ def receives_section() -> str:
             "evidence it reads), each item citing the Intent facts or the policy line it comes from. Each Task "
             "has a view: the user turns of every recording (each with its index and the agent's last line "
             "before it), the Intent facts with the recording and turn each was read from, its stance and its "
-            "echo flag, the items with their provenance, the Verifier's compiled items, the facts no item "
+            "echo and side flags (a side fact asks only to be told something beside the Task's ask: it is scored, "
+            "never gated, so a ruling never asks to gate it), the items with their provenance, the Verifier's compiled items, the facts no item "
             "covers, and every ruling so far with the writer's answer. The policy and the tool "
             'list sit beside the views. Your root is ".", the exam directory: every path is relative to it. '
             "You give feedback and never edit: you file rulings, the writer applies or rebuts them. The Tasks "

@@ -37,7 +37,7 @@ from kullback.spec import writer_tools
 from kullback.spec.actions import action_tables_of, action_tools_of
 from kullback.spec.compile import Compiled, compile_spec
 from kullback.spec.ground import coverage
-from kullback.spec.intent_tools import mark_echo, recordings_of
+from kullback.spec.intent_tools import mark_echo, mark_side, recordings_of
 from kullback.spec.must_not import must_not
 from kullback.spec.schema import (
     Check,
@@ -119,7 +119,8 @@ What the user only accepted after the agent proposed it or refused something is 
 the user left a choice open and the policy allows several, accept any allowed one or weight it. A forbid \
 (not_called, row_keeps) gates only with the policy line that forbids it; else weight it. A value the user \
 asked to be told is a gated judge item anchored on the world row holding it. A variant or payment method the \
-user named is a gated check on that field. A refusal judge item always gates."""
+user named is a gated check on that field. A refusal judge item always gates. A fact marked side asks only to be \
+told something beside the Task's ask, so any item on it is scored, never gated: code weighs such a gate."""
 
 FEEDBACK = """\
 # Feedback
@@ -146,7 +147,7 @@ the user's words why it needs none, then reply that you are done.
 
 
 def asked_missing(items: Iterable[dict], intent: SpecIntent) -> list[dict]:
-    """Volunteered facts (not after pushback, not unfounded) no gated item covers.
+    """Volunteered facts (not after pushback, not unfounded, not side) no gated item covers.
 
     Each row names the fact id and why it is missing: uncovered (no item names it) or
     weighted only (named only by scored items). A gate counts as set where the item says
@@ -160,7 +161,7 @@ def asked_missing(items: Iterable[dict], intent: SpecIntent) -> list[dict]:
              for fact_id in item.get("fact_ids") or []}
     out = []
     for fact in intent.facts:
-        if fact.stance != "volunteered" or fact.after_pushback or fact.unfounded:
+        if fact.stance != "volunteered" or fact.after_pushback or fact.unfounded or fact.side:
             continue
         if fact.id in gated:
             continue
@@ -253,7 +254,8 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
         if spec is None:
             raise FileNotFoundError(f"no Spec for Task {task_id}: mine its Intent first")
         intent = spec.intent
-    intent = intent.model_copy(update={"facts": mark_echo(intent.facts, recordings_of(workdir, task_id))})
+    facts = mark_side(mark_echo(intent.facts, recordings_of(workdir, task_id)))
+    intent = intent.model_copy(update={"facts": facts})
     policy = env.system_prompt(env.task(task_id)) or ""
     overlay, rows = env.overlay(task_id)
     tools = writer_tools.tool_rows(env.sigs)
@@ -296,7 +298,7 @@ def _facts_view(intent: SpecIntent) -> list[dict]:
     return [dict({"id": fact.id, "text": fact.text, "stance": fact.stance},
                  **({"unwitnessed": True} if unwitnessed(fact) else {}), **({"echo": True} if fact.echo else {}),
                  **({"after_pushback": True} if fact.after_pushback else {}),
-                 **({"unfounded": True} if fact.unfounded else {}))
+                 **({"unfounded": True} if fact.unfounded else {}), **({"side": True} if fact.side else {}))
             for fact in intent.facts]
 
 
@@ -507,6 +509,9 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
     spec = _spec_of(task_id, items, counts, inputs)
     counts.update(I.counts_of(items + [I.sanity_item([])]))
     counts["echo_facts"] = sum(1 for fact in inputs.intent.facts if fact.echo)
+    if any(fact.side for fact in inputs.intent.facts):
+        counts["side_facts"] = sum(1 for fact in inputs.intent.facts if fact.side)
+        counts["side_weighed"] = sum(1 for item in items if item.get("weighed") == I.SIDE_WEIGHED)
     save_session(inputs, task_id, "write", 1, session, counts)
     return Written(spec, counts, session)
 

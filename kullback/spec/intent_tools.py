@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.tools import AgentTool, RetryableToolError
 from kullback.runner.records import Task, Trace
-from kullback.spec.schema import FactSource, IntentFact
+from kullback.spec.schema import FactKind, FactSource, IntentFact
 from kullback.spec.text import APOSTROPHE_RE, STOPWORDS, TOKEN_RE, normalise
 
 # A fact is carried by a turn when this share of its content words is in the turn.
@@ -134,6 +134,18 @@ def mark_echo(facts: list[IntentFact], found: TaskRecordings) -> list[IntentFact
     return out
 
 
+# The kinds that ask for a change or for something left undone: beside one, a told fact is a side fact.
+ASK_KINDS = ("do", "keep")
+
+
+def mark_side(facts: list[IntentFact]) -> list[IntentFact]:
+    """The facts with `side` set by code: a told fact is side when another fact of the Task asks for a
+    change or for something left undone. A Task whose only asks are told facts has none; turn order
+    never decides it."""
+    asks = any(fact.kind in ASK_KINDS for fact in facts)
+    return [fact.model_copy(update={"side": asks and fact.kind == "told"}) for fact in facts]
+
+
 def carried_share(text: str, turn: UserTurn) -> float:
     """The share of a fact's words its turn and the agent's line before it carry."""
     return share_in(content_tokens(text), content_tokens(turn.text) | content_tokens(turn.agent_before))
@@ -196,6 +208,10 @@ class FactArgs(BaseModel):
     stance: Literal["volunteered", "accepted"] = Field(
         description="volunteered: the user raised it. accepted: the user agreed to what the agent's "
                     "line before the turn offered.")
+    kind: FactKind = Field(
+        description="do: asks for a change to be made. keep: asks that something not be done or not change. "
+                    "told: asks only to be told something. detail: who the user is, or a value, condition "
+                    "or preference that shapes another fact.")
     after_pushback: bool = Field(
         default=False,
         description="True when the user says it in reply to the agent declining, failing, or offering "
@@ -271,7 +287,7 @@ def _keep(state: MinerState, args: FactArgs) -> IntentFact:
                       source=FactSource(recording=args.recording, turn=turn.index),
                       witnesses=witnesses(text, args.recording, state.found),
                       echo=is_echo(text, args.stance, turn),
-                      after_pushback=bool(args.after_pushback))
+                      after_pushback=bool(args.after_pushback), kind=args.kind)
     state.facts.append(fact)
     return fact
 
@@ -339,7 +355,7 @@ def tool_names() -> tuple[str, ...]:
     return ("list_recordings", "user_turns", "add_facts")
 
 
-__all__ = ["CARRIED_SHARE", "WITNESS_SHARE", "MinerState", "TaskRecordings", "UserTurn", "carried_share", "content_tokens",
-           "counts", "miner_tools", "recordings_of", "share_in", "task_of", "tool_names", "trace_index",
+__all__ = ["ASK_KINDS", "CARRIED_SHARE", "WITNESS_SHARE", "MinerState", "TaskRecordings", "UserTurn", "carried_share", "content_tokens",
+           "counts", "mark_side", "miner_tools", "recordings_of", "share_in", "task_of", "tool_names", "trace_index",
            "user_turns_of", "volunteers", "witnesses"]
 

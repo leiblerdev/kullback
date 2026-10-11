@@ -142,13 +142,30 @@ def _pushback_only(kept: dict, facts: list) -> bool:
         getattr(fact, "after_pushback", False) or fact.stance == "accepted" for fact in facts)
 
 
+# Why a gate on a side fact is weighed, kept on the item so a count can find it.
+SIDE_WEIGHED = "side fact"
+
+
+def _side_only(facts: list) -> bool:
+    """Whether a gate item cites a side fact (an ask only to be told something, beside the Task's ask)
+    and no fact asking for a change or for something left undone. A policy line does not lift it."""
+    return any(getattr(fact, "side", False) for fact in facts) and not any(
+        getattr(fact, "kind", None) in ("do", "keep") for fact in facts)
+
+
 def _weighed_gate(kept: dict, known: dict) -> str:
     """One line for the writer when its gate is weighed: it rests only on facts said after pushback
-    or only accepted, with no policy line beside them; else empty. A scored item may rest on them."""
-    if kept.get("gate") and _pushback_only(kept, [known[f] for f in kept.get("fact_ids") or []]):
+    or only accepted, with no policy line beside them, or on a side fact; else empty. A scored item
+    may rest on them."""
+    facts = [known[f] for f in kept.get("fact_ids") or []]
+    if kept.get("gate") and _pushback_only(kept, facts):
         kept["gate"] = False
         return ("gate weighed: it rests only on facts said after pushback or only accepted; "
                 "a gate needs a volunteered fact or a policy line")
+    if kept.get("gate") and _side_only(facts):
+        kept.update(gate=False, weighed=SIDE_WEIGHED)
+        return ("gate weighed: it rests on a side fact, a question asked beside the Task's ask, which a run "
+                "whose user never asks it cannot meet; it is scored, never gated")
     return ""
 
 

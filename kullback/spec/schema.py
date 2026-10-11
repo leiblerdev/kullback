@@ -6,13 +6,16 @@ import json
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import Field, model_validator
+from pydantic import Field, model_serializer, model_validator
 
 from kullback.runner.records import GATE_KINDS, AtomKind, Item, Record
 from kullback.spec.must_not import tier_of as _atom_tier
 from kullback.user.rules import spec_goal
 
 Stance = Literal["volunteered", "accepted"]
+# What a fact asks for, as the miner reads it: a change made, something left undone or unchanged,
+# only to be told something, or a detail (who the user is, a value or condition shaping another ask).
+FactKind = Literal["do", "keep", "told", "detail"]
 # Spec fields retired with the Examiner's edit kinds (D325 to D331): dropped when an older file loads.
 RETIRED_KEYS = ("atom_edits", "end_state_edits")
 Tier = Literal["critical", "sanity", "important"]
@@ -43,6 +46,21 @@ class IntentFact(Record):
     # The Examiner ruled the user never asked for it (an intent_unfounded ruling the writer applied):
     # no gate item may rest on it alone (spec/items.py).
     unfounded: bool = False
+    # The miner's reading of what the fact asks for; None on a fact mined before kinds were read.
+    kind: Optional[FactKind] = None
+    # Set by code (spec/intent_tools.mark_side), never by a model: an ask only to be told something in a
+    # Task that also asks for a change or for something left undone. It may be scored, never gated.
+    side: bool = False
+
+    @model_serializer(mode="wrap")
+    def _without_unread_kind(self, handler):
+        data = handler(self)
+        if isinstance(data, dict):
+            if data.get("kind") is None:
+                data.pop("kind", None)
+            if not data.get("side"):
+                data.pop("side", None)
+        return data
 
 
 class SpecIntent(Record):
