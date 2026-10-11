@@ -1095,9 +1095,16 @@ LEAK_RETRY = "Your message repeated this text; write it again without it: "
 # How many recorded Tasks are read looking for a style example of the walk's own write tools.
 STYLE_SEARCH_LIMIT = 200
 
+# The founder's standing rule on difficulty (synth-add3 item 5, synth-add4): a Task is harder only by more
+# work in the world, never by a vaguer ask or a stricter check. The mechanism that adds that work is a later slice.
+DIFFICULTY_RULE = ("Difficulty comes from the world, never from the ask or the check: keep the request clear "
+                   "and complete. When a task is too easy, it gets more work in the world (a second row to tell "
+                   "apart, a conflicting clue the policy resolves, facts across tables), never a vaguer ask "
+                   "or a stricter check.")
+
 DESCRIPTION_PROMPT = (
     "A person is writing to a support agent about a problem they want solved. Write their first "
-    "message, in the first person.\n\n"
+    "message, in the first person.\n\n" + DIFFICULTY_RULE + "\n\n"
     "What they want done:\n{ask}\n\n"
     "Things only they know, to state in their own words:\n{facts}\n\n"
     "{extra}"
@@ -1601,7 +1608,7 @@ def _store_task(world: World, parent: Path, store: Path, calls: list[dict], note
             "realism_source": answer.get("source") or ""}, ""
 
 
-__all__ = ["ARCHETYPE_INTENT", "ATTEMPTS_PER_TASK", "CONFIRM_WORDS", "CONSENT_LINE", "CRASHED", "DIR", "DROP_REASONS", "FORMAT",
+__all__ = ["ARCHETYPE_INTENT", "ATTEMPTS_PER_TASK", "CONFIRM_WORDS", "CONSENT_LINE", "CRASHED", "DIFFICULTY_RULE", "DIR", "DROP_REASONS", "FORMAT",
            "INDEX", "MAX_INSERTED_READS", "READ_ONLY_REFUSED", "REFUSED", "RUNGS",
            "REALISM_NOT_RUN", "SCENARIOS", "SECOND_PATH_LIMIT", "SHAPED_PATHS", "STORE", "STORE_INDEX", "STORE_LINKS", "UNBOUND",
            "WRITE_RETRIES", "World", "archetype_intent", "askable_fields", "bind", "build_store",

@@ -655,3 +655,10 @@ def test_the_realism_step_never_fetches_a_destination_that_is_not_public():
                                      search=lambda query, key: ["http://127.0.0.1/admin"],
                                      env={"KULLBACK_SEARCH_KEY": "set"})
     assert step("Please retie my kite at 40.")["happens"] is None and fetched == []
+
+
+def test_the_description_prompt_states_that_difficulty_comes_from_the_world_never_the_ask_or_the_check():
+    writer = _Silent()
+    synthesise.description_text(writer, [{"field": "length", "value": "40"}], [], [])
+    assert synthesise.DIFFICULTY_RULE in writer.prompts[0]
+    assert "never from the ask or the check" in synthesise.DIFFICULTY_RULE
