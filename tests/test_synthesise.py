@@ -397,13 +397,13 @@ def _kept_store(kite_world: Path):
     assert body["counts"]["tasks_kept"] == 1, body["counts"]
     assert model.calls, "the description was never written by the model"
     store = kite_world / synthesise.DIR / synthesise.STORE
-    return store, body["tasks"][0]["task_id"], body["tasks"][0]["run_id"]
+    return store, body["tasks"][0]["task_id"]
 
 
 def test_build_store_keeps_a_described_walk_apart_from_the_d224_store(kite_world: Path):
     from kullback.spec import intent_tools
 
-    store, task_id, _run_id = _kept_store(kite_world)
+    store, task_id = _kept_store(kite_world)
     assert (store / intent_tools.SYNTHETIC_MARKER).is_file()
     assert (store / "db.json").is_symlink(), "the database must be linked, never copied"
     assert not (store / "verifiers").exists(), "the store path never derives a Verifier"
@@ -419,7 +419,7 @@ def test_a_store_task_reads_through_the_chain_unchanged(kite_world: Path):
     from kullback.spec.schema import SpecIntent
     from kullback.spec.writer import load_inputs
 
-    store, task_id, run_id = _kept_store(kite_world)
+    store, task_id = _kept_store(kite_world)
     task = TaskRecord.model_validate(json.loads((store / "tasks" / f"{task_id}.json").read_text()))
     assert task.intent and task.facts_in_instruction is False
     found = intent_tools.recordings_of(store, task_id)
@@ -427,7 +427,18 @@ def test_a_store_task_reads_through_the_chain_unchanged(kite_world: Path):
     inputs = load_inputs(store, task_id, intent=SpecIntent(task_id=task_id, text=task.intent))
     assert inputs.tools and inputs.state is not None
     assert task_id in trust.intent_tiers(store)
-    assert trust.faithful_references(store)[task_id] == [run_id] == task.run_ids
+
+
+def test_the_walk_is_kept_as_the_scenario_source_and_never_as_a_reference_or_a_run(kite_world: Path):
+    from kullback.spec import trust
+
+    store, task_id = _kept_store(kite_world)
+    task = json.loads((store / "tasks" / f"{task_id}.json").read_text())
+    scenario = json.loads((store / synthesise.SCENARIOS / f"{task_id}.json").read_text())
+    assert task["run_ids"] == [] and scenario["steps"] and scenario["rows"]
+    assert "retie_kite" in [step["tool"] for step in scenario["steps"]]
+    assert not (store / "references.json").exists() and not (store / "replays.json").exists()
+    assert trust.faithful_references(store) == {} and trust.runs_on_disk(store) == {}
 
 
 def test_the_synthesise_command_builds_a_store_with_the_store_flag(kite_world: Path):
@@ -454,9 +465,8 @@ def _id_first_walk() -> list[dict]:
 def test_an_id_no_answer_carried_is_stated_in_the_description_and_the_walk_kept(kite_world: Path):
     store = synthesise._link_store(kite_world)
     world = synthesise.World(store)
-    references: dict = {}
     row, drop = synthesise._store_task(world, kite_world, store, _id_first_walk(), {}, "w1t2p1",
-                                       "id-first", _EchoModel(), [], False, references, {}, {})
+                                       "id-first", _EchoModel(), [], False, {})
     assert drop == "" and row is not None
     task = json.loads((store / "tasks" / f"{row['task_id']}.json").read_text())
     assert "k2" in task["intent"], "the id the customer gives never reached the description"
@@ -512,3 +522,136 @@ def test_a_go_ahead_counts_only_as_a_sentence_opening_on_a_yes_with_none_on_a_no
     assert synthesise.consents("Please retie kite k2. Go ahead and make the change.")
     assert not synthesise.consents("Please retie kite k2. You have my go-ahead.")
     assert not synthesise.consents("Go ahead. Do not touch kite k3.")
+
+
+# --- realism by code at birth (synth-add3 item 4) ------------------------------------------------
+
+
+class _Says:
+    """A description writer double that always answers the same message."""
+
+    def __init__(self, text: str):
+        self.text, self.calls = text, 0
+
+    def query(self, messages, tools=None, config=None):
+        from kullback.ai.provider import ModelReply
+
+        self.calls += 1
+        return ModelReply(content=self.text)
+
+
+def _store_one(kite_world: Path, model, realism=None, unreal_rows=None) -> tuple:
+    store = synthesise._link_store(kite_world)
+    return synthesise._store_task(synthesise.World(store), kite_world, store, _id_first_walk(), {},
+                                  "w1t2p1", "realism", model, [], False, {}, realism, unreal_rows)
+
+
+@pytest.mark.parametrize(("text", "reason"), [
+    ("Please retie kite k2 at 40, the grader will want it.", "grader_words"),
+    ("Please retie kite k2 at 40 so it passes the scoring.", "grader_words"),
+    ("Please call retie_kite on k2 at 40.", "tool_named"),
+    ("## My request\nPlease retie kite k2 at 40.", "formatted"),
+    ("I need two things:\n- retie kite k2 at 40", "formatted"),
+])
+def test_a_description_that_reads_as_a_form_or_a_grader_is_dropped_by_its_reason(kite_world: Path, text, reason):
+    assert _store_one(kite_world, _Says(text)) == (None, reason)
+
+
+def test_a_plain_request_passes_the_code_realism_checks(kite_world: Path):
+    row, drop = _store_one(kite_world, _Says("Hi, could you check kite k2 and retie it at 40? Thanks."))
+    assert drop == "" and row is not None and row["realism"] == synthesise.REALISM_NOT_RUN
+
+
+def test_a_description_asking_for_a_write_family_the_walk_never_made_is_a_second_ask():
+    tools = ["get_kite", "retie_kite", "paint_kite"]
+    assert synthesise.unreal_by_code("Please retie k2 at 40 and paint it red.", tools, {"retie_kite"},
+                                     {"retie_kite", "paintKite"}) == "second_ask"
+    assert synthesise.unreal_by_code("Please retie k2 at 40.", tools, {"retie_kite"},
+                                     {"retie_kite", "paint_kite"}) == ""
+
+
+def test_the_store_index_counts_each_drop_under_its_name(kite_world: Path):
+    body = synthesise.build_store(kite_world, {"w1t3p1": 1}, seed="realism",
+                                  model=_Says("# Request\nRetie it."))
+    counts = body["counts"]
+    assert counts["tasks_kept"] == 0 and counts["walks_formatted"] >= 1
+    assert {f"walks_{reason}" for reason in synthesise.DROP_REASONS} <= set(counts)
+
+
+# --- realism against the domain with the search tool (synth-add3-fix) -----------------------------
+
+PAGE = "https://help.example.org/kites/retie"
+PAGE_HTML = "<html><body><p>Customers often ask us to retie a kite at a new line length.</p></body></html>"
+
+
+class _Judge:
+    """A realism model double: it records the prompt and answers what the test scripts."""
+
+    def __init__(self, answer: dict):
+        self.answer, self.prompts = answer, []
+
+    def query(self, messages, tools=None, config=None):
+        from kullback.ai.provider import ModelReply
+
+        self.prompts.append(messages[0]["content"])
+        return ModelReply(content=json.dumps(self.answer))
+
+
+def _realism(judge, pages=(PAGE,), fetched=None):
+    fetched = [] if fetched is None else fetched
+
+    def fetch(url):
+        fetched.append(url)
+        return PAGE_HTML
+
+    return synthesise.domain_realism(judge, search=lambda query, key: list(pages), fetch=fetch,
+                                     env={"KULLBACK_SEARCH_KEY": "set"})
+
+
+def test_the_realism_step_reads_the_description_and_the_pages_and_never_the_walk_or_the_tools():
+    judge = _Judge({"happens": "yes", "source": PAGE, "why": "the page says customers ask it"})
+    queries = []
+    step = synthesise.domain_realism(judge, search=lambda query, key: queries.append(query) or [PAGE],
+                                     fetch=lambda url: PAGE_HTML, env={"KULLBACK_SEARCH_KEY": "set"})
+    answer = step("Please retie my kite at 40.")
+    assert answer == {"happens": True, "source": PAGE, "why": "the page says customers ask it"}
+    assert queries == ["Please retie my kite at 40."]
+    [prompt] = judge.prompts
+    assert "retie a kite at a new line length" in prompt and "retie_kite" not in prompt and "k2" not in prompt
+
+
+def test_a_request_the_domain_does_not_attest_drops_the_walk_as_unreal_with_its_source(kite_world: Path):
+    judge = _Judge({"happens": "no", "source": PAGE, "why": "nobody asks this"})
+    rows: list = []
+    assert _store_one(kite_world, _EchoModel(), _realism(judge), rows) == (None, "unreal")
+    assert rows == [{"task_id": rows[0]["task_id"], "reason": "unreal", "source": PAGE, "why": "nobody asks this"}]
+
+
+def test_a_request_the_domain_attests_is_kept_with_the_page_it_leaned_on(kite_world: Path):
+    judge = _Judge({"happens": "yes", "source": PAGE, "why": "customers ask it"})
+    row, drop = _store_one(kite_world, _EchoModel(), _realism(judge))
+    assert drop == "" and (row["realism"], row["realism_source"]) == ("happens", PAGE)
+
+
+@pytest.mark.parametrize("answer", [{"happens": "yes", "source": "https://elsewhere.example.org/"},
+                                    {"happens": "maybe", "source": PAGE}])
+def test_a_realism_answer_naming_no_page_read_judges_nothing_and_drops_the_walk(kite_world: Path, answer):
+    rows: list = []
+    assert _store_one(kite_world, _EchoModel(), _realism(_Judge(answer)), rows) == (None, "unjudged")
+    assert rows[0]["reason"] == "unjudged"
+
+
+def test_without_a_search_key_the_realism_step_reads_nothing_and_says_so():
+    judge = _Judge({"happens": "yes", "source": PAGE})
+    step = synthesise.domain_realism(judge, search=lambda query, key: [PAGE], fetch=lambda url: PAGE_HTML,
+                                     env={})
+    answer = step("Please retie my kite at 40.")
+    assert answer["happens"] is None and "KULLBACK_SEARCH_KEY" in answer["why"] and judge.prompts == []
+
+
+def test_the_realism_step_never_fetches_a_destination_that_is_not_public():
+    fetched: list = []
+    step = synthesise.domain_realism(_Judge({"happens": "yes", "source": PAGE}),
+                                     search=lambda query, key: ["http://127.0.0.1/admin"],
+                                     env={"KULLBACK_SEARCH_KEY": "set"})
+    assert step("Please retie my kite at 40.")["happens"] is None and fetched == []

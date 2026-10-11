@@ -511,7 +511,11 @@ def runs_on_disk(workdir: Any) -> dict[str, list[Run]]:
 def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[str, TaskTier]:
     """Every Task of the workdir under the intent foundation, the build's sample only when the manifest
     holds one; `specs` stands in for the spec folder."""
+    from kullback.spec import scenario
+    from kullback.spec.intent_tools import is_synthetic_store
+
     root = Path(workdir)
+    synthetic = is_synthetic_store(root)
     canon = load_rules(root / "canon-rules.json")
     sigs = read_json(root / "tool_sigs.json", None) or []
     tools = write_tools_of(sigs.get("sigs", []) if isinstance(sigs, dict) else sigs) - workdir_action_tools(root)
@@ -534,6 +538,10 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
             out[task_id] = unruled_row(task_id, reason, spec.set_aside or "no verifier file")
             continue
         task_runs = runs.get(task_id, [])
+        if synthetic:
+            # A store Task has no Reference: the do-nothing Run is laid on its Starting state through
+            # the expected Run, last, so a fresh Run with a stop still comes first (spec/scenario.py).
+            task_runs = [*task_runs, *filter(None, [scenario.store_expected_run(root, task_id, verifier)])]
         out[task_id] = tier_of_task(spec, verifier, task_runs, events, canon=canon,
                                     write_tools=tools, references=references.get(task_id, ()), schema=schema,
                                     judged=judge_results_of(root, task_id, verifier, task_runs))

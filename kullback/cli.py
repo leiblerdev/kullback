@@ -1029,11 +1029,11 @@ def _shaped_lines(body: dict) -> list[str]:
 def _store_lines(body: dict) -> list[str]:
     """What a store request kept, as the lines the command prints: counts only, never Task text."""
     counts = dict(body.get("counts") or {})
+    reasons = _entry("kullback.synthesise", "DROP_REASONS")
+    dropped = ", ".join(f"{reason} {counts.get('walks_' + reason, 0)}" for reason in reasons)
     lines = [f"walks tried {counts.get('walks_tried', 0)}, refused {counts.get('walks_refused', 0)}, "
-             f"crashed {counts.get('walks_crashed', 0)}, unbound {counts.get('walks_unbound', 0)}, "
-             f"contaminated {counts.get('walks_contaminated', 0)}, unfair {counts.get('walks_unfair', 0)}, "
-             f"undescribed {counts.get('walks_undescribed', 0)}, "
-             f"unconsented {counts.get('walks_unconsented', 0)}, kept {counts.get('tasks_kept', 0)}",
+             f"unbound {counts.get('walks_unbound', 0)}, {dropped}, "
+             f"realism not run {counts.get('realism_not_run', 0)}, kept {counts.get('tasks_kept', 0)}",
              "", "| bucket asked | Tasks kept |",
              "| --- | --- |"]
     per_bucket = counts.get("per_bucket") or {}
@@ -1118,7 +1118,8 @@ def synthesise(
     per_archetype: int = typer.Option(1, "--per-archetype", help="How many Tasks per archetype."),
     store: bool = typer.Option(False, "--store",
                                help="Keep walks as description Tasks in a workdir-shaped store "
-                                    "linked to this one, with the walk as each Task's Reference (D360). "
+                                    "linked to this one, the walk kept as each Task's scenario source, "
+                                    "never its Reference (D360). "
                                     "Nothing is derived; no Verifier is written."),
 ):
     """Walk the mined tool-call graph, run the walks in the rebuilt world and store them apart (D224).

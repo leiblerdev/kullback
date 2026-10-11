@@ -299,12 +299,15 @@ def workdir_mutants(workdir: Any, task_ids: Optional[Iterable[str]] = None, cap:
     from kullback.gates.trust import schema_of
     from kullback.runner.canon import load_rules
     from kullback.runner.records import read_json
+    from kullback.spec import scenario
     from kullback.spec.actions import workdir_action_tools
+    from kullback.spec.intent_tools import is_synthetic_store
     from kullback.spec.judged import judge_results_of
     from kullback.spec.schema import spec_verifier_path
     from kullback.spec.trust import faithful_references, load_spec_verifier, runs_on_disk
 
     root = Path(workdir)
+    synthetic = is_synthetic_store(root)
     canon = load_rules(root / "canon-rules.json")
     sigs = read_json(root / "tool_sigs.json", None) or []
     tools = write_tools_of(sigs.get("sigs", []) if isinstance(sigs, dict) else sigs) - workdir_action_tools(root)
@@ -319,6 +322,16 @@ def workdir_mutants(workdir: Any, task_ids: Optional[Iterable[str]] = None, cap:
             continue
         ids = set(references.get(task_id) or ())
         reference = next((run for run in runs.get(task_id, []) if run.run_id in ids), None)
+        if reference is None and synthetic:
+            # A store Task has no Reference: its mutants are laid on the compiled expected end state and
+            # scored by the Verifier's end state checks alone (spec/scenario.py).
+            base = scenario.store_expected_run(root, task_id, verifier)
+            report = mutant_report(scenario.state_part(verifier), base, canon=canon, tools=tools,
+                                   schema=schema, cap=cap)
+            report["base"] = scenario.EXPECTED
+            write_json(mutants_path(root, task_id), report)
+            out[task_id] = report
+            continue
         answers = judge_results_of(root, task_id, verifier, [reference]).get(reference.run_id) if reference else None
         report = mutant_report(verifier, reference, canon=canon, tools=tools, schema=schema,
                                judge_results=answers, cap=cap)

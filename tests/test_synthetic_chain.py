@@ -1,10 +1,11 @@
 """A synthetic store through the whole chain, every model a scripted one (D360).
 
 The kite world of tests/test_synthesise.py with its toolkit rendered and a policy shipped: one walk is
-kept as a store Task whose description an echoing double writes. From there the chain runs as it runs on
-a recorded workdir: the Candidate opens on the description with no user, the miner reads the description
-as one volunteered turn, the writer writes the Verifier, the Examiner's goal step and review round run,
-the walk is the Reference, mutants score its End state, and trust lands a tier under its own heading.
+kept as a store Task whose description an echoing double writes. The walk is only the Task's scenario
+source, never its Reference. From there the chain runs: the Candidate opens on the description with no
+user, the miner reads the description as one volunteered turn, the writer writes the Verifier, the
+Examiner's goal step and review round run, mutants score the compiled expected end state, and trust lands
+a tier under its own heading once a fresh Run passes.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from kullback import synthesise
 from kullback.agent.bus import Bus
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.builder import compile_env
-from kullback.runner.records import EntitySchema, Run, ToolSig
+from kullback.runner.records import EntitySchema, ToolSig
 from kullback.spec import intent_tools
 from tests.test_synthesise import _EchoModel, kite_world  # noqa: F401 - the fixture is used by name
 
@@ -47,34 +48,21 @@ def kite_store(kite_world: Path):  # noqa: F811 - the imported fixture is the pa
     body = synthesise.build_store(kite_world, {"w1t3p1": 1}, seed="store-chain", model=_EchoModel())
     assert body["counts"]["tasks_kept"] == 1, body["counts"]
     store = synthesise.store_path(kite_world)
-    row = body["tasks"][0]
-    return store, row["task_id"], row["run_id"]
+    return store, body["tasks"][0]["task_id"]
 
 
-def _walk(store: Path, task_id: str, run_id: str) -> Run:
-    from kullback.spec.trust import runs_on_disk
-
-    return next(run for run in runs_on_disk(store)[task_id] if run.run_id == run_id)
-
-
-def _written(store: Path, run: Run) -> tuple[str, dict]:
-    """The one row the walk changed and its changed fields, read off the walk's own End state."""
-    stop = next(event for event in run.events if event.type == "stop").payload
-    start, end = stop["start_state"], stop["end_state"]
-    for table, rows in end.items():
-        for key, row in rows.items():
-            changed = {field: value for field, value in row.items()
-                       if (start.get(table) or {}).get(key, {}).get(field) != value}
-            if changed:
-                return key, changed
-    raise AssertionError("the walk changed nothing")
+def _written(store: Path, task_id: str) -> tuple[str, dict]:
+    """The row the scenario's write names and the change it asks for, read off the scenario source."""
+    scenario = json.loads((store / synthesise.SCENARIOS / f"{task_id}.json").read_text())
+    args = next(step["args"] for step in scenario["steps"] if step["tool"] == "retie_kite")
+    return args["kite_id"], {"length": args["length"]}
 
 
 # --- the Task record and the Candidate's opening ----------------------------------------------
 
 
 def test_the_store_says_its_tasks_are_synthetic_and_the_parent_is_not(kite_store, kite_world):  # noqa: F811
-    store, task_id, _run_id = kite_store
+    store, task_id = kite_store
     assert intent_tools.is_synthetic_store(store) and not intent_tools.is_synthetic_store(kite_world)
     marker = json.loads((store / intent_tools.SYNTHETIC_MARKER).read_text())
     assert marker["origin"] == intent_tools.SYNTHETIC_ORIGIN
@@ -88,7 +76,7 @@ def test_a_candidate_run_opens_on_the_description_and_no_user_is_started(kite_st
     from kullback.runner.world.environment import BuiltEnvironment
     from kullback.runner.world.episode import Episode
 
-    store, task_id, _run_id = kite_store
+    store, task_id = kite_store
     env = BuiltEnvironment(store)
     task = env.task(task_id)
     assert task.facts_in_instruction is False and env.opening(task) == task.intent
@@ -118,24 +106,26 @@ def _mined(store: Path, task_id: str):
     return mine_intent(store, task_id, model, ceiling_usd=1.0)
 
 
-def _verified(store: Path, task_id: str, run_id: str, expect: dict | None = None):
-    """The Task mined and its Verifier written from the Intent: one gated row item on the walk's row,
-    expecting what the description asks (the walk's own change unless `expect` says otherwise)."""
+def _verified(store: Path, task_id: str, confirm: bool = True):
+    """The Task mined and its Verifier written from the Intent: one gated row item on the row the
+    description names, expecting the change it asks for, and (unless told not to) one gated confirm
+    item off the policy."""
     from kullback.spec.stage import write_from_intent
 
     mined = _mined(store, task_id)
-    key, changed = _written(store, _walk(store, task_id, run_id))
+    key, changed = _written(store, task_id)
     item = {"id": "s1", "kind": "row_is", "table": "kites", "find": {"kite_id": key}, "row": key,
-            "expect": expect or changed, "gate": True, "weight": 1.0, "fact_ids": ["f1"], "policy_line": None}
-    confirm = {"id": "c1", "kind": "before", "first": "confirm_turn", "then": "retie_kite", "gate": True,
+            "expect": changed, "gate": True, "weight": 1.0, "fact_ids": ["f1"], "policy_line": None}
+    confirm_item = {"id": "c1", "kind": "before", "first": "confirm_turn", "then": "retie_kite", "gate": True,
                "weight": 1.0, "fact_ids": [], "policy_line": POLICY.splitlines()[-1]}
-    writer = TestModel([call("add_items", items=[item, confirm]), DONE], loop=True)
+    items = [item, confirm_item] if confirm else [item]
+    writer = TestModel([call("add_items", items=items), DONE], loop=True)
     write_from_intent(store, task_id, mined.intent, writer, 1.0, Bus(store / "bus.jsonl", agent="spec"))
     return mined
 
 
 def test_the_miner_reads_the_description_as_one_volunteered_turn(kite_store):
-    store, task_id, _run_id = kite_store
+    store, task_id = kite_store
     mined = _mined(store, task_id)
     [fact] = mined.intent.facts
     assert (fact.stance, fact.source.recording, fact.source.turn) == \
@@ -147,30 +137,42 @@ def test_the_writer_writes_the_verifier_from_the_intent_and_never_from_the_walk(
     from kullback.spec.schema import load_spec
     from kullback.spec.writer import runner_verifier_path
 
-    store, task_id, run_id = kite_store
-    _verified(store, task_id, run_id)
+    store, task_id = kite_store
+    _verified(store, task_id)
     spec = load_spec(store, task_id)
     assert spec.set_aside is None and runner_verifier_path(store, task_id).is_file()
     assert sorted(check.id for check in spec.checks if check.id in ("s1", "c1")) == ["c1", "s1"]
 
 
-def test_the_walk_as_reference_passes_the_verifier_and_both_constructed_runs_fail(kite_store):
-    from kullback.examiner.rule_tool import verify_rows
-    from kullback.spec.trust import load_spec_verifier
+def _fresh(store: Path, task_id: str, *replies: ModelReply):
+    """One scripted Candidate Run of the store Task, written under the store's runs/ like any fresh Run."""
+    from kullback.runner import tool as runner_tool
 
-    store, task_id, run_id = kite_store
-    _verified(store, task_id, run_id)
+    return runner_tool.run(store, task_id, TestModel([*replies, ModelReply(content="It is done.")]),
+                           workdir=store, run_id=f"fresh-{len(replies)}")
+
+
+def test_a_store_task_has_no_reference_and_its_constructed_runs_lie_on_the_starting_state(kite_store):
+    from kullback.examiner.rule_tool import verify_rows
+    from kullback.spec import scenario
+    from kullback.spec.trust import constructed_runs, faithful_references, load_spec_verifier
+
+    store, task_id = kite_store
+    _verified(store, task_id)
     verifier = load_spec_verifier(store, task_id)
-    rows = {row["run"]: row for row in verify_rows(store, task_id, verifier, _walk(store, task_id, run_id))}
-    assert rows["reference"]["verifier_passes_it"] is True
-    assert rows["do_nothing"]["verifier_fails_it"] is True and rows["stray_write"]["verifier_fails_it"] is True
+    assert faithful_references(store) == {}
+    assert verify_rows(store, task_id, verifier, None) == [{"run": "reference", "error": "no faithful Reference on disk"}]
+    expected = scenario.store_expected_run(store, task_id, verifier)
+    built = constructed_runs(verifier, [expected], [])
+    stop = built["do_nothing"].events[-1].payload
+    assert stop["end_state"] == stop["start_state"] == scenario.starting_state(store, task_id)
 
 
 def test_the_goal_step_reads_the_description_as_the_users_words(kite_store):
     from kullback.examiner import goal as G
 
-    store, task_id, run_id = kite_store
-    key, changed = _written(store, _walk(store, task_id, run_id))
+    store, task_id = kite_store
+    key, changed = _written(store, task_id)
     text = json.loads((store / "tasks" / f"{task_id}.json").read_text())["intent"]
     assert G.user_words(store, task_id) == {intent_tools.DESCRIPTION_SOURCE: [{"turn": 0, "user": text}]}
     [(field, value)] = changed.items()
@@ -189,45 +191,46 @@ def _examined(store: Path, task_id: str, *replies: ModelReply) -> dict:
     return examine_rounds(store, [task_id], model=examiner, writer_model=TestModel([DONE], loop=True))
 
 
-def test_a_review_round_that_rules_nothing_lands_the_task_trusted_in_the_stores_own_tiers(kite_store, kite_world):  # noqa: F811
-    from kullback.spec.mutants import workdir_mutants
-    from kullback.spec.trust import intent_tiers
+def test_a_review_round_and_a_passing_fresh_run_land_the_task_trusted_in_the_stores_own_tiers(kite_store, kite_world):  # noqa: F811
+    from kullback.spec.trust import STRAY_UNTESTED, intent_tiers
 
-    store, task_id, run_id = kite_store
-    _verified(store, task_id, run_id)
+    store, task_id = kite_store
+    key, changed = _written(store, task_id)
+    # No confirm item: the runner logs a Task's opening as a model message and never as a user turn,
+    # so no fresh Run of a description-only Task can satisfy a confirm_turn gate (open in the report).
+    _verified(store, task_id, confirm=False)
     out = _examined(store, task_id)
     assert out["examined"] == [task_id] and out["held"] == []
     tier = intent_tiers(store)[task_id]
-    assert tier.tier == "trusted", tier
+    assert (tier.tier, tier.row["reason"]) == ("untrusted", STRAY_UNTESTED), "no Run passed yet, so nothing tested the stray write"
+    _fresh(store, task_id, call("retie_kite", kite_id=key, **changed))
+    tier = intent_tiers(store)[task_id]
+    assert tier.tier == "trusted" and tier.row["reference"]["runs"] == [], tier
     assert task_id not in intent_tiers(kite_world), "the parent's tiers read a synthetic Task"
+
+
+def test_mutants_of_a_store_task_score_the_compiled_expected_end_state_and_not_a_walk(kite_store):
+    from kullback.spec import scenario
+    from kullback.spec.mutants import workdir_mutants
+
+    store, task_id = kite_store
+    _verified(store, task_id)
     report = workdir_mutants(store, [task_id])[task_id]
-    assert report["status"] == "scored" and report["reference"] == run_id, report
+    assert report["status"] == "scored" and report["base"] == scenario.EXPECTED, report
+    assert report["reference"] == f"{task_id}.{scenario.EXPECTED}"
     assert report["killed"] >= 1 and report["built"] == report["killed"] + report["survived"] + report["open"]
 
 
-def test_a_walk_that_did_not_do_what_the_description_asks_ends_the_task_with_no_verifier(kite_store):
-    from kullback.spec.schema import load_spec
-    from kullback.spec.trust import NO_VERIFIER, intent_tiers
+def test_a_fails_reference_ruling_never_applies_to_a_store_task(kite_store):
+    from kullback.spec.trust import intent_tiers
 
-    store, task_id, run_id = kite_store
-    walk = _walk(store, task_id, run_id)
-    key, changed = _written(store, walk)
-    [(field, value)] = changed.items()
-    path = store / "tasks" / f"{task_id}.json"
-    task = json.loads(path.read_text())
-    asked = str(int(value) + 7)
-    task["intent"] = task["intent"].replace(value, asked)
-    path.write_text(json.dumps(task))
-    _verified(store, task_id, run_id, expect={field: asked})
-    assert load_spec(store, task_id).checks[0].demand["expect"] == {field: asked}
-    write = next(event.idx for event in walk.events if event.type == "tool_call"
-                 and event.payload.get("args", {}).get(field) == value)
+    store, task_id = kite_store
+    _verified(store, task_id)
     _examined(store, task_id, call("rule", task_id=task_id, item="s1", kind="code", code="fails_reference",
-                                   reason="The walk wrote a value the description never asked for.",
-                                   fix="Keep the check; the walk is wrong.", blocking=True,
-                                   wrong_side="reference", ref_step=write))
+                                   reason="The walk wrote another value.", fix="Keep the check.", blocking=True,
+                                   wrong_side="reference", ref_step=1))
     tier = intent_tiers(store)[task_id]
-    assert (tier.tier, tier.row["reason"], tier.row["why"]) == ("untrusted", NO_VERIFIER, "reference_wrong"), tier
+    assert tier.row["why"] != "reference_wrong" and tier.row["reason"] != "no_verifier", tier
 
 
 # --- every count of a store is printed under its own heading -------------------------------------
@@ -237,9 +240,11 @@ def test_the_stores_tier_report_and_counts_line_print_under_the_synthetic_headin
     from kullback import cli
     from kullback.spec import report
 
-    store, task_id, run_id = kite_store
-    _verified(store, task_id, run_id)
+    store, task_id = kite_store
+    key, changed = _written(store, task_id)
+    _verified(store, task_id, confirm=False)
     _examined(store, task_id)
+    _fresh(store, task_id, call("retie_kite", kite_id=key, **changed))
     written = report.write_report(store, corpus="kites")
     assert written["origin"] == intent_tools.SYNTHETIC_ORIGIN and written["tiers"]["trusted"] == 1
     assert report.header_line(written).startswith(report.SYNTHETIC_HEADING + ": ")
@@ -253,7 +258,7 @@ def test_the_stores_tier_report_and_counts_line_print_under_the_synthetic_headin
 def test_a_published_store_carries_its_origin_and_the_card_heads_its_counts_apart(kite_store, tmp_path):
     from kullback.hub import card, package
 
-    store, task_id, run_id = kite_store
+    store, _task_id = kite_store
     manifest = package.export(store, tmp_path / "package", name="kites-synthetic", scan=False)
     assert manifest["origin"] == intent_tools.SYNTHETIC_ORIGIN
     body = card.card_markdown(manifest, "someone/kites-synthetic")
