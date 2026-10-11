@@ -16,9 +16,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 from kullback.runner.code_hash import SHORT
+from kullback.spec.intent_tools import SYNTHETIC_ORIGIN, is_synthetic_store
 from kullback.spec.split import reference_classes
 from kullback.spec.trust import FLAGS, REASONS, TIERS, TaskTier, workdir_tiers
 
+# The heading every count of a synthetic store is printed under (D360).
+SYNTHETIC_HEADING = "synthetic Tasks"
 # The report file in the workdir, one per build.
 REPORT_FILE = "tiers.json"
 TABLE_HEADER = ("| Build | Corpus | Verifier from | Tasks | Trusted | Untrusted "
@@ -73,9 +76,11 @@ def build_report(tiers: dict[str, TaskTier], *, corpus: Optional[str] = None,
 
 
 def header_line(report: dict) -> str:
-    """The report's head: the foundation and the one code hash its rows were scored under, or "mixed"."""
+    """The report's head: the foundation and the one code hash its rows were scored under, or "mixed".
+    A synthetic store's report says so first: its counts never join a recorded build's (D360)."""
     code = report.get("code_hash")
-    return f"tier report, verifier from the Spec, code {code[:SHORT] if code else 'mixed'}"
+    head = f"tier report, verifier from the Spec, code {code[:SHORT] if code else 'mixed'}"
+    return f"{SYNTHETIC_HEADING}: {head}" if report.get("origin") == SYNTHETIC_ORIGIN else head
 
 
 def _code_cell(report: dict) -> str:
@@ -89,7 +94,10 @@ def table_line(report: dict) -> str:
     split = report.get("trusted_by_reference")
     by_class = ("n/a" if split is None else
                 ", ".join(str(split.get(cls, 0)) for cls in ("right", "wrong", "mixed", "unknown")))
-    cells = [report.get("build") or "", report.get("corpus") or "", "spec", str(report["tasks"]),
+    corpus = report.get("corpus") or ""
+    if report.get("origin") == SYNTHETIC_ORIGIN:
+        corpus = f"{corpus} ({SYNTHETIC_ORIGIN})".strip()
+    cells = [report.get("build") or "", corpus, "spec", str(report["tasks"]),
              *(str(counts[tier]) for tier in TIERS), *(str(reasons.get(reason, 0)) for reason in REASONS),
              *(f"{flags.get(flag, 0)} of {flags.get(flag, 0) + flags.get(f'{flag}_false', 0)}" for flag in FLAGS),
              by_class, _code_cell(report)]
@@ -101,6 +109,8 @@ def write_report(workdir: Any, *, corpus: Optional[str] = None, build: Optional[
     """The build's tier report written to workdir/tiers.json and returned."""
     report = build_report(workdir_tiers(workdir), corpus=corpus, build=build,
                           classes=reference_classes(workdir, sidecar))
+    if is_synthetic_store(workdir):
+        report["origin"] = SYNTHETIC_ORIGIN
     path = Path(workdir) / REPORT_FILE
     report["warnings"] = _hash_warnings(code_hashes(report["rows"]), _previous_hash(path))
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")

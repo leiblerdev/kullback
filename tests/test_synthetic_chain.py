@@ -228,3 +228,35 @@ def test_a_walk_that_did_not_do_what_the_description_asks_ends_the_task_with_no_
                                    wrong_side="reference", ref_step=write))
     tier = intent_tiers(store)[task_id]
     assert (tier.tier, tier.row["reason"], tier.row["why"]) == ("untrusted", NO_VERIFIER, "reference_wrong"), tier
+
+
+# --- every count of a store is printed under its own heading -------------------------------------
+
+
+def test_the_stores_tier_report_and_counts_line_print_under_the_synthetic_heading(kite_store, kite_world):  # noqa: F811
+    from kullback import cli
+    from kullback.spec import report
+
+    store, task_id, run_id = kite_store
+    _verified(store, task_id, run_id)
+    _examined(store, task_id)
+    written = report.write_report(store, corpus="kites")
+    assert written["origin"] == intent_tools.SYNTHETIC_ORIGIN and written["tiers"]["trusted"] == 1
+    assert report.header_line(written).startswith(report.SYNTHETIC_HEADING + ": ")
+    assert "| kites (synthetic) |" in report.table_line(written)
+    assert cli._counts_line(store).startswith(report.SYNTHETIC_HEADING + ": ")
+    parent = report.write_report(kite_world, corpus="kites")
+    assert "origin" not in parent and not report.header_line(parent).startswith(report.SYNTHETIC_HEADING)
+    assert not cli._counts_line(kite_world).startswith(report.SYNTHETIC_HEADING)
+
+
+def test_a_published_store_carries_its_origin_and_the_card_heads_its_counts_apart(kite_store, tmp_path):
+    from kullback.hub import card, package
+
+    store, task_id, run_id = kite_store
+    manifest = package.export(store, tmp_path / "package", name="kites-synthetic", scan=False)
+    assert manifest["origin"] == intent_tools.SYNTHETIC_ORIGIN
+    body = card.card_markdown(manifest, "someone/kites-synthetic")
+    assert "## Synthetic Tasks" in body and "| Trusted synthetic Tasks, never counted with recorded ones |" in body
+    recorded = card.card_markdown(dict(manifest, origin="recorded"), "someone/kites")
+    assert "## Synthetic Tasks" not in recorded and "| Trusted |" in recorded

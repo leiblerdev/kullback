@@ -62,7 +62,7 @@ def _numbers_table(manifest: dict) -> list[str]:
         ("Call fidelity", _call_fidelity(fidelity)),
         ("Reference confirmed", str(manifest.get("reference_confirmed", 0))),
         ("Verifier derived", str(manifest.get("verifier_derived", 0))),
-        ("Trusted", str(manifest.get("trusted", 0))),
+        (_trusted_label(manifest), str(manifest.get("trusted", 0))),
         ("Refused", str(manifest.get("refused", 0))),
         _untrusted_row(manifest),
     ]
@@ -70,6 +70,15 @@ def _numbers_table(manifest: dict) -> list[str]:
     lines = ["| | |", "| --- | --- |"]
     lines += [f"| {name} | {_cell(value)} |" for name, value in rows]
     return lines
+
+
+def _synthetic(manifest: dict) -> bool:
+    """Whether the package's Tasks are synthetic (D360): every count is then printed apart."""
+    return manifest.get("origin") == "synthetic"
+
+
+def _trusted_label(manifest: dict) -> str:
+    return "Trusted synthetic Tasks, never counted with recorded ones" if _synthetic(manifest) else "Trusted"
 
 
 def _untrusted_row(manifest: dict) -> tuple[str, str]:
@@ -153,6 +162,10 @@ def card_markdown(manifest: dict, repo_id: str, *, github_url: str = "https://gi
               f"and published by [Leibler]({site_url}): the world, the Tasks and a code Verifier per Task, no "
               f"recordings. `{TASKS_ROWS_NAME}` lists the Tasks.", ""]
     lines += [_status(manifest), ""]
+    if _synthetic(manifest):
+        lines += ["## Synthetic Tasks", "",
+                  "Every Task here was made from a walk of the rebuilt world and a written task description, "
+                  "not from a recording. Its counts stand apart from any recorded build's.", ""]
     lines += _numbers_table(manifest)
     lines += ["", "Untrusted Tasks are not graded, and the simulated user does not ship, so a fetched package "
               "cannot finish a Task that needs a fact the user gives mid conversation, though the Task "

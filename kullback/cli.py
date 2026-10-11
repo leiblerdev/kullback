@@ -601,6 +601,8 @@ def _counts_line(workdir: Path) -> str:
     trusted read off the Spec tiers where the workdir has Specs (D322)."""
     from kullback.examiner.reference import pooled_tasks
     from kullback.gates import counts as counts_mod
+    from kullback.spec.intent_tools import is_synthetic_store
+    from kullback.spec.report import SYNTHETIC_HEADING
     from kullback.spec.trust import spec_tiers_of
 
     root = Path(workdir)
@@ -616,6 +618,8 @@ def _counts_line(workdir: Path) -> str:
             f"fidelity {result['fidelity']}/{result['tasks']}")
     if waiting := pooled_tasks(root):
         line += f", needs a Reference: {', '.join(waiting)}"
+    if is_synthetic_store(root):
+        line = f"{SYNTHETIC_HEADING}: {line}"
     return line
 
 

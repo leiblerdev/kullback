@@ -39,6 +39,7 @@ from kullback import difficulty, domain, round_snapshot
 from kullback.gates.verifier_suite import PROSE_MIN_LENGTH, elide_verifier_prose
 from kullback.runner.records import VERDICT_VERSION, Verifier, as_dict, content_hash, read_json, write_json
 from kullback.runner.verdict import REWARD_SHAPE, item_counts
+from kullback.spec.intent_tools import SYNTHETIC_ORIGIN, is_synthetic_store
 
 # 2: the manifest carries what the domain reading attests and what this Environment cannot execute
 # of it, so a card's numbers say how much of the domain the package covers (D225).
@@ -779,6 +780,9 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         "tag": build_tag(workdir, counts),
         "counts_source": "the last round record" if counts else NO_ROUND_SOURCE,
         "tasks_total": len(task_ids),
+        # D360: a synthetic store's Tasks are made from walks of the rebuilt world, never recorded;
+        # the card prints every count of such a package under its own heading.
+        "origin": SYNTHETIC_ORIGIN if is_synthetic_store(workdir) else "recorded",
         # Tasks the build holds a ruling for that are not on the frozen list: they appeared after the
         # freeze, so D96 keeps them out of the denominator and the round line counts them in. Naming
         # the number is what stops the two readings from looking like a mistake.
