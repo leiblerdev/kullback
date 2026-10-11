@@ -26,6 +26,12 @@ from kullback.runner.records import Task, Trace
 from kullback.spec.schema import FactSource, IntentFact
 from kullback.spec.text import APOSTROPHE_RE, STOPWORDS, TOKEN_RE, normalise
 
+# A store shaped like a workdir whose Tasks carry their request in the Task record carries this
+# file at its root. Its Tasks have no recordings; each reads its own instruction as one source.
+SYNTHETIC_MARKER = "synthetic_store.json"
+# The one source a synthetic Task reads its instruction as, and the one turn it holds.
+DESCRIPTION_SOURCE = "description"
+
 # A fact is carried by a turn when this share of its content words is in the turn.
 CARRIED_SHARE = 0.5
 # Another recording witnesses a fact when one of its user turns volunteers this share of its words.
@@ -95,7 +101,13 @@ def task_of(workdir: Path, task_id: str) -> Task:
 
 
 def recordings_of(workdir: Path, task_id: str, traces: Optional[dict[str, Trace]] = None) -> TaskRecordings:
-    """The user turns of every recording of the Task that has at least one."""
+    """The user turns of every recording of the Task that has at least one.
+
+    In a synthetic store (SYNTHETIC_MARKER at the root) a Task with no recording carrying user
+    turns reads its own instruction as one source: one recording keyed "description" holding one
+    user turn, with no agent line before it. Every fact is then volunteered by construction.
+    A Task with no instruction reads as no recording.
+    """
     traces = trace_index(workdir) if traces is None else traces
     found = TaskRecordings(task_id=task_id)
     for run_id in task_of(workdir, task_id).run_ids:
@@ -103,6 +115,10 @@ def recordings_of(workdir: Path, task_id: str, traces: Optional[dict[str, Trace]
         turns = user_turns_of(trace) if trace is not None else []
         if turns:
             found.recordings[run_id] = turns
+    if not found.recordings and (Path(workdir) / SYNTHETIC_MARKER).is_file():
+        text = task_of(workdir, task_id).intent
+        if text:
+            found.recordings[DESCRIPTION_SOURCE] = [UserTurn(index=0, text=text, agent_before="")]
     return found
 
 
@@ -339,7 +355,7 @@ def tool_names() -> tuple[str, ...]:
     return ("list_recordings", "user_turns", "add_facts")
 
 
-__all__ = ["CARRIED_SHARE", "WITNESS_SHARE", "MinerState", "TaskRecordings", "UserTurn", "carried_share", "content_tokens",
+__all__ = ["CARRIED_SHARE", "DESCRIPTION_SOURCE", "SYNTHETIC_MARKER", "WITNESS_SHARE", "MinerState", "TaskRecordings", "UserTurn", "carried_share", "content_tokens",
            "counts", "miner_tools", "recordings_of", "share_in", "task_of", "tool_names", "trace_index",
            "user_turns_of", "volunteers", "witnesses"]
 

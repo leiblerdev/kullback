@@ -221,3 +221,10 @@ def test_a_dotted_path_and_a_table_the_schema_declares_are_not_sent_back():
     dotted = dict(MOVE, field="slot.name")
     declared = dict(ELSEWHERE, field="crate_id")
     assert G.sent_back({"required": [dotted, declared], "unknown": []}, world) == []
+def test_the_goal_step_reads_a_store_task_through_its_description(tmp_path):
+    from kullback.spec.intent_tools import SYNTHETIC_MARKER
+
+    (tmp_path / "tasks").mkdir(parents=True)
+    (tmp_path / "tasks" / "t9.json").write_text(json.dumps({"id": "t9", "run_ids": [], "intent": ASK}))
+    (tmp_path / SYNTHETIC_MARKER).write_text(json.dumps({"format": 1}))
+    assert G.user_words(tmp_path, "t9") == {"description": [{"turn": 0, "user": ASK}]}
