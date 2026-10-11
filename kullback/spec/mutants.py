@@ -1,6 +1,7 @@
 """Code mutants of a passing Reference: each is its end state with one change, and each should fail.
 
-Report only: nothing here feeds trust, rulings or the writer. Four operators, all by code, no model:
+The survivors reach the writer only as the Examiner's rulings (spec/mutant_rulings.py, D362), and trust
+reads the untouched sample for the stray-write gate (`untouched_rows`). Four operators, all by code, no model:
 
 1. value: each field the Reference changed set to another value, the same field of another row of the
    start state where one differs, else the stray value (`trust._stray_value`);
@@ -292,23 +293,37 @@ def mutants_path(workdir: Any, task_id: str) -> Path:
     return Path(workdir) / EXAM_DIR / MUTANTS_DIR / f"{task_id}.json"
 
 
-def workdir_mutants(workdir: Any, task_ids: Optional[Iterable[str]] = None, cap: int = CAP) -> dict[str, dict]:
-    """Every Task with a Verifier on disk (or the named ones): its mutant report, written to
-    exam/mutants/<task>.json."""
+def mutant_context(workdir: Any) -> tuple[Any, Any, Any]:
+    """(canon, write tools, schema) of a workdir, as scoring a mutant reads them."""
     from kullback.gates.probes import write_tools_of
     from kullback.gates.trust import schema_of
     from kullback.runner.canon import load_rules
     from kullback.runner.records import read_json
     from kullback.spec.actions import workdir_action_tools
+
+    root = Path(workdir)
+    sigs = read_json(root / "tool_sigs.json", None) or []
+    tools = write_tools_of(sigs.get("sigs", []) if isinstance(sigs, dict) else sigs) - workdir_action_tools(root)
+    return load_rules(root / "canon-rules.json"), tools, schema_of(root)
+
+
+def untouched_rows(verifier: Verifier, base: Run, *, canon: Any = None, tools: Any = None, schema: Any = None,
+                   judge_results: Optional[dict] = None, cap: int = CAP) -> list[dict]:
+    """The untouched mutants of the Task's capped sample (the ones `mutant_report` builds), scored on `base`."""
+    made, _ = candidate_mutants(verifier, base, canon=canon, schema=schema)
+    return [score_mutant(verifier, m, canon, tools, schema, judge_results)
+            for m in capped(made, verifier.task_id, cap) if m.operator == "untouched"]
+
+
+def workdir_mutants(workdir: Any, task_ids: Optional[Iterable[str]] = None, cap: int = CAP) -> dict[str, dict]:
+    """Every Task with a Verifier on disk (or the named ones): its mutant report, written to
+    exam/mutants/<task>.json."""
     from kullback.spec.judged import judge_results_of
     from kullback.spec.schema import spec_verifier_path
     from kullback.spec.trust import faithful_references, load_spec_verifier, runs_on_disk
 
     root = Path(workdir)
-    canon = load_rules(root / "canon-rules.json")
-    sigs = read_json(root / "tool_sigs.json", None) or []
-    tools = write_tools_of(sigs.get("sigs", []) if isinstance(sigs, dict) else sigs) - workdir_action_tools(root)
-    schema = schema_of(root)
+    canon, tools, schema = mutant_context(root)
     runs, references = runs_on_disk(root), faithful_references(root)
     folder = spec_verifier_path(root, "_").parent
     wanted = sorted(task_ids) if task_ids is not None else sorted(p.stem for p in folder.glob("*.json"))

@@ -27,7 +27,10 @@ TASK_ITEM = "task"
 # What a ruling is about, each with the codes that say how; general, never a domain's words.
 RULING_KINDS: dict[str, tuple[str, ...]] = {
     # The item does not follow from the Intent or the policy, or the Intent asks for more than the items check.
-    "derivation": ("unasked_item", "uncovered_fact", "fixed_value", "unchecked_prohibition", "unbacked_check"),
+    # The unchecked_ codes are filed by code from a surviving mutant (spec/mutant_rulings.py, D362): a field
+    # the user named, a write the Reference made, or a row beyond the declared ones that no gate holds.
+    "derivation": ("unasked_item", "uncovered_fact", "fixed_value", "unchecked_prohibition", "unbacked_check",
+                   "unchecked_field", "unchecked_write", "unchecked_row"),
     # A judge item (a question a model answers about what the Candidate said) is not fit to ask.
     "judge": ("not_yes_no", "taste", "anchor_wrong", "unanswerable", "leading"),
     # A code check is wrong as code: wrong place read, does not run, or the constructed Runs say so.

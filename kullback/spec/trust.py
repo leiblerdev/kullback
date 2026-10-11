@@ -18,6 +18,11 @@ stray_untested (the do-nothing Run fails but no Run passed to lay the stray writ
 was never tested; D347). A stray write that fails at a cell or an atom on a passing base never tested the
 sanity check either: it counts as passed and the row's `detail` says stray_untested.
 
+On a passing base the stray-write gate reads the sample, not one write (D362): where the Task's capped
+mutant sample (spec/mutants.py) holds untouched mutants on that base, the gate holds when every one is
+killed, and any one not killed keeps the Task stray_untested (the survivor reaches the writer as the
+Examiner's unchecked_row ruling). With no untouched mutant built, the one stray write decides as before.
+
 Each Run is scored with the judge answers kept for it (spec/judged.py, D347): the score stage's Verdict
 for a fresh Run, verify's for the Reference. The stray write copies its base's turns, so it carries the
 base's answers; the do-nothing Run says nothing and its judge items score 0 by code.
@@ -243,7 +248,8 @@ def _constructed(verifier: Verifier, runs: list[Run], passing: list[str], canon:
 
     A constructed Run counts as failed only on a definite failure, a gate item that holds False; a Run
     left not verdicted has not failed (S1). The stray write counts as failed only when its sanity item
-    (read off Verdict.items) holds False; failing anywhere else, it never tested the sanity check.
+    (read off Verdict.items) holds False; failing anywhere else, it never tested the sanity check. On a
+    passing base with untouched mutants in the sample, the sample decides instead (`sample`, D362).
     """
     out = {}
     base, base_passed = _stray_base(runs, passing, None)
@@ -258,10 +264,30 @@ def _constructed(verifier: Verifier, runs: list[Run], passing: list[str], canon:
         if name == "stray_write":
             if not base_passed:
                 out[name].update(failed=False, untested=True, no_base=True)
-            else:
-                untested = not outcome.sanity_failed and not outcome.passed
-                out[name].update(failed=outcome.sanity_failed, untested=untested)
+                continue
+            untested = not outcome.sanity_failed and not outcome.passed
+            out[name].update(failed=outcome.sanity_failed, untested=untested)
+            if outcome.passed:  # the one write already passed: a constructed Run passed, whatever the sample says
+                continue
+            sample = _untouched_sample(verifier, base, canon, tools, schema, (judged or {}).get(base.run_id))
+            if sample["built"]:
+                held = sample["killed"] == sample["built"]
+                out[name].update(failed=held, untested=not held, sample=sample)
     return out
+
+
+def _untouched_sample(verifier: Verifier, base: Run, canon: Any, tools: Any, schema: Any,
+                      judge_results: Optional[dict]) -> dict:
+    """The untouched mutants of the Task's capped sample on the passing base (spec/mutants.py, D362): built,
+    killed and the rest. A mutant the scorer cannot read is not killed."""
+    from kullback.spec.mutants import KILLED, untouched_rows
+
+    try:
+        rows = untouched_rows(verifier, base, canon=canon, tools=tools, schema=schema, judge_results=judge_results)
+    except Exception:  # a sample the scorer cannot read tests nothing, and never stops the ruling
+        return {"built": 0, "killed": 0, "not_killed": 0}
+    killed = sum(row["outcome"] == KILLED for row in rows)
+    return {"built": len(rows), "killed": killed, "not_killed": len(rows) - killed}
 
 
 # --- the tier --------------------------------------------------------------------------------------
@@ -308,10 +334,17 @@ def _untrusted_reason(spec: Spec, verifier: Verifier, gates: dict, constructed: 
     if not gates["no_open_ruling"]:
         return OPEN_RULING
     if not all(gates[f"{name}_fails"] for name in constructed):
-        stray = constructed.get("stray_write") or {}
-        others = all(gates[f"{name}_fails"] for name in constructed if name != "stray_write")
-        return STRAY_UNTESTED if others and stray.get("no_base") else CONSTRUCTED_RUN_PASSED
+        return _constructed_reason(gates, constructed)
     return None
+
+
+def _constructed_reason(gates: dict, constructed: dict) -> str:
+    """stray_untested when only the stray write is unshown (no passing base, or an untouched mutant of the
+    sample not killed, D362), else constructed_run_passed."""
+    stray = constructed.get("stray_write") or {}
+    others = all(gates[f"{name}_fails"] for name in constructed if name != "stray_write")
+    untested = stray.get("no_base") or (stray.get("sample") or {}).get("not_killed")
+    return STRAY_UNTESTED if others and untested else CONSTRUCTED_RUN_PASSED
 
 
 def _scored(verifier: Verifier, runs: list[Run], canon: Any, tools: Any, schema: Any,

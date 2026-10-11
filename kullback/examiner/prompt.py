@@ -69,7 +69,9 @@ _TOOL_EXAMPLES = {
               '"keep_open": false, "why": "The writer dropped the write no fact asked for."}.'),
     "verify": ('verify: run the do-nothing Run, a stray write and the Reference\'s end state through the '
                'Verifier, e.g. {"task_id": "t1"}; a passes_do_nothing or fails_reference ruling cites it. The answer '
-               "carries the Reference steps (user turns, tool calls, replies); a fails_reference ruling names the step."),
+               "carries the Reference steps (user turns, tool calls, replies); a fails_reference ruling names the step. "
+               "On a passing Reference it also files, by code, one unchecked_field, unchecked_write or unchecked_row "
+               "ruling per field or row no gate holds (from mutants of the Reference); they are yours to close."),
     "lookup_rows": ('lookup_rows: read a row of the Task\'s world, the one the writer read, e.g. '
                     '{"task_id": "t1", "table": "<table>", "key": "<row key>"}.'),
     "search_rows": ('search_rows: find row keys whose field equals a value, e.g. {"task_id": "t1", '

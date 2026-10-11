@@ -511,6 +511,19 @@ def reference_judge(model: Any) -> Any:
     return lambda verifier, run: judge_items(model, verifier.atoms, run)
 
 
+def _mutants(root: ExamRoot, verifier: Verifier, reference: Optional[Run], rows: list[dict]) -> str:
+    """When verify finds the Reference passing: its surviving mutants filed as this round's rulings by code
+    (spec/mutant_rulings.py, D362), in one line; else nothing."""
+    from kullback.spec.judged import judge_reference
+    from kullback.spec.mutant_rulings import mutant_rulings, mutants_line
+
+    if not any(row.get("run") == "reference" and row.get("verifier_passes_it") for row in rows):
+        return ""
+    answers = judge_reference(root.workdir, verifier.task_id, verifier, reference, None)
+    return mutants_line(mutant_rulings(root.workdir, verifier, reference, root.round, judge_results=answers,
+                                       bus=root.bus))
+
+
 def _verify(root: ExamRoot):
     async def verify(args: VerifyArgs) -> VerifyResult:
         from kullback.spec.trust import load_spec_verifier
@@ -518,10 +531,11 @@ def _verify(root: ExamRoot):
         verifier = load_spec_verifier(root.workdir, args.task_id)
         if verifier is None:
             raise ValueError(f"task {args.task_id} has no Verifier to run")
-        rows = verify_rows(root.workdir, args.task_id, verifier, _reference_run(root.workdir, args.task_id),
-                           judge=reference_judge(root.judge_model))
+        reference = _reference_run(root.workdir, args.task_id)
+        rows = verify_rows(root.workdir, args.task_id, verifier, reference, judge=reference_judge(root.judge_model))
         root.verified[args.task_id] = rows
-        return VerifyResult(summary=verify_line(rows), rows=rows)
+        return VerifyResult(summary="; ".join(filter(None, [verify_line(rows), _mutants(root, verifier, reference, rows)])),
+                            rows=rows)
 
     return verify
 
