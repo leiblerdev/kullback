@@ -15,9 +15,9 @@ from kullback.examiner import goal as G
 from kullback.runner.records import RawPtr, Trace, Turn
 from kullback.spec import writer_tools as T
 
-STATE = {"items": {"A1": {"item_id": "A1", "slot": "two"}, "B2": {"item_id": "B2", "slot": "four"}}}
-POLICY = "# Store policy\n\n## Moving items\n\nMove an item only to a free slot.\n"
-ASK = "Please move item A1 to slot seven."
+STATE = {"boxes": {"A1": {"box_id": "A1", "slot": "two"}, "B2": {"box_id": "B2", "slot": "four"}}}
+POLICY = "# Store policy\n\n## Moving boxes\n\nMove a box only to a free slot.\n"
+ASK = "Please move box A1 to slot seven."
 PTR = RawPtr(file_hash="h")
 
 
@@ -36,8 +36,8 @@ def _workdir(root):
     (root / "traces").mkdir()
     (root / "traces" / "rec1.json").write_text(_trace().model_dump_json())
     (root / "db.json").write_text(json.dumps(STATE))
-    (root / "tool_sigs.json").write_text(json.dumps([{"name": "update_item", "kind": "write"},
-                                                     {"name": "list_items", "kind": "read"}]))
+    (root / "tool_sigs.json").write_text(json.dumps([{"name": "move_box", "kind": "write"},
+                                                     {"name": "list_boxes", "kind": "read"}]))
     (root / "overlays").mkdir()
     (root / "overlays" / "t1.json").write_text(json.dumps({"overlay": {"task_id": "t1", "rows": []}, "values": {}}))
     (root / "env").mkdir()
@@ -60,13 +60,13 @@ def answer(**goal) -> ModelReply:
     return ModelReply(content=json.dumps(goal))
 
 
-MOVE = {"table": "items", "row": "A1", "field": "slot", "value": "seven", "user": "move item A1 to slot seven"}
+MOVE = {"table": "boxes", "row": "A1", "field": "slot", "value": "seven", "user": "move box A1 to slot seven"}
 
 
 def test_the_session_sees_the_user_words_and_never_the_intent_items_verifier_runs_or_agent_lines(tmp_path):
     _workdir(tmp_path)
     inputs = G.load_goal_inputs(tmp_path, "t1")
-    model = TestModel([call("read_row", table="items", key="A1"), answer(required=[MOVE])])
+    model = TestModel([call("read_row", table="boxes", key="A1"), answer(required=[MOVE])])
     G.write_goal("t1", inputs, model)
     shown = json.dumps([c["messages"] for c in model.calls])
     assert ASK in shown and "SEEN" not in shown and "AGENTLINE" not in shown
@@ -116,7 +116,7 @@ def test_a_grounded_goal_is_read_whole_with_no_problems():
 
 
 def test_code_names_a_missing_row_an_ungrounded_cell_and_a_quote_no_turn_holds():
-    cells = [dict(MOVE, row="Z9"), {"table": "items", "row": "B2", "field": "slot", "value": "one"},
+    cells = [dict(MOVE, row="Z9"), {"table": "boxes", "row": "B2", "field": "slot", "value": "one"},
              dict(MOVE, user="put it anywhere")]
     problems = G.parse_goal(json.dumps({"required": cells}), _inputs())["problems"]
     assert any("no such row" in p for p in problems)
@@ -125,7 +125,7 @@ def test_code_names_a_missing_row_an_ungrounded_cell_and_a_quote_no_turn_holds()
 
 
 def test_a_created_row_is_not_a_missing_row():
-    cell = {"table": "items", "row": "new:1", "field": "slot", "value": "seven", "policy": "only to a free slot"}
+    cell = {"table": "boxes", "row": "new:1", "field": "slot", "value": "seven", "policy": "only to a free slot"}
     assert G.parse_goal(json.dumps({"required": [cell]}), _inputs())["problems"] == []
 
 
@@ -157,7 +157,7 @@ def test_the_prompt_says_a_value_only_a_tool_sets_is_choice_or_unknown_unless_th
 
 def test_an_empty_last_answer_gets_one_plain_ask_for_the_goal_object(tmp_path):
     _workdir(tmp_path)
-    model = TestModel([call("read_row", table="items", key="A1"), ModelReply(content=""), answer(required=[MOVE])])
+    model = TestModel([call("read_row", table="boxes", key="A1"), ModelReply(content=""), answer(required=[MOVE])])
     goal = G.write_goal("t1", G.load_goal_inputs(tmp_path, "t1"), model)
     last = model.calls[-1]["messages"]
     assert goal["asked"] == ["empty"] and goal["required"] == [MOVE] and goal["answered"] is True
@@ -165,7 +165,7 @@ def test_an_empty_last_answer_gets_one_plain_ask_for_the_goal_object(tmp_path):
     assert model.calls[-1]["config"].tool_choice == "none"
 
 
-UNSURE = {"what": "the slot may be taken", "table": "items", "row": "A1", "field": "slot"}
+UNSURE = {"what": "the slot may be taken", "table": "boxes", "row": "A1", "field": "slot"}
 
 
 def test_a_required_cell_also_listed_unknown_goes_back_once_and_a_settled_answer_stands(tmp_path):
@@ -181,7 +181,7 @@ def test_a_clash_still_there_after_the_ask_is_moved_to_unknown_by_code(tmp_path)
     clash = answer(required=[MOVE], unknown=[UNSURE])
     goal = G.write_goal("t1", G.load_goal_inputs(tmp_path, "t1"), TestModel([clash, clash]))
     assert goal["moved"] == 1 and goal["required"] == []
-    assert goal["unknown"][-1] == {"table": "items", "row": "A1", "field": "slot", "what": G.MOVED + G.CLASH}
+    assert goal["unknown"][-1] == {"table": "boxes", "row": "A1", "field": "slot", "what": G.MOVED + G.CLASH}
 
 
 def test_an_unknown_on_another_row_or_field_is_no_clash():
@@ -190,8 +190,8 @@ def test_an_unknown_on_another_row_or_field_is_no_clash():
     assert G.clashes({"required": [MOVE], "unknown": [dict(UNSURE, field="")]}) != []
 
 
-INDEXED = {"table": "items", "row": "A1", "field": "parts[0].slot", "value": "seven", "user": ASK}
-ELSEWHERE = {"table": "orders", "row": "new:1", "field": "tool", "value": "update_item", "user": ASK}
+INDEXED = {"table": "boxes", "row": "A1", "field": "parts[0].slot", "value": "seven", "user": ASK}
+ELSEWHERE = {"table": "crates", "row": "new:1", "field": "tool", "value": "move_box", "user": ASK}
 
 
 def test_the_output_rule_says_a_list_is_whole_or_an_append_never_an_indexed_path():
@@ -209,7 +209,7 @@ def test_an_indexed_path_or_a_table_the_starting_state_lacks_goes_back_once_and_
 
 def test_a_sent_back_cell_still_there_after_the_ask_moves_to_unknown_from_required_or_choice(tmp_path):
     _workdir(tmp_path)
-    choice = {"table": "items", "row": "B2", "field": "parts[1]", "allowed": "any valid"}
+    choice = {"table": "boxes", "row": "B2", "field": "parts[1]", "allowed": "any valid"}
     again = answer(required=[MOVE, INDEXED], choice=[choice])
     goal = G.write_goal("t1", G.load_goal_inputs(tmp_path, "t1"), TestModel([again, again]))
     assert goal["moved"] == 2 and goal["required"] == [MOVE] and goal["choice"] == []
@@ -217,7 +217,7 @@ def test_a_sent_back_cell_still_there_after_the_ask_moves_to_unknown_from_requir
 
 
 def test_a_dotted_path_and_a_table_the_schema_declares_are_not_sent_back():
-    world = G.I.World(STATE, columns={"orders": ["order_id"]})
+    world = G.I.World(STATE, columns={"crates": ["crate_id"]})
     dotted = dict(MOVE, field="slot.name")
-    declared = dict(ELSEWHERE, field="order_id")
+    declared = dict(ELSEWHERE, field="crate_id")
     assert G.sent_back({"required": [dotted, declared], "unknown": []}, world) == []
