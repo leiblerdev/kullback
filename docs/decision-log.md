@@ -2694,3 +2694,25 @@ r1 (2026-10-11): founder: the default cap is 5 (ROUNDS_CAP 5, four answers after
 ### D361. A side fact is scored, never gated (2026-10-11)
 
 full50 blind labels found 13 of 23 wrong or partial Verifiers gating a judge item on a question only the recording's user asked along the way; a fresh Run whose user never asks it fails a right Verifier. The miner now reads each fact's kind (do, keep, told, detail; `add_facts` requires it) and code alone sets `side` (`intent_tools.mark_side`): a told fact is side when another fact of the Task is do or keep, unless it is said in its recording's opening ask, the first user turn carrying a do, keep or told fact (greetings and turns with no fact do not count); a Task whose only asks are told has none. The writer weighs a gate resting on a side fact like an after-pushback gate (`items._weighed_gate`): a judge or said item citing one, or any item citing one and no do or keep fact, is kept with gate false and `weighed: side fact`, and the kept line tells the writer why; a policy line does not lift it. The asked follow-up (D354) never sends a side fact back, the writer prompt says so in one sentence, and the Examiner's view shows the flag. The contradiction send-back runs again after the asked follow-up, so a gated row check the follow-up adds that clashes with another is sent back once instead of setting the Spec aside; a Task with no follow-up writes the same bytes. A request the user makes only in reply to an agent line that refused, could not, or proposed another way is a fallback (a third stance): the miner quotes that line (`in_reply_to`, the turn and a span), code keeps the stance only when the line carries the span, else the fact is volunteered and the Intent counts `fallback_unquoted`; any gate citing a fallback fact is weighed (`weighed: fallback`), the asked follow-up never sends one back, and the Examiner's view shows the stance and the quote. A fact mined before kinds has no kind and is never side; a workdir with no told facts writes the same Spec and Verifier bytes as before. Trial on the 13 Tasks, mined and written once (no Examiner), 4.28 USD: no gate on a side fact in any Task, one gate weighed by code and it was no gold ask, blind labels 5 right, 4 partial, 3 wrong, 1 no Verifier against 0, 7, 6 before, so it passes by the pre-registered rule. The cost: 4 side facts in 3 Tasks are told values the gold requires (an opening ask among them), now scored only, which the rater named as holes. Report .claude/herdr/truth-1008/fix-side-report.md.
+
+### D362. Surviving mutants become Examiner rulings; the stray gate reads the untouched sample (2026-10-11)
+
+D356 scored mutants of a passing Reference but nobody acted on a survivor. After verify finds the Reference passing,
+`spec/mutant_rulings.py` files each survivor by code in the Examiner's round, with the same shape, blocking flag and
+round cap as the Examiner's own rulings. A value survivor on a field that a Spec check reads, where that check rests on
+a volunteered fact (not an echo, not after pushback, not unfounded), becomes derivation/unchecked_field on that check.
+An undone survivor on a row where every undone mutant survived becomes unchecked_write. An untouched or extra_row
+survivor becomes unchecked_row, one per table. Any other survivor is a note. A ruling names the table and field, never
+a value, and one stands per cell, write or table per Task. The mutant report gives each survivor its ruling number or
+"note". A review session that never called verify gets the verify step by code afterwards. In trust, a passing base
+whose one stray write fails is held stray_untested unless every untouched mutant in the capped sample is killed. A
+row-level no-effect diff was tried for speed and withdrawn: unproven equivalent, it can drop real mutants.
+
+Trial on 12 labelled Tasks of the full50 clone: one Examiner round, Opus 5.5 on Bedrock, 2.56 USD. Mutants could be
+built on only 2 of the 5 missing_ask Tasks; the other 3 have no passing Reference or no write to miss. 7915 got two
+unchecked_field rulings and one unchecked_write. The writer re-gated the row with no new value, then the Examiner
+reopened it as unasked. On 52e2 the writer rebutted unchecked_write and the Examiner agreed, so it stays ungated. Bar a
+fails, 1 of 2 where mutants ran, and that one is contested. Bar b holds: no applied repair pinned a value. Of the 7
+stray_untested Tasks, 1 (f25a) left it and is trusted: the forced verify judged its Reference, and 10 of 10 untouched
+mutants were killed. 5 stayed, and 1 became no_verifier. With the sample gate on versus off over all 50, 1 retail Task
+moves from trusted to stray_untested. Report .claude/herdr/truth-1008/fix-mutants-report.md.
