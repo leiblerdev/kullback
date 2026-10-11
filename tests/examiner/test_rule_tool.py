@@ -14,7 +14,7 @@ from kullback.examiner import rule_tool as R
 from kullback.examiner.exam_files import ExamRoot
 from kullback.spec import events
 from kullback.spec import rulings as RL
-from kullback.spec.schema import load_spec, save_spec
+from kullback.spec.schema import ReplyQuote, load_spec, save_spec
 from tests.spec.fixtures import WRITE_TOOLS, reference_run, spec
 
 SIGS = [{"name": name, "kind": "write"} for name in WRITE_TOOLS]
@@ -175,7 +175,7 @@ def test_the_view_holds_every_recordings_user_turns_and_each_facts_source(tmp_pa
         "rec2": [{"turn": 1, "agent_before": "How can I help?", "user": "Move A1 to slot seven."}]}
     assert view["facts"][1] == {"id": "f2", "stance": "accepted", "text": "I also want a note saying it was urgent.",
                                 "source": {"recording": "rec1", "turn": 2}, "echo": False, "after_pushback": False,
-                                "unfounded": False, "side": False}
+                                "unfounded": False, "side": False, "in_reply_to": None}
     assert TOOL_SECRET not in json.dumps(view)
     written = R.write_views(root, ["t1"])
     assert json.loads((root.exam_dir / written["t1"]).read_text())["user_turns"] == view["user_turns"]
@@ -190,6 +190,19 @@ def test_the_view_shows_a_side_fact_so_a_ruling_never_asks_to_gate_it(tmp_path):
         update={"facts": [held.intent.facts[0], side]})}))
     assert [fact["side"] for fact in R.spec_view(root, "t1")["facts"]] == [False, True]
     assert "never gated, so a ruling never asks to gate it" in P.receives_section()
+
+
+def test_the_view_shows_a_fallback_fact_with_the_agent_line_it_answers(tmp_path):
+    root = _root(tmp_path)
+    _recordings(tmp_path)
+    held = load_spec(tmp_path, "t1")
+    fallback = held.intent.facts[1].model_copy(update={"stance": "fallback",
+                                                      "in_reply_to": ReplyQuote(turn=3, quote="an urgent note")})
+    save_spec(tmp_path, held.model_copy(update={"intent": held.intent.model_copy(
+        update={"facts": [held.intent.facts[0], fallback]})}))
+    shown = R.spec_view(root, "t1")["facts"][1]
+    assert shown["stance"] == "fallback" and shown["in_reply_to"] == {"turn": 3, "quote": "an urgent note"}
+    assert "fallback fact was asked only after the agent refused" in " ".join(P.receives_section().split())
 
 
 def test_the_choice_rule_names_the_user_turns_and_not_the_intent_as_ground():

@@ -571,11 +571,13 @@ def _item(check: Any) -> dict:
 
 
 def _fact(fact: Any) -> dict:
-    """One Intent fact with where the user said it, its stance and its echo, pushback, unfounded and side flags."""
+    """One Intent fact with where the user said it, its stance (with the agent line a fallback answers) and its
+    echo, pushback, unfounded and side flags."""
     return {"id": fact.id, "stance": fact.stance, "text": fact.text,
             "source": {"recording": fact.source.recording, "turn": fact.source.turn},
             "echo": fact.echo, "after_pushback": fact.after_pushback, "unfounded": fact.unfounded,
-            "side": fact.side}
+            "side": fact.side,
+            "in_reply_to": fact.in_reply_to.model_dump() if fact.in_reply_to else None}
 
 
 def user_turns(workdir: Any, task_id: str) -> dict[str, list[dict]]:

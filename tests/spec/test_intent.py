@@ -234,6 +234,57 @@ def test_a_fact_the_miner_marks_after_pushback_keeps_the_flag():
     assert result.details["rows"][0]["fact_id"] == "f1" and state.facts[0].after_pushback is True
 
 
+# --- fallback facts ---------------------------------------------------------------------------------
+
+def test_a_request_after_a_quoted_refusal_is_kept_as_fallback_with_its_quote():
+    state = _pushback_state()
+    _add(state, text="Then cancel the blue lamp order.", recording="rec", turn=2, stance="fallback",
+         in_reply_to={"turn": 2, "quote": "I cannot  move the lamp"})
+    fact = state.facts[0]
+    assert fact.stance == "fallback" and state.fallback_unquoted == 0
+    assert fact.in_reply_to.turn == 2 and fact.in_reply_to.quote == "I cannot move the lamp"
+
+
+@pytest.mark.parametrize("reply", [None, {"turn": 2, "quote": "we never sell lamps"},
+                                   {"turn": 0, "quote": "I cannot move the lamp"}],
+                         ids=["no quote", "quote in no agent line", "quote from another turn's line"])
+def test_a_fallback_whose_quote_the_named_agent_line_does_not_carry_is_kept_volunteered_and_counted(reply):
+    state = _pushback_state()
+    _add(state, text="Then cancel the blue lamp order.", recording="rec", turn=2, stance="fallback",
+         **({"in_reply_to": reply} if reply else {}))
+    assert state.facts[0].stance == "volunteered" and state.facts[0].in_reply_to is None
+    assert state.fallback_unquoted == 1
+
+
+def test_a_fallback_may_not_quote_an_agent_line_after_its_own_turn():
+    state = _pushback_state()
+    _add(state, text="Please move my blue lamp order to Oak street.", recording="rec", turn=0,
+         stance="fallback", in_reply_to={"turn": 2, "quote": "I cannot move the lamp"})
+    assert state.facts[0].stance == "volunteered" and state.fallback_unquoted == 1
+
+
+def test_the_saved_intent_counts_unquoted_fallbacks_and_a_task_with_none_saves_neither_key(workdir):
+    fact = {"text": "Please move my blue lamp order to the Oak street address.", "recording": "rec-a",
+            "turn": 1, "stance": "fallback", "kind": "do", "in_reply_to": {"turn": 1, "quote": "no such words"}}
+    model = TestModel([_call("a", "add_facts", {"facts": [fact]}), ModelReply(content="1 kept.")])
+    mine_intent(workdir, "t1", model, ceiling_usd=1.0)
+    saved = json.loads((workdir / "spec" / "t1.json").read_text())["intent"]
+    assert saved["fallback_unquoted"] == 1 and saved["facts"][0]["stance"] == "volunteered"
+    assert "in_reply_to" not in saved["facts"][0]
+    model = TestModel([_call("a", "add_facts", {"facts": [dict(fact, stance="volunteered")]}),
+                       ModelReply(content="1 kept.")])
+    (workdir / "spec" / "t1.json").unlink()
+    mine_intent(workdir, "t1", model, ceiling_usd=1.0)
+    assert "fallback_unquoted" not in json.loads((workdir / "spec" / "t1.json").read_text())["intent"]
+
+
+def test_the_prompt_names_the_fallback_stance_and_its_quote_in_one_general_sentence():
+    flat = " ".join(intent_system_prompt().split())
+    assert ("Give a fact the stance fallback when the user asks for it only in reply to an agent line that "
+            "refused, could not, or proposed another way") in flat
+    assert "code keeps the stance only when the line carries the span" in flat
+
+
 def test_the_prompt_marks_a_fact_after_pushback_in_one_general_sentence():
     sentence = ("Mark a fact after_pushback when the user says it in reply to the agent declining, failing, "
                 "or offering another way, before what the user first asked for was met.")

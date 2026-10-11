@@ -146,6 +146,11 @@ def _pushback_only(kept: dict, facts: list) -> bool:
 SIDE_WEIGHED = "side fact"
 
 
+# Why a gate on a fallback fact is weighed: the user asked for it only after the agent refused, could not,
+# or proposed another way, so it is the recording's way out, not the Task's ask.
+FALLBACK_WEIGHED = "fallback"
+
+
 # The item kinds that check what the agent told the user: one citing a side fact answers the side question.
 TOLD_KINDS = ("judge", "said")
 
@@ -161,13 +166,18 @@ def _on_side(kept: dict, facts: list) -> bool:
 
 def _weighed_gate(kept: dict, known: dict) -> str:
     """One line for the writer when its gate is weighed: it rests only on facts said after pushback
-    or only accepted, with no policy line beside them, or on a side fact; else empty. A scored item
+    or only accepted, with no policy line beside them, or on a fallback fact, or on a side fact; else empty. A scored item
     may rest on them."""
     facts = [known[f] for f in kept.get("fact_ids") or []]
     if kept.get("gate") and _pushback_only(kept, facts):
         kept["gate"] = False
         return ("gate weighed: it rests only on facts said after pushback or only accepted; "
                 "a gate needs a volunteered fact or a policy line")
+    if kept.get("gate") and any(fact.stance == "fallback" for fact in facts):
+        kept.update(gate=False, weighed=FALLBACK_WEIGHED)
+        return ("gate weighed: it rests on a fallback fact, asked only after the agent refused, could not, or "
+                "proposed another way, which a run whose agent meets the first ask never reaches; it is scored, "
+                "never gated. If the item checks the Task's ask, add it again citing only the ask's facts")
     if kept.get("gate") and _on_side(kept, facts):
         kept.update(gate=False, weighed=SIDE_WEIGHED)
         return ("gate weighed: it rests on a side fact, a question asked beside the Task's ask, which a run "

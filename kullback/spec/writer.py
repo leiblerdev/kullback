@@ -120,7 +120,9 @@ the user left a choice open and the policy allows several, accept any allowed on
 (not_called, row_keeps) gates only with the policy line that forbids it; else weight it. A value the user \
 asked to be told is a gated judge item anchored on the world row holding it. A variant or payment method the \
 user named is a gated check on that field. A refusal judge item always gates. A fact marked side asks only to be \
-told something beside the Task's ask, so any item on it is scored, never gated: code weighs such a gate."""
+told something beside the Task's ask, so any item on it is scored, never gated: code weighs such a gate. \
+A fact of stance fallback was asked only after the agent refused, could not, or proposed another way: \
+it is scored, never gated, the same way."""
 
 FEEDBACK = """\
 # Feedback
@@ -480,11 +482,15 @@ def save_session(inputs: WriterInputs, task_id: str, kind: str, round_number: in
 
 
 def _side_counts(intent: SpecIntent, items: list[dict]) -> dict:
-    """Side facts and the gates weighed for resting on one; nothing for a Task with no side fact."""
-    side = sum(1 for fact in intent.facts if fact.side)
-    if not side:
-        return {}
-    return {"side_facts": side, "side_weighed": sum(1 for item in items if item.get("weighed") == I.SIDE_WEIGHED)}
+    """Side and fallback facts and the gates weighed for resting on one; nothing for a Task with neither."""
+    out = {}
+    for name, has, weighed in (("side", lambda f: f.side, I.SIDE_WEIGHED),
+                               ("fallback", lambda f: f.stance == "fallback", I.FALLBACK_WEIGHED)):
+        found = sum(1 for fact in intent.facts if has(fact))
+        if found:
+            out.update({f"{name}_facts": found,
+                        f"{name}_weighed": sum(1 for item in items if item.get("weighed") == weighed)})
+    return out
 
 
 def _clash_rows(store: writer_tools.ItemStore) -> list[dict]:

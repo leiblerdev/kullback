@@ -12,7 +12,9 @@ from kullback.runner.records import GATE_KINDS, AtomKind, Item, Record
 from kullback.spec.must_not import tier_of as _atom_tier
 from kullback.user.rules import spec_goal
 
-Stance = Literal["volunteered", "accepted"]
+# fallback: the user asks for it only in reply to an agent line that refused, could not, or proposed
+# another way; code keeps the stance only when the quoted agent line is there (spec/intent_tools.py).
+Stance = Literal["volunteered", "accepted", "fallback"]
 # What a fact asks for, as the miner reads it: a change made, something left undone or unchanged,
 # only to be told something, or a detail (who the user is, a value or condition shaping another ask).
 FactKind = Literal["do", "keep", "told", "detail"]
@@ -28,6 +30,12 @@ class FactSource(Record):
     """Where a fact was said: one recording and the index of the user turn in it."""
     recording: str
     turn: int
+
+
+class ReplyQuote(Record):
+    """The agent line a fallback fact answers: the user turn it stands before, and a span copied from it."""
+    turn: int
+    quote: str
 
 
 class IntentFact(Record):
@@ -51,13 +59,16 @@ class IntentFact(Record):
     # Set by code (spec/intent_tools.mark_side), never by a model: an ask only to be told something in a
     # Task that also asks for a change or for something left undone. It may be scored, never gated.
     side: bool = False
+    # On a fallback fact: the agent line it answers, checked by code against the recording.
+    in_reply_to: Optional[ReplyQuote] = None
 
     @model_serializer(mode="wrap")
     def _without_unread_kind(self, handler):
         data = handler(self)
         if isinstance(data, dict):
-            if data.get("kind") is None:
-                data.pop("kind", None)
+            for key in ("kind", "in_reply_to"):
+                if data.get(key) is None:
+                    data.pop(key, None)
             if not data.get("side"):
                 data.pop("side", None)
         return data
@@ -72,6 +83,15 @@ class SpecIntent(Record):
     refusals: int = 0
     model: Optional[str] = None
     written_at: Optional[str] = None
+    # Facts the miner marked fallback with no agent line carrying its quote: kept as volunteered.
+    fallback_unquoted: int = 0
+
+    @model_serializer(mode="wrap")
+    def _without_zero_unquoted(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and not data.get("fallback_unquoted"):
+            data.pop("fallback_unquoted", None)
+        return data
 
 
 def intent_text(facts: list[IntentFact]) -> str:

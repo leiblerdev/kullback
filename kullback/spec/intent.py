@@ -67,7 +67,10 @@ acting from the Intent needs them. Leave out follow-up questions that react to t
 answer, greetings and thanks. Mark a fact accepted
 when the user only said yes to the agent's line; volunteered when the user raised it or supplied
 the value. Mark a fact after_pushback when the user says it in reply to the agent declining, failing,
-or offering another way, before what the user first asked for was met. One fact per thing, kept once,
+or offering another way, before what the user first asked for was met. Give a fact the stance fallback
+when the user asks for it only in reply to an agent line that refused, could not, or proposed another
+way, and quote that line in in_reply_to: the user turn it stands before and a span copied word for word;
+code keeps the stance only when the line carries the span. One fact per thing, kept once,
 at the turn where a user first says it. Give each fact its kind: do (a change to make), keep (something
 not to do or not to change), told (only something to be told), detail (who the user is, or a value or
 condition that shapes another fact)."""
@@ -175,7 +178,7 @@ def mine_intent(workdir: Path, task_id: str, model: Any, ceiling_usd: float,
         watch.stopped = "no recording with a user turn"
     facts = mark_side(state.facts)
     intent = SpecIntent(task_id=task_id, facts=facts, text=intent_text(facts),
-                        refusals=state.refused,
+                        refusals=state.refused, fallback_unquoted=state.fallback_unquoted,
                         model=model_id, written_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
     return MineResult(intent=intent, tool_calls=dict(watch.calls), refusals=state.refused, spent_usd=watch.spent,
                       stopped=watch.stopped, path=_save(workdir, intent))
