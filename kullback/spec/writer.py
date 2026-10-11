@@ -146,6 +146,11 @@ the user's words why it needs none, then reply that you are done.
 """
 
 
+def _gates_alone(fact: IntentFact) -> bool:
+    """A volunteered fact a gate may rest on alone: not after pushback, not unfounded, not side."""
+    return fact.stance == "volunteered" and not (fact.after_pushback or fact.unfounded or fact.side)
+
+
 def asked_missing(items: Iterable[dict], intent: SpecIntent) -> list[dict]:
     """Volunteered facts (not after pushback, not unfounded, not side) no gated item covers.
 
@@ -161,7 +166,7 @@ def asked_missing(items: Iterable[dict], intent: SpecIntent) -> list[dict]:
              for fact_id in item.get("fact_ids") or []}
     out = []
     for fact in intent.facts:
-        if fact.stance != "volunteered" or fact.after_pushback or fact.unfounded or fact.side:
+        if not _gates_alone(fact):
             continue
         if fact.id in gated:
             continue
@@ -474,6 +479,14 @@ def save_session(inputs: WriterInputs, task_id: str, kind: str, round_number: in
     return path
 
 
+def _side_counts(intent: SpecIntent, items: list[dict]) -> dict:
+    """Side facts and the gates weighed for resting on one; nothing for a Task with no side fact."""
+    side = sum(1 for fact in intent.facts if fact.side)
+    if not side:
+        return {}
+    return {"side_facts": side, "side_weighed": sum(1 for item in items if item.get("weighed") == I.SIDE_WEIGHED)}
+
+
 def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Optional[str] = None,
                config: Any = None, ceiling_usd: Optional[float] = None) -> Written:
     """One writer session for one Task, and the Spec code keeps from it; past `ceiling_usd` it answers at once.
@@ -509,9 +522,7 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
     spec = _spec_of(task_id, items, counts, inputs)
     counts.update(I.counts_of(items + [I.sanity_item([])]))
     counts["echo_facts"] = sum(1 for fact in inputs.intent.facts if fact.echo)
-    if any(fact.side for fact in inputs.intent.facts):
-        counts["side_facts"] = sum(1 for fact in inputs.intent.facts if fact.side)
-        counts["side_weighed"] = sum(1 for item in items if item.get("weighed") == I.SIDE_WEIGHED)
+    counts.update(_side_counts(inputs.intent, items))
     save_session(inputs, task_id, "write", 1, session, counts)
     return Written(spec, counts, session)
 
