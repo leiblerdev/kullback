@@ -84,7 +84,7 @@ dotted path into a dict>", "value": <the value after the solve>, "user": "<the u
  "unknown": [{"what": "<what cannot be decided, and why>", "table": "<when it is about one row>", "row": "", \
 "field": "<optional>"}]}
 For a list field give the whole list after the solve, or {"append": [<elements>]} for what the solve adds, \
-never an indexed path such as items[2].price. A cell names a table the Starting state holds. A value null means the solve removes the field. A value may name a created row as new:1. Quote user \
+never an indexed path such as <field>[2].<key>. A cell names a table the Starting state holds. A value null means the solve removes the field. A value may name a created row as new:1. Quote user \
 words and policy lines exactly, short."""
 
 STOP_RULE = """\
