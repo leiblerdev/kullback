@@ -265,6 +265,24 @@ def _overlaps(one: str, other: str) -> bool:
     return one == other or one.startswith(other + ".") or other.startswith(one + ".")
 
 
+# An index into a list: field[2] anywhere, or a dotted field.2 whose part before it is a list in the row.
+INDEX = re.compile(r"\[\d*\]|\.(\d+)(?=\.|$)")
+
+
+def indexed(world: I.World, table: str, row: str, field: str) -> bool:
+    """Whether a cell's field indexes into a list: a dotted number counts only after a list, since a dict
+    may be keyed by numbers."""
+    for found in INDEX.finditer(field):
+        if found.group(1) is None:
+            return True
+        node: Any = world.row(table, row)
+        for part in field[:found.start()].split("."):
+            node = node.get(part) if isinstance(node, dict) else None
+        if isinstance(node, list):
+            return True
+    return False
+
+
 def sent_back(goal: dict, world: I.World) -> list[dict]:
     """The cells code sends back, each with why: a required cell an unknown also names, and a required or
     choice cell with an indexed path or on a table the Starting state lacks."""
@@ -279,7 +297,7 @@ def sent_back(goal: dict, world: I.World) -> list[dict]:
             table = str(cell.get("table") or "")
             if table not in world.state and table not in world.declared:
                 out.append(dict(spot, why=NO_TABLE))
-            elif re.search(r"\[\d*\]", spot["field"]):
+            elif indexed(world, table, str(cell.get("row") or ""), spot["field"]):
                 out.append(dict(spot, why=INDEXED))
             elif kind == "required" and (spot["table"], spot["row"], spot["field"]) in clashing:
                 out.append(dict(spot, why=CLASH))

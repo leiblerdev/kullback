@@ -221,3 +221,11 @@ def test_a_dotted_path_and_a_table_the_schema_declares_are_not_sent_back():
     dotted = dict(MOVE, field="slot.name")
     declared = dict(ELSEWHERE, field="crate_id")
     assert G.sent_back({"required": [dotted, declared], "unknown": []}, world) == []
+
+
+def test_a_dotted_number_after_a_list_is_an_indexed_path_and_after_a_dict_is_not():
+    world = G.I.World({"boxes": {"A1": {"parts": [{"slot": "two"}], "spares": {"7": {"slot": "one"}}}}})
+    after_list = dict(MOVE, field="parts.0.slot")
+    after_dict = dict(MOVE, field="spares.7.slot")
+    sent = G.sent_back({"required": [after_list, after_dict], "unknown": []}, world)
+    assert [(c["field"], c["why"]) for c in sent] == [("parts.0.slot", G.INDEXED)]
