@@ -624,7 +624,8 @@ def test_a_request_the_domain_does_not_attest_drops_the_walk_as_unreal_with_its_
     judge = _Judge({"happens": "no", "source": PAGE, "why": "nobody asks this"})
     rows: list = []
     assert _store_one(kite_world, _EchoModel(), _realism(judge), rows) == (None, "unreal")
-    assert rows == [{"task_id": rows[0]["task_id"], "reason": "unreal", "source": PAGE, "why": "nobody asks this"}]
+    assert rows == [{"task_id": rows[0]["task_id"], "reason": "unreal", "source": PAGE, "why": "nobody asks this",
+                     "origin": synthesise.WALK}]
 
 
 def test_a_request_the_domain_attests_is_kept_with_the_page_it_leaned_on(kite_world: Path):
@@ -662,3 +663,70 @@ def test_the_description_prompt_states_that_difficulty_comes_from_the_world_neve
     synthesise.description_text(writer, [{"field": "length", "value": "40"}], [], [])
     assert synthesise.DIFFICULTY_RULE in writer.prompts[0]
     assert "never from the ask or the check" in synthesise.DIFFICULTY_RULE
+
+
+# --- scenarios from the real world, bound to this world's rows (synth-add4) ------------------
+
+
+def _scenario(**over) -> dict:
+    return {"ask": "I want my kite retied at a longer line.", "source": PAGE, "facts": ["colour"],
+            "writes": ["retie_kite"], "policy_branch": "", **over}
+
+
+def test_a_scenario_binds_to_fitting_rows_and_its_chain_runs_through_the_bodies(kite_world: Path):
+    model = _EchoModel()
+    body = synthesise.build_store(kite_world, {}, seed="world-e2e", model=model, scenarios=[_scenario()])
+    assert body["counts"]["scenarios_read"] == 1 and body["counts"]["tasks_kept"] == 1
+    [row] = body["tasks"]
+    store = kite_world / synthesise.DIR / synthesise.STORE
+    source = json.loads((store / synthesise.SCENARIOS / f"{row['task_id']}.json").read_text())
+    assert "retie_kite" in [step["tool"] for step in source["steps"]] and source["rows"]
+    assert source["origin"] == synthesise.WORLD and source["request"]["source"] == PAGE
+    assert "I want my kite retied" in model.calls[0][0]["content"], "the real ask never reached the writer"
+    assert not (store / "references.json").exists(), "a bound scenario is never a Reference"
+
+
+def test_a_scenario_no_row_of_the_world_fits_is_dropped_as_unbound_with_its_source(kite_world: Path):
+    write_json(kite_world / "db.json", {"kites": {}, "spools": DB["spools"]})
+    body = synthesise.build_store(kite_world, {}, seed="world-unbound", model=_EchoModel(),
+                                  scenarios=[_scenario()])
+    assert body["counts"]["scenarios_unbound"] == 1 and body["tasks"] == []
+    index = json.loads((kite_world / synthesise.DIR / synthesise.STORE / synthesise.STORE_INDEX).read_text())
+    assert [(row["reason"], row["source"]) for row in index["unreal"]] == [("unbound", PAGE)]
+
+
+def test_a_scenario_whose_chain_a_body_refuses_is_dropped_as_unservable(kite_world: Path):
+    write_json(kite_world / "bodies.json", dict(BODIES, retie_kite="raise ValueError('closed for repairs')"))
+    body = synthesise.build_store(kite_world, {}, seed="world-refused", model=_EchoModel(),
+                                  scenarios=[_scenario()])
+    assert body["counts"]["scenarios_unservable"] == 1 and body["tasks"] == []
+    index = json.loads((kite_world / synthesise.DIR / synthesise.STORE / synthesise.STORE_INDEX).read_text())
+    assert [(row["reason"], row["origin"]) for row in index["unreal"]] == [("unservable", synthesise.WORLD)]
+
+
+def test_every_store_row_says_whether_its_scenario_came_from_a_walk_or_the_world(kite_world: Path):
+    body = synthesise.build_store(kite_world, {"w1t3p1": 1}, seed="store-e2e", model=_EchoModel(),
+                                  scenarios=[_scenario()])
+    origins = sorted(row["scenario_origin"] for row in body["tasks"])
+    assert origins == [synthesise.WALK, synthesise.WORLD]
+    index = json.loads((kite_world / synthesise.DIR / synthesise.STORE / synthesise.STORE_INDEX).read_text())
+    assert all(row["scenario_origin"] in (synthesise.WALK, synthesise.WORLD) for row in index["tasks"])
+
+
+def test_world_scenarios_read_the_domain_pages_and_keep_only_this_worlds_writes_and_fields(kite_world: Path):
+    judge = _Judge({"scenarios": [
+        _scenario(writes=["retie_kite", "paint_kite"], facts=["colour", "owner"]),
+        _scenario(source="https://elsewhere.example.org/not-read")]})
+    queries: list[str] = []
+    out = synthesise.world_scenarios(judge, "A shop that ties kites", kite_world,
+                                     search=lambda query, key: queries.append(query) or [PAGE],
+                                     fetch=lambda url: PAGE_HTML, env={"KULLBACK_SEARCH_KEY": "set"})
+    assert queries == ["A shop that ties kites"]
+    assert out == [_scenario()], "an invented write or field, or a page never read, was kept"
+    prompt = judge.prompts[0]
+    assert synthesise.DIFFICULTY_RULE in prompt and "Customers often ask us" in prompt
+
+
+def test_the_binder_states_that_difficulty_comes_from_the_world():
+    assert "never by a vaguer ask or a stricter check" in " ".join(synthesise.bind_scenario.__doc__.split())
+    assert synthesise.DIFFICULTY_RULE in synthesise.SCENARIO_PROMPT

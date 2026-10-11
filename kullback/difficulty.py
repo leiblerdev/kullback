@@ -401,13 +401,7 @@ def compute(workdir: Any, *, false_rejection: Optional[dict] = None,
     the rounds carry none, so a finished build reads the same as a running one.
     """
     workdir = Path(workdir)
-    counts = _last_counts(workdir)
-    ruling = _trusted_ruling(workdir) if (false_rejection is None or trusted_ids is None) else {}
-    if false_rejection is None:
-        false_rejection = dict(counts.get("false_rejection") or ruling.get("false_rejection") or {})
-    if trusted_ids is None:
-        trusted_ids = list(counts.get("trusted_ids") or ruling.get("trusted") or [])
-    pools = dict(counts.get("false_rejection_pool") or ruling.get("false_rejection_pool") or {})
+    false_rejection, trusted_ids, pools = _round_numbers(workdir, false_rejection, trusted_ids)
     status = read_json(workdir / "task_status.json", {}) or {}
     references = read_json(workdir / "references.json", {}) or {}
     verifiers, retired = _verifiers(workdir, status)
@@ -449,6 +443,20 @@ def compute(workdir: Any, *, false_rejection: Optional[dict] = None,
                                   setup=setup_of(HELD_OUT_POOL, CODE_HASH, HELD_OUT_RULE, pools.get(task_id))))
     return {"format": FORMAT, "tasks": records, "no_record": no_record,
             "buckets": bucket_rows(records, trusted_ids)}
+
+
+def _round_numbers(workdir: Path, false_rejection: Optional[dict], trusted_ids: Optional[Iterable[str]]
+                   ) -> tuple[dict, list, dict]:
+    """The round's false rejection, trusted ids and trial counts: those in hand, else the last round's
+    record, else the last trusted ruling's."""
+    counts = _last_counts(workdir)
+    ruling = _trusted_ruling(workdir) if (false_rejection is None or trusted_ids is None) else {}
+    if false_rejection is None:
+        false_rejection = dict(counts.get("false_rejection") or ruling.get("false_rejection") or {})
+    if trusted_ids is None:
+        trusted_ids = list(counts.get("trusted_ids") or ruling.get("trusted") or [])
+    pools = dict(counts.get("false_rejection_pool") or ruling.get("false_rejection_pool") or {})
+    return false_rejection, list(trusted_ids), pools
 
 
 def _user_bands(workdir: Path) -> dict[str, Optional[str]]:

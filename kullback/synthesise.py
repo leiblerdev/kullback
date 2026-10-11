@@ -1223,6 +1223,11 @@ def _family(tool: str) -> str:
     return parts[0].casefold() if parts else ""
 
 
+def _grader_spoken(lowered: str, words: set[str]) -> bool:
+    """Whether a grader word or phrase occurs: a phrase anywhere, a single word as a whole word."""
+    return any((phrase in lowered) if " " in phrase else (phrase in words) for phrase in GRADER_WORDS)
+
+
 def unreal_by_code(text: str, tools: Iterable[str], walk_writes: Iterable[str],
            write_tools: Iterable[str]) -> str:
     """Why a description does not read as a person's request, as a drop reason; "" when it does.
@@ -1232,7 +1237,7 @@ def unreal_by_code(text: str, tools: Iterable[str], walk_writes: Iterable[str],
     """
     lowered = str(text or "").casefold()
     words = set(re.findall(r"[a-z0-9][a-z0-9'-]*", lowered))
-    if any((phrase in lowered) if " " in phrase else (phrase in words) for phrase in GRADER_WORDS):
+    if _grader_spoken(lowered, words):
         return "grader_words"
     if any(str(name).casefold() in lowered for name in tools if name):
         return "tool_named"
@@ -1308,7 +1313,7 @@ def _ask_for(calls: list[dict], writes: set[str]) -> list[dict]:
 
 def description_text(model: Any, facts: list[dict], ask: list[dict], refusals: list[str], *,
                      consent: bool = False, example: str = "",
-                     retry: str = "") -> tuple[str, str]:
+                     retry: str = "", request: str = "") -> tuple[str, str]:
     """The customer's first-person message from the walk's matter, or nothing and why not.
 
     `retry` is the one line code sends back with a draft it refused: what to write again and why."""
@@ -1321,6 +1326,9 @@ def description_text(model: Any, facts: list[dict], ask: list[dict], refusals: l
     if refusals:
         extra += "It must refuse this, as their own constraint:\n" + "\n".join(
             f"- {value}" for value in refusals) + "\n\n"
+    if request:
+        extra += ("Their request, as a real customer put it: keep what they ask for, and state the values "
+                  "listed above as their own facts in place of any value in it:\n" + request + "\n\n")
     if consent:
         extra += CONSENT_LINE + "\n\n"
     if example:
@@ -1362,17 +1370,18 @@ def _refusal_of(text: str, strings: list[str], consent: bool) -> tuple[str, str]
 
 
 def _described(model: Any, facts: list[dict], ask: list[dict], refusals: list[str],
-               consent: bool, example: str, strings: list[str]) -> tuple[str, str]:
+               consent: bool, example: str, strings: list[str], request: str = "") -> tuple[str, str]:
     """The description, sent back once with the reason when code refuses the first draft; else
     nothing and the count the walk is dropped under (undescribed, contaminated, unconsented)."""
-    text, _why = description_text(model, facts, ask, refusals, consent=consent, example=example)
+    text, _why = description_text(model, facts, ask, refusals, consent=consent, example=example,
+                                  request=request)
     if not text:
         return "", "undescribed"
     retry, _drop = _refusal_of(text, strings, consent)
     if not retry:
         return text, ""
     text, _why = description_text(model, facts, ask, refusals, consent=consent, example=example,
-                                  retry=retry)
+                                  retry=retry, request=request)
     if not text:
         return "", "undescribed"
     _retry, drop = _refusal_of(text, strings, consent)
@@ -1380,7 +1389,8 @@ def _described(model: Any, facts: list[dict], ask: list[dict], refusals: list[st
 
 
 def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = None,
-                model: Any = None, realism: Optional[Callable[[str], dict]] = None) -> dict:
+                model: Any = None, realism: Optional[Callable[[str], dict]] = None,
+                scenarios: Iterable[dict] = ()) -> dict:
     """Keep walks as scenario sources of Tasks carrying a description, in a store linked to this one.
 
     For each kept walk: bind and run it through the bodies as today; write its description from one
@@ -1389,7 +1399,11 @@ def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = 
     or a grader by code; hold every walk argument against the description or an earlier result by
     code, dropping unfair walks; ask the realism step, where one is given, whether the request
     happens in the domain. The walk is kept as the Task's scenario source and never as a Reference:
-    the Verifier comes from the description, the policy, the tools and the Starting state."""
+    the Verifier comes from the description, the policy, the tools and the Starting state.
+
+    `scenarios` are requests read off the domain's public material (`world_scenarios`); each is bound
+    to this world's rows (`bind_scenario`) and, where it binds and its chain runs, takes the same steps
+    as a walk with origin "world"; the rest are counted unbound or unservable with their source."""
     from kullback import domain as domain_mod
 
     parent = Path(workdir)
@@ -1405,35 +1419,64 @@ def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = 
     _grow_for(world, max(int(count) for count in buckets.values()) if buckets else 0)
     counts = {"walks_tried": 0, "walks_refused": 0, "walks_unbound": 0, "walks_crashed": 0,
               **{f"walks_{reason}": 0 for reason in DROP_REASONS},
-              "realism_not_run": 0, "tasks_kept": 0}
-    unreal_rows: list[dict] = []
+              "realism_not_run": 0, "scenarios_read": 0, "scenarios_unbound": 0,
+              "scenarios_unservable": 0, "tasks_kept": 0}
+    run = {"world": world, "parent": parent, "store": store, "body": body, "observed": observed,
+           "model": model, "strings": strings, "consent": consent, "realism": realism, "counts": counts,
+           "rows": [], "status": {}, "unreal": []}
     per_bucket: dict[str, int] = {}
-    rows: list[dict] = []
-    status: dict[str, dict] = {}
     for bucket in sorted(buckets):
-        if graph_mod.bands(bucket)[0] == 0:
-            continue
-        wanted = int(buckets[bucket])
-        made = 0
-        for attempt in range(wanted * ATTEMPTS_PER_TASK):
-            if made >= wanted:
-                break
-            calls, note, ident = _attempt_walk(world, body, observed, bucket, salt, attempt,
-                                              counts)
-            if ident is None:
-                break
-            if not calls:
-                continue
-            row, drop = _store_task(world, parent, store, calls, note, bucket, ident,
-                                    model, strings, consent, status, realism, unreal_rows)
-            if row is None:
-                counts[f"walks_{drop}"] += 1
-                continue
-            counts["realism_not_run"] += 1 if row["realism"] == REALISM_NOT_RUN else 0
-            rows.append(row)
-            made += 1
-            per_bucket[bucket] = per_bucket.get(bucket, 0) + 1
+        if graph_mod.bands(bucket)[0] != 0:
+            made = _fill_bucket(run, bucket, int(buckets[bucket]), salt)
+            if made:
+                per_bucket[bucket] = made
+    for number, scenario in enumerate(scenarios or ()):
+        _bind_world(run, scenario, f"{salt}:world:{number}")
+    rows, status, unreal_rows = run["rows"], run["status"], run["unreal"]
     return _write_store_index(store, buckets, salt, counts, per_bucket, rows, status, unreal_rows)
+
+
+def _kept(run: dict, row: Optional[dict], drop: str) -> bool:
+    """Count one store Task attempt: a kept row joins the rows, a dropped one raises its reason."""
+    if row is None:
+        run["counts"][f"walks_{drop}"] += 1
+        return False
+    run["counts"]["realism_not_run"] += 1 if row["realism"] == REALISM_NOT_RUN else 0
+    run["rows"].append(row)
+    return True
+
+
+def _fill_bucket(run: dict, bucket: str, wanted: int, salt: str) -> int:
+    """Walk a bucket until it holds `wanted` store Tasks or its attempts run out; how many it holds."""
+    world = run["world"]
+    made = 0
+    for attempt in range(wanted * ATTEMPTS_PER_TASK):
+        if made >= wanted:
+            break
+        calls, note, ident = _attempt_walk(world, run["body"], run["observed"], bucket, salt, attempt,
+                                          run["counts"])
+        if ident is None:
+            break
+        if calls:
+            made += _kept(run, *_store_task(world, run["parent"], run["store"], calls, note, bucket, ident,
+                                            run["model"], run["strings"], run["consent"], run["status"],
+                                            run["realism"], run["unreal"]))
+    return made
+
+
+def _bind_world(run: dict, scenario: dict, ident: str) -> None:
+    """One scenario read off the real world: bound and kept with origin world, or counted unbound or
+    unservable with its source."""
+    run["counts"]["scenarios_read"] += 1
+    calls, why = bind_scenario(run["world"], run["body"], run["observed"], scenario, ident)
+    if why:
+        run["counts"][f"scenarios_{why}"] += 1
+        run["unreal"].append({"task_id": _task_id(ident), "reason": why, "origin": WORLD,
+                              "source": str(scenario.get("source") or ""), "why": ""})
+        return
+    _kept(run, *_store_task(run["world"], run["parent"], run["store"], calls, {}, WORLD, ident,
+                            run["model"], run["strings"], run["consent"], run["status"], run["realism"],
+                            run["unreal"], scenario=scenario))
 
 
 def _attempt_walk(world: World, body: dict, observed: dict, bucket: str, salt: str,
@@ -1506,6 +1549,38 @@ REALISM_PAGES = 3
 REALISM_CHARS = 4000
 
 
+def _domain_pages(urls: Iterable[str], reader: Callable[[str], str], corpus_url: Optional[str],
+                  exclude: Iterable[str]) -> list[tuple[str, str]]:
+    """Up to REALISM_PAGES public pages as (url, text): D225 refuses non-public and corpus pages."""
+    from kullback import domain as domain_mod
+
+    pages: list[tuple[str, str]] = []
+    for url in urls:
+        if len(pages) >= REALISM_PAGES or domain_mod.refusal(url, corpus_url, exclude):
+            continue
+        try:
+            text = domain_mod.page_text(reader(url))
+        except Exception:  # noqa: BLE001 - a page that will not read is one page fewer
+            continue
+        if text:
+            pages.append((url, text[:REALISM_CHARS]))
+    return pages
+
+
+def _listing(pages: list[tuple[str, str]]) -> str:
+    return "\n\n".join(f"Page {url}:\n{text}" for url, text in pages)
+
+
+def _realism_answer(answer: Any, pages: list[tuple[str, str]]) -> dict:
+    """The model's yes or no with the page it leaned on; a page never read judges nothing."""
+    answer = answer if isinstance(answer, dict) else {}
+    source = str(answer.get("source") or "")
+    said = str(answer.get("happens") or "").strip().casefold()
+    if source not in {url for url, _text in pages} or said not in ("yes", "no"):
+        return {"happens": None, "source": source, "why": "the realism answer named no page read"}
+    return {"happens": said == "yes", "source": source, "why": str(answer.get("why") or "")}
+
+
 def domain_realism(model: Any, *, search: Optional[Callable[[str, str], list[str]]] = None,
                    fetch: Optional[Callable[[str], str]] = None, env: Optional[dict] = None,
                    corpus_url: Optional[str] = None, exclude: Iterable[str] = ()
@@ -1523,28 +1598,124 @@ def domain_realism(model: Any, *, search: Optional[Callable[[str, str], list[str
 
     def judge(text: str) -> dict:
         urls, note = domain_mod.search_sources(text, search=search, env=env)
-        pages: list[tuple[str, str]] = []
-        for url in urls:
-            if len(pages) >= REALISM_PAGES or domain_mod.refusal(url, corpus_url, exclude):
-                continue
-            try:
-                body = domain_mod.page_text(reader(url))
-            except Exception:  # noqa: BLE001 - a page that will not read is one page fewer
-                continue
-            if body:
-                pages.append((url, body[:REALISM_CHARS]))
+        pages = _domain_pages(urls, reader, corpus_url, exclude)
         if not pages:
             return {"happens": None, "source": "", "why": note or "no page could be read"}
-        listing = "\n\n".join(f"Page {url}:\n{body}" for url, body in pages)
-        answer = domain_mod._json_reply(model, REALISM_PROMPT.format(text=text, pages=listing))  # noqa: SLF001
-        answer = answer if isinstance(answer, dict) else {}
-        source = str(answer.get("source") or "")
-        said = str(answer.get("happens") or "").strip().casefold()
-        if source not in {url for url, _body in pages} or said not in ("yes", "no"):
-            return {"happens": None, "source": source, "why": "the realism answer named no page read"}
-        return {"happens": said == "yes", "source": source, "why": str(answer.get("why") or "")}
+        answer = domain_mod._json_reply(model, REALISM_PROMPT.format(text=text, pages=_listing(pages)))  # noqa: SLF001
+        return _realism_answer(answer, pages)
 
     return judge
+
+
+# The two scenario sources a store Task can come from, kept on every row so a slice reports them apart.
+WALK, WORLD = "walk", "world"
+UNBOUND_SCENARIO, UNSERVABLE = "unbound", "unservable"
+
+SCENARIO_PROMPT = (
+    "Below are public pages about one kind of business:\n{domain}\n\n{pages}\n\n"
+    "From these pages only, write down up to {count} real requests customers of this business make. For each, "
+    "write the ask as the customer would, in the first person; the facts it needs, each named by one of these "
+    "fields: {fields}; the changes it implies, each named by one of these actions: {writes}; and the policy "
+    "branch it turns on, if any.\n\n" + DIFFICULTY_RULE + "\n\n"
+    'Answer with JSON only, as {{"scenarios": [{{"ask": "...", "facts": ["field", ...], '
+    '"writes": ["action", ...], "policy_branch": "...", "source": "the url of the page it came from"}}]}}.')
+SCENARIO_LIMIT = 8
+
+
+def domain_line(workdir: Any) -> str:
+    """The Environment's own description of its domain: environment.json's, else the policy's first line."""
+    body = read_json(Path(workdir) / "environment.json", {}) or {}
+    if body.get("description"):
+        return str(body["description"])
+    try:
+        lines = (Path(workdir) / "env" / "policy.md").read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return ""
+    return next((line.lstrip("# ").strip() for line in lines if line.strip()), "")
+
+
+def world_scenarios(model: Any, domain: str, workdir: Any, *,
+                    search: Optional[Callable[[str, str], list[str]]] = None,
+                    fetch: Optional[Callable[[str], str]] = None, env: Optional[dict] = None,
+                    corpus_url: Optional[str] = None, exclude: Iterable[str] = (),
+                    limit: int = SCENARIO_LIMIT) -> list[dict]:
+    """Real requests of the domain, read off its public material and written as scenarios (synth-add4).
+
+    The domain line is the search query (D225's search, only where a key is set); the pages are fetched
+    through D225's fetch, which refuses non-public destinations and the corpus's own pages. One model call
+    writes each request as a scenario: the ask in the first person, the facts it needs named by this
+    world's fields, the writes it implies named by this world's write tools, and the policy branch. A
+    scenario whose ask copies the corpus (D225's contamination scan) or whose source is no page read is
+    dropped; writes and fields this world does not have are left out, never invented."""
+    from kullback import domain as domain_mod
+
+    world = World(workdir)
+    reader = fetch if fetch is not None else domain_mod.http_fetch
+    urls, _note = domain_mod.search_sources(domain, search=search, env=env)
+    pages = _domain_pages(urls, reader, corpus_url, exclude)
+    if not pages:
+        return []
+    fields = sorted({str(column.name) for column in world.schema.columns or ()})
+    writes = sorted(world.write_tools)
+    answer = domain_mod._json_reply(model, SCENARIO_PROMPT.format(  # noqa: SLF001
+        domain=domain, pages=_listing(pages), count=limit, fields=", ".join(fields), writes=", ".join(writes)))
+    rows = (answer.get("scenarios") or []) if isinstance(answer, dict) else []
+    read = {url for url, _text in pages}
+    strings = domain_mod.corpus_strings(workdir)
+    kept = [_scenario_row(row, read, set(fields), set(writes), strings) for row in rows]
+    return [row for row in kept if row][:limit]
+
+
+def _scenario_row(row: Any, read: set[str], fields: set[str], writes: set[str],
+                  strings: list[str]) -> Optional[dict]:
+    """One scenario as the binder takes it, or None where it names no page read, has no ask or copies the
+    corpus; fields and writes this world does not have are left out."""
+    from kullback import domain as domain_mod
+
+    if not isinstance(row, dict) or str(row.get("source") or "") not in read or not row.get("ask"):
+        return None
+    if domain_mod.contaminated({"goal": str(row["ask"])}, strings):
+        return None
+    return {"ask": str(row["ask"]), "source": str(row["source"]),
+            "facts": [str(name) for name in row.get("facts") or () if str(name) in fields],
+            "writes": [str(name) for name in row.get("writes") or () if str(name) in writes],
+            "policy_branch": str(row.get("policy_branch") or "")}
+
+
+def _fits(world: World, fields: Iterable[str]) -> bool:
+    """Whether every fact the scenario needs has a value on some real row of this world (any table, so
+    facts may sit across tables)."""
+    wanted = {str(name) for name in fields or ()}
+    for table in sorted(world.schema.tables or ()):
+        for row in synth.table_rows(world.db, world.schema, table).values():
+            wanted -= {name for name in wanted if named_leaves(row).get(name)}
+    return not wanted
+
+
+def bind_scenario(world: World, graph: dict, observed: dict, scenario: dict,
+                  ident: str) -> tuple[list[dict], str]:
+    """A scenario read off the real world bound to this world's rows, as the calls of its chain, or why not.
+
+    Every fact the scenario needs must have a value on some real row of this world, else no row fits
+    and it is unbound. The chain is a walk shaped to visit the scenario's writes (D225's `must_visit`), bound by the
+    coherent binding every walk has, and run through the bodies: a walk the graph cannot shape or bind is
+    unbound, one a body refuses or crashes on is unservable. The chain is the scenario's source, never a
+    Reference. Difficulty, the founder's standing rule: a scenario is made harder only by more reading
+    and reasoning in the world (a second row to tell apart, a policy branch, facts across tables), never
+    by a vaguer ask or a stricter check; the mechanism that adds such work is a later slice.
+    """
+    writes = [str(name) for name in scenario.get("writes") or () if str(name) in world.write_tools]
+    if not writes or not _fits(world, scenario.get("facts") or ()):
+        return [], UNBOUND_SCENARIO
+    steps = graph_mod.walk(graph, shaped_bucket(writes, writes), ident, must_visit=writes)
+    if not steps:
+        return [], UNBOUND_SCENARIO
+    calls, why = run_walk(world, steps, observed, ident, graph=graph, write_tools=world.write_tools)
+    if why in (REFUSED, CRASHED):
+        return [], UNSERVABLE
+    if why or not calls:
+        return [], UNBOUND_SCENARIO
+    return calls, ""
 
 
 def _realism_of(realism: Optional[Callable[[str], dict]], text: str) -> tuple[str, dict]:
@@ -1563,56 +1734,88 @@ def _realism_of(realism: Optional[Callable[[str], dict]], text: str) -> tuple[st
 def _store_task(world: World, parent: Path, store: Path, calls: list[dict], note: dict,
                 bucket: str, ident: str, model: Any, strings: list[str], consent: bool,
                 status: dict, realism: Optional[Callable[[str], dict]] = None,
-                unreal_rows: Optional[list] = None) -> tuple[Optional[dict], str]:
+                unreal_rows: Optional[list] = None,
+                scenario: Optional[dict] = None) -> tuple[Optional[dict], str]:
     """One kept walk as a store Task, or nothing and the count to raise (DROP_REASONS).
+
+    `scenario`, where given, is a request read off the domain's public material (synth-add4): its ask
+    is kept and the bound rows' values become the customer's facts, and the row's origin is "world";
+    a walk alone has origin "walk".
 
     A description that reads as a form or a grader is dropped by its code reason (`unreal_by_code`);
     one the realism step says does not happen in the domain is dropped as unreal, with the source it
     leaned on kept in `unreal_rows`. The Task keeps no Run: the walk is its scenario source."""
-    from kullback.runner.world import birth as birth_mod
-    from kullback.spec.intent_tools import SYNTHETIC_ORIGIN
-
     task_id = _task_id(ident)
+    scenario = scenario or {}
+    origin = WORLD if scenario else WALK
     writes = {str(call.get("name")) for call in calls} & set(world.write_tools)
     facts, ask, refusals = _description_inputs(calls, note.get("refused") or [], writes)
+    request = str(scenario.get("ask") or "")
     text, drop = _described(model, facts, ask, refusals, consent, _style_example(parent, writes),
-                            strings)
+                            strings, request=request)
     if not text:
         return None, drop
+    drop, answer = _judged(world, calls, writes, text, realism)
+    if drop:
+        if answer:
+            (unreal_rows if unreal_rows is not None else []).append(
+                {"task_id": task_id, "reason": drop, "source": answer.get("source") or "",
+                 "why": answer.get("why") or "", "origin": origin})
+        return None, drop
+    _write_store_task(store, task_id, text, calls, origin, scenario)
+    status[task_id] = {}
+    return _store_row(task_id, origin, scenario, bucket, writes, calls, realism is not None, answer), ""
+
+
+def _store_row(task_id: str, origin: str, scenario: dict, bucket: str, writes: set[str], calls: list[dict],
+               judged: bool, answer: dict) -> dict:
+    """The index row of one kept store Task: counts and where it came from, never its text."""
+    from kullback.spec.intent_tools import SYNTHETIC_ORIGIN
+
+    return {"task_id": task_id, "origin": SYNTHETIC_ORIGIN, "scenario_origin": origin,
+            "scenario_source": str(scenario.get("source") or ""), "bucket_requested": bucket,
+            "writes": len(writes), "tools": len({str(call.get("name")) for call in calls}),
+            "realism": "happens" if judged else REALISM_NOT_RUN,
+            "realism_source": answer.get("source") or ""}
+
+
+def _judged(world: World, calls: list[dict], writes: set[str], text: str,
+            realism: Optional[Callable[[str], dict]]) -> tuple[str, dict]:
+    """(drop reason or "", the realism answer): the code checks, the birth fairness check, then realism."""
+    from kullback.runner.world import birth as birth_mod
+
     drop = unreal_by_code(text, [sig.name for sig in world.sigs], writes, world.write_tools)
     if drop:
-        return None, drop
+        return drop, {}
     trace = birth_mod.check_arguments_trace(
         walk=[{"args": call.get("args")} for call in calls],
         results=[{"id": f"call-{index + 1}", "result": call.get("result")}
                  for index, call in enumerate(calls)],
         intent=text, user_facts=[])
     if trace.outcome != birth_mod.HELD:
-        return None, "unfair"
-    drop, answer = _realism_of(realism, text)
-    if drop:
-        if unreal_rows is not None:
-            unreal_rows.append({"task_id": task_id, "reason": drop, "source": answer.get("source") or "",
-                                "why": answer.get("why") or ""})
-        return None, drop
+        return "unfair", {}
+    return _realism_of(realism, text)
+
+
+def _write_store_task(store: Path, task_id: str, text: str, calls: list[dict], origin: str,
+                      scenario: Optional[dict]) -> None:
+    """The Task (no Run), its empty overlay and its scenario source, with where the scenario came from."""
     write_json(store / "tasks" / f"{task_id}.json",
                as_dict(Task(id=task_id, run_ids=[], intent=text, facts_in_instruction=False)))
     write_json(store / "overlays" / f"{task_id}.json",
                {"overlay": {"task_id": task_id, "rows": []}, "values": {}})
-    write_json(store / SCENARIOS / f"{task_id}.json", scenario_source(calls))
-    status[task_id] = {}
-    tools = {str(call.get("name")) for call in calls}
-    return {"task_id": task_id, "origin": SYNTHETIC_ORIGIN, "bucket_requested": bucket,
-            "writes": len(writes), "tools": len(tools),
-            "realism": REALISM_NOT_RUN if realism is None else "happens",
-            "realism_source": answer.get("source") or ""}, ""
+    request = ({"ask": str(scenario.get("ask") or ""), "source": str(scenario.get("source") or "")}
+               if scenario else None)
+    write_json(store / SCENARIOS / f"{task_id}.json", dict(scenario_source(calls), origin=origin, request=request))
 
 
-__all__ = ["ARCHETYPE_INTENT", "ATTEMPTS_PER_TASK", "CONFIRM_WORDS", "CONSENT_LINE", "CRASHED", "DIFFICULTY_RULE", "DIR", "DROP_REASONS", "FORMAT",
-           "INDEX", "MAX_INSERTED_READS", "READ_ONLY_REFUSED", "REFUSED", "RUNGS",
-           "REALISM_NOT_RUN", "SCENARIOS", "SECOND_PATH_LIMIT", "SHAPED_PATHS", "STORE", "STORE_INDEX", "STORE_LINKS", "UNBOUND",
-           "WRITE_RETRIES", "World", "archetype_intent", "askable_fields", "bind", "build_store",
-           "consents", "counts_of", "description_text", "domain_realism", "facts_of", "unreal_by_code",
-           "intent_text", "load_graph", "mine_graph", "read_index", "record_run", "run_walk",
-           "scenario_source", "second_paths", "shape", "shaped_bucket", "shaped_counts", "spoken_for", "store_dir",
-           "store_path", "synthesise", "user_rules_for", "written_intent"]
+__all__ = ["ARCHETYPE_INTENT", "ATTEMPTS_PER_TASK", "CONFIRM_WORDS", "CONSENT_LINE", "CRASHED",
+           "DIFFICULTY_RULE", "DIR", "DROP_REASONS", "FORMAT", "INDEX", "MAX_INSERTED_READS",
+           "READ_ONLY_REFUSED", "REALISM_NOT_RUN", "REFUSED", "RUNGS", "SCENARIOS", "SCENARIO_PROMPT",
+           "SECOND_PATH_LIMIT", "SHAPED_PATHS", "STORE", "STORE_INDEX", "STORE_LINKS", "UNBOUND", "WALK",
+           "WORLD", "WRITE_RETRIES", "World", "archetype_intent", "askable_fields", "bind", "bind_scenario",
+           "build_store", "consents", "counts_of", "description_text", "domain_line", "domain_realism",
+           "facts_of", "intent_text", "load_graph", "mine_graph", "read_index", "record_run", "run_walk",
+           "scenario_source", "second_paths", "shape", "shaped_bucket", "shaped_counts", "spoken_for",
+           "store_dir", "store_path", "synthesise", "unreal_by_code", "user_rules_for", "world_scenarios",
+           "written_intent"]

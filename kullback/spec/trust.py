@@ -511,7 +511,6 @@ def runs_on_disk(workdir: Any) -> dict[str, list[Run]]:
 def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[str, TaskTier]:
     """Every Task of the workdir under the intent foundation, the build's sample only when the manifest
     holds one; `specs` stands in for the spec folder."""
-    from kullback.spec import scenario
     from kullback.spec.intent_tools import is_synthetic_store
 
     root = Path(workdir)
@@ -537,23 +536,32 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
             reason = OPEN_RULING if set_aside_of(spec, events) and not is_empty(spec) else NO_INTENT
             out[task_id] = unruled_row(task_id, reason, spec.set_aside or "no verifier file")
             continue
-        task_runs = runs.get(task_id, [])
-        if synthetic:
-            # A store Task has no Reference: the do-nothing Run is laid on its Starting state through
-            # the expected Run, last, so a fresh Run with a stop still comes first (spec/scenario.py).
-            task_runs = [*task_runs, *filter(None, [scenario.store_expected_run(root, task_id, verifier)])]
+        task_runs = _with_expected(root, task_id, verifier, runs.get(task_id, []), synthetic)
         out[task_id] = tier_of_task(spec, verifier, task_runs, events, canon=canon,
                                     write_tools=tools, references=references.get(task_id, ()), schema=schema,
                                     judged=judge_results_of(root, task_id, verifier, task_runs))
-        if synthetic:
-            out[task_id] = _held_on_shortcut(root, task_id, out[task_id], task_runs, tools)
+        out[task_id] = _held_on_shortcut(root, task_id, out[task_id], task_runs, tools, synthetic)
     return out
 
 
-def _held_on_shortcut(root: Path, task_id: str, tier: TaskTier, runs: list[Run], tools: Any) -> TaskTier:
-    """A store Task a passing Run reached by a shortcut is held untrusted, reason shortcut (spec/scenario.py)."""
+def _with_expected(root: Path, task_id: str, verifier: Any, runs: list[Run], synthetic: bool) -> list[Run]:
+    """A store Task has no Reference: its do-nothing Run is laid on its Starting state through the
+    expected Run, last, so a fresh Run with a stop still comes first (spec/scenario.py)."""
     from kullback.spec import scenario
 
+    if not synthetic:
+        return runs
+    return [*runs, *filter(None, [scenario.store_expected_run(root, task_id, verifier)])]
+
+
+def _held_on_shortcut(root: Path, task_id: str, tier: TaskTier, runs: list[Run], tools: Any,
+                      synthetic: bool = True) -> TaskTier:
+    """A store Task a passing Run reached by a shortcut is held untrusted, reason shortcut (spec/scenario.py);
+    a recorded Task's tier is left as it is."""
+    from kullback.spec import scenario
+
+    if not synthetic:
+        return tier
     found = scenario.shortcut_audit(root, task_id, runs, tier.row.get("fresh_passed") or (), tools or ())
     row = dict(tier.row, shortcuts=found)
     if found and tier.tier == TRUSTED:

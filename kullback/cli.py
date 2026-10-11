@@ -1040,6 +1040,8 @@ def _store_lines(body: dict) -> list[str]:
     lines = [f"walks tried {counts.get('walks_tried', 0)}, refused {counts.get('walks_refused', 0)}, "
              f"unbound {counts.get('walks_unbound', 0)}, {dropped}, "
              f"realism not run {counts.get('realism_not_run', 0)}, kept {counts.get('tasks_kept', 0)}",
+             f"world scenarios read {counts.get('scenarios_read', 0)}, unbound "
+             f"{counts.get('scenarios_unbound', 0)}, unservable {counts.get('scenarios_unservable', 0)}",
              "", "| bucket asked | Tasks kept |",
              "| --- | --- |"]
     per_bucket = counts.get("per_bucket") or {}

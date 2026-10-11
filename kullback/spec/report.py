@@ -56,10 +56,7 @@ def build_report(tiers: dict[str, TaskTier], *, corpus: Optional[str] = None,
     flags = {f"{flag}{end}": 0 for flag in FLAGS for end in ("", "_false")}
     for task_tier in tiers.values():
         counts[task_tier.tier] += 1
-        if task_tier.row.get("reason") in reasons:
-            reasons[task_tier.row["reason"]] += 1
-        elif task_tier.row.get("reason") == SHORTCUT:  # a store's own hold, counted only where it occurs
-            reasons[SHORTCUT] = reasons.get(SHORTCUT, 0) + 1
+        _count_reason(reasons, task_tier.row.get("reason"))
         for flag in FLAGS:
             value = task_tier.row.get(flag)
             if value is not None:
@@ -76,6 +73,12 @@ def build_report(tiers: dict[str, TaskTier], *, corpus: Optional[str] = None,
     return {"build": build, "corpus": corpus, "tasks": len(tiers),
             "code_hash": hashes[0] if len(hashes) == 1 else None, "warnings": _hash_warnings(hashes),
             "tiers": counts, "reasons": reasons, "flags": flags, "trusted_by_reference": split, "rows": rows}
+
+
+def _count_reason(reasons: dict, reason: Any) -> None:
+    """Count a row's reason: a known one always, a store's own shortcut hold only where it occurs."""
+    if reason in reasons or reason == SHORTCUT:
+        reasons[reason] = reasons.get(reason, 0) + 1
 
 
 def header_line(report: dict) -> str:
