@@ -524,18 +524,24 @@ def _mutants(root: ExamRoot, verifier: Verifier, reference: Optional[Run], rows:
                                        bus=root.bus))
 
 
+def verify_task(root: ExamRoot, task_id: str) -> VerifyResult:
+    """The verify step on one Task: the constructed Runs and the Reference through its Verifier, kept on the
+    root, and on a passing Reference its surviving mutants filed as rulings."""
+    from kullback.spec.trust import load_spec_verifier
+
+    verifier = load_spec_verifier(root.workdir, task_id)
+    if verifier is None:
+        raise ValueError(f"task {task_id} has no Verifier to run")
+    reference = _reference_run(root.workdir, task_id)
+    rows = verify_rows(root.workdir, task_id, verifier, reference, judge=reference_judge(root.judge_model))
+    root.verified[task_id] = rows
+    return VerifyResult(summary="; ".join(filter(None, [verify_line(rows), _mutants(root, verifier, reference, rows)])),
+                        rows=rows)
+
+
 def _verify(root: ExamRoot):
     async def verify(args: VerifyArgs) -> VerifyResult:
-        from kullback.spec.trust import load_spec_verifier
-
-        verifier = load_spec_verifier(root.workdir, args.task_id)
-        if verifier is None:
-            raise ValueError(f"task {args.task_id} has no Verifier to run")
-        reference = _reference_run(root.workdir, args.task_id)
-        rows = verify_rows(root.workdir, args.task_id, verifier, reference, judge=reference_judge(root.judge_model))
-        root.verified[args.task_id] = rows
-        return VerifyResult(summary="; ".join(filter(None, [verify_line(rows), _mutants(root, verifier, reference, rows)])),
-                            rows=rows)
+        return verify_task(root, args.task_id)
 
     return verify
 

@@ -133,3 +133,27 @@ def test_verify_on_a_failing_reference_builds_no_mutant_and_files_nothing(tmp_pa
     failing = [{"run": "reference", "verifier_passes_it": False, "failing": "s1"}]
     assert _mutants(ExamRoot(workdir=tmp_path, round=2), _row_only(), _reference(), failing) == ""
     assert R.load_rulings(tmp_path, "t1") == []
+
+
+def test_a_review_session_that_never_called_verify_gets_the_verify_step_and_its_mutants_by_code(tmp_path):
+    from kullback.examiner.exam_files import ExamRoot
+    from kullback.examiner.session import _verify_once
+    from kullback.runner.records import write_json
+    from tests.spec.test_roles import _written
+
+    root, _ = _written(tmp_path)
+    write_json(root / "replays.json", {"t1": {"rec1": {"task_id": "t1", "run_id": "ref", "trace_id": "rec1",
+                                                       "confirmed": True, "fidelity": 1}}})
+    exam_root = ExamRoot(workdir=root, round=1)
+    _verify_once(exam_root, "t1")
+    assert "t1" in exam_root.verified
+    assert json.loads((root / "exam" / "mutants" / "t1.json").read_text())["status"] == "scored"
+
+
+def test_a_review_session_on_a_task_with_no_verifier_skips_the_verify_step(tmp_path):
+    from kullback.examiner.exam_files import ExamRoot
+    from kullback.examiner.session import _verify_once
+
+    exam_root = ExamRoot(workdir=tmp_path, round=1)
+    _verify_once(exam_root, "t1")
+    assert exam_root.verified == {}

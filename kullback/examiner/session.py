@@ -798,10 +798,23 @@ def _review_one(root: Path, task_id: str, round_number: int, model: Any, turns: 
         entries = [f"review/{entry}" for entry in root_listing(exam_root.exam_dir / "review")]
         text = prompt_mod.opening(REVIEW_MESSAGE, lines, entries, round_number=round_number)
         capped = _run_session(harness, text, turns, [task_id])
+        _verify_once(exam_root, task_id)
     finally:
         for unsubscribe in detach:
             unsubscribe()
     return bool(capped), list(exam_root.findings)
+
+
+def _verify_once(exam_root: ExamRoot, task_id: str) -> None:
+    """A session that never called verify on its Task gets the verify step by code after it, so the
+    mutant rulings of a passing Reference are filed every round (D362); a Task with no Verifier is skipped."""
+    from kullback.examiner.rule_tool import verify_task
+
+    if task_id not in exam_root.verified:
+        try:
+            verify_task(exam_root, task_id)
+        except ValueError:
+            pass
 
 
 def review_specs(workdir: Any, task_ids: Iterable[str], *, model: Any, round_number: int,
