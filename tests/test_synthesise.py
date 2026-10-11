@@ -670,7 +670,7 @@ def test_the_description_prompt_states_that_difficulty_comes_from_the_world_neve
 
 def _scenario(**over) -> dict:
     return {"ask": "I want my kite retied at a longer line.", "source": PAGE, "facts": ["colour"],
-            "writes": ["retie_kite"], "policy_branch": "", **over}
+            "writes": ["retie_kite"], "policy_branch": "", "needs": [], "files": [], **over}
 
 
 def test_a_scenario_binds_to_fitting_rows_and_its_chain_runs_through_the_bodies(kite_world: Path):
@@ -730,3 +730,136 @@ def test_world_scenarios_read_the_domain_pages_and_keep_only_this_worlds_writes_
 def test_the_binder_states_that_difficulty_comes_from_the_world():
     assert "never by a vaguer ask or a stricter check" in " ".join(synthesise.bind_scenario.__doc__.split())
     assert synthesise.DIFFICULTY_RULE in synthesise.SCENARIO_PROMPT
+
+
+# --- grown rows and files make the scenario real (synth-add5) -----------------------------
+
+
+class _FileModel(_EchoModel):
+    """The description writer echoes its values; the file step writes the text the test scripts."""
+
+    def __init__(self, file_text: str):
+        super().__init__()
+        self.file_text = file_text
+
+    def query(self, messages, tools=None, config=None):
+        from kullback.ai.provider import ModelReply
+
+        if "They hold a file named" in messages[0]["content"]:
+            self.calls.append(messages)
+            return ModelReply(content=self.file_text)
+        return super().query(messages, tools, config)
+
+
+RECEIPT = {"name": "receipt.txt", "kind": "a receipt"}
+
+
+def _world_store(kite_world: Path, model, **over) -> tuple[Path, dict]:
+    body = synthesise.build_store(kite_world, {}, seed="world-files", model=model, scenarios=[_scenario(**over)])
+    assert body["counts"]["scenarios_read"] == 1, body["counts"]
+    return kite_world / synthesise.DIR / synthesise.STORE, body
+
+
+def _source(store: Path, task_id: str) -> dict:
+    return json.loads((store / synthesise.SCENARIOS / f"{task_id}.json").read_text())
+
+
+def test_a_grown_row_obeys_the_mined_rules_is_tagged_and_pinned_for_its_task_alone(kite_world: Path):
+    store, body = _world_store(kite_world, _EchoModel(), needs=[{"table": "kites", "count": 1}])
+    [row] = body["tasks"]
+    [grown] = _source(store, row["task_id"])["grown_rows"]
+    assert grown["table"] == "kites" and grown["id"] not in DB["kites"] and row["grown_rows"] == 1
+    overlay = json.loads((store / "overlays" / f"{row['task_id']}.json").read_text())
+    [pinned] = [overlay["values"][r["version_hash"]] for r in overlay["overlay"]["rows"] if r["id"] == grown["id"]]
+    assert set(pinned) == set(DB["kites"]["k1"]) and pinned["kite_id"] == grown["id"]
+    assert pinned["spool_id"] in DB["spools"], "a grown row points at a row the world does not hold"
+    assert grown["id"] not in json.loads((kite_world / "db.json").read_text())["kites"], "the shared world was written"
+
+
+def test_a_description_naming_a_grown_row_by_id_is_dropped(kite_world: Path):
+    world = synthesise.World(kite_world)
+    calls = [{"name": "get_kite", "args": {"kite_id": "k1"}, "result": {"kite_id": "k1"}}]
+    drop, _answer = synthesise._judged(world, calls, set(), "Please look at kite k1 and k9.", None,
+                                       {"kites": {"k9": {}}})
+    assert drop == "grown_named"
+
+
+def test_a_file_carries_only_values_its_rows_or_the_description_hold(kite_world: Path):
+    store, body = _world_store(kite_world, _FileModel("Receipt\nKite: k1\nRef: ZX-4471\n"), files=[RECEIPT])
+    [row] = body["tasks"]
+    assert row["files"] == 0 and body["counts"]["files_unfounded"] == 1
+    assert not (store / "files").exists() and "files" not in _source(store, row["task_id"])
+    assert scenario_world_unfounded("Kite k1 retied at 99", [{"kite_id": "k1", "length": "99"}], "") == []
+
+
+def scenario_world_unfounded(text, rows, description):
+    from kullback import scenario_world
+
+    return scenario_world.unfounded(text, rows, description)
+
+
+def _filed(kite_world: Path) -> tuple[Path, str, str]:
+    """A world scenario kept with one file written from the kite id its chain wrote to."""
+    import shutil
+
+    store, body = _world_store(kite_world, _EchoModel(), files=[RECEIPT])
+    [row] = body["tasks"]
+    kite = next(step["args"]["kite_id"] for step in _source(store, row["task_id"])["steps"]
+                if step["tool"] == "retie_kite")
+    shutil.rmtree(kite_world / synthesise.DIR)
+    store, body = _world_store(kite_world, _FileModel(f"Receipt for your kite\nKite number: {kite}\nPaid in full.\n"),
+                               files=[RECEIPT])
+    [row] = body["tasks"]
+    assert row["files"] == 1, body["counts"]
+    return store, row["task_id"], kite
+
+
+def test_a_file_reaches_the_agent_through_read_file_and_never_a_path_outside_files(kite_world: Path):
+    from kullback.builder import compile_env
+    from kullback.runner.state import StateView
+    from kullback.runner.world.environment import BuiltEnvironment
+
+    store, task_id, kite = _filed(kite_world)
+    assert (store / "files" / task_id / "receipt.txt").read_text().count(kite) == 1
+    env = BuiltEnvironment(store)
+    overlay, values = env.overlay(task_id)
+    kit = compile_env.load_toolkit(env.toolkit_source(), StateView(env.db, overlay, values).shared)
+    assert kit.read_file(path="files/")["files"] == ["receipt.txt"]
+    assert kite in kit.read_file(path="files/receipt.txt")["text"]
+    for outside in ("../db.json", "/etc/hosts", "files/../db.json", ".env"):
+        with pytest.raises(ValueError):
+            kit.read_file(path=outside)
+    assert not (kite_world / "tool_sigs.json").is_symlink() and "read_file" not in (kite_world / "bodies.json").read_text()
+
+
+def test_a_fact_only_a_file_holds_is_volunteered_with_its_file_provenance(kite_world: Path):
+    from kullback.spec import intent_tools
+
+    store, task_id, kite = _filed(kite_world)
+    found = intent_tools.recordings_of(store, task_id)
+    assert set(found.recordings) == {intent_tools.DESCRIPTION_SOURCE, "file:receipt.txt"}
+    state = intent_tools.MinerState(found=found)
+    fact = intent_tools._keep(state, intent_tools.FactArgs(text=f"kite number {kite}", recording="file:receipt.txt",
+                                                           turn=0, stance="accepted"))
+    assert fact.stance == "volunteered" and fact.source.recording == "file:receipt.txt"
+    from kullback.examiner import goal
+
+    assert kite in goal.user_words(store, task_id)["file:receipt.txt"][0]["user"], "the goal step never saw the file"
+
+
+def test_a_task_with_no_files_or_grown_rows_is_unchanged_byte_for_byte(kite_world: Path, tmp_path: Path):
+    import shutil
+
+    twin = tmp_path / "twin"
+    shutil.copytree(kite_world, twin, symlinks=True)
+    plain = synthesise.build_store(kite_world, {"w1t3p1": 1}, seed="store-e2e", model=_EchoModel())
+    both = synthesise.build_store(twin, {"w1t3p1": 1}, seed="store-e2e", model=_FileModel(""),
+                                  scenarios=[_scenario(files=[RECEIPT])])
+    [task_id] = [row["task_id"] for row in plain["tasks"]]
+    assert task_id in [row["task_id"] for row in both["tasks"]]
+    for folder in ("tasks", "overlays", synthesise.SCENARIOS):
+        name = f"{folder}/{task_id}.json"
+        left = (kite_world / synthesise.DIR / synthesise.STORE / name).read_bytes()
+        assert left == (twin / synthesise.DIR / synthesise.STORE / name).read_bytes(), name
+    store = kite_world / synthesise.DIR / synthesise.STORE
+    assert (store / "tool_sigs.json").is_symlink() and not (store / "files").exists()

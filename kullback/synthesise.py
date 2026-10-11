@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 from kullback import derive as derive_mod
-from kullback import difficulty
+from kullback import difficulty, scenario_world
 from kullback import graph as graph_mod
 from kullback import variants as variants_mod
 from kullback.builder import compile_env, mine, synth
@@ -1433,6 +1433,8 @@ def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = 
     for number, scenario in enumerate(scenarios or ()):
         _bind_world(run, scenario, f"{salt}:world:{number}")
     rows, status, unreal_rows = run["rows"], run["status"], run["unreal"]
+    if any(row.get("files") for row in rows):
+        scenario_world.install_read_file(store)
     return _write_store_index(store, buckets, salt, counts, per_bucket, rows, status, unreal_rows)
 
 
@@ -1442,6 +1444,8 @@ def _kept(run: dict, row: Optional[dict], drop: str) -> bool:
         run["counts"][f"walks_{drop}"] += 1
         return False
     run["counts"]["realism_not_run"] += 1 if row["realism"] == REALISM_NOT_RUN else 0
+    for reason, number in (row.pop("files_dropped", None) or {}).items():
+        run["counts"][f"files_{reason}"] = run["counts"].get(f"files_{reason}", 0) + number
     run["rows"].append(row)
     return True
 
@@ -1468,15 +1472,22 @@ def _bind_world(run: dict, scenario: dict, ident: str) -> None:
     """One scenario read off the real world: bound and kept with origin world, or counted unbound or
     unservable with its source."""
     run["counts"]["scenarios_read"] += 1
-    calls, why = bind_scenario(run["world"], run["body"], run["observed"], scenario, ident)
+    world = run["world"]
+    shared = world.db
+    world.db, grown = scenario_world.grow_needed(world, scenario.get("needs") or (),
+                                                 seed=sample_key("synth-grow", ident, ""))
+    try:
+        calls, why = bind_scenario(world, run["body"], run["observed"], scenario, ident)
+    finally:
+        world.db = shared
     if why:
         run["counts"][f"scenarios_{why}"] += 1
         run["unreal"].append({"task_id": _task_id(ident), "reason": why, "origin": WORLD,
                               "source": str(scenario.get("source") or ""), "why": ""})
         return
-    _kept(run, *_store_task(run["world"], run["parent"], run["store"], calls, {}, WORLD, ident,
+    _kept(run, *_store_task(world, run["parent"], run["store"], calls, {}, WORLD, ident,
                             run["model"], run["strings"], run["consent"], run["status"], run["realism"],
-                            run["unreal"], scenario=scenario))
+                            run["unreal"], scenario=dict(scenario, grown=grown)))
 
 
 def _attempt_walk(world: World, body: dict, observed: dict, bucket: str, salt: str,
@@ -1521,7 +1532,7 @@ def _write_store_index(store: Path, buckets: dict, salt: str, counts: dict,
 
 # Why a walk is dropped after it ran, each a count of its own in the store index.
 DROP_REASONS = ("contaminated", "unfair", "undescribed", "unconsented", "grader_words", "tool_named",
-                "formatted", "second_ask", "unreal", "unjudged", "crashed")
+                "formatted", "second_ask", "unreal", "unjudged", "crashed", "grown_named")
 # The realism field of a kept row where no realism step was given.
 REALISM_NOT_RUN = "not_run"
 # Where a store Task's scenario source sits: the walk's steps and the rows it touched, per Task.
@@ -1615,10 +1626,14 @@ SCENARIO_PROMPT = (
     "Below are public pages about one kind of business:\n{domain}\n\n{pages}\n\n"
     "From these pages only, write down up to {count} real requests customers of this business make. For each, "
     "write the ask as the customer would, in the first person; the facts it needs, each named by one of these "
-    "fields: {fields}; the changes it implies, each named by one of these actions: {writes}; and the policy "
-    "branch it turns on, if any.\n\n" + DIFFICULTY_RULE + "\n\n"
+    "fields: {fields}; the changes it implies, each named by one of these actions: {writes}; the policy "
+    "branch it turns on, if any; the records it needs beside the customer's own, each named by one of these "
+    "tables with how many ({tables}); and the files the customer would hold for it (a confirmation, an "
+    "invoice, a message thread, an export), each with a file name ending in one of: {formats}.\n\n"
+    + DIFFICULTY_RULE + "\n\n"
     'Answer with JSON only, as {{"scenarios": [{{"ask": "...", "facts": ["field", ...], '
-    '"writes": ["action", ...], "policy_branch": "...", "source": "the url of the page it came from"}}]}}.')
+    '"writes": ["action", ...], "policy_branch": "...", "needs": [{{"table": "...", "count": 1}}], '
+    '"files": [{{"name": "...", "kind": "..."}}], "source": "the url of the page it came from"}}]}}.')
 SCENARIO_LIMIT = 8
 
 
@@ -1657,17 +1672,19 @@ def world_scenarios(model: Any, domain: str, workdir: Any, *,
         return []
     fields = sorted({str(column.name) for column in world.schema.columns or ()})
     writes = sorted(world.write_tools)
+    tables = sorted(world.schema.tables or ())
     answer = domain_mod._json_reply(model, SCENARIO_PROMPT.format(  # noqa: SLF001
-        domain=domain, pages=_listing(pages), count=limit, fields=", ".join(fields), writes=", ".join(writes)))
+        domain=domain, pages=_listing(pages), count=limit, fields=", ".join(fields), writes=", ".join(writes),
+        tables=", ".join(tables), formats=", ".join((*scenario_world.FORMATS, *scenario_world.SKIPPED_FORMATS))))
     rows = (answer.get("scenarios") or []) if isinstance(answer, dict) else []
     read = {url for url, _text in pages}
     strings = domain_mod.corpus_strings(workdir)
-    kept = [_scenario_row(row, read, set(fields), set(writes), strings) for row in rows]
+    kept = [_scenario_row(row, read, set(fields), set(writes), strings, set(tables)) for row in rows]
     return [row for row in kept if row][:limit]
 
 
 def _scenario_row(row: Any, read: set[str], fields: set[str], writes: set[str],
-                  strings: list[str]) -> Optional[dict]:
+                  strings: list[str], tables: Iterable[str] = ()) -> Optional[dict]:
     """One scenario as the binder takes it, or None where it names no page read, has no ask or copies the
     corpus; fields and writes this world does not have are left out."""
     from kullback import domain as domain_mod
@@ -1679,7 +1696,17 @@ def _scenario_row(row: Any, read: set[str], fields: set[str], writes: set[str],
     return {"ask": str(row["ask"]), "source": str(row["source"]),
             "facts": [str(name) for name in row.get("facts") or () if str(name) in fields],
             "writes": [str(name) for name in row.get("writes") or () if str(name) in writes],
-            "policy_branch": str(row.get("policy_branch") or "")}
+            "policy_branch": str(row.get("policy_branch") or ""), **_world_work(row, tables)}
+
+
+def _world_work(row: dict, tables: Iterable[str]) -> dict:
+    """The rows a scenario needs beside the customer's own (tables of this world only) and its files."""
+    tables = set(tables)
+    needs = [need for need in row.get("needs") or () if isinstance(need, dict)]
+    files = [spec for spec in row.get("files") or () if isinstance(spec, dict) and spec.get("name")]
+    return {"needs": [{"table": str(need.get("table")), "count": int(need.get("count") or 1)}
+                      for need in needs if str(need.get("table")) in tables],
+            "files": [{"name": str(spec.get("name")), "kind": str(spec.get("kind") or "")} for spec in files]}
 
 
 def _fits(world: World, fields: Iterable[str]) -> bool:
@@ -1755,16 +1782,30 @@ def _store_task(world: World, parent: Path, store: Path, calls: list[dict], note
                             strings, request=request)
     if not text:
         return None, drop
-    drop, answer = _judged(world, calls, writes, text, realism)
+    grown = scenario.get("grown") or {}
+    drop, answer = _judged(world, calls, writes, text, realism, grown)
     if drop:
         if answer:
             (unreal_rows if unreal_rows is not None else []).append(
                 {"task_id": task_id, "reason": drop, "source": answer.get("source") or "",
                  "why": answer.get("why") or "", "origin": origin})
         return None, drop
-    _write_store_task(store, task_id, text, calls, origin, scenario)
+    files, dropped = _scenario_files(model, scenario, calls, grown, text, strings)
+    _write_store_task(store, task_id, text, calls, origin, scenario, files)
     status[task_id] = {}
-    return _store_row(task_id, origin, scenario, bucket, writes, calls, realism is not None, answer), ""
+    row = _store_row(task_id, origin, scenario, bucket, writes, calls, realism is not None, answer)
+    return (dict(row, grown_rows=sum(map(len, grown.values())), files=len(files), files_dropped=dropped)
+            if scenario else row), ""
+
+
+def _scenario_files(model: Any, scenario: dict, calls: list[dict], grown: dict, text: str,
+                    strings: list[str]) -> tuple[dict[str, str], dict[str, int]]:
+    """The files a world scenario names, written from its bound and grown rows and the description only."""
+    if not scenario.get("files"):
+        return {}, {}
+    rows = [part for call in calls for part in (call.get("args"), call.get("result"))]
+    rows += [row for table in grown.values() for row in table.values()]
+    return scenario_world.write_files(model, scenario, rows, text, strings)
 
 
 def _store_row(task_id: str, origin: str, scenario: dict, bucket: str, writes: set[str], calls: list[dict],
@@ -1780,11 +1821,14 @@ def _store_row(task_id: str, origin: str, scenario: dict, bucket: str, writes: s
 
 
 def _judged(world: World, calls: list[dict], writes: set[str], text: str,
-            realism: Optional[Callable[[str], dict]]) -> tuple[str, dict]:
-    """(drop reason or "", the realism answer): the code checks, the birth fairness check, then realism."""
+            realism: Optional[Callable[[str], dict]], grown: Optional[dict] = None) -> tuple[str, dict]:
+    """(drop reason or "", the realism answer): the code checks, the birth fairness check, then realism.
+    A description naming a grown row by id is dropped: the agent must read to find it."""
     from kullback.runner.world import birth as birth_mod
 
     drop = unreal_by_code(text, [sig.name for sig in world.sigs], writes, world.write_tools)
+    if not drop and any(str(row_id) in text for rows in (grown or {}).values() for row_id in rows):
+        drop = "grown_named"
     if drop:
         return drop, {}
     trace = birth_mod.check_arguments_trace(
@@ -1798,15 +1842,24 @@ def _judged(world: World, calls: list[dict], writes: set[str], text: str,
 
 
 def _write_store_task(store: Path, task_id: str, text: str, calls: list[dict], origin: str,
-                      scenario: Optional[dict]) -> None:
-    """The Task (no Run), its empty overlay and its scenario source, with where the scenario came from."""
+                      scenario: Optional[dict], files: Optional[dict] = None) -> None:
+    """The Task (no Run), its overlay and its scenario source, with where the scenario came from.
+
+    The overlay pins the scenario's grown rows and files for this Task alone (scenario_world.py); a Task
+    with neither has the empty overlay and scenario source it always had."""
+    grown = (scenario or {}).get("grown") or {}
+    files = files or {}
     write_json(store / "tasks" / f"{task_id}.json",
                as_dict(Task(id=task_id, run_ids=[], intent=text, facts_in_instruction=False)))
-    write_json(store / "overlays" / f"{task_id}.json",
-               {"overlay": {"task_id": task_id, "rows": []}, "values": {}})
+    write_json(store / "overlays" / f"{task_id}.json", scenario_world.task_overlay(task_id, grown, files))
+    scenario_world.write_task_files(store, task_id, files)
     request = ({"ask": str(scenario.get("ask") or ""), "source": str(scenario.get("source") or "")}
                if scenario else None)
-    write_json(store / SCENARIOS / f"{task_id}.json", dict(scenario_source(calls), origin=origin, request=request))
+    extra = {"grown_rows": [{"table": table, "id": row_id} for table, rows in sorted(grown.items())
+                            for row_id in sorted(rows)]} if grown else {}
+    extra.update({"files": sorted(files)} if files else {})
+    write_json(store / SCENARIOS / f"{task_id}.json",
+               dict(scenario_source(calls), origin=origin, request=request, **extra))
 
 
 __all__ = ["ARCHETYPE_INTENT", "ATTEMPTS_PER_TASK", "CONFIRM_WORDS", "CONSENT_LINE", "CRASHED",

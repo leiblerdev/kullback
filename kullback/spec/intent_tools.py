@@ -31,6 +31,10 @@ from kullback.spec.text import APOSTROPHE_RE, STOPWORDS, TOKEN_RE, normalise
 SYNTHETIC_MARKER = "synthetic_store.json"
 # The one source a synthetic Task reads its instruction as, and the one turn it holds.
 DESCRIPTION_SOURCE = "description"
+# A synthetic Task's files (files/<task_id>/<name>) are read as sources too, each named FILE_SOURCE + name,
+# so a fact only a file holds is volunteered with provenance `file:<name>` (synth-add5).
+FILE_SOURCE = "file:"
+FILES = "files"
 # What the marker names as the origin of every Task in the store. The Task record refuses keys it
 # does not declare, so the origin is the store's, never a field on each Task.
 SYNTHETIC_ORIGIN = "synthetic"
@@ -128,7 +132,25 @@ def recordings_of(workdir: Path, task_id: str, traces: Optional[dict[str, Trace]
         text = task_of(workdir, task_id).intent
         if text:
             found.recordings[DESCRIPTION_SOURCE] = [UserTurn(index=0, text=text, agent_before="")]
+            found.recordings.update(_file_sources(Path(workdir), task_id))
     return found
+
+
+def _file_sources(workdir: Path, task_id: str) -> dict[str, list[UserTurn]]:
+    """Each file a synthetic Task holds as one source of one turn, keyed FILE_SOURCE + its name."""
+    folder = workdir / FILES / task_id
+    if "/" in task_id or task_id.startswith(".") or not folder.is_dir():
+        return {}
+    out = {}
+    for path in sorted(folder.iterdir()):
+        if path.is_file():
+            out[FILE_SOURCE + path.name] = [UserTurn(index=0, text=path.read_text(encoding="utf-8"))]
+    return out
+
+
+def told(recording: str) -> bool:
+    """Whether a source is the Task's own material (its description or a file), where every fact is volunteered."""
+    return recording == DESCRIPTION_SOURCE or recording.startswith(FILE_SOURCE)
 
 
 def volunteers(turn: UserTurn, words: set[str], share: float = WITNESS_SHARE) -> bool:
@@ -294,13 +316,13 @@ def _keep(state: MinerState, args: FactArgs) -> IntentFact:
     _check_words(args, turn)
     # A description has no agent line: nothing in it was accepted or said after pushback, so every
     # fact is volunteered and D354's follow-up reaches each one the writer leaves ungated.
-    told = args.recording == DESCRIPTION_SOURCE
-    stance = "volunteered" if told else args.stance
+    told_here = told(args.recording)
+    stance = "volunteered" if told_here else args.stance
     fact = IntentFact(id=f"f{len(state.facts) + 1}", text=text, stance=stance,
                       source=FactSource(recording=args.recording, turn=turn.index),
                       witnesses=witnesses(text, args.recording, state.found),
                       echo=is_echo(text, stance, turn),
-                      after_pushback=bool(args.after_pushback) and not told)
+                      after_pushback=bool(args.after_pushback) and not told_here)
     state.facts.append(fact)
     return fact
 
@@ -368,7 +390,8 @@ def tool_names() -> tuple[str, ...]:
     return ("list_recordings", "user_turns", "add_facts")
 
 
-__all__ = ["CARRIED_SHARE", "DESCRIPTION_SOURCE", "SYNTHETIC_MARKER", "SYNTHETIC_ORIGIN", "WITNESS_SHARE", "MinerState", "TaskRecordings", "UserTurn", "carried_share", "content_tokens", "is_synthetic_store",
-           "counts", "miner_tools", "recordings_of", "share_in", "task_of", "tool_names", "trace_index",
-           "user_turns_of", "volunteers", "witnesses"]
+__all__ = ["CARRIED_SHARE", "DESCRIPTION_SOURCE", "FILES", "FILE_SOURCE", "MinerState", "SYNTHETIC_MARKER",
+           "SYNTHETIC_ORIGIN", "TaskRecordings", "UserTurn", "WITNESS_SHARE", "carried_share",
+           "content_tokens", "counts", "is_synthetic_store", "miner_tools", "recordings_of", "share_in",
+           "task_of", "told", "tool_names", "trace_index", "user_turns_of", "volunteers", "witnesses"]
 
