@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from kullback.runner.code_hash import SHORT
 from kullback.spec.intent_tools import SYNTHETIC_ORIGIN, is_synthetic_store
+from kullback.spec.scenario import SHORTCUT
 from kullback.spec.split import reference_classes
 from kullback.spec.trust import FLAGS, REASONS, TIERS, TaskTier, workdir_tiers
 
@@ -57,6 +58,8 @@ def build_report(tiers: dict[str, TaskTier], *, corpus: Optional[str] = None,
         counts[task_tier.tier] += 1
         if task_tier.row.get("reason") in reasons:
             reasons[task_tier.row["reason"]] += 1
+        elif task_tier.row.get("reason") == SHORTCUT:  # a store's own hold, counted only where it occurs
+            reasons[SHORTCUT] = reasons.get(SHORTCUT, 0) + 1
         for flag in FLAGS:
             value = task_tier.row.get(flag)
             if value is not None:

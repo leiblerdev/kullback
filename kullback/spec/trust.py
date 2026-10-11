@@ -545,7 +545,20 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
         out[task_id] = tier_of_task(spec, verifier, task_runs, events, canon=canon,
                                     write_tools=tools, references=references.get(task_id, ()), schema=schema,
                                     judged=judge_results_of(root, task_id, verifier, task_runs))
+        if synthetic:
+            out[task_id] = _held_on_shortcut(root, task_id, out[task_id], task_runs, tools)
     return out
+
+
+def _held_on_shortcut(root: Path, task_id: str, tier: TaskTier, runs: list[Run], tools: Any) -> TaskTier:
+    """A store Task a passing Run reached by a shortcut is held untrusted, reason shortcut (spec/scenario.py)."""
+    from kullback.spec import scenario
+
+    found = scenario.shortcut_audit(root, task_id, runs, tier.row.get("fresh_passed") or (), tools or ())
+    row = dict(tier.row, shortcuts=found)
+    if found and tier.tier == TRUSTED:
+        return TaskTier(UNTRUSTED, dict(row, tier=UNTRUSTED, reason=scenario.SHORTCUT))
+    return TaskTier(tier.tier, row)
 
 
 def workdir_tiers(workdir: Any) -> dict[str, TaskTier]:

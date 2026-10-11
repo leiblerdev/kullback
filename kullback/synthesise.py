@@ -1475,7 +1475,7 @@ DROP_REASONS = ("contaminated", "unfair", "undescribed", "unconsented", "grader_
 # The realism field of a kept row where no realism step was given.
 REALISM_NOT_RUN = "not_run"
 # Where a store Task's scenario source sits: the walk's steps and the rows it touched, per Task.
-SCENARIOS = "scenarios"
+SCENARIOS = "scenarios"  # spec/scenario.py reads it under the same name
 
 
 def scenario_source(calls: list[dict]) -> dict:

@@ -144,6 +144,12 @@ def test_the_writer_writes_the_verifier_from_the_intent_and_never_from_the_walk(
     assert sorted(check.id for check in spec.checks if check.id in ("s1", "c1")) == ["c1", "s1"]
 
 
+def _honest(store: Path, task_id: str) -> list[ModelReply]:
+    """A Candidate's calls that read what the description leads to before writing: the scenario's steps."""
+    scenario = json.loads((store / synthesise.SCENARIOS / f"{task_id}.json").read_text())
+    return [call(step["tool"], **step["args"]) for step in scenario["steps"]]
+
+
 def _fresh(store: Path, task_id: str, *replies: ModelReply):
     """One scripted Candidate Run of the store Task, written under the store's runs/ like any fresh Run."""
     from kullback.runner import tool as runner_tool
@@ -203,7 +209,7 @@ def test_a_review_round_and_a_passing_fresh_run_land_the_task_trusted_in_the_sto
     assert out["examined"] == [task_id] and out["held"] == []
     tier = intent_tiers(store)[task_id]
     assert (tier.tier, tier.row["reason"]) == ("untrusted", STRAY_UNTESTED), "no Run passed yet, so nothing tested the stray write"
-    _fresh(store, task_id, call("retie_kite", kite_id=key, **changed))
+    _fresh(store, task_id, *_honest(store, task_id))
     tier = intent_tiers(store)[task_id]
     assert tier.tier == "trusted" and tier.row["reference"]["runs"] == [], tier
     assert task_id not in intent_tiers(kite_world), "the parent's tiers read a synthetic Task"
@@ -244,7 +250,7 @@ def test_the_stores_tier_report_and_counts_line_print_under_the_synthetic_headin
     key, changed = _written(store, task_id)
     _verified(store, task_id, confirm=False)
     _examined(store, task_id)
-    _fresh(store, task_id, call("retie_kite", kite_id=key, **changed))
+    _fresh(store, task_id, *_honest(store, task_id))
     written = report.write_report(store, corpus="kites")
     assert written["origin"] == intent_tools.SYNTHETIC_ORIGIN and written["tiers"]["trusted"] == 1
     assert report.header_line(written).startswith(report.SYNTHETIC_HEADING + ": ")
@@ -265,3 +271,51 @@ def test_a_published_store_carries_its_origin_and_the_card_heads_its_counts_apar
     assert "## Synthetic Tasks" in body and "| Trusted synthetic Tasks, never counted with recorded ones |" in body
     recorded = card.card_markdown(dict(manifest, origin="recorded"), "someone/kites")
     assert "## Synthetic Tasks" not in recorded and "| Trusted |" in recorded
+
+
+# --- the shortcut audit (synth-add3 item 2) -------------------------------------------------------
+
+
+def test_a_run_that_calls_none_of_the_scenarios_writes_is_a_shortcut(kite_store):
+    from kullback.spec import scenario
+    from kullback.spec.trust import runs_on_disk
+
+    store, task_id = kite_store
+    _fresh(store, task_id, *_honest(store, task_id))
+    [run] = runs_on_disk(store)[task_id]
+    text = json.loads((store / "tasks" / f"{task_id}.json").read_text())["intent"]
+    assert scenario.shortcut(run, text, {"retie_kite"}) == ""
+    assert scenario.shortcut(run, text, {"repaint_kite"}).startswith("called none")
+
+
+def test_a_passing_run_naming_a_value_it_could_not_have_read_holds_the_task_as_a_shortcut(kite_store):
+    from kullback.spec import scenario
+    from kullback.spec.report import build_report
+    from kullback.spec.trust import intent_tiers
+
+    store, task_id = kite_store
+    key, changed = _written(store, task_id)
+    task_path = store / "tasks" / f"{task_id}.json"
+    task = json.loads(task_path.read_text())
+    _verified(store, task_id, confirm=False)
+    _examined(store, task_id)
+    _fresh(store, task_id, *_honest(store, task_id))
+    task["intent"] = "Please sort my kite out. Go ahead."
+    task_path.write_text(json.dumps(task))
+    tiers = intent_tiers(store)
+    assert tiers[task_id].row["reason"] == scenario.SHORTCUT
+    assert "argument value" in tiers[task_id].row["shortcuts"][0]["why"]
+    assert build_report(tiers)["reasons"][scenario.SHORTCUT] == 1
+
+
+def test_a_passing_run_that_read_what_it_wrote_is_no_shortcut(kite_store):
+    from kullback.spec import scenario
+    from kullback.spec.trust import runs_on_disk
+
+    store, task_id = kite_store
+    key, changed = _written(store, task_id)
+    _fresh(store, task_id, call("get_kite", kite_id=key), call("retie_kite", kite_id=key, **changed))
+    [run] = runs_on_disk(store)[task_id]
+    text = f"My kite {key} needs retying at {changed['length']}."
+    assert scenario.shortcut(run, text, {"retie_kite"}) == ""
+    assert scenario.shortcut(run, "Please fix my kite.", {"retie_kite"}) != ""
