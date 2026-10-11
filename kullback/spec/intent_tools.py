@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,6 +31,9 @@ from kullback.spec.text import APOSTROPHE_RE, STOPWORDS, TOKEN_RE, normalise
 SYNTHETIC_MARKER = "synthetic_store.json"
 # The one source a synthetic Task reads its instruction as, and the one turn it holds.
 DESCRIPTION_SOURCE = "description"
+# What the marker names as the origin of every Task in the store. The Task record refuses keys it
+# does not declare, so the origin is the store's, never a field on each Task.
+SYNTHETIC_ORIGIN = "synthetic"
 
 # A fact is carried by a turn when this share of its content words is in the turn.
 CARRIED_SHARE = 0.5
@@ -100,6 +103,12 @@ def task_of(workdir: Path, task_id: str) -> Task:
     return Task.model_validate(json.loads(path.read_text(encoding="utf-8")))
 
 
+def is_synthetic_store(workdir: Any) -> bool:
+    """Whether a workdir is a synthetic store: its Tasks are counted apart and never trusted with
+    the recorded ones."""
+    return (Path(workdir) / SYNTHETIC_MARKER).is_file()
+
+
 def recordings_of(workdir: Path, task_id: str, traces: Optional[dict[str, Trace]] = None) -> TaskRecordings:
     """The user turns of every recording of the Task that has at least one.
 
@@ -115,7 +124,7 @@ def recordings_of(workdir: Path, task_id: str, traces: Optional[dict[str, Trace]
         turns = user_turns_of(trace) if trace is not None else []
         if turns:
             found.recordings[run_id] = turns
-    if not found.recordings and (Path(workdir) / SYNTHETIC_MARKER).is_file():
+    if not found.recordings and is_synthetic_store(workdir):
         text = task_of(workdir, task_id).intent
         if text:
             found.recordings[DESCRIPTION_SOURCE] = [UserTurn(index=0, text=text, agent_before="")]
@@ -283,11 +292,15 @@ def _keep(state: MinerState, args: FactArgs) -> IntentFact:
     if any(content_tokens(f.text) == words for f in state.facts):
         raise ValueError("this fact is already kept")
     _check_words(args, turn)
-    fact = IntentFact(id=f"f{len(state.facts) + 1}", text=text, stance=args.stance,
+    # A description has no agent line: nothing in it was accepted or said after pushback, so every
+    # fact is volunteered and D354's follow-up reaches each one the writer leaves ungated.
+    told = args.recording == DESCRIPTION_SOURCE
+    stance = "volunteered" if told else args.stance
+    fact = IntentFact(id=f"f{len(state.facts) + 1}", text=text, stance=stance,
                       source=FactSource(recording=args.recording, turn=turn.index),
                       witnesses=witnesses(text, args.recording, state.found),
-                      echo=is_echo(text, args.stance, turn),
-                      after_pushback=bool(args.after_pushback))
+                      echo=is_echo(text, stance, turn),
+                      after_pushback=bool(args.after_pushback) and not told)
     state.facts.append(fact)
     return fact
 
@@ -355,7 +368,7 @@ def tool_names() -> tuple[str, ...]:
     return ("list_recordings", "user_turns", "add_facts")
 
 
-__all__ = ["CARRIED_SHARE", "DESCRIPTION_SOURCE", "SYNTHETIC_MARKER", "WITNESS_SHARE", "MinerState", "TaskRecordings", "UserTurn", "carried_share", "content_tokens",
+__all__ = ["CARRIED_SHARE", "DESCRIPTION_SOURCE", "SYNTHETIC_MARKER", "SYNTHETIC_ORIGIN", "WITNESS_SHARE", "MinerState", "TaskRecordings", "UserTurn", "carried_share", "content_tokens", "is_synthetic_store",
            "counts", "miner_tools", "recordings_of", "share_in", "task_of", "tool_names", "trace_index",
            "user_turns_of", "volunteers", "witnesses"]
 

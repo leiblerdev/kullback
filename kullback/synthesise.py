@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -1083,6 +1084,14 @@ STORE_LINKS = ("env", "schema.json", "tool_sigs.json", "bodies.json", "canon-rul
 CONFIRM_WORDS = ("confirm", "approval", "consent", "permission", "go-ahead", "authorize",
                  "authorise")
 
+# Where the policy asks, the go-ahead is the one user turn a confirm-before-write gate can read: a
+# sentence opening on a yes, and no sentence opening on a no (the Verdict's own confirm reading).
+CONSENT_LINE = ("They give their go-ahead as a sentence of its own that opens with \"Go ahead\", and "
+                "no sentence of the message opens with a negative word such as no, do not or don't.")
+CONSENT_RETRY = ("Your message did not give the go-ahead as asked; write it again with a sentence "
+                 "opening with \"Go ahead\" and no sentence opening with a negative word.")
+LEAK_RETRY = "Your message repeated this text; write it again without it: "
+
 # How many recorded Tasks are read looking for a style example of the walk's own write tools.
 STYLE_SEARCH_LIMIT = 200
 
@@ -1104,12 +1113,13 @@ def store_path(workdir: Any) -> Path:
 def _link_store(parent: Path) -> Path:
     """Lay out the store on first use: the marker, the links to the parent's Environment, and the
     store's own directories. Later runs find the marker and only repair missing links."""
-    from kullback.spec.intent_tools import SYNTHETIC_MARKER
+    from kullback.spec.intent_tools import SYNTHETIC_MARKER, SYNTHETIC_ORIGIN
 
     store = store_path(parent)
     store.mkdir(parents=True, exist_ok=True)
     if not (store / SYNTHETIC_MARKER).is_file():
-        write_json(store / SYNTHETIC_MARKER, {"format": FORMAT, "parent": ".."})
+        write_json(store / SYNTHETIC_MARKER, {"format": FORMAT, "parent": "..",
+                                              "origin": SYNTHETIC_ORIGIN})
     for name in STORE_LINKS:
         source, link = parent / name, store / name
         if source.exists() and not link.exists() and not link.is_symlink():
@@ -1256,10 +1266,10 @@ def _ask_for(calls: list[dict], writes: set[str]) -> list[dict]:
 
 def description_text(model: Any, facts: list[dict], ask: list[dict], refusals: list[str], *,
                      consent: bool = False, example: str = "",
-                     avoid: str = "") -> tuple[str, str]:
+                     retry: str = "") -> tuple[str, str]:
     """The customer's first-person message from the walk's matter, or nothing and why not.
 
-    `avoid` names a text the last draft repeated: the writer is told to write again without it."""
+    `retry` is the one line code sends back with a draft it refused: what to write again and why."""
     if model is None:
         return "", "no description writer was given"
     lines = "\n".join(f"- {row['field']}: {row['value']}" for row in facts) or "- nothing"
@@ -1270,13 +1280,12 @@ def description_text(model: Any, facts: list[dict], ask: list[dict], refusals: l
         extra += "It must refuse this, as their own constraint:\n" + "\n".join(
             f"- {value}" for value in refusals) + "\n\n"
     if consent:
-        extra += "They give their go-ahead to proceed.\n\n"
+        extra += CONSENT_LINE + "\n\n"
     if example:
         extra += ("Match the tone of this unrelated request, never its details:\n" + example
                   + "\n\n")
-    if avoid:
-        extra += ("Your message repeated this text; write it again without it: " + avoid
-                  + "\n\n")
+    if retry:
+        extra += retry + "\n\n"
     try:
         reply = model.query([{"role": "user", "content": DESCRIPTION_PROMPT.format(
             ask=wanted, facts=lines, extra=extra)}])
@@ -1286,6 +1295,46 @@ def description_text(model: Any, facts: list[dict], ask: list[dict], refusals: l
     if not text:
         return "", "the description writer answered nothing"
     return text, ""
+
+
+def consents(text: str) -> bool:
+    """Whether a message gives the go-ahead the way the Verdict reads one before a write: a sentence
+    opening on a yes and none opening on a no."""
+    from kullback.runner.atom_context import AFFIRM_OPEN, NEGATIVE_OPEN, _opening
+
+    sentences = [_opening(part) for part in re.split(r"[.!?\n]+", text or "") if _opening(part)]
+    return any(AFFIRM_OPEN.match(s) for s in sentences) and \
+        not any(NEGATIVE_OPEN.match(s) for s in sentences)
+
+
+def _refusal_of(text: str, strings: list[str], consent: bool) -> tuple[str, str]:
+    """Why code refuses a draft, as the line sent back and the count it falls under; empty if kept."""
+    from kullback import domain as domain_mod
+
+    leaked = domain_mod.contaminated({"goal": text}, strings)
+    if leaked:
+        return LEAK_RETRY + leaked, "contaminated"
+    if consent and not consents(text):
+        return CONSENT_RETRY, "unconsented"
+    return "", ""
+
+
+def _described(model: Any, facts: list[dict], ask: list[dict], refusals: list[str],
+               consent: bool, example: str, strings: list[str]) -> tuple[str, str]:
+    """The description, sent back once with the reason when code refuses the first draft; else
+    nothing and the count the walk is dropped under (undescribed, contaminated, unconsented)."""
+    text, _why = description_text(model, facts, ask, refusals, consent=consent, example=example)
+    if not text:
+        return "", "undescribed"
+    retry, _drop = _refusal_of(text, strings, consent)
+    if not retry:
+        return text, ""
+    text, _why = description_text(model, facts, ask, refusals, consent=consent, example=example,
+                                  retry=retry)
+    if not text:
+        return "", "undescribed"
+    _retry, drop = _refusal_of(text, strings, consent)
+    return ("", drop) if drop else (text, "")
 
 
 def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = None,
@@ -1312,7 +1361,7 @@ def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = 
     _grow_for(world, max(int(count) for count in buckets.values()) if buckets else 0)
     counts = {"walks_tried": 0, "walks_refused": 0, "walks_unbound": 0, "walks_crashed": 0,
               "walks_contaminated": 0, "walks_unfair": 0, "walks_undescribed": 0,
-              "tasks_kept": 0}
+              "walks_unconsented": 0, "tasks_kept": 0}
     per_bucket: dict[str, int] = {}
     rows: list[dict] = []
     references: dict[str, dict] = {}
@@ -1391,24 +1440,16 @@ def _store_task(world: World, parent: Path, store: Path, calls: list[dict], note
                 consent: bool, references: dict, replays: dict,
                 status: dict) -> tuple[Optional[dict], str]:
     """One kept walk as a store Task, or nothing and the count to raise."""
-    from kullback import domain as domain_mod
     from kullback.runner.world import birth as birth_mod
+    from kullback.spec.intent_tools import SYNTHETIC_ORIGIN
 
     task_id = _task_id(ident)
     writes = {str(call.get("name")) for call in calls} & set(world.write_tools)
     facts, ask, refusals = _description_inputs(calls, note.get("refused") or [], writes)
-    text, _why = description_text(model, facts, ask, refusals, consent=consent,
-                                  example=_style_example(parent, writes))
+    text, drop = _described(model, facts, ask, refusals, consent, _style_example(parent, writes),
+                            strings)
     if not text:
-        return None, "undescribed"
-    leaked = domain_mod.contaminated({"goal": text}, strings)
-    if leaked:
-        text, _why = description_text(model, facts, ask, refusals, consent=consent,
-                                      example=_style_example(parent, writes), avoid=leaked)
-        if not text:
-            return None, "undescribed"
-        if domain_mod.contaminated({"goal": text}, strings):
-            return None, "contaminated"
+        return None, drop
     trace = birth_mod.check_arguments_trace(
         walk=[{"args": call.get("args")} for call in calls],
         results=[{"id": f"call-{index + 1}", "result": call.get("result")}
@@ -1433,15 +1474,16 @@ def _store_task(world: World, parent: Path, store: Path, calls: list[dict], note
                                  "confirmed": True, "fidelity": 1}}
     status[task_id] = {}
     tools = {str(call.get("name")) for call in calls}
-    return {"task_id": task_id, "bucket_requested": bucket, "writes": len(writes),
+    return {"task_id": task_id, "origin": SYNTHETIC_ORIGIN, "bucket_requested": bucket,
+            "writes": len(writes),
             "tools": len(tools), "run_id": run_id}, ""
 
 
-__all__ = ["ARCHETYPE_INTENT", "ATTEMPTS_PER_TASK", "CONFIRM_WORDS", "CRASHED", "DIR", "FORMAT",
+__all__ = ["ARCHETYPE_INTENT", "ATTEMPTS_PER_TASK", "CONFIRM_WORDS", "CONSENT_LINE", "CRASHED", "DIR", "FORMAT",
            "INDEX", "MAX_INSERTED_READS", "READ_ONLY_REFUSED", "REFUSED", "RUNGS",
            "SECOND_PATH_LIMIT", "SHAPED_PATHS", "STORE", "STORE_INDEX", "STORE_LINKS", "UNBOUND",
            "WRITE_RETRIES", "World", "archetype_intent", "askable_fields", "bind", "build_store",
-           "counts_of", "description_text", "facts_of",
+           "consents", "counts_of", "description_text", "facts_of",
            "intent_text", "load_graph", "mine_graph", "read_index", "record_run", "run_walk",
            "second_paths", "shape", "shaped_bucket", "shaped_counts", "spoken_for", "store_dir",
            "store_path", "synthesise", "user_rules_for", "written_intent"]

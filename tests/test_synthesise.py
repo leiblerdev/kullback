@@ -387,7 +387,7 @@ class _EchoModel:
                 if value and value != "nothing" and value not in values:
                     values.append(value)
         return ModelReply(content="Please sort this out: " + ", ".join(values)
-                                  + ". You have my go-ahead.")
+                                  + ". Go ahead and make the change.")
 
 
 def _kept_store(kite_world: Path):
@@ -484,3 +484,31 @@ def test_the_description_never_states_an_id_an_earlier_answer_carried(kite_world
     facts, ask, _refusals = synthesise._description_inputs(walk, [], {"retie_kite"})
     assert [row["value"] for row in facts] == ["teal5", "32"]
     assert ask == [{"field": "length", "value": "32"}]
+
+
+class _Silent:
+    """A description writer double that never gives the go-ahead, whatever it is asked."""
+
+    def __init__(self):
+        self.prompts = []
+
+    def query(self, messages, tools=None, config=None):
+        from kullback.ai.provider import ModelReply
+
+        self.prompts.append(messages[0]["content"])
+        return ModelReply(content="Please retie kite k2 at 40. Thanks.")
+
+
+def test_a_description_with_no_go_ahead_where_the_policy_asks_is_sent_back_once_then_dropped():
+    silent = _Silent()
+    text, drop = synthesise._described(silent, [{"field": "kite_id", "value": "k2"}], [], [],
+                                       True, "", [])
+    assert (text, drop) == ("", "unconsented")
+    assert len(silent.prompts) == 2 and synthesise.CONSENT_LINE in silent.prompts[0]
+    assert synthesise.CONSENT_RETRY in silent.prompts[1]
+
+
+def test_a_go_ahead_counts_only_as_a_sentence_opening_on_a_yes_with_none_on_a_no():
+    assert synthesise.consents("Please retie kite k2. Go ahead and make the change.")
+    assert not synthesise.consents("Please retie kite k2. You have my go-ahead.")
+    assert not synthesise.consents("Go ahead. Do not touch kite k3.")

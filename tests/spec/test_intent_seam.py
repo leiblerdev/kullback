@@ -71,3 +71,14 @@ def test_a_fact_kept_off_the_description_is_volunteered(tmp_path):
     assert (fact.stance, fact.echo, fact.source.recording, fact.source.turn) == \
         ("volunteered", False, "description", 0)
     assert T.counts(fact)
+
+
+def test_a_fact_marked_accepted_or_after_pushback_on_the_description_is_kept_volunteered(tmp_path):
+    _store(tmp_path, {"id": "t1", "run_ids": [], "intent": INTENT})
+    state = T.MinerState(found=T.recordings_of(tmp_path, "t1"))
+    tools = {tool.name: tool for tool in T.miner_tools(state)}
+    asyncio.run(tools["add_facts"].run(
+        {"facts": [{"text": "my teal kite at length 99", "recording": "description", "turn": 0,
+                    "stance": "accepted", "after_pushback": True}]}))
+    [fact] = state.facts
+    assert (fact.stance, fact.after_pushback, fact.echo) == ("volunteered", False, False)
