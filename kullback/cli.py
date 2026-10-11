@@ -685,6 +685,10 @@ def run(
     typer.echo(json.dumps([report.as_dict() for report in reports], default=str))
 
 
+# The scoring rule a solve-rate Run is passed by: the Verdict over the Task's live Verifier.
+SOLVE_RULE = "verdict"
+
+
 @app.command("solve-rate")
 def solve_rate(
     workdir: Path = WORKDIR,
@@ -717,6 +721,8 @@ def solve_rate(
     table = stage(env, task_ids, _live_model(model, base_url), runs_per_task=runs,
                   ceiling_usd=ceiling_usd,
                   outdir=Path(outdir) if outdir is not None else Path(workdir) / "episodes")
+    # Every solve rate is printed under its setup (synth-add3 item 3): the rate means nothing without it.
+    typer.echo("setup: " + difficulty.setup_line(difficulty.setup_of(model, CODE_HASH, SOLVE_RULE, runs)))
     for line in lines(table):
         typer.echo(line)
     typer.echo(f"estimated spend {table['spent_usd']:.4f} USD" +

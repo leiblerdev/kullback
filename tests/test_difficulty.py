@@ -64,11 +64,14 @@ MOVE_P9 = (MOVE, {"pot_id": "p9", "bench_id": "b2"}, {"pot_id": "p9", "moved": T
 
 # --- the record ----------------------------------------------------------------
 
+SETUP = difficulty.setup_of("m-1", "abc", difficulty.HELD_OUT_RULE, 4)
+
+
 def test_a_record_counts_the_writes_the_tools_the_paths_the_questions_and_the_partial_band_of_one_task():
     verifier = _verifier(_write_atom("w0"), _value_atom("w0.litres"), _question_atom("q.litres"))
     record = difficulty.record_for(verifier, calls=_calls(READ_B1, WATER_P1, MOVE_P9),
                                    write_tools=WRITE_TOOLS, status_row={"references": 3},
-                                   false_rejection=0.25)
+                                   false_rejection=0.25, setup=SETUP)
     assert record["task_id"] == "task_1"
     assert record["write_count"] == 1, "the entity-level write atom counts once, its value atom not again"
     assert record["tools_touched"] == 3
@@ -96,8 +99,29 @@ def test_branching_depth_counts_every_rewrite_the_second_path_rule_finds_and_is_
 def test_a_task_that_held_nothing_out_reports_no_solve_rate_rather_than_a_perfect_one():
     record = difficulty.record_for(_verifier(), calls=[], false_rejection=None)
     assert record["held_out_solve_rate"] is None
-    assert difficulty.solve_rate(None) is None
-    assert difficulty.solve_rate(0.0) == 1.0, "an empty pool is not a rate of one, but a full pass is"
+    assert difficulty.solve_rate(None, SETUP) is None
+    assert difficulty.solve_rate(0.0, SETUP) == 1.0, "an empty pool is not a rate of one, but a full pass is"
+
+
+def test_a_solve_rate_with_no_complete_setup_is_refused():
+    assert difficulty.solve_rate(0.25) is None
+    for name in difficulty.SETUP_FIELDS:
+        assert difficulty.solve_rate(0.25, dict(SETUP, **{name: None})) is None, name
+    assert difficulty.solve_rate(0.25, dict(SETUP, trials=0)) is None
+    record = difficulty.record_for(_verifier(), calls=[], false_rejection=0.25)
+    assert record["held_out_solve_rate"] is None and record["solve_rate_refused"] == difficulty.NO_SETUP
+    assert difficulty.record_for(_verifier(), calls=[], false_rejection=0.25, setup=SETUP)["solve_rate_setup"] == SETUP
+
+
+def test_every_printed_solve_rate_shows_its_setup_and_two_setups_are_never_pooled():
+    other = dict(SETUP, model="another-model")
+    rows = difficulty.bucket_rows([
+        {"task_id": "a", "bucket": "w1t1p1", "held_out_solve_rate": 1.0, "solve_rate_setup": SETUP},
+        {"task_id": "b", "bucket": "w2t2p1", "held_out_solve_rate": 1.0, "solve_rate_setup": SETUP},
+        {"task_id": "c", "bucket": "w2t2p1", "held_out_solve_rate": 0.0, "solve_rate_setup": other}])
+    lines = difficulty.markdown_table(rows)
+    assert "model m-1, harness abc, rule held_out_false_rejection, 4 trials" in lines[2]
+    assert "not pooled: 2 setups" in lines[3] and rows[1]["solve_rate"] is None
 
 
 def test_a_task_no_judge_row_names_reports_no_agreement_rather_than_a_perfect_one():
@@ -119,14 +143,15 @@ def test_the_bucket_bands_stop_counting_where_the_caps_say_and_never_move_with_a
 
 def test_a_bucket_row_counts_tasks_and_trusted_and_means_the_rate_over_the_tasks_that_have_one():
     records = [
-        {"task_id": "a", "bucket": "w1t2p1", "held_out_solve_rate": 1.0},
-        {"task_id": "b", "bucket": "w1t2p1", "held_out_solve_rate": 0.5},
+        {"task_id": "a", "bucket": "w1t2p1", "held_out_solve_rate": 1.0, "solve_rate_setup": SETUP},
+        {"task_id": "b", "bucket": "w1t2p1", "held_out_solve_rate": 0.5, "solve_rate_setup": SETUP},
         {"task_id": "c", "bucket": "w1t2p1", "held_out_solve_rate": None},
         {"task_id": "d", "bucket": "w0t1p1", "held_out_solve_rate": None},
     ]
     rows = difficulty.bucket_rows(records, trusted_ids=["a", "d"])
     assert [row["bucket"] for row in rows] == ["w0t1p1", "w1t2p1"]
-    assert rows[1] == {"bucket": "w1t2p1", "tasks": 3, "trusted": 1, "solve_rate": 0.75, "rated": 2}
+    assert rows[1] == {"bucket": "w1t2p1", "tasks": 3, "trusted": 1, "solve_rate": 0.75, "rated": 2,
+                       "setup": SETUP, "setups": 1}
     assert rows[0]["solve_rate"] is None, "a bucket where nothing was held out has no rate"
 
 
@@ -165,7 +190,8 @@ def _workdir(tmp_path: Path) -> Path:
     write_json(tmp_path / "tool_sigs.json",
                [{"name": name, "kind": "write"} for name in WRITE_TOOLS] + [{"name": READ, "kind": "read"}])
     write_json(tmp_path / "gates.json",
-               [{"stage": "trusted", "metrics": {"trusted": ["task_1"], "false_rejection": {"task_1": 0.5}}}])
+               [{"stage": "trusted", "metrics": {"trusted": ["task_1"], "false_rejection": {"task_1": 0.5},
+                                                  "false_rejection_pool": {"task_1": 2}}}])
     return tmp_path
 
 
@@ -175,8 +201,11 @@ def test_a_workdir_reads_back_a_record_per_task_with_a_verifier_and_names_the_re
     assert body["tasks"][0]["tools_touched"] == 3
     assert body["tasks"][0]["held_out_solve_rate"] == 0.5
     assert body["no_record"] == {"task_2": difficulty.NO_VERIFIER}
+    setup = body["tasks"][0]["solve_rate_setup"]
+    assert (setup["model"], setup["scoring_rule"], setup["trials"]) == \
+        (difficulty.HELD_OUT_POOL, difficulty.HELD_OUT_RULE, 2) and setup["harness_version"]
     assert body["buckets"] == [{"bucket": "w1t3+p2+", "tasks": 1, "trusted": 1,
-                                "solve_rate": 0.5, "rated": 1}]
+                                "solve_rate": 0.5, "rated": 1, "setup": setup, "setups": 1}]
 
 
 def test_the_reason_a_task_carries_no_record_is_the_harness_own_words_and_never_the_status_rows(tmp_path):

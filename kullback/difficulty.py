@@ -37,6 +37,7 @@ covering Tasks it never saw.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -45,6 +46,7 @@ from kullback import variants as variants_mod
 from kullback.examiner import lifecycle
 from kullback.gates import verifier_suite
 from kullback.gates.probes import write_tools_of
+from kullback.runner.code_hash import CODE_HASH
 from kullback.runner.records import Verifier, read_json, read_jsonl, write_json
 from kullback.user import fidelity as user_fidelity_mod
 
@@ -52,8 +54,9 @@ from kullback.user import fidelity as user_fidelity_mod
 # bucket's boundaries change, so a file written under an older meaning reads as an older file
 # rather than as today's numbers.
 FILE_NAME = "difficulty.json"
-# 3 since D214 added user_fidelity and D223 the partial-completion band to every record.
-FORMAT = 3
+# 3 since D214 added user_fidelity and D223 the partial-completion band to every record; 4 since every
+# solve rate carries its setup (synth-add3 item 3).
+FORMAT = 4
 
 # The atom target kind that counts as one write. A write atom names a written entity; the value
 # atoms under it name fields of the same write, and counting those would call one write with four
@@ -119,13 +122,47 @@ def branching_depth(calls: list[dict], write_tools: Iterable[str]) -> int:
             + len(variants_mod.dropped_reads(calls, write_tools)))
 
 
-def solve_rate(fraction: Any) -> Optional[float]:
+# What a solve rate means only under (HUD, synth-add3 item 3): the model that played, the harness version
+# (the runner's code hash), the scoring rule's name and the trial count. A rate without all four is refused.
+SETUP_FIELDS = ("model", "harness_version", "scoring_rule", "trials")
+# The held-out pool's setup (D133): its Runs are confirmed recorded replays and finished re-rolls, so its
+# model is the pool and not one model id, and the rule is the false-rejection fraction.
+HELD_OUT_POOL = "held-out pool: recorded replays and re-rolls"
+HELD_OUT_RULE = "held_out_false_rejection"
+NO_SETUP = "refused: the rate names no setup (model, harness version, scoring rule, trials)"
+
+
+def setup_of(model: Any, harness_version: Any, scoring_rule: Any, trials: Any) -> dict:
+    """One setup as a record, the four fields under their names."""
+    return {"model": model, "harness_version": harness_version, "scoring_rule": scoring_rule, "trials": trials}
+
+
+def complete(setup: Any) -> bool:
+    """Whether a setup names all four: a model, a harness version, a scoring rule and at least one trial."""
+    if not isinstance(setup, dict) or not all(setup.get(name) for name in SETUP_FIELDS[:3]):
+        return False
+    try:
+        return int(setup.get("trials") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def setup_line(setup: Any) -> str:
+    """A setup as the words printed beside its rate."""
+    if not complete(setup):
+        return "no setup"
+    return (f"model {setup['model']}, harness {str(setup['harness_version'])[:12]}, "
+            f"rule {setup['scoring_rule']}, {int(setup['trials'])} trials")
+
+
+def solve_rate(fraction: Any, setup: Any = None) -> Optional[float]:
     """The share of the held-out pool the Verifier accepts, off D133's false-rejection fraction.
 
     None stays None: a Task that held nothing out has no rate, and reading an empty pool as a
-    perfect one is the mistake this returns None to avoid.
+    perfect one is the mistake this returns None to avoid. A rate whose setup is not complete is
+    refused (None) too: a number with no model, harness, rule and trial count says nothing.
     """
-    if fraction is None:
+    if fraction is None or not complete(setup):
         return None
     try:
         return 1.0 - float(fraction)
@@ -162,7 +199,7 @@ def second_paths(status_row: Any) -> int:
 def record_for(verifier: Verifier, *, calls: Optional[list[dict]] = None, write_tools: Iterable[str] = (),
                status_row: Any = None, false_rejection: Any = None,
                judge_rows: Iterable[dict] = (), user_fidelity: Optional[str] = None,
-               partial_completion: Any = None) -> dict:
+               partial_completion: Any = None, setup: Any = None) -> dict:
     """One Task's difficulty record, every field a count or a rate off what is already stored.
 
     `partial_completion` is D223's mean over the Task's Runs, banded here in fifths. It is a
@@ -179,7 +216,9 @@ def record_for(verifier: Verifier, *, calls: Optional[list[dict]] = None, write_
         "branching_depth": branching_depth(calls, write_tools),
         "second_paths": paths - 1,
         "question_atoms": question_count(verifier),
-        "held_out_solve_rate": solve_rate(false_rejection),
+        "held_out_solve_rate": solve_rate(false_rejection, setup),
+        "solve_rate_setup": dict(setup) if complete(setup) else None,
+        "solve_rate_refused": NO_SETUP if false_rejection is not None and not complete(setup) else None,
         "judge_agreement": judge_agreement(judge_rows, verifier.task_id),
         # D214: the band and not the number, so the same word means the same thing on two corpora.
         "user_fidelity": user_fidelity,
@@ -199,7 +238,8 @@ def bucket_rows(records: Iterable[dict], trusted_ids: Iterable[str] = ()) -> lis
     """One row per bucket that holds a Task: how many Tasks, how many trusted, the mean solve rate.
 
     The mean is over the Tasks of the bucket that have a rate at all; a bucket where nothing was held
-    out reports None, which is what a reader has to see before believing a rate of one.
+    out reports None, which is what a reader has to see before believing a rate of one. Rates under
+    more than one setup are never pooled: the bucket reports None and how many setups it holds.
     """
     trusted = set(trusted_ids or ())
     grouped: dict[str, list[dict]] = {}
@@ -207,13 +247,17 @@ def bucket_rows(records: Iterable[dict], trusted_ids: Iterable[str] = ()) -> lis
         grouped.setdefault(str(record.get("bucket") or ""), []).append(record)
     rows = []
     for bucket, group in sorted(grouped.items()):
-        rates = [float(r["held_out_solve_rate"]) for r in group if r.get("held_out_solve_rate") is not None]
+        rated = [r for r in group if r.get("held_out_solve_rate") is not None]
+        setups = {json.dumps(r.get("solve_rate_setup"), sort_keys=True, default=str) for r in rated}
+        one = len(setups) == 1
         rows.append({
             "bucket": bucket,
             "tasks": len(group),
             "trusted": sum(1 for r in group if str(r.get("task_id")) in trusted),
-            "solve_rate": _mean(rates),
-            "rated": len(rates),
+            "solve_rate": _mean([float(r["held_out_solve_rate"]) for r in rated]) if one else None,
+            "rated": len(rated),
+            "setup": json.loads(next(iter(setups))) if one else None,
+            "setups": len(setups),
         })
     return rows
 
@@ -225,10 +269,12 @@ def round_summary(rows: Iterable[dict]) -> str:
 
 
 def _rate_cell(row: dict) -> str:
-    """A bucket's mean held-out solve rate, or what it says instead of a number it does not have."""
+    """A bucket's mean held-out solve rate with its setup, or what it says instead of a number it lacks."""
+    if int(row.get("setups") or 0) > 1:
+        return f"not pooled: {row['setups']} setups"
     if row.get("solve_rate") is None:
         return "no held-out pool"
-    return f"{float(row['solve_rate']):.0%} over {row.get('rated', 0)} Tasks"
+    return f"{float(row['solve_rate']):.0%} over {row.get('rated', 0)} Tasks ({setup_line(row.get('setup'))})"
 
 
 def markdown_table(rows: Iterable[dict], no_record: int = 0) -> list[str]:
@@ -361,6 +407,7 @@ def compute(workdir: Any, *, false_rejection: Optional[dict] = None,
         false_rejection = dict(counts.get("false_rejection") or ruling.get("false_rejection") or {})
     if trusted_ids is None:
         trusted_ids = list(counts.get("trusted_ids") or ruling.get("trusted") or [])
+    pools = dict(counts.get("false_rejection_pool") or ruling.get("false_rejection_pool") or {})
     status = read_json(workdir / "task_status.json", {}) or {}
     references = read_json(workdir / "references.json", {}) or {}
     verifiers, retired = _verifiers(workdir, status)
@@ -398,7 +445,8 @@ def compute(workdir: Any, *, false_rejection: Optional[dict] = None,
         records.append(record_for(verifier, calls=calls, write_tools=write_tools,
                                   status_row=status.get(task_id), false_rejection=false_rejection.get(task_id),
                                   judge_rows=judge_rows, user_fidelity=user_bands.get(task_id),
-                                  partial_completion=partial.get(task_id)))
+                                  partial_completion=partial.get(task_id),
+                                  setup=setup_of(HELD_OUT_POOL, CODE_HASH, HELD_OUT_RULE, pools.get(task_id))))
     return {"format": FORMAT, "tasks": records, "no_record": no_record,
             "buckets": bucket_rows(records, trusted_ids)}
 
@@ -436,7 +484,8 @@ def refresh(workdir: Any, *, false_rejection: Optional[dict] = None,
     return body
 
 
-__all__ = ["FILE_NAME", "FORMAT", "NO_REFERENCE_RUN", "NO_VERIFIER", "PATH_CAP", "RETIRED_VERIFIER",
+__all__ = ["FILE_NAME", "FORMAT", "HELD_OUT_POOL", "HELD_OUT_RULE", "NO_REFERENCE_RUN", "NO_SETUP", "NO_VERIFIER",
+           "PATH_CAP", "RETIRED_VERIFIER", "SETUP_FIELDS", "complete", "setup_line", "setup_of",
            "TOOL_CAP", "WRITE_CAP",
            "branching_depth", "bucket_key", "bucket_rows", "compute", "judge_agreement", "markdown_table",
            "partial_by_task",
