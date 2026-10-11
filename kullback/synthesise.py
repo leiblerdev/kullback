@@ -1127,6 +1127,12 @@ def _store_policy(store: Path) -> str:
         return ""
 
 
+def _store_consent(store: Path) -> bool:
+    """Whether the shipped policy asks the customer to confirm before a write."""
+    policy = _store_policy(store)
+    return bool(policy) and any(word in policy.casefold() for word in CONFIRM_WORDS)
+
+
 def _write_names_of(parent: Path) -> set[str]:
     """The parent's write tools, read off its signatures, so a style example matches the walk."""
     try:
@@ -1295,8 +1301,7 @@ def build_store(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = 
         body = mine_graph(parent, World(parent))
     observed = body.get("args") or {}
     strings = domain_mod.corpus_strings(parent)
-    policy = _store_policy(store)
-    consent = bool(policy) and any(word in policy.casefold() for word in CONFIRM_WORDS)
+    consent = _store_consent(store)
     world_values = {text for _path, text in graph_mod._leaves(world.db)}  # noqa: SLF001
     _grow_for(world, max(int(count) for count in buckets.values()) if buckets else 0)
     counts = {"walks_tried": 0, "walks_refused": 0, "walks_unbound": 0, "walks_crashed": 0,
