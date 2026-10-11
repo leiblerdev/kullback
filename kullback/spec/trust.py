@@ -141,17 +141,35 @@ def _stray_value(value: Any) -> Any:
     return None
 
 
-def stray_write_run(verifier: Verifier, base: Optional[Run], *, schema: Any = None,
-                    canon: Any = None) -> Optional[Run]:
-    """`base` with one more write, to a row outside the declared rows; None when none stands.
+def _stray_in_table(base: Run, at: int, table: str, rows: set, before: set, canon: Any,
+                    schema: Any) -> Optional[tuple[str, str, Run]]:
+    """(row id, field, `base` with one write in `table`): the first undeclared row and scalar field, in
+    sorted order, whose change the diff shows; None when none stands."""
+    end = base.events[at].payload["end_state"]
+    for row_id in sorted(end[table], key=str):
+        row = end[table][row_id]
+        if (table, str(row_id)) in rows or not isinstance(row, dict):
+            continue
+        for field in sorted(row, key=str):
+            value = _stray_value(row[field])
+            if value is None:
+                continue
+            run = base.model_copy(deep=True)
+            run.run_id = f"{base.run_id}.stray_write"
+            run.events[at].payload["end_state"][table][row_id][field] = value
+            if set(AtomContext(run, canon, schema=schema).diff()) - before:
+                return str(row_id), str(field), run
+    return None
 
-    Tables that record calls (`action_tables_of`) are not state and are skipped. The first row, in sorted
-    order, with a scalar field whose change the diff shows (an exempt column shows nothing) is written,
-    so the Run differs from `base` by that one row and fails, if at all, at the sanity item.
-    """
+
+def stray_writes(verifier: Verifier, base: Optional[Run], *, schema: Any = None,
+                 canon: Any = None) -> Iterable[tuple[str, str, str, Run]]:
+    """(table, row id, field, Run) per table, in sorted order: `base` with one write to a row outside the
+    declared rows of that table (`_stray_in_table`). Tables that record calls (`action_tables_of`) and
+    tables the Verifier allows whole are skipped."""
     at = _stop(base) if base is not None else None
     if at is None:
-        return None
+        return
     end = base.events[at].payload["end_state"]
     rows, whole = declared_rows(verifier)
     skip = action_tables_of(schema) | whole
@@ -159,20 +177,20 @@ def stray_write_run(verifier: Verifier, base: Optional[Run], *, schema: Any = No
     for table in sorted(end, key=str):
         if table in skip or not isinstance(end[table], dict):
             continue
-        for row_id in sorted(end[table], key=str):
-            row = end[table][row_id]
-            if (table, str(row_id)) in rows or not isinstance(row, dict):
-                continue
-            for field in sorted(row, key=str):
-                value = _stray_value(row[field])
-                if value is None:
-                    continue
-                run = base.model_copy(deep=True)
-                run.run_id = f"{base.run_id}.stray_write"
-                run.events[at].payload["end_state"][table][row_id][field] = value
-                if set(AtomContext(run, canon, schema=schema).diff()) - before:
-                    return run
-    return None
+        found = _stray_in_table(base, at, table, rows, before, canon, schema)
+        if found is not None:
+            yield (table, *found)
+
+
+def stray_write_run(verifier: Verifier, base: Optional[Run], *, schema: Any = None,
+                    canon: Any = None) -> Optional[Run]:
+    """`base` with one more write, to a row outside the declared rows; None when none stands.
+
+    The first of `stray_writes`: the first table, row and scalar field in sorted order whose change the
+    diff shows (an exempt column shows nothing), so the Run differs from `base` by that one row and
+    fails, if at all, at the sanity item.
+    """
+    return next((run for *_, run in stray_writes(verifier, base, schema=schema, canon=canon)), None)
 
 
 def _do_nothing(runs: list[Run]) -> Optional[Run]:
