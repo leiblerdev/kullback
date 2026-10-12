@@ -37,7 +37,7 @@ from typing import Any, Iterable, Optional
 
 from kullback.hub import harbor_world
 from kullback.hub.card import ORGANISATION
-from kullback.hub.harbor_world import DB_NAME, REPLY_TOOL, TASK_NAME, WORLD_DIR, play
+from kullback.hub.harbor_world import DB_NAME, JUDGE_ENV, REPLY_TOOL, TASK_NAME, WORLD_DIR, play
 from kullback.hub.package import (
     CONTENT_MIN_LENGTH,
     LEAK_MIN_LENGTH,
@@ -172,7 +172,7 @@ def oracle_holds(folder: Path) -> bool:
         shutil.copytree(folder / "environment", app)
         for step in solve_steps(*_solution(folder)):
             harbor_world.call(app, step["name"], step["arguments"])
-        body = harbor_world.score(app, folder / "tests" / VERIFIER_NAME, Path(scratch) / "logs")
+        body = harbor_world.score(app, folder / "tests" / VERIFIER_NAME, Path(scratch) / "logs", use_judge=False)
     rows = body.get("items") or []
     return bool(rows) and all(row["held"] is True or (row["kind"] == "judge" and row["held"] is None) for row in rows)
 
@@ -220,7 +220,18 @@ def _toml(value: Any) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
-def task_toml(*, name: str, description: str, keywords: list[str], metadata: dict, org: str) -> str:
+def _verifier_lines(judged: bool) -> str:
+    """A Task with judge items lets the test reach a judge: the model and keys come from the host at
+    test time (empty when unset, so an unset judge fails closed), and only the verifier phase has a
+    network; the agent's never does."""
+    if not judged:
+        return ""
+    env = "\n".join(f"{name} = {_toml('${' + name + ':-}')}" for name in JUDGE_ENV)
+    return f'network_mode = "public"\n\n[verifier.env]\n{env}\n'
+
+
+def task_toml(*, name: str, description: str, keywords: list[str], metadata: dict, org: str,
+              judged: bool = False) -> str:
     meta = "\n".join(f"{key} = {_toml(value)}" for key, value in metadata.items() if value is not None)
     return f"""schema_version = {_toml(SCHEMA_VERSION)}
 
@@ -235,7 +246,7 @@ keywords = {_toml(keywords)}
 
 [verifier]
 timeout_sec = {_toml(VERIFIER_TIMEOUT_SEC)}
-
+{_verifier_lines(judged)}
 [agent]
 timeout_sec = {_toml(AGENT_TIMEOUT_SEC)}
 
@@ -493,6 +504,7 @@ def _metadata(build: _Build, task_id: str, synthetic: bool, index: dict, verifie
         "reference_class": None if synthetic else build.classes.get(task_id),
         "difficulty": index.get("bucket"),
         "needs_judge": needs_judge(verifier),
+        "judge_items": any(atom.judge for atom in verifier.atoms),
         "confirm_gate": confirm_gate(verifier),
         "kullback_build": build.tag,
         "kullback_git_sha": build.sha,
@@ -506,7 +518,8 @@ def _lay_with_oracle(build: _Build, folder: Path, task_id: str, given: dict, met
     for tried in given["candidates"]:
         keywords = category + sorted({call["name"] for call in tried} & build.env.write_tools())
         toml = task_toml(name=f"{build.org}/{folder.name}", description=_description(given["instruction"]),
-                         keywords=keywords, metadata=metadata, org=build.org)
+                         keywords=keywords, metadata=metadata, org=build.org,
+                         judged=metadata["judge_items"])
         write_task(folder, workdir=build.workdir, task_id=task_id, task_record=given["record"],
                    instruction=given["instruction"], policy=given["policy"], verifier_path=verifier_path,
                    calls=tried, wheel=build.wheel, toml=toml)

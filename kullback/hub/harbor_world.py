@@ -16,17 +16,30 @@ still asks the agent to ask before it writes, and the user can never say no.
 The Verifier runs the same play over the log the agent left, then scores the Run with the
 Verdict by code. The reward is gated then weighted as the Verdict scores it, and it fails closed:
 a gated item that cannot be scored (a judge item with no judge) gives 0 and is named.
+
+Judge items are scored by the model JUDGE_VAR names at test time, one call per item (D328), when it
+is set and live calls are allowed (the Harness's own switch); its answers and spend go to judge.json.
+Unset, refused or failed, the judge leaves the item unscored, and the fail-closed rule decides.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from kullback.ai.provider import (
+    BEDROCK_BEARER_VARS,
+    BEDROCK_KEY_VARS,
+    BEDROCK_SESSION_VAR,
+    LIVE_ENV_VAR,
+    live_model,
+)
+from kullback.judge.items import judge_items
 from kullback.runner.records import ItemResult, UserRules, Verifier, read_json, write_json
 from kullback.runner.verdict import load_run, verdict
 from kullback.runner.world.environment import BuiltEnvironment
@@ -49,6 +62,12 @@ ENDED = "the conversation has ended"
 MAX_TURNS = 10_000
 SEED = 0
 MCP_PROTOCOL = "2024-11-05"
+# The judge model, a 'provider/model' id read at test time; no task file names a model.
+JUDGE_VAR = "KULLBACK_JUDGE_MODEL"
+# What a test run passes through to reach a judge: the model, the live switch, the keys and region.
+JUDGE_ENV = (JUDGE_VAR, LIVE_ENV_VAR, *BEDROCK_BEARER_VARS, *BEDROCK_KEY_VARS, BEDROCK_SESSION_VAR,
+             "AWS_REGION", "ANTHROPIC_API_KEY")
+JUDGE_NAME = "judge.json"
 
 
 class ConsentUser:
@@ -203,8 +222,32 @@ def _weighted(gates: list[ItemResult], weighted: list[ItemResult]) -> float:
     return 1.0 if not total else (gate_weight + sum(item.weight for item in scored if item.holds)) / total
 
 
-def score(app: Path, verifier_path: Path, logs: Path) -> dict:
-    """Play the agent's log, score the Run, write reward.txt, reward.json and items.json under `logs`."""
+def judge(verifier: Verifier, run: Any, logs: Path) -> Optional[dict]:
+    """The judge's answers to the Verifier's judge items on `run`, one call each, or None when no judge
+    is named; judge.json records the model, each score and why, and the spend, never into reward.json."""
+    if not any(atom.judge for atom in verifier.atoms):
+        return None
+    model_id = os.environ.get(JUDGE_VAR, "").strip()
+    record: dict = {"model": model_id or None, "items": [], "cost_usd": 0.0, "error": None}
+    answers = None
+    if not model_id:
+        record["error"] = f"{JUDGE_VAR} is not set"
+    else:
+        try:
+            answers = judge_items(live_model(model_id), verifier.atoms, run, model_id=model_id)
+        except Exception as error:  # noqa: BLE001 - a judge that cannot start leaves the items unscored
+            record["error"] = f"{type(error).__name__}: {str(error)[:200]}"
+    for result in (answers or {}).values():
+        record["items"].append({"id": result.id, "score": result.score, "why": result.why,
+                                "error": result.error, "cost_usd": result.cost_usd})
+    record["cost_usd"] = round(sum(row["cost_usd"] for row in record["items"]), 6)
+    write_json(logs / JUDGE_NAME, record)
+    return answers
+
+
+def score(app: Path, verifier_path: Path, logs: Path, *, use_judge: bool = True) -> dict:
+    """Play the agent's log, score the Run, write reward.txt, reward.json and items.json under `logs`;
+    `use_judge` False scores with no judge whatever the environment names (the export's own check)."""
     verifier = Verifier.model_validate(read_json(verifier_path, {}))
     with tempfile.TemporaryDirectory() as scratch:
         played = play(app, read_log(app), Path(scratch))
@@ -212,7 +255,8 @@ def score(app: Path, verifier_path: Path, logs: Path) -> dict:
         env = played.episode.env
         run = load_run(played.episode.run_file())
         flagged = {sig.name for sig in env.sigs if getattr(sig, "unclassified", False)}
-        result = verdict(run, verifier, env.canon_rules, None, schema=env.schema,
+        answers = judge(verifier, run, logs) if use_judge else None
+        result = verdict(run, verifier, env.canon_rules, answers, schema=env.schema,
                          write_tools=env.write_tools() or None, flagged_tools=flagged)
     closed = result.class_ == "env_error"
     body = reward_of(list(result.items), failed_closed=closed)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import shutil
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -279,10 +280,90 @@ def test_items_json_carries_every_item_with_id_kind_gate_weight_held_and_why(dat
     assert rows and all({"id", "kind", "gate", "weight", "held", "why"} <= set(row) for row in rows)
 
 
+JUDGE_GATE = [{"id": "j1", "kind": "communicate", "gate": True, "judge": True, "description": "says it is done",
+               "target": {"question": "Does the agent say it is done?"}}]
+
+
+def _judged(tmp_path: Path) -> Path:
+    """The invented world exported with one gated judge item; answers the dataset directory."""
+    workdir = _workdir(tmp_path / "work", atoms=JUDGE_GATE)
+    wheel = tmp_path / "k.whl"
+    wheel.write_bytes(b"")
+    harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
+    return tmp_path / "out"
+
+
+def _oracle_score(out: Path, tmp_path: Path) -> dict:
+    app = _app(out, tmp_path)
+    for name, arguments in _solve(out):
+        harbor_world.call(app, name, arguments)
+    return _reward(app, out, tmp_path)
+
+
+def _judge_says(monkeypatch, score: int) -> list:
+    """The judge model as a scripted stand-in that answers every item with `score`; answers its calls."""
+    from kullback.ai.provider import TestModel
+
+    model = TestModel([json.dumps({"results": {"j1": {"score": score, "why": "read the reply"}}})], loop=True)
+    monkeypatch.setattr(harbor_world, "live_model", lambda model_id: model)
+    monkeypatch.setenv(harbor_world.JUDGE_VAR, "bedrock/anthropic.some-judge")
+    return model.calls
+
+
+def test_a_gated_judge_item_the_named_judge_meets_scores_one_and_judge_json_says_why(tmp_path, monkeypatch):
+    out = _judged(tmp_path)
+    calls = _judge_says(monkeypatch, 1)
+    body = _oracle_score(out, tmp_path)
+    assert body["reward"] == 1.0 and len(calls) == 1
+    record = json.loads((tmp_path / "logs" / "judge.json").read_text())
+    assert record["model"] == "bedrock/anthropic.some-judge"
+    assert [(row["id"], row["score"]) for row in record["items"]] == [("j1", 1)]
+    assert json.loads((tmp_path / "logs" / "reward.json").read_text()) == {"reward": 1.0}
+
+
+def test_a_gated_judge_item_the_judge_rejects_scores_zero(tmp_path, monkeypatch):
+    out = _judged(tmp_path)
+    _judge_says(monkeypatch, 0)
+    assert _oracle_score(out, tmp_path)["reward"] == 0.0
+
+
+def test_with_no_judge_named_a_gated_judge_item_fails_closed_and_judge_json_says_so(tmp_path, monkeypatch):
+    out = _judged(tmp_path)
+    monkeypatch.delenv(harbor_world.JUDGE_VAR, raising=False)
+    body = _oracle_score(out, tmp_path)
+    assert body["reward"] == 0.0 and body["unscored_gates"] == ["j1"]
+    assert harbor_world.JUDGE_VAR in json.loads((tmp_path / "logs" / "judge.json").read_text())["error"]
+
+
+def test_a_judge_that_cannot_start_fails_closed(tmp_path, monkeypatch):
+    out = _judged(tmp_path)
+
+    def refused(model_id):
+        raise RuntimeError("live model requests are off")
+    monkeypatch.setattr(harbor_world, "live_model", refused)
+    monkeypatch.setenv(harbor_world.JUDGE_VAR, "bedrock/anthropic.some-judge")
+    body = _oracle_score(out, tmp_path)
+    assert body["reward"] == 0.0 and body["unscored_gates"] == ["j1"]
+    assert "live model requests are off" in json.loads((tmp_path / "logs" / "judge.json").read_text())["error"]
+
+
+def test_only_a_task_with_judge_items_passes_the_judge_through_and_opens_the_verifier_network(tmp_path, dataset):
+    judged = tomllib.loads((_judged(tmp_path / "judged") / "widgets-widget_task" / "task.toml").read_text())
+    plain = tomllib.loads((dataset[0] / "widgets-widget_task" / "task.toml").read_text())
+    env = judged["verifier"]["env"]
+    assert harbor_world.JUDGE_VAR in env and env == {name: f"${{{name}:-}}" for name in env}
+    assert judged["verifier"]["network_mode"] == "public" and judged["environment"]["network_mode"] == "no-network"
+    assert "env" not in plain["verifier"] and "network_mode" not in plain["verifier"]
+
+
+def test_the_export_never_calls_a_judge_while_it_checks_its_oracle(tmp_path, monkeypatch):
+    calls = _judge_says(monkeypatch, 1)
+    _judged(tmp_path)
+    assert calls == []
+
+
 def test_a_task_with_a_judge_gate_is_marked_needs_judge(tmp_path):
-    atoms = [{"id": "j1", "kind": "communicate", "gate": True, "judge": True, "description": "says it is done",
-              "target": {"question": "Does the agent say it is done?"}}]
-    workdir = _workdir(tmp_path / "work", atoms=atoms)
+    workdir = _workdir(tmp_path / "work", atoms=JUDGE_GATE)
     wheel = tmp_path / "k.whl"
     wheel.write_bytes(b"")
     manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
