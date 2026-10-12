@@ -50,6 +50,9 @@ TASKS_INDEX_NAME = "tasks_index.json"
 TASKS_ROWS_NAME = "tasks.jsonl"
 # The card publish.py writes beside the package. Named here because the hashes have to leave it out.
 CARD_NAME = "README.md"
+# Where a publish lays the Harbor form of the Environment beside the package (D363). It carries its own
+# manifest and hashes, so the package's hashes leave it out the way they leave out the card.
+HARBOR_DIR = "harbor"
 # The call verdicts that count as agreement, the same three the Runner and the README name.
 AGREEING_VERDICTS = ("same", "cosmetic", "both_refused")
 UNRECORDED_VERDICT = "unrecorded"  # a call the replay made and the recording never did
@@ -660,6 +663,7 @@ def file_hashes(package: Path) -> dict[str, str]:
     Two files are left out. The manifest carries this map, so it cannot carry its own hash. The card
     is prose about the package rather than part of it: it is rewritten on every publish and a person
     who edits it has not tampered with a Verifier, so a package with an edited card still verifies.
+    The Harbor form a publish lays beside the package is left out too: it hashes itself (D363).
     """
     skip = {MANIFEST_NAME, CARD_NAME}
     out = {}
@@ -667,7 +671,7 @@ def file_hashes(package: Path) -> dict[str, str]:
         if not path.is_file():
             continue
         relative = path.relative_to(package).as_posix()
-        if relative in skip or _hidden(path.relative_to(package)):
+        if relative in skip or _hidden(path.relative_to(package)) or relative.startswith(f"{HARBOR_DIR}/"):
             continue
         out[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
     return out

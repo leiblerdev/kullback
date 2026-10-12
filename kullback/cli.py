@@ -1294,12 +1294,30 @@ def export(
     corpus_license: Optional[str] = CORPUS_LICENSE,
     corpus_url: Optional[str] = CORPUS_URL,
     preview: bool = typer.Option(False, "--preview", help="Mark the package as below the fidelity bar."),
+    form: str = typer.Option("package", "--format", help="package, or harbor: one Harbor task directory per "
+                                                         "Task (D363)."),
+    tasks: str = typer.Option("trusted", "--tasks", help="harbor only: trusted, or all (synthetic Tasks too)."),
+    org: Optional[str] = typer.Option(None, "--org", help="harbor only: the organisation in each task name."),
+    only: Optional[list[str]] = typer.Option(None, "--task", help="harbor only: export this Task id; repeat it."),  # noqa: B008
 ):
     """Write a self-contained Environment package: the rebuilt world, the Task list, the Verifiers, a manifest.
 
     Nothing of the recordings the world was rebuilt from goes in, and a leak scan over the customer's
     export refuses the package if anything repeats a string only a recording could have said (D221).
+    With --format harbor the same Tasks are written as a Harbor dataset instead (D363).
     """
+    if form == "harbor":
+        harbor = _entry("kullback.hub.harbor", "export_harbor")
+        laid = harbor(workdir, out, tasks=tasks, name=name, only=only or None, **({"org": org} if org else {}))
+        counts = laid["counts"]
+        typer.echo(f"{counts['exported']} Harbor tasks ({counts['needs_judge']} need a judge, "
+                   f"{counts['synthetic']} synthetic), skipped {counts['skipped'] or 'none'}; leak scan "
+                   f"{laid['leak_scan'].get('leaks', 0)} recorded strings, {laid['leak_scan'].get('value_echoes', 0)} "
+                   "value echoes")
+        typer.echo(str(Path(out) / "manifest.json"))
+        return
+    if form != "package":
+        raise typer.BadParameter(f"--format takes package or harbor, not {form}")
     build = _entry("kullback.hub.package", "export")
     manifest = build(workdir, out, name=name, corpus=corpus, corpus_license=corpus_license,
                      corpus_url=corpus_url, preview=preview)
@@ -1320,6 +1338,10 @@ def publish(
                                                           "on the card saying so."),
     keep: Optional[Path] = typer.Option(None, "--keep", help="Keep the staged package here instead of a "  # noqa: B008
                                                              "temporary directory."),
+    form: str = typer.Option("package", "--format", help="package, or harbor: the package with its Harbor "
+                                                         "form under harbor/ and a card section (D363)."),
+    dry_run: Optional[Path] = typer.Option(None, "--dry-run", help="Lay the upload out under this directory "  # noqa: B008
+                                                                  "and push nothing."),
 ):
     """Export the Environment, write its card and upload it as one commit, tagged with its round (D221).
 
@@ -1328,8 +1350,10 @@ def publish(
     numbers; older rounds stay reachable by their tags.
     """
     push = _entry("kullback.hub.publish", "publish")
+    client = _entry("kullback.hub.client", "LocalHub")(dry_run) if dry_run is not None else None
     hosted, manifest = push(workdir, repo, name=name, preview=preview, corpus=corpus,
-                            corpus_license=corpus_license, corpus_url=corpus_url, keep=keep)
+                            corpus_license=corpus_license, corpus_url=corpus_url, keep=keep,
+                            client=client, form=form)
     _echo_manifest(manifest)
     typer.echo(f"{manifest.get('status', 'preview')} at {hosted.url}, tag {hosted.tag}")
 

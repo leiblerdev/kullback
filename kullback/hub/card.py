@@ -9,13 +9,16 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from kullback.hub.package import TASKS_ROWS_NAME
+from kullback.hub.package import HARBOR_DIR, TASKS_ROWS_NAME
 
 # What every Environment published from this harness is tagged with, before its own domain.
 BASE_TAGS: tuple[str, ...] = ("kullback", "environment", "agent-evaluation", "rl-environment")
 # The licence a card states when the caller named none for the source corpus. A host will not index
 # an empty value, and claiming a permissive licence nobody checked would be worse than saying this.
 UNKNOWN_LICENSE = "other"
+
+# The organisation every Environment is published under unless a caller names another.
+ORGANISATION = "leibler"
 
 # The bar an Environment has to clear to be published as a release rather than as a preview.
 FIDELITY_BAR = 0.90
@@ -165,6 +168,21 @@ def card_markdown(manifest: dict, repo_id: str, *, github_url: str = "https://gi
     return "\n".join(lines) + "\n"
 
 
+def harbor_section(harbor: dict) -> str:
+    """The card's "Run it with Harbor" section, read off the Harbor dataset's manifest (D363)."""
+    counts = harbor.get("counts") or {}
+    rows = list(harbor.get("tasks") or ()) + list(harbor.get("synthetic") or ())
+    example = rows[0]["path"] if rows else "<task>"
+    lines = ["## Run it with Harbor", "",
+             f"`{HARBOR_DIR}/` holds the same Tasks in the [Harbor](https://harborframework.com) task format: "
+             f"{counts.get('exported', 0)} Tasks, {counts.get('needs_judge', 0)} of them with a judge item "
+             "among their gates. Without a judge model those score 0, never pass, so filter on "
+             "`needs_judge` in a Task's `task.toml` or in `harbor/manifest.json` before a run.", "",
+             "```bash", f"uv run harbor run -p {HARBOR_DIR}/{example} -a oracle",
+             f"uv run harbor run -p {HARBOR_DIR}/{example} -a <agent> -m <provider/model>", "```", ""]
+    return "\n".join(lines) + "\n"
+
+
 # The harness's own words, one line each, the same lines the README carries.
 WORDS: tuple[str, ...] = (
     "Run and Trace: a Run is an agent's conversation with the tools; a Trace is a recorded one.",
@@ -195,7 +213,7 @@ def _call_fidelity(fidelity: dict) -> str:
     return f"{float(fidelity['calls_rate']):.2%} of {fidelity.get('calls_total', 0)}"
 
 
-def organisation_card(rows: Iterable[dict], *, organisation: str = "leibler",
+def organisation_card(rows: Iterable[dict], *, organisation: str = ORGANISATION,
                       github_url: str = "https://github.com/leiblerdev/kullback",
                       site_url: str = "https://leibler.dev") -> str:
     """The organisation profile: what Leibler and Kullback are, and one row per Environment passed.
