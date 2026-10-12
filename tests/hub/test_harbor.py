@@ -18,7 +18,7 @@ import pytest
 from kullback.hub import harbor, harbor_world
 from kullback.hub.client import LocalHub
 from kullback.hub.package import HARBOR_DIR, verify_package
-from kullback.runner.records import ItemResult, write_json
+from kullback.runner.records import ItemResult, read_json, write_json
 from kullback.runner.world.environment import BuiltEnvironment
 from kullback.runner.world.episode import Episode
 from kullback.spec.schema import FactSource, IntentFact, Spec, SpecIntent
@@ -399,4 +399,7 @@ def test_a_dry_run_publish_lays_harbor_beside_the_package_and_the_package_still_
     assert 'name = "someorg/widgets-widget_task"' in (landed / HARBOR_DIR / "widgets-widget_task" / "task.toml").read_text()
     assert "## Run it with Harbor" in (landed / "README.md").read_text()
     assert manifest["harbor"]["counts"]["exported"] == 1
+    assert read_json(landed / "manifest.json")["harbor"] == manifest["harbor"]
+    readme = (landed / "README.md").read_text()
+    assert "KULLBACK_JUDGE_MODEL" in readme and "HARNESS_ALLOW_MODEL_REQUESTS=1" in readme
     assert verify_package(landed) == []

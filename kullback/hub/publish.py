@@ -28,7 +28,7 @@ from kullback.hub import package as package_mod
 from kullback.hub.card import FIDELITY_BAR, card_markdown, harbor_section
 from kullback.hub.client import HostedRepo, HubClient, hub_client, url_for
 from kullback.hub.package import CARD_NAME, HARBOR_DIR
-from kullback.runner.records import read_json
+from kullback.runner.records import read_json, write_json
 
 RELEASE_FIDELITY = FIDELITY_BAR
 
@@ -90,6 +90,7 @@ def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, p
         laid = export_harbor(workdir, Path(out) / HARBOR_DIR, name=resolved,
                              **({"org": organisation} if organisation else {}))
         manifest["harbor"] = {key: laid[key] for key in ("counts", "content_hash", "leak_scan")}
+        write_json(Path(out) / package_mod.MANIFEST_NAME, manifest)
         card += "\n" + harbor_section(laid)
     Path(out, CARD_NAME).write_text(card, encoding="utf-8")
     return manifest

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
+from kullback.ai.provider import LIVE_ENV_VAR
+from kullback.hub.harbor_world import JUDGE_VAR
 from kullback.hub.package import HARBOR_DIR, TASKS_ROWS_NAME
 
 # What every Environment published from this harness is tagged with, before its own domain.
@@ -176,8 +178,9 @@ def harbor_section(harbor: dict) -> str:
     lines = ["## Run it with Harbor", "",
              f"`{HARBOR_DIR}/` holds the same Tasks in the [Harbor](https://harborframework.com) task format: "
              f"{counts.get('exported', 0)} Tasks, {counts.get('needs_judge', 0)} of them with a judge item "
-             "among their gates. Without a judge model those score 0, never pass, so filter on "
-             "`needs_judge` in a Task's `task.toml` or in `harbor/manifest.json` before a run.", "",
+             f"among their gates. Those are scored by the model `{JUDGE_VAR}` names at test time, which also "
+             f"needs `{LIVE_ENV_VAR}=1` and the model's keys; without a judge they score 0, never pass "
+             "(`needs_judge` in a Task's `task.toml` and in `harbor/manifest.json`).", "",
              "```bash", f"uv run harbor run -p {HARBOR_DIR}/{example} -a oracle",
              f"uv run harbor run -p {HARBOR_DIR}/{example} -a <agent> -m <provider/model>", "```", ""]
     return "\n".join(lines) + "\n"
