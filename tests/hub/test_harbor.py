@@ -293,6 +293,16 @@ def _judged(tmp_path: Path) -> Path:
     return tmp_path / "out"
 
 
+def test_the_oracle_reply_says_the_answer_each_judge_item_is_held_to(tmp_path):
+    answered = [{**JUDGE_GATE[0], "target": {**JUDGE_GATE[0]["target"], "anchor": {"answer": "Declined, nothing changed."}}}]
+    workdir = _workdir(tmp_path / "work", atoms=answered)
+    wheel = tmp_path / "k.whl"
+    wheel.write_bytes(b"")
+    harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
+    oracle = read_json(tmp_path / "out" / "widgets-widget_task" / "solution" / harbor.ORACLE_NAME)
+    assert oracle["reply"] == "Done. Declined, nothing changed."
+
+
 def _oracle_score(out: Path, tmp_path: Path) -> dict:
     app = _app(out, tmp_path)
     for name, arguments in _solve(out):

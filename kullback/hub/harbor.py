@@ -16,8 +16,8 @@ What each part holds:
 - tests/ holds the Verifier and test.sh, which plays the agent's call log and scores it by code
   (kullback/hub/harbor_world.py). Harbor uploads tests/ at verify time, after the agent is gone.
 - solution/solve.sh replays a passing Run's writes through the `tools` CLI, asking the user first
-  and ending on a reply that says what the Verifier needs said. It never quotes a recorded turn, and a
-  prose-length argument is put as a neutral line. The export plays it and keeps it only if it passes.
+  and ending on a reply that says what the Verifier needs said, judge answers included. It never
+  quotes a recorded turn, and a prose-length argument is put as a neutral line. The export plays it and keeps it only if it passes.
 
 The leak scan is the package's (D221), run over what a Harbor task adds: the instruction's lines,
 the oracle's calls and reply, and the Verifier. A leak removes the dataset and refuses the export.
@@ -178,13 +178,15 @@ def oracle_holds(folder: Path) -> bool:
 
 
 def said_values(verifier: Verifier) -> list[str]:
-    """Every value a `said` item of the Verifier needs the agent to have said, in item order."""
+    """Every value a `said` item of the Verifier needs the agent to have said, then the Spec's own answer
+    each judge item is held to (its anchor), in item order."""
     out: list[str] = []
     for atom in verifier.atoms:
         target = atom.target or {}
         if target.get("kind") == "said":
             out += [str(value) for value in target.get("values") or () if str(value) not in out]
-    return out
+    answers = [((atom.target or {}).get("anchor") or {}).get("answer") for atom in verifier.atoms if atom.judge]
+    return out + [str(answer) for answer in answers if answer and str(answer) not in out]
 
 
 def needs_judge(verifier: Verifier) -> bool:
