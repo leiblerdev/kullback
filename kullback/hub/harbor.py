@@ -83,6 +83,7 @@ VERIFIER_NAME = "verifier.json"
 ORACLE_NAME = "oracle.json"
 # A Task none of whose Runs, replayed through the exported world, scores 1.0: it ships no oracle.
 NO_ORACLE = "no Run passes on replay"
+MASK = 4
 PROSE_LINE = "The user asked for this change; the details are in the conversation."
 TASKS_CHOICES = ("trusted", "all")
 TOOLS_LINE = ("The tools are served two ways from the same world: the MCP server named `tools` in this task, "
@@ -537,7 +538,7 @@ def _export_one(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Opti
     return None, listed, scanned
 
 
-def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict) -> dict:
+def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_oracle: list[str]) -> dict:
     return {
         "format": HARBOR_FORMAT,
         "harbor_schema_version": SCHEMA_VERSION,
@@ -558,6 +559,8 @@ def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict) -> d
                    "skipped": skipped},
         "tasks": [row for row in listed if row["origin"] == "recorded"],
         "synthetic": [row for row in listed if row["origin"] == "synthetic"],
+        # Masked to the last four characters, as every report masks a Task id.
+        "left_out": [{"task": task_id[-MASK:], "reason": NO_ORACLE} for task_id in no_oracle],
     }
 
 
@@ -583,6 +586,7 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
     policy = _fallback_policy(env)
     out.mkdir(parents=True, exist_ok=True)
     skipped: dict[str, int] = {}
+    no_oracle: list[str] = []
     listed: list[dict] = []
     scanned: list[dict] = []
     with tempfile.TemporaryDirectory() as scratch:
@@ -594,10 +598,11 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
             reason, row, scan_row = _export_one(build, task_id, body)
             if reason:
                 skipped[reason] = skipped.get(reason, 0) + 1
+                no_oracle += [task_id] if reason == NO_ORACLE else []
                 continue
             listed.append(row)
             scanned.append(scan_row)
-    manifest = _manifest(build, tasks, listed, skipped)
+    manifest = _manifest(build, tasks, listed, skipped, no_oracle)
     manifest["leak_scan"] = leak_scan(out, workdir / "raw", scanned) if scan else {"leaks": 0, "skipped": True}
     if manifest["leak_scan"].get("leaks"):
         shutil.rmtree(out, ignore_errors=True)

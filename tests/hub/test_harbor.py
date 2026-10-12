@@ -172,7 +172,7 @@ def test_the_oracle_comes_from_a_passing_run_when_the_reference_writes_nothing(t
     assert ("rename_widget", {"widget_id": "w1", "label": "striped"}) in _solve(out)
 
 
-def test_a_task_none_of_whose_runs_passes_on_replay_is_left_out(tmp_path):
+def test_a_task_none_of_whose_runs_passes_on_replay_is_left_out_and_named_masked(tmp_path):
     workdir = _workdir(tmp_path / "work")
     wrong = {"content": None, "tool_calls": [{"id": "c2", "name": "rename_widget",
                                               "arguments": {"widget_id": "w1", "label": "dotted"}}]}
@@ -182,6 +182,7 @@ def test_a_task_none_of_whose_runs_passes_on_replay_is_left_out(tmp_path):
     manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
     assert manifest["counts"]["exported"] == 0
     assert manifest["counts"]["skipped"] == {harbor.NO_ORACLE: 1}
+    assert manifest["left_out"] == [{"task": TASK[-4:], "reason": harbor.NO_ORACLE}]
     assert not (tmp_path / "out" / "widgets-widget_task").exists()
 
 
