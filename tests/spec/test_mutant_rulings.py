@@ -53,6 +53,14 @@ def test_a_value_survivor_on_a_field_no_volunteered_fact_names_files_no_ruling_a
     assert '"ruling": "note"' in report
 
 
+def test_a_value_survivor_on_a_field_only_a_side_fact_names_is_a_note_since_a_side_fact_is_never_gated(tmp_path):
+    the_spec = _spec()
+    side = [f.model_copy(update={"side": True}) if f.id == "f1" else f for f in the_spec.intent.facts]
+    the_spec = the_spec.model_copy(update={"intent": the_spec.intent.model_copy(update={"facts": side})})
+    _file(tmp_path, the_spec, _row_only())
+    assert not [r for r in R.load_rulings(tmp_path, "t1") if r.code == MR.UNCHECKED_FIELD]
+
+
 def test_a_write_no_gate_notices_files_one_unchecked_write_on_the_check_that_reads_the_row(tmp_path):
     _file(tmp_path, _spec(), _row_only())
     write, = [r for r in R.load_rulings(tmp_path, "t1") if r.code == MR.UNCHECKED_WRITE]

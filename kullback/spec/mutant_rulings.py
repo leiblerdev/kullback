@@ -4,7 +4,7 @@ After verify finds the Reference passing, its mutants (spec/mutants.py) are scor
 read by code:
 
 1. value, on a field a check of the Spec reads where that check rests on a fact the user volunteered (not
-   an echo, not after pushback, not unfounded): derivation/unchecked_field on that check;
+   an echo, not after pushback, not unfounded, not a side fact): derivation/unchecked_field on that check;
 2. undone, on a row where every undone mutant built survived (no gate notices the Reference's write at
    all): derivation/unchecked_write, on a check that reads the row, else on the task;
 3. extra_row or untouched: derivation/unchecked_row per table, on the task.
@@ -32,9 +32,10 @@ NOTE = "note"
 
 
 def usable_facts(spec: Spec) -> set[str]:
-    """The fact ids a gate may rest on alone: volunteered, not an echo, not after pushback, not unfounded."""
+    """The fact ids a gate may rest on alone: volunteered, not an echo, not after pushback, not unfounded, not a
+    side fact (D361: a side fact is scored, never gated)."""
     return {fact.id for fact in spec.intent.facts
-            if fact.stance == "volunteered" and not (fact.echo or fact.after_pushback or fact.unfounded)}
+            if fact.stance == "volunteered" and not (fact.echo or fact.after_pushback or fact.unfounded or fact.side)}
 
 
 def reading_checks(spec: Spec, table: str, row_id: str, field: Optional[str] = None) -> list:
