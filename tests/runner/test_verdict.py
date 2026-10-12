@@ -8,7 +8,17 @@ import pytest
 
 from kullback.gates.artifacts import regrade_gate
 from kullback.runner.canon import canon_value
-from kullback.runner.records import Atom, Column, EntitySchema, Environment, Verifier
+from kullback.runner.records import (
+    Atom,
+    Column,
+    Conduct,
+    EndState,
+    EntitySchema,
+    Environment,
+    ExpectedCell,
+    ValueSource,
+    Verifier,
+)
 from kullback.runner.verdict import VERDICT_VERSION, load_run, verdict
 
 CANCEL = "cancel_pending_order"
@@ -830,3 +840,62 @@ def test_a_cause_is_never_invented_for_a_run_that_passed(verifier, write_run):
                   cause_result={"use": "cause", "verdict": "candidate"})
     assert out.passed is True
     assert out.cause is None
+
+
+# --- the gates: end state, forbidden list, conduct (D316) ---
+
+def _stateful_lines(start, end, confirm_first=True):
+    """One cancel of W123, with the user's yes before the write or only after it."""
+    lines = [header(), user(0, "Please stop order W123")]
+    if confirm_first:
+        lines.append(user(1, "Yes, go ahead."))
+    lines += [call(2, CANCEL, {"order_id": "W123"}, cid="c2"), result(3, "c2", {"status": "cancelled"})]
+    if not confirm_first:
+        lines.append(user(4, "Yes, go ahead."))
+    lines.append(stop(5, start_state=start, end_state=end))
+    return lines
+
+
+def _source():
+    return ValueSource(kind="user_turn", ptr={"turn": 0})
+
+
+def test_a_forbidden_atom_whose_predicate_raises_leaves_the_run_not_verdicted_never_passed(write_run):
+    broken = Atom(id="a_never", kind="forbidden", predicate_src="1 / 0 == 0")
+    out = verdict(write_run(oracle_lines()), Verifier(task_id="t1", atoms=[broken]))
+    assert out.passed is False and out.class_ == "not_verdicted" and out.failing_atom == "a_never"
+
+
+def test_a_predicate_that_mutates_the_end_state_cannot_make_a_later_atom_pass(write_run):
+    state = {"orders": {"W123": {"status": "pending"}}}
+    path = write_run(_stateful_lines(state, state))
+    tamper = Atom(id="a_tamper", kind="question",
+                  predicate_src='def check():\n    end_state["orders"]["W123"]["status"] = "cancelled"\n'
+                                '    value("orders", "W123")["status"] = "cancelled"\n    return True\n')
+    later = Atom(id="a_later", kind="required", predicate_src='value("orders", "W123", "status") == "cancelled"')
+    out = verdict(path, Verifier(task_id="t1", atoms=[tamper, later]))
+    assert out.passed is False and out.failing_atom == "a_later", out.notes
+
+
+def test_confirm_before_write_holds_when_a_yes_precedes_the_first_write_and_fails_when_the_write_came_first(
+        write_run):
+    start = {"orders": {"W123": {"status": "pending"}}}
+    end = {"orders": {"W123": {"status": "cancelled"}}}
+    verifier = Verifier(task_id="t1", conduct=[Conduct(kind="confirm_before_write", tool=CANCEL, source=_source())])
+    assert verdict(write_run(_stateful_lines(start, end)), verifier).passed is True
+    out = verdict(write_run(_stateful_lines(start, end, confirm_first=False)), verifier)
+    assert out.passed is False and out.failing_atom == f"gate:conduct:0:confirm_before_write:{CANCEL}"
+
+
+def test_an_unsettled_canonical_pair_in_a_gate_leaves_the_run_not_verdicted_with_the_pair_named(write_run):
+    start = {"orders": {"W123": {"status": "pending", "note": "open"}}}
+    end = {"orders": {"W123": {"status": "cancelled", "note": "cancelled by user"}}}
+    schema = EntitySchema(tables=["orders"], columns=[
+        Column(table="orders", name="status", **{"class": "hard"}),
+        Column(table="orders", name="note", **{"class": "semantic"})])
+    expected = EndState(cells=[
+        ExpectedCell(table="orders", row_id="W123", field="status", value="cancelled", source=_source()),
+        ExpectedCell(table="orders", row_id="W123", field="note", value="cancelled by the user", source=_source())])
+    out = verdict(write_run(_stateful_lines(start, end)), Verifier(task_id="t1", expected=[expected]), schema=schema)
+    assert out.passed is False and out.class_ == "not_verdicted"
+    assert out.failing_atom == "gate:expected:unsettled:orders.note"

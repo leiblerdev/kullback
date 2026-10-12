@@ -1,4 +1,13 @@
-"""The refuse ruling (the solvability judge as code, D128) and what a trusted Verifier is (D126).
+"""The refuse ruling (the solvability judge as code, D128) and what a trusted Verifier is (D126, D319).
+
+D319: a Verifier carrying expected end states is trusted by code alone (`code_ruling`), and every
+Task gets a ruling: trusted, unconfirmed, refused or pending, read as trusted or untrusted (D333).
+No model's judgment and no probe pool is read on that path, and the faithful replay is read only as the Run the end states describe,
+never as evidence that the recorded agent was right. What follows to the next marker is the
+pre-D319 rule, kept as `_legacy_trusted` this release so its count prints beside the tiers, and
+still ruling a Verifier that carries no expected end state.
+
+Pre-D319:
 
 A Task may be refused only when no frontier Run of it finished: no confirmed replay and no re-roll
 of any round with a success termination. The rule reads re-rolls already paid for, costs no Run and
@@ -36,7 +45,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from kullback.gates.loosening import (
     accepted_versions,
@@ -55,10 +64,15 @@ from kullback.gates.probes import (
     version_hash,
     write_tools_of,
 )
-from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES
+from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES, empty_run, forbids_only, skipped_steps
+from kullback.runner.atom_context import AtomContext
 from kullback.runner.canon import load_rules
+from kullback.runner.expected import contradicts_user, unasked_writes
 from kullback.runner.gate_support import _get, gate
 from kullback.runner.records import (
+    EXAM_DIR,
+    EndState,
+    EntitySchema,
     GateResult,
     ProbePool,
     Run,
@@ -72,6 +86,8 @@ from kullback.runner.records import (
     read_json,
     run_path,
 )
+from kullback.runner.target import check_run
+from kullback.runner.verdict import _gates as verdict_gates
 
 # A check the suite could not run, and why it had no input. The stage names the status row carries
 # are the suite's; the trusted ruling speaks the D79 check names a person reads (D173).
@@ -82,6 +98,19 @@ NO_POOL = "no_pool"
 # The Examiner's own re-roll rows (second-path batches), beside the workdir's re-roll file (D133).
 EXAMINER_REROLLS = ("examiner", "rerolls.json")
 RUNS_DIR = "runs"
+#: Why a Task waiting in the Reference pool is untrusted: no recording left standing to derive from.
+NEEDS_REFERENCE = "needs a Reference"
+#: The pool file under the exam folder, written by examiner.reference and read here; the name is
+#: owned here since gates never reach into the examiner.
+POOL_FILE = "reference_pool.json"
+
+
+def pooled_tasks(workdir: Any) -> list[str]:
+    """The sorted ids of the Tasks waiting on a Reference, or empty without a workdir."""
+    if workdir is None:
+        return []
+    body = read_json(Path(workdir) / EXAM_DIR / POOL_FILE, {}) or {}
+    return sorted(body) if isinstance(body, dict) else []
 
 
 def finished_runs(task_id: str, replays: dict, rerolls: dict) -> list[str]:
@@ -125,6 +154,9 @@ def _suite_reason(row: Any, skipped: list[str]) -> str:
     gate that skipped it is the only thing that knows; `NOT_RUN_REASON` is the fallback for a row
     written before those words were recorded.
     """
+    if _get(row, "derive_again", None):
+        # The Reference was re-picked after the suite ran (reference_check), so the reason is that.
+        return str(_get(row, "derive_again", ""))
     checks = _get(row, "checks", None) or {}
     given = _get(row, "not_run_reasons", None) or {}
     named = []
@@ -214,10 +246,23 @@ def unattributed_seeds(verifier: Verifier, workdir: Any, files: dict[str, dict[s
     return bad
 
 
-def _passing_probes(verifier: Verifier, pool: Any, canon_rules: Any, write_tools: Any) -> list[str]:
-    """The probes of the Task's pool the Verifier scores a pass, none without a pool."""
-    scores = probe_scores(verifier, as_pool(pool), canon_rules, write_tools) if pool is not None else {}
-    return [probe_id for probe_id, ok in scores.items() if ok]
+def _passing_probes(verifier: Verifier, pool: Any, canon_rules: Any, write_tools: Any,
+                    runs: Optional[list[Run]] = None) -> list[str]:
+    """The probes of the Task's pool the Verifier scores a pass that skipped a step, none without a pool.
+
+    The same reading as check 6: a passing probe that made every call the seeds all made before their
+    first demanded outcome solved the Task, and it is no reason to withhold trust. The seeds are read
+    off the Task's Runs by the Verifier's seed ids; with none of them to hand, a passing probe
+    withholds trust as it always did.
+    """
+    if pool is None:
+        return []
+    pool = as_pool(pool)
+    scores = probe_scores(verifier, pool, canon_rules, write_tools)
+    wanted = set(verifier.seed_run_ids)
+    seeds = [run for run in runs or [] if run.run_id in wanted]
+    return [probe.probe_id for probe in pool.probes if scores[probe.probe_id]
+            and (not seeds or skipped_steps(verifier, probe.run, seeds, canon_rules))]
 
 
 def _pool_ruling(held: dict) -> str:
@@ -235,13 +280,16 @@ def _unattributed_seeds(verifier: Verifier, workdir: Any, files: dict) -> list[s
     return unattributed_seeds(verifier, workdir, files) if workdir is not None else []
 
 
-def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str, ProbePool],
-                 history: dict[str, VerifierHistory], refusals: dict[str, dict], task_runs: dict[str, list[Run]],
-                 replays: dict, rerolls: dict, canon_rules: Any, sigs: list, *,
-                 workdir: Any = None) -> GateResult:
-    """A failure per Task with a Verifier that is not trusted, with the first reason that holds.
+def _legacy_trusted(task_status: dict, verifiers: list[Verifier], probes: dict[str, ProbePool],
+                    history: dict[str, VerifierHistory], refusals: dict[str, dict], task_runs: dict[str, list[Run]],
+                    replays: dict, rerolls: dict, canon_rules: Any, sigs: list, *,
+                    workdir: Any = None) -> GateResult:
+    """The trusted rule before D319, kept for this release only so the drop shows beside the new count.
 
-    Given the workdir, the seeds of each accepted version are checked for provenance (D281).
+    It reads the probe pool, the suite row (which counts a model's loophole probe) and the history,
+    and nothing here decides trust any more: `trusted_gate` takes its count as `legacy_trusted` and
+    its false-rejection numbers, which it measures and never gates on. Given the workdir, the seeds of each accepted version are checked for provenance (D281), and a
+    Task waiting in the Reference pool is untrusted for want of a Reference.
     """
     write_tools = write_tools_of(sigs)
     files = seed_files(workdir, replays, rerolls) if workdir is not None else {}
@@ -251,6 +299,7 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     legitimate = legitimate_runs(replays, rerolls, discarded_runs(task_status))
     admitted = refuse_gate(refusals, replays, rerolls).metrics["refused"]
     refused = {task_id: _reason_of((refusals or {})[task_id]) for task_id in admitted}
+    pooled = {task_id: NEEDS_REFERENCE for task_id in pooled_tasks(workdir)}
     trusted: list[str] = []
     untrusted: dict[str, str] = {}
     fractions: dict[str, Optional[float]] = {}
@@ -262,7 +311,8 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     failures: list[str] = []
     for verifier in sorted(map(as_verifier, verifiers or ()), key=lambda v: v.task_id):
         task_id = verifier.task_id
-        passing = _passing_probes(verifier, (probes or {}).get(task_id), canon_rules, write_tools)
+        passing = _passing_probes(verifier, (probes or {}).get(task_id), canon_rules, write_tools,
+                                  (task_runs or {}).get(task_id))
         probes_passing += len(passing)
         held = false_rejection(verifier, (task_runs or {}).get(task_id, []), legitimate.get(task_id, set()),
                                canon_rules, write_tools)
@@ -275,7 +325,9 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
             not_run[task_id] = skipped
         suite_passed = bool(_get(row, "verifier_passed", False))
         only_not_run = not suite_passed and _held_by_not_run(row, skipped)
-        if not suite_passed and not only_not_run:
+        if task_id in pooled:
+            reason = pooled[task_id]
+        elif not suite_passed and not only_not_run:
             reason = _suite_reason(row, skipped)
         elif passing:
             reason = f"probe {passing[0]} scores a pass"
@@ -307,6 +359,246 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
                 untrusted_seeds=foreign_seeds)
 
 
+#: The tiers a Task's row carries (D333): trusted or not. A workdir with no Spec has no Intent, so its
+#: untrusted Tasks carry the reason no_intent; `code_ruling`'s words (D319) stay in the untrusted text.
+TIERS = ("trusted", "untrusted")
+
+
+def unsupported_cells(state: EndState) -> list[str]:
+    """Each cell of an end state whose value or row carries no source, as table.row or table.row.field."""
+    out = []
+    for cell in state.cells:
+        if cell.row_source is None or (cell.field is not None and cell.source is None):
+            out.append(f"{cell.table}.{cell.row_id}" + (f".{cell.field}" if cell.field else ""))
+    return out
+
+
+def faithful_references(verifier: Verifier, task_runs: dict, replays: dict) -> list[Run]:
+    """The seed Runs of this version that are confirmed (faithful) replays of a kept recording.
+
+    The replay says the Environment reproduced the recording; it says nothing about whether the
+    recorded agent was right, and it is read here only as the Run the expected end states describe.
+    """
+    rows = (replays or {}).get(verifier.task_id) or {}
+    confirmed = {str(_get(row, "run_id", "")) for row in (rows.values() if isinstance(rows, dict) else rows)
+                 if _get(row, "confirmed", False)}
+    wanted = set(verifier.seed_run_ids) & confirmed
+    return [run for run in (task_runs or {}).get(verifier.task_id) or [] if run.run_id in wanted]
+
+
+def _context(run: Run, canon_rules: Any, write_tools: Any, schema: Any = None) -> AtomContext:
+    """A semantic column (by the schema) with no equivalence table to settle it comes back unsettled."""
+    return AtomContext(run, canon_rules, write_tools or None, schema, rules=canon_rules)
+
+
+def _unknown(name: str) -> str:
+    """A gate that could not settle in words: the column kind for an end state pair, else the gate."""
+    _, found, column = name.partition("unsettled:")
+    return f"unsettled {column}" if found else f"unknown {name}"
+
+
+def _empty_run_passes(verifier: Verifier, reference: Run, canon_rules: Any, write_tools: Any) -> Optional[str]:
+    """Why the empty Run (no write, none of the required conduct) is not failed, or None when it fails.
+
+    It fails when an atom fails it or a gate does (D294: a Task whose expected diff is empty still
+    demands its conduct, so a Verifier only an empty end state speaks for is not evidence). A refusal
+    or no-write Verifier (`forbids_only`) is passed by the empty Run rightly; can_fail's forbidden
+    Run is its wrong Run.
+    """
+    if forbids_only(verifier):
+        return None
+    empty = empty_run(reference)
+    passed, _ = check_run(verifier, empty, canon_rules, write_tools=write_tools)
+    failed, unsettled = verdict_gates(verifier, _context(empty, canon_rules, write_tools))
+    if failed or not passed:
+        return None
+    return "the empty Run passes" + (f" ({_unknown(unsettled)})" if unsettled else "")
+
+
+class CodeRuling(NamedTuple):
+    tier: str
+    reason: str
+    unsupported: int
+    contradicts: list[str] = []
+    unasked: list[str] = []
+
+
+def code_ruling(verifier: Verifier, references: list[Run], row: Any, canon_rules: Any,
+                write_tools: Any, schema: Any = None) -> CodeRuling:
+    """(tier, reason, unsupported cells, consistency flags) by code alone: no model, no probe pool (D319).
+
+    In order: an end state fully sourced; every faithful replay of the Reference matching one
+    (False is a Verifier defect ruled back to the Spec, None leaves the Task unconfirmed, and the
+    forbidden list and conduct answer too, so an unknown there blocks the same way); the empty Run
+    failing; the wrong Run failing (D286) and the leak check clean (D287), off the suite's row.
+    The count is the fewest unsupported cells of any one end state. The cells that contradict the
+    user's named values and the Reference's writes nobody asked for (D321) ride on the ruling as
+    flags and never decide the tier (D322).
+    """
+    if not verifier.expected:
+        return CodeRuling("unconfirmed", "no expected end state", 0)
+    missing = [unsupported_cells(state) for state in verifier.expected]
+    count = min(len(cells) for cells in missing)
+    sourced = [state for state, cells in zip(verifier.expected, missing, strict=True) if not cells]
+    if not sourced:
+        fewest = min(missing, key=len)
+        more = f" and {count - 1} more" if count > 1 else ""
+        return CodeRuling("unconfirmed", f"unsupported cell {fewest[0]}{more}", count)
+    if not references:
+        return CodeRuling("pending", "no faithful replay of a kept Reference", count)
+    # Sourced says a value was available; these two say whether it is consistent with what the
+    # user asked, reported as flags and never gating (D322).
+    request = _context(references[0], canon_rules, write_tools, schema)
+    turns = [text for _, text in request.user]
+    contradicts = sorted({cell for state in sourced
+                          for cell in contradicts_user(state, turns, request.start_state, canon_rules)})
+    unasked = [write.split("@")[0] for write in unasked_writes(references[0], turns, write_tools)]
+
+    def ruled(tier: str, reason: str = "") -> CodeRuling:
+        return CodeRuling(tier, reason, count, contradicts, unasked)
+
+    gated = verifier.model_copy(update={"expected": sourced})
+    for run in references:
+        failed, unsettled = verdict_gates(gated, _context(run, canon_rules, write_tools, schema))
+        if failed:
+            return ruled("pending", f"Verifier defect, ruled back to the Spec: faithful replay {run.run_id} fails {failed}")
+        if unsettled:
+            return ruled("unconfirmed", f"{_unknown(unsettled)} on faithful replay {run.run_id}")
+    if why := _empty_run_passes(verifier, references[0], canon_rules, write_tools):
+        return ruled("pending", why)
+    checks = _get(row, "checks", None) or {}
+    for name, words in (("plausible_wrong_fails", "the wrong Run is not failed"),
+                        ("leak_check_clean", "the leak check is not clean")):
+        if not checks.get(name):
+            return ruled("pending", f"{words} ({name})")
+    return ruled("trusted")
+
+
+def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str, ProbePool],
+                 history: dict[str, VerifierHistory], refusals: dict[str, dict], task_runs: dict[str, list[Run]],
+                 replays: dict, rerolls: dict, canon_rules: Any, sigs: list, *,
+                 workdir: Any = None, schema: Any = None, spec_tiers: Optional[dict] = None) -> GateResult:
+    """A failure per Task with a Verifier that is not trusted, its tier and the first reason (D319).
+
+    `spec_tiers` (task id -> (tier, row), `spec.trust.workdir_tiers`) are the one ruling where the
+    workdir has Specs (D322): they replace trusted, untrusted and the tier, and the rule below stays
+    for the legacy column only.
+
+    The tier is trusted or untrusted (D333); the words below ride in `untrusted`. A refused Task is
+    refused; a Task waiting in the Reference pool, or whose seeds are not Runs of it (D281), is pending;
+    a Verifier carrying expected end states is ruled by `code_ruling`. One
+    with none (written before D315) keeps the pre-D319 ruling and its words this release, and its
+    Task is named in `legacy_only`. The pre-D319 rule runs
+    beside it as `legacy_trusted` (its probe and false-rejection numbers are reported, never read
+    here); the held-out false rejection (D133) is "valid other solutions failing" in the table.
+    """
+    legacy = _legacy_trusted(task_status, verifiers, probes, history, refusals, task_runs, replays, rerolls,
+                             canon_rules, sigs, workdir=workdir)
+    write_tools = write_tools_of(sigs)
+    files = seed_files(workdir, replays, rerolls) if workdir is not None else {}
+    refused = dict(legacy.metrics["refused"])
+    pooled = set(pooled_tasks(workdir))
+    trusted: list[str] = []
+    untrusted: dict[str, str] = {}
+    tiers: dict[str, str] = {}
+    unsupported: dict[str, int] = {}
+    foreign_seeds: dict[str, list[str]] = {}
+    flags: dict[str, int] = {}
+    failures: list[str] = []
+    for verifier in sorted(map(as_verifier, verifiers or ()), key=lambda v: v.task_id):
+        task_id = verifier.task_id
+        count = 0
+        if not verifier.expected:
+            # Until the Spec writes end states for every Verifier, an atom-only one keeps the old
+            # ruling and its words, counted in `legacy_only` so its count is never read as code's.
+            old = legacy.metrics["untrusted"].get(task_id)
+            tiers[task_id] = "trusted" if old is None else "untrusted"
+            unsupported[task_id] = 0
+            if old is None:
+                trusted.append(task_id)
+            else:
+                untrusted[task_id] = old
+                failures.append(f"task {task_id}: {old}")
+                if task_id in legacy.metrics["untrusted_seeds"]:
+                    foreign_seeds[task_id] = legacy.metrics["untrusted_seeds"][task_id]
+            continue
+        if task_id in refused:
+            tier, reason = "refused", "the Task is refused"
+        elif task_id in pooled:
+            tier, reason = "pending", NEEDS_REFERENCE
+        elif unattributed := _unattributed_seeds(verifier, workdir, files):
+            foreign_seeds[task_id] = unattributed
+            tier, reason = "pending", (f"version {version_hash(verifier)} was derived from seeds that are not Runs "
+                                       f"of this Task: {', '.join(unattributed)}")
+        else:
+            ruling = code_ruling(verifier, faithful_references(verifier, task_runs, replays),
+                                 (task_status or {}).get(task_id) or {}, canon_rules, write_tools, schema)
+            tier, reason, count = ruling.tier, ruling.reason, ruling.unsupported
+            flags[task_id] = len(ruling.contradicts) + len(ruling.unasked)
+        tiers[task_id] = "trusted" if tier == "trusted" else "untrusted"
+        unsupported[task_id] = count
+        if tier == "trusted":
+            trusted.append(task_id)
+            continue
+        untrusted[task_id] = f"{tier}: {reason}"
+        failures.append(f"task {task_id}: {untrusted[task_id]}")
+    metrics = dict(legacy.metrics, trusted=trusted, untrusted=untrusted, untrusted_seeds=foreign_seeds,
+                   trust_tier=tiers, trust_reason={t: None if v == "trusted" else "no_intent" for t, v in tiers.items()},
+                   unsupported_cells=unsupported, legacy_trusted=list(legacy.metrics["trusted"]),
+                   legacy_only=sorted(v.task_id for v in map(as_verifier, verifiers or ()) if not v.expected),
+                   consistency_flags=flags)
+    if spec_tiers:
+        metrics.update(_spec_ruling(spec_tiers, refused))
+        failures = [f"task {task_id}: {why}" for task_id, why in sorted(metrics["untrusted"].items())]
+    return gate("trusted", failures, **metrics)
+
+
+def _spec_ruling(spec_tiers: dict[str, Any], refused: dict) -> dict:
+    """The Spec's tiers as the one trusted ruling (D322, D333): trusted or untrusted with one reason, and
+    the two flags; a refused Task is untrusted for no_intent."""
+    trusted, untrusted, tiers, reasons = [], {}, {}, {}
+    flags: dict[str, dict] = {"reference_passes": {}, "solvable": {}}
+    for task_id, (tier, row) in sorted(spec_tiers.items()):
+        reason = row.get("reason")
+        if tier == "trusted" and task_id in refused:
+            tier, reason = "untrusted", "no_intent"
+        tiers[task_id], reasons[task_id] = tier, reason
+        for flag in flags:
+            flags[flag][task_id] = row.get(flag)
+        if tier == "trusted":
+            trusted.append(task_id)
+        else:
+            untrusted[task_id] = f"{reason or 'untrusted'}: {row.get('why') or ''}".rstrip(": ")
+    return {"trusted": trusted, "untrusted": untrusted, "trust_tier": tiers, "trust_reason": reasons, **flags}
+
+
+#: The reasons a Task is not trusted (spec/trust.py REASONS) and the two flags (D333).
+REASONS = ("no_intent", "open_ruling", "constructed_run_passed")
+FLAGS = ("reference_passes", "solvable")
+
+
+def tier_counts(metrics: dict) -> dict[str, int]:
+    """Trusted and untrusted, untrusted by reason, and each flag's true and false counts, as numbers."""
+    tiers = list((metrics.get("trust_tier") or {}).values())
+    reasons = list((metrics.get("trust_reason") or {}).values())
+    counts = {"trusted": tiers.count("trusted"), "untrusted": len(tiers) - tiers.count("trusted"),
+              **{reason: reasons.count(reason) for reason in REASONS}}
+    for flag in FLAGS:
+        values = list((metrics.get(flag) or {}).values())
+        counts[flag], counts[f"{flag}_false"] = values.count(True), values.count(False)
+    return counts
+
+
+def trust_row(counts: dict) -> str:
+    """One line: trusted, untrusted by reason, and the two flags (true of scored); flags never gate."""
+    def flag(name: str) -> str:
+        yes, no = counts.get(name, 0), counts.get(f"{name}_false", 0)
+        return f"{name.replace('_', ' ')} {yes} of {yes + no}"
+    return (f"trusted {counts.get('trusted', 0)} | untrusted {counts.get('untrusted', 0)} ("
+            + ", ".join(f"{reason} {counts.get(reason, 0)}" for reason in REASONS)
+            + f") | {flag('reference_passes')} | {flag('solvable')}")
+
+
 def _live_verifiers(root: Path) -> list[dict]:
     """Each Task's live Verifier: the Examiner's proposal where it wrote one, else the derived file."""
     verifiers: list[dict] = []
@@ -332,12 +624,14 @@ def _refusal_files(root: Path) -> dict[str, Any]:
     return refusals
 
 
-def workdir_trusted_ruling(workdir: Any) -> GateResult:
+def workdir_trusted_ruling(workdir: Any, spec_tiers: Optional[dict] = None) -> GateResult:
     """The trusted ruling over a workdir's live files, with provenance: the one trusted number (D281).
 
     The Builder's status and the round's snapshot both read trust here, so they cannot disagree: the
     Examiner's artefacts where it wrote them (F22), the refusals, the replay and re-roll rows, and
-    the workdir for the seed provenance step. Files not there yet read as empty.
+    the workdir for the seed provenance step. Files not there yet read as empty. Where the workdir
+    has Specs the caller passes their tiers (`spec.trust.workdir_ruling`, D322), since the gates sit
+    below the Spec and cannot read it themselves.
     """
     root = Path(workdir)
     task_status = read_json(root / "task_status.json", None) or {}
@@ -345,4 +639,13 @@ def workdir_trusted_ruling(workdir: Any) -> GateResult:
                         load_probe_pools(root), load_exam_history(root), _refusal_files(root),
                         load_exam_task_runs(root), read_json(root / "replays.json", None) or {},
                         read_json(root / "rerolls.json", None) or {}, load_rules(root / "canon-rules.json"),
-                        read_json(root / "tool_sigs.json", None) or [], workdir=root)
+                        read_json(root / "tool_sigs.json", None) or [], workdir=root, schema=schema_of(root),
+                        spec_tiers=spec_tiers)
+
+
+def schema_of(root: Path) -> Optional[EntitySchema]:
+    """The workdir's column classes, so a semantic pair reads as unsettled rather than as different."""
+    try:
+        return EntitySchema.model_validate(read_json(root / "schema.json", None) or {})
+    except ValueError:
+        return None

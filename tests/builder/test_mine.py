@@ -714,92 +714,6 @@ def test_a_tool_whose_errors_are_mostly_unknown_by_share_is_flagged():
 
 # --- D73: re-run evidence overrides the rule and the LLM ---
 
-def test_a_column_that_varies_across_two_or_more_successful_reruns_becomes_exempt():
-    from kullback.builder.mine import exempt_from_reruns
-    from kullback.runner.records import Column, EntitySchema
-
-    schema = EntitySchema(tables=["orders"], columns=[
-        Column(table="orders", name="status", class_="hard"),
-        Column(table="orders", name="updated_at", class_="hard", classified_by="llm"),
-    ])
-    states = [
-        {"orders": {"o1": {"status": "cancelled", "updated_at": "2026-01-01T10:00:00Z"}}},
-        {"orders": {"o1": {"status": "cancelled", "updated_at": "2026-01-01T10:00:09Z"}}},
-    ]
-    out = exempt_from_reruns(schema, states)
-    by_name = {c.name: c for c in out.columns}
-    assert by_name["updated_at"].class_ == "exempt"
-    assert by_name["updated_at"].classified_by == "observed"
-    assert by_name["status"].class_ == "hard"
-    from kullback.builder.mine import exempt_from_reruns
-    from kullback.runner.records import Column, EntitySchema
-
-    schema = EntitySchema(tables=["orders"], columns=[Column(table="orders", name="x", class_="hard")])
-    assert exempt_from_reruns(schema, [{"orders": {"o1": {"x": 1}}}]).columns[0].class_ == "hard"
-
-
-# --- D95: a truncated result is reconstructed, tagged and Assisted ---
-
-def test_a_truncated_result_string_or_parsed_is_rebuilt_from_the_schema_and_complete_calls():
-    """The shape ingest actually produces: the cut JSON string is still in `result` (D95)."""
-    from kullback.builder.mine import reconstruct_truncated
-    from kullback.runner.records import FieldStat, ToolSig
-
-    sig = ToolSig(name="get_ticket", result_schema=[
-        FieldStat(name="id"), FieldStat(name="subject"), FieldStat(name="history")])
-    cut = ToolCall(name="get_ticket", args={"id": "t1"}, truncated=True, visible_len=40, cut_marker="...",
-                   result='{"id": "t1", "subject": "printer on fire", "hist...', raw_ptr=PTR)
-    whole = ToolCall(name="get_ticket", args={"id": "t2"},
-                     result='{"id": "t2", "subject": "late delivery", "history": ["opened"]}', raw_ptr=PTR)
-    out = reconstruct_truncated(cut, sig, [cut, whole])
-    assert out["result"]["id"] == "t1", "the cut row must keep its own id, never a donor's"
-    assert out["result"]["subject"] == "printer on fire", "a field the agent saw is not invented"
-    assert out["result"]["history"] == ["opened"]
-    assert out["reconstructed_fields"] == ["history"]
-    assert out["tags"] == ["reconstructed"]
-    assert out["assisted"] is True
-    assert out["cut_marker"] == "..."
-    assert out["visible_len"] == 40
-    from kullback.builder.mine import reconstruct_truncated
-    from kullback.runner.records import FieldStat, ToolSig
-
-    sig = ToolSig(name="get_ticket", result_schema=[
-        FieldStat(name="id"), FieldStat(name="subject"), FieldStat(name="history")])
-    cut = ToolCall(name="get_ticket", args={"id": "t1"}, truncated=True, visible_len=40,
-                   cut_marker="...", result={"id": "t1"}, raw_ptr=PTR)
-    whole = ToolCall(name="get_ticket", args={"id": "t2"},
-                     result={"id": "t2", "subject": "late delivery", "history": ["opened"]}, raw_ptr=PTR)
-    out = reconstruct_truncated(cut, sig, [cut, whole])
-    assert out["result"]["id"] == "t1"
-    assert out["result"]["subject"] == "late delivery"
-    assert sorted(out["reconstructed_fields"]) == ["history", "subject"]
-
-
-def test_a_truncated_dict_keeps_its_visible_fields_even_when_the_schema_also_saw_lists():
-    """Row 10: the shape to reconstruct is this call's own visible content, not the tool's whole
-    schema. A cut dict result must not be thrown away for a fabricated list row just because some
-    other call to the same tool returned a list."""
-    from kullback.builder.mine import reconstruct_truncated
-    from kullback.runner.records import FieldStat, ToolSig
-
-    sig = ToolSig(name="get_thing", result_schema=[FieldStat(name="id"), FieldStat(name="[].x")])
-    cut = ToolCall(name="get_thing", args={"id": "1"}, truncated=True, visible_len=26, cut_marker='"',
-                   result='{"id": "1", "extra": "vis', raw_ptr=PTR)
-    donor = ToolCall(name="get_thing", args={"id": "2"}, result=[{"x": 1}], raw_ptr=PTR)
-    out = reconstruct_truncated(cut, sig, [cut, donor])
-    assert out["result"] == {"id": "1"}, "the visible id must survive, not be replaced by a donor row"
-    assert out["reconstructed_fields"] == []
-
-
-def test_a_complete_result_is_never_reconstructed():
-    from kullback.builder.mine import reconstruct_truncated
-    from kullback.runner.records import FieldStat, ToolSig
-
-    sig = ToolSig(name="get_ticket", result_schema=[FieldStat(name="id")])
-    whole = ToolCall(name="get_ticket", args={}, result={"id": "t1"}, raw_ptr=PTR)
-    assert reconstruct_truncated(whole, sig, [whole]) is None
-
-
 # --- effect attribution: only the tool that explains the change gets the credit (D68, D70) ---
 
 
@@ -1077,53 +991,6 @@ def test_a_name_rule_that_disagrees_with_the_annotations_says_so():
     sig = sig_by_name(mine_tools(traces), "get_thing")
     assert sig.kind == "read"
     assert "disagree" in (sig.kind_reason or "")
-
-
-# --- D95: reconstruction keeps what the agent saw ---
-
-
-def test_reconstruction_prefers_a_donor_with_the_same_arguments():
-    from kullback.builder.mine import reconstruct_truncated
-    from kullback.runner.records import FieldStat, ToolSig
-
-    sig = ToolSig(name="get_ticket", result_schema=[FieldStat(name="id"), FieldStat(name="subject")])
-    cut = ToolCall(name="get_ticket", args={"id": "t1"}, truncated=True, result={"id": "t1"}, raw_ptr=PTR)
-    other = ToolCall(name="get_ticket", args={"id": "t2"}, result={"id": "t2", "subject": "other ticket"}, raw_ptr=PTR)
-    same = ToolCall(
-        name="get_ticket", args={"id": "t1"}, result={"id": "t1", "subject": "the real subject"}, raw_ptr=PTR
-    )
-    out = reconstruct_truncated(cut, sig, [cut, other, same])
-    assert out["result"]["subject"] == "the real subject"
-
-
-def test_reconstruction_of_a_cut_list_result_is_still_a_list():
-    from kullback.builder.mine import reconstruct_truncated
-    from kullback.runner.records import FieldStat, ToolSig
-
-    sig = ToolSig(name="search_orders",
-                  result_schema=[FieldStat(name="[].order_id"), FieldStat(name="[].status")])
-    cut = ToolCall(name="search_orders", args={"q": "x"}, truncated=True,
-                   result='[{"order_id": "#W1", "st...', raw_ptr=PTR)
-    whole = ToolCall(name="search_orders", args={"q": "y"},
-                     result='[{"order_id": "#W2", "status": "pending"}]', raw_ptr=PTR)
-    out = reconstruct_truncated(cut, sig, [cut, whole])
-    assert isinstance(out["result"], list)
-    assert out["result"][0]["order_id"] == "#W1"
-    assert out["result"][0]["status"] == "pending"
-    assert out["reconstructed_fields"] == ["[].status"]
-
-
-def test_reconstruction_never_borrows_another_entitys_id():
-    from kullback.builder.mine import reconstruct_truncated
-    from kullback.runner.records import FieldStat, ToolSig
-
-    sig = ToolSig(name="get_ticket", result_schema=[FieldStat(name="ticket_id"), FieldStat(name="subject")])
-    cut = ToolCall(name="get_ticket", args={"id": "t1"}, truncated=True, result='{"subj...', raw_ptr=PTR)
-    whole = ToolCall(name="get_ticket", args={"id": "t2"},
-                     result='{"ticket_id": "t2", "subject": "late delivery"}', raw_ptr=PTR)
-    out = reconstruct_truncated(cut, sig, [cut, whole])
-    assert "ticket_id" not in out["result"]
-    assert out["reconstructed_fields"] == ["subject"]
 
 
 # --- D73: what a column class may not be settled by ---
@@ -1594,13 +1461,6 @@ def test_a_list_of_objects_no_table_owns_is_a_constant_of_the_world():
 def test_a_write_that_acknowledges_every_call_the_same_way_is_not_a_constant():
     traces = [_listing("A", "ok", name="update_kennel"), _listing("B", "ok", name="update_kennel")]
     assert world_constants(traces, write_tools=["update_kennel"]) == {}
-
-
-def test_the_constant_is_a_column_of_one_row_so_a_body_reaches_it_without_naming_a_key():
-    schema = mine_schema([_listing("A", ["K1", "K2"]), _listing("B", ["K1", "K2"])])
-    block = compile_env._schema_block(schema)
-    assert f"self.db.{CONSTANTS_TABLE} holds one row of the world's constants" in block
-    assert f"next(iter(self.db.{CONSTANTS_TABLE}.values()))" in block
 
 
 def test_the_starting_state_holds_the_constant_the_recording_pinned(tmp_path):

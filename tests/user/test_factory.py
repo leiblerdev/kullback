@@ -9,13 +9,13 @@ from __future__ import annotations
 import pytest
 
 from kullback.ai.provider import TestModel
-from kullback.builder import intent as intent_mod
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
 from kullback.user import context as context_mod
 from kullback.user import factory as factory_mod
 from kullback.user import fidelity as fidelity_mod
 from kullback.user import rules as rules_mod
 from kullback.user import simulated as simulated_mod
+from kullback.user import value_strip as intent_mod
 from kullback.user.agent import AgentUser
 from kullback.user.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
 
@@ -116,7 +116,7 @@ def test_the_three_call_paths_build_users_with_equal_configuration(workdir):
     live_strip = intent_mod.value_strip([trace], schema=None, rules=None)
     live = factory_mod.build_user(
         workdir, "task_1", model, factory_mod.PURPOSE_RUN, ctx=live_ctx, fallback=live_floor,
-        vocab=VOCAB, write_tools=writes, goal_writes=rules_mod.goal_write_set(trace, writes),
+        vocab=VOCAB, write_tools=writes, goal_writes=None,
         answer_strip=live_strip, record_values=record, trace=trace)
     assert isinstance(live, AgentUser)
 
@@ -164,8 +164,7 @@ def test_the_disk_fallback_carries_write_tools_goal_writes_and_strip(workdir):
     assert isinstance(user, AgentUser)
     fallback = user.fallback
     assert sorted(fallback.write_tools) == sorted(user.write_tools)
-    assert fallback.goal_writes is not None
-    assert sorted(fallback.goal_writes) == sorted(user.protocol.goal_writes)
+    assert fallback.goal_writes == user.protocol.goal_writes  # no Spec on disk: both any write
     assert fallback.answer_strip is not None
     for probe in ("My plot number is PLOT-4471.", "The courier reference is CR-90881.",
                   "Hello."):
@@ -174,10 +173,9 @@ def test_the_disk_fallback_carries_write_tools_goal_writes_and_strip(workdir):
 
 def test_the_disk_derivation_lists_the_tasks_own_recordings_as_members(workdir):
     """Members off disk are the Task's own recordings, in a fixed order."""
-    from kullback.builder import intent as intent_mod
-    from kullback.builder import user_sim as user_sim_mod
     from kullback.runner import canon as canon_mod
     from kullback.runner.records import EntitySchema, read_json
+    from kullback.user import value_strip as intent_mod
 
     index = fidelity_mod.trace_index(workdir)
     disk_members = factory_mod._members_of(workdir, "task_1", index)
@@ -186,10 +184,9 @@ def test_the_disk_derivation_lists_the_tasks_own_recordings_as_members(workdir):
     writes = fidelity_mod.write_tools_of(workdir)
     assert writes == ["move_delivery"]
     reference = index["t1"]
-    assert user_sim_mod.goal_write_set is rules_mod.goal_write_set
     user = factory_mod.build_user(workdir, "task_1", TestModel([], loop=True),
                                   factory_mod.PURPOSE_SCORE)
-    assert user.protocol.goal_writes == user_sim_mod.goal_write_set(reference, writes)
+    assert user.protocol.goal_writes is None  # no Spec on disk: the goal is any write
     assert user.trace is not None and user.trace.trace_id == reference.trace_id
 
     schema = EntitySchema.model_validate(read_json(workdir / "schema.json", {}))
@@ -218,3 +215,4 @@ def test_the_built_user_carries_the_workdirs_bus_unless_the_caller_passes_one(wo
                                   factory_mod.PURPOSE_SCORE, bus=bus)
     assert user.bus is bus
     assert user.harness().bus is bus
+

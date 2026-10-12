@@ -1,8 +1,7 @@
 """Every tool call is a transaction, and a crashed body is its own outcome (G27).
 
-These tests need the body-transactions frozen patch applied. Without it they skip: the
-Router takes no snapshot and knows no body fault, so every assertion here would fail for the
-wrong reason. Run with the patch: `git apply docs/frozen-patches/body-transactions.patch`.
+The body-transactions change landed in the Runner (it was a frozen patch until D313). The guard
+below still skips on a tree where the Router takes no snapshot and knows no body fault.
 """
 
 from __future__ import annotations

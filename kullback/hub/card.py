@@ -9,13 +9,18 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from kullback.hub.package import TASKS_ROWS_NAME
+from kullback.ai.provider import LIVE_ENV_VAR
+from kullback.hub.harbor_world import JUDGE_VAR
+from kullback.hub.package import HARBOR_DIR, TASKS_ROWS_NAME
 
 # What every Environment published from this harness is tagged with, before its own domain.
 BASE_TAGS: tuple[str, ...] = ("kullback", "environment", "agent-evaluation", "rl-environment")
 # The licence a card states when the caller named none for the source corpus. A host will not index
 # an empty value, and claiming a permissive licence nobody checked would be worse than saying this.
 UNKNOWN_LICENSE = "other"
+
+# The organisation every Environment is published under unless a caller names another.
+ORGANISATION = "leibler"
 
 # The bar an Environment has to clear to be published as a release rather than as a preview.
 FIDELITY_BAR = 0.90
@@ -110,7 +115,7 @@ def _provenance_rows(manifest: dict) -> list[tuple[str, str]]:
     rows.append(("Corpus", f"{corpus}, {source['url']}" if source.get("url") else corpus))
     build = [f"kullback {manifest.get('kullback_version', 'unknown')}", f"git {_short(manifest.get('git_sha'))}"]
     build += [f"{label} {_short(manifest[key])}" for label, key in
-              (("runner", "runner_version"), ("gates", "gates_version"), ("Environment", "env_id"))
+              (("code", "runner_version"), ("Environment", "env_id"))
               if manifest.get(key)]
     rows += [("Built", f"{manifest.get('created_at', 'not recorded')} by {', '.join(build)}"),
              ("Content hash", _short(manifest.get("content_hash")))]
@@ -165,6 +170,22 @@ def card_markdown(manifest: dict, repo_id: str, *, github_url: str = "https://gi
     return "\n".join(lines) + "\n"
 
 
+def harbor_section(harbor: dict) -> str:
+    """The card's "Run it with Harbor" section, read off the Harbor dataset's manifest (D363)."""
+    counts = harbor.get("counts") or {}
+    rows = list(harbor.get("tasks") or ()) + list(harbor.get("synthetic") or ())
+    example = rows[0]["path"] if rows else "<task>"
+    lines = ["## Run it with Harbor", "",
+             f"`{HARBOR_DIR}/` holds the same Tasks in the [Harbor](https://harborframework.com) task format: "
+             f"{counts.get('exported', 0)} Tasks, {counts.get('needs_judge', 0)} of them with a judge item "
+             f"among their gates. Those are scored by the model `{JUDGE_VAR}` names at test time, which also "
+             f"needs `{LIVE_ENV_VAR}=1` and the model's keys; without a judge they score 0, never pass "
+             "(`needs_judge` in a Task's `task.toml` and in `harbor/manifest.json`).", "",
+             "```bash", f"uv run harbor run -p {HARBOR_DIR}/{example} -a oracle",
+             f"uv run harbor run -p {HARBOR_DIR}/{example} -a <agent> -m <provider/model>", "```", ""]
+    return "\n".join(lines) + "\n"
+
+
 # The harness's own words, one line each, the same lines the README carries.
 WORDS: tuple[str, ...] = (
     "Run and Trace: a Run is an agent's conversation with the tools; a Trace is a recorded one.",
@@ -178,6 +199,8 @@ WORDS: tuple[str, ...] = (
     "Call fidelity: agreeing calls over all recorded calls.",
     "Verifier: a Task's End-state check, written only by the Examiner, never by the Builder.",
     "Atom: one Verifier check: required, allowed, forbidden, question, communicate or hard.",
+    "Reward: pass when every gate item holds (the sanity item, nothing else changed, is one); score 0 when a "
+    "gate fails, else the weighted mean of every item, the gates holding at least half.",
     "Gates: oracle replay, suite, loosening, false rejection, trusted.",
     "Trusted: suite passed, probes fail, last version, no loosening, not over strict, not refused.",
     "Open: neither trusted nor refused.",
@@ -193,7 +216,7 @@ def _call_fidelity(fidelity: dict) -> str:
     return f"{float(fidelity['calls_rate']):.2%} of {fidelity.get('calls_total', 0)}"
 
 
-def organisation_card(rows: Iterable[dict], *, organisation: str = "leibler",
+def organisation_card(rows: Iterable[dict], *, organisation: str = ORGANISATION,
                       github_url: str = "https://github.com/leiblerdev/kullback",
                       site_url: str = "https://leibler.dev") -> str:
     """The organisation profile: what Leibler and Kullback are, and one row per Environment passed.
@@ -264,8 +287,8 @@ CARD_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("funnel", "How many Tasks stopped at each rung", "the per-Task index the export writes"),
     ("buckets", "Tasks and trusted Tasks per difficulty bucket", "`difficulty.json` (D209), else computed"),
     ("untrusted", "Untrusted count and the commonest fixed reasons", "the per-Task index"),
-    ("runner_version", "Hash of the frozen Runner the numbers were measured under", "`runner_version.json`"),
-    ("gates_version", "Hash of the gates package", "`runner_version.json`"),
+    ("runner_version", "Hash of the Runner, gates and Spec code the numbers were measured under",
+     "`runner_version.json`"),
     ("kullback_version", "Harness version", "the installed distribution"),
     ("git_sha", "Commit the export ran from", "`git rev-parse HEAD`"),
     ("leak_scan", "What the export checked against the source corpus, in counts", "the export's own scan"),

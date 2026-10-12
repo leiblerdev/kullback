@@ -52,3 +52,21 @@ def test_the_readers_step_keeps_its_own_stage_on_the_shared_helper(tmp_path):
     assert (model.stage, model.cap_context) == ("readers", True)
     assert domain_tools_mod.runner_model(_priced_candidate(), tmp_path).cap_context is False
     assert domain_tools_mod.reader_model(None, tmp_path) is None
+
+
+def test_the_run_tool_plays_the_run_model_and_carries_its_effort(tmp_path):
+    """With a run model named, fresh Runs play on it instead of the session model, each call
+    carrying its effort; the session model is never asked."""
+    root = _workdir(tmp_path)
+    session = TestModel([], name="vendor/large")
+    run = budget.EffortModel(_priced_candidate(), "low")
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root, model=session,
+                                                                       run_model=run)}
+    result = _run(tools["run"], {"task_id": "widget_task", "count": 1})
+    assert not result.is_error, result.content
+    assert len(result.details["runs"]) == 1
+    assert session.calls == []
+    inner = run.inner
+    assert len(inner.calls) > 0
+    assert all(call["config"].effort == "low" and call["config"].reasoning_effort == "low"
+               for call in inner.calls)

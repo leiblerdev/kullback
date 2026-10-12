@@ -94,6 +94,38 @@ class HuggingFaceHub:
             f"https://huggingface.co/organizations/{organisation}/settings/profile by hand")
 
 
+class LocalHub:
+    """A host that is a directory: a dry run lays each upload out under `root/<repo_id>` and pushes nothing."""
+
+    def __init__(self, root: Any):
+        self.root = Path(root)
+        self.tags: dict[str, str] = {}
+
+    def create_repo(self, repo_id: str) -> str:
+        (self.root / repo_id).mkdir(parents=True, exist_ok=True)
+        return str(self.root / repo_id)
+
+    def upload_folder(self, repo_id: str, folder: Path, message: str) -> str:
+        import shutil
+
+        target = self.root / repo_id
+        shutil.copytree(folder, target, dirs_exist_ok=True)
+        (target / ".commit-message").write_text(message + "\n", encoding="utf-8")
+        return "local"
+
+    def tag(self, repo_id: str, tag: str, revision: Optional[str] = None) -> None:
+        self.tags[repo_id] = tag
+
+    def download(self, repo_id: str, out: Path, revision: Optional[str] = None) -> Path:
+        import shutil
+
+        shutil.copytree(self.root / repo_id, out, dirs_exist_ok=True)
+        return Path(out)
+
+    def set_organisation_card(self, organisation: str, markdown: str) -> str:
+        raise HubError("a local dry run has no organisation page")
+
+
 def url_for(repo_id: str) -> str:
     return f"https://huggingface.co/datasets/{repo_id}"
 

@@ -64,7 +64,6 @@ def test_the_manifest_carries_the_numbers_the_artifacts_hold(nursery, tmp_path):
     assert manifest["verifier_derived"] == 2
     assert manifest["trusted"] == 1
     assert manifest["runner_version"] == "runner-hash-1"
-    assert manifest["gates_version"] == "gates-hash-1"
     assert manifest["env_id"] == "env-hash-1"
     assert manifest["source"] == {"corpus": "nursery traces", "license": "MIT", "url": None}
     assert manifest["content_hash"] and manifest["files"]

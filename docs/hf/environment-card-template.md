@@ -20,8 +20,7 @@
 | funnel | How many Tasks stopped at each rung | the per-Task index the export writes |
 | buckets | Tasks and trusted Tasks per difficulty bucket | `difficulty.json` (D209), else computed |
 | untrusted | Untrusted count and the commonest fixed reasons | the per-Task index |
-| runner_version | Hash of the frozen Runner the numbers were measured under | `runner_version.json` |
-| gates_version | Hash of the gates package | `runner_version.json` |
+| runner_version | Hash of the Runner, gates and Spec code the numbers were measured under | `runner_version.json` |
 | kullback_version | Harness version | the installed distribution |
 | git_sha | Commit the export ran from | `git rev-parse HEAD` |
 | leak_scan | What the export checked against the source corpus, in counts | the export's own scan |

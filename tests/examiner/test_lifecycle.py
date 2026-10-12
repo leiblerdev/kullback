@@ -15,7 +15,7 @@ import pytest
 
 from examiner.worlds import World
 from gates.verifier_fixtures import make_run, write_events_jsonl
-from kullback.examiner import lifecycle, loosen, stage
+from kullback.examiner import lifecycle, stage
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import false_rejection_gate
 from kullback.gates.trust import trusted_gate
@@ -225,14 +225,11 @@ def test_the_derivation_writes_the_run_ids_of_the_reference_each_task_holds(deri
 
 
 def test_withdrawing_the_reference_retires_the_verifier_and_no_gate_scores_it(derived):
-    before = loosen.over_strict_rows(_plan(derived).store)
-    assert WITHDRAWN in before, "the held-out Run is rejected while the Verifier is live"
     _withdraw(derived)
     _derive(derived, round_number=1)
     plan = _plan(derived)
     assert not _verifier_file(derived, WITHDRAWN).is_file(), "the file leaves verifiers/"
     assert [v.task_id for v in plan.store["verifiers"]] == [KEPT]
-    assert WITHDRAWN not in loosen.over_strict_rows(plan.store)
     ruling = false_rejection_gate(plan.store["verifiers"], plan.store["task_runs"], plan.store["replays"],
                                   plan.store["rerolls"], plan.store["canon_rules"], plan.store["sigs"],
                                   plan.store["task_status"])
@@ -246,7 +243,7 @@ def test_withdrawing_the_reference_retires_the_verifier_and_no_gate_scores_it(de
     row = lifecycle.retired_row(plan.store["task_status"][WITHDRAWN])
     assert row is not None and row["reason"] == lifecycle.REFERENCE_WITHDRAWN and row["round"] == 1
     assert row["source_run_ids"] == ["ref", "alt"]
-    assert lifecycle.counts(lifecycle.retired_in_round(plan.store["task_status"], 1)) == {
+    assert lifecycle.counts([row]) == {
         "verifiers_retired": 1,
         "verifiers_retired_by_reason": {lifecycle.REFERENCE_WITHDRAWN: 1, lifecycle.REFERENCE_REDERIVED: 0}}
 

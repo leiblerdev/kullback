@@ -175,11 +175,10 @@ def simulated_user_factory(env, task, router, rules, reference):
     caller; tests build it here, where importing the user package is allowed. An env with
     no stored vocabulary reads the generic core, the way the world did before the move.
     """
-    from kullback.user.rules import goal_write_set
     from kullback.user.simulated import SimulatedUser
     from kullback.user.value_strip import value_strip
     from kullback.user.vocabulary import GENERIC
-    goal_writes = goal_write_set(reference, env.write_tools()) if reference is not None else None
+    goal_writes = None  # no Spec here: the goal is any write
     members = env.members(task)
     answer_strip = value_strip(members, schema=env.schema,
                                rules=env.canon_rules) if members else None

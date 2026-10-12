@@ -199,7 +199,7 @@ def tool_called(transcript: Any) -> bool:
 
 def goal_done(goal_writes: Optional[frozenset], write_tools: Iterable[str], made: set, *,
               acted: bool, closed: bool) -> bool:
-    """Whether the Task's goal is done, one predicate for both Simulated users (D210, p3).
+    """Whether the Task's goal is done, one predicate for both Simulated users (D210, D294).
 
     A goal naming writes is done when they are all made. A goal naming none has no write evidence,
     and the empty set is not evidence either: it is done when the Candidate has used a tool in this

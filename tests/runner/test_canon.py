@@ -23,7 +23,6 @@ from kullback.runner.canon import (
     overturn,
     pair_key,
     put,
-    record_hash,
     save_table,
 )
 from kullback.runner.judge import JudgeResult
@@ -472,24 +471,6 @@ def test_canon_record_applies_the_class_per_column():
     assert canon_record({"items": ["b", "a"]}, table="tickets", rules=rules) != canon_record(
         {"items": ["a", "b"]}, table="tickets", rules=rules
     )
-
-
-def test_record_hash_ignores_exempt_columns():
-    """The tau3 rule again, at row level: a changed timestamp is not a changed End state."""
-    schema = make_schema()
-    base = {"id": "W123", "total": 25, "updated_at": "2024-05-01T12:00:00Z", "reason": "broken"}
-    later = dict(base, updated_at="2025-09-09T09:09:09Z")
-    assert record_hash(base, schema, "orders") == record_hash(later, schema, "orders")
-
-    changed = dict(base, total=26)
-    assert record_hash(base, schema, "orders") != record_hash(changed, schema, "orders")
-
-
-def test_record_hash_is_stable_across_key_order_and_number_spelling():
-    schema = make_schema()
-    left = {"id": "W123", "total": "25.00"}
-    right = {"total": 25, "id": "w123"}
-    assert record_hash(left, schema, "orders") == record_hash(right, schema, "orders")
 
 
 # --- rules as data ---

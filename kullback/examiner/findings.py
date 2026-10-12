@@ -1,7 +1,7 @@
 """The findings the round's records file by themselves, before a model chooses what to say (D170).
 
 Over three model-driven builds the Examiner filed 13 findings and 11 of them said the same thing:
-an Intent phrase with no grounded span, `repair_intent`. The Builder followed nearly all of them
+an Intent phrase with no grounded span, to be rewritten. The Builder followed nearly all of them
 and no Task became trusted, because the losses that decide the number were never named: the
 assisted seed tool that blocked 52 Tasks with no Reference, the D79 check that failed on most
 Tasks with one, the Verifier whose required atoms reject every held-out Run, the Task whose own
@@ -35,10 +35,13 @@ from kullback.gates.loosening import discarded_runs, false_rejection, legitimate
 from kullback.gates.probes import write_tools_of
 from kullback.runner.records import Finding, as_dict, read_json
 
+# How many body edits one rule finding carries. Each is one recorded call the body answers
+# differently, and the first few are what the next edit is made against; the count is in the text.
+EDITS_PER_FINDING = 5
 # How much of a gate's own failure line a rule quotes. The line names the leaf and both values
 # (D154) and is the whole of what the next body has to answer, but a keys-differ failure over a
 # wide table runs to thousands of characters, and a lesson that long is not a lesson. Only the
-# rules cut: a hint the model wrote is its own sentence and is kept whole.
+# rules cut: a change line the model wrote is its own sentence and is kept whole.
 HINT_CHARS = 400
 # How many rule findings one round files. Each one reaches the Builder as its own follow-up message
 # and costs it a turn, so a round that files one per Task spends its whole allowance restating the
@@ -63,30 +66,6 @@ CLAIMS_FILE = "claims.json"
 # pair another finding already carries is that finding's news and not a second message.
 PAIR_DEDUPED = frozenset({"fidelity", "environment"})
 
-# Which verb answers which D79 check. Two of the nine have an owner outside the Verifier: the leak
-# check fails on a value that reached the Intent, which is a line the Builder's model wrote and
-# `repair_intent` rewrites; the rest are the Verifier's own atoms, too weak or too tight, and the
-# Examiner's `repair` is the only verb that touches a Verifier (D123). Naming a Builder verb for
-# those would send the Builder to rewrite an artifact that is not the one at fault, which is the
-# mistake this whole file exists to stop.
-SUITE_VERB: dict[str, str] = {
-    "provenance_spans": "repair",       # an atom with no span in any Run: drop it
-    "oracle_passes": "repair",          # the Reference fails its own Verifier: drop what rejects it
-    "empty_fails": "repair",            # a Run that did nothing passes: the Verifier requires nothing
-    "plausible_wrong_fails": "repair",  # the wrong entity passes: no atom names the entity
-    "unsolved_state_fails": "repair",   # a Run cut short passes: no atom names the last write
-    "second_path_passes": "repair",     # the second path is rejected: an atom is over-specific
-    "loophole_probe_fails": "repair",   # the probe passes: the atoms leave it open
-    "leak_check_clean": "repair_intent",  # the Intent holds a value only the Verifier should know
-    "mutation_flips": "repair",         # an atom nothing can fail: it names no value
-}
-# A check whose gate never ran is not a wrong Verifier, it is a missing input, and the verb that
-# answers it buys the input rather than changing the Verifier. `second_path_passes` on a Task with
-# one Reference has no second path to score (D173), and what buys one is the Examiner's own `reroll`
-# followed by `derive`: the Builder's re-roll would fill the corpus without deriving over it, and
-# the Verifier is the Examiner's to rewrite either way (D123). The loophole probe needs probe
-# budget, which no verb buys, so it is reported with no verb rather than with a wrong one.
-MISSING_INPUT_VERB: dict[str, str] = {"second_path_passes": "reroll_then_derive"}
 # The check name each D79 gate stage reports under, inverted from the suite's own map, so a status
 # row's `not_run` (which holds stage names) can be read against its `checks` (which holds these).
 CHECK_OF_STAGE: dict[str, str] = dict(verifier_suite.D79_STAGES)
@@ -169,8 +148,8 @@ def cost_by_key(plan: ExaminerPlan) -> dict[str, list[str]]:
     return seen
 
 
-def file_finding(plan: ExaminerPlan, *, kind: str, text: str, key: str, suggested: str = "none",
-                 hint: str = "", task_id: Optional[str] = None, task_ids: Iterable[str] = (),
+def file_finding(plan: ExaminerPlan, *, kind: str, text: str, key: str, change: str = "",
+                 edits: Iterable[dict] = (), task_id: Optional[str] = None, task_ids: Iterable[str] = (),
                  tool: Optional[str] = None, run_id: Optional[str] = None,
                  about_entry_id: Optional[str] = None) -> Finding:
     """One finding into the plan's store and onto disk, numbered after the ones already there.
@@ -182,8 +161,8 @@ def file_finding(plan: ExaminerPlan, *, kind: str, text: str, key: str, suggeste
     rows = plan.store.setdefault("findings", [])
     ids = sorted(task_ids)
     record = Finding(finding_id=f"finding-{len(rows) + 1}", task_id=task_id or (ids[0] if ids else None),
-                     kind=kind, text=text, run_id=run_id, tool=tool, suggested=suggested,
-                     hint=hint.strip(), about_entry_id=about_entry_id, round=plan.round,
+                     kind=kind, text=text, run_id=run_id, tool=tool, change=change.strip(),
+                     edits=[dict(edit) for edit in edits], about_entry_id=about_entry_id, round=plan.round,
                      status="open", task_ids=ids, key=key)
     rows.append(as_dict(record))
     plan.write_state()
@@ -205,8 +184,8 @@ def assisted_tool_rows(status: dict, fidelity: dict) -> list[dict]:
 
     The counts and the first difference come from `tool_fidelity.json` (`tools` is the corpus
     ruling per tool, `tasks` the per Task grain with the corpus gate's own words for each differing
-    call), so the hint quotes the leaf and both values or the error class (D154) without anything
-    here having to parse a gate's failure line.
+    call), so the change line quotes the leaf and both values or the error class (D154), and the body
+    edits carry the call, the column and both values apart (D317).
     """
     per_tool = (fidelity or {}).get("tools") or {}
     per_task = (fidelity or {}).get("tasks") or {}
@@ -221,12 +200,12 @@ def assisted_tool_rows(status: dict, fidelity: dict) -> list[dict]:
         corpus = per_tool.get(name) or {}
         calls, replayed = int(corpus.get("calls") or 0), int(corpus.get("replayed") or 0)
         detail = first_difference(per_task, name, task_ids)[:HINT_CHARS]
+        edits = body_edits(per_task, name, task_ids)
         callers = sum(1 for row in per_task.values() if isinstance(row, dict) and name in row)
         rows.append({
             "kind": "assisted_tool", "tool": name, "task_ids": task_ids, "task_id": None,
             "key": finding_key("assisted_tool", name),
-            "suggested": "repair_recompile",
-            "hint": detail or "a recorded call of this Task replays differently",
+            "change": detail or "a recorded call of this Task replays differently", "edits": edits,
             "text": (f"{name} answers {len(task_ids)} Tasks' own recorded calls differently, so none of them "
                      f"replays to its End state and none has a Reference (D49, D171). It replays "
                      f"{replayed} of {calls} recorded calls of the corpus and {callers} Tasks call it."
@@ -235,11 +214,34 @@ def assisted_tool_rows(status: dict, fidelity: dict) -> list[dict]:
     return rows
 
 
+def body_edits(per_task: dict, name: str, task_ids: Iterable[str]) -> list[dict]:
+    """The differing calls of these Tasks as body edits: path, call, column, both values and why (D317).
+
+    They are read from `differing_calls`, the four values `fidelity_index` keeps beside its worded
+    reasons. A call whose column is not named (an error class, a missing result) gives no edit, and
+    neither does a file written before D317 with only the worded reasons: the change line still says
+    it, and an edit that cannot name the call and the column is not one the Builder can make exactly.
+    """
+    edits: list[dict] = []
+    for task_id in task_ids:
+        for call in ((per_task.get(task_id) or {}).get(name) or {}).get("differing_calls") or []:
+            if not isinstance(call, dict) or call.get("call_id") in (None, "") or call.get("column") in (None, ""):
+                continue
+            edits.append({"kind": "body", "path": f"env/tools/{name}.py", "call_id": str(call["call_id"]),
+                          "column": str(call["column"]), "recorded": str(call.get("recorded"))[:HINT_CHARS],
+                          "replayed": str(call.get("ours"))[:HINT_CHARS],
+                          "why": (f"the recording is the standard: on this call {name} answers "
+                                  f"{call['column']} with the recorded value")})
+            if len(edits) >= EDITS_PER_FINDING:
+                return edits
+    return edits
+
+
 def first_difference(per_task: dict, name: str, task_ids: Iterable[str]) -> str:
     """The corpus gate's own words for the first call of these Tasks that the body answers differently.
 
     The per Task grain carries the reasons already worded by the gate that ruled on the call, so the
-    hint the recompile is given is the same sentence the gate would have written about it.
+    change line the Builder is given is the same sentence the gate would have written about it.
     """
     for task_id in task_ids:
         reasons = ((per_task.get(task_id) or {}).get(name) or {}).get("reasons") or []
@@ -264,8 +266,8 @@ def leak_rows(status: dict, task_ids: Iterable[str]) -> list[dict]:
              for task_id in task_ids}
     rows = [{
         "kind": "intent_leak", "tool": None, "task_ids": [task_id], "task_id": task_id,
-        "key": finding_key("intent_leak", column, task_id), "suggested": SUITE_VERB["leak_check_clean"],
-        "hint": (f"the Intent of this Task states a value of {column} that no user said; write the "
+        "key": finding_key("intent_leak", column, task_id),
+        "change": (f"the Intent of this Task states a value of {column} that no user said; write the "
                  f"line without it"),
         "text": (f"The D79 check leak_check_clean failed on {task_id}: its Intent states a value of "
                  f"the column {column} that no recorded user said, so the Simulated user would hand "
@@ -275,8 +277,8 @@ def leak_rows(status: dict, task_ids: Iterable[str]) -> list[dict]:
     if unnamed:
         rows.append({
             "kind": "suite", "tool": None, "task_ids": unnamed, "task_id": None,
-            "key": finding_key("suite", "leak_check_clean"), "suggested": SUITE_VERB["leak_check_clean"],
-            "hint": "the D79 check leak_check_clean fails on this Task",
+            "key": finding_key("suite", "leak_check_clean"),
+            "change": "the D79 check leak_check_clean fails on this Task",
             "text": (f"The D79 check leak_check_clean failed on {len(unnamed)} Tasks that have a "
                      f"Reference, so none of them has a trusted Verifier."),
         })
@@ -306,22 +308,19 @@ def suite_rows(status: dict) -> list[dict]:
             (missing if check in not_run else failed).setdefault(check, []).append(task_id)
     rows = leak_rows(status or {}, failed.pop("leak_check_clean", []))
     for check, task_ids in failed.items():
-        verb = SUITE_VERB.get(check, "none")
         rows.append({
             "kind": "suite", "tool": None, "task_ids": task_ids, "task_id": None,
-            "key": finding_key("suite", check), "suggested": verb,
-            "hint": (f"the D79 check {check} fails on this Task's Verifier" if verb == "repair"
-                     else f"the D79 check {check} fails on this Task"),
+            "key": finding_key("suite", check),
+            "change": f"the D79 check {check} fails on this Task's Verifier",
             "text": (f"The D79 check {check} failed on {len(task_ids)} Tasks that have a Reference, so none of "
                      f"them has a trusted Verifier."),
         })
     for check, task_ids in missing.items():
-        verb = MISSING_INPUT_VERB.get(check, "none")
         why = verifier_suite.ALT_PATH_NOT_RUN if check == "second_path_passes" else "the input it needs is not there"
         rows.append({
             "kind": "suite", "tool": None, "task_ids": task_ids, "task_id": None,
-            "key": finding_key("suite", check, "not_run"), "suggested": verb,
-            "hint": "", "text": (f"The D79 check {check} never ran on {len(task_ids)} Tasks ({why}), so the "
+            "key": finding_key("suite", check, "not_run"),
+            "change": "", "text": (f"The D79 check {check} never ran on {len(task_ids)} Tasks ({why}), so the "
                                  f"check counts as not passed and none of them is trusted. This is a missing "
                                  f"Run, not a wrong Verifier (D173)."),
         })
@@ -358,8 +357,8 @@ def false_rejection_rows(store: dict) -> list[dict]:
         rows.append({
             "kind": "false_rejection", "tool": None, "task_ids": [verifier.task_id],
             "task_id": verifier.task_id, "key": finding_key("false_rejection", "", verifier.task_id),
-            "suggested": "repair", "run_id": run_id,
-            "hint": (f"drop or loosen {atom}, which rejects Run {run_id}" if atom
+            "run_id": run_id,
+            "change": (f"drop or loosen {atom}, which rejects Run {run_id}" if atom
                      else f"the required atoms reject Run {run_id}"),
             "text": (f"The Verifier's required atoms reject all {seen['held_out']} held-out frontier Runs of this "
                      f"Task, so it recognises no path but its own seeds (D133)." + names_atom),
@@ -381,7 +380,7 @@ def fidelity_rows(status: dict, fidelity: dict, replays: dict) -> list[dict]:
     The tool named is the Task's own blocker where the status row has one (D171's `blocking_tools`,
     which are the tools whose own differing calls cost this Task), otherwise the first tool
     `tool_fidelity.json` records a difference for on this Task. A Task the records name no tool for
-    keeps the reason line and suggests nothing: a recompile of no tool is not a verb.
+    keeps the reason line and carries no edit: there is no body to name.
     """
     per_task = (fidelity or {}).get("tasks") or {}
     rows = []
@@ -397,11 +396,11 @@ def fidelity_rows(status: dict, fidelity: dict, replays: dict) -> list[dict]:
         tool = (blocking or differing or [""])[0]
         reason = unconfirmed_reason(traces)[:HINT_CHARS]
         detail = first_difference(per_task, tool, [task_id])[:HINT_CHARS] if tool else ""
+        edits = body_edits(per_task, tool, [task_id]) if tool else []
         rows.append({
             "kind": "fidelity", "tool": tool or None, "task_ids": [task_id], "task_id": task_id,
             "key": finding_key("fidelity", tool, task_id),
-            "suggested": "repair_recompile" if tool else "none",
-            "hint": detail or reason,
+            "change": detail or reason, "edits": edits,
             "text": (f"No Trace of this Task replays to its End state, so it has no Reference and no "
                      f"Verifier can be derived from it: {reason}."
                      + (f" The tool blocking it is {tool}." if tool else " No tool is named as the blocker.")),
@@ -434,12 +433,12 @@ def disagreement_rows(status: dict, references: dict) -> list[dict]:
         if not (groups or judge_failed):
             continue
         # The End states are what the Builder has to look at, but a state over a wide table runs long
-        # and the message is a lesson, not a dump; the same cut the gate hints take (D170).
+        # and the message is a lesson, not a dump; the same cut the gate lines take (D170).
         states = "; ".join(f"{g.get('label')}: {g.get('state')}" for g in groups)[:HINT_CHARS]
         rows.append({
             "kind": "reference_disagreement", "tool": None, "task_ids": [task_id], "task_id": task_id,
-            "key": finding_key("reference_disagreement", "", task_id), "suggested": "repair_refuse_task",
-            "hint": str(row.get("reason") or "the recordings do not settle on an End state"),
+            "key": finding_key("reference_disagreement", "", task_id),
+            "change": str(row.get("reason") or "the recordings do not settle on an End state"),
             "text": ("The Task's recordings do not settle on an End state, so it has no Reference: "
                      + (f"{len(groups)} End states, {states}." if groups
                         else f"the judge failed all {len(failed)} recordings.")),
@@ -476,8 +475,7 @@ def unread_result_rows(readers_artifact: dict, status: dict) -> list[dict]:
         rows.append({
             "kind": "environment", "tool": str(name), "task_ids": blocked.get(str(name), []),
             "task_id": None, "key": finding_key("environment", str(name)),
-            "suggested": "none",
-            "hint": (f"no reader answers {shapes[0]}" if shapes
+            "change": (f"no reader answers {shapes[0]}" if shapes
                      else "no reader answers this tool's results"),
             "text": (f"{name} answers {int(count)} recorded results the world homes on a row and "
                      f"nothing reads columns out of, so those rows hold no pinned value and every "
@@ -512,8 +510,8 @@ def runs_disagree_rows(pins: dict) -> list[dict]:
         runs = sorted({str(run) for row in found for run in row.get("run_ids") or ()})
         rows.append({
             "kind": "runs_disagree", "tool": None, "task_ids": [task_id], "task_id": task_id,
-            "key": finding_key("runs_disagree", "", task_id), "suggested": "none",
-            "hint": (f"{len(runs)} runs part on a {found[0].get('key_class')} key column of "
+            "key": finding_key("runs_disagree", "", task_id),
+            "change": (f"{len(runs)} runs part on a {found[0].get('key_class')} key column of "
                      f"{tables[0]}"),
             "text": (f"The Task's own Runs recorded {len(found)} row(s) of {', '.join(tables)} in "
                      f"different versions, parting on a column that names the row and that one of "
@@ -531,16 +529,16 @@ def claimed_unwritten_rows(claims_body: dict) -> list[dict]:
     A Verdict grades state and never words (D46), so these Runs already fail; what the records could
     not say before is that they all fail the same way. A Task where every failing held-out Run said
     the work was done and no write atom moved for it is a Task the Simulated user let go on a
-    sentence, and the answer is the end protocol rather than the Verifier: nothing here suggests a
-    verb, because the verb that would fix it is not one the Builder or the Examiner owns.
+    sentence, and the answer is the end protocol rather than the Verifier: nothing here carries an
+    edit, because the file that would fix it is not one the Builder or the Examiner owns.
     """
     rows = []
     for task_id in sorted((claims_body or {}).get("flagged") or ()):
         seen = ((claims_body.get("tasks") or {}).get(task_id) or {})
         rows.append({
             "kind": "other", "tool": None, "task_ids": [str(task_id)], "task_id": str(task_id),
-            "key": finding_key("claimed_unwritten", "", str(task_id)), "suggested": "none",
-            "hint": "every failing held-out Run of this Task claims a write the state never received",
+            "key": finding_key("claimed_unwritten", "", str(task_id)),
+            "change": "every failing held-out Run of this Task claims a write the state never received",
             "text": (f"All {int(seen.get('failing_runs') or 0)} failing held-out Runs of this Task claim "
                      f"a write in words that no write atom of its Verifier received "
                      f"({int(seen.get('claims_unwritten') or 0)} such claims). The Verdict is right to "
@@ -571,33 +569,3 @@ def rule_rows(plan: ExaminerPlan) -> list[dict]:
     return sorted(rows, key=lambda row: (-len(row["task_ids"]), row["key"]))
 
 
-def file_rule_findings(plan: ExaminerPlan, limit: int = RULE_FINDING_LIMIT) -> list[Finding]:
-    """File what the records say, ranked, and only what the Builder has not already been told.
-
-    Two skips. A key that is open is the finding the Builder has not answered yet, and a second copy
-    of it would be a second message saying the same thing. A key that was answered and comes back
-    costing the very same Tasks is the same news a second time: the repair did not move it, the
-    round is stalled and the loop's own exit says so (`cost_by_key`). What does get filed again is
-    the same loss over a different set of Tasks, because that is a number that moved.
-
-    The cut is at the bottom of the ranked list, so a round that is over the limit drops the losses
-    that cost the fewest Tasks and never the one that costs the most.
-    """
-    already = open_by_key(plan)
-    told = cost_by_key(plan)
-    covered = told_task_tools(plan)
-    filed: list[Finding] = []
-    for row in rule_rows(plan):
-        if len(filed) >= limit:
-            break
-        if row["key"] in already or told.get(row["key"]) == sorted(row["task_ids"]):
-            continue
-        pairs = covered_pairs(row)
-        # The pair skip is the fidelity rule's and the unread-result rule's: a Task and tool another
-        # finding already names is that finding's news. The other rules are ranked by the Tasks they
-        # cost and re-file when that set moves (`cost_by_key`), which a pair cannot see.
-        if row["kind"] in PAIR_DEDUPED and pairs and pairs <= covered:
-            continue
-        covered |= pairs
-        filed.append(file_finding(plan, **row))
-    return filed

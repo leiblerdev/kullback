@@ -472,3 +472,41 @@ def test_a_model_whose_price_row_carries_a_tier_limit_gets_a_window_whose_cap_st
     assert budget.window_for("vendor/tiered") == 680_000
     monkeypatch.setitem(budget.CONTEXT_WINDOWS, "vendor/tiered", 400_000)
     assert budget.window_for("vendor/tiered") == 400_000, "a window already inside the tier stays"
+
+
+# --- the effort wrapper ---
+
+
+def test_an_effort_model_carries_the_effort_into_the_config_of_every_call():
+    from kullback.ai.provider import TestModel
+
+    inner = TestModel(["ok"], loop=True, name="vendor/small")
+    model = budget.EffortModel(inner, "low")
+    assert model.name == "vendor/small"
+    model.query([{"role": "user", "content": "hi"}])
+    model.query([{"role": "user", "content": "again"}], tools=[{"name": "t"}])
+    assert len(inner.calls) == 2
+    for call in inner.calls:
+        assert call["config"].effort == "low"
+        assert call["config"].reasoning_effort == "low"
+
+
+def test_an_effort_model_keeps_a_caller_named_effort_and_other_fields():
+    from kullback.ai.provider import ModelConfig, TestModel
+
+    inner = TestModel(["ok"], loop=True, name="vendor/small")
+    model = budget.EffortModel(inner, "low")
+    model.query([{"role": "user", "content": "hi"}],
+                config=ModelConfig(effort="high", temperature=0))
+    (call,) = inner.calls
+    assert (call["config"].effort, call["config"].reasoning_effort) == ("high", None)
+    assert call["config"].temperature == 0
+
+
+def test_an_effort_model_without_an_effort_passes_calls_through_untouched():
+    from kullback.ai.provider import TestModel
+
+    inner = TestModel(["ok"], loop=True, name="vendor/small")
+    model = budget.EffortModel(inner, None)
+    model.query([{"role": "user", "content": "hi"}])
+    assert inner.calls[0]["config"] is None

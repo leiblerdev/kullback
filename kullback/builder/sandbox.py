@@ -1075,7 +1075,7 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
         return gates
     # Gate 8 (D195) is the one gate that does not stop the chain. It has to run before the replay
     # rulings, because that is what puts a body which reads the world above one which memorises it
-    # in `attempt_score`, and the chain has to go on past it, because a failed sensitivity gate is a
+    # in the attempt's score, and the chain has to go on past it, because a failed sensitivity gate is a
     # tie among every body that fails it and the replay count is what breaks that tie. Both rulings
     # are free once the body has reached here: the sandbox has already answered these calls.
     gates.append(gate_sensitivity(sandbox, every, schema, rules=rules, readers=readers))

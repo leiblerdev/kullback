@@ -10,8 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kullback import difficulty, report
-from kullback.examiner import lifecycle, variants
+from kullback import difficulty, report, variants
+from kullback.examiner import lifecycle
 from kullback.report.render import _difficulty_table
 from kullback.runner.records import Atom, Event, Run, Verifier, as_dict, write_json
 

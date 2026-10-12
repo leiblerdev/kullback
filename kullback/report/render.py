@@ -213,6 +213,11 @@ def _rounds(data: ReportData) -> list[str]:
         lines.append("No rounds recorded: this build ran no Builder and Examiner rounds, or rounds.json is missing.")
         return lines
     lines += _rounds_table(data)
+    metrics = (data.trusted.metrics or {}) if data.trusted is not None else {}
+    if "trust_reason" in metrics:  # a ruling written before D333 has no reasons
+        from kullback.gates.trust import tier_counts, trust_row
+
+        lines += ["", f"Trust (D333): {trust_row(tier_counts(metrics))}"]
     return lines
 
 
@@ -691,7 +696,8 @@ def _verdict_line(record: Verdict, kinds: dict) -> str:
         else "no failing atom"
     )
     cause = f"cause {record.cause}" if record.cause else "no cause recorded"
-    return f"  - {record.run_id}: {'pass' if record.passed else 'fail'}, {atom}, {_path_words(record)}, {cause}"
+    score = "no score" if record.score is None else f"score {record.score:.2f}"
+    return f"  - {record.run_id}: {'pass' if record.passed else 'fail'}, {atom}, {_path_words(record)}, {cause}, {score}"
 
 
 def _uncounted_line(run: Optional[Run], record: Verdict) -> str:
@@ -703,6 +709,12 @@ def _uncounted_line(run: Optional[Run], record: Verdict) -> str:
         stood_in = assisted_tools_of(run)
         reasons.append("assisted Run" + (f", {', '.join(stood_in)} stood in" if stood_in else ", a tool stood in"))
     return f"  - {record.run_id}: {'; '.join(reasons) or 'not counted'}"
+
+
+def _score_words(numbers: dict, side: str) -> str:
+    """The mean weighted score of one side and how many of its Runs carried a score (D329)."""
+    mean = numbers.get(f"{side}_mean_score")
+    return ("n/a" if mean is None else f"{mean:.2f}") + f" ({numbers.get(f'{side}_scored', 0)} scored)"
 
 
 def _task_numbers_lines(data: ReportData, numbers: dict) -> list[str]:
@@ -719,6 +731,8 @@ def _task_numbers_lines(data: ReportData, numbers: dict) -> list[str]:
         f"- Judge atoms: {numbers['judge_atoms']} ({judge_note})",
         f"- Frontier pass rate: {_percent(numbers['frontier_pass_rate'])} ({numbers['frontier_runs']} Runs)",
         f"- Candidate pass rate: {_percent(numbers['candidate_pass_rate'])} ({numbers['candidate_runs']} Runs)",
+        f"- Mean score past the gates: frontier {_score_words(numbers, 'frontier')}, "
+        f"candidate {_score_words(numbers, 'candidate')}",
         f"- Margin: {'n/a' if numbers['margin'] is None else format(numbers['margin'], '+.2f')}",
         "- Failing atoms by class: " + (_counts(numbers["failing_atoms"]) or "none"),
         "- Causes: " + (_counts(numbers["causes"]) or "none"),

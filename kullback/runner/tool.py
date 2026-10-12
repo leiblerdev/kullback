@@ -16,7 +16,6 @@ JSONL; the core harness cutover is left to the agent stream.
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +25,7 @@ from kullback import sampling
 from kullback.gates import tool_runs
 from kullback.runner import canon, loop, route
 from kullback.runner import replay as replay_mod
+from kullback.runner.code_hash import CODE_HASH
 from kullback.runner.real_tools import default_world_factory, real_tools_from
 from kullback.runner.records import (
     RawPtr,
@@ -51,6 +51,16 @@ EQUIVALENCE_FILE = "equivalence.json"
 WORLD_PROVENANCE_FILE = "world_provenance.json"
 PROBES_DIR = "probes"
 MAX_TURNS = 30
+# One general line after the Task's instructions, for the Runner's Candidate only (D326): Candidates
+# ended with part of the user's requests undone on 173 Runs of one build. The Spec writer reads the same
+# instructions as policy text, so the line is added here and not where the instructions are loaded.
+STOP_SHORT_LINE = ("Before you end the conversation, list every item the user asked for and say for each "
+                   "whether it was done or why not.")
+
+
+def runner_prompt(instructions: Optional[str]) -> Optional[str]:
+    """The system prompt a Runner Candidate gets: the Task's instructions, then the stop-short line."""
+    return f"{instructions}\n\n{STOP_SHORT_LINE}" if instructions else None
 PROBE_TURNS = 6
 
 
@@ -129,26 +139,12 @@ class ReplayReport:
 
 
 def version() -> str:
-    """sha256 over the bytes of every module under kullback/runner plus the core loop it runs on.
+    """The code hash of runner/code_hash.py, the same one every Verdict and tier row carries.
 
     Stored beside every Verdict (`runner_version`) and in every report, so a cached artifact
-    graded under an older runner is told apart from a fresh one.
+    graded under other code is told apart from a fresh one.
     """
-    package = Path(__file__).resolve().parent.parent
-    runner_dir = package / "runner"
-    digest = hashlib.sha256()
-    for path in sorted(runner_dir.rglob("*.py")):
-        digest.update(path.relative_to(package).as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    for name in ("agent/loop.py", "agent/harness.py"):
-        path = package / name
-        digest.update(name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
+    return CODE_HASH
 
 
 def _router_for(env: BuiltEnvironment, task_id: str, seed: int,
@@ -215,12 +211,15 @@ def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, mak
     """
     env = BuiltEnvironment(environment_dir)
     task = env.task(task_id)
-    if env.agent_driven(task_id):
+    single = task.facts_in_instruction  # the facts ride in the opening and no user answers (D332)
+    if not single and env.agent_driven(task_id):
         raise EnvironmentError(f"Task {task_id} is driven by the agent user, which needs a model "
                                "the runner is not given")
     router = _router_for(env, task_id, seed)
     _refuse_stand_in(router)
-    if user is None and make_user is not None:
+    if single:
+        user = None
+    elif user is None and make_user is not None:
         user = make_user(router)
     runs_dir = Path(workdir) / RUNS_DIR
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -229,8 +228,8 @@ def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, mak
         run_id, f"{task_id}-{seed}", workdir=runs_dir, env_id=env.env_id, task_id=task_id,
         model=_model_name(model), seed=seed, user=user,
         user_rules=env.rules(task),
-        max_turns=MAX_TURNS, system_prompt=env.system_prompt(task),
-        first_user=task.intent if user is None else None)
+        max_turns=MAX_TURNS, system_prompt=runner_prompt(env.system_prompt(task)),
+        first_user=env.opening(task) if user is None else None)
     run_id = state.run.run_id
     loop.open_with_user(state)
     loop.run(state, model, tools=specs, router=router)

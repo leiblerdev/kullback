@@ -174,7 +174,7 @@ def test_the_bus_holds_the_events_in_gapless_order(tmp_path):
     assert seqs == list(range(1, len(lines) + 1))
 
 
-def test_build_hands_examine_the_judge_probe_and_reroll_models(tmp_path, monkeypatch):
+def test_build_hands_examine_the_judge_model_and_no_probe_or_reroll(tmp_path, monkeypatch):
     from kullback.examiner import session as examiner_session
 
     seen = {}
@@ -189,7 +189,7 @@ def test_build_hands_examine_the_judge_probe_and_reroll_models(tmp_path, monkeyp
     model = TestModel([reply("Examining.", ("examine", {})), reply("Done.")])
     judge, probe, reroll = object(), object(), object()
     session_mod.build(root, model, judge_model=judge, probe_model=probe, reroll_model=reroll)
-    assert seen == {"judge_model": judge, "probe_model": probe, "reroll_model": reroll}
+    assert seen == {"judge_model": judge, "probe_model": None, "reroll_model": None}
 
 
 def test_build_hands_the_caller_the_live_harness_before_the_first_model_turn(tmp_path):

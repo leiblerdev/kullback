@@ -2134,3 +2134,593 @@ polls for its slot without blocking the loop. A 429 sets a cooldown every waiter
 the Retry-After the blocking path already honoured, now shared with streaming under the
 handle's caps. Live check (12 concurrent calls, cap in_flight 3): one bucket, peak in flight 3,
 9 waits, 0 rate limited, 12 answers, no errors.
+### D296. The agent user is the Simulated user by default (2026-09-27)
+
+Every Run a build makes meets the agent user on the run model over the rule floor; `--rule-user` keeps the rule-driven user alone. The rule user answered 0 of 60 dead turns, the agent user 45 of 60 (founder, 2026-09-27).
+
+### D296. Verifiers stop demanding one model's habits: question atoms read the Run, facts answer the request (2026-09-25)
+
+The seeds are the recording plus re-rolls by one model, so what they all did includes that model's habits, and derivation demanded them: 15 of one corpus's and 4 of the other's trusted-lost Tasks failed every held-out recorded Run on a question or stated-fact atom. Four changes, all general. First, a `q.field` atom is derived only when some seed could not read the value from a tool result before its write (`derive._read_before`, by the leak check's own match): reading it or asking are both right, and a Run that guesses a value it never read or was told still fails on the write value atom. Second, a confirmation is a user reply after the agent's question that holds an affirmation and no denial (`target._confirms`), not one that starts with it: a yes anywhere counts, any denial vetoes it, single words are token-matched, and bare "not" vetoes only next to an affirmation, since it negates product options and hedges far more often than consent. Third, a volunteered value satisfies the question atom at scoring time while derivation still asks for elicited ones alone (`question_keys` `elicited_only`), so asking again is not demanded where the user already told. Fourth, from the common facts only those answering the Intent or a user question turn are demanded (`asked_facts` reads "?"-bearing user turns); the rest are reported, as the D190 fallback already held for the reference-only set. Checked in code: `tests/runner/test_question_reading.py` (mid-reply yes, "yes, but wait, no", volunteered and guessed values), `tests/examiner/test_question_fact_demands.py` (world-readable, unreadable and mixed fields; stated, requested and questioned facts); the fixture pin moves to `224c6771…` for the fourth change alone. Measured offline by re-deriving every Task of both smoke 9 corpora from the stored Reference and seeds: 9 false rejections cleared, 6 Tasks clean gained, no wrong Run newly passes (every probe that newly passes skipped a read every seed made, and every probe of a gained Task fails on its confirmation atom); 8 Tasks leave the suite, each either exposing such a skip or left with no demanded value to swap, which is the hand-off work's case. Remaining overfit: none in code; one known weakness is a multi-request user turn, whose denial of a second request vetoes the confirmation of the first.
+
+### D299. A run file carries what its Simulated user recorded about its turn (2026-09-27)
+
+The agent user logged its tool calls and its reasoning summary on its own turn event, but the runner wrote its own narrower turn record into the run file: text, tags, sources, refusals. So no run file could say whether the model read before it wrote, and the per-turn log was dead bytes wherever anyone counted. Now `runner/loop._user_payload` carries the user's own turn record with the turn: the tool log even when empty (no read is the finding, not a missing field), what the model weighed before writing, the driver, the drop reason, and the end marks. Whatever a Simulated user records about its turn travels with the turn, whichever user it is.
+
+### D300. The turn message states the stop rule as sequencing, not as a tool ban (2026-09-27)
+
+Every turn told the model to "answer with the turn itself and no tool call", and the model read that as a ban which overrode the rules' "call first": 19 of 69 fitting no-read turns said so in their reasoning summaries, and fitting reads sat at 1 of 70. The turn still ends when the model answers in text, so the line now says that: use the reading tools the rules name for the question in front of you, then answer with the turn itself, never with a tool call as the turn. Same five Tasks before and after: 0.25 to 1.53 reads per turn, fitting reads 1 of 32 to 22 of 29, with the residual misses being answers the context already holds.
+
+### D301. The Spec keeps the writer's session counts (2026-10-05)
+
+`stage.write_one` dropped what the writer session counted (demands, kept, each refusal, gaps, parse error, truncated characters), so a smoke build could not say why a Spec came out thin without rerunning it. Spec now carries a `writer` dict with those counts, the session's spend and read rounds, the attempts, and the sent-back counts of D302 and D303; old Spec files load with it empty. After a retry the first attempt's counts and spend stay under `writer.first_attempt`, so why it came out empty is kept. The split into `write_from_intent` lets a before and after measurement hold the mined Intent fixed and change only the writer. Costs one small dict per Spec file.
+
+### D302. An empty Spec is a writer failure, retried once, then set aside (2026-10-05)
+
+A Spec that kept no check, or whose every Intent fact was a gap, still got a Verifier, and that Verifier passed or failed Runs on nothing the user asked for. Now the writer runs once more in a fresh session on what is left of the Task ceiling; empty again, the Spec is saved with `set_aside = empty_spec`, `task.set_aside` is published and no Verifier is written, and a resumed build counts the set-aside Spec as done. A Spec that keeps a no_write or cap check is not empty, so a Task with no expected write still has one. `write_specs` returns empty_seen, retried and set_aside_empty. The tier report shows such a Task as set_aside with the Spec's reason, not untrusted for want of a Verifier file. Costs at most one extra writer session per empty Task.
+
+### D303. A write demand must quote its condition, and refused demands go back once (2026-10-05)
+
+In the smoke build 7 of 40 Specs demanded a write nothing asked for: 4 passed the because rule only by naming a policy section, 3 quoted a user fact that does not ask for that action. A write's because must now also quote at least 12 characters of a witnessed Intent fact or of the policy text (`ground.valid_write_because`); naming a section is not enough, the refusal code is condition_unquoted, and the prompt says so in one rule line. Other demands keep the old rule. Demands refused as ungrounded, unwitnessed or condition_unquoted go back to the writer in one follow-up turn of the same conversation with each id, code and rule, and the corrections that ground are kept under their old check ids; `writer.sent_back` and `sent_back_kept` count them. Costs one extra writer call on a Spec with a refused demand, and a write grounded on policy now needs both the section name and the quoted sentence.
+
+### D304. A ruling re-roll starts at the Task's next free seed (2026-10-05)
+
+In both smoke builds a second ruling re-roll on one Task died with FileExistsError on `ruling-<task>-0.jsonl`, and every later examine call failed with it, so the Builder stopped. The runner names a prefixed Run `<prefix>-<task_id>-<seed>` and writes a Run file once (D281), and the router's re-roll and the derivation's `run_rerolls` both started every batch at seed 0. Both now pass `first_seed` from one helper, `runners.next_seed`: one past the highest seed among the Task's Run files under that prefix in runs/, 0 when none. D281 and the frozen runner are unchanged. Checked in code: two router re-rolls of one Task against real files leave seeds 0 and 1.
+
+### D305. The intent tier report scores the Run files the build wrote (2026-10-05)
+
+`intent_tiers` read its Runs from exam/task_runs.json, which nothing writes under `--verifier-from intent`, so every row scored no Run and failed can_fail. It now reads every runs/**/*.jsonl that loads as a Run, grouped by the Run's Task, and skips a file that does not load; the replay prefix and which Runs count as fresh are unchanged. On the two smoke workdirs, read only: retail 20 of 20 rows score at least one Run (164 Runs), airline 18 of 20 (170 Runs, the other two set aside), where before every row scored none.
+
+### D306. A yes to what the Candidate asked to do is an answered turn (2026-10-05)
+
+The agent user counted a turn that answers a request with no fact as unanswerable, and a bare "yes, go ahead" is such a turn, so a Candidate that asked for a second yes before writing hit `UNANSWERABLE_LIMIT` and the Run ended scenario_exhausted just before the write (22 Runs, 9 Tasks in the diagnosis). `guards.confirms` reads a confirmation with the rules' own cues: the Candidate's turn matches `CONFIRM_REQUEST` and a sentence of the user's turn opens on `AFFIRM_CUE`, with none opening on `NEGATIVE_CUE`. `AgentUser._had_nothing` returns False for such a turn, so it never counts toward the limit; the limit and the other end kinds are unchanged. Replayed on the recorded user turns of the 22 Runs with no model: the old reading reproduces every recorded end, and all 20 that ended scenario_exhausted would not have ended at that turn (the other 2 ended handed_off and goal_satisfied, untouched).
+
+### D307. The guard strip takes out only the flagged value (2026-10-05)
+
+`Guards._strip_values` (D196) dropped every sentence the strip flagged a value in, which also lost the user id, payment id, reason or item ids said in the same sentence (24 Runs, 9 Tasks). It now keeps the sentence and removes only the words the strip changed, found by a word diff of the sentence against the strip's own output (`_unchanged_words`, words compared as `canonical` spells them); nothing stands in for the value, because the strip's stand-ins (a month, a code's last characters) still say part of it. A sentence the strip flags without changing is still dropped whole, and STRIPPED is counted as before. Not measurable on the recorded Runs: a Run file keeps the post-guard text only, so 0 of the 24 can be replayed.
+
+### D308. A tool the world records as an action is scored as a call, never as a write (2026-10-05)
+
+dg-runs group 1 (47 Runs, 7 Tasks, the largest cause): the tool D282 made a write so an atom could demand it sat in the write set the Spec path scores under, so the no-write atom, the cap and the extra-write check failed Runs whose only "write" was the hand-off, and an allowed or required hand-off demand compiled to nothing for want of an id_field. The signal is the schema's own: the actions table's columns name the tools whose calls they record (`evidence.actions_of`, read by `spec/actions.py`), no tool name read for meaning. `load_inputs` and `intent_tiers` take those tools out of the write set they pass to compile, `must_not` and `check_run`. A write or no-write demand on such a tool compiles to an action atom (`atoms.action_atoms`): required is a Hard rule that some successful call of the tool is in the Run, forbidden is the no-write rule over that tool alone, allowed is an allowed whole-tool write atom that check_run does not evaluate; required and allowed both carry that allowed atom, so a scorer that still counts the tool as a write (the Runner's Verdict reads `env.write_tools()`) names no extra write. Re-scored offline on the 204 diagnosed Runs: 56 of 141 failing Runs pass (all 47 of group 1 plus 9 "handed off wrongly" whose Spec allows the hand-off and requires no write), 26 of 63 wrong passes now fail (two retail Specs that require the hand-off, which compiled to nothing before). Limit: a required action answers nothing on a Run with no successful call at all (the Hard wrapper judges calls only), so such a Run passes it; closing that needs kullback/runner or kullback/gates. Status: built 2026-10-05 on sp-1005/pl-compile.
+
+### D309. A no-write and a cap that name a tool cover that tool only (2026-10-05)
+
+`_no_write` and `_cap` ignored `demand["tool"]`. A no-write naming a tool is now the no-write rule over that tool alone; a cap naming a tool is a Hard rule that the Run makes at most `count` successful calls of it, because the frozen `entity_count` counts every write and cannot be scoped. With no tool both are unchanged. Re-scored offline on the 204 diagnosed Runs: no verdict moves (6 no-write and 1 cap demands on disk name a tool, none decides a diagnosed Run). Status: built 2026-10-05 on sp-1005/pl-compile.
+
+### D310. A Spec no Run can pass goes back once, then is set aside (2026-10-05)
+
+Compile names three reasons, each with its check ids (`compile.unsatisfiable`): a no-write beside a required write on a tool it covers, a forbidden demand equal to a required one, a required write with no id_field or an object entity. The writer gets those checks back in its one follow-up turn of the same conversation, beside the because refusals of D303, with a rule line per code; still unpassable, the stage saves the Spec set aside as unsatisfiable_spec, publishes task.set_aside and writes no Verifier. On the 40 Specs on disk, read only: alone it would reject 6 (5 required writes naming no row, 1 no-write beside a required write), with D308 applied 3 (2 and 1), since a hand-off demand is no longer a write; no Spec has a forbidden demand equal to a required one. The repair path (`apply_repair`) does not check it yet. Costs at most one writer turn per unpassable Spec. Status: built 2026-10-05 on sp-1005/pl-compile.
+
+### D311. A replay is known by its recorded model, never by its run id (2026-10-05)
+
+`is_replay` used the replay prefix off replays.json when one was known, so a recorded-model Run under another prefix counted as fresh and could feed independent_pass: 50 airline and 39 retail Runs (all `synth-path-r0-`). A Run is now a replay when the recorded model is among the models it names (`run.model` and `reply.model` of its model_call events, `trust.run_models`), and fresh only when it names a model and that model is not the recorded one; a Run that names no model is neither. `replay_prefix` and the `prefix` argument are gone, nothing else read them. On clones of the two resume-b workdirs no tier row and no gate value moved: the 21 moved Runs on scored Tasks all fail their Verifier, and the 280 dg Muse Runs stay fresh with their verdicts unchanged.
+
+### D312. A Verifier that fails a faithful replay of a kept Reference is not trusted (2026-10-05)
+
+A new gate, reference_replay, sits between can_fail and independent_pass: the Verifier must pass every replay with fidelity 1 and confirmed (replays.json) of a recording the harness keeps as the Task's Reference (references.json), never the benchmark's gold. A Task with no such replay passes the gate. The row's `reference_replay` names the replays scored, the first one failed and its first failing atom; replay_only now needs this gate too. On clones of the two resume-b workdirs the gate fails on 4 Tasks (airline 2 right, 1 wrong; retail 1 right), all on an extra hand-off write the recording made, and none changes a tier: all four already fail can_fail. The one on a wrong Reference punishes a Verifier that was right, a cost this gate accepts because the harness cannot tell a wrong Reference from a right one.
+
+### D313. Tasks are cut by the user's request alone; the write set is a label (2026-10-05)
+
+`cluster_runs` used to split the recordings by the set of write tools that went through before it clustered by intent, so a recording that skipped the write left its siblings of the same request and became the Reference of a Task with nobody to dissent. Now the harness's own intent clustering (user turns only, threshold 0.4 unchanged) runs over all recordings, then the starting-world split (D74) as before. Each Run's confirmed write set rides on the Task as `write_labels`; a Task whose Runs carry two labels dissents, and the cluster gate counts `multi_run` and `dissenting`. A Category is now the Tasks whose Runs mostly carry one label, a summary over the cut. `GROUPING_FORMAT` is 3, and a grouping frozen under an older format names `format` as what moved instead of raising. Live check on the smoke9 recordings, no model: retail 223 to 166 Tasks, 57 dissenting, all-wrong Tasks 65 to 17, 67 of 95 lone wrong recordings now beside a right one; airline 130 to 103 Tasks, 29 dissenting, all-wrong 43 to 24, 14 of 50. Every Task id changes against earlier builds (ds-recut report, .claude/herdr/outcome-1005).
+
+### D314. One content hash on every tier row replaces the freeze of the Runner and the gates (2026-10-05)
+
+Freezing was a convention: `freeze-runner` wrote a hash of runner/ (and a separate gates hash, D122) that only regrade Verdicts carried, while `kullback run` put a different hash of runner/ plus two agent files on Runs; the two never matched, nothing compared them, `regrade_gate` asked only that one be present, and nine fixes waited in docs/frozen-patches. Founder decision 5 of 2026-10-05 opens the freeze. Now `runner/code_hash.py` hashes every `.py` file under runner/, gates/ and spec/ from their bytes at import, and that one hash is the `runner_version` on every Run, Replay and Verdict and the `code_hash` on every tier row; the tier report prints it at its head and in its table line and warns on mixed rows or on a replaced report scored under other code. This folds the gates hash into the one hash, reversing D122's "never folded": a tier row is scored by both, so either moving makes rows incomparable. `boundary.runner_version`, the routing config hash and `gates_version` are gone; `freeze-runner` records the live hash for the export only. The agent core files (agent/loop.py, agent/harness.py) are no longer in a Run's hash: they change how a Run plays, not how it is scored. Agents still may not write runner/ or gates/ (`gates.PROTECTED`); people land fixes there as ordinary commits. Live check, no model: the two 20-Task Step B workdirs re-tier to the same tier on every row as their stored tiers.json and as the code before this change, with the hash on 20 of 20 rows.
+
+### D315. A Task carries its expected end states with a source on every value, and a forbidden list (2026-10-06)
+
+A Task is the user's demand (the Intent), its starting state (the rebuilt world at the Task's seed), one or more expected end states and a forbidden list. An expected end state is the Reference's world diff, start to end, as data: `ExpectedCell(table, row_id, field, value, source, row_source)` in an `EndState` whose `allowed` names what else may differ; nothing else moves. A Task carries several when a user turn names alternatives, and a Run passes on any one. Every value and row id carries a `ValueSource`: a user turn (recording, turn), a policy clause (quoted), or the recording's tool result; anything else is unsupported, marked by a None source and counted, never filled in. `Forbidden` names a write or a Run-ending call that must not happen, sourced only from a user negation in their own turn or a recorded refusal; the collateral rule is not enumerated, the end state check enforces it. `Conduct` names a confirmation before a write, a refusal or a hand-off the event log must show. `runner/expected.py` derives all of this by code from a Reference Run (`expected_from_run`, `alternatives_from_turns`, `forbidden_from`, `refusals_of`) and checks a Run's end state against it (`match`, a result with `ok` true, false or None and a readable `why`). A list or dict value is sourced by its leaves that are new or changed at their path, each the same way, kept in `leaf_sources`; the cell is sourced when every such leaf is, and a nested value with no new leaf (reordered only) is `unchanged`. The new Verifier fields default empty, so every stored Verifier still loads. Rejected: a model as a witness of a value, reads in the forbidden list, and a value sourced by anything but a user turn, a policy clause or a tool result. The alternatives rule is literal ("a or b", "either a or b", "a, b or c" on bare words) and says in its docstring what it misses.
+
+### D316. The verdict gates on the end state, the forbidden list and conduct, then weighs the atoms; unknown blocks (2026-10-06)
+
+`verdict` now decides its gates first: one expected end state matches with no collateral move, no forbidden write or call happened (read off the calls and the diff), and each conduct rule holds off the event log (`confirm_before_write`: a user turn opening a sentence on a yes, none on a no, before the tool's first write, as D306 reads a confirmation; `refusal`: the recorded refusal message shows again in the Run; `handoff`: the Run-ending call happened). A False fails the Run naming the gate and the cell or rule (`gate:expected:cell:...`, `gate:forbidden:...`, `gate:conduct:...`); a None leaves it not verdicted naming the unsettled pair, and a definite failure wins over an unsettled gate as it does for atoms. Then the atoms as before; the extra-write check is skipped when expected end states exist, since collateral answers for it. This also closes a fail-open: `_tally_atom` dropped a forbidden atom whose check returned None, so a forbidden predicate that raised let the Run pass while the comment above claimed the opposite; a non-judge forbidden atom that cannot be checked now leaves the Run not verdicted. Predicates get deep copies of calls, results, the start and end state and every helper's return, and the context copies them off the Run, so a predicate that mutates a row cannot make a later check pass. A Verifier with no expected end state, forbidden or conduct rule is checked by its atoms alone, exactly as before.
+
+### D317. A finding is a diff with the why and the rows, one shape for the Builder and the Spec; the repair verbs are gone (2026-10-06)
+
+A finding used to carry a repair verb (`suggested`) and a one-line `hint` from the old round driver, while the Builder prompt already said verbs no longer exist and the Examiner's own Finding carried a path and a line. Two shapes, and neither said exactly what to change: a line the Builder has to interpret is a guess. Now one Finding carries `edits` beside its path, change line and rows. A body edit names the Environment file, the recorded call, the first differing column, the recorded value and the replayed one; the Builder reads the body and makes the one edit that moves the replayed value to the recorded one. A text edit names an Intent or Task file, the verbatim current text and its replacement, and is refused when the text is not found or is found more than once, so the Builder applies it with `edit` exactly as given. An atoms edit names the atoms to drop and add on a Task's Verifier; the Spec applies these (the next wave), this one carries the shape. Every edit carries its why in one sentence. The rule findings read their body edits off the per-Task rows of `tool_fidelity.json`; the Examiner's finding tool validates the edits it is given and its prompt asks for an edit whenever the values can be named or the text quoted. `FindingVerb`, `suggested` and `hint` are removed; a findings file written before this still loads, its verb dropped and its hint read as the change line.
+
+Rejected: a whole body or a whole Intent returned as a finding (the founder's words: "not the whole file, diffs are more robust"; a whole file hides which line changed and the gates rule on the file, not on the claim); a finding with no rows (a claim with no evidence the gates or the Builder can check); keeping the verbs as a hint for which stage to run (the path is the whole address).
+
+### D318. OpenTelemetry GenAI spans and Claude Code transcripts enter through the adapter seam (2026-10-06)
+
+The two detector-only adapters now map (`maps = True`), same contract as terminus-2, every detect vote unchanged. `otel_genai` reads an OTLP JSON export or a flat span list, one recording per `traceId` with spans ordered by start time. A model-call span gives turns and calls from `gen_ai.input.messages` and `gen_ai.output.messages` (parts of type text, `tool_call`, `tool_call_response`) or from the message events (`gen_ai.system.message`, `gen_ai.user.message`, `gen_ai.assistant.message`, `gen_ai.tool.message`, `gen_ai.choice`); input a later span repeats from the earlier history is not mapped twice. An `execute_tool` span answers the call with its `gen_ai.tool.call.id`, latency from the asking span's end to the tool span's end, `error.type` or an error status through the error classes; a `tool_call_response` part answers only when no tool span did. `tools_declared` comes from `gen_ai.tool.definitions` or `gen_ai.request.tools`, `system_prompt` from the system message or `gen_ai.system_instructions`. A trace whose GenAI spans carry nothing to map is rejected with the span names in the reason. `claude_code_jsonl` reads one recording per `sessionId`: user, assistant and system lines with a `message` are turns, ordered by the `parentUuid` chain with file order as the fallback when a parent is missing; a `tool_use` block is a call, the `tool_result` with its id answers it, `is_error` true goes through the error classes. Every other line type is counted in the sidecar as `non_turn_lines`, beside the chain note; `system_prompt` and `tools_declared` stay None. Pointers: a turn or call cites the span index (or line index) and the attribute, event or block it was read from; the Trace itself cites the recording index, which the ruling reads.
+
+### D319. Trust is decided by code on the expected end states; unconfirmed is a tier; no model on the trust path (2026-10-06)
+
+`gates/trust.py` rules every Verifier that carries expected end states (D315) by code alone, in order: one end state has a source on every value and row (else `unconfirmed`, naming the first unsupported cell); every faithful replay of the kept Reference matches it with the forbidden list and conduct holding (a False is a Verifier defect ruled back to the Spec, `pending`; a None or any unknown gate leaves the Task `unconfirmed`, naming the column kind, which is D312 widened); the empty Run fails it, where empty now means the Reference's start state unmoved with no write and none of the required conduct (`verifier_suite.empty_run`), so a Task whose expected diff is empty still has to demand its conduct (D295); the wrong Run fails it (D286) and the leak check is clean (D287), read off the suite's row. Refusals (D128), the Reference pool and seed attribution (D281) are kept as they were. Each status row carries `trust_tier` (trusted, unconfirmed, refused, pending) and `unsupported_cells`, on the round snapshot that `kullback status` and the report read; the one line they print sets the tiers beside the count the pre-D319 rule gives (`_legacy_trusted`, kept for this release only; that column leaves next release) and beside D133's held-out number as "valid other solutions failing", computed as before. A Verifier with no expected end state keeps the pre-D319 ruling and its words this release (`legacy_only` names it), because every stored Verifier is atom-only until the Spec writes end states. Pre-registered rule (docs/validation/trust-1006.md, written before computing): on Tasks with a benchmark sidecar, the share of trusted Tasks resting on a wrong Reference must be under 10 percent under the new gate, or the sourcing gate is not doing the work and the design is wrong, not the corpus. Outcome on the smoke9 retail copy: 64 of 191 (33.5 percent, Wilson 95 percent 27.2 to 40.5) against 63 of 193 (32.6 percent) under the old gate. The rule fails: a value found in a user turn or a lookup result is sourced whether or not the recorded agent chose it rightly, so sourcing does not tell a right Reference from a wrong one. Rejected: a model as a witness of a value or of a Run, probe pools as trust evidence, and reading the faithful replay as correctness (it says the Environment reproduced the recording, never that the recorded agent was right).
+
+### D320. The Spec writes and repairs Verifiers; the Examiner reads and reviews with a diff; derivation, repair and probes leave the Examiner (2026-10-06)
+
+The Examiner used to write the Verifiers it then judged: it derived one per Task from the Runs, edited atoms through edit_verifier, wrote probes, bought re-rolls and loosened by code, so one hand wrote the test and ruled on it. Now the Spec is the one writer. `write_verifier` builds the whole Verifier from the Task's Reference Run by code: the expected end states (`expected_from_run`, with `alternatives_from_turns`), the forbidden list (`forbidden_from`) and the conduct rules from the grounded demands (a confirmation before a write, a refusal from the Reference's recorded refusal message, a hand-off), each with its source; facts told and questions asked stay weighted atoms. The writer never writes a predicate for a write or a conduct rule: a demand carrying code is refused with "write demands are end-state cells" and sent back once (D303). A Spec written before its Task had a Reference has its gates rewritten by code once one comes, with no model call. The Examiner keeps its reading tools and files one review per Task: a finding with what is wrong, why, the rows and the edit (D317), or no_finding with its reason, recorded as "no finding". It writes no Verifier and runs nothing. The Builder's examine tool sends a finding's atoms and text edits to the Spec by code (`spec/review.py`), which applies them, rewrites the Verifier and runs the grounded, can-fail and Reference-replay gates; the Builder reads only the body edits and one line counting the Spec's repairs. Each review round is counted on the Spec, and a Task the gates still refuse at the round ceiling is set aside as pending, never refused by the Examiner alone. derive.py and variants.py leave the Examiner for the package root, where the Reference stage's survivor choice and synthesis still use them; runners.py's user factory moves to the Builder's run tool; loosen.py, the edit, try and probe tools, the re-roll tool and `--verifier-from` are removed. gates/probes.py and gates/loosening.py stay, read by the gates.
+
+Rejected: the Examiner writing any artifact (a Verifier, a probe, a Run), because the writer and the judge of a test must not share a hand; a review without rows, because a claim with no evidence is a guess the Spec cannot apply and the gates cannot rule on; probes as a trust input, because a hand-written Run the Verifier's own author chose measures that author's imagination, not the Verifier, and the end-state gates already fail the empty, wrong-entity and swapped-value Runs by code.
+
+### D321. Consistency with the request is checked by code and does not separate a wrong Reference (2026-10-06)
+
+D319's sourcing says a value was available, not that the user asked for it. Two checks in `kullback/runner/expected.py`, read by `code_ruling` after sourcing and before the replay match, add the other direction: `contradicts_user` (a changed value or leaf whose column's start-state domain the user named values of, and which is none of them) and `unasked_writes` (a successful write with no earlier user turn naming one of its argument values and no user yes, D306's reading). Either leaves the Task unconfirmed naming the cell or tool. Pre-registered (docs/validation/trust-1006.md, round 2): trusted-on-wrong-Reference under 10 percent on the same 222 Tasks. Outcome: 55 of 132 (41.7 percent, Wilson 95 percent 33.6 to 50.2); the checks withheld 9 wrong and 48 right References. The rule fails and no third check follows: a user names a column's value to describe the row as it stands as often as to ask for it, and a wrong Reference writes on the rows the user named after a yes. Both checks stay in code as reported numbers of this release; whether they stay on the trust path is the founder's decision. Numbered D321 because D317 and D318 are held by other streams of this wave.
+
+### D322. One trust ruling: the Spec's tiers carry the code gates; consistency checks are flags (2026-10-06)
+
+After the verify-1006 fold two rulings decided trust for the same Task: the Spec's five gates (`spec/trust.py tier_of_task`) and the code ruling on the expected end states (`gates/trust.py code_ruling`, D319). They could disagree, and the Spec's grounded gate let a Verifier with unsupported cells through, which is exactly what `code_ruling` refuses. Now `tier_of_task` carries a gate `sourced` between grounded and can_fail, computed by `code_ruling` on the Spec's Verifier with the Task's faithful References and its status row. It holds when `code_ruling` answers trusted; unconfirmed becomes the Task's tier with the ruling's reason as `failing`; pending and refused pass through as tiers. The tier order is set_aside, then the code ruling's tier, then the Spec's own. `spec.trust.workdir_ruling` hands the Spec's tiers to `gates.trust.workdir_trusted_ruling`, which maps trusted to trusted and every other tier to untrusted with its word and reason, so `builder status`, the round snapshot, `kullback status` and the report print one tier per Task from one place. The gates sit below the Spec in the import layers, so the tiers are passed in rather than read there. The atom-only rule (`_legacy_trusted`) stays for the legacy column only.
+
+The consistency checks of D321 (`contradicts_user`, `unasked_writes`) leave the trusted decision: `code_ruling` still computes them and the row carries them as `contradicts` and `unasked`, counted in the status table as "consistency flags" and never gating. This is the fold's reading pending the founder's decision on D321, and it is reversible in one place: where `code_ruling` builds the flags it can return unconfirmed again.
+
+Rejected: two rulings on one Task, because a reader could not say which tier a Task has; unsupported cells passing the grounded gate, because a value nobody sourced is not evidence the Task is right; the consistency checks as gates until the founder decides, because D321 found they do not separate a wrong Reference.
+
+### D323. Cells only for what someone said or wrote; the world's own values ride with the write (2026-10-07)
+
+`kullback/runner/expected.py expected_from_run` changes three ways. With a schema, a table whose columns record tool
+calls (evidence.actions_of, D308) gives no cells and one `allowed` entry for the whole table ("action table: calls are
+conduct, not state"); with no schema nothing changes. A value no source holds and no call passed, on a row the last
+successful sourced call named (every key part among its arguments), showed in its result, or made (passed one of the
+new row's values), is the world's answer to that call: `_world_source`, a `tool_result` source with `world` in its ptr.
+A minted row id gets the same `row_source`. A value a call passed, which an assistant turn stated and the next user turn
+opened on a yes to (D306's cue), is sourced by that user turn (`affirmed` in the ptr). Why: the 2026-10-07 failure
+analysis put 42 airline and 27 retail unconfirmed Tasks on action-table cells, 30 and 21 on world-made values, 17 and 4
+on agent-stated values. Re-derived on the vf-live copies, the unconfirmed Tasks whose fewest-unsupported end state has
+no unsupported cell go from 0 of 52 to 38 (airline) and 1 of 48 to 46 (retail); the code ruling then trusts 16 airline
+(2 on a wrong Reference) and 37 retail (5 wrong), and 22 airline and 8 retail land on "the empty Run passes": their only
+change was the hand-off, which is now conduct and gates only where the Spec demands it. Limits: the source kind is
+`tool_result` because `ValueSource.kind` has no `world`; a yes affirms every value of the turn before it; a short value
+is still found by plain containment. The wrong-trust bound must be re-measured before this ships.
+Status: built 2026-10-07 on fix-1007/cells.
+Folded 2026-10-07 on fix-1007/fold
+
+### D324. Refusals and no-writes are forbidden writes, say lists values, conduct must be in the Reference (2026-10-07)
+
+The failure analysis of 2026-10-07 found four Spec writer mechanisms. A refuse demand the Reference never recorded was
+counted unsupported and a no_write demand left no gate, so the empty Run passed (airline 22, retail 23 Tasks). A say
+demand was one sentence the final answer rarely held word for word (airline 3 untrusted and 8 of 117 right replays
+failing, retail 10). A hand-off or confirmation demand on a tool the Reference never called failed every faithful
+replay (airline 3, retail 9 "Verifier defect"). Write values named columns the tool does not take (airline 9, retail 17).
+
+Now `spec/end_state.py forbidden_of` turns a refuse demand with no recorded refusal, and a no_write demand, into
+`Forbidden(kind="write")` entries: one for the demand's tool, else one per write tool (`_forbidden_happened` reads a
+tool None with no table as unknown, not "any write"), with the demand's entity as the row. A tool the Reference
+called is never forbidden, so the Reference passes its own list. `conduct_of` drops a hand-off or confirmation whose
+tool the Reference never called and counts it in the new `Gates.unseen`, shown in `end_state_counts`; the writer gets
+it back in its one follow-up turn as `unseen_conduct`, read off `WriterInputs.reference_tools`, which the model never
+sees. `compile._say` compiles a say demand's `values` list to one communicate atom per value. `writer._check_of`
+refuses a write whose values name a key that is not an argument of its tool (`value_not_argument`) and sends it back
+with the tool's argument names. The prompt asks for say values, keeps a hand-off out of writes and caps, and says an
+id_field names a row. `gates_of` passes `schema.json` into `expected_from_run`.
+
+On the live Specs of verify-1006, read only: airline 77 of 128 Tasks gain 437 forbidden entries, retail 23 of 222
+gain 88; unseen conduct airline 4, retail 9; writes with values that are not arguments airline 14, retail 27.
+
+Limit: the empty Run still passes a Verifier whose expected diff is empty and whose forbidden list is non-empty
+(`gates/trust.py _empty_run_passes`, the return at line 412), since it writes nothing; such a Task is judged by its
+forbidden list on the wrong Run instead, which that function does not yet say. A tool signature with no argument
+list is read as unknown and never refuses a value. Status: built 2026-10-07 on fix-1007/demands.
+Folded 2026-10-07 on fix-1007/fold
+
+### D325. Examiner edits reach what gates: atom ids that exist, end-state and conduct edits, no silent no-finding (2026-10-07)
+
+The analysis of the verify-1006 live run (analyze-1007) found the Examiner's review edits mostly reached nothing. 179 atom
+drops named check ids (c<n>) or fact ids while the compiled atoms are i<n>; `spec/review.py` stored every drop and counted it
+applied, and 0 atoms were removed. 116 findings carried no edit because no kind existed for what they asked (re-pick a
+Reference 23, a conduct rule 18, a cell to drop or allow 17, among others). 40 no-finding reviews sat on Tasks with an
+unsupported cell, and `ExamRoot.current` read stale proposals under exam/verifiers/ before the Spec's Verifier.
+
+Now an atoms edit whose drop names no atom of the live Verifier is refused with the atom ids, and one dropping more than
+half of the atoms at once (its adds counted, since the fold) is refused.
+Each Task's line in the opening shows every atom id beside the check that made it, and the
+prompt shows an added atom in the shape the Spec accepts. Three edit kinds join body, text and atoms: `cell` (allow or drop a
+cell of every expected end state), `conduct` (add or remove a handoff, refusal or confirm_before_write rule; the conduct's
+kind sits under the key `conduct`, since `kind` names the edit) and `reference` (a Run on disk proposed as the Reference).
+Cell and conduct edits are kept on the Spec as `end_state_edits` and applied by code after each rewrite, both Verifier copies
+written with the version marked; an added conduct's source is a policy source whose clause is the review's why, since
+ValueSource has no examiner kind. A reference edit promotes nothing: it writes a `reference_proposed` row to
+examiner/reviews.json and opens a ruling on the Spec, so the Task's no_open_ruling gate fails until someone acts.
+`no_finding` is refused while the Task's Verifier holds a cell without a value or row source, naming the cells.
+`ExamRoot.current` reads the Spec's Verifier only.
+
+Limit: only `apply_review` reapplies the end-state edits; another rewrite of the Verifier (a router repair through
+`spec/writer.py write_verifier`) drops them until the next review round. Nothing closes a reference ruling yet. The finding
+tool's own field description (examiner/domain_tools.py) still lists the three old edit kinds; the prompt lists all six.
+Rejected: an examiner kind on ValueSource, a records change for one pointer; promoting the proposed Run by code, which would
+let the Examiner pick the Reference it is then judged against.
+Status: built 2026-10-07 on fix-1007/examiner.
+Folded 2026-10-07 on fix-1007/fold
+
+### D326. The rule user hears id asks, confirms only a pending write, and ends only when the job is done (2026-10-07)
+
+The fix-1007 failure analysis put 273 of 334 failing airline Runner Runs on the rule user and 57 of 213 retail Runs on a
+goal marked satisfied after part of the job. Six changes, all over names read at run time:
+- `user/fidelity.py vocabulary_of`: with no valid vocabulary.json, the Vocabulary is the generic core plus every id
+  argument of the mined signatures (`user/vocabulary.py from_signatures`, cues from `_base_cues`). The generic core alone
+  heard no id ask, and the user restated its goal and closed (260 Runs).
+- `user/simulated.py _asked`: a held fact the agent's turn names is answered under a confirm cue too; a fact whose value
+  the turn states is a confirmation, not an ask.
+- `_respond`: once the goal's writes are made, a confirm cue past the recorded confirmations gets the goal or the close,
+  never the reused yes (5 Runs looped to max_turns). A line said again with no write in between is replaced by one
+  generic "what else do you need" line; the third time the user closes, `scenario_exhausted` with the tag `user_repeat`.
+- `_close`: a closing line that carries the transfer token is said without it, and the token goes on the next turn, so
+  the agent keeps one turn for its hand-off call (6 Runs ended `transfer` with no hand-off).
+- `_goal_done`: with `goal_counts` (`user/rules.py goal_write_counts`, the Reference's successful writes per tool), the
+  goal is done only when every requested write is made, not one of each tool.
+- `runner/tool.py runner_prompt`: the Runner prompt ends with one line asking the agent to list every item the user
+  asked for and say whether it was done (173 retail Runs stopped short). Not in `_system_prompt_for`, which the Spec
+  writer reads as policy text; `runner/world/episode.py` still passes the bare instructions.
+
+Limits: `builder/run_user.py` builds the exam user with the generic core and no `goal_counts`, and `user/factory.py` and
+`builder/domain_tools.py` pass no `goal_counts`; until they pass `vocabulary_of(workdir)` and
+`goal_write_counts(reference, writes)` those Runs keep the old behaviour. A count per tool stands in for a count per
+entity, so the same row written twice satisfies a count of two. "Pending write" is read as the goal not done, not as the
+turn naming the write. No Run was made to measure the change.
+
+Status: built 2026-10-07 on fix-1007/user.
+Folded 2026-10-07 on fix-1007/fold
+
+### D327. Not run apart from failed; the writer's disagreement with the Reference as a flag (2026-10-07)
+
+What changed: `spec/trust.py tier_of_task` puts `fresh_runs` on the row, and a replay_only Task with no fresh Run
+says "not run: no fresh Run on disk" while one whose fresh Runs all fail keeps "no fresh Run passes"; the
+independent pass was `any()` over nothing, so 40 retail and 3 airline Tasks never played read like failures.
+`writer_disagreement` compares the Spec's write demands with the Reference's diff by code: a required write demand
+whose tool the Reference never called or whose row is in no diffed row (the demand half; a row half, a diffed row
+no write demand names, was dropped at the fold). It rides on the row as `writer_disagrees` beside `contradicts`
+and `unasked`, never gating. The trust row prints "replay_only N (not run M)" and "writer disagrees N".
+Why: the failure analysis of 2026-10-07 found the blind writer named a write the Reference never made on 18 wrong
+retail References against 1 right one, and nothing read it. Measured (docs/validation/trust-1007.md): the demand
+half has precision 0.82 and recall 0.45 for a wrong retail Reference (22 of 27 flagged Tasks wrong); the row half
+fires on 19 right and 0 wrong. Limit: it flags 1 of the 6 wrong-trusted retail Tasks, since on the other 5 the
+writer demanded what the Reference did; gating on it would hold back 5 right retail References with 22 wrong.
+Status: built 2026-10-07 on fix-1007/trust.
+Folded 2026-10-07 on fix-1007/fold
+
+### D328. Judge items: one call per item, 0 or 1, recorded on the Verdict (2026-10-07)
+
+What changed: a judge atom whose target is {question, anchor, evidence} is a judge item. `judge/items.py
+judge_item` asks one model call per item at temperature 0 with MiMo's checkpoint prompt nearly verbatim (one
+objective checkpoint, met 1 or not met 0, no partial credit, nothing guessed, a target in cut evidence scores 0 with
+"evidence truncated"), prices it and returns score, why, truncated. The anchor is {answer, accepted, reject} (a
+string is the answer alone); the prompt shows all three. Evidence refs are written before any Run exists, so none
+names an event index: `assistant_turns` (default since the fold), `final_answer`, `assistant:<k>`, `after_call:<tool>`; each turn
+is clamped at 4000 chars, the block at 24000, and cuts are marked. A failed call or an unreadable reply is score
+None, never 0. `Atom` gains `gate` and `weight` (dumped only when not the default, so old hashes hold). `Verdict`
+gains `items` keyed by atom id; `runner/verdict.py` records every judge item there. A scored item never moves
+pass; a gate item scored 0 fails the Run; a gate item with no score leaves it not verdicted; a scored item with no
+score blocks nothing. `cli._judged_atoms` sends item atoms to the item judge on the first judge's model, and
+`judge_atom_results` skips them. `judge/shape.py` holds the provider-free half so the Verdict still has no import
+path to a model (D76). The trust gates pass no judge results, so constructed Runs are judged by code only.
+`scripts/judge_calibrate.py` judges stored Runs and counts agreement with Examiner anchor rulings where present.
+Why: the redesign of 2026-10-07 (v2, v3) moves what the Candidate told the user into judge items derived from the
+Intent, one item per call, evidence from the event log, and lets the item's gate field decide whether it gates.
+Narrows D255: a judge's opinion enters the pass condition again, but only for an item the Spec marks gate; the
+two-judge agentic path (D76, D92) stays for older judge atoms, equivalence and cause.
+Measured (hand-written items, 8 Tasks, 23 Runs, 66 judged items, Opus 5.5 on Bedrock): 34 met, 32 not met,
+0 unjudged after the clamp fix, 0.36 USD; scores identical on 65 of 65 items judged twice. A hand check found 2 of
+23 hand-written anchors wrong (an ambiguous reference in the Intent), which the judge followed faithfully.
+Limit: no Examiner anchor ruling exists yet, so judge against Examiner agreement is not measured.
+Fold: a gate judge item is settled by the judge's opinion (holds is its 0 or 1); it stays open only when the call
+failed, which leaves the Run not verdicted with the score masked. Empty evidence scores 0 by code before any call.
+This retires D76's "stays open" rule for item-shaped judge atoms. The judge's record is `JudgeScore`; Verdict.items is
+the one item table, judge items in it beside every other item.
+Status: built 2026-10-07 on shape-1007/judge.
+
+### D329. Every item gates or scores; the Verdict carries pass and a weighted score; a sanity item for every Task (2026-10-07)
+
+What changed: `Atom`, `ExpectedCell`, `Forbidden` and `Conduct` (runner/records.py) and the Spec's `Check` carry
+`gate` and `weight`; a Check also carries `policy_line`, and `compile_spec` puts its gate and weight on every atom it
+compiles to. Left unsaid, an atom's gate follows its kind: the kinds that failed a Run before (required, question,
+communicate, hard, forbidden) gate, allowed does not; cells, forbidden and conduct rules gate. Both fields leave the
+dump at their default, so stored records dump and hash as before. `verdict` builds one item per end state cell (of
+the end state the Run matches; any one may match), the sanity item, each forbidden and conduct rule and each atom,
+and keeps them on the Verdict as `items`. Pass is every gate item holding; a definite gate failure wins over an open
+gate, and an open gate leaves the Run not verdicted, as D316. `score` is 0 when a gate failed, else the weighted
+mean of every item with the gate items counted as held and holding at least half the weight (agreed 2026-09-27);
+None when the Run is not verdicted or an env error, or when a scored item is open (an unrun judge), never a false
+0. The sanity item is code for every Task: with end states, nothing outside the matched end state's cells and
+`allowed` moved (the collateral half of `match`, now `expected.collateral`, named `gate:sanity:...`); with atoms
+only, no write that no atom declares (the old extra-write rule). `check_run` reads gate atoms only, so the two
+scorers agree. `Episode.reward` carries `passed` beside `score`; birth's walk and do-nothing checks and the solve
+table read the pass, and the solve table adds the mean score. The report's Task numbers and Verdict lines, the
+package manifest (`reward`, the Verdict version) and its Task rows (`items`: gate and scored counts) and the card
+glossary show both numbers. VERDICT_VERSION is 4.
+Why: the gated weighted reward agreed on 2026-09-27 and the v3 shape of 2026-10-07: correctness gates, process
+scores past the gates, and a stray write fails every Task by code.
+Measured (live Verifiers of verify-1006-live, 2659 stored Runs, base 4b11e3b8 against this code): pass and class
+identical on every Run; 77 failures are now named by the sanity item instead of `gate:expected:collateral`. No live
+item is scored yet, so every live score is 0 or 1. Scoring question and communicate atoms instead of gating them
+would flip 104 of 191 Runs on the 34 Tasks that carry them from fail to pass (mean score of those 0.74 retail,
+0.79 airline); that is the founder's open point, so the default stays the gate and the writer sets `gate` per item.
+Retired: the whole-Run binary reward of `Episode.reward` (1 or 0 from the class) and the score-blind
+`match_any` inside the verdict.
+Status: built 2026-10-07 on shape-1007/reward.
+
+### D330. The Spec writer is blind to the Reference: items from the Intent, the policy and the world (2026-10-07)
+
+What changed: the writer writes typed items (`spec/items.py`): state (`row_is`, `row_new`, `row_keeps`), event
+(`called`, `not_called`, `before`), text (`said`) and judge (`{question, anchor, evidence}`), each with gate, weight
+and provenance (fact_ids or a verbatim policy_line). It searches the world with tools (`read_schema`, `find_rows`,
+`read_row`, `read_policy`) and adds items with `add_items`, which refuses a value no world row, policy line or user
+turn holds, a find matching no row or several, a field the table lacks, and says why ("find, do not invent").
+A judge anchor cites the one row it was read from and its answer states that row's fields; only an anchor quoting
+the item's policy line goes without a row. Code adds the sanity item (`nothing_else`) to every Task: no row outside
+the declared rows changes. A cell value may be a list (members in any order); `free` on a row_is names
+fields a tool sets to a value no search finds (records it fills in, a computed balance), allowed to move
+unchecked. Items with `alt` make several end states, any one may match. The Verdict decides every item
+(D335): the fold deleted `runner/items.py` and `spec/end_state.py`. Contradicting items go back once; any left set
+the Task aside.
+Retired: the Reference path of the Spec package. D320's Reference-derived `write_verifier` and `refresh_gates`;
+D315's `expected_from_run` as the Verifier source (it stays for fidelity measurement); D323's Reference reading
+on the Verifier path; D324's unseen conduct (`reference_tools`) and the demand send-back. `gates_of` takes no
+Reference; `reference_run` moved to `spec/witness.py` for the witness flag. A source test fails if `kullback/spec`
+imports `kullback.runner.expected` or the writer path reads references.json. A refusal is the sanity item plus a
+judge item, with no refusal kind. Older demand Specs still compile, Reference-free, and the Spec stage rewrites
+them as items (D335).
+Why: COMMON shape-1007: Verifier items come from the Intent, the policy and the world, never from the Reference
+Run, so a wrong Reference can no longer write its own Verifier.
+Limit (closed at the fold): D327's `writer_disagreement` is retired by D333.
+Status: built 2026-10-07 on shape-1007/writer.
+
+### D331. The Examiner gives feedback and never edits; rulings, two rounds (2026-10-07)
+
+What changed: the Examiner files rulings (`spec/rulings.py`), one file each under exam/rulings/<task>: the item (a check,
+atom, Intent fact or the task), a kind and code (derivation, judge, code, scope), the reason and the fix in one sentence
+each, blocking or note. `examiner/rule_tool.py` holds rule, close, verify (the do-nothing Run, a stray write and the
+Reference end state through the Verifier, cited by a passes_do_nothing or fails_reference ruling, which names the wrong
+side) and the writer's world tools lookup_rows and search_rows, so a judge anchor is checked against the world.
+`spec/review.py answer_rulings` has the writer apply (Verifier rewritten) or rebut each ruling with why;
+`spec/rounds.py run_rounds` runs Examiner, writer, Examiner (ROUNDS_CAP 2), logged to spec/state/rounds.jsonl and the
+bus. The Spec's `rulings_open` counts open blocking rulings and `round` the last round: an open blocking ruling after
+the last round holds the Task untrusted. A ruling that the Reference is wrong is a note, never asked of the writer.
+Retired: the D325 edit kinds (atoms, text, cell, conduct, reference) and `reference_proposed`; the D317 text and atoms
+edit shape on the Spec (`atom_edits`, `end_state_edits`, dropped on load); the bus-driven Router and its moves on run,
+check, intent and environment targets (`spec/router.py` keeps the set-aside state); reject_reference; the quote
+requirement on rulings. A finding keeps body edits for the Builder only.
+Why: sh-examiner (shape-1007): an Examiner that edits the Spec grades its own work; feedback the writer answers keeps
+one author per Verifier and leaves a trail.
+Status: built 2026-10-07 on shape-1007/examiner.
+
+### D332. The user looks facts up; its goal never ends a Run; a single-turn Task shape (2026-10-07)
+
+What changed: `user/lookup.py` holds the user's facts (rules facts and argument facts) keyed by field name, with
+the Vocabulary's aliases, from the signatures where no build Vocabulary exists (D326). One lookup takes question
+text and returns the facts it asks for: field words, then an alias, then plain-word overlap with the words a
+question points at ("which", "what", "your"; not "your" in an offer, never in a closing question). A fact whose
+value the question states is not asked for; a field named but held nowhere comes back `missing`, which the rule
+user hands to its Starting state reader (the seam for the user reading its own rows later). The rule user's
+`_asked` and the agent user's asked fields call it on the turn's request sentences; `my_facts(question=...)`
+replaces `my_facts(asked=[fields])`, and each call logs the fields found and missing, never values.
+Run ending: `goal_done` no longer ends a Run in `SimulatedUser._end_kind` or `guards.EndProtocol.kind`. The
+Candidate's close, the scenario running out and the turn limit end Runs; where one of them ends a Run with the
+goal's writes made, the end is reported `goal_satisfied` (a label), and every user turn carries `user_goal_met`.
+No module in spec/, gates/, runner/verdict.py or runner/records.py read the goal (a source test keeps it so).
+Single-turn shape: `Task.facts_in_instruction` (default off) folds the user's facts into the opening message
+(`world/environment.py facts_instruction`) and runs with no Simulated user in `runner/tool.py run` and
+`Episode.reset`. The spoken field names moved to `runner/records.py` so the world folds without importing the user.
+Why: the cue lists heard an ask only in the words a corpus showed, and the goal that ended Runs is read off the
+Reference's writes, which may decide nothing trust or the Verifier reads (verifier-redesign-1007 v2).
+Measured (live replay, every fresh Run of verify-1006-live, same Candidate request sentences): retail 176
+questions, answered 43 by the lookup vs 27 by the cues; airline 212, 14 vs 5; no question the cues answered was
+lost. By hand about 5 of the 25 new hits are wrong (yes/no asks, a statement, another traveller's name). One live
+Run per corpus with the agent user on Muse contributor: 4 and 2 `my_facts` calls, found and missing logged.
+Retired: the cue matching of D115 in both users' hearing (`asked_fields` and `named_fields` stay for rule
+derivation), D210's "a Run whose goal writes are confirmed is done whatever the Candidate said next", and the D214
+`my_facts(asked=[...])` argument. Limits: the overlap has no labelled truth beyond the hand read; derivation in
+`rules.py` still mines asks with the cues. Since the fold the goal label is read off the Spec's write items (D335),
+never the Reference's writes.
+Status: built 2026-10-07 on shape-1007/user.
+
+### D333. Trust is two constructed Runs failing and no open ruling; Reference and solvable are flags (2026-10-07)
+
+What changed: `spec/trust.py tier_of_task` rules a Task trusted when the do-nothing Run and a stray-write Run both
+fail its Verifier and no ruling is open; otherwise untrusted with one reason, read in order: no_intent (no Spec, an
+empty Spec, no Intent fact, a Verifier that checks nothing, no Verifier file, or a refused Task), open_ruling (a
+ruling open, or set aside by the router's rule), constructed_run_passed (a constructed Run passed, or none could be
+built). The stray-write Run is built by code: a passing Run of the Task (a faithful kept Reference first, then a
+fresh Run, else the do-nothing Run) plus one write to a row outside every row the Verifier declares (expected
+cells, `allowed`, forbidden rows), skipping tables that record calls and exempt columns. It counts as failed only
+when it fails at the sanity check (collateral) on a base the Verifier passes; failing at a cell or an atom, or on a
+failing do-nothing base, it never tested the sanity check, so the Task reads constructed_run_passed with the row's
+detail stray_untested (round 1 correction). Since the fold every Verifier, a refusal's too, must fail the
+do-nothing Run, and only a definite gate failure counts (D335). Two flags ride
+on the row and never gate: reference_passes (every faithful replay of a kept Reference passes; None without one)
+and solvable (any fresh Run passed; None without one). A failing kept Reference becomes a blocking code ruling
+(fails_reference) filed before the Examiner's first round, who rules which side is wrong (D335). Counts (`round_snapshot.counts_of`,
+`gates.trust.tier_counts` and `trust_row`), the tier report and its README table, the Spec review's repair gates
+and the package rows and manifest read the tier, the reason and the flags; round snapshots move to format 2.
+Retired: the grounded, sourced, can_fail (the D79 mutation suite, `spec/canfail.py can_fail`), reference_replay
+(D312) and independent_pass gates; the tiers replay_only, set_aside, unconfirmed, pending and refused as Task tiers
+(D319's words stay only in the untrusted text of a workdir with no Spec, whose untrusted Tasks read no_intent);
+the code ruling as a gate inside the Spec's tiers (D322's sourced gate); D327 in full (the not-run split and
+`writer_disagreement`, replaced by the reference_passes flag).
+Why: the founder's v3 shape (verifier-redesign-1007.md): trust by code with no model, sourced enforced in the
+writer's tool, the Reference a witness only.
+Limits (closed at the fold): the sanity item landed with D329; the stray write reads it.
+Status: built 2026-10-07 on shape-1007/trust.
+
+### D334. Dead code out: the Builder's memory tree, triage skill, body writer and Intent writer (2026-10-07)
+
+What changed: code no command, module or script reaches is deleted, found by vulture plus a reference count per
+name over kullback, tests, scripts and docs, then a module-aware pass for private names. Whole modules:
+`builder/memory.py` (D64, D69, D87 version tree and lessons file; nothing imported it), `builder/triage.py` (the D150
+skill text; nothing loaded it), `agent/reading.py` (G21 helpers; only its test), `builder/body_skill.py` (D168). In
+`compile_env` the model-written body path: `write_tool_body`, its prompt chain and the D117 lookup_rows and test_body
+loop, whose flag was always off. `builder/intent.py` loses the Intent writer and its grounding (D47, D83, D113,
+D143, D157 as code; the Spec stage writes Intents); at the fold `user/factory.py` imports the value strip directly
+and the module is gone. Smaller: helpers in mine,
+readers, lesson, feed, route, ingest and agent tools that only their own tests called, and three scripts that
+imported removed modules or measured removed code (`reroll_snapshot.py`, `user2_wider.py`, `request_snapshot.py`,
+`prompt_snapshot.py`). Tests of behaviour that still exists were kept or rewritten (apply_intent, the blocked lesson).
+Why: carve, never rewrite; dead code is read by every agent that greps the tree and costs review and mutation time.
+Kept on purpose: `builder/skills.py` and the container world and cheat suite, which D rows and ADR 0010 name as the
+mechanism for planned work; `runner/world/birth.py`, which the trust redesign may reuse for constructed Runs; the
+`kullback/ai` and `kullback/agent` surfaces that mirror tau; the hub package; documented CLI commands.
+Measured: 245 functions and classes and 80 tests removed (one test added), 5705 lines deleted; suite 4153 to 4074.
+Status: built 2026-10-07 on shape-1007/deadcode. Renumbered D334 at the fold.
+
+### D335. The fold: one item table, echo facts, refusal gates, review and audit fixes (2026-10-07)
+
+What changed: the seven shape-1007 streams folded with 22 wiring items. The gate flag decides, never the kind:
+state items are read as the end state's cells (which carry the item's gate and its weight shared over its cells),
+event items (`called`, `not_called`, `before`, `said`) are decided in the Verdict from the atom, judge items by
+their score; `runner/items.py`, `spec/end_state.py`, the writer's add cap and `gates_of` are gone. The conduct kind
+`handoff` reads `called` (old values load). Empty judge evidence scores 0 by code. Judge evidence defaults to every
+agent turn up to the first transfer or hand-off call; `after_call` reads to that point too, past the next user turn;
+a narrower ref needs `evidence_why`. A refusal judge item always gates. Trust counts a definite gate failure only,
+the stray write reads the sanity item, every Verifier must fail the do-nothing Run, and a failing kept Reference
+is a blocking fails_reference ruling before round 1. `free` is {field: reason}; an expect naming only the find key,
+a free field without a reason and a free field whose value an Intent fact names are refused. Older demand Specs are
+rewritten as items by the Spec stage. The user's goal label comes from the Spec's write items (`spec.schema.goal_of`).
+An Intent fact is `echo` when the user only accepted it or a value of it (a token with a digit) was in the agent's
+line and not the user's; a gate value may not rest on echo facts alone (the policy or the item's own row may carry
+it), and echo facts are counted per Task. A judge anchor stating a number its row and the policy do not hold is
+refused as computed. A hand-off `called` item gates only when its policy line names the hand-off. Conditional
+branches are separate end states, counted per Task. Refusals are counted by the family of code wording they carry,
+never by their text. The confirm matcher strips markdown emphasis and a leading conjunction. A Spec that writes with
+no confirm-turn `before` item gets one fixed question to the writer before the Examiner's first round.
+Why: the critical review (sh-review-report.md) and the Verifier audit (sh-audit-report.md) of the seven streams.
+Retired: D76's "stays open" rule for item-shaped judge atoms; the forbids_only exemption and `at_sanity` in trust;
+`ATOM_DEMANDS`, `MAX_ADDS`; `builder/intent.py`; the dead code deferred by D334 that the fold left unreferenced.
+Status: built 2026-10-07 on shape-1007/fold.
+
+### D336. A Task with no Reference left waits in the pool instead of being refused (2026-09-25; was D294, moved for the main collision)
+
+When the Examiner rejected every Reference of a Task, the Task was refused as `reference_wrong` and left the Environment. Those are often the hard Tasks, the ones where no recording solved them, so throwing them out throws out what the next build most needs to learn. Now such a Task waits in `exam/reference_pool.json` with the reason and the excluded runs: it stays in the Environment, untrusted for want of a Reference, and not refused. Any later finished Run whose End state nobody excluded is picked by the normal D111 rule and takes the Task out of the pool; a Run reaching an excluded End state is failed with it, so the rejected answer cannot come back under a new run id. The refuse gate is strict again: every refusal needs no finished frontier Run.
+
+### D337. Keep the two question-atom loosenings that pay; drop the volunteered-value and stated-fact ones (2026-09-27; was D297, moved for the main collision)
+
+Per-change ablation of D296 showed the clean-task gain is carried by the world-readable question drop and the anywhere-confirmation (retail +3, airline +6 together, more than all four changes combined). The volunteered-value rule added nothing alone and the stated-fact narrowing lost clean Tasks alone and beside the others, so both are reverted; their tests go with them and the derivation pin rests back on its pre-D296 value, which the kept changes leave byte-identical on the fixture. The kept confirmation rule edits a frozen scoring path, so its PR needs the founder's allowance, and its denial list is English-only.
+
+### D338. The agent user is told its two readings, and both find what they should (2026-09-25; was D298, moved for the main collision)
+
+The agent user's prompt never named `my_choices` or `my_account`, so the model saw only the schemas and rarely called them; a kind in the model's own words matched nothing and stayed nothing; and a customer keyed by an id alone got no account, because the lookup matched only the person-shaped identity. Now the prompt names both tools with one example call each, the choice rule says to call `my_choices` first, and the company-holds example says the account is the exception: what it shows may be said, but only when asked. A kind that matches nothing answers with the kinds held, nearest layer first with their sources, so the model can ask again with one of them. The account lookup takes the ids the rules hold outside the identity as row-id keys: one row so named is the owner with the same carried rows, two unrelated rows are no account, and where two named rows carry each other the one another row carries as a plain value is the owner. The row, column, and unasked-value limits are unchanged. One line outside the owned files: the examiner passes `id_keys` through to `account_view`.
+
+
+### D339. The Examiner reviews one Task per session; an unexamined Task is untrusted (2026-10-08)
+
+Review_specs runs one session per Task over one round bus with REVIEW_TURNS_PER_TASK turns each, and reports the capped and examined Task lists. Examined rounds are recorded on the Spec file by sync_spec and unioned into the round summary by run_rounds. A Task whose Spec shows no examined round is untrusted with reason not_examined, read after no_intent and before open_ruling.
+
+### D340. The Examiner checks the Intent against what the user said (2026-10-08)
+
+An audit of 50 live Verifiers found 21 wrong, 13 because the Intent copied a failed recording's path (a refusal, a transfer, a fallback accepted after things went wrong) and the writer gated it; the Examiner saw the Intent but no user turn, so a Verifier matching a wrong Intent looked right. Each Task's view now holds every recording's user turns (index, the agent's last line before it, the user's text, read by the Intent miner's own `user_turns_of`) and each fact's source turn, stance, echo and unfounded flags. `how_it_works(query)` returns the policy paragraphs and the tools that match a few words, so the Examiner looks up what the world allows before it accepts an ask. Three scope codes, always blocking: intent_unfounded (applying it marks the fact `unfounded`, and the writer's tool refuses a gate resting on unfounded facts alone), gated_against_ask, and not_enough_truth (fix "keep untrusted"; the writer cannot apply it, only rebut it by citing a user turn, and an open one holds the Task untrusted with reason not_enough_truth, read after not_examined). The choice rule decides from the user turns, the world and the policy, the Intent being the writer's reading of the turns. A Task session gets 20 turns.
+
+### D341. Learned tool effects free the sanity item; called items are checked against recorded calls (2026-10-08)
+
+The sanity item froze every field outside the declared cells, including fields a write tool always changes (a history list appended on the row it writes, a count lowered on related rows), and called items could carry an argument no real call takes (a bare list where the tool takes objects, two arguments equal that no call ever made equal). Once per build the Builder replays every successful recorded write call in the sandbox (`Sandbox.run_diff`, the transition gate's per-call world diff) and stores, at exam/review/effects.json, per write tool the columns every call moved on rows it kept (list positions as N) and the tables every call made rows in, and per tool the argument types (tool_sigs.json first), object keys and never-equal text pairs of the recorded calls (builder/tool_effects.py, spec/effects.py). An end state frees each always-moved column of every tool it expects (a called item, or the one tool that alone answers a row_is or row_new) on its declared rows, or on the whole table where it declares none, with why "free: tool effect: <tool>"; a cell on the same field stays and no rule is added there. The writer's check refuses a called item whose argument type or object shape no recorded call shows, or whose never-equal pair is equal, and checks a list of objects on its key field. Offline on the 50-Task sample: sanity failed the kept Reference on 3 of 25 retail and 4 of 20 airline Verifiers before, on 0 and 3 after; 4 airline called items refused.
+
+### D342. The Examiner reads the whole policy in its prompt; the search finds tools only (2026-10-08)
+
+On the live run of 2026-10-08 (one review session per Task, 25 per corpus) retail sessions opened exam/review/policy.md in 0 of 25 sessions and airline in 5 of 25. `how_it_works` matched keywords against policy paragraphs, so the Examiner ruled on what the world allows without the rules in front of it, and the policy is only about 7 KB per corpus. A review session's system prompt now carries the full text of exam/review/policy.md as the section `examiner_policy`, after what the session receives and before the stop rule, so it is cached across turns; with no policy file there is no section. The views are written before the extension loads, so the file exists when the prompt is built. The search tool is renamed `find_tools` and returns only the tools whose name or description match a few words (at most 8); the policy-paragraph half and `policy_paragraphs` are gone. The choice rule now says the whole policy is in the prompt, to read the part that governs the ask before accepting or ruling, and to check the world rows (lookup_rows, search_rows) for what the world allows; the rest of it is unchanged. This does not change the full examine session's prompt, the Spec writer, the ruling tools, the policy file on disk or how it is written.
+
+### D343. A writer repair keeps the Spec's review fields (2026-10-08)
+
+In the live retail run every one of the 25 sample Tasks had a round one Examiner session, yet the tiers said not_examined on 15. Those 15 were exactly the Tasks with rulings: the writer's repair (spec/review.py `_settle`) rewrote the Spec from the repaired copy and carried over only rulings_open and round, so examined_rounds, set by `rulings.sync_spec` at the end of the round, was lost. not_examined is read before not_enough_truth and open_ruling, so it hid both. The repair now carries every field the review loop and the Spec stage own (`REVIEW_FIELDS`: rulings_open, truth_open, round, examined_rounds, pending_repair, set_aside) from the Spec as it stood. A test files a ruling on an examined Task, has the writer apply it, and reads the Task still examined and untrusted for its open ruling. The run's Specs were restored outside git from the bus (Examiner sessions of round one), with backups in the attic, and the tiers recomputed with no model calls.
+
+### D344. A review session's subscribers come off the shared bus when it ends (2026-10-08)
+
+On the live run of 2026-10-08 the Examiner's review round booked each model call many times over. `_review_one` subscribed the budget pricer (and the caller's watchers) once per Task session, but a harness with a bus subscribes on the bus, and every session in a round shares one bus, so session k's calls were priced by k subscribers. In the round's events.jsonl model_call rows, grouped by (history_hash, output, cache_read), retail had 166 calls booked 2190 times (1 to 25 copies each), 46.26 USD booked against 3.58 real, and airline had 168 calls booked 2163 times, 52.31 USD against 4.03. The driver's spend guard read the false sum and skipped round two and the Runs. `_review_one` now keeps the unsubscribe handles and calls them in a finally, so each call is booked and watched once. The other places that subscribe a pricer (the full examine session, the agentic judge, the Intent miner, the Builder and the trainer) either run without a bus or make a fresh one for their single session, so none had this fault and none changed. The bus semantics of `AgentHarness.subscribe` are unchanged, and budget.json from this run is not rewritten: the reprice script under .claude/herdr/truth-1008/tierfix gives the corrected figures.
+
+### D345. verify says a judge item nobody answered is not judged, never failed (2026-10-09)
+
+The Examiner's verify tool scored the Reference by code only: the Verdict never calls a model, so a judge item without an answer stays open and the Run is not verdicted. verify printed that open item as "reference: fails on j1", and the Examiner ruled on a failure that never happened. On the 2026-10-08 run, 18 of the 30 Reference failures were judge items never asked (retail 5, airline 13); 12 were real code gates. verify now reads the Reference three ways: passes, fails on an item (only a gate item that holds False, named with its kind), or not judged on an item ("reference: not judged on j1 (no judge answer)", or "not settled" for an item code could not evaluate).
+
+### D346. verify judges the Reference; the judge's reason goes to the Examiner only (2026-10-09)
+
+verify asks the item judge (kullback/judge/items.judge_items, the single-call judge the score stage also runs: one call per judge item, yes or no and a short reason) on the Reference and passes the answers into the Verdict. For each judge item it shows the Examiner whether the item held, the judge's reason and at most three of the agent lines the judge read. The answers are kept under exam/judged/<task>/<run>.<verifier hash>.json, so a second verify on the same Verifier and Run spends nothing; a failed call is not kept. The judge model is the Examiner's own unless review_specs is given another. The reason never reaches the writer: a ruling keeps the verify rows without the judge rows, and the writer reads neither exam/judged nor the views. The Examiner may still paraphrase the judge in a ruling's reason or fix, which the writer does read; that path is noted, not blocked.
+
+### D347. Trust reads the judge answers already saved; stray_untested is a reason (2026-10-09)
+
+Trust scored every Run without judge answers, so a fresh Run that passed only with its judge items read as not verdicted: the stray write had no passing base, landed on the do-nothing Run, was marked untested, and the Task was held as constructed_run_passed although no constructed Run passed. tier_of_task now takes the judge answers kept per Run (spec/judged.py): the newest Verdict the score stage saved under verdicts/<task>/ for a fresh Run, verify's kept answers for the Reference. The stray write copies its base's turns, so it carries the base's answers. When the do-nothing Run fails and no Run passed to lay the stray write on, the reason is the new stray_untested, read last after constructed_run_passed; the tier report and docs/builds/README.md gain its column. gates/trust.py keeps its own older reason list (frozen).
+
+A saved Verdict carries no Verifier content hash (verifier_version is a label), so a writer round that rewrites a judge item under the same id would let trust reuse the answer to the old question. The score stage (cli.py `_score`) now appends to verdicts/<task>/scored_with.jsonl the run id and the content hash of the Verifier it scored each Run with; trust reuses a saved judge answer only when the last line for that Run names the current Verifier's hash. No line, or another hash, gives no answer, and the item stays not judged. The file is JSONL so no reader of the Verdicts' *.json takes it for a Verdict.
+
+### D348. The writer's prompt gates the ask, not the recording's path; rebuttals cite (2026-10-09)
+
+Round two of the 2026-10-08 run showed the writer rebutting all 12 scope rulings with no reason, dropping a ruled item whenever the Examiner's fix offered a drop, and once cloning items to cover a fact; the Verifier audit (vq2) found most wrong Verifiers gate the recording's path: what the user only accepted after the agent proposed it or refused, the one option the recorded agent took where the policy allows several, and writes the agent never made turned into not_called or row_keeps gates. The writer prompt now says, in its choice rule: one item per ask; gate what the user asked for and the policy requires; what the user only accepted after a proposal or a refusal is weighted, not gated; where the user left a choice open and the policy allows several, accept any allowed one or weight it; a forbid (not_called, row_keeps) gates only with the policy line that forbids it, else it is weighted. The "leave it as it is" example (row_keeps) gave way to one on accepting every allowed option. The repair prompt now says: fix what the ruling names in the ruled items; drop a ruled item only when it asks for something the user never asked for, and say so; cover a missing fact in a ruled item's fact_ids or with one new item, never a copy; a rebuttal quotes the user's words or the policy line it rests on, and with neither the writer applies the ruling. A reply that changes nothing always starts with "rebut:", also when the ruling asks for no item change: rerunning the twelve round-one rulings answered empty, the writer had given a reason in ten of them, but not on a "rebut:" line, so the harness logged them as empty. Code is unchanged: these are prompt rules, and the checker still refuses what it refused before. A live feasibility check on the 14 Tasks vq2 labelled wrong plus 6 controls is in .claude/herdr/truth-1008/wr-prompt-report.md.
+
+### D352. A called check honours a set of allowed values (2026-10-09)
+
+When the user leaves a choice open, the writer accepts every allowed value as a set (D348), but the check never honoured it. A called target is exact-matched, so a set value compared as a literal never equals the scalar the Run called with, and the item fails whatever the value, even one in the set; seen live on d3a4 k10, whose Reference value is allowed. A called item with a set-valued argument now compiles to a Hard rule that matches the Verdict's own way with the set widened to any member, and a legacy write value naming a set compiles to the same rule scoped to its row. State cells already match sets and are unchanged. A Run calling with any allowed value now holds the check, and any other value fails it. The live spec has since dropped the set argument, so the proof reconstructs that item in memory and scores the Reference with it.
+### D353. A wish said after pushback is weighed, never gated alone (2026-10-09)
+
+The Intent miner flagged volunteered-or-accepted wishes as required goals when the user said
+them only after the agent declined, failed, or offered another way. IntentFact carries
+after_pushback (spec/schema.py): the miner marks it under one prompt sentence, and code backs
+it from the agent line before the turn with general words only, and only before the agent's
+first completed tool call in that recording (spec/intent_tools.py is_after_pushback). A gate
+resting only on after-pushback or accepted facts, with no policy line beside them, is weighed
+by code (spec/items.py _pushback_only, placed after the kind checks so the echo refusal still
+fires first); mixed support still gates. The kept line tells the writer in one line why its
+gate was weighed. Both views show the flag (spec/writer.py _facts_view,
+examiner/rule_tool.py _fact). Live feasibility on the 8 goal-wrong Tasks plus 6 controls,
+re-run after review: report .claude/herdr/truth-1008/gread-report.md, section r1.
+Code backing from the agent line was tried, fired zero times on the 14 re-mined Tasks, and was
+removed; the miner's mark is the only source of the flag.
+
+### D350. Three writer rounds per Task; the cap counts writer rounds (2026-10-09)
+
+With ROUNDS_CAP at 2 the review loop ran Examiner round one, writer round two, Examiner round two and stopped, so a ruling filed in Examiner round two could never be answered: on the 2026-10-09 airline re-review two Tasks stayed held on rulings filed on a false verify message. ROUNDS_CAP is now 3 (spec/router.py). In `run_rounds` the writer's first write is writer round one and each Examiner round short of the cap is followed by a writer round, so the cap gives the writer three rounds (the write and two answers) and the Examiner three.
+
+The Spec's `round` is the last Examiner round, which an Examiner-only re-review moves without a writer round. So the set-aside rule now counts writer rounds where it has the Task's rulings: `router.writer_rounds` is one plus the distinct rounds in which the writer answered a ruling, and `is_set_aside(spec, rulings)` holds a Task at the cap only when that count reaches it with a ruling open. Without ruling records it falls back to the Spec's round, which the loop keeps equal to the writer rounds. `rounds.task_rows` reports both. Trust still holds any Task with an open blocking ruling, cap or no cap, so the rule changes the set-aside label, never a tier.
+
+A writer round only ever answered rulings with no answer, so a ruling the Examiner kept open after the writer's answer never went back: on the 2026-10-09 data that was 10 of 14 open retail rulings and 10 of 16 open airline ones. `rulings.unanswered` now also returns a ruling kept open in the answer's round or later (Examiner round n follows writer round n), and the repair shows the writer its last answer and the Examiner's why for keeping it open. The cap bounds the back and forth.
+
+### D351. Every writer session is saved whole (2026-10-09)
+
+Only the writer's token rows were kept, so what it read, tried and was refused could not be traced when a round went wrong. Each writer session (the first write, every repair, the confirm question) now appends one line to exam/writer/<task>.jsonl: kind, round (1 for the write, the Spec's round plus one for a repair), the ruling answered, spend, counts, the final text, and every conversation it held in full (messages, tool calls with their answers, replies with summarized thinking; a follow-up or retry turn is a second conversation). The model is wrapped to keep its last call, so nothing in the session loop changed. The writer is never shown these files: its inputs come from `load_inputs`, which reads no exam/ path, and the Examiner's root copies no writer directory.
+
+### D349. The Examiner questions the goal before it reads the items (2026-10-09)
+
+The Examiner had every user turn and the intent_unfounded, gated_against_ask and not_enough_truth codes (D340) but read the Intent as truth: of the 7 audited wrong Verifiers that rest on a wrong or incomplete Intent echoing a recording where the agent refused, failed or proposed and the user went along, it questioned the goal on about 2. The choice rule now opens with the goal step on every Task: from the user's own requests, as made before the agent refused, failed or proposed anything, and from the policy alone, say in one or two lines what a correct agent leaves behind; hold the Intent against it (a fact the user only accepted after a proposal, refusal or failure is intent_unfounded; a request no fact or item carries is missing_fact, or uncovered_fact where a fact has no item; where the turns never show the wish once the policy allows the request, not_enough_truth); only then check the items. The old fact-against-turn sentences are replaced, not added to, and a later round's opening also allows a new ruling on a goal the Intent still gets wrong. No new codes. Feasibility check on 14 wrong and 6 right Tasks (one run each, own rating, not blind): sessions that opened as a later round, with earlier rulings to close, filed no ruling on any of the 20 Tasks; fresh round-one sessions, with earlier rulings set aside, filed goal rulings on 10 of 14 wrong Tasks (before: 6), naming the audit's problem on 6 of them (3 yes, 3 partly), and on 3 of 6 right Tasks (before: 1). Those are blocking, factually defensible rulings on facts no gate needs. Report in .claude/herdr/truth-1008/ex-goal-report.md. r1 (a second look at the same 20 Tasks with the prompt tuned on them, not a held-out test): intent_unfounded is ruled only where a gate, or an item that decides the verdict, rests on the accepted fact, else the review text says so and nothing is filed, and a later round opens with the goal step; fresh sessions then filed intent_unfounded on 0 of 6 right Tasks (before 3; one blocking uncovered ask remained) and named the audit's problem on 6 of the 12 wrong Tasks they reached (4 yes, 2 partly), while later-round sessions stated the goal in every session but still filed no new ruling on any of the 20.
+### D354. What the user volunteered is gated or answered, in one follow-up turn (2026-10-09)
+
+Trusted partial Verifiers scored the ask instead of requiring it: a told value, a chosen variant, a named method sat in scored items (fail-report group G2, 9 of 25 trusted). After the contradictions turn, `write_spec` sends volunteered facts (stance volunteered, not after pushback, not unfounded) with no gated cover back once more in the same conversation (`asked_missing`, uncovered or weighted only per `ground.coverage`); the writer gates each or answers in one line quoting the policy or the user. The choice rule drops the leave-text-and-judge-ungated sentence for two: a told value is a gated judge item anchored on the world row holding it, a named variant or method a gated check on that field. D353 keeps accepted and after-pushback facts out of this check, so the two never claim the same fact. Live feasibility on the 9 partials plus 6 controls: report .claude/herdr/truth-1008/asked-report.md.
+### D356. Code mutants of a passing Reference, report only (2026-10-10)
+
+The two constructed Runs show a Verifier can fail, not that it fails where it should. `spec/mutants.py` makes mutants by code from a Reference the Verifier passes, each its end state with one change: value (a field the Reference wrote set to the same field of another start row, else the stray value), undone (a written field back to its start value, an inserted row removed), untouched (one write per table on an undeclared row through `trust.stray_writes`, which `stray_write_run` now takes the first of, and one per field the Reference left alone on a row it wrote) and extra_row (a copy of an inserted row under a new key). At most 40 per Task, shuffled per operator with a fixed seed and taken round robin; each is scored with the Reference's judge answers and named killed, survived or open, with whether a failing gate item reads the mutated cell. `scripts/mutants.py` writes exam/mutants/<task>.json and prints per Task counts. Nothing feeds trust, rulings or the writer. Mutants change the end state only, so call and judge items never see them. Experiment on the truth-1008 clone, pre-registered: 240 Tasks scored, 3813 mutants, 71 survivors, every one on the 50 later-round Verifiers the audit labelled; 19 of 60 hand-labelled survivors are real holes, all on partial Verifiers, and they re-find the audit's written hole on each of those 8 Tasks. Report in .claude/herdr/truth-1008/mutants-report.md.
+
+### D357. A Reference failure names the step and the side at fault (2026-10-10)
+
+When verify showed the Reference failing a check the Examiner filed fails_reference with a bare wrong_side guess, and the last live round loosened two Verifiers until wrong References passed. The verify answer now carries the Reference steps (user turns, tool calls, replies; results and stop left out) as the investigation input, no new tool. A fails_reference ruling must carry ref_step, one of the Reference event indexes, and code refuses one with no step or a step outside that Reference; wrong_side reference keeps the Verifier standing as a note the writer never answers, wrong_side verifier blocks as before. The choice rule says to investigate before ruling and that a passing Reference is never a reason to change a check. Judge reasons and step text stay in the session: the ruling carries the index only. A wrong Reference, or a not_enough_truth ruling the Examiner keeps open after the writer's answer (or still open at the round cap), ends the Task with no Verifier: the Spec's set_aside records reference_wrong or intent_unclear once, trust reads it as reason no_verifier with that why (untrusted, not an error, kept out of the build table's columns), and the writer is asked nothing more on that Task. The repair prompt tells the writer to reply "rebut: cannot verify: <why>" when the only fix would loosen a check so the recorded run passes. Live feasibility: report .claude/herdr/truth-1008/refwhy-report.md.
+
+r1 (2026-10-10): ref_step is one of the steps the verify answer shows (a user turn, a tool call, a reply), or "never" for a write or call the Reference never made, accepted only when the failing check is a state cell or a called check (bad_never otherwise). The no_step and bad_step refusals say the ruling still stands and how to refile. The choice rule asks, before a side is named, whether a right solve of the user's own requests under the policy would pass the check; if not, the check is wrong whatever the Reference did. The r1 rerun showed trust's routed fails_reference rows being closed with the diagnosis in free text (9 of 10), so nothing recorded side, step or no Verifier: closing a routed row with no side is now refused (unsided_close), and a sided fails_reference ruling closes the Task's routed rows on filing.
+### D358. The Examiner derives its own expected end state, report only (2026-10-10)
+
+The writer derives its Verifier from the Intent, and the Intent echoes recordings where the agent refused, failed or proposed something; a check on the Verifier that reads the same Intent inherits the error. `kullback/examiner/goal.py` runs one model session per Task that says what the world should look like after a right solve from other evidence: the user's own words in every recording (never the agent's lines, its tool calls or their results), the policy, the Starting state through the writer's four read tools, and the tool signatures. It never loads the Intent, the writer's items, a Verifier, a Run, a Reference or an End state, and the Starting state goes through `refuse_run_inputs`. It writes exam/goal/<task>.json: required cells with the user's words or the policy line they rest on, choice cells with the allowed set or any valid, untouched rows, told items, refusals, unknowns and cannot_tell; code names a cell on a missing table or row, a required cell resting on nothing, and a quote no user turn or policy holds, and refuses nothing. Nothing reads exam/goal/ for trust, rulings or the writer yet. A final answer is read from its last goal object (an answer may restate a broken first try), and an answer with none is no answer, never cannot_tell. Trial against tau2's gold end state on the 50 audited Tasks (Opus 5.5, one run plus 10 reruns, 5.09 USD): 41 of 50 Tasks with no wrong required cell, but wrong required cells 13.8 percent of 246 and 52 percent of gold changed cells covered, so the pre-registered bar is not met; where the goal and the Verifier disagree in a way gold decides, gold sides with the goal on 27 cells (all a Verifier value the goal leaves free) and with the Verifier on 17 (all a wrong goal value the Verifier leaves free); 10 of 10 reruns name the same cells, 8 the same values. Pre-registration .claude/herdr/truth-1008/goal/prereg.json, report .claude/herdr/truth-1008/goal-report.md.
+
+r1 (2026-10-11): three general fixes in `goal.py`: a value only a tool sets (a status label, a list a tool rebuilds, a computed amount) is choice or unknown unless the policy states it; a required cell an unknown also names (by table and row) goes back once in the same conversation and, if still there, code moves it to unknown; an empty forced answer gets one plain ask for the goal object. Held-out trial on 50 other Tasks, both prompts, 9.23 USD: the old prompt meets the pre-registered bar (5.4 percent wrong, 80.6 covered), the new one misses b (10.5 percent wrong, 77.3 covered), so r1 is not better as scored. 21 of its 26 wrong cells are list elements written as indexed paths the scorer cannot place (16 right read into gold's list, 5 a tau2 gold bug on multi-item swaps); fix 1 removed the status-label errors (7 of the old arm's 14), the empty ask recovered the one no-answer Task, the clash ask fired on 5 Tasks and moved nothing. Report .claude/herdr/truth-1008/goal-report.md, section r1.
+
+r2 (2026-10-11): a list field in the goal is the whole list or an append, never an indexed path; a required or choice cell with a bracketed indexed path or on a table the Starting state lacks goes back once in the same ask as the clash, and a cell still there after it moves to unknown. Held-out trial on 50 other Tasks (19 with an abstain or a wrong Reference), three prompts, 13.10 USD: old 9.1 percent wrong and 80.8 covered, r1 8.7 and 78.4, r2 5.3 and 78.8; all three meet the bar and r2 is better by the pre-registered rule. The r2 checks never fired on this sample, so the gap is run-to-run spread, not the change; dotted indexes (items.0.price) escape both the check and the scorer, and on hard Tasks r2 is no better than r1. tau2's multi-item modify sets every swapped item from the last variant; gold gives each item its own, vendor unpatched. Report .claude/herdr/truth-1008/goal-report.md, section r2.
+
+### D359. The round cap is a setting, 5 by default; every answered round counts (2026-10-10)
+
+The truth-1008 full50 measurement caps the writer and the Examiner at 4 rounds, and ROUNDS_CAP was a constant 3. `router.rounds_cap()` now reads the environment variable KULLBACK_ROUNDS_CAP, a whole number of at least one (anything else is refused, never read as another cap), else ROUNDS_CAP; `is_set_aside` and `run_rounds` read it at call time, so a run's cap is set where it is launched. The test of a cap of 4 showed that `writer_rounds` undercounted: a ruling kept open was answered again in a later round and the answer overwrote its round, so a ruling answered in rounds 2, 3 and 4 counted as one writer round and the Task never reached the cap. The answer now keeps every round it was given in (`rounds`), and `writer_rounds` counts the union (`rulings.answer_rounds`); an answer saved before this names its last round only. Trust still holds any Task with an open blocking ruling, so the fix moves the set-aside label and the intent_unclear why at the cap, never a tier from untrusted to trusted.
+
+r1 (2026-10-11): founder: the default cap is 5 (ROUNDS_CAP 5, four answers after the first write). The truth-1008 full50 table of 50 Tasks was measured at a cap of 4 (KULLBACK_ROUNDS_CAP=4), as pre-registered; a fifth round given afterwards to the 3 Tasks still at the cap with a ruling open closed none of them (report .claude/herdr/truth-1008/full50-report.md). Tests that pin a loop at another cap set the variable.
+
+### D361. A side fact is scored, never gated (2026-10-11)
+
+full50 blind labels found 13 of 23 wrong or partial Verifiers gating a judge item on a question only the recording's user asked along the way; a fresh Run whose user never asks it fails a right Verifier. The miner now reads each fact's kind (do, keep, told, detail; `add_facts` requires it) and code alone sets `side` (`intent_tools.mark_side`): a told fact is side when another fact of the Task is do or keep, unless it is said in its recording's opening ask, the first user turn carrying a do, keep or told fact (greetings and turns with no fact do not count); a Task whose only asks are told has none. The writer weighs a gate resting on a side fact like an after-pushback gate (`items._weighed_gate`): a judge or said item citing one, or any item citing one and no do or keep fact, is kept with gate false and `weighed: side fact`, and the kept line tells the writer why; a policy line does not lift it. The asked follow-up (D354) never sends a side fact back, the writer prompt says so in one sentence, and the Examiner's view shows the flag. The contradiction send-back runs again after the asked follow-up, so a gated row check the follow-up adds that clashes with another is sent back once instead of setting the Spec aside; a Task with no follow-up writes the same bytes. A request the user makes only in reply to an agent line that refused, could not, or proposed another way is a fallback (a third stance): the miner quotes that line (`in_reply_to`, the turn and a span), code keeps the stance only when the line carries the span, else the fact is volunteered and the Intent counts `fallback_unquoted`; any gate citing a fallback fact is weighed (`weighed: fallback`), the asked follow-up never sends one back, and the Examiner's view shows the stance and the quote. A fact mined before kinds has no kind and is never side; a workdir with no told facts writes the same Spec and Verifier bytes as before. Trial on the 13 Tasks, mined and written once (no Examiner), 4.28 USD: no gate on a side fact in any Task, one gate weighed by code and it was no gold ask, blind labels 5 right, 4 partial, 3 wrong, 1 no Verifier against 0, 7, 6 before, so it passes by the pre-registered rule. The cost: 4 side facts in 3 Tasks are told values the gold requires (an opening ask among them), now scored only, which the rater named as holes. Report .claude/herdr/truth-1008/fix-side-report.md.
+
+### D362. Surviving mutants become Examiner rulings; the stray gate reads the untouched sample (2026-10-11)
+
+D356 scored mutants of a passing Reference but nobody acted on a survivor. After verify finds the Reference passing,
+`spec/mutant_rulings.py` files each survivor by code in the Examiner's round, with the same shape, blocking flag and
+round cap as the Examiner's own rulings. A value survivor on a field that a Spec check reads, where that check rests on
+a volunteered fact (not an echo, not after pushback, not unfounded), becomes derivation/unchecked_field on that check.
+An undone survivor on a row where every undone mutant survived becomes unchecked_write. An untouched or extra_row
+survivor becomes unchecked_row, one per table. Any other survivor is a note. A ruling names the table and field, never
+a value, and one stands per cell, write or table per Task. The mutant report gives each survivor its ruling number or
+"note". A review session that never called verify gets the verify step by code afterwards. In trust, a passing base
+whose one stray write fails is held stray_untested unless every untouched mutant in the capped sample is killed. A
+row-level no-effect diff was tried for speed and withdrawn: unproven equivalent, it can drop real mutants.
+
+Trial on 12 labelled Tasks of the full50 clone: one Examiner round, Opus 5.5 on Bedrock, 2.56 USD. Mutants could be
+built on only 2 of the 5 missing_ask Tasks; the other 3 have no passing Reference or no write to miss. 7915 got two
+unchecked_field rulings and one unchecked_write. The writer re-gated the row with no new value, then the Examiner
+reopened it as unasked. On 52e2 the writer rebutted unchecked_write and the Examiner agreed, so it stays ungated. Bar a
+fails, 1 of 2 where mutants ran, and that one is contested. Bar b holds: no applied repair pinned a value. Of the 7
+stray_untested Tasks, 1 (f25a) left it and is trusted: the forced verify judged its Reference, and 10 of 10 untouched
+mutants were killed. 5 stayed, and 1 became no_verifier. With the sample gate on versus off over all 50, 1 retail Task
+moves from trusted to stray_untested. Report .claude/herdr/truth-1008/fix-mutants-report.md.
+
+D358 r3 (2026-10-11): a dotted number after a list (field.0.key) goes back like a bracketed index; after a dict it stays a key. Three runs per arm on the same 50 Tasks: mean wrong r1 5.30 percent (range 1.9), r3 5.83 (range 1.6), so no difference shown by the pre-registered rule and the r2 gain was within run-to-run noise. Wrong cells sit on four fallback and open-call Tasks in both arms; that rule is next, measured on hard Tasks.
+
+D358 r4 (2026-10-11): tried and not kept: prompt rules (a later acceptance or concession is choice, a step left open is unknown, a label is spelled as the Starting state or policy spells it) and three send-backs asked once (fallback, open call, off label). Three runs against r1 re-scored with indexed cells once per leaf: no harm on the 46 Tasks the rules were not read from (wrong cells 2.33 per run against a line of 3.0, coverage 89.73 against 88.27), no gain beyond noise (hard 19.83 against 19.33 percent wrong, all 5.37 against 5.50). Not kept because the session keeps a flagged cell required when asked, so the asks do not move the answer, and the one label aimed at is misspelled in the policy text itself.
+
+### D363. A built Environment exports as a Harbor dataset, one Harbor task per Task (2026-10-11)
+
+`kullback export --format harbor` writes, beside the package export, one Harbor task directory per Task (trusted by default, `--tasks all` adds the synthetic store under `synthetic/`) and a dataset manifest carrying the package manifest's fields with the Harbor task names. Each task holds instruction.md (the Intent's volunteered facts, not echoes and not accepted ones, then the recorded policy, then one line on the tools), task.toml (schema 1.3, name `<org>/<env>-<task id>`, metadata tier, trust reason, reference_class, difficulty bucket, needs_judge, origin, build tag, git sha; no network), environment/ (a digest-pinned Python base, kullback from a wheel, the one Task's world, no recorded calls, Verifiers, traces or References), tests/ (the Verifier and test.sh) and solution/solve.sh (the tool calls, reads and writes, of the first of the Task's Runs, kept References first, whose replay through the exported world holds every item a judge is not needed for; a prose-length argument is put as a neutral line; then a reply built from the values the Verifier needs said and the anchor answer each judge item is held to; a Task with no such Run is left out, counted, and named in the manifest by its last four characters). In the container `kullback.hub.harbor_world` serves the tools as a `tools` CLI and an MCP stdio server; every call replays the call log from the Starting state under seed 0, so ids and times stay deterministic, appends to /app/.calls.jsonl and writes the world back to /app/db.json; `reply_to_user` carries what the agent says. A consent user answers each reply with a yes, so confirm-before-write gates stay satisfiable without a live user. The reward is `verdict` scored as kullback scores it (D329): gates first, weighted after; a gated judge item that cannot be scored fails closed, unscored weighted items leave the denominator. Harbor reads reward.json as numbers only, so reward.json holds the reward and items.json beside it every item (id, kind, gate, weight, held, why). The D221 leak scan runs per task over the instruction, the tests and the solution; the policy is declared, not scanned. `kullback publish --format harbor` adds the directory under `harbor/` in the same dataset repo with a "Run it with Harbor" card section, and `--dry-run DIR` publishes into a local directory. Judge items are scored in the container by the model the variable KULLBACK_JUDGE_MODEL names at test time (founder 2026-10-11), one call per item (D328), behind the Harness's live-call switch; a Task with judge items passes that variable, the switch and the key variables through verifier.env as host templates and opens the network to the verifier phase only; the judge's answers and spend go to judge.json; with no judge named, or one that cannot start or answer, the fail-closed rule stands. The export's own oracle check never calls a judge. Accepted on two Tasks played on the host with Opus 5.5 on Bedrock as the judge, 0.05 USD in all: oracle 1.0 on one and fail-closed 0 on the other when one judge call came back empty, do-nothing and stray write 0 on both, and 0 on both oracles with the variable unset. The harbor CLI is a dev dependency local to kullback (Python 3.12 and later). Report .claude/herdr/truth-1008/harbor-report.md.

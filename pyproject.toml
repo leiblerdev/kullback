@@ -16,6 +16,7 @@ kullback = "kullback.cli:app"
 
 [dependency-groups]
 dev = [
+    "harbor>=0.24.0 ; python_full_version >= '3.12'",
     "import-linter>=2.5",
     "mutmut>=3.7.0",
     "pre-commit>=4.6.2",
@@ -74,6 +75,7 @@ layers = [
     "hub | trainer",
     "builder",
     "examiner",
+    "spec",
     "user",
     "agent",
     "runner:gates",

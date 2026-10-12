@@ -28,12 +28,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Union
 
+from kullback import derive as verifier_mod
 from kullback import sampling
-from kullback.examiner import derive as verifier_mod
+from kullback import variants as variants_mod
 from kullback.examiner import judge as judge_mod
 from kullback.examiner import lifecycle
 from kullback.examiner import reference as reference_mod
-from kullback.examiner import variants as variants_mod
 from kullback.gates import artifacts, fidelity, loosening, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
 from kullback.gates import stages as stage_gates
@@ -84,12 +84,20 @@ CODE_MODULES = (verifier_mod, reference_mod, judge_mod, verifier_suite, variants
 class ExamContext:
     """What the derivation is given beside its inputs: where to write, the anchor to seed from, the ledger."""
 
-    def __init__(self, workdir: Path, ledger: GateLedger, anchor: Any = None, stage: str = STAGE):
+    def __init__(self, workdir: Path, ledger: GateLedger, anchor: Any = None, stage: str = STAGE,
+                 kept: Iterable[str] = ()):
         self.workdir = Path(workdir)
         self.ledger = ledger
         self.anchor = anchor
         self.stage = stage
         self.recorded: list[GateResult] = []
+        # Tasks whose verifiers/ file another owner wrote (a Spec's): derived, never written or retired.
+        self.kept = frozenset(kept)
+
+    def write_verifier(self, task_id: str, body: Any) -> None:
+        """The derived Verifier into verifiers/, unless the Task's file is kept."""
+        if task_id not in self.kept:
+            write_json(self.workdir / "verifiers" / f"{task_id}.json", body)
 
     def seed_runs(self, task_id: str, run_ids: Iterable[str]) -> list[str]:
         """The Task's Runs minus its anchor when one was chosen, every Run otherwise (D81)."""
@@ -1085,7 +1093,7 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
                       probe_skip=probe_skip)
     results = verifier_suite.d79_results(gates)
     passed = artifacts.verifier_gate(results).passed
-    write_json(ctx.workdir / "verifiers" / f"{task.id}.json", as_dict(record))
+    ctx.write_verifier(task.id, as_dict(record))
     left_out = not_at_reference(confirmation, pool_runs, write_tools,
                                 fn or verifier_suite.canon_fn(canon_rules))
     # D199: a Task whose path is single by structure has no second path to score and never will, so
@@ -1158,7 +1166,8 @@ def model_name(model: Any) -> Optional[str]:
 
 
 def cache_key(task: Task, recordings: list, common: dict, *, intents: dict, user_rules: dict,
-              traces: dict, fidelity_row: Optional[dict] = None) -> str:
+              traces: dict, fidelity_row: Optional[dict] = None,
+              excluded: Optional[dict] = None) -> str:
     """The content hash of everything this Task's derivation reads.
 
     The Runs are in by id and by the hash of what they wrote, which is what the D111 rule groups on
@@ -1171,7 +1180,9 @@ def cache_key(task: Task, recordings: list, common: dict, *, intents: dict, user
     probe's model and limit, the judge's name, which judge it is (D185's `judge_agent`, so the
     one-shot judge's answer is never read back for the agent's) and the code hash. `fidelity_row` is
     this Task's own replay fidelity (D171): it decides which tools the row names as blocking, so a
-    recompile that moves it has to move the key with it.
+    recompile that moves it has to move the key with it. `excluded` is the recordings the Examiner
+    rejected as a Reference (reference_check, D111): a rejection changes which Reference the rule picks, so
+    it moves the key, and it is in the key only when there is one, so every other Task keeps its entry.
     """
     return content_hash({
         "task": {"id": task.id, "name": task.name, "intent": task.intent, "run_ids": list(task.run_ids)},
@@ -1183,6 +1194,7 @@ def cache_key(task: Task, recordings: list, common: dict, *, intents: dict, user
                  for r in recordings],
         "user_rules": {trace_id: user_rules.get(trace_id)
                        for trace_id in sorted({r.trace_id for r in recordings if r.trace_id})},
+        **({"excluded": sorted(excluded)} if excluded else {}),
         **common,
     })
 
@@ -1411,18 +1423,29 @@ def _prepare_one(task: Task, state: _DeriveState) -> _Job:
     # D189: the extra batches an earlier derivation bought sit outside the D111 rule's evidence,
     # so they are in the key (a batch bought is a different derivation) and are merged onto the
     # Confirmation afterwards rather than being handed to `confirm`.
-    extra = finished_recordings(second_path_rows(state.ctx.workdir, task.id),
-                                write_tools=state.write_tools, fn=state.fn, atoms=state.atoms, task_id=task.id)
+    # The recordings the Examiner rejected as a Reference stay rejected on every derivation after it,
+    # the second path Runs included, so a re-derive never picks one of them back.
+    excluded = reference_mod.excluded_runs(state.ctx.workdir, task.id)
+    extra = [rec for rec in finished_recordings(second_path_rows(state.ctx.workdir, task.id),
+                                                write_tools=state.write_tools, fn=state.fn, atoms=state.atoms,
+                                                task_id=task.id)
+             if rec.run_id not in excluded]
     key = cache_key(task, recordings + extra, state.common, intents=state.intents,
                     user_rules=state.user_rules, traces=state.traces,
-                    fidelity_row=task_fidelity(state.tool_fidelity, task.id))
+                    fidelity_row=task_fidelity(state.tool_fidelity, task.id), excluded=excluded)
     entry = read_entry(state.ctx.workdir, task.id, key)
     if entry is not None:
         return _Job(task=task, key=key, entry=entry)
     confirmation = reference_mod.confirm(recordings, intent=request_text(task, state.intents,
                                                                          state.traces),
                                          policy_lines=state.policy_lines, judge=state.judge,
-                                         phrases=grounded_phrases(state.intents.get(task.id)))
+                                         phrases=grounded_phrases(state.intents.get(task.id)),
+                                         excluded=excluded)
+    if confirmation.references:
+        # A later Run reached an End state nobody rejected and the normal rule picked again, so the
+        # Task leaves the pool and is derived as usual. The pool helpers lock, so parallel Tasks
+        # never lose each other's rows.
+        reference_mod.leave_pool(state.ctx.workdir, task.id)
     return _Job(task=task, key=key, confirmation=confirmation,
                 recordings=recordings + extra, extra=extra)
 
@@ -1476,7 +1499,7 @@ def _settle_all(state: _DeriveState, jobs: list[_Job], workers: int) -> None:
 def _finish_cached(state: _DeriveState, job: _Job) -> dict:
     """A cache hit's entry, with its Verifier file rewritten beside the live rows."""
     if job.entry.get("verifier") is not None:
-        write_json(state.ctx.workdir / "verifiers" / f"{job.task.id}.json", job.entry["verifier"])
+        state.ctx.write_verifier(job.task.id, job.entry["verifier"])
     return job.entry
 
 
@@ -1505,10 +1528,9 @@ def _second_path_outcome(state: _DeriveState, job: _Job, ceiling: threading.Even
         round_number=state.round_number, write_tools=state.write_tools, fn=state.fn,
         atoms=state.atoms)
     if not second["found"] and state.run_variant is not None:
-        # Gated serial until the re-freeze (docs/todo.md "Next re-freeze: flip the speed-1
-        # variant gate"): the shared replay tally these replays count into stays locked only in
-        # docs/frozen-patches/speed-1.patch, so pooled variants would count nondeterministically.
-        # None runs the variants as a plain loop; survivor derivation above stays pooled.
+        # Serial: the shared replay tally is locked now (speed-1, gates/tool_runs.py), but the
+        # variants are on the runs-foundation deletion list, so the pool was never turned on for
+        # them. None runs the variants as a plain loop; survivor derivation above stays pooled.
         synth, made = synth_second_path(
             task.id, confirmation, run_variant=state.run_variant,
             round_number=state.round_number, write_tools=state.write_tools, fn=state.fn,
@@ -1624,7 +1646,7 @@ def _persist_results(ctx: ExamContext, status: dict, references: dict, only: Any
     if only is not None:
         status = {**prior_status, **status}
         references = {**prior_references, **references}
-    retired = lifecycle.retire(ctx.workdir, status, round_number=round_number)
+    retired = lifecycle.retire(ctx.workdir, status, round_number=round_number, kept=ctx.kept)
     lifecycle.carry_forward(ctx.workdir, status, prior_status)
     write_json(ctx.workdir / "task_status.json", stamped(status, prior_status, round_number))
     write_json(ctx.workdir / "references.json", references)

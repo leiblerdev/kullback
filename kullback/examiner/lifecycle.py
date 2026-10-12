@@ -126,15 +126,18 @@ def on_disk(workdir: Path) -> list[Verifier]:
             for path in sorted((Path(workdir) / "verifiers").glob("*.json"))]
 
 
-def retire(workdir: Path, task_status: dict, *, round_number: int = 0) -> list[dict]:
+def retire(workdir: Path, task_status: dict, *, round_number: int = 0,
+           kept: Iterable[str] = ()) -> list[dict]:
     """Retire, in the derivation's own step, every Verifier on disk whose Reference is not held.
 
     The file leaves verifiers/ so nothing can pick it up off disk, the Task's status row says it was
     retired and why, and the row returned carries the Verifier itself so the caller can keep it in
     version history. Deriving again is what gives the Task a Verifier back; nothing revives one.
+    A `kept` Task's file belongs to another owner (its Spec) and stays.
     """
     rows: list[dict] = []
-    for verifier in on_disk(workdir):
+    kept = set(kept)
+    for verifier in (v for v in on_disk(workdir) if v.task_id not in kept):
         row = retirement(verifier, (task_status or {}).get(verifier.task_id))
         if row is None:
             continue
@@ -174,20 +177,6 @@ def retired_row(row: Any) -> Optional[dict]:
     """The retirement a status row carries, or None: how a reader tells a retired Task from a loss."""
     value = _get(row or {}, RETIRED_FIELD, None)
     return value if isinstance(value, dict) else None
-
-
-def retired_in_round(task_status: Optional[dict], round_number: int) -> list[dict]:
-    """The retirements one round made, off the status rows themselves.
-
-    The rows outlive the call that made them, which is what lets a driver read a round's retirements
-    after the fact rather than having to be handed them by the stage that ran.
-    """
-    out = []
-    for task_id, row in sorted((task_status or {}).items()):
-        gone = retired_row(row)
-        if gone is not None and int(gone.get("round") or 0) == int(round_number):
-            out.append({"task_id": str(task_id), **gone})
-    return out
 
 
 def counts(rows: Iterable[dict]) -> dict:

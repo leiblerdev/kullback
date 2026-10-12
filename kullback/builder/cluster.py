@@ -1,4 +1,4 @@
-"""Groups Runs into Categories by their confirmed write-tool set, then into Tasks by intent similarity (D83)."""
+"""Groups Runs into Tasks by the user's request alone, then labels each Run with its confirmed write set (D83, D313)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from typing import Any, Iterable, Optional, Sequence
 from kullback.ai.provider import Model
 from kullback.builder.mine import is_assistant_call
 from kullback.runner.records import Category, Task, ToolCall, Trace, content_hash
+from kullback.spec.text import APOSTROPHE_RE as APOSTROPHE_RE
+from kullback.spec.text import STOPWORDS as STOPWORDS
 
 # Similarity is Jaccard over the user's words weighted by inverse document frequency, so the
 # politeness and authentication chatter every Run repeats cannot decide membership. On the 456-Run
@@ -23,17 +25,6 @@ USER_TURNS_USED = 2  # the user's opening turns carry the intent; later turns ar
 MAX_NAME_CHARS = 80
 
 TOKEN_RE = re.compile(r"[a-z0-9_]+")
-APOSTROPHE_RE = re.compile(r"[\u0027\u2019\u02bc]")  # "don't" is one word, not "don" and "t"
-STOPWORDS = frozenset(
-    """
-    a an the and or but so then of to for in on at by from with without about into as is was were be been being
-    are am it its this that these those there here i me my we our you your he she they them their his her
-    do does did done have has had can could would should will shall may might must not no yes if when while
-    because please thanks thank hi hello ok okay just also very really any some all
-    dont doesnt didnt cant cannot couldnt wouldnt shouldnt wasnt werent isnt arent wont havent hasnt hadnt
-    im ive ill id youre youve youll youd hes shes theyre theyve thats whats lets weve wed
-    """.split()
-)
 
 
 def tokens(text: Optional[str]) -> list[str]:
@@ -66,7 +57,11 @@ def confirmed_write_calls(trace: Trace, writes: set[str]) -> list[ToolCall]:
 
 
 def category_signature(trace: Trace, writes: set[str]) -> tuple[str, ...]:
-    """The set of write tools this Run actually wrote through, sorted, as the Category key."""
+    """The set of write tools this Run actually wrote through, sorted: the Run's write label (D313).
+
+    A label, never a boundary. The cut is over what the user asked, so a Run that skipped the
+    write stays in the Task of its siblings and its different label is the dissent a judge can see.
+    """
     return tuple(sorted({c.name for c in confirmed_write_calls(trace, writes)}))
 
 
@@ -89,9 +84,9 @@ def task_id(run_ids: Sequence[str]) -> str:
 def run_tokens(trace: Trace) -> set[str]:
     """What a Run's intent looks like to code: the words of its first user turns.
 
-    The keys of the write call are deliberately not in here. Every Run of a Category wrote through
-    the same tools, so those keys are the same for all of them and only add a constant to every
-    similarity: two Runs with no word in common scored 0.308 that way and merged.
+    Only what the user said: nothing the agent said or called is in here (D313), so what the agent
+    chose to do cannot decide which request a Run answers. The keys of a write call once were, and
+    only added a constant to every similarity: two Runs with no word in common scored 0.308 and merged.
     """
     user_turns = [t for t in trace.turns if t.role == "user"][:USER_TURNS_USED]
     return {tok for turn in user_turns for tok in tokens(turn.content)}
@@ -230,6 +225,22 @@ def split_by_world(group: Sequence[Trace], worlds: dict[str, dict]) -> list[list
     return [members for members, _ in subgroups]
 
 
+def plurality_label(labels: Iterable[Sequence[str]]) -> tuple[str, ...]:
+    """The write label most Runs carry; a tie goes to the label that sorts first, so it is order free."""
+    counts: dict[tuple[str, ...], int] = {}
+    for label in labels:
+        counts[tuple(label)] = counts.get(tuple(label), 0) + 1
+    if not counts:
+        return ()
+    return min(counts, key=lambda label: (-counts[label], label))
+
+
+def dissents(task: Any) -> bool:
+    """True when the Task's Runs disagree on what they wrote: the per-Task dissent flag (D313)."""
+    labels = task.get("write_labels") if isinstance(task, dict) else getattr(task, "write_labels", None)
+    return len({tuple(label) for label in (labels or {}).values()}) > 1
+
+
 def cluster_runs(
     traces: Iterable[Trace],
     tool_sigs: Any = None,
@@ -239,37 +250,41 @@ def cluster_runs(
     min_runs: int = MIN_RUNS_GUARDED,
     worlds: Optional[dict[str, dict]] = None,
 ) -> tuple[list[Category], list[Task]]:
-    """Categories by write-tool signature, Tasks by intent similarity and starting world inside them (D83, D81, D74)."""
+    """Tasks by intent similarity and starting world, each Run labelled with its write set (D83, D74, D313).
+
+    The write set used to be the first cut, so a Run that skipped the write left its siblings of the
+    same request and became the Reference of a Task with nobody to dissent. Now it is a label on the
+    Task. A Category gathers the Tasks whose Runs mostly wrote through one set: a summary over the
+    cut, never part of it.
+    """
     writes = write_tool_names(tool_sigs)
-    by_signature: dict[tuple[str, ...], list[Trace]] = {}
-    bags: dict[str, set[str]] = {}
-    for trace in sorted(traces, key=lambda t: t.trace_id):
-        by_signature.setdefault(category_signature(trace, writes), []).append(trace)
-        bags[trace.trace_id] = run_tokens(trace)
-    # The weights come from the whole corpus, not from one Category, because a word is boilerplate
-    # by how often the customer's users say it, not by which tool the Run happened to write with.
+    ordered = sorted(traces, key=lambda t: t.trace_id)
+    bags = {trace.trace_id: run_tokens(trace) for trace in ordered}
+    labels = {trace.trace_id: category_signature(trace, writes) for trace in ordered}
+    # The weights come from the whole corpus, because a word is boilerplate by how often the
+    # customer's users say it.
     weights = idf_weights(bags.values())
 
-    categories: list[Category] = []
     tasks: list[Task] = []
-    for signature in sorted(by_signature):
-        cat_id = category_id(signature)
-        task_ids: list[str] = []
-        for cluster in _cluster_by_intent(by_signature[signature], bags, weights, threshold):
-          for group in split_by_world(cluster, worlds or {}):
+    by_label: dict[tuple[str, ...], list[str]] = {}
+    for cluster in _cluster_by_intent(ordered, bags, weights, threshold):
+        for group in split_by_world(cluster, worlds or {}):
             run_ids = sorted(t.trace_id for t in group)
+            label = plurality_label(labels[run_id] for run_id in run_ids)
             tid = task_id(run_ids)
             tasks.append(
                 Task(
                     id=tid,
-                    category_id=cat_id,
+                    category_id=category_id(label),
                     run_ids=run_ids,
                     unguarded=len(run_ids) < min_runs,
                     name=name_task(model, group),
+                    write_labels={run_id: list(labels[run_id]) for run_id in run_ids},
                 )
             )
-            task_ids.append(tid)
-        categories.append(Category(id=cat_id, write_tools=list(signature), task_ids=task_ids))
+            by_label.setdefault(label, []).append(tid)
+    categories = [Category(id=category_id(label), write_tools=list(label), task_ids=by_label[label])
+                  for label in sorted(by_label)]
     return categories, tasks
 
 
@@ -282,10 +297,11 @@ FROZEN_ONLY_REASON = "the rebuild grouped this Task's Runs differently; the froz
 CLEARED_REASON = ("the recordings alone still group this Task's Runs together, so the starting "
                   "world did not strand it; the rebuild's intent clustering did")
 GROUPING_FILE = "grouping.json"
-# 2: the split compares a requestor's homed row per column under the schema's column classes
-# (D233), so the revealed classes join the recordings and the homing as what the grouping may
-# depend on. 1 was the recordings and the homing alone (D216).
-GROUPING_FORMAT = 2
+# 3: the cut is over the user's request alone, the write set a label (D313). 2: the split compares a
+# requestor's homed row per column under the schema's column classes (D233), so the revealed classes
+# join the recordings and the homing as what the grouping may depend on. 1 was the recordings and
+# the homing alone (D216).
+GROUPING_FORMAT = 3
 
 
 class UnexplainedRegrouping(RuntimeError):
@@ -336,6 +352,9 @@ def moved_input(fingerprint: str, inputs: dict, frozen: Optional[dict]) -> str:
         return ""
     if fingerprint == frozen.get("fingerprint"):
         return ""
+    # A grouping frozen under an older rule moved because the rule did, which names the cause.
+    if frozen.get("format", GROUPING_FORMAT) != GROUPING_FORMAT:
+        return "format"
     for name in ("recordings", "homing"):
         if inputs.get(name) != frozen.get(name):
             return name
@@ -444,8 +463,9 @@ def resume_frozen(tasks: Sequence[Task], frozen: Optional[Sequence[Any]],
         if len(free) == len(task.run_ids):
             added.append(task)
         else:
-            added.append(task.model_copy(update={"id": task_id(free), "run_ids": sorted(free),
-                                                 "unguarded": len(free) < min_runs}))
+            added.append(task.model_copy(update={
+                "id": task_id(free), "run_ids": sorted(free), "unguarded": len(free) < min_runs,
+                "write_labels": {r: label for r, label in task.write_labels.items() if r in free}}))
     for task in kept:
         if task.name is None and task.id in named:
             task.name = named[task.id]
