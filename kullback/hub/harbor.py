@@ -30,13 +30,14 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from kullback.hub import harbor_world
 from kullback.hub.card import ORGANISATION
-from kullback.hub.harbor_world import CALLS_NAME, DB_NAME, REPLY_TOOL, TASK_NAME, WORLD_DIR, HarborEnvironment, play
+from kullback.hub.harbor_world import DB_NAME, REPLY_TOOL, TASK_NAME, WORLD_DIR, play
 from kullback.hub.package import (
     CONTENT_MIN_LENGTH,
     LEAK_MIN_LENGTH,
@@ -75,7 +76,7 @@ VERIFIER_TIMEOUT_SEC = 120.0
 AGENT_TIMEOUT_SEC = 900.0
 BUILD_TIMEOUT_SEC = 600.0
 # The world the image carries: the toolkit, the Starting state and the policy, never env/'s recorded
-# calls or its tau2 Task list.
+# calls or its source Task list.
 ENV_FILES: tuple[str, ...] = ("data_model.py", "tools.py", "db.json")
 POLICY_NAME = "policy.md"
 VERIFIER_NAME = "verifier.json"
@@ -427,115 +428,126 @@ def _policy(env: BuiltEnvironment, task: Any, fallback: Optional[str]) -> Option
         return fallback
 
 
-def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = ORGANISATION,
-                  name: Optional[str] = None, scan: bool = True, wheel: Optional[Path] = None,
-                  only: Optional[Iterable[str]] = None) -> dict:
-    """Write a Harbor dataset of the workdir's Tasks to `out` and answer its manifest.
+@dataclass
+class _Build:
+    """What every Task of one export shares."""
+    workdir: Path
+    out: Path
+    name: str
+    org: str
+    env: BuiltEnvironment
+    rows: dict
+    classes: dict
+    runs: dict
+    policy: Optional[str]
+    tag: Optional[str]
+    sha: Optional[str]
+    wheel: Path
 
-    `tasks` is `trusted` (the default) or `all`; synthetic store Tasks are never trusted, so they
-    come only with `all`, under `synthetic/`. `only` narrows the list to the named Task ids. A Task
-    with no Verifier, no Run or no instruction is left out and counted by reason. The oracle is the first
-    of the Task's Runs whose writes, replayed through the exported world, hold every item scorable without
-    a judge;
-    a Task with none is left out too (NO_ORACLE).
-    """
-    workdir, out = Path(workdir), Path(out)
-    if tasks not in TASKS_CHOICES:
-        raise ExportError(f"--tasks takes {' or '.join(TASKS_CHOICES)}, not {tasks}")
-    if not (workdir / "env").is_dir():
-        raise ExportError(f"{workdir} holds no env/ package: there is no Environment to export")
-    name = name or workdir.resolve().name
-    env = BuiltEnvironment(workdir)
-    write_tools = env.write_tools()
-    tool_names = {sig.name for sig in env.sigs}
-    rows = {row["task_id"]: row for row in task_index(workdir, frozen_task_ids(workdir))}
-    classes = reference_classes(workdir) or {}
-    runs = runs_on_disk(workdir)
+    @property
+    def tool_names(self) -> set[str]:
+        return {sig.name for sig in self.env.sigs}
+
+
+def _fallback_policy(env: BuiltEnvironment) -> Optional[str]:
+    """The first Task's recorded policy, for a Task whose own cannot be read."""
+    return next((prompt for prompt in (_policy(env, task, None) for task in env.tasks().values()) if prompt), None)
+
+
+def _choose(workdir: Path, rows: dict, tasks: str, only: Optional[Iterable[str]]) -> tuple[list[str], dict]:
+    """The recorded Task ids and the synthetic store Tasks to export, narrowed to `only` where given."""
     chosen = [task_id for task_id, row in rows.items() if tasks == "all" or row["trusted"]]
     synthetic = _synthetic_tasks(workdir) if tasks == "all" else {}
     if only is not None:
         keep = set(only)
         chosen = [task_id for task_id in chosen if task_id in keep]
         synthetic = {task_id: body for task_id, body in synthetic.items() if task_id in keep}
-    fallback_policy = next((prompt for prompt in (_policy(env, task, None) for task in env.tasks().values())
-                            if prompt), None)
-    tag, sha = build_tag(workdir), git_sha()
-    out.mkdir(parents=True, exist_ok=True)
-    skipped: dict[str, int] = {}
-    listed: list[dict] = []
-    scanned: list[dict] = []
-    with tempfile.TemporaryDirectory() as scratch:
-        wheel = wheel or build_wheel(Path(scratch))
-        work = [(task_id, False) for task_id in chosen] + [(task_id, True) for task_id in synthetic]
-        for task_id, is_synthetic in work:
-            if is_synthetic:
-                body = synthetic[task_id]
-                record = dict(body["task"])
-                facts: list[str] = []
-                instruction = opening(facts, record.get("intent"))
-                candidates = [[{"name": str(step.get("tool")), "arguments": dict(step.get("args") or {})}
-                               for step in body.get("walk") or () if str(step.get("tool")) in tool_names]]
-                policy = fallback_policy
-                index_row: dict = {"bucket": body.get("bucket")}
-            else:
-                record = read_json(workdir / "tasks" / f"{task_id}.json", {}) or {}
-                facts = asked_facts(_spec(workdir, task_id))
-                instruction = opening(facts, record.get("intent"))
-                candidates = candidate_calls(workdir, task_id, tool_names, runs.get(task_id, ()))
-                policy = _policy(env, env.task(task_id), fallback_policy) if task_id in env.tasks() else fallback_policy
-                index_row = rows[task_id]
-            verifier_path = verifier_of(workdir, task_id, is_synthetic)
-            reason = ("no Verifier" if verifier_path is None else "no Run" if not candidates
-                      else "no instruction" if not instruction else None)
-            if reason:
-                skipped[reason] = skipped.get(reason, 0) + 1
-                continue
-            verifier = Verifier.model_validate(read_json(verifier_path, {}))
-            harbor_name = f"{name}-{task_id}"
-            folder = out / (SYNTHETIC_DIR if is_synthetic else "") / harbor_name
-            judged = needs_judge(verifier)
-            metadata = {
-                "kullback_task_id": task_id,
-                "origin": "synthetic" if is_synthetic else "recorded",
-                "tier": "trusted" if index_row.get("trusted") else "untrusted",
-                "trust_reason": index_row.get("trust_reason"),
-                "reference_class": None if is_synthetic else classes.get(task_id),
-                "difficulty": index_row.get("bucket"),
-                "needs_judge": judged,
-                "confirm_gate": confirm_gate(verifier),
-                "kullback_build": tag,
-                "kullback_git_sha": sha,
-            }
-            calls = None
-            for tried in candidates:
-                keywords = sorted({str(record.get("category_id") or "")} - {""}) + sorted({c["name"] for c in tried} & write_tools)
-                toml = task_toml(name=f"{org}/{harbor_name}", description=_description(instruction),
-                                 keywords=keywords, metadata=metadata, org=org)
-                write_task(folder, workdir=workdir, task_id=task_id, task_record=record, instruction=instruction,
-                           policy=policy, verifier_path=verifier_path, calls=tried, wheel=wheel, toml=toml)
-                if oracle_holds(folder):
-                    calls = tried
-                    break
-                shutil.rmtree(folder)
-            if calls is None:
-                skipped[NO_ORACLE] = skipped.get(NO_ORACLE, 0) + 1
-                continue
-            listed.append({"harbor_name": f"{org}/{harbor_name}", "path": folder.relative_to(out).as_posix(),
-                           **metadata})
-            scanned.append({"name": folder.relative_to(out).as_posix(), "world": folder / "environment" / WORLD_DIR,
-                            "facts": facts or [instruction], "instruction": instruction, "policy": policy,
-                            "verifier": verifier_path, "calls": calls,
-                            "reply": (folder / "solution" / "solve.sh").read_text(encoding="utf-8")})
-    manifest = {
+    return chosen, synthetic
+
+
+def _inputs(build: _Build, task_id: str, body: Optional[dict]) -> dict:
+    """The record, facts, instruction, oracle candidates, policy and index row of one Task; `body` is a
+    synthetic store Task's file, None for a recorded Task."""
+    if body is not None:
+        record = dict(body["task"])
+        walk = [{"name": str(step.get("tool")), "arguments": dict(step.get("args") or {})}
+                for step in body.get("walk") or () if str(step.get("tool")) in build.tool_names]
+        return {"record": record, "facts": [], "instruction": opening([], record.get("intent")),
+                "candidates": [walk], "policy": build.policy, "index": {"bucket": body.get("bucket")}}
+    record = read_json(build.workdir / "tasks" / f"{task_id}.json", {}) or {}
+    facts = asked_facts(_spec(build.workdir, task_id))
+    known = task_id in build.env.tasks()
+    return {"record": record, "facts": facts, "instruction": opening(facts, record.get("intent")),
+            "candidates": candidate_calls(build.workdir, task_id, build.tool_names, build.runs.get(task_id, ())),
+            "policy": _policy(build.env, build.env.task(task_id), build.policy) if known else build.policy,
+            "index": build.rows[task_id]}
+
+
+def _metadata(build: _Build, task_id: str, synthetic: bool, index: dict, verifier: Verifier) -> dict:
+    return {
+        "kullback_task_id": task_id,
+        "origin": "synthetic" if synthetic else "recorded",
+        "tier": "trusted" if index.get("trusted") else "untrusted",
+        "trust_reason": index.get("trust_reason"),
+        "reference_class": None if synthetic else build.classes.get(task_id),
+        "difficulty": index.get("bucket"),
+        "needs_judge": needs_judge(verifier),
+        "confirm_gate": confirm_gate(verifier),
+        "kullback_build": build.tag,
+        "kullback_git_sha": build.sha,
+    }
+
+
+def _lay_with_oracle(build: _Build, folder: Path, task_id: str, given: dict, metadata: dict,
+                     verifier_path: Path) -> Optional[list[dict]]:
+    """Write the task with each candidate oracle in turn and keep the first that holds; None if none does."""
+    category = sorted({str(given["record"].get("category_id") or "")} - {""})
+    for tried in given["candidates"]:
+        keywords = category + sorted({call["name"] for call in tried} & build.env.write_tools())
+        toml = task_toml(name=f"{build.org}/{folder.name}", description=_description(given["instruction"]),
+                         keywords=keywords, metadata=metadata, org=build.org)
+        write_task(folder, workdir=build.workdir, task_id=task_id, task_record=given["record"],
+                   instruction=given["instruction"], policy=given["policy"], verifier_path=verifier_path,
+                   calls=tried, wheel=build.wheel, toml=toml)
+        if oracle_holds(folder):
+            return tried
+        shutil.rmtree(folder)
+    return None
+
+
+def _export_one(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Optional[str], dict, dict]:
+    """(why the Task is left out or None, its manifest row, its leak scan row)."""
+    given = _inputs(build, task_id, body)
+    verifier_path = verifier_of(build.workdir, task_id, body is not None)
+    reason = ("no Verifier" if verifier_path is None else "no Run" if not given["candidates"]
+              else "no instruction" if not given["instruction"] else None)
+    if reason:
+        return reason, {}, {}
+    verifier = Verifier.model_validate(read_json(verifier_path, {}))
+    folder = build.out / (SYNTHETIC_DIR if body is not None else "") / f"{build.name}-{task_id}"
+    metadata = _metadata(build, task_id, body is not None, given["index"], verifier)
+    calls = _lay_with_oracle(build, folder, task_id, given, metadata, verifier_path)
+    if calls is None:
+        return NO_ORACLE, {}, {}
+    path = folder.relative_to(build.out).as_posix()
+    listed = {"harbor_name": f"{build.org}/{folder.name}", "path": path, **metadata}
+    scanned = {"name": path, "world": folder / "environment" / WORLD_DIR, "facts": given["facts"] or [given["instruction"]],
+               "instruction": given["instruction"], "policy": given["policy"], "verifier": verifier_path,
+               "calls": calls, "reply": (folder / "solution" / "solve.sh").read_text(encoding="utf-8")}
+    return None, listed, scanned
+
+
+def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict) -> dict:
+    return {
         "format": HARBOR_FORMAT,
         "harbor_schema_version": SCHEMA_VERSION,
-        "name": name,
-        "org": org,
+        "name": build.name,
+        "org": build.org,
         "tasks_chosen": tasks,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "tag": tag,
+        "tag": build.tag,
         "kullback_version": kullback_version(),
-        "git_sha": sha,
+        "git_sha": build.sha,
         "reward": dict(REWARD_SHAPE, harbor="gated then weighted; an unscored gate gives 0 and is named "
                                             "unscored_gate in items.json; reward.json carries the number alone"),
         "counts": {"exported": len(listed),
@@ -546,8 +558,47 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
                    "skipped": skipped},
         "tasks": [row for row in listed if row["origin"] == "recorded"],
         "synthetic": [row for row in listed if row["origin"] == "synthetic"],
-        "leak_scan": leak_scan(out, workdir / "raw", scanned) if scan else {"leaks": 0, "skipped": True},
     }
+
+
+def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = ORGANISATION,
+                  name: Optional[str] = None, scan: bool = True, wheel: Optional[Path] = None,
+                  only: Optional[Iterable[str]] = None) -> dict:
+    """Write a Harbor dataset of the workdir's Tasks to `out` and answer its manifest.
+
+    `tasks` is `trusted` (the default) or `all`; synthetic store Tasks are never trusted, so they
+    come only with `all`, under `synthetic/`. `only` narrows the list to the named Task ids. A Task
+    with no Verifier, no Run or no instruction is left out and counted by reason. The oracle is the
+    first of the Task's Runs whose calls, replayed through the exported world, hold every item a judge
+    is not needed for; a Task with none is left out too (NO_ORACLE).
+    """
+    workdir, out = Path(workdir), Path(out)
+    if tasks not in TASKS_CHOICES:
+        raise ExportError(f"--tasks takes {' or '.join(TASKS_CHOICES)}, not {tasks}")
+    if not (workdir / "env").is_dir():
+        raise ExportError(f"{workdir} holds no env/ package: there is no Environment to export")
+    env = BuiltEnvironment(workdir)
+    rows = {row["task_id"]: row for row in task_index(workdir, frozen_task_ids(workdir))}
+    chosen, synthetic = _choose(workdir, rows, tasks, only)
+    policy = _fallback_policy(env)
+    out.mkdir(parents=True, exist_ok=True)
+    skipped: dict[str, int] = {}
+    listed: list[dict] = []
+    scanned: list[dict] = []
+    with tempfile.TemporaryDirectory() as scratch:
+        build = _Build(workdir=workdir, out=out, name=name or workdir.resolve().name, org=org, env=env, rows=rows,
+                       classes=reference_classes(workdir) or {}, runs=runs_on_disk(workdir), policy=policy,
+                       tag=build_tag(workdir), sha=git_sha(), wheel=wheel or build_wheel(Path(scratch)))
+        work = [(task_id, None) for task_id in chosen] + list(synthetic.items())
+        for task_id, body in work:
+            reason, row, scan_row = _export_one(build, task_id, body)
+            if reason:
+                skipped[reason] = skipped.get(reason, 0) + 1
+                continue
+            listed.append(row)
+            scanned.append(scan_row)
+    manifest = _manifest(build, tasks, listed, skipped)
+    manifest["leak_scan"] = leak_scan(out, workdir / "raw", scanned) if scan else {"leaks": 0, "skipped": True}
     if manifest["leak_scan"].get("leaks"):
         shutil.rmtree(out, ignore_errors=True)
         raise ExportError(f"the leak scan found {manifest['leak_scan']['leaks']} recorded strings in "
@@ -557,6 +608,3 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
     manifest["content_hash"] = content_hash(manifest["files"])
     write_json(out / MANIFEST_NAME, manifest)
     return manifest
-
-
-__all__ = ["CALLS_NAME", "HarborEnvironment", "export_harbor"]

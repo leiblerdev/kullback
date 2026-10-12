@@ -179,18 +179,28 @@ def reward_of(items: list[ItemResult], *, failed_closed: bool = False) -> dict:
     """
     gates = [item for item in items if item.gate]
     weighted = [item for item in items if not item.gate]
-    unscored_gates = [item for item in gates if item.holds is None]
-    rows = [_row(item, "unscored_gate" if item.gate and item.holds is None else
-                 "unscored" if item.holds is None else "") for item in items]
+    unscored_gates = [item.id for item in gates if item.holds is None]
+    rows = [_row(item, _status(item)) for item in items]
     if failed_closed or unscored_gates or any(item.holds is False for item in gates):
-        return {"reward": 0.0, "items": rows, "unscored_gates": [item.id for item in unscored_gates]}
+        return {"reward": 0.0, "items": rows, "unscored_gates": unscored_gates}
+    return {"reward": _weighted(gates, weighted), "items": rows, "unscored_gates": [],
+            "unscored": [item.id for item in weighted if item.holds is None]}
+
+
+def _status(item: ItemResult) -> str:
+    if item.holds is not None:
+        return ""
+    return "unscored_gate" if item.gate else "unscored"
+
+
+def _weighted(gates: list[ItemResult], weighted: list[ItemResult]) -> float:
+    """Past the gates: the gate weight, at least half, plus the held weighted items, over the gate weight
+    plus every weighted item that could be scored."""
     scored = [item for item in weighted if item.holds is not None]
     rest = sum(item.weight for item in scored)
     gate_weight = max(sum(item.weight for item in gates), rest)
     total = gate_weight + rest
-    value = 1.0 if not total else (gate_weight + sum(item.weight for item in scored if item.holds)) / total
-    return {"reward": value, "items": rows, "unscored_gates": [],
-            "unscored": [item.id for item in weighted if item.holds is None]}
+    return 1.0 if not total else (gate_weight + sum(item.weight for item in scored if item.holds)) / total
 
 
 def score(app: Path, verifier_path: Path, logs: Path) -> dict:
