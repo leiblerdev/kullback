@@ -390,3 +390,26 @@ def test_row_new_carries_its_gate_and_weight_into_new_rows():
                               world())
     assert state.new_rows == [{"table": "notes", "where": {"text": "hi"}, "count": 1, "item": "n1",
                                "gate": False, "weight": 2.0}]
+
+
+def test_a_dict_cell_whose_first_value_is_a_scalar_resolves_its_source_instead_of_raising():
+    priced = IntentFact(id="f9", text="Set the price to 7.5 please.", stance="volunteered",
+                        source=FactSource(recording="rec1", turn=5))
+    told = I.World(STATE, POLICY, FACTS + [priced], TOOLS)
+    assert I._cell_source({"amount": 7.5}, told) == told.source(7.5) != None  # noqa: E711
+    assert I._cell_source({"amount": 7.5}, world()) is None
+    assert I._cell_source({"slot": "seven"}, world()) == world().source("seven")
+
+
+def test_a_dict_cell_whose_first_value_is_a_list_resolves_to_the_source_of_its_last_value():
+    assert I._cell_source({"slots": ["seven", "red"]}, world()) == I.ValueSource(
+        kind="world", ptr={"table": "items", "row": "A1"})
+    assert I._cell_source({"slots": ["red", "nowhere"]}, world()) is None
+    assert I._cell_source({"slots": [None]}, world()) == I.ValueSource(kind="world", ptr={"removed": True})
+
+
+def test_a_plain_list_or_plain_scalar_cell_resolves_as_before():
+    assert I._cell_source(["red", "seven"], world()) == world().source("seven")
+    assert I._cell_source(["seven", "nowhere"], world()) is None
+    assert I._cell_source("two", world()) == I.ValueSource(kind="world", ptr={"table": "items", "row": "A1"})
+    assert I._cell_source(None, world()) == I.ValueSource(kind="world", ptr={"removed": True})

@@ -741,7 +741,8 @@ def _type_refusal(tool: str, name: str, value: Any, types: set) -> str:
 
 def _cell_source(value: Any, world: World) -> Optional[ValueSource]:
     found = None
-    values = next(iter(value.values())) if isinstance(value, dict) else value if isinstance(value, list) else [value]
+    values = next(iter(value.values())) if isinstance(value, dict) else value
+    values = values if isinstance(values, list) else [values]
     for one in values:
         found = world.source(one) if one is not None else ValueSource(kind="world", ptr={"removed": True})
         if found is None:
