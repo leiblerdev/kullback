@@ -35,7 +35,7 @@ TOOLS = ("Tools, one example call each.\n"
          "the way you would read it on your own screen. Empty is all of it.\n"
          "end_run(kind=\"goal_satisfied\"): ask to end. You never end the conversation yourself: this "
          "records the request and code decides whether it holds, so answer this turn either way.\n"
-         "consult(field=\"membership_level\"): go and look one field up, and only on a conversation "
+         "consult(field=\"<field>\"): go and look one field up, and only on a conversation "
          "where you did that before. On any other conversation the tool is not there.")
 
 EXAMPLES = ("Four things that go wrong, and what to do instead.\n"

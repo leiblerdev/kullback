@@ -381,7 +381,7 @@ def test_the_writer_session_gates_only_what_the_user_asked_and_the_policy_requir
     assert "Gate what the user asked for and the policy requires" in prompt
     assert "A fact of condition agent is a reaction" in prompt and "gate the branch the world selects" in prompt
     assert "accept any allowed one or weight it" in prompt
-    assert "gates only with the policy line that forbids it; else weight it" in prompt
+    assert "gates only on a keep fact the user said or the policy line that forbids it; else weight it" in prompt
     assert "one item per ask" in prompt
     assert "A rule the policy does not state is never gated" in " ".join(prompt.split())
     assert "Any other told item (judge, said) gates only citing a told fact" in " ".join(prompt.split())
@@ -432,7 +432,7 @@ def test_a_writer_with_nothing_to_gate_answers_why_not_and_leaves_the_spec():
 
 def test_the_prompt_gates_a_told_value_and_a_named_option():
     assert "A value the user" in W.CHOICE_RULE and "anchored on the world row holding it" in W.CHOICE_RULE
-    assert "A variant or payment method the" in W.CHOICE_RULE
+    assert "One of several options the world holds that the user named" in " ".join(W.CHOICE_RULE.split())
     assert "Leave text and judge items ungated" not in W.CHOICE_RULE
 
 

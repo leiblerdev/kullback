@@ -374,7 +374,7 @@ WHAT_YOU_RECEIVE = (
 TOOLS_TEXT = (
     "Your tools, all read only, one example call each:\n"
     '- intent {} : the Intent line and its grounded phrases.\n'
-    '- policy {"query": "refund"} : the policy sections holding that phrase.\n'
+    '- policy {"query": "<a phrase>"} : the policy sections holding that phrase.\n'
     '- rows {"group": "A"} : the Starting state rows that state\'s Runs named.\n'
     '- stated {"group": "A"} : every value that state told the user, and how each of its Runs ended.\n'
     '- constraints {"group": "A"} : what each coded rule of the policy answered about that state\'s Runs.\n'

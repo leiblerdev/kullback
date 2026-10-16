@@ -78,7 +78,7 @@ _TOOL_EXAMPLES = {
     "search_rows": ('search_rows: find row keys whose field equals a value, e.g. {"task_id": "t1", '
                     '"table": "<table>", "field": "<field>", "value": "<value>"}.'),
     "find_tools": ('find_tools: the tools whose name or description match a few words, e.g. '
-                   '{"query": "change after payment"}.'),
+                   '{"query": "<a few words>"}.'),
     "finding": ('finding: what is wrong with the Environment, for the Builder, e.g. {"task_id": "t1", "kind": '
                 '"fidelity", "text": "what differs", "rows": [...], "path": "env/tools/<name>.py", "edits": '
                 '[{"kind": "body", "path": "env/tools/<name>.py", "call_id": "<id>", "column": "<column>", '

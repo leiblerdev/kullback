@@ -103,15 +103,28 @@ row whose read confirms a condition the agent claimed about the world. When the 
 
 EXAMPLES = """\
 # Examples
-- The user asks to close record R-1 and the policy says closing needs the user's yes: row_is on R-1 \
-with status closed (gate), before {first: "confirm_turn", then: "close_record"} (gate, policy_line).
-- The user asks for something the policy forbids: no state item (code already fails any change), and \
-one gated judge item asking whether the agent declined and why, the anchor quoting the policy line.
-- The user wants a new entry with a minted id: row_new with the fields the user gave, never the id.
-- The user asks what something costs: a judge item whose anchor is the amount read from the row that \
-holds it (row cites that row), and said with that amount if it is stored as is. Never compute a figure the world does not hold.
-- The user asks for one of several options the policy allows and does not say which: the item accepts \
-every allowed one (one_of), never only the one an agent might pick."""
+Placeholders in angle brackets stand for the Task's own names; one example per item kind and per condition.
+- row_is: the user asks to set <field> of <record> to <value> (do, condition none): row_is on <record> with \
+<field> <value>, gated, citing that fact.
+- row_keeps: the user asks that <other record> stay as it is (keep): row_keeps on <other record>, gated, \
+citing that fact.
+- row_new: the user wants a new <entry> with a minted id: row_new with the fields the user gave, never the id.
+- before: the policy says <write> needs the user's yes first: before {first: "confirm_turn", then: \
+"<write tool>"} (gate, policy_line quoting that rule).
+- called: the policy says <step> must be done through <tool>: called <tool> (gate, policy_line).
+- not_called: the policy forbids <action> and the user asks for it: not_called <tool> (gate, policy_line), \
+no state item (code already fails any change), and one gated judge item asking whether the agent \
+declined, the anchor quoting the policy line.
+- judge: the user asks to be told <value> of <record> (told): a gated judge item whose anchor is <value> \
+read from the row that holds it (row cites that row). Never compute a figure the world does not hold.
+- said: the same told <value> stored as is: said with <value>, gated, citing the told fact.
+- one_of: the user asks for one of several <options> the policy allows and does not say which: the item \
+accepts every allowed one (one_of), never only the one an agent might pick.
+- condition world_or_policy: the user asks for <other change> if, as the agent said, <change> is not \
+allowed: look the claim up (read_row, or read_policy) and gate the branch the world selects, citing the \
+row in confirms or the rule in policy_line.
+- condition agent: the user asks for <other change> only after the agent could not do <change>: any item \
+on it is scored, never gated."""
 
 CHOICE_RULE = """\
 # Choosing items
@@ -123,9 +136,9 @@ Every gate rests on an ask fact or on a policy_line that states the rule. A rule
 never gated, however sensible: weight the item, and where the Task turns on it, leave the fact a gap. \
 Where \
 the user left a choice open and the policy allows several, accept any allowed one or weight it. A forbid \
-(not_called, row_keeps) gates only with the policy line that forbids it; else weight it. A value the user \
-asked to be told is a gated judge item anchored on the world row holding it. A variant or payment method the \
-user named is a gated check on that field. A refusal judge item always gates. Any other told item (judge, \
+(not_called, row_keeps) gates only on a keep fact the user said or the policy line that forbids it; else weight it. A value the user \
+asked to be told is a gated judge item anchored on the world row holding it. One of several options the \
+world holds that the user named is a gated check on that field. A refusal judge item always gates. Any other told item (judge, \
 said) gates only citing a told fact or quoting the policy line that requires the telling: code weighs \
 any other. A fact marked side asks only to be \
 told something beside the Task's ask, so any item on it is scored, never gated: code weighs such a gate. \
