@@ -1,4 +1,4 @@
-"""The scenario layer's seam onto the harness's one web reader (D374, D115) and the shared web tools (D375).
+"""The scenario layer's seam onto the harness's one web reader (D374, D115) and the shared web tools (D377).
 
 Search and page fetch go through kullback/builder/search.py only: TinyFish when its key is set, then
 Firecrawl keyless, in one chain, every answer memoized under <workdir>/web_cache keyed by the request,

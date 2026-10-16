@@ -5,7 +5,7 @@ review are (mine_tools.py): one session per batch of one source, on the workdir 
 name synth, its calls booked under the stage synth_mining by the budget subscriber. The recordings
 source hands a session a batch of opening asks, one per recording, and the agent groups them into
 statements; frequency is the count of openings grouped. The search source hands one session the
-harness's web reader as the shared web tools (D375) over search.Crawled: the agent searches, reads pages
+harness's web reader as the shared web tools (D377) over search.Crawled: the agent searches, reads pages
 through the D225 crawl, and writes a statement only with the span of a page it read, whose byte range
 becomes the citation. The ask source
 hands a session a batch of lines a customer typed and the agent rewrites each as a scenario in the third

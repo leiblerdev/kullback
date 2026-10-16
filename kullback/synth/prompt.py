@@ -18,7 +18,7 @@ from kullback.synth.skills import SCENARIO_SKILL
 WIDTH = 140
 TOOLS = ("read_scenario", "list_scenarios", "search", "read_page", "lookup_rows", "search_rows", "find_tools",
          "rule_scenario", "fix_scenario")
-# The shared web tools (D375): named here by name only, their example calls are in their descriptions.
+# The shared web tools (D377): named here by name only, their example calls are in their descriptions.
 WEB = ("search", "read_page")
 
 

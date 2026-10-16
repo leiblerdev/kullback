@@ -2991,7 +2991,7 @@ already grouped is refused naming the scenario that holds it, counted as no refu
 counts per batch the items no scenario grouped (openings_ungrouped). Search: one session holds the harness's reader
 (D374), searches, reads pages through the D225 crawl, and writes a statement only with a span of a page it read,
 kept as its byte range; a statement that copies the page or the corpus is refused. Its search and read_page are the
-shared web tools, D375's, over the adapter search.Crawled, which reads each page through the crawl so the agent
+shared web tools, D377's, over the adapter search.Crawled, which reads each page through the crawl so the agent
 reads the cached text a span is checked against. Asks: a session reads a batch of lines a customer typed and
 rewrites each as a scenario in the third person; the line as typed stays in the source only, since the customer's
 own shape would tell the blind review where it came from, and a line naming a tool is dropped before any session.
@@ -3030,7 +3030,7 @@ Examiner's own sessions are: one session per batch of born scenarios, under stag
 scenario is written as a view under scenarios/review that drops its source, the sources folded into it, its
 frequency and its fix count, and the base tools read only that root. Its tools read a view, list by status, search
 the web and read a page, look up and search the starting rows, find tools by words, file a verdict and send a
-scenario back. The search and read_page are the shared web tools, D375's; their on_call keeps every call as evidence
+scenario back. The search and read_page are the shared web tools, D377's; their on_call keeps every call as evidence
 on each scenario of the session, the URLs a search returned and the URL a page read. A verdict answers occurs,
 feasible and serves_ask; occurs yes needs a cite and feasible no needs what is missing, or the call is refused. A
 cite is a URL a search in a session that reviewed the scenario returned, checked against the evidence kept on the
@@ -3059,7 +3059,7 @@ The scenario layer has no search reader of its own. kullback/synth/search.py is 
 memoized under workdir/web_cache keyed by the request, and nothing live unless the switch that turns model calls on
 (HARNESS_ALLOW_MODEL_REQUESTS) is set; with the switch off a memo is still served, and with no memo there is no reader.
 The seam hands the miner and the review one adapter of the D115 shape, search.Crawled, as the search of the shared
-web tools (D375): its search passes through, and its fetch reads each URL through the D225 crawl with the reader's
+web tools (D377): its search passes through, and its fetch reads each URL through the D225 crawl with the reader's
 fetch as the page fetch, so a fetched page still lands in the crawl's cache and a span's byte range cites it as before. One key variable,
 named in notes, its value never read here or printed. Where nothing is live the note says the search is off, names
 the switch and the key the chain reads first. The second reader of round 0 (its own URL and key variables, a default

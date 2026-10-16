@@ -1,4 +1,4 @@
-"""Web search and page reading as agent tools, the same two for every role (D375).
+"""Web search and page reading as agent tools, the same two for every role (D377).
 
 Any role on the agent harness (the Examiner, the Builder, the synthetic generator) registers
 `search` and `read_page` with `register_web_tools`. The agent core sits below the Builder and the

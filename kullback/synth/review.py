@@ -12,7 +12,7 @@ real asks in and measure the Examiner rather than trust it.
 
 Outcomes are code, read off the verdict after the session: a repeat of another scenario strikes it,
 citing the other's id; occurs no strikes the scenario with its cite. The web tools are the shared ones
-(D375): every search and read_page call of a session is kept as evidence on each scenario that session
+(D377): every search and read_page call of a session is kept as evidence on each scenario that session
 reviews. A cite is a URL a search kept on the scenario returned, or a line of the policy; code refuses
 anything else, so no trace id ever reaches a verdict. Then any unsure puts it on the human queue with the open question; feasible no
 files an Environment finding naming the missing tool or row class and ends it infeasible, never a drop;

@@ -260,7 +260,7 @@ def _scenario_rows(root: MineRoot) -> list[dict]:
 
 
 def mine_tools(root: MineRoot) -> list[AgentTool]:
-    """The role's own tools of one session, the subset its source uses; the web tools are D375's."""
+    """The role's own tools of one session, the subset its source uses; the web tools are D377's."""
 
     async def list_openings(args: NoArgs) -> Rows:
         rows = [{"number": at, "text": item["text"]} for at, item in enumerate(root.items)]
