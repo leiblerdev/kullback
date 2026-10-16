@@ -11,10 +11,13 @@ searched and the review so far, never the source or the frequency. That is what 
 real asks in and measure the Examiner rather than trust it.
 
 Outcomes are code, read off the verdict after the session: a repeat of another scenario strikes it,
-citing the other's id; occurs no strikes the scenario with its cite; any unsure puts it on the human queue with the open question; feasible no files an Environment
-finding naming the missing tool or row class and ends it infeasible, never a drop; occurs yes and
-feasible yes passes. `fix_scenario` sends a scenario back to the generator, which rewrites it once from
-the same source with the reason; a second request on the same scenario ends it unsure.
+citing the other's id; occurs no strikes the scenario with its cite. A cite is a URL the review's own
+search returned for that scenario, or a line of the policy; code refuses anything else, so no trace id
+ever reaches a verdict. Then any unsure puts it on the human queue with the open question; feasible no
+files an Environment finding naming the missing tool or row class and ends it infeasible, never a drop;
+occurs yes and feasible yes passes. `fix_scenario` sends a scenario back to the generator, which
+rewrites it once from the same source with the reason; a second request on the same scenario ends it
+unsure.
 """
 
 from __future__ import annotations
@@ -143,7 +146,7 @@ class FindArgs(Strict):
 class RuleArgs(Strict):
     id: str
     occurs: Answer = Field(description="Does this happen to customers of this kind of business?")
-    occurs_cite: str = Field(default="", description="A URL the search returned, Task ids, or a policy line.")
+    occurs_cite: str = Field(default="", description="A URL your search returned for this scenario, or a policy line.")
     feasible: Answer = Field(description="Can this world serve it with its tools and rows?")
     missing: str = Field(default="", description="When feasible is no: the tool or the kind of row that is missing.")
     serves_ask: Literal["yes", "no", "none"] = Field(default="none", description="Does it serve a customer's ask?")
@@ -207,6 +210,16 @@ def human_row(workdir: Any, record: R.Scenario, question: str) -> None:
     write_json(path, [*rows, {"id": record.id, "statement": record.statement, "question": question}])
 
 
+CITE = "a URL your own search returned for this scenario, or a line of the policy word for word"
+
+
+def cited(root: ReviewRoot, record: R.Scenario, cite: str) -> bool:
+    """Whether a cite is a URL this scenario's own search returned, or a substring of the policy."""
+    text = cite.strip()
+    returned = {url for row in record.evidence for url in row.get("urls") or ()}
+    return text in returned or (bool(text) and text in (root.world.policy or ""))
+
+
 def _filed(root: ReviewRoot, record: R.Scenario, row: dict) -> Rows:
     R.write_scenario(root.workdir, record.model_copy(update={"review": [*record.review, row]}))
     if root.bus is not None:
@@ -229,7 +242,9 @@ def ruled(root: ReviewRoot, args: RuleArgs) -> Rows:
     if args.repeat_of:
         return _repeat(root, record, args)
     if args.occurs == "yes" and not args.occurs_cite.strip():
-        raise ValueError("occurs yes needs occurs_cite: a URL your search returned, Task ids, or a policy line")
+        raise ValueError(f"occurs yes needs occurs_cite: {CITE}")
+    if args.occurs_cite.strip() and not cited(root, record, args.occurs_cite):
+        raise ValueError(f"occurs_cite is neither of what a cite may be: {CITE}")
     if args.feasible == "no" and not args.missing.strip():
         raise ValueError("feasible no needs missing: the tool or the kind of row this world lacks")
     return _filed(root, record, {"kind": "verdict", **args.model_dump(exclude={"id"})})

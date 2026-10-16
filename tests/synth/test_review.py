@@ -16,7 +16,9 @@ from kullback.synth import prompt as P
 from kullback.synth import records as R
 from kullback.synth import review as V
 from kullback.synth import search as S
-from tests.synth.fixture import STATE, TOOLS, URL, call, make_workdir, web
+from tests.synth.fixture import POLICY, STATE, TOOLS, URL, call, make_workdir, web
+
+LINE = POLICY.splitlines()[0]
 
 
 def _root(tmp_path, *statements):
@@ -32,7 +34,7 @@ def _tool(root, name):
 
 
 def _rule(root, record, **verdict):
-    args = {"id": record.id, "occurs": "yes", "occurs_cite": "https://help.example/a", "feasible": "yes",
+    args = {"id": record.id, "occurs": "yes", "occurs_cite": LINE, "feasible": "yes",
             "text": "it happens and the world serves it", **verdict}
     tool = _tool(root, "rule_scenario")
     return asyncio.run(tool.execute(tool.args_model(**args)))
@@ -64,9 +66,22 @@ def test_a_verdict_of_occurs_yes_without_a_cite_or_feasible_no_without_missing_i
         _rule(root, record, feasible="no")
 
 
+def test_a_cite_is_a_url_this_scenarios_own_search_returned_or_a_policy_line_and_nothing_else(tmp_path):
+    root, [record, other] = _root(tmp_path, "a holder wants to move a sealed widget", "a holder wants things")
+    with pytest.raises(ValueError, match="neither"):
+        _rule(root, record, occurs_cite=URL)
+    with pytest.raises(ValueError, match="neither"):
+        _rule(root, record, occurs_cite="task-a1")
+    asyncio.run(_tool(root, "search").execute(V.SearchArgs(id=record.id, query="sealed widget")))
+    assert _rule(root, record, occurs_cite=URL).rows[0]["occurs_cite"] == URL
+    assert _rule(root, other, occurs_cite=LINE).rows[0]["occurs_cite"] == LINE
+    with pytest.raises(ValueError, match="neither"):
+        _rule(root, other, occurs_cite=URL)
+
+
 @pytest.mark.parametrize(("verdict", "status"), [
     ({}, "passed"),
-    ({"occurs": "no", "occurs_cite": "nothing searched shows it"}, "struck"),
+    ({"occurs": "no", "occurs_cite": ""}, "struck"),
     ({"feasible": "unsure"}, "unsure"),
     ({"feasible": "no", "missing": "a tool that paints a widget"}, "infeasible"),
 ])
@@ -158,7 +173,7 @@ def test_a_review_session_plays_on_the_shared_bus_and_books_its_calls_under_its_
     from kullback.runner import budget
 
     root, [record] = _root(tmp_path, "a holder wants a widget put in another slot")
-    model = TestModel([call("rule_scenario", {"id": record.id, "occurs": "yes", "occurs_cite": "https://h.example",
+    model = TestModel([call("rule_scenario", {"id": record.id, "occurs": "yes", "occurs_cite": LINE,
                                               "feasible": "yes", "text": "common and served"}),
                        ModelReply(content="Ruled one: passed.", usage=Usage(input=10, output=2))])
     out = V.review(root.workdir, model=model, engine=root.engine)

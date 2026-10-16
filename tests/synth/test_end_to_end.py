@@ -15,7 +15,7 @@ from kullback.synth import records as R
 from kullback.synth import report as T
 from kullback.synth import review as V
 from kullback.synth.miner import mine
-from tests.synth.fixture import URL, call, make_workdir, web
+from tests.synth.fixture import POLICY, URL, call, make_workdir, web
 
 SPAN = "Customers often ask to move a widget after it has been sealed."
 PLAIN = "a holder wants a widget moved to another slot"
@@ -44,8 +44,11 @@ def _miner_model() -> TestModel:
         ModelReply(content="Wrote two.")])
 
 
+LINE = POLICY.splitlines()[0]
+
+
 def _rule(scenario_id: str, call_id: str, **verdict) -> ModelReply:
-    args = {"id": scenario_id, "occurs": "yes", "occurs_cite": URL, "feasible": "yes", "text": "common, served"}
+    args = {"id": scenario_id, "occurs": "yes", "occurs_cite": LINE, "feasible": "yes", "text": "common, served"}
     return call("rule_scenario", {**args, **verdict}, call_id)
 
 
@@ -53,8 +56,8 @@ def _review_model(ids: dict) -> TestModel:
     return TestModel([
         call("read_scenario", {"id": ids[PLAIN]}, "r0"),
         call("search", {"id": ids[PLAIN], "query": "widget put in another slot"}, "r1"),
-        _rule(ids[PLAIN], "r2"),
-        _rule(ids[SEALED], "r3", occurs="no", occurs_cite="nothing searched shows it"),
+        _rule(ids[PLAIN], "r2", occurs_cite=URL),
+        _rule(ids[SEALED], "r3", occurs="no", occurs_cite=""),
         _rule(ids[WHICH], "r4", feasible="unsure"),
         _rule(ids[PAINT], "r5", feasible="no", missing="a tool that paints a widget"),
         call("fix_scenario", {"id": ids[VAGUE], "why": "too broad: narrow it to one situation"}, "r6"),

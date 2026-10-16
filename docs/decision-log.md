@@ -2836,8 +2836,9 @@ and never written again is dropped at the end of the session, counted per reason
 agent lists the scenarios already written before it writes, which is where repeats are avoided; then repeats fold by
 code only, statements equal up to case, punctuation and spacing, into the first record, which keeps the others as
 also_from (two recordings records add their frequency). The review may rule a scenario a repeat of another (D373).
-Mining again adds records and never resets one already held, nor one whose statement folds into it. The coverage (per source, search scenarios the recordings never show, ask lines
-nothing else covers, folded, dropped) is written to scenarios/mined.json. The fix step the review asks for is a
+Mining again adds records and never resets one already held, nor one whose statement folds into it. The coverage
+(per source, search scenarios the recordings never show, ask lines nothing else covers, folded, dropped) is written
+to scenarios/mined.json. The fix step the review asks for is a
 session too, under the stage synth_fix, whose rewrite_scenario holds the same rule; a scenario it does not rewrite
 ends unsure. The verb is `kullback synth mine`, the live adapter under the budget subscriber and a ceiling checked
 between sessions, as the review's sessions are wired.
@@ -2859,23 +2860,26 @@ stage), tests/synth/test_end_to_end.py (mining and review as sessions on one bus
 
 The review (kullback/synth/review.py) is a role on the shared agent harness, bus and budget subscriber, as the
 Examiner's own sessions are: one session per batch of born scenarios, under stage synth_review. It is blind: each
-scenario is written as a view under scenarios/review that drops its source, the sources folded into it, its frequency
-and its fix count, and the base tools read only that root. Its tools read a view, list by status, search the web (kept
-on the scenario as evidence with the lines read), look up and search the starting rows, find tools by words, file a
-verdict and send a scenario back. A verdict answers occurs, feasible and serves_ask; occurs yes needs a cite and
-feasible no needs what is missing, or the call is refused. The outcome is read off the verdict by code, occurs first:
-a repeat of another scenario (repeat_of, an id the store holds and not its own) strikes it with that id as
-the cite; occurs no strikes it; any unsure puts it on the human queue (scenarios/human.json); feasible no marks it infeasible
-and files one Environment finding through examiner/findings.py naming what to add, never a drop; otherwise it passes.
-A send back has the miner rewrite the statement once from the same source with the reason, keeping the id, and the
-rewrite is reviewed again in the same call; a second send back, or a rewrite that breaks the rule, ends it unsure on
-the human queue. The prompt (kullback/synth/prompt.py) runs in GEPA order, its examples over placeholders, one per
-outcome. The verb is `kullback synth review`, under a spend ceiling. Both verbs print the synth report under
-its own heading (kullback/synth/report.py), never in the build table.
+scenario is written as a view under scenarios/review that drops its source, the sources folded into it, its
+frequency and its fix count, and the base tools read only that root. Its tools read a view, list by status, search
+the web (kept on the scenario as evidence with the lines read), look up and search the starting rows, find tools by
+words, file a verdict and send a scenario back. A verdict answers occurs, feasible and serves_ask; occurs yes needs
+a cite and feasible no needs what is missing, or the call is refused. A cite is a URL the review's own search
+returned for that scenario, checked against the evidence kept on the record, or a substring of the policy; anything
+else is refused with that reason, so no trace id reaches a verdict and the blind review never cites where a scenario
+came from. The outcome is read off the verdict by code, occurs first: a repeat of another scenario (repeat_of, an id
+the store holds and not its own) strikes it with that id as the cite; occurs no strikes it; any unsure puts it on
+the human queue (scenarios/human.json); feasible no marks it infeasible and files one Environment finding through
+examiner/findings.py naming what to add, never a drop; otherwise it passes. A send back has the miner rewrite the
+statement once from the same source with the reason, keeping the id, and the rewrite is reviewed again in the same
+call; a second send back, or a rewrite that breaks the rule, ends it unsure on the human queue. The prompt
+(kullback/synth/prompt.py) runs in GEPA order, its examples over placeholders, one per outcome. The verb is
+`kullback synth review`, under a spend ceiling. Both verbs print the synth report under its own heading
+(kullback/synth/report.py), never in the build table.
 
 What it cannot show: nothing ran on a model. Whether a reviewer searches before ruling, cites what it read, or rules
-the same scenario the same way twice is unmeasured; the cite is checked only for being present, not against the
-evidence. Whether blindness changes verdicts was not tested against a sighted arm.
+the same scenario the same way twice is unmeasured; the cite is checked against what the scenario's search returned
+and the policy, never against what the page says. Whether blindness changes verdicts was not tested against a sighted arm.
 
 Tests: tests/synth/test_review.py, tests/synth/test_end_to_end.py, including a test that no prompt line holds
 a tool, table or field name of the fixture Environment.

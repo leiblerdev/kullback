@@ -45,7 +45,8 @@ _EXAMPLES = {
                       '"occurs_cite": "https://<page you searched>", "feasible": "yes", "missing": "", '
                       '"serves_ask": "none", "text": "<why, in one or two sentences>"}. occurs and feasible are '
                       "yes, no or unsure; serves_ask is yes, no or none. occurs yes needs a cite: a URL your "
-                      "search returned or a policy line. feasible no needs missing: the tool or the "
+                      "own search returned for this scenario, or a policy line word for word; any other cite is "
+                      "refused. feasible no needs missing: the tool or the "
                       'kind of row this world lacks. A scenario that says again what another says takes '
                       '"repeat_of": "sc_<other id>" and ends struck.'),
     "fix_scenario": ('fix_scenario: send a scenario back to the generator once, e.g. {"id": "sc_<id>", "why": '
@@ -64,7 +65,7 @@ def examples_section() -> str:
             "passes: a <kind of customer> wants to <change> a <thing> before <a step>; a searched page shows it "
             "is common, and the world holds a tool that changes it and rows in that step.\n"
             "struck: a <kind of customer> asks for <something no business of this kind offers>; nothing searched "
-            "shows it and the policy never speaks of it (occurs no, the cite is the search you ran).\n"
+            "shows it and the policy never speaks of it (occurs no, the cite a URL you read or left empty).\n"
             "infeasible: a <kind of customer> wants <a remedy> that the policy allows, but no tool makes it and "
             "no row holds it (feasible no, missing names the tool or the kind of row).\n"
             "unsure: the evidence is split, or the world may serve it only through a path you cannot confirm.\n"
