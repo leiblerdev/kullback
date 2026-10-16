@@ -216,12 +216,21 @@ def test_a_fix_session_rewrites_once_from_the_same_source_keeps_the_id_and_a_fai
     assert budget.load_totals(world.workdir)["stages"][M.FIX_STAGE]["calls"] >= 1
 
 
-def test_the_mining_prompt_runs_in_gepa_order_and_names_nothing_of_the_environment():
-    sections = mine_prompt.sections()
-    assert [name for name, _ in sections] == ["receives", "tools", "examples", "choice", "feedback", "stop"]
-    texts = [body for _, body in sections] + [mine_prompt.opening(kind, count=3) for kind in mine_prompt.OPENINGS]
-    names = {tool["name"] for tool in TOOLS} | set(STATE) | {f for rows in STATE.values() for row in rows.values()
-                                                              for f in row}
-    assert not {name for name in names for text in texts if name in text}
+def _fixture_names() -> set[str]:
+    fields = {key for rows in STATE.values() for row in rows.values() for key in row}
+    return {tool["name"] for tool in TOOLS} | set(STATE) | fields
+
+
+def _mining_texts() -> list[str]:
+    return [body for _, body in mine_prompt.sections()] + [mine_prompt.opening(k, count=3) for k in mine_prompt.OPENINGS]
+
+
+def test_the_mining_prompt_runs_in_gepa_order_with_the_stop_rule_last():
+    assert [name for name, _ in mine_prompt.sections()] == ["receives", "tools", "examples", "choice", "feedback", "stop"]
+
+
+def test_no_mining_prompt_line_names_the_environment_or_runs_past_150_characters():
+    texts = _mining_texts()
+    assert not {name for name in _fixture_names() for text in texts if name in text}
     assert DESCRIPTION not in "".join(texts)
     assert all(len(line) < 150 for text in texts for line in text.splitlines())
