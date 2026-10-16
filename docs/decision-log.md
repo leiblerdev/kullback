@@ -2961,3 +2961,11 @@ Not changed: the examine session that files fidelity findings for the Builder st
 
 Lives in: kullback/examiner/rule_tool.py (verify_rows, verify_line, verify_task), kullback/examiner/session.py
 (_refuse_recordings, review_extension), kullback/examiner/prompt.py (receives, verify).
+
+D370 r1 (2026-10-16):
+
+The unchecked_ask ruling's fix reads "add a gate item citing <fact>, or rebut quoting why no gate may hold it", not
+"file it as a gap": the writer files no gap itself; code lists as a gap every fact no check names (ground.coverage).
+That is also a hole in D370, left open for the founder: an ask with no item at all is a code-filled gap and is
+excused, so the rule catches only asks cited by weighted items. On the 100 first-run Specs 25 trusted Tasks (16 right,
+8 partial, 1 wrong) hold such an ask; counting them would block mostly right Verifiers.
