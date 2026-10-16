@@ -58,6 +58,7 @@ class Mining:
     bus: Any = None
     ceiling: Optional[budget.Ceiling] = None
     subscribers: tuple = ()
+    capped: Counter = field(default_factory=Counter)
 
     def over(self) -> bool:
         if self.ceiling is not None and self.ceiling.remaining() <= 0:
@@ -68,7 +69,8 @@ class Mining:
 
     def session(self, kind: str, opening: str, stage: str = STAGE, **root: Any) -> T.MineRoot:
         made = T.MineRoot(world=self.world, kind=kind, found=self.found, dropped=self.dropped, bus=self.bus, **root)
-        T.run(made, self.model, opening, stage, self.ceiling, self.subscribers)
+        if T.run(made, self.model, opening, stage, self.ceiling, self.subscribers):
+            self.capped[kind] += 1
         return made
 
 
@@ -250,7 +252,7 @@ def mine(workdir: Any, *, model: Any, asks: Any = None, searching: bool = True,
     new = [record for record in kept if canonical(record.statement) not in held]
     R.write_all(workdir, new)
     body = {"format": R.FORMAT, "notes": mining.notes, "coverage": coverage(kept, folded, mining.dropped),
-            "born": len(new), "folded": folded}
+            "born": len(new), "folded": folded, "capped": dict(sorted(mining.capped.items()))}
     write_json(R.store_dir(workdir) / R.MINED, body)
     return body
 

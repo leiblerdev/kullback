@@ -163,6 +163,16 @@ def test_a_mining_session_plays_on_the_workdir_bus_as_synth_and_books_its_calls_
     assert budget.load_totals(workdir)["stages"][M.STAGE]["calls"] >= 1
 
 
+def test_a_search_session_gets_its_own_turn_budget_and_a_capped_session_is_counted_under_its_kind(tmp_path):
+    workdir = make_workdir(tmp_path)
+    endless = [call("list_scenarios", {}, f"s{at}") for at in range(T.MAX_TURNS + 5)]
+    model = TestModel([_done(), *endless])
+    body = M.mine(workdir, model=model, engine=web(workdir)[0], refuse=REFUSE, description=DESCRIPTION)
+    assert len(model.calls) - 1 == T.SEARCH_TURNS == T.turns_for(T.MineRoot(world=M.world_of(workdir), kind="search"))
+    assert body["capped"] == {"search": 1}
+    assert json.loads((R.store_dir(workdir) / R.MINED).read_text())["capped"] == {"search": 1}
+
+
 def test_mining_folds_an_ask_into_the_recordings_record_and_writes_coverage(tmp_path):
     workdir = make_workdir(tmp_path)
     statement = "a holder wants a widget moved to another slot"

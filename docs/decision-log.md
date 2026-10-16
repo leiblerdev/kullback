@@ -2819,32 +2819,33 @@ frequency, the review rows, the evidence and the status (born, fixing, passed, u
 
 The miner (kullback/synth/miner.py, mine_tools.py, mine_prompt.py) is the synthetic generator, and it is a role on
 the shared agent harness and event stream as the Examiner and the Builder are: one session per batch of one source,
-base tools over the scenario store, its own tools with pydantic arguments and results carrying rows
-(list_openings, list_scenarios, write_scenario, rewrite_scenario), prompt sections in GEPA order
-with examples over placeholders and the stop rule last, the workdir bus under the agent name synth and the budget
-subscriber under the stage synth_mining. Recordings: a session reads a batch of opening asks, the first user turn
-of every recording or the turn the Spec marks as the opening, and writes statements naming the numbers each groups;
-frequency is the number grouped. Search: one session holds the harness's reader (D374), searches, reads pages through
-the D225 crawl, and writes a statement only with a span of a page it read, kept as its byte range; a statement that
-copies the page or the corpus is refused. Its search and read_page are the shared web tools, D375's, over the
-adapter search.Crawled, which reads each page through the crawl so the agent reads the cached text a span is checked
-against. Asks: a session reads a batch of lines a customer typed and rewrites each
-as a scenario in the third person; the line as typed stays in the source only, since the customer's own shape would
-tell the blind review where it came from, and a line naming a tool is dropped before any session. The rule is held
-by the write tools, which refuse with the reason as the tool result so the agent writes again: no tool name or its
-words, no id shaped value (a code, an order number, an email, a phone number; no value of the Starting state is read for
-the rule), no policy line the policy does not hold, no span the page
-does not hold, no typed line copied as typed. A second refusal of the same scenario drops it, and one refused once
-and never written again is dropped at the end of the session, counted per reason. No model judges a repeat. The
-agent lists the scenarios already written before it writes, which is where repeats are avoided; then repeats fold by
-code only, statements equal up to case, punctuation and spacing, into the first record, which keeps the others as
-also_from (two recordings records add their frequency). The review may rule a scenario a repeat of another (D373).
-Mining again adds records and never resets one already held, nor one whose statement folds into it. The coverage
-(per source, search scenarios the recordings never show, ask lines nothing else covers, folded, dropped) is written
-to scenarios/mined.json. The fix step the review asks for is a
-session too, under the stage synth_fix, whose rewrite_scenario holds the same rule; a scenario it does not rewrite
-ends unsure. The verb is `kullback synth mine`, the live adapter under the budget subscriber and a ceiling checked
-between sessions, as the review's sessions are wired.
+base tools over the scenario store, its own tools with pydantic arguments and results carrying rows (list_openings,
+list_scenarios, write_scenario, rewrite_scenario), prompt sections in GEPA order with examples over placeholders and
+the stop rule last, the workdir bus under the agent name synth and the budget subscriber under the stage
+synth_mining. A batch session gets three turns per item, at least 12 and at most 80; the search session has no items
+and gets its own budget, SEARCH_TURNS (60), and mined.json counts the sessions that stopped on their cap per kind
+(capped). Recordings: a session reads a batch of opening asks, the first user turn of every recording or the turn
+the Spec marks as the opening, and writes statements naming the numbers each groups; frequency is the number
+grouped. Search: one session holds the harness's reader (D374), searches, reads pages through the D225 crawl, and
+writes a statement only with a span of a page it read, kept as its byte range; a statement that copies the page or
+the corpus is refused. Its search and read_page are the shared web tools, D375's, over the adapter search.Crawled,
+which reads each page through the crawl so the agent reads the cached text a span is checked against. Asks: a
+session reads a batch of lines a customer typed and rewrites each as a scenario in the third person; the line as
+typed stays in the source only, since the customer's own shape would tell the blind review where it came from, and a
+line naming a tool is dropped before any session. The rule is held by the write tools, which refuse with the reason
+as the tool result so the agent writes again: no tool name or its words, no id shaped value (a code, an order
+number, an email, a phone number; no value of the Starting state is read for the rule), no policy line the policy
+does not hold, no span the page does not hold, no typed line copied as typed. A second refusal of the same scenario
+drops it, and one refused once and never written again is dropped at the end of the session, counted per reason. No
+model judges a repeat. The agent lists the scenarios already written before it writes, which is where repeats are
+avoided; then repeats fold by code only, statements equal up to case, punctuation and spacing, into the first
+record, which keeps the others as also_from (two recordings records add their frequency). The review may rule a
+scenario a repeat of another (D373). Mining again adds records and never resets one already held, nor one whose
+statement folds into it. The coverage (per source, search scenarios the recordings never show, ask lines nothing
+else covers, folded, dropped) is written to scenarios/mined.json. The fix step the review asks for is a session too,
+under the stage synth_fix, whose rewrite_scenario holds the same rule; a scenario it does not rewrite ends unsure.
+The verb is `kullback synth mine`, the live adapter under the budget subscriber and a ceiling checked between
+sessions, as the review's sessions are wired.
 
 Names. The package is kullback/synth (tests/synth), the CLI group `kullback synth` with the verbs mine and review,
 the bus agent and the budget stages synth (synth_mining, synth_review, synth_fix), the report heading "## synth". The

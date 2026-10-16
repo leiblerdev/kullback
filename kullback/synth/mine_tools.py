@@ -39,10 +39,12 @@ from kullback.synth.rule import EMPTY, World, byte_range, statement_refusal
 
 AGENT = "synth"
 BASE_ONLY = ("read", "grep", "find", "ls")
-# The turn budget of one session: per item, at least and at most.
+# The turn budget of one session: per item, at least and at most. The search session has no items, so it
+# has its own budget: a list, some searches, some reads and the writes, for the whole web.
 TURNS_PER_ITEM = 3
 MIN_TURNS = 12
 MAX_TURNS = 80
+SEARCH_TURNS = 60
 
 NO_OPENING = "no_opening_grouped"
 NO_SPAN = "no_verified_span"
@@ -294,10 +296,17 @@ def bus_for(workdir: Any) -> Bus:
     return Bus(R.store_dir(workdir).parent / "bus.jsonl", agent=AGENT)
 
 
+def turns_for(root: MineRoot) -> int:
+    """The turn budget of one session, by its kind: its own for the search, else sized per item."""
+    if root.kind == "search":
+        return min(MAX_TURNS, SEARCH_TURNS)
+    return min(MAX_TURNS, max(MIN_TURNS, TURNS_PER_ITEM * max(len(root.items), len(root.fixing), 1)))
+
+
 def run(root: MineRoot, model: Any, opening: str, stage: str, ceiling: Optional[budget.Ceiling] = None,
         subscribers: tuple = ()) -> bool:
     """One session on its opening message; whether it stopped on its turn cap. Refusals settle after."""
-    turns = min(MAX_TURNS, max(MIN_TURNS, TURNS_PER_ITEM * max(len(root.items), len(root.fixing), 1)))
+    turns = turns_for(root)
     name = getattr(model, "name", None)
     harness = AgentHarness(model=model, max_turns=turns, context=ContextConfig(window=budget.window_for(name)),
                            bus=root.bus)
@@ -313,5 +322,5 @@ def run(root: MineRoot, model: Any, opening: str, stage: str, ceiling: Optional[
     return bool(capped)
 
 
-__all__ = ["AGENT", "MineRoot", "SESSION_TOOLS", "bus_for", "mine_extension", "mine_tools", "rewritten", "run",
-           "settle_refusals", "written"]
+__all__ = ["AGENT", "MineRoot", "SEARCH_TURNS", "SESSION_TOOLS", "bus_for", "mine_extension", "mine_tools", "rewritten", "run",
+           "settle_refusals", "turns_for", "written"]
