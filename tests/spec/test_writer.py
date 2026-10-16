@@ -383,6 +383,8 @@ def test_the_writer_session_gates_only_what_the_user_asked_and_the_policy_requir
     assert "accept any allowed one or weight it" in prompt
     assert "gates only with the policy line that forbids it; else weight it" in prompt
     assert "one item per ask" in prompt
+    assert "A rule the policy does not state is never gated" in " ".join(prompt.split())
+    assert "Any other told item (judge, said) gates only citing a told fact" in " ".join(prompt.split())
 
 def test_a_refusal_judge_item_is_still_gated_by_the_prompt_rule():
     assert "A refusal judge item always gates." in W.CHOICE_RULE

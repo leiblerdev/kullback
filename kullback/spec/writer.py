@@ -119,6 +119,8 @@ Write an item only for what the Intent asks for or the policy requires, never fo
 one item per ask. Every value comes from a world row you read, a policy line or the user's words: find it \
 first, then add it. Code adds the sanity item by itself (no row outside your state items may change), so \
 list every row a correct run changes, and only those. Gate what the user asked for and the policy requires. \
+Every gate rests on an ask fact or on a policy_line that states the rule. A rule the policy does not state is \
+never gated, however sensible: weight the item, and where the Task turns on it, leave the fact a gap. \
 Where \
 the user left a choice open and the policy allows several, accept any allowed one or weight it. A forbid \
 (not_called, row_keeps) gates only with the policy line that forbids it; else weight it. A value the user \
