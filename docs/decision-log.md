@@ -2937,3 +2937,27 @@ waits on the Examiner's judgment.
 
 Lives in: kullback/spec/schema.py (unchecked_asks), kullback/spec/rulings.py, kullback/spec/mutant_rulings.py
 (ask_rulings, UNCHECKED_ASK), kullback/spec/trust.py (UNCHECKED_ASK).
+
+### D371. The Examiner never sees a Run: verify runs the constructed Runs and the ask's mutants (2026-10-16)
+
+What: the Examiner judges the Verifier against the Intent (stances, conditions, quotes), the policy, the world, the
+Spec and the compiled Verifier. The verify tool no longer loads the Reference: it lays the do-nothing Run and the
+stray write on the Task's newest passing fresh Run (D368), files the unchecked asks (D370) and the ask-keyed mutant
+rulings, and answers with the constructed Runs' word and whether a passing fresh Run existed. The Reference's word,
+its steps (user turns, tool calls, replies) and the judge's answers with the agent lines it read are gone from the
+answer (reference_steps, judge_rows and the Reference word are removed). Judge answers for a fresh Run with none kept
+are asked once and kept as before. The review session's file tools refuse any read under the Run copies or what was
+read off them (runs, spoken, judged, user_rules, replays and task_runs files, reference files) and a grep or find over
+the whole root, with the reason. The user turns of every recording stay in the Task's view, with the agent's last line
+before each, only to check where a fact was said. The Examiner prompt says so: the view's turns are there to check
+provenance, conditions are described, no recording's steps are shown, and what a Run did never decides a ruling; the
+verify text names the fresh base, unchecked_ask and the ask-keyed mutants.
+
+Why: D365 and D367. Showing the Examiner the Reference let the recording argue for what the ask was; with the repair
+door closed, the only use left for the Reference in review was to anchor judgment on it.
+
+Not changed: the examine session that files fidelity findings for the Builder still reads the Reference
+(check_reference); the Reference is for fidelity (D365).
+
+Lives in: kullback/examiner/rule_tool.py (verify_rows, verify_line, verify_task), kullback/examiner/session.py
+(_refuse_recordings, review_extension), kullback/examiner/prompt.py (receives, verify).

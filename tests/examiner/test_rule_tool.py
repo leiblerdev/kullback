@@ -202,7 +202,8 @@ def test_the_view_shows_a_fallback_fact_with_the_agent_line_it_answers(tmp_path)
         update={"facts": [held.intent.facts[0], fallback]})}))
     shown = R.spec_view(root, "t1")["facts"][1]
     assert shown["stance"] == "fallback" and shown["in_reply_to"] == {"turn": 3, "quote": "an urgent note"}
-    assert "fallback fact was asked only after the agent refused" in " ".join(P.receives_section().split())
+    receives = " ".join(P.receives_section().split())
+    assert "a fact of condition agent answers the agent's own conduct" in receives and "never gated" in receives
 
 
 def test_the_choice_rule_names_the_user_turns_and_not_the_intent_as_ground():

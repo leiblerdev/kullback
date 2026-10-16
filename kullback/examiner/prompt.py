@@ -25,13 +25,16 @@ def receives_section() -> str:
             "questions a model answers about what the agent told the user, each with an anchor value and the "
             "evidence it reads), each item citing the Intent facts or the policy line it comes from. Each Task "
             "has a view: the user turns of every recording (each with its index and the agent's last line "
-            "before it), the Intent facts with the recording and turn each was read from, its stance (a "
-            "fallback fact was asked only after the agent refused, could not, or proposed another way, and "
-            "names the agent line it answers: it is scored, never gated) and its "
+            "before it), there only to check where a fact was said; the Intent facts with the recording and turn "
+            "each was read from, its stance and its condition (a fact of condition agent answers the agent's own "
+            "conduct, a refusal, a failure or another way it proposed: it is scored, never gated; a fact of "
+            "condition world_or_policy is an ask under a claim the agent made, gated only where the writer "
+            "confirms the claim by a row or a policy line), and its "
             "echo and side flags (a side fact asks only to be told something beside the Task's ask: it is scored, "
             "never gated, so a ruling never asks to gate it), the items with their provenance, the Verifier's compiled items, the facts no item "
             "covers, and every ruling so far with the writer's answer. The policy and the tool "
-            'list sit beside the views. Your root is ".", the exam directory: every path is relative to it. '
+            "list sit beside the views. You judge the Verifier against the Intent, the policy and the world; "
+            'no recording\'s steps are shown, and what a Run did never decides a ruling. Your root is ".", the exam directory: every path is relative to it. '
             "You give feedback and never edit: you file rulings, the writer applies or rebuts them. The Tasks "
             "and the round are in the opening message.")
 
@@ -65,11 +68,11 @@ _TOOL_EXAMPLES = {
              + "; ".join(f"{kind}: {', '.join(codes)}" for kind, codes in RULING_KINDS.items()) + "."),
     "close": ('close: close an answered ruling or keep it open, e.g. {"task_id": "t1", "number": 1, '
               '"keep_open": false, "why": "The writer dropped the write no fact asked for."}.'),
-    "verify": ('verify: run the do-nothing Run, a stray write and the Reference\'s end state through the '
-               'Verifier, e.g. {"task_id": "t1"}; a passes_do_nothing ruling cites it. The answer '
-               "carries the Reference steps (user turns, tool calls, replies). "
-               "On a passing Reference it also files, by code, one unchecked_field, unchecked_write or unchecked_row "
-               "ruling per field or row no gate holds (from mutants of the Reference); they are yours to close."),
+    "verify": ('verify: run the do-nothing Run and a stray write on the newest passing fresh Run through the '
+               'Verifier, e.g. {"task_id": "t1"}; a passes_do_nothing ruling cites it. It files, by code, one '
+               "unchecked_ask ruling per ask no gate cites and, on a passing fresh Run, one unchecked_field, "
+               "unchecked_write or unchecked_row ruling per field or row of the ask no gate holds (from mutants "
+               "keyed to the ask); they are yours to close. It never shows a recording's steps."),
     "lookup_rows": ('lookup_rows: read a row of the Task\'s world, the one the writer read, e.g. '
                     '{"task_id": "t1", "table": "<table>", "key": "<row key>"}.'),
     "search_rows": ('search_rows: find row keys whose field equals a value, e.g. {"task_id": "t1", '

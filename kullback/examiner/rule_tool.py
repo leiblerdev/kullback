@@ -206,10 +206,8 @@ def checked_ruling(root: ExamRoot, args: RuleArgs) -> R.Ruling:
         if why:
             _refuse(workdir, task_id, f"bad_{what}", why, text)
     blocking, fix = _filed_as(workdir, spec, args)
-    # The judge's answers and the Reference steps are the Examiner's to read; a ruling keeps the
-    # Verifier's rows without them (D346).
-    verified = [row for row in root.verified.get(task_id) or []
-                if row.get("run") not in ("reference_judge", "reference_step")]
+    # A ruling keeps the Verifier's rows on the constructed Runs (D346); verify shows nothing else (D371).
+    verified = list(root.verified.get(task_id) or [])
     if args.code in R.VERIFY_CODES and not verified:
         _refuse(workdir, task_id, "not_verified", f"call verify on task {task_id} first: a {args.code} ruling "
                 "cites what the Verifier did")
@@ -266,167 +264,83 @@ def _close(root: ExamRoot):
     return close
 
 
-# --- verify: the constructed Runs and the Reference through the Verifier, by code ---
+# --- verify: the constructed Runs on the passing fresh Run, and the ask's mutants, by code (D371) ---
 
 
-def _reference_run(workdir: Any, task_id: str) -> Optional[Run]:
-    """The Task's first faithful Reference replay on disk, else None."""
-    from kullback.spec.trust import faithful_references, runs_on_disk
+def _judged_fresh(workdir: Any, task_id: str, verifier: Verifier, runs: list[Run], judge: Any) -> dict:
+    """run id -> judge answers for each fresh Run: the kept ones, else `judge`'s, kept once (spec/judged.py)."""
+    from kullback.spec.judged import judge_reference, judge_results_of
+    from kullback.spec.mutants import is_fresh
 
-    wanted = set(faithful_references(workdir).get(task_id) or ())
-    return next((run for run in runs_on_disk(workdir).get(task_id, []) if run.run_id in wanted), None)
-
-
-def _reference_word(verifier: Verifier, run: Run, canon: Any, tools: Any, judge_results: Optional[dict]) -> dict:
-    """The Reference under the Verifier: passes, fails on a gate item that holds False, or not judged
-    on a gate item left open (a judge item with no judge answer, or an item code could not settle)."""
-    from kullback.runner.verdict import verdict
-    from kullback.spec.canfail import has_gates, judge_run
-
-    if not has_gates(verifier):
-        passed, failing = judge_run(verifier, run, canon, tools)
-        return {"run": "reference", "verifier_passes_it": bool(passed),
-                "failing": None if passed else str(getattr(failing, "id", failing))}
-    result = verdict(run, verifier, canon, judge_results, write_tools=tools)
-    gates = [item for item in result.items if item.gate]
-    failed = next((item for item in gates if item.holds is False), None)
-    if result.passed or failed is not None:
-        return {"run": "reference", "verifier_passes_it": result.passed,
-                "failing": None if failed is None else failed.id, "kind": None if failed is None else failed.kind}
-    open_gate = next((item for item in gates if item.holds is None), None)
-    return {"run": "reference", "verifier_passes_it": None, "open": None if open_gate is None else open_gate.id,
-            "kind": None if open_gate is None else open_gate.kind}
+    judged = judge_results_of(workdir, task_id, verifier, runs)
+    for run in runs:
+        if is_fresh(run) and run.run_id not in judged and judge is not None:
+            answers = judge_reference(workdir, task_id, verifier, run, judge)
+            if answers:
+                judged[run.run_id] = answers
+    return judged
 
 
-def judge_rows(verifier: Verifier, answers: Optional[dict]) -> list[dict]:
-    """One row per judge item the judge answered on the Reference: held or not, its one-line reason and
-    the agent lines it read. For the Examiner only: these never reach a file the writer reads."""
-    return [{"run": "reference_judge", "item": atom_id, "holds": None if row.get("score") is None
-             else row["score"] == 1, "why": row.get("why") or "", "lines": list(row.get("lines") or [])}
-            for atom_id, row in sorted((answers or {}).items())]
+def verify_rows(workdir: Any, task_id: str, verifier: Verifier, runs: Iterable[Run], judge: Any = None) -> list[dict]:
+    """What the Verifier says of each constructed Run, laid on the Task's newest passing fresh Run (D368).
 
-STEP_TEXT_LEN = 160
-
-
-def _step_text(text: Any) -> str:
-    """One step's text on one line, capped: never a whole log in the verify answer."""
-    return " ".join(str(text or "").split())[:STEP_TEXT_LEN]
-
-
-def _reply_text(payload: dict) -> str:
-    """A model call's reply, or the tools it called when it said nothing."""
-    reply = payload.get("reply") if isinstance(payload.get("reply"), dict) else payload
-    text = _step_text(reply.get("content") or payload.get("content"))
-    calls = reply.get("tool_calls") or payload.get("tool_calls") or []
-    names = [call.get("name") for call in calls if isinstance(call, dict) and call.get("name")]
-    return text or (_step_text(f"calls {', '.join(names)}") if names else "")
-
-
-def _step_of(event: Any) -> str:
-    """One event's step text; empty for a tool result, the stop event or an event with nothing said."""
-    payload = event.payload or {}
-    if event.type == "user_turn":
-        return _step_text(payload.get("text") or payload.get("content"))
-    if event.type == "tool_call":
-        return _step_text(f"{payload.get('name')} {payload.get('args') or {}}")
-    return _reply_text(payload) if event.type == "model_call" else ""
-
-
-def reference_steps(run: Any) -> list[dict]:
-    """The Reference as steps the Examiner can investigate: its user turns, the agent's tool calls
-    and its replies, in event order. Tool results and the stop event are left out: the call names
-    the write or row the failing check reads, and the world lookups show what the world holds."""
-    steps = [(event, _step_of(event)) for event in (run.events or [])] if run is not None else []
-    return [{"run": "reference_step", "step": event.idx, "kind": event.type, "text": text}
-            for event, text in steps if text]
-
-
-def verify_rows(workdir: Any, task_id: str, verifier: Verifier, reference: Optional[Run],
-                judge: Any = None) -> list[dict]:
-    """What the Verifier says of each constructed Run and of the Reference, with the Reference steps.
-
-    A constructed Run (do nothing, one stray write on the Reference, spec/trust.py) should fail; the
-    Reference passing says the Verifier is satisfiable. The steps are the Reference's user turns, the
-    agent's tool calls and its replies around the failing check. The Reference's judge items are answered by
-    `judge` (verifier, run) -> {atom id: JudgeScore}, kept once per Verifier and Run under exam/judged/
-    (spec/judged.py); without `judge` or a kept answer a judge item is not judged, never failed.
+    A constructed Run (do nothing, one stray write on the passing fresh Run, spec/trust.py) should fail. The
+    Reference and its steps are never shown (D371): the Examiner judges the Verifier against the Intent, the
+    policy and the world, not against what the recording did. The fresh Runs' judge items are answered by
+    `judge` (verifier, run) -> {atom id: JudgeScore}, kept once per Verifier and Run under exam/judged/.
     A Run the Verdict cannot read is a row with its error.
     """
     from kullback.gates.probes import write_tools_of
     from kullback.runner.canon import load_rules
     from kullback.runner.records import ToolSig
     from kullback.spec.canfail import outcome_of
-    from kullback.spec.judged import judge_reference
+    from kullback.spec.mutants import passing_base
     from kullback.spec.trust import constructed_runs
 
-    if reference is None:
-        return [{"run": "reference", "error": "no faithful Reference on disk"}]
+    runs = list(runs)
     sigs = read_json(Path(workdir) / "tool_sigs.json", None) or []
     sigs = sigs.get("sigs", []) if isinstance(sigs, dict) else sigs
     tools = write_tools_of([ToolSig.model_validate(s) for s in sigs])
     canon = load_rules(Path(workdir) / "canon-rules.json")
     schema = read_json(Path(workdir) / "schema.json", None)
-    answers = judge_reference(workdir, task_id, verifier, reference, judge)
-    rows = []
+    judged = _judged_fresh(workdir, task_id, verifier, runs, judge)
+    base = passing_base(verifier, runs, judged, canon=canon, tools=tools, schema=schema)
+    rows = [{"run": "base", "run_id": base.run_id if base is not None else None}]
     try:
-        built = constructed_runs(verifier, [reference], [reference.run_id], schema=schema, canon=canon)
+        built = constructed_runs(verifier, runs, [base.run_id] if base is not None else [], schema=schema,
+                                 canon=canon)
         for name, run in built.items():
-            if run is not None:
-                # The stray write copies the Reference's turns, so it carries the Reference's judge answers.
-                results = answers if name == "stray_write" else None
-                failed = outcome_of(verifier, run, canon, tools, judge_results=results).failed
-                rows.append({"run": name, "verifier_fails_it": failed is not None, "at": failed})
+            if run is None or (name == "stray_write" and base is None):
+                continue
+            # The stray write copies the passing Run's turns, so it carries that Run's judge answers.
+            results = judged.get(base.run_id) if name == "stray_write" else None
+            failed = outcome_of(verifier, run, canon, tools, judge_results=results).failed
+            rows.append({"run": name, "verifier_fails_it": failed is not None, "at": failed})
     except Exception as exc:  # a constructed Run the Verdict cannot read says the code does not run
         rows.append({"run": "constructed", "error": type(exc).__name__})
-    try:
-        rows.append(_reference_word(verifier, reference, canon, tools, answers))
-    except Exception as exc:
-        rows.append({"run": "reference", "error": type(exc).__name__})
-    return rows + reference_steps(reference) + judge_rows(verifier, answers)
-
-
-def _reference_part(row: dict) -> str:
-    if row["verifier_passes_it"]:
-        return "reference: passes"
-    if row["verifier_passes_it"] is False:
-        kind = f" ({row['kind']} item)" if row.get("kind") else ""
-        return f"reference: fails on {row['failing']}{kind}"
-    if row.get("kind") == "judge":
-        return f"reference: not judged on {row['open']} (no judge answer)"
-    return f"reference: not settled on {row.get('open')} ({row.get('kind')} item, code could not evaluate it)"
-
-
-def _judge_part(row: dict) -> str:
-    word = {True: "holds", False: "does not hold", None: "not judged"}[row["holds"]]
-    lines = " | ".join(row["lines"])
-    return f"judge on {row['item']}: {word}, {row['why'] or 'no reason given'}" + (f"; read: {lines}" if lines else "")
+    return rows
 
 
 def verify_line(rows: list[dict]) -> str:
-    """The verify rows in one line: each kind of Run with how many the Verifier failed, the Reference's word,
-    how many Reference steps the answer carries for investigation, then each judge item's answer on the
-    Reference with the lines the judge read."""
-    parts, kinds, steps = [], {}, 0
+    """The verify rows in one line: each kind of constructed Run with how many the Verifier failed, then the
+    base: the passing fresh Run the stray write was laid on, or none."""
+    parts, kinds = [], {}
     for row in rows:
-        if row.get("run") == "reference_step":
-            steps += 1
-        elif "error" in row:
+        if "error" in row:
             parts.append(f"{row['run']}: {row['error']}")
-        elif row["run"] == "reference":
-            parts.append(_reference_part(row))
-        elif row["run"] == "reference_judge":
-            parts.append(_judge_part(row))
+        elif row["run"] == "base":
+            parts.append("stray write laid on the newest passing fresh run" if row["run_id"]
+                         else "no passing fresh run: no stray write")
         else:
             failed, total = kinds.get(row["run"], (0, 0))
             kinds[row["run"]] = (failed + bool(row["verifier_fails_it"]), total + 1)
     lines = [f"{run}: the Verifier fails {failed} of {total}" for run, (failed, total) in kinds.items()]
-    if steps:
-        lines.append(f"reference steps: {steps}")
     return "; ".join(lines + parts)
 
 
 def reference_judge(model: Any) -> Any:
-    """The judge verify asks of the Reference: kullback/judge/items.judge_items on `model`, one call per item."""
+    """The judge verify asks of a fresh Run with no kept answers: kullback/judge/items.judge_items on `model`,
+    one call per item."""
     if model is None:
         return None
     from kullback.judge.items import judge_items
@@ -443,15 +357,15 @@ def _mutants(root: ExamRoot, verifier: Verifier) -> str:
 
 
 def verify_task(root: ExamRoot, task_id: str) -> VerifyResult:
-    """The verify step on one Task: the constructed Runs and the Reference through its Verifier, kept on the
-    root, and on a passing Reference its surviving mutants filed as rulings."""
-    from kullback.spec.trust import load_spec_verifier
+    """The verify step on one Task: the constructed Runs on its newest passing fresh Run through its Verifier,
+    kept on the root, then its unchecked asks and the surviving mutants of the ask filed as rulings (D371)."""
+    from kullback.spec.trust import load_spec_verifier, runs_on_disk
 
     verifier = load_spec_verifier(root.workdir, task_id)
     if verifier is None:
         raise ValueError(f"task {task_id} has no Verifier to run")
-    reference = _reference_run(root.workdir, task_id)
-    rows = verify_rows(root.workdir, task_id, verifier, reference, judge=reference_judge(root.judge_model))
+    runs = runs_on_disk(root.workdir).get(task_id, [])
+    rows = verify_rows(root.workdir, task_id, verifier, runs, judge=reference_judge(root.judge_model))
     root.verified[task_id] = rows
     return VerifyResult(summary="; ".join(filter(None, [verify_line(rows), _mutants(root, verifier)])),
                         rows=rows)
@@ -599,5 +513,5 @@ RULE_TOOL_NAMES = ("rule", "close", "verify", "lookup_rows", "search_rows")
 
 __all__ = ["POLICY_FILE", "REFUSED_FILE", "REVIEW_DIR", "RULE_TOOL_NAMES", "RULINGS_DIR", "TOOLS_FILE", "VIEW_DIR",
            "CloseArgs", "RuleArgs", "RuleResult", "VerifyArgs", "checked_ruling", "file_ruling", "open_run",
-           "no_verifier", "read_rulings", "reference_ids_of", "reference_steps", "rule_tools", "run_rows", "spec_view",
+           "no_verifier", "read_rulings", "reference_ids_of", "rule_tools", "run_rows", "spec_view",
            "turn_texts", "user_turns", "verify_line", "verify_rows", "write_views"]

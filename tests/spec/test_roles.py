@@ -197,14 +197,26 @@ def test_a_ruling_that_the_reference_is_wrong_asks_nothing_of_the_writer(tmp_pat
     assert out["answered"] == 0 and out["skipped"] == 1
 
 
-def test_verify_says_the_do_nothing_run_fails_and_the_reference_passes(tmp_path):
+def _fresh() -> Run:
+    """A fresh Run (a live model) doing what the Reference did."""
+    return _reference().model_copy(update={"run_id": "fresh-1", "model": "some/model"})
+
+
+def test_verify_lays_the_stray_write_on_the_passing_fresh_run_and_never_shows_the_reference(tmp_path):
     root, verifier = _written(tmp_path)
-    rows = verify_rows(root, "t1", verifier, _reference())
+    rows = verify_rows(root, "t1", verifier, [_reference(), _fresh()])
     by_run = {row["run"]: row for row in rows}
     assert by_run["do_nothing"]["verifier_fails_it"] is True and by_run["stray_write"]["verifier_fails_it"] is True
-    assert by_run["reference"]["verifier_passes_it"] is True
-    assert verify_line(rows).startswith("do_nothing: the Verifier fails 1 of 1;") and "reference: passes" in verify_line(rows)
-    assert verify_rows(root, "t1", verifier, None) == [{"run": "reference", "error": "no faithful Reference on disk"}]
+    assert by_run["base"] == {"run": "base", "run_id": "fresh-1"} and set(by_run) == {"base", "do_nothing", "stray_write"}
+    line = verify_line(rows)
+    assert line.startswith("do_nothing: the Verifier fails 1 of 1;") and "reference" not in line
+
+
+def test_verify_with_only_a_passing_replay_builds_no_stray_write_and_says_so(tmp_path):
+    root, verifier = _written(tmp_path)
+    rows = verify_rows(root, "t1", verifier, [_reference()])
+    assert {row["run"] for row in rows} == {"base", "do_nothing"}
+    assert "no passing fresh run: no stray write" in verify_line(rows)
 
 
 SAID_SLOT = {"id": "j1", "kind": "allowed", "judge": True, "gate": True,
@@ -216,33 +228,22 @@ def _judged(tmp_path):
     return root, verifier.model_copy(update={"atoms": [*verifier.atoms, Atom.model_validate(SAID_SLOT)]})
 
 
-def test_verify_says_a_judge_item_nobody_answered_is_not_judged_never_failed(tmp_path):
-    root, verifier = _judged(tmp_path)
-    rows = verify_rows(root, "t1", verifier, _reference())
-    reference = next(row for row in rows if row["run"] == "reference")
-    assert reference["verifier_passes_it"] is None and reference["open"] == "j1"
-    assert "reference: not judged on j1 (no judge answer)" in verify_line(rows)
-    assert "fails on" not in verify_line(rows)
-
-
-def test_verify_judges_the_reference_once_and_shows_the_examiner_the_reason_and_the_lines_read(tmp_path):
+def test_verify_judges_a_fresh_run_once_and_shows_no_judge_answer_or_agent_line(tmp_path):
     root, verifier = _judged(tmp_path)
     model = TestModel([ModelReply(content='{"results": {"j1": {"score": 1, "why": "slot named"}}}')])
     judge = reference_judge(model)
-    rows = verify_rows(root, "t1", verifier, _reference(), judge=judge)
+    rows = verify_rows(root, "t1", verifier, [_reference(), _fresh()], judge=judge)
     line = verify_line(rows)
-    assert "reference: passes" in line
-    assert "judge on j1: holds, slot named; read: Item A1 is in slot seven." in line
-    assert "stray_write: the Verifier fails 1 of 1" in line
-    again = verify_rows(root, "t1", verifier, _reference(), judge=judge)
+    assert "stray_write: the Verifier fails 1 of 1" in line and "slot named" not in line and "seven" not in line
+    again = verify_rows(root, "t1", verifier, [_reference(), _fresh()], judge=judge)
     assert again == rows and len(model.calls) == 1
 
 
-def test_a_reference_judged_not_holding_fails_on_the_judge_item_by_name(tmp_path):
+def test_a_fresh_run_judged_not_holding_is_no_base(tmp_path):
     root, verifier = _judged(tmp_path)
     model = TestModel([ModelReply(content='{"results": {"j1": {"score": 0, "why": "slot never said"}}}')])
-    line = verify_line(verify_rows(root, "t1", verifier, _reference(), judge=reference_judge(model)))
-    assert "reference: fails on j1 (judge item)" in line and "judge on j1: does not hold, slot never said" in line
+    line = verify_line(verify_rows(root, "t1", verifier, [_fresh()], judge=reference_judge(model)))
+    assert "no passing fresh run: no stray write" in line
 
 
 def _keeping_examiner(seen):

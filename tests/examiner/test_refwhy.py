@@ -16,7 +16,6 @@ from kullback.spec import rulings as RL
 from kullback.spec import trust as T
 from kullback.spec import writer as WR
 from kullback.spec.schema import Spec, load_spec, save_spec
-from tests.spec.fixtures import reference_run
 from tests.spec.test_roles import _both_copies, _reference, _told
 
 REASON = "The agent moved the item but never said the new slot the user asked to hear."
@@ -37,21 +36,11 @@ def _rule(root, **kwargs):
     return asyncio.run(R._rule(root)(R.RuleArgs(**args)))
 
 
-def test_steps_list_user_turns_tool_calls_and_replies_in_order():
-    steps = R.reference_steps(reference_run())
-    assert [(row["step"], row["kind"]) for row in steps] == [
-        (0, "user_turn"), (1, "tool_call"), (3, "tool_call"), (5, "model_call")]
-    assert steps[0]["text"].startswith("Please move")
-    assert "update_item" in steps[2]["text"]
-    assert steps[3]["text"].startswith("Item A1 is now")
-    assert all(row["run"] == "reference_step" for row in steps)
-
-
-def test_verify_rows_carry_steps_and_the_line_counts_them(tmp_path):
+def test_verify_rows_carry_no_reference_step_or_judge_row(tmp_path):
     root = _told(tmp_path)
-    rows = R.verify_rows(root, "t1", _both_copies(root), _reference())
-    assert [row["step"] for row in rows if row.get("run") == "reference_step"] == [0, 1, 3]
-    assert "reference steps: 3" in R.verify_line(rows)
+    rows = R.verify_rows(root, "t1", _both_copies(root), [_reference()])
+    assert not [row for row in rows if str(row.get("run")).startswith("reference")]
+    assert "reference" not in R.verify_line(rows)
 
 
 def test_a_fails_reference_ruling_filed_before_d367_asks_nothing_of_the_writer(tmp_path):
@@ -125,3 +114,18 @@ def test_a_spec_set_aside_reference_wrong_before_d367_stays_held_not_no_verifier
     save_spec(root, spec.model_copy(update={"set_aside": "reference_wrong", "examined_rounds": [1]}))
     row = T.intent_tiers(root)["t1"].row
     assert row["tier"] == T.UNTRUSTED and row["reason"] != T.NO_VERIFIER and row["why"] is None
+
+
+def test_a_review_session_refuses_reading_a_run_or_searching_the_whole_root_and_reads_its_view():
+    from kullback.ai.messages import ToolCall
+    from kullback.examiner.session import _refuse_recordings
+
+    refuse = _refuse_recordings()
+    for name, args in (("read", {"path": "runs/t1/fresh-1.jsonl"}), ("grep", {"pattern": "x"}),
+                       ("grep", {"pattern": "x", "path": "."}), ("ls", {"path": "./judged"}),
+                       ("read", {"path": "references.json"})):
+        with pytest.raises(PermissionError, match="never reads a Run"):
+            refuse(ToolCall(id="c", name=name, arguments=args))
+    for name, args in (("read", {"path": "review/views/t1.json"}), ("grep", {"pattern": "x", "path": "review"}),
+                       ("ls", {"path": "."}), ("verify", {"task_id": "t1"})):
+        assert refuse(ToolCall(id="c", name=name, arguments=args)) is None

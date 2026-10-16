@@ -88,6 +88,38 @@ def _refuse_forbidden_paths() -> Callable:
     return refuse
 
 
+# What a review session never reads under its root (D371): the Runs and what was read off them. It judges the
+# Verifier from the Intent, the policy and the world; the recordings reach it only as the user turns of its view.
+RECORDING_PARTS = ("runs", "spoken", "judged", "user_rules", "replays.json", "task_runs.json")
+RECORDING_PREFIX = "reference"
+WHOLE_ROOT = ("", ".", "./")
+REVIEW_READS = ("the review session never reads a Run or what was read off one (D371); read the Task's view "
+                "under review/ and the policy")
+
+
+def _recording_path(path: Any) -> bool:
+    """Whether a path under the root names a Run copy or a record read off one."""
+    head = str(path or "").strip().lstrip("./").split("/", 1)[0]
+    return head in RECORDING_PARTS or head.startswith(RECORDING_PREFIX)
+
+
+def _refuse_recordings() -> Callable:
+    """A tool_call hook keeping a review session off the Runs: a read naming one, and a search over the whole
+    root (which would reach them), are refused with the reason."""
+
+    def refuse(call: Any) -> None:
+        args = getattr(call, "arguments", None) or {}
+        if "path" not in args and getattr(call, "name", None) not in ("grep", "find"):
+            return None
+        path = args.get("path", ".")
+        if _recording_path(path) or (getattr(call, "name", None) in ("grep", "find") and str(path).strip() in WHOLE_ROOT):
+            raise PermissionError(f"{path!r}: {REVIEW_READS}; search a folder such as review/")
+        return None
+
+    refuse.hook_name = "review_reads_no_run"  # type: ignore[attr-defined]
+    return refuse
+
+
 EXAMINER_WRITES = ("the Examiner writes nothing: it files rulings the writer applies or rebuts, and findings "
                    "for the Builder (D320, D331)")
 
@@ -756,6 +788,7 @@ def review_extension(root: ExamRoot) -> Callable[[ExtensionAPI], None]:
             "examiner_protected_paths"))
         api.tool_call(_refuse_forbidden_paths())
         api.tool_call(_refuse_generic_writes())
+        api.tool_call(_refuse_recordings())
 
     return setup
 
@@ -803,7 +836,8 @@ def _review_one(root: Path, task_id: str, round_number: int, model: Any, turns: 
 
 def _verify_once(exam_root: ExamRoot, task_id: str) -> None:
     """A session that never called verify on its Task gets the verify step by code after it, so the
-    mutant rulings of a passing Reference are filed every round (D362); a Task with no Verifier is skipped."""
+    unchecked asks and the mutant rulings of a passing fresh Run are filed every round (D362, D370, D371);
+    a Task with no Verifier is skipped."""
     from kullback.examiner.rule_tool import verify_task
 
     if task_id not in exam_root.verified:
