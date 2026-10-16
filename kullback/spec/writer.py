@@ -10,7 +10,10 @@ anything else. Nothing here reads the Reference index (spec/witness.py does, for
 Code decides what stands, in the tool: an item naming a value no world row, policy line or user turn
 holds is refused with the reason, as is an item with no provenance or resting on unwitnessed facts
 alone, so the writer fixes it in the same session. Items no Run can pass together go back once in a
-follow-up turn. Code adds the sanity item. Facts no item names become gaps. `repair` answers an
+follow-up turn, as do asks no gate item cites; for those, and in the repair of an unchecked_ask ruling, the
+writer may call rebut_fact, which code keeps only when its why quotes the fact's own words or a policy
+line (D376). The Spec records each kept rebuttal by fact id; nothing else excuses an ask. Code adds the
+sanity item. Facts no item names become gaps. `repair` answers an
 Examiner ruling (D331): it applies the ruling's fix (drop or replace a ruled item, add items for an
 uncovered fact) or rebuts it with why, under the same rules; when code refused every answer it gets
 one retry in the same round, shown each refusal.
@@ -30,6 +33,8 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Iterable, NamedTuple, Optional
 
+from pydantic import Field
+
 from kullback.runner.records import Record, Verifier
 from kullback.spec import effects as tool_effects
 from kullback.spec import items as I
@@ -46,16 +51,22 @@ from kullback.spec.schema import (
     Spec,
     SpecIntent,
     intent_text,
+    is_reaction,
     load_spec,
     save_spec,
     spec_verifier_path,
 )
 
+# The ruling code for an ask no gate item cites (spec/mutant_rulings.py); its repair may call rebut_fact.
+UNCHECKED_ASK = "unchecked_ask"
+
 WHAT_YOU_RECEIVE = """\
 # What you receive
 One customer request as Intent facts (each with an id; a fact marked unwitnessed was only accepted by \
 the user, never volunteered; a fact marked echo carries the agent's proposal, so a gate value may not \
-rest on it alone; a fact marked unfounded was ruled never asked for, so no gate may rest on it alone), the policy the agent works under, the tools the agent may call, and \
+rest on it alone; a fact marked unfounded was ruled never asked for, so no gate may rest on it alone; a \
+fact's condition says what prompted it, with the agent line it answers quoted), the policy the agent works \
+under, the tools the agent may call, and \
 read access to the world as it stands before the agent starts. You have never seen any agent run or \
 reference solution for this request, and you must not ask for one. Your job is the Verifier: the \
 items a correct run shows, each resting on an Intent fact or a policy line."""
@@ -72,6 +83,9 @@ TOOLS_TEXT = """\
   Example: add_items({"items": [{"id": "s1", "kind": "row_is", "table": "records", \
 "find": {"record_id": "R-1"}, "expect": {"status": "closed"}, "gate": true, "fact_ids": ["f1"]}]})
 - drop_items: remove items you added. Example: drop_items({"ids": ["s1"]})
+- rebut_fact: only for a fact code sent back as missing its gate: why it needs none, copying the user's \
+words of that fact or a policy line word for word. Example: rebut_fact({"fact_id": "f2", "why": \
+"the policy says: <the policy line, copied>"})
 
 # Item kinds
 - row_is {table, find: {field: value}, expect: {field: value | [values] | {"one_of": [...]} | {"not": [...]}}, \
@@ -93,21 +107,35 @@ read. Narrow it ("after_call:<tool>", "final_answer", "assistant:<k>") only with
 why the answer can come nowhere else.
 Every item: id, gate (true when a run failing it is wrong whatever else it does), weight (default 1), \
 and fact_ids or policy_line (a verbatim line of the policy, at least 12 characters). A hand-off item \
-gates only when its policy_line demands the hand-off. When the Intent or the policy names a condition \
+gates only when its policy_line demands the hand-off. An item may carry confirms {table, find}: the one \
+row whose read confirms a condition the agent claimed about the world. When the Intent or the policy names a condition \
 (if this, do that; else the other), write each branch as its own end state: its state items carry alt \
 (0, 1, ...); an item without alt holds in all."""
 
 EXAMPLES = """\
 # Examples
-- The user asks to close record R-1 and the policy says closing needs the user's yes: row_is on R-1 \
-with status closed (gate), before {first: "confirm_turn", then: "close_record"} (gate, policy_line).
-- The user asks for something the policy forbids: no state item (code already fails any change), and \
-one gated judge item asking whether the agent declined and why, the anchor quoting the policy line.
-- The user wants a new entry with a minted id: row_new with the fields the user gave, never the id.
-- The user asks what something costs: a judge item whose anchor is the amount read from the row that \
-holds it (row cites that row), and said with that amount if it is stored as is. Never compute a figure the world does not hold.
-- The user asks for one of several options the policy allows and does not say which: the item accepts \
-every allowed one (one_of), never only the one an agent might pick."""
+Placeholders in angle brackets stand for the Task's own names; one example per item kind and per condition.
+- row_is: the user asks to set <field> of <record> to <value> (do, condition none): row_is on <record> with \
+<field> <value>, gated, citing that fact.
+- row_keeps: the user asks that <other record> stay as it is (keep): row_keeps on <other record>, gated, \
+citing that fact.
+- row_new: the user wants a new <entry> with a minted id: row_new with the fields the user gave, never the id.
+- before: the policy says <write> needs the user's yes first: before {first: "confirm_turn", then: \
+"<write tool>"} (gate, policy_line quoting that rule).
+- called: the policy says <step> must be done through <tool>: called <tool> (gate, policy_line).
+- not_called: the policy forbids <action> and the user asks for it: not_called <tool> (gate, policy_line), \
+no state item (code already fails any change), and one gated judge item asking whether the agent \
+declined, the anchor quoting the policy line.
+- judge: the user asks to be told <value> of <record> (told): a gated judge item whose anchor is <value> \
+read from the row that holds it (row cites that row). Never compute a figure the world does not hold.
+- said: the same told <value> stored as is: said with <value>, gated, citing the told fact.
+- one_of: the user asks for one of several <options> the policy allows and does not say which: the item \
+accepts every allowed one (one_of), never only the one an agent might pick.
+- condition world_or_policy: the user asks for <other change> if, as the agent said, <change> is not \
+allowed: look the claim up (read_row, or read_policy) and gate the branch the world selects, citing the \
+row in confirms or the rule in policy_line.
+- condition agent: the user asks for <other change> only after the agent could not do <change>: any item \
+on it is scored, never gated."""
 
 CHOICE_RULE = """\
 # Choosing items
@@ -115,14 +143,23 @@ Write an item only for what the Intent asks for or the policy requires, never fo
 one item per ask. Every value comes from a world row you read, a policy line or the user's words: find it \
 first, then add it. Code adds the sanity item by itself (no row outside your state items may change), so \
 list every row a correct run changes, and only those. Gate what the user asked for and the policy requires. \
-What the user only accepted after the agent proposed it or refused something is weighted, not gated. Where \
+Every gate rests on an ask fact or on a policy_line that states the rule. A rule the policy does not state is \
+never gated, however sensible: weight the item, and where the Task turns on it, leave the fact a gap. \
+Where \
 the user left a choice open and the policy allows several, accept any allowed one or weight it. A forbid \
-(not_called, row_keeps) gates only with the policy line that forbids it; else weight it. A value the user \
-asked to be told is a gated judge item anchored on the world row holding it. A variant or payment method the \
-user named is a gated check on that field. A refusal judge item always gates. A fact marked side asks only to be \
+(not_called, row_keeps) gates only on a keep fact the user said or the policy line that forbids it; else weight it. A value the user \
+asked to be told is a gated judge item anchored on the world row holding it. One of several options the \
+world holds that the user named is a gated check on that field. A refusal judge item always gates. Any other told item (judge, \
+said) gates only citing a told fact or quoting the policy line that requires the telling: code weighs \
+any other. A fact marked side asks only to be \
 told something beside the Task's ask, so any item on it is scored, never gated: code weighs such a gate. \
-A fact of stance fallback was asked only after the agent refused, could not, or proposed another way: \
-it is scored, never gated, the same way."""
+A fact's condition says what prompted it. A fact of condition agent is a reaction to the agent's own \
+conduct (it could not, declined citing no rule, stalled, or proposed another way): any item on it is \
+scored, never gated. A fact of condition world_or_policy is an ask under a condition the agent claimed \
+about the world or the rules: the claim is the agent's until you confirm it. Look it up yourself, the \
+row with find_rows and read_row (cite it in confirms) or the rule with read_policy (cite it in \
+policy_line), and gate the branch the world selects, not the branch the recording took; a claim you \
+cannot confirm leaves the item scored."""
 
 FEEDBACK = """\
 # Feedback
@@ -141,25 +178,27 @@ FOLLOWUP_PROMPT = """Code found items no run can pass together, each with the re
 them under their ids so a correct run can pass, then reply that you are done.
 """
 
-# Volunteered facts no gated item covers go back in one follow-up turn of the same conversation.
-ASKED_FOLLOWUP_PROMPT = """Code lists volunteered facts no gated item covers, each with its id and why \
-(uncovered, or weighted only). Add one gated item for each, or reply with one line quoting the policy or \
-the user's words why it needs none, then reply that you are done.
+# Facts the user raised (not reactions) no gated item covers go back in one follow-up turn of the same conversation.
+ASKED_FOLLOWUP_PROMPT = """Code lists facts the user raised that no gated item covers, each with its id and why \
+(uncovered, or weighted only). Add one gated item for each, or call rebut_fact with its id and why it needs \
+none, copying the user's words of that fact or a policy line word for word; nothing else excuses it. Then \
+reply that you are done.
 """
 
 
 def _gates_alone(fact: IntentFact) -> bool:
-    """A volunteered fact a gate may rest on alone: not after pushback, not unfounded, not side."""
-    return fact.stance == "volunteered" and not (fact.after_pushback or fact.unfounded or fact.side)
+    """A fact a gate may rest on alone: raised by the user (volunteered, or a conditional ask), not a
+    reaction, not unfounded, not side."""
+    return fact.stance != "accepted" and not (is_reaction(fact) or fact.unfounded or fact.side)
 
 
 def asked_missing(items: Iterable[dict], intent: SpecIntent) -> list[dict]:
-    """Volunteered facts (not after pushback, not unfounded, not side) no gated item covers.
+    """Facts the user raised (not a reaction, not unfounded, not side) no gated item covers.
 
     Each row names the fact id and why it is missing: uncovered (no item names it) or
     weighted only (named only by scored items). A gate counts as set where the item says
-    so, else by the kind default, as code keeps it. D353 after-pushback and accepted facts
-    are out of scope here by design.
+    so, else by the kind default, as code keeps it. Accepted facts and reactions are out of
+    scope here by design (D366).
     """
     rows = list(items or [])
     named = {fact_id for item in rows for fact_id in item.get("fact_ids") or []}
@@ -187,6 +226,9 @@ with one line starting "rebut:" that quotes those words or that line. With neith
 A reply that changes nothing always starts with "rebut:", also when the ruling asks for no item change.
 When the only fix would loosen a check so the recorded run passes, apply nothing and reply with one line \
 "rebut: cannot verify: <why>", quoting the user's words or the policy line the check rests on.
+An unchecked_ask ruling names a fact no gated item cites: add a gated item citing it, or call rebut_fact \
+with that fact id and why it needs none, copying the user's words of that fact or a policy line word for \
+word. A "rebut:" reply alone leaves the fact unchecked.
 Reply that you are done when finished.
 
 """
@@ -236,6 +278,8 @@ class Ruling(Record):
     item: str = ""
     fix: str = ""
     kind: str = ""
+    # The fact ids an unchecked_ask ruling filed by code names (its verified rows, D376).
+    facts: list[str] = Field(default_factory=list)
 
 
 class Written(NamedTuple):
@@ -301,8 +345,14 @@ def unwitnessed(fact: IntentFact) -> bool:
     return fact.stance == "accepted" and not fact.witnesses
 
 
+def _condition_view(fact: IntentFact) -> dict:
+    """A fact's condition and the agent line it answers, when it has either."""
+    out = {"condition": fact.condition} if fact.condition != "none" else {}
+    return dict(out, answers=fact.in_reply_to.quote) if fact.in_reply_to else out
+
+
 def _facts_view(intent: SpecIntent) -> list[dict]:
-    return [dict({"id": fact.id, "text": fact.text, "stance": fact.stance},
+    return [dict({"id": fact.id, "text": fact.text, "stance": fact.stance}, **_condition_view(fact),
                  **({"unwitnessed": True} if unwitnessed(fact) else {}), **({"echo": True} if fact.echo else {}),
                  **({"after_pushback": True} if fact.after_pushback else {}),
                  **({"unfounded": True} if fact.unfounded else {}), **({"side": True} if fact.side else {}))
@@ -333,10 +383,10 @@ def world_of(inputs: WriterInputs) -> I.World:
                    inputs.signatures)
 
 
-def store_of(inputs: WriterInputs, items: Iterable[dict] = (),
-             ruled: Optional[set[str]] = None) -> writer_tools.ItemStore:
+def store_of(inputs: WriterInputs, items: Iterable[dict] = (), ruled: Optional[set[str]] = None,
+             rebuttals: Optional[dict] = None) -> writer_tools.ItemStore:
     return writer_tools.ItemStore(world_of(inputs), {fact.id: fact for fact in inputs.intent.facts}, unwitnessed,
-                                  items, ruled)
+                                  items, ruled, rebuttals)
 
 
 def is_item_check(check: Check) -> bool:
@@ -353,11 +403,15 @@ def check_of(item: dict, inputs: WriterInputs, world: Optional[I.World] = None) 
                  gate=bool(item["gate"]), weight=float(item["weight"]), policy_line=item.get("policy_line"))
 
 
-def _spec_of(task_id: str, items: Iterable[dict], counts: dict, inputs: WriterInputs) -> Spec:
+def _spec_of(task_id: str, items: Iterable[dict], counts: dict, inputs: WriterInputs,
+             rebuttals: Optional[dict] = None) -> Spec:
     world = world_of(inputs)
     checks = [check_of(item, inputs, world) for item in items]
-    spec = with_gaps(Spec(task_id=task_id, intent=inputs.intent, checks=checks), inputs)
+    spec = with_gaps(Spec(task_id=task_id, intent=inputs.intent, checks=checks, rebuttals=dict(rebuttals or {})),
+                     inputs)
     counts["gaps"] = len(spec.gaps)
+    if spec.rebuttals:
+        counts["rebutted"] = len(spec.rebuttals)
     return spec
 
 
@@ -482,14 +536,19 @@ def save_session(inputs: WriterInputs, task_id: str, kind: str, round_number: in
 
 
 def _side_counts(intent: SpecIntent, items: list[dict]) -> dict:
-    """Side and fallback facts and the gates weighed for resting on one; nothing for a Task with neither."""
+    """Side facts, reactions and conditional asks, and the gates weighed for resting on one, and the told
+    gates weighed for resting on no told fact and no policy line (D369); nothing for a Task with none."""
     out = {}
     for name, has, weighed in (("side", lambda f: f.side, I.SIDE_WEIGHED),
-                               ("fallback", lambda f: f.stance == "fallback", I.FALLBACK_WEIGHED)):
+                               ("reaction", is_reaction, I.AGENT_WEIGHED),
+                               ("conditional", lambda f: f.condition == "world_or_policy", I.UNCONFIRMED_WEIGHED)):
         found = sum(1 for fact in intent.facts if has(fact))
         if found:
             out.update({f"{name}_facts": found,
                         f"{name}_weighed": sum(1 for item in items if item.get("weighed") == weighed)})
+    untold = sum(1 for item in items if item.get("weighed") == I.TELL_WEIGHED)
+    if untold:
+        out["tell_weighed"] = untold
     return out
 
 
@@ -525,6 +584,7 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
         turn, session = again(turn, session, FOLLOWUP_PROMPT, clashes)
     missing = asked_missing(list(store.items.values()), inputs.intent)
     if missing:
+        store.rebuttable = {row["id"] for row in missing}
         turn, session = again(turn, session, ASKED_FOLLOWUP_PROMPT, missing)
     asked_clashes = _clash_rows(store) if missing else []
     if asked_clashes:
@@ -534,7 +594,7 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
     counts.update(sent_back=len(clashes), unsatisfiable=sorted(
         {item_id for item_id, _ in I.contradictions(items)}),
         asked_sent_back=len(missing), truncated_chars=cut, unfinished=bool(session.get("unfinished")))
-    spec = _spec_of(task_id, items, counts, inputs)
+    spec = _spec_of(task_id, items, counts, inputs, store.rebuttals)
     counts.update(I.counts_of(items + [I.sanity_item([])]))
     counts["echo_facts"] = sum(1 for fact in inputs.intent.facts if fact.echo)
     counts.update(_side_counts(inputs.intent, items))
@@ -634,8 +694,7 @@ def repair(spec: Spec, ruling: Ruling, inputs: WriterInputs, model: Any, *,
     ruling = Ruling.model_validate(ruling.model_dump() if isinstance(ruling, Record) else ruling)
     writer_tools.refuse_run_inputs(inputs.intent, inputs.state, ruling.excerpt)
     messages, cut = repair_messages(spec, ruling, inputs)
-    legacy = not all(is_item_check(check) for check in spec.checks)
-    store = store_of(inputs, item_checks(spec), None if legacy else set(ruling.check_ids))
+    store = _repair_store(spec, ruling, inputs)
     before = {item["id"]: item for item in item_checks(spec)}
     price = _price(model_id)
     session = _session(model, messages, store, inputs, config, price, ceiling_usd)
@@ -654,11 +713,31 @@ def repair(spec: Spec, ruling: Ruling, inputs: WriterInputs, model: Any, *,
                   not_ruled=store.not_ruled, truncated_chars=cut, retried=retried,
                   refusals=[{"id": row["id"], "kind": row["kind"]} for row in store.refused],
                   rebut=rebuttal_of(session.get("text") or ""))
-    repaired = _spec_of(spec.task_id, items, counts, inputs).model_copy(update={
+    repaired = _spec_of(spec.task_id, items, counts, inputs, store.rebuttals).model_copy(update={
         "version": spec.version + 1, "round": spec.round, "rulings_open": spec.rulings_open,
         "writer": spec.writer})
     save_session(inputs, spec.task_id, "repair", spec.round + 1, session, counts, ruling)
     return Written(repaired, counts, session)
+
+
+def _repair_store(spec: Spec, ruling: Ruling, inputs: WriterInputs) -> writer_tools.ItemStore:
+    """The repair's store: the Spec's items, drops limited to the ruled ones (any, on the older grammar), and
+    the rebuttals but those of the facts an unchecked_ask ruling names, which the writer may rebut anew."""
+    legacy = not all(is_item_check(check) for check in spec.checks)
+    asked = asks_ruled(spec, ruling)
+    store = store_of(inputs, item_checks(spec), None if legacy else set(ruling.check_ids),
+                     {fact_id: why for fact_id, why in spec.rebuttals.items() if fact_id not in asked})
+    store.rebuttable = asked
+    return store
+
+
+def asks_ruled(spec: Spec, ruling: Ruling) -> set[str]:
+    """The facts an unchecked_ask ruling names (D376): its fact rows when code filed it, its item when the
+    Examiner did. A rebuttal of such a fact was found wrong, so the repair drops it; the writer may rebut anew."""
+    if not ruling.kind.endswith(UNCHECKED_ASK):
+        return set()
+    named = set(ruling.facts) | {ruling.item}
+    return named & {fact.id for fact in spec.intent.facts}
 
 
 def rebuttal_of(text: str) -> str:
@@ -677,7 +756,13 @@ def ruling_of(body: dict) -> Ruling:
     check_ids = body.get("check_ids") or ([body["item"]] if body.get("item") else [])
     return Ruling(check_ids=[str(c) for c in check_ids], reason=str(body.get("reason") or ""),
                   excerpt=str(excerpt), item=str(body.get("item") or ""), fix=str(body.get("fix") or ""),
-                  kind="/".join(str(body[key]) for key in ("kind", "code") if body.get(key)))
+                  kind="/".join(str(body[key]) for key in ("kind", "code") if body.get(key)),
+                  facts=_fact_rows(body.get("verified")))
+
+
+def _fact_rows(verified: Any) -> list[str]:
+    """The fact ids a ruling's verified rows name (an unchecked_ask ruling filed by code, D376)."""
+    return [str(row["fact_id"]) for row in verified or () if isinstance(row, dict) and row.get("fact_id")]
 
 
 def repair_for_ruling(workdir: Path, task_id: str, ruling: dict, model: Any,

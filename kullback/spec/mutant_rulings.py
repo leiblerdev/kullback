@@ -1,13 +1,16 @@
 """Surviving mutants become the Examiner's rulings: which field or row is unchecked, never a value (D362).
 
-After verify finds the Reference passing, its mutants (spec/mutants.py) are scored and each survivor is
-read by code:
+At verify, the mutants of the Task's base, keyed to the ask (spec/mutants.py, D368, D375),
+are scored and each survivor is read by code:
 
-1. value, on a field a check of the Spec reads where that check rests on a fact the user volunteered (not
-   an echo, not after pushback, not unfounded, not a side fact): derivation/unchecked_field on that check;
-2. undone, on a row where every undone mutant built survived (no gate notices the Reference's write at
+1. value, on a field a check of the Spec reads where that check rests on an ask the user raised (not
+   accepted, not a reaction, not an echo, not unfounded, not a side fact): derivation/unchecked_field on that check;
+2. undone, on a row where every undone mutant built survived (no gate notices the base's write at
    all): derivation/unchecked_write, on a check that reads the row, else on the task;
 3. extra_row or untouched: derivation/unchecked_row per table, on the task.
+
+Before the mutants, every ask no gate item cites (schema.unchecked_asks, D370) is filed as
+derivation/unchecked_ask on the task, one per fact, ever; it needs no passing Run.
 
 Any other survivor (a value on a field no volunteered fact names, an undone field on a row whose write a
 gate does hold) is a note. A ruling names the table and field, never the row's value or the value to
@@ -21,21 +24,21 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from kullback.runner.records import Run, Verifier, write_json
+from kullback.runner.records import Verifier, write_json
 from kullback.spec import events
 from kullback.spec import rulings as R
-from kullback.spec.mutants import CAP, SURVIVED, mutant_context, mutant_report, mutants_path
-from kullback.spec.schema import Spec, load_spec
+from kullback.spec.mutants import CAP, SURVIVED, mutants_path, task_mutants
+from kullback.spec.schema import Spec, is_reaction, load_spec, unchecked_asks
 
 UNCHECKED_FIELD, UNCHECKED_WRITE, UNCHECKED_ROW = "unchecked_field", "unchecked_write", "unchecked_row"
 NOTE = "note"
 
 
 def usable_facts(spec: Spec) -> set[str]:
-    """The fact ids a gate may rest on alone: volunteered, not an echo, not after pushback, not unfounded, not a
-    side fact (D361: a side fact is scored, never gated)."""
-    return {fact.id for fact in spec.intent.facts
-            if fact.stance == "volunteered" and not (fact.echo or fact.after_pushback or fact.unfounded or fact.side)}
+    """The fact ids a gate may rest on alone: raised by the user (not accepted), not a reaction (D366), not an
+    echo, not unfounded, not a side fact (D361: a side fact is scored, never gated)."""
+    return {fact.id for fact in spec.intent.facts if fact.stance != "accepted"
+            and not (is_reaction(fact) or fact.echo or fact.unfounded or fact.side)}
 
 
 def reading_checks(spec: Spec, table: str, row_id: str, field: Optional[str] = None) -> list:
@@ -75,7 +78,7 @@ def _write_ruling(spec: Spec, table: str, row_id: str) -> dict:
     checks = reading_checks(spec, table, row_id)
     item = checks[0].id if checks else R.TASK_ITEM
     return {"code": UNCHECKED_WRITE, "item": item, "key": ("write", table, row_id),
-            "reason": f"A Run that leaves out the Reference's write to a {table} row, every change on it put back, "
+            "reason": f"A Run that leaves out the passing Run's write to a {table} row, every change on it put back, "
                       "still passes every gate.",
             "fix": f"Gate the {table} write the user asked for, or rebut if the user never asked for it."}
 
@@ -159,30 +162,59 @@ def file_rulings(workdir: Any, spec: Spec, rows: list[dict], round_number: int =
     return filed
 
 
-def mutant_rulings(workdir: Any, verifier: Verifier, reference: Optional[Run], round_number: int = 0, *,
-                   judge_results: Optional[dict] = None, bus: Any = None, cap: int = CAP) -> dict:
-    """The Task's mutants scored on its Reference, the survivors filed as rulings, the report written to
+UNCHECKED_ASK = "unchecked_ask"
+
+
+def ask_rulings(workdir: Any, spec: Spec, round_number: int = 0, bus: Any = None) -> list[int]:
+    """Each ask no gate item cites filed as a blocking derivation/unchecked_ask ruling on the task (D370),
+    unless one already names that fact. Returns the numbers filed."""
+    task_id = spec.task_id
+    held = {row.get("fact_id") for ruling in R.load_rulings(workdir, task_id) if ruling.code == UNCHECKED_ASK
+            for row in ruling.verified}
+    filed = []
+    for fact_id in unchecked_asks(spec):
+        if fact_id in held:
+            continue
+        ruling = R.Ruling(task_id=task_id, number=R.next_number(workdir, task_id),
+                          round=int(round_number) or spec.round + 1, item=R.TASK_ITEM, kind="derivation",
+                          code=UNCHECKED_ASK, blocking=True, verified=[{"fact_id": fact_id}],
+                          reason=f"fact {fact_id} is an ask of the user that no gate item cites",
+                          fix=f"add a gate item citing {fact_id}, or call rebut_fact quoting its words or a policy line")
+        R.save_ruling(workdir, ruling)
+        filed.append(ruling.number)
+        if bus is not None:
+            events.ruling_filed(bus, events.ruling_payload(ruling))
+    if filed:
+        R.sync_spec(workdir, task_id)
+    return filed
+
+
+def mutant_rulings(workdir: Any, verifier: Verifier, round_number: int = 0, *, runs: Optional[list] = None,
+                   bus: Any = None, cap: int = CAP) -> dict:
+    """The Task's mutants scored on its base (built from the Verifier, else the newest passing fresh Run of
+    `runs`, else of its Runs on disk), the survivors filed as rulings, the report written to
     exam/mutants/<task>.json. Returns the report's status and counts and the ruling numbers filed."""
-    canon, tools, schema = mutant_context(workdir)
-    report = mutant_report(verifier, reference, canon=canon, tools=tools, schema=schema,
-                           judge_results=judge_results, cap=cap)
     spec = load_spec(workdir, verifier.task_id)
+    asks = ask_rulings(workdir, spec, round_number, bus) if spec is not None else []
+    report = task_mutants(workdir, verifier, runs, cap=cap)
     filed = file_rulings(workdir, spec, report["mutants"], round_number, bus) \
         if report["status"] == "scored" and spec is not None else []
     write_json(mutants_path(workdir, verifier.task_id), report)
     notes = sum(row.get("ruling") == NOTE for row in report.get("mutants", []))
     return {"status": report["status"], "built": report.get("built", 0), "survived": report.get("survived", 0),
-            "filed": filed, "notes": notes}
+            "filed": filed, "notes": notes, "asks": asks}
 
 
 def mutants_line(out: dict) -> str:
-    """The verify answer's mutant part, in one line."""
+    """The verify answer's mutant part, in one line, after the unchecked asks filed when there are any."""
+    asks = out.get("asks") or []
+    head = f"unchecked asks filed: {', '.join(str(n) for n in asks)}; " if asks else ""
     if out["status"] != "scored":
-        return f"mutants: not built ({out['status']})"
+        return f"{head}mutants: not built ({out['status']})"
     filed = ", ".join(str(n) for n in out["filed"]) or "none"
-    return (f"mutants: {out['built']} built, {out['survived']} survived; rulings filed from them: {filed}; "
+    return (f"{head}mutants: {out['built']} built, {out['survived']} survived; rulings filed from them: {filed}; "
             f"notes: {out['notes']}")
 
 
-__all__ = ["NOTE", "UNCHECKED_FIELD", "UNCHECKED_ROW", "UNCHECKED_WRITE", "candidates", "file_rulings",
-           "mutant_rulings", "mutants_line", "reading_checks", "usable_facts"]
+__all__ = ["NOTE", "UNCHECKED_ASK", "UNCHECKED_FIELD", "UNCHECKED_ROW", "UNCHECKED_WRITE", "candidates", "file_rulings",
+           "ask_rulings", "mutant_rulings", "mutants_line", "reading_checks", "usable_facts"]

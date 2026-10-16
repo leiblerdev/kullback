@@ -446,6 +446,28 @@ def disagreement_rows(status: dict, references: dict) -> list[dict]:
     return rows
 
 
+def reference_fails_rows(failing: Iterable[dict]) -> list[dict]:
+    """One row per Task whose kept Reference fails the Verifier (spec/trust.py reference_fails, D367).
+
+    The Verifier comes from the ask, the policy and the world, so the Reference failing it says the
+    recording did not do what the user asked, or replays differently here: a finding about the Reference
+    and the Environment, never a repair of the Verifier and never a ruling.
+    """
+    rows = []
+    for row in failing:
+        task_id = str(row.get("task_id") or "")
+        atom = row.get("atom") or "a gate"
+        rows.append({
+            "kind": "other", "tool": None, "task_ids": [task_id], "task_id": task_id,
+            "key": finding_key("reference_fails", "", task_id),
+            "change": f"the kept Reference fails the Verifier at {atom}",
+            "text": (f"The kept Reference {row.get('run_id') or ''} fails the Task's Verifier at {atom}: the "
+                     "recording did not do what the ask, the policy and the world require, or it replays "
+                     "differently here. The Verifier stands; the Reference is for fidelity only."),
+        })
+    return rows
+
+
 def unread_result_rows(readers_artifact: dict, status: dict) -> list[dict]:
     """One row per tool whose homed prose results nothing reads, so its rows hold no pinned column.
 

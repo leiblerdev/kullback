@@ -53,16 +53,6 @@ def task_rows(workdir: Any, task_ids: Iterable[str]) -> dict[str, dict]:
     return out
 
 
-def _route_reference_fails(root: Path, task_ids: list[str]) -> dict[str, list[int]]:
-    """Trust's kept-Reference failures filed as rulings before the Examiner's first round (D333, fold)."""
-    from kullback.spec.trust import intent_tiers, route_reference_fails
-
-    if not (root / "runs").is_dir():
-        return {}
-    tiers = {task_id: tier for task_id, tier in intent_tiers(root).items() if task_id in task_ids}
-    return {task_id: [n] for task_id in tiers for n in route_reference_fails(root, {task_id: tiers[task_id]})}
-
-
 def _ask_confirm(root: Path, task_id: str, model: Any, ceiling_usd: Optional[float] = None) -> dict:
     from kullback.spec.writer import ask_confirm
 
@@ -101,9 +91,6 @@ def run_rounds(workdir: Any, task_ids: Iterable[str], *, examine: Callable[..., 
     log: list[dict] = []
     found: list[dict] = []
     examined_all: set[str] = set()
-    routed = _route_reference_fails(root, task_ids)
-    if routed:
-        _log(root, {"side": "trust", "reference_fails_filed": routed})
     confirm = confirm or _ask_confirm
     asked = {task_id: confirm(root, task_id, writer_model or model, ceiling_usd=ceiling_usd) for task_id in task_ids}
     if any(row.get("asked") for row in asked.values()):

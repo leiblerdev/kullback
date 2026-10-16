@@ -88,6 +88,38 @@ def _refuse_forbidden_paths() -> Callable:
     return refuse
 
 
+# What a review session never reads under its root (D371): the Runs and what was read off them. It judges the
+# Verifier from the Intent, the policy and the world; the recordings reach it only as the user turns of its view.
+RECORDING_PARTS = ("runs", "spoken", "judged", "user_rules", "replays.json", "task_runs.json")
+RECORDING_PREFIX = "reference"
+WHOLE_ROOT = ("", ".", "./")
+REVIEW_READS = ("the review session never reads a Run or what was read off one (D371); read the Task's view "
+                "under review/ and the policy")
+
+
+def _recording_path(path: Any) -> bool:
+    """Whether a path under the root names a Run copy or a record read off one."""
+    head = str(path or "").strip().lstrip("./").split("/", 1)[0]
+    return head in RECORDING_PARTS or head.startswith(RECORDING_PREFIX)
+
+
+def _refuse_recordings() -> Callable:
+    """A tool_call hook keeping a review session off the Runs: a read naming one, and a search over the whole
+    root (which would reach them), are refused with the reason."""
+
+    def refuse(call: Any) -> None:
+        args = getattr(call, "arguments", None) or {}
+        if "path" not in args and getattr(call, "name", None) not in ("grep", "find"):
+            return None
+        path = args.get("path", ".")
+        if _recording_path(path) or (getattr(call, "name", None) in ("grep", "find") and str(path).strip() in WHOLE_ROOT):
+            raise PermissionError(f"{path!r}: {REVIEW_READS}; search a folder such as review/")
+        return None
+
+    refuse.hook_name = "review_reads_no_run"  # type: ignore[attr-defined]
+    return refuse
+
+
 EXAMINER_WRITES = ("the Examiner writes nothing: it files rulings the writer applies or rebuts, and findings "
                    "for the Builder (D320, D331)")
 
@@ -623,12 +655,8 @@ def rulings_part(workdir: Any, task_id: str) -> str:
     if not rulings:
         return "rulings: none"
     answered = [f"{r.number} {r.answer['action']}" for r in rulings if r.status == "open" and r.answer]
-    unruled = [str(r.number) for r in rulings
-               if r.status == "open" and r.code == "fails_reference" and r.wrong_side is None]
     text = f"rulings: {len(rulings)}, {sum(r.status == 'open' for r in rulings)} open"
-    text += f"; answered, to close or keep open: {', '.join(answered)}" if answered else ""
-    return text + (f"; the Reference fails the Verifier, rule which side is wrong: {', '.join(unruled)}"
-                   if unruled else "")
+    return text + (f"; answered, to close or keep open: {', '.join(answered)}" if answered else "")
 
 
 def _opening(exam_root: ExamRoot, selected: list[str], model: Any = None,
@@ -760,6 +788,7 @@ def review_extension(root: ExamRoot) -> Callable[[ExtensionAPI], None]:
             "examiner_protected_paths"))
         api.tool_call(_refuse_forbidden_paths())
         api.tool_call(_refuse_generic_writes())
+        api.tool_call(_refuse_recordings())
 
     return setup
 
@@ -807,7 +836,8 @@ def _review_one(root: Path, task_id: str, round_number: int, model: Any, turns: 
 
 def _verify_once(exam_root: ExamRoot, task_id: str) -> None:
     """A session that never called verify on its Task gets the verify step by code after it, so the
-    mutant rulings of a passing Reference are filed every round (D362); a Task with no Verifier is skipped."""
+    unchecked asks and the mutant rulings of the Task's base are filed every round (D362, D370, D371, D375);
+    a Task with no Verifier is skipped."""
     from kullback.examiner.rule_tool import verify_task
 
     if task_id not in exam_root.verified:
@@ -862,8 +892,23 @@ __all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "REVIEW_MESSAGE", "review_extension",
 
 def examine_rounds(workdir: Any, task_ids: Iterable[str], *, model: Any, writer_model: Any = None,
                    rounds: Optional[int] = None, ceiling_usd: Optional[float] = None) -> dict:
-    """The review loop over the Tasks with the Examiner's round wired in (spec/rounds.py, D331)."""
+    """The review loop over the Tasks with the Examiner's round wired in (spec/rounds.py, D331), then each
+    kept Reference that fails its final Verifier filed as a finding about the Reference (D367)."""
     from kullback.spec.rounds import run_rounds
 
-    return run_rounds(workdir, task_ids, examine=review_specs, model=model, writer_model=writer_model,
-                      rounds=rounds, ceiling_usd=ceiling_usd)
+    out = run_rounds(workdir, task_ids, examine=review_specs, model=model, writer_model=writer_model,
+                     rounds=rounds, ceiling_usd=ceiling_usd)
+    found = [finding_from_row(row).as_dict() for row in reference_finding_rows(workdir, task_ids)]
+    return dict(out, findings=list(out.get("findings") or []) + found)
+
+
+def reference_finding_rows(workdir: Any, task_ids: Iterable[str]) -> list[dict]:
+    """The finding rows for the Tasks whose kept Reference fails their Verifier, by code (D367)."""
+    from kullback.spec.trust import intent_tiers, reference_fails
+
+    root = Path(workdir)
+    if not (root / "runs").is_dir():
+        return []
+    wanted = set(task_ids)
+    tiers = {task_id: tier for task_id, tier in intent_tiers(root).items() if task_id in wanted}
+    return findings_mod.reference_fails_rows(reference_fails(tiers))

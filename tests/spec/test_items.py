@@ -357,24 +357,23 @@ def test_a_hand_off_item_gates_only_when_its_policy_line_demands_the_hand_off():
     assert I.World(STATE, policy, FACTS, tools).check(move, KNOWN, unwitnessed)[0]["gate"] is True
 
 
-def test_a_fallback_said_after_the_agent_refused_cannot_hold_a_gate_alone():
-    """A volunteered fallback after a refusal, and an accepted fact another user volunteers too:
-    a gate citing only them is weighed; sharing a solid fact, or a policy line, still gates."""
-    fallback = IntentFact(id="f3", text="Cancel the A1 order instead.", stance="volunteered",
-                          source=FactSource(recording="rec1", turn=3), after_pushback=True)
+def test_after_pushback_and_a_witnessed_yes_are_evidence_and_no_longer_weigh_a_gate():
+    """D366: the pushback bar is gone. A fact said after pushback, or accepted and volunteered elsewhere,
+    gates; a reaction (condition agent) is what weighs a gate."""
+    pushed = IntentFact(id="f3", text="Cancel the A1 order instead.", stance="volunteered",
+                        source=FactSource(recording="rec1", turn=3), after_pushback=True)
     agreed = IntentFact(id="f4", text="Maybe leave a note.", stance="accepted",
                         source=FactSource(recording="rec1", turn=3), witnesses=["rec2"])
-    known = {**KNOWN, "f3": fallback, "f4": agreed}
-    world = I.World(STATE, POLICY, FACTS + [fallback, agreed], TOOLS)
+    reaction = pushed.model_copy(update={"id": "f5", "stance": "fallback", "condition": "agent"})
+    known = {**KNOWN, "f3": pushed, "f4": agreed, "f5": reaction}
+    world = I.World(STATE, POLICY, FACTS + [pushed, agreed], TOOLS)
 
     def weighed(fact_ids, **extra):
         return world.check(dict(MOVE, id="s9", fact_ids=fact_ids, **extra), known, unwitnessed)
-    kept, why = weighed(["f3"])
-    assert kept["gate"] is False and "gate weighed" in why and "volunteered fact" in why
-    assert weighed(["f4"])[0]["gate"] is False and "gate weighed" in weighed(["f4"])[1]
-    assert weighed(["f3", "f4"])[0]["gate"] is False
-    assert weighed(["f1", "f3"])[0]["gate"] is True and weighed(["f1", "f3"])[1] == ""
-    assert weighed(["f3"], policy_line="Move an item only to a free slot")[0]["gate"] is True
+    assert weighed(["f3"]) == (weighed(["f3"])[0], "") and weighed(["f3"])[0]["gate"] is True
+    assert weighed(["f4"])[0]["gate"] is True
+    kept, why = weighed(["f1", "f5"], policy_line="Move an item only to a free slot")
+    assert kept["gate"] is False and kept["weighed"] == I.AGENT_WEIGHED and "reaction" in why
 
 
 def test_the_counts_report_one_end_state_per_branch():

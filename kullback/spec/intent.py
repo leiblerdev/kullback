@@ -21,7 +21,7 @@ from kullback.agent.harness import AgentHarness
 from kullback.agent.loop import Hooks
 from kullback.runner import budget
 from kullback.runner.records import Usage
-from kullback.spec.intent_tools import MinerState, mark_side, miner_tools, recordings_of
+from kullback.spec.intent_tools import MinerState, mark_side, miner_tools, promote, recordings_of
 from kullback.spec.schema import Spec, SpecIntent, intent_text, load_spec, save_spec
 
 STAGE = "spec"
@@ -42,19 +42,28 @@ TOOLS_TEXT = """\
 - user_turns: one recording's user turns, each with its index and the agent's line before it.
   Example: user_turns({"recording": "rec-a"})
 - add_facts: keep facts, each naming the recording and user turn that say it, and its stance.
-  Example: add_facts({"facts": [{"text": "wants the second shipment sent to the new flat",
-  "recording": "rec-a", "turn": 3, "stance": "volunteered", "kind": "do"}]})"""
+  Example: add_facts({"facts": [{"text": "wants <field> of <record> changed to <value>",
+  "recording": "rec-a", "turn": 1, "stance": "volunteered", "kind": "do"}]})"""
 
 EXAMPLES = """\
 # Examples
-- The user says "I moved, please send the parcel to my new flat". Fact: "wants the parcel sent to
-  the new flat", volunteered, do.
-- The agent says "Shall I also refund the fee to your card?" and the user says "Yes please".
-  Fact: "agrees to the fee refunded to the card", accepted, do, on the user's turn.
-- The user says "don't cancel the other booking". Fact: "does not want the other booking
-  cancelled", volunteered, keep. A refusal is a fact too.
-- The agent explains a delay and the user asks "so when will it arrive then?". That reacts to the
-  agent's answer; it is not what the user came for. No fact."""
+Placeholders in angle brackets stand for the Task's own words; one example per kind and per condition.
+- In the first turn the user asks for a change to a record they hold: "please set <field> of my <record>
+  to <value>". Fact: "wants <field> of <record> set to <value>", volunteered, do, condition none.
+- The user asks that a second record stay as it is: "leave my other <record> as it is". Fact: "does not
+  want the other <record> changed", volunteered, keep. A refusal is a fact too.
+- The user asks to be told a value the world holds: "what is the <value> of my <record>?". Fact: "wants
+  to be told the <value> of <record>", volunteered, told.
+- The agent asks "Which <record> do you mean?" and the user names it. Fact: "means <record>", volunteered,
+  detail, condition asked, in_reply_to quoting the agent's question.
+- The agent states a rule or a fact of the world ("<the change> is not allowed once <state>") and the user
+  names the branch they want if the first is not allowed: "then make <the other change>". Fact: "wants
+  <the other change> if <the change> is not allowed", fallback, do, condition world_or_policy, in_reply_to
+  quoting the agent's statement.
+- The agent says it could not do the first thing and the user asks for a hand-off: "then pass me to
+  someone else". Fact: "asks for a hand-off", fallback, do, condition agent, in_reply_to quoting the
+  agent's line.
+- The agent explains something and the user asks a follow-up that only reacts to that answer. No fact."""
 
 CHOICE_RULE = """\
 # Choosing facts
@@ -66,14 +75,19 @@ make the line stand alone. Keep the details a user gives to identify themselves 
 acting from the Intent needs them. Leave out follow-up questions that react to the agent's last
 answer, greetings and thanks. Mark a fact accepted
 when the user only said yes to the agent's line; volunteered when the user raised it or supplied
-the value. Mark a fact after_pushback when the user says it in reply to the agent declining, failing,
-or offering another way, before what the user first asked for was met. Give a fact the stance fallback
-when the user asks for it only in reply to an agent line that refused, could not, or proposed another
-way, and quote that line in in_reply_to: the user turn it stands before and a span copied word for word;
-code keeps the stance only when the line carries the span. One fact per thing, kept once,
-at the turn where a user first says it. Give each fact its kind: do (a change to make), keep (something
-not to do or not to change), told (only something to be told), detail (who the user is, or a value or
-condition that shapes another fact)."""
+the value. One fact per thing, kept once, at the turn where a user first says it. Give each fact its
+kind: do (a change to make), keep (something not to do or not to change), told (only something to be
+told), detail (who the user is, or a value or condition that shapes another fact).
+Give each fact its condition, what prompted it. A fact said in the user's first turn is none. A fact
+said in a later turn answers something the agent said: quote that agent line in in_reply_to (the user
+turn it stands before and a span copied word for word) and name what the line did. asked: the agent
+asked for it, or offered it and the user said yes. world_or_policy: the agent stated a fact about the
+world or a rule, and the user names the branch they want under it. agent: the agent could not do or
+verify something, declined citing no rule, stalled, or proposed another way, and the user reacts. A fact
+of condition world_or_policy or agent has the stance fallback, whatever its kind (a keep or told fact
+too). Code checks the quote against the recording; a later fact without one is sent back once. Mark a
+fact after_pushback too when the user says it in reply to the agent declining, failing, or offering
+another way, before what the user first asked for was met."""
 
 FEEDBACK_SHAPE = """\
 # What the tools answer
@@ -176,9 +190,11 @@ def mine_intent(workdir: Path, task_id: str, model: Any, ceiling_usd: float,
         asyncio.run(go())
     else:
         watch.stopped = "no recording with a user turn"
-    facts = mark_side(state.facts)
+    facts, promoted = promote(state.facts, state.found)
+    facts = mark_side(facts)
     intent = SpecIntent(task_id=task_id, facts=facts, text=intent_text(facts),
                         refusals=state.refused, fallback_unquoted=state.fallback_unquoted,
+                        late_sent_back=len(state.sent_back), late_unplaced=state.late_unplaced, promoted=promoted,
                         model=model_id, written_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
     return MineResult(intent=intent, tool_calls=dict(watch.calls), refusals=state.refused, spent_usd=watch.spent,
                       stopped=watch.stopped, path=_save(workdir, intent))

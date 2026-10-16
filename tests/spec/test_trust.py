@@ -2,7 +2,6 @@ import json
 
 import pytest
 
-from kullback.ai.provider import TestModel
 from kullback.runner.records import Atom, EndState, Event, ExpectedCell, Forbidden, ValueSource, Verifier
 from kullback.spec import trust as T
 from kullback.spec.compile import compile_demands, compile_spec
@@ -58,6 +57,12 @@ def _fresh(run_id="fresh-1", right=True):
     return _stopped(run.model_copy(update={"events": [e for e in run.events if e.idx < 3 or e.idx == 5]}), START)
 
 
+def _unbuildable() -> Verifier:
+    """The Verifier with its cell a set of two values: no end state can be built from it by code (D375)."""
+    two = _cell().model_copy(update={"value": {"one_of": ["seven", "eight"]}})
+    return _verifier().model_copy(update={"expected": [EndState(cells=[two])]})
+
+
 def _tier(runs, the_spec=None, rulings=(), verifier=None, references=(REPLAY_ID,)):
     the_spec = the_spec or spec(gaps=["f2"])
     return T.tier_of_task(the_spec, verifier or _verifier(the_spec), runs, rulings, canon=fn,
@@ -87,15 +92,29 @@ def test_a_verifier_both_constructed_runs_fail_with_no_ruling_open_is_trusted_an
     assert row["reference_passes"] is True and row["solvable"] is True and row["fresh_passed"] == ["fresh-1"]
 
 
-def test_no_fresh_pass_leaves_trust_alone_and_sets_solvable_false_where_a_fresh_run_failed():
+def test_no_fresh_pass_still_trusts_on_the_base_built_from_the_verifier_and_solvable_stays_false_beside_it():
     tier, row = _tier([_replay(), _fresh(right=False)])
-    assert tier == "trusted" and row["solvable"] is False and row["fresh_runs"] == 1
+    assert tier == "trusted" and row["constructed"]["stray_write"]["base"] == "constructed"
+    assert row["solvable"] is False and row["fresh_runs"] == 1
     assert row["reference_passes"] is True and row["fresh_passed"] == []
 
 
-def test_no_fresh_run_on_disk_leaves_solvable_unscored_and_never_false():
-    tier, row = _tier([_replay()])
-    assert tier == "trusted" and row["solvable"] is None and row["fresh_runs"] == 0
+def test_no_base_built_and_no_fresh_pass_withholds_trust_as_no_base_and_sets_solvable_false():
+    tier, row = _tier([_replay(), _fresh(right=False)], verifier=_unbuildable())
+    assert tier == "untrusted" and row["reason"] == T.NO_BASE
+    assert row["solvable"] is False and row["fresh_passed"] == []
+
+
+def test_an_unbuildable_verifier_falls_back_to_the_passing_fresh_run_as_its_base():
+    tier, row = _tier([_replay(), _fresh()], verifier=_unbuildable())
+    stray = row["constructed"]["stray_write"]
+    assert tier == "trusted" and stray["base"] == "fresh" and stray["run_id"] == "fresh-1.stray_write"
+
+
+def test_a_passing_replay_alone_is_no_base_for_an_unbuildable_verifier_and_leaves_solvable_unscored():
+    tier, row = _tier([_replay()], verifier=_unbuildable())
+    assert tier == "untrusted" and row["reason"] == T.NO_BASE
+    assert row["solvable"] is None and row["fresh_runs"] == 0
 
 
 def test_a_failing_recording_that_is_not_the_kept_reference_moves_no_flag():
@@ -134,22 +153,21 @@ def test_a_verifier_with_no_end_state_lets_the_stray_write_pass_and_is_untrusted
     assert row["constructed"]["do_nothing"]["failed"] is True and row["constructed"]["stray_write"]["failed"] is False
 
 
-def test_the_stray_write_lands_on_a_passing_run_outside_the_declared_rows_and_fails_at_the_end_state():
+def test_the_stray_write_lands_on_the_built_base_outside_the_declared_rows_and_fails_at_the_end_state():
     tier, row = _tier([_replay(), _fresh()])
     stray = row["constructed"]["stray_write"]
-    assert stray["built"] and stray["failed"] and stray["run_id"] == f"{REPLAY_ID}.stray_write"
+    assert stray["built"] and stray["failed"] and stray["run_id"] == "t1.constructed.stray_write"
     assert stray["atom"].startswith("gate:sanity:")
     run = T.stray_write_run(_verifier(), _replay(), canon=fn)
     assert run.events[-1].payload["end_state"]["items"]["B2"] == {"slot": "four (stray)"}
     assert run.events[-1].payload["end_state"]["items"]["A1"] == END["items"]["A1"]
 
 
-def test_a_stray_write_with_no_passing_base_holds_the_task_as_stray_untested():
-    tier, row = _tier([_fresh(right=False)], references=())
+def test_a_stray_write_with_no_base_holds_the_task_as_no_base():
+    tier, row = _tier([_fresh(right=False)], references=(), verifier=_unbuildable())
     stray = row["constructed"]["stray_write"]
     assert stray["built"] and stray["untested"] is True and stray["failed"] is False and stray["no_base"] is True
-    assert tier == "untrusted" and row["reason"] == "stray_untested"
-    assert row["detail"] == "stray_untested"
+    assert tier == "untrusted" and row["reason"] == T.NO_BASE
 
 
 def test_a_stray_write_on_a_passing_base_failing_at_the_sanity_check_is_tested():
@@ -175,26 +193,27 @@ def test_a_refusal_verifier_with_only_a_forbidden_write_is_passed_by_the_do_noth
     assert tier == "untrusted" and row["reason"] == "constructed_run_passed"
 
 
-def test_a_refusal_verifier_fails_the_do_nothing_run_at_its_gated_judge_item():
+def test_a_refusal_verifier_fails_the_do_nothing_run_at_its_judge_item_and_its_stray_write_on_the_built_start():
     declined = Atom(id="j1", kind="allowed", judge=True, gate=True,
                     target={"question": "Did the agent decline the change?", "anchor": {"answer": "declined"}})
     refusal = Verifier(task_id="t1", expected=[EndState()], atoms=[declined])
     tier, row = _tier([_replay(), _fresh()], verifier=refusal)
     assert row["constructed"]["do_nothing"]["failed"] is True and row["constructed"]["do_nothing"]["atom"] == "j1"
-    assert row["constructed"]["stray_write"]["untested"] is True
-    assert tier == "untrusted" and row["reason"] == "stray_untested"
+    stray = row["constructed"]["stray_write"]
+    assert stray["base"] == "constructed" and stray["untested"] is False and stray["failed"] is True
+    assert tier == "trusted" and row["solvable"] is False
 
 
 def test_trust_scores_runs_with_their_saved_judge_answers_and_the_stray_write_carries_its_base():
     told = Atom(id="j1", kind="allowed", judge=True, gate=True,
                 target={"question": "Did the agent say the new slot?", "anchor": {"answer": "seven"}})
-    judged_item = Verifier(task_id="t1", expected=[EndState(cells=[_cell()])], atoms=[told])
+    judged_item = _unbuildable().model_copy(update={"atoms": [told]})
     the_spec = spec(gaps=["f2"])
     _, row = T.tier_of_task(the_spec, judged_item, [_replay(), _fresh()], canon=fn, write_tools=WRITE_TOOLS,
-                            references=(REPLAY_ID,), judged={REPLAY_ID: {"j1": {"score": 1, "why": "declined"}}})
-    assert row["reference_passes"] is True and row["judged_runs"] == [REPLAY_ID]
+                            references=(REPLAY_ID,), judged={"fresh-1": {"j1": {"score": 1, "why": "said"}}})
+    assert row["judged_runs"] == ["fresh-1"]
     stray = row["constructed"]["stray_write"]
-    assert stray["run_id"] == f"{REPLAY_ID}.stray_write" and stray["untested"] is False
+    assert stray["run_id"] == "fresh-1.stray_write" and stray["untested"] is False
     assert stray["atom"].startswith("gate:sanity:") and stray["failed"] is True
 
 
@@ -375,26 +394,22 @@ def test_a_verifier_failing_a_faithful_kept_reference_flags_it_and_hands_the_exa
     assert tier == "trusted" and row["reference_passes"] is False
     assert row["reference"]["failed"] == REPLAY_ID
     assert row["reference"]["atom"] == f"gate:expected:cell:{verifier.expected[0].cells[0].table}.A1.slot"
-    assert T.examiner_rulings(tiers) == [{"task_id": "t1", "kind": "reference_fails", "run_id": REPLAY_ID,
+    assert T.reference_fails(tiers) == [{"task_id": "t1", "kind": "reference_fails", "run_id": REPLAY_ID,
                                           "atom": row["reference"]["atom"], "blocking": False}]
 
 
-def test_a_failing_kept_reference_is_routed_as_a_blocking_examiner_ruling_and_holds_the_task_untrusted(tmp_path):
+def test_a_failing_kept_reference_opens_no_ruling_holds_nothing_and_becomes_a_finding(tmp_path):
+    from kullback.examiner import session as S
     from kullback.spec import rulings as RL
-    from kullback.spec.review import answer_rulings
 
     _intent_workdir(tmp_path, [_failing_replay(), _fresh()])
     _hold_reference(tmp_path)
-    assert T.route_reference_fails(tmp_path, T.intent_tiers(tmp_path)) == [1]
-    assert T.route_reference_fails(tmp_path, T.intent_tiers(tmp_path)) == [], "one ruling per Task"
-    ruling = RL.load_rulings(tmp_path, "t1")[0]
-    assert (ruling.kind, ruling.code, ruling.blocking, ruling.wrong_side) == ("code", "fails_reference", True, None)
     tier, row = T.intent_tiers(tmp_path)["t1"]
-    assert tier == "untrusted" and row["reason"] == "open_ruling"
-    assert answer_rulings(tmp_path, "t1", TestModel([]), 1)["skipped"] == 1, "the Examiner rules first"
-    RL.close(tmp_path, "t1", 1, False, "The Reference wrote a slot the user never asked for.", 1)
-    RL.sync_spec(tmp_path, "t1")
-    assert T.intent_tiers(tmp_path)["t1"].tier == "trusted"
+    assert tier == "trusted" and row["reference_passes"] is False and RL.load_rulings(tmp_path, "t1") == []
+    [finding] = S.reference_finding_rows(tmp_path, ["t1", "t2"])
+    assert (finding["kind"], finding["task_id"], finding["key"]) == ("other", "t1", "reference_fails::t1")
+    assert row["reference"]["atom"] in finding["text"] and "The Verifier stands" in finding["text"]
+    assert S.reference_finding_rows(tmp_path, ["t2"]) == []
 
 
 @pytest.mark.parametrize("held", [{"fidelity": 0.8}, {"confirmed": False}, {"kept": False}],
@@ -403,7 +418,7 @@ def test_a_failed_replay_that_is_not_a_faithful_kept_reference_sets_no_flag(tmp_
     _intent_workdir(tmp_path, [_failing_replay(), _fresh()])
     _hold_reference(tmp_path, **held)
     tiers = T.intent_tiers(tmp_path)
-    assert tiers["t1"].row["reference_passes"] is None and T.examiner_rulings(tiers) == []
+    assert tiers["t1"].row["reference_passes"] is None and T.reference_fails(tiers) == []
 
 
 # --- D322: one trust ruling, the code gates inside the Spec's tiers ---

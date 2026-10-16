@@ -71,7 +71,7 @@ def test_the_rounds_examiner_can_file_a_finding_for_the_builder(tmp_path, monkey
 
     monkeypatch.setattr(S, "_run_session", file_one)
     monkeypatch.setattr(RD, "_ask_confirm", lambda *args, **kwargs: {"asked": False, "added": 0})
-    monkeypatch.setattr(RD, "_route_reference_fails", lambda *args, **kwargs: {})
+    monkeypatch.setattr(S, "reference_finding_rows", lambda *args, **kwargs: [])
     out = S.examine_rounds(root, ["t1"], model=TestModel([]), writer_model=TestModel([]))
     assert out["findings"] and out["findings"][0]["kind"] == "environment"
     assert out["findings"][0]["task_id"] == "t1"

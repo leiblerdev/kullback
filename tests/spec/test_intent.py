@@ -124,9 +124,13 @@ def test_a_yes_to_the_agent_offer_cannot_be_kept_as_volunteered(workdir):
     assert "mark it accepted" in result.details["rows"][0]["refused"] and state.facts == []
 
 
+OFFER = {"turn": 5, "quote": "refund the shipping fee to your card"}
+
+
 def test_an_accepted_fact_rests_on_the_offer_and_counts_only_when_another_user_volunteers_it(workdir):
     state = _state(workdir)
-    _add(state, text="refund the shipping fee to the card", recording="rec-a", turn=5, stance="accepted")
+    _add(state, text="refund the shipping fee to the card", recording="rec-a", turn=5, stance="accepted",
+         in_reply_to=OFFER)
     fact = state.facts[0]
     # rec-b only echoes the agent's offer; rec-c raises it unasked.
     assert fact.witnesses == ["rec-c"]
@@ -136,7 +140,8 @@ def test_an_accepted_fact_rests_on_the_offer_and_counts_only_when_another_user_v
 def test_an_accepted_fact_no_other_user_volunteers_is_kept_but_does_not_count(workdir):
     state = _state(workdir)
     state.found.recordings.pop("rec-c")
-    result = _add(state, text="refund the shipping fee to the card", recording="rec-a", turn=5, stance="accepted")
+    result = _add(state, text="refund the shipping fee to the card", recording="rec-a", turn=5, stance="accepted",
+                  in_reply_to=OFFER)
     assert "1 accepted with no volunteering witness, kept and marked" in result.content
     assert state.facts[0].witnesses == [] and not T.counts(state.facts[0])
 
@@ -227,66 +232,135 @@ def _pushback_state():
                    agent_before="I cannot move the lamp to that street.")]}))
 
 
+REFUSAL = {"turn": 2, "quote": "I cannot  move the lamp"}
+
+
+def _fallback(state, condition="agent", **fact):
+    return _add(state, **{"text": "Then cancel the blue lamp order.", "recording": "rec", "turn": 2,
+                          "stance": "fallback", "condition": condition, "in_reply_to": REFUSAL, **fact})
+
+
 def test_a_fact_the_miner_marks_after_pushback_keeps_the_flag():
     state = _pushback_state()
-    result = _add(state, text="Then cancel the blue lamp order.", recording="rec", turn=2,
-                  stance="volunteered", after_pushback=True)
+    result = _fallback(state, after_pushback=True)
     assert result.details["rows"][0]["fact_id"] == "f1" and state.facts[0].after_pushback is True
 
 
-# --- fallback facts ---------------------------------------------------------------------------------
+# --- position and condition (H1, D366) ------------------------------------------------------------
 
-def test_a_request_after_a_quoted_refusal_is_kept_as_fallback_with_its_quote():
+@pytest.mark.parametrize("condition", ["world_or_policy", "agent"])
+def test_a_fact_after_a_quoted_agent_line_is_kept_as_fallback_with_its_quote_and_condition(condition):
     state = _pushback_state()
-    _add(state, text="Then cancel the blue lamp order.", recording="rec", turn=2, stance="fallback",
-         in_reply_to={"turn": 2, "quote": "I cannot  move the lamp"})
+    _fallback(state, condition=condition)
     fact = state.facts[0]
-    assert fact.stance == "fallback" and state.fallback_unquoted == 0
+    assert (fact.stance, fact.condition, state.fallback_unquoted) == ("fallback", condition, 0)
     assert fact.in_reply_to.turn == 2 and fact.in_reply_to.quote == "I cannot move the lamp"
+
+
+@pytest.mark.parametrize("kind", ["keep", "told"])
+def test_a_keep_or_told_fact_in_reply_to_a_decline_is_a_fallback_too(kind):
+    state = _pushback_state()
+    _fallback(state, kind=kind)
+    assert (state.facts[0].kind, state.facts[0].stance) == (kind, "fallback")
+
+
+@pytest.mark.parametrize("stance, condition", [("fallback", "none"), ("fallback", "asked"),
+                                               ("volunteered", "agent"), ("accepted", "world_or_policy")])
+def test_a_fallback_without_a_fallback_condition_or_the_reverse_is_refused(stance, condition):
+    state = _pushback_state()
+    result = _fallback(state, stance=stance, condition=condition)
+    assert "is stance fallback" in result.details["rows"][0]["refused"] and state.facts == []
 
 
 @pytest.mark.parametrize("reply", [None, {"turn": 2, "quote": "we never sell lamps"},
                                    {"turn": 0, "quote": "I cannot move the lamp"}],
                          ids=["no quote", "quote in no agent line", "quote from another turn's line"])
-def test_a_fallback_whose_quote_the_named_agent_line_does_not_carry_is_kept_volunteered_and_counted(reply):
+def test_a_late_fact_whose_quote_is_not_found_is_sent_back_once_then_kept_as_a_reaction(reply):
     state = _pushback_state()
+    first = _fallback(state, condition="world_or_policy", in_reply_to=reply)
+    assert "not the user's first turn" in first.details["rows"][0]["refused"] and state.facts == []
+    _fallback(state, condition="world_or_policy", in_reply_to=reply)
+    fact = state.facts[0]
+    assert (fact.condition, fact.in_reply_to) == ("agent", None) and T.is_reaction(fact)
+    assert len(state.sent_back) == 1 and state.late_unplaced == 1
+
+
+def test_a_late_volunteered_fact_with_its_quote_is_kept_as_asked():
+    state = _pushback_state()
+    _add(state, text="Then cancel the blue lamp order.", recording="rec", turn=2, stance="volunteered",
+         in_reply_to=REFUSAL)
+    assert (state.facts[0].stance, state.facts[0].condition) == ("volunteered", "asked")
+
+
+def test_a_fallback_in_the_first_turn_with_no_quote_is_kept_volunteered_and_counted():
+    state = _pushback_state()
+    _fallback(state, text="Please move my blue lamp order to Oak street.", turn=0,
+              in_reply_to={"turn": 2, "quote": "I cannot move the lamp"})
+    fact = state.facts[0]
+    assert (fact.stance, fact.condition, state.fallback_unquoted) == ("volunteered", "none", 1)
+
+
+def test_a_reaction_another_recording_volunteers_before_any_tool_call_is_promoted():
+    turns = [T.UserTurn(index=0, text="Please move my blue lamp order to Oak street.", agent_before="Hello."),
+             T.UserTurn(index=2, text="Then cancel the blue lamp order.", agent_before="I cannot move the lamp.")]
+    found = T.TaskRecordings(task_id="t", recordings={
+        "rec": turns,
+        "opens": [T.UserTurn(index=0, text="Cancel the blue lamp order please.", agent_before="Hi.")],
+        "late": [T.UserTurn(index=4, text="Cancel the blue lamp order please.", agent_before="Done.",
+                            opening=False)]})
+    state = T.MinerState(found=found)
     _add(state, text="Then cancel the blue lamp order.", recording="rec", turn=2, stance="fallback",
-         **({"in_reply_to": reply} if reply else {}))
-    assert state.facts[0].stance == "volunteered" and state.facts[0].in_reply_to is None
-    assert state.fallback_unquoted == 1
+         condition="agent", in_reply_to=REFUSAL)
+    promoted, count = T.promote(state.facts, found)
+    assert count == 1 and (promoted[0].condition, promoted[0].stance) == ("none", "volunteered")
+    found.recordings.pop("opens")
+    assert T.promote(state.facts, found)[1] == 0
 
 
-def test_a_fallback_may_not_quote_an_agent_line_after_its_own_turn():
-    state = _pushback_state()
-    _add(state, text="Please move my blue lamp order to Oak street.", recording="rec", turn=0,
-         stance="fallback", in_reply_to={"turn": 2, "quote": "I cannot move the lamp"})
-    assert state.facts[0].stance == "volunteered" and state.fallback_unquoted == 1
+def test_user_turns_mark_a_turn_after_an_agent_tool_call_as_not_opening(workdir):
+    turns = T.recordings_of(workdir, "t1").recordings["rec-a"]
+    assert [(turn.index, turn.opening) for turn in turns] == [(1, True), (5, False)]
 
 
 def test_the_saved_intent_counts_unquoted_fallbacks_and_a_task_with_none_saves_neither_key(workdir):
     fact = {"text": "Please move my blue lamp order to the Oak street address.", "recording": "rec-a",
-            "turn": 1, "stance": "fallback", "kind": "do", "in_reply_to": {"turn": 1, "quote": "no such words"}}
+            "turn": 1, "stance": "fallback", "condition": "agent", "kind": "do",
+            "in_reply_to": {"turn": 1, "quote": "no such words"}}
     model = TestModel([_call("a", "add_facts", {"facts": [fact]}), ModelReply(content="1 kept.")])
     mine_intent(workdir, "t1", model, ceiling_usd=1.0)
     saved = json.loads((workdir / "spec" / "t1.json").read_text())["intent"]
     assert saved["fallback_unquoted"] == 1 and saved["facts"][0]["stance"] == "volunteered"
-    assert "in_reply_to" not in saved["facts"][0]
-    model = TestModel([_call("a", "add_facts", {"facts": [dict(fact, stance="volunteered")]}),
+    assert "in_reply_to" not in saved["facts"][0] and "condition" not in saved["facts"][0]
+    model = TestModel([_call("a", "add_facts", {"facts": [dict(fact, stance="volunteered", condition="none")]}),
                        ModelReply(content="1 kept.")])
     (workdir / "spec" / "t1.json").unlink()
     mine_intent(workdir, "t1", model, ceiling_usd=1.0)
-    assert "fallback_unquoted" not in json.loads((workdir / "spec" / "t1.json").read_text())["intent"]
+    saved = json.loads((workdir / "spec" / "t1.json").read_text())["intent"]
+    assert not {"fallback_unquoted", "late_sent_back", "late_unplaced", "promoted"} & set(saved)
 
 
-def test_the_prompt_names_the_fallback_stance_and_its_quote_in_one_general_sentence():
+def test_the_saved_intent_counts_late_facts_sent_back_kept_unplaced_and_promoted(workdir):
+    late = {"text": "refund the shipping fee to the card", "recording": "rec-a", "turn": 5,
+            "stance": "accepted", "kind": "do"}
+    model = TestModel([_call("a", "add_facts", {"facts": [late]}), _call("b", "add_facts", {"facts": [late]}),
+                       ModelReply(content="1 kept.")])
+    mine_intent(workdir, "t1", model, ceiling_usd=1.0)
+    saved = json.loads((workdir / "spec" / "t1.json").read_text())["intent"]
+    # rec-c opens with the same ask, so the reaction is promoted to the ask it is there.
+    assert (saved["late_sent_back"], saved["late_unplaced"], saved["promoted"]) == (1, 1, 1)
+    assert "condition" not in saved["facts"][0] and saved["facts"][0]["stance"] == "volunteered"
+
+
+def test_the_prompt_names_each_condition_and_says_code_checks_the_quote():
     flat = " ".join(intent_system_prompt().split())
-    assert ("Give a fact the stance fallback when the user asks for it only in reply to an agent line that "
-            "refused, could not, or proposed another way") in flat
-    assert "code keeps the stance only when the line carries the span" in flat
+    for condition in ("asked:", "world_or_policy:", "agent:"):
+        assert condition in flat
+    assert "has the stance fallback, whatever its kind" in flat
+    assert "a later fact without one is sent back once" in flat
 
 
 def test_the_prompt_marks_a_fact_after_pushback_in_one_general_sentence():
-    sentence = ("Mark a fact after_pushback when the user says it in reply to the agent declining, failing, "
+    sentence = ("Mark a fact after_pushback too when the user says it in reply to the agent declining, failing, "
                 "or offering another way, before what the user first asked for was met.")
     flat = " ".join(intent_system_prompt().split())
     assert sentence in flat and flat.count("after_pushback") == 1
@@ -343,7 +417,7 @@ def test_the_miner_keeps_each_facts_kind_and_code_sets_side_on_the_saved_intent(
     sent = {"text": "need the blue lamp order sent to Oak street instead", "recording": "rec-b", "turn": 0,
             "stance": "volunteered", "kind": "do"}
     fee = {"text": "refund the shipping fee to my card", "recording": "rec-b", "turn": 2,
-           "stance": "accepted", "kind": "told"}
+           "stance": "accepted", "kind": "told", "in_reply_to": {"turn": 2, "quote": "shipping fee refunded"}}
     model = TestModel([_call("a", "add_facts", {"facts": [move, sent, fee]}), ModelReply(content="3 kept.")])
     mine_intent(workdir, "t1", model, ceiling_usd=1.0)
     saved = load_spec(workdir, "t1").intent.facts

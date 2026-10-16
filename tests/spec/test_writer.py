@@ -20,7 +20,7 @@ from kullback.runner.verdict import verdict
 from kullback.spec import writer as W
 from kullback.spec import writer_tools as T
 from kullback.spec.intent_tools import mark_side
-from kullback.spec.items import FALLBACK_WEIGHED, SIDE_WEIGHED
+from kullback.spec.items import AGENT_WEIGHED, SIDE_WEIGHED, TELL_WEIGHED, UNCONFIRMED_WEIGHED
 from kullback.spec.schema import FactSource, IntentFact, ReplyQuote, SpecIntent, intent_text, load_spec
 from tests.spec.fixtures import FACTS, WRITE_TOOLS, check, fn, reference_run
 
@@ -291,7 +291,7 @@ def test_the_prompt_marks_unwitnessed_facts_and_carries_policy_tools_and_the_ite
 
 def test_the_facts_view_shows_the_after_pushback_flag():
     flagged = FACTS[0].model_copy(update={"after_pushback": True})
-    model = TestModel([DONE])
+    model = TestModel([DONE, DONE])
     W.write_spec("t1", inputs(facts=[flagged, FACTS[1]]), model)
     content = model.calls[0]["messages"][0]["content"]
     body = json.loads(content[content.index("\n{") + 1:])
@@ -299,10 +299,10 @@ def test_the_facts_view_shows_the_after_pushback_flag():
 
 
 def test_a_weighed_gate_tells_the_writer_why_on_the_kept_line():
-    flagged = FACTS[0].model_copy(update={"after_pushback": True})
+    flagged = FACTS[0].model_copy(update={"stance": "fallback", "condition": "agent"})
     store = W.store_of(inputs(facts=[flagged, FACTS[1]]))
     out = store.add([dict(ROW, fact_ids=["f1"])])
-    assert "kept" in out and "gate weighed" in out and "volunteered fact" in out
+    assert "kept" in out and "gate weighed" in out and "cites a reaction" in out
     assert store.items["s1"]["gate"] is False and store.refused == []
 
 
@@ -379,10 +379,12 @@ def test_the_writer_session_gates_only_what_the_user_asked_and_the_policy_requir
     W.write_spec("t1", inputs(), model)
     prompt = model.calls[0]["messages"][0]["content"]
     assert "Gate what the user asked for and the policy requires" in prompt
-    assert "only accepted after the agent proposed it or refused something is weighted, not gated" in prompt
+    assert "A fact of condition agent is a reaction" in prompt and "gate the branch the world selects" in prompt
     assert "accept any allowed one or weight it" in prompt
-    assert "gates only with the policy line that forbids it; else weight it" in prompt
+    assert "gates only on a keep fact the user said or the policy line that forbids it; else weight it" in prompt
     assert "one item per ask" in prompt
+    assert "A rule the policy does not state is never gated" in " ".join(prompt.split())
+    assert "Any other told item (judge, said) gates only citing a told fact" in " ".join(prompt.split())
 
 def test_a_refusal_judge_item_is_still_gated_by_the_prompt_rule():
     assert "A refusal judge item always gates." in W.CHOICE_RULE
@@ -407,10 +409,13 @@ def test_a_volunteered_fact_with_no_item_goes_back_as_uncovered():
     assert W.asked_missing([ROW], inputs().intent) == []
 
 
-def test_after_pushback_accepted_and_unfounded_facts_are_never_sent_back():
+def test_a_reaction_and_an_unfounded_fact_are_never_sent_back_and_after_pushback_alone_is_evidence():
     intent = inputs().intent
     pushed = intent.facts[0].model_copy(update={"after_pushback": True})
-    intent = intent.model_copy(update={"facts": [pushed, intent.facts[1]]})
+    assert W.asked_missing([], intent.model_copy(update={"facts": [pushed, intent.facts[1]]})) == [
+        {"id": "f1", "reason": "uncovered"}]
+    reaction = intent.facts[0].model_copy(update={"stance": "fallback", "condition": "agent"})
+    intent = intent.model_copy(update={"facts": [reaction, intent.facts[1]]})
     assert W.asked_missing([], intent) == []
     stray = intent.facts[0].model_copy(update={"after_pushback": False, "unfounded": True})
     intent = intent.model_copy(update={"facts": [stray, intent.facts[1]]})
@@ -422,12 +427,32 @@ def test_a_writer_with_nothing_to_gate_answers_why_not_and_leaves_the_spec():
     written = W.write_spec("t1", inputs(), model)
     assert written.counts["asked_sent_back"] == 1
     assert written.spec.checks[0].gate is False
-    assert "quoting the policy" in model.calls[2]["messages"][-1]["content"]
+    assert "call rebut_fact" in model.calls[2]["messages"][-1]["content"]
+    assert written.spec.rebuttals == {} and "rebuttals" not in written.spec.model_dump()
+
+
+def test_a_rebuttal_is_kept_only_for_a_sent_back_fact_and_only_when_its_why_quotes_the_fact_or_policy():
+    store = W.store_of(inputs())
+    quoted = "the user said only: move item A1 to slot seven"
+    assert "refused: " + T.NOT_SENT_BACK in store.rebut("f1", quoted)
+    store.rebuttable = {"f1"}
+    assert "refused: " + T.UNQUOTED_WHY in store.rebut("f1", "it needs no gate, trust me")
+    assert "refused: no such fact" in store.rebut("f9", quoted)
+    assert store.rebut("f1", quoted) == "f1: rebuttal kept" and store.rebuttals == {"f1": quoted}
+    assert [row["kind"] for row in store.refused] == ["rebut_fact"] * 3
+
+
+def test_a_rebuttal_in_the_follow_up_is_recorded_on_the_spec_by_fact_id():
+    quoted = "the user said only: move item A1 to slot seven"
+    model = TestModel([add(dict(ROW, gate=False)), DONE, call("rebut_fact", fact_id="f1", why=quoted), DONE])
+    written = W.write_spec("t1", inputs(), model)
+    assert written.spec.rebuttals == {"f1": quoted} and written.counts["rebutted"] == 1
+    assert written.spec.model_dump()["rebuttals"] == {"f1": quoted}
 
 
 def test_the_prompt_gates_a_told_value_and_a_named_option():
     assert "A value the user" in W.CHOICE_RULE and "anchored on the world row holding it" in W.CHOICE_RULE
-    assert "A variant or payment method the" in W.CHOICE_RULE
+    assert "One of several options the world holds that the user named" in " ".join(W.CHOICE_RULE.split())
     assert "Leave text and judge items ungated" not in W.CHOICE_RULE
 
 
@@ -464,6 +489,22 @@ def test_repair_for_ruling_publishes_defended_when_no_item_changes(tmp_path):
     assert defended.checks == spec.checks
     (event,) = _bus_events(tmp_path)
     assert event["name"] == "spec.defended" and event["payload"]["check_ids"] == ["s1"]
+
+
+def test_an_unchecked_ask_repair_drops_the_facts_old_rebuttal_and_keeps_a_new_one_that_quotes(tmp_path):
+    from kullback.spec.schema import save_spec
+
+    spec = _ruled_workdir(tmp_path)
+    save_spec(tmp_path, spec.model_copy(update={"rebuttals": {"f2": "an old why"}}))
+    ruling = {"number": 3, "item": "task", "kind": "derivation", "code": "unchecked_ask",
+              "verified": [{"fact_id": "f2"}], "reason": "f2 is an ask no gate cites", "fix": "gate it or rebut"}
+    assert W.repair_for_ruling(tmp_path, "t1", ruling, TestModel([DONE])).rebuttals == {}
+    quoted = "the user wants: a note saying it was urgent"
+    rebut = TestModel([call("rebut_fact", fact_id="f2", why=quoted), DONE])
+    assert W.repair_for_ruling(tmp_path, "t1", ruling, rebut).rebuttals == {"f2": quoted}
+    other = dict(ruling, code="other", verified=[])
+    keep = TestModel([call("rebut_fact", fact_id="f2", why="a new why"), DONE, DONE])
+    assert W.repair_for_ruling(tmp_path, "t1", other, keep).rebuttals == {"f2": quoted}
 
 
 def test_refusal_counts_name_a_family_of_code_wording_never_an_empty_key_or_a_value():
@@ -557,6 +598,28 @@ def test_a_told_fact_in_a_task_with_no_write_ask_still_gates():
     assert store.items["t1"]["gate"] is True and not facts[0].side
 
 
+def test_a_told_gate_on_a_do_fact_with_no_policy_line_is_weighed_as_untold():
+    store = W.store_of(inputs(facts=[FACTS[0].model_copy(update={"kind": "do"})]))
+    out = store.add([dict(SAID_SLOT, fact_ids=["f1"])])
+    assert "gate weighed" in out and "no fact asks to be told" in out
+    assert store.items["t1"]["gate"] is False and store.items["t1"]["weighed"] == TELL_WEIGHED
+
+
+def test_a_told_gate_citing_a_told_fact_or_quoting_a_policy_line_stays_a_gate():
+    told = W.store_of(inputs(facts=[FACTS[0].model_copy(update={"kind": "do"}), TOLD]))
+    told.add([dict(SAID_SLOT, fact_ids=["f3"])])
+    ruled = W.store_of(inputs(facts=[FACTS[0].model_copy(update={"kind": "do"})]))
+    ruled.add([dict(SAID_SLOT, fact_ids=["f1"], policy_line="Move an item only to a free slot.")])
+    assert told.items["t1"]["gate"] is True and "weighed" not in told.items["t1"]
+    assert ruled.items["t1"]["gate"] is True and "weighed" not in ruled.items["t1"]
+
+
+def test_a_state_gate_on_a_do_fact_with_no_policy_line_is_never_weighed_as_untold():
+    store = W.store_of(inputs(facts=[FACTS[0].model_copy(update={"kind": "do"})]))
+    store.add([dict(ROW, fact_ids=["f1"])])
+    assert store.items[ROW["id"]]["gate"] is True and "weighed" not in store.items[ROW["id"]]
+
+
 def test_a_side_fact_is_never_sent_back_by_the_asked_followup():
     intent = SpecIntent(task_id="t1", facts=_side_facts())
     assert W.asked_missing([ROW], intent) == []
@@ -573,23 +636,24 @@ def test_the_writer_shows_the_side_flag_and_counts_side_facts_and_weighed_gates(
     assert "never gated" in W.CHOICE_RULE
 
 
-# The writer's files and message body over facts with no kind, as the code before D361 wrote them.
+# The writer's files and message body over facts with no kind: the body as the code before D361 wrote it, the
+# files as D369 writes them (the said gate cites no told fact and no policy line, so it is weighed).
 NO_KIND_HASHES = {
-    "spec/t1.json": "88e62b785b57b54a39605ce61995981ee8580988ba1c6f5b7464beccc7f58f3c",
-    "spec/verifiers/t1.json": "bd0af6959ddecaffb4f476e5272f6de475d2543901cb262a1a2f1ce21116153a",
-    "verifiers/t1.json": "bd0af6959ddecaffb4f476e5272f6de475d2543901cb262a1a2f1ce21116153a",
+    "spec/t1.json": "7f7100b7af07c4e9d85ce5b5502597ba06064546c4a1162ba523d22d61119dc7",
+    "spec/verifiers/t1.json": "c42527b75c96fb36b1d8c9e9ab7d9437e36fbb2643e70fe05b2131abc22d4308",
+    "verifiers/t1.json": "c42527b75c96fb36b1d8c9e9ab7d9437e36fbb2643e70fe05b2131abc22d4308",
     "body": "4c4054e384426bc357e4a8de56900537c75443d3576f74d8bcb600a063ca088a",
 }
 
 
-def test_a_recorded_workdir_with_no_told_facts_is_unchanged_byte_for_byte_through_the_writer(tmp_path):
+def test_a_recorded_workdir_with_no_told_facts_changes_only_by_weighing_its_untold_said_gate(tmp_path):
     model = TestModel([add(ROW, dict(SAID_SLOT, fact_ids=["f1"])), DONE])
     written = W.write_spec("t1", inputs(), model)
     paths = W.write_verifier(written.spec, tmp_path, inputs())
     got = {path.relative_to(tmp_path).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
     content = model.calls[0]["messages"][0]["content"]
     got["body"] = hashlib.sha256(content[content.index("\n{") + 1:].encode()).hexdigest()
-    assert got == NO_KIND_HASHES
+    assert got == NO_KIND_HASHES and written.counts["tell_weighed"] == 1
     assert "side_facts" not in written.counts and "side_weighed" not in written.counts
 
 
@@ -619,24 +683,55 @@ def test_a_task_with_no_asked_followup_never_runs_the_second_clash_check():
     assert len(model.calls) == 2
 
 
-# --- fallback facts ---------------------------------------------------------------------------------
+# --- reactions and conditional asks -----------------------------------------------------------------
 
 FALLBACK = IntentFact(id="f2", text="Then put item A1 in slot seven.", stance="fallback", kind="do",
-                      source=FactSource(recording="rec1", turn=4),
-                      in_reply_to=ReplyQuote(turn=4, quote="that slot is taken"))
+                      source=FactSource(recording="rec1", turn=4), condition="agent",
+                      in_reply_to=ReplyQuote(turn=4, quote="I could not do that"))
 
 
-def _fallback_facts():
-    """The ask, and a request the user made only after the agent said it could not do it."""
-    return [FACTS[0].model_copy(update={"kind": "do"}), FALLBACK]
+def _fallback_facts(condition="agent"):
+    """The ask, and a request the user made only after the agent's line (its own conduct, or a claim)."""
+    return [FACTS[0].model_copy(update={"kind": "do"}), FALLBACK.model_copy(update={"condition": condition})]
 
 
-@pytest.mark.parametrize("fact_ids", [["f2"], ["f1", "f2"]], ids=["fallback alone", "beside the ask"])
-def test_a_gate_resting_on_a_fallback_fact_is_weighed_with_the_reason_kept_on_the_item(fact_ids):
+@pytest.mark.parametrize("fact_ids", [["f2"], ["f1", "f2"]], ids=["reaction alone", "beside the ask"])
+def test_a_gate_citing_a_reaction_is_weighed_with_the_reason_kept_on_the_item_whatever_the_policy_line(fact_ids):
     store = W.store_of(inputs(facts=_fallback_facts()))
     out = store.add([dict(ROW, fact_ids=fact_ids, policy_line="Move an item only to a free slot.")])
-    assert "gate weighed" in out and "fallback fact" in out and store.refused == []
-    assert store.items["s1"]["gate"] is False and store.items["s1"]["weighed"] == FALLBACK_WEIGHED
+    assert "gate weighed" in out and "reaction" in out and store.refused == []
+    assert store.items["s1"]["gate"] is False and store.items["s1"]["weighed"] == AGENT_WEIGHED
+
+
+def test_a_fallback_fact_mined_before_conditions_counts_as_a_reaction():
+    store = W.store_of(inputs(facts=_fallback_facts(condition="none")))
+    store.add([dict(ROW, fact_ids=["f2"])])
+    assert store.items["s1"]["weighed"] == AGENT_WEIGHED
+
+
+def test_a_gate_on_a_conditional_ask_is_weighed_until_the_writer_confirms_the_claim():
+    store = W.store_of(inputs(facts=_fallback_facts(condition="world_or_policy")))
+    out = store.add([dict(ROW, fact_ids=["f2"])])
+    assert "confirm it yourself" in out and store.items["s1"]["weighed"] == UNCONFIRMED_WEIGHED
+
+
+@pytest.mark.parametrize("confirm", [{"policy_line": "Move an item only to a free slot."},
+                                     {"confirms": {"table": "items", "find": {"item_id": "B2"}}}],
+                         ids=["by the policy line", "by a row"])
+def test_a_conditional_ask_confirmed_by_a_policy_line_or_one_row_keeps_its_gate(confirm):
+    store = W.store_of(inputs(facts=_fallback_facts(condition="world_or_policy")))
+    store.add([dict(ROW, fact_ids=["f2"], **confirm)])
+    assert store.items["s1"]["gate"] is True and "weighed" not in store.items["s1"]
+    if "confirms" in confirm:
+        assert store.items["s1"]["confirms"] == {"table": "items", "row": "B2"}
+
+
+@pytest.mark.parametrize("confirms", [{"table": "items", "find": {"slot": "nine"}}, {"table": "nope", "find": {}},
+                                      {"find": {"item_id": "B2"}}])
+def test_a_confirms_that_names_no_one_row_is_refused_with_the_reason(confirms):
+    store = W.store_of(inputs(facts=_fallback_facts(condition="world_or_policy")))
+    store.add([dict(ROW, fact_ids=["f2"], confirms=confirms)])
+    assert "s1" not in store.items and "confirms" in store.refused[0]["reason"]
 
 
 def test_a_fallback_fact_is_never_sent_back_by_the_asked_followup():
@@ -644,13 +739,14 @@ def test_a_fallback_fact_is_never_sent_back_by_the_asked_followup():
     assert W.asked_missing([ROW], intent) == []
 
 
-def test_the_writer_shows_the_fallback_stance_and_counts_fallback_facts_and_weighed_gates():
+def test_the_writer_shows_the_condition_and_quote_and_counts_reactions_and_weighed_gates():
     model = TestModel([add(ROW, dict(ROW, id="s2", fact_ids=["f2"])), DONE])
     written = W.write_spec("t1", inputs(facts=_fallback_facts()), model)
     content = model.calls[0]["messages"][0]["content"]
-    assert json.loads(content[content.index("\n{") + 1:])["intent"][1]["stance"] == "fallback"
-    assert written.counts["fallback_facts"] == 1 and written.counts["fallback_weighed"] == 1
-    assert "stance fallback" in W.CHOICE_RULE
+    shown = json.loads(content[content.index("\n{") + 1:])["intent"][1]
+    assert shown["condition"] == "agent" and shown["answers"] == "I could not do that"
+    assert written.counts["reaction_facts"] == 1 and written.counts["reaction_weighed"] == 1
+    assert "condition agent is a reaction" in W.CHOICE_RULE
 
 
 # Generated by running the 038b5c1b tree (before fallback facts) on the side-fact Task below.
@@ -670,4 +766,4 @@ def test_a_task_with_kinds_and_no_fallback_facts_is_unchanged_byte_for_byte_thro
     content = model.calls[0]["messages"][0]["content"]
     got["body"] = hashlib.sha256(content[content.index("\n{") + 1:].encode()).hexdigest()
     assert got == KINDS_NO_FALLBACK_HASHES
-    assert "fallback_facts" not in written.counts
+    assert "reaction_facts" not in written.counts

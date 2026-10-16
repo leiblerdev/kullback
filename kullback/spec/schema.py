@@ -21,6 +21,12 @@ FactKind = Literal["do", "keep", "told", "detail"]
 # Spec fields retired with the Examiner's edit kinds (D325 to D331): dropped when an older file loads.
 RETIRED_KEYS = ("atom_edits", "end_state_edits")
 Tier = Literal["critical", "sanity", "important"]
+# What prompted a fact, read from the agent line it answers (in_reply_to): none for a fact the user
+# raised in their first turn; asked when the agent asked for it; world_or_policy when the agent stated a
+# fact about the world or the rules (a conditional ask, gated only once the writer confirms the claim);
+# agent when the agent could not, declined with no policy line, stalled or proposed another way (a
+# reaction: never gated, never a mutant key, never counted as an ask). spec/intent_tools.py checks it.
+Condition = Literal["none", "asked", "world_or_policy", "agent"]
 
 # The atom kind a demand compiles to when it is not the check's own kind (compile.py does the same).
 _COMPILED_KIND = {"say": "communicate", "ask": "question"}
@@ -59,8 +65,10 @@ class IntentFact(Record):
     # Set by code (spec/intent_tools.mark_side), never by a model: an ask only to be told something in a
     # Task that also asks for a change or for something left undone. It may be scored, never gated.
     side: bool = False
-    # On a fallback fact: the agent line it answers, checked by code against the recording.
+    # On a fact said after the user's first turn: the agent line it answers, checked by code against the
+    # recording.
     in_reply_to: Optional[ReplyQuote] = None
+    condition: Condition = "none"
 
     @model_serializer(mode="wrap")
     def _without_unread_kind(self, handler):
@@ -71,7 +79,37 @@ class IntentFact(Record):
                     data.pop(key, None)
             if not data.get("side"):
                 data.pop("side", None)
+            if data.get("condition") == "none":
+                data.pop("condition", None)
         return data
+
+
+def is_reaction(fact: Any) -> bool:
+    """A fact the user said in reaction to the agent's conduct: condition agent, or a fallback fact mined
+    before conditions were read. It never gates, never keys a mutant and never counts as an ask."""
+    condition = getattr(fact, "condition", "none")
+    return condition == "agent" or (getattr(fact, "stance", None) == "fallback" and condition == "none")
+
+
+def is_ask(fact: Any) -> bool:
+    """A do or keep fact that is not a reaction: what a gate must hold (unchecked_asks)."""
+    return getattr(fact, "kind", None) in ("do", "keep") and not is_reaction(fact)
+
+
+def dropped_facts(spec: Any) -> set[str]:
+    """The facts of the checks compile dropped with a reason: the gaps written "<check id>: <reason>"."""
+    dropped = {str(gap).split(":", 1)[0].strip() for gap in spec.gaps if ":" in str(gap)}
+    return {str(f) for check in spec.checks if check.id in dropped for f in check.fact_ids}
+
+
+def unchecked_asks(spec: Any) -> list[str]:
+    """The ids of the Spec's asks (is_ask) that no gate item cites (D370): a write, a forbid, a kept row or a
+    judge refusal all count; a weighed item does not. An ask is excused only by the writer's kept rebuttal
+    or by compile dropping its check with a reason (D376), never by being a coverage gap."""
+    gated = {str(f) for check in spec.checks if (check.demand or {}).get("gate") is True
+             for f in (check.demand or {}).get("fact_ids") or ()}
+    excused = set(getattr(spec, "rebuttals", None) or {}) | dropped_facts(spec)
+    return [fact.id for fact in spec.intent.facts if is_ask(fact) and fact.id not in excused and fact.id not in gated]
 
 
 class SpecIntent(Record):
@@ -85,12 +123,20 @@ class SpecIntent(Record):
     written_at: Optional[str] = None
     # Facts the miner marked fallback with no agent line carrying its quote: kept as volunteered.
     fallback_unquoted: int = 0
+    # The position check (spec/intent_tools.py): facts said after the user's first turn sent back for
+    # want of the agent line they answer, and those kept as reactions when sent again without it.
+    late_sent_back: int = 0
+    late_unplaced: int = 0
+    # Reactions promoted to none: another recording's user volunteered them before any agent tool call.
+    promoted: int = 0
 
     @model_serializer(mode="wrap")
     def _without_zero_unquoted(self, handler):
         data = handler(self)
-        if isinstance(data, dict) and not data.get("fallback_unquoted"):
-            data.pop("fallback_unquoted", None)
+        if isinstance(data, dict):
+            for key in ("fallback_unquoted", "late_sent_back", "late_unplaced", "promoted"):
+                if not data.get(key):
+                    data.pop(key, None)
         return data
 
 
@@ -141,7 +187,11 @@ class Spec(Record):
     task_id: str
     intent: SpecIntent
     checks: list[Check] = Field(default_factory=list)
+    # Intent facts no check names (spec/ground.py coverage) and the checks compile dropped, "<id>: <reason>".
     gaps: list[str] = Field(default_factory=list)
+    # The writer's kept rebuttals, {fact id: why}: an ask it answered needs no gate, why quoting the user's
+    # words of that fact or a policy line (spec/writer_tools.py rebut_fact, D376).
+    rebuttals: dict[str, str] = Field(default_factory=dict)
     rulings_open: int = 0
     # Open not_enough_truth rulings: the Task stays untrusted for that reason (spec/trust.py).
     truth_open: int = 0
@@ -158,6 +208,13 @@ class Spec(Record):
     # What the Verifier came to: its items by kind and gate, end states, cells (spec/items.py counts_of).
     end_state: dict = Field(default_factory=dict)
 
+    @model_serializer(mode="wrap")
+    def _without_no_rebuttals(self, handler):
+        # A Spec with no rebuttal dumps, and so hashes, byte for byte as it did before D376.
+        data = handler(self)
+        if isinstance(data, dict) and not data.get("rebuttals"):
+            data.pop("rebuttals", None)
+        return data
 
     @model_validator(mode="before")
     @classmethod

@@ -175,7 +175,7 @@ def test_the_view_holds_every_recordings_user_turns_and_each_facts_source(tmp_pa
         "rec2": [{"turn": 1, "agent_before": "How can I help?", "user": "Move A1 to slot seven."}]}
     assert view["facts"][1] == {"id": "f2", "stance": "accepted", "text": "I also want a note saying it was urgent.",
                                 "source": {"recording": "rec1", "turn": 2}, "echo": False, "after_pushback": False,
-                                "unfounded": False, "side": False, "in_reply_to": None}
+                                "unfounded": False, "side": False, "in_reply_to": None, "condition": "none"}
     assert TOOL_SECRET not in json.dumps(view)
     written = R.write_views(root, ["t1"])
     assert json.loads((root.exam_dir / written["t1"]).read_text())["user_turns"] == view["user_turns"]
@@ -192,6 +192,17 @@ def test_the_view_shows_a_side_fact_so_a_ruling_never_asks_to_gate_it(tmp_path):
     assert "never gated, so a ruling never asks to gate it" in P.receives_section()
 
 
+def test_the_view_shows_a_rebuttal_beside_its_fact_so_the_examiner_may_rule_it_wrong(tmp_path):
+    root = _root(tmp_path)
+    _recordings(tmp_path)
+    held = load_spec(tmp_path, "t1")
+    fact_id = held.intent.facts[1].id
+    save_spec(tmp_path, held.model_copy(update={"rebuttals": {fact_id: "the user said: <their words>"}}))
+    shown = R.spec_view(root, "t1")["facts"]
+    assert shown[1]["rebuttal"] == "the user said: <their words>" and "rebuttal" not in shown[0]
+    assert "rebuttal" in P.examples_section() and "rule unchecked_ask" in P.examples_section()
+
+
 def test_the_view_shows_a_fallback_fact_with_the_agent_line_it_answers(tmp_path):
     root = _root(tmp_path)
     _recordings(tmp_path)
@@ -202,7 +213,8 @@ def test_the_view_shows_a_fallback_fact_with_the_agent_line_it_answers(tmp_path)
         update={"facts": [held.intent.facts[0], fallback]})}))
     shown = R.spec_view(root, "t1")["facts"][1]
     assert shown["stance"] == "fallback" and shown["in_reply_to"] == {"turn": 3, "quote": "an urgent note"}
-    assert "fallback fact was asked only after the agent refused" in " ".join(P.receives_section().split())
+    receives = " ".join(P.receives_section().split())
+    assert "a fact of condition agent answers the agent's own conduct" in receives and "never gated" in receives
 
 
 def test_the_choice_rule_names_the_user_turns_and_not_the_intent_as_ground():

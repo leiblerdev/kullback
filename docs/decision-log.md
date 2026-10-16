@@ -2810,6 +2810,166 @@ each fact is conditioned on, the Reference leaves the Verifier, repair and the m
 Not built and named as gaps: the behaviour statement's shape, the synthesiser, the human review step, the training
 loop, a realism measure.
 
+### D366. Each fact names its condition; reactions never gate; the writer confirms a claimed condition (2026-10-16)
+
+What: an Intent fact carries a condition, what prompted it: none (said in the user's first turn), asked (the agent
+asked for it, or offered it and the user said yes), world_or_policy (the agent stated a fact of the world or a rule
+and the user names the branch they want), agent (the agent could not, declined citing no rule, stalled or proposed
+another way, and the user reacts). A fact of either of the last two has the stance fallback whatever its kind, and the
+miner quotes the agent line in in_reply_to. Code checks position (H1): a fact first said after the user's first turn
+must quote the agent line it answers; without a quote code finds, it is sent back once, then kept as condition agent.
+A reaction that another recording's user volunteers in a turn before any agent tool call is promoted to condition
+none: it was the ask there. A gate citing a reaction is weighed (scored, never gated). A gate citing a world_or_policy
+fact is weighed unless the item confirms the claim itself (H2): a policy_line, or confirms {table, find} naming the
+one row whose read shows it; the writer is told to gate the branch the world selects, not the branch the recording
+took. The pushback bar goes: after_pushback and a witnessed yes are evidence on the fact view and no longer weigh a
+gate alone. A legacy fallback with no condition reads as a reaction. The saved Intent counts late_sent_back,
+late_unplaced and promoted beside fallback_unquoted. The miner's examples are rewritten over placeholders, one per
+kind and per condition.
+
+Why: D365 makes the ask, the policy and the world the source of truth, and the heldout 100 showed six wrong Verifiers
+that gated the Reference agent's failures as the user voiced them. Those are reactions to the agent's conduct; a run
+whose agent meets the first ask never reaches them. A branch the user names under a rule the agent stated is a real
+ask, but only when the rule or the row holds, which the writer can check and the recording cannot.
+
+What it cannot do: the condition is the miner's reading; code checks only that a quote exists in the agent line and
+that the stance and condition agree, not that the line declined or stated a rule. Promotion needs several recordings
+of one Task.
+
+Lives in: kullback/spec/schema.py (Condition, is_reaction, is_ask), kullback/spec/intent_tools.py (_placed, is_late,
+promote), kullback/spec/intent.py (prompt), kullback/spec/items.py (_weighed_gate, World._confirms),
+kullback/spec/writer.py (prompt, facts view, side counts), kullback/examiner/rule_tool.py (fact view).
+
+### D367. The Reference never repairs a Verifier: no fails_reference ruling, no reference_wrong set-aside (2026-10-16)
+
+What: the repair door the Reference held is closed. The code ruling fails_reference is gone from the ruling codes,
+with its wrong_side and ref_step arguments, the step checks behind them, and the close refusal on a ruling with no
+side. Trust no longer files a failing kept Reference as a blocking ruling before the first round
+(route_reference_fails and its call in the review loop are gone). A kept Reference that fails its Verifier is now a
+finding about the Reference for the Builder (examiner/findings.py reference_fails_rows, kind other, key
+reference_fails), filed after the review rounds against the final Verifier; the Verifier stands and no ruling opens.
+reference_passes stays a flag on the tier row. No Verifier has one reason left, intent_unclear; reference_wrong is no
+longer a why. The Examiner's prompt drops the fails_reference sentences and asks of every gate whether a right solve
+of the user's own requests, under the policy and the world, would pass it, whatever any Run did. Rulings and Specs
+written before this still load: a fails_reference ruling asks nothing of the writer, and a Spec set aside
+reference_wrong stays set aside (held, not no_verifier) until it is written again.
+
+Count: 18 of the 100 first-run heldout Tasks (11 airline, 7 retail) were set aside reference_wrong and carried no
+Verifier; under this rule they would carry one, and whether it is right is for the next run's labels to say. The other
+2 no_verifier Tasks were intent_unclear and stay.
+
+Why: D365. The heldout 100 traced two of the nine wrong Verifiers to the fails_reference repair route, and a wrong
+Reference ending a Task with no Verifier let the recording decide what the ask was. The ask, the policy and the world
+decide the Verifier; the Reference says only whether the recording did that here.
+
+Lives in: kullback/spec/rulings.py, kullback/spec/router.py, kullback/spec/trust.py (reference_fails),
+kullback/spec/rounds.py, kullback/spec/review.py, kullback/examiner/rule_tool.py, kullback/examiner/session.py
+(examine_rounds, reference_finding_rows), kullback/examiner/findings.py, kullback/examiner/prompt.py.
+
+### D368. Mutants key to the ask on a passing fresh Run; trust needs one (2026-10-16)
+
+What: the mutant check changes only what the ask gates. ask_keys reads the Spec's gated items whose facts are asks
+(kind do or keep, not a reaction): row_is and row_keeps give their cells, row_new its table, called the columns the
+tool writes (effects). Mutants are built from those keys only, on the newest fresh Run (a live model, not a replay of
+the recording) that passes the Verifier. The Reference is never a base any more, for mutants or for the stray write.
+With no passing fresh Run the mutant report has status no_passing_run, the Examiner's verify line says "mutants: not
+built (no_passing_run)", and trust holds the Task untrusted with reason no_passing_run. That reason sits outside the
+frozen REASONS columns and the report counts it under side_reasons, beside trusted. The mutant ruling text names the
+passing Run's write, and usable facts drop reactions, echoes, unfounded and side facts.
+
+What this cannot do (H4): a mutant that survives says a change to an ask cell went unchecked; a killed mutant says
+only that some gate noticed. Mutants cannot tell a wrong gate from a right one: a gate that demands the wrong value
+kills every mutant of its cell just as well as a right gate does.
+
+Why trust needs a passing fresh Run (H5): a Verifier no live model has passed is not shown solvable, and a pass by a
+replay says only that the recording did what the Verifier asks, which D367 makes no evidence for the Verifier. Keying
+to the ask keeps the check on the user's requests rather than on whatever else the base Run wrote.
+
+Lives in: kullback/spec/mutants.py (ask_keys, passing_base, task_mutants), kullback/spec/mutant_rulings.py,
+kullback/spec/trust.py (NO_PASSING_RUN), kullback/spec/report.py (side_reasons), kullback/examiner/rule_tool.py,
+scripts/mutants.py.
+
+### D369. A gated tell needs a told fact or a policy line (2026-10-16)
+
+What: a gate item of a told kind (judge, said: it checks what the agent told the user) that cites no fact of kind told
+and quotes no policy_line is weighed, never gated, with reason "untold" kept on the item (items.TELL_WEIGHED), on the
+same path as the side, reaction and unconfirmed-condition weighings. The weighing rules now run from one ordered table
+(items._WEIGHINGS). The writer counts these gates as tell_weighed. A refusal judge item is untouched: with no row it
+must quote its policy line (D330), so it always has one. The writer prompt says a told item other than a refusal gates
+only citing a told fact or quoting the policy line that requires the telling.
+
+Why: D365. A gate on what the agent said that nobody asked to hear and no rule requires checks the recording's
+manners, not the ask: a right solve that does the change and says it differently fails it. Scoring it keeps it as
+signal without letting it end a Run.
+
+Count: the dry pass over the 100 first-run Specs counts the gates this weighs (clean-ask report). A recorded workdir
+with no fact kinds now changes in one way: its said gate citing a kindless fact is weighed (the byte-for-byte writer
+test now pins that).
+
+Lives in: kullback/spec/items.py (TELL_WEIGHED, _untold, _WEIGHINGS), kullback/spec/writer.py (choice rule,
+tell_weighed count).
+
+### D370. Every ask has a gate: unchecked_ask, filed by code, holds trust (2026-10-16)
+
+What: every do or keep fact that is not a reaction (schema.is_reaction) and not a filed gap must be cited by at least
+one gate item; a write, a forbid, a kept row and a judge refusal all count, a weighed item does not
+(schema.unchecked_asks). At verify, before the mutants and needing no passing Run, code files each uncited ask as a
+blocking derivation ruling unchecked_ask on the task, one per fact, ever (mutant_rulings.ask_rulings); the verify line
+says "unchecked asks filed: <numbers>". The writer answers it like any ruling: gate the fact or file it as a gap.
+Trust reads the Spec itself: while an ask is uncited the Task is untrusted with reason unchecked_ask, after
+open_ruling and before the constructed Runs. The reason sits outside the frozen REASONS columns and the report counts
+it under side_reasons.
+
+Counts over the 63 trusted first-run heldout Specs (one rater per corpus; labels right 38, partial 17, wrong 8): -
+Worker, before piece 1 (do facts only, no excusals): blocks right 26, partial 12, wrong 6; with gaps excused right 17,
+partial 7, wrong 6. By the first brief's bar this declined the rule. - Orchestrator recount (reaction-shaped do facts
+excused: fallback, accepted, after pushback, echo; gaps excused): blocks right 0, partial 1, wrong 2 (d79a, d01d). -
+Worker, the rule as built (do and keep, reactions and gaps excused): blocks right 9, partial 4, wrong 5. With
+accepted, after-pushback and echo facts also excused: right 2, partial 2, wrong 2.
+
+Why the built count differs: the first-run Specs carry no condition (D366), so only fallback facts read as reactions;
+accepted, after-pushback and echo facts the new miner would mark condition agent still read as asks. The built rule's
+count on Specs mined under D366 needs a miner run and is not shown here.
+
+Why: D365. An ask no gate holds lets a Run that ignores the user pass. On the first run the built rule finds an
+uncited ask on 5 of the 8 wrong Verifiers the review left trusted; code sees it without a model, where uncovered_fact
+waits on the Examiner's judgment.
+
+Lives in: kullback/spec/schema.py (unchecked_asks), kullback/spec/rulings.py, kullback/spec/mutant_rulings.py
+(ask_rulings, UNCHECKED_ASK), kullback/spec/trust.py (UNCHECKED_ASK).
+
+### D371. The Examiner never sees a Run: verify runs the constructed Runs and the ask's mutants (2026-10-16)
+
+What: the Examiner judges the Verifier against the Intent (stances, conditions, quotes), the policy, the world, the
+Spec and the compiled Verifier. The verify tool no longer loads the Reference: it lays the do-nothing Run and the
+stray write on the Task's newest passing fresh Run (D368), files the unchecked asks (D370) and the ask-keyed mutant
+rulings, and answers with the constructed Runs' word and whether a passing fresh Run existed. The Reference's word,
+its steps (user turns, tool calls, replies) and the judge's answers with the agent lines it read are gone from the
+answer (reference_steps, judge_rows and the Reference word are removed). Judge answers for a fresh Run with none kept
+are asked once and kept as before. The review session's file tools refuse any read under the Run copies or what was
+read off them (runs, spoken, judged, user_rules, replays and task_runs files, reference files) and a grep or find over
+the whole root, with the reason. The user turns of every recording stay in the Task's view, with the agent's last line
+before each, only to check where a fact was said. The Examiner prompt says so: the view's turns are there to check
+provenance, conditions are described, no recording's steps are shown, and what a Run did never decides a ruling; the
+verify text names the fresh base, unchecked_ask and the ask-keyed mutants.
+
+Why: D365 and D367. Showing the Examiner the Reference let the recording argue for what the ask was; with the repair
+door closed, the only use left for the Reference in review was to anchor judgment on it.
+
+Not changed: the examine session that files fidelity findings for the Builder still reads the Reference
+(check_reference); the Reference is for fidelity (D365).
+
+Lives in: kullback/examiner/rule_tool.py (verify_rows, verify_line, verify_task), kullback/examiner/session.py
+(_refuse_recordings, review_extension), kullback/examiner/prompt.py (receives, verify).
+
+D370 r1 (2026-10-16):
+
+The unchecked_ask ruling's fix reads "add a gate item citing <fact>, or rebut quoting why no gate may hold it", not
+"file it as a gap": the writer files no gap itself; code lists as a gap every fact no check names (ground.coverage).
+That is also a hole in D370, left open for the founder: an ask with no item at all is a code-filled gap and is
+excused, so the rule catches only asks cited by weighted items. On the 100 first-run Specs 25 trusted Tasks (16 right,
+8 partial, 1 wrong) hold such an ask; counting them would block mostly right Verifiers.
+
 ### D372. Scenario records and the miner: three sources, general statements, frequency kept (2026-10-16)
 
 A scenario is one situation customers of the business meet, stated in general words in one or two sentences, with
@@ -2917,7 +3077,69 @@ tests/synth/test_review.py (no reader with live off; the shared tools answer off
 tests/synth/conftest.py clears the switch for every test, so a reader the test did not inject is None, and fails a
 test that resolves a host name, so every destination check runs on the fixture's scripted resolver.
 
-### D375. One shared pair of web tools in the agent core, the search injected by the role (2026-10-16)
+### D375. The mutant base is built by code from the Verifier, never from a Run (2026-10-16)
+
+What: the end state the stray write and the ask's mutants are laid on is the Task's start state with every gated
+state cell set to its expected value and every gated new row made (spec/mutants.py constructed_base); code then
+checks that every gated state item and the sanity item hold on it, else it is no base. The start state is read off
+any Run of the Task (it is the Task's), the built Run has no call and no message. A gated cell whose expectation
+is not one literal value (a one_of set of several members, a not set, a row the start state does not hold) cannot
+be built: then the base is the newest fresh Run the Verifier passes, as under D368, and with neither the status is
+no_base (renamed from no_passing_run; kept outside REASONS and counted beside them). A mutant is scored against
+its base: it is killed when a gate item that held on the base fails on it, so a called gate failing on the built
+base (no call was made) kills nothing. A keyed cell the base left as it was (a kept row the ask names) is flipped
+by the value operator too, so a keep the ask names must hold. Called and judge gates have no base to mutate: the
+do-nothing Run tests a called gate (no call made, it must fail); judge gates stay untested by mutants. The
+do-nothing Run is unchanged. solvable (any fresh Run passed) stays a flag beside trusted, never a trust input. The
+Examiner's verify line names the base: built from the Verifier, the newest passing fresh Run, or none.
+
+Why: D368 tied trust to the runner solving the Task: on the first run 78 of 100 Tasks had no passing fresh Run, so
+no mutant and no stray-write test, whatever their Verifier. The expected end state is the Verifier's own claim;
+laying mutants on it asks whether the gates hold what they declare without waiting on any agent. H4 still holds: a
+gate on the wrong cell or with the wrong value passes its own built base and kills its own mutants.
+
+Count (dry pass, no model call, the 100 first-run Specs under this code):
+84 of 100 Verifiers construct a base, 3 fall back to the newest passing fresh Run, 13 are no_base. Trusted: 40
+(by rater label, of the 63 first-run trusted: 25 right, 11 partial, 2 wrong; of the 37 untrusted: 1 right, 1
+partial). The dry pass files no new mutant ruling, so this is an upper bound (.claude/herdr/ask-1016/base-report.md).
+
+Lives in: kullback/spec/mutants.py (constructed_base, mutant_base, held_gates, _kept_cells, NO_BASE),
+kullback/spec/trust.py (_stray_base, NO_BASE), kullback/examiner/rule_tool.py (verify_rows, verify_line),
+kullback/examiner/prompt.py (verify text).
+
+### D376. An ask is excused only by the writer's rebuttal (2026-10-16)
+
+What: a new writer tool rebut_fact(fact_id, why) answers an ask code sent back for want of a gate: in the
+asked_missing follow-up turn, and in the repair session of an unchecked_ask ruling (spec/writer_tools.py
+ItemStore.rebut). Code keeps it only for a fact sent back in that session and only when why quotes at least 12
+characters of the user's words of that fact or of a policy line, set off in quotes or after a colon (the write
+because check, ground.valid_write_because); else it refuses with the reason, in the session. The Spec records kept
+rebuttals as {fact id: why} (Spec.rebuttals; dumped only when there is one, so older Specs hash as before).
+unchecked_asks excuses a fact only when it is rebutted or compile dropped its check with a reason (a gap written
+"<check id>: <reason>"), never because it is a coverage gap. The Examiner's view shows the rebuttal beside its fact;
+the Examiner may rule unchecked_ask on that fact id when it finds the rebuttal wrong, and that open ruling holds
+trust like any other. The repair of an unchecked_ask ruling drops the ruled fact's old rebuttal, so the writer gates
+it or rebuts anew. coverage stays the report's count of facts no check names.
+
+Why a tool and not an argument on add_items or drop_items: a rebuttal is not an item and changes none; it names a
+fact, not an item id, and code answers it on its own (kept or refused with the reason), so one plain tool is
+simpler than an optional argument read differently by two tools. A reply line "rebut:" stays the answer to other
+rulings; it never excuses an ask.
+
+Why: D370 r1 left a hole open: an ask with no item at all became a code-filled gap and was excused, so the rule
+caught only asks cited by weighted items. Now nothing the writer did not argue, in words code can check, excuses an
+ask.
+
+Count (dry pass, no model call, the 100 first-run Specs, which hold no rebuttal):
+trusted 22 (12 right, 6 partial, 2 wrong of the first-run trusted; 1 right, 1
+partial of the untrusted): of the 40 trusted under D375, 18 (13 right, 5 partial, 0 wrong) hold an ask now unexcused.
+
+Lives in: kullback/spec/schema.py (unchecked_asks, dropped_facts, Spec.rebuttals), kullback/spec/writer_tools.py
+(rebut_fact, ItemStore.rebut), kullback/spec/writer.py (TOOLS_TEXT, ASKED_FOLLOWUP_PROMPT, REPAIR_PROMPT,
+asks_ruled, Ruling.facts), kullback/spec/mutant_rulings.py (ask_rulings fix), kullback/examiner/rule_tool.py
+(spec_view), kullback/examiner/prompt.py (examples_section).
+
+### D377. One shared pair of web tools in the agent core, the search injected by the role (2026-10-16)
 
 The founder, 2026-10-16: "common set of tools are exposed right ?" Decided: web search and page reading are one module,
 `kullback/agent/web_tools.py`, and any role on the agent harness (the Examiner, the Builder, the synthetic generator)

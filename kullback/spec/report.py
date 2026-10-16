@@ -43,33 +43,45 @@ def _hash_warnings(hashes: list[str], previous: Optional[str] = None) -> list[st
     return warnings
 
 
+def _trusted_by_class(tiers: dict[str, TaskTier], classes: Optional[dict[str, str]]) -> Optional[dict]:
+    """The trusted Tasks counted by Reference class, None without the classes."""
+    if classes is None:
+        return None
+    split: dict[str, int] = {}
+    for task_id, task_tier in tiers.items():
+        if task_tier.tier == "trusted":
+            cls = classes.get(task_id, "unknown")
+            split[cls] = split.get(cls, 0) + 1
+    return split
+
+
 def build_report(tiers: dict[str, TaskTier], *, corpus: Optional[str] = None,
                  build: Optional[str] = None, classes: Optional[dict[str, str]] = None) -> dict:
     """Counts per tier, per reason and per flag (true and false; None is unscored) and, given the classes,
     the trusted Tasks by Reference class; rows keep ids only."""
     counts = {tier: 0 for tier in TIERS}
     reasons = {reason: 0 for reason in REASONS}
+    # Reasons outside the table's columns (no_verifier, no_base, unchecked_ask), counted beside them.
+    side: dict[str, int] = {}
     flags = {f"{flag}{end}": 0 for flag in FLAGS for end in ("", "_false")}
     for task_tier in tiers.values():
         counts[task_tier.tier] += 1
-        if task_tier.row.get("reason") in reasons:
-            reasons[task_tier.row["reason"]] += 1
+        reason = task_tier.row.get("reason")
+        if reason in reasons:
+            reasons[reason] += 1
+        elif reason:
+            side[reason] = side.get(reason, 0) + 1
         for flag in FLAGS:
             value = task_tier.row.get(flag)
             if value is not None:
                 flags[flag if value else f"{flag}_false"] += 1
-    split = None
-    if classes is not None:
-        split = {}
-        for task_id, task_tier in tiers.items():
-            if task_tier.tier == "trusted":
-                cls = classes.get(task_id, "unknown")
-                split[cls] = split.get(cls, 0) + 1
+    split = _trusted_by_class(tiers, classes)
     rows = [tiers[task_id].row for task_id in sorted(tiers)]
     hashes = code_hashes(rows)
     return {"build": build, "corpus": corpus, "tasks": len(tiers),
             "code_hash": hashes[0] if len(hashes) == 1 else None, "warnings": _hash_warnings(hashes),
-            "tiers": counts, "reasons": reasons, "flags": flags, "trusted_by_reference": split, "rows": rows}
+            "tiers": counts, "reasons": reasons, "side_reasons": side, "flags": flags,
+            "trusted_by_reference": split, "rows": rows}
 
 
 def header_line(report: dict) -> str:
