@@ -20,20 +20,32 @@ STAGES = ("scenario_mining", "scenario_review", "scenario_fix")
 FINDING_KEY = "environment:scenario:"
 
 
+def _table(records: list) -> dict:
+    """Per source kind, how many records sit in each status."""
+    table = {kind: Counter() for kind in R.SOURCE_KINDS}
+    for record in records:
+        table[record.source.kind][record.status] += 1
+    return {kind: {status: row.get(status, 0) for status in R.STATUSES} for kind, row in table.items()}
+
+
+def _findings(root: Path) -> int:
+    """The Environment findings the review filed, by their key."""
+    rows = read_json(root / "examiner" / "findings.json", []) or []
+    return len([row for row in rows if isinstance(row, dict) and str(row.get("key") or "").startswith(FINDING_KEY)])
+
+
+def _spend(root: Path) -> dict:
+    stages = budget.load_totals(root)["stages"]
+    return {stage: float((stages.get(stage) or {}).get("usd") or 0) for stage in STAGES}
+
+
 def counts(workdir: Any) -> dict:
     """The numbers the report prints, as data."""
     root = Path(workdir)
-    records = R.load_scenarios(root)
-    table = {kind: Counter(record.status for record in records if record.source.kind == kind)
-             for kind in R.SOURCE_KINDS}
     mined = read_json(R.store_dir(root) / R.MINED, {}) or {}
-    findings = [row for row in read_json(root / "examiner" / "findings.json", []) or []
-                if isinstance(row, dict) and str(row.get("key") or "").startswith(FINDING_KEY)]
-    stages = budget.load_totals(root)["stages"]
-    spend = {stage: float((stages.get(stage) or {}).get("usd") or 0) for stage in STAGES}
-    return {"table": {kind: {status: table[kind].get(status, 0) for status in R.STATUSES} for kind in table},
-            "findings": len(findings), "coverage": mined.get("coverage") or {}, "notes": mined.get("notes") or [],
-            "human": len(read_json(R.store_dir(root) / R.HUMAN, []) or []), "spend": spend}
+    return {"table": _table(R.load_scenarios(root)), "findings": _findings(root),
+            "coverage": mined.get("coverage") or {}, "notes": mined.get("notes") or [],
+            "human": len(read_json(R.store_dir(root) / R.HUMAN, []) or []), "spend": _spend(root)}
 
 
 def lines(workdir: Any) -> list[str]:
