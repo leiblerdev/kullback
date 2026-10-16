@@ -127,7 +127,7 @@ def test_mining_folds_an_ask_into_the_recordings_record_and_writes_coverage(tmp_
     (workdir / R.DIR).mkdir()
     (workdir / R.DIR / R.ASKS).write_text(f"{statement}\nsomeone asks which slot their widget sits in\n")
     model = TestModel([_reply({"scenarios": [{"statement": statement, "openings": [0, 1]}]})])
-    body = M.mine(workdir, model=model, search=False)
+    body = M.mine(workdir, model=model, searching=False)
     records = R.load_scenarios(workdir)
     kinds = sorted(r.source.kind for r in records)
     assert kinds == ["ask", "recordings"]
@@ -141,10 +141,10 @@ def test_mining_again_keeps_the_status_and_review_of_a_record_already_held(tmp_p
     workdir = make_workdir(tmp_path)
     (workdir / R.DIR).mkdir()
     (workdir / R.DIR / R.ASKS).write_text("someone asks which slot their widget sits in\n")
-    M.mine(workdir, model=None, search=False)
+    M.mine(workdir, model=None, searching=False)
     [record] = R.load_scenarios(workdir)
     R.write_scenario(workdir, record.model_copy(update={"status": "passed"}))
-    M.mine(workdir, model=None, search=False)
+    M.mine(workdir, model=None, searching=False)
     assert [r.status for r in R.load_scenarios(workdir)] == ["passed"]
 
 

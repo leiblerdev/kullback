@@ -445,7 +445,7 @@ def coverage(kept: list[R.Scenario], folded: list[dict], dropped: Counter) -> di
             "dropped": dict(sorted(dropped.items()))}
 
 
-def mine(workdir: Any, *, model: Any, judge: Any = None, asks: Any = None, search: bool = True,
+def mine(workdir: Any, *, model: Any, judge: Any = None, asks: Any = None, searching: bool = True,
          batch: int = BATCH, description: str = "", **reading: Any) -> dict:
     """Run the three sources, fold the repeats, write the new records and the counts, return the counts.
 
@@ -455,7 +455,7 @@ def mine(workdir: Any, *, model: Any, judge: Any = None, asks: Any = None, searc
     dropped: Counter = Counter()
     notes: list[str] = []
     found = from_recordings(world, model, batch=batch, dropped=dropped)
-    if search:
+    if searching:
         found += from_search(world, model, dropped=dropped, notes=notes, **reading)
     else:
         notes.append("search turned off")

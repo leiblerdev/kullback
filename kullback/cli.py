@@ -1442,6 +1442,73 @@ def read_domain(
         typer.echo(f"| {row['source']} | {row['archetypes']} | {row['mapped']} |")
 
 
+scenarios_app = typer.Typer(add_completion=False,
+                            help="Scenarios: what happens every day in this business, mined and reviewed (D372, D373).")
+app.add_typer(scenarios_app, name="scenarios")
+SCENARIO_WORKDIR = typer.Argument(..., help="The built workdir whose scenarios/ store is read and written.")
+SCENARIO_MODEL = typer.Option(None, "--model", help="Model id, as provider/model.")
+SCENARIO_BASE_URL = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model.")
+SCENARIO_CEILING = typer.Option(None, "--ceiling-usd", help="Spend ceiling for this command (D86).")
+SCENARIO_ASKS = typer.Option(None, "--asks", help="Lines a customer typed, one per line; default scenarios/asks.txt.")
+SCENARIO_DOMAIN = typer.Option(None, "--domain", help="One line describing the business; else environment.json's.")
+
+
+def _scenario_report(workdir: Path) -> None:
+    for line in _entry("kullback.scenarios.report", "lines")(workdir):
+        typer.echo(line)
+
+
+@scenarios_app.command("mine")
+def scenarios_mine(
+    workdir: Path = SCENARIO_WORKDIR,
+    asks: Optional[Path] = SCENARIO_ASKS,
+    search: bool = typer.Option(True, "--search/--no-search",
+                                help="Search the web; runs only where KULLBACK_SEARCH_KEY is set (D374)."),
+    batch: int = typer.Option(25, "--batch", help="Opening asks grouped per model call."),
+    ceiling_usd: Optional[float] = SCENARIO_CEILING,
+    model: Optional[str] = SCENARIO_MODEL,
+    base_url: Optional[str] = SCENARIO_BASE_URL,
+    domain_line: Optional[str] = SCENARIO_DOMAIN,
+    corpus_url: Optional[str] = typer.Option(None, "--corpus-url",
+                                             help="The source corpus's own repository or paper; never read."),
+):
+    """Mine scenarios from the recordings, a cited web search and a customer's lines (D372)."""
+    if not model:
+        typer.echo("no model: pass --model")
+        raise typer.Exit(2)
+    reader = _wrapped_model(_live_model(model, base_url), "scenario_mining", Path(workdir), ceiling_usd, model_id=model)
+    _entry("kullback.scenarios.miner", "mine")(workdir, model=reader, judge=reader, asks=asks, searching=search,
+                                               batch=batch, description=str(domain_line or ""),
+                                               corpus_url=corpus_url)
+    _scenario_report(workdir)
+
+
+@scenarios_app.command("review")
+def scenarios_review(
+    workdir: Path = SCENARIO_WORKDIR,
+    batch: int = typer.Option(10, "--batch", help="Scenarios reviewed per session."),
+    ceiling_usd: Optional[float] = SCENARIO_CEILING,
+    model: Optional[str] = SCENARIO_MODEL,
+    base_url: Optional[str] = SCENARIO_BASE_URL,
+    domain_line: Optional[str] = SCENARIO_DOMAIN,
+):
+    """The Examiner's scenario review: one blind session per batch, the fix loop, then the outcomes (D373)."""
+    if not model:
+        typer.echo("no model: pass --model")
+        raise typer.Exit(2)
+    budget = importlib.import_module("kullback.runner.budget")
+    ceiling = budget.Ceiling.from_totals(workdir, ceiling_usd) if ceiling_usd is not None else None
+    if ceiling is not None:
+        ceiling.require_priced(model)
+    fixer = _wrapped_model(_live_model(model, base_url), "scenario_fix", Path(workdir), ceiling_usd, model_id=model)
+    out = _entry("kullback.scenarios.review", "review")(workdir, model=_live_model(model, base_url), fixer=fixer,
+                                                        batch=batch, ceiling=ceiling,
+                                                        description=str(domain_line or ""))
+    if out.get("stopped_on_ceiling"):
+        typer.echo("stopped at the spend ceiling; review again to continue")
+    _scenario_report(workdir)
+
+
 
 
 @app.command()
