@@ -29,7 +29,8 @@ RULING_KINDS: dict[str, tuple[str, ...]] = {
     # The item does not follow from the Intent or the policy, or the Intent asks for more than the items check.
     # The unchecked_ codes are filed by code from a surviving mutant (spec/mutant_rulings.py, D362): a field
     # the user named, a write the passing Run made, or a row beyond the declared ones that no gate holds.
-    # unchecked_ask is filed by code at verify for an ask no gate item cites (D370).
+    # unchecked_ask is filed by code at verify for an ask no gate item cites (D370), or by the Examiner on a
+    # fact whose rebuttal it finds wrong (D376).
     "derivation": ("unasked_item", "uncovered_fact", "fixed_value", "unchecked_prohibition", "unbacked_check",
                    "unchecked_field", "unchecked_write", "unchecked_row", "unchecked_ask"),
     # A judge item (a question a model answers about what the Candidate said) is not fit to ask.

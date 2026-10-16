@@ -2999,3 +2999,35 @@ partial). The dry pass files no new mutant ruling, so this is an upper bound (.c
 Lives in: kullback/spec/mutants.py (constructed_base, mutant_base, held_gates, _kept_cells, NO_BASE),
 kullback/spec/trust.py (_stray_base, NO_BASE), kullback/examiner/rule_tool.py (verify_rows, verify_line),
 kullback/examiner/prompt.py (verify text).
+
+### D376. An ask is excused only by the writer's rebuttal (2026-10-16)
+
+What: a new writer tool rebut_fact(fact_id, why) answers an ask code sent back for want of a gate: in the
+asked_missing follow-up turn, and in the repair session of an unchecked_ask ruling (spec/writer_tools.py
+ItemStore.rebut). Code keeps it only for a fact sent back in that session and only when why quotes at least 12
+characters of the user's words of that fact or of a policy line, set off in quotes or after a colon (the write
+because check, ground.valid_write_because); else it refuses with the reason, in the session. The Spec records kept
+rebuttals as {fact id: why} (Spec.rebuttals; dumped only when there is one, so older Specs hash as before).
+unchecked_asks excuses a fact only when it is rebutted or compile dropped its check with a reason (a gap written
+"<check id>: <reason>"), never because it is a coverage gap. The Examiner's view shows the rebuttal beside its fact;
+the Examiner may rule unchecked_ask on that fact id when it finds the rebuttal wrong, and that open ruling holds
+trust like any other. The repair of an unchecked_ask ruling drops the ruled fact's old rebuttal, so the writer gates
+it or rebuts anew. coverage stays the report's count of facts no check names.
+
+Why a tool and not an argument on add_items or drop_items: a rebuttal is not an item and changes none; it names a
+fact, not an item id, and code answers it on its own (kept or refused with the reason), so one plain tool is
+simpler than an optional argument read differently by two tools. A reply line "rebut:" stays the answer to other
+rulings; it never excuses an ask.
+
+Why: D370 r1 left a hole open: an ask with no item at all became a code-filled gap and was excused, so the rule
+caught only asks cited by weighted items. Now nothing the writer did not argue, in words code can check, excuses an
+ask.
+
+Count (dry pass, no model call, the 100 first-run Specs, which hold no rebuttal):
+trusted 22 (12 right, 6 partial, 2 wrong of the first-run trusted; 1 right, 1
+partial of the untrusted): of the 40 trusted under D375, 18 (13 right, 5 partial, 0 wrong) hold an ask now unexcused.
+
+Lives in: kullback/spec/schema.py (unchecked_asks, dropped_facts, Spec.rebuttals), kullback/spec/writer_tools.py
+(rebut_fact, ItemStore.rebut), kullback/spec/writer.py (TOOLS_TEXT, ASKED_FOLLOWUP_PROMPT, REPAIR_PROMPT,
+asks_ruled, Ruling.facts), kullback/spec/mutant_rulings.py (ask_rulings fix), kullback/examiner/rule_tool.py
+(spec_view), kullback/examiner/prompt.py (examples_section).

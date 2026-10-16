@@ -179,7 +179,7 @@ def ask_rulings(workdir: Any, spec: Spec, round_number: int = 0, bus: Any = None
                           round=int(round_number) or spec.round + 1, item=R.TASK_ITEM, kind="derivation",
                           code=UNCHECKED_ASK, blocking=True, verified=[{"fact_id": fact_id}],
                           reason=f"fact {fact_id} is an ask of the user that no gate item cites",
-                          fix=f"add a gate item citing {fact_id}, or rebut quoting why no gate may hold it")
+                          fix=f"add a gate item citing {fact_id}, or call rebut_fact quoting its words or a policy line")
         R.save_ruling(workdir, ruling)
         filed.append(ruling.number)
         if bus is not None:

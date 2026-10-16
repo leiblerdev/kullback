@@ -96,13 +96,20 @@ def is_ask(fact: Any) -> bool:
     return getattr(fact, "kind", None) in ("do", "keep") and not is_reaction(fact)
 
 
+def dropped_facts(spec: Any) -> set[str]:
+    """The facts of the checks compile dropped with a reason: the gaps written "<check id>: <reason>"."""
+    dropped = {str(gap).split(":", 1)[0].strip() for gap in spec.gaps if ":" in str(gap)}
+    return {str(f) for check in spec.checks if check.id in dropped for f in check.fact_ids}
+
+
 def unchecked_asks(spec: Any) -> list[str]:
-    """The ids of the Spec's asks (is_ask) that are not filed gaps and that no gate item cites (D370): a
-    write, a forbid, a kept row or a judge refusal all count; a weighed item does not."""
+    """The ids of the Spec's asks (is_ask) that no gate item cites (D370): a write, a forbid, a kept row or a
+    judge refusal all count; a weighed item does not. An ask is excused only by the writer's kept rebuttal
+    or by compile dropping its check with a reason (D376), never by being a coverage gap."""
     gated = {str(f) for check in spec.checks if (check.demand or {}).get("gate") is True
              for f in (check.demand or {}).get("fact_ids") or ()}
-    gaps = set(spec.gaps)
-    return [fact.id for fact in spec.intent.facts if is_ask(fact) and fact.id not in gaps and fact.id not in gated]
+    excused = set(getattr(spec, "rebuttals", None) or {}) | dropped_facts(spec)
+    return [fact.id for fact in spec.intent.facts if is_ask(fact) and fact.id not in excused and fact.id not in gated]
 
 
 class SpecIntent(Record):
@@ -180,7 +187,11 @@ class Spec(Record):
     task_id: str
     intent: SpecIntent
     checks: list[Check] = Field(default_factory=list)
+    # Intent facts no check names (spec/ground.py coverage) and the checks compile dropped, "<id>: <reason>".
     gaps: list[str] = Field(default_factory=list)
+    # The writer's kept rebuttals, {fact id: why}: an ask it answered needs no gate, why quoting the user's
+    # words of that fact or a policy line (spec/writer_tools.py rebut_fact, D376).
+    rebuttals: dict[str, str] = Field(default_factory=dict)
     rulings_open: int = 0
     # Open not_enough_truth rulings: the Task stays untrusted for that reason (spec/trust.py).
     truth_open: int = 0
@@ -197,6 +208,13 @@ class Spec(Record):
     # What the Verifier came to: its items by kind and gate, end states, cells (spec/items.py counts_of).
     end_state: dict = Field(default_factory=dict)
 
+    @model_serializer(mode="wrap")
+    def _without_no_rebuttals(self, handler):
+        # A Spec with no rebuttal dumps, and so hashes, byte for byte as it did before D376.
+        data = handler(self)
+        if isinstance(data, dict) and not data.get("rebuttals"):
+            data.pop("rebuttals", None)
+        return data
 
     @model_validator(mode="before")
     @classmethod

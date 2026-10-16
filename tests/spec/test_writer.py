@@ -427,7 +427,27 @@ def test_a_writer_with_nothing_to_gate_answers_why_not_and_leaves_the_spec():
     written = W.write_spec("t1", inputs(), model)
     assert written.counts["asked_sent_back"] == 1
     assert written.spec.checks[0].gate is False
-    assert "quoting the policy" in model.calls[2]["messages"][-1]["content"]
+    assert "call rebut_fact" in model.calls[2]["messages"][-1]["content"]
+    assert written.spec.rebuttals == {} and "rebuttals" not in written.spec.model_dump()
+
+
+def test_a_rebuttal_is_kept_only_for_a_sent_back_fact_and_only_when_its_why_quotes_the_fact_or_policy():
+    store = W.store_of(inputs())
+    quoted = "the user said only: move item A1 to slot seven"
+    assert "refused: " + T.NOT_SENT_BACK in store.rebut("f1", quoted)
+    store.rebuttable = {"f1"}
+    assert "refused: " + T.UNQUOTED_WHY in store.rebut("f1", "it needs no gate, trust me")
+    assert "refused: no such fact" in store.rebut("f9", quoted)
+    assert store.rebut("f1", quoted) == "f1: rebuttal kept" and store.rebuttals == {"f1": quoted}
+    assert [row["kind"] for row in store.refused] == ["rebut_fact"] * 3
+
+
+def test_a_rebuttal_in_the_follow_up_is_recorded_on_the_spec_by_fact_id():
+    quoted = "the user said only: move item A1 to slot seven"
+    model = TestModel([add(dict(ROW, gate=False)), DONE, call("rebut_fact", fact_id="f1", why=quoted), DONE])
+    written = W.write_spec("t1", inputs(), model)
+    assert written.spec.rebuttals == {"f1": quoted} and written.counts["rebutted"] == 1
+    assert written.spec.model_dump()["rebuttals"] == {"f1": quoted}
 
 
 def test_the_prompt_gates_a_told_value_and_a_named_option():
@@ -469,6 +489,22 @@ def test_repair_for_ruling_publishes_defended_when_no_item_changes(tmp_path):
     assert defended.checks == spec.checks
     (event,) = _bus_events(tmp_path)
     assert event["name"] == "spec.defended" and event["payload"]["check_ids"] == ["s1"]
+
+
+def test_an_unchecked_ask_repair_drops_the_facts_old_rebuttal_and_keeps_a_new_one_that_quotes(tmp_path):
+    from kullback.spec.schema import save_spec
+
+    spec = _ruled_workdir(tmp_path)
+    save_spec(tmp_path, spec.model_copy(update={"rebuttals": {"f2": "an old why"}}))
+    ruling = {"number": 3, "item": "task", "kind": "derivation", "code": "unchecked_ask",
+              "verified": [{"fact_id": "f2"}], "reason": "f2 is an ask no gate cites", "fix": "gate it or rebut"}
+    assert W.repair_for_ruling(tmp_path, "t1", ruling, TestModel([DONE])).rebuttals == {}
+    quoted = "the user wants: a note saying it was urgent"
+    rebut = TestModel([call("rebut_fact", fact_id="f2", why=quoted), DONE])
+    assert W.repair_for_ruling(tmp_path, "t1", ruling, rebut).rebuttals == {"f2": quoted}
+    other = dict(ruling, code="other", verified=[])
+    keep = TestModel([call("rebut_fact", fact_id="f2", why="a new why"), DONE, DONE])
+    assert W.repair_for_ruling(tmp_path, "t1", other, keep).rebuttals == {"f2": quoted}
 
 
 def test_refusal_counts_name_a_family_of_code_wording_never_an_empty_key_or_a_value():

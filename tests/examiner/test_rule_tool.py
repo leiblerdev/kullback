@@ -192,6 +192,17 @@ def test_the_view_shows_a_side_fact_so_a_ruling_never_asks_to_gate_it(tmp_path):
     assert "never gated, so a ruling never asks to gate it" in P.receives_section()
 
 
+def test_the_view_shows_a_rebuttal_beside_its_fact_so_the_examiner_may_rule_it_wrong(tmp_path):
+    root = _root(tmp_path)
+    _recordings(tmp_path)
+    held = load_spec(tmp_path, "t1")
+    fact_id = held.intent.facts[1].id
+    save_spec(tmp_path, held.model_copy(update={"rebuttals": {fact_id: "the user said: <their words>"}}))
+    shown = R.spec_view(root, "t1")["facts"]
+    assert shown[1]["rebuttal"] == "the user said: <their words>" and "rebuttal" not in shown[0]
+    assert "rebuttal" in P.examples_section() and "rule unchecked_ask" in P.examples_section()
+
+
 def test_the_view_shows_a_fallback_fact_with_the_agent_line_it_answers(tmp_path):
     root = _root(tmp_path)
     _recordings(tmp_path)

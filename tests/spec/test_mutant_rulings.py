@@ -214,11 +214,22 @@ def test_verify_files_one_unchecked_ask_per_ask_no_gate_cites_once_and_trust_hol
     assert tier == "untrusted" and row["reason"] == T.UNCHECKED_ASK
 
 
-def test_an_ask_filed_as_a_gap_or_a_reaction_needs_no_gate():
+def test_an_ask_is_excused_by_a_kept_rebuttal_or_a_dropped_check_never_by_a_coverage_gap():
     from kullback.spec.schema import unchecked_asks
 
     the_spec = _spec().model_copy(update={"checks": []})
     assert unchecked_asks(the_spec) == ["f1"]
-    assert unchecked_asks(the_spec.model_copy(update={"gaps": ["f1"]})) == []
+    assert unchecked_asks(the_spec.model_copy(update={"gaps": ["f1"]})) == ["f1"]
+    assert unchecked_asks(the_spec.model_copy(update={"rebuttals": {"f1": "the user said it"}})) == []
+    weighed = check("s1", demand=dict(STATE, fact_ids=["f1"], gate=False), fact_ids=["f1"])
+    with_weighed = the_spec.model_copy(update={"checks": [weighed]})
+    assert unchecked_asks(with_weighed) == ["f1"]
+    assert unchecked_asks(with_weighed.model_copy(update={"gaps": ["s1: does not compile"]})) == []
+
+
+def test_an_ask_a_reaction_raised_needs_no_gate():
+    from kullback.spec.schema import unchecked_asks
+
+    the_spec = _spec().model_copy(update={"checks": []})
     facts = [f.model_copy(update={"condition": "agent"}) for f in the_spec.intent.facts]
     assert unchecked_asks(the_spec.model_copy(update={"intent": the_spec.intent.model_copy(update={"facts": facts})})) == []

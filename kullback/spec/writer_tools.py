@@ -4,7 +4,9 @@ The world tools (`WORLD_TOOLS`) close over one `items.World` (the Starting state
 Intent's facts and the tool list) and nothing else, so a writer session can read no Run, Reference,
 Verifier or End state: `refuse_run_inputs` refuses such records before a session starts. `add_items`
 keeps an item only when code finds every value it names in the world, the policy or a user turn,
-and says why when it does not ("find, do not invent"). The two lookups ported from the intentv
+and says why when it does not ("find, do not invent"). `rebut_fact` answers an ask code sent back for want
+of a gate (the follow-up turn, or an unchecked_ask ruling): it is kept only for that fact and only when its why
+quotes the user's words of the fact or a policy line (D376). The two lookups ported from the intentv
 experiment (`READ_TOOLS`) stay for that frozen experiment only.
 """
 
@@ -15,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from kullback.spec.ground import valid_write_because
 from kullback.spec.items import World
 
 # The most read rounds a writer session may spend before it must write (intentv r1).
@@ -153,19 +156,33 @@ WORLD_TOOLS = [
      "description": "Remove items you added, by id.",
      "parameters": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}},
                     "required": ["ids"]}},
+    {"name": "rebut_fact",
+     "description": ("Say why a fact code sent back needs no gate item. why must copy at least 12 characters "
+                     "word for word from the user's words of that fact or from a policy line, set off in quotes "
+                     "or after a colon."),
+     "parameters": {"type": "object", "properties": {"fact_id": {"type": "string"}, "why": {"type": "string"}},
+                    "required": ["fact_id", "why"]}},
 ]
+# Why a rebuttal is refused: the fact was not sent back, or its why quotes nothing it may rest on.
+NOT_SENT_BACK = "not sent back: rebut_fact answers only a fact code listed as missing its gate"
+UNQUOTED_WHY = ("why quotes neither the user's words of that fact nor a policy line: copy at least 12 "
+                "characters word for word, set off in quotes or after a colon")
 
 
 class ItemStore:
     """The items a session has kept, by id, and every refusal it made, each with its reason.
 
     `ruled` limits drops and replacements to the ruled items (a repair); None lets the writer drop or
-    replace any item it added.
+    replace any item it added. `rebuttals` are the kept rebuttals {fact id: why}; `rebuttable` the facts
+    code sent back that a rebuttal may answer now (none until a follow-up or an unchecked_ask ruling).
     """
 
     def __init__(self, world: World, facts: dict, unwitnessed: Callable[[Any], bool] = lambda fact: False,
-                 items: Iterable[dict] = (), ruled: Optional[set[str]] = None):
+                 items: Iterable[dict] = (), ruled: Optional[set[str]] = None,
+                 rebuttals: Optional[dict] = None):
         self.world, self.facts, self.unwitnessed = world, facts, unwitnessed
+        self.rebuttals: dict[str, str] = dict(rebuttals or {})
+        self.rebuttable: set[str] = set()
         self.items: dict[str, dict] = {item["id"]: item for item in items}
         self.held = set(self.items)
         self.ruled = ruled
@@ -214,6 +231,18 @@ class ItemStore:
                 out.append(f"{item_id}: no such item")
         return "\n".join(out) or "no ids"
 
+    def rebut(self, fact_id: Any, why: Any) -> str:
+        """Keeps {fact id: why} when code sent the fact back and why quotes its words or a policy line."""
+        fact_id, why = str(fact_id or ""), " ".join(str(why or "").split())
+        fact = self.facts.get(fact_id)
+        reason = ("no such fact" if fact is None else NOT_SENT_BACK if fact_id not in self.rebuttable
+                  else "" if valid_write_because(why, getattr(fact, "text", ""), self.world.policy) else UNQUOTED_WHY)
+        if reason:
+            self.refused.append({"id": fact_id, "kind": "rebut_fact", "reason": reason})
+            return f"{fact_id}: refused: {reason}"
+        self.rebuttals[fact_id] = why
+        return f"{fact_id}: rebuttal kept"
+
 
 def world_tools(store: ItemStore) -> dict[str, Callable[..., str]]:
     """The world tools bound to one store and its world."""
@@ -235,7 +264,8 @@ def world_tools(store: ItemStore) -> dict[str, Callable[..., str]]:
         return world.policy_section(section)[:6000]
 
     return {"read_schema": read_schema, "find_rows": find_rows, "read_row": read_row, "read_policy": read_policy,
-            "add_items": lambda items=None: store.add(items), "drop_items": lambda ids=None: store.drop(ids)}
+            "add_items": lambda items=None: store.add(items), "drop_items": lambda ids=None: store.drop(ids),
+            "rebut_fact": lambda fact_id=None, why=None: store.rebut(fact_id, why)}
 
 
 def _answer(impl: dict, call: Any) -> str:

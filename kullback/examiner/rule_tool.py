@@ -450,7 +450,7 @@ def user_turns(workdir: Any, task_id: str) -> dict[str, list[dict]]:
 
 def spec_view(root: ExamRoot, task_id: str) -> Optional[dict]:
     """The Task as the Examiner reads it: every recording's user turns, the Intent facts with their
-    source turn, the Spec's items with provenance, the Verifier's items, the facts no item covers, and
+    source turn and the writer's rebuttal when it gave one (D376), the Spec's items with provenance, the Verifier's items, the facts no item covers, and
     every ruling so far with the writer's answer."""
     spec, verifier = _spec_and_verifier(root.workdir, task_id)
     if spec is None:
@@ -458,7 +458,8 @@ def spec_view(root: ExamRoot, task_id: str) -> Optional[dict]:
     covered = {fact_id for check in spec.checks for fact_id in check.fact_ids}
     view = {"task_id": task_id, "round": spec.round, "version": spec.version,
             "user_turns": user_turns(root.workdir, task_id),
-            "facts": [_fact(f) for f in spec.intent.facts],
+            "facts": [dict(_fact(f), **({"rebuttal": spec.rebuttals[f.id]} if f.id in spec.rebuttals else {}))
+                      for f in spec.intent.facts],
             "items": [_item(check) for check in spec.checks],
             "facts_without_item": [f.id for f in spec.intent.facts if f.id not in covered],
             "rulings": read_rulings(root.workdir, task_id)}
