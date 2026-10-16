@@ -10,8 +10,8 @@ nothing else of the store: the view carries the statement, the policy lines, the
 searched and the review so far, never the source or the frequency. That is what lets a live run mix
 real asks in and measure the Examiner rather than trust it.
 
-Outcomes are code, read off the verdict after the session: occurs no strikes the scenario with its
-cite; any unsure puts it on the human queue with the open question; feasible no files an Environment
+Outcomes are code, read off the verdict after the session: a repeat of another scenario strikes it,
+citing the other's id; occurs no strikes the scenario with its cite; any unsure puts it on the human queue with the open question; feasible no files an Environment
 finding naming the missing tool or row class and ends it infeasible, never a drop; occurs yes and
 feasible yes passes. `fix_scenario` sends a scenario back to the generator, which rewrites it once from
 the same source with the reason; a second request on the same scenario ends it unsure.
@@ -147,6 +147,7 @@ class RuleArgs(Strict):
     feasible: Answer = Field(description="Can this world serve it with its tools and rows?")
     missing: str = Field(default="", description="When feasible is no: the tool or the kind of row that is missing.")
     serves_ask: Literal["yes", "no", "none"] = Field(default="none", description="Does it serve a customer's ask?")
+    repeat_of: str = Field(default="", description="The id of another scenario this one says again; it ends struck.")
     text: str = Field(description="Why, in one or two sentences.")
 
 
@@ -206,18 +207,32 @@ def human_row(workdir: Any, record: R.Scenario, question: str) -> None:
     write_json(path, [*rows, {"id": record.id, "statement": record.statement, "question": question}])
 
 
+def _filed(root: ReviewRoot, record: R.Scenario, row: dict) -> Rows:
+    R.write_scenario(root.workdir, record.model_copy(update={"review": [*record.review, row]}))
+    if root.bus is not None:
+        root.bus.publish_custom("scenario_verdict", {"id": record.id, **row})
+    return Rows(summary=f"verdict filed on {record.id}", rows=[row])
+
+
+def _repeat(root: ReviewRoot, record: R.Scenario, args: RuleArgs) -> Rows:
+    """A verdict that this scenario says again what another says; the other must be a different scenario."""
+    if args.repeat_of == record.id:
+        raise ValueError("repeat_of names this scenario itself; name the other scenario it repeats")
+    R.load_scenario(root.workdir, args.repeat_of)
+    row = {"kind": "verdict", **args.model_dump(exclude={"id"}), "occurs_cite": args.repeat_of}
+    return _filed(root, record, row)
+
+
 def ruled(root: ReviewRoot, args: RuleArgs) -> Rows:
     """The verdict on the record; occurs yes without a cite and feasible no without `missing` are refused."""
     record = _record(root, args.id)
+    if args.repeat_of:
+        return _repeat(root, record, args)
     if args.occurs == "yes" and not args.occurs_cite.strip():
         raise ValueError("occurs yes needs occurs_cite: a URL your search returned, Task ids, or a policy line")
     if args.feasible == "no" and not args.missing.strip():
         raise ValueError("feasible no needs missing: the tool or the kind of row this world lacks")
-    row = {"kind": "verdict", **args.model_dump(exclude={"id"})}
-    R.write_scenario(root.workdir, record.model_copy(update={"review": [*record.review, row]}))
-    if root.bus is not None:
-        root.bus.publish_custom("scenario_verdict", {"id": args.id, **row})
-    return Rows(summary=f"verdict filed on {args.id}", rows=[row])
+    return _filed(root, record, {"kind": "verdict", **args.model_dump(exclude={"id"})})
 
 
 def sent_back(root: ReviewRoot, args: FixArgs) -> Rows:
@@ -341,12 +356,12 @@ def _environment_finding(root: ReviewRoot, record: R.Scenario, verdict: dict) ->
 
 
 def settle(root: ReviewRoot, record: R.Scenario) -> R.Scenario:
-    """The scenario's status from its verdict, by code. Occurs no is read first: a situation that does not
-    happen is no finding about the Environment."""
+    """The scenario's status from its verdict, by code. A repeat and occurs no are read first: a situation
+    said twice or that does not happen is no finding about the Environment."""
     verdict = last_verdict(record) if record.status == "born" else None
     if verdict is None:
         return record
-    if verdict["occurs"] == "no":
+    if verdict.get("repeat_of") or verdict["occurs"] == "no":
         status = "struck"
     elif "unsure" in (verdict["occurs"], verdict["feasible"]):
         status = "unsure"

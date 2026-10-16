@@ -1486,8 +1486,7 @@ def synth_mine(
         typer.echo("no model: pass --model")
         raise typer.Exit(2)
     ceiling = _synth_ceiling(workdir, model, ceiling_usd)
-    judge = _wrapped_model(_live_model(model, base_url), "synth_mining", Path(workdir), ceiling_usd, model_id=model)
-    _entry("kullback.synth.miner", "mine")(workdir, model=_live_model(model, base_url), judge=judge, asks=asks,
+    _entry("kullback.synth.miner", "mine")(workdir, model=_live_model(model, base_url), asks=asks,
                                            searching=search, batch=batch, description=str(domain_line or ""),
                                            corpus_url=corpus_url, ceiling=ceiling)
     _scenario_report(workdir)

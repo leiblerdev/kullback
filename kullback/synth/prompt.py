@@ -46,7 +46,8 @@ _EXAMPLES = {
                       '"serves_ask": "none", "text": "<why, in one or two sentences>"}. occurs and feasible are '
                       "yes, no or unsure; serves_ask is yes, no or none. occurs yes needs a cite: a URL your "
                       "search returned or a policy line. feasible no needs missing: the tool or the "
-                      "kind of row this world lacks."),
+                      'kind of row this world lacks. A scenario that says again what another says takes '
+                      '"repeat_of": "sc_<other id>" and ends struck.'),
     "fix_scenario": ('fix_scenario: send a scenario back to the generator once, e.g. {"id": "sc_<id>", "why": '
                      '"<rewrite, rebind or narrow, and what to change>"}. A second request on one scenario '
                      "ends it unsure, for a person."),
@@ -67,12 +68,14 @@ def examples_section() -> str:
             "infeasible: a <kind of customer> wants <a remedy> that the policy allows, but no tool makes it and "
             "no row holds it (feasible no, missing names the tool or the kind of row).\n"
             "unsure: the evidence is split, or the world may serve it only through a path you cannot confirm.\n"
+            "repeat: the scenario says what another scenario already says in other words (repeat_of names it).\n"
             "send back: the statement names one value, joins two situations, or is too broad to serve; say "
             "whether to rewrite, rebind to what the source shows, or narrow it.")
 
 
 def choice_section() -> str:
-    return ("Choosing. Rule on every scenario in the opening message. Read its view before any verdict. Search "
+    return ("Choosing. Rule on every scenario in the opening message. Read its view before any verdict. List the "
+            "scenarios by status: one that says what another already says is a repeat, ruled with repeat_of. Search "
             "before you rule occurs yes or no, unless a policy line settles it; cite what you read. Look the "
             "rows up before you rule feasible: a tool alone is not enough when no row could reach the step. "
             "Send a scenario back only when its words, not the world, are what is wrong; a scenario this world "

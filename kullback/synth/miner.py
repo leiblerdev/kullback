@@ -12,14 +12,16 @@ person; the line as typed stays in the source only, since the customer's own sha
 review where it came from. A line naming a tool is dropped before any session.
 
 The rule lives in the write tools, which refuse with the reason so the agent writes again; a second
-refusal drops the scenario, counted per reason. Repeats across sources fold under the D219 judge
-(`domain.dedup`), recordings first, so a search or ask scenario the recordings already show keeps the
-recordings record and adds its own source under `also_from`. A record keeps the id it was born with,
+refusal drops the scenario, counted per reason. Repeats fold by code only, statements equal up to case,
+punctuation and spacing, recordings first, so a search or ask scenario the recordings already show keeps
+the recordings record and adds its own source under `also_from`; no model judges a repeat. The agent
+lists what is already written before it writes, and the review may rule a scenario a repeat of another. A record keeps the id it was born with,
 also after a fix rewrites its statement. The fix step is a session too, under the stage synth_fix.
 """
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +42,7 @@ BATCH = 25
 STAGE = "synth_mining"
 FIX_STAGE = "synth_fix"
 CEILING_NOTE = "stopped at the spend ceiling; mine again to continue"
+_PUNCT = re.compile(r"[^\w\s]")
 
 
 @dataclass
@@ -185,18 +188,29 @@ def from_asks(mining: Mining, lines: Iterable[str], *, batch: int = BATCH) -> No
 # --- folding and coverage ---------------------------------------------------------------
 
 
-def fold(records: list[R.Scenario], judge: Any = None) -> tuple[list[R.Scenario], list[dict]]:
-    """The records with repeats folded in under the D219 judge, in the order given, and the folds."""
-    by_id = {record.id: record for record in records}
-    rows = [{"id": record.id, "goal": record.statement, "source": record.id} for record in records]
-    kept, folded = domain.dedup(rows, judge)
-    for row in folded:
-        held, other = by_id[row["into"]], by_id[row["id"]]
-        held.also_from += [other.source, *other.also_from]
-        if held.source.kind == other.source.kind == "recordings":
-            held.frequency += other.frequency
-            held.source.task_ids = sorted({*held.source.task_ids, *other.source.task_ids})
-    return [by_id[row["id"]] for row in kept], [dict(row, kind=by_id[row["id"]].source.kind) for row in folded]
+def canonical(text: str) -> str:
+    """A statement as the fold compares it: lowercase, punctuation dropped, spacing collapsed."""
+    return " ".join(_PUNCT.sub(" ", str(text or "").lower()).split())
+
+
+def fold(records: list[R.Scenario]) -> tuple[list[R.Scenario], list[dict]]:
+    """The records with repeats folded in by code, in the order given, and the folds.
+
+    Two statements fold when they are equal up to case, punctuation and spacing; no model judges it.
+    The first record keeps the others' sources under also_from, and two recordings records add up.
+    """
+    first: dict[str, R.Scenario] = {}
+    folded: list[dict] = []
+    for record in records:
+        held = first.setdefault(canonical(record.statement), record)
+        if held is record:
+            continue
+        held.also_from += [record.source, *record.also_from]
+        if held.source.kind == record.source.kind == "recordings":
+            held.frequency += record.frequency
+            held.source.task_ids = sorted({*held.source.task_ids, *record.source.task_ids})
+        folded.append({"id": record.id, "into": held.id, "kind": record.source.kind})
+    return list(first.values()), folded
 
 
 def coverage(kept: list[R.Scenario], folded: list[dict], dropped: Counter) -> dict:
@@ -209,7 +223,7 @@ def coverage(kept: list[R.Scenario], folded: list[dict], dropped: Counter) -> di
             "dropped": dict(sorted(dropped.items()))}
 
 
-def mine(workdir: Any, *, model: Any, judge: Any = None, asks: Any = None, searching: bool = True,
+def mine(workdir: Any, *, model: Any, asks: Any = None, searching: bool = True,
          batch: int = BATCH, description: str = "", engine: Any = None, env: Optional[dict] = None,
          corpus_url: Optional[str] = None, exclude: Iterable[str] = (), ceiling: Optional[budget.Ceiling] = None,
          subscribers: Iterable[Any] = ()) -> dict:
@@ -227,12 +241,12 @@ def mine(workdir: Any, *, model: Any, judge: Any = None, asks: Any = None, searc
         mining.notes.append("search turned off")
     path = Path(asks) if asks else R.store_dir(workdir) / R.ASKS
     from_asks(mining, ask_lines(path), batch=batch)
-    kept, folded = fold(list(mining.found), judge)
-    held = {record.id for record in R.load_scenarios(workdir)}
-    R.write_all(workdir, [record for record in kept if record.id not in held])
+    kept, folded = fold(list(mining.found))
+    held = {canonical(record.statement) for record in R.load_scenarios(workdir)}
+    new = [record for record in kept if canonical(record.statement) not in held]
+    R.write_all(workdir, new)
     body = {"format": R.FORMAT, "notes": mining.notes, "coverage": coverage(kept, folded, mining.dropped),
-            "born": len([record for record in kept if record.id not in held]),
-            "folded": folded}
+            "born": len(new), "folded": folded}
     write_json(R.store_dir(workdir) / R.MINED, body)
     return body
 
@@ -283,6 +297,6 @@ def fix(world: World, sent: list[tuple[R.Scenario, str]], model: Any, *, bus: An
     return [_fixed(record, why, root.fixed.get(record.id)) for record, why in sent]
 
 
-__all__ = ["BATCH", "EMPTY", "FIX_STAGE", "ID_SHAPE", "Mining", "STAGE", "TOOL_NAME", "World", "coverage", "fix",
-           "fold", "from_asks", "from_recordings", "from_search", "mine", "openings", "source_text",
+__all__ = ["BATCH", "EMPTY", "FIX_STAGE", "ID_SHAPE", "Mining", "STAGE", "TOOL_NAME", "World", "canonical", "coverage",
+           "fix", "fold", "from_asks", "from_recordings", "from_search", "mine", "openings", "source_text",
            "statement_refusal", "world_of"]

@@ -158,6 +158,27 @@ def test_mining_folds_an_ask_into_the_recordings_record_and_writes_coverage(tmp_
     assert "search turned off" in body["notes"]
 
 
+def test_two_statements_equal_up_to_case_and_punctuation_fold_by_code_with_no_model():
+    first = R.born("A holder wants a widget moved, to another slot.", R.Source(kind="recordings", task_ids=["t-1"]),
+                   frequency=2)
+    again = R.born("a holder  wants a widget moved to another slot", R.Source(kind="recordings", task_ids=["t-2"]),
+                   frequency=1)
+    typed = R.born("a holder wants a widget moved to another slot!", R.Source(kind="ask", line="move it"))
+    other = R.born("a holder wants a widget painted", R.Source(kind="ask", line="paint it"))
+    kept, folded = M.fold([first, again, typed, other])
+    assert [r.id for r in kept] == [first.id, other.id]
+    assert first.frequency == 3 and first.source.task_ids == ["t-1", "t-2"]
+    assert [source.kind for source in first.also_from] == ["recordings", "ask"]
+    assert [row["into"] for row in folded] == [first.id, first.id]
+
+
+def test_no_module_of_the_layer_calls_a_model_judge_to_fold():
+    from pathlib import Path
+
+    texts = [path.read_text(encoding="utf-8") for path in Path(M.__file__).parent.glob("*.py")]
+    assert texts and not [text for text in texts if "dedup(" in text or "judge=" in text]
+
+
 def test_mining_again_keeps_the_status_and_review_of_a_record_already_held(tmp_path):
     workdir = make_workdir(tmp_path)
     (workdir / R.DIR).mkdir()

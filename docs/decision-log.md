@@ -2832,9 +2832,11 @@ tell the blind review where it came from, and a line naming a tool is dropped be
 by the write tools, which refuse with the reason as the tool result so the agent writes again: no tool name or its
 words, no id shaped value, no identifying value of a row, no policy line the policy does not hold, no span the page
 does not hold, no typed line copied as typed. A second refusal of the same scenario drops it, and one refused once
-and never written again is dropped at the end of the session, counted per reason. Repeats across sources fold
-through the D225 dedup into the first record, which keeps the others as also_from. Mining again adds records and
-never resets one already held. The coverage (per source, search scenarios the recordings never show, ask lines
+and never written again is dropped at the end of the session, counted per reason. No model judges a repeat. The
+agent lists the scenarios already written before it writes, which is where repeats are avoided; then repeats fold by
+code only, statements equal up to case, punctuation and spacing, into the first record, which keeps the others as
+also_from (two recordings records add their frequency). The review may rule a scenario a repeat of another (D373).
+Mining again adds records and never resets one already held, nor one whose statement folds into it. The coverage (per source, search scenarios the recordings never show, ask lines
 nothing else covers, folded, dropped) is written to scenarios/mined.json. The fix step the review asks for is a
 session too, under the stage synth_fix, whose rewrite_scenario holds the same rule; a scenario it does not rewrite
 ends unsure. The verb is `kullback synth mine`, the live adapter under the budget subscriber and a ceiling checked
@@ -2862,7 +2864,8 @@ and its fix count, and the base tools read only that root. Its tools read a view
 on the scenario as evidence with the lines read), look up and search the starting rows, find tools by words, file a
 verdict and send a scenario back. A verdict answers occurs, feasible and serves_ask; occurs yes needs a cite and
 feasible no needs what is missing, or the call is refused. The outcome is read off the verdict by code, occurs first:
-occurs no strikes it; any unsure puts it on the human queue (scenarios/human.json); feasible no marks it infeasible
+a repeat of another scenario (repeat_of, an id the store holds and not its own) strikes it with that id as
+the cite; occurs no strikes it; any unsure puts it on the human queue (scenarios/human.json); feasible no marks it infeasible
 and files one Environment finding through examiner/findings.py naming what to add, never a drop; otherwise it passes.
 A send back has the miner rewrite the statement once from the same source with the reason, keeping the id, and the
 rewrite is reviewed again in the same call; a second send back, or a rewrite that breaks the rule, ends it unsure on

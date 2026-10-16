@@ -78,6 +78,16 @@ def test_the_outcome_is_read_off_the_verdict_by_code(tmp_path, verdict, status):
     assert (status == "unsure") == (R.store_dir(root.workdir) / R.HUMAN).is_file()
 
 
+def test_a_repeat_ruled_by_the_review_ends_struck_naming_the_scenario_it_repeats(tmp_path):
+    root, [first, second] = _root(tmp_path, "a holder wants a widget moved", "a holder asks to move a widget")
+    _rule(root, second, occurs="unsure", feasible="unsure", occurs_cite="", repeat_of=first.id)
+    settled = V.settle(root, R.load_scenario(root.workdir, second.id))
+    assert settled.status == "struck" and settled.review[-1]["occurs_cite"] == first.id
+    assert not (R.store_dir(root.workdir) / R.HUMAN).exists()
+    with pytest.raises(ValueError, match="itself"):
+        _rule(root, first, repeat_of=first.id)
+
+
 def test_a_scenario_this_world_cannot_serve_files_one_environment_finding_and_is_never_dropped(tmp_path):
     root, [record] = _root(tmp_path, "a holder wants a widget painted")
     _rule(root, record, feasible="no", missing="a tool that paints a widget")
