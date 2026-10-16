@@ -12,17 +12,22 @@ from tests.spec.fixtures import spec as base_spec
 START = {"items": {"A1": {"slot": "two", "label": "red"}, "B2": {"slot": "four", "label": "blue"}}}
 END = {"items": {"A1": {"slot": "seven", "label": "red"}, "B2": {"slot": "four", "label": "blue"}}}
 SAID = ValueSource(kind="user_turn", ptr={"turn": 0})
-STATE = {"demand": "state", "table": "items", "row": "A1", "expect": {"slot": "seven"}}
+STATE = {"kind": "row_is", "table": "items", "row": "A1", "expect": {"slot": "seven"}, "gate": True}
 
 
-def _reference(start=START, end=END, run_id="ref"):
+def _base(start=START, end=END, run_id="fresh-1", model="some/model"):
+    """A fresh Run (a live model) ending in `end`; model "recorded" makes it a replay of the recording."""
     run = reference_run()
     stop = Event(idx=len(run.events), type="stop", payload={"start_state": start, "end_state": end})
-    return run.model_copy(update={"events": run.events + [stop], "run_id": run_id, "model": "recorded"})
+    return run.model_copy(update={"events": run.events + [stop], "run_id": run_id, "model": model})
 
 
-def _spec(fact_ids=("f1",)):
-    return base_spec(checks=[check("s1", demand=STATE, fact_ids=fact_ids)])
+def _spec(fact_ids=("f1",), gaps=()):
+    """The Spec with one gated row_is item citing `fact_ids`; f1 is an ask (kind do), f2 accepted."""
+    the_spec = base_spec(checks=[check("s1", demand=dict(STATE, fact_ids=list(fact_ids)), fact_ids=fact_ids)],
+                         gaps=gaps)
+    facts = [f.model_copy(update={"kind": "do"}) for f in the_spec.intent.facts]
+    return the_spec.model_copy(update={"intent": the_spec.intent.model_copy(update={"facts": facts})})
 
 
 def _row_only():
@@ -33,7 +38,7 @@ def _row_only():
 
 def _file(tmp_path, the_spec, verifier, round_number=2):
     save_spec(tmp_path, the_spec)
-    return MR.mutant_rulings(tmp_path, verifier, _reference(), round_number)
+    return MR.mutant_rulings(tmp_path, verifier, round_number, runs=[_base()])
 
 
 def test_a_value_survivor_on_a_field_a_volunteered_fact_names_files_one_ruling_with_no_value_in_it(tmp_path):
@@ -72,7 +77,7 @@ def test_each_survivor_in_the_report_names_the_ruling_it_became_and_a_second_ver
     report = json.loads((tmp_path / "exam" / "mutants" / "t1.json").read_text())
     survivors = [row for row in report["mutants"] if row["outcome"] == "survived"]
     assert survivors and all(row["ruling"] == "note" or row["ruling"] in first["filed"] for row in survivors)
-    again = MR.mutant_rulings(tmp_path, _row_only(), _reference(), 2)
+    again = MR.mutant_rulings(tmp_path, _row_only(), 2, runs=[_base()])
     assert again["filed"] == [] and len(R.load_rulings(tmp_path, "t1")) == len(first["filed"])
 
 
@@ -91,10 +96,9 @@ def test_rulings_from_mutants_are_open_blocking_and_count_against_the_round_cap(
 
 # --- trust: the stray-write gate reads the untouched sample ---
 
-def _tier(verifier):
-    the_spec = base_spec(checks=[check("s1", demand=STATE)], gaps=["f2"]).model_copy(update={"examined_rounds": [1]})
-    return T.tier_of_task(the_spec, verifier, [_reference(run_id="replay-1")], canon=fn, write_tools=WRITE_TOOLS,
-                          references=("replay-1",))
+def _tier(verifier, runs=None):
+    the_spec = _spec(gaps=["f2"]).model_copy(update={"examined_rounds": [1]})
+    return T.tier_of_task(the_spec, verifier, runs or [_base()], canon=fn, write_tools=WRITE_TOOLS)
 
 
 def _held_cell(field, value):
@@ -120,27 +124,39 @@ def test_one_untouched_survivor_keeps_the_task_stray_untested_though_the_one_str
 
 # --- the Examiner's verify step ---
 
-def test_verify_on_a_passing_reference_files_the_survivors_in_the_examiners_round_and_says_so(tmp_path):
+def _runs_on_disk(root, *runs):
+    folder = root / "runs" / "t1"
+    folder.mkdir(parents=True, exist_ok=True)
+    for run in runs:
+        (folder / f"{run.run_id}.jsonl").write_text(run.model_dump_json() + "\n")
+
+
+def test_verify_files_the_survivors_of_the_passing_fresh_run_in_the_examiners_round_and_says_so(tmp_path):
     from kullback.examiner.exam_files import ExamRoot
     from kullback.examiner.rule_tool import _mutants
 
     save_spec(tmp_path, _spec())
-    root = ExamRoot(workdir=tmp_path, round=2)
-    passing = [{"run": "reference", "verifier_passes_it": True}]
-    line = _mutants(root, _row_only(), _reference(), passing)
+    _runs_on_disk(tmp_path, _base())
+    line = _mutants(ExamRoot(workdir=tmp_path, round=2), _row_only())
     filed = R.load_rulings(tmp_path, "t1")
     assert filed and {r.round for r in filed} == {2} and line.startswith("mutants: ")
     assert ", ".join(str(r.number) for r in filed) in line
 
 
-def test_verify_on_a_failing_reference_builds_no_mutant_and_files_nothing(tmp_path):
+def test_verify_with_only_a_passing_replay_builds_no_mutant_files_nothing_and_says_no_passing_run(tmp_path):
     from kullback.examiner.exam_files import ExamRoot
     from kullback.examiner.rule_tool import _mutants
 
     save_spec(tmp_path, _spec())
-    failing = [{"run": "reference", "verifier_passes_it": False, "failing": "s1"}]
-    assert _mutants(ExamRoot(workdir=tmp_path, round=2), _row_only(), _reference(), failing) == ""
-    assert R.load_rulings(tmp_path, "t1") == []
+    _runs_on_disk(tmp_path, _base(run_id="replay-1", model="recorded"))
+    line = _mutants(ExamRoot(workdir=tmp_path, round=2), _row_only())
+    assert line == "mutants: not built (no_passing_run)" and R.load_rulings(tmp_path, "t1") == []
+
+
+def test_a_task_whose_only_passing_run_is_a_replay_is_untrusted_as_no_passing_run():
+    every = Verifier(task_id="t1", expected=[EndState(cells=[_held_cell("slot", "seven")])])
+    tier, row = _tier(every, [_base(run_id="replay-1", model="recorded")])
+    assert tier == "untrusted" and row["reason"] == T.NO_PASSING_RUN and row["reference_passes"] is None
 
 
 def test_a_review_session_that_never_called_verify_gets_the_verify_step_and_its_mutants_by_code(tmp_path):
@@ -155,7 +171,7 @@ def test_a_review_session_that_never_called_verify_gets_the_verify_step_and_its_
     exam_root = ExamRoot(workdir=root, round=1)
     _verify_once(exam_root, "t1")
     assert "t1" in exam_root.verified
-    assert json.loads((root / "exam" / "mutants" / "t1.json").read_text())["status"] == "scored"
+    assert json.loads((root / "exam" / "mutants" / "t1.json").read_text())["status"] == "no_passing_run"
 
 
 def test_a_review_session_on_a_task_with_no_verifier_skips_the_verify_step(tmp_path):

@@ -2865,3 +2865,26 @@ decide the Verifier; the Reference says only whether the recording did that here
 Lives in: kullback/spec/rulings.py, kullback/spec/router.py, kullback/spec/trust.py (reference_fails),
 kullback/spec/rounds.py, kullback/spec/review.py, kullback/examiner/rule_tool.py, kullback/examiner/session.py
 (examine_rounds, reference_finding_rows), kullback/examiner/findings.py, kullback/examiner/prompt.py.
+
+### D368. Mutants key to the ask on a passing fresh Run; trust needs one (2026-10-16)
+
+What: the mutant check changes only what the ask gates. ask_keys reads the Spec's gated items whose facts are asks
+(kind do or keep, not a reaction): row_is and row_keeps give their cells, row_new its table, called the columns the
+tool writes (effects). Mutants are built from those keys only, on the newest fresh Run (a live model, not a replay of
+the recording) that passes the Verifier. The Reference is never a base any more, for mutants or for the stray write.
+With no passing fresh Run the mutant report has status no_passing_run, the Examiner's verify line says "mutants: not
+built (no_passing_run)", and trust holds the Task untrusted with reason no_passing_run. That reason sits outside the
+frozen REASONS columns and the report counts it under side_reasons, beside trusted. The mutant ruling text names the
+passing Run's write, and usable facts drop reactions, echoes, unfounded and side facts.
+
+What this cannot do (H4): a mutant that survives says a change to an ask cell went unchecked; a killed mutant says
+only that some gate noticed. Mutants cannot tell a wrong gate from a right one: a gate that demands the wrong value
+kills every mutant of its cell just as well as a right gate does.
+
+Why trust needs a passing fresh Run (H5): a Verifier no live model has passed is not shown solvable, and a pass by a
+replay says only that the recording did what the Verifier asks, which D367 makes no evidence for the Verifier. Keying
+to the ask keeps the check on the user's requests rather than on whatever else the base Run wrote.
+
+Lives in: kullback/spec/mutants.py (ask_keys, passing_base, task_mutants), kullback/spec/mutant_rulings.py,
+kullback/spec/trust.py (NO_PASSING_RUN), kullback/spec/report.py (side_reasons), kullback/examiner/rule_tool.py,
+scripts/mutants.py.

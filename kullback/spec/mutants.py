@@ -1,21 +1,29 @@
-"""Code mutants of a passing Reference: each is its end state with one change, and each should fail.
+"""Code mutants of a passing fresh Run, keyed to the ask: each is its end state with one change, each should fail.
+
+The base is the newest fresh Run the Verifier passes (`passing_base`), never the Reference (D368): with
+none the report says no_passing_run. Only the base's changes the ask's gates hold are mutated
+(`ask_keys`): the cells a gated row_is or row_keeps item citing an ask names, the columns a gated called
+item's tool always moves (spec/effects.py), and the tables a gated row_new item or that tool makes rows in.
 
 The survivors reach the writer only as the Examiner's rulings (spec/mutant_rulings.py, D362), and trust
 reads the untouched sample for the stray-write gate (`untouched_rows`). Four operators, all by code, no model:
 
-1. value: each field the Reference changed set to another value, the same field of another row of the
+1. value: each keyed field the base changed set to another value, the same field of another row of the
    start state where one differs, else the stray value (`trust._stray_value`);
-2. undone: each field the Reference changed on a kept row put back to its start value, each row it
+2. undone: each keyed field the base changed on a kept row put back to its start value, each keyed row it
    inserted removed;
 3. untouched: one write per table on a row the Verifier does not declare (`trust.stray_writes`), and one
-   per field the Reference left alone on a kept row it changed, valued as in `value`;
-4. extra_row: per table the Reference inserted into, a copy of its first inserted row under a new key.
+   per field the base left alone on a kept row it changed under a key, valued as in `value`;
+4. extra_row: per keyed table the base inserted into, a copy of its first inserted row under a new key.
 
 A change the diff does not show (an exempt column, a canon-equal value) is not built. At most `CAP`
 mutants per Task, shuffled per operator with a fixed seed and taken round robin. A mutant copies the
-Reference's turns, so it is scored with the Reference's judge answers. A kill is for the right reason
-when a failing gate item reads the mutated table, row and field (`reads_cell`); for an untouched or
-extra row, the sanity item or a new-row count on that table also is.
+base's turns, so it is scored with the base's judge answers. A kill is for the right reason when a
+failing gate item reads the mutated table, row and field (`reads_cell`); for an untouched or extra row,
+the sanity item or a new-row count on that table also is.
+
+What mutants cannot do (H4): they test that the gates hold what they declare, keyed to the ask; a gate
+that holds the wrong value kills its mutants as readily as a right one, so no count here says a gate is right.
 """
 
 from __future__ import annotations
@@ -29,14 +37,17 @@ from kullback.runner.records import EXAM_DIR, ItemResult, Run, Verifier, write_j
 from kullback.runner.target import check_run
 from kullback.runner.verdict import verdict
 from kullback.spec.actions import action_tables_of
-from kullback.spec.canfail import has_gates
-from kullback.spec.trust import _stop, _stray_value, stray_writes
+from kullback.spec.canfail import has_gates, outcome_of
+from kullback.spec.schema import is_ask
+from kullback.spec.trust import _stop, _stray_value, is_fresh, stray_writes
 
 OPERATORS = ("value", "undone", "untouched", "extra_row")
 CAP = 40
 SEED = "mutants-1010"
 MUTANTS_DIR = "mutants"
 KILLED, SURVIVED, OPEN = "killed", "survived", "open"
+# The report's status when no fresh Run passes the Verifier: nothing to mutate (H5).
+NO_PASSING_RUN = "no_passing_run"
 # Where the mutated row is new or gone, a check on the row's count or on what else moved reads it.
 ROW_LEVEL = ("untouched", "extra_row")
 
@@ -50,14 +61,72 @@ class Mutant(NamedTuple):
     run: Run
 
 
+class AskKeys(NamedTuple):
+    """What the ask's gates hold: (table, row id, column) cells, (table, column) a called tool moves on any
+    row, and tables a row_new item or a called tool makes rows in."""
+    cells: frozenset
+    columns: frozenset
+    tables: frozenset
+
+
+def _demand_keys(demand: dict, effects: dict) -> tuple[set, set, set]:
+    """One gated item's (cells, columns, tables): row_is and row_keeps their cells, row_new its table, called the
+    columns and tables its tool writes."""
+    kind = demand.get("kind")
+    if kind in ("row_is", "row_keeps") and demand.get("row") is not None:
+        return {(demand["table"], str(demand["row"]), str(f).split(".")[0]) for f in demand.get("expect") or {}}, set(), set()
+    if kind == "row_new":
+        return set(), set(), {demand.get("table")}
+    if kind == "called":
+        effect = effects.get(demand.get("tool")) or {}
+        return set(), {(c["table"], c["column"]) for c in effect.get("columns") or ()}, set(effect.get("makes") or ())
+    return set(), set(), set()
+
+
+def ask_keys(spec: Any, effects: Optional[dict] = None) -> AskKeys:
+    """The keys of the gated items that cite an ask (schema.is_ask); `effects` is spec/effects.py's
+    {tool: {columns, makes}}. A policy-only item or a reaction keys nothing."""
+    asks = {fact.id for fact in spec.intent.facts if is_ask(fact)}
+    cells, columns, tables = set(), set(), set()
+    for check in spec.checks:
+        demand = check.demand or {}
+        if demand.get("gate") is True and asks & set(demand.get("fact_ids") or ()):
+            more = _demand_keys(demand, effects or {})
+            cells, columns, tables = cells | more[0], columns | more[1], tables | more[2]
+    return AskKeys(frozenset(cells), frozenset(columns), frozenset(tables))
+
+
+def keyed(change: tuple, keys: Optional[AskKeys]) -> bool:
+    """Whether a (table, row id, field, how) change is one the ask's gates hold; every change when keys is None."""
+    if keys is None:
+        return True
+    table, row_id, field, how = change
+    if field is None or how == "inserted":
+        return table in keys.tables
+    column = field.split(".")[0]
+    return (table, row_id, column) in keys.cells or (table, column) in keys.columns
+
+
+def passing_base(verifier: Verifier, runs: Iterable[Run], judged: Optional[dict] = None, *, canon: Any = None,
+                 tools: Any = None, schema: Any = None) -> Optional[Run]:
+    """The newest fresh Run the Verifier passes, scored with its own judge answers (`judged` by run id), else None."""
+    for run in reversed([run for run in runs if is_fresh(run) and _stop(run) is not None]):
+        try:
+            if outcome_of(verifier, run, canon, tools, schema=schema, judge_results=(judged or {}).get(run.run_id)).passed:
+                return run
+        except Exception:  # a Run the scorer cannot read is no base
+            continue
+    return None
+
+
 def _states(run: Run) -> tuple[int, dict, dict]:
     at = _stop(run)
     payload = run.events[at].payload
     return at, payload["start_state"], payload["end_state"]
 
 
-def reference_changes(run: Run, canon: Any = None, schema: Any = None) -> list[tuple[str, str, Optional[str], str]]:
-    """(table, row id, field, how) for each change the Reference made: "kept" for a field of a kept row,
+def run_changes(run: Run, canon: Any = None, schema: Any = None) -> list[tuple[str, str, Optional[str], str]]:
+    """(table, row id, field, how) for each change the Run made: "kept" for a field of a kept row,
     "inserted" for a field of a new row, and (table, row id, None, "inserted"/"removed") per row made or gone.
     Tables that record calls are not state and are skipped."""
     skip = action_tables_of(schema)
@@ -165,9 +234,11 @@ def _extra_row_mutants(base: Run, changes: list) -> Iterable[tuple]:
         yield "extra_row", table, key, None, _put(table, key, end[table][row_id])
 
 
-def candidate_mutants(verifier: Verifier, base: Run, *, canon: Any = None, schema: Any = None) -> tuple[list[Mutant], int]:
-    """(every mutant whose change the diff shows, how many were not built because it shows nothing)."""
-    changes = reference_changes(base, canon, schema)
+def candidate_mutants(verifier: Verifier, base: Run, keys: Optional[AskKeys] = None, *, canon: Any = None,
+                      schema: Any = None) -> tuple[list[Mutant], int]:
+    """(every mutant of a keyed change whose change the diff shows, how many were not built because it shows
+    nothing)."""
+    changes = [change for change in run_changes(base, canon, schema) if keyed(change, keys)]
     before = AtomContext(base, canon, schema=schema)
     made = [*_value_mutants(base, changes, before.c), *_undone_mutants(base, changes),
             *_untouched_mutants(verifier, base, changes, canon, schema, before.c), *_extra_row_mutants(base, changes)]
@@ -268,25 +339,19 @@ def counts(rows: list[dict]) -> dict:
     return dict(tally(rows), by_operator={op: tally([r for r in rows if r["operator"] == op]) for op in OPERATORS})
 
 
-def mutant_report(verifier: Verifier, reference: Optional[Run], *, canon: Any = None, tools: Any = None,
-                  schema: Any = None, judge_results: Optional[dict] = None, cap: int = CAP) -> dict:
-    """One Task's mutant report. Only a Reference the Verifier passes is mutated; else the status says why."""
-    if reference is None or _stop(reference) is None:
-        return {"task_id": verifier.task_id, "status": "no_reference"}
-    base = {"task_id": verifier.task_id, "reference": reference.run_id}
-    if has_gates(verifier):
-        result = verdict(reference, verifier, canon, judge_results, write_tools=tools, schema=schema)
-        if not result.passed:
-            definite = any(item.gate and item.holds is False for item in result.items)
-            return dict(base, status="reference_fails" if definite else "reference_not_verdicted",
-                        at=result.failing_atom)
-    elif not check_run(verifier, reference, canon, write_tools=tools)[0]:
-        return dict(base, status="reference_fails")
-    made, no_effect = candidate_mutants(verifier, reference, canon=canon, schema=schema)
+def mutant_report(verifier: Verifier, runs: Iterable[Run], keys: Optional[AskKeys] = None, *, canon: Any = None,
+                  tools: Any = None, schema: Any = None, judged: Optional[dict] = None, cap: int = CAP) -> dict:
+    """One Task's mutant report on its newest passing fresh Run (`passing_base`); no_passing_run without one.
+    `judged` maps a run id to its judge answers; the mutants are scored with the base's."""
+    base = passing_base(verifier, runs, judged, canon=canon, tools=tools, schema=schema)
+    if base is None:
+        return {"task_id": verifier.task_id, "status": NO_PASSING_RUN}
+    answers = (judged or {}).get(base.run_id)
+    made, no_effect = candidate_mutants(verifier, base, keys, canon=canon, schema=schema)
     kept = capped(made, verifier.task_id, cap)
-    rows = [score_mutant(verifier, m, canon, tools, schema, judge_results) for m in kept]
-    return dict(base, status="scored", candidates=len(made), dropped=len(made) - len(kept), no_effect=no_effect,
-                **counts(rows), mutants=rows)
+    rows = [score_mutant(verifier, m, canon, tools, schema, answers) for m in kept]
+    return dict({"task_id": verifier.task_id, "base": base.run_id}, status="scored", candidates=len(made),
+                dropped=len(made) - len(kept), no_effect=no_effect, **counts(rows), mutants=rows)
 
 
 def mutants_path(workdir: Any, task_id: str) -> Path:
@@ -307,24 +372,39 @@ def mutant_context(workdir: Any) -> tuple[Any, Any, Any]:
     return load_rules(root / "canon-rules.json"), tools, schema_of(root)
 
 
-def untouched_rows(verifier: Verifier, base: Run, *, canon: Any = None, tools: Any = None, schema: Any = None,
-                   judge_results: Optional[dict] = None, cap: int = CAP) -> list[dict]:
+def untouched_rows(verifier: Verifier, base: Run, keys: Optional[AskKeys] = None, *, canon: Any = None,
+                   tools: Any = None, schema: Any = None, judge_results: Optional[dict] = None,
+                   cap: int = CAP) -> list[dict]:
     """The untouched mutants of the Task's capped sample (the ones `mutant_report` builds), scored on `base`."""
-    made, _ = candidate_mutants(verifier, base, canon=canon, schema=schema)
+    made, _ = candidate_mutants(verifier, base, keys, canon=canon, schema=schema)
     return [score_mutant(verifier, m, canon, tools, schema, judge_results)
             for m in capped(made, verifier.task_id, cap) if m.operator == "untouched"]
+
+
+def task_mutants(workdir: Any, verifier: Verifier, runs: Optional[list[Run]] = None, cap: int = CAP) -> dict:
+    """One Task's mutant report from the workdir: its Spec's ask keys, its Runs and their kept judge answers."""
+    from kullback.spec import effects as effects_mod
+    from kullback.spec.judged import judge_results_of
+    from kullback.spec.schema import load_spec
+    from kullback.spec.trust import runs_on_disk
+
+    root = Path(workdir)
+    canon, tools, schema = mutant_context(root)
+    task_runs = runs if runs is not None else runs_on_disk(root).get(verifier.task_id, [])
+    spec = load_spec(root, verifier.task_id)
+    keys = ask_keys(spec, effects_mod.load(root)["effects"]) if spec is not None else AskKeys(*(frozenset(),) * 3)
+    return mutant_report(verifier, task_runs, keys, canon=canon, tools=tools, schema=schema,
+                         judged=judge_results_of(root, verifier.task_id, verifier, task_runs), cap=cap)
 
 
 def workdir_mutants(workdir: Any, task_ids: Optional[Iterable[str]] = None, cap: int = CAP) -> dict[str, dict]:
     """Every Task with a Verifier on disk (or the named ones): its mutant report, written to
     exam/mutants/<task>.json."""
-    from kullback.spec.judged import judge_results_of
     from kullback.spec.schema import spec_verifier_path
-    from kullback.spec.trust import faithful_references, load_spec_verifier, runs_on_disk
+    from kullback.spec.trust import load_spec_verifier, runs_on_disk
 
     root = Path(workdir)
-    canon, tools, schema = mutant_context(root)
-    runs, references = runs_on_disk(root), faithful_references(root)
+    runs = runs_on_disk(root)
     folder = spec_verifier_path(root, "_").parent
     wanted = sorted(task_ids) if task_ids is not None else sorted(p.stem for p in folder.glob("*.json"))
     out = {}
@@ -332,11 +412,7 @@ def workdir_mutants(workdir: Any, task_ids: Optional[Iterable[str]] = None, cap:
         verifier = load_spec_verifier(root, task_id)
         if verifier is None:
             continue
-        ids = set(references.get(task_id) or ())
-        reference = next((run for run in runs.get(task_id, []) if run.run_id in ids), None)
-        answers = judge_results_of(root, task_id, verifier, [reference]).get(reference.run_id) if reference else None
-        report = mutant_report(verifier, reference, canon=canon, tools=tools, schema=schema,
-                               judge_results=answers, cap=cap)
+        report = task_mutants(root, verifier, runs.get(task_id, []), cap)
         write_json(mutants_path(root, task_id), report)
         out[task_id] = report
     return out

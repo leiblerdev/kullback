@@ -28,7 +28,7 @@ TASK_ITEM = "task"
 RULING_KINDS: dict[str, tuple[str, ...]] = {
     # The item does not follow from the Intent or the policy, or the Intent asks for more than the items check.
     # The unchecked_ codes are filed by code from a surviving mutant (spec/mutant_rulings.py, D362): a field
-    # the user named, a write the Reference made, or a row beyond the declared ones that no gate holds.
+    # the user named, a write the passing Run made, or a row beyond the declared ones that no gate holds.
     "derivation": ("unasked_item", "uncovered_fact", "fixed_value", "unchecked_prohibition", "unbacked_check",
                    "unchecked_field", "unchecked_write", "unchecked_row"),
     # A judge item (a question a model answers about what the Candidate said) is not fit to ask.

@@ -86,15 +86,17 @@ def test_a_verifier_both_constructed_runs_fail_with_no_ruling_open_is_trusted_an
     assert row["reference_passes"] is True and row["solvable"] is True and row["fresh_passed"] == ["fresh-1"]
 
 
-def test_no_fresh_pass_leaves_trust_alone_and_sets_solvable_false_where_a_fresh_run_failed():
+def test_no_fresh_pass_withholds_trust_as_no_passing_run_and_sets_solvable_false_where_a_fresh_run_failed():
     tier, row = _tier([_replay(), _fresh(right=False)])
-    assert tier == "trusted" and row["solvable"] is False and row["fresh_runs"] == 1
+    assert tier == "untrusted" and row["reason"] == T.NO_PASSING_RUN
+    assert row["solvable"] is False and row["fresh_runs"] == 1
     assert row["reference_passes"] is True and row["fresh_passed"] == []
 
 
-def test_no_fresh_run_on_disk_leaves_solvable_unscored_and_never_false():
+def test_a_passing_replay_alone_is_no_passing_run_and_leaves_solvable_unscored():
     tier, row = _tier([_replay()])
-    assert tier == "trusted" and row["solvable"] is None and row["fresh_runs"] == 0
+    assert tier == "untrusted" and row["reason"] == T.NO_PASSING_RUN
+    assert row["solvable"] is None and row["fresh_runs"] == 0
 
 
 def test_a_failing_recording_that_is_not_the_kept_reference_moves_no_flag():
@@ -136,19 +138,18 @@ def test_a_verifier_with_no_end_state_lets_the_stray_write_pass_and_is_untrusted
 def test_the_stray_write_lands_on_a_passing_run_outside_the_declared_rows_and_fails_at_the_end_state():
     tier, row = _tier([_replay(), _fresh()])
     stray = row["constructed"]["stray_write"]
-    assert stray["built"] and stray["failed"] and stray["run_id"] == f"{REPLAY_ID}.stray_write"
+    assert stray["built"] and stray["failed"] and stray["run_id"] == "fresh-1.stray_write"
     assert stray["atom"].startswith("gate:sanity:")
     run = T.stray_write_run(_verifier(), _replay(), canon=fn)
     assert run.events[-1].payload["end_state"]["items"]["B2"] == {"slot": "four (stray)"}
     assert run.events[-1].payload["end_state"]["items"]["A1"] == END["items"]["A1"]
 
 
-def test_a_stray_write_with_no_passing_base_holds_the_task_as_stray_untested():
+def test_a_stray_write_with_no_passing_fresh_base_holds_the_task_as_no_passing_run():
     tier, row = _tier([_fresh(right=False)], references=())
     stray = row["constructed"]["stray_write"]
     assert stray["built"] and stray["untested"] is True and stray["failed"] is False and stray["no_base"] is True
-    assert tier == "untrusted" and row["reason"] == "stray_untested"
-    assert row["detail"] == "stray_untested"
+    assert tier == "untrusted" and row["reason"] == T.NO_PASSING_RUN
 
 
 def test_a_stray_write_on_a_passing_base_failing_at_the_sanity_check_is_tested():
@@ -181,7 +182,7 @@ def test_a_refusal_verifier_fails_the_do_nothing_run_at_its_gated_judge_item():
     tier, row = _tier([_replay(), _fresh()], verifier=refusal)
     assert row["constructed"]["do_nothing"]["failed"] is True and row["constructed"]["do_nothing"]["atom"] == "j1"
     assert row["constructed"]["stray_write"]["untested"] is True
-    assert tier == "untrusted" and row["reason"] == "stray_untested"
+    assert tier == "untrusted" and row["reason"] == T.NO_PASSING_RUN
 
 
 def test_trust_scores_runs_with_their_saved_judge_answers_and_the_stray_write_carries_its_base():
@@ -190,10 +191,10 @@ def test_trust_scores_runs_with_their_saved_judge_answers_and_the_stray_write_ca
     judged_item = Verifier(task_id="t1", expected=[EndState(cells=[_cell()])], atoms=[told])
     the_spec = spec(gaps=["f2"])
     _, row = T.tier_of_task(the_spec, judged_item, [_replay(), _fresh()], canon=fn, write_tools=WRITE_TOOLS,
-                            references=(REPLAY_ID,), judged={REPLAY_ID: {"j1": {"score": 1, "why": "declined"}}})
-    assert row["reference_passes"] is True and row["judged_runs"] == [REPLAY_ID]
+                            references=(REPLAY_ID,), judged={"fresh-1": {"j1": {"score": 1, "why": "said"}}})
+    assert row["judged_runs"] == ["fresh-1"]
     stray = row["constructed"]["stray_write"]
-    assert stray["run_id"] == f"{REPLAY_ID}.stray_write" and stray["untested"] is False
+    assert stray["run_id"] == "fresh-1.stray_write" and stray["untested"] is False
     assert stray["atom"].startswith("gate:sanity:") and stray["failed"] is True
 
 

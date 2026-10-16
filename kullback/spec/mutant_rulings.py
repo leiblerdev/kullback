@@ -1,11 +1,11 @@
 """Surviving mutants become the Examiner's rulings: which field or row is unchecked, never a value (D362).
 
-After verify finds the Reference passing, its mutants (spec/mutants.py) are scored and each survivor is
-read by code:
+At verify, the mutants of the Task's newest passing fresh Run, keyed to the ask (spec/mutants.py, D368),
+are scored and each survivor is read by code:
 
-1. value, on a field a check of the Spec reads where that check rests on a fact the user volunteered (not
-   an echo, not after pushback, not unfounded, not a side fact): derivation/unchecked_field on that check;
-2. undone, on a row where every undone mutant built survived (no gate notices the Reference's write at
+1. value, on a field a check of the Spec reads where that check rests on an ask the user raised (not
+   accepted, not a reaction, not an echo, not unfounded, not a side fact): derivation/unchecked_field on that check;
+2. undone, on a row where every undone mutant built survived (no gate notices the base's write at
    all): derivation/unchecked_write, on a check that reads the row, else on the task;
 3. extra_row or untouched: derivation/unchecked_row per table, on the task.
 
@@ -21,21 +21,21 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from kullback.runner.records import Run, Verifier, write_json
+from kullback.runner.records import Verifier, write_json
 from kullback.spec import events
 from kullback.spec import rulings as R
-from kullback.spec.mutants import CAP, SURVIVED, mutant_context, mutant_report, mutants_path
-from kullback.spec.schema import Spec, load_spec
+from kullback.spec.mutants import CAP, SURVIVED, mutants_path, task_mutants
+from kullback.spec.schema import Spec, is_reaction, load_spec
 
 UNCHECKED_FIELD, UNCHECKED_WRITE, UNCHECKED_ROW = "unchecked_field", "unchecked_write", "unchecked_row"
 NOTE = "note"
 
 
 def usable_facts(spec: Spec) -> set[str]:
-    """The fact ids a gate may rest on alone: volunteered, not an echo, not after pushback, not unfounded, not a
-    side fact (D361: a side fact is scored, never gated)."""
-    return {fact.id for fact in spec.intent.facts
-            if fact.stance == "volunteered" and not (fact.echo or fact.after_pushback or fact.unfounded or fact.side)}
+    """The fact ids a gate may rest on alone: raised by the user (not accepted), not a reaction (D366), not an
+    echo, not unfounded, not a side fact (D361: a side fact is scored, never gated)."""
+    return {fact.id for fact in spec.intent.facts if fact.stance != "accepted"
+            and not (is_reaction(fact) or fact.echo or fact.unfounded or fact.side)}
 
 
 def reading_checks(spec: Spec, table: str, row_id: str, field: Optional[str] = None) -> list:
@@ -75,7 +75,7 @@ def _write_ruling(spec: Spec, table: str, row_id: str) -> dict:
     checks = reading_checks(spec, table, row_id)
     item = checks[0].id if checks else R.TASK_ITEM
     return {"code": UNCHECKED_WRITE, "item": item, "key": ("write", table, row_id),
-            "reason": f"A Run that leaves out the Reference's write to a {table} row, every change on it put back, "
+            "reason": f"A Run that leaves out the passing Run's write to a {table} row, every change on it put back, "
                       "still passes every gate.",
             "fix": f"Gate the {table} write the user asked for, or rebut if the user never asked for it."}
 
@@ -159,13 +159,12 @@ def file_rulings(workdir: Any, spec: Spec, rows: list[dict], round_number: int =
     return filed
 
 
-def mutant_rulings(workdir: Any, verifier: Verifier, reference: Optional[Run], round_number: int = 0, *,
-                   judge_results: Optional[dict] = None, bus: Any = None, cap: int = CAP) -> dict:
-    """The Task's mutants scored on its Reference, the survivors filed as rulings, the report written to
-    exam/mutants/<task>.json. Returns the report's status and counts and the ruling numbers filed."""
-    canon, tools, schema = mutant_context(workdir)
-    report = mutant_report(verifier, reference, canon=canon, tools=tools, schema=schema,
-                           judge_results=judge_results, cap=cap)
+def mutant_rulings(workdir: Any, verifier: Verifier, round_number: int = 0, *, runs: Optional[list] = None,
+                   bus: Any = None, cap: int = CAP) -> dict:
+    """The Task's mutants scored on its newest passing fresh Run (of `runs`, else its Runs on disk), the
+    survivors filed as rulings, the report written to exam/mutants/<task>.json. Returns the report's status
+    and counts and the ruling numbers filed."""
+    report = task_mutants(workdir, verifier, runs, cap=cap)
     spec = load_spec(workdir, verifier.task_id)
     filed = file_rulings(workdir, spec, report["mutants"], round_number, bus) \
         if report["status"] == "scored" and spec is not None else []

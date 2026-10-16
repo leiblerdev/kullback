@@ -1,8 +1,8 @@
-"""Code mutants of each passing Reference, scored under the Task's Verifier: report only (spec/mutants.py).
+"""Code mutants of each Task's newest passing fresh Run, keyed to the ask: report only (spec/mutants.py).
 
 Writes exam/mutants/<task>.json in the workdir and prints one line per Task, its id masked to the last
 four characters: built, killed, survived, open and wrong-reason kills, then the same per operator. A Task
-whose Reference does not pass its Verifier is not scored and says so.
+with no fresh Run its Verifier passes is not scored and says so.
 
     uv run python scripts/mutants.py .work [--task <id> ...] [--cap 40]
 """
@@ -23,9 +23,8 @@ def line(task_id: str, report: dict) -> str:
     """One Task's counts, its id masked, never a row id or value."""
     head = f"{task_id[-4:]} "
     if report.get("status") != "scored":
-        return head + {"reference_fails": "reference fails, not scored",
-                       "reference_not_verdicted": "reference not verdicted, not scored"}.get(
-                           report.get("status"), str(report.get("status")))
+        return head + {"no_passing_run": "no passing fresh run, not scored"}.get(
+            report.get("status"), str(report.get("status")))
     parts = [_cells(report), f"dropped {report['dropped']}"]
     parts += [f"{op}: {_cells(report['by_operator'][op])}" for op in OPERATORS if report["by_operator"][op]["built"]]
     return head + " | ".join(parts)

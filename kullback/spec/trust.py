@@ -14,11 +14,13 @@ no Verifier for this Task, its `why` intent_unclear, never a check bent to pass)
 not_enough_truth (a not_enough_truth ruling open: the recordings never show what the user wants where
 the Verifier must decide), open_ruling (a ruling open, or the Task set aside by the router's rule),
 constructed_run_passed (a constructed Run passed, or none could be built: not shown to fail),
-stray_untested (the do-nothing Run fails but no Run passed to lay the stray write on, so the sanity check
-was never tested; D347). A stray write that fails at a cell or an atom on a passing base never tested the
+no_passing_run (the do-nothing Run fails but no fresh Run passed to lay the stray write on, so the sanity
+check was never tested and nothing shows the Verifier can be passed; H5, D368), stray_untested (an
+untouched mutant of the sample was not killed; D347, D362). A stray write that fails at a cell or an atom on a passing base never tested the
 sanity check either: it counts as passed and the row's `detail` says stray_untested.
 
-On a passing base the stray-write gate reads the sample, not one write (D362): where the Task's capped
+The base is the newest fresh Run the Verifier passes, never a Reference (D368). On it the stray-write
+gate reads the sample, not one write (D362): where the Task's capped
 mutant sample (spec/mutants.py) holds untouched mutants on that base, the gate holds when every one is
 killed, and any one not killed keeps the Task stray_untested (the survivor reaches the writer as the
 Examiner's unchecked_row ruling). With no untouched mutant built, the one stray write decides as before.
@@ -49,6 +51,7 @@ from kullback.runner.canon import load_rules
 from kullback.runner.code_hash import CODE_HASH
 from kullback.runner.records import Run, Verifier, load_run_jsonl, read_json, read_jsonl
 from kullback.runner.replay import RECORDED
+from kullback.spec import effects as effects_mod
 from kullback.spec.actions import action_tables_of, workdir_action_tools
 from kullback.spec.canfail import Outcome, outcome_of
 from kullback.spec.events import TASK_SET_ASIDE
@@ -73,6 +76,9 @@ NO_VERIFIER = "no_verifier"
 # How the Verdict names a failure at the sanity check: a row outside the declared ones moved; also the
 # reason a Task is held when no Run passed to lay the stray write on.
 STRAY_UNTESTED = "stray_untested"
+# No fresh Run passes the Verifier, so nothing shows it can be passed (H5, D368). Kept out of REASONS, the
+# build table's columns, which stay as recorded; the report counts it beside them (spec/report.py).
+NO_PASSING_RUN = "no_passing_run"
 REASONS = (NO_INTENT, NOT_EXAMINED, NOT_ENOUGH_TRUTH, OPEN_RULING, CONSTRUCTED_RUN_PASSED, STRAY_UNTESTED)
 # The two constructed Runs, each of which must fail.
 CONSTRUCTED = ("do_nothing", "stray_write")
@@ -220,8 +226,8 @@ def _judge(verifier: Verifier, run: Run, canon: Any, write_tools: Any, schema: A
 
 
 def _stray_base(runs: list[Run], passing: Iterable[str], empty: Optional[Run]) -> tuple[Optional[Run], bool]:
-    """(the Run the stray write is laid on, whether it passes): the first Run in `passing` (a faithful
-    Reference first, then a fresh Run), else the do-nothing Run, on which the sanity check goes untested."""
+    """(the Run the stray write is laid on, whether it passes): the first Run in `passing` (the passing fresh
+    Runs, newest first), else the do-nothing Run, on which the sanity check goes untested."""
     by_id = {run.run_id: run for run in runs}
     base = next((by_id[run_id] for run_id in passing if run_id in by_id and _stop(by_id[run_id]) is not None), None)
     return (base, True) if base is not None else (empty, False)
@@ -241,7 +247,7 @@ def constructed_runs(verifier: Verifier, runs: list[Run], passing: Iterable[str]
 
 
 def _constructed(verifier: Verifier, runs: list[Run], passing: list[str], canon: Any, tools: Any,
-                 schema: Any, judged: Optional[dict] = None) -> dict[str, dict]:
+                 schema: Any, judged: Optional[dict] = None, keys: Any = None) -> dict[str, dict]:
     """name -> {built, failed, atom, run_id}, and for the stray write `untested` and `no_base`.
 
     A stray write laid on a base that did not pass never tested the sanity check: untested, not failed,
@@ -270,7 +276,7 @@ def _constructed(verifier: Verifier, runs: list[Run], passing: list[str], canon:
             out[name].update(failed=outcome.sanity_failed, untested=untested)
             if outcome.passed:  # the one write already passed: a constructed Run passed, whatever the sample says
                 continue
-            sample = _untouched_sample(verifier, base, canon, tools, schema, (judged or {}).get(base.run_id))
+            sample = _untouched_sample(verifier, base, canon, tools, schema, (judged or {}).get(base.run_id), keys)
             if sample["built"]:
                 held = sample["killed"] == sample["built"]
                 out[name].update(failed=held, untested=not held, sample=sample)
@@ -278,13 +284,14 @@ def _constructed(verifier: Verifier, runs: list[Run], passing: list[str], canon:
 
 
 def _untouched_sample(verifier: Verifier, base: Run, canon: Any, tools: Any, schema: Any,
-                      judge_results: Optional[dict]) -> dict:
+                      judge_results: Optional[dict], keys: Any = None) -> dict:
     """The untouched mutants of the Task's capped sample on the passing base (spec/mutants.py, D362): built,
     killed and the rest. A mutant the scorer cannot read is not killed."""
     from kullback.spec.mutants import KILLED, untouched_rows
 
     try:
-        rows = untouched_rows(verifier, base, canon=canon, tools=tools, schema=schema, judge_results=judge_results)
+        rows = untouched_rows(verifier, base, keys, canon=canon, tools=tools, schema=schema,
+                              judge_results=judge_results)
     except Exception:  # a sample the scorer cannot read tests nothing, and never stops the ruling
         return {"built": 0, "killed": 0, "not_killed": 0}
     killed = sum(row["outcome"] == KILLED for row in rows)
@@ -340,12 +347,13 @@ def _untrusted_reason(spec: Spec, verifier: Verifier, gates: dict, constructed: 
 
 
 def _constructed_reason(gates: dict, constructed: dict) -> str:
-    """stray_untested when only the stray write is unshown (no passing base, or an untouched mutant of the
-    sample not killed, D362), else constructed_run_passed."""
+    """When only the stray write is unshown: no_passing_run with no passing fresh base (H5), stray_untested
+    with an untouched mutant of the sample not killed (D362); else constructed_run_passed."""
     stray = constructed.get("stray_write") or {}
     others = all(gates[f"{name}_fails"] for name in constructed if name != "stray_write")
-    untested = stray.get("no_base") or (stray.get("sample") or {}).get("not_killed")
-    return STRAY_UNTESTED if others and untested else CONSTRUCTED_RUN_PASSED
+    if others and stray.get("no_base"):
+        return NO_PASSING_RUN
+    return STRAY_UNTESTED if others and (stray.get("sample") or {}).get("not_killed") else CONSTRUCTED_RUN_PASSED
 
 
 def _scored(verifier: Verifier, runs: list[Run], canon: Any, tools: Any, schema: Any,
@@ -357,21 +365,22 @@ def _scored(verifier: Verifier, runs: list[Run], canon: Any, tools: Any, schema:
 
 def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: Iterable[Any] = (), *,
                  canon: Any, write_tools: Optional[Iterable[str]] = None, references: Iterable[str] = (),
-                 schema: Any = None, judged: Optional[dict] = None) -> TaskTier:
+                 schema: Any = None, judged: Optional[dict] = None, keys: Any = None) -> TaskTier:
     """The tier of one Task under the Spec's Verifier, with the row of evidence behind it.
 
     `runs` are every Run of the Task, the replays included; `rulings` are the bus events about it;
     `references` are the run ids of the faithful replays of its kept References (`faithful_references`);
     `judged` maps a run id to the judge answers kept for it (spec/judged.py), so a Run that passes with
-    its judge items passes here too.
+    its judge items passes here too. `keys` are the ask's (spec/mutants.py ask_keys) for the untouched
+    sample; None keys every change. The References only set the reference_passes flag.
     """
     runs = list(runs or ())
     tools = set(write_tools) if write_tools is not None else None
     judged, verdicts = _scored(verifier, runs, canon, tools, schema, judged)
     fresh = [run.run_id for run in runs if is_fresh(run)]
     kept = sorted(set(references) & set(verdicts))
-    passing = [run_id for run_id in [*kept, *fresh] if verdicts[run_id][0]]
-    constructed = _constructed(verifier, runs, passing, canon, tools, schema, judged)
+    passing = [run_id for run_id in reversed(fresh) if verdicts[run_id][0]]
+    constructed = _constructed(verifier, runs, passing, canon, tools, schema, judged, keys)
     set_aside = set_aside_of(spec, rulings)
     gates = {f"{name}_fails": constructed[name]["failed"] for name in constructed}
     gates["no_open_ruling"] = spec.rulings_open == 0 and not set_aside
@@ -522,6 +531,8 @@ def runs_on_disk(workdir: Any) -> dict[str, list[Run]]:
 def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[str, TaskTier]:
     """Every Task of the workdir under the intent foundation, the build's sample only when the manifest
     holds one; `specs` stands in for the spec folder."""
+    from kullback.spec.mutants import ask_keys
+
     root = Path(workdir)
     canon = load_rules(root / "canon-rules.json")
     sigs = read_json(root / "tool_sigs.json", None) or []
@@ -530,6 +541,7 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
     references = faithful_references(root)
     events = set_aside_events(root)
     schema = schema_of(root)
+    effects = effects_mod.load(root)["effects"]
     out: dict[str, TaskTier] = {}
     for task_id in in_sample(root, sorted(set(_task_ids(root)) | set(specs or ()))):
         spec = (specs or {}).get(task_id) or load_spec(root, task_id)
@@ -547,7 +559,8 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
         task_runs = runs.get(task_id, [])
         out[task_id] = tier_of_task(spec, verifier, task_runs, events, canon=canon,
                                     write_tools=tools, references=references.get(task_id, ()), schema=schema,
-                                    judged=judge_results_of(root, task_id, verifier, task_runs))
+                                    judged=judge_results_of(root, task_id, verifier, task_runs),
+                                    keys=ask_keys(spec, effects))
     return out
 
 

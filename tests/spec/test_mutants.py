@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from kullback.runner.records import EndState, Event, ExpectedCell, ItemResult, ValueSource, Verifier
 from kullback.spec import mutants as M
 from kullback.spec import trust as T
@@ -13,10 +15,11 @@ END = {"items": {"A1": {"slot": "seven", "label": "red"}, "B2": {"slot": "four",
 SAID = ValueSource(kind="user_turn", ptr={"turn": 0})
 
 
-def _reference(start=START, end=END):
+def _base(start=START, end=END, model="some/model"):
+    """A fresh Run (a live model, not the recorded one) that ends in `end`."""
     run = reference_run()
     stop = Event(idx=len(run.events), type="stop", payload={"start_state": start, "end_state": end})
-    return run.model_copy(update={"events": run.events + [stop], "run_id": "ref", "model": "recorded"})
+    return run.model_copy(update={"events": run.events + [stop], "run_id": "fresh-1", "model": model})
 
 
 def _cell(table="items", row_id="A1", field="slot", value="seven"):
@@ -28,8 +31,8 @@ def _verifier(cells=None, allowed=()):
                                                      allowed=list(allowed))])
 
 
-def _report(verifier, reference=None, **kw):
-    return M.mutant_report(verifier, reference or _reference(), canon=fn, tools=WRITE_TOOLS, **kw)
+def _report(verifier, base=None, **kw):
+    return M.mutant_report(verifier, [base or _base()], canon=fn, tools=WRITE_TOOLS, **kw)
 
 
 def _by(report, operator):
@@ -37,7 +40,7 @@ def _by(report, operator):
 
 
 def test_the_value_mutant_takes_the_same_field_of_another_start_row_and_the_undone_one_its_start_value():
-    made, _ = M.candidate_mutants(_verifier(), _reference(), canon=fn)
+    made, _ = M.candidate_mutants(_verifier(), _base(), canon=fn)
     slot = {m.operator: m.run.events[-1].payload["end_state"]["items"]["A1"]["slot"]
             for m in made if (m.table, m.row_id, m.field) == ("items", "A1", "slot")}
     assert slot == {"value": "four", "undone": "two"}
@@ -66,17 +69,63 @@ def test_a_verifier_that_allows_the_written_row_whole_lets_its_untouched_fields_
     assert report["survived"] == len(left_alone)
 
 
-def test_a_reference_the_verifier_fails_is_not_mutated_and_says_so():
+def test_a_task_with_no_fresh_run_the_verifier_passes_is_not_mutated_and_says_no_passing_run():
     wrong = _verifier(cells=[_cell(value="nine")])
     report = _report(wrong)
-    assert report["status"] == "reference_fails" and "mutants" not in report
-    assert line("task_abcd1234", report) == "1234 reference fails, not scored"
+    assert report["status"] == M.NO_PASSING_RUN and "mutants" not in report
+    assert line("task_abcd1234", report) == "1234 no passing fresh run, not scored"
+
+
+def test_a_passing_replay_of_the_recording_is_never_the_base():
+    assert _report(_verifier(), _base(model="recorded"))["status"] == M.NO_PASSING_RUN
+
+
+def test_the_base_is_the_newest_passing_fresh_run():
+    older, newer = _base(), _base().model_copy(update={"run_id": "fresh-2"})
+    failing = _base(end=START).model_copy(update={"run_id": "fresh-3"})
+    assert M.passing_base(_verifier(), [older, newer, failing], canon=fn, tools=WRITE_TOOLS).run_id == "fresh-2"
+    assert _report(_verifier(), None)["base"] == "fresh-1"
+
+
+def _ask_spec(demand, stance="volunteered", condition="none"):
+    from kullback.spec.schema import FactSource, IntentFact
+    from tests.spec.fixtures import check, spec
+
+    fact = IntentFact(id="f1", text="move A1 to slot seven", stance=stance, condition=condition, kind="do",
+                      source=FactSource(recording="rec", turn=0))
+    the_spec = spec(checks=[check(demand=dict({"fact_ids": ["f1"], "gate": True}, **demand))])
+    return the_spec.model_copy(update={"intent": the_spec.intent.model_copy(update={"facts": [fact]})})
+
+
+def test_ask_keys_take_the_cells_a_gated_item_on_an_ask_holds_and_the_columns_a_called_tool_moves():
+    keys = M.ask_keys(_ask_spec({"kind": "row_is", "table": "items", "row": "A1", "expect": {"slot": "seven"}}))
+    assert keys.cells == {("items", "A1", "slot")} and not keys.columns and not keys.tables
+    called = _ask_spec({"kind": "called", "tool": "update_item"})
+    effects = {"update_item": {"columns": [{"table": "items", "column": "slot"}], "makes": ["notes"]}}
+    keys = M.ask_keys(called, effects)
+    assert keys.columns == {("items", "slot")} and keys.tables == {"notes"}
+
+
+@pytest.mark.parametrize("demand, stance, condition", [
+    ({"kind": "row_is", "table": "items", "row": "A1", "expect": {"slot": "seven"}, "gate": False}, "volunteered", "none"),
+    ({"kind": "row_is", "table": "items", "row": "A1", "expect": {"slot": "seven"}}, "fallback", "agent"),
+], ids=["weighted item", "reaction"])
+def test_a_weighted_item_or_one_on_a_reaction_keys_nothing(demand, stance, condition):
+    assert M.ask_keys(_ask_spec(demand, stance, condition)) == M.AskKeys(frozenset(), frozenset(), frozenset())
+
+
+def test_only_keyed_changes_are_mutated_and_an_unkeyed_write_builds_no_value_or_undone():
+    end = {**END, "notes": {"n1": {"text": "edited"}}}
+    keys = M.AskKeys(frozenset({("items", "A1", "slot")}), frozenset(), frozenset())
+    made, _ = M.candidate_mutants(_verifier(), _base(end=end), keys, canon=fn)
+    changed = {(m.operator, m.table) for m in made if m.operator in ("value", "undone")}
+    assert changed == {("value", "items"), ("undone", "items")}
 
 
 def test_an_inserted_row_gets_an_extra_row_copy_and_an_undone_that_removes_it():
     end = {**END, "notes": {"n1": {"text": "kept"}, "n2": {"text": "new"}}}
     verifier = _verifier(cells=[_cell(), _cell("notes", "n2", "text", "new")])
-    report = _report(verifier, _reference(end=end))
+    report = _report(verifier, _base(end=end))
     extra, = _by(report, "extra_row")
     assert extra["table"] == "notes" and extra["row"] == "n2.extra" and extra["outcome"] == "killed"
     assert extra["right_reason"]
@@ -86,12 +135,12 @@ def test_an_inserted_row_gets_an_extra_row_copy_and_an_undone_that_removes_it():
 
 def test_a_change_on_an_exempt_column_is_not_built_and_counted_as_no_effect():
     schema = SimpleNamespace(columns=[SimpleNamespace(table="items", name="label", class_="exempt")])
-    made, no_effect = M.candidate_mutants(_verifier(), _reference(), canon=fn, schema=schema)
+    made, no_effect = M.candidate_mutants(_verifier(), _base(), canon=fn, schema=schema)
     assert no_effect >= 1 and not any(m.field == "label" for m in made)
 
 
 def test_the_cap_keeps_every_operator_round_robin_and_the_same_mutants_on_every_call():
-    made, _ = M.candidate_mutants(_verifier(), _reference(), canon=fn)
+    made, _ = M.candidate_mutants(_verifier(), _base(), canon=fn)
     first, again = M.capped(made, "t1", cap=3), M.capped(made, "t1", cap=3)
     assert [m.id for m in first] == [m.id for m in again]
     assert [m.operator for m in first] == ["value", "undone", "untouched"]
@@ -100,7 +149,7 @@ def test_the_cap_keeps_every_operator_round_robin_and_the_same_mutants_on_every_
 
 
 def test_a_failing_item_on_another_cell_is_a_kill_for_the_wrong_reason():
-    made, _ = M.candidate_mutants(_verifier(), _reference(), canon=fn)
+    made, _ = M.candidate_mutants(_verifier(), _base(), canon=fn)
     value = next(m for m in made if m.operator == "value")
     other = ItemResult(id="state:items.B2.slot", kind="state", gate=True, holds=False)
     elsewhere = ItemResult(id="sanity", kind="sanity", gate=True, holds=False, why="collateral:notes.n1.text")
@@ -110,7 +159,7 @@ def test_a_failing_item_on_another_cell_is_a_kill_for_the_wrong_reason():
 
 
 def test_the_stray_write_stays_the_first_of_the_per_table_stray_writes():
-    verifier, reference = _verifier(), _reference()
+    verifier, reference = _verifier(), _base()
     tables = [table for table, *_ in T.stray_writes(verifier, reference, canon=fn)]
     assert tables == ["items", "notes"]
     first = T.stray_write_run(verifier, reference, canon=fn)
@@ -128,7 +177,7 @@ def test_a_new_row_count_whose_where_names_the_mutated_field_kills_for_the_right
     end = {**END, "notes": {"n1": {"text": "kept"}, "n2": {"text": "new"}}}
     counted = Verifier(task_id="t1", expected=[EndState(cells=[_cell()],
                                                         new_rows=[{"table": "notes", "where": {"text": "new"}}])])
-    made, _ = M.candidate_mutants(counted, _reference(end=end), canon=fn)
+    made, _ = M.candidate_mutants(counted, _base(end=end), canon=fn)
     inserted = next(m for m in made if m.operator == "value" and m.row_id == "n2")
     count = ItemResult(id="new_rows:notes:1", kind="state", gate=True, holds=False)
     assert M.reads_cell(count, inserted, counted)

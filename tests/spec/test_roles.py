@@ -322,8 +322,10 @@ def test_the_confirm_question_is_asked_before_the_examiners_first_round(tmp_path
 
 
 def _trust_tier(root, verifier):
-    """The Task tier under the Spec file as the last round left it, scored over its Reference."""
-    return tier_of_task(load_spec(root, "t1"), verifier, [_reference()], (), canon=fn,
+    """The Task tier under the Spec file as the last round left it, scored over its Reference and a fresh Run
+    that does the same."""
+    fresh = _reference().model_copy(update={"run_id": "fresh-1", "model": "some/model"})
+    return tier_of_task(load_spec(root, "t1"), verifier, [_reference(), fresh], (), canon=fn,
                         write_tools={"update_item"}, references=("ref",))
 
 

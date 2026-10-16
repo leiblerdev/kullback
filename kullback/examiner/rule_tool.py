@@ -434,17 +434,12 @@ def reference_judge(model: Any) -> Any:
     return lambda verifier, run: judge_items(model, verifier.atoms, run)
 
 
-def _mutants(root: ExamRoot, verifier: Verifier, reference: Optional[Run], rows: list[dict]) -> str:
-    """When verify finds the Reference passing: its surviving mutants filed as this round's rulings by code
-    (spec/mutant_rulings.py, D362), in one line; else nothing."""
-    from kullback.spec.judged import judge_reference
+def _mutants(root: ExamRoot, verifier: Verifier) -> str:
+    """The surviving mutants of the Task's newest passing fresh Run, keyed to the ask, filed as this round's
+    rulings by code (spec/mutant_rulings.py, D362, D368), in one line."""
     from kullback.spec.mutant_rulings import mutant_rulings, mutants_line
 
-    if not any(row.get("run") == "reference" and row.get("verifier_passes_it") for row in rows):
-        return ""
-    answers = judge_reference(root.workdir, verifier.task_id, verifier, reference, None)
-    return mutants_line(mutant_rulings(root.workdir, verifier, reference, root.round, judge_results=answers,
-                                       bus=root.bus))
+    return mutants_line(mutant_rulings(root.workdir, verifier, root.round, bus=root.bus))
 
 
 def verify_task(root: ExamRoot, task_id: str) -> VerifyResult:
@@ -458,7 +453,7 @@ def verify_task(root: ExamRoot, task_id: str) -> VerifyResult:
     reference = _reference_run(root.workdir, task_id)
     rows = verify_rows(root.workdir, task_id, verifier, reference, judge=reference_judge(root.judge_model))
     root.verified[task_id] = rows
-    return VerifyResult(summary="; ".join(filter(None, [verify_line(rows), _mutants(root, verifier, reference, rows)])),
+    return VerifyResult(summary="; ".join(filter(None, [verify_line(rows), _mutants(root, verifier)])),
                         rows=rows)
 
 
