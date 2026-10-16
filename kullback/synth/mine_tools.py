@@ -9,7 +9,9 @@ The rule lives in the tools. write_scenario and rewrite_scenario refuse a statem
 of the Environment or carries an id shape, a policy line the policy does not hold, a span the page does
 not hold, a page the session never read, a typed line copied as typed, and say why as the tool result,
 so the agent writes again. A second refusal of the same scenario drops it, and a scenario refused once
-and never written again is dropped at the end of the session; both are counted per reason.
+and never written again is dropped at the end of the session; both are counted per reason. An opening
+ask or a typed line belongs to one scenario per session: a write picking one already grouped is refused
+naming the scenario that holds it, and is no refusal of a new scenario.
 """
 
 from __future__ import annotations
@@ -54,6 +56,7 @@ CONTAMINATED = "contaminated"
 POLICY_LINE = "policy_line_not_in_policy"
 AS_TYPED = "line_copied_as_typed"
 WRONG_SOURCE = "wrong_source"
+OPENING_GROUPED = "opening_already_grouped"
 UNKNOWN = "unknown_scenario"
 
 SESSION_TOOLS = {"recordings": ("list_openings", "list_scenarios", "write_scenario"),
@@ -83,6 +86,7 @@ class MineRoot:
     written: set = field(default_factory=set)
     fixing: dict = field(default_factory=dict)
     fixed: dict = field(default_factory=dict)
+    grouped: dict[int, str] = field(default_factory=dict)
 
     @property
     def workdir(self):
@@ -163,7 +167,7 @@ def _recordings(root: MineRoot, args: WriteArgs, statement: str) -> tuple[Any, s
     if not picked:
         return anchor, NO_OPENING, {}
     source = R.Source(kind="recordings", task_ids=sorted({root.items[at]["task_id"] for at in picked}))
-    return anchor, "", {"source": source, "frequency": len(picked)}
+    return anchor, "", {"source": source, "frequency": len(picked), "picked": picked}
 
 
 def _asked(root: MineRoot, args: WriteArgs, statement: str) -> tuple[Any, str, dict]:
@@ -174,7 +178,7 @@ def _asked(root: MineRoot, args: WriteArgs, statement: str) -> tuple[Any, str, d
     line = root.items[picked[0]]["text"]
     if _norm(statement) == _norm(line):
         return anchor, AS_TYPED, {}
-    return anchor, "", {"source": R.Source(kind="ask", line=line), "frequency": 0}
+    return anchor, "", {"source": R.Source(kind="ask", line=line), "frequency": 0, "picked": picked}
 
 
 def _searched(root: MineRoot, args: WriteArgs, statement: str) -> tuple[Any, str, dict]:
@@ -197,10 +201,20 @@ def _searched(root: MineRoot, args: WriteArgs, statement: str) -> tuple[Any, str
 CHECKS = {"recordings": _recordings, "ask": _asked, "search": _searched}
 
 
+def _already_grouped(root: MineRoot, args: WriteArgs) -> None:
+    """Refuse a write picking an item a scenario of this session already holds; no anchor is counted."""
+    held = sorted({at for at in args.openings if at in root.grouped}) if root.kind in ("recordings", "ask") else []
+    if held:
+        named = ", ".join(f"{at} (in {root.grouped[at]})" for at in held)
+        raise ValueError(f"refused ({OPENING_GROUPED.replace('_', ' ')}): item {named} already belongs to a "
+                         "scenario; write the rest of your picks in a new call")
+
+
 def written(root: MineRoot, args: WriteArgs) -> Rows:
     """One scenario written into this mining call's findings, or refused with why."""
     if args.source != root.kind:
         raise ValueError(f"this session mines the source {root.kind}; write with source {root.kind}")
+    _already_grouped(root, args)
     statement = " ".join(args.statement.split())
     anchor, why, made = CHECKS[root.kind](root, args, statement)
     _closed(root, anchor)
@@ -212,6 +226,7 @@ def written(root: MineRoot, args: WriteArgs) -> Rows:
                     made["frequency"])
     root.found.append(record)
     root.written.add(anchor)
+    root.grouped.update({at: record.id for at in made.get("picked", ())})
     row = {"id": record.id, "statement": record.statement, "source": root.kind}
     if root.bus is not None:
         root.bus.publish_custom("scenario_written", row)
@@ -322,5 +337,5 @@ def run(root: MineRoot, model: Any, opening: str, stage: str, ceiling: Optional[
     return bool(capped)
 
 
-__all__ = ["AGENT", "MineRoot", "SEARCH_TURNS", "SESSION_TOOLS", "bus_for", "mine_extension", "mine_tools", "rewritten", "run",
+__all__ = ["AGENT", "MineRoot", "OPENING_GROUPED", "SEARCH_TURNS", "SESSION_TOOLS", "bus_for", "mine_extension", "mine_tools", "rewritten", "run",
            "settle_refusals", "turns_for", "written"]

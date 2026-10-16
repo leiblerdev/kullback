@@ -68,7 +68,9 @@ def choice_section() -> str:
 def feedback_section() -> str:
     return ("Feedback. A written scenario answers with its id. A refused write says why: a tool name, an id shaped "
             "value, a policy line the policy does not hold, a span the page does not hold, a line copied as typed. "
-            "Write it again once, following the reason; a second refusal of the same scenario drops it.")
+            "Write it again once, following the reason; a second refusal of the same scenario drops it. Each "
+            "numbered item belongs to one scenario: a write picking an item already grouped is refused naming "
+            "the scenario that holds it; write the rest of its picks in a new call.")
 
 
 def stop_section() -> str:

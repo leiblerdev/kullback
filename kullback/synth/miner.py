@@ -59,6 +59,7 @@ class Mining:
     ceiling: Optional[budget.Ceiling] = None
     subscribers: tuple = ()
     capped: Counter = field(default_factory=Counter)
+    ungrouped: list = field(default_factory=list)
 
     def over(self) -> bool:
         if self.ceiling is not None and self.ceiling.remaining() <= 0:
@@ -122,7 +123,9 @@ def _batched(mining: Mining, kind: str, items: list[dict], batch: int) -> None:
             return
         chunk = items[start:start + size]
         opening = mine_prompt.opening(kind, _entries(mining.world.workdir), count=len(chunk))
-        mining.session(kind, opening, items=chunk)
+        made = mining.session(kind, opening, items=chunk)
+        mining.ungrouped.append({"source": kind, "batch": start // size, "items": len(chunk),
+                                 "ungrouped": len(chunk) - len(made.grouped)})
 
 
 def from_recordings(mining: Mining, *, batch: int = BATCH) -> None:
@@ -219,14 +222,16 @@ def fold(records: list[R.Scenario]) -> tuple[list[R.Scenario], list[dict]]:
     return list(first.values()), folded
 
 
-def coverage(kept: list[R.Scenario], folded: list[dict], dropped: Counter) -> dict:
-    """Scenarios per source kind, what the recordings never show, the asks nothing else covers, drops."""
+def coverage(kept: list[R.Scenario], folded: list[dict], dropped: Counter, ungrouped: Iterable[dict] = ()) -> dict:
+    """Scenarios per source kind, what the recordings never show, the asks nothing else covers, drops, and
+    per batch the items no scenario grouped."""
     per_kind = Counter(record.source.kind for record in kept)
     return {"per_kind": {kind: per_kind.get(kind, 0) for kind in R.SOURCE_KINDS},
             "search_not_in_recordings": per_kind.get("search", 0),
             "asks_not_covered": per_kind.get("ask", 0),
             "folded": Counter(row["kind"] for row in folded),
-            "dropped": dict(sorted(dropped.items()))}
+            "dropped": dict(sorted(dropped.items())),
+            "openings_ungrouped": list(ungrouped)}
 
 
 def mine(workdir: Any, *, model: Any, asks: Any = None, searching: bool = True,
@@ -251,7 +256,8 @@ def mine(workdir: Any, *, model: Any, asks: Any = None, searching: bool = True,
     held = {canonical(record.statement) for record in R.load_scenarios(workdir)}
     new = [record for record in kept if canonical(record.statement) not in held]
     R.write_all(workdir, new)
-    body = {"format": R.FORMAT, "notes": mining.notes, "coverage": coverage(kept, folded, mining.dropped),
+    counts = coverage(kept, folded, mining.dropped, mining.ungrouped)
+    body = {"format": R.FORMAT, "notes": mining.notes, "coverage": counts,
             "born": len(new), "folded": folded, "capped": dict(sorted(mining.capped.items()))}
     write_json(R.store_dir(workdir) / R.MINED, body)
     return body

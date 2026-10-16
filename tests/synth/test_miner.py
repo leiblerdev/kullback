@@ -163,6 +163,28 @@ def test_a_mining_session_plays_on_the_workdir_bus_as_synth_and_books_its_calls_
     assert budget.load_totals(workdir)["stages"][M.STAGE]["calls"] >= 1
 
 
+def test_an_opening_belongs_to_one_scenario_the_rest_of_the_picks_write_and_ungrouped_ones_are_counted(tmp_path):
+    workdir = make_workdir(tmp_path)
+    model = TestModel([_write("m0", "a holder wants a widget moved to another slot", openings=[0]),
+                       _write("m1", "a holder wants a sealed widget moved", openings=[0, 1]),
+                       _write("m2", "a holder wants a sealed widget moved", openings=[1]), _done()])
+    body = M.mine(workdir, model=model, searching=False)
+    first, second = sorted(R.load_scenarios(workdir), key=lambda r: r.source.task_ids)
+    refusal = _results(model)[1]
+    assert T.OPENING_GROUPED.replace("_", " ") in refusal and first.id in refusal
+    assert [(r.frequency, r.source.task_ids) for r in (first, second)] == [(1, ["task-a1"]), (1, ["task-b2"])]
+    assert body["coverage"]["dropped"] == {}
+    assert body["coverage"]["openings_ungrouped"] == [{"source": "recordings", "batch": 0, "items": 3, "ungrouped": 1}]
+
+
+def test_an_ask_line_is_rewritten_once(tmp_path):
+    mining, model = _mining(tmp_path, _write("a0", "a holder asks which slot a widget sits in", "ask", openings=[0]),
+                            _write("a1", "a holder wants to know where a widget is kept", "ask", openings=[0]), _done())
+    M.from_asks(mining, ["tell me which slot my widget is in"])
+    assert len(mining.found) == 1 and T.OPENING_GROUPED.replace("_", " ") in _results(model)[1]
+    assert mining.ungrouped == [{"source": "ask", "batch": 0, "items": 1, "ungrouped": 0}]
+
+
 def test_a_search_session_gets_its_own_turn_budget_and_a_capped_session_is_counted_under_its_kind(tmp_path):
     workdir = make_workdir(tmp_path)
     endless = [call("list_scenarios", {}, f"s{at}") for at in range(T.MAX_TURNS + 5)]
