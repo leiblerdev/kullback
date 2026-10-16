@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from kullback.synth.prompt import wrap
+from kullback.synth.prompt import held_line, wrap
 
 TOOLS = ("list_openings", "list_scenarios", "search", "read_page", "write_scenario", "rewrite_scenario")
 
@@ -32,8 +32,6 @@ def receives_section() -> str:
 _EXAMPLES = {
     "list_openings": "list_openings: the numbered items of this session, opening asks or typed lines, e.g. {}.",
     "list_scenarios": "list_scenarios: the scenarios already written, so you never write one twice, e.g. {}.",
-    "search": 'search: the result URLs for a query, e.g. {"query": "<kind of customer> <wants> <thing> after <step>"}.',
-    "read_page": 'read_page: the text of one result page, e.g. {"url": "https://<a result>"}.',
     "write_scenario": ('write_scenario: write one scenario, e.g. {"statement": "<the scenario>", "source": "<the '
                        'source of this session>", "policy_lines": ["<a policy line, word for word>"], "openings": '
                        '[0], "url": "", "span": ""}. For opening asks list every number it groups; for typed lines '
@@ -45,8 +43,8 @@ _EXAMPLES = {
 
 
 def tools_section(names: Iterable[str] = TOOLS) -> str:
-    return ("Tools, one example call each. Besides these you hold read, ls, grep and find over your root.\n"
-            + "\n".join(_EXAMPLES[name] for name in names if name in _EXAMPLES))
+    names = list(names)
+    return held_line(names) + "\n" + "\n".join(_EXAMPLES[name] for name in names if name in _EXAMPLES)
 
 
 def examples_section() -> str:

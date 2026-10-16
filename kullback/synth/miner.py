@@ -5,8 +5,9 @@ review are (mine_tools.py): one session per batch of one source, on the workdir 
 name synth, its calls booked under the stage synth_mining by the budget subscriber. The recordings
 source hands a session a batch of opening asks, one per recording, and the agent groups them into
 statements; frequency is the count of openings grouped. The search source hands one session the
-harness's web reader (search.py): the agent searches, reads pages through the D225 crawl, and writes a
-statement only with the span of a page it read, whose byte range becomes the citation. The ask source
+harness's web reader as the shared web tools (D375) over search.Crawled: the agent searches, reads pages
+through the D225 crawl, and writes a statement only with the span of a page it read, whose byte range
+becomes the citation. The ask source
 hands a session a batch of lines a customer typed and the agent rewrites each as a scenario in the third
 person; the line as typed stays in the source only, since the customer's own shape would tell the blind
 review where it came from. A line naming a tool is dropped before any session.
@@ -25,7 +26,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from kullback import domain
 from kullback.runner import budget
@@ -133,7 +134,8 @@ def from_recordings(mining: Mining, *, batch: int = BATCH) -> None:
 
 
 def from_search(mining: Mining, *, engine: Any = None, env: Optional[dict] = None,
-                corpus_url: Optional[str] = None, exclude: Iterable[str] = ()) -> None:
+                corpus_url: Optional[str] = None, exclude: Iterable[str] = (),
+                refuse: Optional[Callable[[str], str]] = None) -> None:
     """Scenarios read off pages the harness's reader names, each citing the byte range of its span.
 
     With nothing live and no memo there is no reader: no session runs, no page is read, and the note
@@ -150,9 +152,11 @@ def from_search(mining: Mining, *, engine: Any = None, env: Optional[dict] = Non
         return
     if mining.over():
         return
-    search, fetch = search_mod.callables(engine, mining.notes)
+    pages: dict = {}
+    reader = search_mod.Crawled(engine, mining.world.workdir, keys=pages, corpus_url=corpus_url, exclude=exclude,
+                                notes=mining.notes)
     opening = mine_prompt.opening("search", _entries(mining.world.workdir))
-    mining.session("search", opening, search=search, fetch=fetch, corpus_url=corpus_url, exclude=tuple(exclude))
+    mining.session("search", opening, reader=reader, pages=pages, refuse=refuse or domain.destination_refusal)
 
 
 # --- the customer's lines ---------------------------------------------------------------
@@ -226,7 +230,7 @@ def coverage(kept: list[R.Scenario], folded: list[dict], dropped: Counter) -> di
 def mine(workdir: Any, *, model: Any, asks: Any = None, searching: bool = True,
          batch: int = BATCH, description: str = "", engine: Any = None, env: Optional[dict] = None,
          corpus_url: Optional[str] = None, exclude: Iterable[str] = (), ceiling: Optional[budget.Ceiling] = None,
-         subscribers: Iterable[Any] = ()) -> dict:
+         subscribers: Iterable[Any] = (), refuse: Optional[Callable[[str], str]] = None) -> dict:
     """Run the three sources as sessions, fold the repeats, write the new records and the counts.
 
     A record already in the store keeps its status and its review: mining again adds, never resets.
@@ -236,7 +240,7 @@ def mine(workdir: Any, *, model: Any, asks: Any = None, searching: bool = True,
                     subscribers=tuple(subscribers))
     from_recordings(mining, batch=batch)
     if searching:
-        from_search(mining, engine=engine, env=env, corpus_url=corpus_url, exclude=exclude)
+        from_search(mining, engine=engine, env=env, corpus_url=corpus_url, exclude=exclude, refuse=refuse)
     else:
         mining.notes.append("search turned off")
     path = Path(asks) if asks else R.store_dir(workdir) / R.ASKS

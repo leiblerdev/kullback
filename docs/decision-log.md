@@ -2820,13 +2820,15 @@ frequency, the review rows, the evidence and the status (born, fixing, passed, u
 The miner (kullback/synth/miner.py, mine_tools.py, mine_prompt.py) is the synthetic generator, and it is a role on
 the shared agent harness and event stream as the Examiner and the Builder are: one session per batch of one source,
 base tools over the scenario store, its own tools with pydantic arguments and results carrying rows
-(list_openings, list_scenarios, search, read_page, write_scenario, rewrite_scenario), prompt sections in GEPA order
+(list_openings, list_scenarios, write_scenario, rewrite_scenario), prompt sections in GEPA order
 with examples over placeholders and the stop rule last, the workdir bus under the agent name synth and the budget
 subscriber under the stage synth_mining. Recordings: a session reads a batch of opening asks, the first user turn
 of every recording or the turn the Spec marks as the opening, and writes statements naming the numbers each groups;
 frequency is the number grouped. Search: one session holds the harness's reader (D374), searches, reads pages through
 the D225 crawl, and writes a statement only with a span of a page it read, kept as its byte range; a statement that
-copies the page or the corpus is refused. Asks: a session reads a batch of lines a customer typed and rewrites each
+copies the page or the corpus is refused. Its search and read_page are the shared web tools, D375's, over the
+adapter search.Crawled, which reads each page through the crawl so the agent reads the cached text a span is checked
+against. Asks: a session reads a batch of lines a customer typed and rewrites each
 as a scenario in the third person; the line as typed stays in the source only, since the customer's own shape would
 tell the blind review where it came from, and a line naming a tool is dropped before any session. The rule is held
 by the write tools, which refuse with the reason as the tool result so the agent writes again: no tool name or its
@@ -2863,20 +2865,21 @@ The review (kullback/synth/review.py) is a role on the shared agent harness, bus
 Examiner's own sessions are: one session per batch of born scenarios, under stage synth_review. It is blind: each
 scenario is written as a view under scenarios/review that drops its source, the sources folded into it, its
 frequency and its fix count, and the base tools read only that root. Its tools read a view, list by status, search
-the web (kept on the scenario as evidence with the lines read), look up and search the starting rows, find tools by
-words, file a verdict and send a scenario back. A verdict answers occurs, feasible and serves_ask; occurs yes needs
-a cite and feasible no needs what is missing, or the call is refused. A cite is a URL the review's own search
-returned for that scenario, checked against the evidence kept on the record, or a substring of the policy; anything
-else is refused with that reason, so no trace id reaches a verdict and the blind review never cites where a scenario
-came from. The outcome is read off the verdict by code, occurs first: a repeat of another scenario (repeat_of, an id
-the store holds and not its own) strikes it with that id as the cite; occurs no strikes it; any unsure puts it on
-the human queue (scenarios/human.json); feasible no marks it infeasible and files one Environment finding through
-examiner/findings.py naming what to add, never a drop; otherwise it passes. A send back has the miner rewrite the
-statement once from the same source with the reason, keeping the id, and the rewrite is reviewed again in the same
-call; a second send back, or a rewrite that breaks the rule, ends it unsure on the human queue. The prompt
-(kullback/synth/prompt.py) runs in GEPA order, its examples over placeholders, one per outcome. The verb is
-`kullback synth review`, under a spend ceiling. Both verbs print the synth report under its own heading
-(kullback/synth/report.py), never in the build table.
+the web and read a page, look up and search the starting rows, find tools by words, file a verdict and send a
+scenario back. The search and read_page are the shared web tools, D375's; their on_call keeps every call as evidence
+on each scenario of the session, the URLs a search returned and the URL a page read. A verdict answers occurs,
+feasible and serves_ask; occurs yes needs a cite and feasible no needs what is missing, or the call is refused. A
+cite is a URL a search in a session that reviewed the scenario returned, checked against the evidence kept on the
+record, or a substring of the policy; anything else is refused with that reason, so no trace id reaches a verdict
+and the blind review never cites where a scenario came from. The outcome is read off the verdict by code, occurs
+first: a repeat of another scenario (repeat_of, an id the store holds and not its own) strikes it with that id as
+the cite; occurs no strikes it; any unsure puts it on the human queue (scenarios/human.json); feasible no marks it
+infeasible and files one Environment finding through examiner/findings.py naming what to add, never a drop;
+otherwise it passes. A send back has the miner rewrite the statement once from the same source with the reason,
+keeping the id, and the rewrite is reviewed again in the same call; a second send back, or a rewrite that breaks the
+rule, ends it unsure on the human queue. The prompt (kullback/synth/prompt.py) runs in GEPA order, its examples over
+placeholders, one per outcome. The verb is `kullback synth review`, under a spend ceiling. Both verbs print the
+synth report under its own heading (kullback/synth/report.py), never in the build table.
 
 What it cannot show: nothing ran on a model. Whether a reviewer searches before ruling, cites what it read, or rules
 the same scenario the same way twice is unmeasured; the cite is checked against what the scenario's search returned
@@ -2891,8 +2894,9 @@ The scenario layer has no search reader of its own. kullback/synth/search.py is 
 (D115): TinyFish search and fetch when TINYFISH_API_KEY is set, then Firecrawl keyless, in one chain, every answer
 memoized under workdir/web_cache keyed by the request, and nothing live unless the switch that turns model calls on
 (HARNESS_ALLOW_MODEL_REQUESTS) is set; with the switch off a memo is still served, and with no memo there is no reader.
-The seam hands the miner and the review two callables, a query in and result URLs out, a URL in and page text out, so
-a fetched page still lands in the D225 crawl's cache and a span's byte range cites it as before. One key variable,
+The seam hands the miner and the review one adapter of the D115 shape, search.Crawled, as the search of the shared
+web tools (D375): its search passes through, and its fetch reads each URL through the D225 crawl with the reader's
+fetch as the page fetch, so a fetched page still lands in the crawl's cache and a span's byte range cites it as before. One key variable,
 named in notes, its value never read here or printed. Where nothing is live the note says the search is off, names
 the switch and the key the chain reads first. The second reader of round 0 (its own URL and key variables, a default
 endpoint and a cache under cache/search) is gone; it posted without the live switch, which is how two test runs of
@@ -2901,10 +2905,13 @@ round 0 reached the network.
 What it cannot show: no request reached a real provider; every test answers through builder.search.TestSearch inside
 the memo and chain the live path builds.
 
-Tests: tests/synth/test_miner.py (the seam reads through the memo and serves a repeat with live off; an unread page is
-empty text and a note; with live off and no memo the miner writes no query and reads no page; no module holds the old
-reader's names), tests/synth/test_review.py (no reader with live off; the review search's evidence names the switch).
-tests/synth/conftest.py clears the switch for every test, so a reader the test did not inject is None.
+Tests: tests/synth/test_search.py (the adapter passes a search through and a repeat is served from the memo with
+live off; a page is read through the crawl and its text is the cached text under the key recorded; a refused or
+unread page is a Page error and a note; no module holds the old reader's names), tests/synth/test_miner.py (with live
+off and no memo the miner writes no query and reads no page; with no reader the shared tools answer off),
+tests/synth/test_review.py (no reader with live off; the shared tools answer off and the evidence names the switch).
+tests/synth/conftest.py clears the switch for every test, so a reader the test did not inject is None, and fails a
+test that resolves a host name, so every destination check runs on the fixture's scripted resolver.
 
 ### D375. One shared pair of web tools in the agent core, the search injected by the role (2026-10-16)
 

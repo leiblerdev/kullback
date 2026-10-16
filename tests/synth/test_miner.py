@@ -15,7 +15,7 @@ from kullback.synth import mine_tools as T
 from kullback.synth import miner as M
 from kullback.synth import records as R
 from kullback.synth import search as S
-from tests.synth.fixture import DESCRIPTION, OPENINGS, POLICY, STATE, TOOLS, URL, call, make_workdir, web
+from tests.synth.fixture import DESCRIPTION, OPENINGS, POLICY, REFUSE, STATE, TOOLS, URL, call, make_workdir, web
 
 SEALED_LINE = POLICY.splitlines()[0]
 SPAN = "Customers often ask to move a widget after it has been sealed."
@@ -88,7 +88,7 @@ def test_a_refused_write_is_written_again_once_and_a_second_refusal_drops_and_co
     assert "write it again once" in results[0] and "dropped" in results[3]
 
 
-def test_a_search_session_cites_the_byte_range_of_a_span_on_a_page_it_read(tmp_path):
+def test_a_search_session_on_the_shared_web_tools_cites_the_byte_range_of_a_span_on_a_page_it_read(tmp_path):
     mining, model = _mining(tmp_path,
                             call("search", {"query": "what holders ask about sealed widgets"}, "m0"),
                             _write("m1", "a holder wants to move a widget that is already sealed", "search",
@@ -100,13 +100,30 @@ def test_a_search_session_cites_the_byte_range_of_a_span_on_a_page_it_read(tmp_p
                                    span="We paint widgets on request."),
                             _done())
     engine, inner = web(mining.world.workdir)
-    M.from_search(mining, engine=engine)
+    M.from_search(mining, engine=engine, refuse=REFUSE)
     [record] = mining.found
     raw = domain.cached_text(mining.world.workdir, record.source.key).encode("utf-8")
     assert raw[record.source.start:record.source.end].decode("utf-8") == SPAN
     assert record.source.url == URL and record.frequency == 0
     assert mining.dropped == Counter({T.NO_SPAN: 1}) and T.NOT_READ.replace("_", " ") in _results(model)[1]
     assert inner.queries == ["what holders ask about sealed widgets"] and inner.fetched == [URL]
+    assert URL in _results(model)[0] and SPAN in _results(model)[2]
+
+
+def test_a_search_session_with_no_reader_holds_the_shared_tools_and_they_answer_off(tmp_path):
+    import asyncio
+
+    from kullback.agent.extensions import load_extensions
+    from kullback.agent.harness import AgentHarness
+    from kullback.agent.web_tools import OFF
+
+    root = T.MineRoot(world=M.world_of(make_workdir(tmp_path)), kind="search", refuse=REFUSE)
+    harness = AgentHarness(model=TestModel([]))
+    load_extensions(harness, [T.mine_extension(root)])
+    searched = asyncio.run(harness.registry.get("search").run({"query": "sealed widget"}))
+    read = asyncio.run(harness.registry.get("read_page").run({"url": URL}))
+    assert searched.details["summary"] == read.details["summary"] == OFF
+    assert root.pages == {} and not (root.workdir / "web_cache").exists()
 
 
 def test_with_the_live_switch_off_and_no_memo_no_search_session_runs_and_the_note_names_the_switch(tmp_path):

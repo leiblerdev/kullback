@@ -16,7 +16,7 @@ from kullback.synth import prompt as P
 from kullback.synth import records as R
 from kullback.synth import review as V
 from kullback.synth import search as S
-from tests.synth.fixture import POLICY, STATE, TOOLS, URL, call, make_workdir, web
+from tests.synth.fixture import POLICY, REFUSE, STATE, TOOLS, URL, call, make_workdir, web
 
 LINE = POLICY.splitlines()[0]
 
@@ -25,12 +25,20 @@ def _root(tmp_path, *statements):
     workdir = make_workdir(tmp_path)
     records = [R.born(text, R.Source(kind="recordings", task_ids=["task-a1"]), frequency=3) for text in statements]
     R.write_all(workdir, records)
-    root = V.ReviewRoot(world=M.world_of(workdir), engine=web(workdir)[0])
+    root = V.ReviewRoot(world=M.world_of(workdir), reader=S.Crawled(web(workdir)[0], workdir), refuse=REFUSE,
+                        current=[record.id for record in records])
     return root, records
 
 
 def _tool(root, name):
     return next(tool for tool in V.scenario_tools(root) if tool.name == name)
+
+
+def _web(root, name, arguments):
+    """One call of a shared web tool as the review session registers it."""
+    harness = AgentHarness(model=TestModel([]))
+    load_extensions(harness, [V.scenario_extension(root)])
+    return asyncio.run(harness.registry.get(name).run(arguments))
 
 
 def _rule(root, record, **verdict):
@@ -66,13 +74,17 @@ def test_a_verdict_of_occurs_yes_without_a_cite_or_feasible_no_without_missing_i
         _rule(root, record, feasible="no")
 
 
-def test_a_cite_is_a_url_this_scenarios_own_search_returned_or_a_policy_line_and_nothing_else(tmp_path):
+def test_a_cite_is_a_url_the_shared_search_returned_for_this_scenario_or_a_policy_line_and_nothing_else(tmp_path):
     root, [record, other] = _root(tmp_path, "a holder wants to move a sealed widget", "a holder wants things")
     with pytest.raises(ValueError, match="neither"):
         _rule(root, record, occurs_cite=URL)
     with pytest.raises(ValueError, match="neither"):
         _rule(root, record, occurs_cite="task-a1")
-    asyncio.run(_tool(root, "search").execute(V.SearchArgs(id=record.id, query="sealed widget")))
+    root.current = [record.id]
+    _web(root, "read_page", {"url": URL})
+    with pytest.raises(ValueError, match="neither"):
+        _rule(root, record, occurs_cite=URL)
+    _web(root, "search", {"query": "sealed widget"})
     assert _rule(root, record, occurs_cite=URL).rows[0]["occurs_cite"] == URL
     assert _rule(root, other, occurs_cite=LINE).rows[0]["occurs_cite"] == LINE
     with pytest.raises(ValueError, match="neither"):
@@ -125,13 +137,15 @@ def test_a_second_send_back_ends_the_scenario_unsure_on_the_human_queue(tmp_path
     assert row["id"] == record.id and "still too broad" in row["question"]
 
 
-def test_a_search_is_kept_on_the_scenario_as_evidence_with_the_lines_it_read(tmp_path):
+def test_every_shared_search_and_read_page_call_is_kept_on_the_scenarios_of_the_session(tmp_path):
     root, [record] = _root(tmp_path, "a holder wants to move a sealed widget")
-    tool = _tool(root, "search")
-    result = asyncio.run(tool.execute(V.SearchArgs(id=record.id, query="move widget after sealed")))
-    assert result.rows[0]["url"] == URL and result.rows[0]["lines"]
-    [evidence] = R.load_scenario(root.workdir, record.id).evidence
-    assert evidence["urls"] == [URL] and evidence["query"] == "move widget after sealed"
+    result = _web(root, "search", {"query": "move widget after sealed"})
+    assert [row["url"] for row in result.details["rows"]] == [URL]
+    page = _web(root, "read_page", {"url": URL})
+    assert any("sealed" in row["text"] for row in page.details["rows"])
+    searched, read = R.load_scenario(root.workdir, record.id).evidence
+    assert searched["urls"] == [URL] and searched["query"] == "move widget after sealed"
+    assert read["read"] == [URL] and read["urls"] == []
 
 
 def test_a_review_built_with_no_reader_injected_and_live_off_has_no_reader(tmp_path):
@@ -139,12 +153,16 @@ def test_a_review_built_with_no_reader_injected_and_live_off_has_no_reader(tmp_p
     assert S.reader(root.workdir) is None
 
 
-def test_with_nothing_live_the_review_search_reads_nothing_and_its_evidence_names_the_switch(tmp_path):
+def test_with_no_reader_the_shared_review_tools_answer_off_read_nothing_and_the_evidence_names_the_switch(tmp_path):
+    from kullback.agent.web_tools import OFF
+
     root, [record] = _root(tmp_path, "a holder wants to move a sealed widget")
-    root.engine = None
-    result = asyncio.run(_tool(root, "search").execute(V.SearchArgs(id=record.id, query="sealed widget")))
-    assert result.rows == [] and result.summary == S.OFF_NOTE
-    assert R.load_scenario(root.workdir, record.id).evidence[0]["note"] == S.OFF_NOTE
+    root.reader = None
+    searched = _web(root, "search", {"query": "sealed widget"})
+    read = _web(root, "read_page", {"url": URL})
+    assert searched.details["summary"] == read.details["summary"] == OFF
+    assert [row["note"] for row in R.load_scenario(root.workdir, record.id).evidence] == [S.OFF_NOTE] * 2
+    assert not (root.workdir / "web_cache").exists()
 
 
 def test_the_lookups_read_the_starting_state_and_find_tools_reads_the_tool_list(tmp_path):
@@ -176,7 +194,7 @@ def test_a_review_session_plays_on_the_shared_bus_and_books_its_calls_under_its_
     model = TestModel([call("rule_scenario", {"id": record.id, "occurs": "yes", "occurs_cite": LINE,
                                               "feasible": "yes", "text": "common and served"}),
                        ModelReply(content="Ruled one: passed.", usage=Usage(input=10, output=2))])
-    out = V.review(root.workdir, model=model, engine=root.engine)
+    out = V.review(root.workdir, model=model, engine=web(root.workdir)[0], refuse=REFUSE)
     assert R.load_scenario(root.workdir, record.id).status == "passed" and out["capped"] == []
     bus = (root.workdir / "bus.jsonl").read_text()
     assert "scenario_verdict" in bus

@@ -1,28 +1,26 @@
-"""The scenario layer's seam onto the harness's one web reader (D374, D115).
+"""The scenario layer's seam onto the harness's one web reader (D374, D115) and the shared web tools (D375).
 
 Search and page fetch go through kullback/builder/search.py only: TinyFish when its key is set, then
 Firecrawl keyless, in one chain, every answer memoized under <workdir>/web_cache keyed by the request,
 and nothing live unless the switch that turns model calls on is set. `reader` is that reader for a
-workdir, or None where nothing is live and no memo exists. `callables` turns it into the two shapes
-the miner and the review take: a query in and result URLs out, and a URL in and page text out, so a
-fetched page still lands in the D225 crawl's cache and a span's byte range cites it as before. A
-failure is a note, never a raise; a key's value is never read here, only its variable named.
+workdir, or None where nothing is live and no memo exists. The roles never wrap it in tools of their
+own: they register kullback.agent.web_tools with `Crawled` over the reader as the search. `Crawled` has
+the D115 shape and reads every page through the D225 crawl (the corpus refusal, the exclude list, the
+content addressed cache), so the text the agent reads is the cached text a span's byte range is checked
+against, and the cache key of every URL read lands in `keys`. A failure is a note or a Page error, never
+a raise; a key's value is never read here, only its variable named.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import Any, Iterable, Optional
 
+from kullback import domain
 from kullback.ai.provider import LIVE_ENV_VAR
 from kullback.builder import search as web
 
-# How many result URLs one query keeps.
-RESULTS = 10
 OFF_NOTE = (f"search off: {LIVE_ENV_VAR} is not set; the chain reads {web.TINYFISH_KEY_VAR} first, "
             "then Firecrawl keyless")
-
-Search = Callable[[str], list[str]]
-Fetch = Callable[[str], str]
 
 
 def reader(workdir: Any, env: Optional[dict] = None) -> Optional[Any]:
@@ -36,35 +34,52 @@ def _note(notes: list, text: str) -> None:
         notes.append(text)
 
 
-def callables(engine: Any, notes: Optional[list] = None, limit: int = RESULTS) -> tuple[Search, Fetch]:
-    """The search and fetch callables over one reader; what fails lands in `notes` and reads as nothing."""
-    notes = [] if notes is None else notes
+class Crawled:
+    """The D115 shape over a reader, each page read through the crawl and filed in its cache."""
 
-    def search(query: str) -> list[str]:
+    def __init__(self, engine: Any, workdir: Any, *, keys: Optional[dict] = None, corpus_url: Optional[str] = None,
+                 exclude: Iterable[str] = (), notes: Optional[list] = None) -> None:
+        self.engine = engine
+        self.workdir = workdir
+        self.keys = {} if keys is None else keys
+        self.corpus_url = corpus_url
+        self.exclude = tuple(exclude)
+        self.notes = [] if notes is None else notes
+        self.name = getattr(engine, "name", "reader")
+        self._titles: dict[str, str] = {}
+
+    def search(self, query: str, limit: int) -> list:
         try:
-            hits = engine.search(str(query), int(limit))
+            return list(self.engine.search(str(query), int(limit)))
         except web.SearchError as error:
-            _note(notes, f"search failed: {error}")
+            _note(self.notes, f"search failed: {error}")
             return []
-        out: list[str] = []
-        for hit in hits:
-            if hit.url.startswith(("http://", "https://")) and hit.url not in out:
-                out.append(hit.url)
-        return out
 
-    def fetch(url: str) -> str:
-        try:
-            pages = engine.fetch([str(url)])
-        except web.SearchError as error:
-            _note(notes, f"page not read: {url}: {error}")
-            return ""
+    def _html(self, url: str) -> str:
+        """The reader's fetch as the crawl's page fetch: the text, or a raise the crawl counts as unread."""
+        pages = self.engine.fetch([url])
         page = pages[0] if pages else None
         if page is None or page.error:
-            _note(notes, f"page not read: {url}: {page.error if page is not None else 'no answer'}")
-            return ""
+            raise web.SearchError(page.error if page is not None else "no answer")
+        self._titles[url] = page.title
         return page.text
 
-    return search, fetch
+    def fetch(self, urls: list[str]) -> list:
+        out = []
+        for url in urls:
+            crawled = domain.crawl(self.workdir, [{"url": url, "depth": 0, "via": domain.SEARCHED}],
+                                   fetch=self._html, depth=0, corpus_url=self.corpus_url, exclude=self.exclude,
+                                   limit=1)
+            if crawled["pages"]:
+                key = crawled["pages"][0]["key"]
+                self.keys[url] = key
+                out.append(web.Page(url=url, title=self._titles.get(url, ""),
+                                    text=domain.cached_text(self.workdir, key)))
+                continue
+            reason = (crawled["refused"] or [{"reason": domain.UNREACHABLE}])[0]["reason"]
+            _note(self.notes, f"page not read: {url}: {reason}")
+            out.append(web.Page(url=url, error=reason))
+        return out
 
 
-__all__ = ["OFF_NOTE", "RESULTS", "callables", "reader"]
+__all__ = ["OFF_NOTE", "Crawled", "reader"]

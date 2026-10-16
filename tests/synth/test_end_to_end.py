@@ -15,7 +15,7 @@ from kullback.synth import records as R
 from kullback.synth import report as T
 from kullback.synth import review as V
 from kullback.synth.miner import mine
-from tests.synth.fixture import POLICY, URL, call, make_workdir, web
+from tests.synth.fixture import POLICY, REFUSE, URL, call, make_workdir, web
 
 SPAN = "Customers often ask to move a widget after it has been sealed."
 PLAIN = "a holder wants a widget moved to another slot"
@@ -55,7 +55,7 @@ def _rule(scenario_id: str, call_id: str, **verdict) -> ModelReply:
 def _review_model(ids: dict) -> TestModel:
     return TestModel([
         call("read_scenario", {"id": ids[PLAIN]}, "r0"),
-        call("search", {"id": ids[PLAIN], "query": "widget put in another slot"}, "r1"),
+        call("search", {"query": "widget put in another slot"}, "r1"),
         _rule(ids[PLAIN], "r2", occurs_cite=URL),
         _rule(ids[SEALED], "r3", occurs="no", occurs_cite=""),
         _rule(ids[WHICH], "r4", feasible="unsure"),
@@ -70,7 +70,7 @@ def _mined(tmp_path):
     workdir = make_workdir(tmp_path)
     (workdir / R.DIR).mkdir()
     (workdir / R.DIR / R.ASKS).write_text("\n".join(TYPED) + "\n", encoding="utf-8")
-    mine(workdir, model=_miner_model(), engine=web(workdir)[0])
+    mine(workdir, model=_miner_model(), engine=web(workdir)[0], refuse=REFUSE)
     return workdir, R.load_scenarios(workdir)
 
 
@@ -80,7 +80,7 @@ def _reviewed(tmp_path):
     model = _review_model(ids)
     fixer = TestModel([call("rewrite_scenario", {"id": ids[VAGUE], "statement": FIXED}, "f0"),
                        ModelReply(content="Rewrote one.")])
-    out = V.review(workdir, model=model, fixer=fixer, engine=web(workdir)[0])
+    out = V.review(workdir, model=model, fixer=fixer, engine=web(workdir)[0], refuse=REFUSE)
     return workdir, ids, model, out
 
 

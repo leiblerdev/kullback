@@ -16,8 +16,10 @@ from kullback.synth.skills import SCENARIO_SKILL
 
 # Every prompt line is folded under this many characters.
 WIDTH = 140
-TOOLS = ("read_scenario", "list_scenarios", "search", "lookup_rows", "search_rows", "find_tools",
+TOOLS = ("read_scenario", "list_scenarios", "search", "read_page", "lookup_rows", "search_rows", "find_tools",
          "rule_scenario", "fix_scenario")
+# The shared web tools (D375): named here by name only, their example calls are in their descriptions.
+WEB = ("search", "read_page")
 
 
 def receives_section() -> str:
@@ -35,8 +37,6 @@ def receives_section() -> str:
 _EXAMPLES = {
     "read_scenario": 'read_scenario: the view of one scenario, e.g. {"id": "sc_<id>"}.',
     "list_scenarios": 'list_scenarios: the scenarios with one status, e.g. {"status": "born"}.',
-    "search": ('search: search the web for how often a situation happens, kept on the scenario as evidence, '
-               'e.g. {"id": "sc_<id>", "query": "<kind of customer> <wants> <thing> after <step>"}.'),
     "lookup_rows": 'lookup_rows: rows of the world by table and key, e.g. {"table": "<table>", "key": ""}.',
     "search_rows": ('search_rows: row keys whose field equals a value, e.g. {"table": "<table>", "field": '
                     '"<field>", "value": "<value>"}.'),
@@ -44,8 +44,8 @@ _EXAMPLES = {
     "rule_scenario": ('rule_scenario: file the verdict on one scenario, e.g. {"id": "sc_<id>", "occurs": "yes", '
                       '"occurs_cite": "https://<page you searched>", "feasible": "yes", "missing": "", '
                       '"serves_ask": "none", "text": "<why, in one or two sentences>"}. occurs and feasible are '
-                      "yes, no or unsure; serves_ask is yes, no or none. occurs yes needs a cite: a URL your "
-                      "own search returned for this scenario, or a policy line word for word; any other cite is "
+                      "yes, no or unsure; serves_ask is yes, no or none. occurs yes needs a cite: a URL a search "
+                      "in this session returned, or a policy line word for word; any other cite is "
                       "refused. feasible no needs missing: the tool or the "
                       'kind of row this world lacks. A scenario that says again what another says takes '
                       '"repeat_of": "sc_<other id>" and ends struck.'),
@@ -55,9 +55,16 @@ _EXAMPLES = {
 }
 
 
+def held_line(names: Iterable[str]) -> str:
+    """The tools a session holds besides its own: the base tools, and the shared web tools where it has them."""
+    web = [name for name in names if name in WEB]
+    shared = f"; and the web tools {' and '.join(web)}, each with its example call in its description" if web else ""
+    return f"Tools, one example call each. Besides these you hold read, ls, grep and find over your root{shared}."
+
+
 def tools_section(names: Iterable[str] = TOOLS) -> str:
-    return ("Tools, one example call each. Besides these you hold read, ls, grep and find over your root.\n"
-            + "\n".join(_EXAMPLES[name] for name in names if name in _EXAMPLES))
+    names = list(names)
+    return held_line(names) + "\n" + "\n".join(_EXAMPLES[name] for name in names if name in _EXAMPLES)
 
 
 def examples_section() -> str:
@@ -124,5 +131,5 @@ def opening(lines: str, entries: Iterable[str] = ()) -> str:
             f"The scenarios, each with its view; open those paths rather than searching:\n{lines}")
 
 
-__all__ = ["TOOLS", "choice_section", "environment_text", "examples_section", "feedback_section", "opening",
+__all__ = ["TOOLS", "WEB", "choice_section", "environment_text", "examples_section", "feedback_section", "held_line", "opening",
            "receives_section", "sections", "stop_section", "tools_section", "wrap"]

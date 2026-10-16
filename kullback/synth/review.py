@@ -11,9 +11,10 @@ searched and the review so far, never the source or the frequency. That is what 
 real asks in and measure the Examiner rather than trust it.
 
 Outcomes are code, read off the verdict after the session: a repeat of another scenario strikes it,
-citing the other's id; occurs no strikes the scenario with its cite. A cite is a URL the review's own
-search returned for that scenario, or a line of the policy; code refuses anything else, so no trace id
-ever reaches a verdict. Then any unsure puts it on the human queue with the open question; feasible no
+citing the other's id; occurs no strikes the scenario with its cite. The web tools are the shared ones
+(D375): every search and read_page call of a session is kept as evidence on each scenario that session
+reviews. A cite is a URL a search kept on the scenario returned, or a line of the policy; code refuses
+anything else, so no trace id ever reaches a verdict. Then any unsure puts it on the human queue with the open question; feasible no
 files an Environment finding naming the missing tool or row class and ends it infeasible, never a drop;
 occurs yes and feasible yes passes. `fix_scenario` sends a scenario back to the generator, which
 rewrites it once from the same source with the reason; a second request on the same scenario ends it
@@ -36,13 +37,14 @@ from kullback.agent.context import ContextConfig, prompt_block
 from kullback.agent.extensions import ExtensionAPI, load_extensions
 from kullback.agent.harness import AgentHarness
 from kullback.agent.tools import AgentTool
+from kullback.agent.web_tools import OFF as WEB_OFF
+from kullback.agent.web_tools import register_web_tools
 from kullback.examiner import findings as findings_mod
 from kullback.examiner import session as session_mod
 from kullback.examiner.domain_tools import find_tools
 from kullback.examiner.plan import ExaminerPlan
 from kullback.runner import budget
 from kullback.runner.records import read_json, write_json
-from kullback.spec.intent_tools import content_tokens
 from kullback.spec.writer_tools import read_tools
 from kullback.synth import miner
 from kullback.synth import prompt as prompt_mod
@@ -61,9 +63,6 @@ FIX_STAGE = "synth_fix"
 BATCH = 10
 TURNS_PER_SCENARIO = 8
 MAX_TURNS = 80
-# How many search pages one call reads, and how many lines of each it shows.
-PAGES_SHOWN = 3
-LINES_SHOWN = 3
 # How many times the review and fix loop goes round in one call.
 PASSES = 3
 # The record keys a view never carries: the review is blind to where a scenario came from.
@@ -75,12 +74,15 @@ TOOL_NAMES = prompt_mod.TOOLS
 
 @dataclass
 class ReviewRoot:
-    """What one review works over: the world, the bus, the harness's web reader (or None) and the findings."""
+    """What one review works over: the world, the bus, the web reader (search.Crawled, or None), the
+    findings, and the scenarios of the session running now, which its web calls are kept on."""
 
     world: World
     bus: Any = None
-    engine: Any = None
+    reader: Any = None
+    refuse: Callable[[str], str] = domain.destination_refusal
     filed: list[dict] = field(default_factory=list)
+    current: list[str] = field(default_factory=list)
 
     @property
     def workdir(self) -> Path:
@@ -121,11 +123,6 @@ class IdArgs(Strict):
 
 class StatusArgs(Strict):
     status: str = Field(default="born", description="One of " + ", ".join(R.STATUSES) + ".")
-
-
-class SearchArgs(Strict):
-    id: str = Field(description="The scenario the search is evidence for.")
-    query: str
 
 
 class LookupArgs(Strict):
@@ -175,32 +172,23 @@ def _record(root: ReviewRoot, scenario_id: str) -> R.Scenario:
     return R.load_scenario(root.workdir, scenario_id)
 
 
-def _excerpt(text: str, query: str) -> list[str]:
-    """The page lines sharing the most words with the query, best first."""
-    words = content_tokens(query)
-    scored = [(len(words & content_tokens(line)), line) for line in text.splitlines() if line.strip()]
-    return [line[:300] for score, line in sorted(scored, key=lambda row: -row[0]) if score][:LINES_SHOWN]
+def evidence_row(name: str, args: dict, result: Any) -> dict:
+    """One shared web call as evidence: the URLs a search returned, or the URL a page read."""
+    off = result.summary == WEB_OFF
+    note = search_mod.OFF_NOTE if off else ""
+    if name == "search":
+        return {"tool": name, "query": args.get("query", ""), "urls": [row["url"] for row in result.rows],
+                "read": [], "note": note}
+    read = [args.get("url", "")] if result.rows else []
+    return {"tool": name, "query": "", "urls": [], "read": read, "note": note or ("" if read else result.summary)}
 
 
-def searched(root: ReviewRoot, scenario_id: str, query: str) -> Rows:
-    """One search kept on the scenario as evidence: the URLs and the matching lines of the first pages."""
-    record = _record(root, scenario_id)
-    notes: list[str] = []
-    urls: list[str] = []
-    pages: list[dict] = []
-    if root.engine is None:
-        notes.append(search_mod.OFF_NOTE)
-    else:
-        search, fetch = search_mod.callables(root.engine, notes)
-        urls = search(query)
-        pages = domain.crawl(root.workdir, [{"url": url, "depth": 0, "via": domain.SEARCHED} for url in urls],
-                             fetch=fetch, depth=0, limit=PAGES_SHOWN)["pages"]
-    rows = [{"url": page["url"], "lines": _excerpt(domain.cached_text(root.workdir, page["key"]), query)}
-            for page in pages]
-    note = "; ".join(notes)
-    evidence = {"query": query, "urls": urls, "read": [page["url"] for page in pages], "note": note}
-    R.write_scenario(root.workdir, record.model_copy(update={"evidence": [*record.evidence, evidence]}))
-    return Rows(summary=note or f"{len(urls)} results, {len(rows)} pages read", rows=rows)
+def kept(root: ReviewRoot, name: str, args: dict, result: Any) -> None:
+    """The shared web tools' on_call: the call kept on every scenario the session reviews."""
+    row = evidence_row(name, args, result)
+    for scenario_id in root.current:
+        record = _record(root, scenario_id)
+        R.write_scenario(root.workdir, record.model_copy(update={"evidence": [*record.evidence, row]}))
 
 
 def human_row(workdir: Any, record: R.Scenario, question: str) -> None:
@@ -214,7 +202,7 @@ CITE = "a URL your own search returned for this scenario, or a line of the polic
 
 
 def cited(root: ReviewRoot, record: R.Scenario, cite: str) -> bool:
-    """Whether a cite is a URL this scenario's own search returned, or a substring of the policy."""
+    """Whether a cite is a URL a search kept on this scenario returned, or a substring of the policy."""
     text = cite.strip()
     returned = {url for row in record.evidence for url in row.get("urls") or ()}
     return text in returned or (bool(text) and text in (root.world.policy or ""))
@@ -282,9 +270,6 @@ def scenario_tools(root: ReviewRoot) -> list[AgentTool]:
                 for r in R.load_scenarios(root.workdir) if r.status == args.status]
         return Rows(summary=f"{len(rows)} scenarios {args.status}", rows=rows)
 
-    async def search(args: SearchArgs) -> Rows:
-        return searched(root, args.id, args.query)
-
     async def lookup_rows(args: LookupArgs) -> Rows:
         return Rows(summary=lookups["lookup_rows"](args.table, args.key))
 
@@ -306,7 +291,6 @@ def scenario_tools(root: ReviewRoot) -> list[AgentTool]:
 
     return [tool("read_scenario", "The view of one scenario.", IdArgs, read_scenario),
             tool("list_scenarios", "The scenarios with one status.", StatusArgs, list_scenarios),
-            tool("search", "Search the web; the results are kept on the scenario as evidence.", SearchArgs, search),
             tool("lookup_rows", "Read rows of the world by table and key; with no key, the count and sample keys.",
                  LookupArgs, lookup_rows),
             tool("search_rows", "Find row keys whose dotted field equals a value.", RowSearchArgs, search_rows),
@@ -316,13 +300,16 @@ def scenario_tools(root: ReviewRoot) -> list[AgentTool]:
 
 
 def scenario_extension(root: ReviewRoot) -> Callable[[ExtensionAPI], None]:
-    """The setup the harness loads: base tools over the blind root, the role's tools, the prompt."""
+    """The setup the harness loads: base tools over the blind root, the role's tools, the shared web tools
+    with their calls kept as evidence, the prompt."""
 
     def setup(api: ExtensionAPI) -> None:
         root.dir.mkdir(parents=True, exist_ok=True)
         register_base_tools(api, root.dir, only=BASE_ONLY)
         for tool in scenario_tools(root):
             api.register_tool(tool)
+        register_web_tools(api, search=root.reader, refuse=root.refuse,
+                           on_call=lambda name, args, result: kept(root, name, args, result))
         for name, text in prompt_mod.sections():
             api.add_prompt_section(f"scenario_{name}", prompt_block(name, text))
             if name == "receives":
@@ -403,6 +390,7 @@ def _session(root: ReviewRoot, ids: list[str], model: Any, subscribers: list[Cal
                            bus=root.bus)
     detach = [harness.subscribe(subscriber) for subscriber in subscribers]
     detach.append(harness.subscribe(budget.subscriber(root.workdir, STAGE, name, ceiling)))
+    root.current = list(ids)
     try:
         paths = write_views(root, ids)
         load_extensions(harness, [scenario_extension(root)])
@@ -412,6 +400,7 @@ def _session(root: ReviewRoot, ids: list[str], model: Any, subscribers: list[Cal
     finally:
         for unsubscribe in detach:
             unsubscribe()
+        root.current = []
     return bool(capped)
 
 
@@ -438,15 +427,18 @@ def _over(ceiling: Optional[budget.Ceiling]) -> bool:
 
 def review(workdir: Any, *, model: Any, fixer: Any = None, batch: int = BATCH, engine: Any = None,
            env: Optional[dict] = None, ceiling: Optional[budget.Ceiling] = None,
-           subscribers: Iterable[Callable] = (), description: str = "") -> dict:
+           subscribers: Iterable[Callable] = (), description: str = "",
+           refuse: Optional[Callable[[str], str]] = None) -> dict:
     """Review every born scenario in batches, fix what was sent back and review it again, then settle.
 
     The first pass reviews every born scenario; each later pass reviews only what the generator rewrote in
     this call, at most PASSES passes. A scenario no session ruled stays born for the next call.
     """
     world = world_of(workdir, description)
+    engine = engine if engine is not None else search_mod.reader(workdir, env)
     root = ReviewRoot(world=world, bus=Bus(Path(workdir) / "bus.jsonl", agent="examiner"),
-                      engine=engine if engine is not None else search_mod.reader(workdir, env))
+                      reader=search_mod.Crawled(engine, workdir) if engine is not None else None,
+                      refuse=refuse or domain.destination_refusal)
     watchers = list(subscribers)
     todo = [record.id for record in R.load_scenarios(workdir) if record.status == "born"]
     capped: list[str] = []

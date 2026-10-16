@@ -28,6 +28,8 @@ from kullback.agent.context import ContextConfig, prompt_block
 from kullback.agent.extensions import ExtensionAPI, load_extensions
 from kullback.agent.harness import AgentHarness
 from kullback.agent.tools import AgentTool
+from kullback.agent.web_tools import TOOL_NAMES as WEB_TOOLS
+from kullback.agent.web_tools import register_web_tools
 from kullback.examiner import session as session_mod
 from kullback.runner import budget
 from kullback.synth import mine_prompt
@@ -60,15 +62,17 @@ SESSION_TOOLS = {"recordings": ("list_openings", "list_scenarios", "write_scenar
 
 @dataclass
 class MineRoot:
-    """One mining session: the world, its source, its items, the web callables, what it wrote."""
+    """One mining session: the world, its source, its items, the web reader (or None), what it wrote.
+
+    `reader` is search.Crawled over the harness's reader, registered as the shared web tools' search; the
+    cache key of every page it reads lands in `pages`, which the search write checks a span against.
+    """
 
     world: World
     kind: str
     items: list[dict] = field(default_factory=list)
-    search: Optional[Callable[[str], list[str]]] = None
-    fetch: Optional[Callable[[str], str]] = None
-    corpus_url: Optional[str] = None
-    exclude: tuple = ()
+    reader: Any = None
+    refuse: Callable[[str], str] = domain.destination_refusal
     found: list = field(default_factory=list)
     dropped: Counter = field(default_factory=Counter)
     bus: Any = None
@@ -89,14 +93,6 @@ class Strict(BaseModel):
 
 class NoArgs(Strict):
     pass
-
-
-class QueryArgs(Strict):
-    query: str
-
-
-class UrlArgs(Strict):
-    url: str
 
 
 class WriteArgs(Strict):
@@ -246,19 +242,8 @@ def _scenario_rows(root: MineRoot) -> list[dict]:
     return rows + [{"id": r.id, "statement": r.statement, "status": "written now"} for r in root.found]
 
 
-def _read_page(root: MineRoot, url: str) -> Rows:
-    crawled = domain.crawl(root.workdir, [{"url": url, "depth": 0, "via": domain.SEARCHED}], fetch=root.fetch,
-                           depth=0, corpus_url=root.corpus_url, exclude=root.exclude, limit=1)
-    if not crawled["pages"]:
-        reason = (crawled["refused"] or [{"reason": domain.UNREACHABLE}])[0]["reason"]
-        raise ValueError(f"page not read: {reason}")
-    page = crawled["pages"][0]
-    root.pages[url] = page["key"]
-    return Rows(summary=domain.cached_text(root.workdir, page["key"])[:domain.PAGE_CHARS], rows=[{"url": url}])
-
-
 def mine_tools(root: MineRoot) -> list[AgentTool]:
-    """The tools of one session, the subset its source uses."""
+    """The role's own tools of one session, the subset its source uses; the web tools are D375's."""
 
     async def list_openings(args: NoArgs) -> Rows:
         rows = [{"number": at, "text": item["text"]} for at, item in enumerate(root.items)]
@@ -268,13 +253,6 @@ def mine_tools(root: MineRoot) -> list[AgentTool]:
         rows = _scenario_rows(root)
         return Rows(summary=f"{len(rows)} scenarios", rows=rows)
 
-    async def search(args: QueryArgs) -> Rows:
-        urls = root.search(args.query) if root.search is not None else []
-        return Rows(summary=f"{len(urls)} results", rows=[{"url": url} for url in urls])
-
-    async def read_page(args: UrlArgs) -> Rows:
-        return _read_page(root, args.url)
-
     async def write_scenario(args: WriteArgs) -> Rows:
         return written(root, args)
 
@@ -283,16 +261,15 @@ def mine_tools(root: MineRoot) -> list[AgentTool]:
 
     every = {"list_openings": ("The numbered items of this session.", NoArgs, list_openings),
              "list_scenarios": ("The scenarios already written.", NoArgs, list_scenarios),
-             "search": ("The result URLs for a web search query.", QueryArgs, search),
-             "read_page": ("The text of one page a search returned.", UrlArgs, read_page),
              "write_scenario": ("Write one scenario under the rule.", WriteArgs, write_scenario),
              "rewrite_scenario": ("Rewrite one scenario sent back.", RewriteArgs, rewrite_scenario)}
     return [AgentTool(name, every[name][0], every[name][1], Rows, every[name][2], render=render)
-            for name in SESSION_TOOLS[root.kind]]
+            for name in SESSION_TOOLS[root.kind] if name in every]
 
 
 def mine_extension(root: MineRoot) -> Callable[[ExtensionAPI], None]:
-    """The setup the harness loads: base tools over the store, the session's tools, the prompt."""
+    """The setup the harness loads: base tools over the store, the session's tools, the shared web tools
+    where its source searches, the prompt."""
 
     def setup(api: ExtensionAPI) -> None:
         folder = R.store_dir(root.workdir)
@@ -300,6 +277,8 @@ def mine_extension(root: MineRoot) -> Callable[[ExtensionAPI], None]:
         register_base_tools(api, folder, only=BASE_ONLY)
         for tool in mine_tools(root):
             api.register_tool(tool)
+        if set(WEB_TOOLS) & set(SESSION_TOOLS[root.kind]):
+            register_web_tools(api, search=root.reader, refuse=root.refuse)
         world = root.world
         for name, text in mine_prompt.sections(SESSION_TOOLS[root.kind]):
             api.add_prompt_section(f"synth_{name}", prompt_block(name, text))

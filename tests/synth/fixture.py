@@ -5,10 +5,12 @@ Every name is abstract: widgets, slots and a holder. No corpus, domain or custom
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
 from kullback.ai.provider import ModelReply, ToolCallRequest
 from kullback.builder.search import Chain, MemoSearch, TestSearch
+from kullback.domain import destination_refusal
 from kullback.runner.records import RawPtr, Task, Trace, Turn, as_dict, write_json
 
 PTR = RawPtr(file_hash="fixture", sim_index=0)
@@ -61,6 +63,9 @@ PAGE = ("<html><body><h1>Help</h1><p>Customers often ask to move a widget after 
 
 
 URL = "https://help.example/a"
+# The domain module's destination check over a scripted resolver: every host answers with one public
+# address, so no test resolves a name over the network.
+REFUSE = partial(destination_refusal, resolve=lambda host: ["93.184.215.14"])
 
 
 def web(workdir: Path, hits: dict | None = None, pages: dict | None = None) -> tuple[MemoSearch, TestSearch]:
