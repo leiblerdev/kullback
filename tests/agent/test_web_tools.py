@@ -57,7 +57,7 @@ def test_search_rows_come_from_the_double_and_a_repeat_query_is_a_memo_hit(tmp_p
     assert [row["url"] for row in first.details["rows"]] == [PAGE_URL, "https://example.org/returns"]
     assert first.details["rows"][0] == {"title": "Refunds", "url": PAGE_URL, "snippet": "how refunds work",
                                         "site": "example.com"}
-    assert first.details["summary"].startswith("2 hits") and "answered by test" in first.details["summary"]
+    assert first.details["summary"].startswith("2 hits")
     second = call(registry, "search", {"query": "refund time", "limit": 5})
     assert second.details == first.details
     assert double.queries == ["refund time"]
@@ -90,11 +90,40 @@ def test_read_page_gives_numbered_lines_with_title_and_length(tmp_path):
     assert double.fetched == [PAGE_URL]
 
 
-def test_read_page_caps_lines_at_max_chars(tmp_path):
+def test_read_page_caps_lines_at_max_chars_and_cuts_the_line_that_does_not_fit(tmp_path):
     registry, _, _ = setup(tmp_path)
     result = call(registry, "read_page", {"url": PAGE_URL, "max_chars": 20})
-    assert result.details["rows"] == [{"line": 1, "text": "Refunds"}]
-    assert "showing 1" in result.details["summary"]
+    assert result.details["rows"] == [{"line": 1, "text": "Refunds"}, {"line": 2, "text": "A refund tak"}]
+    assert "showing lines 1 to 2 of 3" in result.details["summary"]
+    assert "line 2 cut to 12 of 25 characters" in result.details["summary"]
+
+
+def test_read_page_names_the_next_line_while_more_remain(tmp_path):
+    registry, _, _ = setup(tmp_path)
+    first = call(registry, "read_page", {"url": PAGE_URL, "max_chars": 8})
+    assert first.details["rows"] == [{"line": 1, "text": "Refunds"}]
+    assert first.details["summary"].endswith("call again with from_line=2")
+    whole = call(registry, "read_page", {"url": PAGE_URL})
+    assert "call again" not in whole.details["summary"]
+
+
+def test_a_middle_window_keeps_the_line_numbers_of_the_whole_page():
+    text = "\n".join(f"line {number}" for number in range(1, 11))
+    assert numbered_lines(text, 13, from_line=4) == [{"line": 4, "text": "line 4"}, {"line": 5, "text": "line 5"}]
+
+
+def test_a_long_line_is_cut_and_the_next_line_is_read_on_the_following_call():
+    text = "short\n" + "x" * 50 + "\nafter the long line"
+    first = numbered_lines(text, 20)
+    assert first == [{"line": 1, "text": "short"}, {"line": 2, "text": "x" * 14}]
+    assert numbered_lines(text, 20, from_line=first[-1]["line"] + 1) == [{"line": 3, "text": "after the long line"}]
+
+
+def test_read_page_from_a_line_past_the_end_shows_no_rows_and_says_so(tmp_path):
+    registry, _, _ = setup(tmp_path)
+    result = call(registry, "read_page", {"url": PAGE_URL, "from_line": 9})
+    assert result.details["rows"] == []
+    assert "from_line=9 is past the end" in result.details["summary"]
 
 
 def test_a_single_line_longer_than_max_chars_is_cut_not_dropped():
@@ -153,6 +182,6 @@ def test_on_call_sees_every_call_and_never_changes_the_result(tmp_path):
     refused = call(registry, "read_page", {"url": "http://127.0.0.1/"})
     assert [(name, rows) for name, _, _, rows in seen] == [("search", 2), ("read_page", 3), ("read_page", 0)]
     assert seen[0][1] == {"query": "refund", "limit": 8}
-    assert seen[1][1] == {"url": PAGE_URL, "max_chars": 6000}
+    assert seen[1][1] == {"url": PAGE_URL, "max_chars": 6000, "from_line": 1}
     assert len(searched.details["rows"]) == 2 and len(read.details["rows"]) == 3
     assert refused.details["summary"] == seen[2][2]

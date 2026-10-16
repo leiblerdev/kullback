@@ -45,6 +45,7 @@ class ReadPageArgs(BaseModel):
     url: str = Field(description="The http or https URL of the page, usually one a search hit gave.")
     max_chars: int = Field(default=DEFAULT_PAGE_CHARS, ge=1, le=MAX_PAGE_CHARS,
                            description="How many characters of the page's text to show.")
+    from_line: int = Field(default=1, ge=1, description="The page line to start at; the summary names the next one.")
 
 
 class WebResult(BaseModel):
@@ -59,34 +60,27 @@ def _render(result: WebResult) -> str:
     return "\n".join([result.summary, *(json.dumps(row, ensure_ascii=False) for row in result.rows)])
 
 
-def _provider(search: Any, kind: str, payload: dict) -> str:
-    """Who answered, as the memo records it, or nothing where the search keeps no memo."""
-    path_of = getattr(search, "_path", None)
-    path = path_of(kind, payload) if callable(path_of) else None
-    if path is None or not path.is_file():
-        return ""
-    return json.loads(path.read_text(encoding="utf-8")).get("provider") or ""
-
-
 def _searched(search: Any, args: WebSearchArgs) -> WebResult:
     hits = search.search(args.query, args.limit)
     rows = [{"title": hit.title, "url": hit.url, "snippet": hit.snippet, "site": hit.site} for hit in hits]
-    provider = _provider(search, "search", {"query": args.query, "limit": args.limit})
-    by = f", answered by {provider}" if provider else ""
-    return WebResult(summary=f"{len(rows)} hits for {args.query!r}{by}", rows=rows)
+    return WebResult(summary=f"{len(rows)} hits for {args.query!r}", rows=rows)
 
 
-def numbered_lines(text: str, max_chars: int) -> list[dict]:
-    """The text's lines numbered from 1, as many whole lines as fit in max_chars (at least part of one)."""
+def numbered_lines(text: str, max_chars: int, from_line: int = 1) -> list[dict]:
+    """The page's lines from `from_line` on, numbered as in the whole page, as many as fit in max_chars.
+
+    A line longer than what is left of the budget is cut to what fits and ends the window, so a long
+    line never hides the lines after it: the next call starts at the line after it.
+    """
     rows: list[dict] = []
-    used = 0
-    for number, line in enumerate(text.splitlines(), start=1):
-        if used + len(line) > max_chars:
-            if not rows:
-                rows.append({"line": number, "text": line[:max_chars]})
+    left = max_chars
+    for number, line in enumerate(text.splitlines()[from_line - 1:], start=from_line):
+        if left <= 0:
             break
-        rows.append({"line": number, "text": line})
-        used += len(line) + 1
+        rows.append({"line": number, "text": line[:left]})
+        if len(line) > left:
+            break
+        left -= len(line) + 1
     return rows
 
 
@@ -95,9 +89,18 @@ def _read(search: Any, args: ReadPageArgs, refuse: Refuse) -> WebResult:
     if why:
         return WebResult(summary=f"read_page refused {args.url!r}: {why}")
     page = search.fetch([args.url])[0]
-    rows = numbered_lines(page.text, args.max_chars)
-    total = len(page.text.splitlines())
-    parts = [f"{page.title or 'untitled'} ({len(page.text)} characters, {total} lines; showing {len(rows)})"]
+    lines = page.text.splitlines()
+    rows = numbered_lines(page.text, args.max_chars, args.from_line)
+    head = f"{page.title or 'untitled'} ({len(page.text)} characters, {len(lines)} lines)"
+    if rows:
+        first, last = rows[0]["line"], rows[-1]["line"]
+        parts = [f"{head}; showing lines {first} to {last} of {len(lines)}"]
+        if len(rows[-1]["text"]) < len(lines[last - 1]):
+            parts.append(f"line {last} cut to {len(rows[-1]['text'])} of {len(lines[last - 1])} characters")
+        if last < len(lines):
+            parts.append(f"call again with from_line={last + 1}")
+    else:
+        parts = [f"{head}; from_line={args.from_line} is past the end, no lines shown"]
     if page.error:
         parts.append(f"error: {page.error}")
     return WebResult(summary="; ".join(parts), rows=rows)
@@ -120,7 +123,7 @@ def web_tools(*, search: Any, refuse: Refuse, on_call: Optional[OnCall] = None) 
              "Example: search(query=\"how long does a refund take\", limit=5).",
              WebSearchArgs, lambda args: _searched(search, args)),
         tool("read_page", "Read one web page as numbered lines of its text, with its title and length. "
-             "Example: read_page(url=\"https://example.com/help/refunds\", max_chars=4000).",
+             "Example: read_page(url=\"https://example.com/help/refunds\", max_chars=4000, from_line=1).",
              ReadPageArgs, lambda args: _read(search, args, refuse)),
     ]
 

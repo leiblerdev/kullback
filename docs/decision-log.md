@@ -2915,9 +2915,12 @@ agent core sits below the Builder and the domain module (pyproject.toml, layers)
 role builds the D115 chain where its layer allows (`builder.search.search_for(workdir, env)` in the Builder and the
 synthetic generator, the CLI for the Examiner) and passes it in as `search`, duck typed (`search(query, limit)` and
 `fetch(urls)`), with `refuse`, the domain module's `destination_refusal`. `search(query, limit)` returns rows of title,
-url, snippet and site, at most ten, and its summary names the provider where the memo records it. `read_page(url,
-max_chars)` asks `refuse` first (a refusal is a summary with no rows, never an exception to the model) and returns the
-page as numbered lines up to max_chars, with the title, the length and any Page error in the summary. With
+url, snippet and site, at most ten, and its summary is the hit count and the query. `read_page(url, max_chars,
+from_line)` asks `refuse` first (a refusal is a summary with no rows, never an exception to the model) and returns the
+page as numbered lines from from_line up to max_chars, numbered as in the whole page so a span's line is the same in
+every call. A line that does not fit is cut to what fits and ends the window, so it never hides the lines after it,
+and while lines remain the summary says "call again with from_line=<next>", with the title, the length and any Page
+error. With
 `search=None` both tools still register and say the search is off, naming no variable: the agent core does not know
 the chain's variables, and the role's own note names them. `on_call(name, args, result)` gets a copy of every result
 so a role can keep evidence (the synthetic generator keeps its searches on the scenario) and cannot change what the
