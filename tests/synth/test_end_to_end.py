@@ -29,12 +29,19 @@ TYPED = ("I want to see what happens when someone asks which slot their widget s
          "test whether the agent will paint a widget")
 
 
+def _write(call_id: str, statement: str, source: str, **args) -> ModelReply:
+    return call("write_scenario", {"statement": statement, "source": source, **args}, call_id)
+
+
 def _miner_model() -> TestModel:
+    """Three sessions: a batch of openings, the web, a batch of typed lines."""
     return TestModel([
-        json.dumps({"scenarios": [{"statement": PLAIN, "openings": [0]}, {"statement": VAGUE, "openings": [1, 2]}]}),
-        json.dumps({"queries": ["what holders ask about sealed widgets"]}),
-        json.dumps({"scenarios": [{"statement": SEALED, "span": SPAN}]}),
-        json.dumps({"scenarios": [{"line": 0, "statement": WHICH}, {"line": 1, "statement": PAINT}]})])
+        _write("m0", PLAIN, "recordings", openings=[0]), _write("m1", VAGUE, "recordings", openings=[1, 2]),
+        ModelReply(content="Wrote two."),
+        call("search", {"query": "what holders ask about sealed widgets"}, "s0"), call("read_page", {"url": URL}, "s1"),
+        _write("s2", SEALED, "search", url=URL, span=SPAN), ModelReply(content="Wrote one."),
+        _write("a0", WHICH, "ask", openings=[0]), _write("a1", PAINT, "ask", openings=[1]),
+        ModelReply(content="Wrote two.")])
 
 
 def _rule(scenario_id: str, call_id: str, **verdict) -> ModelReply:
@@ -68,8 +75,9 @@ def _reviewed(tmp_path):
     workdir, born = _mined(tmp_path)
     ids = {record.statement: record.id for record in born}
     model = _review_model(ids)
-    out = V.review(workdir, model=model, fixer=TestModel([json.dumps({"statement": FIXED})]),
-                   engine=web(workdir)[0])
+    fixer = TestModel([call("rewrite_scenario", {"id": ids[VAGUE], "statement": FIXED}, "f0"),
+                       ModelReply(content="Rewrote one.")])
+    out = V.review(workdir, model=model, fixer=fixer, engine=web(workdir)[0])
     return workdir, ids, model, out
 
 
@@ -89,6 +97,14 @@ def test_every_outcome_settles_from_the_review_and_the_fix_loop(tmp_path):
     assert finding["key"] == f"environment:scenario:{ids[PAINT]}" and out["findings"]
     assert [row["id"] for row in read_json(R.store_dir(workdir) / R.HUMAN)] == [ids[WHICH]]
     assert R.load_scenario(workdir, ids[PLAIN]).evidence[0]["urls"] == [URL]
+
+
+def test_mining_and_review_play_as_sessions_on_one_bus_under_their_own_agents_and_stages(tmp_path):
+    workdir, _, _, _ = _reviewed(tmp_path)
+    rows = [json.loads(line) for line in (workdir / "bus.jsonl").read_text().splitlines()]
+    assert {row["agent"] for row in rows} == {"synth", "examiner"}
+    names = {row["event"].get("name") for row in rows}
+    assert {"scenario_written", "scenario_rewritten", "scenario_verdict"} <= names
 
 
 def test_the_review_never_sees_a_source_kind_a_task_id_or_a_frequency(tmp_path):

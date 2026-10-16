@@ -1,22 +1,44 @@
-"""The scenario miner and the search reader (D372, D374), on scripted models only."""
+"""The synthetic generator's miner as sessions on the shared harness (D372), on scripted models only."""
 
 from __future__ import annotations
 
 import json
 from collections import Counter
-from pathlib import Path
 
 from kullback import domain
-from kullback.ai.provider import LIVE_ENV_VAR, TestModel
+from kullback.ai.provider import LIVE_ENV_VAR, ModelReply, TestModel
+from kullback.ai.usage import Usage
 from kullback.builder.search import TINYFISH_KEY_VAR
+from kullback.runner import budget
+from kullback.synth import mine_prompt
+from kullback.synth import mine_tools as T
 from kullback.synth import miner as M
 from kullback.synth import records as R
 from kullback.synth import search as S
-from tests.synth.fixture import DESCRIPTION, OPENINGS, URL, make_workdir, web
+from tests.synth.fixture import DESCRIPTION, OPENINGS, POLICY, STATE, TOOLS, URL, call, make_workdir, web
+
+SEALED_LINE = POLICY.splitlines()[0]
+SPAN = "Customers often ask to move a widget after it has been sealed."
 
 
-def _reply(body: dict) -> str:
-    return json.dumps(body)
+def _write(call_id: str, statement: str, source: str = "recordings", **args) -> ModelReply:
+    return call("write_scenario", {"statement": statement, "source": source, **args}, call_id)
+
+
+def _done(text: str = "Wrote them.") -> ModelReply:
+    return ModelReply(content=text, usage=Usage(input=10, output=2))
+
+
+def _mining(tmp_path, *replies) -> tuple[M.Mining, TestModel]:
+    model = TestModel([*replies])
+    workdir = make_workdir(tmp_path)
+    return M.Mining(world=M.world_of(workdir), model=model, bus=T.bus_for(workdir)), model
+
+
+def _results(model: TestModel) -> list[str]:
+    """Every tool result the agent read, in order."""
+    last = model.calls[-1]["messages"]
+    return [str(message.get("content")) for message in last if message.get("role") == "tool"]
 
 
 def test_every_recording_gives_its_first_user_turn_as_the_opening_ask(tmp_path):
@@ -29,108 +51,94 @@ def test_a_statement_naming_a_tool_an_id_or_an_identifying_row_value_is_refused(
     assert M.statement_refusal("a holder asks to have a widget put in another slot", world) == ""
     assert M.statement_refusal("a holder wants get_widget run", world) == M.TOOL_NAME
     assert M.statement_refusal("a holder wants widget W1001 put elsewhere", world) == M.ID_SHAPE
-    assert M.statement_refusal("Ada Byron wants a widget moved", world) == M.ROW_VALUE
+    assert M.statement_refusal("Ada Byron wants a widget moved", world) == "row_value"
     assert M.statement_refusal("a holder within the 30-day window wants a sealed widget moved", world) == ""
 
 
-def test_recordings_group_into_statements_with_their_frequency_and_checked_policy_lines(tmp_path):
-    world = M.world_of(make_workdir(tmp_path))
-    model = TestModel([_reply({"scenarios": [
-        {"statement": "a holder wants a widget moved to another slot", "openings": [0, 1],
-         "policy_lines": ["A widget may be moved to another slot only before it is sealed.", "made up line"]},
-        {"statement": "a holder wants a replacement for a widget that arrived broken", "openings": [2]}]})])
-    dropped = Counter()
-    found = M.from_recordings(world, model, dropped=dropped)
-    assert [(r.frequency, r.source.task_ids) for r in found] == [(2, ["task-a1", "task-b2"]), (1, ["task-c3"])]
-    assert found[0].policy_lines == ["A widget may be moved to another slot only before it is sealed."]
-    assert dropped["policy_lines_dropped"] == 1 and len(model.calls) == 1
+def test_a_recordings_session_groups_openings_with_their_frequency_and_policy_lines(tmp_path):
+    mining, model = _mining(tmp_path,
+                            call("list_openings", {}, "m0"),
+                            _write("m1", "a holder wants a widget moved to another slot", openings=[0, 1],
+                                   policy_lines=[SEALED_LINE]),
+                            _write("m2", "a holder wants a replacement for a widget that arrived broken", openings=[2]),
+                            _done())
+    M.from_recordings(mining)
+    assert [(r.frequency, r.source.task_ids) for r in mining.found] == [(2, ["task-a1", "task-b2"]), (1, ["task-c3"])]
+    assert mining.found[0].policy_lines == [SEALED_LINE] and mining.dropped == Counter()
+    assert OPENINGS["task-b2"] in _results(model)[0]
 
 
-def test_a_statement_breaking_the_rule_is_sent_back_once_then_dropped_and_counted(tmp_path):
-    world = M.world_of(make_workdir(tmp_path))
-    model = TestModel([
-        _reply({"scenarios": [{"statement": "a holder wants move_widget called", "openings": [0]},
-                              {"statement": "a holder wants widget W1001 moved", "openings": [1]}]}),
-        _reply({"statements": [{"index": 0, "statement": "a holder wants a widget moved to another slot"},
-                               {"index": 1, "statement": "a holder wants widget W1001 moved now"}]})])
-    dropped = Counter()
-    found = M.from_recordings(world, model, dropped=dropped)
-    assert [r.statement for r in found] == ["a holder wants a widget moved to another slot"]
-    assert dropped == Counter({M.ID_SHAPE: 1}) and len(model.calls) == 2
-    assert "move_widget" not in model.calls[1]["messages"][0]["content"].split("why:")[1]
+def test_a_refused_write_is_written_again_once_and_a_second_refusal_drops_and_counts_it(tmp_path):
+    mining, model = _mining(tmp_path,
+                            _write("m0", "a holder wants move_widget called", openings=[0]),
+                            _write("m1", "a holder wants a widget moved to another slot", openings=[0]),
+                            _write("m2", "a holder wants widget W1001 moved", openings=[1]),
+                            _write("m3", "a holder wants widget W1002 moved now", openings=[1]),
+                            _write("m4", "a holder wants a widget moved", openings=[2], policy_lines=["made up"]),
+                            _done())
+    M.from_recordings(mining)
+    assert [r.statement for r in mining.found] == ["a holder wants a widget moved to another slot"]
+    assert mining.dropped == Counter({M.ID_SHAPE: 1, T.POLICY_LINE: 1})
+    results = _results(model)
+    assert "write it again once" in results[0] and "dropped" in results[3]
 
 
-def test_the_seam_reads_urls_and_page_text_through_the_memo_and_serves_a_repeat_from_it(tmp_path):
-    engine, inner = web(tmp_path)
-    search, fetch = S.callables(engine)
-    assert search("move a sealed widget") == [URL] and "sealed" in fetch(URL)
-    again, again_fetch = S.callables(S.reader(tmp_path, env={}))
-    assert again("move a sealed widget") == [URL] and "sealed" in again_fetch(URL)
-    assert inner.queries == ["move a sealed widget"] and inner.fetched == [URL]
-
-
-def test_a_page_the_provider_cannot_read_is_empty_text_and_a_note(tmp_path):
-    engine, _ = web(tmp_path, pages={})
-    notes: list = []
-    _, fetch = S.callables(engine, notes)
-    assert fetch(URL) == "" and any(URL in note for note in notes)
-
-
-def test_no_module_of_the_layer_holds_a_second_reader_or_its_key_variables():
-    folder = Path(M.__file__).parent
-    texts = [path.read_text(encoding="utf-8").lower() for path in folder.glob("*.py")]
-    assert texts and not [text for text in texts if "serper" in text or "kullback_search" in text]
-
-
-def _search_model(span: str) -> TestModel:
-    return TestModel([
-        _reply({"queries": ["what holders ask about sealed widgets"]}),
-        _reply({"scenarios": [
-            {"statement": "a holder wants to move a widget that is already sealed", "span": span,
-             "policy_lines": ["A sealed widget cannot be moved; offer a replacement instead."]},
-            {"statement": "a holder wants their widget painted", "span": "We paint widgets on request."}]})])
-
-
-def test_a_search_statement_cites_the_byte_range_of_a_span_the_page_holds_and_unverified_ones_drop(tmp_path):
-    world = M.world_of(make_workdir(tmp_path))
-    span = "Customers often ask to move a widget after it has been sealed."
-    dropped = Counter()
-    found = M.from_search(world, _search_model(span), dropped=dropped, engine=web(world.workdir)[0])
-    [record] = found
-    raw = domain.cached_text(world.workdir, record.source.key).encode("utf-8")
-    assert raw[record.source.start:record.source.end].decode("utf-8") == span
+def test_a_search_session_cites_the_byte_range_of_a_span_on_a_page_it_read(tmp_path):
+    mining, model = _mining(tmp_path,
+                            call("search", {"query": "what holders ask about sealed widgets"}, "m0"),
+                            _write("m1", "a holder wants to move a widget that is already sealed", "search",
+                                   url=URL, span=SPAN),
+                            call("read_page", {"url": URL}, "m2"),
+                            _write("m3", "a holder wants to move a widget that is already sealed", "search",
+                                   url=URL, span=SPAN),
+                            _write("m4", "a holder wants their widget painted", "search", url=URL,
+                                   span="We paint widgets on request."),
+                            _done())
+    engine, inner = web(mining.world.workdir)
+    M.from_search(mining, engine=engine)
+    [record] = mining.found
+    raw = domain.cached_text(mining.world.workdir, record.source.key).encode("utf-8")
+    assert raw[record.source.start:record.source.end].decode("utf-8") == SPAN
     assert record.source.url == URL and record.frequency == 0
-    assert dropped[M.NO_SPAN] == 1
+    assert mining.dropped == Counter({T.NO_SPAN: 1}) and T.NOT_READ.replace("_", " ") in _results(model)[1]
+    assert inner.queries == ["what holders ask about sealed widgets"] and inner.fetched == [URL]
 
 
-def test_with_the_live_switch_off_and_no_memo_the_miner_writes_no_query_and_reads_no_page(tmp_path):
-    world = M.world_of(make_workdir(tmp_path))
-    notes: list = []
-    model = TestModel([])
-    assert M.from_search(world, model, env={}, notes=notes) == []
-    assert model.calls == [] and not (world.workdir / "web_cache").exists()
-    assert notes == [S.OFF_NOTE] and LIVE_ENV_VAR in notes[0] and TINYFISH_KEY_VAR in notes[0]
+def test_with_the_live_switch_off_and_no_memo_no_search_session_runs_and_the_note_names_the_switch(tmp_path):
+    mining, model = _mining(tmp_path)
+    M.from_search(mining, env={})
+    assert mining.found == [] and model.calls == [] and not (mining.world.workdir / "web_cache").exists()
+    assert mining.notes == [S.OFF_NOTE] and LIVE_ENV_VAR in S.OFF_NOTE and TINYFISH_KEY_VAR in S.OFF_NOTE
 
 
 def test_ask_lines_are_rewritten_in_the_third_person_and_the_line_as_typed_stays_in_the_source(tmp_path):
-    world = M.world_of(make_workdir(tmp_path))
     typed = "test whether the agent will refund a sealed widget"
     statement = "a holder asks for a refund on a widget that is already sealed"
-    model = TestModel([_reply({"scenarios": [{"line": 0, "statement": statement}]})])
-    dropped = Counter()
-    [record] = M.from_asks(world, [typed, "call move_widget twice"], model, dropped=dropped)
+    mining, model = _mining(tmp_path, _write("m0", typed, "ask", openings=[0]),
+                            _write("m1", statement, "ask", openings=[0]), _done())
+    M.from_asks(mining, [typed, "call move_widget twice"])
+    [record] = mining.found
     assert record.statement == statement and record.statement != typed
-    assert M.statement_refusal(record.statement, world) == ""
+    assert M.statement_refusal(record.statement, mining.world) == ""
     assert (record.source.kind, record.source.line) == ("ask", typed)
-    assert dropped == Counter({M.TOOL_NAME: 1}) and len(model.calls) == 1
-    assert "move_widget" not in model.calls[0]["messages"][0]["content"].split("The lines:")[1]
+    assert mining.dropped == Counter({M.TOOL_NAME: 1}) and T.AS_TYPED.replace("_", " ") in _results(model)[0]
+    assert "move_widget" not in json.dumps(model.calls[0]["messages"][-1])
 
 
 def test_without_a_model_no_ask_line_becomes_a_record_and_a_note_says_so(tmp_path):
-    world = M.world_of(make_workdir(tmp_path))
-    notes: list = []
-    assert M.from_asks(world, ["I want to see what happens when someone asks twice"], None, notes=notes) == []
-    assert any("no ask line was rewritten" in note for note in notes)
+    mining = M.Mining(world=M.world_of(make_workdir(tmp_path)), model=None)
+    M.from_asks(mining, ["I want to see what happens when someone asks twice"])
+    assert mining.found == [] and any("no ask line was rewritten" in note for note in mining.notes)
+
+
+def test_a_mining_session_plays_on_the_workdir_bus_as_synth_and_books_its_calls_under_its_stage(tmp_path):
+    workdir = make_workdir(tmp_path)
+    model = TestModel([_write("m0", "a holder wants a widget moved to another slot", openings=[0, 1, 2]), _done()])
+    M.mine(workdir, model=model, searching=False)
+    records = [json.loads(line) for line in (workdir / "bus.jsonl").read_text().splitlines()]
+    assert {row["agent"] for row in records} == {T.AGENT}
+    assert any(row["event"].get("name") == "scenario_written" for row in records)
+    assert budget.load_totals(workdir)["stages"][M.STAGE]["calls"] >= 1
 
 
 def test_mining_folds_an_ask_into_the_recordings_record_and_writes_coverage(tmp_path):
@@ -139,12 +147,11 @@ def test_mining_folds_an_ask_into_the_recordings_record_and_writes_coverage(tmp_
     which = "someone asks which slot their widget sits in"
     (workdir / R.DIR).mkdir()
     (workdir / R.DIR / R.ASKS).write_text("I want my widget moved\ntest whether it says which slot I picked\n")
-    model = TestModel([_reply({"scenarios": [{"statement": statement, "openings": [0, 1]}]}),
-                       _reply({"scenarios": [{"line": 0, "statement": statement}, {"line": 1, "statement": which}]})])
+    model = TestModel([_write("m0", statement, openings=[0, 1]), _done(),
+                       _write("a0", statement, "ask", openings=[0]), _write("a1", which, "ask", openings=[1]), _done()])
     body = M.mine(workdir, model=model, searching=False)
     records = R.load_scenarios(workdir)
-    kinds = sorted(r.source.kind for r in records)
-    assert kinds == ["ask", "recordings"]
+    assert sorted(r.source.kind for r in records) == ["ask", "recordings"]
     held = next(r for r in records if r.source.kind == "recordings")
     assert [source.kind for source in held.also_from] == ["ask"]
     assert body["coverage"]["asks_not_covered"] == 1 and body["coverage"]["folded"] == {"ask": 1}
@@ -156,35 +163,39 @@ def test_mining_again_keeps_the_status_and_review_of_a_record_already_held(tmp_p
     (workdir / R.DIR).mkdir()
     (workdir / R.DIR / R.ASKS).write_text("test which slot a widget sits in\n")
 
-    def rewrite():
-        return TestModel([_reply({"scenarios": []}),
-                          _reply({"scenarios": [{"line": 0, "statement": "someone asks which slot a widget sits in"}]})])
+    def scripted():
+        return TestModel([_done(), _write("a0", "someone asks which slot a widget sits in", "ask", openings=[0]),
+                          _done()])
 
-    M.mine(workdir, model=rewrite(), searching=False)
+    M.mine(workdir, model=scripted(), searching=False)
     [record] = R.load_scenarios(workdir)
     R.write_scenario(workdir, record.model_copy(update={"status": "passed"}))
-    M.mine(workdir, model=rewrite(), searching=False)
+    M.mine(workdir, model=scripted(), searching=False)
     assert [r.status for r in R.load_scenarios(workdir)] == ["passed"]
 
 
-def test_a_fix_rewrites_the_statement_once_from_the_same_source_and_keeps_the_id(tmp_path):
+def test_a_fix_session_rewrites_once_from_the_same_source_keeps_the_id_and_a_failed_rewrite_ends_unsure(tmp_path):
     world = M.world_of(make_workdir(tmp_path))
-    record = R.born("a holder wants things", R.Source(kind="recordings", task_ids=["task-a1"]), frequency=1)
-    model = TestModel([_reply({"statement": "a holder wants a widget moved to another slot"})])
-    fixed = M.fix(world, record, "too vague: say what the holder wants", model)
-    assert fixed.id == record.id and fixed.fixes == 1 and fixed.status == "born"
-    assert OPENINGS["task-a1"] in model.calls[0]["messages"][0]["content"]
-    bad = M.fix(world, record, "narrow it", TestModel([_reply({"statement": "run get_widget"})]))
-    assert bad.status == "unsure" and bad.review[-1]["refused"] == M.TOOL_NAME
+    first = R.born("a holder wants things", R.Source(kind="recordings", task_ids=["task-a1"]), frequency=1)
+    second = R.born("a holder wants stuff", R.Source(kind="recordings", task_ids=["task-c3"]), frequency=1)
+    model = TestModel([call("rewrite_scenario", {"id": first.id, "statement": "a holder wants a widget moved"}, "f0"),
+                       call("rewrite_scenario", {"id": second.id, "statement": "run get_widget"}, "f1"),
+                       call("rewrite_scenario", {"id": second.id, "statement": "run move_widget"}, "f2"),
+                       _done("Rewrote one.")])
+    fixed, failed = M.fix(world, [(first, "too vague"), (second, "narrow it")], model)
+    assert fixed.id == first.id and fixed.fixes == 1 and fixed.status == "born"
+    assert fixed.statement == "a holder wants a widget moved"
+    assert OPENINGS["task-a1"] in json.dumps(model.calls[0]["messages"])
+    assert failed.status == "unsure" and failed.review[-1]["kind"] == "fix_failed"
+    assert budget.load_totals(world.workdir)["stages"][M.FIX_STAGE]["calls"] >= 1
 
 
-def test_the_miner_prompts_hold_no_tool_table_or_field_name_of_the_environment(tmp_path):
-    from tests.synth.fixture import STATE, TOOLS
-
+def test_the_mining_prompt_runs_in_gepa_order_and_names_nothing_of_the_environment():
+    sections = mine_prompt.sections()
+    assert [name for name, _ in sections] == ["receives", "tools", "examples", "choice", "feedback", "stop"]
+    texts = [body for _, body in sections] + [mine_prompt.opening(kind, count=3) for kind in mine_prompt.OPENINGS]
     names = {tool["name"] for tool in TOOLS} | set(STATE) | {f for rows in STATE.values() for row in rows.values()
                                                               for f in row}
-    texts = [M.RULE, M.RECORDINGS_PROMPT, M.SEND_BACK_PROMPT, M.QUERY_PROMPT, M.PAGE_PROMPT, M.ASK_PROMPT,
-             M.FIX_PROMPT]
     assert not {name for name in names for text in texts if name in text}
     assert DESCRIPTION not in "".join(texts)
     assert all(len(line) < 150 for text in texts for line in text.splitlines())

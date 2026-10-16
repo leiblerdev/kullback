@@ -13,7 +13,7 @@ real asks in and measure the Examiner rather than trust it.
 Outcomes are code, read off the verdict after the session: occurs no strikes the scenario with its
 cite; any unsure puts it on the human queue with the open question; feasible no files an Environment
 finding naming the missing tool or row class and ends it infeasible, never a drop; occurs yes and
-feasible yes passes. `fix_scenario` sends a scenario back to the miner, which rewrites it once from
+feasible yes passes. `fix_scenario` sends a scenario back to the generator, which rewrites it once from
 the same source with the reason; a second request on the same scenario ends it unsure.
 """
 
@@ -45,6 +45,7 @@ from kullback.synth import miner
 from kullback.synth import prompt as prompt_mod
 from kullback.synth import records as R
 from kullback.synth import search as search_mod
+from kullback.synth.rule import World, world_of
 
 ROOT = "review"
 VIEWS = "views"
@@ -73,7 +74,7 @@ TOOL_NAMES = prompt_mod.TOOLS
 class ReviewRoot:
     """What one review works over: the world, the bus, the harness's web reader (or None) and the findings."""
 
-    world: miner.World
+    world: World
     bus: Any = None
     engine: Any = None
     filed: list[dict] = field(default_factory=list)
@@ -220,7 +221,7 @@ def ruled(root: ReviewRoot, args: RuleArgs) -> Rows:
 
 
 def sent_back(root: ReviewRoot, args: FixArgs) -> Rows:
-    """The scenario sent to the miner with the reason; a second request ends it unsure, for a person."""
+    """The scenario sent to the generator with the reason; a second request ends it unsure, for a person."""
     record = _record(root, args.id)
     if record.fixes >= 1:
         row = {"kind": "fix_refused", "why": args.why}
@@ -230,7 +231,7 @@ def sent_back(root: ReviewRoot, args: FixArgs) -> Rows:
     else:
         row = {"kind": "fix_requested", "why": args.why}
         record = record.model_copy(update={"status": "fixing", "review": [*record.review, row]})
-        summary = f"{args.id} goes back to the miner"
+        summary = f"{args.id} goes back to the generator"
     R.write_scenario(root.workdir, record)
     if root.bus is not None:
         root.bus.publish_custom("synth_fix", {"id": args.id, **row})
@@ -281,7 +282,7 @@ def scenario_tools(root: ReviewRoot) -> list[AgentTool]:
             tool("search_rows", "Find row keys whose dotted field equals a value.", RowSearchArgs, search_rows),
             tool("find_tools", "Find the tools whose name or description match a few words.", FindArgs, find),
             tool("rule_scenario", "File the verdict on one scenario.", RuleArgs, rule_scenario),
-            tool("fix_scenario", "Send one scenario back to the miner with the reason.", FixArgs, fix_scenario)]
+            tool("fix_scenario", "Send one scenario back to the generator with the reason.", FixArgs, fix_scenario)]
 
 
 def scenario_extension(root: ReviewRoot) -> Callable[[ExtensionAPI], None]:
@@ -384,16 +385,18 @@ def _session(root: ReviewRoot, ids: list[str], model: Any, subscribers: list[Cal
     return bool(capped)
 
 
-def _fix_all(root: ReviewRoot, fixer: Any) -> list[str]:
-    """Every scenario sent back, rewritten once by the miner; the ids that came back born."""
-    out = []
+def _fix_all(root: ReviewRoot, fixer: Any, ceiling: Optional[budget.Ceiling] = None,
+             subscribers: Iterable[Callable] = ()) -> list[str]:
+    """Every scenario sent back, rewritten once by the generator in one session; the ids that came back born."""
+    sent = []
     for record in R.load_scenarios(root.workdir):
-        if record.status != "fixing":
-            continue
-        why = next((row["why"] for row in reversed(record.review) if row.get("kind") == "fix_requested"), "")
-        fixed = miner.fix(root.world, record, why, fixer)
+        if record.status == "fixing":
+            why = next((row["why"] for row in reversed(record.review) if row.get("kind") == "fix_requested"), "")
+            sent.append((record, why))
+    out = []
+    for fixed, (_, why) in zip(miner.fix(root.world, sent, fixer, ceiling=ceiling, subscribers=subscribers), sent, strict=True):
         if fixed.status == "unsure":
-            human_row(root.workdir, fixed, f"the miner could not rewrite it: {why}")
+            human_row(root.workdir, fixed, f"the generator could not rewrite it: {why}")
         R.write_scenario(root.workdir, fixed)
         out += [fixed.id] if fixed.status == "born" else []
     return out
@@ -408,10 +411,10 @@ def review(workdir: Any, *, model: Any, fixer: Any = None, batch: int = BATCH, e
            subscribers: Iterable[Callable] = (), description: str = "") -> dict:
     """Review every born scenario in batches, fix what was sent back and review it again, then settle.
 
-    The first pass reviews every born scenario; each later pass reviews only what the miner rewrote in
+    The first pass reviews every born scenario; each later pass reviews only what the generator rewrote in
     this call, at most PASSES passes. A scenario no session ruled stays born for the next call.
     """
-    world = miner.world_of(workdir, description)
+    world = world_of(workdir, description)
     root = ReviewRoot(world=world, bus=Bus(Path(workdir) / "bus.jsonl", agent="examiner"),
                       engine=engine if engine is not None else search_mod.reader(workdir, env))
     watchers = list(subscribers)
@@ -427,7 +430,7 @@ def review(workdir: Any, *, model: Any, fixer: Any = None, batch: int = BATCH, e
             capped += ids if _session(root, ids, model, watchers, ceiling) else []
             for scenario_id in ids:
                 settle(root, R.load_scenario(workdir, scenario_id))
-        todo = [] if stopped else _fix_all(root, fixer if fixer is not None else model)
+        todo = [] if stopped else _fix_all(root, fixer if fixer is not None else model, ceiling, watchers)
         if not todo:
             break
     return {"findings": root.filed, "capped": sorted(set(capped)), "stopped_on_ceiling": stopped}

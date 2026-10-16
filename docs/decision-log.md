@@ -2815,19 +2815,30 @@ loop, a realism measure.
 A scenario is one situation customers of the business meet, stated in general words in one or two sentences, with
 the policy lines it touches. Each lives as one record under workdir/scenarios (kullback/synth/records.py): its id
 from the source kind and the statement, the statement, its source, the sources folded into it, the policy lines, the
-frequency, the review rows, the evidence and the status (born, fixing, passed, unsure, infeasible, struck). The miner
-(kullback/synth/miner.py) writes them from three sources. Recordings: the first user turn of every Task, or the
-Spec's opening facts where a Spec exists, grouped by a model into statements; frequency is the number of openings
-grouped. Search: a model writes queries from the one-line description and the tool list, the pages are read through
-the D225 crawl, and each statement must quote a span the page holds, kept as its byte range; a page that copies the
-corpus or is contaminated is refused. Asks: each line a customer typed is rewritten as a scenario in the third
-person, one model call per batch, and the line as typed stays in the source only, since the customer's own shape would
-tell the blind review where it came from. The rule, checked by code on every statement: no tool name or its words, no id shaped value, no identifying value of a row. A broken statement is sent
-back once with the reason, then dropped and counted per reason. Policy lines the policy does not hold are dropped and
-counted. Repeats across sources fold through the D225 dedup into the first record, which keeps the others as also_from.
-Mining again adds records and never resets one already held. The coverage (per source, search scenarios the recordings
-never show, ask lines nothing else covers, folded, dropped) is written to scenarios/mined.json. The verb is
-`kullback synth mine`, models wired through the ceiling as read-domain wires its reader.
+frequency, the review rows, the evidence and the status (born, fixing, passed, unsure, infeasible, struck).
+
+The miner (kullback/synth/miner.py, mine_tools.py, mine_prompt.py) is the synthetic generator, and it is a role on
+the shared agent harness and event stream as the Examiner and the Builder are: one session per batch of one source,
+base tools over the scenario store, its own tools with pydantic arguments and results carrying rows
+(list_openings, list_scenarios, search, read_page, write_scenario, rewrite_scenario), prompt sections in GEPA order
+with examples over placeholders and the stop rule last, the workdir bus under the agent name synth and the budget
+subscriber under the stage synth_mining. Recordings: a session reads a batch of opening asks, the first user turn
+of every recording or the turn the Spec marks as the opening, and writes statements naming the numbers each groups;
+frequency is the number grouped. Search: one session holds the harness's reader (D374), searches, reads pages through
+the D225 crawl, and writes a statement only with a span of a page it read, kept as its byte range; a statement that
+copies the page or the corpus is refused. Asks: a session reads a batch of lines a customer typed and rewrites each
+as a scenario in the third person; the line as typed stays in the source only, since the customer's own shape would
+tell the blind review where it came from, and a line naming a tool is dropped before any session. The rule is held
+by the write tools, which refuse with the reason as the tool result so the agent writes again: no tool name or its
+words, no id shaped value, no identifying value of a row, no policy line the policy does not hold, no span the page
+does not hold, no typed line copied as typed. A second refusal of the same scenario drops it, and one refused once
+and never written again is dropped at the end of the session, counted per reason. Repeats across sources fold
+through the D225 dedup into the first record, which keeps the others as also_from. Mining again adds records and
+never resets one already held. The coverage (per source, search scenarios the recordings never show, ask lines
+nothing else covers, folded, dropped) is written to scenarios/mined.json. The fix step the review asks for is a
+session too, under the stage synth_fix, whose rewrite_scenario holds the same rule; a scenario it does not rewrite
+ends unsure. The verb is `kullback synth mine`, the live adapter under the budget subscriber and a ceiling checked
+between sessions, as the review's sessions are wired.
 
 Names. The package is kullback/synth (tests/synth), the CLI group `kullback synth` with the verbs mine and review,
 the bus agent and the budget stages synth (synth_mining, synth_review, synth_fix), the report heading "## synth". The
@@ -2835,10 +2846,12 @@ store under the workdir stays scenarios/, since the records are scenarios. kullb
 kullback/builder/synth.py are older paths and keep their names.
 
 What it cannot show: nothing ran on a model or on a real workdir. Every test uses a scripted TestModel over an
-abstract fixture, so whether a model groups openings well, writes general statements, or quotes real spans is
-unmeasured. Without a judge model the fold catches only exact canonical repeats.
+abstract fixture, so whether a model groups openings well, writes general statements, quotes real spans, lists
+before it writes, or writes again well after a refusal is unmeasured. Without a judge model the fold catches only
+exact canonical repeats.
 
-Tests: tests/synth/test_records.py, tests/synth/test_miner.py, tests/synth/test_end_to_end.py.
+Tests: tests/synth/test_records.py, tests/synth/test_miner.py (each source as a session, refusals, the bus and the
+stage), tests/synth/test_end_to_end.py (mining and review as sessions on one bus).
 
 ### D373. The Examiner's scenario review: blind, on the shared harness, outcomes by code (2026-10-16)
 

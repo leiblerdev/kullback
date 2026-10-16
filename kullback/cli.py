@@ -1453,6 +1453,15 @@ SCENARIO_ASKS = typer.Option(None, "--asks", help="Lines a customer typed, one p
 SCENARIO_DOMAIN = typer.Option(None, "--domain", help="One line describing the business; else environment.json's.")
 
 
+def _synth_ceiling(workdir: Path, model: str, ceiling_usd: Optional[float]) -> Any:
+    """The spend ceiling the synth sessions check between batches, resumed from budget.json, or none."""
+    budget = importlib.import_module("kullback.runner.budget")
+    ceiling = budget.Ceiling.from_totals(workdir, ceiling_usd) if ceiling_usd is not None else None
+    if ceiling is not None:
+        ceiling.require_priced(model)
+    return ceiling
+
+
 def _scenario_report(workdir: Path) -> None:
     for line in _entry("kullback.synth.report", "lines")(workdir):
         typer.echo(line)
@@ -1476,10 +1485,11 @@ def synth_mine(
     if not model:
         typer.echo("no model: pass --model")
         raise typer.Exit(2)
-    reader = _wrapped_model(_live_model(model, base_url), "synth_mining", Path(workdir), ceiling_usd, model_id=model)
-    _entry("kullback.synth.miner", "mine")(workdir, model=reader, judge=reader, asks=asks, searching=search,
-                                               batch=batch, description=str(domain_line or ""),
-                                               corpus_url=corpus_url)
+    ceiling = _synth_ceiling(workdir, model, ceiling_usd)
+    judge = _wrapped_model(_live_model(model, base_url), "synth_mining", Path(workdir), ceiling_usd, model_id=model)
+    _entry("kullback.synth.miner", "mine")(workdir, model=_live_model(model, base_url), judge=judge, asks=asks,
+                                           searching=search, batch=batch, description=str(domain_line or ""),
+                                           corpus_url=corpus_url, ceiling=ceiling)
     _scenario_report(workdir)
 
 
@@ -1496,14 +1506,10 @@ def synth_review(
     if not model:
         typer.echo("no model: pass --model")
         raise typer.Exit(2)
-    budget = importlib.import_module("kullback.runner.budget")
-    ceiling = budget.Ceiling.from_totals(workdir, ceiling_usd) if ceiling_usd is not None else None
-    if ceiling is not None:
-        ceiling.require_priced(model)
-    fixer = _wrapped_model(_live_model(model, base_url), "synth_fix", Path(workdir), ceiling_usd, model_id=model)
-    out = _entry("kullback.synth.review", "review")(workdir, model=_live_model(model, base_url), fixer=fixer,
-                                                        batch=batch, ceiling=ceiling,
-                                                        description=str(domain_line or ""))
+    ceiling = _synth_ceiling(workdir, model, ceiling_usd)
+    out = _entry("kullback.synth.review", "review")(workdir, model=_live_model(model, base_url),
+                                                    batch=batch, ceiling=ceiling,
+                                                    description=str(domain_line or ""))
     if out.get("stopped_on_ceiling"):
         typer.echo("stopped at the spend ceiling; review again to continue")
     _scenario_report(workdir)
