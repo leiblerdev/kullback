@@ -199,3 +199,31 @@ def test_a_review_session_plays_on_the_shared_bus_and_books_its_calls_under_its_
     bus = (root.workdir / "bus.jsonl").read_text()
     assert "scenario_verdict" in bus
     assert budget.load_totals(root.workdir)["stages"][V.STAGE]["calls"] >= 1
+
+
+def test_a_spent_ceiling_reviews_nothing_and_the_review_says_it_stopped_on_the_ceiling(tmp_path):
+    from kullback.runner import budget
+
+    root, [record] = _root(tmp_path, "a holder wants a widget put in another slot")
+    ceiling = budget.Ceiling(usd=0.5)
+    ceiling.spent = 0.6
+    model = TestModel([call("rule_scenario", {"id": record.id, "occurs": "yes", "occurs_cite": LINE,
+                                              "feasible": "yes", "text": "common and served"})])
+    out = V.review(root.workdir, model=model, engine=web(root.workdir)[0], refuse=REFUSE, ceiling=ceiling)
+    assert out["stopped_on_ceiling"] is True and model.calls == []
+    assert R.load_scenario(root.workdir, record.id).status == "born"
+
+
+def test_a_ceiling_with_room_reviews_as_without_one(tmp_path):
+    from kullback.ai.provider import ModelReply
+    from kullback.ai.usage import Usage
+    from kullback.runner import budget
+
+    root, [record] = _root(tmp_path, "a holder wants a widget put in another slot")
+    model = TestModel([call("rule_scenario", {"id": record.id, "occurs": "yes", "occurs_cite": LINE,
+                                              "feasible": "yes", "text": "common and served"}),
+                       ModelReply(content="Ruled one: passed.", usage=Usage(input=10, output=2))])
+    out = V.review(root.workdir, model=model, engine=web(root.workdir)[0], refuse=REFUSE,
+                   ceiling=budget.Ceiling(usd=0.5))
+    assert out["stopped_on_ceiling"] is False
+    assert R.load_scenario(root.workdir, record.id).status == "passed"

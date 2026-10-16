@@ -62,7 +62,7 @@ class Mining:
     ungrouped: list = field(default_factory=list)
 
     def over(self) -> bool:
-        if self.ceiling is not None and self.ceiling.remaining() <= 0:
+        if self.ceiling is not None and self.ceiling.remaining <= 0:
             if CEILING_NOTE not in self.notes:
                 self.notes.append(CEILING_NOTE)
             return True

@@ -283,3 +283,21 @@ def test_no_mining_prompt_line_names_the_environment_or_runs_past_150_characters
     assert not {name for name in _fixture_names() for text in texts if name in text}
     assert DESCRIPTION not in "".join(texts)
     assert all(len(line) < 150 for text in texts for line in text.splitlines())
+
+
+def test_a_spent_ceiling_runs_no_mining_session_and_the_notes_say_it_stopped_at_the_ceiling(tmp_path):
+    workdir = make_workdir(tmp_path)
+    ceiling = budget.Ceiling(usd=0.5)
+    ceiling.spent = 0.6
+    model = TestModel([_write("m0", "a holder wants a widget moved to another slot", openings=[0, 1, 2]), _done()])
+    body = M.mine(workdir, model=model, searching=False, ceiling=ceiling)
+    assert model.calls == [] and R.load_scenarios(workdir) == []
+    assert M.CEILING_NOTE in body["notes"]
+
+
+def test_a_ceiling_with_room_runs_the_mining_sessions_as_without_one(tmp_path):
+    workdir = make_workdir(tmp_path)
+    model = TestModel([_write("m0", "a holder wants a widget moved to another slot", openings=[0, 1, 2]), _done()])
+    body = M.mine(workdir, model=model, searching=False, ceiling=budget.Ceiling(usd=0.5))
+    assert [r.statement for r in R.load_scenarios(workdir)] == ["a holder wants a widget moved to another slot"]
+    assert M.CEILING_NOTE not in body["notes"]

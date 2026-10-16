@@ -422,7 +422,7 @@ def _fix_all(root: ReviewRoot, fixer: Any, ceiling: Optional[budget.Ceiling] = N
 
 
 def _over(ceiling: Optional[budget.Ceiling]) -> bool:
-    return ceiling is not None and ceiling.remaining() <= 0
+    return ceiling is not None and ceiling.remaining <= 0
 
 
 def review(workdir: Any, *, model: Any, fixer: Any = None, batch: int = BATCH, engine: Any = None,
