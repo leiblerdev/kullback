@@ -2809,3 +2809,33 @@ Follow-on: stream clean-ask, D366 onward, built separately (.claude/herdr/ask-10
 each fact is conditioned on, the Reference leaves the Verifier, repair and the mutants, and mutants key to the ask.
 Not built and named as gaps: the behaviour statement's shape, the synthesiser, the human review step, the training
 loop, a realism measure.
+
+### D366. Each fact names its condition; reactions never gate; the writer confirms a claimed condition (2026-10-16)
+
+What: an Intent fact carries a condition, what prompted it: none (said in the user's first turn), asked (the agent
+asked for it, or offered it and the user said yes), world_or_policy (the agent stated a fact of the world or a rule
+and the user names the branch they want), agent (the agent could not, declined citing no rule, stalled or proposed
+another way, and the user reacts). A fact of either of the last two has the stance fallback whatever its kind, and the
+miner quotes the agent line in in_reply_to. Code checks position (H1): a fact first said after the user's first turn
+must quote the agent line it answers; without a quote code finds, it is sent back once, then kept as condition agent.
+A reaction that another recording's user volunteers in a turn before any agent tool call is promoted to condition
+none: it was the ask there. A gate citing a reaction is weighed (scored, never gated). A gate citing a world_or_policy
+fact is weighed unless the item confirms the claim itself (H2): a policy_line, or confirms {table, find} naming the
+one row whose read shows it; the writer is told to gate the branch the world selects, not the branch the recording
+took. The pushback bar goes: after_pushback and a witnessed yes are evidence on the fact view and no longer weigh a
+gate alone. A legacy fallback with no condition reads as a reaction. The saved Intent counts late_sent_back,
+late_unplaced and promoted beside fallback_unquoted. The miner's examples are rewritten over placeholders, one per
+kind and per condition.
+
+Why: D365 makes the ask, the policy and the world the source of truth, and the heldout 100 showed six wrong Verifiers
+that gated the Reference agent's failures as the user voiced them. Those are reactions to the agent's conduct; a run
+whose agent meets the first ask never reaches them. A branch the user names under a rule the agent stated is a real
+ask, but only when the rule or the row holds, which the writer can check and the recording cannot.
+
+What it cannot do: the condition is the miner's reading; code checks only that a quote exists in the agent line and
+that the stance and condition agree, not that the line declined or stated a rule. Promotion needs several recordings
+of one Task.
+
+Lives in: kullback/spec/schema.py (Condition, is_reaction, is_ask), kullback/spec/intent_tools.py (_placed, is_late,
+promote), kullback/spec/intent.py (prompt), kullback/spec/items.py (_weighed_gate, World._confirms),
+kullback/spec/writer.py (prompt, facts view, side counts), kullback/examiner/rule_tool.py (fact view).

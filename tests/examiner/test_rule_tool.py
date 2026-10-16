@@ -175,7 +175,7 @@ def test_the_view_holds_every_recordings_user_turns_and_each_facts_source(tmp_pa
         "rec2": [{"turn": 1, "agent_before": "How can I help?", "user": "Move A1 to slot seven."}]}
     assert view["facts"][1] == {"id": "f2", "stance": "accepted", "text": "I also want a note saying it was urgent.",
                                 "source": {"recording": "rec1", "turn": 2}, "echo": False, "after_pushback": False,
-                                "unfounded": False, "side": False, "in_reply_to": None}
+                                "unfounded": False, "side": False, "in_reply_to": None, "condition": "none"}
     assert TOOL_SECRET not in json.dumps(view)
     written = R.write_views(root, ["t1"])
     assert json.loads((root.exam_dir / written["t1"]).read_text())["user_turns"] == view["user_turns"]

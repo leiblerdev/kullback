@@ -21,6 +21,12 @@ FactKind = Literal["do", "keep", "told", "detail"]
 # Spec fields retired with the Examiner's edit kinds (D325 to D331): dropped when an older file loads.
 RETIRED_KEYS = ("atom_edits", "end_state_edits")
 Tier = Literal["critical", "sanity", "important"]
+# What prompted a fact, read from the agent line it answers (in_reply_to): none for a fact the user
+# raised in their first turn; asked when the agent asked for it; world_or_policy when the agent stated a
+# fact about the world or the rules (a conditional ask, gated only once the writer confirms the claim);
+# agent when the agent could not, declined with no policy line, stalled or proposed another way (a
+# reaction: never gated, never a mutant key, never counted as an ask). spec/intent_tools.py checks it.
+Condition = Literal["none", "asked", "world_or_policy", "agent"]
 
 # The atom kind a demand compiles to when it is not the check's own kind (compile.py does the same).
 _COMPILED_KIND = {"say": "communicate", "ask": "question"}
@@ -59,8 +65,10 @@ class IntentFact(Record):
     # Set by code (spec/intent_tools.mark_side), never by a model: an ask only to be told something in a
     # Task that also asks for a change or for something left undone. It may be scored, never gated.
     side: bool = False
-    # On a fallback fact: the agent line it answers, checked by code against the recording.
+    # On a fact said after the user's first turn: the agent line it answers, checked by code against the
+    # recording.
     in_reply_to: Optional[ReplyQuote] = None
+    condition: Condition = "none"
 
     @model_serializer(mode="wrap")
     def _without_unread_kind(self, handler):
@@ -71,7 +79,21 @@ class IntentFact(Record):
                     data.pop(key, None)
             if not data.get("side"):
                 data.pop("side", None)
+            if data.get("condition") == "none":
+                data.pop("condition", None)
         return data
+
+
+def is_reaction(fact: Any) -> bool:
+    """A fact the user said in reaction to the agent's conduct: condition agent, or a fallback fact mined
+    before conditions were read. It never gates, never keys a mutant and never counts as an ask."""
+    condition = getattr(fact, "condition", "none")
+    return condition == "agent" or (getattr(fact, "stance", None) == "fallback" and condition == "none")
+
+
+def is_ask(fact: Any) -> bool:
+    """A do or keep fact that is not a reaction: what a gate must hold (spec/items.py unchecked_asks)."""
+    return getattr(fact, "kind", None) in ("do", "keep") and not is_reaction(fact)
 
 
 class SpecIntent(Record):
@@ -85,12 +107,20 @@ class SpecIntent(Record):
     written_at: Optional[str] = None
     # Facts the miner marked fallback with no agent line carrying its quote: kept as volunteered.
     fallback_unquoted: int = 0
+    # The position check (spec/intent_tools.py): facts said after the user's first turn sent back for
+    # want of the agent line they answer, and those kept as reactions when sent again without it.
+    late_sent_back: int = 0
+    late_unplaced: int = 0
+    # Reactions promoted to none: another recording's user volunteered them before any agent tool call.
+    promoted: int = 0
 
     @model_serializer(mode="wrap")
     def _without_zero_unquoted(self, handler):
         data = handler(self)
-        if isinstance(data, dict) and not data.get("fallback_unquoted"):
-            data.pop("fallback_unquoted", None)
+        if isinstance(data, dict):
+            for key in ("fallback_unquoted", "late_sent_back", "late_unplaced", "promoted"):
+                if not data.get(key):
+                    data.pop(key, None)
         return data
 
 

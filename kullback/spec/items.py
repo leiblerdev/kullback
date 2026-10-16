@@ -35,6 +35,7 @@ from kullback.runner.atom_context import is_transfer
 from kullback.runner.records import Atom, EndState, ExpectedCell, ValueSource
 from kullback.spec.atoms import called_set_atom
 from kullback.spec.effects import type_of
+from kullback.spec.schema import is_reaction
 
 STATE_KINDS = ("row_is", "row_new", "row_keeps")
 EVENT_KINDS = ("called", "not_called", "before")
@@ -135,20 +136,23 @@ def _unfounded_gate(item: dict, facts: list) -> str:
     return ""
 
 
-def _pushback_only(kept: dict, facts: list) -> bool:
-    """Whether a gate item rests only on facts no gate may demand alone: each said after pushback
-    or only accepted, with no policy line beside them (the shape of _unfounded_gate, weighed)."""
-    return bool(facts) and not kept.get("policy_line") and all(
-        getattr(fact, "after_pushback", False) or fact.stance == "accepted" for fact in facts)
-
-
 # Why a gate on a side fact is weighed, kept on the item so a count can find it.
 SIDE_WEIGHED = "side fact"
 
 
-# Why a gate on a fallback fact is weighed: the user asked for it only after the agent refused, could not,
-# or proposed another way, so it is the recording's way out, not the Task's ask.
-FALLBACK_WEIGHED = "fallback"
+# Why a gate on a reaction is weighed (D366): the user said it in answer to the agent's own conduct (could
+# not, declined citing no rule, stalled, proposed another way), so it is the recording's way out, not the ask.
+AGENT_WEIGHED = "reaction"
+# Why a gate on a conditional ask is weighed (D366, H2): the condition is the agent's claim about the world
+# or the rules, and the item names neither the row nor the policy line that confirms it.
+UNCONFIRMED_WEIGHED = "unconfirmed condition"
+
+
+def _unconfirmed(kept: dict, facts: list) -> bool:
+    """Whether a gate item cites a conditional ask (condition world_or_policy) and confirms the agent's
+    claim neither by a policy line nor by the row it names in confirms."""
+    return any(getattr(fact, "condition", "none") == "world_or_policy" for fact in facts) \
+        and not kept.get("policy_line") and not kept.get("confirms")
 
 
 # The item kinds that check what the agent told the user: one citing a side fact answers the side question.
@@ -165,19 +169,21 @@ def _on_side(kept: dict, facts: list) -> bool:
 
 
 def _weighed_gate(kept: dict, known: dict) -> str:
-    """One line for the writer when its gate is weighed: it rests only on facts said after pushback
-    or only accepted, with no policy line beside them, or on a fallback fact, or on a side fact; else empty. A scored item
-    may rest on them."""
+    """One line for the writer when its gate is weighed, else empty: it cites a reaction (condition agent),
+    or a conditional ask whose condition it does not confirm, or a side fact. A scored item may rest on them.
+    after_pushback and echo are evidence, not this rule (D366)."""
     facts = [known[f] for f in kept.get("fact_ids") or []]
-    if kept.get("gate") and _pushback_only(kept, facts):
-        kept["gate"] = False
-        return ("gate weighed: it rests only on facts said after pushback or only accepted; "
-                "a gate needs a volunteered fact or a policy line")
-    if kept.get("gate") and any(fact.stance == "fallback" for fact in facts):
-        kept.update(gate=False, weighed=FALLBACK_WEIGHED)
-        return ("gate weighed: it rests on a fallback fact, asked only after the agent refused, could not, or "
-                "proposed another way, which a run whose agent meets the first ask never reaches; it is scored, "
-                "never gated. If the item checks the Task's ask, add it again citing only the ask's facts")
+    if kept.get("gate") and any(is_reaction(fact) for fact in facts):
+        kept.update(gate=False, weighed=AGENT_WEIGHED)
+        return ("gate weighed: it cites a reaction, a fact the user said in answer to the agent's own conduct "
+                "(could not, declined citing no rule, stalled, proposed another way), which a run whose agent "
+                "meets the first ask never reaches; it is scored, never gated. If the item checks the Task's ask, "
+                "add it again citing only the ask's facts")
+    if kept.get("gate") and _unconfirmed(kept, facts):
+        kept.update(gate=False, weighed=UNCONFIRMED_WEIGHED)
+        return ("gate weighed: it cites a conditional ask whose condition is the agent's claim about the world or "
+                "the rules; confirm it yourself (confirms: the row whose read shows it, or the policy_line that "
+                "states it) and gate the branch the world selects, or leave it scored")
     if kept.get("gate") and _on_side(kept, facts):
         kept.update(gate=False, weighed=SIDE_WEIGHED)
         return ("gate weighed: it rests on a side fact, a question asked beside the Task's ask, which a run "
@@ -319,10 +325,14 @@ class World:
             gate = False  # a hand-off gates only where its policy line names one; else it is weighed
         kept.update(gate=gate, weight=float(weight))
         self._kept = kept
-        why = getattr(self, f"_{item['kind']}")(item, kept)
+        why = self._kind_rules(item, kept)
         if why:
             return None, why
         return kept, _weighed_gate(kept, known_facts)
+
+    def _kind_rules(self, item: dict, kept: dict) -> str:
+        """Why the item's confirms or its kind's own rules refuse it, else empty."""
+        return self._confirms(item, kept) or getattr(self, f"_{item['kind']}")(item, kept)
 
     def _provenance(self, item: dict, kept: dict, known: dict, unwitnessed: Callable[[Any], bool]) -> str:
         fact_ids = [str(f) for f in item.get("fact_ids") or [] if str(f) in known]
@@ -336,6 +346,23 @@ class World:
         kept["fact_ids"] = fact_ids
         kept["policy_line"] = str(item.get("policy_line")).strip() if line else None
         return _unfounded_gate(item, [known[f] for f in fact_ids])
+
+    def _confirms(self, item: dict, kept: dict) -> str:
+        """An item's confirms, when it has one: {table, find} naming the one row whose read confirms a
+        conditional ask's claim about the world (H2); kept with the row resolved."""
+        confirms = item.get("confirms")
+        if confirms is None:
+            return ""
+        if not isinstance(confirms, dict) or not isinstance(confirms.get("find"), dict) or not confirms.get("table"):
+            return "confirms is {table, find: {field: value}}: the one row whose read confirms the condition"
+        table = str(confirms["table"])
+        if table not in self.state:
+            return f"confirms: no table {table}"
+        rows = self.find(table, confirms["find"])
+        if len(rows) != 1:
+            return f"confirms: find matches {len(rows)} rows of {table}; name exactly one"
+        kept["confirms"] = {"table": table, "row": rows[0]}
+        return ""
 
     def _value(self, value: Any, what: str) -> tuple[Any, str]:
         """A value or value set with every value sourced, or why not."""
@@ -719,7 +746,7 @@ def atom_of(item: dict) -> Atom:
             [item["tool"]], _describe(item), gate=bool(item["gate"]), weight=float(item["weight"]),
             extra={"item_kind": item["kind"], "from": _from(item)})
     target = {key: value for key, value in item.items() if key not in ("id", "gate", "weight", "fact_ids",
-                                                                         "policy_line")}
+                                                                         "policy_line", "confirms")}
     target["from"] = _from(item)
     return Atom(id=item["id"], kind="allowed", description=_describe(item), target=target,
                 judge=item["kind"] == "judge", gate=bool(item["gate"]), weight=float(item["weight"]))

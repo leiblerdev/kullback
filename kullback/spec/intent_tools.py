@@ -10,6 +10,12 @@ memory. `add_facts` refuses a fact whose words the named turn does not carry, so
 the user's words and the agent's line before it, and a volunteered fact in which the user added no
 word of their own to that line.
 Witnesses are code: another recording whose user volunteers the same content words.
+
+Position is code too (H1, D366). A fact first said after the user's first turn answers an agent line: it
+names that line (in_reply_to, a span code finds in it) and what the line was, its condition: asked, the
+world or the policy stated, or the agent's own conduct. A late fact without a quote is sent back once; sent
+again without one it is kept as a reaction. A reaction another recording's user volunteers before any agent
+tool call is promoted to none (`promote`): it was the ask there. That needs several recordings of one Task.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.tools import AgentTool, RetryableToolError
 from kullback.runner.records import Task, Trace
-from kullback.spec.schema import FactKind, FactSource, IntentFact, ReplyQuote
+from kullback.spec.schema import FactKind, FactSource, IntentFact, ReplyQuote, is_reaction
 from kullback.spec.text import APOSTROPHE_RE, STOPWORDS, TOKEN_RE, normalise
 
 # A fact is carried by a turn when this share of its content words is in the turn.
@@ -38,6 +44,8 @@ class UserTurn:
     index: int
     text: str
     agent_before: str = ""
+    # No agent tool call came before this turn: the user spoke before the agent did anything.
+    opening: bool = True
 
 
 @dataclass
@@ -66,12 +74,14 @@ def user_turns_of(trace: Trace) -> list[UserTurn]:
     """
     out: list[UserTurn] = []
     agent_said = ""
+    called = False
     for turn in trace.turns:
         text = (turn.content or "").strip()
-        if turn.role == "assistant" and text:
-            agent_said = text
+        if turn.role == "assistant":
+            called = called or bool(turn.tool_call_ids)
+            agent_said = text or agent_said
         elif turn.role == "user" and text:
-            out.append(UserTurn(index=turn.idx, text=text, agent_before=agent_said))
+            out.append(UserTurn(index=turn.idx, text=text, agent_before=agent_said, opening=not called))
             agent_said = ""
     return out
 
@@ -172,6 +182,23 @@ def witnesses(text: str, source: str, found: TaskRecordings, share: float = WITN
             if recording != source and any(volunteers(turn, words, share) for turn in turns)]
 
 
+def promote(facts: list[IntentFact], found: TaskRecordings,
+            share: float = WITNESS_SHARE) -> tuple[list[IntentFact], int]:
+    """(the facts, how many were promoted): a reaction becomes a fact of condition none, stance
+    volunteered, when another recording's user volunteers its words in a turn before any agent tool call."""
+    out, promoted = [], 0
+    for fact in facts:
+        words = content_tokens(fact.text)
+        opened = is_reaction(fact) and any(
+            turn.opening and volunteers(turn, words, share)
+            for recording, turns in found.recordings.items() if recording != fact.source.recording for turn in turns)
+        if opened:
+            fact = fact.model_copy(update={"condition": "none", "stance": "volunteered"})
+            promoted += 1
+        out.append(fact)
+    return out, promoted
+
+
 def counts(fact: IntentFact) -> bool:
     """Rule 5: a fact the user raised counts (volunteered, or a fallback); an accepted one only with a
     volunteering witness."""
@@ -221,6 +248,11 @@ class ReplyArgs(BaseModel):
     quote: str = Field(description="A span copied word for word from that agent line.")
 
 
+Condition = Literal["none", "asked", "world_or_policy", "agent"]
+# The conditions of a fallback fact: the agent stated the world or the rules, or the agent's own conduct.
+FALLBACK_CONDITIONS = ("world_or_policy", "agent")
+
+
 class FactArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -229,8 +261,9 @@ class FactArgs(BaseModel):
     turn: int = Field(description="The index of the user turn that says it, as user_turns gives it.")
     stance: Literal["volunteered", "accepted", "fallback"] = Field(
         description="volunteered: the user raised it. accepted: the user agreed to what the agent's "
-                    "line before the turn offered. fallback: the user asked for it only in reply to an "
-                    "agent line that refused, could not, or proposed another way; name it in in_reply_to.")
+                    "line before the turn offered. fallback: the user said it only in reply to an agent "
+                    "line that declined, could not, or proposed another way, whatever its kind; name it in "
+                    "in_reply_to and give its condition.")
     kind: FactKind = Field(
         description="do: asks for a change to be made. keep: asks that something not be done or not change. "
                     "told: asks only to be told something. detail: who the user is, or a value, condition "
@@ -240,7 +273,13 @@ class FactArgs(BaseModel):
         description="True when the user says it in reply to the agent declining, failing, or offering "
                     "another way, before what the user first asked for was met.")
     in_reply_to: Optional[ReplyArgs] = Field(
-        default=None, description="On a fallback fact: the agent line it answers, quoted.")
+        default=None, description="On a fact said after the user's first turn: the agent line it answers, quoted.")
+    condition: Condition = Field(
+        default="none",
+        description="none: said in the user's first turn. asked: the agent asked for it, or offered it and the "
+                    "user said yes. world_or_policy: the agent stated a fact about the world or a rule and the "
+                    "user names the branch they want (stance fallback). agent: the agent could not, declined "
+                    "citing no rule, stalled or proposed another way, and the user reacts (stance fallback).")
 
 
 class AddFactsArgs(BaseModel):
@@ -274,6 +313,10 @@ class MinerState:
     refused: int = 0
     # Facts marked fallback whose quote no agent line carries: kept as volunteered.
     fallback_unquoted: int = 0
+    # The position check: late facts sent back once for want of a quote (their content words), and how
+    # many came back without one and were kept as reactions.
+    sent_back: set = field(default_factory=set)
+    late_unplaced: int = 0
 
 
 def _turn(state: MinerState, recording: str, index: int) -> UserTurn:
@@ -312,16 +355,43 @@ def quoted(state: MinerState, recording: str, turn: int, reply: Optional[ReplyAr
     return ReplyQuote(turn=reply.turn, quote=" ".join(reply.quote.split()))
 
 
-def _stance(state: MinerState, args: FactArgs) -> tuple[str, Optional[ReplyQuote]]:
-    """The stance code keeps: a fallback whose quote is not in the recording is kept as volunteered
-    and counted."""
-    if args.stance != "fallback":
-        return args.stance, None
+LATE = ("turn {turn} is not the user's first turn of {recording}, so the fact answers an agent line: name it "
+        "in in_reply_to (the user turn and a span copied word for word from the agent line before it) and give "
+        "the condition, asked, world_or_policy or agent, then send the fact again")
+
+
+def is_late(state: MinerState, recording: str, turn: int) -> bool:
+    """Whether a turn comes after the recording's first user turn: what the user says there answers the agent."""
+    turns = state.found.recordings.get(recording) or []
+    return bool(turns) and turn > min(t.index for t in turns)
+
+
+def _placed(state: MinerState, args: FactArgs, words: set) -> tuple[str, Optional[ReplyQuote], str]:
+    """(stance, quote, condition) as code keeps them, or a ValueError naming what to fix.
+
+    A fallback fact names condition world_or_policy or agent; a fact of either condition is a fallback. A
+    fact after the first turn names the agent line it answers: without one it is sent back once, then kept
+    as a reaction. A fallback in the first turn whose quote is not found is kept as volunteered, counted."""
+    fallback = args.stance == "fallback"
+    if fallback != (args.condition in FALLBACK_CONDITIONS):
+        raise ValueError("a fact answering an agent line that stated the world or a rule (world_or_policy) or that "
+                         "declined, could not, stalled or proposed another way (agent) is stance fallback, and a "
+                         "fallback fact names one of those two conditions")
     reply = quoted(state, args.recording, args.turn, args.in_reply_to)
+    late = is_late(state, args.recording, args.turn)
+    if reply is None and late:
+        key = frozenset(words)
+        if key not in state.sent_back:
+            state.sent_back.add(key)
+            raise ValueError(LATE.format(turn=args.turn, recording=args.recording))
+        state.late_unplaced += 1
+        return args.stance, None, "agent"
     if reply is None:
-        state.fallback_unquoted += 1
-        return "volunteered", None
-    return "fallback", reply
+        state.fallback_unquoted += fallback
+        return ("volunteered" if fallback else args.stance), None, "none"
+    if fallback:
+        return "fallback", reply, args.condition
+    return args.stance, reply, "asked" if late else "none"
 
 
 def _keep(state: MinerState, args: FactArgs) -> IntentFact:
@@ -334,8 +404,8 @@ def _keep(state: MinerState, args: FactArgs) -> IntentFact:
     if any(content_tokens(f.text) == words for f in state.facts):
         raise ValueError("this fact is already kept")
     _check_words(args, turn)
-    stance, reply = _stance(state, args)
-    fact = IntentFact(id=f"f{len(state.facts) + 1}", text=text, stance=stance, in_reply_to=reply,
+    stance, reply, condition = _placed(state, args, words)
+    fact = IntentFact(id=f"f{len(state.facts) + 1}", text=text, stance=stance, in_reply_to=reply, condition=condition,
                       source=FactSource(recording=args.recording, turn=turn.index),
                       witnesses=witnesses(text, args.recording, state.found),
                       echo=is_echo(text, stance, turn),
@@ -398,7 +468,7 @@ def miner_tools(state: MinerState) -> list[AgentTool]:
         AgentTool("user_turns", "The user turns of one recording: index, the agent's line just before, "
                   "and what the user said.", UserTurnsArgs, UserTurnsResult, _user_turns(state), render=_render),
         AgentTool("add_facts", "Keep facts of what the user wants, each with the recording and user turn "
-                  "that say it and whether the user volunteered it or accepted an offer.",
+                  "that say it, its stance, and for a fact after the user's first turn the agent line it answers.",
                   AddFactsArgs, AddFactsResult, _add_facts(state), render=_render),
     ]
 
@@ -408,6 +478,6 @@ def tool_names() -> tuple[str, ...]:
 
 
 __all__ = ["ASK_KINDS", "CARRIED_SHARE", "WITNESS_SHARE", "MinerState", "TaskRecordings", "UserTurn", "carried_share", "content_tokens",
-           "counts", "mark_side", "miner_tools", "opening_turns", "recordings_of", "share_in", "task_of", "tool_names", "trace_index",
+           "counts", "is_late", "mark_side", "miner_tools", "opening_turns", "promote", "recordings_of", "share_in", "task_of", "tool_names", "trace_index",
            "user_turns_of", "volunteers", "witnesses"]
 

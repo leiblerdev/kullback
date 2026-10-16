@@ -20,7 +20,7 @@ from kullback.runner.verdict import verdict
 from kullback.spec import writer as W
 from kullback.spec import writer_tools as T
 from kullback.spec.intent_tools import mark_side
-from kullback.spec.items import FALLBACK_WEIGHED, SIDE_WEIGHED
+from kullback.spec.items import AGENT_WEIGHED, SIDE_WEIGHED, UNCONFIRMED_WEIGHED
 from kullback.spec.schema import FactSource, IntentFact, ReplyQuote, SpecIntent, intent_text, load_spec
 from tests.spec.fixtures import FACTS, WRITE_TOOLS, check, fn, reference_run
 
@@ -291,7 +291,7 @@ def test_the_prompt_marks_unwitnessed_facts_and_carries_policy_tools_and_the_ite
 
 def test_the_facts_view_shows_the_after_pushback_flag():
     flagged = FACTS[0].model_copy(update={"after_pushback": True})
-    model = TestModel([DONE])
+    model = TestModel([DONE, DONE])
     W.write_spec("t1", inputs(facts=[flagged, FACTS[1]]), model)
     content = model.calls[0]["messages"][0]["content"]
     body = json.loads(content[content.index("\n{") + 1:])
@@ -299,10 +299,10 @@ def test_the_facts_view_shows_the_after_pushback_flag():
 
 
 def test_a_weighed_gate_tells_the_writer_why_on_the_kept_line():
-    flagged = FACTS[0].model_copy(update={"after_pushback": True})
+    flagged = FACTS[0].model_copy(update={"stance": "fallback", "condition": "agent"})
     store = W.store_of(inputs(facts=[flagged, FACTS[1]]))
     out = store.add([dict(ROW, fact_ids=["f1"])])
-    assert "kept" in out and "gate weighed" in out and "volunteered fact" in out
+    assert "kept" in out and "gate weighed" in out and "cites a reaction" in out
     assert store.items["s1"]["gate"] is False and store.refused == []
 
 
@@ -379,7 +379,7 @@ def test_the_writer_session_gates_only_what_the_user_asked_and_the_policy_requir
     W.write_spec("t1", inputs(), model)
     prompt = model.calls[0]["messages"][0]["content"]
     assert "Gate what the user asked for and the policy requires" in prompt
-    assert "only accepted after the agent proposed it or refused something is weighted, not gated" in prompt
+    assert "A fact of condition agent is a reaction" in prompt and "gate the branch the world selects" in prompt
     assert "accept any allowed one or weight it" in prompt
     assert "gates only with the policy line that forbids it; else weight it" in prompt
     assert "one item per ask" in prompt
@@ -407,10 +407,13 @@ def test_a_volunteered_fact_with_no_item_goes_back_as_uncovered():
     assert W.asked_missing([ROW], inputs().intent) == []
 
 
-def test_after_pushback_accepted_and_unfounded_facts_are_never_sent_back():
+def test_a_reaction_and_an_unfounded_fact_are_never_sent_back_and_after_pushback_alone_is_evidence():
     intent = inputs().intent
     pushed = intent.facts[0].model_copy(update={"after_pushback": True})
-    intent = intent.model_copy(update={"facts": [pushed, intent.facts[1]]})
+    assert W.asked_missing([], intent.model_copy(update={"facts": [pushed, intent.facts[1]]})) == [
+        {"id": "f1", "reason": "uncovered"}]
+    reaction = intent.facts[0].model_copy(update={"stance": "fallback", "condition": "agent"})
+    intent = intent.model_copy(update={"facts": [reaction, intent.facts[1]]})
     assert W.asked_missing([], intent) == []
     stray = intent.facts[0].model_copy(update={"after_pushback": False, "unfounded": True})
     intent = intent.model_copy(update={"facts": [stray, intent.facts[1]]})
@@ -619,24 +622,55 @@ def test_a_task_with_no_asked_followup_never_runs_the_second_clash_check():
     assert len(model.calls) == 2
 
 
-# --- fallback facts ---------------------------------------------------------------------------------
+# --- reactions and conditional asks -----------------------------------------------------------------
 
 FALLBACK = IntentFact(id="f2", text="Then put item A1 in slot seven.", stance="fallback", kind="do",
-                      source=FactSource(recording="rec1", turn=4),
-                      in_reply_to=ReplyQuote(turn=4, quote="that slot is taken"))
+                      source=FactSource(recording="rec1", turn=4), condition="agent",
+                      in_reply_to=ReplyQuote(turn=4, quote="I could not do that"))
 
 
-def _fallback_facts():
-    """The ask, and a request the user made only after the agent said it could not do it."""
-    return [FACTS[0].model_copy(update={"kind": "do"}), FALLBACK]
+def _fallback_facts(condition="agent"):
+    """The ask, and a request the user made only after the agent's line (its own conduct, or a claim)."""
+    return [FACTS[0].model_copy(update={"kind": "do"}), FALLBACK.model_copy(update={"condition": condition})]
 
 
-@pytest.mark.parametrize("fact_ids", [["f2"], ["f1", "f2"]], ids=["fallback alone", "beside the ask"])
-def test_a_gate_resting_on_a_fallback_fact_is_weighed_with_the_reason_kept_on_the_item(fact_ids):
+@pytest.mark.parametrize("fact_ids", [["f2"], ["f1", "f2"]], ids=["reaction alone", "beside the ask"])
+def test_a_gate_citing_a_reaction_is_weighed_with_the_reason_kept_on_the_item_whatever_the_policy_line(fact_ids):
     store = W.store_of(inputs(facts=_fallback_facts()))
     out = store.add([dict(ROW, fact_ids=fact_ids, policy_line="Move an item only to a free slot.")])
-    assert "gate weighed" in out and "fallback fact" in out and store.refused == []
-    assert store.items["s1"]["gate"] is False and store.items["s1"]["weighed"] == FALLBACK_WEIGHED
+    assert "gate weighed" in out and "reaction" in out and store.refused == []
+    assert store.items["s1"]["gate"] is False and store.items["s1"]["weighed"] == AGENT_WEIGHED
+
+
+def test_a_fallback_fact_mined_before_conditions_counts_as_a_reaction():
+    store = W.store_of(inputs(facts=_fallback_facts(condition="none")))
+    store.add([dict(ROW, fact_ids=["f2"])])
+    assert store.items["s1"]["weighed"] == AGENT_WEIGHED
+
+
+def test_a_gate_on_a_conditional_ask_is_weighed_until_the_writer_confirms_the_claim():
+    store = W.store_of(inputs(facts=_fallback_facts(condition="world_or_policy")))
+    out = store.add([dict(ROW, fact_ids=["f2"])])
+    assert "confirm it yourself" in out and store.items["s1"]["weighed"] == UNCONFIRMED_WEIGHED
+
+
+@pytest.mark.parametrize("confirm", [{"policy_line": "Move an item only to a free slot."},
+                                     {"confirms": {"table": "items", "find": {"item_id": "B2"}}}],
+                         ids=["by the policy line", "by a row"])
+def test_a_conditional_ask_confirmed_by_a_policy_line_or_one_row_keeps_its_gate(confirm):
+    store = W.store_of(inputs(facts=_fallback_facts(condition="world_or_policy")))
+    store.add([dict(ROW, fact_ids=["f2"], **confirm)])
+    assert store.items["s1"]["gate"] is True and "weighed" not in store.items["s1"]
+    if "confirms" in confirm:
+        assert store.items["s1"]["confirms"] == {"table": "items", "row": "B2"}
+
+
+@pytest.mark.parametrize("confirms", [{"table": "items", "find": {"slot": "nine"}}, {"table": "nope", "find": {}},
+                                      {"find": {"item_id": "B2"}}])
+def test_a_confirms_that_names_no_one_row_is_refused_with_the_reason(confirms):
+    store = W.store_of(inputs(facts=_fallback_facts(condition="world_or_policy")))
+    store.add([dict(ROW, fact_ids=["f2"], confirms=confirms)])
+    assert "s1" not in store.items and "confirms" in store.refused[0]["reason"]
 
 
 def test_a_fallback_fact_is_never_sent_back_by_the_asked_followup():
@@ -644,13 +678,14 @@ def test_a_fallback_fact_is_never_sent_back_by_the_asked_followup():
     assert W.asked_missing([ROW], intent) == []
 
 
-def test_the_writer_shows_the_fallback_stance_and_counts_fallback_facts_and_weighed_gates():
+def test_the_writer_shows_the_condition_and_quote_and_counts_reactions_and_weighed_gates():
     model = TestModel([add(ROW, dict(ROW, id="s2", fact_ids=["f2"])), DONE])
     written = W.write_spec("t1", inputs(facts=_fallback_facts()), model)
     content = model.calls[0]["messages"][0]["content"]
-    assert json.loads(content[content.index("\n{") + 1:])["intent"][1]["stance"] == "fallback"
-    assert written.counts["fallback_facts"] == 1 and written.counts["fallback_weighed"] == 1
-    assert "stance fallback" in W.CHOICE_RULE
+    shown = json.loads(content[content.index("\n{") + 1:])["intent"][1]
+    assert shown["condition"] == "agent" and shown["answers"] == "I could not do that"
+    assert written.counts["reaction_facts"] == 1 and written.counts["reaction_weighed"] == 1
+    assert "condition agent is a reaction" in W.CHOICE_RULE
 
 
 # Generated by running the 038b5c1b tree (before fallback facts) on the side-fact Task below.
@@ -670,4 +705,4 @@ def test_a_task_with_kinds_and_no_fallback_facts_is_unchanged_byte_for_byte_thro
     content = model.calls[0]["messages"][0]["content"]
     got["body"] = hashlib.sha256(content[content.index("\n{") + 1:].encode()).hexdigest()
     assert got == KINDS_NO_FALLBACK_HASHES
-    assert "fallback_facts" not in written.counts
+    assert "reaction_facts" not in written.counts

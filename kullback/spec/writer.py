@@ -46,6 +46,7 @@ from kullback.spec.schema import (
     Spec,
     SpecIntent,
     intent_text,
+    is_reaction,
     load_spec,
     save_spec,
     spec_verifier_path,
@@ -55,7 +56,9 @@ WHAT_YOU_RECEIVE = """\
 # What you receive
 One customer request as Intent facts (each with an id; a fact marked unwitnessed was only accepted by \
 the user, never volunteered; a fact marked echo carries the agent's proposal, so a gate value may not \
-rest on it alone; a fact marked unfounded was ruled never asked for, so no gate may rest on it alone), the policy the agent works under, the tools the agent may call, and \
+rest on it alone; a fact marked unfounded was ruled never asked for, so no gate may rest on it alone; a \
+fact's condition says what prompted it, with the agent line it answers quoted), the policy the agent works \
+under, the tools the agent may call, and \
 read access to the world as it stands before the agent starts. You have never seen any agent run or \
 reference solution for this request, and you must not ask for one. Your job is the Verifier: the \
 items a correct run shows, each resting on an Intent fact or a policy line."""
@@ -93,7 +96,8 @@ read. Narrow it ("after_call:<tool>", "final_answer", "assistant:<k>") only with
 why the answer can come nowhere else.
 Every item: id, gate (true when a run failing it is wrong whatever else it does), weight (default 1), \
 and fact_ids or policy_line (a verbatim line of the policy, at least 12 characters). A hand-off item \
-gates only when its policy_line demands the hand-off. When the Intent or the policy names a condition \
+gates only when its policy_line demands the hand-off. An item may carry confirms {table, find}: the one \
+row whose read confirms a condition the agent claimed about the world. When the Intent or the policy names a condition \
 (if this, do that; else the other), write each branch as its own end state: its state items carry alt \
 (0, 1, ...); an item without alt holds in all."""
 
@@ -115,14 +119,19 @@ Write an item only for what the Intent asks for or the policy requires, never fo
 one item per ask. Every value comes from a world row you read, a policy line or the user's words: find it \
 first, then add it. Code adds the sanity item by itself (no row outside your state items may change), so \
 list every row a correct run changes, and only those. Gate what the user asked for and the policy requires. \
-What the user only accepted after the agent proposed it or refused something is weighted, not gated. Where \
+Where \
 the user left a choice open and the policy allows several, accept any allowed one or weight it. A forbid \
 (not_called, row_keeps) gates only with the policy line that forbids it; else weight it. A value the user \
 asked to be told is a gated judge item anchored on the world row holding it. A variant or payment method the \
 user named is a gated check on that field. A refusal judge item always gates. A fact marked side asks only to be \
 told something beside the Task's ask, so any item on it is scored, never gated: code weighs such a gate. \
-A fact of stance fallback was asked only after the agent refused, could not, or proposed another way: \
-it is scored, never gated, the same way."""
+A fact's condition says what prompted it. A fact of condition agent is a reaction to the agent's own \
+conduct (it could not, declined citing no rule, stalled, or proposed another way): any item on it is \
+scored, never gated. A fact of condition world_or_policy is an ask under a condition the agent claimed \
+about the world or the rules: the claim is the agent's until you confirm it. Look it up yourself, the \
+row with find_rows and read_row (cite it in confirms) or the rule with read_policy (cite it in \
+policy_line), and gate the branch the world selects, not the branch the recording took; a claim you \
+cannot confirm leaves the item scored."""
 
 FEEDBACK = """\
 # Feedback
@@ -141,25 +150,26 @@ FOLLOWUP_PROMPT = """Code found items no run can pass together, each with the re
 them under their ids so a correct run can pass, then reply that you are done.
 """
 
-# Volunteered facts no gated item covers go back in one follow-up turn of the same conversation.
-ASKED_FOLLOWUP_PROMPT = """Code lists volunteered facts no gated item covers, each with its id and why \
+# Facts the user raised (not reactions) no gated item covers go back in one follow-up turn of the same conversation.
+ASKED_FOLLOWUP_PROMPT = """Code lists facts the user raised that no gated item covers, each with its id and why \
 (uncovered, or weighted only). Add one gated item for each, or reply with one line quoting the policy or \
 the user's words why it needs none, then reply that you are done.
 """
 
 
 def _gates_alone(fact: IntentFact) -> bool:
-    """A volunteered fact a gate may rest on alone: not after pushback, not unfounded, not side."""
-    return fact.stance == "volunteered" and not (fact.after_pushback or fact.unfounded or fact.side)
+    """A fact a gate may rest on alone: raised by the user (volunteered, or a conditional ask), not a
+    reaction, not unfounded, not side."""
+    return fact.stance != "accepted" and not (is_reaction(fact) or fact.unfounded or fact.side)
 
 
 def asked_missing(items: Iterable[dict], intent: SpecIntent) -> list[dict]:
-    """Volunteered facts (not after pushback, not unfounded, not side) no gated item covers.
+    """Facts the user raised (not a reaction, not unfounded, not side) no gated item covers.
 
     Each row names the fact id and why it is missing: uncovered (no item names it) or
     weighted only (named only by scored items). A gate counts as set where the item says
-    so, else by the kind default, as code keeps it. D353 after-pushback and accepted facts
-    are out of scope here by design.
+    so, else by the kind default, as code keeps it. Accepted facts and reactions are out of
+    scope here by design (D366).
     """
     rows = list(items or [])
     named = {fact_id for item in rows for fact_id in item.get("fact_ids") or []}
@@ -301,8 +311,14 @@ def unwitnessed(fact: IntentFact) -> bool:
     return fact.stance == "accepted" and not fact.witnesses
 
 
+def _condition_view(fact: IntentFact) -> dict:
+    """A fact's condition and the agent line it answers, when it has either."""
+    out = {"condition": fact.condition} if fact.condition != "none" else {}
+    return dict(out, answers=fact.in_reply_to.quote) if fact.in_reply_to else out
+
+
 def _facts_view(intent: SpecIntent) -> list[dict]:
-    return [dict({"id": fact.id, "text": fact.text, "stance": fact.stance},
+    return [dict({"id": fact.id, "text": fact.text, "stance": fact.stance}, **_condition_view(fact),
                  **({"unwitnessed": True} if unwitnessed(fact) else {}), **({"echo": True} if fact.echo else {}),
                  **({"after_pushback": True} if fact.after_pushback else {}),
                  **({"unfounded": True} if fact.unfounded else {}), **({"side": True} if fact.side else {}))
@@ -482,10 +498,12 @@ def save_session(inputs: WriterInputs, task_id: str, kind: str, round_number: in
 
 
 def _side_counts(intent: SpecIntent, items: list[dict]) -> dict:
-    """Side and fallback facts and the gates weighed for resting on one; nothing for a Task with neither."""
+    """Side facts, reactions and conditional asks, and the gates weighed for resting on one; nothing for a
+    Task with none."""
     out = {}
     for name, has, weighed in (("side", lambda f: f.side, I.SIDE_WEIGHED),
-                               ("fallback", lambda f: f.stance == "fallback", I.FALLBACK_WEIGHED)):
+                               ("reaction", is_reaction, I.AGENT_WEIGHED),
+                               ("conditional", lambda f: f.condition == "world_or_policy", I.UNCONFIRMED_WEIGHED)):
         found = sum(1 for fact in intent.facts if has(fact))
         if found:
             out.update({f"{name}_facts": found,
