@@ -167,3 +167,4 @@ def test_the_miner_prompts_hold_no_tool_table_or_field_name_of_the_environment(t
     texts = [M.RULE, M.RECORDINGS_PROMPT, M.SEND_BACK_PROMPT, M.QUERY_PROMPT, M.PAGE_PROMPT, M.FIX_PROMPT]
     assert not {name for name in names for text in texts if name in text}
     assert DESCRIPTION not in "".join(texts)
+    assert all(len(line) < 150 for text in texts for line in text.splitlines())

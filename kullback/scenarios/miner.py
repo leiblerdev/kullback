@@ -27,6 +27,7 @@ from kullback import domain
 from kullback.runner.records import read_json, write_json
 from kullback.scenarios import records as R
 from kullback.scenarios import search as search_mod
+from kullback.scenarios.prompt import wrap
 from kullback.spec import intent_tools
 
 # How many opening asks one model call groups, and how many search queries one call writes.
@@ -165,7 +166,7 @@ def statement_refusal(text: str, world: World, *, tools_only: bool = False) -> s
 
 # --- prompts ------------------------------------------------------------------------
 
-RULE = ("Write each scenario as one or two sentences in the third person saying what happens, in general words: "
+RULE = wrap("Write each scenario as one or two sentences in the third person saying what happens, in general words: "
         "the kind of person, the kind of thing and the step it has reached. Never name a system, a tool, a "
         "button, an id, a number, a name, a place or any other value taken from a message; say the kind of "
         "thing instead. The shapes, over placeholders:\n"
@@ -173,25 +174,25 @@ RULE = ("Write each scenario as one or two sentences in the third person saying 
         "  a <kind of customer> asks for <something> that the rules allow only <under a condition>\n"
         "  a <kind of customer> reports that <a thing> <went wrong> and wants <a remedy>")
 
-RECORDINGS_PROMPT = (
+RECORDINGS_PROMPT = wrap(
     "Below are the opening messages customers sent to the support agent of one business, numbered.\n\n"
     "Group them into scenarios, one per distinct situation, and say which numbered openings each groups. "
     + RULE + "\n\nQuote any line of the policy a scenario touches, word for word.\n\n"
     "The policy:\n{policy}\n\nThe openings:\n{openings}\n\n"
     'Answer with JSON only, as {{"scenarios": [{{"statement": "...", "openings": [0], "policy_lines": ["..."]}}]}}.')
 
-SEND_BACK_PROMPT = (
+SEND_BACK_PROMPT = wrap(
     "These scenario statements break the rule below, each with why. Rewrite each one so it keeps the "
     "situation and follows the rule.\n\n" + RULE + "\n\nThe statements:\n{rows}\n\n"
     'Answer with JSON only, as {{"statements": [{{"index": 0, "statement": "..."}}]}}.')
 
-QUERY_PROMPT = (
+QUERY_PROMPT = wrap(
     "One business is described in one line:\n{description}\n\nWhat its support agent can do:\n{tools}\n\n"
     "Write up to {count} web search queries that find what customers of this kind of business ask for, how "
     "its workflows go and what goes wrong. Never search for an academic paper, a benchmark, a dataset or a "
     'code repository.\n\nAnswer with JSON only, as {{"queries": ["..."]}}.')
 
-PAGE_PROMPT = (
+PAGE_PROMPT = wrap(
     "Below is the text of one public page about the kind of business described in one line:\n{description}\n\n"
     "Write each distinct situation a customer of this kind of business is in, as the page shows it. " + RULE
     + "\n\nFor each scenario copy the span of the page it rests on, word for word, one or two sentences. A "
@@ -199,7 +200,7 @@ PAGE_PROMPT = (
     "The policy:\n{policy}\n\nThe page:\n{text}\n\n"
     'Answer with JSON only, as {{"scenarios": [{{"statement": "...", "span": "...", "policy_lines": ["..."]}}]}}.')
 
-FIX_PROMPT = (
+FIX_PROMPT = wrap(
     "A reviewer sent this scenario back once, with the reason. Rewrite it from the same source, following "
     "the reason: rewrite the words, rebind it to what the source shows, or narrow it.\n\n" + RULE
     + "\n\nThe scenario:\n{statement}\n\nThe reason:\n{why}\n\nThe source it was written from:\n{source}\n\n"
