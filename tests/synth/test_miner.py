@@ -46,13 +46,18 @@ def test_every_recording_gives_its_first_user_turn_as_the_opening_ask(tmp_path):
     assert [(row["task_id"], row["text"]) for row in rows] == list(OPENINGS.items())
 
 
-def test_a_statement_naming_a_tool_an_id_or_an_identifying_row_value_is_refused(tmp_path):
+def test_the_statement_rule_refuses_a_tool_name_and_id_shapes_and_keeps_a_named_kind_of_thing(tmp_path):
     world = M.world_of(make_workdir(tmp_path))
-    assert M.statement_refusal("a holder asks to have a widget put in another slot", world) == ""
+    kept = ["a holder asks to have a widget put in another slot", "a holder on the Gold Tier plan wants a widget moved",
+            "a holder in the Front Row section wants a sealed widget swapped", "Ada Byron wants a widget moved",
+            "a holder within the 30-day window wants a sealed widget moved"]
+    assert [M.statement_refusal(text, world) for text in kept] == [""] * len(kept)
     assert M.statement_refusal("a holder wants get_widget run", world) == M.TOOL_NAME
-    assert M.statement_refusal("a holder wants widget W1001 put elsewhere", world) == M.ID_SHAPE
-    assert M.statement_refusal("Ada Byron wants a widget moved", world) == "row_value"
-    assert M.statement_refusal("a holder within the 30-day window wants a sealed widget moved", world) == ""
+    assert M.statement_refusal("a holder wants the get widget step", world) == M.TOOL_NAME
+    refused = ["a holder wants widget W1001 put elsewhere", "a holder asks where order #4521 is",
+               "a holder at ada@example.org wants a widget moved", "a holder who called 555-010-2030 wants a refund",
+               "a holder on +44 20 7946 0958 wants a widget moved"]
+    assert [M.statement_refusal(text, world) for text in refused] == [M.ID_SHAPE] * len(refused)
 
 
 def test_a_recordings_session_groups_openings_with_their_frequency_and_policy_lines(tmp_path):

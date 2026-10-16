@@ -2830,7 +2830,8 @@ copies the page or the corpus is refused. Asks: a session reads a batch of lines
 as a scenario in the third person; the line as typed stays in the source only, since the customer's own shape would
 tell the blind review where it came from, and a line naming a tool is dropped before any session. The rule is held
 by the write tools, which refuse with the reason as the tool result so the agent writes again: no tool name or its
-words, no id shaped value, no identifying value of a row, no policy line the policy does not hold, no span the page
+words, no id shaped value (a code, an order number, an email, a phone number; no value of the Starting state is read for
+the rule), no policy line the policy does not hold, no span the page
 does not hold, no typed line copied as typed. A second refusal of the same scenario drops it, and one refused once
 and never written again is dropped at the end of the session, counted per reason. No model judges a repeat. The
 agent lists the scenarios already written before it writes, which is where repeats are avoided; then repeats fold by
