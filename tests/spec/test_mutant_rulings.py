@@ -23,10 +23,10 @@ def _base(start=START, end=END, run_id="fresh-1", model="some/model"):
 
 
 def _spec(fact_ids=("f1",), gaps=()):
-    """The Spec with one gated row_is item citing `fact_ids`; f1 is an ask (kind do), f2 accepted."""
+    """The Spec with one gated row_is item citing `fact_ids`; f1 is an ask (kind do), f2 an accepted detail."""
     the_spec = base_spec(checks=[check("s1", demand=dict(STATE, fact_ids=list(fact_ids)), fact_ids=fact_ids)],
                          gaps=gaps)
-    facts = [f.model_copy(update={"kind": "do"}) for f in the_spec.intent.facts]
+    facts = [f.model_copy(update={"kind": "do" if f.id == "f1" else "detail"}) for f in the_spec.intent.facts]
     return the_spec.model_copy(update={"intent": the_spec.intent.model_copy(update={"facts": facts})})
 
 
@@ -52,7 +52,10 @@ def test_a_value_survivor_on_a_field_a_volunteered_fact_names_files_one_ruling_w
 
 
 def test_a_value_survivor_on_a_field_no_volunteered_fact_names_files_no_ruling_and_is_a_note(tmp_path):
-    _file(tmp_path, _spec(fact_ids=("f2",)), _row_only())
+    the_spec = _spec(fact_ids=("f2",), gaps=["f1"])
+    accepted = [f.model_copy(update={"kind": "do"}) for f in the_spec.intent.facts]
+    _file(tmp_path, the_spec.model_copy(update={"intent": the_spec.intent.model_copy(update={"facts": accepted})}),
+          _row_only())
     assert not [r for r in R.load_rulings(tmp_path, "t1") if r.code == MR.UNCHECKED_FIELD]
     report = (tmp_path / "exam" / "mutants" / "t1.json").read_text()
     assert '"ruling": "note"' in report
@@ -181,3 +184,32 @@ def test_a_review_session_on_a_task_with_no_verifier_skips_the_verify_step(tmp_p
     exam_root = ExamRoot(workdir=tmp_path, round=1)
     _verify_once(exam_root, "t1")
     assert exam_root.verified == {}
+
+
+def test_verify_files_one_unchecked_ask_per_ask_no_gate_cites_once_and_trust_holds_the_task_for_it(tmp_path):
+    from kullback.examiner.exam_files import ExamRoot
+    from kullback.examiner.rule_tool import _mutants
+
+    weighed = dict(STATE, fact_ids=["f1"], gate=False)
+    the_spec = _spec().model_copy(update={"checks": [check("s1", demand=weighed, fact_ids=("f1",))]})
+    save_spec(tmp_path, the_spec)
+    _runs_on_disk(tmp_path, _base())
+    line = _mutants(ExamRoot(workdir=tmp_path, round=2), _row_only())
+    asked = [r for r in R.load_rulings(tmp_path, "t1") if r.code == MR.UNCHECKED_ASK]
+    assert len(asked) == 1 and asked[0].verified == [{"fact_id": "f1"}] and asked[0].blocking
+    assert line.startswith(f"unchecked asks filed: {asked[0].number}; mutants: ")
+    assert MR.ask_rulings(tmp_path, the_spec, 3) == []
+    every = Verifier(task_id="t1", expected=[EndState(cells=[_held_cell("slot", "seven")])])
+    tier, row = T.tier_of_task(the_spec.model_copy(update={"examined_rounds": [1], "gaps": ["f2"]}), every,
+                               [_base()], canon=fn, write_tools=WRITE_TOOLS)
+    assert tier == "untrusted" and row["reason"] == T.UNCHECKED_ASK
+
+
+def test_an_ask_filed_as_a_gap_or_a_reaction_needs_no_gate():
+    from kullback.spec.schema import unchecked_asks
+
+    the_spec = _spec().model_copy(update={"checks": []})
+    assert unchecked_asks(the_spec) == ["f1"]
+    assert unchecked_asks(the_spec.model_copy(update={"gaps": ["f1"]})) == []
+    facts = [f.model_copy(update={"condition": "agent"}) for f in the_spec.intent.facts]
+    assert unchecked_asks(the_spec.model_copy(update={"intent": the_spec.intent.model_copy(update={"facts": facts})})) == []

@@ -61,7 +61,7 @@ from kullback.spec.router import (  # noqa: F401  (ROUNDS_CAP re-exported for re
     is_set_aside,
     no_verifier_why,
 )
-from kullback.spec.schema import Spec, is_empty, load_spec, spec_ids
+from kullback.spec.schema import Spec, is_empty, load_spec, spec_ids, unchecked_asks
 from kullback.spec.writer import spec_verifier_path
 
 TRUSTED, UNTRUSTED = "trusted", "untrusted"
@@ -79,6 +79,8 @@ STRAY_UNTESTED = "stray_untested"
 # No fresh Run passes the Verifier, so nothing shows it can be passed (H5, D368). Kept out of REASONS, the
 # build table's columns, which stay as recorded; the report counts it beside them (spec/report.py).
 NO_PASSING_RUN = "no_passing_run"
+# An ask of the user no gate item cites (D370): outside REASONS too, counted beside them.
+UNCHECKED_ASK = "unchecked_ask"
 REASONS = (NO_INTENT, NOT_EXAMINED, NOT_ENOUGH_TRUTH, OPEN_RULING, CONSTRUCTED_RUN_PASSED, STRAY_UNTESTED)
 # The two constructed Runs, each of which must fail.
 CONSTRUCTED = ("do_nothing", "stray_write")
@@ -341,6 +343,8 @@ def _untrusted_reason(spec: Spec, verifier: Verifier, gates: dict, constructed: 
         return NOT_ENOUGH_TRUTH
     if not gates["no_open_ruling"]:
         return OPEN_RULING
+    if unchecked_asks(spec):
+        return UNCHECKED_ASK
     if not all(gates[f"{name}_fails"] for name in constructed):
         return _constructed_reason(gates, constructed)
     return None

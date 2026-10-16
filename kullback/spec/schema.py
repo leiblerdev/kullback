@@ -92,8 +92,17 @@ def is_reaction(fact: Any) -> bool:
 
 
 def is_ask(fact: Any) -> bool:
-    """A do or keep fact that is not a reaction: what a gate must hold (spec/items.py unchecked_asks)."""
+    """A do or keep fact that is not a reaction: what a gate must hold (unchecked_asks)."""
     return getattr(fact, "kind", None) in ("do", "keep") and not is_reaction(fact)
+
+
+def unchecked_asks(spec: Any) -> list[str]:
+    """The ids of the Spec's asks (is_ask) that are not filed gaps and that no gate item cites (D370): a
+    write, a forbid, a kept row or a judge refusal all count; a weighed item does not."""
+    gated = {str(f) for check in spec.checks if (check.demand or {}).get("gate") is True
+             for f in (check.demand or {}).get("fact_ids") or ()}
+    gaps = set(spec.gaps)
+    return [fact.id for fact in spec.intent.facts if is_ask(fact) and fact.id not in gaps and fact.id not in gated]
 
 
 class SpecIntent(Record):

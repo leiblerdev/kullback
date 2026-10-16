@@ -2908,3 +2908,32 @@ test now pins that).
 
 Lives in: kullback/spec/items.py (TELL_WEIGHED, _untold, _WEIGHINGS), kullback/spec/writer.py (choice rule,
 tell_weighed count).
+
+### D370. Every ask has a gate: unchecked_ask, filed by code, holds trust (2026-10-16)
+
+What: every do or keep fact that is not a reaction (schema.is_reaction) and not a filed gap must be cited by at least
+one gate item; a write, a forbid, a kept row and a judge refusal all count, a weighed item does not
+(schema.unchecked_asks). At verify, before the mutants and needing no passing Run, code files each uncited ask as a
+blocking derivation ruling unchecked_ask on the task, one per fact, ever (mutant_rulings.ask_rulings); the verify line
+says "unchecked asks filed: <numbers>". The writer answers it like any ruling: gate the fact or file it as a gap.
+Trust reads the Spec itself: while an ask is uncited the Task is untrusted with reason unchecked_ask, after
+open_ruling and before the constructed Runs. The reason sits outside the frozen REASONS columns and the report counts
+it under side_reasons.
+
+Counts over the 63 trusted first-run heldout Specs (one rater per corpus; labels right 38, partial 17, wrong 8): -
+Worker, before piece 1 (do facts only, no excusals): blocks right 26, partial 12, wrong 6; with gaps excused right 17,
+partial 7, wrong 6. By the first brief's bar this declined the rule. - Orchestrator recount (reaction-shaped do facts
+excused: fallback, accepted, after pushback, echo; gaps excused): blocks right 0, partial 1, wrong 2 (d79a, d01d). -
+Worker, the rule as built (do and keep, reactions and gaps excused): blocks right 9, partial 4, wrong 5. With
+accepted, after-pushback and echo facts also excused: right 2, partial 2, wrong 2.
+
+Why the built count differs: the first-run Specs carry no condition (D366), so only fallback facts read as reactions;
+accepted, after-pushback and echo facts the new miner would mark condition agent still read as asks. The built rule's
+count on Specs mined under D366 needs a miner run and is not shown here.
+
+Why: D365. An ask no gate holds lets a Run that ignores the user pass. On the first run the built rule finds an
+uncited ask on 5 of the 8 wrong Verifiers the review left trusted; code sees it without a model, where uncovered_fact
+waits on the Examiner's judgment.
+
+Lives in: kullback/spec/schema.py (unchecked_asks), kullback/spec/rulings.py, kullback/spec/mutant_rulings.py
+(ask_rulings, UNCHECKED_ASK), kullback/spec/trust.py (UNCHECKED_ASK).

@@ -9,6 +9,9 @@ are scored and each survivor is read by code:
    all): derivation/unchecked_write, on a check that reads the row, else on the task;
 3. extra_row or untouched: derivation/unchecked_row per table, on the task.
 
+Before the mutants, every ask no gate item cites (schema.unchecked_asks, D370) is filed as
+derivation/unchecked_ask on the task, one per fact, ever; it needs no passing Run.
+
 Any other survivor (a value on a field no volunteered fact names, an undone field on a row whose write a
 gate does hold) is a note. A ruling names the table and field, never the row's value or the value to
 require; it is filed in the Examiner's round with the same shape as the Examiner's own, so the writer sees
@@ -25,7 +28,7 @@ from kullback.runner.records import Verifier, write_json
 from kullback.spec import events
 from kullback.spec import rulings as R
 from kullback.spec.mutants import CAP, SURVIVED, mutants_path, task_mutants
-from kullback.spec.schema import Spec, is_reaction, load_spec
+from kullback.spec.schema import Spec, is_reaction, load_spec, unchecked_asks
 
 UNCHECKED_FIELD, UNCHECKED_WRITE, UNCHECKED_ROW = "unchecked_field", "unchecked_write", "unchecked_row"
 NOTE = "note"
@@ -159,29 +162,59 @@ def file_rulings(workdir: Any, spec: Spec, rows: list[dict], round_number: int =
     return filed
 
 
+UNCHECKED_ASK = "unchecked_ask"
+
+
+def ask_rulings(workdir: Any, spec: Spec, round_number: int = 0, bus: Any = None) -> list[int]:
+    """Each ask no gate item cites filed as a blocking derivation/unchecked_ask ruling on the task (D370),
+    unless one already names that fact. Returns the numbers filed."""
+    task_id = spec.task_id
+    held = {row.get("fact_id") for ruling in R.load_rulings(workdir, task_id) if ruling.code == UNCHECKED_ASK
+            for row in ruling.verified}
+    filed = []
+    for fact_id in unchecked_asks(spec):
+        if fact_id in held:
+            continue
+        ruling = R.Ruling(task_id=task_id, number=R.next_number(workdir, task_id),
+                          round=int(round_number) or spec.round + 1, item=R.TASK_ITEM, kind="derivation",
+                          code=UNCHECKED_ASK, blocking=True, verified=[{"fact_id": fact_id}],
+                          reason=f"fact {fact_id} is an ask of the user that no gate item cites",
+                          fix=f"add a gate item citing {fact_id}, or file {fact_id} as a gap")
+        R.save_ruling(workdir, ruling)
+        filed.append(ruling.number)
+        if bus is not None:
+            events.ruling_filed(bus, events.ruling_payload(ruling))
+    if filed:
+        R.sync_spec(workdir, task_id)
+    return filed
+
+
 def mutant_rulings(workdir: Any, verifier: Verifier, round_number: int = 0, *, runs: Optional[list] = None,
                    bus: Any = None, cap: int = CAP) -> dict:
     """The Task's mutants scored on its newest passing fresh Run (of `runs`, else its Runs on disk), the
     survivors filed as rulings, the report written to exam/mutants/<task>.json. Returns the report's status
     and counts and the ruling numbers filed."""
-    report = task_mutants(workdir, verifier, runs, cap=cap)
     spec = load_spec(workdir, verifier.task_id)
+    asks = ask_rulings(workdir, spec, round_number, bus) if spec is not None else []
+    report = task_mutants(workdir, verifier, runs, cap=cap)
     filed = file_rulings(workdir, spec, report["mutants"], round_number, bus) \
         if report["status"] == "scored" and spec is not None else []
     write_json(mutants_path(workdir, verifier.task_id), report)
     notes = sum(row.get("ruling") == NOTE for row in report.get("mutants", []))
     return {"status": report["status"], "built": report.get("built", 0), "survived": report.get("survived", 0),
-            "filed": filed, "notes": notes}
+            "filed": filed, "notes": notes, "asks": asks}
 
 
 def mutants_line(out: dict) -> str:
-    """The verify answer's mutant part, in one line."""
+    """The verify answer's mutant part, in one line, after the unchecked asks filed when there are any."""
+    asks = out.get("asks") or []
+    head = f"unchecked asks filed: {', '.join(str(n) for n in asks)}; " if asks else ""
     if out["status"] != "scored":
-        return f"mutants: not built ({out['status']})"
+        return f"{head}mutants: not built ({out['status']})"
     filed = ", ".join(str(n) for n in out["filed"]) or "none"
-    return (f"mutants: {out['built']} built, {out['survived']} survived; rulings filed from them: {filed}; "
+    return (f"{head}mutants: {out['built']} built, {out['survived']} survived; rulings filed from them: {filed}; "
             f"notes: {out['notes']}")
 
 
-__all__ = ["NOTE", "UNCHECKED_FIELD", "UNCHECKED_ROW", "UNCHECKED_WRITE", "candidates", "file_rulings",
-           "mutant_rulings", "mutants_line", "reading_checks", "usable_facts"]
+__all__ = ["NOTE", "UNCHECKED_ASK", "UNCHECKED_FIELD", "UNCHECKED_ROW", "UNCHECKED_WRITE", "candidates", "file_rulings",
+           "ask_rulings", "mutant_rulings", "mutants_line", "reading_checks", "usable_facts"]
