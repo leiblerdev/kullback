@@ -2724,3 +2724,88 @@ D358 r4 (2026-10-11): tried and not kept: prompt rules (a later acceptance or co
 ### D363. A built Environment exports as a Harbor dataset, one Harbor task per Task (2026-10-11)
 
 `kullback export --format harbor` writes, beside the package export, one Harbor task directory per Task (trusted by default, `--tasks all` adds the synthetic store under `synthetic/`) and a dataset manifest carrying the package manifest's fields with the Harbor task names. Each task holds instruction.md (the Intent's volunteered facts, not echoes and not accepted ones, then the recorded policy, then one line on the tools), task.toml (schema 1.3, name `<org>/<env>-<task id>`, metadata tier, trust reason, reference_class, difficulty bucket, needs_judge, origin, build tag, git sha; no network), environment/ (a digest-pinned Python base, kullback from a wheel, the one Task's world, no recorded calls, Verifiers, traces or References), tests/ (the Verifier and test.sh) and solution/solve.sh (the tool calls, reads and writes, of the first of the Task's Runs, kept References first, whose replay through the exported world holds every item a judge is not needed for; a prose-length argument is put as a neutral line; then a reply built from the values the Verifier needs said and the anchor answer each judge item is held to; a Task with no such Run is left out, counted, and named in the manifest by its last four characters). In the container `kullback.hub.harbor_world` serves the tools as a `tools` CLI and an MCP stdio server; every call replays the call log from the Starting state under seed 0, so ids and times stay deterministic, appends to /app/.calls.jsonl and writes the world back to /app/db.json; `reply_to_user` carries what the agent says. A consent user answers each reply with a yes, so confirm-before-write gates stay satisfiable without a live user. The reward is `verdict` scored as kullback scores it (D329): gates first, weighted after; a gated judge item that cannot be scored fails closed, unscored weighted items leave the denominator. Harbor reads reward.json as numbers only, so reward.json holds the reward and items.json beside it every item (id, kind, gate, weight, held, why). The D221 leak scan runs per task over the instruction, the tests and the solution; the policy is declared, not scanned. `kullback publish --format harbor` adds the directory under `harbor/` in the same dataset repo with a "Run it with Harbor" card section, and `--dry-run DIR` publishes into a local directory. Judge items are scored in the container by the model the variable KULLBACK_JUDGE_MODEL names at test time (founder 2026-10-11), one call per item (D328), behind the Harness's live-call switch; a Task with judge items passes that variable, the switch and the key variables through verifier.env as host templates and opens the network to the verifier phase only; the judge's answers and spend go to judge.json; with no judge named, or one that cannot start or answer, the fail-closed rule stands. The export's own oracle check never calls a judge. Accepted on two Tasks played on the host with Opus 5.5 on Bedrock as the judge, 0.05 USD in all: oracle 1.0 on one and fail-closed 0 on the other when one judge call came back empty, do-nothing and stray write 0 on both, and 0 on both oracles with the variable unset. The harbor CLI is a dev dependency local to kullback (Python 3.12 and later). Report .claude/herdr/truth-1008/harbor-report.md.
+
+### D364. Heldout 100: unseen Tasks pass every pre-registered bar; trusted is not right (2026-10-12)
+
+What was measured: 100 Tasks drawn unseen, 50 retail and 50 airline, built on bb3a0a5c at a round cap of 5, each
+Verifier labelled right, partial, wrong or no_verifier by one blind rater per corpus against the benchmark gold, which
+was a ruler only. Report .claude/herdr/truth-1008/heldout-report.md; every number below is from it, with its section.
+
+What it cannot show (the report's own opening): one rater per corpus and no second rater, one run and no replicate, a
+rater of the same model family as the writer and the Examiner, and a draw and a code version that both differ from
+full50, so no gain over full50 can be split between the fixes and easier Tasks. 26 of the 100 were in goal r1's
+held-out set. Two airline Tasks (a3f5, f94c) crashed on a harness bug in the Spec cell reader, fixed at 55b8b1e4 and not
+in this run, and are rated no_verifier as the founder ruled.
+
+Bars (section Bars), verdict PASS. Primary, wrong at most 20 of 100: 9 (full50 10 of 50). Primary, right plus partial
+plus no_verifier at least 80 of 100: 91 (89 without the two crashes counted). Generalisation, right at least 18 percent
+of reached: 43 percent (full50 28). Standing, beside the verdict, trusted on a wrong Reference at most 10 percent by the
+sidecar class: 4 of 62, 6 percent (full50 3 of 26). Confound: draw and code both differ, stated, not testable.
+
+Labels (section M3): retail 20 right, 16 partial, 7 wrong, 7 no_verifier; airline 23, 11, 2, 14; all 43, 27, 9, 21.
+Outside goal r1 (74 Tasks): 31, 21, 8, 14.
+
+Labels by tier (section Labels by tier): trusted 63 hold 38 right, 17 partial and 8 wrong (13 percent wrong; full50 6 of
+27); open_ruling 6 hold 1, 4, 1; stray_untested 9 hold 3, 6, 0; all 18 no_verifier reference_wrong set-asides were rated
+no_verifier; intent_unclear 2 hold 1 right and 1 no_verifier. All 4 trusted Tasks on a wrong Reference are labelled
+wrong, and 4 more wrong ones sit on a right Reference, so trust kept out none of the wrong-Reference Verifiers that
+reached the trusted tier.
+
+The wrong Verifiers (section The wrong Verifiers): retail 4770, 1f8a, e04c, d79a and d01d on a wrong Reference; airline
+b8ba, retail 222a, retail 2417 and airline d73f on a right one. Patterns (section Patterns): a core write left ungated
+(d79a, d01d, b8ba); the Verifier carries a wrong Reference's outcome as a gate (4770, 1f8a, e04c); gated tell items the
+user never needs (2417, d73f); one misread (222a). The loosening search (section Loosening search) finds six repairs on
+three trusted Tasks, all labelled wrong, that let a wrong Reference pass (d01d by a fails_reference ruling, d79a and 4770
+by other rulings). Mutants (section M4) are built from the Reference's writes, so they measure fit to the Reference,
+not the ask: survivors per Verifier were 1.40 on right, 3.40 on partial and 0.75 on wrong.
+
+Three general fixes proposed, none built (section Three simplest general fixes): a repair cannot buy a pass (a repair
+that ungates a gate citing a volunteered do fact in answer to fails_reference or gated_against_ask ends the Task
+no_verifier reference_wrong); a gated tell item needs a told fact or a policy line naming the statement, else it is
+weighed; one gate per written row. Pattern 2 has no code fix: it needs a truth source other than the Reference, which
+D365 sets.
+
+### D365. The product vision and the source of truth: the ask, the policy and the world (2026-10-15 and 2026-10-16)
+
+The founder, 2026-10-15: "essentially the vision to it have something like you say the agent what kind of behaviour
+you want and then the agent builds the evals and training data for the same ( traces and everything for the
+environments )." And: "the whole point is to construct the environment and tasks from the traces, we cannot use the
+gold for anything", "i mean references are good for fidelity that this passed in the users environment and this wisll
+pass in my environment as well but they are not good for anything post that", "we need to remove trusted by agreeement
+it just doesn't make sense", "the mutants should measure fit to the ask".
+
+The founder, 2026-10-16: "traces should be one of the inputs not the whole to be honest :), the database structure and
+business knowledge graph. Where we come in is take all of these using this construct as realistic environment as much
+possible and then heavily augment it with real world synthetic data which we need to generate now. that is the vision
+of the product an agent which asks you the right behaviour you want and then we generate the evals or the same and then
+the human sees some of the evals and then we benchmark all the models across it and then train the model then and
+there :)"
+
+What: the product is an agent that asks for the behaviour wanted and builds the evals and the training data for it; a
+human reviews a sample of the evals; every model is benchmarked on them; the chosen model is trained on the same set.
+Traces are one input beside the database structure, the business knowledge graph and the policy; the Environment is
+built from all of them as realistically as possible, then augmented with synthetic Tasks from the real world bound to
+real rows. The source of truth is three things: the ask (with branches conditioned on the world or the policy), the
+policy and the world. The Intent, the Verifier, the mutants, trust and the Examiner's rulings derive from them. The
+Reference is for fidelity only and never enters the Verifier, repair or the mutants; a Reference that fails a Verifier
+is a finding about the Reference. Reactions to the agent's conduct inside a trace (a transfer after a failure, giving
+up, a late improvised ask) are recorded and never gate. Benchmark gold and scripts are a ruler, never an input. Mined
+held-out Tasks are the eval; synthetic Tasks are training data, measured on the mined held-out set. Lives in:
+docs/vision.md.
+
+Why: in the heldout 100 (D364) the nine wrong Verifiers came from leaning on the Reference: read against this rule, six
+gated the Reference agent's failures as the user voiced them, two came through the fails_reference repair path, one
+was a misread (the report's own patterns group them by mechanism; see docs/vision.md, section Why). All four trusted
+Tasks on a wrong Reference were wrong, and agreement with the Reference cannot see that, since fresh Runs agree with a
+wrong Reference as readily as with a right one.
+
+Supersedes: "The trace is the only truth" in docs/design-philosophy.md, and D66 where it reads the raw trace as the
+only truth; D66's storage, hashing and provenance stand, the trace becomes one input whose agent side is evidence.
+Trust by agreement of 2026-10-05 (executed end states agreeing with the recording) as a truth source. Left for the
+follow-on stream to revisit, not changed here: D312's reference_replay gate and D357's fails_reference repair route,
+both of which let the Reference act on a Verifier.
+
+Follow-on: stream clean-ask, D366 onward, built separately (.claude/herdr/ask-1016/clean-ask.md): the miner marks what
+each fact is conditioned on, the Reference leaves the Verifier, repair and the mutants, and mutants key to the ask.
+Not built and named as gaps: the behaviour statement's shape, the synthesiser, the human review step, the training
+loop, a realism measure.
