@@ -1,6 +1,6 @@
 """Surviving mutants become the Examiner's rulings: which field or row is unchecked, never a value (D362).
 
-At verify, the mutants of the Task's newest passing fresh Run, keyed to the ask (spec/mutants.py, D368),
+At verify, the mutants of the Task's base, keyed to the ask (spec/mutants.py, D368, D375),
 are scored and each survivor is read by code:
 
 1. value, on a field a check of the Spec reads where that check rests on an ask the user raised (not
@@ -191,9 +191,9 @@ def ask_rulings(workdir: Any, spec: Spec, round_number: int = 0, bus: Any = None
 
 def mutant_rulings(workdir: Any, verifier: Verifier, round_number: int = 0, *, runs: Optional[list] = None,
                    bus: Any = None, cap: int = CAP) -> dict:
-    """The Task's mutants scored on its newest passing fresh Run (of `runs`, else its Runs on disk), the
-    survivors filed as rulings, the report written to exam/mutants/<task>.json. Returns the report's status
-    and counts and the ruling numbers filed."""
+    """The Task's mutants scored on its base (built from the Verifier, else the newest passing fresh Run of
+    `runs`, else of its Runs on disk), the survivors filed as rulings, the report written to
+    exam/mutants/<task>.json. Returns the report's status and counts and the ruling numbers filed."""
     spec = load_spec(workdir, verifier.task_id)
     asks = ask_rulings(workdir, spec, round_number, bus) if spec is not None else []
     report = task_mutants(workdir, verifier, runs, cap=cap)

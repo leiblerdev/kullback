@@ -264,7 +264,7 @@ def _close(root: ExamRoot):
     return close
 
 
-# --- verify: the constructed Runs on the passing fresh Run, and the ask's mutants, by code (D371) ---
+# --- verify: the constructed Runs on the Task's base, and the ask's mutants, by code (D371, D375) ---
 
 
 def _judged_fresh(workdir: Any, task_id: str, verifier: Verifier, runs: list[Run], judge: Any) -> dict:
@@ -282,9 +282,10 @@ def _judged_fresh(workdir: Any, task_id: str, verifier: Verifier, runs: list[Run
 
 
 def verify_rows(workdir: Any, task_id: str, verifier: Verifier, runs: Iterable[Run], judge: Any = None) -> list[dict]:
-    """What the Verifier says of each constructed Run, laid on the Task's newest passing fresh Run (D368).
+    """What the Verifier says of each constructed Run, the stray write laid on the Task's base (D375).
 
-    A constructed Run (do nothing, one stray write on the passing fresh Run, spec/trust.py) should fail. The
+    A constructed Run (do nothing, one stray write on the base, spec/trust.py) should fail. The base is the
+    Verifier's end state built by code, else the newest passing fresh Run (spec/mutants.py `mutant_base`). The
     Reference and its steps are never shown (D371): the Examiner judges the Verifier against the Intent, the
     policy and the world, not against what the recording did. The fresh Runs' judge items are answered by
     `judge` (verifier, run) -> {atom id: JudgeScore}, kept once per Verifier and Run under exam/judged/.
@@ -294,7 +295,7 @@ def verify_rows(workdir: Any, task_id: str, verifier: Verifier, runs: Iterable[R
     from kullback.runner.canon import load_rules
     from kullback.runner.records import ToolSig
     from kullback.spec.canfail import outcome_of
-    from kullback.spec.mutants import passing_base
+    from kullback.spec.mutants import mutant_base
     from kullback.spec.trust import constructed_runs
 
     runs = list(runs)
@@ -304,16 +305,17 @@ def verify_rows(workdir: Any, task_id: str, verifier: Verifier, runs: Iterable[R
     canon = load_rules(Path(workdir) / "canon-rules.json")
     schema = read_json(Path(workdir) / "schema.json", None)
     judged = _judged_fresh(workdir, task_id, verifier, runs, judge)
-    base = passing_base(verifier, runs, judged, canon=canon, tools=tools, schema=schema)
-    rows = [{"run": "base", "run_id": base.run_id if base is not None else None}]
+    base = mutant_base(verifier, runs, judged, canon=canon, tools=tools, schema=schema)
+    rows = [{"run": "base", "run_id": base.run.run_id if base is not None else None,
+             "kind": base.kind if base is not None else None}]
     try:
-        built = constructed_runs(verifier, runs, [base.run_id] if base is not None else [], schema=schema,
-                                 canon=canon)
+        fresh = [base.run.run_id] if base is not None and base.kind != "constructed" else []
+        built = constructed_runs(verifier, runs, fresh, schema=schema, canon=canon)
         for name, run in built.items():
             if run is None or (name == "stray_write" and base is None):
                 continue
-            # The stray write copies the passing Run's turns, so it carries that Run's judge answers.
-            results = judged.get(base.run_id) if name == "stray_write" else None
+            # The stray write copies its base's turns, so it carries that Run's judge answers (none when built).
+            results = judged.get(base.run.run_id) if name == "stray_write" else None
             failed = outcome_of(verifier, run, canon, tools, judge_results=results).failed
             rows.append({"run": name, "verifier_fails_it": failed is not None, "at": failed})
     except Exception as exc:  # a constructed Run the Verdict cannot read says the code does not run
@@ -323,14 +325,15 @@ def verify_rows(workdir: Any, task_id: str, verifier: Verifier, runs: Iterable[R
 
 def verify_line(rows: list[dict]) -> str:
     """The verify rows in one line: each kind of constructed Run with how many the Verifier failed, then the
-    base: the passing fresh Run the stray write was laid on, or none."""
+    base the stray write was laid on: built from the Verifier, the passing fresh Run, or none."""
     parts, kinds = [], {}
     for row in rows:
         if "error" in row:
             parts.append(f"{row['run']}: {row['error']}")
         elif row["run"] == "base":
-            parts.append("stray write laid on the newest passing fresh run" if row["run_id"]
-                         else "no passing fresh run: no stray write")
+            parts.append({"constructed": "stray write laid on the end state built from the Verifier",
+                          "fresh": "stray write laid on the newest passing fresh run"}.get(
+                row.get("kind") or ("fresh" if row["run_id"] else ""), "no base: no stray write"))
         else:
             failed, total = kinds.get(row["run"], (0, 0))
             kinds[row["run"]] = (failed + bool(row["verifier_fails_it"]), total + 1)
@@ -349,15 +352,15 @@ def reference_judge(model: Any) -> Any:
 
 
 def _mutants(root: ExamRoot, verifier: Verifier) -> str:
-    """The surviving mutants of the Task's newest passing fresh Run, keyed to the ask, filed as this round's
-    rulings by code (spec/mutant_rulings.py, D362, D368), in one line."""
+    """The surviving mutants of the Task's base, keyed to the ask, filed as this round's rulings by code
+    (spec/mutant_rulings.py, D362, D368, D375), in one line."""
     from kullback.spec.mutant_rulings import mutant_rulings, mutants_line
 
     return mutants_line(mutant_rulings(root.workdir, verifier, root.round, bus=root.bus))
 
 
 def verify_task(root: ExamRoot, task_id: str) -> VerifyResult:
-    """The verify step on one Task: the constructed Runs on its newest passing fresh Run through its Verifier,
+    """The verify step on one Task: the constructed Runs on its base (D375) through its Verifier,
     kept on the root, then its unchecked asks and the surviving mutants of the ask filed as rulings (D371)."""
     from kullback.spec.trust import load_spec_verifier, runs_on_disk
 

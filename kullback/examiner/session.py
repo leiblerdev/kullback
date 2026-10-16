@@ -836,7 +836,7 @@ def _review_one(root: Path, task_id: str, round_number: int, model: Any, turns: 
 
 def _verify_once(exam_root: ExamRoot, task_id: str) -> None:
     """A session that never called verify on its Task gets the verify step by code after it, so the
-    unchecked asks and the mutant rulings of a passing fresh Run are filed every round (D362, D370, D371);
+    unchecked asks and the mutant rulings of the Task's base are filed every round (D362, D370, D371, D375);
     a Task with no Verifier is skipped."""
     from kullback.examiner.rule_tool import verify_task
 

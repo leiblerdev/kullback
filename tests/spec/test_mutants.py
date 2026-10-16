@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kullback.runner.records import EndState, Event, ExpectedCell, ItemResult, ValueSource, Verifier
+from kullback.runner.records import Conduct, EndState, Event, ExpectedCell, ItemResult, ValueSource, Verifier
 from kullback.spec import mutants as M
 from kullback.spec import trust as T
 from scripts.mutants import line
@@ -69,22 +69,78 @@ def test_a_verifier_that_allows_the_written_row_whole_lets_its_untouched_fields_
     assert report["survived"] == len(left_alone)
 
 
-def test_a_task_with_no_fresh_run_the_verifier_passes_is_not_mutated_and_says_no_passing_run():
-    wrong = _verifier(cells=[_cell(value="nine")])
-    report = _report(wrong)
-    assert report["status"] == M.NO_PASSING_RUN and "mutants" not in report
-    assert line("task_abcd1234", report) == "1234 no passing fresh run, not scored"
+def _two(members=("nine", "ten")):
+    """A Verifier whose cell is a set of two values: no end state can be built from it (D375)."""
+    return _verifier(cells=[_cell(value={"one_of": list(members)})])
+
+
+def test_a_task_with_no_base_built_and_no_fresh_run_passing_is_not_mutated_and_says_no_base():
+    report = _report(_two())
+    assert report["status"] == M.NO_BASE and "mutants" not in report
+    assert line("task_abcd1234", report) == "1234 no base built and no passing fresh run, not scored"
 
 
 def test_a_passing_replay_of_the_recording_is_never_the_base():
-    assert _report(_verifier(), _base(model="recorded"))["status"] == M.NO_PASSING_RUN
+    assert _report(_two(("seven", "eight")), _base(model="recorded"))["status"] == M.NO_BASE
 
 
-def test_the_base_is_the_newest_passing_fresh_run():
+def test_an_unbuildable_verifier_takes_the_newest_passing_fresh_run_as_its_base():
     older, newer = _base(), _base().model_copy(update={"run_id": "fresh-2"})
     failing = _base(end=START).model_copy(update={"run_id": "fresh-3"})
-    assert M.passing_base(_verifier(), [older, newer, failing], canon=fn, tools=WRITE_TOOLS).run_id == "fresh-2"
-    assert _report(_verifier(), None)["base"] == "fresh-1"
+    two = _two(("seven", "eight"))
+    assert M.passing_base(two, [older, newer, failing], canon=fn, tools=WRITE_TOOLS).run_id == "fresh-2"
+    report = _report(two, None)
+    assert report["base"] == "fresh-1" and report["base_kind"] == M.FRESH
+
+
+def test_the_base_is_built_from_the_verifier_on_the_start_state_with_no_run_passing():
+    report = _report(_verifier(cells=[_cell(value="nine")]), _base(model="recorded"))
+    assert report["status"] == "scored" and report["base_kind"] == M.CONSTRUCTED and report["base"] == "t1.constructed"
+    built = M.constructed_base(_verifier(cells=[_cell(value="nine")]), [_base()], canon=fn)
+    assert built.events[-1].payload["end_state"] == {**START, "items": {**START["items"], "A1": {"slot": "nine",
+                                                                                                 "label": "red"}}}
+    assert built.events[-1].payload["start_state"] == START and not [e for e in built.events if e.type != "stop"]
+
+
+@pytest.mark.parametrize("cell", [
+    _cell(value={"one_of": ["seven", "eight"]}),
+    _cell(value={"not": ["two"]}),
+    _cell(row_id="Z9"),
+], ids=["set of two", "not set", "row not there"])
+def test_a_gated_cell_that_is_not_one_literal_value_builds_no_base(cell):
+    assert M.constructed_base(_verifier(cells=[cell]), [_base()], canon=fn) is None
+
+
+def test_a_set_of_one_a_dotted_path_and_a_new_row_are_built_and_a_weighted_cell_is_left_as_it_was():
+    cells = [_cell(value={"one_of": ["seven"]}), _cell(row_id="B2", field="meta.size", value=3),
+             _cell(row_id="B2", field="label", value="green").model_copy(update={"gate": False})]
+    made = Verifier(task_id="t1", expected=[EndState(cells=cells, new_rows=[{"table": "notes",
+                                                                             "where": {"text": "new"}, "count": 2}])])
+    end = M.constructed_base(made, [_base()], canon=fn).events[-1].payload["end_state"]
+    assert end["items"]["A1"]["slot"] == "seven" and end["items"]["B2"] == {"slot": "four", "label": "blue",
+                                                                           "meta": {"size": 3}}
+    assert sorted(row["text"] for row in end["notes"].values()) == ["kept", "new", "new"]
+
+
+def test_a_called_gate_failing_on_the_built_base_kills_no_mutant_and_a_loose_cell_still_survives():
+    called = Conduct(kind="called", tool="update_item", source=SAID)
+    loose = Verifier(task_id="t1", conduct=[called], expected=[EndState(
+        cells=[_cell()], allowed=[{"table": "items", "row_id": "A1", "field": "label"}])])
+    report = _report(loose, _base(model="recorded"))
+    assert report["base_kind"] == M.CONSTRUCTED
+    assert all(row["outcome"] == "killed" for row in _by(report, "value") if row["field"] == "slot")
+    label = [row for row in report["mutants"] if row["row"] == "A1" and row["field"] == "label"]
+    assert label and all(row["outcome"] == "survived" and row["failing"] == [] for row in label)
+
+
+def test_a_keyed_cell_the_base_kept_is_flipped_and_a_keep_that_holds_kills_it():
+    kept = _cell(row_id="B2", value="four")
+    keys = M.AskKeys(frozenset({("items", "A1", "slot"), ("items", "B2", "slot")}), frozenset(), frozenset())
+    made, _ = M.candidate_mutants(_verifier(cells=[_cell(), kept]), _base(), keys, canon=fn)
+    flipped = [m for m in made if (m.operator, m.row_id, m.field) == ("value", "B2", "slot")]
+    assert len(flipped) == 1 and flipped[0].run.events[-1].payload["end_state"]["items"]["B2"]["slot"] == "two"
+    report = _report(_verifier(cells=[_cell(), kept]), keys=keys)
+    assert all(row["outcome"] == "killed" for row in report["mutants"] if row["row"] == "B2" and row["field"] == "slot")
 
 
 def _ask_spec(demand, stance="volunteered", condition="none"):

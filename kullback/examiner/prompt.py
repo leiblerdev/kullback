@@ -68,9 +68,10 @@ _TOOL_EXAMPLES = {
              + "; ".join(f"{kind}: {', '.join(codes)}" for kind, codes in RULING_KINDS.items()) + "."),
     "close": ('close: close an answered ruling or keep it open, e.g. {"task_id": "t1", "number": 1, '
               '"keep_open": false, "why": "The writer dropped the write no fact asked for."}.'),
-    "verify": ('verify: run the do-nothing Run and a stray write on the newest passing fresh Run through the '
-               'Verifier, e.g. {"task_id": "t1"}; a passes_do_nothing ruling cites it. It files, by code, one '
-               "unchecked_ask ruling per ask no gate cites and, on a passing fresh Run, one unchecked_field, "
+    "verify": ('verify: run the do-nothing Run and a stray write on the Task\'s base (the end state the Verifier '
+               'expects, built by code, else the newest passing fresh Run) through the Verifier, e.g. '
+               '{"task_id": "t1"}; a passes_do_nothing ruling cites it. It files, by code, one '
+               "unchecked_ask ruling per ask no gate cites and, on a base, one unchecked_field, "
                "unchecked_write or unchecked_row ruling per field or row of the ask no gate holds (from mutants "
                "keyed to the ask); they are yours to close. It never shows a recording's steps."),
     "lookup_rows": ('lookup_rows: read a row of the Task\'s world, the one the writer read, e.g. '

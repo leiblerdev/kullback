@@ -23,7 +23,7 @@ def line(task_id: str, report: dict) -> str:
     """One Task's counts, its id masked, never a row id or value."""
     head = f"{task_id[-4:]} "
     if report.get("status") != "scored":
-        return head + {"no_passing_run": "no passing fresh run, not scored"}.get(
+        return head + {"no_base": "no base built and no passing fresh run, not scored"}.get(
             report.get("status"), str(report.get("status")))
     parts = [_cells(report), f"dropped {report['dropped']}"]
     parts += [f"{op}: {_cells(report['by_operator'][op])}" for op in OPERATORS if report["by_operator"][op]["built"]]

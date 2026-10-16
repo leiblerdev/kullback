@@ -14,13 +14,17 @@ no Verifier for this Task, its `why` intent_unclear, never a check bent to pass)
 not_enough_truth (a not_enough_truth ruling open: the recordings never show what the user wants where
 the Verifier must decide), open_ruling (a ruling open, or the Task set aside by the router's rule),
 constructed_run_passed (a constructed Run passed, or none could be built: not shown to fail),
-no_passing_run (the do-nothing Run fails but no fresh Run passed to lay the stray write on, so the sanity
-check was never tested and nothing shows the Verifier can be passed; H5, D368), stray_untested (an
-untouched mutant of the sample was not killed; D347, D362). A stray write that fails at a cell or an atom on a passing base never tested the
-sanity check either: it counts as passed and the row's `detail` says stray_untested.
+no_base (the do-nothing Run fails but there is no base to lay the stray write on: the Verifier's end state
+cannot be built by code and no fresh Run passes it, so the sanity check was never tested; D375, was
+no_passing_run under D368), stray_untested (an untouched mutant of the sample was not killed; D347, D362). A
+stray write that fails at a cell or an atom on its base never tested the sanity check either: it counts as
+passed and the row's `detail` says stray_untested.
 
-The base is the newest fresh Run the Verifier passes, never a Reference (D368). On it the stray-write
-gate reads the sample, not one write (D362): where the Task's capped
+The base is built from the Verifier (D375, spec/mutants.py `constructed_base`): the start state with every
+gated state cell set to its expected value, on which the state gates hold by construction. Where a gated
+cell is not one literal value it is the newest fresh Run the Verifier passes; never a Reference (D368). The
+do-nothing Run tests a called gate (no call made, it must fail); judge gates stay untested by mutants. On the
+base the stray-write gate reads the sample, not one write (D362): where the Task's capped
 mutant sample (spec/mutants.py) holds untouched mutants on that base, the gate holds when every one is
 killed, and any one not killed keeps the Task stray_untested (the survivor reaches the writer as the
 Examiner's unchecked_row ruling). With no untouched mutant built, the one stray write decides as before.
@@ -76,9 +80,10 @@ NO_VERIFIER = "no_verifier"
 # How the Verdict names a failure at the sanity check: a row outside the declared ones moved; also the
 # reason a Task is held when no Run passed to lay the stray write on.
 STRAY_UNTESTED = "stray_untested"
-# No fresh Run passes the Verifier, so nothing shows it can be passed (H5, D368). Kept out of REASONS, the
-# build table's columns, which stay as recorded; the report counts it beside them (spec/report.py).
-NO_PASSING_RUN = "no_passing_run"
+# No base for the stray write and the mutants: the Verifier's end state cannot be built by code and no fresh
+# Run passes it (D375; was no_passing_run, D368). Kept out of REASONS, the build table's columns, which stay
+# as recorded; the report counts it beside them (spec/report.py).
+NO_BASE = "no_base"
 # An ask of the user no gate item cites (D370): outside REASONS too, counted beside them.
 UNCHECKED_ASK = "unchecked_ask"
 REASONS = (NO_INTENT, NOT_EXAMINED, NOT_ENOUGH_TRUTH, OPEN_RULING, CONSTRUCTED_RUN_PASSED, STRAY_UNTESTED)
@@ -227,58 +232,67 @@ def _judge(verifier: Verifier, run: Run, canon: Any, write_tools: Any, schema: A
         return Outcome(False, None, False)
 
 
-def _stray_base(runs: list[Run], passing: Iterable[str], empty: Optional[Run]) -> tuple[Optional[Run], bool]:
-    """(the Run the stray write is laid on, whether it passes): the first Run in `passing` (the passing fresh
-    Runs, newest first), else the do-nothing Run, on which the sanity check goes untested."""
+def _stray_base(verifier: Verifier, runs: list[Run], passing: Iterable[str], *, canon: Any = None,
+                schema: Any = None) -> Optional[Any]:
+    """The base the stray write is laid on (spec/mutants.py `Base`): the Verifier's end state built by code
+    (D375), else the first Run in `passing` (the passing fresh Runs, newest first), else None."""
+    from kullback.spec.mutants import CONSTRUCTED, FRESH, Base, constructed_base
+
+    built = constructed_base(verifier, runs, canon=canon, schema=schema)
+    if built is not None:
+        return Base(built, CONSTRUCTED)
     by_id = {run.run_id: run for run in runs}
-    base = next((by_id[run_id] for run_id in passing if run_id in by_id and _stop(by_id[run_id]) is not None), None)
-    return (base, True) if base is not None else (empty, False)
+    fresh = next((by_id[run_id] for run_id in passing if run_id in by_id and _stop(by_id[run_id]) is not None), None)
+    return Base(fresh, FRESH) if fresh is not None else None
 
 
 def constructed_runs(verifier: Verifier, runs: list[Run], passing: Iterable[str], *, schema: Any = None,
                      canon: Any = None) -> dict[str, Optional[Run]]:
     """name -> the constructed Run, None where it cannot be built; every Verifier gets both (D333, fold).
 
-    The stray write is laid on `_stray_base`: on a passing base, the stray row is the one thing that can fail it.
+    The stray write is laid on `_stray_base`: on a base whose state gates hold, the stray row is the one
+    state change that can fail it. With no base it is laid on the do-nothing Run, where it tests nothing.
     """
     empty = _do_nothing(runs)
-    base, _passing = _stray_base(runs, passing, empty)
+    base = _stray_base(verifier, runs, passing, canon=canon, schema=schema)
     out: dict[str, Optional[Run]] = {"do_nothing": empty}
-    out["stray_write"] = stray_write_run(verifier, base, schema=schema, canon=canon)
+    out["stray_write"] = stray_write_run(verifier, base.run if base is not None else empty, schema=schema,
+                                         canon=canon)
     return out
 
 
 def _constructed(verifier: Verifier, runs: list[Run], passing: list[str], canon: Any, tools: Any,
                  schema: Any, judged: Optional[dict] = None, keys: Any = None) -> dict[str, dict]:
-    """name -> {built, failed, atom, run_id}, and for the stray write `untested` and `no_base`.
+    """name -> {built, failed, atom, run_id}, and for the stray write `base` (its kind), `untested` and
+    `no_base`.
 
-    A stray write laid on a base that did not pass never tested the sanity check: untested, not failed,
-    and `no_base`. The stray write is scored with its base's judge answers (`judged`, by run id).
+    With no base the stray write never tested the sanity check: untested, not failed, and `no_base`. It is
+    scored with its base's judge answers (`judged`, by run id; a constructed base has none).
 
     A constructed Run counts as failed only on a definite failure, a gate item that holds False; a Run
     left not verdicted has not failed (S1). The stray write counts as failed only when its sanity item
     (read off Verdict.items) holds False; failing anywhere else, it never tested the sanity check. On a
-    passing base with untouched mutants in the sample, the sample decides instead (`sample`, D362).
+    base with untouched mutants in the sample, the sample decides instead (`sample`, D362).
     """
     out = {}
-    base, base_passed = _stray_base(runs, passing, None)
+    base = _stray_base(verifier, runs, passing, canon=canon, schema=schema)
     for name, run in constructed_runs(verifier, runs, passing, schema=schema, canon=canon).items():
         if run is None:
             out[name] = {"built": False, "failed": False, "atom": None, "run_id": None}
             continue
-        results = (judged or {}).get(base.run_id) if name == "stray_write" and base is not None else None
+        results = (judged or {}).get(base.run.run_id) if name == "stray_write" and base is not None else None
         outcome = _judge(verifier, run, canon, tools, schema, results)
         out[name] = {"built": True, "failed": outcome.failed is not None, "atom": outcome.failed,
                      "run_id": run.run_id}
         if name == "stray_write":
-            if not base_passed:
+            if base is None:
                 out[name].update(failed=False, untested=True, no_base=True)
                 continue
             untested = not outcome.sanity_failed and not outcome.passed
-            out[name].update(failed=outcome.sanity_failed, untested=untested)
+            out[name].update(failed=outcome.sanity_failed, untested=untested, base=base.kind)
             if outcome.passed:  # the one write already passed: a constructed Run passed, whatever the sample says
                 continue
-            sample = _untouched_sample(verifier, base, canon, tools, schema, (judged or {}).get(base.run_id), keys)
+            sample = _untouched_sample(verifier, base.run, canon, tools, schema, results, keys)
             if sample["built"]:
                 held = sample["killed"] == sample["built"]
                 out[name].update(failed=held, untested=not held, sample=sample)
@@ -351,12 +365,12 @@ def _untrusted_reason(spec: Spec, verifier: Verifier, gates: dict, constructed: 
 
 
 def _constructed_reason(gates: dict, constructed: dict) -> str:
-    """When only the stray write is unshown: no_passing_run with no passing fresh base (H5), stray_untested
+    """When only the stray write is unshown: no_base with no base to lay it on (D375), stray_untested
     with an untouched mutant of the sample not killed (D362); else constructed_run_passed."""
     stray = constructed.get("stray_write") or {}
     others = all(gates[f"{name}_fails"] for name in constructed if name != "stray_write")
     if others and stray.get("no_base"):
-        return NO_PASSING_RUN
+        return NO_BASE
     return STRAY_UNTESTED if others and (stray.get("sample") or {}).get("not_killed") else CONSTRUCTED_RUN_PASSED
 
 

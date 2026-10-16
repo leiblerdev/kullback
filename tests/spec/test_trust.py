@@ -57,6 +57,12 @@ def _fresh(run_id="fresh-1", right=True):
     return _stopped(run.model_copy(update={"events": [e for e in run.events if e.idx < 3 or e.idx == 5]}), START)
 
 
+def _unbuildable() -> Verifier:
+    """The Verifier with its cell a set of two values: no end state can be built from it by code (D375)."""
+    two = _cell().model_copy(update={"value": {"one_of": ["seven", "eight"]}})
+    return _verifier().model_copy(update={"expected": [EndState(cells=[two])]})
+
+
 def _tier(runs, the_spec=None, rulings=(), verifier=None, references=(REPLAY_ID,)):
     the_spec = the_spec or spec(gaps=["f2"])
     return T.tier_of_task(the_spec, verifier or _verifier(the_spec), runs, rulings, canon=fn,
@@ -86,16 +92,28 @@ def test_a_verifier_both_constructed_runs_fail_with_no_ruling_open_is_trusted_an
     assert row["reference_passes"] is True and row["solvable"] is True and row["fresh_passed"] == ["fresh-1"]
 
 
-def test_no_fresh_pass_withholds_trust_as_no_passing_run_and_sets_solvable_false_where_a_fresh_run_failed():
+def test_no_fresh_pass_still_trusts_on_the_base_built_from_the_verifier_and_solvable_stays_false_beside_it():
     tier, row = _tier([_replay(), _fresh(right=False)])
-    assert tier == "untrusted" and row["reason"] == T.NO_PASSING_RUN
+    assert tier == "trusted" and row["constructed"]["stray_write"]["base"] == "constructed"
     assert row["solvable"] is False and row["fresh_runs"] == 1
     assert row["reference_passes"] is True and row["fresh_passed"] == []
 
 
-def test_a_passing_replay_alone_is_no_passing_run_and_leaves_solvable_unscored():
-    tier, row = _tier([_replay()])
-    assert tier == "untrusted" and row["reason"] == T.NO_PASSING_RUN
+def test_no_base_built_and_no_fresh_pass_withholds_trust_as_no_base_and_sets_solvable_false():
+    tier, row = _tier([_replay(), _fresh(right=False)], verifier=_unbuildable())
+    assert tier == "untrusted" and row["reason"] == T.NO_BASE
+    assert row["solvable"] is False and row["fresh_passed"] == []
+
+
+def test_an_unbuildable_verifier_falls_back_to_the_passing_fresh_run_as_its_base():
+    tier, row = _tier([_replay(), _fresh()], verifier=_unbuildable())
+    stray = row["constructed"]["stray_write"]
+    assert tier == "trusted" and stray["base"] == "fresh" and stray["run_id"] == "fresh-1.stray_write"
+
+
+def test_a_passing_replay_alone_is_no_base_for_an_unbuildable_verifier_and_leaves_solvable_unscored():
+    tier, row = _tier([_replay()], verifier=_unbuildable())
+    assert tier == "untrusted" and row["reason"] == T.NO_BASE
     assert row["solvable"] is None and row["fresh_runs"] == 0
 
 
@@ -135,21 +153,21 @@ def test_a_verifier_with_no_end_state_lets_the_stray_write_pass_and_is_untrusted
     assert row["constructed"]["do_nothing"]["failed"] is True and row["constructed"]["stray_write"]["failed"] is False
 
 
-def test_the_stray_write_lands_on_a_passing_run_outside_the_declared_rows_and_fails_at_the_end_state():
+def test_the_stray_write_lands_on_the_built_base_outside_the_declared_rows_and_fails_at_the_end_state():
     tier, row = _tier([_replay(), _fresh()])
     stray = row["constructed"]["stray_write"]
-    assert stray["built"] and stray["failed"] and stray["run_id"] == "fresh-1.stray_write"
+    assert stray["built"] and stray["failed"] and stray["run_id"] == "t1.constructed.stray_write"
     assert stray["atom"].startswith("gate:sanity:")
     run = T.stray_write_run(_verifier(), _replay(), canon=fn)
     assert run.events[-1].payload["end_state"]["items"]["B2"] == {"slot": "four (stray)"}
     assert run.events[-1].payload["end_state"]["items"]["A1"] == END["items"]["A1"]
 
 
-def test_a_stray_write_with_no_passing_fresh_base_holds_the_task_as_no_passing_run():
-    tier, row = _tier([_fresh(right=False)], references=())
+def test_a_stray_write_with_no_base_holds_the_task_as_no_base():
+    tier, row = _tier([_fresh(right=False)], references=(), verifier=_unbuildable())
     stray = row["constructed"]["stray_write"]
     assert stray["built"] and stray["untested"] is True and stray["failed"] is False and stray["no_base"] is True
-    assert tier == "untrusted" and row["reason"] == T.NO_PASSING_RUN
+    assert tier == "untrusted" and row["reason"] == T.NO_BASE
 
 
 def test_a_stray_write_on_a_passing_base_failing_at_the_sanity_check_is_tested():
@@ -175,20 +193,21 @@ def test_a_refusal_verifier_with_only_a_forbidden_write_is_passed_by_the_do_noth
     assert tier == "untrusted" and row["reason"] == "constructed_run_passed"
 
 
-def test_a_refusal_verifier_fails_the_do_nothing_run_at_its_gated_judge_item():
+def test_a_refusal_verifier_fails_the_do_nothing_run_at_its_judge_item_and_its_stray_write_on_the_built_start():
     declined = Atom(id="j1", kind="allowed", judge=True, gate=True,
                     target={"question": "Did the agent decline the change?", "anchor": {"answer": "declined"}})
     refusal = Verifier(task_id="t1", expected=[EndState()], atoms=[declined])
     tier, row = _tier([_replay(), _fresh()], verifier=refusal)
     assert row["constructed"]["do_nothing"]["failed"] is True and row["constructed"]["do_nothing"]["atom"] == "j1"
-    assert row["constructed"]["stray_write"]["untested"] is True
-    assert tier == "untrusted" and row["reason"] == T.NO_PASSING_RUN
+    stray = row["constructed"]["stray_write"]
+    assert stray["base"] == "constructed" and stray["untested"] is False and stray["failed"] is True
+    assert tier == "trusted" and row["solvable"] is False
 
 
 def test_trust_scores_runs_with_their_saved_judge_answers_and_the_stray_write_carries_its_base():
     told = Atom(id="j1", kind="allowed", judge=True, gate=True,
                 target={"question": "Did the agent say the new slot?", "anchor": {"answer": "seven"}})
-    judged_item = Verifier(task_id="t1", expected=[EndState(cells=[_cell()])], atoms=[told])
+    judged_item = _unbuildable().model_copy(update={"atoms": [told]})
     the_spec = spec(gaps=["f2"])
     _, row = T.tier_of_task(the_spec, judged_item, [_replay(), _fresh()], canon=fn, write_tools=WRITE_TOOLS,
                             references=(REPLAY_ID,), judged={"fresh-1": {"j1": {"score": 1, "why": "said"}}})

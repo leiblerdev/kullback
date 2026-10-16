@@ -202,21 +202,36 @@ def _fresh() -> Run:
     return _reference().model_copy(update={"run_id": "fresh-1", "model": "some/model"})
 
 
-def test_verify_lays_the_stray_write_on_the_passing_fresh_run_and_never_shows_the_reference(tmp_path):
-    root, verifier = _written(tmp_path)
-    rows = verify_rows(root, "t1", verifier, [_reference(), _fresh()])
-    by_run = {row["run"]: row for row in rows}
-    assert by_run["do_nothing"]["verifier_fails_it"] is True and by_run["stray_write"]["verifier_fails_it"] is True
-    assert by_run["base"] == {"run": "base", "run_id": "fresh-1"} and set(by_run) == {"base", "do_nothing", "stray_write"}
-    line = verify_line(rows)
-    assert line.startswith("do_nothing: the Verifier fails 1 of 1;") and "reference" not in line
+def _unbuildable(verifier: Verifier) -> Verifier:
+    """The Verifier with each cell a set of two values: no end state can be built from it by code (D375)."""
+    cells = [cell.model_copy(update={"value": {"one_of": [cell.value, "other"]}}) for cell in verifier.expected[0].cells]
+    return verifier.model_copy(update={"expected": [verifier.expected[0].model_copy(update={"cells": cells})]})
 
 
-def test_verify_with_only_a_passing_replay_builds_no_stray_write_and_says_so(tmp_path):
+def test_verify_lays_the_stray_write_on_the_base_built_from_the_verifier_and_never_shows_the_reference(tmp_path):
     root, verifier = _written(tmp_path)
     rows = verify_rows(root, "t1", verifier, [_reference()])
+    by_run = {row["run"]: row for row in rows}
+    assert by_run["do_nothing"]["verifier_fails_it"] is True and by_run["stray_write"]["verifier_fails_it"] is True
+    assert by_run["base"] == {"run": "base", "run_id": "t1.constructed", "kind": "constructed"}
+    line = verify_line(rows)
+    assert line.startswith("do_nothing: the Verifier fails 1 of 1;") and "reference" not in line
+    assert "stray write laid on the end state built from the Verifier" in line
+
+
+def test_verify_on_an_unbuildable_verifier_lays_the_stray_write_on_the_passing_fresh_run(tmp_path):
+    root, verifier = _written(tmp_path)
+    rows = verify_rows(root, "t1", _unbuildable(verifier), [_reference(), _fresh()])
+    by_run = {row["run"]: row for row in rows}
+    assert by_run["base"] == {"run": "base", "run_id": "fresh-1", "kind": "fresh"}
+    assert by_run["stray_write"]["verifier_fails_it"] is True
+
+
+def test_verify_with_only_a_passing_replay_and_no_base_built_builds_no_stray_write_and_says_so(tmp_path):
+    root, verifier = _written(tmp_path)
+    rows = verify_rows(root, "t1", _unbuildable(verifier), [_reference()])
     assert {row["run"] for row in rows} == {"base", "do_nothing"}
-    assert "no passing fresh run: no stray write" in verify_line(rows)
+    assert "no base: no stray write" in verify_line(rows)
 
 
 SAID_SLOT = {"id": "j1", "kind": "allowed", "judge": True, "gate": True,
@@ -239,11 +254,11 @@ def test_verify_judges_a_fresh_run_once_and_shows_no_judge_answer_or_agent_line(
     assert again == rows and len(model.calls) == 1
 
 
-def test_a_fresh_run_judged_not_holding_is_no_base(tmp_path):
+def test_a_fresh_run_judged_not_holding_is_no_base_when_none_is_built(tmp_path):
     root, verifier = _judged(tmp_path)
     model = TestModel([ModelReply(content='{"results": {"j1": {"score": 0, "why": "slot never said"}}}')])
-    line = verify_line(verify_rows(root, "t1", verifier, [_fresh()], judge=reference_judge(model)))
-    assert "no passing fresh run: no stray write" in line
+    line = verify_line(verify_rows(root, "t1", _unbuildable(verifier), [_fresh()], judge=reference_judge(model)))
+    assert "no base: no stray write" in line
 
 
 def _keeping_examiner(seen):

@@ -2969,3 +2969,33 @@ The unchecked_ask ruling's fix reads "add a gate item citing <fact>, or rebut qu
 That is also a hole in D370, left open for the founder: an ask with no item at all is a code-filled gap and is
 excused, so the rule catches only asks cited by weighted items. On the 100 first-run Specs 25 trusted Tasks (16 right,
 8 partial, 1 wrong) hold such an ask; counting them would block mostly right Verifiers.
+
+### D375. The mutant base is built by code from the Verifier, never from a Run (2026-10-16)
+
+What: the end state the stray write and the ask's mutants are laid on is the Task's start state with every gated
+state cell set to its expected value and every gated new row made (spec/mutants.py constructed_base); code then
+checks that every gated state item and the sanity item hold on it, else it is no base. The start state is read off
+any Run of the Task (it is the Task's), the built Run has no call and no message. A gated cell whose expectation
+is not one literal value (a one_of set of several members, a not set, a row the start state does not hold) cannot
+be built: then the base is the newest fresh Run the Verifier passes, as under D368, and with neither the status is
+no_base (renamed from no_passing_run; kept outside REASONS and counted beside them). A mutant is scored against
+its base: it is killed when a gate item that held on the base fails on it, so a called gate failing on the built
+base (no call was made) kills nothing. A keyed cell the base left as it was (a kept row the ask names) is flipped
+by the value operator too, so a keep the ask names must hold. Called and judge gates have no base to mutate: the
+do-nothing Run tests a called gate (no call made, it must fail); judge gates stay untested by mutants. The
+do-nothing Run is unchanged. solvable (any fresh Run passed) stays a flag beside trusted, never a trust input. The
+Examiner's verify line names the base: built from the Verifier, the newest passing fresh Run, or none.
+
+Why: D368 tied trust to the runner solving the Task: on the first run 78 of 100 Tasks had no passing fresh Run, so
+no mutant and no stray-write test, whatever their Verifier. The expected end state is the Verifier's own claim;
+laying mutants on it asks whether the gates hold what they declare without waiting on any agent. H4 still holds: a
+gate on the wrong cell or with the wrong value passes its own built base and kills its own mutants.
+
+Count (dry pass, no model call, the 100 first-run Specs under this code):
+84 of 100 Verifiers construct a base, 3 fall back to the newest passing fresh Run, 13 are no_base. Trusted: 40
+(by rater label, of the 63 first-run trusted: 25 right, 11 partial, 2 wrong; of the 37 untrusted: 1 right, 1
+partial). The dry pass files no new mutant ruling, so this is an upper bound (.claude/herdr/ask-1016/base-report.md).
+
+Lives in: kullback/spec/mutants.py (constructed_base, mutant_base, held_gates, _kept_cells, NO_BASE),
+kullback/spec/trust.py (_stray_base, NO_BASE), kullback/examiner/rule_tool.py (verify_rows, verify_line),
+kullback/examiner/prompt.py (verify text).

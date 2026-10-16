@@ -30,9 +30,11 @@ def _spec(fact_ids=("f1",), gaps=()):
     return the_spec.model_copy(update={"intent": the_spec.intent.model_copy(update={"facts": facts})})
 
 
-def _row_only():
-    """A Verifier that allows the written row to change but never holds its slot: every value there passes."""
-    cell = ExpectedCell(table="items", row_id="A1", field="label", value="red", row_source=SAID, source=SAID)
+def _row_only(buildable=True):
+    """A Verifier that allows the written row to change but never holds its slot: every value there passes.
+    Not buildable, its cell is a set of two values, so the passing fresh Run is the base (D375)."""
+    value = "red" if buildable else {"one_of": ["red", "pink"]}
+    cell = ExpectedCell(table="items", row_id="A1", field="label", value=value, row_source=SAID, source=SAID)
     return Verifier(task_id="t1", expected=[EndState(cells=[cell], allowed=[{"table": "items", "row_id": "A1"}])])
 
 
@@ -69,8 +71,8 @@ def test_a_value_survivor_on_a_field_only_a_side_fact_names_is_a_note_since_a_si
     assert not [r for r in R.load_rulings(tmp_path, "t1") if r.code == MR.UNCHECKED_FIELD]
 
 
-def test_a_write_no_gate_notices_files_one_unchecked_write_on_the_check_that_reads_the_row(tmp_path):
-    _file(tmp_path, _spec(), _row_only())
+def test_a_write_no_gate_notices_on_the_fresh_base_files_one_unchecked_write_on_the_check_that_reads_the_row(tmp_path):
+    _file(tmp_path, _spec(), _row_only(buildable=False))
     write, = [r for r in R.load_rulings(tmp_path, "t1") if r.code == MR.UNCHECKED_WRITE]
     assert write.item == "s1" and all(row["operator"] == "undone" for row in write.verified)
 
@@ -146,20 +148,26 @@ def test_verify_files_the_survivors_of_the_passing_fresh_run_in_the_examiners_ro
     assert ", ".join(str(r.number) for r in filed) in line
 
 
-def test_verify_with_only_a_passing_replay_builds_no_mutant_files_nothing_and_says_no_passing_run(tmp_path):
+def test_verify_with_only_a_passing_replay_and_no_base_built_files_nothing_and_says_no_base(tmp_path):
     from kullback.examiner.exam_files import ExamRoot
     from kullback.examiner.rule_tool import _mutants
 
     save_spec(tmp_path, _spec())
     _runs_on_disk(tmp_path, _base(run_id="replay-1", model="recorded"))
-    line = _mutants(ExamRoot(workdir=tmp_path, round=2), _row_only())
-    assert line == "mutants: not built (no_passing_run)" and R.load_rulings(tmp_path, "t1") == []
+    line = _mutants(ExamRoot(workdir=tmp_path, round=2), _row_only(buildable=False))
+    assert line == "mutants: not built (no_base)" and R.load_rulings(tmp_path, "t1") == []
 
 
-def test_a_task_whose_only_passing_run_is_a_replay_is_untrusted_as_no_passing_run():
+def test_a_task_whose_only_passing_run_is_a_replay_and_no_base_is_built_is_untrusted_as_no_base():
+    every = Verifier(task_id="t1", expected=[EndState(cells=[_held_cell("slot", {"one_of": ["seven", "six"]})])])
+    tier, row = _tier(every, [_base(run_id="replay-1", model="recorded")])
+    assert tier == "untrusted" and row["reason"] == T.NO_BASE and row["reference_passes"] is None
+
+
+def test_a_task_whose_only_passing_run_is_a_replay_is_trusted_on_the_base_built_from_its_verifier():
     every = Verifier(task_id="t1", expected=[EndState(cells=[_held_cell("slot", "seven")])])
     tier, row = _tier(every, [_base(run_id="replay-1", model="recorded")])
-    assert tier == "untrusted" and row["reason"] == T.NO_PASSING_RUN and row["reference_passes"] is None
+    assert tier == "trusted" and row["constructed"]["stray_write"]["sample"]["not_killed"] == 0
 
 
 def test_a_review_session_that_never_called_verify_gets_the_verify_step_and_its_mutants_by_code(tmp_path):
@@ -174,7 +182,8 @@ def test_a_review_session_that_never_called_verify_gets_the_verify_step_and_its_
     exam_root = ExamRoot(workdir=root, round=1)
     _verify_once(exam_root, "t1")
     assert "t1" in exam_root.verified
-    assert json.loads((root / "exam" / "mutants" / "t1.json").read_text())["status"] == "no_passing_run"
+    report = json.loads((root / "exam" / "mutants" / "t1.json").read_text())
+    assert report["status"] == "scored" and report["base_kind"] == "constructed"
 
 
 def test_a_review_session_on_a_task_with_no_verifier_skips_the_verify_step(tmp_path):

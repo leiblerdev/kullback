@@ -61,7 +61,7 @@ def build_report(tiers: dict[str, TaskTier], *, corpus: Optional[str] = None,
     the trusted Tasks by Reference class; rows keep ids only."""
     counts = {tier: 0 for tier in TIERS}
     reasons = {reason: 0 for reason in REASONS}
-    # Reasons outside the table's columns (no_verifier, no_passing_run, unchecked_ask), counted beside them.
+    # Reasons outside the table's columns (no_verifier, no_base, unchecked_ask), counted beside them.
     side: dict[str, int] = {}
     flags = {f"{flag}{end}": 0 for flag in FLAGS for end in ("", "_false")}
     for task_tier in tiers.values():
