@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Iterable, Literal, Optional, Union
+from typing import Any, Iterable, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,7 +28,7 @@ from kullback.runner.records import EXAM_DIR, Run, Verifier, read_json, run_path
 from kullback.runner.target import load_run
 from kullback.spec import events
 from kullback.spec import rulings as R
-from kullback.spec.router import INTENT_UNCLEAR, REFERENCE_WRONG
+from kullback.spec.router import INTENT_UNCLEAR
 from kullback.spec.schema import Spec, load_spec, save_spec
 
 RULINGS_DIR = R.RULINGS_DIR
@@ -50,10 +50,6 @@ class RuleArgs(BaseModel):
     reason: str = Field(description="What is wrong, in one sentence.")
     fix: str = Field(description="What the writer should do, in one sentence.")
     blocking: bool = Field(description="True when the Task must not be trusted until this is fixed; false for a note.")
-    wrong_side: Optional[str] = Field(default=None, description="For fails_reference: reference or verifier.")
-    ref_step: Optional[Union[int, Literal["never"]]] = Field(
-        default=None, description="For fails_reference: the Reference step the diagnosis rests on, one the verify answer "
-        "shows, or never when the check reads a write or call the Reference never made.")
 
 
 class RuleResult(BaseModel):
@@ -189,52 +185,8 @@ def _filed_as(workdir: Any, spec: Spec, args: RuleArgs) -> tuple[bool, str]:
     if args.code == R.UNFOUNDED_CODE and args.item not in {fact.id for fact in spec.intent.facts}:
         _refuse(workdir, args.task_id, "not_a_fact", f"an {R.UNFOUNDED_CODE} ruling names one Intent fact id "
                 "from the view")
-    # A wrong Reference leaves the Verifier standing: the ruling is a note for the witness flag, never blocking.
-    blocking = (bool(args.blocking) or args.code in R.BLOCKING_CODES) and args.wrong_side != "reference"
+    blocking = bool(args.blocking) or args.code in R.BLOCKING_CODES
     return blocking, R.NO_TRUTH_FIX if args.code == R.NO_TRUTH_CODE else " ".join(args.fix.split())
-
-
-REFILE = ("The ruling still stands: call rule again with ref_step set to one of the steps the verify answer "
-          "shows (a user turn, a tool call or a reply), or never when the failing check reads a write or call "
-          "the Reference never made.")
-
-
-def _failing_check(rows: Iterable[dict]) -> Optional[str]:
-    """The check verify showed the Reference failing, else None."""
-    return next((row.get("failing") for row in rows if row.get("run") == "reference" and row.get("failing")), None)
-
-
-def _omission_check(verifier: Optional[Verifier], failing: Optional[str]) -> bool:
-    """Whether the failing check can fail by omission: a state cell, or a check that a tool was called."""
-    if failing is None:
-        return False
-    if failing.startswith("state:"):
-        return True
-    atom = next((atom for atom in (verifier.atoms if verifier else []) if atom.id == failing), None)
-    return atom is not None and (atom.target or {}).get("kind") == "called"
-
-
-def _check_diagnosis(root: ExamRoot, verifier: Optional[Verifier], args: RuleArgs) -> None:
-    """A fails_reference ruling names the side at fault and rests on one step the verify answer shows,
-    or on never for a state cell or called check the Reference never made, else a counted refusal."""
-    workdir, task_id, ref_step = root.workdir, args.task_id, args.ref_step
-    if args.wrong_side not in R.WRONG_SIDES:
-        _refuse(workdir, task_id, "no_side", "a fails_reference ruling says which side is wrong: wrong_side "
-                "reference or verifier")
-    reference = _reference_run(workdir, task_id)
-    if reference is None:
-        _refuse(workdir, task_id, "no_reference", f"no faithful Reference on disk for task {task_id}: "
-                "a fails_reference ruling names a step of it")
-    if ref_step is None:
-        _refuse(workdir, task_id, "no_step", "a fails_reference ruling names the Reference step it rests on. " + REFILE)
-    failing = _failing_check(root.verified.get(task_id) or [])
-    if ref_step == R.NEVER_STEP and not _omission_check(verifier, failing):
-        _refuse(workdir, task_id, "bad_never", f"never fits only a state cell or a called check the Reference "
-                f"never made, and the failing check {failing} is neither: name one of the steps the verify "
-                "answer shows. The ruling still stands.")
-    if ref_step != R.NEVER_STEP and ref_step not in {row["step"] for row in reference_steps(reference)}:
-        _refuse(workdir, task_id, "bad_step", f"step {ref_step} is not one the verify answer shows for task "
-                f"{task_id}. " + REFILE)
 
 
 def checked_ruling(root: ExamRoot, args: RuleArgs) -> R.Ruling:
@@ -253,11 +205,9 @@ def checked_ruling(root: ExamRoot, args: RuleArgs) -> R.Ruling:
         why = R.sentence_refusal(text, what)
         if why:
             _refuse(workdir, task_id, f"bad_{what}", why, text)
-    if args.code == "fails_reference":
-        _check_diagnosis(root, verifier, args)
     blocking, fix = _filed_as(workdir, spec, args)
     # The judge's answers and the Reference steps are the Examiner's to read; a ruling keeps the
-    # Verifier's rows without them (D346). The step the diagnosis rests on travels as ref_step.
+    # Verifier's rows without them (D346).
     verified = [row for row in root.verified.get(task_id) or []
                 if row.get("run") not in ("reference_judge", "reference_step")]
     if args.code in R.VERIFY_CODES and not verified:
@@ -265,8 +215,7 @@ def checked_ruling(root: ExamRoot, args: RuleArgs) -> R.Ruling:
                 "cites what the Verifier did")
     return R.Ruling(task_id=task_id, number=R.next_number(workdir, task_id), round=root.round or spec.round + 1,
                     item=args.item, kind=args.kind, code=args.code, reason=" ".join(args.reason.split()),
-                    fix=fix, blocking=blocking, wrong_side=args.wrong_side, ref_step=args.ref_step,
-                    verified=verified if args.kind == "code" else [])
+                    fix=fix, blocking=blocking, verified=verified if args.kind == "code" else [])
 
 
 def no_verifier(workdir: Any, task_id: str, why: str) -> None:
@@ -277,28 +226,11 @@ def no_verifier(workdir: Any, task_id: str, why: str) -> None:
         save_spec(workdir, spec.model_copy(update={"set_aside": why}))
 
 
-def _unsided(ruling: R.Ruling) -> bool:
-    """A fails_reference ruling with no side named: trust's routed row, waiting for the Examiner's diagnosis."""
-    return ruling.code == "fails_reference" and ruling.wrong_side is None
-
-
-def _answer_unsided(root: ExamRoot, ruling: R.Ruling) -> None:
-    """A fails_reference ruling with its side and step answers the Task's routed rows: they close on it."""
-    for routed in R.load_rulings(root.workdir, ruling.task_id):
-        if routed.status == "open" and _unsided(routed) and routed.round < ruling.round:
-            R.close(root.workdir, ruling.task_id, routed.number, False,
-                    f"Diagnosed by ruling {ruling.number}: wrong side {ruling.wrong_side}.", ruling.round)
-
-
 def file_ruling(root: ExamRoot, args: RuleArgs) -> dict:
     """Write the ruling under exam/rulings/<task>/<n>.json, count it on the Spec, publish ruling.filed."""
     ruling = checked_ruling(root, args)
     path = R.save_ruling(root.workdir, ruling)
-    if ruling.code == "fails_reference":
-        _answer_unsided(root, ruling)
     R.sync_spec(root.workdir, ruling.task_id)
-    if ruling.code == "fails_reference" and ruling.wrong_side == "reference":
-        no_verifier(root.workdir, ruling.task_id, REFERENCE_WRONG)
     if root.bus is not None:
         events.ruling_filed(root.bus, events.ruling_payload(ruling))
     return dict(ruling.model_dump(mode="json"), path=path.relative_to(root.exam_dir).as_posix())
@@ -307,11 +239,8 @@ def file_ruling(root: ExamRoot, args: RuleArgs) -> dict:
 def _rule(root: ExamRoot):
     async def rule(args: RuleArgs) -> RuleResult:
         body = file_ruling(root, args)
-        side = " (the Reference is ruled wrong: no Verifier for this Task)" if body.get("wrong_side") == "reference" else ""
-        step = "" if args.code != "fails_reference" else (
-            " on a step never made" if body["ref_step"] == R.NEVER_STEP else f" at step {body['ref_step']}")
         summary = (f"ruling {body['number']} on task {args.task_id} filed: {args.kind}/{args.code} on "
-                   f"{args.item}{step}, {'blocking' if body['blocking'] else 'note'}{side}; the writer answers it next round")
+                   f"{args.item}, {'blocking' if body['blocking'] else 'note'}; the writer answers it next round")
         return RuleResult(summary=summary, task_id=args.task_id, number=body["number"], path=body["path"])
 
     return rule
@@ -322,11 +251,6 @@ def _close(root: ExamRoot):
         why = R.sentence_refusal(args.why, "why")
         if why:
             _refuse(root.workdir, args.task_id, "bad_why", why, args.why)
-        held = next((r for r in R.load_rulings(root.workdir, args.task_id) if r.number == args.number), None)
-        if held is not None and _unsided(held) and not args.keep_open:
-            _refuse(root.workdir, args.task_id, "unsided_close", "a Reference failure is not closed: rule it. File "
-                    "rule with code fails_reference on the failing check, wrong_side and ref_step; this ruling "
-                    "closes on it.")
         try:
             ruling = R.close(root.workdir, args.task_id, args.number, args.keep_open, args.why, root.round)
         except (OSError, ValueError) as exc:
@@ -423,8 +347,7 @@ def verify_rows(workdir: Any, task_id: str, verifier: Verifier, reference: Optio
 
     A constructed Run (do nothing, one stray write on the Reference, spec/trust.py) should fail; the
     Reference passing says the Verifier is satisfiable. The steps are the Reference's user turns, the
-    agent's tool calls and its replies around the failing check: the investigation input a
-    fails_reference ruling names its step from. The Reference's judge items are answered by
+    agent's tool calls and its replies around the failing check. The Reference's judge items are answered by
     `judge` (verifier, run) -> {atom id: JudgeScore}, kept once per Verifier and Run under exam/judged/
     (spec/judged.py); without `judge` or a kept answer a judge item is not judged, never failed.
     A Run the Verdict cannot read is a row with its error.
@@ -671,8 +594,7 @@ def rule_tools(root: ExamRoot) -> list[AgentTool]:
         AgentTool("verify", "Run the constructed Runs (do nothing, one stray write, an expected cell undone) and the "
                   "Reference's end state through the Task's Verifier, by code, with each judge item answered on the "
                   "Reference by the judge (its reason and the lines it read) and the Reference steps (user turns, "
-                  "tool calls, replies) to investigate a failing check. A code ruling cites it; a fails_reference "
-                  "ruling names the step.",
+                  "tool calls, replies) to investigate a failing check. A code ruling cites it.",
                   VerifyArgs, VerifyResult, _verify(root), render=render),
         *_lookups(root),
     ]

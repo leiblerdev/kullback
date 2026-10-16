@@ -33,8 +33,9 @@ RULING_KINDS: dict[str, tuple[str, ...]] = {
                    "unchecked_field", "unchecked_write", "unchecked_row"),
     # A judge item (a question a model answers about what the Candidate said) is not fit to ask.
     "judge": ("not_yes_no", "taste", "anchor_wrong", "unanswerable", "leading"),
-    # A code check is wrong as code: wrong place read, does not run, or the constructed Runs say so.
-    "code": ("wrong_field", "does_not_run", "passes_do_nothing", "fails_reference"),
+    # A code check is wrong as code: wrong place read, does not run, or the constructed Runs say so. A
+    # Reference failing the Verifier is no ruling: it is a finding about the Reference (D367).
+    "code": ("wrong_field", "does_not_run", "passes_do_nothing"),
     # The Task itself: not doable under the policy, too vague, or missing a fact the Task needs; an Intent
     # fact the user never asked for (said nowhere, or only after the agent refused, failed or stalled); a
     # gate against what the user volunteered where the policy and the world allow a path to it; or the
@@ -43,19 +44,16 @@ RULING_KINDS: dict[str, tuple[str, ...]] = {
               "not_enough_truth"),
 }
 RulingKind = Literal["derivation", "judge", "code", "scope"]
-# The codes that rest on what the Verifier did to a constructed Run or the Reference: the verify tool first.
-VERIFY_CODES = ("passes_do_nothing", "fails_reference")
+# The codes that rest on what the Verifier did to a constructed Run: the verify tool first.
+VERIFY_CODES = ("passes_do_nothing",)
 # The codes that always block, whatever the Examiner says.
 BLOCKING_CODES = ("intent_unfounded", "gated_against_ask", "not_enough_truth")
 # Applying it marks the ruled Intent fact unfounded: no gate may rest on it alone.
 UNFOUNDED_CODE = "intent_unfounded"
 # The writer cannot apply it: it stays open until a rebuttal citing a user turn settles it and the
 # Examiner closes it. An open one holds the Task untrusted for its own reason (spec/trust.py).
-# A fails_reference ruling on a failure by omission: the check reads a write or call the Reference never made.
-NEVER_STEP = "never"
 NO_TRUTH_CODE = "not_enough_truth"
 NO_TRUTH_FIX = "keep untrusted"
-WRONG_SIDES = ("reference", "verifier")
 ANSWER_ACTIONS = ("applied", "rebutted")
 # One sentence: no line break, between these lengths.
 MIN_SENTENCE, MAX_SENTENCE = 12, 400
@@ -72,12 +70,11 @@ class Ruling(Record):
     reason: str
     fix: str
     blocking: bool
-    # For fails_reference: which side the Examiner rules wrong, the Reference or the Verifier.
+    # Read only on a fails_reference ruling filed before D367 (which side was ruled wrong, and the Reference
+    # step it rested on); no ruling is filed with them now.
     wrong_side: Optional[Literal["reference", "verifier"]] = None
-    # For fails_reference: the Reference step the diagnosis rests on, the user turn, call or reply the
-    # failing check reads, or NEVER_STEP for a write or call the Reference never made. None on every other ruling.
     ref_step: Optional[Union[int, Literal["never"]]] = None
-    # The verify rows the ruling cites (constructed Runs and the Reference through the Verifier).
+    # The verify rows the ruling cites (the constructed Runs through the Verifier).
     verified: list[dict] = Field(default_factory=list)
     status: Literal["open", "closed"] = "open"
     # {action: applied | rebutted, why, round, changed: [check ids], writer: the repair's counts}
@@ -261,7 +258,7 @@ def rulings_line(workdir: Any, task_ids: Iterable[str]) -> str:
             "answers them in the review loop")
 
 
-__all__ = ["ANSWER_ACTIONS", "BLOCKING_CODES", "NEVER_STEP", "NO_TRUTH_CODE", "NO_TRUTH_FIX", "UNFOUNDED_CODE", "open_no_truth", "rulings_line", "MAX_SENTENCE", "MIN_SENTENCE", "RULINGS_DIR", "RULING_KINDS", "TASK_ITEM",
-           "VERIFY_CODES", "WRONG_SIDES", "Ruling", "answer", "answer_rounds", "close", "code_refusal", "counts", "item_ids",
+__all__ = ["ANSWER_ACTIONS", "BLOCKING_CODES", "NO_TRUTH_CODE", "NO_TRUTH_FIX", "UNFOUNDED_CODE", "open_no_truth", "rulings_line", "MAX_SENTENCE", "MIN_SENTENCE", "RULINGS_DIR", "RULING_KINDS", "TASK_ITEM",
+           "VERIFY_CODES", "Ruling", "answer", "answer_rounds", "close", "code_refusal", "counts", "item_ids",
            "load_rulings", "next_number", "open_blocking", "ruling_path", "rulings_dir", "save_ruling",
            "sentence_refusal", "sync_spec", "unanswered"]

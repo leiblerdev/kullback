@@ -2839,3 +2839,29 @@ of one Task.
 Lives in: kullback/spec/schema.py (Condition, is_reaction, is_ask), kullback/spec/intent_tools.py (_placed, is_late,
 promote), kullback/spec/intent.py (prompt), kullback/spec/items.py (_weighed_gate, World._confirms),
 kullback/spec/writer.py (prompt, facts view, side counts), kullback/examiner/rule_tool.py (fact view).
+
+### D367. The Reference never repairs a Verifier: no fails_reference ruling, no reference_wrong set-aside (2026-10-16)
+
+What: the repair door the Reference held is closed. The code ruling fails_reference is gone from the ruling codes,
+with its wrong_side and ref_step arguments, the step checks behind them, and the close refusal on a ruling with no
+side. Trust no longer files a failing kept Reference as a blocking ruling before the first round
+(route_reference_fails and its call in the review loop are gone). A kept Reference that fails its Verifier is now a
+finding about the Reference for the Builder (examiner/findings.py reference_fails_rows, kind other, key
+reference_fails), filed after the review rounds against the final Verifier; the Verifier stands and no ruling opens.
+reference_passes stays a flag on the tier row. No Verifier has one reason left, intent_unclear; reference_wrong is no
+longer a why. The Examiner's prompt drops the fails_reference sentences and asks of every gate whether a right solve
+of the user's own requests, under the policy and the world, would pass it, whatever any Run did. Rulings and Specs
+written before this still load: a fails_reference ruling asks nothing of the writer, and a Spec set aside
+reference_wrong stays set aside (held, not no_verifier) until it is written again.
+
+Count: 18 of the 100 first-run heldout Tasks (11 airline, 7 retail) were set aside reference_wrong and carried no
+Verifier; under this rule they would carry one, and whether it is right is for the next run's labels to say. The other
+2 no_verifier Tasks were intent_unclear and stay.
+
+Why: D365. The heldout 100 traced two of the nine wrong Verifiers to the fails_reference repair route, and a wrong
+Reference ending a Task with no Verifier let the recording decide what the ask was. The ask, the policy and the world
+decide the Verifier; the Reference says only whether the recording did that here.
+
+Lives in: kullback/spec/rulings.py, kullback/spec/router.py, kullback/spec/trust.py (reference_fails),
+kullback/spec/rounds.py, kullback/spec/review.py, kullback/examiner/rule_tool.py, kullback/examiner/session.py
+(examine_rounds, reference_finding_rows), kullback/examiner/findings.py, kullback/examiner/prompt.py.

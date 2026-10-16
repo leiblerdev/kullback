@@ -62,14 +62,12 @@ _TOOL_EXAMPLES = {
              '"code": "unasked_item", "reason": "No Intent fact or policy line asks for the second write.", '
              '"fix": "Drop c2 or cite the fact that asks for it.", "blocking": true}. item is a check, atom or '
              "fact id from the view, or task for the Task as a whole. The codes per kind: "
-             + "; ".join(f"{kind}: {', '.join(codes)}" for kind, codes in RULING_KINDS.items())
-             + ". A fails_reference ruling names wrong_side, reference or verifier, and ref_step, a step the verify answer "
-             "shows, or never for a write or call the Reference never made."),
+             + "; ".join(f"{kind}: {', '.join(codes)}" for kind, codes in RULING_KINDS.items()) + "."),
     "close": ('close: close an answered ruling or keep it open, e.g. {"task_id": "t1", "number": 1, '
               '"keep_open": false, "why": "The writer dropped the write no fact asked for."}.'),
     "verify": ('verify: run the do-nothing Run, a stray write and the Reference\'s end state through the '
-               'Verifier, e.g. {"task_id": "t1"}; a passes_do_nothing or fails_reference ruling cites it. The answer '
-               "carries the Reference steps (user turns, tool calls, replies); a fails_reference ruling names the step. "
+               'Verifier, e.g. {"task_id": "t1"}; a passes_do_nothing ruling cites it. The answer '
+               "carries the Reference steps (user turns, tool calls, replies). "
                "On a passing Reference it also files, by code, one unchecked_field, unchecked_write or unchecked_row "
                "ruling per field or row no gate holds (from mutants of the Reference); they are yours to close."),
     "lookup_rows": ('lookup_rows: read a row of the Task\'s world, the one the writer read, e.g. '
@@ -104,8 +102,7 @@ def examples_section() -> str:
             "the world holds or goes against the policy (look the value up first); its evidence cannot answer it; "
             "it leads or is ambiguous.\n"
             "code: the check reads the wrong table or field; it does not run; verify shows the do-nothing Run "
-            "passes it; verify shows the Reference fails it, and you first read its steps, then rule which side "
-            "is wrong and at which step, from the user turns and the policy.\n"
+            "passes it.\n"
             "scope: the request is not doable under the policy (fix: a refusal, the sanity item plus a judge item "
             "citing the policy line); the Intent is too vague to check; the instruction lacks a fact the Task "
             "needs.\n"
@@ -131,12 +128,9 @@ def choice_section() -> str:
             "against the Intent and the policy. The whole policy is in this prompt: read the part that governs "
             "the ask before you accept or rule. Look up in the world every anchor and every value an "
             "item fixes (lookup_rows, search_rows) before you accept it. Call verify once per Task before any code ruling. "
-            "When verify shows the Reference failing a check, investigate before ruling: read the Reference steps in "
-            "the verify answer, find what the agent did at the step the failing check reads, hold it against the "
-            "user's own requests and the policy, then name the side and the step. Before you name a side, ask whether "
-            "a right solve of the user's own requests, under the policy, would pass this check: if not, the check "
-            "is wrong (wrong_side verifier), whatever the Reference did. A Reference passing is never a "
-            "reason to change a check: a wrong Reference ends the Task with no Verifier, an honest outcome. "
+            "Ask of every gate whether a right solve of the user's own requests, under the policy and the world, would "
+            "pass it: if not, rule on it, whatever any Run did. A Reference passing or failing is never a reason "
+            "to change a check: the Reference is for fidelity only, and its failing is a finding, not a ruling. "
             "Block when a correct solve could fail or a wrong one pass; file a note when the item is weak but the "
             "verdict would stand. One ruling per problem, on the item it is about. Decide from what the user said "
             "(the user turns), the world and the policy, never from what a Run did.\n" + REVIEW_SKILL)

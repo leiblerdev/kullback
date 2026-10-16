@@ -623,12 +623,8 @@ def rulings_part(workdir: Any, task_id: str) -> str:
     if not rulings:
         return "rulings: none"
     answered = [f"{r.number} {r.answer['action']}" for r in rulings if r.status == "open" and r.answer]
-    unruled = [str(r.number) for r in rulings
-               if r.status == "open" and r.code == "fails_reference" and r.wrong_side is None]
     text = f"rulings: {len(rulings)}, {sum(r.status == 'open' for r in rulings)} open"
-    text += f"; answered, to close or keep open: {', '.join(answered)}" if answered else ""
-    return text + (f"; the Reference fails the Verifier, rule which side is wrong: {', '.join(unruled)}"
-                   if unruled else "")
+    return text + (f"; answered, to close or keep open: {', '.join(answered)}" if answered else "")
 
 
 def _opening(exam_root: ExamRoot, selected: list[str], model: Any = None,
@@ -862,8 +858,23 @@ __all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "REVIEW_MESSAGE", "review_extension",
 
 def examine_rounds(workdir: Any, task_ids: Iterable[str], *, model: Any, writer_model: Any = None,
                    rounds: Optional[int] = None, ceiling_usd: Optional[float] = None) -> dict:
-    """The review loop over the Tasks with the Examiner's round wired in (spec/rounds.py, D331)."""
+    """The review loop over the Tasks with the Examiner's round wired in (spec/rounds.py, D331), then each
+    kept Reference that fails its final Verifier filed as a finding about the Reference (D367)."""
     from kullback.spec.rounds import run_rounds
 
-    return run_rounds(workdir, task_ids, examine=review_specs, model=model, writer_model=writer_model,
-                      rounds=rounds, ceiling_usd=ceiling_usd)
+    out = run_rounds(workdir, task_ids, examine=review_specs, model=model, writer_model=writer_model,
+                     rounds=rounds, ceiling_usd=ceiling_usd)
+    found = [finding_from_row(row).as_dict() for row in reference_finding_rows(workdir, task_ids)]
+    return dict(out, findings=list(out.get("findings") or []) + found)
+
+
+def reference_finding_rows(workdir: Any, task_ids: Iterable[str]) -> list[dict]:
+    """The finding rows for the Tasks whose kept Reference fails their Verifier, by code (D367)."""
+    from kullback.spec.trust import intent_tiers, reference_fails
+
+    root = Path(workdir)
+    if not (root / "runs").is_dir():
+        return []
+    wanted = set(task_ids)
+    tiers = {task_id: tier for task_id, tier in intent_tiers(root).items() if task_id in wanted}
+    return findings_mod.reference_fails_rows(reference_fails(tiers))

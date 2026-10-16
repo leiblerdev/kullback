@@ -2,7 +2,6 @@ import json
 
 import pytest
 
-from kullback.ai.provider import TestModel
 from kullback.runner.records import Atom, EndState, Event, ExpectedCell, Forbidden, ValueSource, Verifier
 from kullback.spec import trust as T
 from kullback.spec.compile import compile_demands, compile_spec
@@ -375,26 +374,22 @@ def test_a_verifier_failing_a_faithful_kept_reference_flags_it_and_hands_the_exa
     assert tier == "trusted" and row["reference_passes"] is False
     assert row["reference"]["failed"] == REPLAY_ID
     assert row["reference"]["atom"] == f"gate:expected:cell:{verifier.expected[0].cells[0].table}.A1.slot"
-    assert T.examiner_rulings(tiers) == [{"task_id": "t1", "kind": "reference_fails", "run_id": REPLAY_ID,
+    assert T.reference_fails(tiers) == [{"task_id": "t1", "kind": "reference_fails", "run_id": REPLAY_ID,
                                           "atom": row["reference"]["atom"], "blocking": False}]
 
 
-def test_a_failing_kept_reference_is_routed_as_a_blocking_examiner_ruling_and_holds_the_task_untrusted(tmp_path):
+def test_a_failing_kept_reference_opens_no_ruling_holds_nothing_and_becomes_a_finding(tmp_path):
+    from kullback.examiner import session as S
     from kullback.spec import rulings as RL
-    from kullback.spec.review import answer_rulings
 
     _intent_workdir(tmp_path, [_failing_replay(), _fresh()])
     _hold_reference(tmp_path)
-    assert T.route_reference_fails(tmp_path, T.intent_tiers(tmp_path)) == [1]
-    assert T.route_reference_fails(tmp_path, T.intent_tiers(tmp_path)) == [], "one ruling per Task"
-    ruling = RL.load_rulings(tmp_path, "t1")[0]
-    assert (ruling.kind, ruling.code, ruling.blocking, ruling.wrong_side) == ("code", "fails_reference", True, None)
     tier, row = T.intent_tiers(tmp_path)["t1"]
-    assert tier == "untrusted" and row["reason"] == "open_ruling"
-    assert answer_rulings(tmp_path, "t1", TestModel([]), 1)["skipped"] == 1, "the Examiner rules first"
-    RL.close(tmp_path, "t1", 1, False, "The Reference wrote a slot the user never asked for.", 1)
-    RL.sync_spec(tmp_path, "t1")
-    assert T.intent_tiers(tmp_path)["t1"].tier == "trusted"
+    assert tier == "trusted" and row["reference_passes"] is False and RL.load_rulings(tmp_path, "t1") == []
+    [finding] = S.reference_finding_rows(tmp_path, ["t1", "t2"])
+    assert (finding["kind"], finding["task_id"], finding["key"]) == ("other", "t1", "reference_fails::t1")
+    assert row["reference"]["atom"] in finding["text"] and "The Verifier stands" in finding["text"]
+    assert S.reference_finding_rows(tmp_path, ["t2"]) == []
 
 
 @pytest.mark.parametrize("held", [{"fidelity": 0.8}, {"confirmed": False}, {"kept": False}],
@@ -403,7 +398,7 @@ def test_a_failed_replay_that_is_not_a_faithful_kept_reference_sets_no_flag(tmp_
     _intent_workdir(tmp_path, [_failing_replay(), _fresh()])
     _hold_reference(tmp_path, **held)
     tiers = T.intent_tiers(tmp_path)
-    assert tiers["t1"].row["reference_passes"] is None and T.examiner_rulings(tiers) == []
+    assert tiers["t1"].row["reference_passes"] is None and T.reference_fails(tiers) == []
 
 
 # --- D322: one trust ruling, the code gates inside the Spec's tiers ---

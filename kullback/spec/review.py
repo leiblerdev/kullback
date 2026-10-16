@@ -10,8 +10,7 @@ An intent_unfounded ruling the writer applies marks its fact `unfounded` on the 
 then refuses any gate resting on it alone (spec/items.py). A not_enough_truth ruling cannot be applied:
 whatever the repair changed is not kept, and the answer is the writer's rebuttal, or none.
 
-A ruling that says the Reference is wrong (fails_reference, wrong side reference), or one trust filed
-with no side named yet, asks nothing of the writer: it is left for the Examiner.
+A fails_reference ruling filed before D367 asks nothing of the writer: the Reference never repairs a Verifier.
 """
 
 from __future__ import annotations
@@ -82,8 +81,8 @@ def _kept_open_note(ruling: R.Ruling) -> str:
 
 
 def _examiners_side(ruling: R.Ruling) -> bool:
-    """A Reference ruling asks nothing of the writer: ruled wrong, or not yet ruled on (a routed trust row)."""
-    return ruling.code == "fails_reference" and ruling.wrong_side != "verifier"
+    """A fails_reference ruling filed before D367 asks nothing of the writer: no Reference repairs a Verifier."""
+    return ruling.code == "fails_reference"
 
 
 def unfounded_intent(intent: Any, fact_id: str) -> Any:

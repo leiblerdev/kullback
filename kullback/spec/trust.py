@@ -9,8 +9,8 @@ A Task is trusted when both constructed Runs score 0 under its Verifier and no b
    declared rows changed).
 
 Otherwise the Task is untrusted with one reason, in this order: no_intent (no Spec, an empty Spec, no
-Verifier, or a Task refused), no_verifier (the Examiner found the Reference wrong or the intent unclear:
-no Verifier for this Task, its `why` reference_wrong or intent_unclear, never a check bent to pass), not_examined (no round's Examiner session ran over the Task),
+Verifier, or a Task refused), no_verifier (the intent unclear:
+no Verifier for this Task, its `why` intent_unclear, never a check bent to pass), not_examined (no round's Examiner session ran over the Task),
 not_enough_truth (a not_enough_truth ruling open: the recordings never show what the user wants where
 the Verifier must decide), open_ruling (a ruling open, or the Task set aside by the router's rule),
 constructed_run_passed (a constructed Run passed, or none could be built: not shown to fail),
@@ -28,8 +28,9 @@ for a fresh Run, verify's for the Reference. The stray write copies its base's t
 base's answers; the do-nothing Run says nothing and its judge items score 0 by code.
 
 Two flags ride on the row and never gate. reference_passes: every faithful replay of a kept Reference
-passes the Verifier (None without one); a fail is filed for the Examiner as a blocking
-code/fails_reference ruling (`route_reference_fails`), who rules which side is wrong. solvable: any fresh Run passed (None without one).
+passes the Verifier (None without one); a fail is a finding about the Reference for the Builder
+(`reference_fails`, D367), never a ruling and never a repair of the Verifier. solvable: any fresh Run passed (None
+without one).
 Sourced is enforced in the writer's tool, not here. Every row names the Runs it scored and carries
 `code_hash` (runner/code_hash.py): two rows are comparable when their hashes match.
 """
@@ -64,7 +65,7 @@ TRUSTED, UNTRUSTED = "trusted", "untrusted"
 TIERS = (TRUSTED, UNTRUSTED)
 NO_INTENT, NOT_EXAMINED, OPEN_RULING, CONSTRUCTED_RUN_PASSED = "no_intent", "not_examined", "open_ruling", "constructed_run_passed"
 NOT_ENOUGH_TRUTH = "not_enough_truth"
-# No Verifier can be made for the Task (the Reference ruled wrong, or the intent unclear): an honest
+# No Verifier can be made for the Task (the intent unclear): an honest
 # outcome, neither trusted nor an error; the row's `why` says which (router.NO_VERIFIER_WHYS).
 # Read right after no_intent; kept out of REASONS, the build table's columns, which stay as recorded.
 NO_VERIFIER = "no_verifier"
@@ -78,7 +79,7 @@ CONSTRUCTED = ("do_nothing", "stray_write")
 FLAGS = ("reference_passes", "solvable")
 # The build manifest in the workdir: the build's Task sample, kept for a resume.
 BUILD_MANIFEST = "build.json"
-# The code ruling a failing Reference becomes, for the Examiner to rule which side is wrong.
+# What a kept Reference failing its Verifier becomes: a finding about the Reference (D367), never a ruling.
 REFERENCE_FAILS = "reference_fails"
 
 
@@ -408,11 +409,12 @@ def missing_spec_row(task_id: str) -> TaskTier:
     return unruled_row(task_id, NO_INTENT, "no spec")
 
 
-def examiner_rulings(tiers: dict[str, TaskTier]) -> list[dict]:
-    """The code rulings the Examiner reads: one per Task whose kept Reference fails its Verifier.
+def reference_fails(tiers: dict[str, TaskTier]) -> list[dict]:
+    """One row per Task whose kept Reference fails its Verifier: a finding about the Reference (D367).
 
-    A Reference failing is not a verdict on either side: the Examiner rules whether the Verifier or the
-    Reference is wrong. Ids and the failing atom only; nothing from the recording.
+    The Verifier comes from the ask, the policy and the world; the Reference is for fidelity only, so
+    its failing changes nothing on the Verifier and opens no ruling. Ids and the failing atom only;
+    nothing from the recording.
     """
     out = []
     for task_id, task_tier in sorted(tiers.items()):
@@ -421,30 +423,6 @@ def examiner_rulings(tiers: dict[str, TaskTier]) -> list[dict]:
             out.append({"task_id": task_id, "kind": REFERENCE_FAILS, "run_id": reference.get("failed"),
                         "atom": reference.get("atom"), "blocking": False})
     return out
-
-
-def route_reference_fails(workdir: Any, tiers: dict[str, TaskTier]) -> list[int]:
-    """Each `examiner_rulings` row filed as the Examiner's code/fails_reference ruling, blocking, with no
-    side named: the Examiner rules which side is wrong on its next round, and until it closes the ruling
-    the Task is held untrusted. A Task that already holds a fails_reference ruling gets no second one.
-    Returns the ruling numbers filed."""
-    from kullback.spec import rulings as R
-
-    filed = []
-    for row in examiner_rulings(tiers):
-        task_id = row["task_id"]
-        if any(r.code == "fails_reference" for r in R.load_rulings(workdir, task_id)):
-            continue
-        item = str(row.get("atom") or R.TASK_ITEM)
-        ruling = R.Ruling(task_id=task_id, number=R.next_number(workdir, task_id), round=0, item=item, kind="code",
-                          code="fails_reference", blocking=True,
-                          reason="The kept Reference fails this Verifier, found by code at the trust step.",
-                          fix="File a fails_reference ruling naming wrong_side and ref_step; this one closes on it.",
-                          verified=[{"run": "reference", "verifier_passes_it": False, "failing": row.get("atom")}])
-        R.save_ruling(workdir, ruling)
-        R.sync_spec(workdir, task_id)
-        filed.append(ruling.number)
-    return filed
 
 
 # --- the build manifest ----------------------------------------------------------------------------
