@@ -2905,3 +2905,27 @@ Tests: tests/synth/test_miner.py (the seam reads through the memo and serves a r
 empty text and a note; with live off and no memo the miner writes no query and reads no page; no module holds the old
 reader's names), tests/synth/test_review.py (no reader with live off; the review search's evidence names the switch).
 tests/synth/conftest.py clears the switch for every test, so a reader the test did not inject is None.
+
+### D375. One shared pair of web tools in the agent core, the search injected by the role (2026-10-16)
+
+The founder, 2026-10-16: "common set of tools are exposed right ?" Decided: web search and page reading are one module,
+`kullback/agent/web_tools.py`, and any role on the agent harness (the Examiner, the Builder, the synthetic generator)
+registers them with `register_web_tools(api, *, search, refuse, on_call=None)`. No role wraps the chain itself. The
+agent core sits below the Builder and the domain module (pyproject.toml, layers), so the module imports neither: the
+role builds the D115 chain where its layer allows (`builder.search.search_for(workdir, env)` in the Builder and the
+synthetic generator, the CLI for the Examiner) and passes it in as `search`, duck typed (`search(query, limit)` and
+`fetch(urls)`), with `refuse`, the domain module's `destination_refusal`. `search(query, limit)` returns rows of title,
+url, snippet and site, at most ten, and its summary names the provider where the memo records it. `read_page(url,
+max_chars)` asks `refuse` first (a refusal is a summary with no rows, never an exception to the model) and returns the
+page as numbered lines up to max_chars, with the title, the length and any Page error in the summary. With
+`search=None` both tools still register and say the search is off, naming no variable: the agent core does not know
+the chain's variables, and the role's own note names them. `on_call(name, args, result)` gets a copy of every result
+so a role can keep evidence (the synthetic generator keeps its searches on the scenario) and cannot change what the
+model reads. The base tool `web_search` (base_tools) stays as it is and is a different thing: the provider's own
+search inside the model call, with no memo, no citation span and no page fetch; these tools are the harness's own
+search, with a memo and page text a cite can rest on.
+
+What it cannot show: nothing ran live; no role registers the tools yet, so whether a model uses them, and what a live
+provider answers, is unmeasured. Tests (`tests/agent/test_web_tools.py`) run on `TestSearch` inside `MemoSearch` over a
+tmp workdir as the search and `destination_refusal` over a scripted resolver as `refuse`, with no network call; one
+test pins the module's harness imports to `kullback.agent` and `kullback.ai`.
