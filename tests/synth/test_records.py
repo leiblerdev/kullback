@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from kullback.scenarios import records as R
+from kullback.synth import records as R
 
 POLICY = "Changes are allowed before dispatch.\nRefunds go to the original payment method."
 

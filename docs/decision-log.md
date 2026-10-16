@@ -2813,10 +2813,10 @@ loop, a realism measure.
 ### D372. Scenario records and the miner: three sources, general statements, frequency kept (2026-10-16)
 
 A scenario is one situation customers of the business meet, stated in general words in one or two sentences, with
-the policy lines it touches. Each lives as one record under workdir/scenarios (kullback/scenarios/records.py): its id
+the policy lines it touches. Each lives as one record under workdir/scenarios (kullback/synth/records.py): its id
 from the source kind and the statement, the statement, its source, the sources folded into it, the policy lines, the
 frequency, the review rows, the evidence and the status (born, fixing, passed, unsure, infeasible, struck). The miner
-(kullback/scenarios/miner.py) writes them from three sources. Recordings: the first user turn of every Task, or the
+(kullback/synth/miner.py) writes them from three sources. Recordings: the first user turn of every Task, or the
 Spec's opening facts where a Spec exists, grouped by a model into statements; frequency is the number of openings
 grouped. Search: a model writes queries from the one-line description and the tool list, the pages are read through
 the D225 crawl, and each statement must quote a span the page holds, kept as its byte range; a page that copies the
@@ -2826,18 +2826,23 @@ back once with the reason, then dropped and counted per reason. Policy lines the
 counted. Repeats across sources fold through the D225 dedup into the first record, which keeps the others as also_from.
 Mining again adds records and never resets one already held. The coverage (per source, search scenarios the recordings
 never show, ask lines nothing else covers, folded, dropped) is written to scenarios/mined.json. The verb is
-`kullback scenarios mine`, models wired through the ceiling as read-domain wires its reader.
+`kullback synth mine`, models wired through the ceiling as read-domain wires its reader.
+
+Names. The package is kullback/synth (tests/synth), the CLI group `kullback synth` with the verbs mine and review,
+the bus agent and the budget stages synth (synth_mining, synth_review, synth_fix), the report heading "## synth". The
+store under the workdir stays scenarios/, since the records are scenarios. kullback/synthesise.py (D224) and
+kullback/builder/synth.py are older paths and keep their names.
 
 What it cannot show: nothing ran on a model or on a real workdir. Every test uses a scripted TestModel over an
 abstract fixture, so whether a model groups openings well, writes general statements, or quotes real spans is
 unmeasured. Without a judge model the fold catches only exact canonical repeats.
 
-Tests: tests/scenarios/test_records.py, tests/scenarios/test_miner.py, tests/scenarios/test_end_to_end.py.
+Tests: tests/synth/test_records.py, tests/synth/test_miner.py, tests/synth/test_end_to_end.py.
 
 ### D373. The Examiner's scenario review: blind, on the shared harness, outcomes by code (2026-10-16)
 
-The review (kullback/scenarios/review.py) is a role on the shared agent harness, bus and budget subscriber, as the
-Examiner's own sessions are: one session per batch of born scenarios, under stage scenario_review. It is blind: each
+The review (kullback/synth/review.py) is a role on the shared agent harness, bus and budget subscriber, as the
+Examiner's own sessions are: one session per batch of born scenarios, under stage synth_review. It is blind: each
 scenario is written as a view under scenarios/review that drops its source, the sources folded into it, its frequency
 and its fix count, and the base tools read only that root. Its tools read a view, list by status, search the web (kept
 on the scenario as evidence with the lines read), look up and search the starting rows, find tools by words, file a
@@ -2847,20 +2852,20 @@ occurs no strikes it; any unsure puts it on the human queue (scenarios/human.jso
 and files one Environment finding through examiner/findings.py naming what to add, never a drop; otherwise it passes.
 A send back has the miner rewrite the statement once from the same source with the reason, keeping the id, and the
 rewrite is reviewed again in the same call; a second send back, or a rewrite that breaks the rule, ends it unsure on
-the human queue. The prompt (kullback/scenarios/prompt.py) runs in GEPA order, its examples over placeholders, one per
-outcome. The verb is `kullback scenarios review`, under a spend ceiling. Both verbs print the scenarios report under
-its own heading (kullback/scenarios/report.py), never in the build table.
+the human queue. The prompt (kullback/synth/prompt.py) runs in GEPA order, its examples over placeholders, one per
+outcome. The verb is `kullback synth review`, under a spend ceiling. Both verbs print the synth report under
+its own heading (kullback/synth/report.py), never in the build table.
 
 What it cannot show: nothing ran on a model. Whether a reviewer searches before ruling, cites what it read, or rules
 the same scenario the same way twice is unmeasured; the cite is checked only for being present, not against the
 evidence. Whether blindness changes verdicts was not tested against a sighted arm.
 
-Tests: tests/scenarios/test_review.py, tests/scenarios/test_end_to_end.py, including a test that no prompt line holds
+Tests: tests/synth/test_review.py, tests/synth/test_end_to_end.py, including a test that no prompt line holds
 a tool, table or field name of the fixture Environment.
 
 ### D374. The search reader: one provider behind an env URL and key (2026-10-16)
 
-Web search (kullback/scenarios/search.py) is one provider behind two variables: KULLBACK_SEARCH_URL names the endpoint
+Web search (kullback/synth/search.py) is one provider behind two variables: KULLBACK_SEARCH_URL names the endpoint
 (a Serper style POST, defaulting to its public search URL) and KULLBACK_SEARCH_KEY the key, sent as one header. The key
 is never printed, logged or cached; notes name the variable only. Without the key no search runs and the report says
 so. Answers are cached under cache/search by a hash of the query, without the key, so a rerun reads no network. Every
@@ -2868,4 +2873,4 @@ URL is checked by the D225 destination refusal before a request, and pages are r
 
 What it cannot show: no request reached a real provider in the tests; the answer shape is read from a scripted reply.
 
-Tests: tests/scenarios/test_miner.py (the reader posts with the header and caches the links; no key, no search).
+Tests: tests/synth/test_miner.py (the reader posts with the header and caches the links; no key, no search).

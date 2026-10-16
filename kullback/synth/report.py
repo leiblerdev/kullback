@@ -1,4 +1,4 @@
-"""The scenarios report: every count under its own heading, never in the build table (D372, D373).
+"""The synth report: every scenario count under its own heading, never in the build table (D372, D373).
 
 Per source kind: born, passed, unsure, infeasible, struck and fixing; the Environment findings the
 review filed; what the miner dropped, per reason; the coverage across sources; the human queue; and
@@ -13,10 +13,10 @@ from typing import Any
 
 from kullback.runner import budget
 from kullback.runner.records import read_json
-from kullback.scenarios import records as R
+from kullback.synth import records as R
 
-HEADING = "## scenarios"
-STAGES = ("scenario_mining", "scenario_review", "scenario_fix")
+HEADING = "## synth"
+STAGES = ("synth_mining", "synth_review", "synth_fix")
 FINDING_KEY = "environment:scenario:"
 
 
@@ -49,7 +49,7 @@ def counts(workdir: Any) -> dict:
 
 
 def lines(workdir: Any) -> list[str]:
-    """The report as printed lines, under the scenarios heading."""
+    """The report as printed lines, under the synth heading."""
     body = counts(workdir)
     out = [HEADING, "", "| source | " + " | ".join(R.STATUSES) + " |", "| --- |" + " --- |" * len(R.STATUSES)]
     for kind, row in body["table"].items():

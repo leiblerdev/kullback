@@ -11,11 +11,11 @@ from typer.testing import CliRunner
 from kullback import cli
 from kullback.ai.provider import ModelReply, TestModel
 from kullback.runner.records import read_json
-from kullback.scenarios import records as R
-from kullback.scenarios import report as T
-from kullback.scenarios import review as V
-from kullback.scenarios.miner import mine
-from tests.scenarios.fixture import PAGE, call, make_workdir
+from kullback.synth import records as R
+from kullback.synth import report as T
+from kullback.synth import review as V
+from kullback.synth.miner import mine
+from tests.synth.fixture import PAGE, call, make_workdir
 
 KEY = {"KULLBACK_SEARCH_KEY": "k"}
 URL = "https://help.example/a"
@@ -111,5 +111,5 @@ def test_the_report_prints_every_count_under_the_scenarios_heading(tmp_path):
 def test_both_scenario_verbs_refuse_without_a_model_and_name_the_option(tmp_path):
     workdir = make_workdir(tmp_path)
     for verb in ("mine", "review"):
-        result = CliRunner().invoke(cli.app, ["scenarios", verb, str(workdir)])
+        result = CliRunner().invoke(cli.app, ["synth", verb, str(workdir)])
         assert result.exit_code == 2 and "--model" in result.output

@@ -1442,9 +1442,9 @@ def read_domain(
         typer.echo(f"| {row['source']} | {row['archetypes']} | {row['mapped']} |")
 
 
-scenarios_app = typer.Typer(add_completion=False,
-                            help="Scenarios: what happens every day in this business, mined and reviewed (D372, D373).")
-app.add_typer(scenarios_app, name="scenarios")
+synth_app = typer.Typer(add_completion=False,
+                        help="The synthetic generator: scenarios of this business, mined and reviewed (D372, D373).")
+app.add_typer(synth_app, name="synth")
 SCENARIO_WORKDIR = typer.Argument(..., help="The built workdir whose scenarios/ store is read and written.")
 SCENARIO_MODEL = typer.Option(None, "--model", help="Model id, as provider/model.")
 SCENARIO_BASE_URL = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model.")
@@ -1454,12 +1454,12 @@ SCENARIO_DOMAIN = typer.Option(None, "--domain", help="One line describing the b
 
 
 def _scenario_report(workdir: Path) -> None:
-    for line in _entry("kullback.scenarios.report", "lines")(workdir):
+    for line in _entry("kullback.synth.report", "lines")(workdir):
         typer.echo(line)
 
 
-@scenarios_app.command("mine")
-def scenarios_mine(
+@synth_app.command("mine")
+def synth_mine(
     workdir: Path = SCENARIO_WORKDIR,
     asks: Optional[Path] = SCENARIO_ASKS,
     search: bool = typer.Option(True, "--search/--no-search",
@@ -1476,15 +1476,15 @@ def scenarios_mine(
     if not model:
         typer.echo("no model: pass --model")
         raise typer.Exit(2)
-    reader = _wrapped_model(_live_model(model, base_url), "scenario_mining", Path(workdir), ceiling_usd, model_id=model)
-    _entry("kullback.scenarios.miner", "mine")(workdir, model=reader, judge=reader, asks=asks, searching=search,
+    reader = _wrapped_model(_live_model(model, base_url), "synth_mining", Path(workdir), ceiling_usd, model_id=model)
+    _entry("kullback.synth.miner", "mine")(workdir, model=reader, judge=reader, asks=asks, searching=search,
                                                batch=batch, description=str(domain_line or ""),
                                                corpus_url=corpus_url)
     _scenario_report(workdir)
 
 
-@scenarios_app.command("review")
-def scenarios_review(
+@synth_app.command("review")
+def synth_review(
     workdir: Path = SCENARIO_WORKDIR,
     batch: int = typer.Option(10, "--batch", help="Scenarios reviewed per session."),
     ceiling_usd: Optional[float] = SCENARIO_CEILING,
@@ -1500,8 +1500,8 @@ def scenarios_review(
     ceiling = budget.Ceiling.from_totals(workdir, ceiling_usd) if ceiling_usd is not None else None
     if ceiling is not None:
         ceiling.require_priced(model)
-    fixer = _wrapped_model(_live_model(model, base_url), "scenario_fix", Path(workdir), ceiling_usd, model_id=model)
-    out = _entry("kullback.scenarios.review", "review")(workdir, model=_live_model(model, base_url), fixer=fixer,
+    fixer = _wrapped_model(_live_model(model, base_url), "synth_fix", Path(workdir), ceiling_usd, model_id=model)
+    out = _entry("kullback.synth.review", "review")(workdir, model=_live_model(model, base_url), fixer=fixer,
                                                         batch=batch, ceiling=ceiling,
                                                         description=str(domain_line or ""))
     if out.get("stopped_on_ceiling"):

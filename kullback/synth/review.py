@@ -39,20 +39,20 @@ from kullback.examiner.domain_tools import find_tools
 from kullback.examiner.plan import ExaminerPlan
 from kullback.runner import budget
 from kullback.runner.records import read_json, write_json
-from kullback.scenarios import miner
-from kullback.scenarios import prompt as prompt_mod
-from kullback.scenarios import records as R
-from kullback.scenarios import search as search_mod
 from kullback.spec.intent_tools import content_tokens
 from kullback.spec.writer_tools import read_tools
+from kullback.synth import miner
+from kullback.synth import prompt as prompt_mod
+from kullback.synth import records as R
+from kullback.synth import search as search_mod
 
 ROOT = "review"
 VIEWS = "views"
 POLICY_FILE = "policy.md"
 TOOLS_FILE = "tools.json"
 BASE_ONLY = ("read", "grep", "find", "ls")
-STAGE = "scenario_review"
-FIX_STAGE = "scenario_fix"
+STAGE = "synth_review"
+FIX_STAGE = "synth_fix"
 # How many scenarios one session reviews, and its turn budget per scenario and at most.
 BATCH = 10
 TURNS_PER_SCENARIO = 8
@@ -227,7 +227,7 @@ def sent_back(root: ReviewRoot, args: FixArgs) -> Rows:
         summary = f"{args.id} goes back to the miner"
     R.write_scenario(root.workdir, record)
     if root.bus is not None:
-        root.bus.publish_custom("scenario_fix", {"id": args.id, **row})
+        root.bus.publish_custom("synth_fix", {"id": args.id, **row})
     return Rows(summary=summary, rows=[row])
 
 

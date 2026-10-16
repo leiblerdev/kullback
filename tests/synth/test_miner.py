@@ -7,10 +7,10 @@ from collections import Counter
 
 from kullback import domain
 from kullback.ai.provider import TestModel
-from kullback.scenarios import miner as M
-from kullback.scenarios import records as R
-from kullback.scenarios import search as S
-from tests.scenarios.fixture import DESCRIPTION, OPENINGS, PAGE, make_workdir
+from kullback.synth import miner as M
+from kullback.synth import records as R
+from kullback.synth import search as S
+from tests.synth.fixture import DESCRIPTION, OPENINGS, PAGE, make_workdir
 
 KEY = {"KULLBACK_SEARCH_KEY": "secret-value"}
 
@@ -160,7 +160,7 @@ def test_a_fix_rewrites_the_statement_once_from_the_same_source_and_keeps_the_id
 
 
 def test_the_miner_prompts_hold_no_tool_table_or_field_name_of_the_environment(tmp_path):
-    from tests.scenarios.fixture import STATE, TOOLS
+    from tests.synth.fixture import STATE, TOOLS
 
     names = {tool["name"] for tool in TOOLS} | set(STATE) | {f for rows in STATE.values() for row in rows.values()
                                                               for f in row}

@@ -25,10 +25,10 @@ from typing import Any, Callable, Iterable, Optional
 
 from kullback import domain
 from kullback.runner.records import read_json, write_json
-from kullback.scenarios import records as R
-from kullback.scenarios import search as search_mod
-from kullback.scenarios.prompt import wrap
 from kullback.spec import intent_tools
+from kullback.synth import records as R
+from kullback.synth import search as search_mod
+from kullback.synth.prompt import wrap
 
 # How many opening asks one model call groups, and how many search queries one call writes.
 BATCH = 25

@@ -6,7 +6,7 @@ no domain, tool or value.
 
 from __future__ import annotations
 
-SCENARIO_SKILL_NAME = "scenario_review"
+SCENARIO_SKILL_NAME = "synth_review"
 
 SCENARIO_SKILL = """Scenario review skill. For each scenario read, in this order: the statement; the policy lines
 it cites, and the part of the policy in your prompt that governs it; the search evidence, searching for how

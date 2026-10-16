@@ -12,7 +12,7 @@ from __future__ import annotations
 import textwrap
 from typing import Iterable
 
-from kullback.scenarios.skills import SCENARIO_SKILL
+from kullback.synth.skills import SCENARIO_SKILL
 
 # Every prompt line is folded under this many characters.
 WIDTH = 140

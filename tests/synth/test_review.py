@@ -11,11 +11,11 @@ from kullback.agent.extensions import load_extensions
 from kullback.agent.harness import AgentHarness
 from kullback.ai.provider import TestModel
 from kullback.runner.records import read_json
-from kullback.scenarios import miner as M
-from kullback.scenarios import prompt as P
-from kullback.scenarios import records as R
-from kullback.scenarios import review as V
-from tests.scenarios.fixture import PAGE, STATE, TOOLS, call, make_workdir
+from kullback.synth import miner as M
+from kullback.synth import prompt as P
+from kullback.synth import records as R
+from kullback.synth import review as V
+from tests.synth.fixture import PAGE, STATE, TOOLS, call, make_workdir
 
 KEY = {"KULLBACK_SEARCH_KEY": "k"}
 
