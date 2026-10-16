@@ -15,10 +15,8 @@ from kullback.synth import records as R
 from kullback.synth import report as T
 from kullback.synth import review as V
 from kullback.synth.miner import mine
-from tests.synth.fixture import PAGE, call, make_workdir
+from tests.synth.fixture import URL, call, make_workdir, web
 
-KEY = {"KULLBACK_SEARCH_KEY": "k"}
-URL = "https://help.example/a"
 SPAN = "Customers often ask to move a widget after it has been sealed."
 PLAIN = "a holder wants a widget moved to another slot"
 VAGUE = "a holder wants things"
@@ -62,7 +60,7 @@ def _mined(tmp_path):
     workdir = make_workdir(tmp_path)
     (workdir / R.DIR).mkdir()
     (workdir / R.DIR / R.ASKS).write_text("\n".join(TYPED) + "\n", encoding="utf-8")
-    mine(workdir, model=_miner_model(), env=KEY, search=lambda q, k: [URL], fetch=lambda url: PAGE)
+    mine(workdir, model=_miner_model(), engine=web(workdir)[0])
     return workdir, R.load_scenarios(workdir)
 
 
@@ -70,8 +68,8 @@ def _reviewed(tmp_path):
     workdir, born = _mined(tmp_path)
     ids = {record.statement: record.id for record in born}
     model = _review_model(ids)
-    out = V.review(workdir, model=model, fixer=TestModel([json.dumps({"statement": FIXED})]), env=KEY,
-                   search=lambda q, k: [URL], fetch=lambda url: PAGE)
+    out = V.review(workdir, model=model, fixer=TestModel([json.dumps({"statement": FIXED})]),
+                   engine=web(workdir)[0])
     return workdir, ids, model, out
 
 

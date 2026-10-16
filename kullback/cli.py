@@ -1463,7 +1463,7 @@ def synth_mine(
     workdir: Path = SCENARIO_WORKDIR,
     asks: Optional[Path] = SCENARIO_ASKS,
     search: bool = typer.Option(True, "--search/--no-search",
-                                help="Search the web; runs only where KULLBACK_SEARCH_KEY is set (D374)."),
+                                help="Search the web through the harness's reader (D115, D374), only when live requests are on."),
     batch: int = typer.Option(25, "--batch", help="Opening asks grouped per model call."),
     ceiling_usd: Optional[float] = SCENARIO_CEILING,
     model: Optional[str] = SCENARIO_MODEL,

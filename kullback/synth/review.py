@@ -71,13 +71,11 @@ TOOL_NAMES = prompt_mod.TOOLS
 
 @dataclass
 class ReviewRoot:
-    """What one review works over: the world, the bus, the search reader and the findings plan."""
+    """What one review works over: the world, the bus, the harness's web reader (or None) and the findings."""
 
     world: miner.World
     bus: Any = None
-    search: Optional[Callable[[str, str], list[str]]] = None
-    env: Optional[dict] = None
-    fetch: Callable[[str], str] = domain.http_fetch
+    engine: Any = None
     filed: list[dict] = field(default_factory=list)
 
     @property
@@ -182,11 +180,19 @@ def _excerpt(text: str, query: str) -> list[str]:
 def searched(root: ReviewRoot, scenario_id: str, query: str) -> Rows:
     """One search kept on the scenario as evidence: the URLs and the matching lines of the first pages."""
     record = _record(root, scenario_id)
-    urls, note = search_mod.run(query, root.workdir, search=root.search, env=root.env)
-    pages = domain.crawl(root.workdir, [{"url": url, "depth": 0, "via": domain.SEARCHED} for url in urls],
-                         fetch=root.fetch, depth=0, limit=PAGES_SHOWN)["pages"]
+    notes: list[str] = []
+    urls: list[str] = []
+    pages: list[dict] = []
+    if root.engine is None:
+        notes.append(search_mod.OFF_NOTE)
+    else:
+        search, fetch = search_mod.callables(root.engine, notes)
+        urls = search(query)
+        pages = domain.crawl(root.workdir, [{"url": url, "depth": 0, "via": domain.SEARCHED} for url in urls],
+                             fetch=fetch, depth=0, limit=PAGES_SHOWN)["pages"]
     rows = [{"url": page["url"], "lines": _excerpt(domain.cached_text(root.workdir, page["key"]), query)}
             for page in pages]
+    note = "; ".join(notes)
     evidence = {"query": query, "urls": urls, "read": [page["url"] for page in pages], "note": note}
     R.write_scenario(root.workdir, record.model_copy(update={"evidence": [*record.evidence, evidence]}))
     return Rows(summary=note or f"{len(urls)} results, {len(rows)} pages read", rows=rows)
@@ -397,9 +403,8 @@ def _over(ceiling: Optional[budget.Ceiling]) -> bool:
     return ceiling is not None and ceiling.remaining() <= 0
 
 
-def review(workdir: Any, *, model: Any, fixer: Any = None, batch: int = BATCH,
-           search: Optional[Callable[[str, str], list[str]]] = None, env: Optional[dict] = None,
-           fetch: Callable[[str], str] = domain.http_fetch, ceiling: Optional[budget.Ceiling] = None,
+def review(workdir: Any, *, model: Any, fixer: Any = None, batch: int = BATCH, engine: Any = None,
+           env: Optional[dict] = None, ceiling: Optional[budget.Ceiling] = None,
            subscribers: Iterable[Callable] = (), description: str = "") -> dict:
     """Review every born scenario in batches, fix what was sent back and review it again, then settle.
 
@@ -408,7 +413,7 @@ def review(workdir: Any, *, model: Any, fixer: Any = None, batch: int = BATCH,
     """
     world = miner.world_of(workdir, description)
     root = ReviewRoot(world=world, bus=Bus(Path(workdir) / "bus.jsonl", agent="examiner"),
-                      search=search or search_mod.reader(workdir), env=env, fetch=fetch)
+                      engine=engine if engine is not None else search_mod.reader(workdir, env))
     watchers = list(subscribers)
     todo = [record.id for record in R.load_scenarios(workdir) if record.status == "born"]
     capped: list[str] = []

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from pathlib import Path
 
 from kullback import domain
-from kullback.ai.provider import TestModel
+from kullback.ai.provider import LIVE_ENV_VAR, TestModel
+from kullback.builder.search import TINYFISH_KEY_VAR
 from kullback.synth import miner as M
 from kullback.synth import records as R
 from kullback.synth import search as S
-from tests.synth.fixture import DESCRIPTION, OPENINGS, PAGE, make_workdir
-
-KEY = {"KULLBACK_SEARCH_KEY": "secret-value"}
+from tests.synth.fixture import DESCRIPTION, OPENINGS, URL, make_workdir, web
 
 
 def _reply(body: dict) -> str:
@@ -60,25 +60,26 @@ def test_a_statement_breaking_the_rule_is_sent_back_once_then_dropped_and_counte
     assert "move_widget" not in model.calls[1]["messages"][0]["content"].split("why:")[1]
 
 
-def test_the_search_reader_posts_the_query_with_the_key_header_and_caches_the_links(tmp_path):
-    sent = []
-
-    def post(url, headers, body):
-        sent.append((url, headers, body))
-        return {"organic": [{"link": "https://help.example/a"}, {"link": "https://help.example/a"},
-                            {"link": "https://help.example/b"}]}
-
-    search = S.reader(tmp_path, post=post, env={S.URL_VAR: "https://search.example/q"})
-    assert search("move a sealed widget", "k1") == ["https://help.example/a", "https://help.example/b"]
-    assert search("move a sealed widget", "k1") == ["https://help.example/a", "https://help.example/b"]
-    assert sent == [("https://search.example/q", {S.KEY_HEADER: "k1"}, {"q": "move a sealed widget"})]
-    assert "k1" not in S.cache_path(tmp_path, "move a sealed widget").read_text()
-    assert S.endpoint({}) == S.DEFAULT_URL
+def test_the_seam_reads_urls_and_page_text_through_the_memo_and_serves_a_repeat_from_it(tmp_path):
+    engine, inner = web(tmp_path)
+    search, fetch = S.callables(engine)
+    assert search("move a sealed widget") == [URL] and "sealed" in fetch(URL)
+    again, again_fetch = S.callables(S.reader(tmp_path, env={}))
+    assert again("move a sealed widget") == [URL] and "sealed" in again_fetch(URL)
+    assert inner.queries == ["move a sealed widget"] and inner.fetched == [URL]
 
 
-def test_without_a_search_key_no_search_runs_and_the_note_names_the_variable_only(tmp_path):
-    found, note = S.run("anything", tmp_path, search=lambda q, k: ["https://x.example"], env={})
-    assert found == [] and domain.SEARCH_KEY_VAR in note
+def test_a_page_the_provider_cannot_read_is_empty_text_and_a_note(tmp_path):
+    engine, _ = web(tmp_path, pages={})
+    notes: list = []
+    _, fetch = S.callables(engine, notes)
+    assert fetch(URL) == "" and any(URL in note for note in notes)
+
+
+def test_no_module_of_the_layer_holds_a_second_reader_or_its_key_variables():
+    folder = Path(M.__file__).parent
+    texts = [path.read_text(encoding="utf-8").lower() for path in folder.glob("*.py")]
+    assert texts and not [text for text in texts if "serper" in text or "kullback_search" in text]
 
 
 def _search_model(span: str) -> TestModel:
@@ -94,21 +95,21 @@ def test_a_search_statement_cites_the_byte_range_of_a_span_the_page_holds_and_un
     world = M.world_of(make_workdir(tmp_path))
     span = "Customers often ask to move a widget after it has been sealed."
     dropped = Counter()
-    found = M.from_search(world, _search_model(span), dropped=dropped, env=KEY,
-                          search=lambda q, k: ["https://help.example/a"], fetch=lambda url: PAGE)
+    found = M.from_search(world, _search_model(span), dropped=dropped, engine=web(world.workdir)[0])
     [record] = found
     raw = domain.cached_text(world.workdir, record.source.key).encode("utf-8")
     assert raw[record.source.start:record.source.end].decode("utf-8") == span
-    assert record.source.url == "https://help.example/a" and record.frequency == 0
+    assert record.source.url == URL and record.frequency == 0
     assert dropped[M.NO_SPAN] == 1
 
 
-def test_search_without_a_key_reads_no_page_and_says_why(tmp_path):
+def test_with_the_live_switch_off_and_no_memo_the_miner_writes_no_query_and_reads_no_page(tmp_path):
     world = M.world_of(make_workdir(tmp_path))
     notes: list = []
-    model = TestModel([_reply({"queries": ["what holders ask"]})])
-    assert M.from_search(world, model, env={}, notes=notes, fetch=lambda url: PAGE) == []
-    assert any(domain.SEARCH_KEY_VAR in note for note in notes)
+    model = TestModel([])
+    assert M.from_search(world, model, env={}, notes=notes) == []
+    assert model.calls == [] and not (world.workdir / "web_cache").exists()
+    assert notes == [S.OFF_NOTE] and LIVE_ENV_VAR in notes[0] and TINYFISH_KEY_VAR in notes[0]
 
 
 def test_ask_lines_are_rewritten_in_the_third_person_and_the_line_as_typed_stays_in_the_source(tmp_path):

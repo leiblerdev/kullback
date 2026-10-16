@@ -22,7 +22,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from kullback import domain
 from kullback.runner.records import read_json, write_json
@@ -364,28 +364,35 @@ def _page_drafts(model: Any, world: World, page: dict, text: str, strings: list[
     return drafts
 
 
-def search_pages(world: World, model: Any, *, search: Optional[Callable[[str, str], list[str]]] = None,
-                 env: Optional[dict] = None, fetch: Callable[[str], str] = domain.http_fetch,
+def search_pages(world: World, model: Any, *, engine: Any = None, env: Optional[dict] = None,
                  corpus_url: Optional[str] = None, exclude: Iterable[str] = (), count: int = QUERIES,
                  notes: Optional[list] = None) -> dict:
-    """The pages the search names for queries a model wrote, read through the D225 crawl."""
+    """The pages the harness's reader names for queries a model wrote, read through the D225 crawl.
+
+    With nothing live and no memo there is no reader: no query is written, no page read, and the note
+    names the switch.
+    """
     notes = [] if notes is None else notes
+    none: dict = {"pages": [], "refused": []}
     if not world.description:
         notes.append("no one-line description of the business, so no search was run")
-        return {"pages": [], "refused": []}
+        return none
+    engine = engine if engine is not None else search_mod.reader(world.workdir, env)
+    if engine is None:
+        notes.append(search_mod.OFF_NOTE)
+        return none
+    search, fetch = search_mod.callables(engine, notes)
     body = _ask(model, QUERY_PROMPT.format(description=world.description, tools=_tool_lines(world), count=count))
     urls: list[str] = []
     for query in [str(q) for q in body.get("queries") or () if str(q).strip()][:int(count)]:
-        found, note = search_mod.run(query, world.workdir, search=search, env=env)
-        if note and note not in notes:
-            notes.append(note)
-        urls += [url for url in found if url not in urls]
+        urls += [url for url in search(query) if url not in urls]
     sources = [{"url": url, "depth": 0, "via": domain.SEARCHED} for url in urls]
     return domain.crawl(world.workdir, sources, fetch=fetch, depth=0, corpus_url=corpus_url, exclude=exclude)
 
 
 def from_search(world: World, model: Any, *, dropped: Optional[Counter] = None, **reading: Any) -> list[R.Scenario]:
-    """Scenarios read off search pages, each citing the byte range of the span it rests on."""
+    """Scenarios read off search pages, each citing the byte range of the span it rests on. `reading` is
+    what `search_pages` takes: the reader (`engine`), `env`, `corpus_url`, `exclude`, `notes`."""
     dropped = Counter() if dropped is None else dropped
     if model is None:
         return []

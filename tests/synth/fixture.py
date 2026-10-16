@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from kullback.ai.provider import ModelReply, ToolCallRequest
+from kullback.builder.search import Chain, MemoSearch, TestSearch
 from kullback.runner.records import RawPtr, Task, Trace, Turn, as_dict, write_json
 
 PTR = RawPtr(file_hash="fixture", sim_index=0)
@@ -57,3 +58,13 @@ def call(name: str, arguments: dict, call_id: str = "c1") -> ModelReply:
 PAGE = ("<html><body><h1>Help</h1><p>Customers often ask to move a widget after it has been sealed. "
         "Sealed widgets stay where they are, so we offer a replacement.</p>"
         "<p>Some holders forget which slot they picked and ask us to tell them.</p></body></html>")
+
+
+URL = "https://help.example/a"
+
+
+def web(workdir: Path, hits: dict | None = None, pages: dict | None = None) -> tuple[MemoSearch, TestSearch]:
+    """The harness's reader as the live path builds it, memo over a chain, with a scripted provider inside."""
+    inner = TestSearch(hits={"": [{"url": URL}]} if hits is None else hits,
+                       pages={URL: PAGE} if pages is None else pages)
+    return MemoSearch(Chain([inner]), workdir), inner

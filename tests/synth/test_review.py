@@ -15,17 +15,15 @@ from kullback.synth import miner as M
 from kullback.synth import prompt as P
 from kullback.synth import records as R
 from kullback.synth import review as V
-from tests.synth.fixture import PAGE, STATE, TOOLS, call, make_workdir
-
-KEY = {"KULLBACK_SEARCH_KEY": "k"}
+from kullback.synth import search as S
+from tests.synth.fixture import STATE, TOOLS, URL, call, make_workdir, web
 
 
 def _root(tmp_path, *statements):
     workdir = make_workdir(tmp_path)
     records = [R.born(text, R.Source(kind="recordings", task_ids=["task-a1"]), frequency=3) for text in statements]
     R.write_all(workdir, records)
-    root = V.ReviewRoot(world=M.world_of(workdir), search=lambda q, k: ["https://help.example/a"], env=KEY,
-                        fetch=lambda url: PAGE)
+    root = V.ReviewRoot(world=M.world_of(workdir), engine=web(workdir)[0])
     return root, records
 
 
@@ -106,9 +104,22 @@ def test_a_search_is_kept_on_the_scenario_as_evidence_with_the_lines_it_read(tmp
     root, [record] = _root(tmp_path, "a holder wants to move a sealed widget")
     tool = _tool(root, "search")
     result = asyncio.run(tool.execute(V.SearchArgs(id=record.id, query="move widget after sealed")))
-    assert result.rows[0]["url"] == "https://help.example/a" and result.rows[0]["lines"]
+    assert result.rows[0]["url"] == URL and result.rows[0]["lines"]
     [evidence] = R.load_scenario(root.workdir, record.id).evidence
-    assert evidence["urls"] == ["https://help.example/a"] and evidence["query"] == "move widget after sealed"
+    assert evidence["urls"] == [URL] and evidence["query"] == "move widget after sealed"
+
+
+def test_a_review_built_with_no_reader_injected_and_live_off_has_no_reader(tmp_path):
+    root, _ = _root(tmp_path, "a holder wants to move a sealed widget")
+    assert S.reader(root.workdir) is None
+
+
+def test_with_nothing_live_the_review_search_reads_nothing_and_its_evidence_names_the_switch(tmp_path):
+    root, [record] = _root(tmp_path, "a holder wants to move a sealed widget")
+    root.engine = None
+    result = asyncio.run(_tool(root, "search").execute(V.SearchArgs(id=record.id, query="sealed widget")))
+    assert result.rows == [] and result.summary == S.OFF_NOTE
+    assert R.load_scenario(root.workdir, record.id).evidence[0]["note"] == S.OFF_NOTE
 
 
 def test_the_lookups_read_the_starting_state_and_find_tools_reads_the_tool_list(tmp_path):
@@ -140,7 +151,7 @@ def test_a_review_session_plays_on_the_shared_bus_and_books_its_calls_under_its_
     model = TestModel([call("rule_scenario", {"id": record.id, "occurs": "yes", "occurs_cite": "https://h.example",
                                               "feasible": "yes", "text": "common and served"}),
                        ModelReply(content="Ruled one: passed.", usage=Usage(input=10, output=2))])
-    out = V.review(root.workdir, model=model, search=root.search, env=KEY, fetch=root.fetch)
+    out = V.review(root.workdir, model=model, engine=root.engine)
     assert R.load_scenario(root.workdir, record.id).status == "passed" and out["capped"] == []
     bus = (root.workdir / "bus.jsonl").read_text()
     assert "scenario_verdict" in bus

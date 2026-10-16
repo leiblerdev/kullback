@@ -2864,14 +2864,23 @@ evidence. Whether blindness changes verdicts was not tested against a sighted ar
 Tests: tests/synth/test_review.py, tests/synth/test_end_to_end.py, including a test that no prompt line holds
 a tool, table or field name of the fixture Environment.
 
-### D374. The search reader: one provider behind an env URL and key (2026-10-16)
+### D374. The scenario layer searches through the D115 reader, behind the live switch (2026-10-16)
 
-Web search (kullback/synth/search.py) is one provider behind two variables: KULLBACK_SEARCH_URL names the endpoint
-(a Serper style POST, defaulting to its public search URL) and KULLBACK_SEARCH_KEY the key, sent as one header. The key
-is never printed, logged or cached; notes name the variable only. Without the key no search runs and the report says
-so. Answers are cached under cache/search by a hash of the query, without the key, so a rerun reads no network. Every
-URL is checked by the D225 destination refusal before a request, and pages are read through the same crawl.
+The scenario layer has no search reader of its own. kullback/synth/search.py is a seam onto kullback/builder/search.py
+(D115): TinyFish search and fetch when TINYFISH_API_KEY is set, then Firecrawl keyless, in one chain, every answer
+memoized under workdir/web_cache keyed by the request, and nothing live unless the switch that turns model calls on
+(HARNESS_ALLOW_MODEL_REQUESTS) is set; with the switch off a memo is still served, and with no memo there is no reader.
+The seam hands the miner and the review two callables, a query in and result URLs out, a URL in and page text out, so
+a fetched page still lands in the D225 crawl's cache and a span's byte range cites it as before. One key variable,
+named in notes, its value never read here or printed. Where nothing is live the note says the search is off, names
+the switch and the key the chain reads first. The second reader of round 0 (its own URL and key variables, a default
+endpoint and a cache under cache/search) is gone; it posted without the live switch, which is how two test runs of
+round 0 reached the network.
 
-What it cannot show: no request reached a real provider in the tests; the answer shape is read from a scripted reply.
+What it cannot show: no request reached a real provider; every test answers through builder.search.TestSearch inside
+the memo and chain the live path builds.
 
-Tests: tests/synth/test_miner.py (the reader posts with the header and caches the links; no key, no search).
+Tests: tests/synth/test_miner.py (the seam reads through the memo and serves a repeat with live off; an unread page is
+empty text and a note; with live off and no memo the miner writes no query and reads no page; no module holds the old
+reader's names), tests/synth/test_review.py (no reader with live off; the review search's evidence names the switch).
+tests/synth/conftest.py clears the switch for every test, so a reader the test did not inject is None.
