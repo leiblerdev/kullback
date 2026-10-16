@@ -2820,8 +2820,9 @@ frequency, the review rows, the evidence and the status (born, fixing, passed, u
 Spec's opening facts where a Spec exists, grouped by a model into statements; frequency is the number of openings
 grouped. Search: a model writes queries from the one-line description and the tool list, the pages are read through
 the D225 crawl, and each statement must quote a span the page holds, kept as its byte range; a page that copies the
-corpus or is contaminated is refused. Asks: lines a customer typed, kept as typed. The rule, checked by code on every
-statement: no tool name or its words, no id shaped value, no identifying value of a row. A broken statement is sent
+corpus or is contaminated is refused. Asks: each line a customer typed is rewritten as a scenario in the third
+person, one model call per batch, and the line as typed stays in the source only, since the customer's own shape would
+tell the blind review where it came from. The rule, checked by code on every statement: no tool name or its words, no id shaped value, no identifying value of a row. A broken statement is sent
 back once with the reason, then dropped and counted per reason. Policy lines the policy does not hold are dropped and
 counted. Repeats across sources fold through the D225 dedup into the first record, which keeps the others as also_from.
 Mining again adds records and never resets one already held. The coverage (per source, search scenarios the recordings

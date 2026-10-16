@@ -4,8 +4,9 @@ Three sources, each a function returning records. The recordings source reads ev
 ask per recording and groups a batch of them into statements with one model call. The search source
 writes queries from the Environment's one-line description and its tool descriptions, reads the pages
 the search names through the D225 crawl, and keeps a statement only where the page holds the span it
-says it rests on, whose byte range becomes its citation. The ask source takes the lines a customer
-typed as they are.
+says it rests on, whose byte range becomes its citation. The ask source rewrites each line a customer
+typed as a scenario under the same rule, one model call per batch, and keeps the line as typed in its
+source: a line in the customer's own shape would tell the blind review where it came from.
 
 Every statement is held to the same rule by code: no tool name of the Environment, no id shape and
 no identifying value of a Starting state row. A recordings or search statement that breaks it is sent
@@ -199,6 +200,12 @@ PAGE_PROMPT = wrap(
     "scenario the page does not show is left out. Quote any line of the policy it touches, word for word.\n\n"
     "The policy:\n{policy}\n\nThe page:\n{text}\n\n"
     'Answer with JSON only, as {{"scenarios": [{{"statement": "...", "span": "...", "policy_lines": ["..."]}}]}}.')
+
+ASK_PROMPT = wrap(
+    "Below are lines a person typed, numbered, each naming a situation they want covered, in their own words. "
+    "Rewrite each line as one scenario of the situation it names, one per line. " + RULE + "\n\n"
+    "The lines:\n{lines}\n\n"
+    'Answer with JSON only, as {{"scenarios": [{{"line": 0, "statement": "..."}}]}}.')
 
 FIX_PROMPT = wrap(
     "A reviewer sent this scenario back once, with the reason. Rewrite it from the same source, following "
@@ -405,16 +412,43 @@ def ask_lines(path: Any) -> list[str]:
             if line.strip() and not line.strip().startswith("#")]
 
 
-def from_asks(world: World, lines: Iterable[str], *, dropped: Optional[Counter] = None) -> list[R.Scenario]:
-    """One record per line as typed; a line naming a tool of the Environment is dropped and counted."""
+def _ask_drafts(body: dict, chunk: list[str]) -> list[dict]:
+    """One draft per line the model rewrote, the first answer for each line index, the line as typed kept."""
+    drafts: dict[int, dict] = {}
+    for row in body.get("scenarios") or ():
+        at = row.get("line") if isinstance(row, dict) else None
+        if isinstance(at, int) and 0 <= at < len(chunk) and at not in drafts:
+            drafts[at] = {"statement": " ".join(str(row.get("statement") or "").split()), "line": chunk[at]}
+    return [drafts[at] for at in sorted(drafts)]
+
+
+def from_asks(world: World, lines: Iterable[str], model: Any, *, batch: int = BATCH,
+              dropped: Optional[Counter] = None, notes: Optional[list] = None) -> list[R.Scenario]:
+    """Each line a customer typed, rewritten as a scenario under the same rule, one model call per batch.
+
+    The line as typed stays in the source. A line naming a tool of the Environment is dropped and counted
+    before any call; a rewrite that breaks the rule is sent back once, then dropped and counted.
+    """
     dropped = Counter() if dropped is None else dropped
-    out = []
+    notes = [] if notes is None else notes
+    kept = []
     for line in lines:
         why = statement_refusal(line, world, tools_only=True)
         if why:
             dropped[why] += 1
-            continue
-        out.append(R.born(line, R.Source(kind="ask", line=line)))
+        else:
+            kept.append(line)
+    if model is None:
+        if kept:
+            notes.append("no model, so no ask line was rewritten as a scenario")
+        return []
+    out: list[R.Scenario] = []
+    size = max(int(batch), 1)
+    for start in range(0, len(kept), size):
+        chunk = kept[start:start + size]
+        listed = "\n".join(f"[{at}] {line}" for at, line in enumerate(chunk))
+        drafts = checked(model, _ask_drafts(_ask(model, ASK_PROMPT.format(lines=listed)), chunk), world, dropped)
+        out += [R.born(d["statement"], R.Source(kind="ask", line=d["line"])) for d in drafts]
     return out
 
 
@@ -460,7 +494,7 @@ def mine(workdir: Any, *, model: Any, judge: Any = None, asks: Any = None, searc
     else:
         notes.append("search turned off")
     path = Path(asks) if asks else R.store_dir(workdir) / R.ASKS
-    found += from_asks(world, ask_lines(path), dropped=dropped)
+    found += from_asks(world, ask_lines(path), model, batch=batch, dropped=dropped, notes=notes)
     kept, folded = fold(found, judge)
     held = {record.id for record in R.load_scenarios(workdir)}
     R.write_all(workdir, [record for record in kept if record.id not in held])
@@ -491,7 +525,7 @@ def fix(world: World, record: R.Scenario, why: str, model: Any) -> R.Scenario:
     or none at all, ends the record unsure with why."""
     body = _ask(model, FIX_PROMPT.format(statement=record.statement, why=why, source=source_text(world, record)))
     statement = " ".join(str(body.get("statement") or "").split())
-    broken = statement_refusal(statement, world, tools_only=record.source.kind == "ask") if statement else EMPTY
+    broken = statement_refusal(statement, world) if statement else EMPTY
     if broken:
         row = {"kind": "fix_failed", "why": why, "refused": broken}
         return record.model_copy(update={"status": "unsure", "review": [*record.review, row]})

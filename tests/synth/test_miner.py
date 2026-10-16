@@ -111,22 +111,35 @@ def test_search_without_a_key_reads_no_page_and_says_why(tmp_path):
     assert any(domain.SEARCH_KEY_VAR in note for note in notes)
 
 
-def test_ask_lines_become_records_as_typed_and_a_line_naming_a_tool_is_dropped(tmp_path):
+def test_ask_lines_are_rewritten_in_the_third_person_and_the_line_as_typed_stays_in_the_source(tmp_path):
     world = M.world_of(make_workdir(tmp_path))
+    typed = "test whether the agent will refund a sealed widget"
+    statement = "a holder asks for a refund on a widget that is already sealed"
+    model = TestModel([_reply({"scenarios": [{"line": 0, "statement": statement}]})])
     dropped = Counter()
-    found = M.from_asks(world, ["test whether the agent refuses to move a sealed widget",
-                                "call move_widget twice"], dropped=dropped)
-    assert [(r.source.kind, r.source.line) for r in found] == [
-        ("ask", "test whether the agent refuses to move a sealed widget")]
-    assert dropped == Counter({M.TOOL_NAME: 1})
+    [record] = M.from_asks(world, [typed, "call move_widget twice"], model, dropped=dropped)
+    assert record.statement == statement and record.statement != typed
+    assert M.statement_refusal(record.statement, world) == ""
+    assert (record.source.kind, record.source.line) == ("ask", typed)
+    assert dropped == Counter({M.TOOL_NAME: 1}) and len(model.calls) == 1
+    assert "move_widget" not in model.calls[0]["messages"][0]["content"].split("The lines:")[1]
+
+
+def test_without_a_model_no_ask_line_becomes_a_record_and_a_note_says_so(tmp_path):
+    world = M.world_of(make_workdir(tmp_path))
+    notes: list = []
+    assert M.from_asks(world, ["I want to see what happens when someone asks twice"], None, notes=notes) == []
+    assert any("no ask line was rewritten" in note for note in notes)
 
 
 def test_mining_folds_an_ask_into_the_recordings_record_and_writes_coverage(tmp_path):
     workdir = make_workdir(tmp_path)
     statement = "a holder wants a widget moved to another slot"
+    which = "someone asks which slot their widget sits in"
     (workdir / R.DIR).mkdir()
-    (workdir / R.DIR / R.ASKS).write_text(f"{statement}\nsomeone asks which slot their widget sits in\n")
-    model = TestModel([_reply({"scenarios": [{"statement": statement, "openings": [0, 1]}]})])
+    (workdir / R.DIR / R.ASKS).write_text("I want my widget moved\ntest whether it says which slot I picked\n")
+    model = TestModel([_reply({"scenarios": [{"statement": statement, "openings": [0, 1]}]}),
+                       _reply({"scenarios": [{"line": 0, "statement": statement}, {"line": 1, "statement": which}]})])
     body = M.mine(workdir, model=model, searching=False)
     records = R.load_scenarios(workdir)
     kinds = sorted(r.source.kind for r in records)
@@ -140,11 +153,16 @@ def test_mining_folds_an_ask_into_the_recordings_record_and_writes_coverage(tmp_
 def test_mining_again_keeps_the_status_and_review_of_a_record_already_held(tmp_path):
     workdir = make_workdir(tmp_path)
     (workdir / R.DIR).mkdir()
-    (workdir / R.DIR / R.ASKS).write_text("someone asks which slot their widget sits in\n")
-    M.mine(workdir, model=None, searching=False)
+    (workdir / R.DIR / R.ASKS).write_text("test which slot a widget sits in\n")
+
+    def rewrite():
+        return TestModel([_reply({"scenarios": []}),
+                          _reply({"scenarios": [{"line": 0, "statement": "someone asks which slot a widget sits in"}]})])
+
+    M.mine(workdir, model=rewrite(), searching=False)
     [record] = R.load_scenarios(workdir)
     R.write_scenario(workdir, record.model_copy(update={"status": "passed"}))
-    M.mine(workdir, model=None, searching=False)
+    M.mine(workdir, model=rewrite(), searching=False)
     assert [r.status for r in R.load_scenarios(workdir)] == ["passed"]
 
 
@@ -164,7 +182,8 @@ def test_the_miner_prompts_hold_no_tool_table_or_field_name_of_the_environment(t
 
     names = {tool["name"] for tool in TOOLS} | set(STATE) | {f for rows in STATE.values() for row in rows.values()
                                                               for f in row}
-    texts = [M.RULE, M.RECORDINGS_PROMPT, M.SEND_BACK_PROMPT, M.QUERY_PROMPT, M.PAGE_PROMPT, M.FIX_PROMPT]
+    texts = [M.RULE, M.RECORDINGS_PROMPT, M.SEND_BACK_PROMPT, M.QUERY_PROMPT, M.PAGE_PROMPT, M.ASK_PROMPT,
+             M.FIX_PROMPT]
     assert not {name for name in names for text in texts if name in text}
     assert DESCRIPTION not in "".join(texts)
     assert all(len(line) < 150 for text in texts for line in text.splitlines())

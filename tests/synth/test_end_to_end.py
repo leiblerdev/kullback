@@ -26,13 +26,17 @@ SEALED = "a holder wants to move a widget that is already sealed"
 WHICH = "someone asks which slot their widget sits in"
 PAINT = "a holder wants their widget painted"
 FIXED = "a holder wants a sealed widget swapped for a new one"
+# Two lines in a customer's own shape; the miner rewrites them as WHICH and PAINT.
+TYPED = ("I want to see what happens when someone asks which slot their widget sits in",
+         "test whether the agent will paint a widget")
 
 
 def _miner_model() -> TestModel:
     return TestModel([
         json.dumps({"scenarios": [{"statement": PLAIN, "openings": [0]}, {"statement": VAGUE, "openings": [1, 2]}]}),
         json.dumps({"queries": ["what holders ask about sealed widgets"]}),
-        json.dumps({"scenarios": [{"statement": SEALED, "span": SPAN}]})])
+        json.dumps({"scenarios": [{"statement": SEALED, "span": SPAN}]}),
+        json.dumps({"scenarios": [{"line": 0, "statement": WHICH}, {"line": 1, "statement": PAINT}]})])
 
 
 def _rule(scenario_id: str, call_id: str, **verdict) -> ModelReply:
@@ -57,7 +61,7 @@ def _review_model(ids: dict) -> TestModel:
 def _mined(tmp_path):
     workdir = make_workdir(tmp_path)
     (workdir / R.DIR).mkdir()
-    (workdir / R.DIR / R.ASKS).write_text(f"{WHICH}\n{PAINT}\n", encoding="utf-8")
+    (workdir / R.DIR / R.ASKS).write_text("\n".join(TYPED) + "\n", encoding="utf-8")
     mine(workdir, model=_miner_model(), env=KEY, search=lambda q, k: [URL], fetch=lambda url: PAGE)
     return workdir, R.load_scenarios(workdir)
 
@@ -96,6 +100,7 @@ def test_the_review_never_sees_a_source_kind_a_task_id_or_a_frequency(tmp_path):
     sent = json.dumps([message for call_ in model.calls for message in call_["messages"]])
     kinds = "|".join(R.SOURCE_KINDS)
     assert not re.search(rf'kind\W+({kinds})\W', sent) and "task-a1" not in sent and "frequency" not in sent
+    assert "test whether" not in sent.lower() and "i want to see" not in sent.lower()
 
 
 def test_the_report_prints_every_count_under_the_scenarios_heading(tmp_path):
