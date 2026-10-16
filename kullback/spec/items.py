@@ -168,27 +168,50 @@ def _on_side(kept: dict, facts: list) -> bool:
     return kept.get("kind") in TOLD_KINDS or not any(getattr(fact, "kind", None) in ("do", "keep") for fact in facts)
 
 
+def _untold(kept: dict, facts: list) -> bool:
+    """Whether a told item (judge, said) rests on no told fact and no policy line: nobody asked to be told
+    it and no rule says the agent must tell it (D369)."""
+    return kept.get("kind") in TOLD_KINDS and not kept.get("policy_line") \
+        and not any(getattr(fact, "kind", None) == "told" for fact in facts)
+
+
+# Why a told gate with no told fact and no policy line is weighed (D369).
+TELL_WEIGHED = "untold"
+
+# Each weighing rule in order: the test on (kept item, its facts), the reason kept on it, the line for the writer.
+_WEIGHINGS = (
+    (lambda kept, facts: any(is_reaction(fact) for fact in facts), AGENT_WEIGHED,
+     "gate weighed: it cites a reaction, a fact the user said in answer to the agent's own conduct "
+     "(could not, declined citing no rule, stalled, proposed another way), which a run whose agent "
+     "meets the first ask never reaches; it is scored, never gated. If the item checks the Task's ask, "
+     "add it again citing only the ask's facts"),
+    (_unconfirmed, UNCONFIRMED_WEIGHED,
+     "gate weighed: it cites a conditional ask whose condition is the agent's claim about the world or "
+     "the rules; confirm it yourself (confirms: the row whose read shows it, or the policy_line that "
+     "states it) and gate the branch the world selects, or leave it scored"),
+    (_on_side, SIDE_WEIGHED,
+     "gate weighed: it rests on a side fact, a question asked beside the Task's ask, which a run "
+     "whose user never asks it cannot meet; it is scored, never gated. If the item checks the "
+     "Task's ask, add it again citing only the ask's facts"),
+    (_untold, TELL_WEIGHED,
+     "gate weighed: it checks what the agent told the user, but no fact asks to be told it and no "
+     "policy_line says the agent must tell it; it is scored, never gated. Gate it only citing a told "
+     "fact or quoting the policy line that requires the telling"),
+)
+
+
 def _weighed_gate(kept: dict, known: dict) -> str:
     """One line for the writer when its gate is weighed, else empty: it cites a reaction (condition agent),
-    or a conditional ask whose condition it does not confirm, or a side fact. A scored item may rest on them.
-    after_pushback and echo are evidence, not this rule (D366)."""
+    or a conditional ask whose condition it does not confirm, or a side fact, or it is a told item with no
+    told fact and no policy line. A scored item may rest on them. after_pushback and echo are evidence, not
+    this rule (D366)."""
+    if not kept.get("gate"):
+        return ""
     facts = [known[f] for f in kept.get("fact_ids") or []]
-    if kept.get("gate") and any(is_reaction(fact) for fact in facts):
-        kept.update(gate=False, weighed=AGENT_WEIGHED)
-        return ("gate weighed: it cites a reaction, a fact the user said in answer to the agent's own conduct "
-                "(could not, declined citing no rule, stalled, proposed another way), which a run whose agent "
-                "meets the first ask never reaches; it is scored, never gated. If the item checks the Task's ask, "
-                "add it again citing only the ask's facts")
-    if kept.get("gate") and _unconfirmed(kept, facts):
-        kept.update(gate=False, weighed=UNCONFIRMED_WEIGHED)
-        return ("gate weighed: it cites a conditional ask whose condition is the agent's claim about the world or "
-                "the rules; confirm it yourself (confirms: the row whose read shows it, or the policy_line that "
-                "states it) and gate the branch the world selects, or leave it scored")
-    if kept.get("gate") and _on_side(kept, facts):
-        kept.update(gate=False, weighed=SIDE_WEIGHED)
-        return ("gate weighed: it rests on a side fact, a question asked beside the Task's ask, which a run "
-                "whose user never asks it cannot meet; it is scored, never gated. If the item checks the "
-                "Task's ask, add it again citing only the ask's facts")
+    for applies, reason, line in _WEIGHINGS:
+        if applies(kept, facts):
+            kept.update(gate=False, weighed=reason)
+            return line
     return ""
 
 

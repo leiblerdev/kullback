@@ -123,7 +123,9 @@ Where \
 the user left a choice open and the policy allows several, accept any allowed one or weight it. A forbid \
 (not_called, row_keeps) gates only with the policy line that forbids it; else weight it. A value the user \
 asked to be told is a gated judge item anchored on the world row holding it. A variant or payment method the \
-user named is a gated check on that field. A refusal judge item always gates. A fact marked side asks only to be \
+user named is a gated check on that field. A refusal judge item always gates. Any other told item (judge, \
+said) gates only citing a told fact or quoting the policy line that requires the telling: code weighs \
+any other. A fact marked side asks only to be \
 told something beside the Task's ask, so any item on it is scored, never gated: code weighs such a gate. \
 A fact's condition says what prompted it. A fact of condition agent is a reaction to the agent's own \
 conduct (it could not, declined citing no rule, stalled, or proposed another way): any item on it is \
@@ -498,8 +500,8 @@ def save_session(inputs: WriterInputs, task_id: str, kind: str, round_number: in
 
 
 def _side_counts(intent: SpecIntent, items: list[dict]) -> dict:
-    """Side facts, reactions and conditional asks, and the gates weighed for resting on one; nothing for a
-    Task with none."""
+    """Side facts, reactions and conditional asks, and the gates weighed for resting on one, and the told
+    gates weighed for resting on no told fact and no policy line (D369); nothing for a Task with none."""
     out = {}
     for name, has, weighed in (("side", lambda f: f.side, I.SIDE_WEIGHED),
                                ("reaction", is_reaction, I.AGENT_WEIGHED),
@@ -508,6 +510,9 @@ def _side_counts(intent: SpecIntent, items: list[dict]) -> dict:
         if found:
             out.update({f"{name}_facts": found,
                         f"{name}_weighed": sum(1 for item in items if item.get("weighed") == weighed)})
+    untold = sum(1 for item in items if item.get("weighed") == I.TELL_WEIGHED)
+    if untold:
+        out["tell_weighed"] = untold
     return out
 
 

@@ -20,7 +20,7 @@ from kullback.runner.verdict import verdict
 from kullback.spec import writer as W
 from kullback.spec import writer_tools as T
 from kullback.spec.intent_tools import mark_side
-from kullback.spec.items import AGENT_WEIGHED, SIDE_WEIGHED, UNCONFIRMED_WEIGHED
+from kullback.spec.items import AGENT_WEIGHED, SIDE_WEIGHED, TELL_WEIGHED, UNCONFIRMED_WEIGHED
 from kullback.spec.schema import FactSource, IntentFact, ReplyQuote, SpecIntent, intent_text, load_spec
 from tests.spec.fixtures import FACTS, WRITE_TOOLS, check, fn, reference_run
 
@@ -560,6 +560,28 @@ def test_a_told_fact_in_a_task_with_no_write_ask_still_gates():
     assert store.items["t1"]["gate"] is True and not facts[0].side
 
 
+def test_a_told_gate_on_a_do_fact_with_no_policy_line_is_weighed_as_untold():
+    store = W.store_of(inputs(facts=[FACTS[0].model_copy(update={"kind": "do"})]))
+    out = store.add([dict(SAID_SLOT, fact_ids=["f1"])])
+    assert "gate weighed" in out and "no fact asks to be told" in out
+    assert store.items["t1"]["gate"] is False and store.items["t1"]["weighed"] == TELL_WEIGHED
+
+
+def test_a_told_gate_citing_a_told_fact_or_quoting_a_policy_line_stays_a_gate():
+    told = W.store_of(inputs(facts=[FACTS[0].model_copy(update={"kind": "do"}), TOLD]))
+    told.add([dict(SAID_SLOT, fact_ids=["f3"])])
+    ruled = W.store_of(inputs(facts=[FACTS[0].model_copy(update={"kind": "do"})]))
+    ruled.add([dict(SAID_SLOT, fact_ids=["f1"], policy_line="Move an item only to a free slot.")])
+    assert told.items["t1"]["gate"] is True and "weighed" not in told.items["t1"]
+    assert ruled.items["t1"]["gate"] is True and "weighed" not in ruled.items["t1"]
+
+
+def test_a_state_gate_on_a_do_fact_with_no_policy_line_is_never_weighed_as_untold():
+    store = W.store_of(inputs(facts=[FACTS[0].model_copy(update={"kind": "do"})]))
+    store.add([dict(ROW, fact_ids=["f1"])])
+    assert store.items[ROW["id"]]["gate"] is True and "weighed" not in store.items[ROW["id"]]
+
+
 def test_a_side_fact_is_never_sent_back_by_the_asked_followup():
     intent = SpecIntent(task_id="t1", facts=_side_facts())
     assert W.asked_missing([ROW], intent) == []
@@ -576,23 +598,24 @@ def test_the_writer_shows_the_side_flag_and_counts_side_facts_and_weighed_gates(
     assert "never gated" in W.CHOICE_RULE
 
 
-# The writer's files and message body over facts with no kind, as the code before D361 wrote them.
+# The writer's files and message body over facts with no kind: the body as the code before D361 wrote it, the
+# files as D369 writes them (the said gate cites no told fact and no policy line, so it is weighed).
 NO_KIND_HASHES = {
-    "spec/t1.json": "88e62b785b57b54a39605ce61995981ee8580988ba1c6f5b7464beccc7f58f3c",
-    "spec/verifiers/t1.json": "bd0af6959ddecaffb4f476e5272f6de475d2543901cb262a1a2f1ce21116153a",
-    "verifiers/t1.json": "bd0af6959ddecaffb4f476e5272f6de475d2543901cb262a1a2f1ce21116153a",
+    "spec/t1.json": "7f7100b7af07c4e9d85ce5b5502597ba06064546c4a1162ba523d22d61119dc7",
+    "spec/verifiers/t1.json": "c42527b75c96fb36b1d8c9e9ab7d9437e36fbb2643e70fe05b2131abc22d4308",
+    "verifiers/t1.json": "c42527b75c96fb36b1d8c9e9ab7d9437e36fbb2643e70fe05b2131abc22d4308",
     "body": "4c4054e384426bc357e4a8de56900537c75443d3576f74d8bcb600a063ca088a",
 }
 
 
-def test_a_recorded_workdir_with_no_told_facts_is_unchanged_byte_for_byte_through_the_writer(tmp_path):
+def test_a_recorded_workdir_with_no_told_facts_changes_only_by_weighing_its_untold_said_gate(tmp_path):
     model = TestModel([add(ROW, dict(SAID_SLOT, fact_ids=["f1"])), DONE])
     written = W.write_spec("t1", inputs(), model)
     paths = W.write_verifier(written.spec, tmp_path, inputs())
     got = {path.relative_to(tmp_path).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
     content = model.calls[0]["messages"][0]["content"]
     got["body"] = hashlib.sha256(content[content.index("\n{") + 1:].encode()).hexdigest()
-    assert got == NO_KIND_HASHES
+    assert got == NO_KIND_HASHES and written.counts["tell_weighed"] == 1
     assert "side_facts" not in written.counts and "side_weighed" not in written.counts
 
 

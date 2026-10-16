@@ -2888,3 +2888,23 @@ to the ask keeps the check on the user's requests rather than on whatever else t
 Lives in: kullback/spec/mutants.py (ask_keys, passing_base, task_mutants), kullback/spec/mutant_rulings.py,
 kullback/spec/trust.py (NO_PASSING_RUN), kullback/spec/report.py (side_reasons), kullback/examiner/rule_tool.py,
 scripts/mutants.py.
+
+### D369. A gated tell needs a told fact or a policy line (2026-10-16)
+
+What: a gate item of a told kind (judge, said: it checks what the agent told the user) that cites no fact of kind told
+and quotes no policy_line is weighed, never gated, with reason "untold" kept on the item (items.TELL_WEIGHED), on the
+same path as the side, reaction and unconfirmed-condition weighings. The weighing rules now run from one ordered table
+(items._WEIGHINGS). The writer counts these gates as tell_weighed. A refusal judge item is untouched: with no row it
+must quote its policy line (D330), so it always has one. The writer prompt says a told item other than a refusal gates
+only citing a told fact or quoting the policy line that requires the telling.
+
+Why: D365. A gate on what the agent said that nobody asked to hear and no rule requires checks the recording's
+manners, not the ask: a right solve that does the change and says it differently fails it. Scoring it keeps it as
+signal without letting it end a Run.
+
+Count: the dry pass over the 100 first-run Specs counts the gates this weighs (clean-ask report). A recorded workdir
+with no fact kinds now changes in one way: its said gate citing a kindless fact is weighed (the byte-for-byte writer
+test now pins that).
+
+Lives in: kullback/spec/items.py (TELL_WEIGHED, _untold, _WEIGHINGS), kullback/spec/writer.py (choice rule,
+tell_weighed count).
