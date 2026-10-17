@@ -42,7 +42,7 @@ from kullback.spec import writer_tools
 from kullback.spec.actions import action_tables_of, action_tools_of
 from kullback.spec.compile import Compiled, compile_spec
 from kullback.spec.ground import coverage
-from kullback.spec.intent_tools import mark_echo, mark_side, recordings_of
+from kullback.spec.intent_tools import mark_echo, mark_side, recordings_of, task_of, trace_index
 from kullback.spec.must_not import must_not
 from kullback.spec.schema import (
     Check,
@@ -165,7 +165,8 @@ FEEDBACK = """\
 # Feedback
 add_items answers each item: kept, or refused with the reason (a value not found, a find matching no \
 row or several, a field the table lacks, no provenance). Fix a refused item and add it again under its \
-id, or leave it out."""
+id, or leave it out. A gated value must be one a tool can write or the user fixed: when code names \
+reachable values for a field, gate one of them or weigh the item."""
 
 STOP_RULE = """\
 # Stop
@@ -266,6 +267,8 @@ class WriterInputs(NamedTuple):
     # What each write tool always moves and what each tool's recorded calls passed (spec/effects.py).
     effects: dict = {}
     signatures: dict = {}
+    # What tools can write per field (D380): the learned writes and the Task's recorded write results.
+    reach: Optional[I.Reach] = None
     # Where the sessions are saved (exam/writer); None saves nothing. Never shown to the writer.
     workdir: Optional[Path] = None
 
@@ -300,25 +303,51 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
     from kullback.runner.world.environment import BuiltEnvironment
 
     env = BuiltEnvironment(workdir)
+    traces = trace_index(workdir)
     if intent is None:
         spec = load_spec(workdir, task_id)
         if spec is None:
             raise FileNotFoundError(f"no Spec for Task {task_id}: mine its Intent first")
         intent = spec.intent
-    facts = mark_side(mark_echo(intent.facts, recordings_of(workdir, task_id)))
+    facts = mark_side(mark_echo(intent.facts, recordings_of(workdir, task_id, traces)))
     intent = intent.model_copy(update={"facts": facts})
     policy = env.system_prompt(env.task(task_id)) or ""
     overlay, rows = env.overlay(task_id)
     tools = writer_tools.tool_rows(env.sigs)
     actions = frozenset(action_tools_of(env.schema))
     learned = tool_effects.load(workdir)
+    effects = learned.get("effects") or {}
+    write_tools = {row["name"] for row in tools if row["kind"] == "write"} - actions
+    tools = [dict(row, writes=_writes_view(effects[row["name"]])) if _writes_view(effects.get(row["name"]))
+             else row for row in tools]
     return WriterInputs(intent=intent, policy_text=policy, sections=writer_tools.policy_sections_of(workdir),
-                        tools=tools, write_tools={row["name"] for row in tools if row["kind"] == "write"} - actions,
+                        tools=tools, write_tools=write_tools,
                         state=StateView(env.db, overlay, rows).shared, constraints=_constraints(workdir),
                         canon=canon_fn(env.canon_rules), action_tools=actions,
                         action_tables=frozenset(action_tables_of(env.schema)), columns=_columns(env.schema),
-                        effects=learned.get("effects") or {}, signatures=learned.get("signatures") or {},
+                        effects=effects, signatures=learned.get("signatures") or {},
+                        reach=I.reach_of_inputs(effects, _write_results(workdir, task_id, traces, write_tools)),
                         workdir=Path(workdir))
+
+
+def _writes_view(learned: Optional[dict]) -> dict:
+    """What a write tool writes, as the writer's tool list shows it: {table.field: its literal values, or
+    "from <argument>" where it copies what the call passed}."""
+    return {f"{row['table']}.{row['field']}": row["values"] if row.get("values") else
+            f"from {', '.join(row['from_args'])}" for row in (learned or {}).get("writes") or []
+            if row.get("values") or row.get("from_args")}
+
+
+def _write_results(workdir: Path, task_id: str, traces: dict, write_tools: set) -> list[tuple[str, str, Any]]:
+    """(recording, tool, result) of every successful write call in the Task's recordings (D380): what a
+    tool wrote, read for the values it shows, never for the path the recording took."""
+    out = []
+    for run_id in task_of(workdir, task_id).run_ids:
+        trace = traces.get(run_id)
+        for call in trace.tool_calls if trace is not None else ():
+            if call.name in write_tools and call.error is None and call.result is not None:
+                out.append((run_id, call.name, call.result))
+    return out
 
 
 def _columns(schema: Any) -> dict:
@@ -380,7 +409,7 @@ def writer_messages(inputs: WriterInputs) -> tuple[list[dict], int]:
 def world_of(inputs: WriterInputs) -> I.World:
     """The world the writer's tools read and its values are sourced from."""
     return I.World(inputs.state, inputs.policy_text, inputs.intent.facts, inputs.tools, inputs.columns,
-                   inputs.signatures)
+                   inputs.signatures, inputs.reach)
 
 
 def store_of(inputs: WriterInputs, items: Iterable[dict] = (), ruled: Optional[set[str]] = None,
@@ -439,7 +468,7 @@ def _config(config: Any) -> Any:
 # Each refusal counted under the family of code wording it carries (spec/items.py), never its text:
 # a cut of the text kept values (a field's value, a quoted sentence) and left some keys empty.
 REASON_FAMILIES = (
-    ("rests only on echo facts", "echo value at a gate"), ("unfounded facts", "unfounded facts at a gate"),
+    (I.UNREACHABLE, "unreachable value"), ("rests only on echo facts", "echo value at a gate"), ("unfounded facts", "unfounded facts at a gate"),
     ("is not in the world", "value not found"),
     ("unwitnessed facts", "unwitnessed facts alone"), ("evidence_why", "narrow evidence without why"),
     ("which is no value of the cited row", "computed anchor"), ("anchor.answer does not state", "anchor misses row"),
@@ -466,7 +495,8 @@ def _store_counts(store: writer_tools.ItemStore) -> dict:
         key = reason_family(row["reason"])
         reasons[key] = reasons.get(key, 0) + 1
     return {"offered": store.offered, "kept": len(store.items), "refused": len(store.refused),
-            "refused_why": dict(sorted(reasons.items())), "dropped": len(store.dropped)}
+            "refused_why": dict(sorted(reasons.items())), "dropped": len(store.dropped),
+            "reachability": {"refused": reasons.get("unreachable value", 0), "warned": len(store.warned)}}
 
 
 # One file per Task, one line per writer session: the first write and every repair (D351).
@@ -650,6 +680,16 @@ def end_state_counts(verifier: Verifier, spec: Optional[Spec] = None) -> dict:
     return out
 
 
+def reachability(spec: Spec, inputs: WriterInputs) -> dict:
+    """The reachability rule's count on the Spec (D380): gated values code refused in the first write, and
+    the kept items naming a value no source reaches, weighed (warned) or, on an older Spec, gated."""
+    world = world_of(inputs)
+    found = [item for item in item_checks(spec) if world.unreachable(item)]
+    return {"refused": int(((spec.writer or {}).get("reachability") or {}).get("refused", 0)),
+            "warned": sum(1 for item in found if not item.get("gate")),
+            "gated": sum(1 for item in found if item.get("gate"))}
+
+
 def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = None) -> list[Path]:
     """Saves the Spec and its whole Verifier, written from its items by code; no Reference is read.
 
@@ -659,7 +699,10 @@ def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = N
     inputs = inputs or load_inputs(workdir, spec.task_id, spec.intent)
     verifier: Verifier = verifier_of(spec, inputs).verifier
     text = json.dumps(verifier.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-    spec = spec.model_copy(update={"end_state": end_state_counts(verifier, spec)})
+    counts = end_state_counts(verifier, spec)
+    if inputs.reach is not None:
+        counts["reachability"] = reachability(spec, inputs)
+    spec = spec.model_copy(update={"end_state": counts})
     paths = [save_spec(workdir, spec), spec_verifier_path(workdir, spec.task_id),
              runner_verifier_path(workdir, spec.task_id)]
     for path in paths[1:]:

@@ -111,6 +111,12 @@ def test_a_gated_cell_that_is_not_one_literal_value_builds_no_base(cell):
     assert M.constructed_base(_verifier(cells=[cell]), [_base()], canon=fn) is None
 
 
+def test_the_constructed_base_never_builds_a_gated_cell_whose_value_no_source_reaches():
+    unreached = _cell(value="nine").model_copy(update={"source": None})
+    assert M.constructed_base(_verifier(cells=[unreached]), [_base()], canon=fn) is None
+    assert M.constructed_base(_verifier(cells=[_cell(value="nine")]), [_base()], canon=fn) is not None
+
+
 def test_a_set_of_one_a_dotted_path_and_a_new_row_are_built_and_a_weighted_cell_is_left_as_it_was():
     cells = [_cell(value={"one_of": ["seven"]}), _cell(row_id="B2", field="meta.size", value=3),
              _cell(row_id="B2", field="label", value="green").model_copy(update={"gate": False})]

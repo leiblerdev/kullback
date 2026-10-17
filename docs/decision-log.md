@@ -3431,3 +3431,53 @@ Tests: tests/spec/test_coherence.py rewritten around the miner's outcome rows (t
 withdrawal sentence; the outcome rides in add_facts with no further call; withdrawal, user, agent and world endings;
 marker and agent quotes refused for the user; wrong ender or recording; no opening ask; unanswered counted; stage
 set-aside, tiers, held Task). tests/spec/test_stage.py: `_mined` takes the fact with its outcome.
+
+### D386. The 100 held-out rerun on the clean-ask head fails all five bars (2026-10-17)
+
+The 100 held-out rerun on the clean-ask head fails all five pre-registered bars (wrong 22 of 96, trusted 43 with 8
+wrong, 1.28 USD per Task); the Reference used to catch unreachable gate values and recording-only transfer gates;
+reports in .claude/herdr/ask-1016/rerun-report.md and rerun-analysis.md.
+
+### D387. A gated value must be reachable (2026-10-17)
+
+What: a gated literal value for a cell (row_is expect, row_new where, the end state cells the Verifier compiles from
+them) is kept only when it is reachable from one of four sources: a write tool's learned writes for that table and
+field name (the build's sandbox replays, spec/effects.py `writes`: the literal values, at most 12 distinct, and the
+arguments a field is copied from, `from_args`, where any value the start state holds or the user said reaches it);
+a write tool's result in a recording of the Task holding the value under that field name (its presence only, never
+the recording's path); the user's own words in an Intent fact (an echo fact does not count); a start row holding it
+under that field name, any table. Matching is on the normalised string, numbers as numbers. Nulls and not sets are
+never checked; each member of a list or a one_of is. A policy line alone never reaches a value. Code refuses a gated
+item naming any other value in add_items, with the item id, the field, the value and up to ten reachable values, and
+the writer re-gates or weighs it in the same session; a weighed item is kept with the same finding as a warning. The
+writer's prompt has one sentence on it, and its tool list shows what each write tool writes. A gated cell's source
+is where it is reachable from (None when nothing reaches it), and the constructed mutant base (D375) never builds a
+cell with no source. The Spec counts it: writer.reachability {refused, warned} per session, end_state.reachability
+{refused, warned, gated} on the final Verifier. A world with no learned writes still applies the other three sources.
+
+Why: D386. Seven retail Verifiers gated an order status the policy spells wrong on one line and the tool spells
+right, so no Run could pass them; the Reference Run used to fail such a gate and the repair took it away, and D367
+took the Reference out of verification without anything taking that job. Nothing checked that a gated value can
+exist. A value no tool writes and no user fixed cannot be a correct end state, whatever the policy text says.
+
+Count (dry pass, no model call, the 100 rerun Specs under this code): retail 8 gated values refused on 7 Tasks, all
+the policy's misspelt status, and 2 weighed values warned (the misspelt status on the eighth Task, a computed
+amount); airline none. Before from_args (post hoc, added after the first pass) the same pass refused 21 on 10 retail
+and 1 airline Tasks, 13 of them right values a tool copies from its arguments under another field name.
+
+Live (the eight Tasks, Examiner cache cleared, 14.36 USD of a 15 cap). Arm A, the full Spec stage with the writes
+view shown: 0 refusals in any session; the writer never offered the misspelt status, and no final Verifier gated
+the tool's status either. Arm B (post hoc), the first write only with the writes view hidden: the refusal fired on 7
+of 8 Tasks, and on 6 the writer then gated the tool's status, which the older found rule refused as not in the
+world, the policy or a user turn; so the found rule now takes a value a tool writes. Arm C (post hoc, two Tasks):
+the writer offered the tool's status first, the refusal did not fire, and on one Task the gated tool status was kept.
+
+What it cannot show: the reach is per table and field name, not per tool and path, so a value one tool writes to a
+field reaches the same field name another tool writes; a value a tool computes (an amount) is reachable only when a
+recording or the world shows it; no run showed a refusal followed by a kept re-gate in one session; arm C fails its pre-registered bar; the eight
+Tasks are the dry pass's own hits, so nothing here measures false refusals on fresh Tasks.
+
+Lives in: kullback/spec/items.py (Reach, World.reach_of, World.unreachable, World._tool_written, _gate_source), kullback/spec/effects.py
+(literal_writes, EFFECTS_VERSION), kullback/builder/tool_effects.py (call_diffs), kullback/spec/writer.py
+(load_inputs reach, _writes_view, FEEDBACK, reachability), kullback/spec/writer_tools.py (ItemStore.warned),
+kullback/spec/mutants.py (_build_state).

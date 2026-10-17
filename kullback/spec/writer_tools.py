@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 from kullback.spec.ground import valid_write_because
-from kullback.spec.items import World
+from kullback.spec.items import UNREACHABLE, World
 
 # The most read rounds a writer session may spend before it must write (intentv r1).
 MAX_READ_ROUNDS = 4
@@ -190,6 +190,8 @@ class ItemStore:
         self.dropped: list[str] = []
         self.offered = 0
         self.not_ruled = 0
+        # Kept weighed items naming a value no source reaches, {item id: the finding} (D380).
+        self.warned: dict[str, str] = {}
 
     def _limit(self, item_id: str) -> str:
         """Why a repair may not add this id: an unruled item it held; else empty."""
@@ -214,6 +216,10 @@ class ItemStore:
                 lines.append(f"{item_id}: refused: {why}")
                 continue
             self.items[kept["id"]] = kept
+            if UNREACHABLE in why:
+                self.warned[kept["id"]] = why
+            else:
+                self.warned.pop(kept["id"], None)
             note = f" ({why})" if why else ""
             lines.append(f"{item_id}: kept" + (f" (row {kept['row']})" if "row" in kept else "") + note)
         return "\n".join(lines) or "no items"
@@ -225,6 +231,7 @@ class ItemStore:
                 self.not_ruled += 1
                 out.append(f"{item_id}: not ruled, kept")
             elif self.items.pop(item_id, None) is not None:
+                self.warned.pop(item_id, None)
                 self.dropped.append(item_id)
                 out.append(f"{item_id}: dropped")
             else:

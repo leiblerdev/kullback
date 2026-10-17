@@ -8,6 +8,10 @@ Two readings, both code, both read by the Spec writer's checks (spec/items.py):
    rows in, are kept per call; a tool's effects are what every one of its calls moved. A list
    position in a column path is a pattern (`history.N`). The sanity item frees these columns where
    the end state expects the tool to run, so a right Run is not failed for what the tool always does.
+   Beside them, what the calls wrote (`writes`): per table and field name, the values any call wrote
+   there where they are literal (at most MAX_LITERAL distinct), and the arguments every call's written
+   values came from (`from_args`), where the field copies what the call passed. A gated value must be
+   one a tool can write (D380, spec/items.py `Reach`), and the writer reads these with the tool list.
 2. Signatures. Per tool and argument: the JSON types the recorded calls used (tool_sigs.json where it
    says, else the recordings), for a list or a dict of objects the keys every object carried and the
    keys any carried, and the pairs of text arguments no recorded call ever gave the same value. A called
@@ -27,6 +31,10 @@ from typing import Any, Iterable, Optional
 from kullback.runner.records import read_json
 
 EFFECTS_FILE = Path("exam") / "review" / "effects.json"
+# What the stored file holds; a build's digest carries it, so a file learned before `writes` is learned again.
+EFFECTS_VERSION = 2
+# A field a tool wrote more distinct values to than this is filled from its arguments, not literal (D380).
+MAX_LITERAL = 12
 # A pair of arguments is called never equal only on this many recorded calls that carry both.
 MIN_PAIR_CALLS = 3
 JSON_TYPES = {bool: "bool", int: "int", float: "float", str: "str", list: "list", dict: "dict", type(None): "NoneType"}
@@ -75,12 +83,83 @@ def call_effects(changed: dict) -> tuple[set[tuple[str, str]], set[str]]:
     return moved, made
 
 
-def always(diffs: Iterable[dict]) -> dict:
-    """What every one of a tool's calls moved: {"columns": [{table, column, patterns}], "makes": [...]}.
+def _written(before: Any, after: Any, key: str) -> Iterable[tuple[str, Any]]:
+    """(field name, value) for each scalar of `after` that differs from `before` at its place; a list
+    entry's scalars are named by their own key, or by the list's where they have none."""
+    if isinstance(after, dict):
+        for name, value in after.items():
+            yield from _written(before.get(name) if isinstance(before, dict) else None, value, str(name))
+    elif isinstance(after, list):
+        for index, value in enumerate(after):
+            yield from _written(before[index] if isinstance(before, list) and index < len(before) else None,
+                                value, key)
+    elif after is not None and after != before:
+        yield key, after
+
+
+def call_writes(changed: dict) -> set[tuple[str, str, str]]:
+    """One call's diff as (table, field name, value as JSON) per scalar it wrote, on rows it kept or made."""
+    out: set[tuple[str, str, str]] = set()
+    for table, rows in (changed or {}).items():
+        for change in (rows or {}).values():
+            if change.get("after") is not None:
+                out |= {(str(table), name, json.dumps(value, sort_keys=True))
+                        for name, value in _written(change.get("before"), change["after"], "")}
+    return out
+
+
+def _arg_leaves(args: Any) -> dict[str, set[str]]:
+    """Per argument, its scalars as JSON (a list or an object argument by its members)."""
+    def leaves(value: Any) -> Iterable[Any]:
+        if isinstance(value, dict):
+            for one in value.values():
+                yield from leaves(one)
+        elif isinstance(value, list):
+            for one in value:
+                yield from leaves(one)
+        elif value is not None:
+            yield value
+    return {str(name): {json.dumps(one, sort_keys=True) for one in leaves(value)}
+            for name, value in (args or {}).items()}
+
+
+def literal_writes(diffs: Iterable[dict], args: Optional[Iterable[dict]] = None) -> list[dict]:
+    """[{table, field, values?, from_args?}] per field the calls wrote, sorted: `values` where they wrote at
+    most MAX_LITERAL distinct values there; `from_args`, given each call's arguments beside its diff, the
+    arguments that held every value each call wrote there. A field with neither is left out."""
+    diffs = list(diffs)
+    calls = list(args) if args is not None else [None] * len(diffs)
+    seen: dict[tuple[str, str], set[str]] = {}
+    fed: dict[tuple[str, str], Optional[set[str]]] = {}
+    for changed, call_args in zip(diffs, calls, strict=False):
+        written: dict[tuple[str, str], set[str]] = {}
+        for table, name, value in call_writes(changed):
+            written.setdefault((table, name), set()).add(value)
+        held = _arg_leaves(call_args) if call_args is not None else {}
+        for key, values in written.items():
+            seen.setdefault(key, set()).update(values)
+            names = {arg for arg, leaves in held.items() if values <= leaves}
+            fed[key] = names if fed.get(key) is None else fed[key] & names
+    out = []
+    for (table, name), values in sorted(seen.items()):
+        row: dict = {"table": table, "field": name}
+        if len(values) <= MAX_LITERAL:
+            row["values"] = [json.loads(value) for value in sorted(values)]
+        if fed.get((table, name)):
+            row["from_args"] = sorted(fed[(table, name)])
+        if name and len(row) > 2:
+            out.append(row)
+    return out
+
+
+def always(diffs: Iterable[dict], args: Optional[Iterable[dict]] = None) -> dict:
+    """What every one of a tool's calls moved: {"columns": [{table, column, patterns}], "makes": [...]},
+    and what any of them wrote where it is literal or copied from an argument ("writes", `literal_writes`).
 
     A column every call moved is free even where its path differs call to call (a value used as a key);
     `patterns` are the paths every call shared under it, `<column>.*` where they share none.
     """
+    diffs = list(diffs)
     moved_all: Optional[set] = None
     columns_all: Optional[set] = None
     made_all: Optional[set] = None
@@ -94,7 +173,7 @@ def always(diffs: Iterable[dict]) -> dict:
     for table, column in sorted(columns_all or ()):
         patterns = sorted(path for t, path in moved_all or () if t == table and path.split(".")[0] == column)
         out.append({"table": table, "column": column, "patterns": patterns or [f"{column}.*"]})
-    return {"columns": out, "makes": sorted(made_all or ())}
+    return {"columns": out, "makes": sorted(made_all or ()), "writes": literal_writes(diffs, args)}
 
 
 def _object_keys(value: Any) -> Optional[list[set]]:
@@ -178,4 +257,5 @@ def load(workdir: Any) -> dict:
     return {"effects": stored.get("effects") or {}, "signatures": stored.get("signatures") or {}}
 
 
-__all__ = ["EFFECTS_FILE", "always", "call_effects", "load", "signatures", "type_of"]
+__all__ = ["EFFECTS_FILE", "EFFECTS_VERSION", "MAX_LITERAL", "always", "call_effects", "call_writes", "literal_writes",
+           "load", "signatures", "type_of"]

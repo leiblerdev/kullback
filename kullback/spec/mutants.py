@@ -4,7 +4,7 @@ The base is built by code from the Verifier, never from a Run (D375, `constructe
 state with every gated state cell set to its expected value and every gated new row made. On it the state
 gates pass by construction (checked: every gated state item and the sanity item hold, else no base is
 built). A gated cell whose expectation is not one literal value (a set of several members, a `not` set, a
-row that is not there) cannot be built: then the base is the newest fresh Run the Verifier passes
+row that is not there), or whose value no source reaches (its source None, D380), cannot be built: then the base is the newest fresh Run the Verifier passes
 (`passing_base`, D368), and with neither the report says no_base. The Reference is never a base.
 
 Called and judge gates have no base to mutate: no Run's calls or answers are laid on a constructed base.
@@ -155,6 +155,13 @@ def _literal(value: Any) -> Any:
     raise _Unbuildable
 
 
+def _reached(cell: Any) -> Any:
+    """A gated cell's one literal value; a value no source reaches is no end state a Run can make (D380)."""
+    if cell.source is None:
+        raise _Unbuildable
+    return _literal(cell.value)
+
+
 def _set_path(row: dict, field: str, value: Any) -> None:
     """`row` with `value` at the dotted path `field`, making the dicts on the way; a list step must exist."""
     parts = str(field).split(".")
@@ -189,7 +196,7 @@ def _build_state(state: EndState, end: dict) -> None:
             continue
         if not isinstance(table.get(cell.row_id), dict):
             raise _Unbuildable
-        _set_path(table[cell.row_id], cell.field, _literal(cell.value))
+        _set_path(table[cell.row_id], cell.field, _reached(cell))
     for spec in state.new_rows:
         if not spec.get("gate", True):
             continue

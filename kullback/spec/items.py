@@ -20,6 +20,12 @@ a value an Intent fact names elsewhere in the world (that value belongs in expec
 anchor cites the row it was read from (one row by a world search) and its answer states those fields;
 only an anchor whose answer quotes the item's policy line goes without a row, and that refusal item
 always gates.
+A gated value for a cell must be reachable (D380, `World.reach_of`): a tool writes it to that field (the
+build's learned writes), or copies that field from an argument and a start row holds the value anywhere,
+a write tool's result in a recording of the Task shows it there, the user's own words fix it, or a start
+row holds it under that field name. A gated row_is or row_new naming any other
+value is refused with the field's reachable values; a weighed one is kept with the same finding as a
+warning. Nulls and `not` sets are never checked. A World built without a `Reach` checks nothing here.
 State items may name an alternative end state (`alt`); one without belongs to every end state, and a
 Run passes the state items when any one end state matches.
 """
@@ -29,7 +35,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 from kullback.runner.atom_context import is_transfer
 from kullback.runner.records import Atom, EndState, ExpectedCell, ValueSource
@@ -215,11 +221,85 @@ def _weighed_gate(kept: dict, known: dict) -> str:
     return ""
 
 
+# The finding a gated value no source reaches carries (D380); a weighed item gets it as a warning.
+UNREACHABLE = "is unreachable"
+# The most reachable values a finding lists for a field.
+MAX_CANDIDATES = 10
+
+
+def leaf_of(field: Any) -> str:
+    """The field name a dotted path ends in, list positions skipped: what a tool's writes are keyed by."""
+    parts = [part for part in str(field or "").split(".") if part and not part.isdigit()]
+    return parts[-1] if parts else ""
+
+
+class Reach(NamedTuple):
+    """What tools can write, per field (D380), each value normalised to (its text, where it was seen):
+    `tools` per table and field name, the build's learned writes (spec/effects.py); `recorded` per field
+    name, what a write tool's result showed in a recording of the Task (its presence only, never its path);
+    `fed` per table and field name, the tool arguments the field is copied from ("tool.arg")."""
+    tools: dict = {}
+    recorded: dict = {}
+    fed: dict = {}
+
+
+def effect_reach(effects: dict) -> tuple[dict, dict]:
+    """Per table and field name, the values each write tool's learned effects say it writes there, and the
+    tool arguments it copies there ("tool.arg"): the `tools` and `fed` of a Reach."""
+    out: dict = {}
+    fed: dict = {}
+    for tool, learned in sorted((effects or {}).items()):
+        for row in (learned or {}).get("writes") or []:
+            table, field = str(row["table"]), str(row["field"])
+            for value in row.get("values") or []:
+                out.setdefault(table, {}).setdefault(field, {}).setdefault(norm(value), (value, f"tool:{tool}"))
+            for arg in row.get("from_args") or []:
+                fed.setdefault(table, {}).setdefault(field, []).append(f"{tool}.{arg}")
+    return out, fed
+
+
+def reach_of_inputs(effects: dict, results: Iterable[tuple[str, str, Any]]) -> Reach:
+    """The Reach of one Task: the build's learned writes and its recordings' write results."""
+    tools, fed = effect_reach(effects)
+    return Reach(tools, recorded_reach(results), fed)
+
+
+def recorded_reach(results: Iterable[tuple[str, str, Any]]) -> dict:
+    """Per field name, the scalars write tools' results held, from (recording, tool, result) triples;
+    a result recorded as JSON text is read as JSON."""
+    out: dict = {}
+
+    def walk(node: Any, key: str, seen: str) -> None:
+        if isinstance(node, dict):
+            for name, value in node.items():
+                walk(value, str(name), seen)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, key, seen)
+        elif node is not None and key and norm(node):
+            out.setdefault(key, {}).setdefault(norm(node), (node, seen))
+    for recording, tool, result in results:
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except ValueError:
+                continue
+        walk(result, "", f"recording:{recording}:{tool}")
+    return out
+
+
+def _members(value: Any) -> list:
+    """The values a cell names that a Run must be able to write: each of a list or a one_of, never a not."""
+    if isinstance(value, dict):
+        return [] if "not" in value else list(value.get("one_of") or [])
+    return list(value) if isinstance(value, list) else [value]
+
+
 class World:
     """The Starting state, the policy and the user turns, for finding rows and sourcing values."""
 
     def __init__(self, state: dict, policy_text: str = "", facts: Iterable[Any] = (), tools: Iterable[dict] = (),
-                 columns: Optional[dict] = None, signatures: Optional[dict] = None):
+                 columns: Optional[dict] = None, signatures: Optional[dict] = None, reach: Optional[Reach] = None):
         self.state = {table: rows for table, rows in (state or {}).items() if isinstance(rows, dict)}
         # The schema's columns per table, for a table the Starting state holds no row of.
         self.declared = {table: list(names) for table, names in (columns or {}).items()}
@@ -229,7 +309,10 @@ class World:
         # Per tool, what its recorded calls passed (spec/effects.py signatures): a called item no
         # recorded call could have made is refused.
         self.signatures = dict(signatures or {})
+        # What tools can write (D380); None checks no gated value for reachability.
+        self.reach = reach
         self._values: Optional[dict[str, tuple[str, str]]] = None
+        self._by_name: Optional[dict[str, dict[str, tuple[str, str, Any]]]] = None
         # The item being checked, so a value can be read against its gate and its row.
         self._kept: dict = {}
 
@@ -326,6 +409,96 @@ class World:
             return ValueSource(kind="world", ptr={"table": found[0], "row": found[1]})
         return None
 
+    # --- reaching (D380) -----------------------------------------------------------------------
+    def _start_values(self) -> dict[str, dict[str, tuple[str, str, Any]]]:
+        """Per field name, every scalar some start row holds under it, at any depth: (table, row, value) first
+        seen."""
+        if self._by_name is None:
+            out: dict[str, dict[str, tuple[str, str, Any]]] = {}
+
+            def walk(node: Any, key: str, at: tuple) -> None:
+                if isinstance(node, dict):
+                    for name, value in node.items():
+                        walk(value, str(name), at)
+                elif isinstance(node, list):
+                    for value in node:
+                        walk(value, key, at)
+                elif node is not None and norm(node):
+                    out.setdefault(key, {}).setdefault(norm(node), at + (node,))
+            for table, rows in sorted(self.state.items()):
+                for key, row in rows.items():
+                    walk(row, "", (table, key))
+            self._by_name = out
+        return self._by_name
+
+    def reach_of(self, table: str, field: Any, value: Any) -> Optional[ValueSource]:
+        """Where a cell's value is reachable from, or None: the user's own words (no echo fact), a tool's
+        learned writes to that table and field, a write tool's result in a recording of the Task, a start
+        row holding it under that field name. A null is always reachable."""
+        if value is None:
+            return ValueSource(kind="world", ptr={"removed": True})
+        target, name = norm(value), leaf_of(field)
+        return self._user_reach(target) or self._tool_reach(table, name, target) or self._start_reach(name, target) \
+            or self._arg_reach(table, name, target)
+
+    def _user_reach(self, target: str) -> Optional[ValueSource]:
+        """The user's own words fixing the value: a fact that is not an echo of the agent's proposal."""
+        for fact in self.facts:
+            if not getattr(fact, "echo", False) and _contains(_flat(fact.text), target):
+                return ValueSource(kind="user_turn", ptr={"recording": fact.source.recording,
+                                                          "turn": fact.source.turn, "fact": fact.id})
+        return None
+
+    def _tool_reach(self, table: str, name: str, target: str) -> Optional[ValueSource]:
+        """A tool's learned writes to that table and field, else a recorded write result under that field."""
+        reach = self.reach or Reach()
+        for seen in ((reach.tools.get(table) or {}).get(name) or {}, reach.recorded.get(name) or {}):
+            if target in seen:
+                return ValueSource(kind="tool_result", ptr={"field": name, "seen": seen[target][1]})
+        return None
+
+    def _start_reach(self, name: str, target: str) -> Optional[ValueSource]:
+        at = (self._start_values().get(name) or {}).get(target)
+        return ValueSource(kind="world", ptr={"table": at[0], "row": at[1]}) if at else None
+
+    def _arg_reach(self, table: str, name: str, target: str) -> Optional[ValueSource]:
+        """A field a tool copies from an argument holds what the call passed: any value the world holds."""
+        fed = ((self.reach or Reach()).fed.get(table) or {}).get(name)
+        held = self._world_values().get(target) if fed else None
+        return ValueSource(kind="tool_result", ptr={"field": name, "seen": f"arg:{fed[0]}", "table": held[0],
+                                                    "row": held[1]}) if held else None
+
+    def candidates(self, table: str, field: Any) -> list:
+        """The reachable values of a field a finding lists: tools' writes, recorded results, start rows."""
+        name, reach = leaf_of(field), self.reach or Reach()
+        out: dict[str, Any] = {}
+        for seen in ((reach.tools.get(table) or {}).get(name) or {}, reach.recorded.get(name) or {}):
+            for key, (raw, _) in sorted(seen.items()):
+                out.setdefault(key, raw)
+        start = self._start_values().get(name) or {}
+        for key in sorted(start, key=lambda key: (start[key][0] != table, key)):
+            out.setdefault(key, start[key][2])
+        return list(out.values())[:MAX_CANDIDATES]
+
+    def unreachable(self, item: dict) -> list[tuple[str, Any]]:
+        """(field, value) per value a row_is expects or a row_new holds that no source reaches; none
+        without a Reach."""
+        if self.reach is None or item.get("kind") not in ("row_is", "row_new"):
+            return []
+        cells = item.get("expect") if item["kind"] == "row_is" else item.get("where")
+        return [(str(field), one) for field, value in sorted((cells or {}).items()) for one in _members(value)
+                if one is not None and self.reach_of(item["table"], field, one) is None]
+
+    def unreachable_line(self, item: dict, found: list[tuple[str, Any]]) -> str:
+        """The finding for an item's unreachable values: the item, each field, the value and its candidates."""
+        lines = []
+        for field, value in found:
+            listed = self.candidates(item["table"], field)
+            lines.append(f"item {item['id']} {field}: value {json.dumps(value)} {UNREACHABLE}: no tool writes "
+                         f"it there, no user turn fixes it, no start row holds it under {leaf_of(field)}; "
+                         f"reachable values: {json.dumps(listed) if listed else 'none found'}")
+        return "; ".join(lines)
+
     # --- checking one item ---------------------------------------------------------------------
     def check(self, item: Any, known_facts: dict, unwitnessed: Callable[[Any], bool] = lambda fact: False
               ) -> tuple[Optional[dict], str]:
@@ -351,7 +524,20 @@ class World:
         why = self._kind_rules(item, kept)
         if why:
             return None, why
-        return kept, _weighed_gate(kept, known_facts)
+        return self._reachable(kept, _weighed_gate(kept, known_facts))
+
+    def _reachable(self, kept: dict, note: str) -> tuple[Optional[dict], str]:
+        """The kept item and its note, or the refusal when a gated value no source reaches (D380); a weighed
+        item naming one keeps the finding as a warning in its note."""
+        found = self.unreachable(kept)
+        if found and kept["gate"]:
+            return None, (f"gate value unreachable: {self.unreachable_line(kept, found)}. A gated value must be "
+                          "one a tool can write or the user fixed: gate one of the reachable values, or weigh the "
+                          "item (gate false)")
+        if found:
+            warning = f"warning: {self.unreachable_line(kept, found)}; weighed, so it costs score, not the Verdict"
+            note = f"{note}; {warning}" if note else warning
+        return kept, note
 
     def _kind_rules(self, item: dict, kept: dict) -> str:
         """Why the item's confirms or its kind's own rules refuse it, else empty."""
@@ -800,6 +986,26 @@ def _cell_source(value: Any, world: World) -> Optional[ValueSource]:
     return found
 
 
+def _source_of(item: dict, field: str, value: Any, world: World) -> Optional[ValueSource]:
+    """A cell's source: where it is reachable from for a gated row_is (`_gate_source`), else `_cell_source`."""
+    if item["gate"] and item["kind"] == "row_is":
+        return _gate_source(item["table"], field, value, world)
+    return _cell_source(value, world)
+
+
+def _gate_source(table: str, field: str, value: Any, world: World) -> Optional[ValueSource]:
+    """A gated cell's source where the world knows what tools can write (D380): where each value it names
+    is reachable from, None when one is not; a `not` set, and a world with no Reach, as `_cell_source`."""
+    if world.reach is None or (isinstance(value, dict) and (not value_set_of(value) or "not" in value)):
+        return _cell_source(value, world)
+    found = ValueSource(kind="world", ptr={"removed": True})
+    for one in _members(value):
+        found = world.reach_of(table, field, one)
+        if found is None:
+            return None
+    return found
+
+
 def _answers(item: dict, effects: dict) -> list[str]:
     """The tools that could answer one state item: for a row_is, every tool that always moves each column
     it expects on that table; for a row_new, every tool that always makes rows in that table."""
@@ -888,7 +1094,7 @@ def end_states_of(items: list[dict], world: World, action_tables: Iterable[str] 
             row_source = ValueSource(kind="world", ptr={"table": item["table"], "row": item["row"]})
             for field, value in item["expect"].items():
                 cells.append(ExpectedCell(table=item["table"], row_id=item["row"], field=field, value=value,
-                                          source=_cell_source(value, world), row_source=row_source,
+                                          source=_source_of(item, field, value, world), row_source=row_source,
                                           gate=bool(item["gate"]), weight=float(item["weight"]) / len(item["expect"])))
         cells.sort(key=lambda cell: (cell.table, cell.row_id, cell.field))
         out.append(EndState(cells=cells, allowed=list(allowed) + free, new_rows=new_rows))
@@ -955,7 +1161,7 @@ def counts_of(items: list[dict]) -> dict:
             "policy_backed": sum(1 for item in items if item.get("policy_line"))}
 
 
-__all__ = ["CONFIRM_TURN", "DEFAULT_GATE", "EVENT_KINDS", "ITEM_KINDS", "SANITY", "SANITY_ID", "STATE_KINDS",
-           "World", "atom_of", "because_of", "contradictions", "counts_of", "effect_rules", "end_states_of",
+__all__ = ["CONFIRM_TURN", "DEFAULT_GATE", "EVENT_KINDS", "ITEM_KINDS", "Reach", "SANITY", "SANITY_ID", "STATE_KINDS",
+           "UNREACHABLE", "World", "effect_reach", "reach_of_inputs", "recorded_reach", "atom_of", "because_of", "contradictions", "counts_of", "effect_rules", "end_states_of",
            "expected_tools",
            "norm", "sanity_atom", "sanity_item"]

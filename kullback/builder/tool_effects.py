@@ -21,14 +21,14 @@ from kullback.builder.world_tools import load_traces
 from kullback.gates.tool_runs import key_fields
 from kullback.runner.records import Task, TaskOverlay, content_hash, read_json
 from kullback.runner.world.recorded import recorded_call_contexts
-from kullback.spec.effects import EFFECTS_FILE, always, signatures
+from kullback.spec.effects import EFFECTS_FILE, EFFECTS_VERSION, always, signatures
 
 
 def digest(workdir: Path) -> str:
     folder = workdir / "traces"
     traces = sorted(path.name for path in folder.glob("*.json")) if folder.is_dir() else []
     return content_hash({"module": render_module(workdir), "traces": traces,
-                         "sigs": read_json(workdir / "tool_sigs.json", [])})
+                         "sigs": read_json(workdir / "tool_sigs.json", []), "version": EFFECTS_VERSION})
 
 
 def _tasks(workdir: Path) -> list[Task]:
@@ -56,6 +56,12 @@ def _call_states(workdir: Path, calls: list, db: dict) -> dict:
 
 def world_diffs(workdir: Path, scratch: Path, traces: list, write_tools: set[str]) -> dict[str, list[dict]]:
     """Per write tool, the world diff of each successful recorded call, run as the transition gate runs it."""
+    return {tool: [changed for changed, _ in rows] for tool, rows in call_diffs(workdir, scratch, traces,
+                                                                                 write_tools).items()}
+
+
+def call_diffs(workdir: Path, scratch: Path, traces: list, write_tools: set[str]) -> dict[str, list[tuple]]:
+    """Per write tool, (world diff, arguments) of each successful recorded call (`world_diffs` with the args)."""
     calls = [call.model_copy(update={"trace_id": call.trace_id or trace.trace_id})
              for trace in traces for call in trace.tool_calls]
     writes = [call for call in calls if call.name in write_tools and call.error is None and call.id]
@@ -69,10 +75,10 @@ def world_diffs(workdir: Path, scratch: Path, traces: list, write_tools: set[str
         entries = sandbox.run_diff(writes)
     except SandboxError:
         return {}
-    out: dict[str, list[dict]] = {}
+    out: dict[str, list[tuple]] = {}
     for call, entry in zip(writes, entries, strict=False):
         if entry.get("changed") is not None and not entry.get("truncated"):
-            out.setdefault(call.name, []).append(entry["changed"])
+            out.setdefault(call.name, []).append((entry["changed"], call.args))
     return out
 
 
@@ -82,10 +88,11 @@ def learn(workdir: Any, scratch: Optional[Any] = None) -> dict:
     sigs = _read_sigs(root)
     traces = load_traces(root)
     writes = set(cluster.write_tool_names(sigs))
-    diffs = world_diffs(root, Path(scratch) if scratch is not None else root / EFFECTS_FILE.parent, traces, writes)
+    diffs = call_diffs(root, Path(scratch) if scratch is not None else root / EFFECTS_FILE.parent, traces, writes)
     schema = _read_schema(root)
     keys = {name for table in schema.tables for name in key_fields(schema, table)}
-    return {"effects": {tool: dict(always(rows), calls=len(rows)) for tool, rows in sorted(diffs.items())},
+    return {"effects": {tool: dict(always([diff for diff, _ in rows], [args for _, args in rows]), calls=len(rows))
+                        for tool, rows in sorted(diffs.items())},
             "signatures": signatures([call for trace in traces for call in trace.tool_calls], sigs, keys)}
 
 
@@ -103,4 +110,4 @@ def store(workdir: Any) -> Path:
     return path
 
 
-__all__ = ["digest", "learn", "store", "world_diffs"]
+__all__ = ["call_diffs", "digest", "learn", "store", "world_diffs"]
