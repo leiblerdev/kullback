@@ -3378,3 +3378,28 @@ strayed answer with a quote not in the named recording sets nothing aside; no op
 call; unreadable reply and failed call; the stage set-aside with no Verifier and the bus told; the tier reads
 no_verifier why intent_strayed; a held Task keeps the record; an empty record is not dumped), tests/spec/test_stage.py,
 tests/examiner/test_refwhy.py.
+
+### D385. The coherence judge names who ended an ask; only the user's ending sets aside (2026-10-17)
+
+Why. D384's question folded the user changing course, an agent failure or hand-off, and a condition that did not hold
+into one answer, strayed; most of its 15 false positives of 94 ended in a hand-off or a stop after a confirmation.
+
+What. kullback/spec/coherence.py: each opening ask is answered carried_out, refused_or_withdrawn, or ended_by with an
+ender: user (changed what they wanted in their own words, asked for the opposite, or withheld what the policy requires
+when asked), agent (failed, stopped or handed off without acting, also after a confirmation) or world (a condition the
+user set did not hold, or a call failed). Only ended_by user sets the Task aside as intent_strayed. Code keeps a user
+ending only when its quote sits in a user line of the named recording and still carries words once any control
+marker (###NAME###) is taken out, so a stop or hand-off marker alone is never the user straying. Every answer keeps
+its ender on the Spec's coherence record. This supersedes D384's strayed answer.
+
+Measured (pre-registered in .claude/herdr/stray-1017/filter-prereg-r2.md, same bars, scorer unchanged): over the same
+100 rerun Tasks, one pass on Opus 5.5, 3.60 USD, no failed quote, no error. Enders: 5 user, 13 agent, 17 world. It set
+aside 2 of the 6 intent_wrong Tasks (bar at least 4: fails) and 2 of the other 94 (bar at most 5: holds). Verdict
+FAIL. Lost: two ended by the agent or the world by definition (a hand-off, a failed call), one the judge gave to the
+agent rather than the user, and one the user withdrew in their own words, as in D384.
+
+What it cannot show: one judge, one pass, the six are the raters' call, and round 1 had read the labels.
+
+Tests: tests/spec/test_coherence.py (the user ending in their own words sets aside; agent and world endings set
+nothing aside and keep the ender; a user ending quoted from the agent or a marker alone is refused; an ender on
+another answer or outside the three is not kept; a user ending not in the named recording is refused).
