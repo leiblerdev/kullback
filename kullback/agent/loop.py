@@ -22,6 +22,16 @@ and the round ended with no account of what was left. The loop asks once, with a
 message, for the summary the prompt's stop rule wants; a second empty turn ends the run, so a model
 with nothing to say costs one turn and not a loop.
 
+A cut last turn. A turn the provider cut at the output cap (stop reason length) that called no tool
+is not a stop either: one live session looked rows up for forty turns, had its next answer cut, and
+its summary after that was read as done with nothing written. The loop asks once, with a one-line user
+message, to continue in smaller turns; a second cut turn ends the run.
+
+Unfinished work. A caller that can tell what is left gives the state an `unfinished` hook. It is asked
+only when the run would otherwise end (no tool call, nothing pending, no follow up); a non empty line is
+appended as a user message, at most UNFINISHED_ASKS times per run, and then the run ends. The line is
+the caller's: the loop knows nothing of what is unfinished.
+
 A refusal that knows the corrected call. A tool may refuse arguments with a `RetryableToolError`,
 whose `ask` is the corrected call in one line; the loop appends that ask as a user message after the
 turn that earned it, once per distinct ask in a run, which is the empty-turn ask's shape. One live
@@ -99,6 +109,7 @@ class LoopState:
     cancel: CancelToken = field(default_factory=CancelToken)
     config: Optional[ModelConfig] = None
     max_turns: Optional[int] = None
+    unfinished: Optional[Callable[[], str]] = None
 
 
 async def run_agent_loop(
@@ -131,6 +142,8 @@ async def run_agent_loop(
     turn = 0
     asked_for_summary = False  # the empty-turn ask is made once per run, never twice
     asked_shapes: set[str] = set()  # the retry asks already made; the same refusal twice stands
+    asked_after_cut = False  # the cut-turn ask is made once per run; a second cut ends the run
+    unfinished_asks = 0
     pending: list[Message] = list(prompts or [])
     pending.extend(_drain_all(state.steering))
     while True:
@@ -170,10 +183,20 @@ async def run_agent_loop(
             has_more_tools = bool(assistant.tool_calls)
             pending = _drain_all(state.steering)
             pending += [user_message(ask, {"retry_ask": ask}) for ask in _retry_asks(results, asked_shapes)]
-            if (not has_more_tools and not pending and not state.follow_ups
-                    and not asked_for_summary and _says_nothing(assistant)):
+            if has_more_tools or pending or state.follow_ups:
+                continue
+            if assistant.stop_reason == "length":
+                if not asked_after_cut:
+                    asked_after_cut = True
+                    pending = [user_message(CUT_TURN_ASK)]
+            elif not asked_for_summary and _says_nothing(assistant):
                 asked_for_summary = True
                 pending = [user_message(EMPTY_TURN_ASK)]
+            elif state.unfinished is not None and unfinished_asks < UNFINISHED_ASKS:
+                left = " ".join(str(state.unfinished() or "").split())
+                if left:
+                    unfinished_asks += 1
+                    pending = [user_message(left, {"unfinished_ask": unfinished_asks})]
         if state.follow_ups:
             pending = [state.follow_ups.popleft()]
             continue
@@ -187,6 +210,11 @@ async def run_agent_loop(
 EMPTY_TURN_ASK = ("Your last turn answered nothing and called no tool. Before the session ends, answer "
                   "in one line with what is left and what you did about each of them, as the stop rule "
                   "in your prompt asks.")
+# What a turn cut at the output cap with no tool call is answered with, once; it names no artifact either.
+CUT_TURN_ASK = ("Your last answer was cut at the output cap and called no tool. Continue with fewer calls per "
+                "turn, and act on each item as soon as what it needs is looked up.")
+# How many times per run the caller's unfinished line is put to the model before the run ends.
+UNFINISHED_ASKS = 2
 
 
 def _retry_asks(results: list[ToolResultMessage], already: set[str]) -> list[str]:

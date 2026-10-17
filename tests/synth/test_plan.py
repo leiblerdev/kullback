@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from kullback.agent.loop import UNFINISHED_ASKS
 from kullback.ai.provider import ModelReply, TestModel
 from kullback.synth import generate as M
 from kullback.synth import generate_prompt
@@ -77,13 +78,13 @@ def test_a_hedged_statement_is_refused_and_asks_for_a_variant(tmp_path, hedged):
 
 def test_the_retry_session_runs_only_over_the_openings_left_in_no_situation(tmp_path):
     generation, model = _generation(
-        tmp_path, _situation("p0", MOVE, [0, 1]), _done(),
+        tmp_path, _situation("p0", MOVE, [0, 1]), *[_done()] * (1 + UNFINISHED_ASKS),
         call("list_openings", {}, "r0"), _situation("r1", BROKEN, [0], kind="complaint"), _done())
     M.plan_openings(generation)
     listed = _results(model)[0]
     assert OPENINGS["task-c3"] in listed and OPENINGS["task-a1"] not in listed and "1 items" in listed
     assert [s["openings"][0]["task_id"] for s in generation.plan.situations] == ["task-a1", "task-c3"]
-    assert generation.unplanned == [] and len(model.calls) == 5
+    assert generation.unplanned == [] and len(model.calls) == 5 + UNFINISHED_ASKS
 
 
 def test_the_plan_is_written_with_its_shape_after_every_session(tmp_path):

@@ -3660,3 +3660,32 @@ items with equal args are not a contradiction is superseded: they are now report
 Tests: tests/spec/test_items.py (the clash fires and nothing else does; a not_called with other args passes; a
 repeated pair is reported once on the second item; D392's equal args case now reports the repeat; a called
 description names its args and a not_called without args reads as before).
+
+### D396. A cut answer is not done, and an answer with items unwritten is not final (2026-10-17)
+
+What. kullback/agent/loop.py: a turn the provider cut at the output cap (stop reason length) that called no tool is
+not a stop. The loop appends once per run CUT_TURN_ASK, one line beside EMPTY_TURN_ASK naming no artifact: continue
+with fewer calls per turn and act on each item as soon as what it needs is looked up. A second cut turn ends the run.
+LoopState gains `unfinished` (Callable[[], str], default none), also an AgentHarness keyword: asked only when the run
+would otherwise end (no tool call, nothing pending, no follow up); a non empty line is appended as a user message, at
+most UNFINISHED_ASKS = 2 times per run, then the run ends. The loop knows no items; the line is the caller's.
+kullback/synth/generate_tools.run gives a session with items the hook: the numbers of the items no scenario grouped
+(for the plan session, no situation holds and none skipped), as "items n, m are not written and not skipped", then
+"skip it with skip_opening and its reason" where the session holds the skip tool, else "say in one line why each
+cannot be written". The choice rule gains one sentence: write each scenario as soon as its rows are looked up; never
+look everything up first.
+
+Why. In the live airline regeneration of 2026-10-17 failed sessions spent 20 to 40 turns on 117 to 168 lookups, one
+answer hit the output cap with no tool call, and the next answer was a summary saying nothing was written yet, which
+the loop read as done: 0 scenarios from 25 items. D394's retry pass patches the symptom; this stops the loop reading
+a cut or unfinished answer as the end.
+
+What it does not do: no change to the stop rule, the turn caps or the retry pass; a cut turn that made tool calls is
+run as before; no resume of a cut tool call. The complex route (count lookups per item and force a write after k)
+would buy an earlier nudge at the price of a per role policy in the loop.
+
+Tests: tests/agent/test_loop.py (a cut turn is asked once and a second cut ends the run; a cut then an answer ends on
+the answer; the unfinished hook is asked only when the run would end, at most twice, and its line reaches the model;
+an empty line lets the run end), tests/synth/test_generate.py (the hook names the unwritten item numbers; the plan
+session names the skip tool; no items gives no line; the choice rule holds the sentence), and the retry tests now
+script the two asks.

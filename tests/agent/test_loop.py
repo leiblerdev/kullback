@@ -6,10 +6,10 @@ import asyncio
 from collections import deque
 
 from kullback.agent.events import AgentEnd, ToolExecutionEnd, TurnEnd
-from kullback.agent.loop import EMPTY_TURN_ASK, Hooks, LoopState, run_agent_loop
+from kullback.agent.loop import CUT_TURN_ASK, EMPTY_TURN_ASK, UNFINISHED_ASKS, Hooks, LoopState, run_agent_loop
 from kullback.agent.messages import AssistantMessage, ToolResultMessage, UserMessage
 from kullback.agent.tools import AgentTool, RetryableToolError, ToolRegistry, ToolResult
-from kullback.ai.provider import TestModel
+from kullback.ai.provider import ModelReply, TestModel
 from tests.agent.conftest import AddArgs, AddResult, call, reply, types_of
 
 
@@ -300,6 +300,49 @@ def test_only_an_empty_last_turn_is_asked_once_for_the_summary_and_a_second_one_
     events, state = run(TestModel(["nothing left to do."]))
     assert [m.role for m in state.messages] == ["user", "assistant"]
     assert not [m for m in state.messages if m.role == "user" and m.content == EMPTY_TURN_ASK]
+
+
+def _cut(text: str = "I looked up every row and now I will") -> ModelReply:
+    return ModelReply(content=text, stop_reason="max_tokens")
+
+
+def test_a_turn_cut_at_the_output_cap_is_asked_once_to_continue_and_a_second_cut_ends_the_run():
+    """One live session looked rows up for forty turns, had its next answer cut at the output cap with no
+    tool call, and the loop read that as done. The loop asks once to continue in smaller turns."""
+    model = TestModel([_cut(), _cut(), "never"])
+    events, state = run(model)
+    asks = [m for m in state.messages if m.role == "user" and m.content == CUT_TURN_ASK]
+    assert len(asks) == 1
+    assert [m.role for m in state.messages] == ["user", "assistant", "user", "assistant"]
+    assert state.messages[-1].stop_reason == "length" and len(model.calls) == 2
+
+
+def test_a_cut_turn_then_an_answer_ends_the_run_on_the_answer():
+    events, state = run(TestModel([_cut(), "all written."]))
+    assert [m.content for m in state.messages if m.role == "user"] == ["go", CUT_TURN_ASK]
+    assert state.messages[-1].content == "all written."
+
+
+def test_the_unfinished_hook_is_asked_only_when_the_run_would_end_and_at_most_twice(add_tool):
+    asked = []
+
+    def left() -> str:
+        asked.append(len(state.messages))
+        return "items 3, 5 are not done"
+
+    state = LoopState(system="sys", unfinished=left)
+    model = TestModel([reply(None, call("add", {"a": 1, "b": 2})), "done.", "done again.", "still done.", "never"])
+    events, state = run(model, [add_tool], state=state)
+    lines = [m for m in state.messages if m.role == "user" and m.content == "items 3, 5 are not done"]
+    assert len(lines) == UNFINISHED_ASKS == 2 and len(asked) == 2, "not asked after the tool turn, twice at the end"
+    assert len(model.calls) == 1 + 1 + UNFINISHED_ASKS
+    assert "items 3, 5 are not done" in str(model.calls[2]["messages"][-1]["content"])
+
+
+def test_an_unfinished_hook_with_nothing_left_lets_the_run_end():
+    state = LoopState(system="sys", unfinished=lambda: "")
+    events, state = run(TestModel(["done.", "never"]), state=state)
+    assert [m.role for m in state.messages] == ["user", "assistant"]
 
 
 def test_only_a_refusal_that_names_the_corrected_call_is_put_to_the_model_and_only_once():

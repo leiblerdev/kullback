@@ -6,6 +6,7 @@ import json
 from collections import Counter
 
 from kullback import domain
+from kullback.agent.loop import UNFINISHED_ASKS
 from kullback.ai.provider import LIVE_ENV_VAR, ModelReply, TestModel
 from kullback.ai.usage import Usage
 from kullback.builder.search import TINYFISH_KEY_VAR
@@ -42,6 +43,11 @@ def _write(call_id: str, statement: str, source: str = "recordings", **args) -> 
 
 def _done(text: str = "Wrote them.") -> ModelReply:
     return ModelReply(content=text, usage=Usage(input=10, output=2))
+
+
+def _quiet() -> list[ModelReply]:
+    """A session that stops with items left and answers each of the loop's unfinished asks with a stop."""
+    return [_done()] * (1 + UNFINISHED_ASKS)
 
 
 def _generation(tmp_path, *replies) -> tuple[M.Generation, TestModel]:
@@ -274,9 +280,11 @@ def test_an_ask_line_is_rewritten_once(tmp_path):
 def test_a_search_session_gets_its_own_turn_budget_and_a_capped_session_is_counted_under_its_kind(tmp_path):
     workdir = make_workdir(tmp_path)
     endless = [call("list_scenarios", {}, f"s{at}") for at in range(T.MAX_TURNS + 5)]
-    model = TestModel([*planned(), _done(), _done(), *endless])
+    # the recordings session and its retry write nothing, so each stops after its two unfinished asks
+    quiet = [*_quiet(), *_quiet()]
+    model = TestModel([*planned(), *quiet, *endless])
     body = M.generate(workdir, model=model, engine=web(workdir)[0], refuse=REFUSE, description=DESCRIPTION)
-    assert len(model.calls) - 4 == T.SEARCH_TURNS == T.turns_for(T.GenerateRoot(world=M.world_of(workdir), kind="search"))
+    assert len(model.calls) - 2 - len(quiet) == T.SEARCH_TURNS == T.turns_for(T.GenerateRoot(world=M.world_of(workdir), kind="search"))
     assert body["capped"] == {"search": 1}
     assert json.loads((R.store_dir(workdir) / R.GENERATED).read_text())["capped"] == {"search": 1}
 
@@ -325,7 +333,7 @@ def test_generation_again_keeps_the_status_and_review_of_a_record_already_held(t
     (workdir / R.DIR / R.ASKS).write_text("test which slot a widget sits in\n")
 
     def scripted(plan=()):
-        return TestModel([*plan, _done(), _done(), _write("a0", "someone asks which slot a widget sits in", "ask", openings=[0]),
+        return TestModel([*plan, *_quiet(), *_quiet(), _write("a0", "someone asks which slot a widget sits in", "ask", openings=[0]),
                           _done()])
 
     M.generate(workdir, model=scripted(planned()), searching=False)
@@ -550,19 +558,60 @@ def test_the_items_a_pass_left_unwritten_run_once_more_in_halves_and_are_counted
     lines = [f"my widget number {word} should go to another slot" for word in
              ("one", "two", "three", "four", "five", "six", "seven", "eight")]
     model = generation.model = TestModel([
-        _done(), _write("a0", "a holder wants a widget put in a new slot", "ask", openings=[0]), _done(), _done()])
+        *_quiet(), _write("a0", "a holder wants a widget put in a new slot", "ask", openings=[0]), *_quiet(), *_quiet()])
     M.from_asks(generation, lines, batch=8)
     assert generation.retried == {"ask": {"items": 8, "written": 1}}
     assert [(row["items"], row.get("retry", False)) for row in generation.ungrouped] == [(8, False), (4, True),
                                                                                           (4, True)]
-    assert len(model.calls) == 4
+    assert len(model.calls) == 3 * (1 + UNFINISHED_ASKS) + 1
+
+
+def _user_lines(model: TestModel) -> list[str]:
+    return [str(m.get("content")) for c in model.calls for m in c["messages"][-1:] if m.get("role") == "user"]
+
+
+def test_a_session_that_stops_with_items_left_is_told_the_unwritten_item_numbers_and_writes_one(tmp_path):
+    """A live session looked rows up for forty turns and stopped with nothing written; the loop read its
+    summary as done. The session's unfinished hook names the items no scenario holds yet."""
+    generation, _ = _generation(tmp_path)
+    lines = ["my widget one should go to another slot", "my widget two arrived broken",
+             "which slot does widget three sit in"]
+    model = generation.model = TestModel([
+        _write("a0", "a holder wants a widget put in a new slot", "ask", openings=[1]), _done(),
+        _write("a1", "a holder wants a broken widget replaced", "ask", openings=[2]), _done(), _done()])
+    M.from_asks(generation, lines, batch=8)
+    asked = [line for line in _user_lines(model) if "not written and not skipped" in line]
+    assert asked[0] == ("items 0, 2 are not written and not skipped: write each, or say in one line why each "
+                        "cannot be written.")
+    assert asked[1].startswith("item 0 is not written") and len(asked) == UNFINISHED_ASKS
+    assert generation.ungrouped[0]["ungrouped"] == 1
+
+
+def test_a_plan_session_with_items_left_is_told_to_place_or_skip_them_with_the_skip_tool(tmp_path):
+    generation, _ = _generation(tmp_path)
+    root = T.GenerateRoot(world=generation.world, kind="plan", items=M.openings(generation.world.workdir))
+    assert T.unfinished_line(root) == ("items 0, 1, 2 are not written and not skipped: write each, or skip it "
+                                       f"with {T.SKIP_TOOL} and its reason.")
+    assert T.SKIP_TOOL in T.SESSION_TOOLS["plan"]
+    P.skip_opening(root.plan, root.items, [0, 1, 2], "no ask")
+    assert T.unfinished_line(root) == ""
+
+
+def test_a_session_with_no_items_gets_no_unfinished_line(tmp_path):
+    generation, _ = _generation(tmp_path)
+    assert T.unfinished_line(T.GenerateRoot(world=generation.world, kind="search")) == ""
+
+
+def test_the_choice_rule_says_to_write_each_scenario_as_soon_as_its_rows_are_looked_up():
+    assert ("Write each scenario as soon as its rows are looked up; never look everything up first."
+            in generate_prompt.choice_section())
 
 
 def test_a_recordings_retry_lists_only_the_situations_the_first_pass_left_unwritten(tmp_path):
     generation, _ = _generation(tmp_path)
     move, broken, third = _plan(generation, (MOVE, [0], []), (BROKEN, [1], []), (PLANNED, [2], []))
-    model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move), _done(),
-                                          call("list_openings", {}, "r0"), _done()])
+    model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move), *_quiet(),
+                                          call("list_openings", {}, "r0"), *_quiet()])
     M.from_recordings(generation, batch=8)
     listed = _results(model, session=1)[0]
     assert move not in listed and broken in listed and third in listed

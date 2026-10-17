@@ -84,6 +84,9 @@ BOUND_KINDS = ("recordings", "search")
 # How many opening texts a situation item shows; the rest are counted.
 OPENINGS_SHOWN = 5
 
+# The tool that marks items as no opening ask, in the sessions that hold it.
+SKIP_TOOL = "skip_opening"
+
 SESSION_TOOLS = {"plan": ("list_openings", "list_plan", "write_situation", "attach_openings", "skip_opening"),
                  "recordings": ("list_openings", "list_scenarios", *WORLD_TOOLS, "write_scenario"),
                  "ask": ("list_openings", "list_scenarios", *WORLD_TOOLS, "write_scenario"),
@@ -508,13 +511,34 @@ def turns_for(root: GenerateRoot) -> int:
     return min(MAX_TURNS, max(MIN_TURNS, TURNS_PER_ITEM * max(len(root.items), len(root.fixing), 1)))
 
 
+def unwritten(root: GenerateRoot) -> list[int]:
+    """The numbers of the session's items no scenario grouped and no skip named yet; the plan's items by the plan."""
+    if root.kind == "plan":
+        return [at for at, item in enumerate(root.items) if not root.plan.holder(item)]
+    return [at for at in range(len(root.items)) if at not in root.grouped]
+
+
+def unfinished_line(root: GenerateRoot) -> str:
+    """What the loop puts to the model when the session would end with items left, or nothing."""
+    left = unwritten(root)
+    if not left:
+        return ""
+    numbers = ", ".join(str(at) for at in left)
+    named = f"item {numbers} is" if len(left) == 1 else f"items {numbers} are"
+    if SKIP_TOOL in SESSION_TOOLS[root.kind]:
+        return f"{named} not written and not skipped: write each, or skip it with {SKIP_TOOL} and its reason."
+    return f"{named} not written and not skipped: write each, or say in one line why each cannot be written."
+
+
 def run(root: GenerateRoot, model: Any, opening: str, stage: str, ceiling: Optional[budget.Ceiling] = None,
         subscribers: tuple = ()) -> bool:
-    """One session on its opening message; whether it stopped on its turn cap. Refusals settle after."""
+    """One session on its opening message; whether it stopped on its turn cap. Refusals settle after.
+
+    A session with items is asked, when it would end, for the items still unwritten (the loop's unfinished hook)."""
     turns = turns_for(root)
     name = getattr(model, "name", None)
     harness = AgentHarness(model=model, max_turns=turns, context=ContextConfig(window=budget.window_for(name)),
-                           bus=root.bus)
+                           bus=root.bus, unfinished=(lambda: unfinished_line(root)) if root.items else None)
     detach = [harness.subscribe(subscriber) for subscriber in subscribers]
     detach.append(harness.subscribe(budget.subscriber(root.workdir, stage, name, ceiling)))
     try:
@@ -529,4 +553,4 @@ def run(root: GenerateRoot, model: Any, opening: str, stage: str, ceiling: Optio
 
 __all__ = ["AGENT", "ASK_SHARES_END", "ASK_WITHOUT_END", "END_WITHOUT_ASK", "TOOL_IN_ASK", "TOOL_IN_END",
            "GenerateRoot", "pair_refusal", "NEAR", "NEAR_REPEAT", "OPENING_GROUPED", "SEARCH_TURNS", "SESSION_TOOLS", "bus_for", "generate_extension", "generate_tools", "rewritten", "run",
-           "settle_refusals", "turns_for", "written"]
+           "settle_refusals", "turns_for", "unfinished_line", "unwritten", "written"]

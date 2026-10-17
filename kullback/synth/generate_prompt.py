@@ -89,7 +89,8 @@ def examples_section() -> str:
 
 def choice_section() -> str:
     return ("Choosing. List the scenarios already written before you write, and write none twice. Look the rows "
-            "up before you write and bind every row the scenario names. Quote a policy line only word for word. "
+            "up before you write and bind every row the scenario names. Write each scenario as soon as its rows "
+            "are looked up; never look everything up first. Quote a policy line only word for word. "
             "From situations of the plan, write one scenario for each situation and one for each of its variants. "
             "From the web, search for what customers of this kind of business ask for, how its workflows go and "
             "what goes wrong, read the pages, and write only what a page shows, with the span it rests on, bound "
