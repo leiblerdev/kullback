@@ -254,6 +254,19 @@ def test_contradictions_name_a_tool_both_needed_and_forbidden_and_a_cell_expecte
     assert [item_id for item_id, _ in found] == ["e2", "s2"]
 
 
+def test_two_gated_called_items_on_one_tool_with_different_args_contradict_and_only_those():
+    def called(item_id, tool="update_item", **extra):
+        return dict({"id": item_id, "kind": "called", "tool": tool, "fact_ids": ["f1"]}, **extra)
+    a1, b2 = {"item_id": "A1"}, {"item_id": "B2"}
+    found = I.contradictions(_kept(called("c1", args=a1), called("c2", args=b2)))
+    assert found == [("c2", "called update_item with other args beside c1; gate the end state row instead, "
+                             "or one called item with one_of")]
+    assert I.contradictions(_kept(called("c1"), called("c2", args=b2))) == []
+    assert I.contradictions(_kept(called("c1", args=a1), called("c2", tool="add_note", args={"text": "B2"}))) == []
+    assert I.contradictions(_kept(called("c1", args=a1), called("c2", args=b2, gate=False))) == []
+    assert I.contradictions(_kept(called("c1", args=a1), called("c2", args=dict(a1)))) == []
+
+
 def test_counts_split_items_by_kind_gate_and_provenance():
     items = _kept(MOVE, {"id": "t1", "kind": "said", "values": ["seven"], "fact_ids": ["f1"]})
     counts = I.counts_of(items + [I.sanity_item([])])
