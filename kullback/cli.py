@@ -436,7 +436,7 @@ def _spec_switch(adapter: Any, judge_adapter: Any, spec_adapter: Any) -> dict:
         code = examine(Path(workdir), task_ids=ids, model=None, judge_model=judge_adapter or adapter)
         # What each tool always moves and what its calls pass, for the Spec writer's checks (D341).
         tool_effects(Path(workdir))
-        counts = write_specs(Path(workdir), ids, spec_adapter, judge_model=judge_adapter or adapter)
+        counts = write_specs(Path(workdir), ids, spec_adapter)
         typer.echo(f"spec: {json.dumps(counts, default=str, sort_keys=True)}")
         rounds = examine_rounds(Path(workdir), ids, model=adapter, writer_model=spec_adapter)
         held, total = rounds.get("held"), rounds.get("total")

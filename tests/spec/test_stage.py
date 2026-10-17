@@ -57,20 +57,14 @@ def _items(*items: dict) -> list[ModelReply]:
     return [_call("add_items", {"items": list(items)}), DONE]
 
 
-def _held(answer: str = "carried_out", quote: str = "move item A1 to slot seven", ender: str = "") -> ModelReply:
-    """The coherence judge's reply on the one opening ask, with the ender of an ended_by answer."""
-    row = {"answer": answer, "ender": ender or None, "recording": "r1", "quote": quote, "why": "the user's own line"}
-    return ModelReply(content=json.dumps({"facts": {"f1": row}}), usage=Usage(input=200, output=30))
-
-
-def _mined() -> list[ModelReply]:
-    """Mining: read the recording, keep one fact, stop; then the coherence judge finds the ask held."""
-    return [_call("user_turns", {"recording": "rec-a"}), _call("add_facts", {"facts": [FACT]}),
-            ModelReply(content="1 fact kept.", usage=Usage(input=100, output=5)), _held()]
+def _mined(fact: dict = FACT) -> list[ModelReply]:
+    """Mining: read the recording, keep one fact (with its outcome, if it carries one), stop."""
+    return [_call("user_turns", {"recording": "rec-a"}), _call("add_facts", {"facts": [fact]}),
+            ModelReply(content="1 fact kept.", usage=Usage(input=100, output=5))]
 
 
 def _one_task_replies() -> list[ModelReply]:
-    """Mining and the judge (`_mined`). Writing: one state item resting on that fact."""
+    """Mining (`_mined`). Writing: one state item resting on that fact."""
     return _mined() + _items(ITEM)
 
 
@@ -96,7 +90,7 @@ def test_write_specs_writes_the_spec_both_verifiers_and_publishes_spec_written(t
     assert spec_verifier_path(root, "t1").read_text() == runner_verifier_path(root, "t1").read_text()
     assert _events(root) == ["spec.written"]
     ledger = json.loads((root / "budget.json").read_text())["stages"]["spec"]
-    assert ledger["calls"] == 6 and counts["spent_usd"] > 0
+    assert ledger["calls"] == 5 and counts["spent_usd"] > 0
 
 
 def test_write_specs_skips_a_task_whose_spec_and_verifier_are_on_disk(tmp_path):
@@ -138,7 +132,7 @@ def test_write_specs_records_a_failing_task_and_goes_on_to_the_next(tmp_path):
 def test_an_empty_first_spec_is_written_once_more_and_the_second_stands(tmp_path):
     root = _workdir(tmp_path)
     replies = _one_task_replies()
-    counts = stage.write_specs(root, ["t1"], TestModel(replies[:4] + [EMPTY, EMPTY] + replies[4:]))
+    counts = stage.write_specs(root, ["t1"], TestModel(replies[:3] + [EMPTY, EMPTY] + replies[3:]))
     assert {k: counts[k] for k in ("written", "empty_seen", "retried", "set_aside_empty")} == \
         {"written": 1, "empty_seen": 1, "retried": 1, "set_aside_empty": 0}
     spec = load_spec(root, "t1")
@@ -150,7 +144,7 @@ def test_an_empty_first_spec_is_written_once_more_and_the_second_stands(tmp_path
 
 def test_an_empty_spec_twice_sets_the_task_aside_with_no_verifier_and_a_resume_skips_it(tmp_path):
     root = _workdir(tmp_path)
-    counts = stage.write_specs(root, ["t1"], TestModel(_mined() + [EMPTY] * 4))
+    counts = stage.write_specs(root, ["t1"], TestModel(_one_task_replies()[:3] + [EMPTY] * 4))
     assert {k: counts[k] for k in ("written", "empty_seen", "retried", "set_aside_empty")} == \
         {"written": 0, "empty_seen": 1, "retried": 1, "set_aside_empty": 1}
     spec = load_spec(root, "t1")
@@ -176,9 +170,9 @@ def test_a_spec_no_run_can_pass_goes_back_once_and_still_unpassable_is_set_aside
     root = _workdir(tmp_path)
     clash = _items({"id": "e1", "kind": "called", "tool": "update_item", "fact_ids": ["f1"]},
                    {"id": "e2", "kind": "not_called", "tool": "update_item", "fact_ids": ["f1"]})
-    model = TestModel(_mined() + clash + [DONE])
+    model = TestModel(_one_task_replies()[:3] + clash + [DONE])
     counts = stage.write_specs(root, ["t1"], model)
-    assert (counts["written"], counts["set_aside_unsatisfiable"], len(model.calls)) == (0, 1, 7)
+    assert (counts["written"], counts["set_aside_unsatisfiable"], len(model.calls)) == (0, 1, 6)
     spec = load_spec(root, "t1")
     assert spec.set_aside == "unsatisfiable_spec" and spec.writer["unsatisfiable"] == ["e2"]
     assert not spec_verifier_path(root, "t1").exists() and not runner_verifier_path(root, "t1").exists()

@@ -253,6 +253,19 @@ Condition = Literal["none", "asked", "world_or_policy", "agent"]
 FALLBACK_CONDITIONS = ("world_or_policy", "agent")
 
 
+class OutcomeArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answer: Literal["carried_out", "refused_or_withdrawn", "ended_by"] = Field(
+        description="What became of the opening ask by the end of the recordings.")
+    ender: Optional[Literal["user", "agent", "world"]] = Field(
+        default=None, description="On ended_by only: who ended the ask.")
+    recording: str = Field(description="The recording whose line shows the outcome.")
+    quote: str = Field(description="Words copied word for word from one line of that recording; for the user "
+                                   "ender, the user's own words.")
+    why: str = Field(default="", description="One short sentence.")
+
+
 class FactArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -280,6 +293,9 @@ class FactArgs(BaseModel):
                     "user said yes. world_or_policy: the agent stated a fact about the world or a rule and the "
                     "user names the branch they want (stance fallback). agent: the agent could not, declined "
                     "citing no rule, stalled or proposed another way, and the user reacts (stance fallback).")
+    outcome: Optional[OutcomeArgs] = Field(
+        default=None, description="On an opening ask (a volunteered do or told fact of condition none): what "
+                                  "became of it by the end of the recordings.")
 
 
 class AddFactsArgs(BaseModel):
@@ -317,6 +333,8 @@ class MinerState:
     # many came back without one and were kept as reactions.
     sent_back: set = field(default_factory=set)
     late_unplaced: int = 0
+    # The outcome rows the miner gave its kept facts, by fact id (spec/coherence.py checks them).
+    outcomes: dict = field(default_factory=dict)
 
 
 def _turn(state: MinerState, recording: str, index: int) -> UserTurn:
@@ -411,6 +429,8 @@ def _keep(state: MinerState, args: FactArgs) -> IntentFact:
                       echo=is_echo(text, stance, turn),
                       after_pushback=bool(args.after_pushback), kind=args.kind)
     state.facts.append(fact)
+    if args.outcome is not None:
+        state.outcomes[fact.id] = args.outcome.model_dump(mode="json")
     return fact
 
 
