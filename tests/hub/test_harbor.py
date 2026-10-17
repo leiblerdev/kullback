@@ -592,3 +592,11 @@ def test_the_card_carries_the_publishers_announcement_and_names_tasks_left_out_f
     section = harbor_section({"counts": {"exported": 0, "skipped": {"solution leaks": 1}},
                               "left_out": [{"task": "0001", "reason": "solution leaks"}]})
     assert "Left out because their oracle would repeat a recorded string: 0001" in section
+
+
+def test_the_organisation_card_carries_news_above_the_environments_only_when_given():
+    from kullback.hub.card import organisation_card
+
+    card = organisation_card([], announcement="Verifiers now come from the ask.")
+    assert card.index("## News\n\nVerifiers now come from the ask.") < card.index("## Environments")
+    assert "## News" not in organisation_card([])

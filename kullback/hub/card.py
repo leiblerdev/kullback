@@ -271,8 +271,9 @@ def _call_fidelity(fidelity: dict) -> str:
 
 def organisation_card(rows: Iterable[dict], *, organisation: str = ORGANISATION,
                       github_url: str = "https://github.com/leiblerdev/kullback",
-                      site_url: str = "https://leibler.dev") -> str:
-    """The organisation profile: what Leibler and Kullback are, and one row per Environment passed.
+                      site_url: str = "https://leibler.dev", announcement: Optional[str] = None) -> str:
+    """The organisation profile: what Leibler and Kullback are, the publisher's News where given, and one
+    row per Environment passed.
 
     A row is `{name, repo_id, manifest}`, so this page and each Environment's own card cannot
     disagree about a number.
@@ -281,6 +282,8 @@ def organisation_card(rows: Iterable[dict], *, organisation: str = ORGANISATION,
     lines += [f"[Leibler]({site_url}) rebuilds the system a working agent ran in from its traces, then grades "
               f"other models in code on what they change there. [Kullback]({github_url}) is the open-source "
               "Builder and Runner behind it, under Apache-2.0.", ""]
+    if announcement and announcement.strip():
+        lines += ["## News", "", announcement.strip(), ""]
     lines += ["## Environments", "",
               "| Environment | Fidelity over Tasks | Call fidelity | Verifiers | Trusted | Status |",
               "| --- | --- | --- | --- | --- | --- |"]
