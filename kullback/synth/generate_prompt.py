@@ -87,7 +87,8 @@ def feedback_section() -> str:
     return ("Feedback. A written scenario answers with its id. A refused write says why: a tool name, an id shaped "
             "value, a policy line the policy does not hold, a span the page does not hold, a line copied as typed, "
             "a binding the world does not hold (naming the table and key), a scenario bound to nothing with "
-            "nothing required, a situation and variant already written (naming the scenario). Write it again "
+            "nothing required, a situation and variant already written (naming the scenario), a statement that "
+            "says what a written scenario says (naming it). Write it again "
             "once, following the reason; a second refusal of the same scenario drops it. Each typed line belongs "
             "to one scenario: a write picking a line already rewritten is refused naming the scenario that holds "
             "it.")

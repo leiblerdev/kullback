@@ -7,7 +7,8 @@ synth stage. One session per batch of one source.
 
 The rule lives in the tools. write_scenario and rewrite_scenario refuse a statement that names a tool
 of the Environment or carries an id shape, a policy line the policy does not hold, a span the page does
-not hold, a page the session never read, a typed line copied as typed, and say why as the tool result,
+not hold, a page the session never read, a typed line copied as typed, a statement that nearly repeats
+one already written (D383), and say why as the tool result,
 so the agent writes again. A second refusal of the same scenario drops it, and a scenario refused once
 and never written again is dropped at the end of the session; both are counted per reason. An opening
 ask or a typed line belongs to one scenario per session: a write picking one already grouped is refused
@@ -38,7 +39,7 @@ from kullback.synth import generate_prompt
 from kullback.synth import plan as plan_mod
 from kullback.synth import prompt as prompt_mod
 from kullback.synth import records as R
-from kullback.synth.rule import EMPTY, World, byte_range, statement_refusal
+from kullback.synth.rule import EMPTY, World, byte_range, rouge_l, statement_refusal
 from kullback.synth.world_tools import NAMES as WORLD_TOOLS
 from kullback.synth.world_tools import binding_refusal, world_tools
 
@@ -64,6 +65,9 @@ UNKNOWN = "unknown_scenario"
 BINDING = "binding_not_in_world"
 UNBOUND = "unbound"
 SITUATION_WRITTEN = "situation_already_written"
+NEAR = "near_repeat"
+# A statement at or above this ROUGE-L against any written one is a near repeat, fixed before any run (D383).
+NEAR_REPEAT = 0.7
 # The sources whose scenarios must be bound to rows or say what the world lacks.
 BOUND_KINDS = ("recordings", "search")
 # How many opening texts a situation item shows; the rest are counted.
@@ -280,10 +284,28 @@ def _bound_why(world: World, kind: str, binding: dict, requires: list[str]) -> t
     return "", ""
 
 
+def _near(statement: str, record: R.Scenario, skip: str, situation: str) -> bool:
+    """Whether a statement nearly repeats a written one. An exact twin is left to the fold, and a variant of
+    the same situation to the one per situation and variant rule."""
+    if record.id == skip or (situation and record.situation == situation):
+        return False
+    return NEAR_REPEAT <= rouge_l(statement, record.statement) < 1.0
+
+
+def _near_why(root: GenerateRoot, statement: str, skip: str = "", situation: str = "") -> tuple[str, str]:
+    """The first written statement, in the store or this session, the new one nearly repeats, or nothing (D383)."""
+    held = [*R.load_scenarios(root.workdir), *root.found]
+    twin = next((r.id for r in held if _near(statement, r, skip, situation)), "")
+    return (NEAR, f"{twin} already says this") if twin else ("", "")
+
+
 def _why(root: GenerateRoot, args: WriteArgs, statement: str, why: str) -> tuple[str, str]:
     why = why or (statement_refusal(statement, root.world) if statement else EMPTY)
     why = why or _policy_refusal(args.policy_lines, root.world.policy)
-    return (why, "") if why else _bound_why(root.world, root.kind, args.binding, _requires(args.requires))
+    if why:
+        return why, ""
+    near = _near_why(root, statement, situation=args.situation)
+    return near if near[0] else _bound_why(root.world, root.kind, args.binding, _requires(args.requires))
 
 
 def written(root: GenerateRoot, args: WriteArgs) -> Rows:
@@ -321,6 +343,7 @@ def rewritten(root: GenerateRoot, args: RewriteArgs) -> Rows:
     binding = dict(record.binding if args.binding is None else args.binding)
     requires = list(record.requires) if args.requires is None else _requires(args.requires)
     why, detail = (statement_refusal(statement, root.world) if statement else EMPTY), ""
+    why, detail = (why, detail) if why else _near_why(root, statement, args.id, record.situation)
     why, detail = (why, detail) if why else _bound_why(root.world, record.source.kind, binding, requires)
     if why:
         _refuse(root, anchor, why, detail)
@@ -462,5 +485,5 @@ def run(root: GenerateRoot, model: Any, opening: str, stage: str, ceiling: Optio
     return bool(capped)
 
 
-__all__ = ["AGENT", "GenerateRoot", "OPENING_GROUPED", "SEARCH_TURNS", "SESSION_TOOLS", "bus_for", "generate_extension", "generate_tools", "rewritten", "run",
+__all__ = ["AGENT", "GenerateRoot", "NEAR", "NEAR_REPEAT", "OPENING_GROUPED", "SEARCH_TURNS", "SESSION_TOOLS", "bus_for", "generate_extension", "generate_tools", "rewritten", "run",
            "settle_refusals", "turns_for", "written"]

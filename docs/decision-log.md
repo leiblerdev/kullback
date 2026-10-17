@@ -3304,3 +3304,40 @@ refused; a read page and its span file the verdict and the evidence row sits on 
 earlier session is no cite; feasible yes with empty checked, an unknown tool or a row outside the binding is
 refused, and with open requires is refused; a quote not in the statement is refused; the finding carries requires
 and binding; the fix session reads quote, why and change), tests/synth/test_end_to_end.py.
+
+### D383. A statement that nearly repeats a written scenario is refused at the write (2026-10-17)
+
+The founder, 2026-10-17, asked for synthetic data as close to the deployment setting as possible and diverse on
+purpose, and for the papers on it (.claude/herdr/synth-1016/papers-diversity.md, rules 6 to 8). The first live run
+struck 57 repeats after the fact, in the review; each was a model call spent on a twin, and the twin sat in the store
+until then.
+
+What. kullback/synth/rule.py `rouge_l(a, b)`: the F1 of the longest common subsequence over lowercased word tokens
+(split on whitespace, punctuation stripped at the edges of each token), 0.0 when either side is empty, no dependency.
+kullback/synth/generate_tools.py NEAR_REPEAT = 0.7 and the refusal `near_repeat`. In write_scenario, after the
+statement and policy checks and before the binding check, the statement is scored against every statement in the
+store and in this session; the first at or above 0.7 refuses the write through the ordinary refusal, naming the
+twin's id, so a second refusal drops it and generated.json counts it under dropped. rewrite_scenario runs the same
+check against every statement but its own. Two pairs are left out of the gate: an exact twin (score 1.0), which the
+fold still folds by code so a second source lands under also_from as before; and a scenario of the same situation of
+the plan, since a variant is close to its situation by design and one per situation and variant is already held
+(D381). The generator prompt's feedback names the new refusal.
+
+The threshold. 0.7 ROUGE-L is Self-Instruct's choice, taken as is and fixed here before any run on scenarios; it was
+not tuned on scenarios, and Persona Hub's 0.9 is on embeddings, a different measure.
+
+Why at the write. A refusal at the write costs one tool result and leaves no twin in the store; the review's repeat
+ruling stays for what surface form cannot see.
+
+Spread (no row of its own). coverage in generated.json gains `spread` (scenarios per situation kind, per bound table,
+per policy line touched) and `cells` (distinct situation kind and bound table pairs hit, of the kinds seen times the
+tables of the world), and the synth report prints one line each.
+
+What it does not do: no embedding, no paraphrase that changes most words, no comparison across corpora or against
+another store. Whether 0.7 refuses real distinct scenarios or lets real repeats through is unmeasured; nothing ran on
+a model.
+
+Tests: tests/synth/test_generate.py (rouge_l on the same words, disjoint words and a pair of known value 2/3; a
+paraphrase of a stored scenario is refused naming it and the second attempt is dropped and counted; two statements of
+different situations both pass; a rewrite never scores against its own statement and is refused near another; the
+spread counters and cells; the report lines).

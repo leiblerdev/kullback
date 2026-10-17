@@ -18,6 +18,7 @@ from kullback.synth import records as R
 HEADING = "## synth"
 STAGES = ("synth_generation", "synth_review", "synth_fix")
 FINDING_KEY = "environment:scenario:"
+SPREAD = (("situation_kind", "situation kind"), ("bound_table", "bound table"), ("policy_line", "policy line"))
 
 
 def _table(records: list) -> dict:
@@ -48,6 +49,20 @@ def counts(workdir: Any) -> dict:
             "human": len(read_json(R.store_dir(root) / R.HUMAN, []) or []), "spend": _spend(root)}
 
 
+def _by_count(counter: dict) -> list[tuple[str, int]]:
+    """A counter as printed: the largest first, ties by name, since the stored file sorts its keys."""
+    return sorted(counter.items(), key=lambda item: (-int(item[1]), str(item[0])))
+
+
+def _spread_lines(coverage: dict) -> list[str]:
+    """One line per spread counter and the cells hit, where the coverage holds them."""
+    spread = coverage.get("spread") or {}
+    out = [f"scenarios per {name}: " + ", ".join(f"{label} {n}" for label, n in _by_count(spread.get(key) or {}))
+           for key, name in SPREAD if key in spread]
+    cells = coverage.get("cells")
+    return out + ([f"cells hit: {cells.get('hit', 0)} of {cells.get('possible', 0)}"] if cells else [])
+
+
 def lines(workdir: Any) -> list[str]:
     """The report as printed lines, under the synth heading."""
     body = counts(workdir)
@@ -63,6 +78,7 @@ def lines(workdir: Any) -> list[str]:
         out += [f"folded into an earlier source, from {kind}: {n}"
                 for kind, n in sorted((coverage.get("folded") or {}).items())]
         out += [f"dropped, {reason.replace('_', ' ')}: {n}" for reason, n in (coverage.get("dropped") or {}).items()]
+        out += _spread_lines(coverage)
     out += [f"note: {note}" for note in body["notes"]]
     out.append("spend: " + ", ".join(f"{stage} {usd:.4f} USD" for stage, usd in body["spend"].items()))
     return out

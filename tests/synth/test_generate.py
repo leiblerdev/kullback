@@ -401,3 +401,99 @@ def test_every_generation_session_but_the_plan_holds_the_world_tools_the_review_
         load_extensions(harness, [T.generate_extension(T.GenerateRoot(world=world, kind=kind, refuse=REFUSE))])
         held[kind] = set(W.NAMES) <= set(harness.registry.names())
     assert held == {"plan": False, "recordings": True, "ask": True, "search": True, "fix": True}
+
+
+# --- the near repeat gate and the spread (D383) -----------------------------------------------
+
+
+STORED = "a holder wants a widget moved to another slot"
+
+
+def test_rouge_l_is_one_on_the_same_words_zero_on_disjoint_words_and_two_thirds_on_a_known_pair():
+    from kullback.synth.rule import rouge_l
+
+    assert rouge_l("The widget, moved.", "the widget moved") == 1.0
+    assert rouge_l("a widget moved", "holder sealed slot") == 0.0
+    assert rouge_l("", "a widget") == 0.0
+    # Six words a side, the longest common subsequence "the cat on mat" is four: 2 * 4 / (6 + 6).
+    assert abs(rouge_l("The cat sat on the mat.", "the cat lay on a mat") - 2 / 3) < 1e-9
+
+
+def test_a_write_paraphrasing_a_stored_scenario_is_refused_naming_it_and_the_second_attempt_is_dropped(tmp_path):
+    workdir = make_workdir(tmp_path)
+    stored = R.born(STORED, R.Source(kind="ask", line="move my widget"))
+    R.write_all(workdir, [stored])
+    situation = P.situation_id(PLANNED)
+    model = TestModel([*planned(), _bound("m0", "a holder wants the widget moved to another slot today", situation),
+                       _bound("m1", "a holder wants their widget moved to another slot now", situation), _done()])
+    body = M.generate(workdir, model=model, searching=False)
+    first, second = _results(model)[-2:]
+    assert T.NEAR.replace("_", " ") in first and stored.id in first and "write it again once" in first
+    assert "dropped" in second and body["born"] == 0
+    assert body["coverage"]["dropped"] == {T.NEAR: 1}
+
+
+def test_two_statements_of_different_situations_both_pass_the_near_repeat_gate(tmp_path):
+    generation, _ = _generation(tmp_path)
+    move, broken = _plan(generation, (MOVE, [0, 1], []), (BROKEN, [2], []))
+    generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved to another slot", move),
+                                  _bound("m1", "Ada Byron wants a replacement for a widget that arrived broken", broken),
+                                  _done()])
+    M.from_recordings(generation)
+    assert len(generation.found) == 2 and generation.dropped == Counter()
+
+
+def test_a_rewrite_is_scored_against_every_other_statement_and_never_against_its_own(tmp_path):
+    world = M.world_of(make_workdir(tmp_path))
+    source = R.Source(kind="recordings", task_ids=["task-a1"])
+    own = R.born(STORED, source, frequency=1).model_copy(update={"binding": dict(BOUND)})
+    other = R.born("a holder wants a replacement for a broken widget", source,
+                   frequency=1).model_copy(update={"binding": dict(BOUND)})
+    R.write_all(world.workdir, [own, other])
+    model = TestModel([call("rewrite_scenario", {"id": own.id, "statement": STORED + " before noon"}, "f0"),
+                       call("rewrite_scenario", {"id": other.id, "statement": STORED + " soon"}, "f1"),
+                       _done("Rewrote one.")])
+    fixed, failed = M.fix(world, [(own, "say when"), (other, "say which")], model)
+    assert fixed.statement == STORED + " before noon" and failed.status == "unsure"
+    refusal = _results(model)[-1]
+    assert T.NEAR.replace("_", " ") in refusal and own.id in refusal
+
+
+def _spread_store() -> tuple[list[R.Scenario], P.Plan, list[str]]:
+    """Three kept scenarios over two situation kinds and none, two tables and three policy lines."""
+    lines = POLICY.splitlines()
+    plan = P.Plan(situations=[{"id": "si_a", "statement": MOVE, "kind": "change", "variants": [], "openings": []},
+                              {"id": "si_b", "statement": BROKEN, "kind": "cancel", "variants": [], "openings": []}])
+    source = R.Source(kind="recordings", task_ids=["task-a1"])
+    kept = [R.born("a holder wants a widget moved", source, [lines[0], lines[1]]).model_copy(
+                update={"situation": "si_a", "binding": dict(BOUND)}),
+            R.born("a holder wants a broken widget gone", source, [lines[1], lines[2], lines[2]]).model_copy(
+                update={"situation": "si_b", "binding": {"widget_rows": "W1002"}}),
+            R.born("someone asks where a widget sits", R.Source(kind="ask", line="where is it"), [lines[0]])]
+    return kept, plan, list(STATE)
+
+
+def test_coverage_counts_scenarios_per_situation_kind_bound_table_and_policy_line_and_the_cells_hit():
+    kept, plan, tables = _spread_store()
+    lines = POLICY.splitlines()
+    body = M.coverage(kept, [], Counter(), plan=plan, tables=tables)
+    assert body["spread"] == {"situation_kind": {"change": 1, "cancel": 1, "none": 1},
+                              "bound_table": {"widget_rows": 2, "holder_rows": 1},
+                              "policy_line": {lines[0]: 2, lines[1]: 2, lines[2]: 1}}
+    assert body["cells"] == {"hit": 3, "possible": 6}
+
+
+def test_the_report_prints_one_line_per_spread_counter_and_the_cells_hit(tmp_path):
+    from kullback.runner.records import write_json
+    from kullback.synth import report
+
+    workdir = make_workdir(tmp_path)
+    kept, plan, tables = _spread_store()
+    write_json(R.store_dir(workdir) / R.GENERATED, {"coverage": M.coverage(kept, [], Counter(), plan=plan,
+                                                                             tables=tables)})
+    printed = report.lines(workdir)
+    assert "scenarios per situation kind: cancel 1, change 1, none 1" in printed
+    assert "scenarios per bound table: widget_rows 2, holder_rows 1" in printed
+    sealed, moved, verified = POLICY.splitlines()[1], SEALED_LINE, POLICY.splitlines()[2]
+    assert f"scenarios per policy line: {sealed} 2, {moved} 2, {verified} 1" in printed
+    assert "cells hit: 3 of 6" in printed

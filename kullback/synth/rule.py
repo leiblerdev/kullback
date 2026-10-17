@@ -27,6 +27,8 @@ _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)+")
 # A phone shape: digits with spaces, dots, dashes or brackets between them, seven digits at least.
 _PHONE = re.compile(r"\+?\(?\d[\d\s().-]{5,}\d")
 PHONE_DIGITS = 7
+# The punctuation stripped at the edges of a word token before two statements are compared.
+_EDGE = "".join(chr(c) for c in range(33, 127) if not chr(c).isalnum())
 
 
 @dataclass
@@ -118,4 +120,30 @@ def byte_range(text: str, span: str) -> Optional[tuple[int, int]]:
     return start, start + len(str(span).encode("utf-8"))
 
 
-__all__ = ["EMPTY", "ID_SHAPE", "TOOL_NAME", "World", "byte_range", "statement_refusal", "tool_rows", "world_of"]
+def _words(text: str) -> list[str]:
+    return [word for word in (token.strip(_EDGE) for token in str(text or "").lower().split()) if word]
+
+
+def _lcs(a: list[str], b: list[str]) -> int:
+    """The length of the longest common subsequence of two word lists, one row at a time."""
+    row = [0] * (len(b) + 1)
+    for word in a:
+        last = 0
+        for at, other in enumerate(b, start=1):
+            last, row[at] = row[at], last + 1 if word == other else max(row[at], row[at - 1])
+    return row[-1]
+
+
+def rouge_l(a: str, b: str) -> float:
+    """ROUGE-L of two statements: the F1 of their longest common subsequence over lowercased words.
+
+    Words are split on whitespace with punctuation stripped at their edges; 0.0 when either side is empty.
+    """
+    left, right = _words(a), _words(b)
+    if not left or not right:
+        return 0.0
+    return 2 * _lcs(left, right) / (len(left) + len(right))
+
+
+__all__ = ["EMPTY", "ID_SHAPE", "TOOL_NAME", "World", "byte_range", "rouge_l", "statement_refusal", "tool_rows",
+           "world_of"]

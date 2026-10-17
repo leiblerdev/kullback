@@ -270,11 +270,28 @@ def fold(records: list[R.Scenario]) -> tuple[list[R.Scenario], list[dict]]:
     return list(first.values()), folded
 
 
+def spread(kept: list[R.Scenario], plan: plan_mod.Plan, tables: Iterable[str]) -> tuple[dict, dict]:
+    """How the kept scenarios spread over situation kinds, bound tables and policy lines, and the cells of
+    (situation kind, bound table) they hit out of the kinds seen times the tables of the world."""
+    kinds = {situation["id"]: situation["kind"] for situation in plan.situations}
+    kind_of = {record.id: kinds.get(record.situation, "none") for record in kept}
+    per_kind = Counter(kind_of.values())
+    per_table = Counter(table for record in kept for table in set(record.binding))
+    per_line = Counter(line for record in kept for line in set(record.policy_lines))
+    hit = {(kind_of[record.id], table) for record in kept for table in record.binding}
+    counters = {"situation_kind": dict(per_kind.most_common()), "bound_table": dict(per_table.most_common()),
+                "policy_line": dict(per_line.most_common())}
+    return counters, {"hit": len(hit), "possible": len(per_kind) * len(set(tables))}
+
+
 def coverage(kept: list[R.Scenario], folded: list[dict], dropped: Counter, ungrouped: Iterable[dict] = (),
-             unplanned: Iterable[dict] = ()) -> dict:
+             unplanned: Iterable[dict] = (), *, plan: Optional[plan_mod.Plan] = None,
+             tables: Iterable[str] = ()) -> dict:
     """Scenarios per source kind, what the recordings never show, the asks nothing else covers, drops, per
-    batch the items no scenario grouped, and the openings the plan left in no situation and not skipped."""
+    batch the items no scenario grouped, the openings the plan left in no situation and not skipped, and
+    the spread over situation kinds, bound tables and policy lines with the cells hit."""
     left = list(unplanned)
+    counters, cells = spread(kept, plan or plan_mod.Plan(), tables)
     per_kind = Counter(record.source.kind for record in kept)
     return {"per_kind": {kind: per_kind.get(kind, 0) for kind in R.SOURCE_KINDS},
             "search_not_in_recordings": per_kind.get("search", 0),
@@ -282,7 +299,8 @@ def coverage(kept: list[R.Scenario], folded: list[dict], dropped: Counter, ungro
             "folded": Counter(row["kind"] for row in folded),
             "dropped": dict(sorted(dropped.items())),
             "openings_ungrouped": list(ungrouped),
-            "openings_unplanned": {"count": len(left), "ids": [R.mask(row.get("task_id")) for row in left]}}
+            "openings_unplanned": {"count": len(left), "ids": [R.mask(row.get("task_id")) for row in left]},
+            "spread": counters, "cells": cells}
 
 
 def generate(workdir: Any, *, model: Any, asks: Any = None, searching: bool = True,
@@ -308,7 +326,8 @@ def generate(workdir: Any, *, model: Any, asks: Any = None, searching: bool = Tr
     held = {canonical(record.statement) for record in R.load_scenarios(workdir)}
     new = [record for record in kept if canonical(record.statement) not in held]
     R.write_all(workdir, new)
-    counts = coverage(kept, folded, generation.dropped, generation.ungrouped, generation.unplanned)
+    counts = coverage(kept, folded, generation.dropped, generation.ungrouped, generation.unplanned,
+                      plan=generation.plan, tables=list(world.state))
     body = {"format": R.FORMAT, "notes": generation.notes, "coverage": counts,
             "born": len(new), "folded": folded, "capped": dict(sorted(generation.capped.items()))}
     write_json(R.store_dir(workdir) / R.GENERATED, body)
@@ -362,6 +381,6 @@ def fix(world: World, sent: list[tuple[R.Scenario, str]], model: Any, *, bus: An
     return [_fixed(record, why, root.fixed.get(record.id)) for record, why in sent]
 
 
-__all__ = ["BATCH", "plan_openings", "EMPTY", "FIX_STAGE", "ID_SHAPE", "Generation", "STAGE", "TOOL_NAME", "World", "canonical", "coverage",
+__all__ = ["BATCH", "plan_openings", "EMPTY", "FIX_STAGE", "ID_SHAPE", "Generation", "STAGE", "TOOL_NAME", "World", "canonical", "coverage", "spread",
            "fix", "fold", "from_asks", "from_recordings", "from_search", "generate", "openings", "source_text",
            "statement_refusal", "world_of"]
