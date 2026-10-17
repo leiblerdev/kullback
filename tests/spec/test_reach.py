@@ -71,6 +71,15 @@ def test_a_gated_value_a_tool_writes_is_kept_and_sourced_from_that_tool():
     assert world().reach_of("items", "state", "MOVED  (Pending) ").ptr["seen"] == "tool:move_item"
 
 
+def test_a_value_only_a_tool_writes_is_found_so_the_refused_item_can_be_re_gated_to_it():
+    state = {"items": {key: row for key, row in STATE["items"].items() if key != "C3"}, "people": STATE["people"]}
+    bare = I.World(state, POLICY, FACTS, TOOLS, reach=I.reach_of_inputs(EFFECTS, ()))
+    kept, why = bare.check(row_is({"state": "moved (pending)"}), KNOWN)
+    assert why == "" and kept["gate"] is True
+    assert "is not in the world" in I.World(state, POLICY, FACTS, TOOLS).check(row_is({"state": "moved (pending)"}),
+                                                                              KNOWN)[1]
+
+
 def test_a_gated_value_only_the_policy_spells_is_refused_naming_the_item_field_value_and_candidates():
     kept, why = keep(row_is({"state": "moved (pendng)"}))
     assert kept is None and I.UNREACHABLE in why
