@@ -57,7 +57,8 @@ class Scenario(Record):
     """One real-world situation: the statement, its source, the policy lines it touches, how often the
     recordings open with it, the Examiner's verdicts and its status; the plan's situation and variant it
     was written for, the rows of the world it is bound to (table to key) and what the world lacks for it
-    (D381)."""
+    (D381); the user's own opening words, first person, and what the world looks like after a correct
+    agent (both empty on older records)."""
 
     id: str
     statement: str
@@ -73,6 +74,8 @@ class Scenario(Record):
     variant: str = ""
     binding: dict[str, str] = Field(default_factory=dict)
     requires: list[str] = Field(default_factory=list)
+    ask: str = ""
+    end: str = ""
 
 
 def scenario_id(statement: str, kind: str) -> str:
