@@ -11,14 +11,16 @@ searched and the review so far, never the source or the frequency. That is what 
 real asks in and measure the Examiner rather than trust it.
 
 Outcomes are code, read off the verdict after the session: a repeat of another scenario strikes it,
-citing the other's id; occurs no strikes the scenario with its cite. The web tools are the shared ones
-(D377): every search and read_page call of a session is kept as evidence on each scenario that session
-reviews. A cite is a URL a search kept on the scenario returned, or a line of the policy; code refuses
-anything else, so no trace id ever reaches a verdict. Then any unsure puts it on the human queue with the open question; feasible no
-files an Environment finding naming the missing tool or row class and ends it infeasible, never a drop;
-occurs yes and feasible yes passes. `fix_scenario` sends a scenario back to the generator, which
-rewrites it once from the same source with the reason; a second request on the same scenario ends it
-unsure.
+naming the other's id; occurs no strikes it. The web tools are the shared ones (D377). A cite is a page
+this session read with read_page and a span found in that page's cached text; a search result alone is
+no cite and a policy line is no cite, and code refuses anything else, so no trace id ever reaches a
+verdict (D382). The verdict writes the cite's evidence row on its scenario alone. feasible yes names
+the tools and the bound rows it checked, each found by code, and is refused while the scenario's
+requires is open. Then any unsure puts it on the human queue with the open question; feasible no files
+an Environment finding carrying the scenario's requires and binding, the order to build, and ends it
+infeasible, never a drop; occurs yes and feasible yes passes. `fix_scenario` sends a scenario back to
+the generator with the words it quotes, why and the change; the generator rewrites it once from the
+same source, and a second request on the same scenario ends it unsure.
 """
 
 from __future__ import annotations
@@ -37,20 +39,18 @@ from kullback.agent.context import ContextConfig, prompt_block
 from kullback.agent.extensions import ExtensionAPI, load_extensions
 from kullback.agent.harness import AgentHarness
 from kullback.agent.tools import AgentTool
-from kullback.agent.web_tools import OFF as WEB_OFF
 from kullback.agent.web_tools import register_web_tools
 from kullback.examiner import findings as findings_mod
 from kullback.examiner import session as session_mod
-from kullback.examiner.domain_tools import find_tools
 from kullback.examiner.plan import ExaminerPlan
 from kullback.runner import budget
 from kullback.runner.records import read_json, write_json
-from kullback.spec.writer_tools import read_tools
 from kullback.synth import generate
 from kullback.synth import prompt as prompt_mod
 from kullback.synth import records as R
 from kullback.synth import search as search_mod
-from kullback.synth.rule import World, world_of
+from kullback.synth.rule import World, byte_range, world_of
+from kullback.synth.world_tools import world_tools
 
 ROOT = "review"
 VIEWS = "views"
@@ -66,7 +66,7 @@ MAX_TURNS = 80
 # How many times the review and fix loop goes round in one call.
 PASSES = 3
 # The record keys a view never carries: the review is blind to where a scenario came from.
-HIDDEN = ("source", "also_from", "frequency", "fixes")
+HIDDEN = ("source", "also_from", "frequency", "fixes", "situation")
 
 Answer = Literal["yes", "no", "unsure"]
 TOOL_NAMES = prompt_mod.TOOLS
@@ -75,14 +75,15 @@ TOOL_NAMES = prompt_mod.TOOLS
 @dataclass
 class ReviewRoot:
     """What one review works over: the world, the bus, the web reader (search.Crawled, or None), the
-    findings, and the scenarios of the session running now, which its web calls are kept on."""
+    findings, and the pages the session running now read with read_page (URL to cache key), which are
+    the only pages a verdict may cite."""
 
     world: World
     bus: Any = None
     reader: Any = None
     refuse: Callable[[str], str] = domain.destination_refusal
     filed: list[dict] = field(default_factory=list)
-    current: list[str] = field(default_factory=list)
+    read: dict[str, str] = field(default_factory=dict)
 
     @property
     def workdir(self) -> Path:
@@ -125,35 +126,24 @@ class StatusArgs(Strict):
     status: str = Field(default="born", description="One of " + ", ".join(R.STATUSES) + ".")
 
 
-class LookupArgs(Strict):
-    table: str
-    key: str = ""
-
-
-class RowSearchArgs(Strict):
-    table: str
-    field: str
-    value: str
-
-
-class FindArgs(Strict):
-    query: str
-
-
 class RuleArgs(Strict):
     id: str
     occurs: Answer = Field(description="Does this happen to customers of this kind of business?")
-    occurs_cite: str = Field(default="", description="A URL your search returned for this scenario, or a policy line.")
+    occurs_url: str = Field(default="", description="A URL you read with read_page in this session.")
+    occurs_span: str = Field(default="", description="The words of that page that show it, word for word.")
     feasible: Answer = Field(description="Can this world serve it with its tools and rows?")
+    checked: list[str] = Field(default_factory=list, description=(
+        'For feasible yes: "tool:<name>" for each tool it needs, "row:<table>:<key>" for each bound row you looked up.'))
     missing: str = Field(default="", description="When feasible is no: the tool or the kind of row that is missing.")
-    serves_ask: Literal["yes", "no", "none"] = Field(default="none", description="Does it serve a customer's ask?")
     repeat_of: str = Field(default="", description="The id of another scenario this one says again; it ends struck.")
     text: str = Field(description="Why, in one or two sentences.")
 
 
 class FixArgs(Strict):
     id: str
-    why: str = Field(description="Rewrite, rebind or narrow, and what to change.")
+    quote: str = Field(description="The words of the statement that are wrong, copied exactly.")
+    why: str = Field(description="Why those words are wrong.")
+    change: str = Field(description="What they should say instead, or what to look up.")
 
 
 class Rows(Strict):
@@ -172,23 +162,13 @@ def _record(root: ReviewRoot, scenario_id: str) -> R.Scenario:
     return R.load_scenario(root.workdir, scenario_id)
 
 
-def evidence_row(name: str, args: dict, result: Any) -> dict:
-    """One shared web call as evidence: the URLs a search returned, or the URL a page read."""
-    off = result.summary == WEB_OFF
-    note = search_mod.OFF_NOTE if off else ""
-    if name == "search":
-        return {"tool": name, "query": args.get("query", ""), "urls": [row["url"] for row in result.rows],
-                "read": [], "note": note}
-    read = [args.get("url", "")] if result.rows else []
-    return {"tool": name, "query": "", "urls": [], "read": read, "note": note or ("" if read else result.summary)}
-
-
 def kept(root: ReviewRoot, name: str, args: dict, result: Any) -> None:
-    """The shared web tools' on_call: the call kept on every scenario the session reviews."""
-    row = evidence_row(name, args, result)
-    for scenario_id in root.current:
-        record = _record(root, scenario_id)
-        R.write_scenario(root.workdir, record.model_copy(update={"evidence": [*record.evidence, row]}))
+    """The shared web tools' on_call: a page read with read_page becomes citable in this session; a search
+    is not kept."""
+    url = str(args.get("url") or "")
+    keys = getattr(root.reader, "keys", {}) or {}
+    if name == "read_page" and result.rows and url in keys:
+        root.read[url] = keys[url]
 
 
 def human_row(workdir: Any, record: R.Scenario, question: str) -> None:
@@ -198,14 +178,55 @@ def human_row(workdir: Any, record: R.Scenario, question: str) -> None:
     write_json(path, [*rows, {"id": record.id, "statement": record.statement, "question": question}])
 
 
-CITE = "a URL your own search returned for this scenario, or a line of the policy word for word"
+CITE = "occurs_url, a page you read with read_page in this session, and occurs_span, its words copied exactly"
+NO_POLICY_CITE = ("a policy line is no cite: it shows the business anticipated the situation, not that customers "
+                  "bring it")
 
 
-def cited(root: ReviewRoot, record: R.Scenario, cite: str) -> bool:
-    """Whether a cite is a URL a search kept on this scenario returned, or a substring of the policy."""
-    text = cite.strip()
-    returned = {url for row in record.evidence for url in row.get("urls") or ()}
-    return text in returned or (bool(text) and text in (root.world.policy or ""))
+def cited(root: ReviewRoot, args: RuleArgs) -> Optional[dict]:
+    """The evidence row of a verdict's cite, checked by code, or nothing when it cites nothing.
+
+    The URL must be a page this session read with read_page, and the span must be in that page's cached
+    text under the key the reader kept; a search result alone is no cite, and a policy line is no cite.
+    """
+    url, span = args.occurs_url.strip(), args.occurs_span
+    if not url and not span.strip():
+        return None
+    if span.strip() and span.strip() in (root.world.policy or "") and url not in root.read:
+        raise ValueError(f"{NO_POLICY_CITE}; cite {CITE}")
+    if url not in root.read:
+        raise ValueError(f"{url or 'no URL'} was not read with read_page in this session; a search result alone "
+                         f"is no cite: read the page, then cite {CITE}")
+    where = byte_range(domain.cached_text(root.workdir, root.read[url]), span) if span.strip() else None
+    if where is None:
+        raise ValueError(f"the span is not on the page you read at {url}; copy its words exactly")
+    return {"tool": "read_page", "url": url, "span": span, "start": where[0], "end": where[1]}
+
+
+def _checked(root: ReviewRoot, record: R.Scenario, item: str) -> bool:
+    """Whether one checked entry is a tool of this world, or a row the scenario is bound to."""
+    kind, _, rest = str(item).partition(":")
+    if kind == "tool":
+        return rest in {str(tool.get("name")) for tool in root.world.tools}
+    table, _, key = rest.partition(":")
+    return kind == "row" and bool(table) and record.binding.get(table) == key
+
+
+def _feasible(root: ReviewRoot, record: R.Scenario, args: RuleArgs) -> None:
+    """feasible no needs missing; feasible yes needs checked entries code finds, and no requires left open."""
+    if args.feasible == "no" and not args.missing.strip():
+        raise ValueError("feasible no needs missing: the tool or the kind of row this world lacks")
+    if args.feasible != "yes":
+        return
+    if record.requires:
+        raise ValueError(f"this scenario requires what the world lacks ({'; '.join(record.requires)}): rule "
+                         "feasible no with missing, or send it back if the world holds what requires names")
+    if not args.checked:
+        raise ValueError('feasible yes needs checked: "tool:<name>" for each tool it needs and '
+                         '"row:<table>:<key>" for each bound row you looked up')
+    bad = [item for item in args.checked if not _checked(root, record, item)]
+    if bad:
+        raise ValueError(f"checked names what this world or this scenario's binding does not hold: {', '.join(bad)}")
 
 
 def _filed(root: ReviewRoot, record: R.Scenario, row: dict) -> Rows:
@@ -220,34 +241,43 @@ def _repeat(root: ReviewRoot, record: R.Scenario, args: RuleArgs) -> Rows:
     if args.repeat_of == record.id:
         raise ValueError("repeat_of names this scenario itself; name the other scenario it repeats")
     R.load_scenario(root.workdir, args.repeat_of)
-    row = {"kind": "verdict", **args.model_dump(exclude={"id"}), "occurs_cite": args.repeat_of}
-    return _filed(root, record, row)
-
-
-def ruled(root: ReviewRoot, args: RuleArgs) -> Rows:
-    """The verdict on the record; occurs yes without a cite and feasible no without `missing` are refused."""
-    record = _record(root, args.id)
-    if args.repeat_of:
-        return _repeat(root, record, args)
-    if args.occurs == "yes" and not args.occurs_cite.strip():
-        raise ValueError(f"occurs yes needs occurs_cite: {CITE}")
-    if args.occurs_cite.strip() and not cited(root, record, args.occurs_cite):
-        raise ValueError(f"occurs_cite is neither of what a cite may be: {CITE}")
-    if args.feasible == "no" and not args.missing.strip():
-        raise ValueError("feasible no needs missing: the tool or the kind of row this world lacks")
     return _filed(root, record, {"kind": "verdict", **args.model_dump(exclude={"id"})})
 
 
-def sent_back(root: ReviewRoot, args: FixArgs) -> Rows:
-    """The scenario sent to the generator with the reason; a second request ends it unsure, for a person."""
+def ruled(root: ReviewRoot, args: RuleArgs) -> Rows:
+    """The verdict on the record, its cite's evidence row on this scenario alone; refused with why where the
+    cite, the checked entries or `missing` do not hold."""
     record = _record(root, args.id)
+    if args.repeat_of:
+        return _repeat(root, record, args)
+    evidence = cited(root, args)
+    if args.occurs == "yes" and evidence is None:
+        raise ValueError(f"occurs yes needs {CITE}")
+    _feasible(root, record, args)
+    if evidence is not None:
+        record = record.model_copy(update={"evidence": [*record.evidence, evidence]})
+    return _filed(root, record, {"kind": "verdict", **args.model_dump(exclude={"id"})})
+
+
+def reason(row: dict) -> str:
+    """A send back as the fix session reads it: the quoted words, why, and what to change."""
+    return f"quote: \"{row.get('quote', '')}\"\nwhy: {row.get('why', '')}\nchange: {row.get('change', '')}"
+
+
+def sent_back(root: ReviewRoot, args: FixArgs) -> Rows:
+    """The scenario sent to the generator with the quoted words, why and the change; a second request ends it
+    unsure, for a person. A quote the statement does not hold is refused."""
+    record = _record(root, args.id)
+    if not args.quote.strip() or args.quote not in record.statement:
+        raise ValueError("quote is not in the statement: copy the wrong words of the statement exactly")
+    asked = {"quote": args.quote, "why": args.why, "change": args.change}
     if record.fixes >= 1:
-        row = {"kind": "fix_refused", "why": args.why}
+        row = {"kind": "fix_refused", **asked}
         record = record.model_copy(update={"status": "unsure", "review": [*record.review, row]})
         human_row(root.workdir, record, f"the reviewer asked for a second fix: {args.why}")
         summary = f"{args.id} was fixed once already; it goes to a person as unsure"
     else:
-        row = {"kind": "fix_requested", "why": args.why}
+        row = {"kind": "fix_requested", **asked}
         record = record.model_copy(update={"status": "fixing", "review": [*record.review, row]})
         summary = f"{args.id} goes back to the generator"
     R.write_scenario(root.workdir, record)
@@ -257,8 +287,7 @@ def sent_back(root: ReviewRoot, args: FixArgs) -> Rows:
 
 
 def scenario_tools(root: ReviewRoot) -> list[AgentTool]:
-    """The role's own tools over one root; none edits a statement."""
-    lookups = read_tools(root.world.state)
+    """The role's own tools over one root and the shared world tools; none edits a statement."""
 
     async def read_scenario(args: IdArgs) -> Rows:
         return Rows(summary=args.id, rows=[view(_record(root, args.id))])
@@ -269,16 +298,6 @@ def scenario_tools(root: ReviewRoot) -> list[AgentTool]:
         rows = [{"id": r.id, "statement": r.statement, "status": r.status}
                 for r in R.load_scenarios(root.workdir) if r.status == args.status]
         return Rows(summary=f"{len(rows)} scenarios {args.status}", rows=rows)
-
-    async def lookup_rows(args: LookupArgs) -> Rows:
-        return Rows(summary=lookups["lookup_rows"](args.table, args.key))
-
-    async def search_rows(args: RowSearchArgs) -> Rows:
-        return Rows(summary=lookups["search_rows"](args.table, args.field, args.value))
-
-    async def find(args: FindArgs) -> Rows:
-        found = find_tools(args.query, root.world.tools)
-        return Rows(summary=found.summary, rows=found.tools)
 
     async def rule_scenario(args: RuleArgs) -> Rows:
         return ruled(root, args)
@@ -291,10 +310,7 @@ def scenario_tools(root: ReviewRoot) -> list[AgentTool]:
 
     return [tool("read_scenario", "The view of one scenario.", IdArgs, read_scenario),
             tool("list_scenarios", "The scenarios with one status.", StatusArgs, list_scenarios),
-            tool("lookup_rows", "Read rows of the world by table and key; with no key, the count and sample keys.",
-                 LookupArgs, lookup_rows),
-            tool("search_rows", "Find row keys whose dotted field equals a value.", RowSearchArgs, search_rows),
-            tool("find_tools", "Find the tools whose name or description match a few words.", FindArgs, find),
+            *world_tools(root.world),
             tool("rule_scenario", "File the verdict on one scenario.", RuleArgs, rule_scenario),
             tool("fix_scenario", "Send one scenario back to the generator with the reason.", FixArgs, fix_scenario)]
 
@@ -347,8 +363,10 @@ def _environment_finding(root: ReviewRoot, record: R.Scenario, verdict: dict) ->
     if held:
         return held[0]
     missing = str(verdict.get("missing") or "").strip()
+    order = {"kind": "world", "requires": list(record.requires), "binding": dict(record.binding),
+             "why": f"a scenario this world cannot serve needs {missing}"}
     finding = findings_mod.file_finding(
-        plan, kind="environment", key=key, change=f"add {missing}",
+        plan, kind="environment", key=key, change=f"add {missing}", edits=[order],
         text=f"a scenario this world cannot serve needs {missing}: {record.statement}")
     body = finding.model_dump(mode="json")
     if root.bus is not None:
@@ -390,7 +408,7 @@ def _session(root: ReviewRoot, ids: list[str], model: Any, subscribers: list[Cal
                            bus=root.bus)
     detach = [harness.subscribe(subscriber) for subscriber in subscribers]
     detach.append(harness.subscribe(budget.subscriber(root.workdir, STAGE, name, ceiling)))
-    root.current = list(ids)
+    root.read = {}
     try:
         paths = write_views(root, ids)
         load_extensions(harness, [scenario_extension(root)])
@@ -400,7 +418,7 @@ def _session(root: ReviewRoot, ids: list[str], model: Any, subscribers: list[Cal
     finally:
         for unsubscribe in detach:
             unsubscribe()
-        root.current = []
+        root.read = {}
     return bool(capped)
 
 
@@ -410,7 +428,7 @@ def _fix_all(root: ReviewRoot, fixer: Any, ceiling: Optional[budget.Ceiling] = N
     sent = []
     for record in R.load_scenarios(root.workdir):
         if record.status == "fixing":
-            why = next((row["why"] for row in reversed(record.review) if row.get("kind") == "fix_requested"), "")
+            why = next((reason(row) for row in reversed(record.review) if row.get("kind") == "fix_requested"), "")
             sent.append((record, why))
     out = []
     for fixed, (_, why) in zip(generate.fix(root.world, sent, fixer, ceiling=ceiling, subscribers=subscribers), sent, strict=True):

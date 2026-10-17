@@ -15,7 +15,8 @@ from kullback.synth import records as R
 from kullback.synth import report as T
 from kullback.synth import review as V
 from kullback.synth.generate import generate
-from tests.synth.fixture import POLICY, REFUSE, URL, call, make_workdir, web
+from kullback.synth.plan import situation_id
+from tests.synth.fixture import BOUND, REFUSE, URL, call, make_workdir, planned, web
 
 SPAN = "Customers often ask to move a widget after it has been sealed."
 PLAIN = "a holder wants a widget moved to another slot"
@@ -34,21 +35,21 @@ def _write(call_id: str, statement: str, source: str, **args) -> ModelReply:
 
 
 def _generator_model() -> TestModel:
-    """Three sessions: a batch of openings, the web, a batch of typed lines."""
+    """Four sessions: the plan, a batch of openings, the web, a batch of typed lines."""
     return TestModel([
-        _write("m0", PLAIN, "recordings", openings=[0]), _write("m1", VAGUE, "recordings", openings=[1, 2]),
+        *planned((PLAIN, [0]), (VAGUE, [1, 2])),
+        _write("m0", PLAIN, "recordings", situation=situation_id(PLAIN), binding=BOUND),
+        _write("m1", VAGUE, "recordings", situation=situation_id(VAGUE), binding=BOUND),
         ModelReply(content="Wrote two."),
         call("search", {"query": "what holders ask about sealed widgets"}, "s0"), call("read_page", {"url": URL}, "s1"),
-        _write("s2", SEALED, "search", url=URL, span=SPAN), ModelReply(content="Wrote one."),
+        _write("s2", SEALED, "search", url=URL, span=SPAN, binding=BOUND), ModelReply(content="Wrote one."),
         _write("a0", WHICH, "ask", openings=[0]), _write("a1", PAINT, "ask", openings=[1]),
         ModelReply(content="Wrote two.")])
 
 
-LINE = POLICY.splitlines()[0]
-
-
 def _rule(scenario_id: str, call_id: str, **verdict) -> ModelReply:
-    args = {"id": scenario_id, "occurs": "yes", "occurs_cite": LINE, "feasible": "yes", "text": "common, served"}
+    args = {"id": scenario_id, "occurs": "yes", "occurs_url": URL, "occurs_span": SPAN, "feasible": "yes",
+            "checked": ["tool:move_widget"], "text": "common, served"}
     return call("rule_scenario", {**args, **verdict}, call_id)
 
 
@@ -56,12 +57,15 @@ def _review_model(ids: dict) -> TestModel:
     return TestModel([
         call("read_scenario", {"id": ids[PLAIN]}, "r0"),
         call("search", {"query": "widget put in another slot"}, "r1"),
-        _rule(ids[PLAIN], "r2", occurs_cite=URL),
-        _rule(ids[SEALED], "r3", occurs="no", occurs_cite=""),
-        _rule(ids[WHICH], "r4", feasible="unsure"),
-        _rule(ids[PAINT], "r5", feasible="no", missing="a tool that paints a widget"),
-        call("fix_scenario", {"id": ids[VAGUE], "why": "too broad: narrow it to one situation"}, "r6"),
+        call("read_page", {"url": URL}, "r1b"),
+        _rule(ids[PLAIN], "r2"),
+        _rule(ids[SEALED], "r3", occurs="no", occurs_url="", occurs_span=""),
+        _rule(ids[WHICH], "r4", feasible="unsure", checked=[]),
+        _rule(ids[PAINT], "r5", feasible="no", checked=[], missing="a tool that paints a widget"),
+        call("fix_scenario", {"id": ids[VAGUE], "quote": "things", "why": "too broad for one situation",
+                              "change": "say which widget and what should happen to it"}, "r6"),
         ModelReply(content="Ruled four, sent one back."),
+        call("read_page", {"url": URL}, "r7a"),
         _rule(ids[VAGUE], "r7"),
         ModelReply(content="Ruled one: passed.")])
 
@@ -99,7 +103,8 @@ def test_every_outcome_settles_from_the_review_and_the_fix_loop(tmp_path):
     [finding] = read_json(workdir / "examiner" / "findings.json")
     assert finding["key"] == f"environment:scenario:{ids[PAINT]}" and out["findings"]
     assert [row["id"] for row in read_json(R.store_dir(workdir) / R.HUMAN)] == [ids[WHICH]]
-    assert R.load_scenario(workdir, ids[PLAIN]).evidence[0]["urls"] == [URL]
+    assert [row["url"] for row in R.load_scenario(workdir, ids[PLAIN]).evidence] == [URL]
+    assert R.load_scenario(workdir, ids[SEALED]).evidence == []
 
 
 def test_generation_and_review_play_as_sessions_on_one_bus_under_their_own_agents_and_stages(tmp_path):

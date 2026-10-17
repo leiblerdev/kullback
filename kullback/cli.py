@@ -1481,7 +1481,7 @@ def synth_scenarios(
     corpus_url: Optional[str] = typer.Option(None, "--corpus-url",
                                              help="The source corpus's own repository or paper; never read."),
 ):
-    """Generate scenarios from the built Environment: its recordings, a cited web search and a customer's lines (D372)."""
+    """Plan the situations the openings show, then generate scenarios: recordings, a cited web search, typed lines (D372, D380)."""
     if not model:
         typer.echo("no model: pass --model")
         raise typer.Exit(2)

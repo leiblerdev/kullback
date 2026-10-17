@@ -3170,3 +3170,137 @@ test pins the module's harness imports to `kullback.agent` and `kullback.ai`.
 
 The CLI verb is `kullback synth scenarios`, the stage `synth_generation`, the summary `generated.json`. The word mine
 read as rebuilding the Environment; the step reads the built Environment and writes scenarios.
+
+### D380. A plan session puts every opening in one situation before any scenario is written (2026-10-17)
+
+The founder, 2026-10-17: "lets add the planning / reasoning stage to first understand everything and then derive the
+scenarios from it" and "lets give it this tool" (attach openings to an existing scenario). The first live run worked in
+batches of 25 opening asks with no memory across sessions: it skipped 172 of 456 retail openings as already covered and
+wrote 57 repeats where it did not notice the twin.
+
+What: `kullback synth scenarios` now plans first. A session of kind plan (kullback/synth/plan.py, generate_tools
+SESSION_TOOLS["plan"]) reads up to PLAN_BATCH (150) numbered opening asks (generate.openings) and holds list_openings,
+list_plan (id, statement, kind, how many openings, variants), write_situation(statement, kind, openings, variants),
+attach_openings(id, openings) and skip_opening(openings, why). A situation is one sentence in general words saying one
+thing that happens, a one word kind the model picks, the openings that show it and zero or more one line variants
+that change what the agent must do; its id is "si_" plus a 12 hex content hash of the statement. Code refuses with
+why: an opening another situation holds or one already skipped (naming the holder), an item number outside the
+batch, an empty statement, a tool name or an id shape (rule.statement_refusal, on the variants too), a hedged
+statement holding "sometimes" or " or " (split it into variants), a statement the plan already holds (attach
+instead), a kind of more than one word, a skip with no reason. attach_openings reaches a situation of this or any
+earlier session, and of an earlier call: the plan is read from <workdir>/scenarios/plan.json first and written after
+every session as {"format": 1, "situations": [{id, statement, kind, openings: [{task_id, recording, text}],
+variants}], "skipped": [{task_id, recording, why}]}. Every plan session's opening message lists the plan so far (id,
+statement, count) and says every numbered item ends in exactly one situation or skipped. After the batches, one more
+plan session runs over the openings in no situation and not skipped, if any; what still remains is written to
+generated.json as coverage.openings_unplanned (count and the masked Task ids). The plan prompt runs in GEPA order
+under the same section names, with its own texts (generate_prompt.sections(names, "plan")): the rule, the tools
+with one example call each, a placeholder situation and variant, the choice rule ("one situation per distinct thing
+that happens; the same thing at another step or with another remedy is a variant, never a second situation and
+never a hedge"), feedback and the stop rule last.
+
+Provenance by construction: a planned opening carries its task_id and recording from the rows, so no model lists
+an opening number after the plan. Until D381, the recordings sessions still read openings as before.
+
+What it cannot show: nothing ran on a model. Whether a model reads 150 items before it writes, splits hedges into
+variants, or attaches rather than writes again is unmeasured; the turn budget of a plan session is the batch
+budget (at most 80 turns), not a measured need.
+
+Tests: tests/synth/test_plan.py (a session writes and skips and a later session attaches to the earlier situation;
+a held opening is refused naming the holder; a hedged statement is refused; the retry session sees only the
+unassigned; plan.json has its shape; openings_unplanned counts and masks; planning again reads the plan on disk).
+
+### D381. Scenarios are written per situation of the plan and bound to rows of the world (2026-10-17)
+
+The founder, 2026-10-17: "bind each scenario to real rows of the world at generation time: this user, this order,
+this product with these option values, this amount"; "we should have required as well that it requires these users
+and the tools and these amendments to the datasets"; "as close to the real world / deployment settings" and "diverse
+data". The first live run's statements said "a customer with a pet" where the world holds a named customer, a cat,
+an airport and a capped amount, so nothing downstream could be judged from them; it also listed wrong item numbers
+on 9 of 144 statements.
+
+What. The recordings sessions take the plan's situations (D380) as items, 25 per session: each item shows the
+statement, its kind, its variants and the texts of at most five of its openings, the rest counted (more_openings).
+The model writes one scenario per situation and one per variant: write_scenario takes `situation` (the si_ id) and
+`variant` (the variant line word for word, or empty); code fills source.task_ids and frequency from the plan, never
+from the model, and `openings` stays only for the ask source. A write for a situation and variant already written,
+in this session or in the store, is refused naming the scenario that holds it, so a repeat cannot be written; a
+situation whose situation and variants are all written is left out of the next call's items. Records carry
+`situation`, `variant`, `binding` and `requires`; the review's view hides `situation` beside source and frequency
+and shows the binding and requires. coverage.openings_ungrouped now counts, per recordings batch, the situations no
+scenario was written for.
+
+Binding. Every generation session but the plan (recordings, search, ask, fix) holds lookup_rows, search_rows and
+find_tools, the three the review holds, now defined once in kullback/synth/world_tools.py and used by both roles.
+write_scenario takes `binding` (table to row key, as lookup_rows names them) and `requires` (what the world lacks,
+in words); rewrite_scenario takes both as optional, kept when left out. Code checks every binding entry: the table is
+in the Starting state and the key is a row of it, else refused binding_not_in_world naming the table and key. A
+recordings or search scenario with an empty binding and an empty requires is refused unbound (on a fix too, by the
+record's source kind). The statement rule stays for tool names and id shapes, since ids live in the binding; the
+corpus contamination check on search statements is dropped, because world values are now allowed in the words;
+copies_page stays. The rule text (generate_prompt.RULE) now says a scenario is two to four sentences in the third
+person about one customer of this world: who they are as the bound rows name them, what they have, what they ask,
+what they bring with them; every fact from a bound row or the policy; values said, never an id or a tool name, a
+date in words; what the world lacks goes into requires and the scenario is still written; different customers and
+rows across one session. This supersedes D372's sentence that a scenario is one or two sentences in general words
+that never name a value. The fix session's items show the binding and requires beside the reason.
+
+A batch session's turn budget is six turns per item (was three), at least 12 and at most 160 (was 80), since each
+bound scenario looks its rows up before it is written; SEARCH_TURNS stays 60.
+
+What it cannot show: nothing ran on a model. Whether a model looks rows up before it binds, picks rows that fit the
+situation, spreads customers across a session, or says the values without an id is unmeasured; whether the bound
+user matches the recording's own Task user is measured only by the live driver. The turn budget is a setting.
+
+Tests: tests/synth/test_generate.py (a session binds to fixture rows and the record carries them with the plan's
+Tasks and frequency and the requires; a key or a table not in the world is refused naming it; an unbound scenario is
+refused; a second write for the same situation and variant is refused naming the holder, in the session and from the
+store; every session but the plan holds the world tools), tests/synth/test_review.py (the view shows binding and
+requires and hides the situation), tests/synth/test_end_to_end.py.
+
+### D382. The reviewer cites a page it read, names what it checked, and quotes what a send back changes (2026-10-17)
+
+The founder, 2026-10-17, on the cite rule: "lets fix this". In the first live run the reviewer never opened a page
+in 35 sessions, because the cite rule accepted a search result URL or a policy line, and its send backs said
+"narrow" without saying which words. Its infeasible rulings named real gaps (a policy promises something no tool
+issues), which the founder wants kept as an order to build.
+
+What. rule_scenario (kullback/synth/review.py RuleArgs) takes `occurs_url` and `occurs_span` in place of
+`occurs_cite`. occurs yes needs a URL this session read with read_page and a span found in that page's cached text
+(rule.byte_range over domain.cached_text under the key the search.Crawled reader kept for the URL), else it is
+refused saying so. A search result alone is no cite; a policy line is no cite, since it shows the business
+anticipated the situation, not that customers bring it. A page read in an earlier session is no cite in the next
+(ReviewRoot.read is reset per session). occurs no may carry a URL read and a span, checked the same way, or
+nothing. `serves_ask` is removed; no outcome read it. New `checked`: for feasible yes, "tool:<name>" for each tool
+of this world the scenario needs and "row:<table>:<key>" for each bound row looked up, each verified by code (the
+tool in the world's tool list, the row in the scenario's binding); feasible yes with an empty or unverified
+checked is refused, and feasible yes on a scenario whose requires is not empty is refused (rule feasible no with
+missing, or send it back if the world holds what requires names). feasible no needs missing as before, and its
+Environment finding now carries one edit of kind world holding the scenario's requires and binding, the order to
+build. A repeat's verdict keeps repeat_of as its own field; occurs_cite no longer carries the other id.
+
+Evidence per scenario. The shared web tools' on_call no longer writes every call onto every scenario of the batch:
+a search is not kept, and a read_page only makes its URL citable in the session. The verdict writes one evidence
+row on its own scenario: {"tool": "read_page", "url", "span", "start", "end"}. This supersedes D373's sentences that
+every search and read_page call is kept as evidence on each scenario of the session, that a cite is a URL a search
+returned or a substring of the policy, and that a verdict answers serves_ask; and D374's sentence that with no
+reader the evidence names the switch (with no reader nothing is read, so occurs yes cannot be ruled and the
+reviewer rules unsure).
+
+Send backs. fix_scenario takes `quote` (a substring of the statement, checked by code, else refused), `why` and
+`change` (what it should say instead, or what to look up); the review row keeps all three, and the fix session's
+items show them as quote, why and change lines beside the binding and requires (D381).
+
+Prompt (kullback/synth/prompt.py, skills.py): the receives section drops the ask question; the rule_scenario and
+fix_scenario examples show the new arguments; the examples cite a page read and a quote; the choice section says to
+read the page before citing it, to name the rows and tools checked, and that a send back quotes the words.
+
+What it cannot show: nothing ran on a model. Whether a reviewer reads before it cites, picks a span that shows
+customers meet the situation rather than one that merely mentions it, or quotes the right words is unmeasured; code
+checks only that the span is on the page and the quote in the statement.
+
+Tests: tests/synth/test_review.py (a search URL alone is refused; a policy line is refused; a span not on the page is
+refused; a read page and its span file the verdict and the evidence row sits on that scenario alone; a page of an
+earlier session is no cite; feasible yes with empty checked, an unknown tool or a row outside the binding is
+refused, and with open requires is refused; a quote not in the statement is refused; the finding carries requires
+and binding; the fix session reads quote, why and change), tests/synth/test_end_to_end.py.

@@ -22,6 +22,7 @@ also after a fix rewrites its statement. The fix step is a session too, under th
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -34,6 +35,7 @@ from kullback.runner.records import write_json
 from kullback.spec import intent_tools
 from kullback.synth import generate_prompt
 from kullback.synth import generate_tools as T
+from kullback.synth import plan as plan_mod
 from kullback.synth import records as R
 from kullback.synth import search as search_mod
 from kullback.synth.rule import EMPTY, ID_SHAPE, TOOL_NAME, World, statement_refusal, world_of
@@ -60,6 +62,8 @@ class Generation:
     subscribers: tuple = ()
     capped: Counter = field(default_factory=Counter)
     ungrouped: list = field(default_factory=list)
+    plan: plan_mod.Plan = field(default_factory=plan_mod.Plan)
+    unplanned: list = field(default_factory=list)
 
     def over(self) -> bool:
         if self.ceiling is not None and self.ceiling.remaining <= 0:
@@ -69,7 +73,8 @@ class Generation:
         return False
 
     def session(self, kind: str, opening: str, stage: str = STAGE, **root: Any) -> T.GenerateRoot:
-        made = T.GenerateRoot(world=self.world, kind=kind, found=self.found, dropped=self.dropped, bus=self.bus, **root)
+        made = T.GenerateRoot(world=self.world, kind=kind, found=self.found, dropped=self.dropped, bus=self.bus,
+                              plan=self.plan, **root)
         if T.run(made, self.model, opening, stage, self.ceiling, self.subscribers):
             self.capped[kind] += 1
         return made
@@ -115,6 +120,37 @@ def openings(workdir: Any) -> list[dict]:
     return out
 
 
+# --- the plan (D380) ---------------------------------------------------------------------
+
+
+def _plan_session(generation: Generation, chunk: list[dict]) -> None:
+    listing = generate_prompt.plan_listing(generation.plan.rows())
+    opening = generate_prompt.opening("plan", _entries(generation.world.workdir), count=len(chunk), items=listing)
+    generation.session("plan", opening, items=chunk)
+    plan_mod.write_plan(generation.world.workdir, generation.plan)
+
+
+def plan_openings(generation: Generation, *, batch: int = plan_mod.PLAN_BATCH) -> None:
+    """The plan sessions over every opening not yet planned, then one more over what they left.
+
+    The plan already on disk is read first, so planning again adds to it; what remains in no situation
+    and not skipped is kept on the generation as unplanned.
+    """
+    workdir = generation.world.workdir
+    generation.plan = plan_mod.load_plan(workdir)
+    rows = openings(workdir)
+    todo = plan_mod.unplanned(generation.plan, rows) if generation.model is not None else []
+    size = max(int(batch), 1)
+    for start in range(0, len(todo), size):
+        if generation.over():
+            break
+        _plan_session(generation, todo[start:start + size])
+    left = plan_mod.unplanned(generation.plan, rows)
+    if left and todo and not generation.over():
+        _plan_session(generation, left)
+    generation.unplanned = plan_mod.unplanned(generation.plan, rows)
+
+
 def _batched(generation: Generation, kind: str, items: list[dict], batch: int) -> None:
     """One session per batch of items of one source, stopping at the ceiling."""
     size = max(int(batch), 1)
@@ -128,11 +164,23 @@ def _batched(generation: Generation, kind: str, items: list[dict], batch: int) -
                                  "ungrouped": len(chunk) - len(made.grouped)})
 
 
+def situation_items(generation: Generation) -> list[dict]:
+    """The plan's situations as items, leaving out those whose situation and every variant are written."""
+    held = {(r.situation, r.variant) for r in R.load_scenarios(generation.world.workdir) if r.situation}
+    out = []
+    for situation in generation.plan.situations:
+        wanted = {(situation["id"], variant) for variant in ["", *situation["variants"]]}
+        if not wanted <= held:
+            out.append({"situation": situation["id"], "statement": situation["statement"], "kind": situation["kind"],
+                        "variants": list(situation["variants"]), "openings": list(situation["openings"])})
+    return out
+
+
 def from_recordings(generation: Generation, *, batch: int = BATCH) -> None:
-    """Scenarios grouping the recordings' opening asks, one session per batch."""
+    """One scenario per situation of the plan and one per variant, bound to rows, one session per batch (D381)."""
     if generation.model is None:
         return
-    _batched(generation, "recordings", openings(generation.world.workdir), batch)
+    _batched(generation, "recordings", situation_items(generation), batch)
 
 
 # --- the search -------------------------------------------------------------------------
@@ -222,16 +270,19 @@ def fold(records: list[R.Scenario]) -> tuple[list[R.Scenario], list[dict]]:
     return list(first.values()), folded
 
 
-def coverage(kept: list[R.Scenario], folded: list[dict], dropped: Counter, ungrouped: Iterable[dict] = ()) -> dict:
-    """Scenarios per source kind, what the recordings never show, the asks nothing else covers, drops, and
-    per batch the items no scenario grouped."""
+def coverage(kept: list[R.Scenario], folded: list[dict], dropped: Counter, ungrouped: Iterable[dict] = (),
+             unplanned: Iterable[dict] = ()) -> dict:
+    """Scenarios per source kind, what the recordings never show, the asks nothing else covers, drops, per
+    batch the items no scenario grouped, and the openings the plan left in no situation and not skipped."""
+    left = list(unplanned)
     per_kind = Counter(record.source.kind for record in kept)
     return {"per_kind": {kind: per_kind.get(kind, 0) for kind in R.SOURCE_KINDS},
             "search_not_in_recordings": per_kind.get("search", 0),
             "asks_not_covered": per_kind.get("ask", 0),
             "folded": Counter(row["kind"] for row in folded),
             "dropped": dict(sorted(dropped.items())),
-            "openings_ungrouped": list(ungrouped)}
+            "openings_ungrouped": list(ungrouped),
+            "openings_unplanned": {"count": len(left), "ids": [R.mask(row.get("task_id")) for row in left]}}
 
 
 def generate(workdir: Any, *, model: Any, asks: Any = None, searching: bool = True,
@@ -245,6 +296,7 @@ def generate(workdir: Any, *, model: Any, asks: Any = None, searching: bool = Tr
     world = world_of(workdir, description)
     generation = Generation(world=world, model=model, bus=T.bus_for(workdir), ceiling=ceiling,
                     subscribers=tuple(subscribers))
+    plan_openings(generation)
     from_recordings(generation, batch=batch)
     if searching:
         from_search(generation, engine=engine, env=env, corpus_url=corpus_url, exclude=exclude, refuse=refuse)
@@ -256,7 +308,7 @@ def generate(workdir: Any, *, model: Any, asks: Any = None, searching: bool = Tr
     held = {canonical(record.statement) for record in R.load_scenarios(workdir)}
     new = [record for record in kept if canonical(record.statement) not in held]
     R.write_all(workdir, new)
-    counts = coverage(kept, folded, generation.dropped, generation.ungrouped)
+    counts = coverage(kept, folded, generation.dropped, generation.ungrouped, generation.unplanned)
     body = {"format": R.FORMAT, "notes": generation.notes, "coverage": counts,
             "born": len(new), "folded": folded, "capped": dict(sorted(generation.capped.items()))}
     write_json(R.store_dir(workdir) / R.GENERATED, body)
@@ -279,16 +331,17 @@ def source_text(world: World, record: R.Scenario) -> str:
 
 
 def _fix_items(world: World, sent: list[tuple[R.Scenario, str]]) -> str:
-    return "\n\n".join(f"{record.id}: {record.statement}\nreason: {why}\nwritten from: {source_text(world, record)}"
+    return "\n\n".join(f"{record.id}: {record.statement}\n{why}\nbound to: {json.dumps(record.binding, sort_keys=True)}"
+                       f"\nrequires: {json.dumps(record.requires)}\nwritten from: {source_text(world, record)}"
                        for record, why in sent)
 
 
-def _fixed(record: R.Scenario, why: str, statement: Optional[str]) -> R.Scenario:
-    if not statement:
+def _fixed(record: R.Scenario, why: str, rewrite: Optional[dict]) -> R.Scenario:
+    if not rewrite:
         row = {"kind": "fix_failed", "why": why}
         return record.model_copy(update={"status": "unsure", "review": [*record.review, row]})
     row = {"kind": "fixed", "why": why, "was": record.statement}
-    return record.model_copy(update={"statement": statement, "status": "born", "fixes": record.fixes + 1,
+    return record.model_copy(update={**rewrite, "status": "born", "fixes": record.fixes + 1,
                                      "review": [*record.review, row]})
 
 
@@ -309,6 +362,6 @@ def fix(world: World, sent: list[tuple[R.Scenario, str]], model: Any, *, bus: An
     return [_fixed(record, why, root.fixed.get(record.id)) for record, why in sent]
 
 
-__all__ = ["BATCH", "EMPTY", "FIX_STAGE", "ID_SHAPE", "Generation", "STAGE", "TOOL_NAME", "World", "canonical", "coverage",
+__all__ = ["BATCH", "plan_openings", "EMPTY", "FIX_STAGE", "ID_SHAPE", "Generation", "STAGE", "TOOL_NAME", "World", "canonical", "coverage",
            "fix", "fold", "from_asks", "from_recordings", "from_search", "generate", "openings", "source_text",
            "statement_refusal", "world_of"]

@@ -73,3 +73,17 @@ def web(workdir: Path, hits: dict | None = None, pages: dict | None = None) -> t
     inner = TestSearch(hits={"": [{"url": URL}]} if hits is None else hits,
                        pages={URL: PAGE} if pages is None else pages)
     return MemoSearch(Chain([inner]), workdir), inner
+
+
+PLANNED = "a holder wants something done with a widget"
+# Rows of the fixture world a bound scenario names, table to key.
+BOUND = {"widget_rows": "W1001", "holder_rows": "holder_7"}
+
+
+def planned(*situations: tuple[str, list[int]]) -> list[ModelReply]:
+    """One plan session writing each (statement, openings) as a situation, by default one holding every
+    opening, then stopping."""
+    rows = situations or ((PLANNED, [0, 1, 2]),)
+    calls = [call("write_situation", {"statement": text, "kind": "change", "openings": list(at)}, f"p{n}")
+             for n, (text, at) in enumerate(rows)]
+    return [*calls, ModelReply(content="Planned them.")]

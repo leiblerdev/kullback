@@ -55,7 +55,9 @@ class Source(Record):
 
 class Scenario(Record):
     """One real-world situation: the statement, its source, the policy lines it touches, how often the
-    recordings open with it, the Examiner's verdicts and its status."""
+    recordings open with it, the Examiner's verdicts and its status; the plan's situation and variant it
+    was written for, the rows of the world it is bound to (table to key) and what the world lacks for it
+    (D381)."""
 
     id: str
     statement: str
@@ -67,6 +69,10 @@ class Scenario(Record):
     evidence: list[dict] = Field(default_factory=list)
     status: Status = "born"
     fixes: int = 0
+    situation: str = ""
+    variant: str = ""
+    binding: dict[str, str] = Field(default_factory=dict)
+    requires: list[str] = Field(default_factory=list)
 
 
 def scenario_id(statement: str, kind: str) -> str:

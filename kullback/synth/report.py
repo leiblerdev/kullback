@@ -59,6 +59,7 @@ def lines(workdir: Any) -> list[str]:
     if coverage:
         out.append(f"search scenarios the recordings never show: {coverage.get('search_not_in_recordings', 0)}")
         out.append(f"ask lines nothing else covers: {coverage.get('asks_not_covered', 0)}")
+        out.append(f"openings in no situation of the plan: {(coverage.get('openings_unplanned') or {}).get('count', 0)}")
         out += [f"folded into an earlier source, from {kind}: {n}"
                 for kind, n in sorted((coverage.get("folded") or {}).items())]
         out += [f"dropped, {reason.replace('_', ' ')}: {n}" for reason, n in (coverage.get("dropped") or {}).items()]

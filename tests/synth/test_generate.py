@@ -13,9 +13,24 @@ from kullback.runner import budget
 from kullback.synth import generate as M
 from kullback.synth import generate_prompt
 from kullback.synth import generate_tools as T
+from kullback.synth import plan as P
 from kullback.synth import records as R
 from kullback.synth import search as S
-from tests.synth.fixture import DESCRIPTION, OPENINGS, POLICY, REFUSE, STATE, TOOLS, URL, call, make_workdir, web
+from tests.synth.fixture import (
+    BOUND,
+    DESCRIPTION,
+    OPENINGS,
+    PLANNED,
+    POLICY,
+    REFUSE,
+    STATE,
+    TOOLS,
+    URL,
+    call,
+    make_workdir,
+    planned,
+    web,
+)
 
 SEALED_LINE = POLICY.splitlines()[0]
 SPAN = "Customers often ask to move a widget after it has been sealed."
@@ -33,6 +48,25 @@ def _generation(tmp_path, *replies) -> tuple[M.Generation, TestModel]:
     model = TestModel([*replies])
     workdir = make_workdir(tmp_path)
     return M.Generation(world=M.world_of(workdir), model=model, bus=T.bus_for(workdir)), model
+
+
+MOVE = "a holder wants a widget moved to another slot"
+BROKEN = "a holder wants a replacement for a widget that arrived broken"
+SEALED_VARIANT = "the widget is already sealed, so a replacement is offered"
+
+
+def _plan(generation: M.Generation, *situations: tuple[str, list[int], list[str]]) -> list[str]:
+    """The generation's plan holding each (statement, openings, variants); the situation ids."""
+    rows = M.openings(generation.world.workdir)
+    generation.plan = P.Plan(situations=[
+        {"id": P.situation_id(text), "statement": text, "kind": "change", "variants": list(variants),
+         "openings": [rows[n] for n in at]} for text, at, variants in situations])
+    return [row["id"] for row in generation.plan.situations]
+
+
+def _bound(call_id: str, statement: str, situation: str, variant: str = "", **args) -> ModelReply:
+    return _write(call_id, statement, situation=situation, variant=variant,
+                  **{"binding": dict(BOUND), **args})
 
 
 def _results(model: TestModel) -> list[str]:
@@ -60,51 +94,103 @@ def test_the_statement_rule_refuses_a_tool_name_and_id_shapes_and_keeps_a_named_
     assert [M.statement_refusal(text, world) for text in refused] == [M.ID_SHAPE] * len(refused)
 
 
-def test_a_recordings_session_groups_openings_with_their_frequency_and_policy_lines(tmp_path):
-    generation, model = _generation(tmp_path,
-                            call("list_openings", {}, "m0"),
-                            _write("m1", "a holder wants a widget moved to another slot", openings=[0, 1],
-                                   policy_lines=[SEALED_LINE]),
-                            _write("m2", "a holder wants a replacement for a widget that arrived broken", openings=[2]),
-                            _done())
+def test_a_recordings_session_writes_one_bound_scenario_per_situation_and_variant_with_tasks_from_the_plan(tmp_path):
+    generation, _ = _generation(tmp_path)
+    move, broken = _plan(generation, (MOVE, [0, 1], [SEALED_VARIANT]), (BROKEN, [2], []))
+    model = generation.model = TestModel([
+        call("list_openings", {}, "m0"), call("lookup_rows", {"table": "widget_rows", "key": "W1001"}, "m1"),
+        _bound("m2", "Ada Byron wants her widget in slot two moved to slot seven before it is sealed.", move,
+               policy_lines=[SEALED_LINE]),
+        _bound("m3", "Ada Byron wants her sealed widget in slot four moved; it cannot move.", move, SEALED_VARIANT,
+               requires=["a tool that swaps a sealed widget"]),
+        _done()])
     M.from_recordings(generation)
-    assert [(r.frequency, r.source.task_ids) for r in generation.found] == [(2, ["task-a1", "task-b2"]), (1, ["task-c3"])]
-    assert generation.found[0].policy_lines == [SEALED_LINE] and generation.dropped == Counter()
-    assert OPENINGS["task-b2"] in _results(model)[0]
+    first, second = generation.found
+    assert [(r.situation, r.variant) for r in generation.found] == [(move, ""), (move, SEALED_VARIANT)]
+    assert first.source.task_ids == second.source.task_ids == ["task-a1", "task-b2"] and first.frequency == 2
+    assert first.binding == BOUND and first.policy_lines == [SEALED_LINE]
+    assert second.requires == ["a tool that swaps a sealed widget"] and generation.dropped == Counter()
+    listed = _results(model)[0]
+    assert OPENINGS["task-b2"] in listed and SEALED_VARIANT in listed and broken in listed
+    assert '"is_sealed": false' in _results(model)[1]
+    assert generation.ungrouped == [{"source": "recordings", "batch": 0, "items": 2, "ungrouped": 1}]
 
 
 def test_a_refused_write_is_written_again_once_and_a_second_refusal_drops_and_counts_it(tmp_path):
-    generation, model = _generation(tmp_path,
-                            _write("m0", "a holder wants move_widget called", openings=[0]),
-                            _write("m1", "a holder wants a widget moved to another slot", openings=[0]),
-                            _write("m2", "a holder wants widget W1001 moved", openings=[1]),
-                            _write("m3", "a holder wants widget W1002 moved now", openings=[1]),
-                            _write("m4", "a holder wants a widget moved", openings=[2], policy_lines=["made up"]),
-                            _done())
+    generation, model = _generation(tmp_path)
+    move, broken, third = _plan(generation, (MOVE, [0], []), (BROKEN, [1], []), (PLANNED, [2], []))
+    model = generation.model = TestModel([_bound("m0", "a holder wants move_widget called", move),
+                      _bound("m1", "Ada Byron wants a widget moved to another slot", move),
+                      _bound("m2", "a holder wants widget W1001 replaced", broken),
+                      _bound("m3", "a holder wants widget W1002 replaced now", broken),
+                      _bound("m4", "a holder wants a widget looked at", third, policy_lines=["made up"]), _done()])
     M.from_recordings(generation)
-    assert [r.statement for r in generation.found] == ["a holder wants a widget moved to another slot"]
+    assert [r.statement for r in generation.found] == ["Ada Byron wants a widget moved to another slot"]
     assert generation.dropped == Counter({M.ID_SHAPE: 1, T.POLICY_LINE: 1})
     results = _results(model)
     assert "write it again once" in results[0] and "dropped" in results[3]
+
+
+def test_a_binding_the_world_does_not_hold_is_refused_naming_the_table_and_key(tmp_path):
+    generation, model = _generation(tmp_path)
+    [move] = _plan(generation, (MOVE, [0, 1, 2], []))
+    model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move, binding={"widget_rows": "W9999"}),
+                      _bound("m1", "Ada Byron wants a widget moved", move, binding={"gadget_rows": "W1001"}),
+                      _done()])
+    M.from_recordings(generation)
+    first, second = _results(model)
+    assert T.BINDING.replace("_", " ") in first and "'widget_rows'" in first and "'W9999'" in first
+    assert "'gadget_rows'" in second and "dropped" in second
+    assert generation.found == [] and generation.dropped == Counter({T.BINDING: 1})
+
+
+def test_a_scenario_bound_to_nothing_with_nothing_required_is_refused_as_unbound(tmp_path):
+    generation, model = _generation(tmp_path)
+    [move] = _plan(generation, (MOVE, [0, 1, 2], []))
+    model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move, binding={}),
+                      _bound("m1", "Ada Byron wants a widget moved", move, binding={},
+                             requires=["a slot that takes a sealed widget"]), _done()])
+    M.from_recordings(generation)
+    assert T.UNBOUND in _results(model)[0]
+    [record] = generation.found
+    assert record.binding == {} and record.requires == ["a slot that takes a sealed widget"]
+
+
+def test_a_second_write_for_the_same_situation_and_variant_is_refused_naming_the_scenario_that_holds_it(tmp_path):
+    generation, model = _generation(tmp_path)
+    [move] = _plan(generation, (MOVE, [0, 1, 2], [SEALED_VARIANT]))
+    model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move),
+                      _bound("m1", "Ada Byron wants her widget moved again", move),
+                      _bound("m2", "Ada Byron wants a sealed widget moved", move, SEALED_VARIANT), _done()])
+    M.from_recordings(generation)
+    refusal = _results(model)[1]
+    assert T.SITUATION_WRITTEN.replace("_", " ") in refusal and generation.found[0].id in refusal
+    assert [r.variant for r in generation.found] == ["", SEALED_VARIANT]
+    R.write_all(generation.world.workdir, generation.found[:1])
+    again = M.Generation(world=generation.world, model=None)
+    _plan(again, (MOVE, [0, 1, 2], [SEALED_VARIANT]))
+    model = again.model = TestModel([_bound("n0", "Ada Byron wants her widget moved once more", move), _done()])
+    M.from_recordings(again)
+    assert generation.found[0].id in _results(model)[0] and again.found == []
 
 
 def test_a_search_session_on_the_shared_web_tools_cites_the_byte_range_of_a_span_on_a_page_it_read(tmp_path):
     generation, model = _generation(tmp_path,
                             call("search", {"query": "what holders ask about sealed widgets"}, "m0"),
                             _write("m1", "a holder wants to move a widget that is already sealed", "search",
-                                   url=URL, span=SPAN),
+                                   url=URL, span=SPAN, binding=BOUND),
                             call("read_page", {"url": URL}, "m2"),
                             _write("m3", "a holder wants to move a widget that is already sealed", "search",
-                                   url=URL, span=SPAN),
+                                   url=URL, span=SPAN, binding=BOUND),
                             _write("m4", "a holder wants their widget painted", "search", url=URL,
-                                   span="We paint widgets on request."),
+                                   span="We paint widgets on request.", binding=BOUND),
                             _done())
     engine, inner = web(generation.world.workdir)
     M.from_search(generation, engine=engine, refuse=REFUSE)
     [record] = generation.found
     raw = domain.cached_text(generation.world.workdir, record.source.key).encode("utf-8")
     assert raw[record.source.start:record.source.end].decode("utf-8") == SPAN
-    assert record.source.url == URL and record.frequency == 0
+    assert record.source.url == URL and record.frequency == 0 and record.binding == BOUND
     assert generation.dropped == Counter({T.NO_SPAN: 1}) and T.NOT_READ.replace("_", " ") in _results(model)[1]
     assert inner.queries == ["what holders ask about sealed widgets"] and inner.fetched == [URL]
     assert URL in _results(model)[0] and SPAN in _results(model)[2]
@@ -155,7 +241,7 @@ def test_without_a_model_no_ask_line_becomes_a_record_and_a_note_says_so(tmp_pat
 
 def test_a_generation_session_plays_on_the_workdir_bus_as_synth_and_books_its_calls_under_its_stage(tmp_path):
     workdir = make_workdir(tmp_path)
-    model = TestModel([_write("m0", "a holder wants a widget moved to another slot", openings=[0, 1, 2]), _done()])
+    model = TestModel([*planned(), _bound("m0", MOVE, P.situation_id(PLANNED)), _done()])
     M.generate(workdir, model=model, searching=False)
     records = [json.loads(line) for line in (workdir / "bus.jsonl").read_text().splitlines()]
     assert {row["agent"] for row in records} == {T.AGENT}
@@ -163,18 +249,15 @@ def test_a_generation_session_plays_on_the_workdir_bus_as_synth_and_books_its_ca
     assert budget.load_totals(workdir)["stages"][M.STAGE]["calls"] >= 1
 
 
-def test_an_opening_belongs_to_one_scenario_the_rest_of_the_picks_write_and_ungrouped_ones_are_counted(tmp_path):
+def test_generation_writes_scenarios_with_the_plan_situation_and_a_second_call_skips_what_is_written(tmp_path):
     workdir = make_workdir(tmp_path)
-    model = TestModel([_write("m0", "a holder wants a widget moved to another slot", openings=[0]),
-                       _write("m1", "a holder wants a sealed widget moved", openings=[0, 1]),
-                       _write("m2", "a holder wants a sealed widget moved", openings=[1]), _done()])
-    body = M.generate(workdir, model=model, searching=False)
-    first, second = sorted(R.load_scenarios(workdir), key=lambda r: r.source.task_ids)
-    refusal = _results(model)[1]
-    assert T.OPENING_GROUPED.replace("_", " ") in refusal and first.id in refusal
-    assert [(r.frequency, r.source.task_ids) for r in (first, second)] == [(1, ["task-a1"]), (1, ["task-b2"])]
-    assert body["coverage"]["dropped"] == {}
-    assert body["coverage"]["openings_ungrouped"] == [{"source": "recordings", "batch": 0, "items": 3, "ungrouped": 1}]
+    model = TestModel([*planned(), _bound("m0", MOVE, P.situation_id(PLANNED)), _done()])
+    M.generate(workdir, model=model, searching=False)
+    [record] = R.load_scenarios(workdir)
+    assert record.situation == P.situation_id(PLANNED) and record.source.task_ids == list(OPENINGS)
+    assert record.frequency == 3 and record.binding == BOUND
+    body = M.generate(workdir, model=TestModel([]), searching=False)
+    assert body["born"] == 0 and body["coverage"]["openings_unplanned"]["count"] == 0
 
 
 def test_an_ask_line_is_rewritten_once(tmp_path):
@@ -188,9 +271,9 @@ def test_an_ask_line_is_rewritten_once(tmp_path):
 def test_a_search_session_gets_its_own_turn_budget_and_a_capped_session_is_counted_under_its_kind(tmp_path):
     workdir = make_workdir(tmp_path)
     endless = [call("list_scenarios", {}, f"s{at}") for at in range(T.MAX_TURNS + 5)]
-    model = TestModel([_done(), *endless])
+    model = TestModel([*planned(), _done(), *endless])
     body = M.generate(workdir, model=model, engine=web(workdir)[0], refuse=REFUSE, description=DESCRIPTION)
-    assert len(model.calls) - 1 == T.SEARCH_TURNS == T.turns_for(T.GenerateRoot(world=M.world_of(workdir), kind="search"))
+    assert len(model.calls) - 3 == T.SEARCH_TURNS == T.turns_for(T.GenerateRoot(world=M.world_of(workdir), kind="search"))
     assert body["capped"] == {"search": 1}
     assert json.loads((R.store_dir(workdir) / R.GENERATED).read_text())["capped"] == {"search": 1}
 
@@ -201,7 +284,7 @@ def test_generation_folds_an_ask_into_the_recordings_record_and_writes_coverage(
     which = "someone asks which slot their widget sits in"
     (workdir / R.DIR).mkdir()
     (workdir / R.DIR / R.ASKS).write_text("I want my widget moved\ntest whether it says which slot I picked\n")
-    model = TestModel([_write("m0", statement, openings=[0, 1]), _done(),
+    model = TestModel([*planned(), _bound("m0", statement, P.situation_id(PLANNED)), _done(),
                        _write("a0", statement, "ask", openings=[0]), _write("a1", which, "ask", openings=[1]), _done()])
     body = M.generate(workdir, model=model, searching=False)
     records = R.load_scenarios(workdir)
@@ -238,11 +321,11 @@ def test_generation_again_keeps_the_status_and_review_of_a_record_already_held(t
     (workdir / R.DIR).mkdir()
     (workdir / R.DIR / R.ASKS).write_text("test which slot a widget sits in\n")
 
-    def scripted():
-        return TestModel([_done(), _write("a0", "someone asks which slot a widget sits in", "ask", openings=[0]),
+    def scripted(plan=()):
+        return TestModel([*plan, _done(), _write("a0", "someone asks which slot a widget sits in", "ask", openings=[0]),
                           _done()])
 
-    M.generate(workdir, model=scripted(), searching=False)
+    M.generate(workdir, model=scripted(planned()), searching=False)
     [record] = R.load_scenarios(workdir)
     R.write_scenario(workdir, record.model_copy(update={"status": "passed"}))
     M.generate(workdir, model=scripted(), searching=False)
@@ -251,8 +334,10 @@ def test_generation_again_keeps_the_status_and_review_of_a_record_already_held(t
 
 def test_a_fix_session_rewrites_once_from_the_same_source_keeps_the_id_and_a_failed_rewrite_ends_unsure(tmp_path):
     world = M.world_of(make_workdir(tmp_path))
-    first = R.born("a holder wants things", R.Source(kind="recordings", task_ids=["task-a1"]), frequency=1)
-    second = R.born("a holder wants stuff", R.Source(kind="recordings", task_ids=["task-c3"]), frequency=1)
+    first = R.born("a holder wants things", R.Source(kind="recordings", task_ids=["task-a1"]),
+                   frequency=1).model_copy(update={"binding": dict(BOUND)})
+    second = R.born("a holder wants stuff", R.Source(kind="recordings", task_ids=["task-c3"]),
+                    frequency=1).model_copy(update={"binding": dict(BOUND)})
     model = TestModel([call("rewrite_scenario", {"id": first.id, "statement": "a holder wants a widget moved"}, "f0"),
                        call("rewrite_scenario", {"id": second.id, "statement": "run get_widget"}, "f1"),
                        call("rewrite_scenario", {"id": second.id, "statement": "run move_widget"}, "f2"),
@@ -297,7 +382,22 @@ def test_a_spent_ceiling_runs_no_generation_session_and_the_notes_say_it_stopped
 
 def test_a_ceiling_with_room_runs_the_generation_sessions_as_without_one(tmp_path):
     workdir = make_workdir(tmp_path)
-    model = TestModel([_write("m0", "a holder wants a widget moved to another slot", openings=[0, 1, 2]), _done()])
+    model = TestModel([*planned(), _bound("m0", "a holder wants a widget moved to another slot",
+                                          P.situation_id(PLANNED)), _done()])
     body = M.generate(workdir, model=model, searching=False, ceiling=budget.Ceiling(usd=0.5))
     assert [r.statement for r in R.load_scenarios(workdir)] == ["a holder wants a widget moved to another slot"]
     assert M.CEILING_NOTE not in body["notes"]
+
+
+def test_every_generation_session_but_the_plan_holds_the_world_tools_the_review_holds(tmp_path):
+    from kullback.agent.extensions import load_extensions
+    from kullback.agent.harness import AgentHarness
+    from kullback.synth import world_tools as W
+
+    world = M.world_of(make_workdir(tmp_path))
+    held = {}
+    for kind in T.SESSION_TOOLS:
+        harness = AgentHarness(model=TestModel([]))
+        load_extensions(harness, [T.generate_extension(T.GenerateRoot(world=world, kind=kind, refuse=REFUSE))])
+        held[kind] = set(W.NAMES) <= set(harness.registry.names())
+    assert held == {"plan": False, "recordings": True, "ask": True, "search": True, "fix": True}
