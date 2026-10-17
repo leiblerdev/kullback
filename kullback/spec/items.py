@@ -1140,8 +1140,25 @@ def sanity_atom(end_states: list[EndState]) -> Atom:
                         "from": {"fact_ids": [], "policy_line": None, "code": True}})
 
 
+def _called_arg_clashes(items: list[dict]) -> list[tuple[str, str]]:
+    """Gated called items naming one tool with different args: the Verdict exact-matches called args, so
+    both hold only for a Run that calls the tool once per arg set (D392)."""
+    out: list[tuple[str, str]] = []
+    first: dict[str, tuple[str, str]] = {}
+    for item in items:
+        if item["kind"] != "called" or not item.get("gate") or not item.get("args"):
+            continue
+        text = json.dumps(item["args"], sort_keys=True, default=str)
+        first_id, first_text = first.setdefault(item["tool"], (item["id"], text))
+        if first_text != text:
+            out.append((item["id"], f"called {item['tool']} with other args beside {first_id}; gate the end state "
+                                    "row instead, or one called item with one_of"))
+    return out
+
+
 def contradictions(items: list[dict]) -> list[tuple[str, str]]:
-    """(item id, why) for items no Run can pass together: a tool both called and not, a cell both v and not v."""
+    """(item id, why) for items no Run can pass together: a tool both called and not, a tool gated as called
+    with two different arg sets, a cell both v and not v."""
     out: list[tuple[str, str]] = []
     needed = {}
     for item in items:
@@ -1152,6 +1169,7 @@ def contradictions(items: list[dict]) -> list[tuple[str, str]]:
     for item in items:
         if item["kind"] == "not_called" and not item.get("args") and item["tool"] in needed:
             out.append((item["id"], f"not_called {item['tool']} beside {needed[item['tool']]}, which needs the call"))
+    out += _called_arg_clashes(items)
     cells: dict[tuple, tuple[str, str]] = {}
     for item in items:
         if item["kind"] != "row_is":

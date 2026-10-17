@@ -3540,3 +3540,19 @@ a model.
 
 Tests: tests/synth/test_tasks.py (a born Task's overlay loads through load_overlay with no rows, no steps and empty
 values; a second call writes the overlay a born Task lacks and skips the Task).
+
+### D392. Two gated called items on one tool with different args are a contradiction (2026-10-17)
+What: kullback/spec/items.py contradictions now reports the second of two gated called items that name the same
+tool with differing args: "called <tool> with other args beside <first id>; gate the end state row instead, or one
+called item with one_of". The reason reaches the Spec writer by the existing send-back turn (writer._clash_rows and
+FOLLOWUP_PROMPT) and, if left, counts["unsatisfiable"]; writer.py is unchanged.
+
+Why: the Verdict exact-matches a called target, so such a pair holds only for a Run that calls the tool once per
+arg set. In the first loop check the writer wrote one called item per row the user named; it meant the end state of
+those rows, which row_is items check.
+
+What it does not do: no alt on called items, no change to the Verdict (kullback/runner is unchanged, frozen). Items
+without args, items on different tools, ungated items and two items with equal args are not contradictions.
+
+Tests: tests/spec/test_items.py (the new case fires on the second item; the four non cases report nothing; the
+existing not_called and cell cases still fire).
