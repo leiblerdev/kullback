@@ -12,6 +12,11 @@ evidence and nothing else: no Reference, no expected end state, no user goal.
 
 A call that fails or a reply that cannot be read gives score None, never a false 0: the reward is
 masked for that Run, the same rule the grader follows.
+
+The cap fits a model that reasons before it answers (D395): a reasoning model spends its output
+tokens on thinking first, so a cap sized for the JSON alone comes back empty with stop reason
+max_tokens. A reply that is empty or cut is asked once more at a larger cap; empty again, the item
+is a judge outage (status "outage"), still unscored, so a report can tell an outage from a no.
 """
 
 from __future__ import annotations
@@ -27,7 +32,10 @@ from kullback.judge.shape import NO_EVIDENCE, anchor_of, evidence_refs, has_evid
 from kullback.runner.budget import call_cost
 from kullback.runner.records import Atom, Run
 
-ITEM_JUDGE_VERSION = "1"
+ITEM_JUDGE_VERSION = "2"
+JUDGE_TOKENS = 4000  # thinking plus a one-line JSON answer
+RETRY_TOKENS = 16000  # the one retry of an empty or cut reply
+CUT_STOPS = ("max_tokens", "length")  # the stop reasons of a reply cut by the cap
 TURN_CHARS = 4000  # each turn of evidence, clamped and marked when cut
 EVIDENCE_CHARS = 24000  # all the evidence of one item; a long multi-turn Run fits
 WHY_CHARS = 25
@@ -41,7 +49,8 @@ SYSTEM = (
     "guess. If the evidence is marked truncated where the checkpoint's target falls, score 0 and "
     f'write "{TRUNCATED_WHY}" in why. An answer listed under reject scores 0 even when it also '
     "says the right answer as one of several options it leaves the user to pick from.\n"
-    'Output one JSON object and nothing else: {"results": {"<id>": {"score": 0 or 1, '
+    "Answer with the JSON object first, nothing before it, and nothing else: "
+    '{"results": {"<id>": {"score": 0 or 1, '
     f'"why": "<= {WHY_CHARS} chars"}}}}'
 )
 
@@ -58,6 +67,9 @@ class JudgeScore(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)  # evidence refs the Run had nothing for
     error: Optional[str] = None
+    status: str = ""  # "" when scored by code, "answered", "unreadable", or "outage" when no answer came back (D395)
+    stop_reason: Optional[str] = None  # of the last call
+    retries: int = 0
     cost_usd: float = 0.0
     model: Optional[str] = None
     version: str = ITEM_JUDGE_VERSION
@@ -133,7 +145,8 @@ def _parse(content: Optional[str], item_id: str) -> tuple[Optional[int], str]:
 
 
 def judge_item(model: Model, atom: Atom, run: Run, *, model_id: Optional[str] = None) -> JudgeScore:
-    """One judge item on one Run: one call, temperature 0, priced; score 0, 1 or None."""
+    """One judge item on one Run: one call at temperature 0, a second when the first comes back empty or
+    cut, priced; score 0, 1 or None."""
     target = atom.target or {}
     refs = evidence_refs(target)
     evidence, cut, missing = build_evidence(run, refs)
@@ -146,16 +159,30 @@ def judge_item(model: Model, atom: Atom, run: Run, *, model_id: Optional[str] = 
         return result
     messages = [{"role": "system", "content": SYSTEM},
                 {"role": "user", "content": judge_message(atom.id, target, evidence)}]
-    try:
-        reply = model.query(messages, config=ModelConfig(temperature=0, max_tokens=200))
-    except Exception as error:  # any failed call masks the item; it is never a 0
-        result.error = f"{type(error).__name__}: {str(error)[:200]}"
-        return result
-    result.cost_usd = call_cost(reply.usage, name) if name else 0.0
-    result.score, result.why = _parse(reply.content, atom.id)
-    if result.score is None:
+    for cap in (JUDGE_TOKENS, RETRY_TOKENS):
+        try:
+            reply = model.query(messages, config=ModelConfig(temperature=0, max_tokens=cap))
+        except Exception as error:  # any failed call masks the item; it is never a 0
+            result.error = f"{type(error).__name__}: {str(error)[:200]}"
+            result.status = "outage"
+            return result
+        result.cost_usd += call_cost(reply.usage, name) if name else 0.0
+        result.stop_reason = reply.stop_reason
+        result.score, result.why = _parse(reply.content, atom.id)
+        if result.score is not None or not _empty_or_cut(reply) or cap == RETRY_TOKENS:
+            break
+        result.retries += 1
+    if result.score is not None:
+        result.status = "answered"
+    else:
+        result.status = "outage" if not (reply.content or "").strip() else "unreadable"
         result.error = f"{result.why}: {(reply.content or '')[:200]!r}"
     return result
+
+
+def _empty_or_cut(reply) -> bool:
+    """A reply worth one retry: the cap cut it, or it holds no JSON object at all."""
+    return reply.stop_reason in CUT_STOPS or not re.search(r"\{.*\}", reply.content or "", re.S)
 
 
 def judge_items(model: Model, atoms: Iterable[Atom], run: Run, **kwargs) -> dict[str, JudgeScore]:
@@ -170,6 +197,7 @@ def tally(results: Iterable[JudgeScore]) -> dict:
             "met": sum(1 for r in rows if r.score == 1),
             "not_met": sum(1 for r in rows if r.score == 0),
             "unjudged": sum(1 for r in rows if r.score is None),
+            "outage": sum(1 for r in rows if r.status == "outage"),
             "truncated": sum(1 for r in rows if r.truncated),
             "said_truncated": sum(1 for r in rows if TRUNCATED_WHY in r.why.lower()),
             "cost_usd": round(sum(r.cost_usd for r in rows), 4)}

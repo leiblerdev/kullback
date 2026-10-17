@@ -3607,3 +3607,25 @@ tier by label table and rubric sentence; News on the Environment and organisatio
 ships without solution/ marked has_oracle false, counted and listed under no_oracle, still left out under trusted,
 no oracle part scanned, and the card's line on it; a Task ruled no_verifier ships no draft; publishing from a staged
 package gives the manifest a plain stage gives, and a tampered staged file is refused by name).
+
+### D395. The item judge's cap fits a reasoning model, one retry, an outage is not a no (2026-10-17)
+What: kullback/judge/items.py judge_item asks at max_tokens JUDGE_TOKENS 4000 instead of 200, and on a reply that
+is empty or cut (stop reason max_tokens or length, or no JSON object in it) asks once more at RETRY_TOKENS 16000. The
+system prompt says to answer with the JSON object first, nothing before it. JudgeScore gains status ("answered",
+"unreadable", "outage"; empty when code scored the item), stop_reason of the last call and retries; cost adds both
+calls. A failed call, or an empty reply after the retry, is status "outage". tally counts outages.
+ITEM_JUDGE_VERSION 2. kullback/hub/harbor_world.py writes status, stop_reason and retries into judge.json. D394 is not
+in the log on this branch; this row follows D393 and the fold renumbers if needed.
+
+Why: in the bench-1017 smoke the Harbor oracle on one airline Task scored 0 twice because gated item j1 came back as
+an empty reply. Reproduced outside Docker: at 200 tokens the model's only content block was thinking (stop reason
+max_tokens, 200 out); at 4000 it answered in 101 tokens. The adapter always sends adaptive thinking to this model and
+it cannot be turned off, so the cap must hold the thinking and the answer. With 68 of 73 staged airline Tasks holding
+judged items, a judge that comes back empty makes the dataset measure the judge, not the agent.
+
+What it does not do: an outage still leaves the item unscored, so a gated item still fails closed; the change only
+makes an outage visible beside a no. No change to evidence building, the Verdict or kullback/runner (frozen).
+
+Tests: tests/runner/test_judge_items.py (a cut reply is asked once more at the larger cap and parses; an empty reply
+after the retry is an outage, unscored and tallied; an answer on the first call is not retried and records its stop
+reason; the judge is told to answer with the JSON first).

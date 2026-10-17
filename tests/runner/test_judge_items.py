@@ -74,6 +74,34 @@ def test_a_failed_call_or_an_unreadable_reply_gives_no_score_never_a_zero():
     assert judge_item(TestModel([_says(0.5)]), _item(), _run(["hi"])).score is None
 
 
+def test_a_reply_cut_by_the_cap_is_asked_once_more_at_a_larger_cap_and_parses():
+    cut = ModelReply(content=None, stop_reason="max_tokens", usage=Usage(input=500, output=4000))
+    model = TestModel([cut, _says(1)])
+    result = judge_item(model, _item(), _run(["Your total is $42.50."]))
+    assert (result.score, result.status, result.retries) == (1, "answered", 1)
+    caps = [call["config"].max_tokens for call in model.calls]
+    assert caps == [items.JUDGE_TOKENS, items.RETRY_TOKENS] and caps[0] < caps[1]
+
+
+def test_an_empty_reply_after_the_retry_is_a_judge_outage_not_a_no_and_stays_unscored():
+    empty = ModelReply(content="", stop_reason="max_tokens")
+    model = TestModel([empty, empty])
+    result = judge_item(model, _item(gate=True), _run(["Your total is $42.50."]))
+    assert (result.score, result.status, result.retries, result.stop_reason) == (None, "outage", 1, "max_tokens")
+    assert len(model.calls) == 2 and tally([result])["outage"] == 1
+
+
+def test_an_answer_on_the_first_call_is_not_retried_and_records_its_stop_reason():
+    model = TestModel([_says(0).model_copy(update={"stop_reason": "end_turn"})])
+    result = judge_item(model, _item(), _run(["Your total is $40.00."]))
+    assert (result.score, result.status, result.retries, result.stop_reason) == (0, "answered", 0, "end_turn")
+    assert len(model.calls) == 1
+
+
+def test_the_judge_is_told_to_answer_with_the_json_first_and_nothing_before_it():
+    assert "JSON object first, nothing before it" in items.SYSTEM
+
+
 def test_a_results_list_leaves_the_item_unjudged_with_unreadable_reply():
     listed = TestModel([ModelReply(content=json.dumps({"results": [{"score": 1}]}))])
     result = judge_item(listed, _item(), _run(["Your total is $42.50."]))

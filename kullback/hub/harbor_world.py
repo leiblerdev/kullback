@@ -239,7 +239,9 @@ def judge(verifier: Verifier, run: Any, logs: Path) -> Optional[dict]:
             record["error"] = f"{type(error).__name__}: {str(error)[:200]}"
     for result in (answers or {}).values():
         record["items"].append({"id": result.id, "score": result.score, "why": result.why,
-                                "error": result.error, "cost_usd": result.cost_usd})
+                                "error": result.error, "status": result.status,
+                                "stop_reason": result.stop_reason, "retries": result.retries,
+                                "cost_usd": result.cost_usd})
     record["cost_usd"] = round(sum(row["cost_usd"] for row in record["items"]), 6)
     write_json(logs / JUDGE_NAME, record)
     return answers
