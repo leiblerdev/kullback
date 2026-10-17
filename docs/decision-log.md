@@ -3661,7 +3661,7 @@ Tests: tests/spec/test_items.py (the clash fires and nothing else does; a not_ca
 repeated pair is reported once on the second item; D392's equal args case now reports the repeat; a called
 description names its args and a not_called without args reads as before).
 
-### D396. A cut answer is not done, and an answer with items unwritten is not final (2026-10-17)
+### D397. A cut answer is not done, and an answer with items unwritten is not final (2026-10-17)
 
 What. kullback/agent/loop.py: a turn the provider cut at the output cap (stop reason length) that called no tool is
 not a stop. The loop appends once per run CUT_TURN_ASK, one line beside EMPTY_TURN_ASK naming no artifact: continue

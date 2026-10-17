@@ -140,10 +140,8 @@ async def run_agent_loop(
 
     await send(AgentStartEvent())
     turn = 0
-    asked_for_summary = False  # the empty-turn ask is made once per run, never twice
     asked_shapes: set[str] = set()  # the retry asks already made; the same refusal twice stands
-    asked_after_cut = False  # the cut-turn ask is made once per run; a second cut ends the run
-    unfinished_asks = 0
+    ending = _EndAsks()
     pending: list[Message] = list(prompts or [])
     pending.extend(_drain_all(state.steering))
     while True:
@@ -183,20 +181,8 @@ async def run_agent_loop(
             has_more_tools = bool(assistant.tool_calls)
             pending = _drain_all(state.steering)
             pending += [user_message(ask, {"retry_ask": ask}) for ask in _retry_asks(results, asked_shapes)]
-            if has_more_tools or pending or state.follow_ups:
-                continue
-            if assistant.stop_reason == "length":
-                if not asked_after_cut:
-                    asked_after_cut = True
-                    pending = [user_message(CUT_TURN_ASK)]
-            elif not asked_for_summary and _says_nothing(assistant):
-                asked_for_summary = True
-                pending = [user_message(EMPTY_TURN_ASK)]
-            elif state.unfinished is not None and unfinished_asks < UNFINISHED_ASKS:
-                left = " ".join(str(state.unfinished() or "").split())
-                if left:
-                    unfinished_asks += 1
-                    pending = [user_message(left, {"unfinished_ask": unfinished_asks})]
+            if not has_more_tools and not pending and not state.follow_ups:
+                pending = ending.asks(assistant, state)
         if state.follow_ups:
             pending = [state.follow_ups.popleft()]
             continue
@@ -215,6 +201,33 @@ CUT_TURN_ASK = ("Your last answer was cut at the output cap and called no tool. 
                 "turn, and act on each item as soon as what it needs is looked up.")
 # How many times per run the caller's unfinished line is put to the model before the run ends.
 UNFINISHED_ASKS = 2
+
+
+@dataclass
+class _EndAsks:
+    """The asks a run makes when it would otherwise end, each counted per run."""
+
+    cut: bool = False  # the cut-turn ask is made once; a second cut ends the run
+    summary: bool = False  # the empty-turn ask is made once, never twice
+    unfinished: int = 0
+
+    def asks(self, assistant: AssistantMessage, state: LoopState) -> list[Message]:
+        """The one user message that keeps the run going, or none and the run ends."""
+        if assistant.stop_reason == "length":
+            if self.cut:
+                return []
+            self.cut = True
+            return [user_message(CUT_TURN_ASK)]
+        if not self.summary and _says_nothing(assistant):
+            self.summary = True
+            return [user_message(EMPTY_TURN_ASK)]
+        if state.unfinished is None or self.unfinished >= UNFINISHED_ASKS:
+            return []
+        left = " ".join(str(state.unfinished() or "").split())
+        if not left:
+            return []
+        self.unfinished += 1
+        return [user_message(left, {"unfinished_ask": self.unfinished})]
 
 
 def _retry_asks(results: list[ToolResultMessage], already: set[str]) -> list[str]:
