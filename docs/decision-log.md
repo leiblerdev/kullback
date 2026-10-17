@@ -3520,3 +3520,23 @@ second call skips what exists; the limit holds; scenario_of names the scenario o
 the born ids join a build sample and the tiers call the born Task synthetic; no sample, no build file),
 tests/spec/test_trust.py (a Task whose recording is a scenario's is tiered synthetic and never trusted, an ordinary
 Task unchanged).
+
+### D390. A born Task's Starting state is the shared world: an empty overlay (2026-10-17)
+
+What. kullback/synth/tasks.py born_tasks writes, for every born Task, overlays/<task id>.json in the shape every
+recorded Task's overlay has: {"overlay": {"task_id", "rows": [], "steps": []}, "values": {}, "runs": {},
+"reference_run_id": ""}, through write_json (synth is read by spec/trust.py, so it does not import the Builder's
+writer). A Task that already exists but lacks its overlay gets one on the next call, so a rerun of
+`kullback synth tasks` repairs Tasks born before this row; an overlay that exists is never rewritten. The counts gain
+"overlays_written".
+
+Why. The first live loop check failed in the Spec stage on every born Task: the writer reads the Starting state
+through env.overlay like every recorded Task, and load_overlay raises where no overlay file exists. A scenario is
+bound to rows that exist in db.json, so nothing needs pinning; the empty overlay says the Starting state is the
+shared world as it stands.
+
+What it does not do: no row is pinned, no step, no Run layer; kullback/runner is unchanged (frozen). Nothing ran on
+a model.
+
+Tests: tests/synth/test_tasks.py (a born Task's overlay loads through load_overlay with no rows, no steps and empty
+values; a second call writes the overlay a born Task lacks and skips the Task).

@@ -7,7 +7,8 @@ statement and nothing else, so `scenario_of` reads where a Task came from off it
 miner, the Spec writer, the review rounds and the Examiner then run over it unchanged. The binding and the policy lines are not
 copied anywhere: the writer reads the world itself. No Reference, no Run and no fidelity number come of
 it, and trust tiers such a Task synthetic, never trusted (spec/trust.py). Where the workdir's build.json holds
-a Task sample, the born ids join it, so the tiers see them.
+a Task sample, the born ids join it, so the tiers see them. Its Starting state is the shared world as it stands
+(D390): an empty overlay, since the binding names rows that exist and nothing is pinned.
 """
 
 from __future__ import annotations
@@ -16,7 +17,8 @@ import hashlib
 from pathlib import Path
 from typing import Any, Optional
 
-from kullback.runner.records import RawPtr, Task, Trace, Turn, as_dict, read_json, write_json
+from kullback.runner.records import RawPtr, Task, TaskOverlay, Trace, Turn, as_dict, read_json, write_json
+from kullback.runner.world.loading import OVERLAY_DIR
 from kullback.synth.records import FORMAT, Scenario, load_scenarios
 
 SECTION = "scenario"
@@ -72,6 +74,17 @@ def scenario_of(workdir: Any, task_id: str) -> Optional[str]:
     return named.pop() if len(named) == 1 and "" not in named else None
 
 
+def _write_empty_overlay(workdir: Path, task_id: str) -> bool:
+    """The empty overlay of a born Task in the shape every recorded Task's overlay has (D390): no row
+    pinned, no step, no Run layer, so the writer reads the shared world. False where one exists."""
+    path = workdir / OVERLAY_DIR / f"{task_id}.json"
+    if path.is_file():
+        return False
+    overlay = TaskOverlay(task_id=task_id, rows=[], steps=[])
+    write_json(path, {"overlay": as_dict(overlay), "values": {}, "runs": {}, "reference_run_id": ""})
+    return True
+
+
 def _append_index(workdir: Path, tasks: list[Task]) -> None:
     """The born Tasks appended to tasks.json in its own shape, {"tasks": [...]}."""
     body = read_json(workdir / TASKS_INDEX, {}) or {}
@@ -90,15 +103,17 @@ def _join_sample(workdir: Path, task_ids: list[str]) -> None:
 
 def born_tasks(workdir: Any, store_dir: Any, *, limit: Optional[int] = None) -> dict:
     """One Task and one recording per scenario that bears a Task, in id order, up to `limit`; a scenario
-    whose Task already exists is skipped. Returns the counts and the ids born."""
+    whose Task already exists is skipped, though its overlay is written where it lacks one (D390).
+    Returns the counts and the ids born."""
     root = Path(workdir)
     candidates = [scenario for scenario in load_scenarios(store_dir) if bears_task(scenario)]
     if limit is not None:
         candidates = candidates[:limit]
     born: list[Task] = []
-    skipped = 0
+    skipped = overlays = 0
     for scenario in candidates:
         task = task_of_scenario(scenario)
+        overlays += _write_empty_overlay(root, task.id)
         if (root / "tasks" / f"{task.id}.json").is_file():
             skipped += 1
             continue
@@ -110,7 +125,7 @@ def born_tasks(workdir: Any, store_dir: Any, *, limit: Optional[int] = None) -> 
         _append_index(root, born)
         _join_sample(root, [task.id for task in born])
     return {"candidates": len(candidates), "born": len(born), "skipped_existing": skipped,
-            "ids": [task.id for task in born]}
+            "overlays_written": overlays, "ids": [task.id for task in born]}
 
 
 __all__ = ["bears_task", "born_tasks", "recording_of", "scenario_of", "task_id_of", "task_of_scenario", "trace_id_of"]

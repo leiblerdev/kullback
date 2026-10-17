@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from kullback.runner.records import Task, as_dict, write_json
+from kullback.runner.world.loading import load_overlay
 from kullback.spec.intent_tools import recordings_of, task_of, trace_index
 from kullback.synth.records import Source, born, write_all
 from kullback.synth.tasks import born_tasks, scenario_of, task_id_of, trace_id_of
@@ -41,7 +42,7 @@ def _workdir(root):
 def test_only_passed_bound_scenarios_of_the_recordings_with_nothing_required_bear_tasks(tmp_path):
     passed = _store(tmp_path / "store")
     counts = born_tasks(_workdir(tmp_path / "env"), tmp_path / "store")
-    assert counts == {"candidates": 2, "born": 2, "skipped_existing": 0,
+    assert counts == {"candidates": 2, "born": 2, "skipped_existing": 0, "overlays_written": 2,
                       "ids": [task_id_of(record.id) for record in passed]}
     index = json.loads((tmp_path / "env" / "tasks.json").read_text())["tasks"]
     assert [row["id"] for row in index] == ["task_existing", *counts["ids"]]
@@ -68,8 +69,27 @@ def test_a_second_call_skips_the_tasks_that_exist_and_appends_nothing(tmp_path):
     workdir = _workdir(tmp_path / "env")
     born_tasks(workdir, tmp_path / "store")
     again = born_tasks(workdir, tmp_path / "store")
-    assert again == {"candidates": 2, "born": 0, "skipped_existing": 2, "ids": []}
+    assert again == {"candidates": 2, "born": 0, "skipped_existing": 2, "overlays_written": 0, "ids": []}
     assert len(json.loads((workdir / "tasks.json").read_text())["tasks"]) == 3
+
+
+def test_a_born_task_loads_an_empty_overlay_so_its_starting_state_is_the_shared_world(tmp_path):
+    record = _store(tmp_path / "store")[0]
+    workdir = _workdir(tmp_path / "env")
+    counts = born_tasks(workdir, tmp_path / "store")
+    assert counts["overlays_written"] == 2
+    overlay, values = load_overlay(workdir, task_id_of(record.id))
+    assert overlay.task_id == task_id_of(record.id) and overlay.rows == [] and overlay.steps == [] and values == {}
+
+
+def test_a_second_call_writes_the_overlay_a_born_task_lacks_and_skips_the_task(tmp_path):
+    record = _store(tmp_path / "store")[0]
+    workdir = _workdir(tmp_path / "env")
+    born_tasks(workdir, tmp_path / "store")
+    (workdir / "overlays" / f"{task_id_of(record.id)}.json").unlink()
+    again = born_tasks(workdir, tmp_path / "store")
+    assert (again["born"], again["skipped_existing"], again["overlays_written"]) == (0, 2, 1)
+    assert load_overlay(workdir, task_id_of(record.id))[0].rows == []
 
 
 def test_the_limit_takes_the_first_scenarios_in_id_order(tmp_path):
