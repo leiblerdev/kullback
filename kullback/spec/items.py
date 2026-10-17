@@ -467,6 +467,10 @@ class World:
                 return ValueSource(kind="tool_result", ptr={"field": name, "seen": seen[target][1]})
         return None
 
+    def _unfound(self, value: Any) -> bool:
+        """A value no user turn, policy line, world row or tool write holds."""
+        return self.source(value) is None and not self._tool_written(value)
+
     def _tool_written(self, value: Any) -> bool:
         """A value some tool's learned writes or a recorded write result hold under any field: found, so a
         gated value the policy spells another way can be re-gated to what the tool writes (D387)."""
@@ -607,7 +611,7 @@ class World:
         for one in values:
             if isinstance(one, (dict, list)):
                 return None, f"{what}: name one scalar field per cell, not a nested value"
-            if one is not None and self.source(one) is None and not self._tool_written(one):
+            if one is not None and self._unfound(one):
                 return None, (f"{what}: value {json.dumps(one)} is not in the world, the policy or a user turn, "
                               "nor what a tool writes; find it with the tools, or demand another field")
             if one is not None and self._echo_only(one):
