@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from kullback.runner.records import Task, as_dict, write_json
+from kullback.runner.records import RawPtr, Task, Trace, as_dict, write_json
 from kullback.runner.world.loading import load_overlay
 from kullback.spec.intent_tools import recordings_of, task_of, trace_index
 from kullback.synth.records import Source, born, write_all
@@ -43,7 +43,7 @@ def test_only_passed_bound_scenarios_of_the_recordings_with_nothing_required_bea
     passed = _store(tmp_path / "store")
     counts = born_tasks(_workdir(tmp_path / "env"), tmp_path / "store")
     assert counts == {"candidates": 2, "born": 2, "skipped_existing": 0, "overlays_written": 2,
-                      "ids": [task_id_of(record.id) for record in passed]}
+                      "prompts_written": 0, "ids": [task_id_of(record.id) for record in passed]}
     index = json.loads((tmp_path / "env" / "tasks.json").read_text())["tasks"]
     assert [row["id"] for row in index] == ["task_existing", *counts["ids"]]
     assert all("scenario" not in row for row in index)
@@ -69,7 +69,8 @@ def test_a_second_call_skips_the_tasks_that_exist_and_appends_nothing(tmp_path):
     workdir = _workdir(tmp_path / "env")
     born_tasks(workdir, tmp_path / "store")
     again = born_tasks(workdir, tmp_path / "store")
-    assert again == {"candidates": 2, "born": 0, "skipped_existing": 2, "overlays_written": 0, "ids": []}
+    assert again == {"candidates": 2, "born": 0, "skipped_existing": 2, "overlays_written": 0,
+                     "prompts_written": 0, "ids": []}
     assert len(json.loads((workdir / "tasks.json").read_text())["tasks"]) == 3
 
 
@@ -127,3 +128,49 @@ def test_the_task_record_is_plain_and_scenario_of_reads_the_scenario_off_its_rec
     task_id = task_id_of(passed[0].id)
     assert "scenario" not in json.loads((workdir / "tasks" / f"{task_id}.json").read_text())
     assert scenario_of(workdir, task_id) == passed[0].id and scenario_of(workdir, "task_existing") is None
+
+
+def _recordings_with_prompts(workdir, prompts):
+    for number, prompt in enumerate(prompts):
+        trace = Trace(trace_id=f"rec-{number}", raw_hash="h", ingest_version="1", source="recorded",
+                      raw_ptr=RawPtr(file_hash="h", section="s"), system_prompt=prompt)
+        write_json(workdir / "traces" / f"rec-{number}.json", as_dict(trace))
+
+
+def test_a_born_recording_carries_the_agent_prompt_most_recordings_share(tmp_path):
+    record = _store(tmp_path / "store")[0]
+    workdir = _workdir(tmp_path / "env")
+    _recordings_with_prompts(workdir, ["Rare policy.", "Shared policy.", "Shared policy.", None])
+    counts = born_tasks(workdir, tmp_path / "store")
+    assert counts["prompts_written"] == 2
+    assert trace_index(workdir)[trace_id_of(record.id)].system_prompt == "Shared policy."
+
+
+def test_a_born_recording_has_no_prompt_when_no_recording_carries_one(tmp_path):
+    record = _store(tmp_path / "store")[0]
+    workdir = _workdir(tmp_path / "env")
+    _recordings_with_prompts(workdir, [None])
+    assert born_tasks(workdir, tmp_path / "store")["prompts_written"] == 0
+    assert trace_index(workdir)[trace_id_of(record.id)].system_prompt is None
+
+
+def test_the_user_turn_is_the_ask_when_the_scenario_has_one_else_the_statement(tmp_path):
+    asked, plain = _store(tmp_path / "store")
+    write_all(tmp_path / "store", [asked.model_copy(update={"ask": "I need my widget moved to slot seven."})])
+    workdir = _workdir(tmp_path / "env")
+    born_tasks(workdir, tmp_path / "store")
+    traces = trace_index(workdir)
+    assert traces[trace_id_of(asked.id)].turns[0].content == "I need my widget moved to slot seven."
+    assert traces[trace_id_of(plain.id)].turns[0].content == plain.statement
+
+
+def test_a_rerun_writes_the_shared_prompt_into_a_born_recording_that_lacks_it_and_counts_it(tmp_path):
+    record = _store(tmp_path / "store")[0]
+    workdir = _workdir(tmp_path / "env")
+    born_tasks(workdir, tmp_path / "store")
+    _recordings_with_prompts(workdir, ["Shared policy."])
+    again = born_tasks(workdir, tmp_path / "store")
+    assert (again["born"], again["skipped_existing"], again["prompts_written"]) == (0, 2, 2)
+    trace = trace_index(workdir)[trace_id_of(record.id)]
+    assert trace.system_prompt == "Shared policy." and trace.turns[0].content == record.statement
+    assert born_tasks(workdir, tmp_path / "store")["prompts_written"] == 0

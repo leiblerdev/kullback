@@ -3615,3 +3615,25 @@ is unwritten, so it gets one more session.
 Tests: tests/synth/test_generate.py (eight lines left unwritten run again in two sessions of four and the count holds
 items and written; a recordings retry lists only the situations the first pass left; no second pass when every item is
 written; the report line per source).
+
+### D395. A born Task's recording carries the Environment's shared agent prompt (2026-10-17)
+
+What. kullback/synth/tasks.py recording_of sets the recording's system_prompt to the prompt most recordings of the
+workdir carry (shared_prompt: distinct texts counted over intent_tools.trace_index, the most frequent taken; none
+when no recording carries one). The user turn is the scenario's ask where it has one, else its statement (older
+scenarios; the Scenario field ask is D393's, empty by default on every stored scenario). born_tasks
+also repairs: a Task that already exists whose recording lacks a prompt gets the prompt written into it, the turn
+kept. The counts gain "prompts_written", the recordings written with a prompt, new or repaired.
+
+Why. The Spec writer and the Examiner read the policy off a Task's recording like every recorded Task does
+(env.system_prompt, then env/policy.md, which a work copy does not ship). A born recording had no prompt, so the
+writer said "no recorded agent policy found", the Examiner's policy file said "no policy recorded", and refusal
+scenarios got Verifiers that gate the forbidden action (airline 8 of 17 wrong in the first loop check). The
+recordings of an Environment share one prompt (retail 387 of 400, airline 200 of 217).
+
+What it does not do: no change under kullback/runner (frozen), no policy file written, no prompt invented; a
+workdir whose recordings carry none gives born recordings none.
+
+Tests: tests/synth/test_tasks.py (a born recording carries the prompt most recordings share, the majority winning
+over a second prompt; no prompt when no recording has one; the user turn is the ask when set, else the statement; a
+rerun writes the prompt into a born recording that lacks it, counts it, and a third call writes nothing).
