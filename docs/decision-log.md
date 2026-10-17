@@ -3465,12 +3465,13 @@ the policy's misspelt status, and 2 weighed values warned (the misspelt status o
 amount); airline none. Before from_args (post hoc, added after the first pass) the same pass refused 21 on 10 retail
 and 1 airline Tasks, 13 of them right values a tool copies from its arguments under another field name.
 
-Live (the eight Tasks, Examiner cache cleared, 14.36 USD of a 15 cap). Arm A, the full Spec stage with the writes
-view shown: 0 refusals in any session; the writer never offered the misspelt status, and no final Verifier gated
-the tool's status either. Arm B (post hoc), the first write only with the writes view hidden: the refusal fired on 7
-of 8 Tasks, and on 6 the writer then gated the tool's status, which the older found rule refused as not in the
-world, the policy or a user turn; so the found rule now takes a value a tool writes. Arm C (post hoc, two Tasks):
-the writer offered the tool's status first, the refusal did not fire, and on one Task the gated tool status was kept.
+Live (the eight Tasks, Examiner cache cleared, 14.36 USD of a 15 cap). Arm A, the full Spec stage with the writes view
+shown: 0 refusals in any session; the writer never offered the misspelt status, and no final Verifier gated the tool's
+status either, because the older found rule refused the tool's status 19 times across all eight Tasks. Arm B (post
+hoc), the first write only with the writes view hidden: the refusal fired on 7 of 8 Tasks, and on 6 the writer then
+gated the tool's status, which the older found rule refused as not in the world, the policy or a user turn; so the
+found rule now takes a value a tool writes. Arm C (post hoc, two Tasks): the writer offered the tool's status first,
+the refusal did not fire, and on one Task the gated tool status was kept.
 
 What it cannot show: the reach is per table and field name, not per tool and path, so a value one tool writes to a
 field reaches the same field name another tool writes; a value a tool computes (an amount) is reachable only when a
