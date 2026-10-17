@@ -23,7 +23,7 @@ The leak scan is the package's (D221), run over what a Harbor task adds: the ins
 the oracle's calls and reply, the Verifier and a rater's words in its metadata. A leak removes the
 dataset and refuses the export, naming each leaking Task (masked) and part and how many strings.
 
-`--tasks verified` (D392) exports every recorded Task with a Verifier on disk, trusted or not, each
+`--tasks verified` (D393) exports every recorded Task with a Verifier on disk, trusted or not, each
 marked with its Spec tier and tier reason (tiers.json) and, given label files, a rater's label.
 """
 
@@ -221,7 +221,7 @@ def _synthetic_tasks(workdir: Path) -> dict[str, dict]:
     return out
 
 
-# --- the tier and the label of each Task (D392) ------------------------------------
+# --- the tier and the label of each Task (D393) ------------------------------------
 
 
 def _owner(key: str, exact: set[str], ids: list[str]) -> Optional[str]:
@@ -457,7 +457,7 @@ def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: 
     """The package's scan (D221) over what each Harbor task adds, counts only.
 
     Per task: the instruction's lines against the world and the harness, then the Verifier, the
-    oracle's calls and its reply and a rater's words in the metadata (D392) against the world, the
+    oracle's calls and its reply and a rater's words in the metadata (D393) against the world, the
     harness and the instruction. Each leaking part is named by its Task, masked, and its part. The policy is
     declared rather than scanned: it is the recorded agent's own system prompt, the text every Run
     the build made was given, and it ships in instruction.md as the policy the agent works under.
@@ -668,7 +668,7 @@ def solution_only(scan: dict, scanned: list[dict]) -> list[dict]:
 
 def _drop_solution_leaks(out: Path, scan: dict, scanned: list[dict], listed: list[dict],
                          skipped: dict) -> tuple[dict, list[str]]:
-    """Take each Task whose only leaking part is its oracle out of the dataset (D392); answers the scan
+    """Take each Task whose only leaking part is its oracle out of the dataset (D393); answers the scan
     over what stays, which still refuses the export on any other part, and the ids taken out."""
     dropped = solution_only(scan, scanned)
     names = {row["name"] for row in dropped}
@@ -742,7 +742,7 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
     of the synthetic tier) or `all`; synthetic store Tasks are never trusted, so they
     come only with `all`, under `synthetic/`. `only` narrows the list to the named Task ids. Every
     recorded Task carries its Spec tier off `tiers` (the workdir's tiers.json by default) and, with
-    `labels`, a rater's label, `unlabelled` where no row names it (D392). A Task whose only leaking part
+    `labels`, a rater's label, `unlabelled` where no row names it (D393). A Task whose only leaking part
     is its oracle is left out as SOLUTION_LEAKS and listed masked; a leak in any other part refuses. A Task
     with no Verifier, no Run or no instruction is left out and counted by reason. The oracle is the
     first of the Task's Runs whose calls, replayed through the exported world, hold every item a judge

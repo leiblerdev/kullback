@@ -77,7 +77,7 @@ def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, p
     Answers the manifest with the ruling on it. The card is written after the manifest and is not
     part of the content hash: it is prose about the package, rewritten on every publish, and a
     package whose card someone edited has not been tampered with. `harbor_options` go to export_harbor
-    as they are: the Task set, the tier files, the label files and their rubric (D392).
+    as they are: the Task set, the tier files, the label files and their rubric (D393).
     """
     resolved = name or repo_id.rsplit("/", 1)[-1]
     manifest = package_mod.export(workdir, out, name=resolved, corpus=corpus, corpus_license=corpus_license,

@@ -3540,3 +3540,54 @@ a model.
 
 Tests: tests/synth/test_tasks.py (a born Task's overlay loads through load_overlay with no rows, no steps and empty
 values; a second call writes the overlay a born Task lacks and skips the Task).
+
+### D392. Two gated called items on one tool with different args are a contradiction (2026-10-17)
+What: kullback/spec/items.py contradictions now reports the second of two gated called items that name the same
+tool with differing args: "called <tool> with other args beside <first id>; gate the end state row instead, or one
+called item with one_of". The reason reaches the Spec writer by the existing send-back turn (writer._clash_rows and
+FOLLOWUP_PROMPT) and, if left, counts["unsatisfiable"]; writer.py is unchanged.
+
+Why: the Verdict exact-matches a called target, so such a pair holds only for a Run that calls the tool once per
+arg set. In the first loop check the writer wrote one called item per row the user named; it meant the end state of
+those rows, which row_is items check.
+
+What it does not do: no alt on called items, no change to the Verdict (kullback/runner is unchanged, frozen). Items
+without args, items on different tools, ungated items and two items with equal args are not contradictions.
+
+Tests: tests/spec/test_items.py (the new case fires on the second item; the four non cases report nothing; the
+existing not_called and cell cases still fire).
+
+### D393. Harbor publish of every Task with a Verifier, its Spec tier and a rater's label (2026-10-17)
+
+What. `kullback publish --format harbor` and `kullback export --format harbor` take `--tasks verified` beside
+trusted (the default, unchanged) and all (unchanged): every frozen recorded Task with a Verifier on disk, trusted or
+not; a Task with no Verifier is left out as "no Verifier" and one of the synthetic tier as "synthetic", both counted
+in the manifest's skipped. Every recorded Task's task.toml metadata gains spec_tier and spec_tier_reason, read off the
+tier report: the workdir's tiers.json, or the files `--tiers` names (repeatable, later wins; tiers.json's rows or a
+"tasks" map from id to row). `--labels` (repeatable, later wins) reads JSON lists of rater rows keyed by task and adds
+label, label_matches_gold and label_gold_diff; a Task no row names is "unlabelled". A key matches a Task id exactly or
+as the end of exactly one id, since reports mask ids; a key that names no single Task is counted unmatched. The Harbor
+manifest says the Task set (tasks_chosen), counts Tasks by tier cell (trusted, else the untrusted reason) and label,
+and records the tier and label files, rows and unmatched counts and the rubric (`--labels-rubric`). The card's Harbor
+section names the Task set and what was left out, carries the tier by label table and says that a label is one blind
+model rater's judgement under the named rubric.
+
+Leaks (D221 unchanged in rule). The scan also covers a rater's words in the metadata (part "label"). Every leaking
+part is reported by Task, masked, part (instruction, Verifier, oracle, label) and count, in the manifest and in the
+refusal, never the strings. A Task whose only leaking part is its oracle (solution/) is left out as "solution leaks"
+and listed masked in the manifest's left_out and on the card (founder 2026-10-17, proposed and reversible before any
+upload); a leak in any other part still refuses the dataset.
+
+Cards. `publish --announcement FILE` puts the publisher's words on the Environment card as a News section, and
+organisation_card takes the same text, so neither carries hard-coded news.
+
+What it does not do: tiers are read, never recomputed (a tier run costs model calls and hours); a label is one model
+rater's judgement, not ground truth; nothing was uploaded. Acceptance: dry runs on the merged retail and airline
+workdirs, report .claude/herdr/publish-1017/verified-report.md.
+
+Tests: tests/hub/test_harbor.py (verified exports an untrusted Task with a Verifier and leaves out one without, and
+one of the synthetic tier; tier and reason off tiers.json, not_recorded without a row, a named tier file with masked
+keys; labels by masked key with the later file winning, unlabelled, an ambiguous key unmatched, a label file that is
+not a list refused; a leak named by masked Task, part and count; a rater's words repeating a recording refuse; an
+oracle-only leak leaves the Task out and lists it, an oracle plus another part still refuses; the card's Task set,
+tier by label table and rubric sentence; News on the Environment and organisation cards).
