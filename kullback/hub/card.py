@@ -170,9 +170,43 @@ def card_markdown(manifest: dict, repo_id: str, *, github_url: str = "https://gi
     return "\n".join(lines) + "\n"
 
 
+# What each Task set of a Harbor export holds, in the card's words (D392).
+TASK_SETS = {"trusted": "the trusted Tasks", "verified": "every Task with a Verifier, trusted or not",
+             "all": "every Task, the synthetic ones too"}
+LABEL_ORDER = ("right", "partial", "wrong", "no_verifier", "unlabelled")
+
+
+def _skipped(counts: dict) -> str:
+    skipped = counts.get("skipped") or {}
+    return ", ".join(f"{count} {reason}" for reason, count in sorted(skipped.items())) or "none"
+
+
+def tier_label_table(harbor: dict) -> list[str]:
+    """Tasks by tier (trusted, else the untrusted reason) and, where labels were given, by label (D392)."""
+    table = (harbor.get("counts") or {}).get("by_tier_and_label") or {}
+    if not table:
+        return []
+    labelled = harbor.get("labels") is not None
+    seen = {label for row in table.values() for label in row}
+    labels = [label for label in LABEL_ORDER if label in seen] + sorted(seen - set(LABEL_ORDER))
+    columns = labels if labelled else []
+    lines = ["| Tier | " + " | ".join(columns + ["Tasks"]) + " |", "| --- |" + " --- |" * (len(columns) + 1)]
+    for tier in sorted(table, key=lambda cell: (cell != "trusted", cell)):
+        row = table[tier]
+        cells = [str(row.get(label, 0)) for label in columns] + [str(sum(row.values()))]
+        lines.append(f"| {_cell(tier)} | " + " | ".join(cells) + " |")
+    lines.append("")
+    if labelled:
+        rubric = (harbor.get("labels") or {}).get("rubric") or "not named"
+        lines += [f"A label is one blind model rater's judgement of the Task's Verifier under the rubric "
+                  f"{_cell(rubric)}, not a ground truth; `label` in a Task's `task.toml` carries it.", ""]
+    return lines
+
+
 def harbor_section(harbor: dict) -> str:
     """The card's "Run it with Harbor" section, read off the Harbor dataset's manifest (D363)."""
     counts = harbor.get("counts") or {}
+    chosen = str(harbor.get("tasks_chosen") or "trusted")
     rows = list(harbor.get("tasks") or ()) + list(harbor.get("synthetic") or ())
     example = rows[0]["path"] if rows else "<task>"
     lines = ["## Run it with Harbor", "",
@@ -181,6 +215,10 @@ def harbor_section(harbor: dict) -> str:
              f"among their gates. Those are scored by the model `{JUDGE_VAR}` names at test time, which also "
              f"needs `{LIVE_ENV_VAR}=1` and the model's keys; without a judge they score 0, never pass "
              "(`needs_judge` in a Task's `task.toml` and in `harbor/manifest.json`).", "",
+             f"Task set: `{chosen}`, {TASK_SETS.get(chosen, chosen)}; {counts.get('exported', 0)} exported, "
+             f"left out: {_skipped(counts)}. Each Task's `task.toml` carries its Spec tier as `spec_tier` "
+             "and `spec_tier_reason`.", "",
+             *tier_label_table(harbor),
              "```bash", f"uv run harbor run -p {HARBOR_DIR}/{example} -a oracle",
              f"uv run harbor run -p {HARBOR_DIR}/{example} -a <agent> -m <provider/model>", "```", ""]
     return "\n".join(lines) + "\n"

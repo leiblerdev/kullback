@@ -20,7 +20,11 @@ What each part holds:
   quotes a recorded turn, and a prose-length argument is put as a neutral line. The export plays it and keeps it only if it passes.
 
 The leak scan is the package's (D221), run over what a Harbor task adds: the instruction's lines,
-the oracle's calls and reply, and the Verifier. A leak removes the dataset and refuses the export.
+the oracle's calls and reply, the Verifier and a rater's words in its metadata. A leak removes the
+dataset and refuses the export, naming each leaking Task (masked) and part and how many strings.
+
+`--tasks verified` (D392) exports every recorded Task with a Verifier on disk, trusted or not, each
+marked with its Spec tier and tier reason (tiers.json) and, given label files, a rater's label.
 """
 
 from __future__ import annotations
@@ -62,8 +66,10 @@ from kullback.hub.package import (
 from kullback.runner.records import Run, Verifier, read_json, write_json
 from kullback.runner.verdict import REWARD_SHAPE
 from kullback.runner.world.environment import BuiltEnvironment
+from kullback.spec.report import REPORT_FILE as TIERS_FILE
 from kullback.spec.schema import Spec, spec_path, spec_verifier_path
 from kullback.spec.split import reference_classes
+from kullback.spec.trust import SYNTHETIC as SYNTHETIC_TIER
 from kullback.spec.trust import runs_on_disk
 from kullback.synthesise import DIR as SYNTHETIC_DIR
 
@@ -85,7 +91,12 @@ ORACLE_NAME = "oracle.json"
 NO_ORACLE = "no Run passes on replay"
 MASK = 4
 PROSE_LINE = "The user asked for this change; the details are in the conversation."
-TASKS_CHOICES = ("trusted", "all")
+TASKS_CHOICES = ("trusted", "verified", "all")
+# A Task with no row in the tier report, and one with no row in the label files given.
+NOT_RECORDED = "not_recorded"
+UNLABELLED = "unlabelled"
+# What a label row carries into a task's metadata, under these names.
+LABEL_FIELDS = (("label", "label"), ("matches_gold", "label_matches_gold"), ("gold_diff", "label_gold_diff"))
 TOOLS_LINE = ("The tools are served two ways from the same world: the MCP server named `tools` in this task, "
               "and the `tools` command (`tools list`, then `tools call <name> --json '{...}'`). Everything "
               f"you would say to the user goes through `{REPLY_TOOL}`; the user answers each message, and "
@@ -207,6 +218,57 @@ def _synthetic_tasks(workdir: Path) -> dict[str, dict]:
         if isinstance(body, dict) and isinstance(body.get("task"), dict):
             out[path.stem] = body
     return out
+
+
+# --- the tier and the label of each Task (D392) ------------------------------------
+
+
+def _owner(key: str, exact: set[str], ids: list[str]) -> Optional[str]:
+    """The Task a row's key names: the id itself, else the one id ending with it (a report masks an id to
+    its last characters); None where no Task or more than one does."""
+    if key in exact:
+        return key
+    ends = [task_id for task_id in ids if key and task_id.endswith(key)]
+    return ends[0] if len(ends) == 1 else None
+
+
+def keyed_rows(pairs: Iterable[tuple[str, dict]], task_ids: Iterable[str]) -> tuple[dict[str, dict], int]:
+    """Each (key, row) given to the Task its key names, a later row winning a clash; answers the rows by
+    Task id and how many keys named no single Task."""
+    ids = list(task_ids)
+    exact = set(ids)
+    out: dict[str, dict] = {}
+    unmatched = 0
+    for key, row in pairs:
+        owner = _owner(str(key), exact, ids)
+        if owner is None:
+            unmatched += 1
+            continue
+        out[owner] = row
+    return out, unmatched
+
+
+def tier_pairs(path: Path) -> list[tuple[str, dict]]:
+    """A tier report's rows: tiers.json's `rows`, each with its task_id, or a `tasks` map from id to row."""
+    body = read_json(path, {}) or {}
+    if not isinstance(body, dict):
+        raise ExportError(f"{path} is not a tier report")
+    if isinstance(body.get("tasks"), dict):
+        return [(str(key), row) for key, row in body["tasks"].items() if isinstance(row, dict)]
+    return [(str(row.get("task_id") or ""), row) for row in body.get("rows") or () if isinstance(row, dict)]
+
+
+def label_pairs(path: Path) -> list[tuple[str, dict]]:
+    """A label file's rows: one JSON list, each row keyed by its `task`."""
+    body = read_json(path, None)
+    if not isinstance(body, list):
+        raise ExportError(f"{path} is not a JSON list of label rows")
+    return [(str(row.get("task") or row.get("task_id") or ""), row) for row in body if isinstance(row, dict)]
+
+
+def tier_cell(spec_tier: str, reason: Optional[str]) -> str:
+    """One word for a Task's tier as the run reports it: trusted, else the untrusted reason, else the tier."""
+    return reason if spec_tier != "trusted" and reason else spec_tier
 
 
 # --- writing one Harbor task --------------------------------------------------------
@@ -394,7 +456,8 @@ def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: 
     """The package's scan (D221) over what each Harbor task adds, counts only.
 
     Per task: the instruction's lines against the world and the harness, then the Verifier, the
-    oracle's calls and its reply against the world, the harness and the instruction. The policy is
+    oracle's calls and its reply and a rater's words in the metadata (D392) against the world, the
+    harness and the instruction. Each leaking part is named by its Task, masked, and its part. The policy is
     declared rather than scanned: it is the recorded agent's own system prompt, the text every Run
     the build made was given, and it ships in instruction.md as the policy the agent works under.
     """
@@ -405,14 +468,14 @@ def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: 
     for row in scanned:
         world_values, world_text = _baseline(row["world"], WORLD_FILES + ("env", "overlays"), min_length)
         policy = row.get("policy") or ""
-        groups = [(row["name"] + "/instruction.md", _text_strings(row["facts"], min_length), "")]
+        groups = [("instruction", _text_strings(row["facts"], min_length), "")]
         verifier_strings = _file_strings(row["verifier"], min_length)
         oracle = set()
         _strings(row["calls"], oracle, min_length)
         _strings(row["reply"], oracle, min_length)
-        groups += [(row["name"] + "/tests", verifier_strings, row["instruction"]),
-                   (row["name"] + "/solution", oracle, row["instruction"])]
-        for name, found, extra in groups:
+        groups += [("Verifier", verifier_strings, row["instruction"]), ("oracle", oracle, row["instruction"]),
+                   ("label", _text_strings([row.get("label") or ""], min_length), row["instruction"])]
+        for part, found, extra in groups:
             checked += len(found)
             found = found | embedded_prose(found, index, content_min_length)
             unaccounted = {value for value in found if value in corpus and not (
@@ -421,9 +484,10 @@ def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: 
             leaks = {value for value in unaccounted if len(value) >= content_min_length}
             echoes += len(unaccounted - leaks)
             if leaks:
-                leaking.append({"file": name, "values": len(leaks)})
-    return {"corpus_strings": len(corpus), "values_checked": checked, "files_scanned": 3 * len(scanned),
-            "leaks": sum(row["values"] for row in leaking), "leaking_files": leaking[:20],
+                leaking.append({"task": str(row.get("task") or row["name"])[-MASK:], "part": part,
+                                "values": len(leaks)})
+    return {"corpus_strings": len(corpus), "values_checked": checked, "files_scanned": 4 * len(scanned),
+            "leaks": sum(row["values"] for row in leaking), "leaking_files": leaking,
             "value_echoes": echoes, "policy": "declared, not scanned"}
 
 
@@ -457,6 +521,10 @@ class _Build:
     tag: Optional[str]
     sha: Optional[str]
     wheel: Path
+    tasks: str = "trusted"
+    tiers: Optional[dict] = None
+    # None where no label file was given: then no Task carries a label field.
+    labels: Optional[dict] = None
 
     @property
     def tool_names(self) -> set[str]:
@@ -469,8 +537,9 @@ def _fallback_policy(env: BuiltEnvironment) -> Optional[str]:
 
 
 def _choose(workdir: Path, rows: dict, tasks: str, only: Optional[Iterable[str]]) -> tuple[list[str], dict]:
-    """The recorded Task ids and the synthetic store Tasks to export, narrowed to `only` where given."""
-    chosen = [task_id for task_id, row in rows.items() if tasks == "all" or row["trusted"]]
+    """The recorded Task ids and the synthetic store Tasks to export, narrowed to `only` where given.
+    `verified` takes every recorded Task; the ones with no Verifier are left out with that reason."""
+    chosen = [task_id for task_id, row in rows.items() if tasks in ("all", "verified") or row["trusted"]]
     synthetic = _synthetic_tasks(workdir) if tasks == "all" else {}
     if only is not None:
         keep = set(only)
@@ -497,6 +566,16 @@ def _inputs(build: _Build, task_id: str, body: Optional[dict]) -> dict:
             "index": build.rows[task_id]}
 
 
+def _marks(build: _Build, task_id: str) -> dict:
+    """The Task's Spec tier and reason off the tier report and, where label files were given, its label."""
+    tier = (build.tiers or {}).get(task_id) or {}
+    marks = {"spec_tier": str(tier.get("tier") or NOT_RECORDED), "spec_tier_reason": tier.get("reason")}
+    if build.labels is not None:
+        row = build.labels.get(task_id) or {"label": UNLABELLED}
+        marks.update({name: row.get(key) for key, name in LABEL_FIELDS})
+    return marks
+
+
 def _metadata(build: _Build, task_id: str, synthetic: bool, index: dict, verifier: Verifier) -> dict:
     return {
         "kullback_task_id": task_id,
@@ -508,6 +587,7 @@ def _metadata(build: _Build, task_id: str, synthetic: bool, index: dict, verifie
         "needs_judge": needs_judge(verifier),
         "judge_items": any(atom.judge for atom in verifier.atoms),
         "confirm_gate": confirm_gate(verifier),
+        **({} if synthetic else _marks(build, task_id)),
         "kullback_build": build.tag,
         "kullback_git_sha": build.sha,
     }
@@ -535,8 +615,10 @@ def _export_one(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Opti
     """(why the Task is left out or None, its manifest row, its leak scan row)."""
     given = _inputs(build, task_id, body)
     verifier_path = verifier_of(build.workdir, task_id, body is not None)
-    reason = ("no Verifier" if verifier_path is None else "no Run" if not given["candidates"]
-              else "no instruction" if not given["instruction"] else None)
+    synthetic_tier = (build.tasks == "verified" and body is None
+                      and ((build.tiers or {}).get(task_id) or {}).get("tier") == SYNTHETIC_TIER)
+    reason = ("no Verifier" if verifier_path is None else "synthetic" if synthetic_tier
+              else "no Run" if not given["candidates"] else "no instruction" if not given["instruction"] else None)
     if reason:
         return reason, {}, {}
     verifier = Verifier.model_validate(read_json(verifier_path, {}))
@@ -547,13 +629,31 @@ def _export_one(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Opti
         return NO_ORACLE, {}, {}
     path = folder.relative_to(build.out).as_posix()
     listed = {"harbor_name": f"{build.org}/{folder.name}", "path": path, **metadata}
-    scanned = {"name": path, "world": folder / "environment" / WORLD_DIR, "facts": given["facts"] or [given["instruction"]],
+    scanned = {"name": path, "task": task_id, "world": folder / "environment" / WORLD_DIR,
+               "facts": given["facts"] or [given["instruction"]], "label": str(metadata.get("label_gold_diff") or ""),
                "instruction": given["instruction"], "policy": given["policy"], "verifier": verifier_path,
                "calls": calls, "reply": (folder / "solution" / "solve.sh").read_text(encoding="utf-8")}
     return None, listed, scanned
 
 
+def leak_lines(scan: dict) -> str:
+    """Which Task (masked) and which part leaked and how many strings, never the strings."""
+    return "; ".join(f"Task {row['task']} {row['part']} {row['values']}" for row in scan.get("leaking_files") or ())
+
+
+def by_tier_and_label(rows: Iterable[dict]) -> dict[str, dict[str, int]]:
+    """Exported recorded Tasks counted by tier cell, then by label where the rows carry one."""
+    out: dict[str, dict[str, int]] = {}
+    for row in rows:
+        cell = tier_cell(str(row.get("spec_tier") or NOT_RECORDED), row.get("spec_tier_reason"))
+        label = str(row.get("label") or "")
+        out.setdefault(cell, {})
+        out[cell][label] = out[cell].get(label, 0) + 1
+    return out
+
+
 def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_oracle: list[str]) -> dict:
+    recorded = [row for row in listed if row["origin"] == "recorded"]
     return {
         "format": HARBOR_FORMAT,
         "harbor_schema_version": SCHEMA_VERSION,
@@ -571,21 +671,44 @@ def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_o
                    "synthetic": sum(1 for row in listed if row["origin"] == "synthetic"),
                    "needs_judge": sum(1 for row in listed if row["needs_judge"]),
                    "confirm_gate": sum(1 for row in listed if row["confirm_gate"]),
-                   "skipped": skipped},
-        "tasks": [row for row in listed if row["origin"] == "recorded"],
+                   "skipped": skipped,
+                   "by_tier_and_label": by_tier_and_label(recorded)},
+        "tasks": recorded,
         "synthetic": [row for row in listed if row["origin"] == "synthetic"],
         # Masked to the last four characters, as every report masks a Task id.
         "left_out": [{"task": task_id[-MASK:], "reason": NO_ORACLE} for task_id in no_oracle],
     }
 
 
+def _read_marks(workdir: Path, task_ids: list[str], tiers: Optional[Iterable[Any]],
+                labels: Optional[Iterable[Any]], rubric: Optional[str]) -> tuple[dict, Optional[dict], dict]:
+    """The tier rows (the workdir's tiers.json unless files are named), the label rows (None without
+    label files), and what the manifest says of both. Later files win a clash."""
+    tier_files = [Path(path) for path in tiers] if tiers else [workdir / TIERS_FILE]
+    tier_rows, tiers_unmatched = keyed_rows(
+        [pair for path in tier_files if path.is_file() for pair in tier_pairs(path)], task_ids)
+    said = {"tiers": {"files": [path.name for path in tier_files if path.is_file()], "rows": len(tier_rows),
+                      "unmatched": tiers_unmatched}}
+    if not labels:
+        return tier_rows, None, said
+    label_files = [Path(path) for path in labels]
+    label_rows, labels_unmatched = keyed_rows([pair for path in label_files for pair in label_pairs(path)], task_ids)
+    said["labels"] = {"files": [path.name for path in label_files], "rows": len(label_rows),
+                      "unmatched": labels_unmatched, "rubric": rubric or "not named"}
+    return tier_rows, label_rows, said
+
+
 def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = ORGANISATION,
                   name: Optional[str] = None, scan: bool = True, wheel: Optional[Path] = None,
-                  only: Optional[Iterable[str]] = None) -> dict:
+                  only: Optional[Iterable[str]] = None, tiers: Optional[Iterable[Any]] = None,
+                  labels: Optional[Iterable[Any]] = None, labels_rubric: Optional[str] = None) -> dict:
     """Write a Harbor dataset of the workdir's Tasks to `out` and answer its manifest.
 
-    `tasks` is `trusted` (the default) or `all`; synthetic store Tasks are never trusted, so they
-    come only with `all`, under `synthetic/`. `only` narrows the list to the named Task ids. A Task
+    `tasks` is `trusted` (the default), `verified` (every recorded Task with a Verifier on disk, none
+    of the synthetic tier) or `all`; synthetic store Tasks are never trusted, so they
+    come only with `all`, under `synthetic/`. `only` narrows the list to the named Task ids. Every
+    recorded Task carries its Spec tier off `tiers` (the workdir's tiers.json by default) and, with
+    `labels`, a rater's label, `unlabelled` where no row names it (D392). A Task
     with no Verifier, no Run or no instruction is left out and counted by reason. The oracle is the
     first of the Task's Runs whose calls, replayed through the exported world, hold every item a judge
     is not needed for; a Task with none is left out too (NO_ORACLE).
@@ -598,6 +721,7 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
     env = BuiltEnvironment(workdir)
     rows = {row["task_id"]: row for row in task_index(workdir, frozen_task_ids(workdir))}
     chosen, synthetic = _choose(workdir, rows, tasks, only)
+    tier_rows, label_rows, said = _read_marks(workdir, list(rows), tiers, labels, labels_rubric)
     policy = _fallback_policy(env)
     out.mkdir(parents=True, exist_ok=True)
     skipped: dict[str, int] = {}
@@ -607,7 +731,8 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
     with tempfile.TemporaryDirectory() as scratch:
         build = _Build(workdir=workdir, out=out, name=name or workdir.resolve().name, org=org, env=env, rows=rows,
                        classes=reference_classes(workdir) or {}, runs=runs_on_disk(workdir), policy=policy,
-                       tag=build_tag(workdir), sha=git_sha(), wheel=wheel or build_wheel(Path(scratch)))
+                       tag=build_tag(workdir), sha=git_sha(), wheel=wheel or build_wheel(Path(scratch)),
+                       tasks=tasks, tiers=tier_rows, labels=label_rows)
         work = [(task_id, None) for task_id in chosen] + list(synthetic.items())
         for task_id, body in work:
             reason, row, scan_row = _export_one(build, task_id, body)
@@ -617,13 +742,13 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
                 continue
             listed.append(row)
             scanned.append(scan_row)
-    manifest = _manifest(build, tasks, listed, skipped, no_oracle)
+    manifest = dict(_manifest(build, tasks, listed, skipped, no_oracle), **said)
     manifest["leak_scan"] = leak_scan(out, workdir / "raw", scanned) if scan else {"leaks": 0, "skipped": True}
     if manifest["leak_scan"].get("leaks"):
         shutil.rmtree(out, ignore_errors=True)
         raise ExportError(f"the leak scan found {manifest['leak_scan']['leaks']} recorded strings in "
-                          f"{len(manifest['leak_scan']['leaking_files'])} Harbor task part(s); the dataset "
-                          "was taken away again")
+                          f"{len(manifest['leak_scan']['leaking_files'])} Harbor task part(s) "
+                          f"({leak_lines(manifest['leak_scan'])}); the dataset was taken away again")
     manifest["files"] = file_hashes(out)
     manifest["content_hash"] = content_hash(manifest["files"])
     write_json(out / MANIFEST_NAME, manifest)

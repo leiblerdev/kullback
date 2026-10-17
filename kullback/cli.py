@@ -1284,6 +1284,21 @@ def _rate(value: Optional[float]) -> str:
     return "not measured" if value is None else f"{float(value):.1%}"
 
 
+HARBOR_TASKS = typer.Option("trusted", "--tasks", help="harbor only: trusted, verified (every Task with a "
+                                                        "Verifier, trusted or not), or all (synthetic Tasks too).")
+HARBOR_TIERS = typer.Option(None, "--tiers", help="harbor only: a tier report whose tier each Task carries; "  # noqa: B008
+                                                  "repeat it, later wins. The default is the workdir's tiers.json.")
+HARBOR_LABELS = typer.Option(None, "--labels", help="harbor only: a JSON list of rater label rows keyed by "  # noqa: B008
+                                                    "task; repeat it, later wins. A Task with no row is unlabelled.")
+HARBOR_RUBRIC = typer.Option(None, "--labels-rubric", help="harbor only: the rubric the labels were given under, "
+                                                           "named on the card.")
+
+
+def _harbor_options(tasks: str, tiers: Optional[list[Path]], labels: Optional[list[Path]],
+                    rubric: Optional[str]) -> dict:
+    return {"tasks": tasks, "tiers": tiers or None, "labels": labels or None, "labels_rubric": rubric}
+
+
 @app.command()
 def export(
     workdir: Path = WORKDIR,
@@ -1296,9 +1311,12 @@ def export(
     preview: bool = typer.Option(False, "--preview", help="Mark the package as below the fidelity bar."),
     form: str = typer.Option("package", "--format", help="package, or harbor: one Harbor task directory per "
                                                          "Task (D363)."),
-    tasks: str = typer.Option("trusted", "--tasks", help="harbor only: trusted, or all (synthetic Tasks too)."),
+    tasks: str = HARBOR_TASKS,
     org: Optional[str] = typer.Option(None, "--org", help="harbor only: the organisation in each task name."),
     only: Optional[list[str]] = typer.Option(None, "--task", help="harbor only: export this Task id; repeat it."),  # noqa: B008
+    tiers: Optional[list[Path]] = HARBOR_TIERS,
+    labels: Optional[list[Path]] = HARBOR_LABELS,
+    labels_rubric: Optional[str] = HARBOR_RUBRIC,
 ):
     """Write a self-contained Environment package: the rebuilt world, the Task list, the Verifiers, a manifest.
 
@@ -1308,7 +1326,8 @@ def export(
     """
     if form == "harbor":
         harbor = _entry("kullback.hub.harbor", "export_harbor")
-        laid = harbor(workdir, out, tasks=tasks, name=name, only=only or None, **({"org": org} if org else {}))
+        laid = harbor(workdir, out, name=name, only=only or None, **({"org": org} if org else {}),
+                      **_harbor_options(tasks, tiers, labels, labels_rubric))
         counts = laid["counts"]
         typer.echo(f"{counts['exported']} Harbor tasks ({counts['needs_judge']} need a judge, "
                    f"{counts['synthetic']} synthetic), skipped {counts['skipped'] or 'none'}; leak scan "
@@ -1342,6 +1361,10 @@ def publish(
                                                          "form under harbor/ and a card section (D363)."),
     dry_run: Optional[Path] = typer.Option(None, "--dry-run", help="Lay the upload out under this directory "  # noqa: B008
                                                                   "and push nothing."),
+    tasks: str = HARBOR_TASKS,
+    tiers: Optional[list[Path]] = HARBOR_TIERS,
+    labels: Optional[list[Path]] = HARBOR_LABELS,
+    labels_rubric: Optional[str] = HARBOR_RUBRIC,
 ):
     """Export the Environment, write its card and upload it as one commit, tagged with its round (D221).
 
@@ -1353,8 +1376,15 @@ def publish(
     client = _entry("kullback.hub.client", "LocalHub")(dry_run) if dry_run is not None else None
     hosted, manifest = push(workdir, repo, name=name, preview=preview, corpus=corpus,
                             corpus_license=corpus_license, corpus_url=corpus_url, keep=keep,
-                            client=client, form=form)
+                            client=client, form=form,
+                            harbor_options=_harbor_options(tasks, tiers, labels, labels_rubric))
     _echo_manifest(manifest)
+    if manifest.get("harbor"):
+        laid = manifest["harbor"]
+        typer.echo(f"harbor: {laid.get('tasks_chosen')} Tasks, {laid['counts']['exported']} exported, "
+                   f"skipped {laid['counts']['skipped'] or 'none'}; by tier and label "
+                   f"{json.dumps(laid['counts'].get('by_tier_and_label') or {}, sort_keys=True)}; leak scan "
+                   f"{laid['leak_scan'].get('leaks', 0)} recorded strings")
     typer.echo(f"{manifest.get('status', 'preview')} at {hosted.url}, tag {hosted.tag}")
 
 

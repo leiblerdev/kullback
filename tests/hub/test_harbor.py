@@ -413,3 +413,145 @@ def test_a_dry_run_publish_lays_harbor_beside_the_package_and_the_package_still_
     readme = (landed / "README.md").read_text()
     assert "KULLBACK_JUDGE_MODEL" in readme and "HARNESS_ALLOW_MODEL_REQUESTS=1" in readme
     assert verify_package(landed) == []
+
+
+# --- the verified Task set, tiers and labels (D392) ----------------------------------------------
+
+
+def _wheel(tmp_path: Path) -> Path:
+    wheel = tmp_path / "k.whl"
+    wheel.write_bytes(b"")
+    return wheel
+
+
+def _toml(out: Path) -> dict:
+    return tomllib.loads((out / "widgets-widget_task" / "task.toml").read_text())["metadata"]
+
+
+def test_verified_exports_an_untrusted_task_that_has_a_verifier(tmp_path):
+    workdir = _workdir(tmp_path / "work", trusted=False)
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path), tasks="verified")
+    assert manifest["tasks_chosen"] == "verified" and manifest["counts"]["exported"] == 1
+    assert manifest["tasks"][0]["tier"] == "untrusted"
+
+
+def test_verified_leaves_out_a_task_with_no_verifier_and_counts_the_reason(tmp_path):
+    workdir = _workdir(tmp_path / "work", trusted=False)
+    (workdir / "verifiers" / f"{TASK}.json").unlink()
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path), tasks="verified")
+    assert manifest["counts"]["exported"] == 0 and manifest["counts"]["skipped"] == {"no Verifier": 1}
+
+
+def test_verified_leaves_out_a_task_of_the_synthetic_tier(tmp_path):
+    workdir = _workdir(tmp_path / "work", trusted=False)
+    write_json(workdir / "tiers.json", {"rows": [{"task_id": TASK, "tier": "synthetic", "reason": None}]})
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path), tasks="verified")
+    assert manifest["counts"]["exported"] == 0 and manifest["counts"]["skipped"] == {"synthetic": 1}
+
+
+def test_each_task_carries_its_spec_tier_and_reason_off_the_workdir_tier_report(tmp_path):
+    workdir = _workdir(tmp_path / "work", trusted=False)
+    write_json(workdir / "tiers.json", {"tasks": 1, "rows": [{"task_id": TASK, "tier": "untrusted", "reason": "no_base"}]})
+    out = tmp_path / "out"
+    manifest = harbor.export_harbor(workdir, out, name="widgets", wheel=_wheel(tmp_path), tasks="verified")
+    meta = _toml(out)
+    assert meta["spec_tier"] == "untrusted" and meta["spec_tier_reason"] == "no_base"
+    assert "label" not in meta and "labels" not in manifest
+    assert manifest["counts"]["by_tier_and_label"] == {"no_base": {"": 1}}
+
+
+def test_a_task_no_tier_row_names_is_marked_not_recorded(tmp_path):
+    out = tmp_path / "out"
+    harbor.export_harbor(_workdir(tmp_path / "work"), out, name="widgets", wheel=_wheel(tmp_path))
+    assert _toml(out)["spec_tier"] == "not_recorded"
+
+
+def test_a_tier_file_named_on_the_call_replaces_the_workdir_report_and_may_map_masked_ids(tmp_path):
+    workdir = _workdir(tmp_path / "work")
+    write_json(workdir / "tiers.json", {"rows": [{"task_id": TASK, "tier": "untrusted", "reason": "no_base"}]})
+    named = tmp_path / "tiers-shard.json"
+    write_json(named, {"tasks": {TASK[-4:]: {"tier": "trusted", "reason": None}}})
+    out = tmp_path / "out"
+    manifest = harbor.export_harbor(workdir, out, name="widgets", wheel=_wheel(tmp_path), tiers=[named])
+    assert _toml(out)["spec_tier"] == "trusted" and "spec_tier_reason" not in _toml(out)
+    assert manifest["tiers"] == {"files": ["tiers-shard.json"], "rows": 1, "unmatched": 0}
+
+
+def test_a_label_row_keyed_by_the_masked_id_marks_the_task_and_a_later_file_wins(tmp_path):
+    first, second = tmp_path / "labels-1.json", tmp_path / "labels-2.json"
+    write_json(first, [{"task": TASK[-4:], "label": "wrong", "matches_gold": "no", "gold_diff": "first"}])
+    write_json(second, [{"task": TASK[-4:], "label": "partial", "matches_gold": "yes", "gold_diff": "second"},
+                        {"task": "zzzz", "label": "right"}])
+    out = tmp_path / "out"
+    manifest = harbor.export_harbor(_workdir(tmp_path / "work"), out, name="widgets", wheel=_wheel(tmp_path),
+                                    labels=[first, second], labels_rubric="rubric r1")
+    meta = _toml(out)
+    assert (meta["label"], meta["label_matches_gold"], meta["label_gold_diff"]) == ("partial", "yes", "second")
+    assert manifest["labels"] == {"files": ["labels-1.json", "labels-2.json"], "rows": 1, "unmatched": 1,
+                                  "rubric": "rubric r1"}
+    assert manifest["tasks"][0]["label"] == "partial"
+
+
+def test_with_label_files_a_task_no_row_names_is_unlabelled(tmp_path):
+    labels = tmp_path / "labels.json"
+    write_json(labels, [{"task": "zzzz", "label": "right"}])
+    out = tmp_path / "out"
+    manifest = harbor.export_harbor(_workdir(tmp_path / "work"), out, name="widgets", wheel=_wheel(tmp_path),
+                                    labels=[labels])
+    assert _toml(out)["label"] == "unlabelled"
+    assert manifest["counts"]["by_tier_and_label"] == {"not_recorded": {"unlabelled": 1}}
+
+
+def test_a_key_two_task_ids_end_with_names_no_task_and_is_counted_unmatched():
+    rows, unmatched = harbor.keyed_rows([("0001", {"n": 1}), ("a0001", {"n": 2}), ("full_id", {"n": 3})],
+                                        ["xa0001", "yb0001", "full_id"])
+    assert rows == {"xa0001": {"n": 2}, "full_id": {"n": 3}} and unmatched == 1
+
+
+def test_a_label_file_that_is_not_a_list_refuses_the_export(tmp_path):
+    labels = tmp_path / "labels.json"
+    write_json(labels, {"task": TASK})
+    with pytest.raises(harbor.ExportError):
+        harbor.export_harbor(_workdir(tmp_path / "work"), tmp_path / "out", name="widgets", wheel=_wheel(tmp_path),
+                             labels=[labels])
+
+
+def test_a_leak_names_the_task_masked_and_the_part_and_the_count_never_the_string(tmp_path):
+    workdir = _workdir(tmp_path / "work")
+    turn = "wants widget w1 to carry the label striped because the old plain label kept confusing the warehouse"
+    spec = Spec(task_id=TASK, intent=SpecIntent(task_id=TASK, facts=[_fact("f1", turn)]))
+    write_json(workdir / "spec" / f"{TASK}.json", spec.model_dump())
+    write_json(workdir / "raw" / "export.json", [{"turn": turn}])
+    with pytest.raises(harbor.ExportError) as refused:
+        harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path))
+    message = str(refused.value)
+    assert f"Task {TASK[-4:]} instruction 1" in message and turn not in message and TASK not in message
+
+
+def test_a_rater_words_that_repeat_a_recorded_turn_refuse_the_export_as_a_label_leak(tmp_path):
+    workdir = _workdir(tmp_path / "work")
+    turn = "the customer said the old plain label kept confusing everyone in the north warehouse all week"
+    write_json(workdir / "raw" / "export.json", [{"turn": turn}])
+    labels = tmp_path / "labels.json"
+    write_json(labels, [{"task": TASK, "label": "right", "matches_gold": "yes", "gold_diff": turn}])
+    with pytest.raises(harbor.ExportError) as refused:
+        harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path), labels=[labels])
+    assert f"Task {TASK[-4:]} label 1" in str(refused.value)
+
+
+def test_the_card_names_the_task_set_and_counts_tasks_by_tier_and_label_under_the_named_rubric(tmp_path, monkeypatch):
+    from kullback.hub import publish
+
+    workdir = _workdir(tmp_path / "work", trusted=False)
+    monkeypatch.setattr(harbor, "build_wheel", lambda out: _wheel(tmp_path))
+    write_json(workdir / "tiers.json", {"rows": [{"task_id": TASK, "tier": "untrusted", "reason": "open_ruling"}]})
+    labels = tmp_path / "labels.json"
+    write_json(labels, [{"task": TASK[-4:], "label": "partial", "matches_gold": "yes", "gold_diff": "same"}])
+    _, manifest = publish.publish(workdir, "someorg/widgets", client=LocalHub(tmp_path / "local"), preview=True,
+                                  form="harbor", harbor_options={"tasks": "verified", "labels": [labels],
+                                                                 "labels_rubric": "rubric r1"})
+    readme = (tmp_path / "local" / "someorg" / "widgets" / "README.md").read_text()
+    assert "Task set: `verified`, every Task with a Verifier, trusted or not; 1 exported" in readme
+    assert "| Tier | partial | Tasks |" in readme and "| open_ruling | 1 | 1 |" in readme
+    assert "one blind model rater's judgement" in readme and "rubric r1" in readme
+    assert manifest["harbor"]["tasks_chosen"] == "verified" and manifest["harbor"]["labels"]["rows"] == 1
