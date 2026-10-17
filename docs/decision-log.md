@@ -3546,8 +3546,10 @@ values; a second call writes the overlay a born Task lacks and skips the Task).
 On e04c3eaf (D384 to D388) the 100 hold five of six pre-registered bars (wrong 4 of 90, right 66 of 90, trusted 35
 with 1 wrong against the trace, 1.15 USD per Task) and fail the stray filter (2 of the 6 named set aside
 intent_strayed). Out of sample the 253 trust 83, with 6 of 48 labelled wrong and 2 of 24 trusted wrong; 412.72 USD for
-all 353. D387 alone leaves no base on 7 of 18 no_base Tasks of the 100 and 24 of 59 of the 253, nearly all on gated
-whole-field lists. Report: .claude/herdr/run-1017/run-report.md.
+all 353. With every Verifier labelled, 21 of 319 are wrong against the trace (6.6 percent, 4.3 to 9.9), 5 of 118
+trusted (4.2 percent, 1.8 to 9.5); right 192, partial 106; 34 Tasks end with no Verifier. D387 alone leaves no base on
+7 of 18 no_base Tasks of the 100 and 24 of 59 of the 253, nearly all on gated whole-field lists. Report:
+.claude/herdr/run-1017/run-report.md.
 
 ### D392. Two gated called items on one tool with different args are a contradiction (2026-10-17)
 What: kullback/spec/items.py contradictions now reports the second of two gated called items that name the same
