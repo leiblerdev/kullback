@@ -3165,3 +3165,8 @@ What it cannot show: nothing ran live; no role registers the tools yet, so wheth
 provider answers, is unmeasured. Tests (`tests/agent/test_web_tools.py`) run on `TestSearch` inside `MemoSearch` over a
 tmp workdir as the search and `destination_refusal` over a scripted resolver as `refuse`, with no network call; one
 test pins the module's harness imports to `kullback.agent` and `kullback.ai`.
+
+### D378. The scenario step is named generate, not mine (2026-10-17)
+
+The CLI verb is `kullback synth scenarios`, the stage `synth_generation`, the summary `generated.json`. The word mine
+read as rebuilding the Environment; the step reads the built Environment and writes scenarios.

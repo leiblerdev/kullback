@@ -1,8 +1,8 @@
-"""The synthetic generator's miner: scenarios from the recordings, a cited search and a customer's lines (D372).
+"""The scenario generator: scenarios from the built Environment, its recordings, a web search and typed lines (D372).
 
-The miner is a role on the shared agent harness and event stream, as the Examiner and the scenario
-review are (mine_tools.py): one session per batch of one source, on the workdir bus under the agent
-name synth, its calls booked under the stage synth_mining by the budget subscriber. The recordings
+The generator is a role on the shared agent harness and event stream, as the Examiner and the scenario
+review are (generate_tools.py): one session per batch of one source, on the workdir bus under the agent
+name synth, its calls booked under the stage synth_generation by the budget subscriber. The recordings
 source hands a session a batch of opening asks, one per recording, and the agent groups them into
 statements; frequency is the count of openings grouped. The search source hands one session the
 harness's web reader as the shared web tools (D377) over search.Crawled: the agent searches, reads pages
@@ -32,23 +32,23 @@ from kullback import domain
 from kullback.runner import budget
 from kullback.runner.records import write_json
 from kullback.spec import intent_tools
-from kullback.synth import mine_prompt
-from kullback.synth import mine_tools as T
+from kullback.synth import generate_prompt
+from kullback.synth import generate_tools as T
 from kullback.synth import records as R
 from kullback.synth import search as search_mod
 from kullback.synth.rule import EMPTY, ID_SHAPE, TOOL_NAME, World, statement_refusal, world_of
 
-# How many opening asks or typed lines one session mines.
+# How many opening asks or typed lines one session generates from.
 BATCH = 25
-STAGE = "synth_mining"
+STAGE = "synth_generation"
 FIX_STAGE = "synth_fix"
-CEILING_NOTE = "stopped at the spend ceiling; mine again to continue"
+CEILING_NOTE = "stopped at the spend ceiling; generate again to continue"
 _PUNCT = re.compile(r"[^\w\s]")
 
 
 @dataclass
-class Mining:
-    """One mining call: the world, the model, what every session found and dropped, the stream."""
+class Generation:
+    """One generation call: the world, the model, what every session found and dropped, the stream."""
 
     world: World
     model: Any
@@ -68,8 +68,8 @@ class Mining:
             return True
         return False
 
-    def session(self, kind: str, opening: str, stage: str = STAGE, **root: Any) -> T.MineRoot:
-        made = T.MineRoot(world=self.world, kind=kind, found=self.found, dropped=self.dropped, bus=self.bus, **root)
+    def session(self, kind: str, opening: str, stage: str = STAGE, **root: Any) -> T.GenerateRoot:
+        made = T.GenerateRoot(world=self.world, kind=kind, found=self.found, dropped=self.dropped, bus=self.bus, **root)
         if T.run(made, self.model, opening, stage, self.ceiling, self.subscribers):
             self.capped[kind] += 1
         return made
@@ -84,7 +84,7 @@ def _entries(workdir: Path) -> list[str]:
 
 
 def _opening_index(workdir: Path, task_id: str) -> dict[str, int]:
-    """Per recording, the opening ask the Intent miner marked; none where the Task has no Spec yet."""
+    """Per recording, the opening ask the Intent marked; none where the Task has no Spec yet."""
     from kullback.spec.schema import load_spec
 
     try:
@@ -97,7 +97,7 @@ def _opening_index(workdir: Path, task_id: str) -> dict[str, int]:
 def openings(workdir: Any) -> list[dict]:
     """Every recording's opening ask, one row each: the Task, the recording and the user's words.
 
-    The opening is the turn the Intent miner marked as the first ask where a Spec exists, else the
+    The opening is the turn the Intent marked as the first ask where a Spec exists, else the
     recording's first user turn.
     """
     root = Path(workdir)
@@ -115,30 +115,30 @@ def openings(workdir: Any) -> list[dict]:
     return out
 
 
-def _batched(mining: Mining, kind: str, items: list[dict], batch: int) -> None:
+def _batched(generation: Generation, kind: str, items: list[dict], batch: int) -> None:
     """One session per batch of items of one source, stopping at the ceiling."""
     size = max(int(batch), 1)
     for start in range(0, len(items), size):
-        if mining.over():
+        if generation.over():
             return
         chunk = items[start:start + size]
-        opening = mine_prompt.opening(kind, _entries(mining.world.workdir), count=len(chunk))
-        made = mining.session(kind, opening, items=chunk)
-        mining.ungrouped.append({"source": kind, "batch": start // size, "items": len(chunk),
+        opening = generate_prompt.opening(kind, _entries(generation.world.workdir), count=len(chunk))
+        made = generation.session(kind, opening, items=chunk)
+        generation.ungrouped.append({"source": kind, "batch": start // size, "items": len(chunk),
                                  "ungrouped": len(chunk) - len(made.grouped)})
 
 
-def from_recordings(mining: Mining, *, batch: int = BATCH) -> None:
+def from_recordings(generation: Generation, *, batch: int = BATCH) -> None:
     """Scenarios grouping the recordings' opening asks, one session per batch."""
-    if mining.model is None:
+    if generation.model is None:
         return
-    _batched(mining, "recordings", openings(mining.world.workdir), batch)
+    _batched(generation, "recordings", openings(generation.world.workdir), batch)
 
 
 # --- the search -------------------------------------------------------------------------
 
 
-def from_search(mining: Mining, *, engine: Any = None, env: Optional[dict] = None,
+def from_search(generation: Generation, *, engine: Any = None, env: Optional[dict] = None,
                 corpus_url: Optional[str] = None, exclude: Iterable[str] = (),
                 refuse: Optional[Callable[[str], str]] = None) -> None:
     """Scenarios read off pages the harness's reader names, each citing the byte range of its span.
@@ -146,22 +146,22 @@ def from_search(mining: Mining, *, engine: Any = None, env: Optional[dict] = Non
     With nothing live and no memo there is no reader: no session runs, no page is read, and the note
     names the switch.
     """
-    if mining.model is None:
+    if generation.model is None:
         return
-    if not mining.world.description:
-        mining.notes.append("no one-line description of the business, so no search was run")
+    if not generation.world.description:
+        generation.notes.append("no one-line description of the business, so no search was run")
         return
-    engine = engine if engine is not None else search_mod.reader(mining.world.workdir, env)
+    engine = engine if engine is not None else search_mod.reader(generation.world.workdir, env)
     if engine is None:
-        mining.notes.append(search_mod.OFF_NOTE)
+        generation.notes.append(search_mod.OFF_NOTE)
         return
-    if mining.over():
+    if generation.over():
         return
     pages: dict = {}
-    reader = search_mod.Crawled(engine, mining.world.workdir, keys=pages, corpus_url=corpus_url, exclude=exclude,
-                                notes=mining.notes)
-    opening = mine_prompt.opening("search", _entries(mining.world.workdir))
-    mining.session("search", opening, reader=reader, pages=pages, refuse=refuse or domain.destination_refusal)
+    reader = search_mod.Crawled(engine, generation.world.workdir, keys=pages, corpus_url=corpus_url, exclude=exclude,
+                                notes=generation.notes)
+    opening = generate_prompt.opening("search", _entries(generation.world.workdir))
+    generation.session("search", opening, reader=reader, pages=pages, refuse=refuse or domain.destination_refusal)
 
 
 # --- the customer's lines ---------------------------------------------------------------
@@ -175,23 +175,23 @@ def ask_lines(path: Any) -> list[str]:
             if line.strip() and not line.strip().startswith("#")]
 
 
-def from_asks(mining: Mining, lines: Iterable[str], *, batch: int = BATCH) -> None:
+def from_asks(generation: Generation, lines: Iterable[str], *, batch: int = BATCH) -> None:
     """Each line a customer typed, rewritten as a scenario under the rule, one session per batch.
 
     A line naming a tool of the Environment is dropped and counted before any session.
     """
     kept = []
     for line in lines:
-        why = statement_refusal(line, mining.world, tools_only=True)
+        why = statement_refusal(line, generation.world, tools_only=True)
         if why:
-            mining.dropped[why] += 1
+            generation.dropped[why] += 1
         else:
             kept.append({"text": line})
-    if mining.model is None:
+    if generation.model is None:
         if kept:
-            mining.notes.append("no model, so no ask line was rewritten as a scenario")
+            generation.notes.append("no model, so no ask line was rewritten as a scenario")
         return
-    _batched(mining, "ask", kept, batch)
+    _batched(generation, "ask", kept, batch)
 
 
 # --- folding and coverage ---------------------------------------------------------------
@@ -234,32 +234,32 @@ def coverage(kept: list[R.Scenario], folded: list[dict], dropped: Counter, ungro
             "openings_ungrouped": list(ungrouped)}
 
 
-def mine(workdir: Any, *, model: Any, asks: Any = None, searching: bool = True,
+def generate(workdir: Any, *, model: Any, asks: Any = None, searching: bool = True,
          batch: int = BATCH, description: str = "", engine: Any = None, env: Optional[dict] = None,
          corpus_url: Optional[str] = None, exclude: Iterable[str] = (), ceiling: Optional[budget.Ceiling] = None,
          subscribers: Iterable[Any] = (), refuse: Optional[Callable[[str], str]] = None) -> dict:
     """Run the three sources as sessions, fold the repeats, write the new records and the counts.
 
-    A record already in the store keeps its status and its review: mining again adds, never resets.
+    A record already in the store keeps its status and its review: generating again adds, never resets.
     """
     world = world_of(workdir, description)
-    mining = Mining(world=world, model=model, bus=T.bus_for(workdir), ceiling=ceiling,
+    generation = Generation(world=world, model=model, bus=T.bus_for(workdir), ceiling=ceiling,
                     subscribers=tuple(subscribers))
-    from_recordings(mining, batch=batch)
+    from_recordings(generation, batch=batch)
     if searching:
-        from_search(mining, engine=engine, env=env, corpus_url=corpus_url, exclude=exclude, refuse=refuse)
+        from_search(generation, engine=engine, env=env, corpus_url=corpus_url, exclude=exclude, refuse=refuse)
     else:
-        mining.notes.append("search turned off")
+        generation.notes.append("search turned off")
     path = Path(asks) if asks else R.store_dir(workdir) / R.ASKS
-    from_asks(mining, ask_lines(path), batch=batch)
-    kept, folded = fold(list(mining.found))
+    from_asks(generation, ask_lines(path), batch=batch)
+    kept, folded = fold(list(generation.found))
     held = {canonical(record.statement) for record in R.load_scenarios(workdir)}
     new = [record for record in kept if canonical(record.statement) not in held]
     R.write_all(workdir, new)
-    counts = coverage(kept, folded, mining.dropped, mining.ungrouped)
-    body = {"format": R.FORMAT, "notes": mining.notes, "coverage": counts,
-            "born": len(new), "folded": folded, "capped": dict(sorted(mining.capped.items()))}
-    write_json(R.store_dir(workdir) / R.MINED, body)
+    counts = coverage(kept, folded, generation.dropped, generation.ungrouped)
+    body = {"format": R.FORMAT, "notes": generation.notes, "coverage": counts,
+            "born": len(new), "folded": folded, "capped": dict(sorted(generation.capped.items()))}
+    write_json(R.store_dir(workdir) / R.GENERATED, body)
     return body
 
 
@@ -300,15 +300,15 @@ def fix(world: World, sent: list[tuple[R.Scenario, str]], model: Any, *, bus: An
     """
     if not sent:
         return []
-    mining = Mining(world=world, model=model, bus=bus if bus is not None else T.bus_for(world.workdir),
+    generation = Generation(world=world, model=model, bus=bus if bus is not None else T.bus_for(world.workdir),
                     ceiling=ceiling, subscribers=tuple(subscribers))
-    if model is None or mining.over():
+    if model is None or generation.over():
         return [_fixed(record, why, None) for record, why in sent]
-    opening = mine_prompt.opening("fix", _entries(world.workdir), items=_fix_items(world, sent))
-    root = mining.session("fix", opening, stage=FIX_STAGE, fixing={record.id: record for record, _ in sent})
+    opening = generate_prompt.opening("fix", _entries(world.workdir), items=_fix_items(world, sent))
+    root = generation.session("fix", opening, stage=FIX_STAGE, fixing={record.id: record for record, _ in sent})
     return [_fixed(record, why, root.fixed.get(record.id)) for record, why in sent]
 
 
-__all__ = ["BATCH", "EMPTY", "FIX_STAGE", "ID_SHAPE", "Mining", "STAGE", "TOOL_NAME", "World", "canonical", "coverage",
-           "fix", "fold", "from_asks", "from_recordings", "from_search", "mine", "openings", "source_text",
+__all__ = ["BATCH", "EMPTY", "FIX_STAGE", "ID_SHAPE", "Generation", "STAGE", "TOOL_NAME", "World", "canonical", "coverage",
+           "fix", "fold", "from_asks", "from_recordings", "from_search", "generate", "openings", "source_text",
            "statement_refusal", "world_of"]

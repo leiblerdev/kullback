@@ -11,7 +11,7 @@ from kullback.agent.extensions import load_extensions
 from kullback.agent.harness import AgentHarness
 from kullback.ai.provider import TestModel
 from kullback.runner.records import read_json
-from kullback.synth import miner as M
+from kullback.synth import generate as M
 from kullback.synth import prompt as P
 from kullback.synth import records as R
 from kullback.synth import review as V

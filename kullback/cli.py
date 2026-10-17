@@ -1443,7 +1443,7 @@ def read_domain(
 
 
 synth_app = typer.Typer(add_completion=False,
-                        help="The synthetic generator: scenarios of this business, mined and reviewed (D372, D373).")
+                        help="Scenarios generated from the built Environment, then reviewed (D372, D373).")
 app.add_typer(synth_app, name="synth")
 SCENARIO_WORKDIR = typer.Argument(..., help="The built workdir whose scenarios/ store is read and written.")
 SCENARIO_MODEL = typer.Option(None, "--model", help="Model id, as provider/model.")
@@ -1467,8 +1467,8 @@ def _scenario_report(workdir: Path) -> None:
         typer.echo(line)
 
 
-@synth_app.command("mine")
-def synth_mine(
+@synth_app.command("scenarios")
+def synth_scenarios(
     workdir: Path = SCENARIO_WORKDIR,
     asks: Optional[Path] = SCENARIO_ASKS,
     search: bool = typer.Option(True, "--search/--no-search",
@@ -1481,14 +1481,14 @@ def synth_mine(
     corpus_url: Optional[str] = typer.Option(None, "--corpus-url",
                                              help="The source corpus's own repository or paper; never read."),
 ):
-    """Mine scenarios from the recordings, a cited web search and a customer's lines (D372)."""
+    """Generate scenarios from the built Environment: its recordings, a cited web search and a customer's lines (D372)."""
     if not model:
         typer.echo("no model: pass --model")
         raise typer.Exit(2)
     ceiling = _synth_ceiling(workdir, model, ceiling_usd)
-    _entry("kullback.synth.miner", "mine")(workdir, model=_live_model(model, base_url), asks=asks,
-                                           searching=search, batch=batch, description=str(domain_line or ""),
-                                           corpus_url=corpus_url, ceiling=ceiling)
+    _entry("kullback.synth.generate", "generate")(workdir, model=_live_model(model, base_url), asks=asks,
+                                                   searching=search, batch=batch, description=str(domain_line or ""),
+                                                   corpus_url=corpus_url, ceiling=ceiling)
     _scenario_report(workdir)
 
 

@@ -25,7 +25,7 @@ INDEX = "index.json"
 MARKER = "STORE"
 ASKS = "asks.txt"
 HUMAN = "human.json"
-MINED = "mined.json"
+GENERATED = "generated.json"
 FORMAT = 1
 MARKER_TEXT = ("A scenario store (D372): one JSON per scenario plus index.json. Scenarios are not Tasks; "
                "nothing here is read by the trusted count.\n")
@@ -153,6 +153,6 @@ def load_scenarios(workdir: Any) -> list[Scenario]:
             for path in sorted(folder.glob("sc_*.json"))] if folder.is_dir() else []
 
 
-__all__ = ["ASKS", "DIR", "HUMAN", "INDEX", "MARKER", "MINED", "SETTLED", "SOURCE_KINDS", "STATUSES", "Scenario",
+__all__ = ["ASKS", "DIR", "HUMAN", "INDEX", "MARKER", "GENERATED", "SETTLED", "SOURCE_KINDS", "STATUSES", "Scenario",
            "Source", "born", "load_scenario", "load_scenarios", "mask", "policy_lines_in", "record_path",
            "scenario_id", "store_dir", "write_all", "write_scenario"]

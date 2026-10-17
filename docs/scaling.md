@@ -7,12 +7,12 @@ Agent-World (arXiv 2604.18292) and Agent World Model (arXiv 2602.10090) both rep
 1. More Tasks per environment without new traces (D224, building). A tool-call dependency graph is mined from the recordings: an edge from tool A to tool B where a B argument value came from an A result column, and from a read to a write on the same row. Walks over that graph, instantiated with rows of the rebuilt world (real rows and the synthetic rows synth.py already grows), become synthetic Tasks: the Intent is written from the walk in symptom form (D196), the Starting state is the world the walk starts in, the Reference End state is what the walk's writes do when executed in the rebuilt world by code, the Verifier is derived from that executed path by the same derive path References use (D198), and the simulated user's askable facts are the row values the walk's arguments carry (record facts never). Walk length, branching and the number of writes set the difficulty record (D209), which is the second half of the TaskPilot knob: a training run asks for buckets and the generator fills them. Synthetic Tasks go through the D79 suite and the held-out pool but are reported under their own heading, never inside trusted, because no recording gates their fidelity. What they buy: a pool large enough to measure over-strictness on thin corpora, training Runs at chosen difficulty, and coverage of tool paths the customer's users have not yet taken.
 
    The scenario layer replaces walks as the source (D372). A scenario is one situation customers of the business meet,
-   in general words, with the policy lines it touches. The miner writes scenarios from three sources: the opening asks of
-   the recordings, grouped and counted; pages a cited web search returns, each statement bound to a verified byte range;
-   and lines a customer typed. The Examiner reviews them blind to their source (D373): whether the situation occurs,
-   whether the world can serve it, and whether it serves an ask. One that the world cannot serve files an Environment
-   finding rather than being dropped. Turning a passed scenario into a synthetic Task bound to real rows is not built
-   yet, and nothing of the layer has run on a model.
+   in general words, with the policy lines it touches. The generator writes scenarios from the built Environment, from
+   three sources: the opening asks of the recordings, grouped and counted; pages a cited web search returns, each
+   statement bound to a verified byte range; and lines a customer typed. The Examiner reviews them blind to their source
+   (D373): whether the situation occurs, whether the world can serve it, and whether it serves an ask. One that the
+   world cannot serve files an Environment finding rather than being dropped. Turning a passed scenario into a synthetic
+   Task bound to real rows is not built yet, and nothing of the layer has run on a model.
 
 2. Environments without traces, from a specification (next). Agent World Model writes environments from a schema and tool descriptions. Kullback's Builder already writes data model, tool bodies and policy from evidence; a specification (an API description, an MCP tool list, a schema) is thinner evidence than a trace, so the gates change: replay fidelity is unmeasurable and is replaced by consistency rulings the harness already has (the sensitivity gate D195, round trips, the memorised-values gate, effect checks D215 against the specification's own examples) plus generated unit examples per tool, and the report labels the environment "specification, no recording" with those numbers. Synthetic Tasks (axis 1) supply its Tasks. The first customer of this path is a public API with a good specification, so the environment can be compared with a traced one later.
 

@@ -1,4 +1,4 @@
-"""The synthetic generator's miner as sessions on the shared harness (D372), on scripted models only."""
+"""The scenario generator as sessions on the shared harness (D372), on scripted models only."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from kullback.ai.provider import LIVE_ENV_VAR, ModelReply, TestModel
 from kullback.ai.usage import Usage
 from kullback.builder.search import TINYFISH_KEY_VAR
 from kullback.runner import budget
-from kullback.synth import mine_prompt
-from kullback.synth import mine_tools as T
-from kullback.synth import miner as M
+from kullback.synth import generate as M
+from kullback.synth import generate_prompt
+from kullback.synth import generate_tools as T
 from kullback.synth import records as R
 from kullback.synth import search as S
 from tests.synth.fixture import DESCRIPTION, OPENINGS, POLICY, REFUSE, STATE, TOOLS, URL, call, make_workdir, web
@@ -29,10 +29,10 @@ def _done(text: str = "Wrote them.") -> ModelReply:
     return ModelReply(content=text, usage=Usage(input=10, output=2))
 
 
-def _mining(tmp_path, *replies) -> tuple[M.Mining, TestModel]:
+def _generation(tmp_path, *replies) -> tuple[M.Generation, TestModel]:
     model = TestModel([*replies])
     workdir = make_workdir(tmp_path)
-    return M.Mining(world=M.world_of(workdir), model=model, bus=T.bus_for(workdir)), model
+    return M.Generation(world=M.world_of(workdir), model=model, bus=T.bus_for(workdir)), model
 
 
 def _results(model: TestModel) -> list[str]:
@@ -61,35 +61,35 @@ def test_the_statement_rule_refuses_a_tool_name_and_id_shapes_and_keeps_a_named_
 
 
 def test_a_recordings_session_groups_openings_with_their_frequency_and_policy_lines(tmp_path):
-    mining, model = _mining(tmp_path,
+    generation, model = _generation(tmp_path,
                             call("list_openings", {}, "m0"),
                             _write("m1", "a holder wants a widget moved to another slot", openings=[0, 1],
                                    policy_lines=[SEALED_LINE]),
                             _write("m2", "a holder wants a replacement for a widget that arrived broken", openings=[2]),
                             _done())
-    M.from_recordings(mining)
-    assert [(r.frequency, r.source.task_ids) for r in mining.found] == [(2, ["task-a1", "task-b2"]), (1, ["task-c3"])]
-    assert mining.found[0].policy_lines == [SEALED_LINE] and mining.dropped == Counter()
+    M.from_recordings(generation)
+    assert [(r.frequency, r.source.task_ids) for r in generation.found] == [(2, ["task-a1", "task-b2"]), (1, ["task-c3"])]
+    assert generation.found[0].policy_lines == [SEALED_LINE] and generation.dropped == Counter()
     assert OPENINGS["task-b2"] in _results(model)[0]
 
 
 def test_a_refused_write_is_written_again_once_and_a_second_refusal_drops_and_counts_it(tmp_path):
-    mining, model = _mining(tmp_path,
+    generation, model = _generation(tmp_path,
                             _write("m0", "a holder wants move_widget called", openings=[0]),
                             _write("m1", "a holder wants a widget moved to another slot", openings=[0]),
                             _write("m2", "a holder wants widget W1001 moved", openings=[1]),
                             _write("m3", "a holder wants widget W1002 moved now", openings=[1]),
                             _write("m4", "a holder wants a widget moved", openings=[2], policy_lines=["made up"]),
                             _done())
-    M.from_recordings(mining)
-    assert [r.statement for r in mining.found] == ["a holder wants a widget moved to another slot"]
-    assert mining.dropped == Counter({M.ID_SHAPE: 1, T.POLICY_LINE: 1})
+    M.from_recordings(generation)
+    assert [r.statement for r in generation.found] == ["a holder wants a widget moved to another slot"]
+    assert generation.dropped == Counter({M.ID_SHAPE: 1, T.POLICY_LINE: 1})
     results = _results(model)
     assert "write it again once" in results[0] and "dropped" in results[3]
 
 
 def test_a_search_session_on_the_shared_web_tools_cites_the_byte_range_of_a_span_on_a_page_it_read(tmp_path):
-    mining, model = _mining(tmp_path,
+    generation, model = _generation(tmp_path,
                             call("search", {"query": "what holders ask about sealed widgets"}, "m0"),
                             _write("m1", "a holder wants to move a widget that is already sealed", "search",
                                    url=URL, span=SPAN),
@@ -99,13 +99,13 @@ def test_a_search_session_on_the_shared_web_tools_cites_the_byte_range_of_a_span
                             _write("m4", "a holder wants their widget painted", "search", url=URL,
                                    span="We paint widgets on request."),
                             _done())
-    engine, inner = web(mining.world.workdir)
-    M.from_search(mining, engine=engine, refuse=REFUSE)
-    [record] = mining.found
-    raw = domain.cached_text(mining.world.workdir, record.source.key).encode("utf-8")
+    engine, inner = web(generation.world.workdir)
+    M.from_search(generation, engine=engine, refuse=REFUSE)
+    [record] = generation.found
+    raw = domain.cached_text(generation.world.workdir, record.source.key).encode("utf-8")
     assert raw[record.source.start:record.source.end].decode("utf-8") == SPAN
     assert record.source.url == URL and record.frequency == 0
-    assert mining.dropped == Counter({T.NO_SPAN: 1}) and T.NOT_READ.replace("_", " ") in _results(model)[1]
+    assert generation.dropped == Counter({T.NO_SPAN: 1}) and T.NOT_READ.replace("_", " ") in _results(model)[1]
     assert inner.queries == ["what holders ask about sealed widgets"] and inner.fetched == [URL]
     assert URL in _results(model)[0] and SPAN in _results(model)[2]
 
@@ -117,9 +117,9 @@ def test_a_search_session_with_no_reader_holds_the_shared_tools_and_they_answer_
     from kullback.agent.harness import AgentHarness
     from kullback.agent.web_tools import OFF
 
-    root = T.MineRoot(world=M.world_of(make_workdir(tmp_path)), kind="search", refuse=REFUSE)
+    root = T.GenerateRoot(world=M.world_of(make_workdir(tmp_path)), kind="search", refuse=REFUSE)
     harness = AgentHarness(model=TestModel([]))
-    load_extensions(harness, [T.mine_extension(root)])
+    load_extensions(harness, [T.generate_extension(root)])
     searched = asyncio.run(harness.registry.get("search").run({"query": "sealed widget"}))
     read = asyncio.run(harness.registry.get("read_page").run({"url": URL}))
     assert searched.details["summary"] == read.details["summary"] == OFF
@@ -127,36 +127,36 @@ def test_a_search_session_with_no_reader_holds_the_shared_tools_and_they_answer_
 
 
 def test_with_the_live_switch_off_and_no_memo_no_search_session_runs_and_the_note_names_the_switch(tmp_path):
-    mining, model = _mining(tmp_path)
-    M.from_search(mining, env={})
-    assert mining.found == [] and model.calls == [] and not (mining.world.workdir / "web_cache").exists()
-    assert mining.notes == [S.OFF_NOTE] and LIVE_ENV_VAR in S.OFF_NOTE and TINYFISH_KEY_VAR in S.OFF_NOTE
+    generation, model = _generation(tmp_path)
+    M.from_search(generation, env={})
+    assert generation.found == [] and model.calls == [] and not (generation.world.workdir / "web_cache").exists()
+    assert generation.notes == [S.OFF_NOTE] and LIVE_ENV_VAR in S.OFF_NOTE and TINYFISH_KEY_VAR in S.OFF_NOTE
 
 
 def test_ask_lines_are_rewritten_in_the_third_person_and_the_line_as_typed_stays_in_the_source(tmp_path):
     typed = "test whether the agent will refund a sealed widget"
     statement = "a holder asks for a refund on a widget that is already sealed"
-    mining, model = _mining(tmp_path, _write("m0", typed, "ask", openings=[0]),
+    generation, model = _generation(tmp_path, _write("m0", typed, "ask", openings=[0]),
                             _write("m1", statement, "ask", openings=[0]), _done())
-    M.from_asks(mining, [typed, "call move_widget twice"])
-    [record] = mining.found
+    M.from_asks(generation, [typed, "call move_widget twice"])
+    [record] = generation.found
     assert record.statement == statement and record.statement != typed
-    assert M.statement_refusal(record.statement, mining.world) == ""
+    assert M.statement_refusal(record.statement, generation.world) == ""
     assert (record.source.kind, record.source.line) == ("ask", typed)
-    assert mining.dropped == Counter({M.TOOL_NAME: 1}) and T.AS_TYPED.replace("_", " ") in _results(model)[0]
+    assert generation.dropped == Counter({M.TOOL_NAME: 1}) and T.AS_TYPED.replace("_", " ") in _results(model)[0]
     assert "move_widget" not in json.dumps(model.calls[0]["messages"][-1])
 
 
 def test_without_a_model_no_ask_line_becomes_a_record_and_a_note_says_so(tmp_path):
-    mining = M.Mining(world=M.world_of(make_workdir(tmp_path)), model=None)
-    M.from_asks(mining, ["I want to see what happens when someone asks twice"])
-    assert mining.found == [] and any("no ask line was rewritten" in note for note in mining.notes)
+    generation = M.Generation(world=M.world_of(make_workdir(tmp_path)), model=None)
+    M.from_asks(generation, ["I want to see what happens when someone asks twice"])
+    assert generation.found == [] and any("no ask line was rewritten" in note for note in generation.notes)
 
 
-def test_a_mining_session_plays_on_the_workdir_bus_as_synth_and_books_its_calls_under_its_stage(tmp_path):
+def test_a_generation_session_plays_on_the_workdir_bus_as_synth_and_books_its_calls_under_its_stage(tmp_path):
     workdir = make_workdir(tmp_path)
     model = TestModel([_write("m0", "a holder wants a widget moved to another slot", openings=[0, 1, 2]), _done()])
-    M.mine(workdir, model=model, searching=False)
+    M.generate(workdir, model=model, searching=False)
     records = [json.loads(line) for line in (workdir / "bus.jsonl").read_text().splitlines()]
     assert {row["agent"] for row in records} == {T.AGENT}
     assert any(row["event"].get("name") == "scenario_written" for row in records)
@@ -168,7 +168,7 @@ def test_an_opening_belongs_to_one_scenario_the_rest_of_the_picks_write_and_ungr
     model = TestModel([_write("m0", "a holder wants a widget moved to another slot", openings=[0]),
                        _write("m1", "a holder wants a sealed widget moved", openings=[0, 1]),
                        _write("m2", "a holder wants a sealed widget moved", openings=[1]), _done()])
-    body = M.mine(workdir, model=model, searching=False)
+    body = M.generate(workdir, model=model, searching=False)
     first, second = sorted(R.load_scenarios(workdir), key=lambda r: r.source.task_ids)
     refusal = _results(model)[1]
     assert T.OPENING_GROUPED.replace("_", " ") in refusal and first.id in refusal
@@ -178,24 +178,24 @@ def test_an_opening_belongs_to_one_scenario_the_rest_of_the_picks_write_and_ungr
 
 
 def test_an_ask_line_is_rewritten_once(tmp_path):
-    mining, model = _mining(tmp_path, _write("a0", "a holder asks which slot a widget sits in", "ask", openings=[0]),
+    generation, model = _generation(tmp_path, _write("a0", "a holder asks which slot a widget sits in", "ask", openings=[0]),
                             _write("a1", "a holder wants to know where a widget is kept", "ask", openings=[0]), _done())
-    M.from_asks(mining, ["tell me which slot my widget is in"])
-    assert len(mining.found) == 1 and T.OPENING_GROUPED.replace("_", " ") in _results(model)[1]
-    assert mining.ungrouped == [{"source": "ask", "batch": 0, "items": 1, "ungrouped": 0}]
+    M.from_asks(generation, ["tell me which slot my widget is in"])
+    assert len(generation.found) == 1 and T.OPENING_GROUPED.replace("_", " ") in _results(model)[1]
+    assert generation.ungrouped == [{"source": "ask", "batch": 0, "items": 1, "ungrouped": 0}]
 
 
 def test_a_search_session_gets_its_own_turn_budget_and_a_capped_session_is_counted_under_its_kind(tmp_path):
     workdir = make_workdir(tmp_path)
     endless = [call("list_scenarios", {}, f"s{at}") for at in range(T.MAX_TURNS + 5)]
     model = TestModel([_done(), *endless])
-    body = M.mine(workdir, model=model, engine=web(workdir)[0], refuse=REFUSE, description=DESCRIPTION)
-    assert len(model.calls) - 1 == T.SEARCH_TURNS == T.turns_for(T.MineRoot(world=M.world_of(workdir), kind="search"))
+    body = M.generate(workdir, model=model, engine=web(workdir)[0], refuse=REFUSE, description=DESCRIPTION)
+    assert len(model.calls) - 1 == T.SEARCH_TURNS == T.turns_for(T.GenerateRoot(world=M.world_of(workdir), kind="search"))
     assert body["capped"] == {"search": 1}
-    assert json.loads((R.store_dir(workdir) / R.MINED).read_text())["capped"] == {"search": 1}
+    assert json.loads((R.store_dir(workdir) / R.GENERATED).read_text())["capped"] == {"search": 1}
 
 
-def test_mining_folds_an_ask_into_the_recordings_record_and_writes_coverage(tmp_path):
+def test_generation_folds_an_ask_into_the_recordings_record_and_writes_coverage(tmp_path):
     workdir = make_workdir(tmp_path)
     statement = "a holder wants a widget moved to another slot"
     which = "someone asks which slot their widget sits in"
@@ -203,7 +203,7 @@ def test_mining_folds_an_ask_into_the_recordings_record_and_writes_coverage(tmp_
     (workdir / R.DIR / R.ASKS).write_text("I want my widget moved\ntest whether it says which slot I picked\n")
     model = TestModel([_write("m0", statement, openings=[0, 1]), _done(),
                        _write("a0", statement, "ask", openings=[0]), _write("a1", which, "ask", openings=[1]), _done()])
-    body = M.mine(workdir, model=model, searching=False)
+    body = M.generate(workdir, model=model, searching=False)
     records = R.load_scenarios(workdir)
     assert sorted(r.source.kind for r in records) == ["ask", "recordings"]
     held = next(r for r in records if r.source.kind == "recordings")
@@ -233,7 +233,7 @@ def test_no_module_of_the_layer_calls_a_model_judge_to_fold():
     assert texts and not [text for text in texts if "dedup(" in text or "judge=" in text]
 
 
-def test_mining_again_keeps_the_status_and_review_of_a_record_already_held(tmp_path):
+def test_generation_again_keeps_the_status_and_review_of_a_record_already_held(tmp_path):
     workdir = make_workdir(tmp_path)
     (workdir / R.DIR).mkdir()
     (workdir / R.DIR / R.ASKS).write_text("test which slot a widget sits in\n")
@@ -242,10 +242,10 @@ def test_mining_again_keeps_the_status_and_review_of_a_record_already_held(tmp_p
         return TestModel([_done(), _write("a0", "someone asks which slot a widget sits in", "ask", openings=[0]),
                           _done()])
 
-    M.mine(workdir, model=scripted(), searching=False)
+    M.generate(workdir, model=scripted(), searching=False)
     [record] = R.load_scenarios(workdir)
     R.write_scenario(workdir, record.model_copy(update={"status": "passed"}))
-    M.mine(workdir, model=scripted(), searching=False)
+    M.generate(workdir, model=scripted(), searching=False)
     assert [r.status for r in R.load_scenarios(workdir)] == ["passed"]
 
 
@@ -270,34 +270,34 @@ def _fixture_names() -> set[str]:
     return {tool["name"] for tool in TOOLS} | set(STATE) | fields
 
 
-def _mining_texts() -> list[str]:
-    return [body for _, body in mine_prompt.sections()] + [mine_prompt.opening(k, count=3) for k in mine_prompt.OPENINGS]
+def _generation_texts() -> list[str]:
+    return [body for _, body in generate_prompt.sections()] + [generate_prompt.opening(k, count=3) for k in generate_prompt.OPENINGS]
 
 
-def test_the_mining_prompt_runs_in_gepa_order_with_the_stop_rule_last():
-    assert [name for name, _ in mine_prompt.sections()] == ["receives", "tools", "examples", "choice", "feedback", "stop"]
+def test_the_generation_prompt_runs_in_gepa_order_with_the_stop_rule_last():
+    assert [name for name, _ in generate_prompt.sections()] == ["receives", "tools", "examples", "choice", "feedback", "stop"]
 
 
-def test_no_mining_prompt_line_names_the_environment_or_runs_past_150_characters():
-    texts = _mining_texts()
+def test_no_generation_prompt_line_names_the_environment_or_runs_past_150_characters():
+    texts = _generation_texts()
     assert not {name for name in _fixture_names() for text in texts if name in text}
     assert DESCRIPTION not in "".join(texts)
     assert all(len(line) < 150 for text in texts for line in text.splitlines())
 
 
-def test_a_spent_ceiling_runs_no_mining_session_and_the_notes_say_it_stopped_at_the_ceiling(tmp_path):
+def test_a_spent_ceiling_runs_no_generation_session_and_the_notes_say_it_stopped_at_the_ceiling(tmp_path):
     workdir = make_workdir(tmp_path)
     ceiling = budget.Ceiling(usd=0.5)
     ceiling.spent = 0.6
     model = TestModel([_write("m0", "a holder wants a widget moved to another slot", openings=[0, 1, 2]), _done()])
-    body = M.mine(workdir, model=model, searching=False, ceiling=ceiling)
+    body = M.generate(workdir, model=model, searching=False, ceiling=ceiling)
     assert model.calls == [] and R.load_scenarios(workdir) == []
     assert M.CEILING_NOTE in body["notes"]
 
 
-def test_a_ceiling_with_room_runs_the_mining_sessions_as_without_one(tmp_path):
+def test_a_ceiling_with_room_runs_the_generation_sessions_as_without_one(tmp_path):
     workdir = make_workdir(tmp_path)
     model = TestModel([_write("m0", "a holder wants a widget moved to another slot", openings=[0, 1, 2]), _done()])
-    body = M.mine(workdir, model=model, searching=False, ceiling=budget.Ceiling(usd=0.5))
+    body = M.generate(workdir, model=model, searching=False, ceiling=budget.Ceiling(usd=0.5))
     assert [r.statement for r in R.load_scenarios(workdir)] == ["a holder wants a widget moved to another slot"]
     assert M.CEILING_NOTE not in body["notes"]

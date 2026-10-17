@@ -31,7 +31,7 @@ PHONE_DIGITS = 7
 
 @dataclass
 class World:
-    """What the miner and the review read of the Environment: the policy, the tools, the Starting state
+    """What the generator and the review read of the Environment: the policy, the tools, the Starting state
     and the one-line description of the business."""
 
     workdir: Path
@@ -52,7 +52,7 @@ def _policy(workdir: Path) -> str:
 
 
 def tool_rows(workdir: Path) -> list[dict]:
-    """Each mined tool: name, read or write, argument names and its description where it has one."""
+    """Each tool of the Environment: name, read or write, argument names and its description where it has one."""
     sigs = read_json(workdir / "tool_sigs.json", None) or []
     sigs = sigs.get("sigs", []) if isinstance(sigs, dict) else sigs
     out = []

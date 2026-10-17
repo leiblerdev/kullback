@@ -1,7 +1,7 @@
 """The synth report: every scenario count under its own heading, never in the build table (D372, D373).
 
 Per source kind: born, passed, unsure, infeasible, struck and fixing; the Environment findings the
-review filed; what the miner dropped, per reason; the coverage across sources; the human queue; and
+review filed; what the generator dropped, per reason; the coverage across sources; the human queue; and
 what the scenario stages spent. Read off the store and the ledger; nothing is called.
 """
 
@@ -16,7 +16,7 @@ from kullback.runner.records import read_json
 from kullback.synth import records as R
 
 HEADING = "## synth"
-STAGES = ("synth_mining", "synth_review", "synth_fix")
+STAGES = ("synth_generation", "synth_review", "synth_fix")
 FINDING_KEY = "environment:scenario:"
 
 
@@ -42,9 +42,9 @@ def _spend(root: Path) -> dict:
 def counts(workdir: Any) -> dict:
     """The numbers the report prints, as data."""
     root = Path(workdir)
-    mined = read_json(R.store_dir(root) / R.MINED, {}) or {}
+    generated = read_json(R.store_dir(root) / R.GENERATED, {}) or {}
     return {"table": _table(R.load_scenarios(root)), "findings": _findings(root),
-            "coverage": mined.get("coverage") or {}, "notes": mined.get("notes") or [],
+            "coverage": generated.get("coverage") or {}, "notes": generated.get("notes") or [],
             "human": len(read_json(R.store_dir(root) / R.HUMAN, []) or []), "spend": _spend(root)}
 
 

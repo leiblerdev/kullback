@@ -1,4 +1,4 @@
-"""The synthetic generator's mining session: a role on the shared agent harness and event stream (D372).
+"""The scenario generator session: a role on the shared agent harness and event stream (D372).
 
 Set up as the Examiner's sessions and the scenario review are: base tools over the scenario store, the
 role's own tools with pydantic arguments and results carrying rows, prompt sections in GEPA order, the
@@ -34,7 +34,7 @@ from kullback.agent.web_tools import TOOL_NAMES as WEB_TOOLS
 from kullback.agent.web_tools import register_web_tools
 from kullback.examiner import session as session_mod
 from kullback.runner import budget
-from kullback.synth import mine_prompt
+from kullback.synth import generate_prompt
 from kullback.synth import prompt as prompt_mod
 from kullback.synth import records as R
 from kullback.synth.rule import EMPTY, World, byte_range, statement_refusal
@@ -66,8 +66,8 @@ SESSION_TOOLS = {"recordings": ("list_openings", "list_scenarios", "write_scenar
 
 
 @dataclass
-class MineRoot:
-    """One mining session: the world, its source, its items, the web reader (or None), what it wrote.
+class GenerateRoot:
+    """One generation session: the world, its source, its items, the web reader (or None), what it wrote.
 
     `reader` is search.Crawled over the harness's reader, registered as the shared web tools' search; the
     cache key of every page it reads lands in `pages`, which the search write checks a span against.
@@ -127,7 +127,7 @@ def render(result: Rows) -> str:
 # --- refusals ------------------------------------------------------------------------------
 
 
-def _refuse(root: MineRoot, anchor: Any, why: str) -> None:
+def _refuse(root: GenerateRoot, anchor: Any, why: str) -> None:
     """Count one refusal of a scenario; the second drops it. Raised so the agent reads why."""
     count, _ = root.refused.get(anchor, (0, why))
     root.refused[anchor] = (count + 1, why)
@@ -137,12 +137,12 @@ def _refuse(root: MineRoot, anchor: Any, why: str) -> None:
     raise ValueError(f"refused ({why.replace('_', ' ')}): write it again once, following the rule")
 
 
-def _closed(root: MineRoot, anchor: Any) -> None:
+def _closed(root: GenerateRoot, anchor: Any) -> None:
     if root.refused.get(anchor, (0, ""))[0] >= 2:
         raise ValueError("this scenario was refused twice and is dropped; go on to the next")
 
 
-def settle_refusals(root: MineRoot) -> None:
+def settle_refusals(root: GenerateRoot) -> None:
     """A scenario refused once and never written again is dropped, counted under its reason."""
     for anchor, (count, why) in root.refused.items():
         if count == 1 and anchor not in root.written:
@@ -161,7 +161,7 @@ def _norm(text: str) -> str:
     return " ".join(str(text or "").lower().split())
 
 
-def _recordings(root: MineRoot, args: WriteArgs, statement: str) -> tuple[Any, str, dict]:
+def _recordings(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[Any, str, dict]:
     picked = sorted({at for at in args.openings if 0 <= at < len(root.items)})
     anchor = ("recordings", tuple(picked))
     if not picked:
@@ -170,7 +170,7 @@ def _recordings(root: MineRoot, args: WriteArgs, statement: str) -> tuple[Any, s
     return anchor, "", {"source": source, "frequency": len(picked), "picked": picked}
 
 
-def _asked(root: MineRoot, args: WriteArgs, statement: str) -> tuple[Any, str, dict]:
+def _asked(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[Any, str, dict]:
     picked = sorted({at for at in args.openings if 0 <= at < len(root.items)})
     anchor = ("ask", tuple(picked))
     if len(picked) != 1:
@@ -181,7 +181,7 @@ def _asked(root: MineRoot, args: WriteArgs, statement: str) -> tuple[Any, str, d
     return anchor, "", {"source": R.Source(kind="ask", line=line), "frequency": 0, "picked": picked}
 
 
-def _searched(root: MineRoot, args: WriteArgs, statement: str) -> tuple[Any, str, dict]:
+def _searched(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[Any, str, dict]:
     anchor = ("search", args.url, args.span)
     key = root.pages.get(args.url)
     if key is None:
@@ -201,7 +201,7 @@ def _searched(root: MineRoot, args: WriteArgs, statement: str) -> tuple[Any, str
 CHECKS = {"recordings": _recordings, "ask": _asked, "search": _searched}
 
 
-def _already_grouped(root: MineRoot, args: WriteArgs) -> None:
+def _already_grouped(root: GenerateRoot, args: WriteArgs) -> None:
     """Refuse a write picking an item a scenario of this session already holds; no anchor is counted."""
     held = sorted({at for at in args.openings if at in root.grouped}) if root.kind in ("recordings", "ask") else []
     if held:
@@ -210,10 +210,10 @@ def _already_grouped(root: MineRoot, args: WriteArgs) -> None:
                          "scenario; write the rest of your picks in a new call")
 
 
-def written(root: MineRoot, args: WriteArgs) -> Rows:
-    """One scenario written into this mining call's findings, or refused with why."""
+def written(root: GenerateRoot, args: WriteArgs) -> Rows:
+    """One scenario written into this generation call's findings, or refused with why."""
     if args.source != root.kind:
-        raise ValueError(f"this session mines the source {root.kind}; write with source {root.kind}")
+        raise ValueError(f"this session generates from the source {root.kind}; write with source {root.kind}")
     _already_grouped(root, args)
     statement = " ".join(args.statement.split())
     anchor, why, made = CHECKS[root.kind](root, args, statement)
@@ -233,7 +233,7 @@ def written(root: MineRoot, args: WriteArgs) -> Rows:
     return Rows(summary=f"written {record.id}", rows=[row])
 
 
-def rewritten(root: MineRoot, args: RewriteArgs) -> Rows:
+def rewritten(root: GenerateRoot, args: RewriteArgs) -> Rows:
     """One scenario sent back, rewritten under the rule, or refused with why."""
     record = root.fixing.get(args.id)
     if record is None:
@@ -254,12 +254,12 @@ def rewritten(root: MineRoot, args: RewriteArgs) -> Rows:
 # --- the tools -----------------------------------------------------------------------------
 
 
-def _scenario_rows(root: MineRoot) -> list[dict]:
+def _scenario_rows(root: GenerateRoot) -> list[dict]:
     rows = [{"id": r.id, "statement": r.statement, "status": r.status} for r in R.load_scenarios(root.workdir)]
     return rows + [{"id": r.id, "statement": r.statement, "status": "written now"} for r in root.found]
 
 
-def mine_tools(root: MineRoot) -> list[AgentTool]:
+def generate_tools(root: GenerateRoot) -> list[AgentTool]:
     """The role's own tools of one session, the subset its source uses; the web tools are D377's."""
 
     async def list_openings(args: NoArgs) -> Rows:
@@ -284,7 +284,7 @@ def mine_tools(root: MineRoot) -> list[AgentTool]:
             for name in SESSION_TOOLS[root.kind] if name in every]
 
 
-def mine_extension(root: MineRoot) -> Callable[[ExtensionAPI], None]:
+def generate_extension(root: GenerateRoot) -> Callable[[ExtensionAPI], None]:
     """The setup the harness loads: base tools over the store, the session's tools, the shared web tools
     where its source searches, the prompt."""
 
@@ -292,12 +292,12 @@ def mine_extension(root: MineRoot) -> Callable[[ExtensionAPI], None]:
         folder = R.store_dir(root.workdir)
         folder.mkdir(parents=True, exist_ok=True)
         register_base_tools(api, folder, only=BASE_ONLY)
-        for tool in mine_tools(root):
+        for tool in generate_tools(root):
             api.register_tool(tool)
         if set(WEB_TOOLS) & set(SESSION_TOOLS[root.kind]):
             register_web_tools(api, search=root.reader, refuse=root.refuse)
         world = root.world
-        for name, text in mine_prompt.sections(SESSION_TOOLS[root.kind]):
+        for name, text in generate_prompt.sections(SESSION_TOOLS[root.kind]):
             api.add_prompt_section(f"synth_{name}", prompt_block(name, text))
             if name == "receives":
                 api.add_prompt_section("synth_environment", prompt_block(
@@ -311,14 +311,14 @@ def bus_for(workdir: Any) -> Bus:
     return Bus(R.store_dir(workdir).parent / "bus.jsonl", agent=AGENT)
 
 
-def turns_for(root: MineRoot) -> int:
+def turns_for(root: GenerateRoot) -> int:
     """The turn budget of one session, by its kind: its own for the search, else sized per item."""
     if root.kind == "search":
         return min(MAX_TURNS, SEARCH_TURNS)
     return min(MAX_TURNS, max(MIN_TURNS, TURNS_PER_ITEM * max(len(root.items), len(root.fixing), 1)))
 
 
-def run(root: MineRoot, model: Any, opening: str, stage: str, ceiling: Optional[budget.Ceiling] = None,
+def run(root: GenerateRoot, model: Any, opening: str, stage: str, ceiling: Optional[budget.Ceiling] = None,
         subscribers: tuple = ()) -> bool:
     """One session on its opening message; whether it stopped on its turn cap. Refusals settle after."""
     turns = turns_for(root)
@@ -328,7 +328,7 @@ def run(root: MineRoot, model: Any, opening: str, stage: str, ceiling: Optional[
     detach = [harness.subscribe(subscriber) for subscriber in subscribers]
     detach.append(harness.subscribe(budget.subscriber(root.workdir, stage, name, ceiling)))
     try:
-        load_extensions(harness, [mine_extension(root)])
+        load_extensions(harness, [generate_extension(root)])
         capped = session_mod._run_session(harness, opening, turns, [])
     finally:
         for unsubscribe in detach:
@@ -337,5 +337,5 @@ def run(root: MineRoot, model: Any, opening: str, stage: str, ceiling: Optional[
     return bool(capped)
 
 
-__all__ = ["AGENT", "MineRoot", "OPENING_GROUPED", "SEARCH_TURNS", "SESSION_TOOLS", "bus_for", "mine_extension", "mine_tools", "rewritten", "run",
+__all__ = ["AGENT", "GenerateRoot", "OPENING_GROUPED", "SEARCH_TURNS", "SESSION_TOOLS", "bus_for", "generate_extension", "generate_tools", "rewritten", "run",
            "settle_refusals", "turns_for", "written"]

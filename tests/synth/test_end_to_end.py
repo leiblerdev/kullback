@@ -1,4 +1,4 @@
-"""The scenario layer end to end on scripted models: mine from all three sources, review blind, fix once,
+"""The scenario layer end to end on scripted models: generate from all three sources, review blind, fix once,
 settle every outcome, print the report (D372 to D374)."""
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from kullback.runner.records import read_json
 from kullback.synth import records as R
 from kullback.synth import report as T
 from kullback.synth import review as V
-from kullback.synth.miner import mine
+from kullback.synth.generate import generate
 from tests.synth.fixture import POLICY, REFUSE, URL, call, make_workdir, web
 
 SPAN = "Customers often ask to move a widget after it has been sealed."
@@ -24,7 +24,7 @@ SEALED = "a holder wants to move a widget that is already sealed"
 WHICH = "someone asks which slot their widget sits in"
 PAINT = "a holder wants their widget painted"
 FIXED = "a holder wants a sealed widget swapped for a new one"
-# Two lines in a customer's own shape; the miner rewrites them as WHICH and PAINT.
+# Two lines in a customer's own shape; the generator rewrites them as WHICH and PAINT.
 TYPED = ("I want to see what happens when someone asks which slot their widget sits in",
          "test whether the agent will paint a widget")
 
@@ -33,7 +33,7 @@ def _write(call_id: str, statement: str, source: str, **args) -> ModelReply:
     return call("write_scenario", {"statement": statement, "source": source, **args}, call_id)
 
 
-def _miner_model() -> TestModel:
+def _generator_model() -> TestModel:
     """Three sessions: a batch of openings, the web, a batch of typed lines."""
     return TestModel([
         _write("m0", PLAIN, "recordings", openings=[0]), _write("m1", VAGUE, "recordings", openings=[1, 2]),
@@ -66,16 +66,16 @@ def _review_model(ids: dict) -> TestModel:
         ModelReply(content="Ruled one: passed.")])
 
 
-def _mined(tmp_path):
+def _generated(tmp_path):
     workdir = make_workdir(tmp_path)
     (workdir / R.DIR).mkdir()
     (workdir / R.DIR / R.ASKS).write_text("\n".join(TYPED) + "\n", encoding="utf-8")
-    mine(workdir, model=_miner_model(), engine=web(workdir)[0], refuse=REFUSE)
+    generate(workdir, model=_generator_model(), engine=web(workdir)[0], refuse=REFUSE)
     return workdir, R.load_scenarios(workdir)
 
 
 def _reviewed(tmp_path):
-    workdir, born = _mined(tmp_path)
+    workdir, born = _generated(tmp_path)
     ids = {record.statement: record.id for record in born}
     model = _review_model(ids)
     fixer = TestModel([call("rewrite_scenario", {"id": ids[VAGUE], "statement": FIXED}, "f0"),
@@ -84,8 +84,8 @@ def _reviewed(tmp_path):
     return workdir, ids, model, out
 
 
-def test_the_miner_writes_records_from_all_three_sources(tmp_path):
-    _, born = _mined(tmp_path)
+def test_the_generator_writes_records_from_all_three_sources(tmp_path):
+    _, born = _generated(tmp_path)
     assert sorted(record.source.kind for record in born) == ["ask", "ask", "recordings", "recordings", "search"]
 
 
@@ -102,7 +102,7 @@ def test_every_outcome_settles_from_the_review_and_the_fix_loop(tmp_path):
     assert R.load_scenario(workdir, ids[PLAIN]).evidence[0]["urls"] == [URL]
 
 
-def test_mining_and_review_play_as_sessions_on_one_bus_under_their_own_agents_and_stages(tmp_path):
+def test_generation_and_review_play_as_sessions_on_one_bus_under_their_own_agents_and_stages(tmp_path):
     workdir, _, _, _ = _reviewed(tmp_path)
     rows = [json.loads(line) for line in (workdir / "bus.jsonl").read_text().splitlines()]
     assert {row["agent"] for row in rows} == {"synth", "examiner"}
@@ -132,6 +132,6 @@ def test_the_report_prints_every_count_under_the_scenarios_heading(tmp_path):
 
 def test_both_scenario_verbs_refuse_without_a_model_and_name_the_option(tmp_path):
     workdir = make_workdir(tmp_path)
-    for verb in ("mine", "review"):
+    for verb in ("scenarios", "review"):
         result = CliRunner().invoke(cli.app, ["synth", verb, str(workdir)])
         assert result.exit_code == 2 and "--model" in result.output

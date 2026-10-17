@@ -1,9 +1,9 @@
-"""The synthetic generator's mining prompt in GEPA order: receives, tools, examples, choice, feedback,
+"""The scenario generator prompt in GEPA order: receives, tools, examples, choice, feedback,
 stop (D372).
 
 The same section order as the Examiner's prompt and the scenario review's (prompt.py). General only: no
 corpus, publisher, tool, table or field name appears here, and every example is over placeholders, one
-per shape. What one session mines (a batch of opening asks, the web, a batch of typed lines, or the
+per shape. What one session generates from (a batch of opening asks, the web, a batch of typed lines, or the
 scenarios sent back) is said in its opening message, never in the sections, so every session reads the
 same sections. The stop rule is last.
 """
@@ -22,7 +22,7 @@ RULE = ("A scenario is one or two sentences in the third person saying what happ
 
 
 def receives_section() -> str:
-    return ("You write scenarios for one business. " + RULE + " Each session mines one source, named in the "
+    return ("You write scenarios for one business. " + RULE + " Each session generates from one source, named in the "
             "opening message: the opening asks of real conversations, numbered; the web, searched and read; "
             "lines a person typed, numbered, each naming a situation in their own words; or scenarios a reviewer "
             "sent back with the reason. The policy, the tool list and the one-line description of the business "
@@ -86,15 +86,15 @@ def sections(names: Iterable[str] = TOOLS) -> list[tuple[str, str]]:
 
 
 OPENINGS = {
-    "recordings": "Mine this batch of opening asks of real conversations: source recordings, {count} items.",
-    "ask": "Mine this batch of lines a person typed: source ask, {count} items.",
-    "search": "Mine the web for this business: source search. Search, read the pages, write what they show.",
+    "recordings": "Generate scenarios from this batch of opening asks of real conversations: source recordings, {count} items.",
+    "ask": "Generate scenarios from this batch of lines a person typed: source ask, {count} items.",
+    "search": "Generate scenarios from the web for this business: source search. Search, read the pages, write what they show.",
     "fix": "Rewrite the scenarios a reviewer sent back, each with its reason and what it was written from:\n{items}",
 }
 
 
 def opening(kind: str, entries: Iterable[str] = (), count: int = 0, items: str = "") -> str:
-    """The opening message of one session: what it mines and what the root holds."""
+    """The opening message of one session: what it generates from and what the root holds."""
     listed = ", ".join(entries) or "nothing yet"
     return wrap(OPENINGS[kind].format(count=count, items=items) + f"\n\nThe root holds: {listed}.")
 

@@ -46,7 +46,7 @@ from kullback.examiner.plan import ExaminerPlan
 from kullback.runner import budget
 from kullback.runner.records import read_json, write_json
 from kullback.spec.writer_tools import read_tools
-from kullback.synth import miner
+from kullback.synth import generate
 from kullback.synth import prompt as prompt_mod
 from kullback.synth import records as R
 from kullback.synth import search as search_mod
@@ -413,7 +413,7 @@ def _fix_all(root: ReviewRoot, fixer: Any, ceiling: Optional[budget.Ceiling] = N
             why = next((row["why"] for row in reversed(record.review) if row.get("kind") == "fix_requested"), "")
             sent.append((record, why))
     out = []
-    for fixed, (_, why) in zip(miner.fix(root.world, sent, fixer, ceiling=ceiling, subscribers=subscribers), sent, strict=True):
+    for fixed, (_, why) in zip(generate.fix(root.world, sent, fixer, ceiling=ceiling, subscribers=subscribers), sent, strict=True):
         if fixed.status == "unsure":
             human_row(root.workdir, fixed, f"the generator could not rewrite it: {why}")
         R.write_scenario(root.workdir, fixed)
