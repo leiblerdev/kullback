@@ -3608,6 +3608,11 @@ ships without solution/ marked has_oracle false, counted and listed under no_ora
 no oracle part scanned, and the card's line on it; a Task ruled no_verifier ships no draft; publishing from a staged
 package gives the manifest a plain stage gives, and a tampered staged file is refused by name).
 
+A release replaces the repository (r4): HuggingFaceHub.upload_folder passes delete_patterns "*", so files an
+older release left and this one lacks leave in the same commit (the Hub keeps .gitattributes); older builds stay
+reachable by their tags. LocalHub empties the target before a dry run lays it out, the same behaviour. Found before
+the airline upload: 399 build-20260924 paths would have stayed on main. Tests in tests/hub/test_publish.py.
+
 ### D395. The item judge's cap fits a reasoning model, one retry, an outage is not a no (2026-10-17)
 What: kullback/judge/items.py judge_item asks at max_tokens JUDGE_TOKENS 4000 instead of 200, and on a reply that
 is empty or cut (stop reason max_tokens or length, or no JSON object in it) asks once more at RETRY_TOKENS 16000. The
