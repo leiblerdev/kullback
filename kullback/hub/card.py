@@ -149,8 +149,9 @@ def _status(manifest: dict) -> str:
 
 
 def card_markdown(manifest: dict, repo_id: str, *, github_url: str = "https://github.com/leiblerdev/kullback",
-                  site_url: str = "https://leibler.dev") -> str:
-    """The dataset card of one Environment, every number read off its manifest."""
+                  site_url: str = "https://leibler.dev", announcement: Optional[str] = None) -> str:
+    """The dataset card of one Environment, every number read off its manifest; `announcement`, the
+    publisher's own words (`publish --announcement FILE`), goes under the status line as is (D392)."""
     name = manifest.get("name") or repo_id.rsplit("/", 1)[-1]
     lines = [front_matter(manifest, tags=[str(name)]), ""]
     lines += [f"# {name}", ""]
@@ -158,6 +159,8 @@ def card_markdown(manifest: dict, repo_id: str, *, github_url: str = "https://gi
               f"and published by [Leibler]({site_url}): the world, the Tasks and a code Verifier per Task, no "
               f"recordings. `{TASKS_ROWS_NAME}` lists the Tasks.", ""]
     lines += [_status(manifest), ""]
+    if announcement and announcement.strip():
+        lines += ["## News", "", announcement.strip(), ""]
     lines += _numbers_table(manifest)
     lines += ["", "Untrusted Tasks are not graded, and the simulated user does not ship, so a fetched package "
               "cannot finish a Task that needs a fact the user gives mid conversation, though the Task "
@@ -173,6 +176,8 @@ def card_markdown(manifest: dict, repo_id: str, *, github_url: str = "https://gi
 # What each Task set of a Harbor export holds, in the card's words (D392).
 TASK_SETS = {"trusted": "the trusted Tasks", "verified": "every Task with a Verifier, trusted or not",
              "all": "every Task, the synthetic ones too"}
+# A Task whose only leaking part is its oracle (D392): left out of the Harbor form, the dataset not refused.
+SOLUTION_LEAKS = "solution leaks"
 LABEL_ORDER = ("right", "partial", "wrong", "no_verifier", "unlabelled")
 
 
@@ -203,6 +208,15 @@ def tier_label_table(harbor: dict) -> list[str]:
     return lines
 
 
+def _solution_leak_lines(harbor: dict) -> list[str]:
+    """The Tasks left out because their oracle repeats a recorded string, by masked id (D392)."""
+    ids = [str(row.get("task")) for row in harbor.get("left_out") or () if row.get("reason") == SOLUTION_LEAKS]
+    if not ids:
+        return []
+    return [f"Left out because their oracle would repeat a recorded string: {', '.join(ids)} (last four characters "
+            "of the Task id).", ""]
+
+
 def harbor_section(harbor: dict) -> str:
     """The card's "Run it with Harbor" section, read off the Harbor dataset's manifest (D363)."""
     counts = harbor.get("counts") or {}
@@ -219,6 +233,7 @@ def harbor_section(harbor: dict) -> str:
              f"left out: {_skipped(counts)}. Each Task's `task.toml` carries its Spec tier as `spec_tier` "
              "and `spec_tier_reason`.", "",
              *tier_label_table(harbor),
+             *_solution_leak_lines(harbor),
              "```bash", f"uv run harbor run -p {HARBOR_DIR}/{example} -a oracle",
              f"uv run harbor run -p {HARBOR_DIR}/{example} -a <agent> -m <provider/model>", "```", ""]
     return "\n".join(lines) + "\n"

@@ -71,7 +71,7 @@ FORMATS = ("package", "harbor")
 def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, preview: bool = False,
           corpus: Optional[str] = None, corpus_license: Optional[str] = None,
           corpus_url: Optional[str] = None, bar: float = RELEASE_FIDELITY, harbor: bool = False,
-          harbor_options: Optional[dict] = None) -> dict:
+          harbor_options: Optional[dict] = None, announcement: Optional[str] = None) -> dict:
     """Export into `out`, decide release or preview, and write the card beside the package.
 
     Answers the manifest with the ruling on it. The card is written after the manifest and is not
@@ -83,7 +83,7 @@ def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, p
     manifest = package_mod.export(workdir, out, name=resolved, corpus=corpus, corpus_license=corpus_license,
                                   corpus_url=corpus_url, preview=preview)
     manifest["status"] = release_ruling(manifest, preview, bar)
-    card = card_markdown(manifest, repo_id)
+    card = card_markdown(manifest, repo_id, announcement=announcement)
     if harbor:
         # The Harbor form of the same Tasks under harbor/, with its own manifest and leak scan (D363).
         from kullback.hub.harbor import export_harbor
@@ -92,7 +92,7 @@ def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, p
         laid = export_harbor(workdir, Path(out) / HARBOR_DIR, name=resolved,
                              **({"org": organisation} if organisation else {}), **(harbor_options or {}))
         manifest["harbor"] = {key: laid[key] for key in ("tasks_chosen", "counts", "content_hash", "leak_scan",
-                                                         "tiers", "labels") if key in laid}
+                                                         "tiers", "labels", "left_out") if key in laid}
         write_json(Path(out) / package_mod.MANIFEST_NAME, manifest)
         card += "\n" + harbor_section(laid)
     Path(out, CARD_NAME).write_text(card, encoding="utf-8")
@@ -103,7 +103,7 @@ def publish(workdir: Any, repo_id: str, *, client: Optional[HubClient] = None, n
             preview: bool = False, corpus: Optional[str] = None, corpus_license: Optional[str] = None,
             corpus_url: Optional[str] = None, keep: Optional[Any] = None,
             bar: float = RELEASE_FIDELITY, form: str = "package",
-            harbor_options: Optional[dict] = None) -> tuple[HostedRepo, dict]:
+            harbor_options: Optional[dict] = None, announcement: Optional[str] = None) -> tuple[HostedRepo, dict]:
     """Export, card, upload, tag. Answers where it landed and the manifest that landed there."""
     if form not in FORMATS:
         raise PublishError(f"--format takes {' or '.join(FORMATS)}, not {form}")
@@ -115,7 +115,7 @@ def publish(workdir: Any, repo_id: str, *, client: Optional[HubClient] = None, n
     try:
         manifest = stage(workdir, out, repo_id, name=name, preview=preview, corpus=corpus,
                          corpus_license=corpus_license, corpus_url=corpus_url, bar=bar,
-                         harbor=form == "harbor", harbor_options=harbor_options)
+                         harbor=form == "harbor", harbor_options=harbor_options, announcement=announcement)
         url = host.create_repo(repo_id)
         tag = manifest["tag"]
         commit = host.upload_folder(repo_id, out, _commit_message(manifest, tag))

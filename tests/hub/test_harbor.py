@@ -555,3 +555,40 @@ def test_the_card_names_the_task_set_and_counts_tasks_by_tier_and_label_under_th
     assert "| Tier | partial | Tasks |" in readme and "| open_ruling | 1 | 1 |" in readme
     assert "one blind model rater's judgement" in readme and "rubric r1" in readme
     assert manifest["harbor"]["tasks_chosen"] == "verified" and manifest["harbor"]["labels"]["rows"] == 1
+
+
+ANSWER = "the widget now carries the striped label and every other widget is exactly as it was before"
+ANCHORED = [{"id": "j1", "kind": "communicate", "gate": False, "judge": True, "weight": 1.0,
+             "description": "says what changed",
+             "target": {"question": "Does the agent say what changed?", "anchor": {"answer": ANSWER}}}]
+
+
+def test_a_task_whose_only_leaking_part_is_its_oracle_is_left_out_and_listed_masked(tmp_path):
+    workdir = _workdir(tmp_path / "work", atoms=ANCHORED)
+    write_json(workdir / "raw" / "export.json", [{"turn": f"{harbor.DONE_LINE} {ANSWER}"}])
+    out = tmp_path / "out"
+    manifest = harbor.export_harbor(workdir, out, name="widgets", wheel=_wheel(tmp_path))
+    assert manifest["counts"]["exported"] == 0 and manifest["counts"]["skipped"] == {"solution leaks": 1}
+    assert {"task": TASK[-4:], "reason": "solution leaks"} in manifest["left_out"]
+    assert manifest["leak_scan"]["leaks"] == 0
+    assert manifest["leak_scan"]["solution_leaks"] == [{"task": TASK[-4:], "part": "oracle", "values": 1}]
+    assert not (out / "widgets-widget_task").exists() and (out / "manifest.json").is_file()
+
+
+def test_a_task_whose_oracle_and_another_part_leak_still_refuses_the_export():
+    scan = {"leaking_files": [{"task": "0001", "part": "oracle", "values": 2},
+                              {"task": "0001", "part": "Verifier", "values": 1},
+                              {"task": "0002", "part": "oracle", "values": 1}]}
+    scanned = [{"task": "a0001", "name": "x-a0001"}, {"task": "a0002", "name": "x-a0002"}]
+    assert [row["task"] for row in harbor.solution_only(scan, scanned)] == ["a0002"]
+
+
+def test_the_card_carries_the_publishers_announcement_and_names_tasks_left_out_for_a_leaking_oracle():
+    from kullback.hub.card import card_markdown, harbor_section
+
+    card = card_markdown({"name": "widgets"}, "someorg/widgets", announcement="Verifiers now come from the ask.\n")
+    assert "## News\n\nVerifiers now come from the ask.\n" in card
+    assert "## News" not in card_markdown({"name": "widgets"}, "someorg/widgets")
+    section = harbor_section({"counts": {"exported": 0, "skipped": {"solution leaks": 1}},
+                              "left_out": [{"task": "0001", "reason": "solution leaks"}]})
+    assert "Left out because their oracle would repeat a recorded string: 0001" in section

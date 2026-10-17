@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from kullback.hub import harbor_world
-from kullback.hub.card import ORGANISATION
+from kullback.hub.card import ORGANISATION, SOLUTION_LEAKS
 from kullback.hub.harbor_world import DB_NAME, JUDGE_ENV, REPLY_TOOL, TASK_NAME, WORLD_DIR, play
 from kullback.hub.package import (
     CONTENT_MIN_LENGTH,
@@ -89,6 +89,7 @@ VERIFIER_NAME = "verifier.json"
 ORACLE_NAME = "oracle.json"
 # A Task none of whose Runs, replayed through the exported world, scores 1.0: it ships no oracle.
 NO_ORACLE = "no Run passes on replay"
+ORACLE_PART = "oracle"
 MASK = 4
 PROSE_LINE = "The user asked for this change; the details are in the conversation."
 TASKS_CHOICES = ("trusted", "verified", "all")
@@ -652,7 +653,39 @@ def by_tier_and_label(rows: Iterable[dict]) -> dict[str, dict[str, int]]:
     return out
 
 
-def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_oracle: list[str]) -> dict:
+def solution_only(scan: dict, scanned: list[dict]) -> list[dict]:
+    """The scanned Tasks whose every leaking part is the oracle, the solution/ directory. A masked id that
+    names more than one scanned Task is never taken, so such a leak still refuses the export."""
+    parts: dict[str, set[str]] = {}
+    for row in scan.get("leaking_files") or ():
+        parts.setdefault(row["task"], set()).add(row["part"])
+    owners: dict[str, list[dict]] = {}
+    for row in scanned:
+        owners.setdefault(str(row["task"])[-MASK:], []).append(row)
+    return [owners[masked][0] for masked, found in parts.items()
+            if found == {ORACLE_PART} and len(owners.get(masked) or ()) == 1]
+
+
+def _drop_solution_leaks(out: Path, scan: dict, scanned: list[dict], listed: list[dict],
+                         skipped: dict) -> tuple[dict, list[str]]:
+    """Take each Task whose only leaking part is its oracle out of the dataset (D392); answers the scan
+    over what stays, which still refuses the export on any other part, and the ids taken out."""
+    dropped = solution_only(scan, scanned)
+    names = {row["name"] for row in dropped}
+    for name in names:
+        shutil.rmtree(out / name, ignore_errors=True)
+    listed[:] = [row for row in listed if row["path"] not in names]
+    if dropped:
+        skipped[SOLUTION_LEAKS] = len(dropped)
+    masked = {str(row["task"])[-MASK:] for row in dropped}
+    kept = [row for row in scan.get("leaking_files") or () if row["task"] not in masked]
+    taken = [row for row in scan.get("leaking_files") or () if row["task"] in masked]
+    scan = dict(scan, leaks=sum(row["values"] for row in kept), leaking_files=kept, solution_leaks=taken)
+    return scan, [str(row["task"]) for row in dropped]
+
+
+def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_oracle: list[str],
+              solution_leaks: Iterable[str] = ()) -> dict:
     recorded = [row for row in listed if row["origin"] == "recorded"]
     return {
         "format": HARBOR_FORMAT,
@@ -676,7 +709,8 @@ def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_o
         "tasks": recorded,
         "synthetic": [row for row in listed if row["origin"] == "synthetic"],
         # Masked to the last four characters, as every report masks a Task id.
-        "left_out": [{"task": task_id[-MASK:], "reason": NO_ORACLE} for task_id in no_oracle],
+        "left_out": [{"task": task_id[-MASK:], "reason": NO_ORACLE} for task_id in no_oracle]
+        + [{"task": task_id[-MASK:], "reason": SOLUTION_LEAKS} for task_id in solution_leaks],
     }
 
 
@@ -708,7 +742,8 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
     of the synthetic tier) or `all`; synthetic store Tasks are never trusted, so they
     come only with `all`, under `synthetic/`. `only` narrows the list to the named Task ids. Every
     recorded Task carries its Spec tier off `tiers` (the workdir's tiers.json by default) and, with
-    `labels`, a rater's label, `unlabelled` where no row names it (D392). A Task
+    `labels`, a rater's label, `unlabelled` where no row names it (D392). A Task whose only leaking part
+    is its oracle is left out as SOLUTION_LEAKS and listed masked; a leak in any other part refuses. A Task
     with no Verifier, no Run or no instruction is left out and counted by reason. The oracle is the
     first of the Task's Runs whose calls, replayed through the exported world, hold every item a judge
     is not needed for; a Task with none is left out too (NO_ORACLE).
@@ -742,8 +777,10 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
                 continue
             listed.append(row)
             scanned.append(scan_row)
-    manifest = dict(_manifest(build, tasks, listed, skipped, no_oracle), **said)
-    manifest["leak_scan"] = leak_scan(out, workdir / "raw", scanned) if scan else {"leaks": 0, "skipped": True}
+    found = leak_scan(out, workdir / "raw", scanned) if scan else {"leaks": 0, "skipped": True}
+    found, solution_leaks = _drop_solution_leaks(out, found, scanned, listed, skipped)
+    manifest = dict(_manifest(build, tasks, listed, skipped, no_oracle, solution_leaks), **said)
+    manifest["leak_scan"] = found
     if manifest["leak_scan"].get("leaks"):
         shutil.rmtree(out, ignore_errors=True)
         raise ExportError(f"the leak scan found {manifest['leak_scan']['leaks']} recorded strings in "
