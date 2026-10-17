@@ -99,8 +99,9 @@ def test_the_choice_rule_asks_whether_a_right_solve_would_pass_and_never_moves_a
     assert "fails_reference" not in rule and "ref_step" not in P.tools_section()
 
 
-def test_no_verifier_has_one_reason_left_the_intent_unclear(tmp_path):
-    assert ROUTER.NO_VERIFIER_WHYS == (ROUTER.INTENT_UNCLEAR,) and not hasattr(ROUTER, "REFERENCE_WRONG")
+def test_no_verifier_reasons_are_the_intent_unclear_or_strayed_never_a_wrong_reference(tmp_path):
+    assert ROUTER.NO_VERIFIER_WHYS == (ROUTER.INTENT_UNCLEAR, ROUTER.INTENT_STRAYED)
+    assert not hasattr(ROUTER, "REFERENCE_WRONG")
     root = _told(tmp_path)
     spec = load_spec(root, "t1")
     save_spec(root, spec.model_copy(update={"set_aside": ROUTER.INTENT_UNCLEAR, "examined_rounds": [1]}))

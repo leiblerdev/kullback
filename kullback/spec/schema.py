@@ -192,6 +192,9 @@ class Spec(Record):
     # The writer's kept rebuttals, {fact id: why}: an ask it answered needs no gate, why quoting the user's
     # words of that fact or a policy line (spec/writer_tools.py rebut_fact, D376).
     rebuttals: dict[str, str] = Field(default_factory=dict)
+    # Did the recorded user hold to their opening asks (spec/coherence.py): who decided, the per-fact answers
+    # with their quotes, and the strayed fact ids; any one sets the Task aside as intent_strayed.
+    coherence: dict = Field(default_factory=dict)
     rulings_open: int = 0
     # Open not_enough_truth rulings: the Task stays untrusted for that reason (spec/trust.py).
     truth_open: int = 0
@@ -210,10 +213,12 @@ class Spec(Record):
 
     @model_serializer(mode="wrap")
     def _without_no_rebuttals(self, handler):
-        # A Spec with no rebuttal dumps, and so hashes, byte for byte as it did before D376.
+        # A Spec with no rebuttal and no coherence record dumps, and so hashes, byte for byte as before.
         data = handler(self)
-        if isinstance(data, dict) and not data.get("rebuttals"):
-            data.pop("rebuttals", None)
+        if isinstance(data, dict):
+            for key in ("rebuttals", "coherence"):
+                if not data.get(key):
+                    data.pop(key, None)
         return data
 
     @model_validator(mode="before")
