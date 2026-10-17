@@ -3403,3 +3403,31 @@ What it cannot show: one judge, one pass, the six are the raters' call, and roun
 Tests: tests/spec/test_coherence.py (the user ending in their own words sets aside; agent and world endings set
 nothing aside and keep the ender; a user ending quoted from the agent or a marker alone is refused; an ender on
 another answer or outside the three is not kept; a user ending not in the named recording is refused).
+
+### D388. The miner answers each opening ask's outcome; no separate judge call (2026-10-17)
+
+Why. A second model call for a small classification is not acceptable, and D385's two false positives were the user
+dropping an ask after hearing a price or a refusal, read as the user ending it.
+
+What. kullback/spec/intent.py and intent_tools.py: the miner's add_facts row for an opening ask carries an outcome
+(answer, ender, recording, quote, why) in the same call it keeps the fact with; there is no judge call and write_specs
+has no judge_model. kullback/spec/coherence.py keeps the definitions the prompt quotes and the code checks: the quote
+check and the user-ender rule of D385 are unchanged, and an opening ask with no outcome sets nothing aside and is
+counted. One sentence is added: when the user drops or declines an ask in their own words after hearing a price, a
+condition or a refusal, that is refused_or_withdrawn, not a user ending. The stage reads the miner's coherence record
+and sets a Task aside as intent_strayed with no Verifier exactly as before. This supersedes D385's separate call.
+
+Measured (pre-registered in .claude/herdr/stray-1017/filter-prereg-r3.md, scorer unchanged): 30 Tasks, the 6
+intent_wrong and 24 drawn by seed 1017 from the other 94, mined fresh on Opus 5.5, 2.50 USD, no unquoted or
+unanswered outcome. Set aside 4770 and 1f8a (bar: both) and 0 of the 24 (bar: at most 1). Verdict PASS. Both D385
+false positives now hold: one is in the 24 and reads as a withdrawal after the refund amount, the other (a named extra
+outside the verdict) reads as an agent hand-off. Extra miner output is about 220 tokens per Task, about 0.004 USD,
+against D385's separate call at about 0.036 USD per Task.
+
+What it cannot show: one pass, a sample of 24 for the false-positive side, labels already read in D384 and D385, and
+the Intent is mined fresh, so it can differ from the one the rerun's Verifier was written from.
+
+Tests: tests/spec/test_coherence.py rewritten around the miner's outcome rows (the prompt carries the rule and the
+withdrawal sentence; the outcome rides in add_facts with no further call; withdrawal, user, agent and world endings;
+marker and agent quotes refused for the user; wrong ender or recording; no opening ask; unanswered counted; stage
+set-aside, tiers, held Task). tests/spec/test_stage.py: `_mined` takes the fact with its outcome.
