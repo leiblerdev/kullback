@@ -3700,7 +3700,10 @@ a line of the policy with its list marks stripped, leaving out headings, labels 
 LINE_WORDS = 5 words; a quote covers a line when either holds the other. The items go through _batched, so D394's
 retry applies, with the same write tools, refusals and ceiling; the source kind is "gaps", one number per write as
 for typed lines, and Source.gap keeps the gap filled (what, kind, table or line). A cell's situation kind comes from
-the item, a policy line's from the write's new optional kind field; spread reads a gap scenario's kind from it.
+the item, a policy line's from the write's new optional kind field, refused as kind_not_in_plan unless it is one
+of the plan's kinds (the refusal and the gaps opening name them); spread reads a gap scenario's kind from it. A gaps
+write needs its ask and its end: one alone is refused with D393's reasons, both empty as ask_and_end_missing; the
+other sources stay as D393 left them.
 generated.json gains "gaps": {"items", "before", "after"} with the cells hit and the policy lines covered over the
 whole store before and after the pass, and the report prints them. The scenarios verb gains --source, repeatable,
 to run only the sources named; without the recordings no plan session runs and the plan on disk is read.
@@ -3711,10 +3714,11 @@ existing bookings. Papers rule 4 (docs/papers.md, the diversity reading): compos
 yet used.
 
 What it does not do: no new tool; no check that a cell scenario binds the cell's table or that a line scenario quotes
-its line, so cells and lines after the pass are measured, not forced. The kinds of the cells are the plan's kinds;
-a new kind a policy line scenario names widens the cells possible.
+its line, so cells and lines after the pass are measured, not forced. The kinds of the cells are the plan's kinds,
+so the cells possible stay the plan's kinds by the world's tables.
 
 Tests: tests/synth/test_generate.py (policy lines leave out headings, labels and short lines; gap items are the unhit
 cells and the unquoted lines and a kept scenario removes its own; the pass writes through the same tools, its
-refusals count and its before and after move; no pass without a model; --source gaps reads the plan on disk; the
+refusals count and its before and after move; a kind outside the plan is refused naming the kinds; a missing ask,
+end or both is refused; no pass without a model; --source gaps reads the plan on disk; the
 report lines).

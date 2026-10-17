@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from functools import partial
 
 from kullback import domain
 from kullback.agent.loop import UNFINISHED_ASKS
@@ -679,33 +680,68 @@ def test_gap_items_are_the_cells_no_kept_scenario_hits_and_the_policy_lines_none
         {"what": "cell", "kind": "cancel", "table": "holder_rows"}, {"what": "policy_line", "line": lines[2]}]
 
 
+def _gap_write(call_id: str, statement: str, at: int, **args) -> ModelReply:
+    """A gaps write with an ask and an end, the pair every gap scenario needs."""
+    return _write(call_id, statement, "gaps", openings=[at], **{"ask": ASK, "end": END, **args})
+
+
 def test_the_gaps_pass_writes_through_the_same_tools_its_refusals_count_and_its_counts_move(tmp_path):
     lines = POLICY.splitlines()
     generation = _gap_generation(
         tmp_path,
         call("list_openings", {}, "g0"),
-        _write("g1", "a holder wants widget W1002 cancelled", "gaps", openings=[1], binding={"widget_rows": "W1002"}),
-        _write("g2", "a holder wants widget W1002 dropped now", "gaps", openings=[1], binding={"widget_rows": "W1002"}),
-        _write("g3", "Ada Byron wants to cancel her slot holding", "gaps", openings=[0],
-               binding={"holder_rows": "holder_7"}),
-        _write("g4", "Ada Byron asks to cancel her holding twice", "gaps", openings=[0],
-               binding={"holder_rows": "holder_7"}),
-        _write("g5", "Ada Byron asks for a replacement of her sealed widget", "gaps", openings=[2], kind="Exchange",
-               binding={"widget_rows": "W1002"}, policy_lines=[lines[1]]),
+        _gap_write("g1", "a holder wants widget W1002 cancelled", 1, binding={"widget_rows": "W1002"}),
+        _gap_write("g2", "a holder wants widget W1002 dropped now", 1, binding={"widget_rows": "W1002"}),
+        _gap_write("g3", "Ada Byron wants to cancel her slot holding", 0, binding={"holder_rows": "holder_7"}),
+        _gap_write("g4", "Ada Byron asks to cancel her holding twice", 0, binding={"holder_rows": "holder_7"}),
+        _gap_write("g5", "Ada Byron asks for a replacement of her sealed widget", 2, kind="Cancel",
+                   binding={"widget_rows": "W1002"}, policy_lines=[lines[1]]),
         _done(), _done())
     M.from_gaps(generation, batch=8)
     model = generation.model
     first, second = generation.found
     assert first.source.gap == {"what": "cell", "kind": "cancel", "table": "holder_rows"}
-    assert second.source.gap == {"what": "policy_line", "line": lines[1], "kind": "exchange"}
+    assert second.source.gap == {"what": "policy_line", "line": lines[1], "kind": "cancel"}
     assert generation.dropped == Counter({M.ID_SHAPE: 1})
     results = _results(model)
     assert "a situation where this policy line decides: " + lines[2] in results[0]
     assert T.OPENING_GROUPED.replace("_", " ") in results[4]
     assert generation.gaps == {"items": 4, "before": {"hit": 2, "possible": 2, "lines_covered": 1, "lines": 3},
-                               "after": {"hit": 4, "possible": 6, "lines_covered": 2, "lines": 3}}
+                               "after": {"hit": 4, "possible": 4, "lines_covered": 2, "lines": 3}}
     assert generation.retried == {"gaps": {"items": 2, "written": 0}}
     assert M.source_text(generation.world, first) == "a cancel situation bound to a holder_rows row"
+    assert "kinds: cancel, change." in " ".join(str(model.calls[0]["messages"][-1]["content"]).split())
+
+
+def test_a_policy_line_gap_with_a_kind_outside_the_plan_is_refused_naming_the_kinds_and_counted_when_dropped(tmp_path):
+    line = POLICY.splitlines()[1]
+    write = partial(_gap_write, statement="Ada Byron asks for a replacement of her sealed widget", at=2,
+                    binding={"widget_rows": "W1002"}, policy_lines=[line])
+    generation = _gap_generation(tmp_path, write("k0", kind="exchange"), write("k1", kind="change"),
+                                 write("k2", statement="Ada Byron wants her sealed widget swapped today", at=3,
+                                       kind=""),
+                                 write("k3", statement="Ada Byron wants her sealed widget swapped today", at=3,
+                                       kind="exchange"), _done(), _done())
+    M.from_gaps(generation, batch=8)
+    [record] = generation.found
+    assert record.source.gap["kind"] == "change"
+    assert generation.dropped == Counter({T.KIND_NOT_IN_PLAN: 1})
+    results = _results(generation.model)
+    assert "kind not in plan: give one of cancel, change" in results[0] and "dropped" in results[3]
+
+
+def test_a_gaps_write_without_its_ask_or_its_end_or_both_is_refused_and_counted(tmp_path):
+    bound = {"binding": {"holder_rows": "holder_7"}}
+    generation = _gap_generation(
+        tmp_path, _gap_write("p0", "Ada Byron wants to cancel her slot holding", 0, ask="", end="", **bound),
+        _gap_write("p1", "Ada Byron wants to cancel her slot holding", 0, ask="", end="", **bound),
+        _gap_write("p2", "Ada Byron wants to cancel her slot holding now", 1, end="", **bound),
+        _gap_write("p3", "Ada Byron wants to cancel her slot holding now", 1, ask="", **bound), _done(), _done())
+    M.from_gaps(generation, batch=8)
+    results = _results(generation.model)
+    assert generation.found == [] and T.PAIR_MISSING.replace("_", " ") in results[0]
+    assert T.ASK_WITHOUT_END.replace("_", " ") in results[2] and T.END_WITHOUT_ASK.replace("_", " ") in results[3]
+    assert generation.dropped == Counter({T.PAIR_MISSING: 1, T.END_WITHOUT_ASK: 1})
 
 
 def test_no_gaps_pass_runs_without_a_model(tmp_path):
@@ -718,8 +754,8 @@ def test_generate_with_only_the_gaps_source_reads_the_plan_on_disk_and_runs_no_o
     generation = _gap_generation(tmp_path)
     workdir = generation.world.workdir
     P.write_plan(workdir, generation.plan)
-    model = TestModel([_write("g0", "Ada Byron wants to cancel her slot holding", "gaps", openings=[0],
-                              binding={"holder_rows": "holder_7"}), _done(), _done(), _done()])
+    model = TestModel([_gap_write("g0", "Ada Byron wants to cancel her slot holding", 0,
+                                  binding={"holder_rows": "holder_7"}), _done(), _done(), _done()])
     body = M.generate(workdir, model=model, sources=["gaps"])
     assert body["born"] == 1 and body["coverage"]["per_kind"]["gaps"] == 1 and body["notes"] == []
     assert body["gaps"]["before"]["hit"] == 2 and body["gaps"]["after"]["hit"] == 3

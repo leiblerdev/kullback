@@ -200,7 +200,8 @@ OPENINGS = {
     "gaps": ("Generate scenarios for the gaps in the store: source gaps, {count} items. Each item is a gap in the "
              "store; write one specific scenario for it, bound to real rows (look them up), that could reach this "
              "business's support in the real world; if the world has no rows for it, write it with requires naming "
-             "what is missing."),
+             "what is missing. Every gap scenario has an ask and an end. A policy line gap's kind is one of the "
+             "plan's kinds: {items}."),
     "search": "Generate scenarios from the web for this business: source search. Search, read the pages, write what they show.",
     "fix": "Rewrite the scenarios a reviewer sent back, each with its reason and what it was written from:\n{items}",
 }

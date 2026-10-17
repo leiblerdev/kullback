@@ -167,14 +167,15 @@ def plan_openings(generation: Generation, *, batch: int = plan_mod.PLAN_BATCH) -
     generation.unplanned = plan_mod.unplanned(generation.plan, rows)
 
 
-def _pass(generation: Generation, kind: str, items: list[dict], size: int, retry: bool = False) -> list[dict]:
+def _pass(generation: Generation, kind: str, items: list[dict], size: int, retry: bool = False,
+          said: str = "") -> list[dict]:
     """One session per batch of items of one source, stopping at the ceiling; the items no session grouped."""
     left: list[dict] = []
     for start in range(0, len(items), size):
         if generation.over():
             return left
         chunk = items[start:start + size]
-        opening = generate_prompt.opening(kind, _entries(generation.world.workdir), count=len(chunk))
+        opening = generate_prompt.opening(kind, _entries(generation.world.workdir), count=len(chunk), items=said)
         made = generation.session(kind, opening, items=chunk)
         row = {"source": kind, "batch": start // size, "items": len(chunk), "ungrouped": len(chunk) - len(made.grouped)}
         generation.ungrouped.append({**row, "retry": True} if retry else row)
@@ -183,18 +184,18 @@ def _pass(generation: Generation, kind: str, items: list[dict], size: int, retry
 
 
 def _batched(generation: Generation, kind: str, items: list[dict], batch: int,
-             unwritten: Optional[Callable[[], list[dict]]] = None) -> None:
+             unwritten: Optional[Callable[[], list[dict]]] = None, said: str = "") -> None:
     """The batched pass of one source, then once more over what it left unwritten in halves (D394).
 
     `unwritten` names the items still unwritten after the first pass; by default, those no session grouped.
     """
     size = max(int(batch), 1)
-    left = _pass(generation, kind, items, size)
+    left = _pass(generation, kind, items, size, said=said)
     left = unwritten() if unwritten is not None else left
     if not left or generation.over():
         return
     before = len(generation.found)
-    _pass(generation, kind, left, max(size // 2, RETRY_MIN), retry=True)
+    _pass(generation, kind, left, max(size // 2, RETRY_MIN), retry=True, said=said)
     generation.retried[kind] = {"items": len(left), "written": len(generation.found) - before}
 
 
@@ -342,7 +343,8 @@ def from_gaps(generation: Generation, *, batch: int = BATCH) -> None:
         return
     before = gap_counts(generation)
     items = gap_items(generation)
-    _batched(generation, "gaps", items, batch)
+    kinds = sorted({situation["kind"] for situation in generation.plan.situations})
+    _batched(generation, "gaps", items, batch, said=", ".join(kinds))
     generation.gaps = {"items": len(items), "before": before, "after": gap_counts(generation)}
 
 

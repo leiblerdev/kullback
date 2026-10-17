@@ -75,6 +75,8 @@ TOOL_IN_ASK = "tool_name_in_ask"
 TOOL_IN_END = "tool_name_in_end"
 ASK_WITHOUT_END = "ask_without_end"
 END_WITHOUT_ASK = "end_without_ask"
+PAIR_MISSING = "ask_and_end_missing"
+KIND_NOT_IN_PLAN = "kind_not_in_plan"
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 NEAR = "near_repeat"
 # A statement at or above this ROUGE-L against any written one is a near repeat, fixed before any run (D383).
@@ -295,7 +297,10 @@ def _gapped(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[Any, s
         return anchor, NO_OPENING, {}
     gap = dict(root.items[picked[0]]["gap"])
     if not gap.get("kind"):
-        gap["kind"] = (args.kind.lower().split() or ["none"])[0]
+        gap["kind"] = (args.kind.lower().split() or [""])[0]
+        kinds = sorted({situation["kind"] for situation in root.plan.situations})
+        if gap["kind"] not in kinds:
+            return anchor, KIND_NOT_IN_PLAN, {"detail": "give one of " + ", ".join(kinds)}
     return anchor, "", {"source": R.Source(kind="gaps", gap=gap), "frequency": 0, "picked": picked}
 
 
@@ -356,6 +361,7 @@ def pair_refusal(ask: str, end: str, world: World) -> str:
 def _why(root: GenerateRoot, args: WriteArgs, statement: str, why: str) -> tuple[str, str]:
     why = why or (statement_refusal(statement, root.world) if statement else EMPTY)
     why = why or pair_refusal(_one_line(args.ask), _one_line(args.end), root.world)
+    why = why or (PAIR_MISSING if root.kind == "gaps" and not (args.ask or args.end) else "")
     why = why or _policy_refusal(args.policy_lines, root.world.policy)
     if why:
         return why, ""
@@ -372,6 +378,7 @@ def written(root: GenerateRoot, args: WriteArgs) -> Rows:
     anchor, why, made = CHECKS[root.kind](root, args, statement)
     _closed(root, anchor)
     why, detail = _why(root, args, statement, why)
+    detail = detail or made.get("detail", "")
     if why:
         _refuse(root, anchor, why, detail)
     record = R.born(statement, made["source"], R.policy_lines_in(args.policy_lines, root.world.policy)[0],
