@@ -3582,6 +3582,18 @@ upload); a leak in any other part still refuses the dataset.
 Cards. `publish --announcement FILE` puts the publisher's words on the Environment card as a News section, and
 organisation_card takes the same text, so neither carries hard-coded news.
 
+No oracle. Under `verified` and `all` a Task none of whose Runs replays to a pass through the exported world is
+exported with no solution/, has_oracle = false and no_oracle_reason in task.toml, counted as counts.no_oracle and
+listed masked under no_oracle (not left_out); every other Task carries has_oracle = true. The leak scan has no
+oracle part for such a Task. The card says how many ship without solution/ and that Harbor's oracle agent cannot run
+on them. Under `trusted` such a Task is still left out (decided 2026-10-17: the founder asked for every Task with a
+Verifier, right, partial and wrong alike).
+
+Reuse. `kullback publish --from-staged DIR` takes the package a dry run laid out, verifies it against its manifest
+(refusing with the first mismatch), copies it without harbor/, the card or hidden files, and does what stage() does
+after the package step: the Harbor export, manifest["harbor"], the card. A dry run's hour of package export is not
+repeated to change the Harbor form or the card.
+
 What it does not do: tiers are read, never recomputed (a tier run costs model calls and hours); a label is one model
 rater's judgement, not ground truth; nothing was uploaded. Acceptance: dry runs on the merged retail and airline
 workdirs, report .claude/herdr/publish-1017/verified-report.md.
@@ -3591,4 +3603,7 @@ one of the synthetic tier; tier and reason off tiers.json, not_recorded without 
 keys; labels by masked key with the later file winning, unlabelled, an ambiguous key unmatched, a label file that is
 not a list refused; a leak named by masked Task, part and count; a rater's words repeating a recording refuse; an
 oracle-only leak leaves the Task out and lists it, an oracle plus another part still refuses; the card's Task set,
-tier by label table and rubric sentence; News on the Environment and organisation cards).
+tier by label table and rubric sentence; News on the Environment and organisation cards; a Task no Run passes for
+ships without solution/ marked has_oracle false, counted and listed under no_oracle, still left out under trusted,
+no oracle part scanned, and the card's line on it; a Task ruled no_verifier ships no draft; publishing from a staged
+package gives the manifest a plain stage gives, and a tampered staged file is refused by name).
