@@ -3483,3 +3483,11 @@ Lives in: kullback/spec/items.py (Reach, World.reach_of, World.unreachable, Worl
 kullback/spec/effects.py (literal_writes, EFFECTS_VERSION), kullback/builder/tool_effects.py (call_diffs),
 kullback/spec/writer.py (load_inputs reach, _writes_view, FEEDBACK, reachability), kullback/spec/writer_tools.py
 (ItemStore.warned), kullback/spec/mutants.py (_build_state).
+
+### D391. The 100 again and the 253 on the gate and stray head: FAIL on the stray bar only (2026-10-17)
+
+On e04c3eaf (D384 to D388) the 100 hold five of six pre-registered bars (wrong 4 of 90, right 66 of 90, trusted 35
+with 1 wrong against the trace, 1.15 USD per Task) and fail the stray filter (2 of the 6 named set aside
+intent_strayed). Out of sample the 253 trust 83, with 6 of 48 labelled wrong and 2 of 24 trusted wrong; 412.72 USD for
+all 353. D387 alone leaves no base on 7 of 18 no_base Tasks of the 100 and 24 of 59 of the 253, nearly all on gated
+whole-field lists. Report: .claude/herdr/run-1017/run-report.md.
