@@ -106,6 +106,8 @@ def test_numbers_compare_as_numbers_and_a_null_is_always_reachable():
     assert world(I.Reach()).reach_of("items", "weight", 7.0) is not None
     assert world(I.Reach()).reach_of("items", "weight", "7") is not None
     assert world(I.Reach()).reach_of("items", "weight", 8) is None
+    results = [("rec1", "move_item", {"item_id": "A1", "weight": 4.4999999999999})]
+    assert world(results=results).reach_of("items", "weight", 4.5) is not None
     assert world(I.Reach()).reach_of("items", "state", None).ptr == {"removed": True}
 
 

@@ -227,6 +227,16 @@ UNREACHABLE = "is unreachable"
 MAX_CANDIDATES = 10
 
 
+def reach_key(value: Any) -> str:
+    """A value as the reach rule compares it: `norm`, a number rounded to 6 places first, so a tool's float
+    noise (114.7299999999999) matches the value it stands for (114.73)."""
+    text = norm(value)
+    try:
+        return norm(round(float(text), 6)) if re.fullmatch(r"-?\d*\.?\d+(e-?\d+)?", text) else text
+    except ValueError:
+        return text
+
+
 def leaf_of(field: Any) -> str:
     """The field name a dotted path ends in, list positions skipped: what a tool's writes are keyed by."""
     parts = [part for part in str(field or "").split(".") if part and not part.isdigit()]
@@ -252,7 +262,7 @@ def effect_reach(effects: dict) -> tuple[dict, dict]:
         for row in (learned or {}).get("writes") or []:
             table, field = str(row["table"]), str(row["field"])
             for value in row.get("values") or []:
-                out.setdefault(table, {}).setdefault(field, {}).setdefault(norm(value), (value, f"tool:{tool}"))
+                out.setdefault(table, {}).setdefault(field, {}).setdefault(reach_key(value), (value, f"tool:{tool}"))
             for arg in row.get("from_args") or []:
                 fed.setdefault(table, {}).setdefault(field, []).append(f"{tool}.{arg}")
     return out, fed
@@ -277,7 +287,7 @@ def recorded_reach(results: Iterable[tuple[str, str, Any]]) -> dict:
             for value in node:
                 walk(value, key, seen)
         elif node is not None and key and norm(node):
-            out.setdefault(key, {}).setdefault(norm(node), (node, seen))
+            out.setdefault(key, {}).setdefault(reach_key(node), (node, seen))
     for recording, tool, result in results:
         if isinstance(result, str):
             try:
@@ -424,7 +434,7 @@ class World:
                     for value in node:
                         walk(value, key, at)
                 elif node is not None and norm(node):
-                    out.setdefault(key, {}).setdefault(norm(node), at + (node,))
+                    out.setdefault(key, {}).setdefault(reach_key(node), at + (node,))
             for table, rows in sorted(self.state.items()):
                 for key, row in rows.items():
                     walk(row, "", (table, key))
@@ -437,9 +447,9 @@ class World:
         row holding it under that field name. A null is always reachable."""
         if value is None:
             return ValueSource(kind="world", ptr={"removed": True})
-        target, name = norm(value), leaf_of(field)
-        return self._user_reach(target) or self._tool_reach(table, name, target) or self._start_reach(name, target) \
-            or self._arg_reach(table, name, target)
+        text, key, name = norm(value), reach_key(value), leaf_of(field)
+        return self._user_reach(text) or self._tool_reach(table, name, key) or self._start_reach(name, key) \
+            or self._arg_reach(table, name, text)
 
     def _user_reach(self, target: str) -> Optional[ValueSource]:
         """The user's own words fixing the value: a fact that is not an echo of the agent's proposal."""
