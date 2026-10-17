@@ -1367,6 +1367,9 @@ def publish(
     labels_rubric: Optional[str] = HARBOR_RUBRIC,
     announcement: Optional[Path] = typer.Option(None, "--announcement", help="A Markdown file whose text the "  # noqa: B008
                                                                             "card carries as its News section."),
+    staged: Optional[Path] = typer.Option(None, "--from-staged", help="Reuse the package a dry run laid out "  # noqa: B008
+                                                                     "in this directory, verified first, "
+                                                                     "instead of exporting it again."),
 ):
     """Export the Environment, write its card and upload it as one commit, tagged with its round (D221).
 
@@ -1380,7 +1383,8 @@ def publish(
                             corpus_license=corpus_license, corpus_url=corpus_url, keep=keep,
                             client=client, form=form,
                             harbor_options=_harbor_options(tasks, tiers, labels, labels_rubric),
-                            announcement=announcement.read_text(encoding="utf-8") if announcement else None)
+                            announcement=announcement.read_text(encoding="utf-8") if announcement else None,
+                            staged=staged)
     _echo_manifest(manifest)
     if manifest.get("harbor"):
         laid = manifest["harbor"]

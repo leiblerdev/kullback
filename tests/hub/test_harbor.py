@@ -661,3 +661,38 @@ def test_the_card_counts_tasks_without_a_solution_and_says_the_oracle_agent_cann
 
     section = harbor_section({"counts": {"exported": 3, "no_oracle": 2}})
     assert "2 Tasks ship without `solution/`" in section and "oracle agent cannot run on them" in section
+
+
+def _staged(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    """A dry run laid out by publish: the workdir and the staged package folder."""
+    from kullback.hub import publish
+
+    workdir = _workdir(tmp_path / "work")
+    monkeypatch.setattr(harbor, "build_wheel", lambda out: _wheel(tmp_path))
+    write_json(workdir / "replays.json", {TASK: {"rec1": {"confirmed": True, "trace_id": "rec1"}}})
+    publish.publish(workdir, "someorg/widgets", client=LocalHub(tmp_path / "first"), preview=True, form="harbor")
+    return workdir, tmp_path / "first" / "someorg" / "widgets"
+
+
+def test_publishing_from_a_staged_package_gives_the_manifest_a_plain_stage_gives(tmp_path, monkeypatch):
+    from kullback.hub import publish
+
+    workdir, staged = _staged(tmp_path, monkeypatch)
+    plain = publish.stage(workdir, tmp_path / "plain", "someorg/widgets", preview=True, harbor=True)
+    _, reused = publish.publish(workdir, "someorg/widgets", client=LocalHub(tmp_path / "second"), preview=True,
+                                form="harbor", staged=staged)
+    landed = tmp_path / "second" / "someorg" / "widgets"
+    assert {k: v for k, v in reused.items() if k != "created_at"} == {k: v for k, v in plain.items() if k != "created_at"}
+    assert reused["created_at"] == read_json(staged / "manifest.json")["created_at"]
+    assert verify_package(landed) == [] and (landed / HARBOR_DIR / "widgets-widget_task" / "task.toml").is_file()
+
+
+def test_a_staged_package_with_a_tampered_file_is_refused_naming_the_file(tmp_path, monkeypatch):
+    from kullback.hub import publish
+
+    workdir, staged = _staged(tmp_path, monkeypatch)
+    tampered = next(path for path in sorted((staged / "verifiers").glob("*.json")))
+    tampered.write_text("{}")
+    with pytest.raises(publish.PublishError, match=f"verifiers/{tampered.name}"):
+        publish.publish(workdir, "someorg/widgets", client=LocalHub(tmp_path / "second"), preview=True,
+                        form="harbor", staged=staged)
