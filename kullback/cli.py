@@ -1514,6 +1514,21 @@ def synth_review(
     _scenario_report(workdir)
 
 
+TASKS_WORKDIR = typer.Argument(..., help="The Environment's workdir the Tasks and recordings are written into.")
+TASKS_STORE = typer.Option(..., "--store", help="The scenario run's workdir, holding scenarios/.")
+
+
+@synth_app.command("tasks")
+def synth_tasks(
+    workdir: Path = TASKS_WORKDIR,
+    store: Path = TASKS_STORE,
+    limit: Optional[int] = typer.Option(None, "--limit", help="At most this many scenarios, in id order."),
+):
+    """One Task and one recording per passed, bound scenario of the recordings (D389); counts as one JSON line."""
+    counts = _entry("kullback.synth.tasks", "born_tasks")(workdir, store, limit=limit)
+    typer.echo(json.dumps(counts, sort_keys=True))
+
+
 
 
 @app.command()

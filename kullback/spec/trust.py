@@ -70,6 +70,8 @@ from kullback.spec.writer import spec_verifier_path
 
 TRUSTED, UNTRUSTED = "trusted", "untrusted"
 TIERS = (TRUSTED, UNTRUSTED)
+# A Task born of a scenario (D389): its own tier, never trusted, kept out of TIERS, the build table's columns.
+SYNTHETIC = "synthetic"
 NO_INTENT, NOT_EXAMINED, OPEN_RULING, CONSTRUCTED_RUN_PASSED = "no_intent", "not_examined", "open_ruling", "constructed_run_passed"
 NOT_ENOUGH_TRUTH = "not_enough_truth"
 # No Verifier can be made for the Task (the intent unclear): an honest
@@ -579,7 +581,19 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
                                     write_tools=tools, references=references.get(task_id, ()), schema=schema,
                                     judged=judge_results_of(root, task_id, verifier, task_runs),
                                     keys=ask_keys(spec, effects))
-    return out
+    return {task_id: _synthetic_tier(root, task_id, task_tier) for task_id, task_tier in out.items()}
+
+
+def _synthetic_tier(root: Path, task_id: str, task_tier: TaskTier) -> TaskTier:
+    """The tier as computed, or synthetic for a Task born of a scenario. The synthetic principles of
+    2026-10-11: a synthetic Task has no Reference and is never tested against a valid Run, so it never
+    counts in trusted; whatever its gates say, it sits in its own tier with the row kept."""
+    from kullback.synth.tasks import scenario_of
+
+    scenario = scenario_of(root, task_id)
+    if not scenario:
+        return task_tier
+    return TaskTier(SYNTHETIC, {**task_tier.row, "tier": SYNTHETIC, "scenario": scenario})
 
 
 def workdir_tiers(workdir: Any) -> dict[str, TaskTier]:

@@ -441,3 +441,21 @@ def test_the_workdir_ruling_reads_the_spec_tiers_reasons_and_flags_where_the_wor
     assert metrics["trust_reason"] == {"t1": None, "t2": "no_intent"}
     assert metrics["trusted"] == ["t1"] and metrics["untrusted"] == {"t2": "no_intent: no spec"}
     assert metrics["reference_passes"] == {"t1": True, "t2": None} and metrics["solvable"] == {"t1": True, "t2": None}
+
+
+def test_a_task_born_of_a_scenario_is_tiered_synthetic_never_trusted_and_an_ordinary_task_is_unchanged(tmp_path):
+    from kullback.runner.records import RawPtr, Task, Trace, Turn, as_dict, write_json
+
+    _intent_workdir(tmp_path, [_replay(), _fresh()])
+    write_json(tmp_path / "tasks" / "t2.json", as_dict(Task(id="t2", run_ids=["rec1"])))
+    write_json(tmp_path / "tasks" / "t1.json", as_dict(Task(id="t1", run_ids=["sc-1"])))
+    ordinary = T.intent_tiers(tmp_path)
+    assert ordinary["t1"].tier == "trusted" and "scenario" not in ordinary["t1"].row
+    ptr = RawPtr(file_hash="sc_abc", section="scenario")
+    write_json(tmp_path / "traces" / "sc-1.json", as_dict(Trace(
+        trace_id="sc-1", raw_hash="sc_abc", ingest_version="1", source="scenario", raw_ptr=ptr,
+        turns=[Turn(idx=0, role="user", content="move it", raw_ptr=ptr)])))
+    tiers = T.intent_tiers(tmp_path)
+    assert tiers["t1"].tier == "synthetic" and tiers["t1"].row["tier"] == "synthetic"
+    assert tiers["t1"].row["scenario"] == "sc_abc" and tiers["t1"].row["gates"] == ordinary["t1"].row["gates"]
+    assert tiers["t2"] == ordinary["t2"]

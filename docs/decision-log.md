@@ -3483,3 +3483,40 @@ Lives in: kullback/spec/items.py (Reach, World.reach_of, World.unreachable, Worl
 kullback/spec/effects.py (literal_writes, EFFECTS_VERSION), kullback/builder/tool_effects.py (call_diffs),
 kullback/spec/writer.py (load_inputs reach, _writes_view, FEEDBACK, reachability), kullback/spec/writer_tools.py
 (ItemStore.warned), kullback/spec/mutants.py (_build_state).
+
+### D389. Tasks are born of passed scenarios through the existing mechanism, in a synthetic tier (2026-10-17)
+
+The founder, 2026-10-17, as .claude/herdr/synth-1016/tasks-design.md records the words: "the existing mechanism
+derives the Tasks; the Examiner checks whether the Verifier matches the Intent and the Task; keep it simple and check
+that one loop first, with the one question the other loop asks: does the Verifier actually check what is asked for."
+
+What. kullback/synth/tasks.py `born_tasks(workdir, store_dir, limit=None)`: every scenario of the store with status
+passed, source kind recordings, a non empty binding and an empty requires, in id order, up to limit, becomes one Task
+and one recording in the Environment's workdir; a scenario whose Task exists is skipped. The Task's id is "task_"
+and the first 12 hex of the sha256 of the scenario id, its run_ids the one recording, unguarded, no anchor; the
+Task record is plain, with no field of its own (kullback/runner stays frozen). The recording names the scenario:
+"sc-" and the same 12 hex, source "scenario", raw_hash and both pointers' file_hash the scenario id, section
+"scenario", one user turn whose content is the scenario statement and nothing else, no agent turn, no tool call.
+`scenario_of(workdir, task_id)` reads it back: the scenario id when every recording of the Task has source
+"scenario", else None. The Task is written under tasks/ and appended to tasks.json in its own shape; the recording
+under traces/<trace id>.json. Where build.json holds a Task sample, the born ids are appended to it, so the tiers,
+which read only the sample, see them. The binding
+and the policy lines are copied nowhere: the miner, the writer, the review rounds and the Examiner run unchanged over
+the one turn and read the world themselves. `kullback synth tasks <workdir> --store <scenario workdir> [--limit N]`
+prints the counts (candidates, born, skipped_existing, ids) as one JSON line.
+
+Trust. spec/trust.py intent_tiers gives a Task for which scenario_of names a scenario the tier "synthetic", whatever
+its gates say, with the row kept and the scenario id on it: by the synthetic principles of 2026-10-11 such a Task has
+no Reference and is never tested against a valid Run, so it never counts in trusted. "synthetic" is kept out of TIERS,
+the build table's columns; spec/report.py counts a tier outside them instead of failing on it.
+
+What it does not do: no Reference, no Run, no fidelity number for these Tasks; the Examiner's rulings are the only
+check and the hand audit the only check of the Examiner. The one turn in the third person is not a conversation, so
+the miner and the coherence check see less than on a recording. Nothing ran on a model.
+
+Tests: tests/synth/test_tasks.py (only passed, bound scenarios of the recordings with nothing required bear Tasks;
+the Task and recording read back through task_of and recordings_of with one user turn holding the statement; a
+second call skips what exists; the limit holds; scenario_of names the scenario of a born Task and None for another;
+the born ids join a build sample and the tiers call the born Task synthetic; no sample, no build file),
+tests/spec/test_trust.py (a Task whose recording is a scenario's is tiered synthetic and never trusted, an ordinary
+Task unchanged).

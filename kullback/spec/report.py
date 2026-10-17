@@ -65,7 +65,7 @@ def build_report(tiers: dict[str, TaskTier], *, corpus: Optional[str] = None,
     side: dict[str, int] = {}
     flags = {f"{flag}{end}": 0 for flag in FLAGS for end in ("", "_false")}
     for task_tier in tiers.values():
-        counts[task_tier.tier] += 1
+        counts[task_tier.tier] = counts.get(task_tier.tier, 0) + 1
         reason = task_tier.row.get("reason")
         if reason in reasons:
             reasons[reason] += 1
