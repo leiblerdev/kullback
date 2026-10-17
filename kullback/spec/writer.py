@@ -267,7 +267,7 @@ class WriterInputs(NamedTuple):
     # What each write tool always moves and what each tool's recorded calls passed (spec/effects.py).
     effects: dict = {}
     signatures: dict = {}
-    # What tools can write per field (D380): the learned writes and the Task's recorded write results.
+    # What tools can write per field (D387): the learned writes and the Task's recorded write results.
     reach: Optional[I.Reach] = None
     # Where the sessions are saved (exam/writer); None saves nothing. Never shown to the writer.
     workdir: Optional[Path] = None
@@ -339,7 +339,7 @@ def _writes_view(learned: Optional[dict]) -> dict:
 
 
 def _write_results(workdir: Path, task_id: str, traces: dict, write_tools: set) -> list[tuple[str, str, Any]]:
-    """(recording, tool, result) of every successful write call in the Task's recordings (D380): what a
+    """(recording, tool, result) of every successful write call in the Task's recordings (D387): what a
     tool wrote, read for the values it shows, never for the path the recording took."""
     out = []
     for run_id in task_of(workdir, task_id).run_ids:
@@ -681,7 +681,7 @@ def end_state_counts(verifier: Verifier, spec: Optional[Spec] = None) -> dict:
 
 
 def reachability(spec: Spec, inputs: WriterInputs) -> dict:
-    """The reachability rule's count on the Spec (D380): gated values code refused in the first write, and
+    """The reachability rule's count on the Spec (D387): gated values code refused in the first write, and
     the kept items naming a value no source reaches, weighed (warned) or, on an older Spec, gated."""
     world = world_of(inputs)
     found = [item for item in item_checks(spec) if world.unreachable(item)]

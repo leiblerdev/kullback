@@ -1,4 +1,4 @@
-"""A gated value must be reachable (D380): a tool writes it, a recorded write result shows it, the user fixed it,
+"""A gated value must be reachable (D387): a tool writes it, a recorded write result shows it, the user fixed it,
 or a start row holds it under that field. Code refuses any other gated value with the field's reachable values.
 
 The world, the policy, the tools and the facts are invented: items on shelves, a move tool that marks a moved item

@@ -3474,10 +3474,11 @@ the writer offered the tool's status first, the refusal did not fire, and on one
 
 What it cannot show: the reach is per table and field name, not per tool and path, so a value one tool writes to a
 field reaches the same field name another tool writes; a value a tool computes (an amount) is reachable only when a
-recording or the world shows it; no run showed a refusal followed by a kept re-gate in one session; arm C fails its pre-registered bar; the eight
-Tasks are the dry pass's own hits, so nothing here measures false refusals on fresh Tasks.
+recording or the world shows it; no run showed a refusal followed by a kept re-gate in one session; arm C fails its
+pre-registered bar; the eight Tasks are the dry pass's own hits, so nothing here measures false refusals on fresh
+Tasks.
 
-Lives in: kullback/spec/items.py (Reach, World.reach_of, World.unreachable, World._tool_written, _gate_source), kullback/spec/effects.py
-(literal_writes, EFFECTS_VERSION), kullback/builder/tool_effects.py (call_diffs), kullback/spec/writer.py
-(load_inputs reach, _writes_view, FEEDBACK, reachability), kullback/spec/writer_tools.py (ItemStore.warned),
-kullback/spec/mutants.py (_build_state).
+Lives in: kullback/spec/items.py (Reach, World.reach_of, World.unreachable, World._tool_written, _gate_source),
+kullback/spec/effects.py (literal_writes, EFFECTS_VERSION), kullback/builder/tool_effects.py (call_diffs),
+kullback/spec/writer.py (load_inputs reach, _writes_view, FEEDBACK, reachability), kullback/spec/writer_tools.py
+(ItemStore.warned), kullback/spec/mutants.py (_build_state).

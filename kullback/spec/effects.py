@@ -11,7 +11,7 @@ Two readings, both code, both read by the Spec writer's checks (spec/items.py):
    Beside them, what the calls wrote (`writes`): per table and field name, the values any call wrote
    there where they are literal (at most MAX_LITERAL distinct), and the arguments every call's written
    values came from (`from_args`), where the field copies what the call passed. A gated value must be
-   one a tool can write (D380, spec/items.py `Reach`), and the writer reads these with the tool list.
+   one a tool can write (D387, spec/items.py `Reach`), and the writer reads these with the tool list.
 2. Signatures. Per tool and argument: the JSON types the recorded calls used (tool_sigs.json where it
    says, else the recordings), for a list or a dict of objects the keys every object carried and the
    keys any carried, and the pairs of text arguments no recorded call ever gave the same value. A called
@@ -33,7 +33,7 @@ from kullback.runner.records import read_json
 EFFECTS_FILE = Path("exam") / "review" / "effects.json"
 # What the stored file holds; a build's digest carries it, so a file learned before `writes` is learned again.
 EFFECTS_VERSION = 2
-# A field a tool wrote more distinct values to than this is filled from its arguments, not literal (D380).
+# A field a tool wrote more distinct values to than this is filled from its arguments, not literal (D387).
 MAX_LITERAL = 12
 # A pair of arguments is called never equal only on this many recorded calls that carry both.
 MIN_PAIR_CALLS = 3

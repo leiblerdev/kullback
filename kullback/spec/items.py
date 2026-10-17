@@ -20,7 +20,7 @@ a value an Intent fact names elsewhere in the world (that value belongs in expec
 anchor cites the row it was read from (one row by a world search) and its answer states those fields;
 only an anchor whose answer quotes the item's policy line goes without a row, and that refusal item
 always gates.
-A gated value for a cell must be reachable (D380, `World.reach_of`): a tool writes it to that field (the
+A gated value for a cell must be reachable (D387, `World.reach_of`): a tool writes it to that field (the
 build's learned writes), or copies that field from an argument and a start row holds the value anywhere,
 a write tool's result in a recording of the Task shows it there, the user's own words fix it, or a start
 row holds it under that field name. A gated row_is or row_new naming any other
@@ -221,7 +221,7 @@ def _weighed_gate(kept: dict, known: dict) -> str:
     return ""
 
 
-# The finding a gated value no source reaches carries (D380); a weighed item gets it as a warning.
+# The finding a gated value no source reaches carries (D387); a weighed item gets it as a warning.
 UNREACHABLE = "is unreachable"
 # The most reachable values a finding lists for a field.
 MAX_CANDIDATES = 10
@@ -244,7 +244,7 @@ def leaf_of(field: Any) -> str:
 
 
 class Reach(NamedTuple):
-    """What tools can write, per field (D380), each value normalised to (its text, where it was seen):
+    """What tools can write, per field (D387), each value normalised to (its text, where it was seen):
     `tools` per table and field name, the build's learned writes (spec/effects.py); `recorded` per field
     name, what a write tool's result showed in a recording of the Task (its presence only, never its path);
     `fed` per table and field name, the tool arguments the field is copied from ("tool.arg")."""
@@ -319,7 +319,7 @@ class World:
         # Per tool, what its recorded calls passed (spec/effects.py signatures): a called item no
         # recorded call could have made is refused.
         self.signatures = dict(signatures or {})
-        # What tools can write (D380); None checks no gated value for reachability.
+        # What tools can write (D387); None checks no gated value for reachability.
         self.reach = reach
         self._values: Optional[dict[str, tuple[str, str]]] = None
         self._by_name: Optional[dict[str, dict[str, tuple[str, str, Any]]]] = None
@@ -419,7 +419,7 @@ class World:
             return ValueSource(kind="world", ptr={"table": found[0], "row": found[1]})
         return None
 
-    # --- reaching (D380) -----------------------------------------------------------------------
+    # --- reaching (D387) -----------------------------------------------------------------------
     def _start_values(self) -> dict[str, dict[str, tuple[str, str, Any]]]:
         """Per field name, every scalar some start row holds under it, at any depth: (table, row, value) first
         seen."""
@@ -544,7 +544,7 @@ class World:
         return self._reachable(kept, _weighed_gate(kept, known_facts))
 
     def _reachable(self, kept: dict, note: str) -> tuple[Optional[dict], str]:
-        """The kept item and its note, or the refusal when a gated value no source reaches (D380); a weighed
+        """The kept item and its note, or the refusal when a gated value no source reaches (D387); a weighed
         item naming one keeps the finding as a warning in its note."""
         found = self.unreachable(kept)
         if found and kept["gate"]:
@@ -1011,7 +1011,7 @@ def _source_of(item: dict, field: str, value: Any, world: World) -> Optional[Val
 
 
 def _gate_source(table: str, field: str, value: Any, world: World) -> Optional[ValueSource]:
-    """A gated cell's source where the world knows what tools can write (D380): where each value it names
+    """A gated cell's source where the world knows what tools can write (D387): where each value it names
     is reachable from, None when one is not; a `not` set, and a world with no Reach, as `_cell_source`."""
     if world.reach is None or (isinstance(value, dict) and (not value_set_of(value) or "not" in value)):
         return _cell_source(value, world)

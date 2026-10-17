@@ -190,7 +190,7 @@ class ItemStore:
         self.dropped: list[str] = []
         self.offered = 0
         self.not_ruled = 0
-        # Kept weighed items naming a value no source reaches, {item id: the finding} (D380).
+        # Kept weighed items naming a value no source reaches, {item id: the finding} (D387).
         self.warned: dict[str, str] = {}
 
     def _limit(self, item_id: str) -> str:
