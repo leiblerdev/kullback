@@ -452,6 +452,17 @@ def _text_strings(texts: Iterable[str], min_length: int) -> set[str]:
     return out
 
 
+def _parts(row: dict, min_length: int) -> list[tuple[str, set[str], str]]:
+    """What one Harbor task adds, by part: (part, its strings, the text it may repeat besides the world)."""
+    oracle: set[str] = set()
+    _strings(row["calls"], oracle, min_length)
+    _strings(row["reply"], oracle, min_length)
+    return [("instruction", _text_strings(row["facts"], min_length), ""),
+            ("Verifier", _file_strings(row["verifier"], min_length), row["instruction"]),
+            ("oracle", oracle, row["instruction"]),
+            ("label", _text_strings([row.get("label") or ""], min_length), row["instruction"])]
+
+
 def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: int = LEAK_MIN_LENGTH,
               content_min_length: int = CONTENT_MIN_LENGTH, corpus: Optional[set[str]] = None) -> dict:
     """The package's scan (D221) over what each Harbor task adds, counts only.
@@ -469,14 +480,7 @@ def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: 
     for row in scanned:
         world_values, world_text = _baseline(row["world"], WORLD_FILES + ("env", "overlays"), min_length)
         policy = row.get("policy") or ""
-        groups = [("instruction", _text_strings(row["facts"], min_length), "")]
-        verifier_strings = _file_strings(row["verifier"], min_length)
-        oracle = set()
-        _strings(row["calls"], oracle, min_length)
-        _strings(row["reply"], oracle, min_length)
-        groups += [("Verifier", verifier_strings, row["instruction"]), ("oracle", oracle, row["instruction"]),
-                   ("label", _text_strings([row.get("label") or ""], min_length), row["instruction"])]
-        for part, found, extra in groups:
+        for part, found, extra in _parts(row, min_length):
             checked += len(found)
             found = found | embedded_prose(found, index, content_min_length)
             unaccounted = {value for value in found if value in corpus and not (
@@ -485,8 +489,7 @@ def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: 
             leaks = {value for value in unaccounted if len(value) >= content_min_length}
             echoes += len(unaccounted - leaks)
             if leaks:
-                leaking.append({"task": str(row.get("task") or row["name"])[-MASK:], "part": part,
-                                "values": len(leaks)})
+                leaking.append({"task": str(row["task"])[-MASK:], "part": part, "values": len(leaks)})
     return {"corpus_strings": len(corpus), "values_checked": checked, "files_scanned": 4 * len(scanned),
             "leaks": sum(row["values"] for row in leaking), "leaking_files": leaking,
             "value_echoes": echoes, "policy": "declared, not scanned"}
