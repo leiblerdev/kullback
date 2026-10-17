@@ -3715,10 +3715,11 @@ yet used.
 
 What it does not do: no new tool; no check that a cell scenario binds the cell's table or that a line scenario quotes
 its line, so cells and lines after the pass are measured, not forced. The kinds of the cells are the plan's kinds,
-so the cells possible stay the plan's kinds by the world's tables.
+so the cells possible stay the plan's kinds by the world's tables. A table with no rows gives no cell, in the
+cells possible and in the gap items alike (cell_tables), since a cell no row can ever fill is no gap.
 
 Tests: tests/synth/test_generate.py (policy lines leave out headings, labels and short lines; gap items are the unhit
 cells and the unquoted lines and a kept scenario removes its own; the pass writes through the same tools, its
 refusals count and its before and after move; a kind outside the plan is refused naming the kinds; a missing ask,
-end or both is refused; no pass without a model; --source gaps reads the plan on disk; the
-report lines).
+end or both is refused; a table with no rows gives no cell and no gap item; no pass without a model; --source gaps
+reads the plan on disk; the report lines).

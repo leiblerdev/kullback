@@ -294,6 +294,11 @@ def policy_lines(policy: str) -> list[str]:
     return out
 
 
+def cell_tables(state: dict) -> list[str]:
+    """The tables of the world that hold rows; a table with none can never be bound, so it gives no cell."""
+    return [table for table, rows in state.items() if rows]
+
+
 def _covered(line: str, quoted: set[str]) -> bool:
     return any(quote in line or line in quote for quote in quoted)
 
@@ -314,14 +319,15 @@ def gap_text(gap: dict) -> str:
 
 
 def gap_items(generation: Generation) -> list[dict]:
-    """The items of the gaps pass: every cell of (situation kind of the plan, table of the world) no kept
+    """The items of the gaps pass: every cell of (situation kind of the plan, table of the world with rows) no kept
     scenario hits, then every policy line no kept scenario quotes, each carrying the gap it is."""
     kept = _kept(generation)
     kind_of = _kinds(kept, generation.plan)
     hit = {(kind_of[r.id], table) for r in kept for table in r.binding}
     quoted = {line for r in kept for line in r.policy_lines}
     kinds = sorted({situation["kind"] for situation in generation.plan.situations})
-    gaps = [{"what": "cell", "kind": kind, "table": table} for kind in kinds for table in generation.world.state
+    gaps = [{"what": "cell", "kind": kind, "table": table} for kind in kinds
+            for table in cell_tables(generation.world.state)
             if (kind, table) not in hit]
     gaps += [{"what": "policy_line", "line": line} for line in policy_lines(generation.world.policy)
              if not _covered(line, quoted)]
@@ -331,7 +337,7 @@ def gap_items(generation: Generation) -> list[dict]:
 def gap_counts(generation: Generation) -> dict:
     """The cells hit and the policy lines quoted over the kept scenarios, out of how many."""
     kept = _kept(generation)
-    cells = spread(kept, generation.plan, generation.world.state)[1]
+    cells = spread(kept, generation.plan, cell_tables(generation.world.state))[1]
     lines = policy_lines(generation.world.policy)
     quoted = {line for r in kept for line in r.policy_lines}
     return {**cells, "lines_covered": sum(1 for line in lines if _covered(line, quoted)), "lines": len(lines)}
@@ -447,7 +453,7 @@ def generate(workdir: Any, *, model: Any, asks: Any = None, searching: bool = Tr
     new = [record for record in kept if canonical(record.statement) not in held]
     R.write_all(workdir, new)
     counts = coverage(kept, folded, generation.dropped, generation.ungrouped, generation.unplanned,
-                      plan=generation.plan, tables=list(world.state))
+                      plan=generation.plan, tables=cell_tables(world.state))
     body = {"format": R.FORMAT, "notes": generation.notes, "coverage": counts,
             "born": len(new), "folded": folded, "capped": dict(sorted(generation.capped.items())),
             "retried": dict(sorted(generation.retried.items())), "gaps": generation.gaps}
@@ -503,7 +509,7 @@ def fix(world: World, sent: list[tuple[R.Scenario, str]], model: Any, *, bus: An
     return [_fixed(record, why, root.fixed.get(record.id)) for record, why in sent]
 
 
-__all__ = ["BATCH", "GAP_PER", "LINE_WORDS", "from_gaps", "gap_counts", "gap_items", "gap_text", "policy_lines",
+__all__ = ["BATCH", "GAP_PER", "LINE_WORDS", "cell_tables", "from_gaps", "gap_counts", "gap_items", "gap_text", "policy_lines",
            "RETRY_MIN", "plan_openings", "EMPTY", "FIX_STAGE", "ID_SHAPE", "Generation", "STAGE", "TOOL_NAME", "World", "canonical", "coverage", "spread",
            "fix", "fold", "from_asks", "from_recordings", "from_search", "generate", "openings", "source_text",
            "statement_refusal", "world_of"]

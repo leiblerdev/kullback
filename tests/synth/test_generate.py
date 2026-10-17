@@ -775,3 +775,14 @@ def test_the_report_prints_the_gaps_pass_with_the_cells_and_policy_lines_before_
     assert "cells hit before the gaps pass: 2 of 2, after: 4 of 6" in printed
     assert "policy lines covered before the gaps pass: 1 of 3, after: 2 of 3" in printed
     assert "| gaps | 0 | 0 | 0 | 0 | 0 | 0 |" in printed
+
+
+def test_a_table_with_no_rows_gives_no_possible_cell_and_no_gap_item(tmp_path):
+    from kullback.runner.records import write_json
+
+    generation = _gap_generation(tmp_path)
+    write_json(generation.world.workdir / "db.json", {**STATE, "empty_rows": {}})
+    generation.world = M.world_of(generation.world.workdir)
+    assert sorted(M.cell_tables(generation.world.state)) == sorted(STATE)
+    assert not any(item["gap"].get("table") == "empty_rows" for item in M.gap_items(generation))
+    assert M.gap_counts(generation)["possible"] == len(STATE)
