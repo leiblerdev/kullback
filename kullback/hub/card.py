@@ -217,6 +217,15 @@ def _solution_leak_lines(harbor: dict) -> list[str]:
             "of the Task id).", ""]
 
 
+def _no_oracle_lines(counts: dict) -> list[str]:
+    """How many Tasks ship without solution/ because no Run passes on replay (D393)."""
+    count = int(counts.get("no_oracle") or 0)
+    if not count:
+        return []
+    return [f"{count} Tasks ship without `solution/`: no Run passes on replay through the exported world, so "
+            "Harbor's oracle agent cannot run on them (`has_oracle = false` in their `task.toml`).", ""]
+
+
 def harbor_section(harbor: dict) -> str:
     """The card's "Run it with Harbor" section, read off the Harbor dataset's manifest (D363)."""
     counts = harbor.get("counts") or {}
@@ -234,6 +243,7 @@ def harbor_section(harbor: dict) -> str:
              "and `spec_tier_reason`.", "",
              *tier_label_table(harbor),
              *_solution_leak_lines(harbor),
+             *_no_oracle_lines(counts),
              "```bash", f"uv run harbor run -p {HARBOR_DIR}/{example} -a oracle",
              f"uv run harbor run -p {HARBOR_DIR}/{example} -a <agent> -m <provider/model>", "```", ""]
     return "\n".join(lines) + "\n"

@@ -401,9 +401,10 @@ def starting_state(app: Path) -> dict:
 
 
 def write_task(directory: Path, *, workdir: Path, task_id: str, task_record: dict, instruction: str,
-               policy: Optional[str], verifier_path: Path, calls: list[dict], wheel: Path,
+               policy: Optional[str], verifier_path: Path, calls: Optional[list[dict]], wheel: Path,
                toml: str) -> None:
-    """One Harbor task directory, laid out and checked to load before anything else reads it."""
+    """One Harbor task directory, laid out and checked to load before anything else reads it; with `calls`
+    None it has no solution/ (no Run passes on replay, D393)."""
     environment = directory / "environment"
     world = environment / WORLD_DIR
     world.mkdir(parents=True, exist_ok=True)
@@ -419,6 +420,8 @@ def write_task(directory: Path, *, workdir: Path, task_id: str, task_record: dic
     shutil.copyfile(verifier_path, directory / "tests" / VERIFIER_NAME)
     (directory / "tests" / "test.sh").write_text(TEST_SH, encoding="utf-8")
     (directory / "tests" / "test.sh").chmod(0o755)
+    if calls is None:
+        return
     verifier = Verifier.model_validate(read_json(verifier_path, {}))
     reply = " ".join([DONE_LINE, *said_values(verifier)])
     (directory / "solution").mkdir(exist_ok=True)
@@ -458,10 +461,12 @@ def _parts(row: dict, min_length: int) -> list[tuple[str, set[str], str]]:
     oracle: set[str] = set()
     _strings(row["calls"], oracle, min_length)
     _strings(row["reply"], oracle, min_length)
-    return [("instruction", _text_strings(row["facts"], min_length), ""),
-            ("Verifier", _file_strings(row["verifier"], min_length), row["instruction"]),
-            ("oracle", oracle, row["instruction"]),
-            ("label", _text_strings([row.get("label") or ""], min_length), row["instruction"])]
+    parts = [("instruction", _text_strings(row["facts"], min_length), ""),
+             ("Verifier", _file_strings(row["verifier"], min_length), row["instruction"]),
+             ("oracle", oracle, row["instruction"]),
+             ("label", _text_strings([row.get("label") or ""], min_length), row["instruction"])]
+    # A Task with no solution/ has no oracle part to scan (D393).
+    return [part for part in parts if part[0] != ORACLE_PART or row.get("has_oracle", True)]
 
 
 def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: int = LEAK_MIN_LENGTH,
@@ -477,11 +482,13 @@ def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: 
     corpus = corpus_strings(raw_dir, min_length) if corpus is None else corpus
     index = _prose_index(corpus, content_min_length)
     harness = harness_text()
-    leaking, echoes, checked = [], 0, 0
+    leaking, echoes, checked, files = [], 0, 0, 0
     for row in scanned:
         world_values, world_text = _baseline(row["world"], WORLD_FILES + ("env", "overlays"), min_length)
         policy = row.get("policy") or ""
-        for part, found, extra in _parts(row, min_length):
+        parts = _parts(row, min_length)
+        files += len(parts)
+        for part, found, extra in parts:
             checked += len(found)
             found = found | embedded_prose(found, index, content_min_length)
             unaccounted = {value for value in found if value in corpus and not (
@@ -491,7 +498,7 @@ def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: 
             echoes += len(unaccounted - leaks)
             if leaks:
                 leaking.append({"task": str(row["task"])[-MASK:], "part": part, "values": len(leaks)})
-    return {"corpus_strings": len(corpus), "values_checked": checked, "files_scanned": 4 * len(scanned),
+    return {"corpus_strings": len(corpus), "values_checked": checked, "files_scanned": files,
             "leaks": sum(row["values"] for row in leaking), "leaking_files": leaking,
             "value_echoes": echoes, "policy": "declared, not scanned"}
 
@@ -598,22 +605,33 @@ def _metadata(build: _Build, task_id: str, synthetic: bool, index: dict, verifie
     }
 
 
+def _write(build: _Build, folder: Path, task_id: str, given: dict, metadata: dict, verifier_path: Path,
+           calls: Optional[list[dict]]) -> None:
+    category = sorted({str(given["record"].get("category_id") or "")} - {""})
+    keywords = category + sorted({call["name"] for call in calls or ()} & build.env.write_tools())
+    toml = task_toml(name=f"{build.org}/{folder.name}", description=_description(given["instruction"]),
+                     keywords=keywords, metadata=metadata, org=build.org, judged=metadata["judge_items"])
+    write_task(folder, workdir=build.workdir, task_id=task_id, task_record=given["record"],
+               instruction=given["instruction"], policy=given["policy"], verifier_path=verifier_path,
+               calls=calls, wheel=build.wheel, toml=toml)
+
+
 def _lay_with_oracle(build: _Build, folder: Path, task_id: str, given: dict, metadata: dict,
                      verifier_path: Path) -> Optional[list[dict]]:
-    """Write the task with each candidate oracle in turn and keep the first that holds; None if none does."""
-    category = sorted({str(given["record"].get("category_id") or "")} - {""})
+    """Write the task with each candidate oracle in turn and keep the first that holds; None if none does.
+    Under `verified` and `all` a Task none holds for is then written without solution/, marked has_oracle
+    false (D393); it answers [] for that Task."""
     for tried in given["candidates"]:
-        keywords = category + sorted({call["name"] for call in tried} & build.env.write_tools())
-        toml = task_toml(name=f"{build.org}/{folder.name}", description=_description(given["instruction"]),
-                         keywords=keywords, metadata=metadata, org=build.org,
-                         judged=metadata["judge_items"])
-        write_task(folder, workdir=build.workdir, task_id=task_id, task_record=given["record"],
-                   instruction=given["instruction"], policy=given["policy"], verifier_path=verifier_path,
-                   calls=tried, wheel=build.wheel, toml=toml)
+        _write(build, folder, task_id, given, dict(metadata, has_oracle=True), verifier_path, tried)
         if oracle_holds(folder):
+            metadata["has_oracle"] = True
             return tried
         shutil.rmtree(folder)
-    return None
+    if build.tasks == "trusted":
+        return None
+    metadata.update(has_oracle=False, no_oracle_reason=NO_ORACLE)
+    _write(build, folder, task_id, given, metadata, verifier_path, None)
+    return []
 
 
 def _verified_skip(build: _Build, task_id: str, body: Optional[dict]) -> Optional[str]:
@@ -643,10 +661,12 @@ def _export_one(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Opti
         return NO_ORACLE, {}, {}
     path = folder.relative_to(build.out).as_posix()
     listed = {"harbor_name": f"{build.org}/{folder.name}", "path": path, **metadata}
+    solve = folder / "solution" / "solve.sh"
     scanned = {"name": path, "task": task_id, "world": folder / "environment" / WORLD_DIR,
                "facts": given["facts"] or [given["instruction"]], "label": str(metadata.get("label_gold_diff") or ""),
                "instruction": given["instruction"], "policy": given["policy"], "verifier": verifier_path,
-               "calls": calls, "reply": (folder / "solution" / "solve.sh").read_text(encoding="utf-8")}
+               "has_oracle": metadata["has_oracle"], "calls": calls,
+               "reply": solve.read_text(encoding="utf-8") if solve.is_file() else ""}
     return None, listed, scanned
 
 
@@ -718,7 +738,11 @@ def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_o
                    "needs_judge": sum(1 for row in listed if row["needs_judge"]),
                    "confirm_gate": sum(1 for row in listed if row["confirm_gate"]),
                    "skipped": skipped,
+                   "no_oracle": sum(1 for row in listed if row.get("has_oracle") is False),
                    "by_tier_and_label": by_tier_and_label(recorded)},
+        # Exported with no solution/: no Run passes on replay (D393). Masked, as left_out.
+        "no_oracle": [{"task": row["kullback_task_id"][-MASK:], "reason": NO_ORACLE}
+                      for row in listed if row.get("has_oracle") is False],
         "tasks": recorded,
         "synthetic": [row for row in listed if row["origin"] == "synthetic"],
         # Masked to the last four characters, as every report masks a Task id.
