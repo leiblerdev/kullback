@@ -600,3 +600,12 @@ def test_the_organisation_card_carries_news_above_the_environments_only_when_giv
     card = organisation_card([], announcement="Verifiers now come from the ask.")
     assert card.index("## News\n\nVerifiers now come from the ask.") < card.index("## Environments")
     assert "## News" not in organisation_card([])
+
+
+def test_verified_leaves_out_a_task_the_tier_report_rules_no_verifier_though_a_draft_is_on_disk(tmp_path):
+    workdir = _workdir(tmp_path / "work", trusted=False)
+    write_json(workdir / "tiers.json", {"rows": [{"task_id": TASK, "tier": "untrusted", "reason": "no_verifier"}]})
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path), tasks="verified")
+    assert manifest["counts"]["exported"] == 0 and manifest["counts"]["skipped"] == {"no Verifier": 1}
+    kept = harbor.export_harbor(workdir, tmp_path / "all", name="widgets", wheel=_wheel(tmp_path), tasks="all")
+    assert kept["counts"]["exported"] == 1

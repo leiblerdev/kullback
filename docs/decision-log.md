@@ -3562,7 +3562,8 @@ existing not_called and cell cases still fire).
 What. `kullback publish --format harbor` and `kullback export --format harbor` take `--tasks verified` beside
 trusted (the default, unchanged) and all (unchanged): every frozen recorded Task with a Verifier on disk, trusted or
 not; a Task with no Verifier is left out as "no Verifier" and one of the synthetic tier as "synthetic", both counted
-in the manifest's skipped. Every recorded Task's task.toml metadata gains spec_tier and spec_tier_reason, read off the
+in the manifest's skipped. A Task the tier report rules no_verifier is "no Verifier" too, though the Spec left a draft
+Verifier file on disk when it set the Task aside (the first airline dry run shipped 2 such drafts). Every recorded Task's task.toml metadata gains spec_tier and spec_tier_reason, read off the
 tier report: the workdir's tiers.json, or the files `--tiers` names (repeatable, later wins; tiers.json's rows or a
 "tasks" map from id to row). `--labels` (repeatable, later wins) reads JSON lists of rater rows keyed by task and adds
 label, label_matches_gold and label_gold_diff; a Task no row names is "unlabelled". A key matches a Task id exactly or

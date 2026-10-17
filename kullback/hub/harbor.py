@@ -69,6 +69,7 @@ from kullback.runner.world.environment import BuiltEnvironment
 from kullback.spec.report import REPORT_FILE as TIERS_FILE
 from kullback.spec.schema import Spec, spec_path, spec_verifier_path
 from kullback.spec.split import reference_classes
+from kullback.spec.trust import NO_VERIFIER as NO_VERIFIER_REASON
 from kullback.spec.trust import SYNTHETIC as SYNTHETIC_TIER
 from kullback.spec.trust import runs_on_disk
 from kullback.synthesise import DIR as SYNTHETIC_DIR
@@ -615,14 +616,23 @@ def _lay_with_oracle(build: _Build, folder: Path, task_id: str, given: dict, met
     return None
 
 
+def _verified_skip(build: _Build, task_id: str, body: Optional[dict]) -> Optional[str]:
+    """Under `verified`, a recorded Task the tier report rules no_verifier is "no Verifier" whatever file is on
+    disk (a draft the Spec set aside, D393), and one of the synthetic tier is "synthetic"; else None."""
+    if build.tasks != "verified" or body is not None:
+        return None
+    row = (build.tiers or {}).get(task_id) or {}
+    if row.get("reason") == NO_VERIFIER_REASON:
+        return "no Verifier"
+    return "synthetic" if row.get("tier") == SYNTHETIC_TIER else None
+
+
 def _export_one(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Optional[str], dict, dict]:
     """(why the Task is left out or None, its manifest row, its leak scan row)."""
     given = _inputs(build, task_id, body)
     verifier_path = verifier_of(build.workdir, task_id, body is not None)
-    synthetic_tier = (build.tasks == "verified" and body is None
-                      and ((build.tiers or {}).get(task_id) or {}).get("tier") == SYNTHETIC_TIER)
-    reason = ("no Verifier" if verifier_path is None else "synthetic" if synthetic_tier
-              else "no Run" if not given["candidates"] else "no instruction" if not given["instruction"] else None)
+    reason = ("no Verifier" if verifier_path is None else _verified_skip(build, task_id, body)
+              or ("no Run" if not given["candidates"] else "no instruction" if not given["instruction"] else None))
     if reason:
         return reason, {}, {}
     verifier = Verifier.model_validate(read_json(verifier_path, {}))
