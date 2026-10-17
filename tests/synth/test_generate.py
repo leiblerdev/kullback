@@ -69,9 +69,11 @@ def _bound(call_id: str, statement: str, situation: str, variant: str = "", **ar
                   **{"binding": dict(BOUND), **args})
 
 
-def _results(model: TestModel) -> list[str]:
-    """Every tool result the agent read, in order."""
-    last = model.calls[-1]["messages"]
+def _results(model: TestModel, session: int = 0) -> list[str]:
+    """Every tool result the agent read in one session, the first by default, in order; a session starts on a
+    call holding no assistant message yet."""
+    starts = [at for at, made in enumerate(model.calls) if not any(m.get("role") == "assistant" for m in made["messages"])]
+    last = model.calls[([*starts[1:], len(model.calls)])[session] - 1]["messages"]
     return [str(message.get("content")) for message in last if message.get("role") == "tool"]
 
 
@@ -103,7 +105,7 @@ def test_a_recordings_session_writes_one_bound_scenario_per_situation_and_varian
                policy_lines=[SEALED_LINE]),
         _bound("m3", "Ada Byron wants her sealed widget in slot four moved; it cannot move.", move, SEALED_VARIANT,
                requires=["a tool that swaps a sealed widget"]),
-        _done()])
+        _done(), _done()])
     M.from_recordings(generation)
     first, second = generation.found
     assert [(r.situation, r.variant) for r in generation.found] == [(move, ""), (move, SEALED_VARIANT)]
@@ -113,7 +115,8 @@ def test_a_recordings_session_writes_one_bound_scenario_per_situation_and_varian
     listed = _results(model)[0]
     assert OPENINGS["task-b2"] in listed and SEALED_VARIANT in listed and broken in listed
     assert '"is_sealed": false' in _results(model)[1]
-    assert generation.ungrouped == [{"source": "recordings", "batch": 0, "items": 2, "ungrouped": 1}]
+    assert generation.ungrouped == [{"source": "recordings", "batch": 0, "items": 2, "ungrouped": 1},
+                                    {"source": "recordings", "batch": 0, "items": 1, "ungrouped": 1, "retry": True}]
 
 
 def test_a_refused_write_is_written_again_once_and_a_second_refusal_drops_and_counts_it(tmp_path):
@@ -271,9 +274,9 @@ def test_an_ask_line_is_rewritten_once(tmp_path):
 def test_a_search_session_gets_its_own_turn_budget_and_a_capped_session_is_counted_under_its_kind(tmp_path):
     workdir = make_workdir(tmp_path)
     endless = [call("list_scenarios", {}, f"s{at}") for at in range(T.MAX_TURNS + 5)]
-    model = TestModel([*planned(), _done(), *endless])
+    model = TestModel([*planned(), _done(), _done(), *endless])
     body = M.generate(workdir, model=model, engine=web(workdir)[0], refuse=REFUSE, description=DESCRIPTION)
-    assert len(model.calls) - 3 == T.SEARCH_TURNS == T.turns_for(T.GenerateRoot(world=M.world_of(workdir), kind="search"))
+    assert len(model.calls) - 4 == T.SEARCH_TURNS == T.turns_for(T.GenerateRoot(world=M.world_of(workdir), kind="search"))
     assert body["capped"] == {"search": 1}
     assert json.loads((R.store_dir(workdir) / R.GENERATED).read_text())["capped"] == {"search": 1}
 
@@ -322,7 +325,7 @@ def test_generation_again_keeps_the_status_and_review_of_a_record_already_held(t
     (workdir / R.DIR / R.ASKS).write_text("test which slot a widget sits in\n")
 
     def scripted(plan=()):
-        return TestModel([*plan, _done(), _write("a0", "someone asks which slot a widget sits in", "ask", openings=[0]),
+        return TestModel([*plan, _done(), _done(), _write("a0", "someone asks which slot a widget sits in", "ask", openings=[0]),
                           _done()])
 
     M.generate(workdir, model=scripted(planned()), searching=False)
@@ -427,7 +430,7 @@ def test_a_write_paraphrasing_a_stored_scenario_is_refused_naming_it_and_the_sec
     model = TestModel([*planned(), _bound("m0", "a holder wants the widget moved to another slot today", situation),
                        _bound("m1", "a holder wants their widget moved to another slot now", situation), _done()])
     body = M.generate(workdir, model=model, searching=False)
-    first, second = _results(model)[-2:]
+    first, second = _results(model, session=1)[-2:]
     assert T.NEAR.replace("_", " ") in first and stored.id in first and "write it again once" in first
     assert "dropped" in second and body["born"] == 0
     assert body["coverage"]["dropped"] == {T.NEAR: 1}
@@ -497,3 +500,91 @@ def test_the_report_prints_one_line_per_spread_counter_and_the_cells_hit(tmp_pat
     sealed, moved, verified = POLICY.splitlines()[1], SEALED_LINE, POLICY.splitlines()[2]
     assert f"scenarios per policy line: {sealed} 2, {moved} 2, {verified} 1" in printed
     assert "cells hit: 3 of 6" in printed
+
+
+ASK = "Hi, I am Ada Byron. My widget sits in slot two and I want it in slot seven."
+END = "The widget of Ada Byron now sits in slot seven."
+
+
+def test_an_ask_and_an_end_that_leak_name_a_tool_or_come_alone_are_refused_naming_which(tmp_path):
+    world = M.world_of(make_workdir(tmp_path))
+    assert T.pair_refusal(ASK, END, world) == "" and T.pair_refusal("", "", world) == ""
+    assert T.pair_refusal(ASK, END + " " + ASK.split(". ")[1].upper(), world) == T.ASK_SHARES_END
+    assert T.pair_refusal("Please run move widget for me.", END, world) == T.TOOL_IN_ASK
+    assert T.pair_refusal(ASK, "move_widget was called.", world) == T.TOOL_IN_END
+    assert T.pair_refusal(ASK, "", world) == T.ASK_WITHOUT_END
+    assert T.pair_refusal("", END, world) == T.END_WITHOUT_ASK
+
+
+def test_a_write_whose_ask_shares_a_sentence_with_its_end_is_refused_and_counted_when_dropped(tmp_path):
+    generation, _ = _generation(tmp_path)
+    [move] = _plan(generation, (MOVE, [0, 1, 2], []))
+    leak = {"ask": ASK, "end": "Ada Byron gets it moved. " + ASK}
+    model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move, **leak),
+                                          _bound("m1", "Ada Byron wants a widget moved", move, **leak), _done()])
+    M.from_recordings(generation)
+    assert T.ASK_SHARES_END.replace("_", " ") in _results(model)[0]
+    assert generation.found == [] and generation.dropped == Counter({T.ASK_SHARES_END: 1})
+
+
+def test_a_written_ask_and_end_are_stored_listed_beside_the_statement_and_kept_by_a_rewrite(tmp_path):
+    generation, _ = _generation(tmp_path)
+    [move] = _plan(generation, (MOVE, [0, 1, 2], []))
+    model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move, ask=ASK, end=END),
+                                          call("list_scenarios", {}, "m1"), _done()])
+    M.from_recordings(generation)
+    [record] = generation.found
+    assert (record.ask, record.end) == (ASK, END)
+    listed = _results(model)[1]
+    assert ASK in listed and END in listed and record.statement in listed
+    R.write_all(generation.world.workdir, [record])
+    assert R.load_scenarios(generation.world.workdir)[0].ask == ASK
+    model = TestModel([call("rewrite_scenario", {"id": record.id, "statement": "Ada Byron wants her widget moved"},
+                            "f0"), _done()])
+    [fixed] = M.fix(generation.world, [(record, "say her")], model)
+    assert (fixed.ask, fixed.end, fixed.status) == (ASK, END, "born")
+
+
+def test_the_items_a_pass_left_unwritten_run_once_more_in_halves_and_are_counted(tmp_path):
+    generation, _ = _generation(tmp_path)
+    lines = [f"my widget number {word} should go to another slot" for word in
+             ("one", "two", "three", "four", "five", "six", "seven", "eight")]
+    model = generation.model = TestModel([
+        _done(), _write("a0", "a holder wants a widget put in a new slot", "ask", openings=[0]), _done(), _done()])
+    M.from_asks(generation, lines, batch=8)
+    assert generation.retried == {"ask": {"items": 8, "written": 1}}
+    assert [(row["items"], row.get("retry", False)) for row in generation.ungrouped] == [(8, False), (4, True),
+                                                                                          (4, True)]
+    assert len(model.calls) == 4
+
+
+def test_a_recordings_retry_lists_only_the_situations_the_first_pass_left_unwritten(tmp_path):
+    generation, _ = _generation(tmp_path)
+    move, broken, third = _plan(generation, (MOVE, [0], []), (BROKEN, [1], []), (PLANNED, [2], []))
+    model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move), _done(),
+                                          call("list_openings", {}, "r0"), _done()])
+    M.from_recordings(generation, batch=8)
+    listed = _results(model, session=1)[0]
+    assert move not in listed and broken in listed and third in listed
+    assert generation.retried == {"recordings": {"items": 2, "written": 0}} and M.RETRY_MIN == 4
+
+
+def test_no_second_pass_runs_when_every_item_is_written(tmp_path):
+    workdir = make_workdir(tmp_path)
+    model = TestModel([*planned(), _bound("m0", MOVE, P.situation_id(PLANNED)), _done()])
+    body = M.generate(workdir, model=model, searching=False)
+    assert body["retried"] == {} and len(model.calls) == 4
+
+
+def test_the_report_prints_the_retried_items_per_source_and_the_scenarios_with_an_ask_and_an_end(tmp_path):
+    from kullback.runner.records import write_json
+    from kullback.synth import report
+
+    workdir = make_workdir(tmp_path)
+    paired = R.born("a holder wants a widget moved", R.Source(kind="ask", line="move it")).model_copy(
+        update={"ask": ASK, "end": END})
+    R.write_all(workdir, [paired, R.born("a holder wants a new widget", R.Source(kind="ask", line="new one"))])
+    write_json(R.store_dir(workdir) / R.GENERATED, {"retried": {"recordings": {"items": 5, "written": 3}}})
+    printed = report.lines(workdir)
+    assert "retried from recordings: 5 items unwritten, 3 written" in printed
+    assert "scenarios with an ask and an end: 1 of 2" in printed

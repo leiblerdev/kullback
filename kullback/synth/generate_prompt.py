@@ -25,7 +25,12 @@ RULE = ("A scenario is two to four sentences in the third person saying exactly 
         "looked up and bound, or from the policy; say the values, never an id and never a tool or system name, "
         "and write a date in words. What the world lacks for this situation goes into requires, in words, and "
         "the scenario is still written. Bind to rows that fit the situation; across the scenarios of one session "
-        "use different customers and different rows.")
+        "use different customers and different rows. Beside the statement write two parts apart. The ask is what "
+        "the customer says to open the conversation, in the first person and their own words: who they are as the "
+        "bound rows name them, what they have, what they want and what they bring with them, including what they get "
+        "wrong; never what the agent will do and never how it ends. The end is what a correct agent leaves the world "
+        "and the customer with, in the third person: the rows changed and their new values, or that nothing changed "
+        "and why, quoting the policy line. The ask and the end share no sentence.")
 
 
 def receives_section() -> str:
@@ -44,14 +49,16 @@ _EXAMPLES = {
     "write_scenario": ('write_scenario: write one scenario, e.g. {"statement": "<the scenario>", "source": "<the '
                        'source of this session>", "situation": "si_<id>", "variant": "", "binding": {"<table>": '
                        '"<row key>"}, "requires": [], "policy_lines": ["<a policy line, word for word>"], '
-                       '"openings": [], "url": "", "span": ""}. For a situation give its id and the variant line '
+                       '"openings": [], "url": "", "span": "", "ask": "<the opening words, first person>", '
+                       '"end": "<what a correct agent leaves behind>"}. For a situation give its id and the variant line '
                        "word for word, or empty for the situation itself; for a typed line the one number it "
                        "rewrites; for a page the URL you read and the span it rests on, word for word. binding "
                        "names each row you looked up by table and key; requires says in words what the world "
                        "lacks."),
     "rewrite_scenario": ('rewrite_scenario: rewrite one scenario sent back, e.g. {"id": "sc_<id>", "statement": '
-                         '"<the scenario, rewritten>", "binding": {"<table>": "<row key>"}}; leave binding or '
-                         "requires out to keep them."),
+                         '"<the scenario, rewritten>", "binding": {"<table>": "<row key>"}, "ask": "<the opening '
+                         'words>", "end": "<what a correct agent leaves behind>"}; leave binding, requires, ask or '
+                         "end out to keep them."),
 }
 
 
@@ -61,14 +68,23 @@ def tools_section(names: Iterable[str] = TOOLS) -> str:
 
 
 def examples_section() -> str:
-    return ("Examples of scenarios, over placeholders, one per shape.\n"
+    return ("Examples of scenarios, over placeholders, one per shape, each with its ask and its end.\n"
             "<name from the bound row> bought <the product with its option values> on <the date> for <the amount>. "
             "It has already <reached a later step>, and they want to <change> it to <the other option>. They do "
             "not know the rules allow that only before <the step>.\n"
+            "ask: Hi, I am <name>. I bought <the product> on <the date> and I want it changed to <the other "
+            "option>, today if you can.\n"
+            "end: Nothing changed, since <the policy line, word for word>; <name> was told so and offered <what "
+            "the policy allows>.\n"
             "<name from the bound row> holds <the booking with its places and dates> and asks for <a remedy> the "
             "policy promises; the world holds no way to make it, so requires says <what is missing>.\n"
+            "ask: I have <the booking> from <the place> on <the date>, and I was promised <the remedy>.\n"
+            "end: <name> is told <the remedy> is due under <the policy line>; no row changed, since the world "
+            "holds no way to make it.\n"
             "<name from the bound row> reports that <the item with its options> <went wrong> and gives <a wrong "
-            "detail> at first; they want <a remedy> worth <the amount>.")
+            "detail> at first; they want <a remedy> worth <the amount>.\n"
+            "ask: My <item> <went wrong>. It was the <wrong detail> one, and I want <the remedy>.\n"
+            "end: <the row> now holds <the new value>, and <name> has <the remedy> worth <the amount>.")
 
 
 def choice_section() -> str:
@@ -88,7 +104,8 @@ def feedback_section() -> str:
             "value, a policy line the policy does not hold, a span the page does not hold, a line copied as typed, "
             "a binding the world does not hold (naming the table and key), a scenario bound to nothing with "
             "nothing required, a situation and variant already written (naming the scenario), a statement that "
-            "says what a written scenario says (naming it). Write it again "
+            "says what a written scenario says (naming it), an ask and an end that share a sentence, a tool name "
+            "in the ask or the end, an ask without an end or an end without an ask. Write it again "
             "once, following the reason; a second refusal of the same scenario drops it. Each typed line belongs "
             "to one scenario: a write picking a line already rewritten is refused naming the scenario that holds "
             "it.")

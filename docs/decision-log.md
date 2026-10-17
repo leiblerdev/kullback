@@ -3566,3 +3566,52 @@ without args, items on different tools, ungated items and two items with equal a
 
 Tests: tests/spec/test_items.py (the new case fires on the second item; the four non cases report nothing; the
 existing not_called and cell cases still fire).
+
+### D393. A scenario carries the user's words and the expected end apart (2026-10-17)
+
+What. write_scenario takes two more fields, ask (what the customer says to open the conversation, first person,
+their own words, never what the agent will do and never the outcome) and end (what a correct agent leaves the world
+and the customer with, third person: the rows changed and their values, or nothing changed and why, quoting the
+policy line). rewrite_scenario may carry both, leaving either out keeps it. Both are stored on the Scenario and
+list_scenarios shows them beside the statement; the fix listing shows them too. The statement stays as it was, since
+the fold and the review compare it. A leak check in code, at write and rewrite (generate_tools.pair_refusal), refuses
+an ask and an end that share a sentence (sentences compared through generate.canonical), a tool name in the ask or the
+end (the statement's tool name check), and one of the pair without the other; each has its own reason
+(ask_shares_end, tool_name_in_ask, tool_name_in_end, ask_without_end, end_without_ask), counted in dropped like every
+refusal. Both empty stays allowed, so older records and older sessions keep working. RULE, the write_scenario and
+rewrite_scenario examples, one ask and one end per example shape over placeholders, and the feedback section say it.
+The report prints how many scenarios carry an ask and an end.
+
+Why. The statement says what happens including how it ends, and a born Task made it the single user turn, so the
+model under test was told the resolution; other statements left the end open, so no Verifier could be derived
+(live2 audit finding 3).
+
+What it does not do: ask and end do not reach the Spec writer here; the born Task's user turn becomes the ask in the
+tasks.py Worker's change, not in this one. No model judges a leak, only sentences equal after canonical; a paraphrase
+of the end inside the ask passes.
+
+Tests: tests/synth/test_generate.py (each of the five pair refusals; a shared sentence refused and dropped on the
+second write and counted; ask and end stored, listed beside the statement, read back from the store and kept by a
+rewrite; the report line of scenarios with an ask and an end).
+
+### D394. Items a session left unwritten are retried in halves (2026-10-17)
+
+What. generate._batched runs the batched pass of one source, then once more over the items still unwritten in
+batches of half the size, at least RETRY_MIN = 4. For the recordings source the unwritten items are situation_items
+again, which now also counts what this generation already wrote; for the typed lines, the items no session grouped.
+A session whose answer ended empty or on its cap left its items unwritten, so they are in that set by construction.
+generated.json gains "retried": {"<source>": {"items": n, "written": m}}, a retry batch's ungrouped row carries
+"retry": true, and the report prints per source the retried items and what the second pass wrote. BATCH stays 25:
+the one failed batch of the last run had 25 items and the next of 14 wrote 34, too little to measure a better size,
+and the halved retry covers the failure.
+
+Why. The first airline batch of the last live run did 201 lookups, hit the output cap on one answer and then answered
+with an empty turn, which the stop rule read as done: 0 scenarios from 25 situations (53 variants).
+
+What it does not do: one retry pass only, never a third; no retry for the search session (it has no items); the stop
+rule and the empty answer handling of the harness are unchanged. An item dropped after two refusals in the first pass
+is unwritten, so it gets one more session.
+
+Tests: tests/synth/test_generate.py (eight lines left unwritten run again in two sessions of four and the count holds
+items and written; a recordings retry lists only the situations the first pass left; no second pass when every item is
+written; the report line per source).

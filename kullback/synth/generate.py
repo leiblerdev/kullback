@@ -18,6 +18,10 @@ punctuation and spacing, recordings first, so a search or ask scenario the recor
 the recordings record and adds its own source under `also_from`; no model judges a repeat. The agent
 lists what is already written before it writes, and the review may rule a scenario a repeat of another. A record keeps the id it was born with,
 also after a fix rewrites its statement. The fix step is a session too, under the stage synth_fix.
+
+No session leaves items unwritten (D394): after the batched pass of one source, the items still unwritten
+run once more in batches of half the size, at least RETRY_MIN; a session that ended empty or on its cap
+left its items unwritten, so they are in that set. What the second pass wrote is counted per source.
 """
 
 from __future__ import annotations
@@ -42,6 +46,8 @@ from kullback.synth.rule import EMPTY, ID_SHAPE, TOOL_NAME, World, statement_ref
 
 # How many opening asks or typed lines one session generates from.
 BATCH = 25
+# The smallest batch of the second pass over the items a first pass left unwritten (D394).
+RETRY_MIN = 4
 STAGE = "synth_generation"
 FIX_STAGE = "synth_fix"
 CEILING_NOTE = "stopped at the spend ceiling; generate again to continue"
@@ -64,6 +70,7 @@ class Generation:
     ungrouped: list = field(default_factory=list)
     plan: plan_mod.Plan = field(default_factory=plan_mod.Plan)
     unplanned: list = field(default_factory=list)
+    retried: dict = field(default_factory=dict)
 
     def over(self) -> bool:
         if self.ceiling is not None and self.ceiling.remaining <= 0:
@@ -151,22 +158,42 @@ def plan_openings(generation: Generation, *, batch: int = plan_mod.PLAN_BATCH) -
     generation.unplanned = plan_mod.unplanned(generation.plan, rows)
 
 
-def _batched(generation: Generation, kind: str, items: list[dict], batch: int) -> None:
-    """One session per batch of items of one source, stopping at the ceiling."""
-    size = max(int(batch), 1)
+def _pass(generation: Generation, kind: str, items: list[dict], size: int, retry: bool = False) -> list[dict]:
+    """One session per batch of items of one source, stopping at the ceiling; the items no session grouped."""
+    left: list[dict] = []
     for start in range(0, len(items), size):
         if generation.over():
-            return
+            return left
         chunk = items[start:start + size]
         opening = generate_prompt.opening(kind, _entries(generation.world.workdir), count=len(chunk))
         made = generation.session(kind, opening, items=chunk)
-        generation.ungrouped.append({"source": kind, "batch": start // size, "items": len(chunk),
-                                 "ungrouped": len(chunk) - len(made.grouped)})
+        row = {"source": kind, "batch": start // size, "items": len(chunk), "ungrouped": len(chunk) - len(made.grouped)}
+        generation.ungrouped.append({**row, "retry": True} if retry else row)
+        left += [item for at, item in enumerate(chunk) if at not in made.grouped]
+    return left
+
+
+def _batched(generation: Generation, kind: str, items: list[dict], batch: int,
+             unwritten: Optional[Callable[[], list[dict]]] = None) -> None:
+    """The batched pass of one source, then once more over what it left unwritten in halves (D394).
+
+    `unwritten` names the items still unwritten after the first pass; by default, those no session grouped.
+    """
+    size = max(int(batch), 1)
+    left = _pass(generation, kind, items, size)
+    left = unwritten() if unwritten is not None else left
+    if not left or generation.over():
+        return
+    before = len(generation.found)
+    _pass(generation, kind, left, max(size // 2, RETRY_MIN), retry=True)
+    generation.retried[kind] = {"items": len(left), "written": len(generation.found) - before}
 
 
 def situation_items(generation: Generation) -> list[dict]:
-    """The plan's situations as items, leaving out those whose situation and every variant are written."""
-    held = {(r.situation, r.variant) for r in R.load_scenarios(generation.world.workdir) if r.situation}
+    """The plan's situations as items, leaving out those whose situation and every variant are written, in the
+    store or by this generation."""
+    held = {(r.situation, r.variant) for r in [*R.load_scenarios(generation.world.workdir), *generation.found]
+            if r.situation}
     out = []
     for situation in generation.plan.situations:
         wanted = {(situation["id"], variant) for variant in ["", *situation["variants"]]}
@@ -180,7 +207,7 @@ def from_recordings(generation: Generation, *, batch: int = BATCH) -> None:
     """One scenario per situation of the plan and one per variant, bound to rows, one session per batch (D381)."""
     if generation.model is None:
         return
-    _batched(generation, "recordings", situation_items(generation), batch)
+    _batched(generation, "recordings", situation_items(generation), batch, lambda: situation_items(generation))
 
 
 # --- the search -------------------------------------------------------------------------
@@ -329,7 +356,8 @@ def generate(workdir: Any, *, model: Any, asks: Any = None, searching: bool = Tr
     counts = coverage(kept, folded, generation.dropped, generation.ungrouped, generation.unplanned,
                       plan=generation.plan, tables=list(world.state))
     body = {"format": R.FORMAT, "notes": generation.notes, "coverage": counts,
-            "born": len(new), "folded": folded, "capped": dict(sorted(generation.capped.items()))}
+            "born": len(new), "folded": folded, "capped": dict(sorted(generation.capped.items())),
+            "retried": dict(sorted(generation.retried.items()))}
     write_json(R.store_dir(workdir) / R.GENERATED, body)
     return body
 
@@ -351,7 +379,8 @@ def source_text(world: World, record: R.Scenario) -> str:
 
 def _fix_items(world: World, sent: list[tuple[R.Scenario, str]]) -> str:
     return "\n\n".join(f"{record.id}: {record.statement}\n{why}\nbound to: {json.dumps(record.binding, sort_keys=True)}"
-                       f"\nrequires: {json.dumps(record.requires)}\nwritten from: {source_text(world, record)}"
+                       f"\nrequires: {json.dumps(record.requires)}\nask: {record.ask}\nend: {record.end}"
+                       f"\nwritten from: {source_text(world, record)}"
                        for record, why in sent)
 
 
@@ -381,6 +410,6 @@ def fix(world: World, sent: list[tuple[R.Scenario, str]], model: Any, *, bus: An
     return [_fixed(record, why, root.fixed.get(record.id)) for record, why in sent]
 
 
-__all__ = ["BATCH", "plan_openings", "EMPTY", "FIX_STAGE", "ID_SHAPE", "Generation", "STAGE", "TOOL_NAME", "World", "canonical", "coverage", "spread",
+__all__ = ["BATCH", "RETRY_MIN", "plan_openings", "EMPTY", "FIX_STAGE", "ID_SHAPE", "Generation", "STAGE", "TOOL_NAME", "World", "canonical", "coverage", "spread",
            "fix", "fold", "from_asks", "from_recordings", "from_search", "generate", "openings", "source_text",
            "statement_refusal", "world_of"]

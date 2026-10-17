@@ -2,7 +2,8 @@
 
 Per source kind: born, passed, unsure, infeasible, struck and fixing; the Environment findings the
 review filed; what the generator dropped, per reason; the coverage across sources; the human queue; and
-what the scenario stages spent. Read off the store and the ledger; nothing is called.
+what the scenario stages spent; per source the items a first pass left unwritten and what the second
+pass wrote (D394), and how many scenarios carry an ask and an end (D393). Read off the store and the ledger; nothing is called.
 """
 
 from __future__ import annotations
@@ -44,7 +45,9 @@ def counts(workdir: Any) -> dict:
     """The numbers the report prints, as data."""
     root = Path(workdir)
     generated = read_json(R.store_dir(root) / R.GENERATED, {}) or {}
-    return {"table": _table(R.load_scenarios(root)), "findings": _findings(root),
+    records = R.load_scenarios(root)
+    return {"table": _table(records), "findings": _findings(root), "retried": generated.get("retried") or {},
+            "paired": {"set": sum(1 for r in records if r.ask and r.end), "of": len(records)},
             "coverage": generated.get("coverage") or {}, "notes": generated.get("notes") or [],
             "human": len(read_json(R.store_dir(root) / R.HUMAN, []) or []), "spend": _spend(root)}
 
@@ -79,6 +82,9 @@ def lines(workdir: Any) -> list[str]:
                 for kind, n in sorted((coverage.get("folded") or {}).items())]
         out += [f"dropped, {reason.replace('_', ' ')}: {n}" for reason, n in (coverage.get("dropped") or {}).items()]
         out += _spread_lines(coverage)
+    out += [f"retried from {kind}: {row.get('items', 0)} items unwritten, {row.get('written', 0)} written"
+            for kind, row in sorted(body["retried"].items())]
+    out.append(f"scenarios with an ask and an end: {body['paired']['set']} of {body['paired']['of']}")
     out += [f"note: {note}" for note in body["notes"]]
     out.append("spend: " + ", ".join(f"{stage} {usd:.4f} USD" for stage, usd in body["spend"].items()))
     return out

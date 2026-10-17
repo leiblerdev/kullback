@@ -13,11 +13,16 @@ so the agent writes again. A second refusal of the same scenario drops it, and a
 and never written again is dropped at the end of the session; both are counted per reason. An opening
 ask or a typed line belongs to one scenario per session: a write picking one already grouped is refused
 naming the scenario that holds it, and is no refusal of a new scenario.
+
+A scenario also carries the customer's opening words (ask) and what a correct agent leaves behind (end),
+apart (D393). The write and the rewrite refuse, by code, an ask and an end that share a sentence, a tool
+name in either, and one of the pair given without the other; the reason names which.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -65,6 +70,12 @@ UNKNOWN = "unknown_scenario"
 BINDING = "binding_not_in_world"
 UNBOUND = "unbound"
 SITUATION_WRITTEN = "situation_already_written"
+ASK_SHARES_END = "ask_shares_end"
+TOOL_IN_ASK = "tool_name_in_ask"
+TOOL_IN_END = "tool_name_in_end"
+ASK_WITHOUT_END = "ask_without_end"
+END_WITHOUT_ASK = "end_without_ask"
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
 NEAR = "near_repeat"
 # A statement at or above this ROUGE-L against any written one is a near repeat, fixed before any run (D383).
 NEAR_REPEAT = 0.7
@@ -129,6 +140,8 @@ class WriteArgs(Strict):
     binding: dict[str, str] = Field(default_factory=dict,
                                     description="The rows it is bound to: table to row key, as lookup_rows names them.")
     requires: list[str] = Field(default_factory=list, description="What the world lacks for it, in words.")
+    ask: str = Field(default="", description="What the customer says to open, first person, never the outcome.")
+    end: str = Field(default="", description="What a correct agent leaves the world and the customer with.")
 
 
 class SituationArgs(Strict):
@@ -153,6 +166,8 @@ class RewriteArgs(Strict):
     statement: str
     binding: Optional[dict[str, str]] = Field(default=None, description="The rows it is bound to; leave out to keep them.")
     requires: Optional[list[str]] = Field(default=None, description="What the world lacks; leave out to keep it.")
+    ask: Optional[str] = Field(default=None, description="The customer's opening words; leave out to keep them.")
+    end: Optional[str] = Field(default=None, description="What a correct agent leaves behind; leave out to keep it.")
 
 
 class Rows(Strict):
@@ -200,6 +215,10 @@ def _policy_refusal(lines: list[str], policy: str) -> str:
 
 def _norm(text: str) -> str:
     return " ".join(str(text or "").lower().split())
+
+
+def _one_line(text: Optional[str]) -> str:
+    return " ".join(str(text or "").split())
 
 
 def _requires(lines: Optional[list[str]]) -> list[str]:
@@ -299,8 +318,26 @@ def _near_why(root: GenerateRoot, statement: str, skip: str = "", situation: str
     return (NEAR, f"{twin} already says this") if twin else ("", "")
 
 
+def _sentences(text: str) -> set[str]:
+    from kullback.synth.generate import canonical
+
+    return {said for said in (canonical(part) for part in _SENTENCE.split(text)) if said}
+
+
+def pair_refusal(ask: str, end: str, world: World) -> str:
+    """Why an ask and an end leak into each other or name a tool, or one is missing, or nothing (D393)."""
+    if bool(ask) != bool(end):
+        return ASK_WITHOUT_END if ask else END_WITHOUT_ASK
+    if statement_refusal(ask, world, tools_only=True):
+        return TOOL_IN_ASK
+    if statement_refusal(end, world, tools_only=True):
+        return TOOL_IN_END
+    return ASK_SHARES_END if _sentences(ask) & _sentences(end) else ""
+
+
 def _why(root: GenerateRoot, args: WriteArgs, statement: str, why: str) -> tuple[str, str]:
     why = why or (statement_refusal(statement, root.world) if statement else EMPTY)
+    why = why or pair_refusal(_one_line(args.ask), _one_line(args.end), root.world)
     why = why or _policy_refusal(args.policy_lines, root.world.policy)
     if why:
         return why, ""
@@ -322,11 +359,12 @@ def written(root: GenerateRoot, args: WriteArgs) -> Rows:
     record = R.born(statement, made["source"], R.policy_lines_in(args.policy_lines, root.world.policy)[0],
                     made["frequency"]).model_copy(update={
                         "situation": made.get("situation", ""), "variant": made.get("variant", ""),
-                        "binding": dict(args.binding), "requires": _requires(args.requires)})
+                        "binding": dict(args.binding), "requires": _requires(args.requires),
+                        "ask": _one_line(args.ask), "end": _one_line(args.end)})
     root.found.append(record)
     root.written.add(anchor)
     root.grouped.update({at: record.id for at in made.get("picked", ())})
-    row = {"id": record.id, "statement": record.statement, "source": root.kind}
+    row = {"id": record.id, "statement": record.statement, "source": root.kind, "ask": record.ask, "end": record.end}
     if root.bus is not None:
         root.bus.publish_custom("scenario_written", row)
     return Rows(summary=f"written {record.id}", rows=[row])
@@ -342,14 +380,17 @@ def rewritten(root: GenerateRoot, args: RewriteArgs) -> Rows:
     statement = " ".join(args.statement.split())
     binding = dict(record.binding if args.binding is None else args.binding)
     requires = list(record.requires) if args.requires is None else _requires(args.requires)
+    ask = record.ask if args.ask is None else _one_line(args.ask)
+    end = record.end if args.end is None else _one_line(args.end)
     why, detail = (statement_refusal(statement, root.world) if statement else EMPTY), ""
+    why = why or pair_refusal(ask, end, root.world)
     why, detail = (why, detail) if why else _near_why(root, statement, args.id, record.situation)
     why, detail = (why, detail) if why else _bound_why(root.world, record.source.kind, binding, requires)
     if why:
         _refuse(root, anchor, why, detail)
-    root.fixed[args.id] = {"statement": statement, "binding": binding, "requires": requires}
+    root.fixed[args.id] = {"statement": statement, "binding": binding, "requires": requires, "ask": ask, "end": end}
     root.written.add(anchor)
-    row = {"id": args.id, "statement": statement, "binding": binding, "requires": requires}
+    row = {"id": args.id, **root.fixed[args.id]}
     if root.bus is not None:
         root.bus.publish_custom("scenario_rewritten", row)
     return Rows(summary=f"rewritten {args.id}", rows=[row])
@@ -360,6 +401,7 @@ def rewritten(root: GenerateRoot, args: RewriteArgs) -> Rows:
 
 def _scenario_row(record: R.Scenario, status: str) -> dict:
     row = {"id": record.id, "statement": record.statement, "status": status}
+    row = {**row, "ask": record.ask, "end": record.end} if record.ask or record.end else row
     return {**row, "situation": record.situation, "variant": record.variant} if record.situation else row
 
 
@@ -485,5 +527,6 @@ def run(root: GenerateRoot, model: Any, opening: str, stage: str, ceiling: Optio
     return bool(capped)
 
 
-__all__ = ["AGENT", "GenerateRoot", "NEAR", "NEAR_REPEAT", "OPENING_GROUPED", "SEARCH_TURNS", "SESSION_TOOLS", "bus_for", "generate_extension", "generate_tools", "rewritten", "run",
+__all__ = ["AGENT", "ASK_SHARES_END", "ASK_WITHOUT_END", "END_WITHOUT_ASK", "TOOL_IN_ASK", "TOOL_IN_END",
+           "GenerateRoot", "pair_refusal", "NEAR", "NEAR_REPEAT", "OPENING_GROUPED", "SEARCH_TURNS", "SESSION_TOOLS", "bus_for", "generate_extension", "generate_tools", "rewritten", "run",
            "settle_refusals", "turns_for", "written"]
