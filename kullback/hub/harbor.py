@@ -717,6 +717,19 @@ def _drop_solution_leaks(out: Path, scan: dict, scanned: list[dict], listed: lis
     return scan, [str(row["task"]) for row in dropped]
 
 
+def _counts(listed: list[dict], recorded: list[dict], skipped: dict) -> dict:
+    def count(test: Any) -> int:
+        return sum(1 for row in listed if test(row))
+
+    return {"exported": len(listed), "recorded": len(recorded),
+            "synthetic": count(lambda row: row["origin"] == "synthetic"),
+            "needs_judge": count(lambda row: row["needs_judge"]),
+            "confirm_gate": count(lambda row: row["confirm_gate"]),
+            "skipped": skipped,
+            "no_oracle": count(lambda row: row.get("has_oracle") is False),
+            "by_tier_and_label": by_tier_and_label(recorded)}
+
+
 def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_oracle: list[str],
               solution_leaks: Iterable[str] = ()) -> dict:
     recorded = [row for row in listed if row["origin"] == "recorded"]
@@ -732,14 +745,7 @@ def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_o
         "git_sha": build.sha,
         "reward": dict(REWARD_SHAPE, harbor="gated then weighted; an unscored gate gives 0 and is named "
                                             "unscored_gate in items.json; reward.json carries the number alone"),
-        "counts": {"exported": len(listed),
-                   "recorded": sum(1 for row in listed if row["origin"] == "recorded"),
-                   "synthetic": sum(1 for row in listed if row["origin"] == "synthetic"),
-                   "needs_judge": sum(1 for row in listed if row["needs_judge"]),
-                   "confirm_gate": sum(1 for row in listed if row["confirm_gate"]),
-                   "skipped": skipped,
-                   "no_oracle": sum(1 for row in listed if row.get("has_oracle") is False),
-                   "by_tier_and_label": by_tier_and_label(recorded)},
+        "counts": _counts(listed, recorded, skipped),
         # Exported with no solution/: no Run passes on replay (D393). Masked, as left_out.
         "no_oracle": [{"task": row["kullback_task_id"][-MASK:], "reason": NO_ORACLE}
                       for row in listed if row.get("has_oracle") is False],
