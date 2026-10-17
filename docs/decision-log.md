@@ -3341,3 +3341,40 @@ Tests: tests/synth/test_generate.py (rouge_l on the same words, disjoint words a
 paraphrase of a stored scenario is refused naming it and the second attempt is dropped and counted; two statements of
 different situations both pass; a rewrite never scores against its own statement and is refused near another; the
 spread counters and cells; the report lines).
+
+### D384. A Task whose recorded user strayed from an opening ask is set aside as intent_strayed (2026-10-17)
+
+Briefed as D381; D380 to D382 were already taken on the base (733964b8) and D383 by another stream, so the row takes
+the next free number.
+
+Why. Every recording was made with a model-simulated user, and that user sometimes strays: withholds what the agent
+needs, swaps values, stops after the first confirmation, holds an ask pending a check that never comes. The miner
+records it faithfully, so the Verifier is right for the conversation and wrong for the ask. The founder wants these
+filtered by a simple mechanism, not by trace agreement.
+
+What. kullback/spec/coherence.py asks one judge question per Task between the miner and the writer, from the Intent
+and the recordings only (never a Run, never the Reference): for each opening ask (a volunteered do or told fact of
+condition none), by the end of the recordings was it carried_out, refused_or_withdrawn (refused on a policy ground or
+withdrawn in the user's own words), or strayed. The judge names the recording and quotes one line; code keeps an
+answer only when the quote sits word for word in one line of that recording. Any kept strayed answer sets the Task
+aside as intent_strayed (a new set_aside value and task.set_aside reason code, in router.NO_VERIFIER_WHYS beside
+intent_unclear), so no writer runs and the tiers read reason no_verifier, why intent_strayed. Code decides a Task
+with no opening ask (no call). A failed call or unreadable reply sets nothing aside and the Spec says why. The record
+lives on the Spec as `coherence` (dropped from the dump when empty, so older Specs hash as before). write_specs takes
+`judge_model`, None asking on the writer's model; the CLI's examine passes the judge adapter.
+
+Measured (pre-registered in .claude/herdr/stray-1017/filter-prereg.md): over the 100 rerun Tasks, one pass on
+Opus 5.5, 3.76 USD, every Task decided by the judge, no failed quote, no error. It set aside 5 of the 6 Tasks the raters
+marked intent_wrong (bar at least 4: holds) and 15 of the other 94 (bar at most 5: fails). Verdict FAIL. Most false
+positives end in a hand-off or a stop right after a confirmation, with no write: the clause "the conversation ended
+with the ask neither done nor refused nor withdrawn" catches the agent failing as well as the user straying, and the
+true positives rest on the same clause, so dropping it post hoc loses them too (2 of 6 caught, 8 false).
+
+What it cannot show: one judge, one pass; the six are the raters' call; whether the question can separate a user who
+strayed from an agent who failed at the end is open.
+
+Tests: tests/spec/test_coherence.py (opening asks; recording lines; the quote check; each of the three answers; a
+strayed answer with a quote not in the named recording sets nothing aside; no opening ask decided by code with no
+call; unreadable reply and failed call; the stage set-aside with no Verifier and the bus told; the tier reads
+no_verifier why intent_strayed; a held Task keeps the record; an empty record is not dumped), tests/spec/test_stage.py,
+tests/examiner/test_refwhy.py.
