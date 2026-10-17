@@ -3637,3 +3637,26 @@ workdir whose recordings carry none gives born recordings none.
 Tests: tests/synth/test_tasks.py (a born recording carries the prompt most recordings share, the majority winning
 over a second prompt; no prompt when no recording has one; the user turn is the ask when set, else the statement; a
 rerun writes the prompt into a born recording that lacks it, counts it, and a third call writes nothing).
+
+### D396. A gated not_called beside a gated called, and a repeated gated event item, are contradictions (2026-10-17)
+What: kullback/spec/items.py _gated_call_clashes, called from contradictions beside D392's check, reports a gated
+not_called item whose args are none or a subset of a gated called item's args on the same tool ("gated not_called
+<tool> beside gated called <id>; keep the one the ask calls for"), and a gated called or not_called item that
+repeats an earlier one's kind, tool and args ("<kind> <tool> repeats <first id> with the same args; remove this
+one"). An item the older not_called check already names is not named twice.
+
+Why: the measurement of born Verifiers found gated "is called" and "is not called" atoms on one tool, which no Run
+can pass, and the blind judge named contradictory or duplicated checks as the commonest tell of a synthetic
+Verifier. A not_called fails on any call carrying its args, so a subset of the called args is enough to clash; a
+not_called with other args only forbids those and stands.
+
+Also: a called or not_called atom's description names its args ("<tool> is called with <key> <value>, ..."; no
+args reads as before), since the three born Verifiers the measurement named were satisfiable and only read as
+contradictory because the description left the args out.
+
+What it does not do: no change to the Verdict or the writer; ungated items are not checked. D392's note that two
+items with equal args are not a contradiction is superseded: they are now reported as a repeat.
+
+Tests: tests/spec/test_items.py (the clash fires and nothing else does; a not_called with other args passes; a
+repeated pair is reported once on the second item; D392's equal args case now reports the repeat; a called
+description names its args and a not_called without args reads as before).
