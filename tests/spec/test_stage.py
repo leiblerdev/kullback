@@ -57,9 +57,9 @@ def _items(*items: dict) -> list[ModelReply]:
     return [_call("add_items", {"items": list(items)}), DONE]
 
 
-def _held(answer: str = "carried_out", quote: str = "move item A1 to slot seven") -> ModelReply:
-    """The coherence judge's reply on the one opening ask."""
-    row = {"answer": answer, "recording": "r1", "quote": quote, "why": "the user's own line"}
+def _held(answer: str = "carried_out", quote: str = "move item A1 to slot seven", ender: str = "") -> ModelReply:
+    """The coherence judge's reply on the one opening ask, with the ender of an ended_by answer."""
+    row = {"answer": answer, "ender": ender or None, "recording": "r1", "quote": quote, "why": "the user's own line"}
     return ModelReply(content=json.dumps({"facts": {"f1": row}}), usage=Usage(input=200, output=30))
 
 

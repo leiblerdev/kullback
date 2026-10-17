@@ -30,7 +30,9 @@ def _trace_with_call(root) -> None:
              {"idx": 2, "role": "assistant", "content": "", "tool_call_ids": ["c1"], "raw_ptr": PTR},
              {"idx": 3, "role": "tool", "content": "{\"slot\": \"seven\"}", "raw_ptr": PTR},
              {"idx": 4, "role": "assistant", "content": "Done, it sits in slot seven now.", "raw_ptr": PTR},
-             {"idx": 5, "role": "user", "content": "Actually forget it, I will call back later.", "raw_ptr": PTR}]
+             {"idx": 5, "role": "user", "content": "Actually forget it, I will call back later.", "raw_ptr": PTR},
+             {"idx": 6, "role": "assistant", "content": "I cannot finish this, passing you on.", "raw_ptr": PTR},
+             {"idx": 7, "role": "user", "content": "###STOP###", "raw_ptr": PTR}]
     calls = [{"id": "c1", "name": "update_item", "args": {"item_id": "A1", "slot": "seven"},
               "result": {"slot": "seven"}, "raw_ptr": PTR}]
     (root / "traces" / "rec-a.json").write_text(json.dumps(
@@ -42,8 +44,13 @@ def _reply(**rows: dict) -> ModelReply:
     return ModelReply(content=json.dumps({"facts": rows}), usage=Usage(input=200, output=30))
 
 
-def _row(answer: str, quote: str, recording: str = "r1") -> dict:
-    return {"answer": answer, "recording": recording, "quote": quote, "why": "shown in that line"}
+def _row(answer: str, quote: str, recording: str = "r1", ender: str = "") -> dict:
+    return {"answer": answer, "ender": ender or None, "recording": recording, "quote": quote,
+            "why": "shown in that line"}
+
+
+def _ended(quote: str, ender: str = C.USER, recording: str = "r1") -> dict:
+    return _row(C.ENDED_BY, quote, recording, ender)
 
 
 def _mining() -> list[ModelReply]:
@@ -69,7 +76,7 @@ def test_a_recording_shows_each_call_with_its_arguments_and_result_and_never_the
     lines = C.recording_lines(trace)
     assert lines[1] == "user: Please move item A1 to slot seven today."
     assert lines[2].startswith("agent calls update_item {") and lines[2].endswith("-> {'slot': 'seven'}")
-    assert len(lines) == 5
+    assert len(lines) == 7 and lines[-1] == "user: ###STOP###"
 
 
 def test_a_quote_counts_only_when_it_sits_word_for_word_inside_one_line_and_carries_content_words():
@@ -85,7 +92,7 @@ def test_an_ask_the_agent_carried_out_sets_nothing_aside(tmp_path):
     model = TestModel([_reply(f1=_row("carried_out", "Done, it sits in slot seven now."))])
     record, _ = C.check_coherence(root, "t1", _intent(OPENING), model)
     assert record["decided_by"] == C.JUDGE and record["strayed"] == []
-    assert record["facts"]["f1"] == {"answer": "carried_out", "recording": "rec-a",
+    assert record["facts"]["f1"] == {"answer": "carried_out", "ender": None, "recording": "rec-a",
                                      "quote": "Done, it sits in slot seven now.", "quote_ok": True,
                                      "why": "shown in that line"}
 
@@ -98,18 +105,44 @@ def test_an_ask_the_user_withdrew_in_their_own_words_sets_nothing_aside(tmp_path
     assert record["strayed"] == [] and record["facts"]["f1"]["quote_ok"] is True
 
 
-def test_an_ask_the_user_strayed_from_with_a_quote_in_the_recording_is_named_strayed(tmp_path):
+def test_an_ask_the_user_ended_in_their_own_words_is_named_strayed(tmp_path):
     root = _workdir(tmp_path)
     _trace_with_call(root)
-    model = TestModel([_reply(f1=_row("strayed", "I will call back later"))])
+    model = TestModel([_reply(f1=_ended("I will call back later"))])
     record, _ = C.check_coherence(root, "t1", _intent(OPENING), model)
     assert record["strayed"] == ["f1"] and record["unquoted"] == 0
+    assert (record["facts"]["f1"]["answer"], record["facts"]["f1"]["ender"]) == (C.ENDED_BY, C.USER)
 
 
-def test_a_strayed_answer_whose_quote_is_not_in_the_named_recording_sets_nothing_aside(tmp_path):
+def test_an_ask_the_agent_or_the_world_ended_sets_nothing_aside_and_keeps_the_ender(tmp_path):
     root = _workdir(tmp_path)
     _trace_with_call(root)
-    for row in (_row("strayed", "the user never gave the code"), _row("strayed", "call back later", "r9")):
+    for ender, quote in ((C.AGENT, "I cannot finish this, passing you on."), (C.WORLD, "update_item")):
+        record, _ = C.check_coherence(root, "t1", _intent(OPENING), TestModel([_reply(f1=_ended(quote, ender))]))
+        assert record["strayed"] == [] and record["unquoted"] == 0
+        assert (record["facts"]["f1"]["ender"], record["facts"]["f1"]["quote_ok"]) == (ender, True)
+
+
+def test_a_user_ending_quoted_from_the_agent_or_from_a_marker_alone_sets_nothing_aside(tmp_path):
+    root = _workdir(tmp_path)
+    _trace_with_call(root)
+    for quote in ("I cannot finish this, passing you on.", "###STOP###"):
+        record, _ = C.check_coherence(root, "t1", _intent(OPENING), TestModel([_reply(f1=_ended(quote))]))
+        assert record["strayed"] == [] and record["unquoted"] == 1 and record["facts"]["f1"]["quote_ok"] is False
+
+
+def test_an_ender_on_another_answer_or_outside_the_three_is_not_kept(tmp_path):
+    root = _workdir(tmp_path)
+    _trace_with_call(root)
+    for row in (_row(C.CARRIED_OUT, "update_item", ender=C.USER), _ended("call back later", "someone")):
+        record, _ = C.check_coherence(root, "t1", _intent(OPENING), TestModel([_reply(f1=row)]))
+        assert record["strayed"] == [] and record["facts"]["f1"]["ender"] is None
+
+
+def test_a_user_ending_whose_quote_is_not_in_the_named_recording_sets_nothing_aside(tmp_path):
+    root = _workdir(tmp_path)
+    _trace_with_call(root)
+    for row in (_ended("the user never gave the code"), _ended("call back later", recording="r9")):
         record, _ = C.check_coherence(root, "t1", _intent(OPENING), TestModel([_reply(f1=row)]))
         assert record["strayed"] == [] and record["unquoted"] == 1 and record["facts"]["f1"]["quote_ok"] is False
 
@@ -139,7 +172,7 @@ def test_an_unreadable_reply_or_a_failed_call_sets_nothing_aside_and_says_why(tm
 
 def test_a_task_whose_user_strayed_is_set_aside_with_no_verifier_and_the_bus_is_told(tmp_path):
     root = _workdir(tmp_path)
-    model = TestModel(_mining() + [_held("strayed", "Please move item A1 to slot seven today")])
+    model = TestModel(_mining() + [_held(C.ENDED_BY, "Please move item A1 to slot seven today", C.USER)])
     counts = stage.write_specs(root, ["t1"], model)
     assert (counts["written"], counts["set_aside_strayed"], len(model.calls)) == (0, 1, 4)
     spec = load_spec(root, "t1")
@@ -153,7 +186,7 @@ def test_a_task_whose_user_strayed_is_set_aside_with_no_verifier_and_the_bus_is_
 
 def test_a_strayed_task_reads_as_no_verifier_why_intent_strayed_in_the_tiers(tmp_path):
     root = _workdir(tmp_path)
-    stage.write_specs(root, ["t1"], TestModel(_mining() + [_held("strayed", "slot seven today")]))
+    stage.write_specs(root, ["t1"], TestModel(_mining() + [_held(C.ENDED_BY, "slot seven today", C.USER)]))
     spec = load_spec(root, "t1")
     assert no_verifier_why(spec) == INTENT_STRAYED
     row = T.intent_tiers(root)["t1"].row

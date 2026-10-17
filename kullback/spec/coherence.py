@@ -6,12 +6,17 @@ for something it then drops. The miner records that faithfully, so a Verifier wr
 for the conversation and wrong for the ask. This check reads the Intent and the recordings only (never
 a Run, never the Reference) and asks, for each opening ask (a volunteered do or told fact of condition
 none), what became of it by the end of the recordings: carried out, refused on a policy ground or
-withdrawn by the user in their own words, or neither (strayed). Any strayed answer whose quote code finds
-in the named recording sets the Task aside as intent_strayed, with no Verifier.
+withdrawn by the user in their own words, or ended by someone, with the ender named: the user (changed
+what they wanted, asked for the opposite, withheld what the policy requires when asked), the agent (failed,
+stopped or handed off without acting) or the world (a condition the user set did not hold, a call failed).
+Only an ask ended by the user, quoted in the user's own words, sets the Task aside as intent_strayed, with
+no Verifier; an agent or world ending is kept on the record and sets nothing aside.
 
 Code decides first: a Task with no opening ask has nothing to check and no call is made. The judge
 answers the rest in one call, each answer with the line it rests on; code keeps an answer only when that
-quote is in the recording it names, as the miner checks in_reply_to. A failed call or an unreadable reply
+quote is in the recording it names, as the miner checks in_reply_to; for the user ender the quote must sit in
+a user line and carry the user's words once any control marker (###NAME###) is taken out, so a marker alone
+is never evidence of the user straying. A failed call or an unreadable reply
 sets nothing aside: the Task goes on to the writer and the Spec says why.
 """
 
@@ -27,8 +32,13 @@ from kullback.runner.budget import call_cost
 from kullback.runner.records import Trace
 from kullback.spec.intent_tools import content_tokens, task_of, trace_index
 
-CARRIED_OUT, REFUSED_OR_WITHDRAWN, STRAYED = "carried_out", "refused_or_withdrawn", "strayed"
-ANSWERS = (CARRIED_OUT, REFUSED_OR_WITHDRAWN, STRAYED)
+CARRIED_OUT, REFUSED_OR_WITHDRAWN, ENDED_BY = "carried_out", "refused_or_withdrawn", "ended_by"
+ANSWERS = (CARRIED_OUT, REFUSED_OR_WITHDRAWN, ENDED_BY)
+USER, AGENT, WORLD = "user", "agent", "world"
+ENDERS = (USER, AGENT, WORLD)
+# A simulator's control marker in a user line (a stop, a hand-off): never the user's own words.
+CONTROL_MARK_RE = re.compile(r"#{2,}[A-Z][A-Z_-]*#{2,}")
+USER_PREFIX = "user: "
 CODE, JUDGE = "code", "judge"
 RESULT_CHARS = 400  # each tool result shown, clamped
 MAX_TOKENS = 3000
@@ -41,17 +51,22 @@ what it came for. For each opening ask, answer what became of it by the end of t
   the agent told the user).
 - refused_or_withdrawn: the agent declined it on a ground of policy, or the user withdrew it in their own
   words.
-- strayed: neither of those. The user changed what they wanted, withheld what the agent needed, gave a
-  value that contradicts the ask, or the conversation ended with the ask neither done nor refused nor
-  withdrawn.
+- ended_by: neither of those; name who ended the ask (ender):
+  - user: the user, in their own words, changed what they wanted, asked for the opposite, or withheld what
+    the policy requires the agent to have (an identity detail, a confirmation) when the agent asked for it;
+  - agent: the agent failed, stopped, or handed off without acting, also after the user confirmed;
+  - world: a condition the user set did not hold (an option that does not exist, a price not met), or a
+    tool call failed.
 Where the Task has several recordings, answer carried_out or refused_or_withdrawn when any recording shows
-it, and strayed only when none does.
+it, and ended_by only when none does. A stop or hand-off marker on its own is never the user changing
+course: the user ender needs the user's own words.
 For each answer quote, copied word for word from one line of the recording you name, the line or call
-that shows it: the call that made the change, the agent's refusal, the user's own withdrawal, or the line
-where the user strayed (the last line of the conversation when it simply ended).
+that shows it: the call that made the change, the agent's refusal, the user's own withdrawal, the user's
+words that changed course, the agent's line or the failed call.
 Output one JSON object and nothing else:
-{"facts": {"<fact id>": {"answer": "carried_out" | "refused_or_withdrawn" | "strayed",
- "recording": "<recording label>", "quote": "<words copied from one line>", "why": "<one short sentence>"}}}"""
+{"facts": {"<fact id>": {"answer": "carried_out" | "refused_or_withdrawn" | "ended_by",
+ "ender": "user" | "agent" | "world" (ended_by only), "recording": "<recording label>",
+ "quote": "<words copied from one line>", "why": "<one short sentence>"}}}"""
 
 
 def opening_asks(intent: Any) -> list[Any]:
@@ -96,6 +111,14 @@ def quote_in(quote: str, lines: list[str]) -> bool:
     return bool(content_tokens(quote)) and any(span in _squash(line) for line in lines)
 
 
+def user_words_in(quote: str, lines: list[str]) -> bool:
+    """Whether the quote is the user's own words: in a user line, with content words once any control
+    marker is taken out of it."""
+    words = CONTROL_MARK_RE.sub(" ", quote)
+    users = [line for line in lines if line.startswith(USER_PREFIX)]
+    return quote_in(quote, users) and bool(content_tokens(words))
+
+
 def judge_message(asks: list[Any], recordings: dict[str, list[str]]) -> str:
     facts = "\n".join(f"- [{fact.id}] ({fact.kind}) {fact.text}" for fact in asks)
     blocks = "\n\n".join(f"<recording {label}>\n" + "\n".join(lines) + f"\n</recording {label}>"
@@ -115,23 +138,28 @@ def _reply_rows(content: Optional[str]) -> Optional[dict]:
 
 def checked_answers(rows: dict, asks: list[Any], recordings: dict[str, list[str]],
                     labels: dict[str, str]) -> dict[str, dict]:
-    """Each opening ask's answer as code kept it: the answer, the recording it names, the quote, whether
-    the quote is in that recording, and the why. An answer outside the three, or none, is kept as None."""
+    """Each opening ask's answer as code kept it: the answer, its ender (ended_by only), the recording it
+    names, the quote, whether the quote holds (in that recording; for the user ender, the user's own words
+    in a user line), and the why. An answer or ender outside the listed ones, or none, is kept as None."""
     out: dict[str, dict] = {}
     for fact in asks:
         row = rows.get(fact.id) if isinstance(rows.get(fact.id), dict) else {}
         answer = row.get("answer") if row.get("answer") in ANSWERS else None
+        ender = row.get("ender") if answer == ENDED_BY and row.get("ender") in ENDERS else None
         label = str(row.get("recording") or "")
         quote = " ".join(str(row.get("quote") or "").split())
-        out[fact.id] = {"answer": answer, "recording": labels.get(label), "quote": quote,
-                        "quote_ok": label in recordings and quote_in(quote, recordings[label]),
-                        "why": str(row.get("why") or "")[:300]}
+        lines = recordings.get(label)
+        held = lines is not None and (user_words_in(quote, lines) if ender == USER else quote_in(quote, lines))
+        out[fact.id] = {"answer": answer, "ender": ender, "recording": labels.get(label), "quote": quote,
+                        "quote_ok": held, "why": str(row.get("why") or "")[:300]}
     return out
 
 
 def strayed_facts(answers: dict[str, dict]) -> list[str]:
-    """The opening asks the judge answered strayed with a quote code found: any one sets the Task aside."""
-    return [fact_id for fact_id, row in answers.items() if row["answer"] == STRAYED and row["quote_ok"]]
+    """The opening asks the judge said the user ended, in the user's own words as code found them: any one
+    sets the Task aside. An ask ended by the agent or the world is kept on the record only."""
+    return [fact_id for fact_id, row in answers.items()
+            if row["answer"] == ENDED_BY and row["ender"] == USER and row["quote_ok"]]
 
 
 def check_coherence(workdir: Path, task_id: str, intent: Any, model: Any,
@@ -164,5 +192,6 @@ def check_coherence(workdir: Path, task_id: str, intent: Any, model: Any,
                 unquoted=sum(1 for row in answers.values() if row["answer"] and not row["quote_ok"])), spent
 
 
-__all__ = ["ANSWERS", "CARRIED_OUT", "CODE", "JUDGE", "REFUSED_OR_WITHDRAWN", "STRAYED", "check_coherence",
-           "checked_answers", "opening_asks", "quote_in", "recording_lines", "strayed_facts"]
+__all__ = ["AGENT", "ANSWERS", "CARRIED_OUT", "CODE", "ENDED_BY", "ENDERS", "JUDGE", "REFUSED_OR_WITHDRAWN", "USER",
+           "WORLD", "check_coherence", "checked_answers", "opening_asks", "quote_in", "recording_lines",
+           "strayed_facts", "user_words_in"]
