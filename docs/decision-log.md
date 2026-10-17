@@ -3689,3 +3689,32 @@ the answer; the unfinished hook is asked only when the run would end, at most tw
 an empty line lets the run end), tests/synth/test_generate.py (the hook names the unwritten item numbers; the plan
 session names the skip tool; no items gives no line; the choice rule holds the sentence), and the retry tests now
 script the two asks.
+
+### D398. A gaps pass asks for the cells and policy lines no scenario covers (2026-10-17)
+
+What. generate.from_gaps runs last in generate(), after the recordings, the search and the typed lines. Its items
+come by code from gap_items: one per cell of (situation kind of the plan, table of the world) that no kept scenario
+of the store or this generation hits ("a <kind> situation bound to a <table> row"), then one per policy line no kept
+scenario quotes ("a situation where this policy line decides: <line>"), GAP_PER = 1 scenario each. A policy line is
+a line of the policy with its list marks stripped, leaving out headings, labels ending in a colon and lines under
+LINE_WORDS = 5 words; a quote covers a line when either holds the other. The items go through _batched, so D394's
+retry applies, with the same write tools, refusals and ceiling; the source kind is "gaps", one number per write as
+for typed lines, and Source.gap keeps the gap filled (what, kind, table or line). A cell's situation kind comes from
+the item, a policy line's from the write's new optional kind field; spread reads a gap scenario's kind from it.
+generated.json gains "gaps": {"items", "before", "after"} with the cells hit and the policy lines covered over the
+whole store before and after the pass, and the report prints them. The scenarios verb gains --source, repeatable,
+to run only the sources named; without the recordings no plan session runs and the plan on disk is read.
+
+Why. The recordings source mirrors the recorded mix: the airline store hit 15 of 30 cells and kinds ran change 24,
+booking 6, complaint 5, cancel 2, question 2, refusal 1. A thousand Tasks at that mix are a thousand changes to
+existing bookings. Papers rule 4 (docs/papers.md, the diversity reading): compose from atoms and ask for the atoms not
+yet used.
+
+What it does not do: no new tool; no check that a cell scenario binds the cell's table or that a line scenario quotes
+its line, so cells and lines after the pass are measured, not forced. The kinds of the cells are the plan's kinds;
+a new kind a policy line scenario names widens the cells possible.
+
+Tests: tests/synth/test_generate.py (policy lines leave out headings, labels and short lines; gap items are the unhit
+cells and the unquoted lines and a kept scenario removes its own; the pass writes through the same tools, its
+refusals count and its before and after move; no pass without a model; --source gaps reads the plan on disk; the
+report lines).

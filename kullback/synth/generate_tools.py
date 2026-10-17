@@ -80,7 +80,7 @@ NEAR = "near_repeat"
 # A statement at or above this ROUGE-L against any written one is a near repeat, fixed before any run (D383).
 NEAR_REPEAT = 0.7
 # The sources whose scenarios must be bound to rows or say what the world lacks.
-BOUND_KINDS = ("recordings", "search")
+BOUND_KINDS = ("recordings", "search", "gaps")
 # How many opening texts a situation item shows; the rest are counted.
 OPENINGS_SHOWN = 5
 
@@ -90,6 +90,7 @@ SKIP_TOOL = "skip_opening"
 SESSION_TOOLS = {"plan": ("list_openings", "list_plan", "write_situation", "attach_openings", "skip_opening"),
                  "recordings": ("list_openings", "list_scenarios", *WORLD_TOOLS, "write_scenario"),
                  "ask": ("list_openings", "list_scenarios", *WORLD_TOOLS, "write_scenario"),
+                 "gaps": ("list_openings", "list_scenarios", *WORLD_TOOLS, "write_scenario"),
                  "search": ("list_scenarios", "search", "read_page", *WORLD_TOOLS, "write_scenario"),
                  "fix": ("list_scenarios", *WORLD_TOOLS, "rewrite_scenario")}
 
@@ -133,9 +134,10 @@ class NoArgs(Strict):
 
 class WriteArgs(Strict):
     statement: str
-    source: str = Field(description="The source of this session: recordings, search or ask.")
+    source: str = Field(description="The source of this session: recordings, search, ask or gaps.")
     policy_lines: list[str] = Field(default_factory=list, description="Policy lines it touches, word for word.")
-    openings: list[int] = Field(default_factory=list, description="For typed lines: the one number it rewrites.")
+    openings: list[int] = Field(default_factory=list,
+                                description="For typed lines or gaps: the one number it writes.")
     url: str = Field(default="", description="For a page: the URL you read.")
     span: str = Field(default="", description="For a page: the span it rests on, word for word.")
     situation: str = Field(default="", description="For a situation of the plan: its si_ id.")
@@ -145,6 +147,7 @@ class WriteArgs(Strict):
     requires: list[str] = Field(default_factory=list, description="What the world lacks for it, in words.")
     ask: str = Field(default="", description="What the customer says to open, first person, never the outcome.")
     end: str = Field(default="", description="What a correct agent leaves the world and the customer with.")
+    kind: str = Field(default="", description="For a policy line gap: the situation's kind, one word.")
 
 
 class SituationArgs(Strict):
@@ -284,12 +287,24 @@ def _searched(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[Any,
     return anchor, "", {"source": source, "frequency": 0}
 
 
-CHECKS = {"recordings": _recordings, "ask": _asked, "search": _searched}
+def _gapped(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[Any, str, dict]:
+    """A scenario filling one gap item (D398); a cell's kind comes from the item, a policy line's from the write."""
+    picked = sorted({at for at in args.openings if 0 <= at < len(root.items)})
+    anchor = ("gaps", tuple(picked))
+    if len(picked) != 1:
+        return anchor, NO_OPENING, {}
+    gap = dict(root.items[picked[0]]["gap"])
+    if not gap.get("kind"):
+        gap["kind"] = (args.kind.lower().split() or ["none"])[0]
+    return anchor, "", {"source": R.Source(kind="gaps", gap=gap), "frequency": 0, "picked": picked}
+
+
+CHECKS = {"recordings": _recordings, "ask": _asked, "search": _searched, "gaps": _gapped}
 
 
 def _already_grouped(root: GenerateRoot, args: WriteArgs) -> None:
     """Refuse a write picking an item a scenario of this session already holds; no anchor is counted."""
-    held = sorted({at for at in args.openings if at in root.grouped}) if root.kind == "ask" else []
+    held = sorted({at for at in args.openings if at in root.grouped}) if root.kind in ("ask", "gaps") else []
     if held:
         named = ", ".join(f"{at} (in {root.grouped[at]})" for at in held)
         raise ValueError(f"refused ({OPENING_GROUPED.replace('_', ' ')}): item {named} already belongs to a "

@@ -2,8 +2,8 @@
 
 One record per real-world situation, in general words. A record says where it came from (the
 recordings whose opening asks it groups, a search page and the byte range of the span it rests on,
-or a line a customer typed), the policy lines it touches, each checked by code to be a substring of
-the policy, and how many opening asks it groups. The Examiner's verdicts land on it later.
+a line a customer typed, or a gap in the store it fills), the policy lines it touches, each checked
+by code to be a substring of the policy, and how many opening asks it groups. The Examiner's verdicts land on it later.
 
 The store is one JSON file per record under <workdir>/scenarios/, an index beside them and a marker
 file saying what the folder is. Nothing here touches tasks.json or anything the trusted count reads:
@@ -30,9 +30,9 @@ FORMAT = 1
 MARKER_TEXT = ("A scenario store (D372): one JSON per scenario plus index.json. Scenarios are not Tasks; "
                "nothing here is read by the trusted count.\n")
 
-SourceKind = Literal["recordings", "search", "ask"]
+SourceKind = Literal["recordings", "search", "ask", "gaps"]
 Status = Literal["born", "fixing", "passed", "unsure", "infeasible", "struck"]
-SOURCE_KINDS: tuple[str, ...] = ("recordings", "search", "ask")
+SOURCE_KINDS: tuple[str, ...] = ("recordings", "search", "ask", "gaps")
 STATUSES: tuple[str, ...] = ("born", "fixing", "passed", "unsure", "infeasible", "struck")
 # The statuses a review has settled; the rest are still open to a review session.
 SETTLED: tuple[str, ...] = ("passed", "unsure", "infeasible", "struck")
@@ -42,7 +42,8 @@ MASK_CHARS = 4
 
 class Source(Record):
     """Where one scenario came from. Recordings name Task ids, search a URL and a byte range into the
-    cached page text (the D225 cache and range shape), ask the line as typed."""
+    cached page text (the D225 cache and range shape), ask the line as typed, gaps the gap it fills
+    (D398): a cell, its situation kind and table, or a policy line no scenario turned on."""
 
     kind: SourceKind
     task_ids: list[str] = Field(default_factory=list)
@@ -51,6 +52,7 @@ class Source(Record):
     start: Optional[int] = None
     end: Optional[int] = None
     line: str = ""
+    gap: dict[str, str] = Field(default_factory=dict)
 
 
 class Scenario(Record):

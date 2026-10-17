@@ -37,7 +37,9 @@ def receives_section() -> str:
     return ("You write scenarios for one business. " + RULE + " Each session generates from one source, named in the "
             "opening message: situations of the plan, each with the opening asks of real conversations that show "
             "it and its variants, numbered; the web, searched and read; lines a person typed, numbered, each "
-            "naming a situation in their own words; or scenarios a reviewer sent back with the reason. The policy, "
+            "naming a situation in their own words; gaps in the store, numbered, each a kind of situation "
+            "and a table no scenario is bound to yet or a policy line no scenario turns on; or scenarios a reviewer "
+            "sent back with the reason. The policy, "
             "the tool list and the one-line description of the business sit beside this text. Your root is the "
             'scenario store, "."; read it, never edit it.')
 
@@ -52,7 +54,8 @@ _EXAMPLES = {
                        '"openings": [], "url": "", "span": "", "ask": "<the opening words, first person>", '
                        '"end": "<what a correct agent leaves behind>"}. For a situation give its id and the variant line '
                        "word for word, or empty for the situation itself; for a typed line the one number it "
-                       "rewrites; for a page the URL you read and the span it rests on, word for word. binding "
+                       "rewrites; for a gap the one number it fills and, for a policy line, the kind in one word; "
+                       "for a page the URL you read and the span it rests on, word for word. binding "
                        "names each row you looked up by table and key; requires says in words what the world "
                        "lacks."),
     "rewrite_scenario": ('rewrite_scenario: rewrite one scenario sent back, e.g. {"id": "sc_<id>", "statement": '
@@ -96,6 +99,9 @@ def choice_section() -> str:
             "what goes wrong, read the pages, and write only what a page shows, with the span it rests on, bound "
             "to rows that fit it; never search for an academic paper, a benchmark, a dataset or a code repository. "
             "From typed lines, write each line as a scenario of the situation it names, never the line as typed. "
+            "From gaps, write one specific scenario per gap that could reach this business's support in the real "
+            "world, bound to real rows you looked up, quoting the policy line a line gap names; where the world "
+            "holds no rows for it, write it with requires naming what is missing. "
             "From scenarios sent back, follow the reason: change the quoted words as asked, keep the binding or "
             "change it to rows that fit.")
 
@@ -191,6 +197,10 @@ OPENINGS = {
     "recordings": ("Generate scenarios from this batch of situations of the plan: source recordings, {count} items. "
                    "Write one scenario per situation and one per variant, each bound to rows of the world."),
     "ask": "Generate scenarios from this batch of lines a person typed: source ask, {count} items.",
+    "gaps": ("Generate scenarios for the gaps in the store: source gaps, {count} items. Each item is a gap in the "
+             "store; write one specific scenario for it, bound to real rows (look them up), that could reach this "
+             "business's support in the real world; if the world has no rows for it, write it with requires naming "
+             "what is missing."),
     "search": "Generate scenarios from the web for this business: source search. Search, read the pages, write what they show.",
     "fix": "Rewrite the scenarios a reviewer sent back, each with its reason and what it was written from:\n{items}",
 }

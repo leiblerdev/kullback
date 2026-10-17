@@ -34,6 +34,8 @@ from tests.synth.fixture import (
 )
 
 SEALED_LINE = POLICY.splitlines()[0]
+# The sources before the gaps pass, for tests that script every reply of those sessions.
+FIRST = ("recordings", "search", "ask")
 SPAN = "Customers often ask to move a widget after it has been sealed."
 
 
@@ -283,7 +285,8 @@ def test_a_search_session_gets_its_own_turn_budget_and_a_capped_session_is_count
     # the recordings session and its retry write nothing, so each stops after its two unfinished asks
     quiet = [*_quiet(), *_quiet()]
     model = TestModel([*planned(), *quiet, *endless])
-    body = M.generate(workdir, model=model, engine=web(workdir)[0], refuse=REFUSE, description=DESCRIPTION)
+    body = M.generate(workdir, model=model, engine=web(workdir)[0], refuse=REFUSE, description=DESCRIPTION,
+                      sources=FIRST)
     assert len(model.calls) - 2 - len(quiet) == T.SEARCH_TURNS == T.turns_for(T.GenerateRoot(world=M.world_of(workdir), kind="search"))
     assert body["capped"] == {"search": 1}
     assert json.loads((R.store_dir(workdir) / R.GENERATED).read_text())["capped"] == {"search": 1}
@@ -411,7 +414,7 @@ def test_every_generation_session_but_the_plan_holds_the_world_tools_the_review_
         harness = AgentHarness(model=TestModel([]))
         load_extensions(harness, [T.generate_extension(T.GenerateRoot(world=world, kind=kind, refuse=REFUSE))])
         held[kind] = set(W.NAMES) <= set(harness.registry.names())
-    assert held == {"plan": False, "recordings": True, "ask": True, "search": True, "fix": True}
+    assert held == {"plan": False, "recordings": True, "ask": True, "gaps": True, "search": True, "fix": True}
 
 
 # --- the near repeat gate and the spread (D383) -----------------------------------------------
@@ -621,7 +624,7 @@ def test_a_recordings_retry_lists_only_the_situations_the_first_pass_left_unwrit
 def test_no_second_pass_runs_when_every_item_is_written(tmp_path):
     workdir = make_workdir(tmp_path)
     model = TestModel([*planned(), _bound("m0", MOVE, P.situation_id(PLANNED)), _done()])
-    body = M.generate(workdir, model=model, searching=False)
+    body = M.generate(workdir, model=model, searching=False, sources=FIRST)
     assert body["retried"] == {} and len(model.calls) == 4
 
 
@@ -637,3 +640,102 @@ def test_the_report_prints_the_retried_items_per_source_and_the_scenarios_with_a
     printed = report.lines(workdir)
     assert "retried from recordings: 5 items unwritten, 3 written" in printed
     assert "scenarios with an ask and an end: 1 of 2" in printed
+
+
+# --- the gaps pass (D398) ---------------------------------------------------------------------
+
+
+def _gap_generation(tmp_path, *replies) -> M.Generation:
+    """A store with one change scenario bound to both tables quoting the first policy line, and a plan of
+    two kinds, change and cancel."""
+    generation, _ = _generation(tmp_path)
+    generation.model = TestModel([*replies]) if replies else None
+    generation.plan = P.Plan(situations=[
+        {"id": "si_a", "statement": MOVE, "kind": "change", "variants": [], "openings": []},
+        {"id": "si_b", "statement": BROKEN, "kind": "cancel", "variants": [], "openings": []}])
+    held = R.born("Ada Byron wants her widget moved", R.Source(kind="recordings", task_ids=["task-a1"]),
+                  [SEALED_LINE]).model_copy(update={"situation": "si_a", "binding": dict(BOUND)})
+    R.write_all(generation.world.workdir, [held])
+    return generation
+
+
+def test_policy_lines_leave_out_headings_labels_and_short_lines_and_strip_list_marks():
+    policy = "# Rules\nPayment:\n- user id\n- A sealed widget stays where it is.\n\nA sealed widget stays where it is."
+    assert M.policy_lines(policy) == ["A sealed widget stays where it is."]
+
+
+def test_gap_items_are_the_cells_no_kept_scenario_hits_and_the_policy_lines_none_quotes_and_nothing_else(tmp_path):
+    generation = _gap_generation(tmp_path)
+    lines = POLICY.splitlines()
+    assert [item["gap"] for item in M.gap_items(generation)] == [
+        {"what": "cell", "kind": "cancel", "table": "holder_rows"},
+        {"what": "cell", "kind": "cancel", "table": "widget_rows"},
+        {"what": "policy_line", "line": lines[1]}, {"what": "policy_line", "line": lines[2]}]
+    assert M.gap_items(generation)[1]["text"] == "a cancel situation bound to a widget_rows row"
+    generation.found.append(R.born("Ada Byron wants a broken widget gone", R.Source(kind="ask", line="gone"),
+                                   [lines[1]]).model_copy(update={"situation": "si_b",
+                                                                  "binding": {"widget_rows": "W1002"}}))
+    assert [item["gap"] for item in M.gap_items(generation)] == [
+        {"what": "cell", "kind": "cancel", "table": "holder_rows"}, {"what": "policy_line", "line": lines[2]}]
+
+
+def test_the_gaps_pass_writes_through_the_same_tools_its_refusals_count_and_its_counts_move(tmp_path):
+    lines = POLICY.splitlines()
+    generation = _gap_generation(
+        tmp_path,
+        call("list_openings", {}, "g0"),
+        _write("g1", "a holder wants widget W1002 cancelled", "gaps", openings=[1], binding={"widget_rows": "W1002"}),
+        _write("g2", "a holder wants widget W1002 dropped now", "gaps", openings=[1], binding={"widget_rows": "W1002"}),
+        _write("g3", "Ada Byron wants to cancel her slot holding", "gaps", openings=[0],
+               binding={"holder_rows": "holder_7"}),
+        _write("g4", "Ada Byron asks to cancel her holding twice", "gaps", openings=[0],
+               binding={"holder_rows": "holder_7"}),
+        _write("g5", "Ada Byron asks for a replacement of her sealed widget", "gaps", openings=[2], kind="Exchange",
+               binding={"widget_rows": "W1002"}, policy_lines=[lines[1]]),
+        _done(), _done())
+    M.from_gaps(generation, batch=8)
+    model = generation.model
+    first, second = generation.found
+    assert first.source.gap == {"what": "cell", "kind": "cancel", "table": "holder_rows"}
+    assert second.source.gap == {"what": "policy_line", "line": lines[1], "kind": "exchange"}
+    assert generation.dropped == Counter({M.ID_SHAPE: 1})
+    results = _results(model)
+    assert "a situation where this policy line decides: " + lines[2] in results[0]
+    assert T.OPENING_GROUPED.replace("_", " ") in results[4]
+    assert generation.gaps == {"items": 4, "before": {"hit": 2, "possible": 2, "lines_covered": 1, "lines": 3},
+                               "after": {"hit": 4, "possible": 6, "lines_covered": 2, "lines": 3}}
+    assert generation.retried == {"gaps": {"items": 2, "written": 0}}
+    assert M.source_text(generation.world, first) == "a cancel situation bound to a holder_rows row"
+
+
+def test_no_gaps_pass_runs_without_a_model(tmp_path):
+    generation = _gap_generation(tmp_path)
+    M.from_gaps(generation)
+    assert generation.found == [] and generation.gaps == {}
+
+
+def test_generate_with_only_the_gaps_source_reads_the_plan_on_disk_and_runs_no_other_session(tmp_path):
+    generation = _gap_generation(tmp_path)
+    workdir = generation.world.workdir
+    P.write_plan(workdir, generation.plan)
+    model = TestModel([_write("g0", "Ada Byron wants to cancel her slot holding", "gaps", openings=[0],
+                              binding={"holder_rows": "holder_7"}), _done(), _done(), _done()])
+    body = M.generate(workdir, model=model, sources=["gaps"])
+    assert body["born"] == 1 and body["coverage"]["per_kind"]["gaps"] == 1 and body["notes"] == []
+    assert body["gaps"]["before"]["hit"] == 2 and body["gaps"]["after"]["hit"] == 3
+    assert "Generate scenarios for the gaps in the store" in str(model.calls[0]["messages"])
+
+
+def test_the_report_prints_the_gaps_pass_with_the_cells_and_policy_lines_before_and_after(tmp_path):
+    from kullback.runner.records import write_json
+    from kullback.synth import report
+
+    workdir = make_workdir(tmp_path)
+    gaps = {"items": 4, "before": {"hit": 2, "possible": 2, "lines_covered": 1, "lines": 3},
+            "after": {"hit": 4, "possible": 6, "lines_covered": 2, "lines": 3}}
+    write_json(R.store_dir(workdir) / R.GENERATED, {"gaps": gaps})
+    printed = report.lines(workdir)
+    assert "gaps pass: 4 items" in printed
+    assert "cells hit before the gaps pass: 2 of 2, after: 4 of 6" in printed
+    assert "policy lines covered before the gaps pass: 1 of 3, after: 2 of 3" in printed
+    assert "| gaps | 0 | 0 | 0 | 0 | 0 | 0 |" in printed
