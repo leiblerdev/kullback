@@ -407,7 +407,7 @@ def test_a_dry_run_publish_lays_harbor_beside_the_package_and_the_package_still_
     landed = tmp_path / "local" / "someorg" / "widgets"
     assert (landed / HARBOR_DIR / "widgets-widget_task" / "task.toml").is_file()
     assert 'name = "someorg/widgets-widget_task"' in (landed / HARBOR_DIR / "widgets-widget_task" / "task.toml").read_text()
-    assert "## Run it with Harbor" in (landed / "README.md").read_text()
+    assert "`harbor/` holds 1 Tasks in the [Harbor]" in (landed / "README.md").read_text()
     assert manifest["harbor"]["counts"]["exported"] == 1
     assert read_json(landed / "manifest.json")["harbor"] == manifest["harbor"]
     readme = (landed / "README.md").read_text()
@@ -539,7 +539,7 @@ def test_a_rater_words_that_repeat_a_recorded_turn_refuse_the_export_as_a_label_
     assert f"Task {TASK[-4:]} label 1" in str(refused.value)
 
 
-def test_the_card_names_the_task_set_and_counts_tasks_by_tier_and_label_under_the_named_rubric(tmp_path, monkeypatch):
+def test_the_manifest_keeps_the_task_set_and_the_tier_and_label_counts_the_card_leaves_out(tmp_path, monkeypatch):
     from kullback.hub import publish
 
     workdir = _workdir(tmp_path / "work", trusted=False)
@@ -551,10 +551,9 @@ def test_the_card_names_the_task_set_and_counts_tasks_by_tier_and_label_under_th
                                   form="harbor", harbor_options={"tasks": "verified", "labels": [labels],
                                                                  "labels_rubric": "rubric r1"})
     readme = (tmp_path / "local" / "someorg" / "widgets" / "README.md").read_text()
-    assert "Task set: `verified`, every Task with a Verifier, trusted or not; 1 exported" in readme
-    assert "| Tier | partial | Tasks |" in readme and "| open_ruling | 1 | 1 |" in readme
-    assert "one blind model rater's judgement" in readme and "rubric r1" in readme
+    assert "| Tier |" not in readme and "rubric r1" not in readme and "Task set" not in readme
     assert manifest["harbor"]["tasks_chosen"] == "verified" and manifest["harbor"]["labels"]["rows"] == 1
+    assert manifest["harbor"]["counts"]["by_tier_and_label"] == {"open_ruling": {"partial": 1}}
 
 
 ANSWER = "the widget now carries the striped label and every other widget is exactly as it was before"
@@ -583,15 +582,18 @@ def test_a_task_whose_oracle_and_another_part_leak_still_refuses_the_export():
     assert [row["task"] for row in harbor.solution_only(scan, scanned)] == ["a0002"]
 
 
-def test_the_card_carries_the_publishers_announcement_and_names_tasks_left_out_for_a_leaking_oracle():
-    from kullback.hub.card import card_markdown, harbor_section
+def test_the_card_runs_harbor_under_how_to_use_it_without_the_tier_table_or_left_out_task_ids():
+    from kullback.hub.card import card_markdown
 
-    card = card_markdown({"name": "widgets"}, "someorg/widgets", announcement="Verifiers now come from the ask.\n")
-    assert "## News\n\nVerifiers now come from the ask.\n" in card
-    assert "## News" not in card_markdown({"name": "widgets"}, "someorg/widgets")
-    section = harbor_section({"counts": {"exported": 0, "skipped": {"solution leaks": 1}},
-                              "left_out": [{"task": "0001", "reason": "solution leaks"}]})
-    assert "Left out because their oracle would repeat a recorded string: 0001" in section
+    harbor_manifest = {"counts": {"exported": 2, "skipped": {"solution leaks": 1},
+                                  "by_tier_and_label": {"trusted": {"right": 2}}},
+                       "left_out": [{"task": "0001", "reason": "solution leaks"}],
+                       "tasks": [{"path": "widgets-one"}], "labels": {"rubric": "r"}}
+    card = card_markdown({"name": "widgets"}, "someorg/widgets", harbor=harbor_manifest)
+    usage, why = card.index("## How to use it"), card.index("## Why it matters")
+    assert usage < card.index("`harbor/` holds 2 Tasks") < card.index("harbor run -p harbor/widgets-one -a oracle") < why
+    assert "0001" not in card and "| Tier |" not in card and "rubric" not in card
+    assert "harbor/" not in card_markdown({"name": "widgets"}, "someorg/widgets")
 
 
 def test_the_organisation_card_carries_news_above_the_environments_only_when_given():
@@ -659,8 +661,8 @@ def test_the_leak_scan_has_no_oracle_part_to_scan_for_a_task_without_one(tmp_pat
 def test_the_card_counts_tasks_without_a_solution_and_says_the_oracle_agent_cannot_run_on_them():
     from kullback.hub.card import harbor_section
 
-    section = harbor_section({"counts": {"exported": 3, "no_oracle": 2}})
-    assert "2 Tasks ship without `solution/`" in section and "oracle agent cannot run on them" in section
+    section = "\n".join(harbor_section({"counts": {"exported": 3, "no_oracle": 2}}))
+    assert "2 of them ship without `solution/`, so Harbor's oracle agent has nothing to run on them." in section
 
 
 def _staged(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:

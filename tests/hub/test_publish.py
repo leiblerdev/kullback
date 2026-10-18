@@ -84,7 +84,7 @@ def test_a_build_with_no_closed_round_publishes_the_workdir_status_and_a_date_ta
     assert manifest["tag"] == hosted.tag == "build-20260923"
     assert manifest["counts_source"] == package_mod.NO_ROUND_SOURCE
     card = hub.repos["leibler/nursery"]["commits"][hosted.commit]["README.md"].decode()
-    assert "counts from the workdir status, no round closed" in card
+    assert "Built: build-20260923, git " in card
     assert "round-unknown" not in card and "round-unknown" not in hub.messages[0]
 
 
@@ -248,15 +248,14 @@ def test_a_release_is_refused_below_the_fidelity_bar_saying_the_number_and_passe
     assert manifest["preview"] is False
 
 
-def test_preview_passes_below_the_bar_and_the_card_says_it_is_a_preview_above_its_numbers(nursery, tmp_path):
+def test_preview_passes_below_the_bar_and_the_card_says_it_is_a_preview_beside_its_fidelity(nursery, tmp_path):
     out = tmp_path / "package"
     manifest = publish_mod.stage(nursery, out, "leibler/nursery", preview=True,
                                  corpus="nursery traces", corpus_license="MIT")
     assert manifest["preview"] is True
     assert manifest["status"] == "preview"
     body = (out / package_mod.CARD_NAME).read_text(encoding="utf-8")
-    status, table = body.index("Preview: below the 90% replay fidelity"), body.index("| Fidelity over Tasks | 66.7%")
-    assert status < table
+    assert "fidelity over Tasks is 66.7% (2 of 3): a preview, below the 90% replay fidelity a release needs" in body
 
 
 def test_an_environment_whose_replays_were_never_scored_cannot_be_a_release():
@@ -280,7 +279,7 @@ def test_the_card_front_matter_parses_and_holds_the_licence_and_the_tags(nursery
     assert "nursery" in fields["tags"]
 
 
-def test_a_card_states_the_corpus_licence_the_numbers_and_the_untrusted_count(nursery, tmp_path):
+def test_a_card_states_the_corpus_licence_the_task_count_and_the_content_hash(nursery, tmp_path):
     out = tmp_path / "package"
     manifest = publish_mod.stage(nursery, out, "leibler/nursery", preview=True,
                                  corpus="nursery traces", corpus_license="MIT")
@@ -288,7 +287,7 @@ def test_a_card_states_the_corpus_licence_the_numbers_and_the_untrusted_count(nu
     assert "nursery traces" in body
     assert "MIT" in body
     assert str(manifest["content_hash"])[:16] in body
-    assert "| Not trusted | 2 of 3" in body
+    assert "It has 3 Tasks." in body
     assert "uv run kullback fetch leibler/nursery" in body
 
 
@@ -383,12 +382,12 @@ def test_the_environment_name_comes_from_the_flag_and_not_from_the_environment_r
 # --- the organisation card ------------------------------------------------------------
 
 
-def test_the_organisation_card_has_a_row_only_for_each_environment_passed_with_its_numbers_and_status(
+def test_the_organisation_card_has_a_row_only_for_each_environment_with_its_tasks_harbor_tasks_tag_and_status(
         nursery, tmp_path):
     manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
     body = card_mod.organisation_card([{"name": "nursery", "repo_id": "leibler/nursery", "manifest": manifest}])
-    row = (f"| [leibler/nursery](https://huggingface.co/datasets/leibler/nursery) | 66.7% (2 of 3) | not measured | "
-           f"{manifest['verifier_derived']} | 1 of 3 | preview |")
+    row = (f"| [leibler/nursery](https://huggingface.co/datasets/leibler/nursery) | 3 | none | {manifest['tag']} | "
+           "preview |")
     assert row in body
     assert [line for line in body.splitlines() if line.startswith("| [")] == [row]
     assert "kullback fetch leibler/<environment>" in body
@@ -465,10 +464,9 @@ def test_the_package_carries_one_flat_row_per_task_for_a_dataset_viewer_and_the_
 # --- what the domain reading attests, on the card (D225) ------------------------------
 
 
-def test_the_card_says_how_many_domain_archetypes_were_read_and_how_many_no_tool_realises_if_any_were(
+def test_the_manifest_says_how_many_domain_archetypes_were_read_and_how_many_no_tool_realises_if_any_were(
         nursery, tmp_path):
-    """Someone deciding whether to use a package wants the second number: it says what this
-    Environment cannot be asked to do, and nothing else on the card says it."""
+    """The second number says what this Environment cannot be asked to do; the manifest carries it."""
     from kullback import domain as domain_mod
     from kullback.runner.records import write_json as write
 
@@ -476,7 +474,6 @@ def test_the_card_says_how_many_domain_archetypes_were_read_and_how_many_no_tool
     # found are not the same reading.
     unread = package_mod.export(nursery, tmp_path / "unread", name="nursery", preview=True)
     assert unread["domain"] == {}
-    assert "Domain archetypes" not in card_mod.card_markdown(unread, "leibler/nursery")
 
     store = nursery / domain_mod.DIR
     write(store / domain_mod.ARCHETYPES, {"format": domain_mod.FORMAT, "counts": {},
@@ -486,15 +483,12 @@ def test_the_card_says_how_many_domain_archetypes_were_read_and_how_many_no_tool
     manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
     assert manifest["domain"] == {"archetypes_extracted": 2, "archetypes_mapped": 1,
                                   "archetype_gaps": 1}
-    body = card_mod.card_markdown(manifest, "leibler/nursery")
-    assert "| Domain archetypes read | 2 (1 a tool of this Environment realises) |" in body
-    assert "| Domain archetypes with no tool | 1 |" in body
 
 
 # --- call fidelity, table cells and the words (PR #121) --------------------------------
 
 
-def test_call_fidelity_counts_same_cosmetic_and_both_refused_as_agreeing_and_both_cards_show_it(nursery, tmp_path):
+def test_call_fidelity_counts_same_cosmetic_and_both_refused_as_agreeing(nursery, tmp_path):
     replays = read_json(nursery / "replays.json")
     replays["task_one"]["trace-task_one"]["checks"] = [
         {"verdict": "same"}, {"verdict": "cosmetic"}, {"verdict": "both_refused"}, {"verdict": "differs"}]
@@ -504,9 +498,6 @@ def test_call_fidelity_counts_same_cosmetic_and_both_refused_as_agreeing_and_bot
     assert "call_fidelity" not in manifest
     fidelity = manifest["replay_fidelity"]
     assert (fidelity["calls"], fidelity["calls_total"], fidelity["calls_rate"]) == (3, 5, 0.6)
-    org = card_mod.organisation_card([{"name": "nursery", "repo_id": "leibler/nursery", "manifest": manifest}])
-    assert "| 66.7% (2 of 3) | 60.00% of 5 |" in org
-    assert "| Call fidelity | 60.00% of 5 |" in card_mod.card_markdown(manifest, "leibler/nursery")
 
 
 def test_a_recorded_call_the_replay_never_made_lowers_call_fidelity(nursery, tmp_path):
@@ -535,7 +526,6 @@ def test_a_replay_record_without_counts_is_counted_from_its_checks(nursery, tmp_
     manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
     fidelity = manifest["replay_fidelity"]
     assert (fidelity["calls"], fidelity["calls_total"], fidelity["calls_rate"]) == (1, 2, 0.5)
-    assert "| Call fidelity | 50.00% of 2 |" in card_mod.card_markdown(manifest, "leibler/nursery")
 
 
 def test_call_fidelity_counts_the_calls_a_replay_report_writes_to_replays_json(nursery, tmp_path):
@@ -553,27 +543,22 @@ def test_call_fidelity_counts_the_calls_a_replay_report_writes_to_replays_json(n
     assert (fidelity["calls"], fidelity["calls_total"], fidelity["calls_rate"]) == (2, 4, 0.5)
 
 
-def test_a_pipe_or_a_line_break_in_corpus_text_stays_inside_its_table_cell(nursery, tmp_path):
+def test_a_line_break_in_corpus_text_stays_on_its_card_line_and_a_pipe_inside_its_organisation_cell(
+        nursery, tmp_path):
     manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True,
                                   corpus="nursery | traces\nsecond line", corpus_license="MIT")
-    corpus_row = next(line for line in card_mod.card_markdown(manifest, "leibler/nursery").splitlines()
-                      if line.startswith("| Corpus |"))
-    assert corpus_row == "| Corpus | nursery \\| traces second line (MIT) |"
+    assert "Source corpus: nursery | traces second line (MIT)." in card_mod.card_markdown(manifest, "leibler/nursery")
     org = card_mod.organisation_card([{"name": "n", "repo_id": "leibler/a|b", "manifest": manifest}])
     row = next(line for line in org.splitlines() if line.startswith("| ["))
-    assert row.replace("\\|", "").count("|") == 7
+    assert row.replace("\\|", "").count("|") == 6
 
 
-def test_a_replay_answered_by_the_stand_in_is_not_confirmed_in_the_card_and_the_readme():
-    confirmed = next(word for word in card_mod.WORDS if word.startswith("Confirmed:"))
-    assert "none was answered by the stand-in" in confirmed
-    assert f"- {confirmed}" in (Path(__file__).parents[2] / "README.md").read_text(encoding="utf-8")
-
-
-def test_an_open_task_is_neither_trusted_nor_refused_in_the_card_and_the_readme():
-    assert "Open: neither trusted nor refused." in card_mod.WORDS
-    assert "- Open: neither trusted nor refused." in (Path(__file__).parents[2] / "README.md").read_text(
-        encoding="utf-8")
+def test_the_organisation_card_defines_at_most_six_plain_terms_and_no_gate_atom_or_fidelity_names():
+    body = card_mod.organisation_card([])
+    terms = body.split("## Terms\n\n", 1)[1].split("\n\n", 1)[0].splitlines()
+    assert terms == [f"- {term}" for term in card_mod.TERMS] and len(terms) <= 6
+    for name in ("Atom", "Gates", "suite", "loosening", "Call fidelity", "Fidelity over", "Confirmed:"):
+        assert name not in body
 
 
 def test_the_card_says_a_fetched_package_cannot_finish_a_task_that_needs_a_fact_the_user_gives(nursery, tmp_path):
@@ -581,7 +566,6 @@ def test_the_card_says_a_fetched_package_cannot_finish_a_task_that_needs_a_fact_
     note = next(line for line in card_mod.card_markdown(manifest, "leibler/nursery").splitlines()
                 if "simulated user does not ship" in line)
     assert "cannot finish a Task that needs a fact the user gives mid conversation" in note
-    assert "still carries a Verifier" in note
 
 
 # --- a release replaces the repository ---------------------------------------------
@@ -615,31 +599,45 @@ def test_a_dry_run_upload_leaves_no_file_an_earlier_upload_had_and_this_one_lack
     assert not (target / "gone.json").exists()
 
 
-def _not_trusted_row(card: str) -> tuple[int, list[tuple[int, str]]]:
-    """The Not trusted row's count and its (Tasks, reason) parts, read off a rendered card."""
-    cell = next(line for line in card.splitlines() if line.startswith("| Not trusted |")).split("|")[2].strip()
-    head, *parts = cell.split("; ")
-    return int(head.split(" of ")[0]), [(int(part.split(" ", 1)[0]), part.split(" ", 1)[1]) for part in parts]
-
-
-def test_the_not_trusted_reasons_name_every_reason_and_sum_to_the_count():
+def test_the_manifest_names_every_untrusted_reason_and_the_reasons_sum_to_the_count():
     suite = package_mod.STOPPED_AT["verifier_derived"]
     stopped = [reason for stage, reason in package_mod.STOPPED_AT.items() if stage != "trusted"]
     stopped += [f"{suite}: check_a", f"{suite}: check_a, check_b", f"{suite}: check_b, check_c, check_d"]
     rows = [{"trusted": True}] * 2 + [{"trusted": False, "stopped_because": reason}
                                       for times, reason in enumerate(stopped, start=1) for _ in range(times)]
     rows.append({"trusted": False, "stopped_because": None})
-    manifest = {"tasks_total": len(rows), "untrusted": package_mod.untrusted_reasons(rows)}
-    count, parts = _not_trusted_row(card_mod.card_markdown(manifest, "someorg/widgets"))
-    assert count == len(rows) - 2 == sum(tasks for tasks, _ in parts)
-    assert {reason for _, reason in parts} == set(stopped) | {"not trusted"}
+    untrusted = package_mod.untrusted_reasons(rows)
+    assert untrusted["count"] == len(rows) - 2 == sum(entry["tasks"] for entry in untrusted["reasons"])
+    assert {entry["reason"] for entry in untrusted["reasons"]} == set(stopped) | {"not trusted"}
 
 
-def test_a_manifest_listing_only_some_reasons_gets_the_rest_as_one_remainder_that_sums():
-    manifest = {"tasks_total": 10, "untrusted": {"count": 8, "reasons": [{"reason": "a", "tasks": 5}]}}
-    count, parts = _not_trusted_row(card_mod.card_markdown(manifest, "someorg/widgets"))
-    assert count == 8 == sum(tasks for tasks, _ in parts)
-    assert parts[-1] == (3, "for reasons the manifest does not list")
+UNTRUSTED_REASON = "a reason only the manifest holds"
+
+
+def _card(**manifest) -> str:
+    return card_mod.card_markdown(dict({"name": "widgets", "tasks_total": 4, "trusted": 1,
+                                        "replay_fidelity": {"tasks": 4, "tasks_total": 4, "tasks_rate": 1.0},
+                                        "untrusted": {"count": 3, "reasons": [{"reason": UNTRUSTED_REASON, "tasks": 3}]}},
+                                       **manifest), "someorg/widgets")
+
+
+def test_the_card_reads_what_it_is_what_we_did_how_to_use_it_and_why_it_matters_in_that_order():
+    body = _card()
+    headings = [line for line in body.splitlines() if line.startswith("#")]
+    assert headings == ["# widgets", "## What we did", "## How to use it", "## Why it matters"]
+    assert body.index("It has 4 Tasks.") < body.index("## What we did")
+    assert body.index("## Why it matters") < body.index("Built: ")
+
+
+def test_the_card_says_once_that_some_tasks_can_be_wrong():
+    assert _card().count(card_mod.DISCLAIMER) == 1
+    assert card_mod.DISCLAIMER.startswith("Some Tasks can be wrong.")
+
+
+def test_the_card_leaves_the_trusted_count_the_reasons_the_audit_numbers_and_any_news_to_the_manifest():
+    body = _card(leak_scan={"leaks": 0}, refused=0, reference_confirmed=4, verifier_derived=4)
+    for gone in ("1 of them", "Trusted", "Not trusted", UNTRUSTED_REASON, "| ", "Leak scan", "Refused", "Reference confirmed", "## News"):
+        assert gone not in body
 
 
 def test_the_built_line_names_the_commit_that_laid_the_harbor_tasks_where_it_differs_from_the_package():
@@ -647,4 +645,4 @@ def test_the_built_line_names_the_commit_that_laid_the_harbor_tasks_where_it_dif
     built = card_mod.card_markdown({"git_sha": package_sha, "harbor": {"git_sha": laid_sha}}, "someorg/widgets")
     assert f"package built at git {'a' * 16}, Harbor Tasks laid at git {'b' * 16}" in built
     same = card_mod.card_markdown({"git_sha": package_sha, "harbor": {"git_sha": package_sha}}, "someorg/widgets")
-    assert f"git {'a' * 16} |" in same and "laid at" not in same
+    assert f"git {'a' * 16}," in same and "laid at" not in same

@@ -1,31 +1,18 @@
 # Environment card fields
 
-`kullback/hub/card.py` renders every card from the package's `manifest.json` alone, and this is what each field means and where it is read from.
+`kullback/hub/card.py` renders every card from the package's `manifest.json` alone, in five parts: what this is, what we did (with a disclaimer that some Tasks can be wrong), how to use it, why it matters, and a Built line. These are the fields the card reads; every other number, the trusted count among them, stays in `manifest.json` and `tasks_index.json`.
 
 | Field | Meaning | Read from |
 | --- | --- | --- |
 | name | The Environment's name, which is also its domain tag | `--name`, or the last segment of `--repo` |
-| preview | Whether it is below the fidelity bar | `--preview` on the publish |
-| round | The build round the numbers were measured in | the last record in `rounds.json` |
+| source | The corpus, its licence and its URL | `--corpus`, `--corpus-license`, `--corpus-url` |
 | tasks_total | Tasks on the frozen list | `tasks_frozen.json`, or the newest round snapshot |
 | replay_fidelity.tasks_rate | Share of Tasks with at least one confirmed replay | `replays.json` |
-| replay_fidelity.runs_rate | Share of replayed Runs that were confirmed | `replays.json` |
-| replay_fidelity.calls_rate | Share of recorded calls that agree, over `calls_total` | `replays.json` |
+| preview | Whether it is below the fidelity bar | `--preview` on the publish |
 | tag | The tag this publish carries | `round-<n>`, else `build-<YYYYMMDD>` of the newest session write |
-| counts_source | Where the counts came from | the last round record, else the workdir status |
-| reference_confirmed | Tasks with at least one confirmed replay | `replays.json` |
-| verifier_derived | Tasks with a Verifier on disk | `verifiers/` |
-| trusted | Tasks whose Verifier passed the whole suite | the last round's trusted ruling, else the Builder's status rule |
-| refused | Tasks the harness ruled nobody finished | the last round's refuse ruling |
-| funnel | How many Tasks stopped at each rung | the per-Task index the export writes |
-| buckets | Tasks and trusted Tasks per difficulty bucket | `difficulty.json` (D209), else computed |
-| untrusted | Untrusted count and every fixed reason, summing to it | the per-Task index |
-| runner_version | Hash of the Runner, gates and Spec code the numbers were measured under | `runner_version.json` |
-| kullback_version | Harness version | the installed distribution |
 | git_sha | Commit the export ran from; the card also names the Harbor form's where it differs | `git rev-parse HEAD` |
-| leak_scan | What the export checked against the source corpus, in counts | the export's own scan |
-| content_hash | One hash over every file of the package | computed at export |
-| files | sha256 per file, which is what a fetch verifies | computed at export |
+| created_at | When the package was exported | the export's clock, UTC |
+| content_hash | One hash over every file of the package, which a fetch checks | computed at export |
 
 ## Front matter
 
@@ -33,5 +20,9 @@
 
 ## Preview and release
 
-A release needs fidelity over Tasks of at least 90%; below that only `publish --preview` is allowed, and the card says so above its table.
+A release needs fidelity over Tasks of at least 90%; below that only `publish --preview` is allowed, and the card says so where it gives the fidelity.
+
+## Harbor
+
+Where the package carries a Harbor form, the card reads `harbor/manifest.json` for the exported count, the Tasks without an oracle and an example Task path.
 
