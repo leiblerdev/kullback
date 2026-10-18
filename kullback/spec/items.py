@@ -181,6 +181,9 @@ def _on_side(kept: dict, facts: list) -> bool:
 # The recording a fact of a scenario's end names (D414): the end is the truth a born Task was written
 # with, read off the workdir by spec/writer.py, never a user turn.
 END_SOURCE = "scenario_end"
+# The recording a fact of a born Task's bound records names (D416): a value of the person's own rows the user
+# gives when asked, laid as a fact the user says; never an end fact.
+RECORDS_SOURCE = "bound_records"
 
 
 def is_end_fact(fact: Any) -> bool:
@@ -1307,5 +1310,5 @@ def counts_of(items: list[dict]) -> dict:
 
 __all__ = ["CONFIRM_TURN", "DEFAULT_GATE", "EVENT_KINDS", "ITEM_KINDS", "Reach", "SANITY", "SANITY_ID", "STATE_KINDS",
            "UNREACHABLE", "World", "effect_reach", "reach_of_inputs", "recorded_reach", "atom_of", "because_of", "contradictions", "counts_of", "effect_rules", "end_states_of",
-           "expected_tools", "END_SOURCE", "PATH_WEIGHED", "is_end_fact", "names_tool", "said_shape",
-           "norm", "sanity_atom", "sanity_item"]
+           "expected_tools", "END_SOURCE", "RECORDS_SOURCE", "PATH_WEIGHED", "is_end_fact", "names_tool",
+           "said_shape", "norm", "sanity_atom", "sanity_item"]

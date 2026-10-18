@@ -335,7 +335,9 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
             raise FileNotFoundError(f"no Spec for Task {task_id}: mine its Intent first")
         intent = spec.intent
     facts = mark_side(mark_echo(intent.facts, recordings_of(workdir, task_id, traces)))
-    intent = with_end(intent.model_copy(update={"facts": facts}), scenario_end(workdir, task_id))
+    end = scenario_end(workdir, task_id)
+    intent = with_end(with_records(intent.model_copy(update={"facts": facts}), record_facts(workdir, task_id) if end
+                                   else []), end)
     policy = env.system_prompt(env.task(task_id)) or ""
     overlay, rows = env.overlay(task_id)
     tools = writer_tools.tool_rows(env.sigs)
@@ -383,6 +385,34 @@ def with_end(intent: SpecIntent, end: str) -> SpecIntent:
     """The Intent with the end facts it lacks appended; unchanged with no end or with them already there."""
     held = {fact.id for fact in intent.facts}
     added = [fact for fact in end_facts(end) if fact.id not in held]
+    if not added:
+        return intent
+    facts = list(intent.facts) + added
+    return intent.model_copy(update={"facts": facts, "text": intent_text(facts)})
+
+
+def record_facts(workdir: Any, task_id: str) -> list[IntentFact]:
+    """The bound records a born Task's user gives when asked (synth/tasks.py, D416), as facts the user says: the
+    facts of its recordings' user rules that no user turn holds (no span) and that are given on request, ids
+    rec1, rec2, ..., their source items.RECORDS_SOURCE. They are details, not asks, and never end facts."""
+    root = Path(workdir)
+    task = read_json(root / "tasks" / f"{task_id}.json", None) if "/" not in str(task_id) else None
+    said: list[str] = []
+    for run_id in (task.get("run_ids") or ()) if isinstance(task, dict) else ():
+        rules = read_json(root / "user_rules" / f"{run_id}.json", None) if "/" not in str(run_id) else None
+        if not isinstance(rules, dict):
+            continue
+        asked = {rule.get("field") for rule in rules.get("disclosure") or () if rule.get("on_request")}
+        said += [f"{fact['field']}: {fact.get('value')}" for fact in rules.get("facts") or ()
+                 if fact.get("span") is None and fact.get("field") in asked]
+    return [IntentFact(id=f"rec{n}", text=text, source=FactSource(recording=I.RECORDS_SOURCE, turn=0),
+                       stance="volunteered", kind="detail", condition="asked") for n, text in enumerate(dict.fromkeys(said), 1)]
+
+
+def with_records(intent: SpecIntent, records: list[IntentFact]) -> SpecIntent:
+    """The Intent with the record facts it lacks appended (D416); unchanged with none to add."""
+    held = {fact.id for fact in intent.facts}
+    added = [fact for fact in records if fact.id not in held]
     if not added:
         return intent
     facts = list(intent.facts) + added

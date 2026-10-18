@@ -218,3 +218,66 @@ def test_the_born_recordings_user_rules_carry_the_ask_as_goal_and_the_end_as_a_f
     rules = json.loads((workdir / "user_rules" / f"{trace_id_of(record.id)}.json").read_text())
     facts = {fact["field"]: fact["value"] for fact in rules["facts"]}
     assert facts[END_FIELD] == END and facts["goal"] == record.ask
+
+
+ROWS = {"holder_rows": {"holder_7": {"holder_id": "holder_7", "contact_mail": "ada@example.org", "post_code": "40213",
+                                     "tags": ["gold"], "home": {"post_code": "40213"}, "rank": 3}},
+        "widget_rows": {"W1001": {"widget_id": "W1001", "holder_id": "holder_7", "slot_code": "two"}}}
+SCHEMA = {"columns": [{"table": "holder_rows", "name": name} for name in ("rank", "post_code", "holder_id", "home", "tags",
+                                                                          "contact_mail")]}
+HELD = {"holder_rows": "holder_7", "widget_rows": "W1001"}
+
+
+def _records_workdir(root, given=("post_code", "contact_mail", "holder_id", "tags", "home")):
+    """A workdir whose world holds the bound rows and one recorded user who gave the named fields."""
+    workdir = _workdir(root)
+    write_json(workdir / "db.json", ROWS)
+    write_json(workdir / "schema.json", SCHEMA)
+    ptr = RawPtr(file_hash="h", section="s")
+    write_json(workdir / "traces" / "rec-a.json", as_dict(Trace(trace_id="rec-a", raw_hash="h", ingest_version="1",
+                                                                source="fixture", turns=[], raw_ptr=ptr)))
+    write_json(workdir / "user_rules" / "rec-a.json", {"facts": [{"field": field, "value": "x"} for field in given]})
+    return workdir
+
+
+def _born_rules(tmp_path, ask, given=("post_code", "contact_mail", "holder_id", "tags", "home")):
+    record = _scenario("A holder wants a widget moved to slot seven.", binding=HELD, ask=ask)
+    write_all(tmp_path / "store", [record])
+    workdir = _records_workdir(tmp_path / "env", given)
+    born_tasks(workdir, tmp_path / "store")
+    return json.loads((workdir / "user_rules" / f"{trace_id_of(record.id)}.json").read_text()), record
+
+
+def test_a_born_recordings_user_rules_hold_every_bound_scalar_cell_on_request_in_schema_field_order(tmp_path):
+    rules, _ = _born_rules(tmp_path, "Move my widget to slot seven please.")
+    bound = [(fact["field"], fact["value"]) for fact in rules["facts"] if fact["field"] not in ("goal", END_FIELD)]
+    assert bound == [("post_code", "40213"), ("holder_id", "holder_7"), ("contact_mail", "ada@example.org")]
+    assert all(fact.get("span") is None and fact["context"] == END for fact in rules["facts"][1:])
+    assert {(rule["field"], rule["on_request"]) for rule in rules["disclosure"]} >= {
+        ("post_code", True), ("holder_id", True), ("contact_mail", True)}
+
+
+def test_a_cell_the_ask_already_states_appears_once_with_the_asks_span_volunteered(tmp_path):
+    rules, record = _born_rules(tmp_path, "Move my widget to slot seven, my email is ada@example.org.")
+    said = [fact for fact in rules["facts"] if fact["value"] == "ada@example.org"]
+    assert len(said) == 1 and said[0]["span"]["file_hash"] == record.id
+    assert not any(rule["field"] == said[0]["field"] and rule["on_request"] for rule in rules["disclosure"])
+
+
+def test_a_nested_cell_a_list_or_an_object_is_not_a_fact(tmp_path):
+    rules, _ = _born_rules(tmp_path, "Move my widget to slot seven please.")
+    fields = [fact["field"] for fact in rules["facts"]]
+    assert "tags" not in fields and "home" not in fields
+
+
+def test_the_end_fact_stays_last_and_keeps_its_field(tmp_path):
+    rules, _ = _born_rules(tmp_path, "Move my widget to slot seven please.")
+    assert (rules["facts"][-1]["field"], rules["facts"][-1]["value"]) == (END_FIELD, END)
+
+
+def test_a_column_no_recorded_user_gave_is_not_a_fact_and_a_world_without_recorded_facts_keeps_the_keys(tmp_path):
+    rules, _ = _born_rules(tmp_path / "some", "Move my widget to slot seven please.", given=("contact_mail",))
+    assert [fact["field"] for fact in rules["facts"][1:-1]] == ["contact_mail"]
+    keys, _ = _born_rules(tmp_path / "none", "Move my widget to slot seven please.", given=())
+    assert [(fact["field"], fact["value"]) for fact in keys["facts"][1:-1]] == [("holder_id", "holder_7"),
+                                                                               ("widget_id", "W1001")]

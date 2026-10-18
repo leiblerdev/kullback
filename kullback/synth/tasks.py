@@ -14,7 +14,9 @@ carries the agent prompt most recordings of the workdir carry (D395), since the 
 the policy off a Task's recording and a work copy ships no policy file. The scenario's end goes beside it
 (D414): born/<task>.json holds it for the Spec writer, which gates what the end says, and the recording's
 user rules (user_rules/<run id>.json) carry the ask as the goal and the end as a fact, so a user asked to
-confirm the end's change can answer. Both are written in the workdir, so a work copy carries them.
+confirm the end's change can answer. Both are written in the workdir, so a work copy carries them. The user
+rules also carry the scalar cells of the rows the scenario binds, on request (D416): the person's own records,
+kept where the column is a field the recorded users of the workdir give, else only the bound keys.
 """
 
 from __future__ import annotations
@@ -24,11 +26,23 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Optional
 
-from kullback.runner.records import RawPtr, Task, TaskOverlay, Trace, Turn, UserFact, as_dict, read_json, write_json
+from kullback.runner.records import (
+    DisclosureRule,
+    RawPtr,
+    Task,
+    TaskOverlay,
+    Trace,
+    Turn,
+    UserFact,
+    as_dict,
+    read_json,
+    write_json,
+)
 from kullback.runner.world.loading import OVERLAY_DIR
 from kullback.spec import intent_tools
 from kullback.spec.writer import born_path
 from kullback.synth.records import FORMAT, Scenario, load_scenarios
+from kullback.synth.rule import world_of
 from kullback.user.rules import derive_user_rules
 
 SECTION = "scenario"
@@ -127,20 +141,67 @@ def _write_end(workdir: Path, task_id: str, scenario: Scenario) -> bool:
     return True
 
 
-def user_rules_of(trace: Trace, end: str) -> dict:
-    """The user rules of a born recording: what code reads off its one user turn, and the end as a fact."""
+def recorded_fields(workdir: Any) -> set[str]:
+    """The fact fields the recorded users of the workdir give: over the user rules of every recording that is
+    not born of a scenario."""
+    root = Path(workdir)
+    fields: set[str] = set()
+    for path in sorted((root / RULES_DIR).glob("*.json")):
+        trace = read_json(root / "traces" / path.name, None)
+        rules = read_json(path, None)
+        if isinstance(trace, dict) and trace.get("source") != SOURCE and isinstance(rules, dict):
+            fields.update(str(fact.get("field")) for fact in rules.get("facts") or () if isinstance(fact, dict))
+    return fields
+
+
+def _schema_order(workdir: Path, table: str, row: dict) -> list[str]:
+    """The row's columns in the order the schema names them, those it does not name after in row order."""
+    schema = read_json(workdir / "schema.json", None)
+    named = [str(column.get("name")) for column in (schema.get("columns") or () if isinstance(schema, dict) else ())
+             if isinstance(column, dict) and column.get("table") == table]
+    return [name for name in named if name in row] + [name for name in row if name not in named]
+
+
+def bound_cells(workdir: Any, binding: dict, fields: set[str]) -> list[tuple[str, Any]]:
+    """The scalar cells of the rows a scenario binds, column and value, in schema order and once per column:
+    those whose column is one of `fields`, or with no fields the cells holding a bound key (D416)."""
+    root = Path(workdir)
+    state = world_of(root).state
+    cells: dict[str, Any] = {}
+    for table, key in (binding or {}).items():
+        row = (state.get(str(table)) or {}).get(str(key)) if isinstance(state.get(str(table)), dict) else None
+        if not isinstance(row, dict):
+            continue
+        for column in _schema_order(root, str(table), row):
+            value = row[column]
+            scalar = isinstance(value, (str, int, float, bool))
+            kept = column in fields if fields else str(value) == str(key)
+            if scalar and kept and column not in cells:
+                cells[column] = value
+    return list(cells.items())
+
+
+def user_rules_of(trace: Trace, end: str, cells: list[tuple[str, Any]] = ()) -> dict:
+    """The user rules of a born recording: what code reads off its one user turn, the bound cells it does not
+    state, each given on request (D416), and the end as a fact, last."""
     rules = derive_user_rules(trace)
+    stated = {fact.field for fact in rules.facts} | {str(fact.value) for fact in rules.facts}
+    for field, value in cells:
+        if field not in stated and str(value) not in stated:
+            rules.facts.append(UserFact(field=field, value=value, context=end))
+            rules.disclosure.append(DisclosureRule(field=field, on_request=True))
     rules.facts.append(UserFact(field=END_FIELD, value=end, context=end))
     return as_dict(rules)
 
 
-def _write_rules(workdir: Path, scenario: Scenario) -> bool:
+def _write_rules(workdir: Path, scenario: Scenario, fields: set[str]) -> bool:
     """The user rules of a born recording where it has none. False where they exist or no recording does."""
     trace_id = trace_id_of(scenario.id)
     path, body = workdir / RULES_DIR / f"{trace_id}.json", read_json(workdir / "traces" / f"{trace_id}.json", None)
     if path.is_file() or not isinstance(body, dict):
         return False
-    write_json(path, user_rules_of(Trace.model_validate(body), scenario.end))
+    cells = bound_cells(workdir, scenario.binding, fields)
+    write_json(path, user_rules_of(Trace.model_validate(body), scenario.end, cells))
     return True
 
 
@@ -172,6 +233,7 @@ def born_tasks(workdir: Any, store_dir: Any, *, limit: Optional[int] = None) -> 
     if limit is not None:
         candidates = candidates[:limit]
     prompt = shared_prompt(root)
+    fields = recorded_fields(root)
     born: list[Task] = []
     skipped = overlays = prompts = ends = rules = 0
     for scenario in candidates:
@@ -187,7 +249,7 @@ def born_tasks(workdir: Any, store_dir: Any, *, limit: Optional[int] = None) -> 
             write_json(root / "tasks" / f"{task.id}.json", as_dict(task))
             born.append(task)
         ends += _write_end(root, task.id, scenario)
-        rules += _write_rules(root, scenario)
+        rules += _write_rules(root, scenario, fields)
     if born:
         _append_index(root, born)
         _join_sample(root, [task.id for task in born])
@@ -196,5 +258,5 @@ def born_tasks(workdir: Any, store_dir: Any, *, limit: Optional[int] = None) -> 
             "ids": [task.id for task in born]}
 
 
-__all__ = ["END_FIELD", "bears_task", "born_tasks", "recording_of", "scenario_of", "shared_prompt", "task_id_of",
-           "task_of_scenario", "trace_id_of", "user_rules_of"]
+__all__ = ["END_FIELD", "bears_task", "born_tasks", "bound_cells", "recorded_fields", "recording_of", "scenario_of",
+           "shared_prompt", "task_id_of", "task_of_scenario", "trace_id_of", "user_rules_of"]

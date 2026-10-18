@@ -118,3 +118,34 @@ def test_a_said_number_compiles_to_the_shape_every_writing_of_it_holds():
     assert values == ["648.02", "128", "12.5", "A1"]
     for text in ("your refund is $3,648.02 for 128 gb at 12.50 each on a1", "3648.02 back, 128gb, 12.5, a1"):
         assert all(value.lower() in text for value in values)
+
+
+def test_a_born_tasks_intent_says_its_record_facts_the_end_stays_an_end_and_asked_facts_lays_records_never_the_end(
+        tmp_path):
+    from kullback.hub.package import asked_facts
+    from kullback.spec.schema import Spec
+
+    _born(tmp_path)
+    write_json(tmp_path / "tasks" / "t1.json", {"id": "t1", "run_ids": ["sc-1"]})
+    write_json(tmp_path / "user_rules" / "sc-1.json", {
+        "facts": [{"field": "goal", "value": "Move A1.", "span": {"file_hash": "sc_0"}},
+                  {"field": "holder_code", "value": "H-77", "context": END},
+                  {"field": "end", "value": END, "context": END}],
+        "disclosure": [{"field": "holder_code", "on_request": True}]})
+    loaded = W.load_inputs(tmp_path, "t1", inputs().intent)
+    records = [fact for fact in loaded.intent.facts if fact.source.recording == I.RECORDS_SOURCE]
+    assert [(fact.id, fact.text, fact.stance, fact.condition) for fact in records] == [
+        ("rec1", "holder_code: H-77", "volunteered", "asked")]
+    assert not any(I.is_end_fact(fact) for fact in records)
+    assert [fact.id for fact in loaded.intent.facts if I.is_end_fact(fact)] == ["end1", "end2"]
+    laid = asked_facts(Spec(task_id="t1", intent=loaded.intent))
+    ends = {fact.text for fact in loaded.intent.facts if I.is_end_fact(fact)}
+    assert "holder_code: H-77" in laid and not ends & set(laid)
+
+
+def test_a_recorded_task_gets_no_record_facts(tmp_path):
+    _workdir(tmp_path)
+    write_json(tmp_path / "user_rules" / "r1.json", {"facts": [{"field": "holder_code", "value": "H-77"}],
+                                                     "disclosure": [{"field": "holder_code", "on_request": True}]})
+    write_json(tmp_path / "tasks" / "t1.json", {"id": "t1", "run_ids": ["r1"]})
+    assert W.load_inputs(tmp_path, "t1", inputs().intent).intent == inputs().intent
