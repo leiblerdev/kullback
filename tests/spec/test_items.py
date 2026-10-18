@@ -30,7 +30,10 @@ CELL = "state:items.A1.slot"
 STATE = {"items": {"A1": {"item_id": "A1", "slot": "two", "label": "red"},
                    "B2": {"item_id": "B2", "slot": "four", "label": "red"}},
          "notes": {}}
-POLICY = "# Store policy\n\n## Moving items\n\nMove an item only to a free slot, after the user says yes.\n"
+POLICY = ("# Store policy\n\n## Moving items\n\nMove an item only to a free slot, after the user says yes.\n"
+          "Moves go through update_item, notes through add_note, and nothing else does either.\n")
+# The policy line naming the write tools (D410): a called gate stands only where its policy line names the tool.
+PATH_LINE = "Moves go through update_item, notes through add_note, and nothing else does either."
 FACTS = [IntentFact(id="f1", text="Please move item A1 to slot seven.", stance="volunteered",
                     source=FactSource(recording="rec1", turn=1), witnesses=["rec2"]),
          IntentFact(id="f2", text="Maybe leave a note.", stance="accepted", source=FactSource(recording="rec1", turn=3))]
@@ -127,9 +130,11 @@ def test_a_judge_anchor_cites_the_one_row_it_was_found_in_and_its_answer_states_
 
 
 def _kept(*items: dict) -> list[dict]:
+    """Each item kept, a gated called item citing the policy line that names its tool."""
     out = []
     for item in items:
-        kept, why = keep(item)
+        named = item.get("kind") == "called" and item.get("gate", True) and not item.get("policy_line")
+        kept, why = keep(dict(item, policy_line=PATH_LINE) if named else item)
         assert why == "", why
         out.append(kept)
     return out
@@ -399,7 +404,8 @@ def test_a_hand_off_item_gates_only_when_its_policy_line_demands_the_hand_off():
     grounded = dict(hand_off, policy_line="Transfer the user to a person when the slot is taken.")
     kept, why = I.World(STATE, policy, FACTS, tools).check(grounded, KNOWN, unwitnessed)
     assert why == "" and kept["gate"] is True
-    move = {"id": "c1", "kind": "called", "tool": "update_item", "gate": True, "fact_ids": ["f1"]}
+    move = {"id": "c1", "kind": "called", "tool": "update_item", "gate": True, "fact_ids": ["f1"],
+            "policy_line": PATH_LINE}
     assert I.World(STATE, policy, FACTS, tools).check(move, KNOWN, unwitnessed)[0]["gate"] is True
 
 

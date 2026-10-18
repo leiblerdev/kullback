@@ -28,6 +28,10 @@ value is refused with the field's reachable values; a weighed one is kept with t
 warning. Nulls and `not` sets are never checked. A World built without a `Reach` checks nothing here.
 State items may name an alternative end state (`alt`); one without belongs to every end state, and a
 Run passes the state items when any one end state matches.
+A gated called item stands only where its policy line names the tool (D410): any other path is the
+agent's to choose, so the gate is weighed. A told item citing a fact of a scenario's end (`is_end_fact`)
+is a told item asked for. A said value that is one number compiles to the shape the frozen Runner's
+substring match finds most widely (`said_shape`).
 """
 
 from __future__ import annotations
@@ -174,15 +178,40 @@ def _on_side(kept: dict, facts: list) -> bool:
     return kept.get("kind") in TOLD_KINDS or not any(getattr(fact, "kind", None) in ("do", "keep") for fact in facts)
 
 
+# The recording a fact of a scenario's end names (D410): the end is the truth a born Task was written
+# with, read off the workdir by spec/writer.py, never a user turn.
+END_SOURCE = "scenario_end"
+
+
+def is_end_fact(fact: Any) -> bool:
+    """A fact of the scenario's end a born Task carries (spec/writer.py end_facts)."""
+    return getattr(getattr(fact, "source", None), "recording", None) == END_SOURCE
+
+
 def _untold(kept: dict, facts: list) -> bool:
-    """Whether a told item (judge, said) rests on no told fact and no policy line: nobody asked to be told
-    it and no rule says the agent must tell it (D369)."""
+    """Whether a told item (judge, said) rests on no told fact, no end fact and no policy line: nobody asked
+    to be told it and no rule says the agent must tell it (D369)."""
     return kept.get("kind") in TOLD_KINDS and not kept.get("policy_line") \
-        and not any(getattr(fact, "kind", None) == "told" for fact in facts)
+        and not any(getattr(fact, "kind", None) == "told" or is_end_fact(fact) for fact in facts)
+
+
+def names_tool(line: Any, tool: str) -> bool:
+    """Whether a policy line names the tool, as written or with its underscores read as spaces."""
+    text = _flat(line)
+    return bool(tool) and any(_flat(name) in text for name in (tool, tool.replace("_", " ")))
+
+
+def _unfixed_path(kept: dict, facts: list) -> bool:
+    """Whether a called gate names a tool its policy line does not name: the path is not fixed (D410). A
+    hand-off keeps its own rule (`World.check`): it gates where its policy line names a hand-off."""
+    tool = str(kept.get("tool") or "")
+    return kept.get("kind") == "called" and not is_transfer(tool) and not names_tool(kept.get("policy_line"), tool)
 
 
 # Why a told gate with no told fact and no policy line is weighed (D369).
 TELL_WEIGHED = "untold"
+# Why a called gate whose policy line does not name its tool is weighed (D410).
+PATH_WEIGHED = "path not fixed"
 
 # Each weighing rule in order: the test on (kept item, its facts), the reason kept on it, the line for the writer.
 _WEIGHINGS = (
@@ -203,6 +232,10 @@ _WEIGHINGS = (
      "gate weighed: it checks what the agent told the user, but no fact asks to be told it and no "
      "policy_line says the agent must tell it; it is scored, never gated. Gate it only citing a told "
      "fact or quoting the policy line that requires the telling"),
+    (_unfixed_path, PATH_WEIGHED,
+     "gate weighed: a called gate stands only where its policy_line names that tool as the only way; any "
+     "other path is the agent's to choose. Gate the outcome instead (the row the call changes or finds), "
+     "or quote the policy line that names the tool"),
 )
 
 
@@ -986,8 +1019,26 @@ def atom_of(item: dict) -> Atom:
     target = {key: value for key, value in item.items() if key not in ("id", "gate", "weight", "fact_ids",
                                                                          "policy_line", "confirms")}
     target["from"] = _from(item)
+    if item["kind"] == "said":
+        target["values"] = [said_shape(value) for value in item.get("values") or []]
     return Atom(id=item["id"], kind="allowed", description=_describe(item), target=target,
                 judge=item["kind"] == "judge", gate=bool(item["gate"]), weight=float(item["weight"]))
+
+
+# One number as a said value may carry: a currency sign before, a short unit after.
+SAID_NUMBER = re.compile(r"[$\u20ac\u00a3]?\s*(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*[a-z%]{0,3}", re.IGNORECASE)
+
+
+def said_shape(value: Any) -> Any:
+    """A said value as the Runner's lowercased substring match finds it most widely (D410): a value that is one
+    number loses its currency sign, its unit and its trailing zeros, and with cents its digits past the last
+    thousands group, so "$3,648.02", "3648.02" and "3,648.02" all hold "648.02". Anything else is unchanged."""
+    found = SAID_NUMBER.fullmatch(str(value).strip()) if isinstance(value, (str, int, float)) \
+        and not isinstance(value, bool) else None
+    if found is None:
+        return value
+    whole, cents = found.group(1).replace(",", ""), (found.group(2) or "").rstrip("0").rstrip(".")
+    return (whole[-3:] if cents and len(whole) > 3 else whole) + cents
 
 
 def value_set_of(value: Any) -> bool:
@@ -1256,5 +1307,5 @@ def counts_of(items: list[dict]) -> dict:
 
 __all__ = ["CONFIRM_TURN", "DEFAULT_GATE", "EVENT_KINDS", "ITEM_KINDS", "Reach", "SANITY", "SANITY_ID", "STATE_KINDS",
            "UNREACHABLE", "World", "effect_reach", "reach_of_inputs", "recorded_reach", "atom_of", "because_of", "contradictions", "counts_of", "effect_rules", "end_states_of",
-           "expected_tools",
+           "expected_tools", "END_SOURCE", "PATH_WEIGHED", "is_end_fact", "names_tool", "said_shape",
            "norm", "sanity_atom", "sanity_item"]

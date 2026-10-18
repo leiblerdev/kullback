@@ -1,7 +1,8 @@
 """Tasks born of passed scenarios, through the mechanism every recorded Task already goes through (D389).
 
-A passed scenario of source recordings with a binding and nothing in requires becomes one Task and one
-recording in the Environment's workdir. The Task record is plain; the recording names the scenario
+A passed scenario with a binding, an ask, an end and nothing in requires becomes one Task and one
+recording in the Environment's workdir, whatever its source (D411): a search born scenario carries its
+page and span as provenance, as a recordings one carries its Task ids. The Task record is plain; the recording names the scenario
 (source "scenario", raw_hash the scenario id) and holds one user turn whose content is the scenario's
 ask, or its statement where it has no ask, and nothing else, so `scenario_of` reads where a Task came from off its recordings. The intent
 miner, the Spec writer, the review rounds and the Examiner then run over it unchanged. The binding and the policy lines are not
@@ -10,7 +11,10 @@ it, and trust tiers such a Task synthetic, never trusted (spec/trust.py). Where 
 a Task sample, the born ids join it, so the tiers see them. Its Starting state is the shared world as it stands
 (D390): an empty overlay, since the binding names rows that exist and nothing is pinned. Its recording
 carries the agent prompt most recordings of the workdir carry (D395), since the writer and the Examiner read
-the policy off a Task's recording and a work copy ships no policy file.
+the policy off a Task's recording and a work copy ships no policy file. The scenario's end goes beside it
+(D410): born/<task>.json holds it for the Spec writer, which gates what the end says, and the recording's
+user rules (user_rules/<run id>.json) carry the ask as the goal and the end as a fact, so a user asked to
+confirm the end's change can answer. Both are written in the workdir, so a work copy carries them.
 """
 
 from __future__ import annotations
@@ -20,21 +24,27 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Optional
 
-from kullback.runner.records import RawPtr, Task, TaskOverlay, Trace, Turn, as_dict, read_json, write_json
+from kullback.runner.records import RawPtr, Task, TaskOverlay, Trace, Turn, UserFact, as_dict, read_json, write_json
 from kullback.runner.world.loading import OVERLAY_DIR
 from kullback.spec import intent_tools
+from kullback.spec.writer import born_path
 from kullback.synth.records import FORMAT, Scenario, load_scenarios
+from kullback.user.rules import derive_user_rules
 
 SECTION = "scenario"
 SOURCE = "scenario"
 TASKS_INDEX = "tasks.json"
 BUILD_MANIFEST = "build.json"
+RULES_DIR = "user_rules"
+# The user fact that carries the scenario's end (D410).
+END_FIELD = "end"
 
 
 def bears_task(scenario: Scenario) -> bool:
-    """Whether a scenario may become a Task: passed, from the recordings, bound to rows, needing nothing."""
-    return (scenario.status == "passed" and scenario.source.kind == "recordings"
-            and bool(scenario.binding) and not scenario.requires)
+    """Whether a scenario may become a Task (D411): passed, bound to rows, with an ask and an end, needing
+    nothing, whatever its source."""
+    return (scenario.status == "passed" and bool(scenario.binding) and bool(scenario.ask.strip())
+            and bool(scenario.end.strip()) and not scenario.requires)
 
 
 def _digest(scenario_id: str) -> str:
@@ -107,6 +117,33 @@ def _write_prompt(workdir: Path, trace_id: str, system_prompt: Optional[str]) ->
     return True
 
 
+def _write_end(workdir: Path, task_id: str, scenario: Scenario) -> bool:
+    """The scenario's end beside a born Task (D410), for the Spec writer. False where it is there already."""
+    path = born_path(workdir, task_id)
+    body = {"scenario": scenario.id, "end": scenario.end}
+    if read_json(path, None) == body:
+        return False
+    write_json(path, body)
+    return True
+
+
+def user_rules_of(trace: Trace, end: str) -> dict:
+    """The user rules of a born recording: what code reads off its one user turn, and the end as a fact."""
+    rules = derive_user_rules(trace)
+    rules.facts.append(UserFact(field=END_FIELD, value=end, context=end))
+    return as_dict(rules)
+
+
+def _write_rules(workdir: Path, scenario: Scenario) -> bool:
+    """The user rules of a born recording where it has none. False where they exist or no recording does."""
+    trace_id = trace_id_of(scenario.id)
+    path, body = workdir / RULES_DIR / f"{trace_id}.json", read_json(workdir / "traces" / f"{trace_id}.json", None)
+    if path.is_file() or not isinstance(body, dict):
+        return False
+    write_json(path, user_rules_of(Trace.model_validate(body), scenario.end))
+    return True
+
+
 def _append_index(workdir: Path, tasks: list[Task]) -> None:
     """The born Tasks appended to tasks.json in its own shape, {"tasks": [...]}."""
     body = read_json(workdir / TASKS_INDEX, {}) or {}
@@ -126,33 +163,38 @@ def _join_sample(workdir: Path, task_ids: list[str]) -> None:
 def born_tasks(workdir: Any, store_dir: Any, *, limit: Optional[int] = None) -> dict:
     """One Task and one recording per scenario that bears a Task, in id order, up to `limit`; a scenario
     whose Task already exists is skipped, though its overlay is written where it lacks one (D390) and its
-    recording gets the shared agent prompt where it lacks one (D395). Returns the counts and the ids born;
-    prompts_written counts the recordings written with a prompt, new or repaired."""
+    recording gets the shared agent prompt where it lacks one (D395), and each gets the scenario's end and
+    its recording's user rules where it lacks them (D410). Returns the counts and the ids born;
+    prompts_written counts the recordings written with a prompt, new or repaired, ends_written and
+    rules_written the ends and user rules written, new or repaired."""
     root = Path(workdir)
     candidates = [scenario for scenario in load_scenarios(store_dir) if bears_task(scenario)]
     if limit is not None:
         candidates = candidates[:limit]
     prompt = shared_prompt(root)
     born: list[Task] = []
-    skipped = overlays = prompts = 0
+    skipped = overlays = prompts = ends = rules = 0
     for scenario in candidates:
         task = task_of_scenario(scenario)
         overlays += _write_empty_overlay(root, task.id)
         if (root / "tasks" / f"{task.id}.json").is_file():
             skipped += 1
             prompts += _write_prompt(root, trace_id_of(scenario.id), prompt)
-            continue
-        trace = recording_of(scenario, prompt)
-        prompts += prompt is not None
-        write_json(root / "traces" / f"{trace.trace_id}.json", as_dict(trace))
-        write_json(root / "tasks" / f"{task.id}.json", as_dict(task))
-        born.append(task)
+        else:
+            trace = recording_of(scenario, prompt)
+            prompts += prompt is not None
+            write_json(root / "traces" / f"{trace.trace_id}.json", as_dict(trace))
+            write_json(root / "tasks" / f"{task.id}.json", as_dict(task))
+            born.append(task)
+        ends += _write_end(root, task.id, scenario)
+        rules += _write_rules(root, scenario)
     if born:
         _append_index(root, born)
         _join_sample(root, [task.id for task in born])
     return {"candidates": len(candidates), "born": len(born), "skipped_existing": skipped,
-            "overlays_written": overlays, "prompts_written": prompts, "ids": [task.id for task in born]}
+            "overlays_written": overlays, "prompts_written": prompts, "ends_written": ends, "rules_written": rules,
+            "ids": [task.id for task in born]}
 
 
-__all__ = ["bears_task", "born_tasks", "recording_of", "scenario_of", "shared_prompt", "task_id_of", "task_of_scenario",
-           "trace_id_of"]
+__all__ = ["END_FIELD", "bears_task", "born_tasks", "recording_of", "scenario_of", "shared_prompt", "task_id_of",
+           "task_of_scenario", "trace_id_of", "user_rules_of"]

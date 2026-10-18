@@ -4,7 +4,8 @@ A Task whose Spec and Spec Verifier are both on disk is skipped, so a resumed bu
 what is missing; a Spec of the older demand grammar (no item) is rewritten as items, Intent and all,
 so every Task gets the sanity item (automatic, no flag). An empty Spec is written once more; empty again, the Task is set aside with no
 Verifier. A Spec no Run can pass after its one send-back is set aside the same way, as
-unsatisfiable_spec. The miner also says whether the recorded user held to their opening asks, checked by
+unsatisfiable_spec. A Spec of a born Task leaving an end fact of its scenario unchecked (writer.unchecked_end,
+D410) is set aside so as unchecked_end. The miner also says whether the recorded user held to their opening asks, checked by
 code (spec/coherence.py); a Task whose user strayed is set aside as intent_strayed before the writer, no
 Verifier written. A set-aside Spec counts as done. Every call is priced under the `spec` stage of the workdir ledger (budget.json):
 the miner through the harness subscriber, the writer through BudgetedModel, the two seams every
@@ -21,7 +22,14 @@ from kullback.runner.budget import BudgetedModel
 from kullback.spec import events
 from kullback.spec.intent import STAGE, mine_intent
 from kullback.spec.schema import SpecIntent, is_empty, load_spec, save_spec, spec_path
-from kullback.spec.writer import is_item_check, load_inputs, spec_verifier_path, write_spec, write_verifier
+from kullback.spec.writer import (
+    UNCHECKED_END,
+    is_item_check,
+    load_inputs,
+    spec_verifier_path,
+    write_spec,
+    write_verifier,
+)
 
 # What one Task's mining and writing may spend together when the caller names no ceiling.
 SPEC_TASK_CEILING_USD = 1.0
@@ -74,7 +82,8 @@ def write_from_intent(workdir: Path, task_id: str, intent: SpecIntent, model: An
         writer["first_attempt"] = dict(tries[0].counts, usd=float(tries[0].session.get("usd") or 0.0))
     spec = written.spec.model_copy(update={"version": _version(workdir, task_id) + 1, "writer": writer,
                                            "coherence": coherence or {}})
-    aside = events.EMPTY_SPEC if empty else events.UNSATISFIABLE_SPEC if written.counts.get("unsatisfiable") else None
+    aside = events.EMPTY_SPEC if empty else events.UNSATISFIABLE_SPEC if written.counts.get("unsatisfiable") else \
+        UNCHECKED_END if written.counts.get(UNCHECKED_END) else None
     if aside:
         save_spec(workdir, spec.model_copy(update={"set_aside": aside}))
         events.task_set_aside(bus, task_id, aside, 0)
@@ -107,7 +116,7 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
     ceiling = SPEC_TASK_CEILING_USD if ceiling_usd is None else ceiling_usd
     counts: dict = {"written": 0, "skipped_existing": 0, "failed": 0, "spent_usd": 0.0, "failures": {},
                     "empty_seen": 0, "retried": 0, "set_aside_empty": 0, "set_aside_unsatisfiable": 0,
-                    "set_aside_strayed": 0, "rewritten_older": 0}
+                    "set_aside_strayed": 0, "set_aside_unchecked_end": 0, "rewritten_older": 0}
     for task_id in task_ids:
         if written_already(workdir, task_id):
             counts["skipped_existing"] += 1
@@ -123,7 +132,7 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
         counts["empty_seen"] += int(bool(spec.writer.get("empty_first")))
         counts["retried"] += int(spec.writer.get("attempts", 1) > 1)
         aside = {events.EMPTY_SPEC: "set_aside_empty", events.UNSATISFIABLE_SPEC: "set_aside_unsatisfiable",
-                 events.INTENT_STRAYED: "set_aside_strayed"}
+                 events.INTENT_STRAYED: "set_aside_strayed", UNCHECKED_END: "set_aside_unchecked_end"}
         counts[aside.get(spec.set_aside, "written")] += 1
     return counts
 

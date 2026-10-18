@@ -18,6 +18,12 @@ Examiner ruling (D331): it applies the ruling's fix (drop or replace a ruled ite
 uncovered fact) or rebuts it with why, under the same rules; when code refused every answer it gets
 one retry in the same round, shown each refusal.
 
+A Task born of a scenario carries the scenario's end (D410): born/<task>.json in the workdir, written by
+synth/tasks.py, holds the end, what a correct agent leaves the world as and tells. `load_inputs` adds it
+to the Intent as end facts, one per clause, marked end and never a user turn; each is an ask, so one no
+gated item cites goes back like any ask, and a Spec still leaving one uncited and unrebutted is refused
+(`unchecked_end`): the Spec stage sets it aside with no Verifier. A recorded Task has no end.
+
 Every session (a first write, each repair) is saved whole under exam/writer/<task>.jsonl, one line per
 session: the messages, the tool calls and answers, the replies (D351). Nothing the writer is shown is read
 from there.
@@ -35,7 +41,7 @@ from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 from pydantic import Field
 
-from kullback.runner.records import Record, Verifier
+from kullback.runner.records import Record, Verifier, read_json
 from kullback.spec import effects as tool_effects
 from kullback.spec import items as I
 from kullback.spec import writer_tools
@@ -55,6 +61,7 @@ from kullback.spec.schema import (
     load_spec,
     save_spec,
     spec_verifier_path,
+    unchecked_asks,
 )
 
 # The ruling code for an ask no gate item cites (spec/mutant_rulings.py); its repair may call rebut_fact.
@@ -69,7 +76,9 @@ fact's condition says what prompted it, with the agent line it answers quoted), 
 under, the tools the agent may call, and \
 read access to the world as it stands before the agent starts. You have never seen any agent run or \
 reference solution for this request, and you must not ask for one. Your job is the Verifier: the \
-items a correct run shows, each resting on an Intent fact or a policy line."""
+items a correct run shows, each resting on an Intent fact or a policy line. A Task born of a scenario \
+also carries the scenario's end as facts marked end: the truth the Task was written with, what a correct \
+agent leaves the world as and what it tells. The user never said them."""
 
 TOOLS_TEXT = """\
 # Tools
@@ -159,7 +168,23 @@ scored, never gated. A fact of condition world_or_policy is an ask under a condi
 about the world or the rules: the claim is the agent's until you confirm it. Look it up yourself, the \
 row with find_rows and read_row (cite it in confirms) or the rule with read_policy (cite it in \
 policy_line), and gate the branch the world selects, not the branch the recording took; a claim you \
-cannot confirm leaves the item scored."""
+cannot confirm leaves the item scored. A called gate stands only where its policy_line names that tool as \
+the only way; code weighs any other. Gate who the user is by the outcome (the writes on the rows of the \
+user the agent found), never by which lookup tool found them."""
+
+END_RULE = """\
+# The scenario's end
+Facts marked end are the truth this Task was written with. Every change an end fact names is a gated \
+state item (row_is or row_new) on the row and field it names, with the value it names, citing that fact. \
+Every action or change an end fact rules out is gated absent: not_called or row_keeps, citing it. Every \
+value an end fact says the user is told is a gated judge or said item citing it. A gate no end fact names \
+and no policy line demands is weighed. Where an end fact says the change happens once the user confirms, \
+the user will say yes: gate the change (and a before item on confirm_turn where the policy asks for the \
+yes), never a not_called on it. Where the end has the user pick one of several writes, write each as its \
+own end state (alt 0, 1, ...), never both gated in one; where alt cannot hold them, gate neither and add \
+one gated judge item on the outcome. An end fact that needs no item of its own (a step on the way, what \
+the user does) goes to rebut_fact, copying its words. Code refuses a Spec with an end fact no gated item \
+cites and no rebuttal excuses."""
 
 FEEDBACK = """\
 # Feedback
@@ -173,7 +198,7 @@ STOP_RULE = """\
 When every Intent fact has its items (or none fits), reply with one line saying you are done, no tool \
 call. Spend at most 14 tool rounds."""
 
-SYSTEM_PROMPT = "\n\n".join((WHAT_YOU_RECEIVE, TOOLS_TEXT, EXAMPLES, CHOICE_RULE, FEEDBACK, STOP_RULE)) + "\n"
+SYSTEM_PROMPT = "\n\n".join((WHAT_YOU_RECEIVE, TOOLS_TEXT, EXAMPLES, CHOICE_RULE, END_RULE, FEEDBACK, STOP_RULE)) + "\n"
 
 FOLLOWUP_PROMPT = """Code found items no run can pass together, each with the reason. Drop or re-add \
 them under their ids so a correct run can pass, then reply that you are done.
@@ -310,7 +335,7 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
             raise FileNotFoundError(f"no Spec for Task {task_id}: mine its Intent first")
         intent = spec.intent
     facts = mark_side(mark_echo(intent.facts, recordings_of(workdir, task_id, traces)))
-    intent = intent.model_copy(update={"facts": facts})
+    intent = with_end(intent.model_copy(update={"facts": facts}), scenario_end(workdir, task_id))
     policy = env.system_prompt(env.task(task_id)) or ""
     overlay, rows = env.overlay(task_id)
     tools = writer_tools.tool_rows(env.sigs)
@@ -328,6 +353,47 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
                         effects=effects, signatures=learned.get("signatures") or {},
                         reach=I.reach_of_inputs(effects, _write_results(workdir, task_id, traces, write_tools)),
                         workdir=Path(workdir))
+
+
+# Where a born Task's scenario end lies in the workdir, one file per Task (synth/tasks.py writes it, D410).
+BORN_DIR = "born"
+# Why the Spec stage sets a Spec aside: an end fact no gated item cites and no rebuttal excuses.
+UNCHECKED_END = "unchecked_end"
+
+
+def born_path(workdir: Any, task_id: str) -> Path:
+    return Path(workdir) / BORN_DIR / f"{task_id}.json"
+
+
+def scenario_end(workdir: Any, task_id: str) -> str:
+    """The end of the scenario a Task was born of, or empty for a recorded Task."""
+    body = read_json(born_path(workdir, task_id), None) if "/" not in str(task_id) else None
+    return str(body.get("end") or "").strip() if isinstance(body, dict) else ""
+
+
+def end_facts(end: str) -> list[IntentFact]:
+    """The end as facts, one per clause (split at a full stop or a semicolon), ids end1, end2, ...: asks of
+    kind do, said by no user turn, their source the end itself (items.END_SOURCE)."""
+    clauses = [clause.strip() for clause in re.split(r"(?<=[.;])\s+", end or "") if clause.strip()]
+    return [IntentFact(id=f"end{n}", text=clause, source=FactSource(recording=I.END_SOURCE, turn=0),
+                       stance="volunteered", kind="do") for n, clause in enumerate(clauses, 1)]
+
+
+def with_end(intent: SpecIntent, end: str) -> SpecIntent:
+    """The Intent with the end facts it lacks appended; unchanged with no end or with them already there."""
+    held = {fact.id for fact in intent.facts}
+    added = [fact for fact in end_facts(end) if fact.id not in held]
+    if not added:
+        return intent
+    facts = list(intent.facts) + added
+    return intent.model_copy(update={"facts": facts, "text": intent_text(facts)})
+
+
+def unchecked_end(spec: Spec) -> list[str]:
+    """The end facts no gate item cites and no kept rebuttal excuses (`schema.unchecked_asks` named for the
+    end): the Spec of a born Task leaving one is refused."""
+    unchecked = set(unchecked_asks(spec))
+    return [fact.id for fact in spec.intent.facts if I.is_end_fact(fact) and fact.id in unchecked]
 
 
 def _writes_view(learned: Optional[dict]) -> dict:
@@ -384,7 +450,8 @@ def _facts_view(intent: SpecIntent) -> list[dict]:
     return [dict({"id": fact.id, "text": fact.text, "stance": fact.stance}, **_condition_view(fact),
                  **({"unwitnessed": True} if unwitnessed(fact) else {}), **({"echo": True} if fact.echo else {}),
                  **({"after_pushback": True} if fact.after_pushback else {}),
-                 **({"unfounded": True} if fact.unfounded else {}), **({"side": True} if fact.side else {}))
+                 **({"unfounded": True} if fact.unfounded else {}), **({"side": True} if fact.side else {}),
+                 **({"end": True} if I.is_end_fact(fact) else {}))
             for fact in intent.facts]
 
 
@@ -625,6 +692,9 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
         {item_id for item_id, _ in I.contradictions(items)}),
         asked_sent_back=len(missing), truncated_chars=cut, unfinished=bool(session.get("unfinished")))
     spec = _spec_of(task_id, items, counts, inputs, store.rebuttals)
+    left = unchecked_end(spec)
+    if left:
+        counts[UNCHECKED_END] = left
     counts.update(I.counts_of(items + [I.sanity_item([])]))
     counts["echo_facts"] = sum(1 for fact in inputs.intent.facts if fact.echo)
     counts.update(_side_counts(inputs.intent, items))

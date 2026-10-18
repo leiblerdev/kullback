@@ -4109,3 +4109,61 @@ Tests: tests/agent/test_loop.py (a session at its turn cap gets one last turn ca
 nothing unfinished it stops on the cap; a call cut at the output cap is answered as cut while the complete calls on
 its turn run), tests/synth/test_generate.py (a retry's turn budget follows the turns per item its first pass spent;
 the first pass turns are counted per kind).
+
+### D410. The Spec writer of a born Task gates what its scenario's end says (2026-10-18)
+
+What. A Task born of a scenario carries the scenario's end: synth/tasks.born_tasks writes born/<task>.json in the
+workdir ({"scenario", "end"}), so a work copy carries it, and writes it for a born Task that lacks it on a rerun.
+spec/writer.load_inputs adds the end to the Intent as end facts, one per clause split at a full stop or a semicolon,
+ids end1, end2, ..., kind do, their source the end itself (items.END_SOURCE), never a user turn; the facts view
+marks them end. A recorded Task has no born file and its Intent is unchanged. The writer's prompt gains END_RULE:
+every change an end fact names is a gated state item on the row, field and value it names; every action or change it
+rules out is gated absent (not_called or row_keeps); every told value is a gated judge or said item; a gate no end
+fact names and no policy line demands is weighed; a change after a later yes is gated, never a not_called; writes
+the user picks between are alternative end states (alt), and where alt cannot hold them one gated judge item on the
+outcome. Code: an end fact is an ask, so one no gated item cites goes back in the asked follow-up turn like any ask,
+and writer.unchecked_end (schema.unchecked_asks named for the end) lists those still uncited and unrebutted; the
+writer's counts carry them and the Spec stage sets such a Spec aside as unchecked_end with no Verifier. A told item
+citing an end fact keeps its gate (items._untold). Two rules for every Task: a gated called item stands only where
+its policy line names that tool (items.names_tool), else it is weighed as "path not fixed" and the writer is told
+why; a hand-off keeps its own rule. Identification is gated by its outcome, never by the lookup used (prompt). A
+said value that is one number compiles (items.atom_of, said_shape) to the shape the Runner's lowercased substring
+match finds most widely: no currency sign, no unit, no trailing zeros, and with cents only the digits past the last
+thousands group, so "$3,648.02", "3648.02" and "3,648.02" all hold "648.02". The comparison itself lives in the frozen
+Runner (verdict.py, atom_context.t), so it is not changed. The born recording's user rules (user_rules/<run>.json,
+D210) carry the ask as the goal and the end as a fact of field end, so a user asked to confirm can answer.
+
+Why. S/audit (.claude/herdr/synth-1016/audit): 34 of 69 airline and 45 of 78 retail Verifiers of born Tasks were
+right. The writer saw the ask and the world, never the end the scenario was written with, so the end's changes sat
+weighed or free, its forbids were not gated, a change after a later yes was forbidden, one lookup path was gated, two
+exclusive writes were both gated, and "3648.02" failed "$3,648.02".
+
+What it does not do: code does not parse the end into rows; it asks that each end clause be gated or rebutted, and
+the rebuttal must quote the clause or a policy line (D376). The schema has no one-of atom for two writes; alt end
+states are the existing shape. An integer of four digits or more is left whole, so "3648" still misses "3,648".
+No current Run path reads a born Task's user rules (it has no Reference and no replay row); they wait for one. The
+bus payload of the set aside reads other, since events.REASON_CODES is not this change's file.
+
+Tests: tests/spec/test_spec_end.py (the end reaches the writer as end facts, never a user turn; a recorded Task has
+none; a writer leaving an end change ungated is refused and one gating it passes; the stage sets such a Spec aside
+with no Verifier; a told item citing an end fact stays a gate and a later yes gates the change; a called gate stands
+only where its policy line names the tool; exclusive writes are alternative end states; a said number compiles to
+the shape every writing of it holds), tests/synth/test_tasks.py (the end lies beside a born Task; a rerun writes the
+end and user rules a born Task lacks; the user rules carry the ask and the end).
+
+### D411. A scenario bears a Task whatever its source (2026-10-18)
+
+What. synth/tasks.bears_task: a scenario bears a Task when it is passed, bound to rows, has an ask and an end, and
+requires nothing, whatever its source kind; the test on source kind recordings is gone. A search born scenario
+carries the page URL and the byte span of the cached page text it rests on (Source.url, start, end) as its
+provenance, as a recordings one carries its Task ids, so a born Task of either is traced back the same way
+(scenario_of, then the scenario record).
+
+Why. The fix loop of .claude/herdr/synth-1016 aims at 500 scenarios per corpus, most from search, typed lines and
+gaps; only the recordings source bore Tasks. The end is now required since the Spec writer gates it (D410).
+
+What it does not do: a passed scenario with no ask or no end bears no Task, so older records without them are left
+out; no change to how any source writes a scenario.
+
+Tests: tests/synth/test_tasks.py (passed bound scenarios with an ask and an end bear Tasks of any source; one with
+no ask or no end bears none).
