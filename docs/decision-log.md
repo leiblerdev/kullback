@@ -3831,3 +3831,28 @@ pool, --workers reaches the pool on export and on publish).
 Correction (founder, 2026-10-18): the default is the smaller of cores minus 2 and 4, not cores minus 2 (8 on a 10-core
 laptop), because a publish worker peaks above a gigabyte and the 16 GB laptop crashed twice above six to eight
 drivers; --workers still asks for more where memory allows (tests/test_processes.py, the default never exceeds 4).
+
+### D402. An Environment card is a short page, with no trust numbers on it (2026-10-18)
+
+What. kullback/hub/card.py renders an Environment card in six parts: a one-line summary with its status (release or
+preview and the fidelity over Tasks that decides it), Use it (fetch, run, verdict, report, then the Harbor commands),
+What is inside (how many Tasks and tools, and one Task's first ask quoted), Known issues (one dated list: some Tasks
+can be wrong, Tasks that did not pass every check are not graded, the Tasks with no `solution/`), How it was built
+(three sentences and the Built line: tag, git sha, time, content hash) and Licence. No trusted count, untrusted
+reasons, gate names, tier or label table, leak scan, call or Run fidelity appears on a card; they stay in
+manifest.json, tasks_index.json and harbor/manifest.json. `package.inside` reads the tool count and the example ask
+off the laid package, and `stage` records them as the manifest's `inside`. The organisation card is a mission
+sentence, the Environments table (Environment, Status, Tasks, Harbor Tasks, Tag), Use it, five Terms (Environment,
+Task, Run, Verifier, release and preview), Known issues and Links. `publish --announcement` is removed and neither
+card carries News.
+
+Why. Founder, 2026-10-18, on the retail card: the tier table, the reason strings and the audit details "are not
+needed"; "simple documentation like what is this about, what did we do, how do you use this and why should you care",
+and "a disclaimer should be added that some of the tasks can be wrong". Then: no trusted count on either card, and
+the Words section "simplify this as well, see how other RL environments are released". The release survey
+(.claude/herdr/publish-1017/release-survey-report.md) found that almost no release defines a vocabulary, none shows
+a trust statistic, and use comes first; the section order and the five Terms are taken from it.
+
+Tests: tests/hub/test_publish.py and tests/hub/test_harbor.py (section order on both cards, the disclaimer once,
+no gate or trust word and no audit number on a card, what is inside counts tools and quotes one ask, the Known
+issues lines, the organisation table and Terms, no News).

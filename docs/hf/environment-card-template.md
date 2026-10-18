@@ -1,12 +1,14 @@
 # Environment card fields
 
-`kullback/hub/card.py` renders every card from the package's `manifest.json` alone, in five parts: what this is, what we did (with a disclaimer that some Tasks can be wrong), how to use it, why it matters, and a Built line. These are the fields the card reads; every other number, the trusted count among them, stays in `manifest.json` and `tasks_index.json`.
+`kullback/hub/card.py` renders every card from the package's `manifest.json` alone, in six parts: a summary with its status, use it, what is inside, known issues (a dated list that says some Tasks can be wrong), how it was built with a Built line, and the licence. These are the fields the card reads; every other number, the trusted count among them, stays in `manifest.json` and `tasks_index.json`.
 
 | Field | Meaning | Read from |
 | --- | --- | --- |
 | name | The Environment's name, which is also its domain tag | `--name`, or the last segment of `--repo` |
 | source | The corpus, its licence and its URL | `--corpus`, `--corpus-license`, `--corpus-url` |
 | tasks_total | Tasks on the frozen list | `tasks_frozen.json`, or the newest round snapshot |
+| inside.tools | Tools the Environment serves | `tool_sigs.json` in the laid package |
+| inside.example_ask | One Task's first ask, as its instruction states it | the first Harbor Task's `instruction.md`, else `tasks.jsonl` |
 | replay_fidelity.tasks_rate | Share of Tasks with at least one confirmed replay | `replays.json` |
 | preview | Whether it is below the fidelity bar | `--preview` on the publish |
 | tag | The tag this publish carries | `round-<n>`, else `build-<YYYYMMDD>` of the newest session write |
@@ -24,5 +26,5 @@ A release needs fidelity over Tasks of at least 90%; below that only `publish --
 
 ## Harbor
 
-Where the package carries a Harbor form, the card reads `harbor/manifest.json` for the exported count, the Tasks without an oracle and an example Task path.
+Where the package carries a Harbor form, the card reads `harbor/manifest.json` for the exported count, the Tasks without an oracle and the example Task's path.
 

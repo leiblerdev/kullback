@@ -255,7 +255,7 @@ def test_preview_passes_below_the_bar_and_the_card_says_it_is_a_preview_beside_i
     assert manifest["preview"] is True
     assert manifest["status"] == "preview"
     body = (out / package_mod.CARD_NAME).read_text(encoding="utf-8")
-    assert "fidelity over Tasks is 66.7% (2 of 3): a preview, below the 90% replay fidelity a release needs" in body
+    assert "Preview: 66.7% (2 of 3) of its Tasks replay as recorded, below the 90% a release needs." in body
 
 
 def test_an_environment_whose_replays_were_never_scored_cannot_be_a_release():
@@ -287,7 +287,7 @@ def test_a_card_states_the_corpus_licence_the_task_count_and_the_content_hash(nu
     assert "nursery traces" in body
     assert "MIT" in body
     assert str(manifest["content_hash"])[:16] in body
-    assert "It has 3 Tasks." in body
+    assert "3 Tasks over" in body
     assert "uv run kullback fetch leibler/nursery" in body
 
 
@@ -382,12 +382,11 @@ def test_the_environment_name_comes_from_the_flag_and_not_from_the_environment_r
 # --- the organisation card ------------------------------------------------------------
 
 
-def test_the_organisation_card_has_a_row_only_for_each_environment_with_its_tasks_harbor_tasks_tag_and_status(
+def test_the_organisation_card_has_a_row_only_for_each_environment_with_its_status_tasks_harbor_tasks_and_tag(
         nursery, tmp_path):
     manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
     body = card_mod.organisation_card([{"name": "nursery", "repo_id": "leibler/nursery", "manifest": manifest}])
-    row = (f"| [leibler/nursery](https://huggingface.co/datasets/leibler/nursery) | 3 | none | {manifest['tag']} | "
-           "preview |")
+    row = f"| [leibler/nursery](https://huggingface.co/datasets/leibler/nursery) | preview | 3 | none | {manifest['tag']} |"
     assert row in body
     assert [line for line in body.splitlines() if line.startswith("| [")] == [row]
     assert "kullback fetch leibler/<environment>" in body
@@ -553,19 +552,25 @@ def test_a_line_break_in_corpus_text_stays_on_its_card_line_and_a_pipe_inside_it
     assert row.replace("\\|", "").count("|") == 6
 
 
-def test_the_organisation_card_defines_at_most_six_plain_terms_and_no_gate_atom_or_fidelity_names():
+def test_the_organisation_card_defines_five_plain_terms_and_names_no_gate_atom_or_fidelity():
     body = card_mod.organisation_card([])
     terms = body.split("## Terms\n\n", 1)[1].split("\n\n", 1)[0].splitlines()
-    assert terms == [f"- {term}" for term in card_mod.TERMS] and len(terms) <= 6
+    assert [term.split(":")[0] for term in terms] == ["- Environment", "- Task", "- Run", "- Verifier",
+                                                      "- Release and preview"]
+    headings = [line for line in body.splitlines() if line.startswith("#")]
+    assert headings[1:] == ["## Environments", "## Use it", "## Terms", "## Known issues", "## Links"]
+    assert card_mod.DISCLAIMER in body.split("## Known issues")[1]
     for name in ("Atom", "Gates", "suite", "loosening", "Call fidelity", "Fidelity over", "Confirmed:"):
         assert name not in body
 
 
-def test_the_card_says_a_fetched_package_cannot_finish_a_task_that_needs_a_fact_the_user_gives(nursery, tmp_path):
+def test_the_known_issues_say_a_task_needing_a_mid_conversation_fact_cannot_be_finished_in_the_package(
+        nursery, tmp_path):
     manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
     note = next(line for line in card_mod.card_markdown(manifest, "leibler/nursery").splitlines()
                 if "simulated user does not ship" in line)
-    assert "cannot finish a Task that needs a fact the user gives mid conversation" in note
+    assert note.startswith(f"- {manifest['created_at'][:10]}: ")
+    assert "A Task that needs a fact the user gives mid conversation cannot be finished in the package" in note
 
 
 # --- a release replaces the repository ---------------------------------------------
@@ -621,23 +626,37 @@ def _card(**manifest) -> str:
                                        **manifest), "someorg/widgets")
 
 
-def test_the_card_reads_what_it_is_what_we_did_how_to_use_it_and_why_it_matters_in_that_order():
+def test_the_card_reads_summary_use_it_inside_known_issues_how_it_was_built_and_licence_in_that_order():
     body = _card()
     headings = [line for line in body.splitlines() if line.startswith("#")]
-    assert headings == ["# widgets", "## What we did", "## How to use it", "## Why it matters"]
-    assert body.index("It has 4 Tasks.") < body.index("## What we did")
-    assert body.index("## Why it matters") < body.index("Built: ")
+    assert headings == ["# widgets", "## Use it", "## What is inside", "## Known issues", "## How it was built",
+                        "## Licence"]
+    assert "Release: 100.0% (4 of 4) of its Tasks replay as recorded" in body.split("## Use it")[0]
+    assert body.index("Built: ") < body.index("## Licence")
 
 
-def test_the_card_says_once_that_some_tasks_can_be_wrong():
-    assert _card().count(card_mod.DISCLAIMER) == 1
-    assert card_mod.DISCLAIMER.startswith("Some Tasks can be wrong.")
+def test_the_card_says_once_that_some_tasks_can_be_wrong_and_that_unchecked_tasks_are_not_graded():
+    body = _card()
+    assert body.count(card_mod.DISCLAIMER) == 1 and card_mod.DISCLAIMER.startswith("Some Tasks can be wrong.")
+    assert "Tasks that did not pass every check are not graded." in body.split("## Known issues")[1]
 
 
-def test_the_card_leaves_the_trusted_count_the_reasons_the_audit_numbers_and_any_news_to_the_manifest():
-    body = _card(leak_scan={"leaks": 0}, refused=0, reference_confirmed=4, verifier_derived=4)
-    for gone in ("1 of them", "Trusted", "Not trusted", UNTRUSTED_REASON, "| ", "Leak scan", "Refused", "Reference confirmed", "## News"):
+def test_the_card_names_no_gate_no_trust_word_no_reasons_no_audit_numbers_and_no_news():
+    body = _card(leak_scan={"leaks": 0}, refused=0, reference_confirmed=4, verifier_derived=4).lower()
+    for gone in ("trust", "suite", "loosening", "false rejection", "oracle replay", UNTRUSTED_REASON,
+                 "| ", "leak scan", "refused", "reference confirmed", "## news"):
         assert gone not in body
+
+
+def test_what_is_inside_counts_the_tools_and_quotes_one_tasks_first_ask(tmp_path):
+    (tmp_path / "harbor" / "widgets-one").mkdir(parents=True)
+    (tmp_path / "harbor" / "widgets-one" / "instruction.md").write_text(
+        "A user writes in.\n- wants the widget relabelled\n- user ID is u1\n\n## Policy\n\n- rule\n")
+    write_json(tmp_path / "tool_sigs.json", [{"name": "a"}, {"name": "b"}])
+    inside = package_mod.inside(tmp_path, {"tasks": [{"path": "widgets-one"}]})
+    assert inside == {"tools": 2, "example_ask": "wants the widget relabelled"}
+    body = _card(inside=inside)
+    assert "4 Tasks over 2 tools" in body and 'opens, for example: "wants the widget relabelled".' in body
 
 
 def test_the_built_line_names_the_commit_that_laid_the_harbor_tasks_where_it_differs_from_the_package():

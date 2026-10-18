@@ -582,7 +582,7 @@ def test_a_task_whose_oracle_and_another_part_leak_still_refuses_the_export():
     assert [row["task"] for row in harbor.solution_only(scan, scanned)] == ["a0002"]
 
 
-def test_the_card_runs_harbor_under_how_to_use_it_without_the_tier_table_or_left_out_task_ids():
+def test_the_card_runs_harbor_under_use_it_without_the_tier_table_or_left_out_task_ids():
     from kullback.hub.card import card_markdown
 
     harbor_manifest = {"counts": {"exported": 2, "skipped": {"solution leaks": 1},
@@ -590,17 +590,15 @@ def test_the_card_runs_harbor_under_how_to_use_it_without_the_tier_table_or_left
                        "left_out": [{"task": "0001", "reason": "solution leaks"}],
                        "tasks": [{"path": "widgets-one"}], "labels": {"rubric": "r"}}
     card = card_markdown({"name": "widgets"}, "someorg/widgets", harbor=harbor_manifest)
-    usage, why = card.index("## How to use it"), card.index("## Why it matters")
-    assert usage < card.index("`harbor/` holds 2 Tasks") < card.index("harbor run -p harbor/widgets-one -a oracle") < why
+    usage, inside = card.index("## Use it"), card.index("## What is inside")
+    assert usage < card.index("`harbor/` holds 2 Tasks") < card.index("harbor run -p harbor/widgets-one -a oracle") < inside
     assert "0001" not in card and "| Tier |" not in card and "rubric" not in card
     assert "harbor/" not in card_markdown({"name": "widgets"}, "someorg/widgets")
 
 
-def test_the_organisation_card_carries_news_above_the_environments_only_when_given():
+def test_the_organisation_card_carries_no_news_section():
     from kullback.hub.card import organisation_card
 
-    card = organisation_card([], announcement="Verifiers now come from the ask.")
-    assert card.index("## News\n\nVerifiers now come from the ask.") < card.index("## Environments")
     assert "## News" not in organisation_card([])
 
 
@@ -658,11 +656,12 @@ def test_the_leak_scan_has_no_oracle_part_to_scan_for_a_task_without_one(tmp_pat
     assert manifest["leak_scan"]["files_scanned"] == 3
 
 
-def test_the_card_counts_tasks_without_a_solution_and_says_the_oracle_agent_cannot_run_on_them():
-    from kullback.hub.card import harbor_section
+def test_the_known_issues_count_tasks_without_a_solution_and_say_the_oracle_agent_has_nothing_to_run():
+    from kullback.hub.card import card_markdown
 
-    section = "\n".join(harbor_section({"counts": {"exported": 3, "no_oracle": 2}}))
-    assert "2 of them ship without `solution/`, so Harbor's oracle agent has nothing to run on them." in section
+    card = card_markdown({"name": "widgets"}, "someorg/widgets", harbor={"counts": {"exported": 3, "no_oracle": 2}})
+    issues = card.split("## Known issues")[1].split("## How it was built")[0]
+    assert "2 Tasks have no `solution/`, so Harbor's oracle agent has nothing to run on them." in issues
 
 
 def _staged(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:

@@ -125,9 +125,9 @@ def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, p
         manifest["harbor"] = {key: laid[key] for key in ("tasks_chosen", "counts", "content_hash", "leak_scan",
                                                          "tiers", "labels", "left_out", "no_oracle", "git_sha")
                               if key in laid}
-        write_json(Path(out) / package_mod.MANIFEST_NAME, manifest)
-    elif staged is not None:
-        write_json(Path(out) / package_mod.MANIFEST_NAME, manifest)
+    # Read off what was laid, so the card says how many tools there are and quotes one Task's ask.
+    manifest["inside"] = package_mod.inside(Path(out), laid)
+    write_json(Path(out) / package_mod.MANIFEST_NAME, manifest)
     # Written after the Harbor form, so the card can name the commit that laid its Tasks.
     card = card_markdown(manifest, repo_id, harbor=laid)
     Path(out, CARD_NAME).write_text(card, encoding="utf-8")

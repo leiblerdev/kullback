@@ -382,6 +382,33 @@ def untrusted_reasons(rows: Iterable[dict]) -> dict:
 # --- the package on disk ------------------------------------------------------------
 
 
+def inside(package: Path, harbor: Optional[dict] = None) -> dict:
+    """What a card says is inside a laid package: how many tools it serves and one Task's first ask.
+
+    The ask is the first listed line of the first Harbor Task's instruction, the Task the card's Harbor
+    commands name, else the first instruction in the viewer rows; both passed the package's leak scan.
+    """
+    tools = read_json(package / "tool_sigs.json", None)
+    rows = list((harbor or {}).get("tasks") or ()) + list((harbor or {}).get("synthetic") or ())
+    texts = []
+    if rows:
+        instruction = package / HARBOR_DIR / str(rows[0]["path"]) / "instruction.md"
+        texts.append(instruction.read_text(encoding="utf-8").split("\n## ", 1)[0] if instruction.is_file() else "")
+    viewer = package / TASKS_ROWS_NAME
+    if viewer.is_file():
+        texts += [json.loads(line).get("instruction") or "" for line in viewer.read_text(encoding="utf-8").splitlines()
+                  if line.strip()]
+    return {"tools": len(tools) if isinstance(tools, (list, dict)) else None,
+            "example_ask": next((ask for ask in map(_first_ask, texts) if ask), None)}
+
+
+def _first_ask(text: str) -> Optional[str]:
+    """The first listed line of an instruction, else its first line."""
+    lines = [line.strip() for line in str(text).splitlines() if line.strip()]
+    listed = [line[2:].strip() for line in lines if line.startswith("- ")]
+    return (listed or lines or [None])[0]
+
+
 def _copy(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(source.read_bytes())
