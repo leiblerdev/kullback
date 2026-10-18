@@ -257,7 +257,8 @@ def test_preview_passes_below_the_bar_and_the_card_says_it_is_a_preview_beside_i
     assert manifest["preview"] is True
     assert manifest["status"] == "preview"
     body = (out / package_mod.CARD_NAME).read_text(encoding="utf-8")
-    assert "Preview: 66.7% (2 of 3) of its Tasks replay as recorded, below the 90% a release needs." in body
+    assert "Preview: 66.7% (2 of 3) of its Tasks replay as recorded." in body
+    assert "90%" not in body
 
 
 def test_an_environment_whose_replays_were_never_scored_cannot_be_a_release():
@@ -428,14 +429,15 @@ def test_the_environment_name_comes_from_the_flag_and_not_from_the_environment_r
 # --- the organisation card ------------------------------------------------------------
 
 
-def test_the_organisation_card_has_a_row_only_for_each_environment_with_its_status_tasks_harbor_tasks_and_tag(
+def test_the_organisation_card_has_a_row_only_for_each_environment_with_its_status_tasks_and_harbor_tasks(
         nursery, tmp_path):
     manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
     body = card_mod.organisation_card([{"name": "nursery", "repo_id": "leibler/nursery", "manifest": manifest}])
-    row = f"| [leibler/nursery](https://huggingface.co/datasets/leibler/nursery) | preview | 3 | none | {manifest['tag']} |"
+    row = "| [leibler/nursery](https://huggingface.co/datasets/leibler/nursery) | preview | 3 | none |"
     assert row in body
     assert [line for line in body.splitlines() if line.startswith("| [")] == [row]
     assert "kullback fetch leibler/<environment>" in body
+    assert manifest["tag"] not in body
 
 
 def test_an_organisation_card_is_published_where_the_host_takes_it_and_reported_where_it_will_not(
@@ -595,18 +597,17 @@ def test_a_line_break_in_corpus_text_stays_on_its_card_line_and_a_pipe_inside_it
     assert "Source corpus: nursery | traces second line (MIT)." in card_mod.card_markdown(manifest, "leibler/nursery")
     org = card_mod.organisation_card([{"name": "n", "repo_id": "leibler/a|b", "manifest": manifest}])
     row = next(line for line in org.splitlines() if line.startswith("| ["))
-    assert row.replace("\\|", "").count("|") == 6
+    assert row.replace("\\|", "").count("|") == 5
 
 
-def test_the_organisation_card_defines_five_plain_terms_and_names_no_gate_atom_or_fidelity():
+def test_the_organisation_card_defines_four_plain_terms_and_names_no_gate_atom_or_fidelity():
     body = card_mod.organisation_card([])
     terms = body.split("## Terms\n\n", 1)[1].split("\n\n", 1)[0].splitlines()
-    assert [term.split(":")[0] for term in terms] == ["- Environment", "- Task", "- Run", "- Verifier",
-                                                      "- Release and preview"]
+    assert [term.split(":")[0] for term in terms] == ["- Environment", "- Task", "- Run", "- Verifier"]
     headings = [line for line in body.splitlines() if line.startswith("#")]
     assert headings[1:] == ["## Environments", "## Use it", "## Terms", "## Known issues", "## Links"]
     assert card_mod.DISCLAIMER in body.split("## Known issues")[1]
-    for name in ("Atom", "Gates", "suite", "loosening", "Call fidelity", "Fidelity over", "Confirmed:"):
+    for name in ("Atom", "Gates", "suite", "loosening", "Call fidelity", "Fidelity over", "Confirmed:", "90%"):
         assert name not in body
 
 

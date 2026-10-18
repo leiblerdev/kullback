@@ -85,11 +85,9 @@ def _corpus(manifest: dict) -> str:
 
 
 def _status(manifest: dict) -> str:
-    """Release or preview, with the replay fidelity over Tasks that decides it."""
+    """Release or preview, with the replay fidelity over Tasks; the bar itself stays out of the card."""
     fidelity = _share(manifest.get("replay_fidelity") or {}, "tasks")
-    if manifest.get("preview"):
-        return f"Preview: {fidelity} of its Tasks replay as recorded, below the {FIDELITY_BAR:.0%} a release needs."
-    return f"Release: {fidelity} of its Tasks replay as recorded; a release needs {FIDELITY_BAR:.0%}."
+    return f"{'Preview' if manifest.get('preview') else 'Release'}: {fidelity} of its Tasks replay as recorded."
 
 
 # Said once on every card, because a Task's Verifier is a model's reading of the ask, not a ground truth.
@@ -184,7 +182,6 @@ TERMS: tuple[str, ...] = (
     "Task: one goal the agent is asked to reach in an Environment.",
     "Run: one attempt by an agent at a Task, recorded step by step.",
     "Verifier: the check that decides from the end state whether a Run succeeded.",
-    f"Release and preview: a release replays at least {FIDELITY_BAR:.0%} of its Tasks; a preview is below that.",
 )
 
 
@@ -201,8 +198,8 @@ def organisation_card(rows: Iterable[dict], *, organisation: str = ORGANISATION,
     lines += [f"[Leibler]({site_url}) rebuilds the system a working agent ran in from its traces and grades other "
               f"models in code on what they change there, with [Kullback]({github_url}), its open-source harness.", ""]
     lines += ["## Environments", "",
-              "| Environment | Status | Tasks | Harbor Tasks | Tag |",
-              "| --- | --- | --- | --- | --- |"]
+              "| Environment | Status | Tasks | Harbor Tasks |",
+              "| --- | --- | --- | --- |"]
     for row in rows:
         manifest = row.get("manifest") or {}
         repo_id = row.get("repo_id", "")
@@ -210,7 +207,7 @@ def organisation_card(rows: Iterable[dict], *, organisation: str = ORGANISATION,
         laid = ((harbor.get("counts") or {}).get("exported", 0)) if isinstance(harbor, dict) else "none"
         status = "preview" if manifest.get("preview") else "release"
         lines.append(f"| [{_cell(repo_id)}](https://huggingface.co/datasets/{_cell(repo_id)}) | {status} | "
-                     f"{manifest.get('tasks_total', 0)} | {laid} | {_cell(manifest.get('tag') or 'not recorded')} |")
+                     f"{manifest.get('tasks_total', 0)} | {laid} |")
     lines += ["", "## Use it", "", "```bash",
               "uv pip install git+" + github_url + ".git",
               f"uv run kullback fetch {organisation}/<environment> --out env",
@@ -231,16 +228,13 @@ def environment_card_template(fields: Optional[Iterable[tuple[str, str]]] = None
              "`kullback/hub/card.py` renders every card from the package's `manifest.json` alone, in six parts: "
              "a summary with its status, use it, what is inside, known issues (a dated list that says some Tasks "
              "can be wrong), how it was built with a Built line, and the licence. These are the fields the card "
-             "reads; every other number, the trusted count among them, stays in `manifest.json` and "
+             "reads; every other number stays in `manifest.json` and "
              "`tasks_index.json`.", "",
              "| Field | Meaning | Read from |", "| --- | --- | --- |"]
     lines += [f"| {name} | {meaning} | {source} |" for name, meaning, source in rows]
     lines += ["", "## Front matter", "",
               f"`license` is the corpus licence as the host's id, or `{UNKNOWN_LICENSE}` when none was named; "
               f"`tags` is {', '.join('`' + tag + '`' for tag in BASE_TAGS)} and the Environment's name.", "",
-              "## Preview and release", "",
-              f"A release needs fidelity over Tasks of at least {FIDELITY_BAR:.0%}; below that only "
-              "`publish --preview` is allowed, and the card says so where it gives the fidelity.", "",
               "## Harbor", "",
               f"Where the package carries a Harbor form, the card reads `{HARBOR_DIR}/manifest.json` for the "
               "exported count, the Tasks without an oracle and the example Task's path.", ""]
@@ -255,7 +249,7 @@ CARD_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("inside.example_ask", "One Task's first ask, as its instruction states it",
      "the first Harbor Task's `instruction.md`, else `tasks.jsonl`"),
     ("replay_fidelity.tasks_rate", "Share of Tasks with at least one confirmed replay", "`replays.json`"),
-    ("preview", "Whether it is below the fidelity bar", "`--preview` on the publish"),
+    ("preview", "Whether it was published as a preview", "`--preview` on the publish"),
     ("tag", "The tag this publish carries", "`round-<n>`, else `build-<YYYYMMDD>` of the newest session write"),
     ("git_sha", "Commit the export ran from; the card also names the Harbor form's where it differs",
      "`git rev-parse HEAD`"),

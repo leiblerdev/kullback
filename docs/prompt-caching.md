@@ -1,49 +1,66 @@
-# Prompt caching (2026-08-28, corrected 2026-09-24)
+# Prompt caching
 
-> Status (2026-09-24, ov-cache): the first two sections say what the code does now. The plan from 2026-08-28 below them is kept as it was
-> written, with a note on each point the code or the Claude API reference has since overtaken.
+How the provider layer caches prompts and how to check that it works. It matters because, in the founder's
+words, "you also need to explore how to cache prompts as well please or else the cost would be too much."
 
-Asked for in my words: "you also need to explore how to cache prompts as well please or else the cost would be too much." This note is what the provider layer does, where the tokens actually go, and the changes in the order they pay off.
+## Check a build
 
-## What the code does (2026-09-24)
+```bash
+uv run kullback budget cache --workdir work
+uv run kullback budget cache --workdir work --json
+```
 
-Every provider caches the same thing: a prefix that is byte identical from one call to the next, in the order tools, system, messages. OpenAI-shaped endpoints cache it on their own once it passes 1,024 tokens. Anthropic, on its own API and on Bedrock, caches only up to a block marked with `cache_control`.
+Read only. Per stage it prints the calls, the share of prompt tokens read from the cache, the writes (cold, on a
+new prefix, after a gap past the stage's TTL), memo hits, and the ten largest uncached calls. Every priced call is
+a `model_call` line in `events.jsonl` with its cache fields and a request fingerprint
+(`kullback.ai.cache.fingerprint`: `prefix_hash`, `history_hash`, `parent_hash`, `n_messages`).
 
-- Cache points (`kullback/ai/provider.py`, `AnthropicModel.build_body`): one on the last tool (`cache_tools`), one on the last system block (`cache_system`; where a model refuses a forced tool choice, the one line that asks for a tool call goes after that block, outside the cached prefix), one on each of the last two messages (`cache_last_two`, which skips a thinking block or an empty text block for the block before it). That is four, the API's limit, counted over tools, system and messages together; `build_body` counts the marks and refuses a fifth. No mark ever goes on the top level of the body: the legacy Bedrock stack refuses that field with a 400.
-- TTL (`kullback/ai/cache.py`): `ModelConfig.cache_ttl` is `"5m"` or `"1h"`. The default is sent as the bare `{"type": "ephemeral"}`, byte identical to the marks sent before the setting existed; `"1h"` adds `"ttl": "1h"` to every mark, so the one-hour points always come before any five-minute ones. `STAGE_CACHE_TTL` sets it per stage: `builder_session` writes one-hour marks, every other stage five-minute ones (why: the ov-cache report, from the gaps in the build-20260923 builds). The OpenAI adapters send no TTL.
-- Usage (`kullback/ai/usage.py`): `Usage.input` is the input neither read from nor written to the cache, on every adapter. The Messages API reports it that way. The OpenAI shapes report `prompt_tokens` with the read and the written tokens inside it, so both are subtracted. Before 2026-09-24 only the read part was, and every written token was priced twice, once as input and once as a write. `Usage.cache_write_1h` is the one-hour part of `cache_write`, read from `cache_creation.ephemeral_1h_input_tokens`.
-- Prices (`kullback/runner/budget.py`): a row's `cache_write` is the five-minute write; a one-hour write is priced at `cache_write_1h` when the row has one, else twice the input price. `call_cost` and `cache_effect` both use it. OpenAI's GPT-6 rows carry a write charge (1.25x input); a new row needs its own `cache_write`.
-- Stable prefixes: tool lists render sorted by name (`ToolRegistry.schemas`, the mined tool definitions, the judge's tool specs), JSON that goes into a prompt is dumped with sorted keys, and facts that differ per session or per Run (the Examiner's root listing and rulings, the judge's Verifier output and check count) sit in the user message, not the system prompt.
-- `prompt_cache_key`: set per build and stage for the stages `kullback/cli.py` wraps (`_wrapped_model`), and per session by the agent harness's OpenAI provider. The runner stage sets none: its prefix is stable and the build-20260923 runs read 92 to 94 percent from the cache without one.
-- The memo (`MemoModel`, `<workdir>/model_cache`): wraps the `_wrapped_model` stages and the readers step (`reader_model`). Not the judges, not the agent sessions, never a Candidate; the ov-cache report says why for each.
+## What the code does
 
-## Measuring it (2026-09-24)
+Every provider caches a prefix that is byte identical from one call to the next, in the order tools, system,
+messages. OpenAI-shaped endpoints cache it on their own past 1,024 tokens. Anthropic, on its own API and on
+Bedrock, caches only up to a block marked with `cache_control`.
 
-Every priced call is a `model_call` line in `events.jsonl`. Since ov-cache each line carries `cache_write`, `cache_write_1h` when there is one, and the request's fingerprint (`kullback.ai.cache.fingerprint`): `prefix_hash` over the tools and leading system messages, `history_hash` over the messages after them, `parent_hash` over the messages before the last assistant turn, and `n_messages`. When a call's `parent_hash` is an earlier call's `history_hash` under the same `prefix_hash`, the conversation grew by appending and the provider had the prefix to read. Agent sessions carry the same fingerprint on their `message_end` event.
+### Cache points
 
-`kullback budget cache --workdir <dir>` (read only, `--json` for the raw view) prints per stage: calls, the share of prompt tokens read from the cache, cold and tail writes, writes on a new prefix, writes on an already sent prefix with nothing read (and how many came after a gap past the stage's TTL), appended conversations that still read nothing, memo hits, and the ten largest uncached calls. On a feed from before the fingerprint the prefix columns print as not known and the write is recovered from each line's dollars.
+`AnthropicModel.build_body` (`kullback/ai/provider.py`) marks the last tool (`cache_tools`), the last system block
+(`cache_system`) and the last two messages (`cache_last_two`). Four marks is the API's limit, and `build_body`
+refuses a fifth. No mark goes on the top level of the body: the legacy Bedrock stack refuses it.
 
-## Why it mostly did nothing yet (2026-08-28)
+### Choosing the TTL
 
-A provider only caches a prefix that is long enough: 1,024 tokens on OpenAI, and on Anthropic a per-model minimum that `research/40-runner-and-provider.md` found ranges from 512 to 4,096 tokens by model generation, so the harness needs a per-model table rather than one number. Correction from the same report: OpenAI charges cache writes at 1.25x on GPT-5.6 class models, so the `PRICES` comment that OpenAI has no cache-write charge holds only for the two OpenAI models priced today and a new entry needs its own `cache_write` price. Below that a cache point is ignored. The system prompts in the Builder are 45 to 90 tokens each (`compile_env._SYSTEM` 78, `mine.KIND_SYSTEM` 61, `mine.SCHEMA_SYSTEM` 45, `memory._JUDGE_SYSTEM` 90, `policy._CONTRACT` in the same range). The variable evidence, the recorded calls, the rule and the case, is in the user message. So in the Builder the cached prefix is the short system prompt and it never reaches the minimum; every call pays full input price. The candidate loop in the Runner is the one place the layout is right: `new_run_state` puts the Environment's system prompt first, the tools ride along, and the conversation grows behind them, so each turn reuses the previous turn's prefix.
+`ModelConfig.cache_ttl` is `"5m"` (the default, sent as a bare `{"type": "ephemeral"}`) or `"1h"`.
+`STAGE_CACHE_TTL` in `kullback/ai/cache.py` gives `builder_session` one-hour marks, because the Builder session
+waits past five minutes on long prompts; every other stage writes five-minute marks. The OpenAI adapters send
+no TTL.
 
-The two judges were meant to share one prompt per Run. Corrected 2026-09-24: they did not, because the judge's system prompt carried the Verifier's output and the number of checks, both facts of one Run; both now sit in the user message, so every Run judged under one use shares the system prompt. The judge's tool loop grows the same way the candidate loop does and caches correctly.
+### Usage and economics
 
-## Where the tokens go in a build (2026-08-28)
+- `Usage.input` (`kullback/ai/usage.py`) is the input neither read from nor written to the cache, on every
+  adapter. `Usage.cache_write_1h` is the one-hour part of `cache_write`.
+- `kullback/runner/budget.py` prices a one-hour write at the row's `cache_write_1h`, else twice the input price.
+  A new price row needs its own `cache_write`.
 
-Per build, roughly in order of spend: `compile_env.write_tool_body` (one call per tool, the recorded calls as evidence, a retry per failed gate with the failure appended), `policy` (one or two calls per rule sentence, the rule and a case each), `verifier` derivation and `memory` relevance checks (one call per lesson per build), the judges (two calls per disputed Run, each with a tool loop), and `intent` and `cluster` naming (one call per Task). Candidate runs are the Runner's cost and scale with the number of Candidates times Runs times turns. Corrected 2026-09-24: the build-20260923 runs spent most in the runner stage (retail 8,905 calls), then the Examiner and the Builder session.
+### Stable prefixes
 
-## Changes, in the order they pay off (2026-08-28)
+Tool lists render sorted by name, JSON in a prompt is dumped with sorted keys, and facts that differ per session
+or per Run sit in the user message, not the system prompt.
 
-1. Stable part first, long enough to cache. In `compile_env` the system message should carry the schema (tables and columns), the tool list and the emit rules, which is the same for every tool in a build; the tool and its calls follow in the user message. In `policy` the system message should carry the compile contract plus the policy text itself, which is the same for every rule; the sentence and the case follow. Both prefixes then clear 1,024 tokens on any real customer and every call in the stage after the first reads them at 0.1x.
-2. Retries append, never rewrite. `body_messages` today folds the gate failure into the same user message, so a retry is a different prefix and a miss. The retry should keep the original messages and add the failure as a new user turn after the model's previous reply. Same for `policy`'s rewrite call.
-3. A request memo on disk. Key: sha256 of model id, messages, tools and config. Value: the reply record, under `workdir/model_cache/<hash>.json`. Served hits cost nothing and are counted in `budget.json` as `memo_hits`. This is what makes `--iterate` cheap: when one new trace changes one tool's evidence, the other tools' requests are byte identical and never go to the network. It also makes a crashed stage resume for free. Off by default for live candidate runs (a candidate's answer must be a fresh sample), on for every Builder stage and for the judges. Corrected 2026-09-24: on for the `_wrapped_model` stages and the readers only. The judges are not memoised, because the derivation's own key cache already skips a judgement it has made, and the agent sessions ask a new question every turn.
-4. `prompt_cache_key` on OpenAI, one per build and stage, so the provider routes calls with the same prefix to the same cache. One line in the OpenAI adapter, one field in `ModelConfig`. Done; see What the code does for where it is set and where not.
-5. Hit rate in the report: per stage, `cache_read / (input + cache_read)` and the dollars the reads saved against list price. It goes next to the spend so a layout that misses shows up as a number, not a feeling. Done as `kullback budget cache`, with the share taken over input, read and written tokens together.
-6. Anthropic 1 hour TTL only where a stage's calls are more than 5 minutes apart with the same prefix (`{"type": "ephemeral", "ttl": "1h"}`, write at 2x instead of 1.25x). Not expected to be needed; measure first. Corrected 2026-09-24: measured on the build-20260923 runs, the Builder session waited past five minutes 6 times in retail and 3 in airline on prompts of 75,000 tokens and more, so `builder_session` writes one-hour marks; the runner never waited that long and the Examiner's waits do not pay back the doubled write.
+## The rules, numbered
 
-What not to do: cache across customers or across builds with a shared key (the prefix carries customer data; the memo is per workdir on purpose), and do not lower temperature or pin seeds to raise memo hits on candidate runs, which would turn a sample into a replay.
+Code and tests cite these by number.
 
-## Measuring it (2026-08-28)
+1. Stable part first, long enough to cache: what is the same for every call in a stage (schema, tool list,
+   contract, policy text) goes in the system message; the case goes in the user message.
+2. Retries append, never rewrite: a retry keeps the earlier messages and adds the failure as a new user turn.
+3. The memo: `MemoModel` stores replies under `<workdir>/model_cache/`, keyed by the request. It wraps the stages
+   `kullback/cli.py` wraps (`_wrapped_model`) and the readers step, never the judges, the agent sessions or a
+   Candidate. A hit still counts as a call and adds to `memo_hits`.
+4. `prompt_cache_key` on OpenAI-shaped endpoints: set per build and stage for the wrapped stages, and per session
+   by the agent harness. The runner stage sets none; its prefix is stable without one.
 
-Corrected 2026-09-24: the `--iterate` flag named here and in change 3 no longer exists on `kullback build`. The first live build on tau2 retail with one model records `cache_read`, `cache_write`, `input` and `memo_hits` per stage in `budget.json`. Before changes 1 and 2 the Builder's read share should be close to zero, which is the number to beat. After them the per-stage read share should sit above 0.7 for `compile_tools` and `compile_policy`, and a second `--iterate` build with one added trace should show most calls as memo hits.
+## What not to do
+
+Do not cache across customers or across builds with a shared key: the prefix carries customer data, so the memo
+is per workdir. Do not lower temperature or pin seeds to raise memo hits on Candidate Runs, which would turn a
+sample into a replay.
