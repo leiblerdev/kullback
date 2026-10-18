@@ -363,8 +363,9 @@ def _domain_counts(workdir: Path) -> dict:
     return {key: int(counts[key]) for key in named if counts.get(key)}
 
 
-def untrusted_reasons(rows: Iterable[dict], top: int = 3) -> dict:
-    """How many Tasks are not trusted and the commonest reasons, in the harness's fixed words."""
+def untrusted_reasons(rows: Iterable[dict]) -> dict:
+    """How many Tasks are not trusted and every reason, commonest first, in the harness's fixed words, so the
+    reasons sum to the count."""
     counted: dict[str, int] = {}
     total = 0
     for row in rows:
@@ -373,7 +374,7 @@ def untrusted_reasons(rows: Iterable[dict], top: int = 3) -> dict:
         total += 1
         reason = row.get("stopped_because") or "not trusted"
         counted[reason] = counted.get(reason, 0) + 1
-    ranked = sorted(counted.items(), key=lambda pair: (-pair[1], pair[0]))[:top]
+    ranked = sorted(counted.items(), key=lambda pair: (-pair[1], pair[0]))
     return {"count": total, "reasons": [{"reason": reason, "tasks": count} for reason, count in ranked]}
 
 

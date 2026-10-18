@@ -84,6 +84,10 @@ def from_staged(staged: Any, out: Any) -> dict:
     manifest = dict(read_json(staged / MANIFEST_NAME, {}) or {})
     for key in ("status", "harbor"):
         manifest.pop(key, None)
+    # A package staged when the manifest kept only the commonest untrusted reasons; its own index has them all.
+    rows = (read_json(staged / package_mod.TASKS_INDEX_NAME, {}) or {}).get("tasks")
+    if rows:
+        manifest["untrusted"] = package_mod.untrusted_reasons(rows)
     return manifest
 
 
@@ -107,7 +111,6 @@ def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, p
         manifest = package_mod.export(workdir, out, name=resolved, corpus=corpus, corpus_license=corpus_license,
                                       corpus_url=corpus_url, preview=preview)
     manifest["status"] = release_ruling(manifest, preview, bar)
-    card = card_markdown(manifest, repo_id, announcement=announcement)
     if harbor:
         # The Harbor form of the same Tasks under harbor/, with its own manifest and leak scan (D363).
         from kullback.hub.harbor import export_harbor
@@ -116,11 +119,15 @@ def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, p
         laid = export_harbor(workdir, Path(out) / HARBOR_DIR, name=resolved,
                              **({"org": organisation} if organisation else {}), **(harbor_options or {}))
         manifest["harbor"] = {key: laid[key] for key in ("tasks_chosen", "counts", "content_hash", "leak_scan",
-                                                         "tiers", "labels", "left_out", "no_oracle") if key in laid}
+                                                         "tiers", "labels", "left_out", "no_oracle", "git_sha")
+                              if key in laid}
         write_json(Path(out) / package_mod.MANIFEST_NAME, manifest)
-        card += "\n" + harbor_section(laid)
     elif staged is not None:
         write_json(Path(out) / package_mod.MANIFEST_NAME, manifest)
+    # Written after the Harbor form, so the card can name the commit that laid its Tasks.
+    card = card_markdown(manifest, repo_id, announcement=announcement)
+    if harbor:
+        card += "\n" + harbor_section(laid)
     Path(out, CARD_NAME).write_text(card, encoding="utf-8")
     return manifest
 

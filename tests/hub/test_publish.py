@@ -613,3 +613,38 @@ def test_a_dry_run_upload_leaves_no_file_an_earlier_upload_had_and_this_one_lack
     target = tmp_path / "hub" / "leibler" / "nursery"
     assert (target / "kept.json").is_file()
     assert not (target / "gone.json").exists()
+
+
+def _not_trusted_row(card: str) -> tuple[int, list[tuple[int, str]]]:
+    """The Not trusted row's count and its (Tasks, reason) parts, read off a rendered card."""
+    cell = next(line for line in card.splitlines() if line.startswith("| Not trusted |")).split("|")[2].strip()
+    head, *parts = cell.split("; ")
+    return int(head.split(" of ")[0]), [(int(part.split(" ", 1)[0]), part.split(" ", 1)[1]) for part in parts]
+
+
+def test_the_not_trusted_reasons_name_every_reason_and_sum_to_the_count():
+    suite = package_mod.STOPPED_AT["verifier_derived"]
+    stopped = [reason for stage, reason in package_mod.STOPPED_AT.items() if stage != "trusted"]
+    stopped += [f"{suite}: check_a", f"{suite}: check_a, check_b", f"{suite}: check_b, check_c, check_d"]
+    rows = [{"trusted": True}] * 2 + [{"trusted": False, "stopped_because": reason}
+                                      for times, reason in enumerate(stopped, start=1) for _ in range(times)]
+    rows.append({"trusted": False, "stopped_because": None})
+    manifest = {"tasks_total": len(rows), "untrusted": package_mod.untrusted_reasons(rows)}
+    count, parts = _not_trusted_row(card_mod.card_markdown(manifest, "someorg/widgets"))
+    assert count == len(rows) - 2 == sum(tasks for tasks, _ in parts)
+    assert {reason for _, reason in parts} == set(stopped) | {"not trusted"}
+
+
+def test_a_manifest_listing_only_some_reasons_gets_the_rest_as_one_remainder_that_sums():
+    manifest = {"tasks_total": 10, "untrusted": {"count": 8, "reasons": [{"reason": "a", "tasks": 5}]}}
+    count, parts = _not_trusted_row(card_mod.card_markdown(manifest, "someorg/widgets"))
+    assert count == 8 == sum(tasks for tasks, _ in parts)
+    assert parts[-1] == (3, "for reasons the manifest does not list")
+
+
+def test_the_built_line_names_the_commit_that_laid_the_harbor_tasks_where_it_differs_from_the_package():
+    package_sha, laid_sha = "a" * 40, "b" * 40
+    built = card_mod.card_markdown({"git_sha": package_sha, "harbor": {"git_sha": laid_sha}}, "someorg/widgets")
+    assert f"package built at git {'a' * 16}, Harbor Tasks laid at git {'b' * 16}" in built
+    same = card_mod.card_markdown({"git_sha": package_sha, "harbor": {"git_sha": package_sha}}, "someorg/widgets")
+    assert f"git {'a' * 16} |" in same and "laid at" not in same

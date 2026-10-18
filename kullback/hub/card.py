@@ -78,9 +78,16 @@ def _numbers_table(manifest: dict) -> list[str]:
 
 
 def _untrusted_row(manifest: dict) -> tuple[str, str]:
+    """The untrusted count and its reasons, which sum to it: an older manifest that lists only the commonest
+    reasons gets the rest as one remainder."""
     untrusted = manifest.get("untrusted") or {}
-    reasons = "".join(f"; {entry.get('tasks', 0)} {entry.get('reason', '')}" for entry in untrusted.get("reasons") or ())
-    return "Not trusted", f"{untrusted.get('count', 0)} of {int(manifest.get('tasks_total') or 0)}{reasons}"
+    entries = list(untrusted.get("reasons") or ())
+    count = int(untrusted.get("count") or 0)
+    reasons = "".join(f"; {entry.get('tasks', 0)} {entry.get('reason', '')}" for entry in entries)
+    rest = count - sum(int(entry.get("tasks") or 0) for entry in entries)
+    if rest > 0:
+        reasons += f"; {rest} for reasons the manifest does not list"
+    return "Not trusted", f"{count} of {int(manifest.get('tasks_total') or 0)}{reasons}"
 
 
 def _coverage_rows(manifest: dict) -> list[tuple[str, str]]:
@@ -113,13 +120,23 @@ def _provenance_rows(manifest: dict) -> list[tuple[str, str]]:
     source = manifest.get("source") or {}
     corpus = f"{source.get('corpus') or 'not stated'} ({source.get('license') or 'not stated'})"
     rows.append(("Corpus", f"{corpus}, {source['url']}" if source.get("url") else corpus))
-    build = [f"kullback {manifest.get('kullback_version', 'unknown')}", f"git {_short(manifest.get('git_sha'))}"]
+    build = [f"kullback {manifest.get('kullback_version', 'unknown')}", _built_at(manifest)]
     build += [f"{label} {_short(manifest[key])}" for label, key in
               (("code", "runner_version"), ("Environment", "env_id"))
               if manifest.get(key)]
     rows += [("Built", f"{manifest.get('created_at', 'not recorded')} by {', '.join(build)}"),
              ("Content hash", _short(manifest.get("content_hash")))]
     return rows
+
+
+def _built_at(manifest: dict) -> str:
+    """The commit the package was exported at and, where another commit laid its Harbor Tasks (a publish
+    from a staged package), that one too: the `kullback_git_sha` every shipped `task.toml` carries."""
+    package_sha = manifest.get("git_sha")
+    laid = (manifest.get("harbor") or {}).get("git_sha")
+    if laid and laid != package_sha:
+        return f"package built at git {_short(package_sha)}, Harbor Tasks laid at git {_short(laid)}"
+    return f"git {_short(package_sha)}"
 
 
 def _domain_rows(manifest: dict) -> list[tuple[str, str]]:
@@ -352,11 +369,12 @@ CARD_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("refused", "Tasks the harness ruled nobody finished", "the last round's refuse ruling"),
     ("funnel", "How many Tasks stopped at each rung", "the per-Task index the export writes"),
     ("buckets", "Tasks and trusted Tasks per difficulty bucket", "`difficulty.json` (D209), else computed"),
-    ("untrusted", "Untrusted count and the commonest fixed reasons", "the per-Task index"),
+    ("untrusted", "Untrusted count and every fixed reason, summing to it", "the per-Task index"),
     ("runner_version", "Hash of the Runner, gates and Spec code the numbers were measured under",
      "`runner_version.json`"),
     ("kullback_version", "Harness version", "the installed distribution"),
-    ("git_sha", "Commit the export ran from", "`git rev-parse HEAD`"),
+    ("git_sha", "Commit the export ran from; the card also names the Harbor form's where it differs",
+     "`git rev-parse HEAD`"),
     ("leak_scan", "What the export checked against the source corpus, in counts", "the export's own scan"),
     ("content_hash", "One hash over every file of the package", "computed at export"),
     ("files", "sha256 per file, which is what a fetch verifies", "computed at export"),

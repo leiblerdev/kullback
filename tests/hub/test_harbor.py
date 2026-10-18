@@ -696,3 +696,31 @@ def test_a_staged_package_with_a_tampered_file_is_refused_naming_the_file(tmp_pa
     with pytest.raises(publish.PublishError, match=f"verifiers/{tampered.name}"):
         publish.publish(workdir, "someorg/widgets", client=LocalHub(tmp_path / "second"), preview=True,
                         form="harbor", staged=staged)
+
+
+def test_a_staged_manifest_listing_only_some_untrusted_reasons_publishes_every_reason_from_its_index(
+        tmp_path, monkeypatch):
+    from kullback.hub import publish
+
+    workdir, staged = _staged(tmp_path, monkeypatch)
+    manifest = read_json(staged / "manifest.json")
+    whole = manifest["untrusted"]
+    write_json(staged / "manifest.json", dict(manifest, untrusted=dict(whole, reasons=whole["reasons"][:0])))
+    _, reused = publish.publish(workdir, "someorg/widgets", client=LocalHub(tmp_path / "second"), preview=True,
+                                form="harbor", staged=staged)
+    assert reused["untrusted"] == whole
+
+
+def test_a_card_published_from_a_staged_package_names_the_commit_its_harbor_tasks_were_laid_at(
+        tmp_path, monkeypatch):
+    from kullback.hub import publish
+
+    workdir, staged = _staged(tmp_path, monkeypatch)
+    manifest = read_json(staged / "manifest.json")
+    write_json(staged / "manifest.json", dict(manifest, git_sha="0" * 40))
+    publish.publish(workdir, "someorg/widgets", client=LocalHub(tmp_path / "second"), preview=True,
+                    form="harbor", staged=staged)
+    landed = tmp_path / "second" / "someorg" / "widgets"
+    laid = read_json(landed / HARBOR_DIR / "manifest.json")["git_sha"]
+    card = (landed / "README.md").read_text(encoding="utf-8")
+    assert f"package built at git {'0' * 16}, Harbor Tasks laid at git {laid[:16]}" in card
