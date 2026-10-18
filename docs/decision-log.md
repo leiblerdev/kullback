@@ -4190,7 +4190,11 @@ born Task with the agent user; a Task with rows but none confirmed still has non
 untouched. Correction (r2): where a column holds two different values across the bound rows and leaves, the value
 of the owner is kept and the others dropped; the owner is the one bound row whose key appears as a scalar cell or
 leaf of another bound row (the row the others refer to), so the person's account wins over a shipment's address.
-With no single owner, or an owner holding two values of the column, the column is dropped as before.
+With no single owner, or an owner holding two values of the column, the column is dropped as before. Correction
+(r4): the record facts come from the owner row only, its cells and nested leaves under the same filters (a recorded
+field, once per column, the two-values guard over the owner's own leaves), its own key kept; the other bound rows
+(the order or item the Task is about) give no fact, so neither the Harbor instruction nor the simulated user hands
+the agent the Task's targets. No owner, no record facts; a world without recorded facts keeps the owner's key only.
 
 Why. The pass@1 benchmark on the born Tasks of one Environment failed on identification: nearly every ask names the
 person by name and place only, its user rules held no other identifying value, and the policy asks for more before
@@ -4209,4 +4213,6 @@ tests/synth/test_tasks.py (a leaf of a nested object a recorded user gives is an
 key, a list element is not), tests/builder/test_run_user.py (a Task without replay rows gets the agent user built
 from its recording's rules on disk; one with neither rows nor rules gets none; one whose rows are none confirmed
 gets none). Correction (r2): tests/synth/test_tasks.py (a column two bound rows hold with different values keeps
-the value of the row the other refers to; with no such row it is no fact).
+the value of the row the other refers to; with no such row it is no fact). Correction (r4): tests/synth/test_tasks.py
+(the other bound rows give no fact even where recorded users gave their columns; with no bound row referred to
+there are no record facts, with or without recorded fields; a world without recorded facts keeps the owner's key).

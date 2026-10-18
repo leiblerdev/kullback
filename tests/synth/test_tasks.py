@@ -290,12 +290,17 @@ def test_the_end_fact_stays_last_and_keeps_its_field(tmp_path):
     assert (rules["facts"][-1]["field"], rules["facts"][-1]["value"]) == (END_FIELD, END)
 
 
-def test_a_column_no_recorded_user_gave_is_not_a_fact_and_a_world_without_recorded_facts_keeps_the_keys(tmp_path):
+def test_a_column_no_recorded_user_gave_is_not_a_fact_and_a_world_without_recorded_facts_keeps_the_owners_key(tmp_path):
     rules, _ = _born_rules(tmp_path / "some", "Move my widget to slot seven please.", given=("contact_mail",))
     assert [fact["field"] for fact in rules["facts"][1:-1]] == ["contact_mail"]
     keys, _ = _born_rules(tmp_path / "none", "Move my widget to slot seven please.", given=())
-    assert [(fact["field"], fact["value"]) for fact in keys["facts"][1:-1]] == [("holder_id", "holder_7"),
-                                                                               ("widget_id", "W1001")]
+    assert [(fact["field"], fact["value"]) for fact in keys["facts"][1:-1]] == [("holder_id", "holder_7")]
+
+
+def test_the_other_bound_rows_the_task_is_about_give_no_fact_even_where_a_recorded_user_gave_their_columns(tmp_path):
+    rules, _ = _born_rules(tmp_path, "Move my widget to slot seven please.", given=(*GIVEN, "widget_id", "slot_code"))
+    fields = {fact["field"] for fact in rules["facts"]}
+    assert not {"widget_id", "slot_code"} & fields and {"holder_id", "post_code", "contact_mail"} <= fields
 
 
 def test_a_column_the_bound_rows_hold_with_two_values_is_not_a_fact(tmp_path):
@@ -314,9 +319,10 @@ def test_a_column_two_bound_rows_hold_with_different_values_keeps_the_value_of_t
     assert bound_cells(workdir, HELD, recorded_fields(workdir)) == [("holder_id", "holder_7"), ("post_code", "40213")]
 
 
-def test_a_column_held_with_two_values_where_no_bound_row_is_referred_to_is_no_fact(tmp_path):
+def test_with_no_bound_row_referred_to_there_are_no_record_facts_with_or_without_recorded_fields(tmp_path):
     rows = {"holder_rows": {"holder_7": {"holder_id": "holder_7", "home": {"post_code": "40213"}}},
             "widget_rows": {"W1001": {"widget_id": "W1001", "sent_to": {"post_code": "99001"}}}}
     workdir = _records_workdir(tmp_path, given=("post_code", "holder_id"))
     write_json(workdir / "db.json", rows)
-    assert bound_cells(workdir, HELD, recorded_fields(workdir)) == [("holder_id", "holder_7")]
+    assert bound_cells(workdir, HELD, recorded_fields(workdir)) == []
+    assert bound_cells(workdir, HELD, set()) == []
