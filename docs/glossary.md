@@ -8,7 +8,6 @@ The words Kullback uses, defined once. Other pages link here instead of redefini
 - Task: one goal the agent is asked to reach in an Environment.
 - Run: one attempt by an agent at a Task, recorded step by step.
 - Verifier: the check that decides from the end state whether a Run succeeded.
-- Release and preview: a release replays at least 90 percent of its Tasks as recorded; a preview is below that.
 
 ## Contributor words
 

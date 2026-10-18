@@ -4,10 +4,10 @@
 
 ## Environments
 
-| Environment | Status | Tasks | Harbor Tasks | Tag |
-| --- | --- | --- | --- | --- |
-| [leibler/airline](https://huggingface.co/datasets/leibler/airline) | release | 130 | 123 | build-20261017 |
-| [leibler/retail](https://huggingface.co/datasets/leibler/retail) | release | 223 | 186 | build-20261017 |
+| Environment | Status | Tasks | Harbor Tasks |
+| --- | --- | --- | --- |
+| [leibler/airline](https://huggingface.co/datasets/leibler/airline) | release | 130 | 123 |
+| [leibler/retail](https://huggingface.co/datasets/leibler/retail) | release | 223 | 186 |
 
 ## Use it
 
@@ -25,7 +25,6 @@ uv run kullback report --workdir env
 - Task: one goal the agent is asked to reach in an Environment.
 - Run: one attempt by an agent at a Task, recorded step by step.
 - Verifier: the check that decides from the end state whether a Run succeeded.
-- Release and preview: a release replays at least 90% of its Tasks; a preview is below that.
 
 ## Known issues
 

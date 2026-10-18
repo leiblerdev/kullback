@@ -1,97 +1,54 @@
 <div align="center">
   <h1>Kullback</h1>
-  <p><strong>Rebuild an executable environment from your agent's traces, then grade and train models on it.</strong></p>
-  <p><a href="https://huggingface.co/leibler"><strong>Environments on Hugging Face</strong></a> · <a href="#quick-start"><strong>Quick start</strong></a> · <a href="docs/architecture.md"><strong>Architecture</strong></a></p>
+  <p><strong>Rebuild an executable environment from your agent's traces, then grade models on it in code.</strong></p>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue" alt="Apache-2.0"></a>
-  <a href="https://www.python.org"><img src="https://img.shields.io/badge/python-%3E%3D3.11-blue" alt="Python 3.11+"></a>
-  <a href="https://huggingface.co/leibler"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-leibler-yellow" alt="Environments on Hugging Face"></a>
+  <a href="https://huggingface.co/leibler"><img src="https://img.shields.io/badge/Hugging%20Face-leibler-yellow" alt="Hugging Face"></a>
   <br><br>
   <img src="docs/assets/kullback-tui.webp" alt="The kullback TUI" width="820">
 </div>
 
-Kullback rebuilds a running copy of your system from your agent's traces and grades any model, in code, on what it changes there. It is the open-source Builder and Runner behind [Leibler](https://leibler.dev), under Apache-2.0, and changes every build round.
+## What this is
 
-## News
+Kullback turns the recorded conversations of a tool-using agent into a running copy of the system it worked in: a
+database, tools, policy checks, a simulated user and a Verifier per Task. Any model can then be played through that
+copy, and a Verifier decides in code, from the end state, whether the model did what the user asked. It is the
+open-source harness behind [Leibler](https://leibler.dev).
 
-- **2026-10-17.** The generator now derives every Verifier from the user's ask in the recording and the policy. The recorded answer is a ruler for checking, never an input. A gated value must be one the tools can write, and a Task whose user withdrew the ask gets no Verifier. On all 353 Tasks of the two released Environments, blind model raters under one rubric (end state and actions, gold as a column) found 21 of 319 Verifiers wrong against the recording (6.6 percent, 95 percent interval 4.3 to 9.9) and 5 of 118 trusted Verifiers wrong (4.2 percent, 1.8 to 9.5). That is one rater per Task with no human review, so it is a model's judgement, not ground truth. The held-out run of 2026-10-12 on the previous harness had 13 percent of its trusted Verifiers wrong against the recording under an earlier rubric; on 2026-09-25 about a third of trusted Tasks sat on a wrong Reference.
-- **2026-09-24.** Retail replays all 223 Tasks with 193 trusted, airline all 130 with 82 trusted. Both published as `build-20260924`, airline now as a release.
-- **2026-09-23.** Retail replays all 205 Tasks with 133 trusted; airline 95 of 119 with 53 trusted. Both published as `build-20260923`.
-- **2026-09-09.** Retail published on Hugging Face as a release, airline as a preview.
+## What we did
 
-## Environments
+We rebuilt two Environments from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora and
+released them on Hugging Face: [leibler/retail](https://huggingface.co/datasets/leibler/retail) with 223 Tasks and
+[leibler/airline](https://huggingface.co/datasets/leibler/airline) with 130 Tasks. Every Task replays its recording in
+the rebuilt world, and each Verifier is derived from the user's ask and the policy, never from the recorded answer.
 
-Built 2026-09-24 with Claude Opus 5.5, published on Hugging Face as `build-20260924`.
-
-| | [Retail](https://huggingface.co/datasets/leibler/retail) | [Airline](https://huggingface.co/datasets/leibler/airline) |
-|---|---|---|
-| Tasks | 223 | 130 |
-| Tasks with a faithful replay | 100% | 100% |
-| Tool calls that match the recording | 100% | 99.9% |
-| Trusted Tasks (graded by a checked Verifier) | 193 | 82 |
-
-Every Task has at least one faithful replay. Over all recorded Runs, 456 of 456 retail and 199 of 200 airline replay faithfully.
-
-Both Environments come from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora (MIT); no package carries the recordings.
+## How to use it
 
 ```bash
+git clone https://github.com/leiblerdev/kullback.git && cd kullback && uv sync
 uv run kullback fetch leibler/retail --out env-retail
 uv run kullback run --workdir env-retail --task <task id> --model provider/model
 uv run kullback verdict --workdir env-retail
 uv run kullback report --workdir env-retail
 ```
 
-## Words
+`fetch` checks the content hash, and `ls env-retail/tasks` lists the Task ids. `run` plays one model on one Task; live
+calls need `HARNESS_ALLOW_MODEL_REQUESTS=1` and the provider's key (see `.env.example`). `verdict` scores the stored
+Runs and `report` writes `report.md`. To build an Environment from your own traces, start with `kullback ingest` and
+`kullback build`; [docs/trace-intake.md](docs/trace-intake.md) covers the trace formats, and
+[docs/README.md](docs/README.md) lists every doc.
 
-- Run and Trace: a Run is an agent's conversation with the tools; a Trace is a recorded one.
-- Reference: the Trace a Task's user context comes from.
-- Replay and agree: a replay re-drives a Trace's turns; a call agrees when its verdict is same, cosmetic or both refused.
-- Confirmed: a replay where every call agrees, none was answered by the stand-in, and nothing is missing, reordered or crashed.
-- Fidelity over Tasks: Tasks with a confirmed replay, over all Tasks.
-- Fidelity over Runs: confirmed replays over all replays.
-- Call fidelity: agreeing calls over all recorded calls.
-- Verifier: a Task's End-state check, written only by the Examiner, never by the Builder.
-- Atom: one Verifier check: required, allowed, forbidden, question, communicate or hard.
-- Gates: oracle replay, suite, loosening, false rejection, trusted.
-- Trusted: suite passed, probes fail, last version, no loosening, not over strict, not refused.
-- Open: neither trusted nor refused.
-- Refused: a Task the Builder showed nobody can finish.
-- Release and preview: a release replays at least 90% of its Tasks; a preview is below that.
+## Why it matters
 
-## Quick start
+Benchmarks written by hand are slow to make and rarely look like your own system. Your agent's traces already hold the
+tools, the data and what users ask for. Kullback turns them into Tasks with checks in code, so you can compare models
+on your own work, and train on it, without hand-writing a benchmark.
 
-Build your own Environment from a trace export:
+## Known issues
 
-```bash
-uv sync
-uv run kullback ingest path/to/traces.json --workdir work
-uv run kullback build --workdir work
-uv run kullback freeze-runner --workdir work --yes
-uv run kullback run --workdir work --task <task id> --model provider/candidate
-uv run kullback verdict --workdir work
-uv run kullback report --workdir work
-```
+Some Tasks can be wrong. A Verifier can check the wrong thing, or a Task can be impossible to finish. Treat the result
+of a single Task with care and the set as a whole as an eval. The decisions behind the harness are in
+[docs/decision-log.md](docs/decision-log.md), and what comes next is in [docs/todo.md](docs/todo.md).
 
-The build defaults to Opus 5.5 on Amazon Bedrock's global profile, with `AWS_BEARER_TOKEN_BEDROCK` or the AWS key pair and `AWS_REGION` (default `us-east-2`). `--model` takes any id models.dev lists, OpenAI on Bedrock included (`bedrock/global.openai.gpt-6-sol`). Live calls need `HARNESS_ALLOW_MODEL_REQUESTS=1`; `kullback tui` watches a build and `kullback publish` puts it on Hugging Face.
+## Licence
 
-## How it works
-
-The Builder turns traces into a database, tools, policy checks, a simulated user and a Verifier per Task. The Runner plays a candidate through it and grades what changed in code.
-
-## Read more
-
-- [docs/architecture.md](docs/architecture.md), the map
-- [docs/harness-design.md](docs/harness-design.md), the spec
-- [docs/decision-log.md](docs/decision-log.md), why
-- [docs/todo.md](docs/todo.md), what comes next
-- [CONTRIBUTING.md](CONTRIBUTING.md) and [DEVELOPING.md](DEVELOPING.md)
-
-## Citation
-
-```bibtex
-@misc{kullback2026,
-  title  = {Kullback: Executable Environments and Verifiers Rebuilt from Agent Traces},
-  author = {Krrish Agarwalla},
-  year   = {2026},
-  note   = {Open-source Builder and Runner behind Leibler. https://github.com/leiblerdev/kullback}
-}
-```
+Apache-2.0 for the harness and every package; each source corpus keeps its own licence (tau2-bench is MIT).
