@@ -16,6 +16,9 @@ A plan_search session (D399) writes situations from the web instead: each rests 
 read, kept under "source" in the Source shape a search scenario carries, with no openings and no variants.
 Its write is refused for a kind the plan does not hold and for a statement that nearly repeats a situation
 of the plan, naming the holder.
+
+A kind sharing its stem with an earlier kind of the plan is refused in both sessions, naming that kind, so
+one thing is never counted under two words (D400). A refusal quotes the words that failed.
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ from typing import Any, Iterable
 
 from kullback.runner.records import read_json, write_json
 from kullback.synth import records as R
-from kullback.synth.rule import EMPTY, World, rouge_l, statement_refusal
+from kullback.synth.rule import EMPTY, ID_SHAPE, World, id_word, rouge_l, statement_refusal
 
 PLAN = "plan.json"
 FORMAT = 1
@@ -39,6 +42,9 @@ HELD = "opening_already_held"
 NEAR = "near_repeat"
 KIND = "kind_not_in_plan"
 _HEDGES = re.compile(r"\bsometimes\b| or ", re.IGNORECASE)
+TWIN = "kind_twin"
+# Endings cut off a kind before two kinds are compared by stem (D400).
+_ENDINGS = ("ations", "ation", "ings", "ing", "ments", "ment", "ed", "es", "s")
 
 
 def situation_id(statement: str) -> str:
@@ -140,11 +146,48 @@ def _statement_why(text: str, world: World) -> str:
     return statement_refusal(text, world) or (HEDGED if _HEDGES.search(f" {text} ") else "")
 
 
-def _refused(why: str) -> ValueError:
+def _refused(why: str, text: str = "") -> ValueError:
+    """The refusal, quoting the words that failed: the hedging word or the id shaped word (D400)."""
     if why == HEDGED:
-        return ValueError("refused (hedged statement): it says two things at once; write one situation and "
-                          "give the other as a variant")
-    return ValueError(f"refused ({why.replace('_', ' ')}): write it again, following the rule")
+        found = _HEDGES.search(f" {text} ")
+        word = found.group(0).strip() if found else ""
+        return ValueError(f"refused (hedged statement: \"{word}\"): it says two things at once; write one "
+                          "situation and give the other as a variant")
+    word = id_word(text) if why == ID_SHAPE else ""
+    named = why.replace("_", " ") + (f": \"{word}\"" if word else "")
+    return ValueError(f"refused ({named}): write it again, following the rule")
+
+
+def stem(kind: str) -> str:
+    """A kind without its ending and a doubled last letter, so book and booking, cancel and cancellation meet."""
+    word = str(kind or "").lower()
+    for ending in _ENDINGS:
+        if word.endswith(ending) and len(word) - len(ending) >= 3:
+            word = word[:-len(ending)]
+            break
+    return word[:-1] if len(word) > 3 and word[-1] == word[-2] else word
+
+
+def kind_twin(plan: Plan, kind: str) -> str:
+    """The plan's first kind sharing a stem with this one where it is another word, or nothing (D400).
+
+    Two stems meet when they are equal or one starts the other at four letters or more."""
+    mine = stem(kind)
+    for situation in plan.situations:
+        other = str(situation["kind"])
+        theirs = stem(other)
+        if other == kind:
+            return ""
+        short, long_ = sorted((mine, theirs), key=len)
+        if short == long_ or (len(short) >= 4 and long_.startswith(short)):
+            return other
+    return ""
+
+
+def _no_twin(plan: Plan, kind: str) -> None:
+    twin = kind_twin(plan, kind)
+    if twin:
+        raise ValueError(f"refused ({TWIN.replace('_', ' ')}): the plan holds the kind {twin}; give {twin}")
 
 
 def write_situation(plan: Plan, world: World, items: list[dict], statement: str, kind: str,
@@ -153,12 +196,15 @@ def write_situation(plan: Plan, world: World, items: list[dict], statement: str,
     text = " ".join(str(statement or "").split())
     why = _statement_why(text, world)
     lines = [" ".join(str(line).split()) for line in variants or () if str(line).strip()]
-    why = why or next((statement_refusal(line, world) for line in lines if statement_refusal(line, world)), "")
+    failed = next((line for line in lines if statement_refusal(line, world)), "")
     if why:
-        raise _refused(why)
+        raise _refused(why, text)
+    if failed:
+        raise _refused(statement_refusal(failed, world), failed)
     word = str(kind or "").strip().lower()
     if not word or len(word.split()) != 1:
         raise ValueError("kind is one word: change, cancel, return, exchange, question, complaint, refusal or your own")
+    _no_twin(plan, word)
     made = situation_id(text)
     if any(s["id"] == made for s in plan.situations):
         raise ValueError(f"{made} already says this; attach the openings to it with attach_openings")
@@ -180,8 +226,9 @@ def write_searched(plan: Plan, world: World, statement: str, kind: str, source: 
     text = " ".join(str(statement or "").split())
     why = _statement_why(text, world)
     if why:
-        raise _refused(why)
+        raise _refused(why, text)
     word = str(kind or "").strip().lower()
+    _no_twin(plan, word)
     kinds = plan.kinds()
     if kinds and word not in kinds:
         raise ValueError(f"refused ({KIND.replace('_', ' ')}): give one of {', '.join(kinds)}")
@@ -215,5 +262,5 @@ def skip_opening(plan: Plan, items: list[dict], openings: Iterable[int], why: st
     return rows
 
 
-__all__ = ["HEDGED", "HELD", "KIND", "NEAR", "near_holder", "write_searched", "PLAN", "PLAN_BATCH", "Plan", "attach_openings", "load_plan", "opening_key",
+__all__ = ["HEDGED", "HELD", "KIND", "NEAR", "TWIN", "kind_twin", "stem", "near_holder", "write_searched", "PLAN", "PLAN_BATCH", "Plan", "attach_openings", "load_plan", "opening_key",
            "plan_path", "situation_id", "skip_opening", "unplanned", "write_plan", "write_situation"]

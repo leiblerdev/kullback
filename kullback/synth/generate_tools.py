@@ -48,7 +48,17 @@ from kullback.synth import generate_prompt
 from kullback.synth import plan as plan_mod
 from kullback.synth import prompt as prompt_mod
 from kullback.synth import records as R
-from kullback.synth.rule import EMPTY, World, byte_range, rouge_l, statement_refusal
+from kullback.synth.rule import (
+    EMPTY,
+    ID_SHAPE,
+    World,
+    byte_range,
+    id_word,
+    nearest_line,
+    rouge_l,
+    row_values,
+    statement_refusal,
+)
 from kullback.synth.world_tools import NAMES as WORLD_TOOLS
 from kullback.synth.world_tools import binding_refusal, world_tools
 
@@ -228,9 +238,24 @@ def settle_refusals(root: GenerateRoot) -> None:
             root.dropped[why] += 1
 
 
-def _policy_refusal(lines: list[str], policy: str) -> str:
-    _, missing = R.policy_lines_in(lines, policy)
-    return POLICY_LINE if missing else ""
+def _policy_refusal(lines: list[str], policy: str) -> tuple[str, str]:
+    """A policy line the policy does not hold, with the nearest line of the policy quoted (D400), or nothing."""
+    kept, missing = R.policy_lines_in(lines, policy)
+    if not missing:
+        return "", ""
+    line = next((str(line).strip() for line in lines if str(line or "").strip() not in kept), "")
+    near = nearest_line(line, policy.splitlines()) if line else ""
+    return POLICY_LINE, f"the nearest policy line is \"{near}\"" if near else ""
+
+
+def _statement_why(root: GenerateRoot, statement: str, binding: dict) -> tuple[str, str]:
+    """The statement rule with the bound rows' values spared, naming the id shaped word that matched (D400)."""
+    if not statement:
+        return EMPTY, ""
+    spare = row_values(root.world, binding)
+    why = statement_refusal(statement, root.world, spare=spare)
+    word = id_word(statement, spare) if why == ID_SHAPE else ""
+    return why, f"\"{word}\" matched" if word else ""
 
 
 # --- the write checks per source -------------------------------------------------------------
@@ -312,11 +337,18 @@ def _plan_kind(root: GenerateRoot, kind: str) -> tuple[str, str]:
     return word, (KIND_NOT_IN_PLAN if kinds and word not in kinds else "")
 
 
+def page_line(root: GenerateRoot, url: str, span: str) -> str:
+    """The line of a page read in this session nearest a span it does not hold, quoted (D400), or nothing."""
+    key = root.pages.get(url)
+    near = nearest_line(span, domain.cached_text(root.workdir, key).splitlines()) if key is not None else ""
+    return f"the nearest line of the page is \"{near}\"" if near else ""
+
+
 def _searched(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[Any, str, dict]:
     anchor = ("search", args.url, args.span)
     why, source = span_source(root, args.url, args.span, statement)
     if why:
-        return anchor, why, {}
+        return anchor, why, {"detail": page_line(root, args.url, args.span) if why == NO_SPAN else ""}
     kind, why = _plan_kind(root, args.kind)
     if why:
         return anchor, why, {"detail": "give one of " + ", ".join(root.plan.kinds())}
@@ -392,12 +424,16 @@ def pair_refusal(ask: str, end: str, world: World) -> str:
 
 
 def _why(root: GenerateRoot, args: WriteArgs, statement: str, why: str) -> tuple[str, str]:
-    why = why or (statement_refusal(statement, root.world) if statement else EMPTY)
-    why = why or pair_refusal(_one_line(args.ask), _one_line(args.end), root.world)
-    why = why or (PAIR_MISSING if root.kind == "gaps" and not (args.ask or args.end) else "")
-    why = why or _policy_refusal(args.policy_lines, root.world.policy)
     if why:
         return why, ""
+    why, detail = _statement_why(root, statement, args.binding)
+    why = why or pair_refusal(_one_line(args.ask), _one_line(args.end), root.world)
+    why = why or (PAIR_MISSING if root.kind == "gaps" and not (args.ask or args.end) else "")
+    if why:
+        return why, detail
+    why, detail = _policy_refusal(args.policy_lines, root.world.policy)
+    if why:
+        return why, detail
     near = _near_why(root, statement, situation=args.situation)
     return near if near[0] else _bound_why(root.world, root.kind, args.binding, _requires(args.requires))
 
@@ -441,7 +477,7 @@ def rewritten(root: GenerateRoot, args: RewriteArgs) -> Rows:
     requires = list(record.requires) if args.requires is None else _requires(args.requires)
     ask = record.ask if args.ask is None else _one_line(args.ask)
     end = record.end if args.end is None else _one_line(args.end)
-    why, detail = (statement_refusal(statement, root.world) if statement else EMPTY), ""
+    why, detail = _statement_why(root, statement, binding)
     why = why or pair_refusal(ask, end, root.world)
     why, detail = (why, detail) if why else _near_why(root, statement, args.id, record.situation)
     why, detail = (why, detail) if why else _bound_why(root.world, record.source.kind, binding, requires)
@@ -459,7 +495,8 @@ def rewritten(root: GenerateRoot, args: RewriteArgs) -> Rows:
 
 
 def _scenario_row(record: R.Scenario, status: str) -> dict:
-    row = {"id": record.id, "statement": record.statement, "status": status}
+    """A scenario as list_scenarios shows it; this_session marks the ones whose rows this session must not reuse."""
+    row = {"id": record.id, "statement": record.statement, "status": status, "this_session": status == "written now"}
     row = {**row, "ask": record.ask, "end": record.end} if record.ask or record.end else row
     return {**row, "situation": record.situation, "variant": record.variant} if record.situation else row
 
@@ -494,7 +531,9 @@ def _plan_tools(root: GenerateRoot) -> dict[str, tuple]:
     async def write_searched(args: SearchedArgs) -> Rows:
         why, source = span_source(root, args.url, args.span, args.statement)
         if why:
-            raise ValueError(f"refused ({why.replace('_', ' ')}): read the page and quote its span word for word")
+            near = page_line(root, args.url, args.span) if why == NO_SPAN else ""
+            raise ValueError(f"refused ({why.replace('_', ' ')}{': ' + near if near else ''}): read the page and "
+                             "quote its span word for word")
         made = plan_mod.write_searched(plan, world, args.statement, args.kind, source.model_dump(mode="json"),
                                        " ".join(args.span.split()), NEAR_REPEAT)
         return Rows(summary=f"written {made['id']}", rows=[{"id": made["id"], "kind": made["kind"]}])
@@ -525,7 +564,7 @@ def generate_tools(root: GenerateRoot) -> list[AgentTool]:
 
     async def list_scenarios(args: NoArgs) -> Rows:
         rows = _scenario_rows(root)
-        return Rows(summary=f"{len(rows)} scenarios", rows=rows)
+        return Rows(summary=f"{len(rows)} scenarios, {len(root.found)} of this session", rows=rows)
 
     async def write_scenario(args: WriteArgs) -> Rows:
         return written(root, args)

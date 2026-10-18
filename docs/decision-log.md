@@ -4037,3 +4037,35 @@ on disk; a near repeat is refused naming the holder, a kind outside the plan nam
 such; the opening asks for the count and names the thinnest kinds; a scenario of a search-born situation carries
 its span; a search scenario takes a kind from the plan and counts under it; --target runs rounds and stops on the
 target and on the 5 percent rule, generated.json holds the rounds; no rounds without a target; the report lines).
+
+### D400. The generator's prompt and refusals from the observation of the live runs (2026-10-18)
+
+What. Seven fixes from the observation of the two live generator runs (synth-1016/observe/report.md), each
+simple. The rule sentence says customers and rows used in earlier sessions may be used again, only this session's
+scenarios need different ones, and list_scenarios marks those with this_session (104 thinking turns hunted the store
+for unused customers). A row search says how many keys match and how many it does not show, and a key a table does
+not hold is answered with the table's key shape and two sample keys (200 misses, 84 cut searches). The rule binds
+the rows that fit whichever customer holds them and writes requires only when a search shows no row fits (32
+infeasible scenarios, all with requires). The id shape rule spares a word that is a value of a bound row outside the
+world's keys, and the refusal names the word that matched (22 refusals, 19 of them on amounts, zips and options). A
+kind sharing its stem with an earlier kind of the plan is refused naming that kind, in the plan session and in
+plan_search (book and booking, 8 situations). The hedge, span and policy line refusals quote the hedging word, the
+nearest line of the page and the nearest policy line, and the review's send back takes a quote from the statement,
+the ask, the end or requires (17 copy slips). The plan_search choice rule writes a situation only where the tool list
+holds an action for it or the policy says to refuse it (4 of 25).
+
+Why. Each pattern was counted in the traces with quoted examples; every fix is a prompt sentence, a refusal message or
+a result shape, none names a corpus, table, field or tool.
+
+What it does not do: a search over several field and value pairs at once stays out, since it is a query surface over
+rows; the count and the key shape are the simple part. No code checks that requires is true (a row search over the
+requires words would enforce it). The stem check is a small ending list and a four letter prefix, so two kinds that
+mean the same thing in different words still pass. The lookup shape lives in the synth world tools only; the Spec
+writer's and the Examiner's lookups keep theirs, so their recorded replays stay valid. review.py was touched for the
+span and quote refusals although the brief did not list it.
+
+Tests: tests/synth/test_gfix.py (list_scenarios marks this session's scenarios and the rule allows reuse; a search
+counts matches and a miss shows the key shape and two samples; the rule asks for requires only when no row fits; the
+id rule spares a bound row's value and names the matched word; a stem twin kind is refused naming the plan's kind in
+both sessions; the hedge word, the nearest page line and the nearest policy line are quoted and a send back may quote
+requires; the plan_search choice rule asks for a tool or a policy refusal).

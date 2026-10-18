@@ -23,9 +23,10 @@ RULE = ("A scenario is two to four sentences in the third person saying exactly 
         "product with its options, the amounts, the dates, the places), what they ask, and what they bring with "
         "them (what they know, what they get wrong, what they want instead). Every fact comes from a row you "
         "looked up and bound, or from the policy; say the values, never an id and never a tool or system name, "
-        "and write a date in words. What the world lacks for this situation goes into requires, in words, and "
-        "the scenario is still written. Bind to rows that fit the situation; across the scenarios of one session "
-        "use different customers and different rows. Beside the statement write two parts apart. The ask is what "
+        "and write a date in words. Bind to rows that fit the situation, whichever customer holds them. Write "
+        "requires only when a search shows no row of the world fits; then say in words what the world lacks, and "
+        "the scenario is still written. Customers and rows used in earlier sessions may be used again; only the "
+        "scenarios of this session need different ones, and list_scenarios marks them. Beside the statement write two parts apart. The ask is what "
         "the customer says to open the conversation, in the first person and their own words: who they are as the "
         "bound rows name them, what they have, what they want and what they bring with them, including what they get "
         "wrong; never what the agent will do and never how it ends. The end is what a correct agent leaves the world "
@@ -46,7 +47,8 @@ def receives_section() -> str:
 
 _EXAMPLES = {
     "list_openings": "list_openings: the numbered items of this session, situations or typed lines, e.g. {}.",
-    "list_scenarios": "list_scenarios: the scenarios already written, so you never write one twice, e.g. {}.",
+    "list_scenarios": ("list_scenarios: the scenarios already written, so you never write one twice; this_session "
+                       "marks the ones written in this session, e.g. {}."),
     **{name: _WORLD_EXAMPLES[name] for name in ("lookup_rows", "search_rows", "find_tools")},
     "write_scenario": ('write_scenario: write one scenario, e.g. {"statement": "<the scenario>", "source": "<the '
                        'source of this session>", "situation": "si_<id>", "variant": "", "binding": {"<table>": '
@@ -101,14 +103,17 @@ def choice_section() -> str:
             "From typed lines, write each line as a scenario of the situation it names, never the line as typed. "
             "From gaps, write one specific scenario per gap that could reach this business's support in the real "
             "world, bound to real rows you looked up, quoting the policy line a line gap names; where the world "
-            "holds no rows for it, write it with requires naming what is missing. "
+            "holds no rows for it, write it with requires naming what is missing. A search result says how many "
+            "keys match and how many it does not show, and a key a table does not hold is answered with the "
+            "table's key shape and sample keys: search by a field rather than guess a key. "
             "From scenarios sent back, follow the reason: change the quoted words as asked, keep the binding or "
             "change it to rows that fit.")
 
 
 def feedback_section() -> str:
     return ("Feedback. A written scenario answers with its id. A refused write says why: a tool name, an id shaped "
-            "value, a policy line the policy does not hold, a span the page does not hold, a line copied as typed, "
+            "value (naming the word that matched; a value of a bound row is no id), a policy line the policy does "
+            "not hold (quoting the nearest policy line), a span the page does not hold (quoting the nearest line), a line copied as typed, "
             "a binding the world does not hold (naming the table and key), a scenario bound to nothing with "
             "nothing required, a situation and variant already written (naming the scenario), a statement that "
             "says what a written scenario says (naming it), an ask and an end that share a sentence, a tool name "
@@ -160,10 +165,13 @@ def plan_search_texts(names: list[str]) -> tuple[tuple[str, str], ...]:
     choice = ("Choosing. List the plan before you write and write nothing it already says. Fill the kinds the "
               "opening names as thinnest first. Each situation is something a real customer of this business "
               "could bring to its support and that this business's policy and world could handle or refuse. "
+              "Write a situation only where the tool list holds an action for it or the policy says to refuse it. "
+              "Give a kind the plan holds, never a new word for one it holds. "
               "Search widely: different customers, different steps of the workflow, different things gone wrong. "
               "Never search for an academic paper, a benchmark, a dataset or a code repository.")
     feedback = ("Feedback. A written situation answers with its id. A refused call says why: a page you never read; "
-                "a span the page does not hold; a kind the plan does not hold, naming the kinds; a statement that "
+                "a span the page does not hold, quoting the nearest line; a kind the plan does not hold, naming the "
+                "kinds; a kind sharing its stem with a kind of the plan, naming it; a statement that "
                 "nearly repeats a situation of the plan, naming it; an empty statement, a tool name, an id shaped "
                 "value or a hedge. Follow the reason and call again.")
     stop = ("Stopping. Answer with one line and no tool call when you have written the number of situations the "
@@ -193,15 +201,16 @@ def plan_examples_section() -> str:
 def plan_choice_section() -> str:
     return ("Choosing. Read every item before you write. Write one situation per distinct thing that happens; the "
             "same thing at another step or with another remedy is a variant, never a second situation and never a "
-            "hedge. Attach an item to a situation the plan already holds rather than writing it again. Skip only "
+            "hedge. Reuse a kind the plan holds rather than a new word for it. Attach an item to a situation the plan already holds rather than writing it again. Skip only "
             "an item that is no opening ask: a turn from the middle of a conversation, identification only, no "
             "ask. A situation the policy handles that no item shows is still worth one line, with no openings.")
 
 
 def plan_feedback_section() -> str:
     return ("Feedback. A written situation answers with its id. A refused call says why: an item another "
-            "situation holds, named with its holder; an empty statement; a tool name or an id shaped value; a "
-            "hedged statement. Follow the reason and call again.")
+            "situation holds, named with its holder; an empty statement; a tool name or an id shaped value, "
+            "naming the word; a hedged statement, naming the hedging word; a kind sharing its stem with a kind of "
+            "the plan, naming it. Follow the reason and call again.")
 
 
 def plan_stop_section() -> str:

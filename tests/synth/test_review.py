@@ -179,7 +179,7 @@ def test_a_scenario_this_world_cannot_serve_files_one_finding_carrying_its_requi
 
 def test_a_send_back_quotes_words_of_the_statement_and_a_second_one_ends_it_unsure_on_the_human_queue(tmp_path):
     root, [record] = _root(tmp_path, "a holder wants things moved")
-    with pytest.raises(ValueError, match="quote is not in the statement"):
+    with pytest.raises(ValueError, match="quote is not in the scenario"):
         _fix(root, record, "wants stuff")
     _fix(root, record, "things")
     held = R.load_scenario(root.workdir, record.id)

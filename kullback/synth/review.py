@@ -49,7 +49,7 @@ from kullback.synth import generate
 from kullback.synth import prompt as prompt_mod
 from kullback.synth import records as R
 from kullback.synth import search as search_mod
-from kullback.synth.rule import World, byte_range, world_of
+from kullback.synth.rule import World, byte_range, nearest_line, world_of
 from kullback.synth.world_tools import world_tools
 
 ROOT = "review"
@@ -141,7 +141,8 @@ class RuleArgs(Strict):
 
 class FixArgs(Strict):
     id: str
-    quote: str = Field(description="The words of the statement that are wrong, copied exactly.")
+    quote: str = Field(description="The words of the scenario that are wrong, copied exactly from its statement, ask, "
+                                   "end or requires.")
     why: str = Field(description="Why those words are wrong.")
     change: str = Field(description="What they should say instead, or what to look up.")
 
@@ -197,9 +198,12 @@ def cited(root: ReviewRoot, args: RuleArgs) -> Optional[dict]:
     if url not in root.read:
         raise ValueError(f"{url or 'no URL'} was not read with read_page in this session; a search result alone "
                          f"is no cite: read the page, then cite {CITE}")
-    where = byte_range(domain.cached_text(root.workdir, root.read[url]), span) if span.strip() else None
+    text = domain.cached_text(root.workdir, root.read[url])
+    where = byte_range(text, span) if span.strip() else None
     if where is None:
-        raise ValueError(f"the span is not on the page you read at {url}; copy its words exactly")
+        near = nearest_line(span, text.splitlines())
+        raise ValueError(f"the span is not on the page you read at {url}; copy its words exactly"
+                         + (f"; the nearest line of the page is \"{near}\"" if near else ""))
     return {"tool": "read_page", "url": url, "span": span, "start": where[0], "end": where[1]}
 
 
@@ -266,10 +270,12 @@ def reason(row: dict) -> str:
 
 def sent_back(root: ReviewRoot, args: FixArgs) -> Rows:
     """The scenario sent to the generator with the quoted words, why and the change; a second request ends it
-    unsure, for a person. A quote the statement does not hold is refused."""
+    unsure, for a person. A quote no written part of it holds (statement, ask, end, requires) is refused (D400)."""
     record = _record(root, args.id)
-    if not args.quote.strip() or args.quote not in record.statement:
-        raise ValueError("quote is not in the statement: copy the wrong words of the statement exactly")
+    written = [record.statement, record.ask, record.end, *record.requires]
+    if not args.quote.strip() or not any(args.quote in part for part in written):
+        raise ValueError("quote is not in the scenario: copy the wrong words of its statement, ask, end or "
+                         "requires exactly")
     asked = {"quote": args.quote, "why": args.why, "change": args.change}
     if record.fixes >= 1:
         row = {"kind": "fix_refused", **asked}
