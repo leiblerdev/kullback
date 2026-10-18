@@ -42,7 +42,7 @@ from typing import Any, Iterable, Optional
 from kullback import processes
 from kullback.hub import harbor_world
 from kullback.hub.card import ORGANISATION, SOLUTION_LEAKS
-from kullback.hub.harbor_world import DB_NAME, JUDGE_ENV, REPLY_TOOL, TASK_NAME, WORLD_DIR, play
+from kullback.hub.harbor_world import DB_NAME, JUDGE_ENV, REPLY_TOOL, TASK_NAME, UNSCORED_EXIT, WORLD_DIR, play
 from kullback.hub.package import (
     CONTENT_MIN_LENGTH,
     FACTS_LEAD,
@@ -267,7 +267,7 @@ def _toml(value: Any) -> str:
 
 def _verifier_lines(judged: bool) -> str:
     """A Task with judge items lets the test reach a judge: the model and keys come from the host at
-    test time (empty when unset, so an unset judge fails closed), and only the verifier phase has a
+    test time (empty when unset, so an unset judge leaves the trial unscored, D405), and only the verifier phase has a
     network; the agent's never does."""
     if not judged:
         return ""
@@ -324,10 +324,14 @@ TEST_SH = f"""#!/bin/bash
 # Plays the agent's call log from the Starting state and scores the Run by code (kullback D363).
 mkdir -p /logs/verifier
 cd /app
-if ! python -m kullback.hub.harbor_world verify /tests/{VERIFIER_NAME} --logs /logs/verifier; then
+python -m kullback.hub.harbor_world verify /tests/{VERIFIER_NAME} --logs /logs/verifier
+status=$?
+# {UNSCORED_EXIT}: a judge item went unanswered, so the trial is unscored and its reward.json says why (D405).
+if [ "$status" -ne 0 ] && [ "$status" -ne {UNSCORED_EXIT} ]; then
   echo 0 > /logs/verifier/reward.txt
   echo '{{"reward": 0}}' > /logs/verifier/reward.json
 fi
+exit $status
 """
 
 
@@ -732,8 +736,8 @@ def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_o
         "tag": build.tag,
         "kullback_version": kullback_version(),
         "git_sha": build.sha,
-        "reward": dict(REWARD_SHAPE, harbor="gated then weighted; an unscored gate gives 0 and is named "
-                                            "unscored_gate in items.json; reward.json carries the number alone"),
+        "reward": dict(REWARD_SHAPE, harbor="gated then weighted; an unanswered judge item leaves the trial unscored "
+                                            f"(reward.json says why, exit {UNSCORED_EXIT}); else reward.json carries the number alone"),
         "counts": _counts(listed, recorded, skipped),
         # Exported with no solution/: no Run passes on replay (D399). Masked, as left_out.
         "no_oracle": [{"task": row["kullback_task_id"][-MASK:], "reason": NO_ORACLE}

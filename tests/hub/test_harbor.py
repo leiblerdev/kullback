@@ -337,24 +337,86 @@ def test_a_gated_judge_item_the_judge_rejects_scores_zero(tmp_path, monkeypatch)
     assert _oracle_score(out, tmp_path)["reward"] == 0.0
 
 
-def test_with_no_judge_named_a_gated_judge_item_fails_closed_and_judge_json_says_so(tmp_path, monkeypatch):
+JUDGE_WEIGHTED = [{"id": "a1", "kind": "required", "gate": True, "predicate_src": "wrote('rename_widget')",
+                   "target": {"kind": "write", "tool": "rename_widget"}},
+                  {**JUDGE_GATE[0], "gate": False}]
+
+
+def _judge_goes_quiet(monkeypatch) -> None:
+    """The judge model answers every call with nothing, which the judge's own retry ends as an outage (D400)."""
+    from kullback.ai.provider import TestModel
+
+    monkeypatch.setattr(harbor_world, "live_model", lambda model_id: TestModel([""], loop=True))
+    monkeypatch.setenv(harbor_world.JUDGE_VAR, "bedrock/anthropic.some-judge")
+
+
+def _assert_unscored(body: dict, logs: Path, status: str) -> None:
+    """No reward, no reward.txt, a reward.json Harbor refuses as a number, and the judge status in items.json."""
+    assert body["reward"] is None and body["judge_status"] == {"j1": status}
+    assert not (logs / "reward.txt").exists()
+    assert json.loads((logs / "reward.json").read_text()) == {"reward": f"unscored: judge j1 {status}"}
+    items = json.loads((logs / "items.json").read_text())
+    assert {row["id"]: row.get("status") for row in items["items"]}["j1"] == status
+
+
+def test_a_judge_outage_on_a_gated_item_leaves_the_trial_unscored_not_failed(tmp_path, monkeypatch):
+    out = _judged(tmp_path)
+    _judge_goes_quiet(monkeypatch)
+    _assert_unscored(_oracle_score(out, tmp_path), tmp_path / "logs", "outage")
+
+
+def test_a_judge_outage_on_a_weighted_item_leaves_the_trial_unscored_not_passed(tmp_path, monkeypatch):
+    workdir = _workdir(tmp_path / "work", atoms=JUDGE_WEIGHTED)
+    wheel = tmp_path / "k.whl"
+    wheel.write_bytes(b"")
+    harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
+    _judge_goes_quiet(monkeypatch)
+    body = _oracle_score(tmp_path / "out", tmp_path)
+    _assert_unscored(body, tmp_path / "logs", "outage")
+    assert body["reward_had_it_been_scored"] == 1.0, "the masked score that used to be reported"
+
+
+def test_a_weighted_judge_item_the_judge_answers_scores_as_before(tmp_path, monkeypatch):
+    workdir = _workdir(tmp_path / "work", atoms=JUDGE_WEIGHTED)
+    wheel = tmp_path / "k.whl"
+    wheel.write_bytes(b"")
+    harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
+    _judge_says(monkeypatch, 0)
+    body = _oracle_score(tmp_path / "out", tmp_path)
+    assert 0.0 < body["reward"] < 1.0 and "unscored_reason" not in body, "past the gate, the rejected item costs its weight"
+    assert (tmp_path / "logs" / "reward.txt").read_text() == f"{body['reward']}\n"
+    assert json.loads((tmp_path / "logs" / "reward.json").read_text()) == {"reward": body["reward"]}
+
+
+def test_with_no_judge_named_a_judge_item_leaves_the_trial_unscored_and_judge_json_says_so(tmp_path, monkeypatch):
     out = _judged(tmp_path)
     monkeypatch.delenv(harbor_world.JUDGE_VAR, raising=False)
-    body = _oracle_score(out, tmp_path)
-    assert body["reward"] == 0.0 and body["unscored_gates"] == ["j1"]
+    _assert_unscored(_oracle_score(out, tmp_path), tmp_path / "logs", harbor_world.NOT_CONFIGURED)
     assert harbor_world.JUDGE_VAR in json.loads((tmp_path / "logs" / "judge.json").read_text())["error"]
 
 
-def test_a_judge_that_cannot_start_fails_closed(tmp_path, monkeypatch):
+def test_a_judge_that_cannot_start_leaves_the_trial_unscored(tmp_path, monkeypatch):
     out = _judged(tmp_path)
 
     def refused(model_id):
         raise RuntimeError("live model requests are off")
     monkeypatch.setattr(harbor_world, "live_model", refused)
     monkeypatch.setenv(harbor_world.JUDGE_VAR, "bedrock/anthropic.some-judge")
-    body = _oracle_score(out, tmp_path)
-    assert body["reward"] == 0.0 and body["unscored_gates"] == ["j1"]
+    _assert_unscored(_oracle_score(out, tmp_path), tmp_path / "logs", harbor_world.NOT_STARTED)
     assert "live model requests are off" in json.loads((tmp_path / "logs" / "judge.json").read_text())["error"]
+
+
+def test_an_unscored_trial_exits_with_its_own_code_and_the_test_step_keeps_its_reward_json(tmp_path, monkeypatch):
+    out = _judged(tmp_path)
+    _judge_goes_quiet(monkeypatch)
+    app = _app(out, tmp_path)
+    for name, arguments in _solve(out):
+        harbor_world.call(app, name, arguments)
+    verifier = out / "widgets-widget_task" / "tests" / "verifier.json"
+    code = harbor_world.verify_main([str(verifier), "--logs", str(tmp_path / "logs")], app=app)
+    assert code == harbor_world.UNSCORED_EXIT != 0
+    test_sh = (out / "widgets-widget_task" / "tests" / "test.sh").read_text()
+    assert f'-ne {harbor_world.UNSCORED_EXIT} ]' in test_sh and test_sh.rstrip().endswith("exit $status")
 
 
 def test_only_a_task_with_judge_items_passes_the_judge_through_and_opens_the_verifier_network(tmp_path, dataset):

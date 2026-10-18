@@ -15,11 +15,12 @@ still asks the agent to ask before it writes, and the user can never say no.
 
 The Verifier runs the same play over the log the agent left, then scores the Run with the
 Verdict by code. The reward is gated then weighted as the Verdict scores it, and it fails closed:
-a gated item that cannot be scored (a judge item with no judge) gives 0 and is named.
+a gated item that cannot be scored by code gives 0 and is named.
 
 Judge items are scored by the model JUDGE_VAR names at test time, one call per item (D328), when it
 is set and live calls are allowed (the Harness's own switch); its answers and spend go to judge.json.
-Unset, refused or failed, the judge leaves the item unscored, and the fail-closed rule decides.
+Unset, refused, unreadable or out after its retry, the judge leaves the trial unscored (D405): no reward,
+a reward.json that says why, and exit UNSCORED_EXIT, so Harbor records an exception rather than a 0 or a 1.
 """
 
 from __future__ import annotations
@@ -68,6 +69,13 @@ JUDGE_VAR = "KULLBACK_JUDGE_MODEL"
 JUDGE_ENV = (JUDGE_VAR, LIVE_ENV_VAR, *BEDROCK_BEARER_VARS, *BEDROCK_KEY_VARS, BEDROCK_SESSION_VAR,
              "AWS_REGION", "ANTHROPIC_API_KEY")
 JUDGE_NAME = "judge.json"
+# D405: a judge item that did not come back answered makes the trial unscored, never a pass or a fail. The
+# verifier exits with this code and reward.json carries a word where Harbor takes a number, so Harbor records
+# the trial as an exception whose reason names the judge status.
+UNSCORED_EXIT = 3
+ANSWERED = "answered"
+NOT_CONFIGURED = "not_configured"
+NOT_STARTED = "not_started"
 
 
 class ConsentUser:
@@ -264,11 +272,38 @@ def score(app: Path, verifier_path: Path, logs: Path, *, use_judge: bool = True)
     body = reward_of(list(result.items), failed_closed=closed)
     body.update({"class": result.class_, "failing_atom": result.failing_atom,
                  "verdict_score": result.score, "notes": list(result.notes)})
+    unjudged = {item: status for item, status in judge_statuses(verifier, answers).items()
+                if status != ANSWERED} if use_judge else {}
     logs.mkdir(parents=True, exist_ok=True)
+    if unjudged:
+        return _unscored(body, unjudged, logs)
     (logs / "reward.txt").write_text(f"{body['reward']}\n", encoding="utf-8")
     # Harbor reads reward.json before reward.txt and takes every value in it as a reward, so it
     # carries the number alone; the items go beside it, where the trial keeps them.
     write_json(logs / "reward.json", {"reward": body["reward"]})
+    write_json(logs / "items.json", body)
+    return body
+
+
+def judge_statuses(verifier: Verifier, answers: Optional[dict]) -> dict[str, str]:
+    """Each judge item's status after the judge's own retry (D400): answered, unreadable, outage, or not
+    configured or not started where no judge answered anything."""
+    fallback = NOT_CONFIGURED if not os.environ.get(JUDGE_VAR, "").strip() else NOT_STARTED
+    return {atom.id: (getattr((answers or {}).get(atom.id), "status", "") or fallback)
+            for atom in verifier.atoms if atom.judge}
+
+
+def _unscored(body: dict, unjudged: dict[str, str], logs: Path) -> dict:
+    """The trial with no reward (D405): items.json keeps every item and each judge status, reward.json says
+    unscored with the reason, and no reward.txt is left for a reader to take as a number."""
+    reason = "unscored: judge " + ", ".join(f"{item} {status}" for item, status in sorted(unjudged.items()))
+    for row in body["items"]:
+        if row["id"] in unjudged:
+            row["status"] = unjudged[row["id"]]
+    body.update({"reward": None, "unscored_reason": reason, "judge_status": unjudged,
+                 "reward_had_it_been_scored": body["reward"]})
+    (logs / "reward.txt").unlink(missing_ok=True)
+    write_json(logs / "reward.json", {"reward": reason})
     write_json(logs / "items.json", body)
     return body
 
@@ -348,8 +383,8 @@ def verify_main(argv: Optional[list[str]] = None, app: Path = APP) -> int:
     args = parser.parse_args(argv)
     body = score(app, args.verifier, args.logs)
     print(json.dumps({"reward": body["reward"], "class": body["class"],
-                      "unscored_gates": body["unscored_gates"]}))
-    return 0
+                      "unscored_gates": body["unscored_gates"], "unscored_reason": body.get("unscored_reason")}))
+    return UNSCORED_EXIT if body.get("unscored_reason") else 0
 
 
 def main(argv: Optional[list[str]] = None) -> int:

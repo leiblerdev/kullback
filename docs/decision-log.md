@@ -3894,3 +3894,23 @@ package cannot run. A package that runs without its policy is a different Enviro
 
 Tests: tests/hub/test_publish.py (a packaged workdir passes the workdir check when the build wrote no policy file or
 environment.json; Tasks recorded under different prompts ship no policy and the fetch names it missing).
+
+### D405. A judge outage leaves a Harbor trial unscored, never a pass or a fail (2026-10-18)
+
+What. The defect: in the shipped Harbor test step a judge item with no answer was masked out of the weights when it
+was not gated (items.json noted judge_item:<id>:unjudged and score_masked), so a trial's reward rose from 0.857 to
+1.0 when the judge was unreachable, and failed closed to 0 when it was gated. The fix, kullback/hub/harbor_world.py:
+after the judge's own retry (D400), a judge item whose status is not answered (outage, unreadable, not_configured
+when KULLBACK_JUDGE_MODEL is unset, not_started when the judge cannot start) makes the trial unscored. No
+reward.txt, a reward.json of `{"reward": "unscored: judge <item> <status>"}`, items.json with each item and its
+judge status and the score it would have had, and `verify` exits UNSCORED_EXIT (3). The shipped test.sh keeps that
+exit and those files; any other failure still writes 0. Harbor ignores the test step's exit code and refuses a
+non-numeric reward with VerifierOutputParseError, whose message quotes the reason, so the trial lands with
+exception_info and no verifier_result. Items scored by code and answered judge items score as before.
+
+Why. .claude/herdr/publish-1017/package-r11.md: the bench Worker found the masked reward. For a benchmark an
+unjudged item says nothing about the agent: neither a pass nor a fail may be counted.
+
+Tests: tests/hub/test_harbor.py (an outage on a gated item and on a weighted item leaves the trial unscored; no judge
+named and a judge that cannot start do the same; an answered weighted item scores as before; an unscored trial exits
+with its own code and the test step keeps its reward.json).

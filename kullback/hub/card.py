@@ -164,7 +164,7 @@ def harbor_section(harbor: dict) -> list[str]:
     example = _harbor_example(harbor) or "<task>"
     return [f"`{HARBOR_DIR}/` holds {counts.get('exported', 0)} Tasks in the [Harbor](https://harborframework.com) "
             f"task format; a judge item is scored at test time by the model `{JUDGE_VAR}` names, with "
-            f"`{LIVE_ENV_VAR}=1` and the model's keys, and scores 0 without one.", "",
+            f"`{LIVE_ENV_VAR}=1` and the model's keys; without an answer the trial is unscored, not 0.", "",
             "```bash", f"uv run harbor run -p {HARBOR_DIR}/{example} -a oracle",
             f"uv run harbor run -p {HARBOR_DIR}/{example} -a <agent> -m <provider/model>", "```", ""]
 
