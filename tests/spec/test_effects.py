@@ -121,7 +121,7 @@ def test_the_sanity_gate_still_fails_a_change_outside_the_tool_effects():
 
 
 def _called(**args) -> dict:
-    """A weighed called item: no policy line names the tool, so its gate would be weighed (D410)."""
+    """A weighed called item: no policy line names the tool, so its gate would be weighed (D414)."""
     return {"id": "c1", "kind": "called", "tool": "pay", "args": args, "fact_ids": ["f1"], "gate": False}
 
 

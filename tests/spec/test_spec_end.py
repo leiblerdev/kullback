@@ -1,4 +1,4 @@
-"""The Spec writer of a born Task gates what the scenario's end says (D410).
+"""The Spec writer of a born Task gates what the scenario's end says (D414).
 
 The end lies beside a born Task in born/<task>.json; the writer receives it as end facts, never a user turn.
 The models are the harness TestModel with scripted replies, over the invented world of tests/spec/test_writer.py.

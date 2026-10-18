@@ -27,7 +27,7 @@ is not a stop either: one live session looked rows up for forty turns, had its n
 its summary after that was read as done with nothing written. The loop asks once, with a one-line user
 message, to continue in smaller turns; a second cut turn ends the run. A cut turn that did call tools had
 its last call cut (the cap falls at the end of the output), so that call is not run: its result is
-CUT_CALL, and the complete calls before it run as usual (D402). Twenty live refusals were a cut call's
+CUT_CALL, and the complete calls before it run as usual (D413). Twenty live refusals were a cut call's
 bare argument error, which told the model nothing about why.
 
 Unfinished work. A caller that can tell what is left gives the state an `unfinished` hook. It is asked
@@ -35,7 +35,7 @@ only when the run would otherwise end (no tool call, nothing pending, no follow 
 appended as a user message, at most UNFINISHED_ASKS times per run, and then the run ends. The line is
 the caller's: the loop knows nothing of what is unfinished. At the turn cap the hook is asked once more:
 a non empty line gives the run one last turn, the line after LAST_TURN, so items end written, skipped or
-explained rather than cut off with the cap (D402); the next turn past the cap stops the run.
+explained rather than cut off with the cap (D413); the next turn past the cap stops the run.
 
 A refusal that knows the corrected call. A tool may refuse arguments with a `RetryableToolError`,
 whose `ask` is the corrected call in one line; the loop appends that ask as a user message after the

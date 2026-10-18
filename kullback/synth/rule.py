@@ -90,7 +90,7 @@ def _named(lowered: str, needle: str) -> bool:
 
 def id_word(text: str, spare: Iterable[str] = ()) -> str:
     """The first id shaped word of a text (a code, a number of five digits, an email, a phone number) that is
-    not spared, or nothing. A spared word is a value a bound row holds outside its keys (D400)."""
+    not spared, or nothing. A spared word is a value a bound row holds outside its keys (D411)."""
     kept = {str(word).lower() for word in spare}
     found = [m.group(0) for m in _ID.finditer(text)] + [m.group(0) for m in _EMAIL.finditer(text)]
     found += [m.group(0).strip() for m in _PHONE.finditer(text)
@@ -127,7 +127,7 @@ def _leaves(node: Any) -> Iterable[str]:
 
 
 def row_values(world: World, binding: dict) -> set[str]:
-    """Every value the bound rows hold outside the world's keys, as words: the words the id rule spares (D400)."""
+    """Every value the bound rows hold outside the world's keys, as words: the words the id rule spares (D411)."""
     keys = {str(key).lower() for rows in world.state.values() if isinstance(rows, dict) for key in rows}
     bound = [world.state.get(str(table), {}).get(str(key)) for table, key in (binding or {}).items()
              if isinstance(world.state.get(str(table)), dict)]
@@ -136,7 +136,7 @@ def row_values(world: World, binding: dict) -> set[str]:
 
 
 def nearest_line(text: str, lines: Iterable[str]) -> str:
-    """The line most like the text by ROUGE-L, so a refusal can quote what the model nearly copied (D400)."""
+    """The line most like the text by ROUGE-L, so a refusal can quote what the model nearly copied (D411)."""
     best = max(((rouge_l(text, line), line.strip()) for line in lines if str(line).strip()), default=(0.0, ""))
     return best[1]
 

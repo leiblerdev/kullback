@@ -28,7 +28,7 @@ value is refused with the field's reachable values; a weighed one is kept with t
 warning. Nulls and `not` sets are never checked. A World built without a `Reach` checks nothing here.
 State items may name an alternative end state (`alt`); one without belongs to every end state, and a
 Run passes the state items when any one end state matches.
-A gated called item stands only where its policy line names the tool (D410): any other path is the
+A gated called item stands only where its policy line names the tool (D414): any other path is the
 agent's to choose, so the gate is weighed. A told item citing a fact of a scenario's end (`is_end_fact`)
 is a told item asked for. A said value that is one number compiles to the shape the frozen Runner's
 substring match finds most widely (`said_shape`).
@@ -178,7 +178,7 @@ def _on_side(kept: dict, facts: list) -> bool:
     return kept.get("kind") in TOLD_KINDS or not any(getattr(fact, "kind", None) in ("do", "keep") for fact in facts)
 
 
-# The recording a fact of a scenario's end names (D410): the end is the truth a born Task was written
+# The recording a fact of a scenario's end names (D414): the end is the truth a born Task was written
 # with, read off the workdir by spec/writer.py, never a user turn.
 END_SOURCE = "scenario_end"
 
@@ -202,7 +202,7 @@ def names_tool(line: Any, tool: str) -> bool:
 
 
 def _unfixed_path(kept: dict, facts: list) -> bool:
-    """Whether a called gate names a tool its policy line does not name: the path is not fixed (D410). A
+    """Whether a called gate names a tool its policy line does not name: the path is not fixed (D414). A
     hand-off keeps its own rule (`World.check`): it gates where its policy line names a hand-off."""
     tool = str(kept.get("tool") or "")
     return kept.get("kind") == "called" and not is_transfer(tool) and not names_tool(kept.get("policy_line"), tool)
@@ -210,7 +210,7 @@ def _unfixed_path(kept: dict, facts: list) -> bool:
 
 # Why a told gate with no told fact and no policy line is weighed (D369).
 TELL_WEIGHED = "untold"
-# Why a called gate whose policy line does not name its tool is weighed (D410).
+# Why a called gate whose policy line does not name its tool is weighed (D414).
 PATH_WEIGHED = "path not fixed"
 
 # Each weighing rule in order: the test on (kept item, its facts), the reason kept on it, the line for the writer.
@@ -1030,7 +1030,7 @@ SAID_NUMBER = re.compile(r"[$\u20ac\u00a3]?\s*(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s
 
 
 def said_shape(value: Any) -> Any:
-    """A said value as the Runner's lowercased substring match finds it most widely (D410): a value that is one
+    """A said value as the Runner's lowercased substring match finds it most widely (D414): a value that is one
     number loses its currency sign, its unit and its trailing zeros, and with cents its digits past the last
     thousands group, so "$3,648.02", "3648.02" and "3,648.02" all hold "648.02". Anything else is unchanged."""
     found = SAID_NUMBER.fullmatch(str(value).strip()) if isinstance(value, (str, int, float)) \

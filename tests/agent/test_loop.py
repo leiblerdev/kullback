@@ -349,7 +349,7 @@ def test_the_unfinished_hook_is_asked_only_when_the_run_would_end_and_at_most_tw
 
 
 def test_a_session_at_its_turn_cap_gets_one_last_turn_carrying_the_unfinished_line(add_tool):
-    """Every live session that still had items ended on the cap, so the unfinished ask never fired (D402)."""
+    """Every live session that still had items ended on the cap, so the unfinished ask never fired (D413)."""
     state = LoopState(system="sys", max_turns=2, unfinished=lambda: "item 1 is not written")
     model = TestModel([reply(None, call("add", {"a": 1, "b": 1}))], loop=True)
     events, state = run(model, [add_tool], state=state)
@@ -366,7 +366,7 @@ def test_a_session_at_its_turn_cap_with_nothing_unfinished_stops_on_the_cap(add_
 
 
 def test_a_call_cut_at_the_output_cap_is_answered_as_cut_while_the_complete_calls_on_its_turn_run(add_tool):
-    """Twenty live refusals were a cut last call's bare argument error (D402)."""
+    """Twenty live refusals were a cut last call's bare argument error (D413)."""
     cut = ModelReply(tool_calls=[call("add", {"a": 1, "b": 2}), call("add", {"a": 3})], stop_reason="max_tokens")
     events, state = run(TestModel([cut, "done."]), [add_tool])
     results = [m for m in state.messages if isinstance(m, ToolResultMessage)]

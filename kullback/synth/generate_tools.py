@@ -18,7 +18,7 @@ A scenario also carries the customer's opening words (ask) and what a correct ag
 apart (D393). The write and the rewrite refuse, by code, an ask and an end that share a sentence, a tool
 name in either, and one of the pair given without the other; the reason names which.
 
-A plan_search session (D399) holds the web tools and write_situation over the plan: a situation from the span
+A plan_search session (D410) holds the web tools and write_situation over the plan: a situation from the span
 of a page it read, in a kind the plan holds, refused as a near repeat of any situation naming the holder. A
 search scenario takes a kind from the plan too, refused as kind_not_in_plan as a policy line gap's is.
 """
@@ -239,7 +239,7 @@ def settle_refusals(root: GenerateRoot) -> None:
 
 
 def _policy_refusal(lines: list[str], policy: str) -> tuple[str, str]:
-    """A policy line the policy does not hold, with the nearest line of the policy quoted (D400), or nothing."""
+    """A policy line the policy does not hold, with the nearest line of the policy quoted (D411), or nothing."""
     kept, missing = R.policy_lines_in(lines, policy)
     if not missing:
         return "", ""
@@ -249,7 +249,7 @@ def _policy_refusal(lines: list[str], policy: str) -> tuple[str, str]:
 
 
 def _statement_why(root: GenerateRoot, statement: str, binding: dict) -> tuple[str, str]:
-    """The statement rule with the bound rows' values spared, naming the id shaped word that matched (D400)."""
+    """The statement rule with the bound rows' values spared, naming the id shaped word that matched (D411)."""
     if not statement:
         return EMPTY, ""
     spare = row_values(root.world, binding)
@@ -331,14 +331,14 @@ def span_source(root: GenerateRoot, url: str, span: str, statement: str) -> tupl
 
 
 def _plan_kind(root: GenerateRoot, kind: str) -> tuple[str, str]:
-    """The first word of a kind, and why it is refused where the plan holds kinds and not this one (D398, D399)."""
+    """The first word of a kind, and why it is refused where the plan holds kinds and not this one (D398, D410)."""
     word = (kind.lower().split() or [""])[0]
     kinds = root.plan.kinds()
     return word, (KIND_NOT_IN_PLAN if kinds and word not in kinds else "")
 
 
 def page_line(root: GenerateRoot, url: str, span: str) -> str:
-    """The line of a page read in this session nearest a span it does not hold, quoted (D400), or nothing."""
+    """The line of a page read in this session nearest a span it does not hold, quoted (D411), or nothing."""
     key = root.pages.get(url)
     near = nearest_line(span, domain.cached_text(root.workdir, key).splitlines()) if key is not None else ""
     return f"the nearest line of the page is \"{near}\"" if near else ""
@@ -614,7 +614,7 @@ def bus_for(workdir: Any) -> Bus:
 def turns_for(root: GenerateRoot, per_item: float = 0) -> int:
     """The turn budget of one session, by its kind: its own for the search, else sized per item.
 
-    `per_item` is what an earlier pass spent per item; a retry gets at least that many turns per item (D402),
+    `per_item` is what an earlier pass spent per item; a retry gets at least that many turns per item (D413),
     since the items it is handed are the ones a first pass could not finish."""
     if root.kind == "search":
         return min(MAX_TURNS, SEARCH_TURNS)

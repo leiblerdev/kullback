@@ -1,7 +1,7 @@
 """Tasks born of passed scenarios, through the mechanism every recorded Task already goes through (D389).
 
 A passed scenario with a binding, an ask, an end and nothing in requires becomes one Task and one
-recording in the Environment's workdir, whatever its source (D411): a search born scenario carries its
+recording in the Environment's workdir, whatever its source (D415): a search born scenario carries its
 page and span as provenance, as a recordings one carries its Task ids. The Task record is plain; the recording names the scenario
 (source "scenario", raw_hash the scenario id) and holds one user turn whose content is the scenario's
 ask, or its statement where it has no ask, and nothing else, so `scenario_of` reads where a Task came from off its recordings. The intent
@@ -12,7 +12,7 @@ a Task sample, the born ids join it, so the tiers see them. Its Starting state i
 (D390): an empty overlay, since the binding names rows that exist and nothing is pinned. Its recording
 carries the agent prompt most recordings of the workdir carry (D395), since the writer and the Examiner read
 the policy off a Task's recording and a work copy ships no policy file. The scenario's end goes beside it
-(D410): born/<task>.json holds it for the Spec writer, which gates what the end says, and the recording's
+(D414): born/<task>.json holds it for the Spec writer, which gates what the end says, and the recording's
 user rules (user_rules/<run id>.json) carry the ask as the goal and the end as a fact, so a user asked to
 confirm the end's change can answer. Both are written in the workdir, so a work copy carries them.
 """
@@ -36,12 +36,12 @@ SOURCE = "scenario"
 TASKS_INDEX = "tasks.json"
 BUILD_MANIFEST = "build.json"
 RULES_DIR = "user_rules"
-# The user fact that carries the scenario's end (D410).
+# The user fact that carries the scenario's end (D414).
 END_FIELD = "end"
 
 
 def bears_task(scenario: Scenario) -> bool:
-    """Whether a scenario may become a Task (D411): passed, bound to rows, with an ask and an end, needing
+    """Whether a scenario may become a Task (D415): passed, bound to rows, with an ask and an end, needing
     nothing, whatever its source."""
     return (scenario.status == "passed" and bool(scenario.binding) and bool(scenario.ask.strip())
             and bool(scenario.end.strip()) and not scenario.requires)
@@ -118,7 +118,7 @@ def _write_prompt(workdir: Path, trace_id: str, system_prompt: Optional[str]) ->
 
 
 def _write_end(workdir: Path, task_id: str, scenario: Scenario) -> bool:
-    """The scenario's end beside a born Task (D410), for the Spec writer. False where it is there already."""
+    """The scenario's end beside a born Task (D414), for the Spec writer. False where it is there already."""
     path = born_path(workdir, task_id)
     body = {"scenario": scenario.id, "end": scenario.end}
     if read_json(path, None) == body:
@@ -164,7 +164,7 @@ def born_tasks(workdir: Any, store_dir: Any, *, limit: Optional[int] = None) -> 
     """One Task and one recording per scenario that bears a Task, in id order, up to `limit`; a scenario
     whose Task already exists is skipped, though its overlay is written where it lacks one (D390) and its
     recording gets the shared agent prompt where it lacks one (D395), and each gets the scenario's end and
-    its recording's user rules where it lacks them (D410). Returns the counts and the ids born;
+    its recording's user rules where it lacks them (D414). Returns the counts and the ids born;
     prompts_written counts the recordings written with a prompt, new or repaired, ends_written and
     rules_written the ends and user rules written, new or repaired."""
     root = Path(workdir)

@@ -461,7 +461,7 @@ def _spec(workdir: Path, task_id: str) -> Optional[Spec]:
 
 def asked_facts(spec: Optional[Spec]) -> list[str]:
     """The Intent facts the user volunteered, as the user would say them: no echo of the agent, nothing ruled out,
-    and no fact of a scenario's end, which no user said (D410)."""
+    and no fact of a scenario's end, which no user said (D414)."""
     from kullback.spec.items import is_end_fact
 
     if spec is None:

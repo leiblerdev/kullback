@@ -22,14 +22,14 @@ also after a fix rewrites its statement. The fix step is a session too, under th
 No session leaves items unwritten (D394): after the batched pass of one source, the items still unwritten
 run once more in batches of half the size, at least RETRY_MIN; a session that ended empty or on its cap
 left its items unwritten, so they are in that set. What the second pass wrote is counted per source. A retry
-session gets at least the turns per item the first pass spent (D402): its items are the hard ones, and the
+session gets at least the turns per item the first pass spent (D413): its items are the hard ones, and the
 floor alone capped all eight small retries of one live run.
 
 The gaps pass runs last (D398): the recordings mirror the recorded mix, so it asks, by code, for what the
 store lacks: one item per cell of (situation kind, bound table) no kept scenario hits and one per policy
 line no kept scenario quotes, one scenario each, through the same sessions, write tools and refusals.
 
-Situations come from the web too (D399): plan_search sessions read the web as the search source does and write
+Situations come from the web too (D410): plan_search sessions read the web as the search source does and write
 situations, each on a page span, into the plan on disk, the thinnest kinds named first. The recordings pass
 then writes their scenarios, the source carrying the span. With a target, generate runs in rounds (plan_search,
 the recordings pass over the situations with no scenario yet, the gaps pass) until the store keeps the target
@@ -70,13 +70,13 @@ GAP_PER = 1
 # A policy line under this many words is a heading or a field name, never a rule a situation turns on.
 LINE_WORDS = 5
 _PUNCT = re.compile(r"[^\w\s]")
-# How many situations one plan_search session is asked for, at most (D399).
+# How many situations one plan_search session is asked for, at most (D410).
 PLAN_SEARCH_BATCH = 25
-# How many scenarios a plan_search situation is counted on when a round sizes its ask (D399).
+# How many scenarios a plan_search situation is counted on when a round sizes its ask (D410).
 PER_SITUATION = 3
-# A round adding under this share of the target ends the rounds (D399).
+# A round adding under this share of the target ends the rounds (D410).
 STOP_SHARE = 0.05
-# How many of the thinnest kinds the plan_search opening names (D399).
+# How many of the thinnest kinds the plan_search opening names (D410).
 THIN = 3
 
 
@@ -291,7 +291,7 @@ def plan_search(generation: Generation, count: int, *, engine: Any = None, env: 
                 corpus_url: Optional[str] = None, exclude: Iterable[str] = (),
                 refuse: Optional[Callable[[str], str]] = None) -> int:
     """Situations from the web into the plan on disk, at most PLAN_SEARCH_BATCH per session, until `count` are
-    written or a session writes none (D399); how many were written."""
+    written or a session writes none (D410); how many were written."""
     if generation.model is None or count <= 0:
         return 0
     pages: dict = {}
@@ -450,7 +450,7 @@ def fold(records: list[R.Scenario]) -> tuple[list[R.Scenario], list[dict]]:
 
 def _kinds(kept: list[R.Scenario], plan: plan_mod.Plan) -> dict[str, str]:
     """Each kept scenario's situation kind: its situation's in the plan, else the kind it was written with (a
-    search scenario, D399), else the gap it fills, else none."""
+    search scenario, D410), else the gap it fills, else none."""
     kinds = {situation["id"]: situation["kind"] for situation in plan.situations}
     return {r.id: kinds.get(r.situation) or r.kind or r.source.gap.get("kind") or "none" for r in kept}
 
@@ -488,7 +488,7 @@ def coverage(kept: list[R.Scenario], folded: list[dict], dropped: Counter, ungro
 
 
 def diversity(workdir: Any, plan: plan_mod.Plan, tables: Iterable[str]) -> dict:
-    """How diverse the store is (D399): the median pairwise ROUGE-L of its statements, scenarios per situation
+    """How diverse the store is (D410): the median pairwise ROUGE-L of its statements, scenarios per situation
     kind, the cells hit of possible, and situations per kind in the plan."""
     kept = R.load_scenarios(workdir)
     texts = [record.statement for record in kept]
@@ -534,7 +534,7 @@ def _one_pass(generation: Generation, wanted: set, searching: bool, asks: Any, b
 
 
 def _stop(generation: Generation, target: int, last: dict) -> str:
-    """Why the rounds end after this one (D399), or nothing."""
+    """Why the rounds end after this one (D410), or nothing."""
     if last["kept"] >= target:
         return "target"
     if generation.over():
@@ -569,7 +569,7 @@ def generate(workdir: Any, *, model: Any, asks: Any = None, searching: bool = Tr
     """Run the sources named as sessions, the gaps last, fold the repeats, write the new records and the counts.
 
     A record already in the store keeps its status and its review: generating again adds, never resets.
-    Without the recordings no plan session runs; the plan on disk is read as it is. With a target (D399), the
+    Without the recordings no plan session runs; the plan on disk is read as it is. With a target (D410), the
     one pass is round 1, then each round runs plan_search for a third of what is missing, the recordings pass
     and the gaps pass, until the store keeps the target, a round adds under STOP_SHARE of it, or the ceiling.
     """

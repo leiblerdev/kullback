@@ -60,7 +60,7 @@ the line that shows the outcome; for the user ender, the user's own words."""
 
 def opening_asks(intent: Any) -> list[Any]:
     """The opening asks of an Intent: volunteered do or told facts the user raised unprompted (condition none);
-    never a fact of a scenario's end, which no user said (D410)."""
+    never a fact of a scenario's end, which no user said (D414)."""
     from kullback.spec.items import is_end_fact
 
     return [fact for fact in intent.facts if fact.stance == "volunteered" and fact.kind in ("do", "told")

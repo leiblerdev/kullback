@@ -4,7 +4,7 @@ The generator binds each scenario to rows it looked up with these, and the revie
 and tools with them, so both roles read the world through one definition. They read the Starting state
 and the tool list only; none changes anything.
 
-The results say what a miss and a cut hide (D400): a search names how many keys match and how many are not
+The results say what a miss and a cut hide (D411): a search names how many keys match and how many are not
 shown, and a key the table does not hold is answered with the table's key shape and two sample keys. A
 filter over several field and value pairs at once stays out: it is a query surface over rows.
 """

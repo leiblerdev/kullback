@@ -155,7 +155,7 @@ _SEARCH_PLAN_EXAMPLES = {
 
 
 def plan_search_texts(names: list[str]) -> tuple[tuple[str, str], ...]:
-    """The plan_search session's sections (D399): situations from the web, each on a page span, in GEPA order."""
+    """The plan_search session's sections (D410): situations from the web, each on a page span, in GEPA order."""
     tools = held_line(names) + "\n" + "\n".join(_SEARCH_PLAN_EXAMPLES[n] for n in names if n in _SEARCH_PLAN_EXAMPLES)
     receives = ("You add situations to the plan of one business's scenarios, from the web. You search for what "
                 "customers of this kind of business ask for, how its workflows go and what goes wrong, read the "

@@ -18,7 +18,7 @@ Examiner ruling (D331): it applies the ruling's fix (drop or replace a ruled ite
 uncovered fact) or rebuts it with why, under the same rules; when code refused every answer it gets
 one retry in the same round, shown each refusal.
 
-A Task born of a scenario carries the scenario's end (D410): born/<task>.json in the workdir, written by
+A Task born of a scenario carries the scenario's end (D414): born/<task>.json in the workdir, written by
 synth/tasks.py, holds the end, what a correct agent leaves the world as and tells. `load_inputs` adds it
 to the Intent as end facts, one per clause, marked end and never a user turn; each is an ask, so one no
 gated item cites goes back like any ask, and a Spec still leaving one uncited and unrebutted is refused
@@ -355,7 +355,7 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
                         workdir=Path(workdir))
 
 
-# Where a born Task's scenario end lies in the workdir, one file per Task (synth/tasks.py writes it, D410).
+# Where a born Task's scenario end lies in the workdir, one file per Task (synth/tasks.py writes it, D414).
 BORN_DIR = "born"
 # Why the Spec stage sets a Spec aside: an end fact no gated item cites and no rebuttal excuses (events.py).
 UNCHECKED_END = events.UNCHECKED_END

@@ -35,7 +35,7 @@ EMPTY_SPEC = "empty_spec"
 UNSATISFIABLE_SPEC = "unsatisfiable_spec"
 # The recorded user strayed from an opening ask (spec/coherence.py): no Verifier for the Task.
 INTENT_STRAYED = "intent_strayed"
-# A born Task's Spec left an end fact of its scenario uncited and unrebutted (spec/writer.py unchecked_end, D410).
+# A born Task's Spec left an end fact of its scenario uncited and unrebutted (spec/writer.py unchecked_end, D414).
 UNCHECKED_END = "unchecked_end"
 REASON_CODES = (QUOTE_MISSING, *RULING_CODES, NO_AGREEMENT, EMPTY_SPEC, UNSATISFIABLE_SPEC, INTENT_STRAYED,
                 UNCHECKED_END)

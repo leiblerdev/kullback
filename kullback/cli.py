@@ -1538,7 +1538,7 @@ def synth_scenarios(
     corpus_url: Optional[str] = typer.Option(None, "--corpus-url",
                                              help="The source corpus's own repository or paper; never read."),
     source: Optional[list[str]] = SCENARIO_SOURCE,
-    target: Optional[int] = typer.Option(None, "--target", help="Run rounds until the store keeps this many (D399)."),
+    target: Optional[int] = typer.Option(None, "--target", help="Run rounds until the store keeps this many (D410)."),
 ):
     """Plan the situations the openings show, then generate scenarios: recordings, a cited web search, typed
     lines, then the gaps in the store (D372, D380, D398); with --target, rounds with situations from the web."""

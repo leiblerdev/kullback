@@ -1,4 +1,4 @@
-"""The generator's prompt and refusal fixes from the observation of the live runs (D400), on scripted data only."""
+"""The generator's prompt and refusal fixes from the observation of the live runs (D411), on scripted data only."""
 
 from __future__ import annotations
 

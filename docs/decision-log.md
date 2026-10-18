@@ -3996,7 +3996,7 @@ Tests: tests/hub/test_harbor.py (a reply under an unknown parameter name is refu
 no turn; a Task tool called without a required parameter is refused the same way over MCP, and the correct call then goes
 through and is logged).
 
-### D399. Situations from the web, and a target count of scenarios per store (2026-10-18)
+### D410. Situations from the web, and a target count of scenarios per store (2026-10-18)
 
 What. A plan session of a second kind, plan_search (generate.plan_search), holds list_plan, the shared web tools and
 its own write_situation: a statement, a kind and the URL and span of a page it read. The situation lands in the plan
@@ -4038,7 +4038,7 @@ such; the opening asks for the count and names the thinnest kinds; a scenario of
 its span; a search scenario takes a kind from the plan and counts under it; --target runs rounds and stops on the
 target and on the 5 percent rule, generated.json holds the rounds; no rounds without a target; the report lines).
 
-### D400. The generator's prompt and refusals from the observation of the live runs (2026-10-18)
+### D411. The generator's prompt and refusals from the observation of the live runs (2026-10-18)
 
 What. Seven fixes from the observation of the two live generator runs (synth-1016/observe/report.md), each
 simple. The rule sentence says customers and rows used in earlier sessions may be used again, only this session's
@@ -4070,7 +4070,7 @@ id rule spares a bound row's value and names the matched word; a stem twin kind 
 both sessions; the hedge word, the nearest page line and the nearest policy line are quoted and a send back may quote
 requires; the plan_search choice rule asks for a tool or a policy refusal).
 
-### D401. The review accepts any checked row the world holds (2026-10-18)
+### D412. The review accepts any checked row the world holds (2026-10-18)
 
 What. feasible yes on rule_scenario takes "row:<table>:<key>" for any row the world's Starting state holds, bound
 to the scenario or not; only a row the world lacks (or a tool it lacks) is refused, naming each such entry and
@@ -4087,7 +4087,7 @@ rows too; the review's checked rows are not written into the binding.
 Tests: tests/synth/test_review.py (a checked row outside the binding that the world holds passes; a checked row the
 world lacks is refused naming it; feasible yes still needs checked entries code finds and no open requires).
 
-### D402. A retry gets the first pass's turns per item, a capped session gets one last turn, a cut call is named (2026-10-18)
+### D413. A retry gets the first pass's turns per item, a capped session gets one last turn, a cut call is named (2026-10-18)
 
 What. A retry session (D394) gets at least the turns per item its source's first pass spent, times its own items,
 never the MIN_TURNS floor alone (turns_for, Generation.spent). At the turn cap the loop asks the caller's unfinished
@@ -4110,7 +4110,7 @@ nothing unfinished it stops on the cap; a call cut at the output cap is answered
 its turn run), tests/synth/test_generate.py (a retry's turn budget follows the turns per item its first pass spent;
 the first pass turns are counted per kind).
 
-### D410. The Spec writer of a born Task gates what its scenario's end says (2026-10-18)
+### D414. The Spec writer of a born Task gates what its scenario's end says (2026-10-18)
 
 What. A Task born of a scenario carries the scenario's end: synth/tasks.born_tasks writes born/<task>.json in the
 workdir ({"scenario", "end"}), so a work copy carries it, and writes it for a born Task that lacks it on a rerun.
@@ -4153,7 +4153,7 @@ only where its policy line names the tool; exclusive writes are alternative end 
 the shape every writing of it holds), tests/synth/test_tasks.py (the end lies beside a born Task; a rerun writes the
 end and user rules a born Task lacks; the user rules carry the ask and the end).
 
-### D411. A scenario bears a Task whatever its source (2026-10-18)
+### D415. A scenario bears a Task whatever its source (2026-10-18)
 
 What. synth/tasks.bears_task: a scenario bears a Task when it is passed, bound to rows, has an ask and an end, and
 requires nothing, whatever its source kind; the test on source kind recordings is gone. A search born scenario
@@ -4162,7 +4162,7 @@ provenance, as a recordings one carries its Task ids, so a born Task of either i
 (scenario_of, then the scenario record).
 
 Why. The fix loop of .claude/herdr/synth-1016 aims at 500 scenarios per corpus, most from search, typed lines and
-gaps; only the recordings source bore Tasks. The end is now required since the Spec writer gates it (D410).
+gaps; only the recordings source bore Tasks. The end is now required since the Spec writer gates it (D414).
 
 What it does not do: a passed scenario with no ask or no end bears no Task, so older records without them are left
 out; no change to how any source writes a scenario.

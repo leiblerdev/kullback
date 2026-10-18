@@ -15,7 +15,7 @@ naming the other's id; occurs no strikes it. The web tools are the shared ones (
 this session read with read_page and a span found in that page's cached text; a search result alone is
 no cite and a policy line is no cite, and code refuses anything else, so no trace id ever reaches a
 verdict (D382). The verdict writes the cite's evidence row on its scenario alone. feasible yes names
-the tools and the rows it checked, each found in the world by code (D401), and is refused while the scenario's
+the tools and the rows it checked, each found in the world by code (D412), and is refused while the scenario's
 requires is open. Then any unsure puts it on the human queue with the open question; feasible no files
 an Environment finding carrying the scenario's requires and binding, the order to build, and ends it
 infeasible, never a drop; occurs yes and feasible yes passes. `fix_scenario` sends a scenario back to
@@ -208,7 +208,7 @@ def cited(root: ReviewRoot, args: RuleArgs) -> Optional[dict]:
 
 
 def _checked(root: ReviewRoot, item: str) -> bool:
-    """Whether one checked entry is a tool of this world, or a row the world holds, bound or not (D401)."""
+    """Whether one checked entry is a tool of this world, or a row the world holds, bound or not (D412)."""
     kind, _, rest = str(item).partition(":")
     if kind == "tool":
         return rest in {str(tool.get("name")) for tool in root.world.tools}
@@ -272,7 +272,7 @@ def reason(row: dict) -> str:
 
 def sent_back(root: ReviewRoot, args: FixArgs) -> Rows:
     """The scenario sent to the generator with the quoted words, why and the change; a second request ends it
-    unsure, for a person. A quote no written part of it holds (statement, ask, end, requires) is refused (D400)."""
+    unsure, for a person. A quote no written part of it holds (statement, ask, end, requires) is refused (D411)."""
     record = _record(root, args.id)
     written = [record.statement, record.ask, record.end, *record.requires]
     if not args.quote.strip() or not any(args.quote in part for part in written):

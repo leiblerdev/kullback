@@ -789,7 +789,7 @@ def test_a_table_with_no_rows_gives_no_possible_cell_and_no_gap_item(tmp_path):
 
 
 def test_a_retrys_turn_budget_follows_the_turns_per_item_its_first_pass_spent(tmp_path):
-    """All eight small live retries capped on the floor of MIN_TURNS with the hardest items (D402)."""
+    """All eight small live retries capped on the floor of MIN_TURNS with the hardest items (D413)."""
     generation, _ = _generation(tmp_path)
     root = T.GenerateRoot(world=generation.world, kind="recordings", items=[{}, {}])
     assert T.turns_for(root) == T.MIN_TURNS

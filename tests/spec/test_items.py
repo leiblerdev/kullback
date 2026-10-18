@@ -32,7 +32,7 @@ STATE = {"items": {"A1": {"item_id": "A1", "slot": "two", "label": "red"},
          "notes": {}}
 POLICY = ("# Store policy\n\n## Moving items\n\nMove an item only to a free slot, after the user says yes.\n"
           "Moves go through update_item, notes through add_note, and nothing else does either.\n")
-# The policy line naming the write tools (D410): a called gate stands only where its policy line names the tool.
+# The policy line naming the write tools (D414): a called gate stands only where its policy line names the tool.
 PATH_LINE = "Moves go through update_item, notes through add_note, and nothing else does either."
 FACTS = [IntentFact(id="f1", text="Please move item A1 to slot seven.", stance="volunteered",
                     source=FactSource(recording="rec1", turn=1), witnesses=["rec2"]),

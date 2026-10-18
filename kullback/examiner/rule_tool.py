@@ -428,7 +428,7 @@ def _item(check: Any) -> dict:
 def _fact(fact: Any) -> dict:
     """One Intent fact with where the user said it, its stance and condition (with the agent line it answers)
     and its echo, pushback, unfounded and side flags; a fact of a scenario's end, which no user said, is marked end
-    (D410)."""
+    (D414)."""
     from kullback.spec.items import is_end_fact
 
     row = {"id": fact.id, "stance": fact.stance, "text": fact.text,

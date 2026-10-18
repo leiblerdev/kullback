@@ -12,13 +12,13 @@ why, as the generator's write tools do: an opening another situation holds (nami
 statement, a tool name or an id shape, and a hedged statement, which says two things at once and is
 split into variants instead.
 
-A plan_search session (D399) writes situations from the web instead: each rests on the span of a page it
+A plan_search session (D410) writes situations from the web instead: each rests on the span of a page it
 read, kept under "source" in the Source shape a search scenario carries, with no openings and no variants.
 Its write is refused for a kind the plan does not hold and for a statement that nearly repeats a situation
 of the plan, naming the holder.
 
 A kind sharing its stem with an earlier kind of the plan is refused in both sessions, naming that kind, so
-one thing is never counted under two words (D400). A refusal quotes the words that failed.
+one thing is never counted under two words (D411). A refusal quotes the words that failed.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ NEAR = "near_repeat"
 KIND = "kind_not_in_plan"
 _HEDGES = re.compile(r"\bsometimes\b| or ", re.IGNORECASE)
 TWIN = "kind_twin"
-# Endings cut off a kind before two kinds are compared by stem (D400).
+# Endings cut off a kind before two kinds are compared by stem (D411).
 _ENDINGS = ("ations", "ation", "ings", "ing", "ments", "ment", "ed", "es", "s")
 
 
@@ -147,7 +147,7 @@ def _statement_why(text: str, world: World) -> str:
 
 
 def _refused(why: str, text: str = "") -> ValueError:
-    """The refusal, quoting the words that failed: the hedging word or the id shaped word (D400)."""
+    """The refusal, quoting the words that failed: the hedging word or the id shaped word (D411)."""
     if why == HEDGED:
         found = _HEDGES.search(f" {text} ")
         word = found.group(0).strip() if found else ""
@@ -169,7 +169,7 @@ def stem(kind: str) -> str:
 
 
 def kind_twin(plan: Plan, kind: str) -> str:
-    """The plan's first kind sharing a stem with this one where it is another word, or nothing (D400).
+    """The plan's first kind sharing a stem with this one where it is another word, or nothing (D411).
 
     Two stems meet when they are equal or one starts the other at four letters or more."""
     mine = stem(kind)
@@ -222,7 +222,7 @@ def near_holder(plan: Plan, text: str, near: float) -> str:
 
 def write_searched(plan: Plan, world: World, statement: str, kind: str, source: dict, span: str,
                    near: float) -> dict:
-    """One situation from a page span into the plan (D399), or refused with why."""
+    """One situation from a page span into the plan (D410), or refused with why."""
     text = " ".join(str(statement or "").split())
     why = _statement_why(text, world)
     if why:

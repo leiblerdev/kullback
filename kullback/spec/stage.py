@@ -5,7 +5,7 @@ what is missing; a Spec of the older demand grammar (no item) is rewritten as it
 so every Task gets the sanity item (automatic, no flag). An empty Spec is written once more; empty again, the Task is set aside with no
 Verifier. A Spec no Run can pass after its one send-back is set aside the same way, as
 unsatisfiable_spec. A Spec of a born Task leaving an end fact of its scenario unchecked (writer.unchecked_end,
-D410) is set aside so as unchecked_end. The miner also says whether the recorded user held to their opening asks, checked by
+D414) is set aside so as unchecked_end. The miner also says whether the recorded user held to their opening asks, checked by
 code (spec/coherence.py); a Task whose user strayed is set aside as intent_strayed before the writer, no
 Verifier written. A set-aside Spec counts as done. Every call is priced under the `spec` stage of the workdir ledger (budget.json):
 the miner through the harness subscriber, the writer through BudgetedModel, the two seams every

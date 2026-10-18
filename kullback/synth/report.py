@@ -5,7 +5,7 @@ review filed; what the generator dropped, per reason; the coverage across source
 what the scenario stages spent; per source the items a first pass left unwritten and what the second
 pass wrote (D394), and how many scenarios carry an ask and an end (D393); the gaps pass's cells hit and
 policy lines covered before and after it (D398); with a target, one line per round, the stop reason and the
-diversity of the store (D399). Read off the store and the ledger; nothing is called.
+diversity of the store (D410). Read off the store and the ledger; nothing is called.
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ STOPS = {"target": "the store keeps the target", "slow": "a round added under 5 
 
 
 def _round_lines(body: dict) -> list[str]:
-    """With a target (D399): one line per round with its born per source, the stop reason, the diversity."""
+    """With a target (D410): one line per round with its born per source, the stop reason, the diversity."""
     if body["target"] is None:
         return []
     out = [f"round {row['round']}: situations from the web {row.get('situations', 0)}, born "
