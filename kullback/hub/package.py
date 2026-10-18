@@ -130,18 +130,19 @@ def last_round(workdir: Path) -> dict:
 NO_ROUND_SOURCE = "counts from the workdir status, no round closed"
 
 
-def trusted_ids(workdir: Path, counts: Optional[dict] = None) -> set[str]:
+def trusted_ids(workdir: Path, counts: Optional[dict] = None, *, workers: Optional[int] = 1) -> set[str]:
     """The trusted Task ids: the last round's ruling where one closed, else the Builder's status rule.
 
     The status rule is `status_of` in the Builder's domain tools, the same reading its status tool
     answers, so a build killed before any round closed publishes what that tool reported rather than
     nothing. The hub is the top layer and may import the Builder, so there is one rule, not a copy.
+    That rule scores every Task, the slowest step of an export, so `workers` runs it on processes (D401).
     """
     counts = last_round(workdir) if counts is None else counts
     if counts:
         return set(counts.get("trusted_ids") or ())
     from kullback.builder.domain_tools import status_of
-    return {row["task_id"] for row in status_of(workdir)["tasks"] if row.get("state") == "trusted"}
+    return {row["task_id"] for row in status_of(workdir, workers=workers)["tasks"] if row.get("state") == "trusted"}
 
 
 def build_tag(workdir: Path, counts: Optional[dict] = None) -> str:
@@ -284,12 +285,12 @@ def stopped_because(stage: str, status_row: Any) -> Optional[str]:
     return reason
 
 
-def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
+def task_index(workdir: Path, task_ids: Iterable[str], *, workers: Optional[int] = 1) -> list[dict]:
     """One row per Task: the trust ruling, the funnel stage it reached, its difficulty record and bucket."""
     status = read_json(workdir / "task_status.json", {}) or {}
     replays = read_json(workdir / "replays.json", {}) or {}
     counts = last_round(workdir)
-    trusted = trusted_ids(workdir, counts)
+    trusted = trusted_ids(workdir, counts, workers=workers)
     refused = set((counts.get("refused") or {}))
     records = _difficulty_records(workdir)
     trust = _trust_rows(workdir)
@@ -753,13 +754,16 @@ def _row_counts(rows: list[dict]) -> dict:
 
 def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Optional[str] = None,
            corpus_license: Optional[str] = None, corpus_url: Optional[str] = None,
-           preview: bool = False, scan: bool = True) -> dict:
+           preview: bool = False, scan: bool = True, workers: Optional[int] = None,
+           index: Optional[list[dict]] = None) -> dict:
     """Write a self-contained Environment package from a workdir and answer its manifest.
 
     The workdir is only read. The package holds the rebuilt world, the Task list, the Verifier of
     every Task that has one, and a manifest with the numbers, the versions and a content hash; it
     holds nothing of the recordings the world was rebuilt from. A leak found by the scan raises
     rather than being reported, because a package with a leak in it must not exist on disk.
+    `workers` is how many processes rule the Tasks (None: the default of kullback/processes.py; the package is the same
+    whatever the count, D401), and `index` is the Task index where the caller already holds it.
     """
     workdir, out = Path(workdir), Path(out)
     if not (workdir / "env").is_dir():
@@ -767,7 +771,7 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
     out.mkdir(parents=True, exist_ok=True)
     task_ids = frozen_task_ids(workdir)
     _lay_out(workdir, out, task_ids)
-    rows = task_index(workdir, task_ids)
+    rows = task_index(workdir, task_ids, workers=workers) if index is None else index
     write_json(out / TASKS_INDEX_NAME, {"format": PACKAGE_FORMAT, "tasks": rows})
     write_task_rows(out, rows)
     counts = last_round(workdir)

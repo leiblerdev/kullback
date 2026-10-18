@@ -548,10 +548,27 @@ def runs_on_disk(workdir: Any) -> dict[str, list[Run]]:
     return out
 
 
-def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[str, TaskTier]:
-    """Every Task of the workdir under the intent foundation, the build's sample only when the manifest
-    holds one; `specs` stands in for the spec folder."""
+def _scored_tier(job: tuple) -> TaskTier:
+    """One Task's tier off its whole input, so a process pool can score it (D401)."""
     from kullback.spec.mutants import ask_keys
+
+    root, task_id, spec, verifier, task_runs, events, canon, tools, references, schema, effects = job
+    return tier_of_task(spec, verifier, task_runs, events, canon=canon, write_tools=tools,
+                        references=references, schema=schema,
+                        judged=judge_results_of(root, task_id, verifier, task_runs), keys=ask_keys(spec, effects))
+
+
+def _placed(out: dict[str, Any], scored: list[TaskTier]) -> dict[str, TaskTier]:
+    """`out` with each job's place (an int) replaced by the tier the pool scored for it."""
+    return {task_id: scored[tier] if isinstance(tier, int) else tier for task_id, tier in out.items()}
+
+
+def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None, *,
+                 workers: Optional[int] = 1) -> dict[str, TaskTier]:
+    """Every Task of the workdir under the intent foundation, the build's sample only when the manifest
+    holds one; `specs` stands in for the spec folder. The Tasks with a Verifier are scored on `workers`
+    processes (None: the default, kullback/processes.py), which changes nothing but the time."""
+    from kullback import processes
 
     root = Path(workdir)
     canon = load_rules(root / "canon-rules.json")
@@ -562,7 +579,8 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
     events = set_aside_events(root)
     schema = schema_of(root)
     effects = effects_mod.load(root)["effects"]
-    out: dict[str, TaskTier] = {}
+    out: dict[str, Any] = {}
+    jobs: list[tuple] = []
     for task_id in in_sample(root, sorted(set(_task_ids(root)) | set(specs or ()))):
         spec = (specs or {}).get(task_id) or load_spec(root, task_id)
         if spec is None:
@@ -576,11 +594,10 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None) -> dict[
             reason = OPEN_RULING if set_aside_of(spec, events) and not is_empty(spec) else NO_INTENT
             out[task_id] = unruled_row(task_id, reason, spec.set_aside or "no verifier file")
             continue
-        task_runs = runs.get(task_id, [])
-        out[task_id] = tier_of_task(spec, verifier, task_runs, events, canon=canon,
-                                    write_tools=tools, references=references.get(task_id, ()), schema=schema,
-                                    judged=judge_results_of(root, task_id, verifier, task_runs),
-                                    keys=ask_keys(spec, effects))
+        out[task_id] = len(jobs)  # the job's place, filled once the pool answers
+        jobs.append((root, task_id, spec, verifier, runs.get(task_id, []), events, canon, tools,
+                     references.get(task_id, ()), schema, effects))
+    out = _placed(out, processes.each(jobs, _scored_tier, workers))
     return {task_id: _synthetic_tier(root, task_id, task_tier) for task_id, task_tier in out.items()}
 
 
@@ -596,20 +613,20 @@ def _synthetic_tier(root: Path, task_id: str, task_tier: TaskTier) -> TaskTier:
     return TaskTier(SYNTHETIC, {**task_tier.row, "tier": SYNTHETIC, "scenario": scenario})
 
 
-def workdir_tiers(workdir: Any) -> dict[str, TaskTier]:
+def workdir_tiers(workdir: Any, *, workers: Optional[int] = 1) -> dict[str, TaskTier]:
     """Every Task's tier: the Spec writes every Verifier, so this is `intent_tiers` (D320)."""
-    return intent_tiers(workdir)
+    return intent_tiers(workdir, workers=workers)
 
 
-def spec_tiers_of(workdir: Any) -> Optional[dict[str, TaskTier]]:
+def spec_tiers_of(workdir: Any, *, workers: Optional[int] = 1) -> Optional[dict[str, TaskTier]]:
     """The Spec's tiers where the workdir has Specs, else None: what the gates take as `spec_tiers` (D322)."""
     root = Path(workdir)
-    return workdir_tiers(root) if spec_ids(root) else None
+    return workdir_tiers(root, workers=workers) if spec_ids(root) else None
 
 
-def workdir_ruling(workdir: Any) -> Any:
+def workdir_ruling(workdir: Any, *, workers: Optional[int] = 1) -> Any:
     """The one trusted ruling over a workdir (D322): the Spec's tiers where it has Specs, read through
     `gates.trust.workdir_trusted_ruling` so status, the round snapshot and the report print one tier per
     Task from one place; a workdir with no Spec keeps the gates' own ruling."""
     root = Path(workdir)
-    return workdir_trusted_ruling(root, spec_tiers=spec_tiers_of(root))
+    return workdir_trusted_ruling(root, spec_tiers=spec_tiers_of(root, workers=workers))

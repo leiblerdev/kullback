@@ -724,3 +724,77 @@ def test_a_card_published_from_a_staged_package_names_the_commit_its_harbor_task
     laid = read_json(landed / HARBOR_DIR / "manifest.json")["git_sha"]
     card = (landed / "README.md").read_text(encoding="utf-8")
     assert f"package built at git {'0' * 16}, Harbor Tasks laid at git {laid[:16]}" in card
+
+
+# --- the pool (D401) ------------------------------------------------------------------------------
+
+TASK_TWO = f"{TASK}_two"
+
+
+def _two_tasks(root: Path) -> Path:
+    """The finished build with a second trusted Task, a copy of the first under its own id."""
+    workdir = _workdir(root)
+    rename = (f'"{TASK}"', f'"{TASK_TWO}"')
+    for folder in ("tasks", "overlays", "verifiers", "spec"):
+        source = workdir / folder / f"{TASK}.json"
+        (workdir / folder / f"{TASK_TWO}.json").write_text(source.read_text().replace(*rename))
+    (workdir / "runs" / TASK_TWO).mkdir()
+    run = (workdir / "runs" / TASK / "reference.jsonl").read_text().replace(*rename)
+    (workdir / "runs" / TASK_TWO / "reference.jsonl").write_text(run)
+    references = read_json(workdir / "references.json")
+    write_json(workdir / "references.json", dict(references, **{TASK_TWO: references[TASK]}))
+    write_json(workdir / "rounds.json", [{"round": 1, "counts": {"trusted_ids": [TASK, TASK_TWO]}}])
+    return workdir
+
+
+def _laid(out: Path) -> dict[str, bytes]:
+    return {path.relative_to(out).as_posix(): path.read_bytes() for path in sorted(out.rglob("*"))
+            if path.is_file() and path.name != "manifest.json"}
+
+
+def test_the_dataset_laid_on_a_pool_is_byte_identical_to_the_one_laid_task_by_task(tmp_path):
+    workdir = _two_tasks(tmp_path / "work")
+    serial = harbor.export_harbor(workdir, tmp_path / "serial", name="widgets", wheel=_wheel(tmp_path), workers=1)
+    pooled = harbor.export_harbor(workdir, tmp_path / "pooled", name="widgets", wheel=_wheel(tmp_path), workers=2)
+    assert serial["counts"]["exported"] == 2
+    assert pooled["content_hash"] == serial["content_hash"] and pooled["tasks"] == serial["tasks"]
+    assert _laid(tmp_path / "pooled") == _laid(tmp_path / "serial")
+
+
+def test_a_recorded_turn_still_refuses_the_export_when_the_tasks_are_laid_on_a_pool(tmp_path):
+    workdir = _two_tasks(tmp_path / "work")
+    turn = "wants widget w1 to carry the label striped because the old plain label kept confusing the warehouse"
+    for task_id in (TASK, TASK_TWO):
+        spec = Spec(task_id=task_id, intent=SpecIntent(task_id=task_id, facts=[_fact("f1", turn)]))
+        write_json(workdir / "spec" / f"{task_id}.json", spec.model_dump())
+    write_json(workdir / "raw" / "export.json", [{"turn": turn}])
+    with pytest.raises(harbor.ExportError, match="instruction"):
+        harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path), workers=2)
+    assert not (tmp_path / "out").exists()
+
+
+def test_the_workers_flag_reaches_the_pool_on_export_and_publish(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from kullback import cli, processes
+
+    asked: list = []
+    real = processes.each
+
+    def counted(items, fn, workers=1):
+        asked.append(workers)
+        return real(items, fn, workers)
+
+    monkeypatch.setattr(processes, "each", counted)
+    monkeypatch.setattr(harbor, "build_wheel", lambda out: _wheel(tmp_path))
+    workdir = _two_tasks(tmp_path / "work")
+    result = CliRunner().invoke(cli.app, ["export", "--workdir", str(workdir), "--out", str(tmp_path / "out"),
+                                          "--format", "harbor", "--workers", "1"])
+    assert result.exit_code == 0, result.output
+    assert asked == [1]
+    write_json(workdir / "replays.json", {TASK: {"rec1": {"confirmed": True, "trace_id": "rec1"}}})
+    result = CliRunner().invoke(cli.app, ["publish", "--workdir", str(workdir), "--repo", "someorg/widgets",
+                                          "--preview", "--format", "harbor", "--workers", "3",
+                                          "--dry-run", str(tmp_path / "local")])
+    assert result.exit_code == 0, result.output
+    assert asked[1:] == [3]

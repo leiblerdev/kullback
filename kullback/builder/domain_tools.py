@@ -625,17 +625,18 @@ def _render_note(result: NoteResult) -> str:
     return result.summary
 
 
-def status_of(workdir: Any) -> dict[str, Any]:
+def status_of(workdir: Any, *, workers: Optional[int] = 1) -> dict[str, Any]:
     """One row per Task (trusted, refused or open, with its reason) and per tool (last replay fidelity).
 
     Read off the workdir files through `spec.trust.workdir_ruling`, the one trusted ruling the round's
     snapshot reads as well (D281, D322). The Examiner's artefacts (its proposed Verifiers, the version
     histories, the task runs, the probe pools) are read where the Examiner wrote them (F22). Files
-    not there yet read as empty, so a Task with no Verifier is open with its reason.
+    not there yet read as empty, so a Task with no Verifier is open with its reason. `workers` scores
+    the Tasks on that many processes (D401).
     """
     root = Path(workdir)
     task_ids = [path.stem for path in sorted((root / "tasks").glob("*.json")) if path.name != "tasks.json"]
-    ruling = workdir_ruling(root)
+    ruling = workdir_ruling(root, workers=workers)
     trusted = set(ruling.metrics.get("trusted") or [])
     refused = ruling.metrics.get("refused") or {}
     untrusted = ruling.metrics.get("untrusted") or {}

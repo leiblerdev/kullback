@@ -1292,6 +1292,10 @@ HARBOR_LABELS = typer.Option(None, "--labels", help="harbor only: a JSON list of
                                                     "task; repeat it, later wins. A Task with no row is unlabelled.")
 HARBOR_RUBRIC = typer.Option(None, "--labels-rubric", help="harbor only: the rubric the labels were given under, "
                                                            "named on the card.")
+EXPORT_WORKERS = typer.Option(None, "--workers", help="Processes that rule and lay the Tasks; 1 is serial. The "
+                                                     "output is the same whatever the count. Default: cores - 2, at most "
+                                                     "4 (a worker can take over a gigabyte); ask for more "
+                                                     "where memory allows.")
 
 
 def _harbor_options(tasks: str, tiers: Optional[list[Path]], labels: Optional[list[Path]],
@@ -1317,6 +1321,7 @@ def export(
     tiers: Optional[list[Path]] = HARBOR_TIERS,
     labels: Optional[list[Path]] = HARBOR_LABELS,
     labels_rubric: Optional[str] = HARBOR_RUBRIC,
+    workers: Optional[int] = EXPORT_WORKERS,
 ):
     """Write a self-contained Environment package: the rebuilt world, the Task list, the Verifiers, a manifest.
 
@@ -1327,7 +1332,7 @@ def export(
     if form == "harbor":
         harbor = _entry("kullback.hub.harbor", "export_harbor")
         laid = harbor(workdir, out, name=name, only=only or None, **({"org": org} if org else {}),
-                      **_harbor_options(tasks, tiers, labels, labels_rubric))
+                      workers=workers, **_harbor_options(tasks, tiers, labels, labels_rubric))
         counts = laid["counts"]
         typer.echo(f"{counts['exported']} Harbor tasks ({counts['needs_judge']} need a judge, "
                    f"{counts['synthetic']} synthetic), skipped {counts['skipped'] or 'none'}; leak scan "
@@ -1339,7 +1344,7 @@ def export(
         raise typer.BadParameter(f"--format takes package or harbor, not {form}")
     build = _entry("kullback.hub.package", "export")
     manifest = build(workdir, out, name=name, corpus=corpus, corpus_license=corpus_license,
-                     corpus_url=corpus_url, preview=preview)
+                     corpus_url=corpus_url, preview=preview, workers=workers)
     _echo_manifest(manifest)
     typer.echo(str(Path(out) / "manifest.json"))
 
@@ -1367,6 +1372,7 @@ def publish(
     labels_rubric: Optional[str] = HARBOR_RUBRIC,
     announcement: Optional[Path] = typer.Option(None, "--announcement", help="A Markdown file whose text the "  # noqa: B008
                                                                             "card carries as its News section."),
+    workers: Optional[int] = EXPORT_WORKERS,
     staged: Optional[Path] = typer.Option(None, "--from-staged", help="Reuse the package a dry run laid out "  # noqa: B008
                                                                      "in this directory, verified first, "
                                                                      "instead of exporting it again."),
@@ -1384,7 +1390,7 @@ def publish(
                             client=client, form=form,
                             harbor_options=_harbor_options(tasks, tiers, labels, labels_rubric),
                             announcement=announcement.read_text(encoding="utf-8") if announcement else None,
-                            staged=staged)
+                            workers=workers, staged=staged)
     _echo_manifest(manifest)
     if manifest.get("harbor"):
         laid = manifest["harbor"]
