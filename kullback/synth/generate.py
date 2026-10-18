@@ -26,15 +26,23 @@ left its items unwritten, so they are in that set. What the second pass wrote is
 The gaps pass runs last (D398): the recordings mirror the recorded mix, so it asks, by code, for what the
 store lacks: one item per cell of (situation kind, bound table) no kept scenario hits and one per policy
 line no kept scenario quotes, one scenario each, through the same sessions, write tools and refusals.
+
+Situations come from the web too (D399): plan_search sessions read the web as the search source does and write
+situations, each on a page span, into the plan on disk, the thinnest kinds named first. The recordings pass
+then writes their scenarios, the source carrying the span. With a target, generate runs in rounds (plan_search,
+the recordings pass over the situations with no scenario yet, the gaps pass) until the store keeps the target
+or a round adds under STOP_SHARE of it; the diversity of what is kept is measured at the end.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from statistics import median
 from typing import Any, Callable, Iterable, Optional
 
 from kullback import domain
@@ -46,7 +54,7 @@ from kullback.synth import generate_tools as T
 from kullback.synth import plan as plan_mod
 from kullback.synth import records as R
 from kullback.synth import search as search_mod
-from kullback.synth.rule import EMPTY, ID_SHAPE, TOOL_NAME, World, statement_refusal, world_of
+from kullback.synth.rule import EMPTY, ID_SHAPE, TOOL_NAME, World, rouge_l, statement_refusal, world_of
 
 # How many opening asks or typed lines one session generates from.
 BATCH = 25
@@ -60,6 +68,14 @@ GAP_PER = 1
 # A policy line under this many words is a heading or a field name, never a rule a situation turns on.
 LINE_WORDS = 5
 _PUNCT = re.compile(r"[^\w\s]")
+# How many situations one plan_search session is asked for, at most (D399).
+PLAN_SEARCH_BATCH = 25
+# How many scenarios a plan_search situation is counted on when a round sizes its ask (D399).
+PER_SITUATION = 3
+# A round adding under this share of the target ends the rounds (D399).
+STOP_SHARE = 0.05
+# How many of the thinnest kinds the plan_search opening names (D399).
+THIN = 3
 
 
 @dataclass
@@ -87,6 +103,19 @@ class Generation:
                 self.notes.append(CEILING_NOTE)
             return True
         return False
+
+    def search_reader(self, engine: Any, env: Optional[dict], corpus_url: Optional[str], exclude: Iterable[str],
+                      pages: dict) -> Any:
+        """The harness's reader as a crawl, or None with the note saying why no search runs."""
+        if not self.world.description:
+            self.notes.append("no one-line description of the business, so no search was run")
+            return None
+        engine = engine if engine is not None else search_mod.reader(self.world.workdir, env)
+        if engine is None:
+            self.notes.append(search_mod.OFF_NOTE)
+            return None
+        return search_mod.Crawled(engine, self.world.workdir, keys=pages, corpus_url=corpus_url, exclude=exclude,
+                                  notes=self.notes)
 
     def session(self, kind: str, opening: str, stage: str = STAGE, **root: Any) -> T.GenerateRoot:
         made = T.GenerateRoot(world=self.world, kind=kind, found=self.found, dropped=self.dropped, bus=self.bus,
@@ -208,8 +237,10 @@ def situation_items(generation: Generation) -> list[dict]:
     for situation in generation.plan.situations:
         wanted = {(situation["id"], variant) for variant in ["", *situation["variants"]]}
         if not wanted <= held:
-            out.append({"situation": situation["id"], "statement": situation["statement"], "kind": situation["kind"],
-                        "variants": list(situation["variants"]), "openings": list(situation["openings"])})
+            item = {"situation": situation["id"], "statement": situation["statement"], "kind": situation["kind"],
+                    "variants": list(situation["variants"]), "openings": list(situation["openings"])}
+            out.append({**item, "source": situation["source"], "span": situation["span"]} if situation.get("source")
+                       else item)
     return out
 
 
@@ -233,20 +264,48 @@ def from_search(generation: Generation, *, engine: Any = None, env: Optional[dic
     """
     if generation.model is None:
         return
-    if not generation.world.description:
-        generation.notes.append("no one-line description of the business, so no search was run")
-        return
-    engine = engine if engine is not None else search_mod.reader(generation.world.workdir, env)
-    if engine is None:
-        generation.notes.append(search_mod.OFF_NOTE)
-        return
-    if generation.over():
-        return
     pages: dict = {}
-    reader = search_mod.Crawled(engine, generation.world.workdir, keys=pages, corpus_url=corpus_url, exclude=exclude,
-                                notes=generation.notes)
-    opening = generate_prompt.opening("search", _entries(generation.world.workdir))
+    reader = generation.search_reader(engine, env, corpus_url, exclude, pages)
+    if reader is None or generation.over():
+        return
+    opening = generate_prompt.opening("search", _entries(generation.world.workdir),
+                                      items=", ".join(generation.plan.kinds()) or "none yet")
     generation.session("search", opening, reader=reader, pages=pages, refuse=refuse or domain.destination_refusal)
+
+
+def thin_line(plan: plan_mod.Plan) -> str:
+    """The plan's kinds with their situation counts, fewest first, and the THIN thinnest named."""
+    counts = plan.per_kind()
+    listed = ", ".join(f"{kind} {n}" for kind, n in counts.items()) or "none yet"
+    return f"{listed}; thinnest: {', '.join(list(counts)[:THIN]) or 'none'}"
+
+
+def plan_search(generation: Generation, count: int, *, engine: Any = None, env: Optional[dict] = None,
+                corpus_url: Optional[str] = None, exclude: Iterable[str] = (),
+                refuse: Optional[Callable[[str], str]] = None) -> int:
+    """Situations from the web into the plan on disk, at most PLAN_SEARCH_BATCH per session, until `count` are
+    written or a session writes none (D399); how many were written."""
+    if generation.model is None or count <= 0:
+        return 0
+    pages: dict = {}
+    reader = generation.search_reader(engine, env, corpus_url, exclude, pages)
+    if reader is None:
+        return 0
+    start = len(generation.plan.situations)
+    while not generation.over():
+        left = count - (len(generation.plan.situations) - start)
+        if left <= 0:
+            break
+        wanted = min(left, PLAN_SEARCH_BATCH)
+        opening = generate_prompt.opening("plan_search", _entries(generation.world.workdir), count=wanted,
+                                          items=thin_line(generation.plan))
+        before = len(generation.plan.situations)
+        generation.session("plan_search", opening, reader=reader, pages=pages, wanted=wanted,
+                           refuse=refuse or domain.destination_refusal)
+        plan_mod.write_plan(generation.world.workdir, generation.plan)
+        if len(generation.plan.situations) == before:
+            break
+    return len(generation.plan.situations) - start
 
 
 # --- the customer's lines ---------------------------------------------------------------
@@ -383,9 +442,10 @@ def fold(records: list[R.Scenario]) -> tuple[list[R.Scenario], list[dict]]:
 
 
 def _kinds(kept: list[R.Scenario], plan: plan_mod.Plan) -> dict[str, str]:
-    """Each kept scenario's situation kind: its situation's in the plan, else the gap it fills, else none."""
+    """Each kept scenario's situation kind: its situation's in the plan, else the kind it was written with (a
+    search scenario, D399), else the gap it fills, else none."""
     kinds = {situation["id"]: situation["kind"] for situation in plan.situations}
-    return {r.id: kinds.get(r.situation) or r.source.gap.get("kind") or "none" for r in kept}
+    return {r.id: kinds.get(r.situation) or r.kind or r.source.gap.get("kind") or "none" for r in kept}
 
 
 def spread(kept: list[R.Scenario], plan: plan_mod.Plan, tables: Iterable[str]) -> tuple[dict, dict]:
@@ -420,27 +480,43 @@ def coverage(kept: list[R.Scenario], folded: list[dict], dropped: Counter, ungro
             "spread": counters, "cells": cells}
 
 
-def generate(workdir: Any, *, model: Any, asks: Any = None, searching: bool = True,
-         batch: int = BATCH, description: str = "", engine: Any = None, env: Optional[dict] = None,
-         corpus_url: Optional[str] = None, exclude: Iterable[str] = (), ceiling: Optional[budget.Ceiling] = None,
-         subscribers: Iterable[Any] = (), refuse: Optional[Callable[[str], str]] = None,
-         sources: Iterable[str] = R.SOURCE_KINDS) -> dict:
-    """Run the sources named as sessions, the gaps last, fold the repeats, write the new records and the counts.
+def diversity(workdir: Any, plan: plan_mod.Plan, tables: Iterable[str]) -> dict:
+    """How diverse the store is (D399): the median pairwise ROUGE-L of its statements, scenarios per situation
+    kind, the cells hit of possible, and situations per kind in the plan."""
+    kept = R.load_scenarios(workdir)
+    texts = [record.statement for record in kept]
+    scores = [rouge_l(texts[i], texts[j]) for i in range(len(texts)) for j in range(i + 1, len(texts))]
+    counters, cells = spread(kept, plan, tables)
+    return {"kept": len(kept), "rouge_l_median": round(median(scores), 4) if scores else None,
+            "situation_kind": counters["situation_kind"], "cells": cells, "situations_per_kind": plan.per_kind()}
 
-    A record already in the store keeps its status and its review: generating again adds, never resets.
-    Without the recordings no plan session runs; the plan on disk is read as it is.
-    """
-    wanted = set(sources)
-    world = world_of(workdir, description)
-    generation = Generation(world=world, model=model, bus=T.bus_for(workdir), ceiling=ceiling,
-                    subscribers=tuple(subscribers))
+
+def _settle(generation: Generation, workdir: Any, folds: list[dict]) -> list[R.Scenario]:
+    """This generation's findings folded, the new ones written to the store and returned; the findings emptied."""
+    kept, folded = fold(list(generation.found))
+    folds += folded
+    held = {canonical(record.statement) for record in R.load_scenarios(workdir)}
+    new = [record for record in kept if canonical(record.statement) not in held]
+    R.write_all(workdir, new)
+    generation.found.clear()
+    return new
+
+
+def _round_rows(new: list[R.Scenario]) -> dict:
+    per = Counter(record.source.kind for record in new)
+    return {kind: per.get(kind, 0) for kind in R.SOURCE_KINDS}
+
+
+def _one_pass(generation: Generation, wanted: set, searching: bool, asks: Any, batch: int, web: dict) -> None:
+    """The sources named, each once, the gaps last; without the recordings the plan on disk is read."""
+    workdir = generation.world.workdir
     if "recordings" in wanted:
         plan_openings(generation)
         from_recordings(generation, batch=batch)
     else:
         generation.plan = plan_mod.load_plan(workdir)
     if "search" in wanted and searching:
-        from_search(generation, engine=engine, env=env, corpus_url=corpus_url, exclude=exclude, refuse=refuse)
+        from_search(generation, **web)
     elif "search" in wanted:
         generation.notes.append("search turned off")
     if "ask" in wanted:
@@ -448,15 +524,66 @@ def generate(workdir: Any, *, model: Any, asks: Any = None, searching: bool = Tr
         from_asks(generation, ask_lines(path), batch=batch)
     if "gaps" in wanted:
         from_gaps(generation, batch=batch)
-    kept, folded = fold(list(generation.found))
-    held = {canonical(record.statement) for record in R.load_scenarios(workdir)}
-    new = [record for record in kept if canonical(record.statement) not in held]
-    R.write_all(workdir, new)
-    counts = coverage(kept, folded, generation.dropped, generation.ungrouped, generation.unplanned,
+
+
+def _stop(generation: Generation, target: int, last: dict) -> str:
+    """Why the rounds end after this one (D399), or nothing."""
+    if last["kept"] >= target:
+        return "target"
+    if generation.over():
+        return "ceiling"
+    return "slow" if sum(last["born"].values()) < STOP_SHARE * target else ""
+
+
+def _rounds(generation: Generation, target: int, rounds: list[dict], born: list[R.Scenario], folds: list[dict],
+            wanted: set, searching: bool, batch: int, web: dict) -> str:
+    """Rounds of plan_search, the recordings pass and the gaps pass until the stop rule holds; why it stopped."""
+    workdir = generation.world.workdir
+    while not (stop := _stop(generation, target, rounds[-1])):
+        searching = searching and "search" in wanted
+        missing = math.ceil((target - rounds[-1]["kept"]) / PER_SITUATION)
+        searched = plan_search(generation, missing, **web) if searching else 0
+        if "recordings" in wanted or searched:
+            from_recordings(generation, batch=batch)
+        if "gaps" in wanted:
+            from_gaps(generation, batch=batch)
+        new = _settle(generation, workdir, folds)
+        born += new
+        rounds.append({"round": len(rounds) + 1, "situations": searched, "born": _round_rows(new),
+                       "kept": len(R.load_scenarios(workdir))})
+    return stop
+
+
+def generate(workdir: Any, *, model: Any, asks: Any = None, searching: bool = True,
+         batch: int = BATCH, description: str = "", engine: Any = None, env: Optional[dict] = None,
+         corpus_url: Optional[str] = None, exclude: Iterable[str] = (), ceiling: Optional[budget.Ceiling] = None,
+         subscribers: Iterable[Any] = (), refuse: Optional[Callable[[str], str]] = None,
+         sources: Iterable[str] = R.SOURCE_KINDS, target: Optional[int] = None) -> dict:
+    """Run the sources named as sessions, the gaps last, fold the repeats, write the new records and the counts.
+
+    A record already in the store keeps its status and its review: generating again adds, never resets.
+    Without the recordings no plan session runs; the plan on disk is read as it is. With a target (D399), the
+    one pass is round 1, then each round runs plan_search for a third of what is missing, the recordings pass
+    and the gaps pass, until the store keeps the target, a round adds under STOP_SHARE of it, or the ceiling.
+    """
+    wanted = set(sources)
+    world = world_of(workdir, description)
+    generation = Generation(world=world, model=model, bus=T.bus_for(workdir), ceiling=ceiling,
+                    subscribers=tuple(subscribers))
+    web = {"engine": engine, "env": env, "corpus_url": corpus_url, "exclude": exclude, "refuse": refuse}
+    _one_pass(generation, wanted, searching, asks, batch, web)
+    folds: list[dict] = []
+    born = _settle(generation, workdir, folds)
+    rounds = [{"round": 1, "situations": 0, "born": _round_rows(born), "kept": len(R.load_scenarios(workdir))}]
+    stop = _rounds(generation, target, rounds, born, folds, wanted, searching, batch, web) if target is not None else ""
+    counts = coverage(born, folds, generation.dropped, generation.ungrouped, generation.unplanned,
                       plan=generation.plan, tables=cell_tables(world.state))
     body = {"format": R.FORMAT, "notes": generation.notes, "coverage": counts,
-            "born": len(new), "folded": folded, "capped": dict(sorted(generation.capped.items())),
+            "born": len(born), "folded": folds, "capped": dict(sorted(generation.capped.items())),
             "retried": dict(sorted(generation.retried.items())), "gaps": generation.gaps}
+    if target is not None:
+        body.update(target=int(target), rounds=rounds, stop=stop,
+                    diversity=diversity(workdir, generation.plan, cell_tables(world.state)))
     write_json(R.store_dir(workdir) / R.GENERATED, body)
     return body
 
@@ -509,7 +636,8 @@ def fix(world: World, sent: list[tuple[R.Scenario, str]], model: Any, *, bus: An
     return [_fixed(record, why, root.fixed.get(record.id)) for record, why in sent]
 
 
-__all__ = ["BATCH", "GAP_PER", "LINE_WORDS", "cell_tables", "from_gaps", "gap_counts", "gap_items", "gap_text", "policy_lines",
+__all__ = ["BATCH", "GAP_PER", "PER_SITUATION", "PLAN_SEARCH_BATCH", "STOP_SHARE", "THIN", "diversity",
+           "plan_search", "thin_line", "LINE_WORDS", "cell_tables", "from_gaps", "gap_counts", "gap_items", "gap_text", "policy_lines",
            "RETRY_MIN", "plan_openings", "EMPTY", "FIX_STAGE", "ID_SHAPE", "Generation", "STAGE", "TOOL_NAME", "World", "canonical", "coverage", "spread",
            "fix", "fold", "from_asks", "from_recordings", "from_search", "generate", "openings", "source_text",
            "statement_refusal", "world_of"]

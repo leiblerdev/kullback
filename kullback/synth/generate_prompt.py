@@ -141,6 +141,40 @@ _PLAN_EXAMPLES = {
 }
 
 
+_SEARCH_PLAN_EXAMPLES = {
+    "list_plan": _PLAN_EXAMPLES["list_plan"],
+    "write_situation": ('write_situation: write one situation from a page you read, e.g. {"statement": "<the '
+                        'situation>", "kind": "<one of the plan\'s kinds>", "url": "<the URL you read>", "span": "<the '
+                        'span it rests on, word for word>"}.'),
+}
+
+
+def plan_search_texts(names: list[str]) -> tuple[tuple[str, str], ...]:
+    """The plan_search session's sections (D399): situations from the web, each on a page span, in GEPA order."""
+    tools = held_line(names) + "\n" + "\n".join(_SEARCH_PLAN_EXAMPLES[n] for n in names if n in _SEARCH_PLAN_EXAMPLES)
+    receives = ("You add situations to the plan of one business's scenarios, from the web. You search for what "
+                "customers of this kind of business ask for, how its workflows go and what goes wrong, read the "
+                "pages, and write each situation a page shows with the span it rests on. " + PLAN_RULE + " The "
+                "policy, the tool list and the one-line description of the business sit beside this text. Your "
+                'root is the scenario store, "."; read it, never edit it.')
+    choice = ("Choosing. List the plan before you write and write nothing it already says. Fill the kinds the "
+              "opening names as thinnest first. Each situation is something a real customer of this business "
+              "could bring to its support and that this business's policy and world could handle or refuse. "
+              "Search widely: different customers, different steps of the workflow, different things gone wrong. "
+              "Never search for an academic paper, a benchmark, a dataset or a code repository.")
+    feedback = ("Feedback. A written situation answers with its id. A refused call says why: a page you never read; "
+                "a span the page does not hold; a kind the plan does not hold, naming the kinds; a statement that "
+                "nearly repeats a situation of the plan, naming it; an empty statement, a tool name, an id shaped "
+                "value or a hedge. Follow the reason and call again.")
+    stop = ("Stopping. Answer with one line and no tool call when you have written the number of situations the "
+            "opening asks for, or the web shows no more. Say how many you wrote.")
+    examples = ("Examples over placeholders.\n"
+                "a situation: a <kind of customer> wants to <change> a <thing> that has already <reached a later "
+                "step>\nthe span it rests on: <the sentence of the page that shows it, word for word>")
+    return (("receives", receives), ("tools", tools), ("examples", examples), ("choice", choice),
+            ("feedback", feedback), ("stop", stop))
+
+
 def plan_receives_section() -> str:
     return ("You plan the scenarios of one business before any is written. You read the opening asks of real "
             "conversations, numbered, and put every item in exactly one place: a situation you write, a situation "
@@ -185,6 +219,8 @@ def sections(names: Iterable[str] = TOOLS, kind: str = "") -> list[tuple[str, st
     """Every section in GEPA order, the stop rule last; the plan session reads its own texts."""
     if kind == "plan":
         return [(name, wrap(text)) for name, text in _plan_texts(list(names))]
+    if kind == "plan_search":
+        return [(name, wrap(text)) for name, text in plan_search_texts(list(names))]
     return [(name, wrap(text)) for name, text in (
         ("receives", receives_section()), ("tools", tools_section(names)), ("examples", examples_section()),
         ("choice", choice_section()), ("feedback", feedback_section()), ("stop", stop_section()))]
@@ -202,7 +238,11 @@ OPENINGS = {
              "business's support in the real world; if the world has no rows for it, write it with requires naming "
              "what is missing. Every gap scenario has an ask and an end. A policy line gap's kind is one of the "
              "plan's kinds: {items}."),
-    "search": "Generate scenarios from the web for this business: source search. Search, read the pages, write what they show.",
+    "search": ("Generate scenarios from the web for this business: source search. Search, read the pages, write what "
+               "they show. Give each scenario the kind of situation it is, one of the plan's kinds: {items}."),
+    "plan_search": ("Add {count} situations to the plan from the web. The kinds of the plan with how many situations "
+                    "each holds, fewest first: {items}. Fill the thinnest kinds first.\n\nThe plan so far is "
+                    "what list_plan shows."),
     "fix": "Rewrite the scenarios a reviewer sent back, each with its reason and what it was written from:\n{items}",
 }
 
@@ -219,4 +259,4 @@ def opening(kind: str, entries: Iterable[str] = (), count: int = 0, items: str =
     return wrap(OPENINGS[kind].format(count=count, items=items) + f"\n\nThe root holds: {listed}.")
 
 
-__all__ = ["PLAN_RULE", "RULE", "TOOLS", "opening", "plan_listing", "sections"]
+__all__ = ["plan_search_texts", "PLAN_RULE", "RULE", "TOOLS", "opening", "plan_listing", "sections"]

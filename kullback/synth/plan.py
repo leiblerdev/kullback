@@ -11,6 +11,11 @@ The plan lives at <workdir>/scenarios/plan.json, written after every session. Th
 why, as the generator's write tools do: an opening another situation holds (naming it), an empty
 statement, a tool name or an id shape, and a hedged statement, which says two things at once and is
 split into variants instead.
+
+A plan_search session (D399) writes situations from the web instead: each rests on the span of a page it
+read, kept under "source" in the Source shape a search scenario carries, with no openings and no variants.
+Its write is refused for a kind the plan does not hold and for a statement that nearly repeats a situation
+of the plan, naming the holder.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ from typing import Any, Iterable
 
 from kullback.runner.records import read_json, write_json
 from kullback.synth import records as R
-from kullback.synth.rule import EMPTY, World, statement_refusal
+from kullback.synth.rule import EMPTY, World, rouge_l, statement_refusal
 
 PLAN = "plan.json"
 FORMAT = 1
@@ -31,6 +36,8 @@ FORMAT = 1
 PLAN_BATCH = 150
 HEDGED = "hedged_statement"
 HELD = "opening_already_held"
+NEAR = "near_repeat"
+KIND = "kind_not_in_plan"
 _HEDGES = re.compile(r"\bsometimes\b| or ", re.IGNORECASE)
 
 
@@ -73,6 +80,16 @@ class Plan:
         """The plan as list_plan shows it: id, statement, kind, how many openings, variants."""
         return [{"id": s["id"], "statement": s["statement"], "kind": s["kind"], "openings": len(s["openings"]),
                  "variants": list(s["variants"])} for s in self.situations]
+
+    def kinds(self) -> list[str]:
+        return sorted({s["kind"] for s in self.situations})
+
+    def per_kind(self) -> dict[str, int]:
+        """Situations per kind, fewest first, ties by name."""
+        counts: dict[str, int] = {}
+        for situation in self.situations:
+            counts[situation["kind"]] = counts.get(situation["kind"], 0) + 1
+        return dict(sorted(counts.items(), key=lambda item: (item[1], item[0])))
 
     def body(self) -> dict:
         return {"format": FORMAT, "situations": self.situations, "skipped": self.skipped}
@@ -152,6 +169,33 @@ def write_situation(plan: Plan, world: World, items: list[dict], statement: str,
     return situation
 
 
+def near_holder(plan: Plan, text: str, near: float) -> str:
+    """The first situation of the plan whose statement the text nearly repeats, at ROUGE-L `near` or over."""
+    return next((s["id"] for s in plan.situations if rouge_l(text, s["statement"]) >= near), "")
+
+
+def write_searched(plan: Plan, world: World, statement: str, kind: str, source: dict, span: str,
+                   near: float) -> dict:
+    """One situation from a page span into the plan (D399), or refused with why."""
+    text = " ".join(str(statement or "").split())
+    why = _statement_why(text, world)
+    if why:
+        raise _refused(why)
+    word = str(kind or "").strip().lower()
+    kinds = plan.kinds()
+    if kinds and word not in kinds:
+        raise ValueError(f"refused ({KIND.replace('_', ' ')}): give one of {', '.join(kinds)}")
+    if not word or len(word.split()) != 1:
+        raise ValueError("kind is one word")
+    holder = near_holder(plan, text, near)
+    if holder:
+        raise ValueError(f"refused ({NEAR.replace('_', ' ')}): {holder} already says this; write another situation")
+    situation = {"id": situation_id(text), "statement": text, "kind": word, "openings": [], "variants": [],
+                 "source": dict(source), "span": span}
+    plan.situations.append(situation)
+    return situation
+
+
 def attach_openings(plan: Plan, items: list[dict], situation_id_: str, openings: Iterable[int]) -> dict:
     """Openings added to a situation of this or any earlier session, or refused with why."""
     situation = plan.find(situation_id_)
@@ -171,5 +215,5 @@ def skip_opening(plan: Plan, items: list[dict], openings: Iterable[int], why: st
     return rows
 
 
-__all__ = ["HEDGED", "HELD", "PLAN", "PLAN_BATCH", "Plan", "attach_openings", "load_plan", "opening_key",
+__all__ = ["HEDGED", "HELD", "KIND", "NEAR", "near_holder", "write_searched", "PLAN", "PLAN_BATCH", "Plan", "attach_openings", "load_plan", "opening_key",
            "plan_path", "situation_id", "skip_opening", "unplanned", "write_plan", "write_situation"]

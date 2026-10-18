@@ -3995,3 +3995,45 @@ of being graded on a turn it never knew was lost.
 Tests: tests/hub/test_harbor.py (a reply under an unknown parameter name is refused naming the expected ones and leaves
 no turn; a Task tool called without a required parameter is refused the same way over MCP, and the correct call then goes
 through and is logged).
+
+### D399. Situations from the web, and a target count of scenarios per store (2026-10-18)
+
+What. A plan session of a second kind, plan_search (generate.plan_search), holds list_plan, the shared web tools and
+its own write_situation: a statement, a kind and the URL and span of a page it read. The situation lands in the plan
+with no openings and no variants, its span kept under "source" in the Source shape a search scenario carries (URL,
+cache key, byte range) and the span text beside it; the plan is written to disk after every session, so a later run
+reads it like the rest. The write is refused for a page never read, a span the page does not hold, a kind the plan
+does not hold (naming the kinds), and a statement at NEAR_REPEAT (ROUGE-L 0.7) or over against any situation of the
+plan (near_repeat, naming the holder). Its opening asks for a count, at most PLAN_SEARCH_BATCH = 25 per session,
+and lists the plan's kinds with their situation counts, fewest first, naming the THIN = 3 thinnest; sessions run
+until the count is written or a session writes none. Its turn budget is SEARCH_TURNS plus TURNS_PER_SITUATION = 4
+per situation asked for, under MAX_TURNS.
+The recordings pass treats a search-born situation as any other (same tools, binding, ask and end rules); its item
+lists the page span, and its scenario's source is the situation's span (kind search, frequency 0). The loose search
+pass keeps working, but a search write now names a kind from the plan, refused as kind_not_in_plan as a policy line
+gap's is (D398); Scenario.kind keeps it and spread reads it, so a search scenario no longer counts under "none".
+`kullback synth scenarios --target N`: the one pass as before is round 1; while the store keeps fewer than N, each
+round runs plan_search for ceil((N minus kept) / PER_SITUATION = 3) situations, the recordings pass over the
+situations with no scenario yet, then the gaps pass. Each round's findings are folded and written before the next.
+The rounds stop when the store keeps N ("target"), a round adds under STOP_SHARE = 5 percent of N ("slow"), or the
+ceiling is spent ("ceiling"). generated.json gains target, rounds (situations from the web, born per source, kept)
+and stop, and diversity over the whole store: the median pairwise ROUGE-L of the statements, scenarios per situation
+kind, cells hit of possible and situations per kind of the plan. The report prints one line per round, the stop
+reason and the diversity. Without --target nothing changes but the search kind.
+
+Why. The thousand run kept about 250 scenarios per corpus: the recordings source is bounded by the plan, about three
+scenarios per situation, and the plan's situations came from the recorded openings only. The founder asked for 500
+per corpus, very diverse, with situations from the search as well. Its search scenarios also had no kind, which
+brought a "none" kind into the cells and missed bar 2 on both corpora.
+
+What it does not do: scenarios of search-born situations have source kind search, so bears_task still turns them
+down; whether they should bear Tasks is a separate decision. Nothing forces diversity beyond naming the thin kinds
+and the near repeat gate; the diversity numbers are measured, not targets. No check that a situation fits the
+world's rows beyond the binding of its scenarios. The pairwise ROUGE-L is computed over every pair of the store,
+quadratic in its size.
+
+Tests: tests/synth/test_volume.py (a plan_search session writes situations on a span with no openings into the plan
+on disk; a near repeat is refused naming the holder, a kind outside the plan naming the kinds, an unread page as
+such; the opening asks for the count and names the thinnest kinds; a scenario of a search-born situation carries
+its span; a search scenario takes a kind from the plan and counts under it; --target runs rounds and stops on the
+target and on the 5 percent rule, generated.json holds the rounds; no rounds without a target; the report lines).

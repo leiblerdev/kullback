@@ -42,7 +42,7 @@ def _generator_model() -> TestModel:
         _write("m1", VAGUE, "recordings", situation=situation_id(VAGUE), binding=BOUND),
         ModelReply(content="Wrote two."),
         call("search", {"query": "what holders ask about sealed widgets"}, "s0"), call("read_page", {"url": URL}, "s1"),
-        _write("s2", SEALED, "search", url=URL, span=SPAN, binding=BOUND), ModelReply(content="Wrote one."),
+        _write("s2", SEALED, "search", url=URL, span=SPAN, binding=BOUND, kind="change"), ModelReply(content="Wrote one."),
         _write("a0", WHICH, "ask", openings=[0]), _write("a1", PAINT, "ask", openings=[1]),
         ModelReply(content="Wrote two.")])
 

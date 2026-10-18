@@ -4,7 +4,8 @@ Per source kind: born, passed, unsure, infeasible, struck and fixing; the Enviro
 review filed; what the generator dropped, per reason; the coverage across sources; the human queue; and
 what the scenario stages spent; per source the items a first pass left unwritten and what the second
 pass wrote (D394), and how many scenarios carry an ask and an end (D393); the gaps pass's cells hit and
-policy lines covered before and after it (D398). Read off the store and the ledger; nothing is called.
+policy lines covered before and after it (D398); with a target, one line per round, the stop reason and the
+diversity of the store (D399). Read off the store and the ledger; nothing is called.
 """
 
 from __future__ import annotations
@@ -49,7 +50,9 @@ def counts(workdir: Any) -> dict:
     records = R.load_scenarios(root)
     return {"table": _table(records), "findings": _findings(root), "retried": generated.get("retried") or {},
             "paired": {"set": sum(1 for r in records if r.ask and r.end), "of": len(records)},
-            "gaps": generated.get("gaps") or {}, "coverage": generated.get("coverage") or {}, "notes": generated.get("notes") or [],
+            "gaps": generated.get("gaps") or {}, "target": generated.get("target"),
+            "rounds": generated.get("rounds") or [], "stop": generated.get("stop") or "",
+            "diversity": generated.get("diversity") or {}, "coverage": generated.get("coverage") or {}, "notes": generated.get("notes") or [],
             "human": len(read_json(R.store_dir(root) / R.HUMAN, []) or []), "spend": _spend(root)}
 
 
@@ -79,6 +82,28 @@ def _gap_lines(gaps: dict) -> list[str]:
             f"after: {after.get('lines_covered', 0)} of {after.get('lines', 0)}"]
 
 
+STOPS = {"target": "the store keeps the target", "slow": "a round added under 5 percent of the target",
+         "ceiling": "the spend ceiling"}
+
+
+def _round_lines(body: dict) -> list[str]:
+    """With a target (D399): one line per round with its born per source, the stop reason, the diversity."""
+    if body["target"] is None:
+        return []
+    out = [f"round {row['round']}: situations from the web {row.get('situations', 0)}, born "
+           + ", ".join(f"{kind} {row['born'].get(kind, 0)}" for kind in R.SOURCE_KINDS) + f", kept {row['kept']}"
+           for row in body["rounds"]]
+    out.append(f"target {body['target']}, stopped: {STOPS.get(body['stop'], body['stop'])}")
+    found = body["diversity"]
+    if found:
+        cells = found.get("cells") or {}
+        out += [f"diversity: pairwise ROUGE-L median {found.get('rouge_l_median')} over {found.get('kept', 0)} kept, "
+                f"cells hit {cells.get('hit', 0)} of {cells.get('possible', 0)}",
+                "scenarios per kind: " + ", ".join(f"{k} {n}" for k, n in _by_count(found.get("situation_kind") or {})),
+                "situations per kind: " + ", ".join(f"{k} {n}" for k, n in _by_count(found.get("situations_per_kind") or {}))]
+    return out
+
+
 def lines(workdir: Any) -> list[str]:
     """The report as printed lines, under the synth heading."""
     body = counts(workdir)
@@ -98,6 +123,7 @@ def lines(workdir: Any) -> list[str]:
     out += [f"retried from {kind}: {row.get('items', 0)} items unwritten, {row.get('written', 0)} written"
             for kind, row in sorted(body["retried"].items())]
     out += _gap_lines(body["gaps"])
+    out += _round_lines(body)
     out.append(f"scenarios with an ask and an end: {body['paired']['set']} of {body['paired']['of']}")
     out += [f"note: {note}" for note in body["notes"]]
     out.append("spend: " + ", ".join(f"{stage} {usd:.4f} USD" for stage, usd in body["spend"].items()))

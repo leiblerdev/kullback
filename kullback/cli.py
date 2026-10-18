@@ -1538,9 +1538,10 @@ def synth_scenarios(
     corpus_url: Optional[str] = typer.Option(None, "--corpus-url",
                                              help="The source corpus's own repository or paper; never read."),
     source: Optional[list[str]] = SCENARIO_SOURCE,
+    target: Optional[int] = typer.Option(None, "--target", help="Run rounds until the store keeps this many (D399)."),
 ):
     """Plan the situations the openings show, then generate scenarios: recordings, a cited web search, typed
-    lines, then the gaps in the store (D372, D380, D398)."""
+    lines, then the gaps in the store (D372, D380, D398); with --target, rounds with situations from the web."""
     if not model:
         typer.echo("no model: pass --model")
         raise typer.Exit(2)
@@ -1552,7 +1553,8 @@ def synth_scenarios(
     ceiling = _synth_ceiling(workdir, model, ceiling_usd)
     _entry("kullback.synth.generate", "generate")(workdir, model=_live_model(model, base_url), asks=asks,
                                                    searching=search, batch=batch, description=str(domain_line or ""),
-                                                   corpus_url=corpus_url, ceiling=ceiling, sources=source or kinds)
+                                                   corpus_url=corpus_url, ceiling=ceiling, sources=source or kinds,
+                                                   target=target)
     _scenario_report(workdir)
 
 

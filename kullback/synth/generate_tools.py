@@ -17,6 +17,10 @@ naming the scenario that holds it, and is no refusal of a new scenario.
 A scenario also carries the customer's opening words (ask) and what a correct agent leaves behind (end),
 apart (D393). The write and the rewrite refuse, by code, an ask and an end that share a sentence, a tool
 name in either, and one of the pair given without the other; the reason names which.
+
+A plan_search session (D399) holds the web tools and write_situation over the plan: a situation from the span
+of a page it read, in a kind the plan holds, refused as a near repeat of any situation naming the holder. A
+search scenario takes a kind from the plan too, refused as kind_not_in_plan as a policy line gap's is.
 """
 
 from __future__ import annotations
@@ -57,6 +61,8 @@ TURNS_PER_ITEM = 6
 MIN_TURNS = 12
 MAX_TURNS = 160
 SEARCH_TURNS = 60
+# The turns a plan_search session gets per situation it is asked for, past SEARCH_TURNS.
+TURNS_PER_SITUATION = 4
 
 NO_OPENING = "no_opening_grouped"
 NO_SPAN = "no_verified_span"
@@ -90,6 +96,7 @@ OPENINGS_SHOWN = 5
 SKIP_TOOL = "skip_opening"
 
 SESSION_TOOLS = {"plan": ("list_openings", "list_plan", "write_situation", "attach_openings", "skip_opening"),
+                 "plan_search": ("list_plan", "search", "read_page", "write_situation"),
                  "recordings": ("list_openings", "list_scenarios", *WORLD_TOOLS, "write_scenario"),
                  "ask": ("list_openings", "list_scenarios", *WORLD_TOOLS, "write_scenario"),
                  "gaps": ("list_openings", "list_scenarios", *WORLD_TOOLS, "write_scenario"),
@@ -120,6 +127,7 @@ class GenerateRoot:
     fixed: dict = field(default_factory=dict)
     grouped: dict[int, str] = field(default_factory=dict)
     plan: plan_mod.Plan = field(default_factory=plan_mod.Plan)
+    wanted: int = 0
 
     @property
     def workdir(self):
@@ -149,7 +157,7 @@ class WriteArgs(Strict):
     requires: list[str] = Field(default_factory=list, description="What the world lacks for it, in words.")
     ask: str = Field(default="", description="What the customer says to open, first person, never the outcome.")
     end: str = Field(default="", description="What a correct agent leaves the world and the customer with.")
-    kind: str = Field(default="", description="For a policy line gap: the situation's kind, one word.")
+    kind: str = Field(default="", description="For a policy line gap or a page: the situation's kind, one of the plan's.")
 
 
 class SituationArgs(Strict):
@@ -157,6 +165,13 @@ class SituationArgs(Strict):
     kind: str = Field(description="One word: change, cancel, return, exchange, question, complaint, refusal or your own.")
     openings: list[int] = Field(default_factory=list, description="The numbered items that show it.")
     variants: list[str] = Field(default_factory=list, description="One line each: a variant that changes what the agent must do.")
+
+
+class SearchedArgs(Strict):
+    statement: str = Field(description="One sentence in general words: one thing that happens.")
+    kind: str = Field(description="One word, one of the plan's kinds.")
+    url: str = Field(description="The URL of a page you read.")
+    span: str = Field(description="The span of that page it rests on, word for word.")
 
 
 class AttachArgs(Strict):
@@ -258,6 +273,7 @@ def _recordings(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[An
     """A scenario of one situation of the plan; its Tasks and frequency come from the plan, never the model."""
     at, item, variant = _situation_item(root, args)
     source = R.Source(kind="recordings", task_ids=sorted({row["task_id"] for row in item["openings"]}))
+    source = R.Source.model_validate(item["source"]) if item.get("source") else source
     return ("recordings", item["situation"], variant), "", {
         "source": source, "frequency": len(item["openings"]), "picked": [at], "situation": item["situation"],
         "variant": variant}
@@ -274,19 +290,37 @@ def _asked(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[Any, st
     return anchor, "", {"source": R.Source(kind="ask", line=line), "frequency": 0, "picked": picked}
 
 
+def span_source(root: GenerateRoot, url: str, span: str, statement: str) -> tuple[str, Optional[R.Source]]:
+    """Why a span is refused (a page never read, a span it does not hold, a statement copying it), or its
+    Source: the URL, the cache key and the byte range."""
+    key = root.pages.get(url)
+    if key is None:
+        return NOT_READ, None
+    text = domain.cached_text(root.workdir, key)
+    where = byte_range(text, span)
+    if where is None:
+        return NO_SPAN, None
+    if domain.copies_page({"goal": statement}, text):
+        return COPIES_PAGE, None
+    return "", R.Source(kind="search", url=url, key=key, start=where[0], end=where[1])
+
+
+def _plan_kind(root: GenerateRoot, kind: str) -> tuple[str, str]:
+    """The first word of a kind, and why it is refused where the plan holds kinds and not this one (D398, D399)."""
+    word = (kind.lower().split() or [""])[0]
+    kinds = root.plan.kinds()
+    return word, (KIND_NOT_IN_PLAN if kinds and word not in kinds else "")
+
+
 def _searched(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[Any, str, dict]:
     anchor = ("search", args.url, args.span)
-    key = root.pages.get(args.url)
-    if key is None:
-        return anchor, NOT_READ, {}
-    text = domain.cached_text(root.workdir, key)
-    where = byte_range(text, args.span)
-    if where is None:
-        return anchor, NO_SPAN, {}
-    if domain.copies_page({"goal": statement}, text):
-        return anchor, COPIES_PAGE, {}
-    source = R.Source(kind="search", url=args.url, key=key, start=where[0], end=where[1])
-    return anchor, "", {"source": source, "frequency": 0}
+    why, source = span_source(root, args.url, args.span, statement)
+    if why:
+        return anchor, why, {}
+    kind, why = _plan_kind(root, args.kind)
+    if why:
+        return anchor, why, {"detail": "give one of " + ", ".join(root.plan.kinds())}
+    return anchor, "", {"source": source, "frequency": 0, "kind": kind}
 
 
 def _gapped(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[Any, str, dict]:
@@ -297,10 +331,9 @@ def _gapped(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[Any, s
         return anchor, NO_OPENING, {}
     gap = dict(root.items[picked[0]]["gap"])
     if not gap.get("kind"):
-        gap["kind"] = (args.kind.lower().split() or [""])[0]
-        kinds = sorted({situation["kind"] for situation in root.plan.situations})
-        if gap["kind"] not in kinds:
-            return anchor, KIND_NOT_IN_PLAN, {"detail": "give one of " + ", ".join(kinds)}
+        gap["kind"], why = _plan_kind(root, args.kind)
+        if why or not root.plan.kinds():
+            return anchor, KIND_NOT_IN_PLAN, {"detail": "give one of " + ", ".join(root.plan.kinds())}
     return anchor, "", {"source": R.Source(kind="gaps", gap=gap), "frequency": 0, "picked": picked}
 
 
@@ -384,6 +417,7 @@ def written(root: GenerateRoot, args: WriteArgs) -> Rows:
     record = R.born(statement, made["source"], R.policy_lines_in(args.policy_lines, root.world.policy)[0],
                     made["frequency"]).model_copy(update={
                         "situation": made.get("situation", ""), "variant": made.get("variant", ""),
+                        "kind": made.get("kind", ""),
                         "binding": dict(args.binding), "requires": _requires(args.requires),
                         "ask": _one_line(args.ask), "end": _one_line(args.end)})
     root.found.append(record)
@@ -439,9 +473,10 @@ def item_rows(root: GenerateRoot) -> list[dict]:
     """The numbered items as list_openings shows them; a situation shows at most OPENINGS_SHOWN opening texts."""
     if root.kind != "recordings":
         return [{"number": at, "text": item["text"]} for at, item in enumerate(root.items)]
-    return [{"number": at, "situation": item["situation"], "statement": item["statement"], "kind": item["kind"],
+    rows = [{"number": at, "situation": item["situation"], "statement": item["statement"], "kind": item["kind"],
              "variants": item["variants"], "openings": [row["text"] for row in item["openings"][:OPENINGS_SHOWN]],
              "more_openings": max(len(item["openings"]) - OPENINGS_SHOWN, 0)} for at, item in enumerate(root.items)]
+    return [{**row, "page_span": item["span"]} if item.get("span") else row for row, item in zip(rows, root.items, strict=True)]
 
 
 def _plan_tools(root: GenerateRoot) -> dict[str, tuple]:
@@ -456,6 +491,17 @@ def _plan_tools(root: GenerateRoot) -> dict[str, tuple]:
         made = plan_mod.write_situation(plan, world, items, args.statement, args.kind, args.openings, args.variants)
         return Rows(summary=f"written {made['id']}", rows=[{"id": made["id"], "openings": len(made["openings"])}])
 
+    async def write_searched(args: SearchedArgs) -> Rows:
+        why, source = span_source(root, args.url, args.span, args.statement)
+        if why:
+            raise ValueError(f"refused ({why.replace('_', ' ')}): read the page and quote its span word for word")
+        made = plan_mod.write_searched(plan, world, args.statement, args.kind, source.model_dump(mode="json"),
+                                       " ".join(args.span.split()), NEAR_REPEAT)
+        return Rows(summary=f"written {made['id']}", rows=[{"id": made["id"], "kind": made["kind"]}])
+
+    writer = (("Write one situation from a page you read.", SearchedArgs, write_searched) if root.kind == "plan_search"
+              else ("Write one situation of the plan.", SituationArgs, write_situation))
+
     async def attach_openings(args: AttachArgs) -> Rows:
         made = plan_mod.attach_openings(plan, items, args.id, args.openings)
         return Rows(summary=f"attached to {made['id']}", rows=[{"id": made["id"], "openings": len(made["openings"])}])
@@ -465,7 +511,7 @@ def _plan_tools(root: GenerateRoot) -> dict[str, tuple]:
         return Rows(summary=f"skipped {len(rows)}")
 
     return {"list_plan": ("The situations of the plan so far.", NoArgs, list_plan),
-            "write_situation": ("Write one situation of the plan.", SituationArgs, write_situation),
+            "write_situation": writer,
             "attach_openings": ("Add openings to a situation of the plan.", AttachArgs, attach_openings),
             "skip_opening": ("Mark items that are no opening ask, with why.", SkipArgs, skip_opening)}
 
@@ -530,6 +576,8 @@ def turns_for(root: GenerateRoot) -> int:
     """The turn budget of one session, by its kind: its own for the search, else sized per item."""
     if root.kind == "search":
         return min(MAX_TURNS, SEARCH_TURNS)
+    if root.kind == "plan_search":
+        return min(MAX_TURNS, SEARCH_TURNS + TURNS_PER_SITUATION * root.wanted)
     return min(MAX_TURNS, max(MIN_TURNS, TURNS_PER_ITEM * max(len(root.items), len(root.fixing), 1)))
 
 
@@ -574,5 +622,5 @@ def run(root: GenerateRoot, model: Any, opening: str, stage: str, ceiling: Optio
 
 
 __all__ = ["AGENT", "ASK_SHARES_END", "ASK_WITHOUT_END", "END_WITHOUT_ASK", "TOOL_IN_ASK", "TOOL_IN_END",
-           "GenerateRoot", "pair_refusal", "NEAR", "NEAR_REPEAT", "OPENING_GROUPED", "SEARCH_TURNS", "SESSION_TOOLS", "bus_for", "generate_extension", "generate_tools", "rewritten", "run",
+           "GenerateRoot", "pair_refusal", "NEAR", "NEAR_REPEAT", "OPENING_GROUPED", "SEARCH_TURNS", "SESSION_TOOLS", "TURNS_PER_SITUATION", "span_source", "bus_for", "generate_extension", "generate_tools", "rewritten", "run",
            "settle_refusals", "turns_for", "unfinished_line", "unwritten", "written"]

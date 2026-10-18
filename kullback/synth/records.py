@@ -60,7 +60,7 @@ class Scenario(Record):
     recordings open with it, the Examiner's verdicts and its status; the plan's situation and variant it
     was written for, the rows of the world it is bound to (table to key) and what the world lacks for it
     (D381); the user's own opening words, first person, and what the world looks like after a correct
-    agent (both empty on older records)."""
+    agent (both empty on older records); the plan's kind a search scenario names (D399), empty for the rest."""
 
     id: str
     statement: str
@@ -78,6 +78,7 @@ class Scenario(Record):
     requires: list[str] = Field(default_factory=list)
     ask: str = ""
     end: str = ""
+    kind: str = ""
 
 
 def scenario_id(statement: str, kind: str) -> str:

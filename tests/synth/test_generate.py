@@ -404,7 +404,7 @@ def test_a_ceiling_with_room_runs_the_generation_sessions_as_without_one(tmp_pat
     assert M.CEILING_NOTE not in body["notes"]
 
 
-def test_every_generation_session_but_the_plan_holds_the_world_tools_the_review_holds(tmp_path):
+def test_every_generation_session_but_the_two_plan_sessions_holds_the_world_tools_the_review_holds(tmp_path):
     from kullback.agent.extensions import load_extensions
     from kullback.agent.harness import AgentHarness
     from kullback.synth import world_tools as W
@@ -415,7 +415,7 @@ def test_every_generation_session_but_the_plan_holds_the_world_tools_the_review_
         harness = AgentHarness(model=TestModel([]))
         load_extensions(harness, [T.generate_extension(T.GenerateRoot(world=world, kind=kind, refuse=REFUSE))])
         held[kind] = set(W.NAMES) <= set(harness.registry.names())
-    assert held == {"plan": False, "recordings": True, "ask": True, "gaps": True, "search": True, "fix": True}
+    assert held == {"plan": False, "plan_search": False, "recordings": True, "ask": True, "gaps": True, "search": True, "fix": True}
 
 
 # --- the near repeat gate and the spread (D383) -----------------------------------------------
