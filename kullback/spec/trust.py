@@ -562,7 +562,7 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None, *,
                  workers: Optional[int] = 1) -> dict[str, TaskTier]:
     """Every Task of the workdir under the intent foundation, the build's sample only when the manifest
     holds one; `specs` stands in for the spec folder. The Tasks with a Verifier are scored on `workers`
-    processes (None: every core but two), which changes nothing but the time (kullback/processes.py)."""
+    processes (None: the default, kullback/processes.py), which changes nothing but the time."""
     from kullback import processes
 
     root = Path(workdir)

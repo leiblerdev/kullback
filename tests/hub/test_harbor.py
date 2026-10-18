@@ -415,7 +415,7 @@ def test_a_dry_run_publish_lays_harbor_beside_the_package_and_the_package_still_
     assert verify_package(landed) == []
 
 
-# --- the verified Task set, tiers and labels (D393) ----------------------------------------------
+# --- the verified Task set, tiers and labels (D399) ----------------------------------------------
 
 
 def _wheel(tmp_path: Path) -> Path:
@@ -600,6 +600,102 @@ def test_the_organisation_card_carries_news_above_the_environments_only_when_giv
     card = organisation_card([], announcement="Verifiers now come from the ask.")
     assert card.index("## News\n\nVerifiers now come from the ask.") < card.index("## Environments")
     assert "## News" not in organisation_card([])
+
+
+def test_verified_leaves_out_a_task_the_tier_report_rules_no_verifier_though_a_draft_is_on_disk(tmp_path):
+    workdir = _workdir(tmp_path / "work", trusted=False)
+    write_json(workdir / "tiers.json", {"rows": [{"task_id": TASK, "tier": "untrusted", "reason": "no_verifier"}]})
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path), tasks="verified")
+    assert manifest["counts"]["exported"] == 0 and manifest["counts"]["skipped"] == {"no Verifier": 1}
+    kept = harbor.export_harbor(workdir, tmp_path / "all", name="widgets", wheel=_wheel(tmp_path), tasks="all")
+    assert kept["counts"]["exported"] == 1
+
+
+def _no_passing_run(root: Path) -> Path:
+    """The invented world where the one Run on disk writes the wrong label, so none passes on replay."""
+    workdir = _workdir(root, trusted=False)
+    verifier = json.loads((workdir / "verifiers" / f"{TASK}.json").read_text())
+    expected = [{"cells": [{"table": "widgets", "row_id": "w1", "field": "label", "value": "dotted"}]}]
+    write_json(workdir / "verifiers" / f"{TASK}.json", dict(verifier, expected=expected))
+    return workdir
+
+
+def test_verified_ships_a_task_no_run_passes_for_without_a_solution_marked_has_oracle_false(tmp_path):
+    out = tmp_path / "out"
+    manifest = harbor.export_harbor(_no_passing_run(tmp_path / "work"), out, name="widgets", wheel=_wheel(tmp_path),
+                                    tasks="verified")
+    folder = out / "widgets-widget_task"
+    assert manifest["counts"]["exported"] == 1 and not (folder / "solution").exists()
+    assert (folder / "tests" / "verifier.json").is_file()
+    meta = _toml(out)
+    assert meta["has_oracle"] is False and meta["no_oracle_reason"] == harbor.NO_ORACLE
+
+
+def test_a_task_shipped_without_oracle_is_counted_and_listed_masked_under_no_oracle_not_left_out(tmp_path):
+    manifest = harbor.export_harbor(_no_passing_run(tmp_path / "work"), tmp_path / "out", name="widgets",
+                                    wheel=_wheel(tmp_path), tasks="all")
+    assert manifest["counts"]["no_oracle"] == 1
+    assert manifest["no_oracle"] == [{"task": TASK[-4:], "reason": harbor.NO_ORACLE}] and manifest["left_out"] == []
+
+
+def test_under_trusted_a_task_no_run_passes_for_is_still_left_out(tmp_path):
+    workdir = _no_passing_run(tmp_path / "work")
+    write_json(workdir / "rounds.json", [{"round": 1, "counts": {"trusted_ids": [TASK]}}])
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path))
+    assert manifest["counts"]["exported"] == 0 and manifest["counts"]["skipped"] == {harbor.NO_ORACLE: 1}
+
+
+def test_a_task_with_an_oracle_is_marked_has_oracle_true(dataset):
+    out, manifest = dataset
+    assert _toml(out)["has_oracle"] is True and manifest["counts"]["no_oracle"] == 0
+
+
+def test_the_leak_scan_has_no_oracle_part_to_scan_for_a_task_without_one(tmp_path):
+    manifest = harbor.export_harbor(_no_passing_run(tmp_path / "work"), tmp_path / "out", name="widgets",
+                                    wheel=_wheel(tmp_path), tasks="verified")
+    assert manifest["leak_scan"]["files_scanned"] == 3
+
+
+def test_the_card_counts_tasks_without_a_solution_and_says_the_oracle_agent_cannot_run_on_them():
+    from kullback.hub.card import harbor_section
+
+    section = harbor_section({"counts": {"exported": 3, "no_oracle": 2}})
+    assert "2 Tasks ship without `solution/`" in section and "oracle agent cannot run on them" in section
+
+
+def _staged(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    """A dry run laid out by publish: the workdir and the staged package folder."""
+    from kullback.hub import publish
+
+    workdir = _workdir(tmp_path / "work")
+    monkeypatch.setattr(harbor, "build_wheel", lambda out: _wheel(tmp_path))
+    write_json(workdir / "replays.json", {TASK: {"rec1": {"confirmed": True, "trace_id": "rec1"}}})
+    publish.publish(workdir, "someorg/widgets", client=LocalHub(tmp_path / "first"), preview=True, form="harbor")
+    return workdir, tmp_path / "first" / "someorg" / "widgets"
+
+
+def test_publishing_from_a_staged_package_gives_the_manifest_a_plain_stage_gives(tmp_path, monkeypatch):
+    from kullback.hub import publish
+
+    workdir, staged = _staged(tmp_path, monkeypatch)
+    plain = publish.stage(workdir, tmp_path / "plain", "someorg/widgets", preview=True, harbor=True)
+    _, reused = publish.publish(workdir, "someorg/widgets", client=LocalHub(tmp_path / "second"), preview=True,
+                                form="harbor", staged=staged)
+    landed = tmp_path / "second" / "someorg" / "widgets"
+    assert {k: v for k, v in reused.items() if k != "created_at"} == {k: v for k, v in plain.items() if k != "created_at"}
+    assert reused["created_at"] == read_json(staged / "manifest.json")["created_at"]
+    assert verify_package(landed) == [] and (landed / HARBOR_DIR / "widgets-widget_task" / "task.toml").is_file()
+
+
+def test_a_staged_package_with_a_tampered_file_is_refused_naming_the_file(tmp_path, monkeypatch):
+    from kullback.hub import publish
+
+    workdir, staged = _staged(tmp_path, monkeypatch)
+    tampered = next(path for path in sorted((staged / "verifiers").glob("*.json")))
+    tampered.write_text("{}")
+    with pytest.raises(publish.PublishError, match=f"verifiers/{tampered.name}"):
+        publish.publish(workdir, "someorg/widgets", client=LocalHub(tmp_path / "second"), preview=True,
+                        form="harbor", staged=staged)
 
 
 # --- the pool (D401) ------------------------------------------------------------------------------

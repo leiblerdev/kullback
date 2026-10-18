@@ -761,7 +761,7 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
     every Task that has one, and a manifest with the numbers, the versions and a content hash; it
     holds nothing of the recordings the world was rebuilt from. A leak found by the scan raises
     rather than being reported, because a package with a leak in it must not exist on disk.
-    `workers` is how many processes rule the Tasks (None: every core but two; the package is the same
+    `workers` is how many processes rule the Tasks (None: the default of kullback/processes.py; the package is the same
     whatever the count, D401), and `index` is the Task index where the caller already holds it.
     """
     workdir, out = Path(workdir), Path(out)

@@ -582,3 +582,34 @@ def test_the_card_says_a_fetched_package_cannot_finish_a_task_that_needs_a_fact_
                 if "simulated user does not ship" in line)
     assert "cannot finish a Task that needs a fact the user gives mid conversation" in note
     assert "still carries a Verifier" in note
+
+
+# --- a release replaces the repository ---------------------------------------------
+
+
+def test_the_hub_adapter_asks_the_host_to_drop_remote_files_the_uploaded_folder_lacks(tmp_path):
+    from kullback.hub.client import HuggingFaceHub
+
+    class Host:
+        def upload_folder(self, **asked):
+            self.asked = asked
+            return type("Commit", (), {"oid": "abc"})()
+
+    host = Host()
+    assert HuggingFaceHub(api=host).upload_folder("leibler/nursery", tmp_path, "release") == "abc"
+    assert host.asked["delete_patterns"] == "*"
+
+
+def test_a_dry_run_upload_leaves_no_file_an_earlier_upload_had_and_this_one_lacks(tmp_path):
+    from kullback.hub.client import LocalHub
+
+    older, newer = tmp_path / "older", tmp_path / "newer"
+    for folder, name in ((older, "gone.json"), (newer, "kept.json")):
+        folder.mkdir()
+        (folder / name).write_text("{}", encoding="utf-8")
+    local = LocalHub(tmp_path / "hub")
+    local.upload_folder("leibler/nursery", older, "first")
+    local.upload_folder("leibler/nursery", newer, "second")
+    target = tmp_path / "hub" / "leibler" / "nursery"
+    assert (target / "kept.json").is_file()
+    assert not (target / "gone.json").exists()

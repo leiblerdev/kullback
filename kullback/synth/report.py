@@ -2,7 +2,9 @@
 
 Per source kind: born, passed, unsure, infeasible, struck and fixing; the Environment findings the
 review filed; what the generator dropped, per reason; the coverage across sources; the human queue; and
-what the scenario stages spent. Read off the store and the ledger; nothing is called.
+what the scenario stages spent; per source the items a first pass left unwritten and what the second
+pass wrote (D394), and how many scenarios carry an ask and an end (D393); the gaps pass's cells hit and
+policy lines covered before and after it (D398). Read off the store and the ledger; nothing is called.
 """
 
 from __future__ import annotations
@@ -44,8 +46,10 @@ def counts(workdir: Any) -> dict:
     """The numbers the report prints, as data."""
     root = Path(workdir)
     generated = read_json(R.store_dir(root) / R.GENERATED, {}) or {}
-    return {"table": _table(R.load_scenarios(root)), "findings": _findings(root),
-            "coverage": generated.get("coverage") or {}, "notes": generated.get("notes") or [],
+    records = R.load_scenarios(root)
+    return {"table": _table(records), "findings": _findings(root), "retried": generated.get("retried") or {},
+            "paired": {"set": sum(1 for r in records if r.ask and r.end), "of": len(records)},
+            "gaps": generated.get("gaps") or {}, "coverage": generated.get("coverage") or {}, "notes": generated.get("notes") or [],
             "human": len(read_json(R.store_dir(root) / R.HUMAN, []) or []), "spend": _spend(root)}
 
 
@@ -61,6 +65,18 @@ def _spread_lines(coverage: dict) -> list[str]:
            for key, name in SPREAD if key in spread]
     cells = coverage.get("cells")
     return out + ([f"cells hit: {cells.get('hit', 0)} of {cells.get('possible', 0)}"] if cells else [])
+
+
+def _gap_lines(gaps: dict) -> list[str]:
+    """The gaps pass: its items, then the cells hit and the policy lines covered before and after it."""
+    if not gaps:
+        return []
+    before, after = gaps.get("before") or {}, gaps.get("after") or {}
+    return [f"gaps pass: {gaps.get('items', 0)} items",
+            f"cells hit before the gaps pass: {before.get('hit', 0)} of {before.get('possible', 0)}, "
+            f"after: {after.get('hit', 0)} of {after.get('possible', 0)}",
+            f"policy lines covered before the gaps pass: {before.get('lines_covered', 0)} of {before.get('lines', 0)}, "
+            f"after: {after.get('lines_covered', 0)} of {after.get('lines', 0)}"]
 
 
 def lines(workdir: Any) -> list[str]:
@@ -79,6 +95,10 @@ def lines(workdir: Any) -> list[str]:
                 for kind, n in sorted((coverage.get("folded") or {}).items())]
         out += [f"dropped, {reason.replace('_', ' ')}: {n}" for reason, n in (coverage.get("dropped") or {}).items()]
         out += _spread_lines(coverage)
+    out += [f"retried from {kind}: {row.get('items', 0)} items unwritten, {row.get('written', 0)} written"
+            for kind, row in sorted(body["retried"].items())]
+    out += _gap_lines(body["gaps"])
+    out.append(f"scenarios with an ask and an end: {body['paired']['set']} of {body['paired']['of']}")
     out += [f"note: {note}" for note in body["notes"]]
     out.append("spend: " + ", ".join(f"{stage} {usd:.4f} USD" for stage, usd in body["spend"].items()))
     return out

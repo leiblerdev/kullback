@@ -20,9 +20,13 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 
+DEFAULT_CAP = 4  # a publish worker peaks above a gigabyte; a 16 GB laptop crashed above six to eight
+
+
 def default_workers() -> int:
-    """Every core but two, which keep the laptop and anything else running on it responsive."""
-    return max(1, (os.cpu_count() or 1) - 2)
+    """Every core but two, which keep the machine responsive, and never more than DEFAULT_CAP, which keeps
+    its memory; a caller with more memory asks for more by name."""
+    return max(1, min((os.cpu_count() or 1) - 2, DEFAULT_CAP))
 
 
 def resolve(workers: Optional[int]) -> int:

@@ -27,7 +27,7 @@ from typing import Any, Optional
 from kullback.hub import package as package_mod
 from kullback.hub.card import FIDELITY_BAR, card_markdown, harbor_section
 from kullback.hub.client import HostedRepo, HubClient, hub_client, url_for
-from kullback.hub.package import CARD_NAME, HARBOR_DIR
+from kullback.hub.package import CARD_NAME, HARBOR_DIR, MANIFEST_NAME
 from kullback.runner.records import read_json, write_json
 
 RELEASE_FIDELITY = FIDELITY_BAR
@@ -68,24 +68,47 @@ def release_ruling(manifest: dict, preview: bool, bar: float = RELEASE_FIDELITY)
 FORMATS = ("package", "harbor")
 
 
+def from_staged(staged: Any, out: Any) -> dict:
+    """The package a dry run laid out at `staged`, verified and copied into `out` without its Harbor form,
+    its card or a host's hidden files; answers its manifest as the export wrote it (D399).
+
+    A package that does not verify is refused, naming the first problem: reusing it is only worth
+    anything because it is the package that was checked.
+    """
+    staged, out = Path(staged), Path(out)
+    problems = package_mod.verify_package(staged)
+    if problems:
+        raise PublishError(f"the staged package at {staged} does not verify: {problems[0]}")
+    shutil.copytree(staged, out, ignore=lambda folder, names: [
+        name for name in names if name.startswith(".") or (Path(folder) == staged and name in (HARBOR_DIR, CARD_NAME))])
+    manifest = dict(read_json(staged / MANIFEST_NAME, {}) or {})
+    for key in ("status", "harbor"):
+        manifest.pop(key, None)
+    return manifest
+
+
 def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, preview: bool = False,
           corpus: Optional[str] = None, corpus_license: Optional[str] = None,
           corpus_url: Optional[str] = None, bar: float = RELEASE_FIDELITY, harbor: bool = False,
           harbor_options: Optional[dict] = None, announcement: Optional[str] = None,
-          workers: Optional[int] = None) -> dict:
+          workers: Optional[int] = None, staged: Optional[Any] = None) -> dict:
     """Export into `out`, decide release or preview, and write the card beside the package.
 
     Answers the manifest with the ruling on it. The card is written after the manifest and is not
     part of the content hash: it is prose about the package, rewritten on every publish, and a
     package whose card someone edited has not been tampered with. `harbor_options` go to export_harbor
-    as they are: the Task set, the tier files, the label files and their rubric (D393). The Task index
-    is ruled once, on `workers` processes, and both forms read it (D401).
+    as they are: the Task set, the tier files, the label files and their rubric (D399). `staged` reuses
+    the package a dry run laid out there instead of exporting it again (from_staged); the rest is the same.
+    The Task index is ruled once, on `workers` processes, and every form that needs it reads it (D401).
     """
     resolved = name or repo_id.rsplit("/", 1)[-1]
     index = (package_mod.task_index(Path(workdir), package_mod.frozen_task_ids(Path(workdir)), workers=workers)
-             if (Path(workdir) / "env").is_dir() else None)
-    manifest = package_mod.export(workdir, out, name=resolved, corpus=corpus, corpus_license=corpus_license,
-                                  corpus_url=corpus_url, preview=preview, workers=workers, index=index)
+             if (Path(workdir) / "env").is_dir() and (harbor or staged is None) else None)
+    if staged is not None:
+        manifest = from_staged(staged, out)
+    else:
+        manifest = package_mod.export(workdir, out, name=resolved, corpus=corpus, corpus_license=corpus_license,
+                                      corpus_url=corpus_url, preview=preview, workers=workers, index=index)
     manifest["status"] = release_ruling(manifest, preview, bar)
     card = card_markdown(manifest, repo_id, announcement=announcement)
     if harbor:
@@ -97,9 +120,11 @@ def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, p
                              **({"org": organisation} if organisation else {}), workers=workers, index=index,
                              **(harbor_options or {}))
         manifest["harbor"] = {key: laid[key] for key in ("tasks_chosen", "counts", "content_hash", "leak_scan",
-                                                         "tiers", "labels", "left_out") if key in laid}
+                                                         "tiers", "labels", "left_out", "no_oracle") if key in laid}
         write_json(Path(out) / package_mod.MANIFEST_NAME, manifest)
         card += "\n" + harbor_section(laid)
+    elif staged is not None:
+        write_json(Path(out) / package_mod.MANIFEST_NAME, manifest)
     Path(out, CARD_NAME).write_text(card, encoding="utf-8")
     return manifest
 
@@ -109,7 +134,7 @@ def publish(workdir: Any, repo_id: str, *, client: Optional[HubClient] = None, n
             corpus_url: Optional[str] = None, keep: Optional[Any] = None,
             bar: float = RELEASE_FIDELITY, form: str = "package",
             harbor_options: Optional[dict] = None, announcement: Optional[str] = None,
-            workers: Optional[int] = None) -> tuple[HostedRepo, dict]:
+            workers: Optional[int] = None, staged: Optional[Any] = None) -> tuple[HostedRepo, dict]:
     """Export, card, upload, tag. Answers where it landed and the manifest that landed there."""
     if form not in FORMATS:
         raise PublishError(f"--format takes {' or '.join(FORMATS)}, not {form}")
@@ -122,7 +147,7 @@ def publish(workdir: Any, repo_id: str, *, client: Optional[HubClient] = None, n
         manifest = stage(workdir, out, repo_id, name=name, preview=preview, corpus=corpus,
                          corpus_license=corpus_license, corpus_url=corpus_url, bar=bar,
                          harbor=form == "harbor", harbor_options=harbor_options, announcement=announcement,
-                         workers=workers)
+                         workers=workers, staged=staged)
         url = host.create_repo(repo_id)
         tag = manifest["tag"]
         commit = host.upload_folder(repo_id, out, _commit_message(manifest, tag))

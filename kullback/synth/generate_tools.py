@@ -13,11 +13,16 @@ so the agent writes again. A second refusal of the same scenario drops it, and a
 and never written again is dropped at the end of the session; both are counted per reason. An opening
 ask or a typed line belongs to one scenario per session: a write picking one already grouped is refused
 naming the scenario that holds it, and is no refusal of a new scenario.
+
+A scenario also carries the customer's opening words (ask) and what a correct agent leaves behind (end),
+apart (D393). The write and the rewrite refuse, by code, an ask and an end that share a sentence, a tool
+name in either, and one of the pair given without the other; the reason names which.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -65,17 +70,29 @@ UNKNOWN = "unknown_scenario"
 BINDING = "binding_not_in_world"
 UNBOUND = "unbound"
 SITUATION_WRITTEN = "situation_already_written"
+ASK_SHARES_END = "ask_shares_end"
+TOOL_IN_ASK = "tool_name_in_ask"
+TOOL_IN_END = "tool_name_in_end"
+ASK_WITHOUT_END = "ask_without_end"
+END_WITHOUT_ASK = "end_without_ask"
+PAIR_MISSING = "ask_and_end_missing"
+KIND_NOT_IN_PLAN = "kind_not_in_plan"
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
 NEAR = "near_repeat"
 # A statement at or above this ROUGE-L against any written one is a near repeat, fixed before any run (D383).
 NEAR_REPEAT = 0.7
 # The sources whose scenarios must be bound to rows or say what the world lacks.
-BOUND_KINDS = ("recordings", "search")
+BOUND_KINDS = ("recordings", "search", "gaps")
 # How many opening texts a situation item shows; the rest are counted.
 OPENINGS_SHOWN = 5
+
+# The tool that marks items as no opening ask, in the sessions that hold it.
+SKIP_TOOL = "skip_opening"
 
 SESSION_TOOLS = {"plan": ("list_openings", "list_plan", "write_situation", "attach_openings", "skip_opening"),
                  "recordings": ("list_openings", "list_scenarios", *WORLD_TOOLS, "write_scenario"),
                  "ask": ("list_openings", "list_scenarios", *WORLD_TOOLS, "write_scenario"),
+                 "gaps": ("list_openings", "list_scenarios", *WORLD_TOOLS, "write_scenario"),
                  "search": ("list_scenarios", "search", "read_page", *WORLD_TOOLS, "write_scenario"),
                  "fix": ("list_scenarios", *WORLD_TOOLS, "rewrite_scenario")}
 
@@ -119,9 +136,10 @@ class NoArgs(Strict):
 
 class WriteArgs(Strict):
     statement: str
-    source: str = Field(description="The source of this session: recordings, search or ask.")
+    source: str = Field(description="The source of this session: recordings, search, ask or gaps.")
     policy_lines: list[str] = Field(default_factory=list, description="Policy lines it touches, word for word.")
-    openings: list[int] = Field(default_factory=list, description="For typed lines: the one number it rewrites.")
+    openings: list[int] = Field(default_factory=list,
+                                description="For typed lines or gaps: the one number it writes.")
     url: str = Field(default="", description="For a page: the URL you read.")
     span: str = Field(default="", description="For a page: the span it rests on, word for word.")
     situation: str = Field(default="", description="For a situation of the plan: its si_ id.")
@@ -129,6 +147,9 @@ class WriteArgs(Strict):
     binding: dict[str, str] = Field(default_factory=dict,
                                     description="The rows it is bound to: table to row key, as lookup_rows names them.")
     requires: list[str] = Field(default_factory=list, description="What the world lacks for it, in words.")
+    ask: str = Field(default="", description="What the customer says to open, first person, never the outcome.")
+    end: str = Field(default="", description="What a correct agent leaves the world and the customer with.")
+    kind: str = Field(default="", description="For a policy line gap: the situation's kind, one word.")
 
 
 class SituationArgs(Strict):
@@ -153,6 +174,8 @@ class RewriteArgs(Strict):
     statement: str
     binding: Optional[dict[str, str]] = Field(default=None, description="The rows it is bound to; leave out to keep them.")
     requires: Optional[list[str]] = Field(default=None, description="What the world lacks; leave out to keep it.")
+    ask: Optional[str] = Field(default=None, description="The customer's opening words; leave out to keep them.")
+    end: Optional[str] = Field(default=None, description="What a correct agent leaves behind; leave out to keep it.")
 
 
 class Rows(Strict):
@@ -200,6 +223,10 @@ def _policy_refusal(lines: list[str], policy: str) -> str:
 
 def _norm(text: str) -> str:
     return " ".join(str(text or "").lower().split())
+
+
+def _one_line(text: Optional[str]) -> str:
+    return " ".join(str(text or "").split())
 
 
 def _requires(lines: Optional[list[str]]) -> list[str]:
@@ -262,12 +289,27 @@ def _searched(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[Any,
     return anchor, "", {"source": source, "frequency": 0}
 
 
-CHECKS = {"recordings": _recordings, "ask": _asked, "search": _searched}
+def _gapped(root: GenerateRoot, args: WriteArgs, statement: str) -> tuple[Any, str, dict]:
+    """A scenario filling one gap item (D398); a cell's kind comes from the item, a policy line's from the write."""
+    picked = sorted({at for at in args.openings if 0 <= at < len(root.items)})
+    anchor = ("gaps", tuple(picked))
+    if len(picked) != 1:
+        return anchor, NO_OPENING, {}
+    gap = dict(root.items[picked[0]]["gap"])
+    if not gap.get("kind"):
+        gap["kind"] = (args.kind.lower().split() or [""])[0]
+        kinds = sorted({situation["kind"] for situation in root.plan.situations})
+        if gap["kind"] not in kinds:
+            return anchor, KIND_NOT_IN_PLAN, {"detail": "give one of " + ", ".join(kinds)}
+    return anchor, "", {"source": R.Source(kind="gaps", gap=gap), "frequency": 0, "picked": picked}
+
+
+CHECKS = {"recordings": _recordings, "ask": _asked, "search": _searched, "gaps": _gapped}
 
 
 def _already_grouped(root: GenerateRoot, args: WriteArgs) -> None:
     """Refuse a write picking an item a scenario of this session already holds; no anchor is counted."""
-    held = sorted({at for at in args.openings if at in root.grouped}) if root.kind == "ask" else []
+    held = sorted({at for at in args.openings if at in root.grouped}) if root.kind in ("ask", "gaps") else []
     if held:
         named = ", ".join(f"{at} (in {root.grouped[at]})" for at in held)
         raise ValueError(f"refused ({OPENING_GROUPED.replace('_', ' ')}): item {named} already belongs to a "
@@ -299,8 +341,27 @@ def _near_why(root: GenerateRoot, statement: str, skip: str = "", situation: str
     return (NEAR, f"{twin} already says this") if twin else ("", "")
 
 
+def _sentences(text: str) -> set[str]:
+    from kullback.synth.generate import canonical
+
+    return {said for said in (canonical(part) for part in _SENTENCE.split(text)) if said}
+
+
+def pair_refusal(ask: str, end: str, world: World) -> str:
+    """Why an ask and an end leak into each other or name a tool, or one is missing, or nothing (D393)."""
+    if bool(ask) != bool(end):
+        return ASK_WITHOUT_END if ask else END_WITHOUT_ASK
+    if statement_refusal(ask, world, tools_only=True):
+        return TOOL_IN_ASK
+    if statement_refusal(end, world, tools_only=True):
+        return TOOL_IN_END
+    return ASK_SHARES_END if _sentences(ask) & _sentences(end) else ""
+
+
 def _why(root: GenerateRoot, args: WriteArgs, statement: str, why: str) -> tuple[str, str]:
     why = why or (statement_refusal(statement, root.world) if statement else EMPTY)
+    why = why or pair_refusal(_one_line(args.ask), _one_line(args.end), root.world)
+    why = why or (PAIR_MISSING if root.kind == "gaps" and not (args.ask or args.end) else "")
     why = why or _policy_refusal(args.policy_lines, root.world.policy)
     if why:
         return why, ""
@@ -317,16 +378,18 @@ def written(root: GenerateRoot, args: WriteArgs) -> Rows:
     anchor, why, made = CHECKS[root.kind](root, args, statement)
     _closed(root, anchor)
     why, detail = _why(root, args, statement, why)
+    detail = detail or made.get("detail", "")
     if why:
         _refuse(root, anchor, why, detail)
     record = R.born(statement, made["source"], R.policy_lines_in(args.policy_lines, root.world.policy)[0],
                     made["frequency"]).model_copy(update={
                         "situation": made.get("situation", ""), "variant": made.get("variant", ""),
-                        "binding": dict(args.binding), "requires": _requires(args.requires)})
+                        "binding": dict(args.binding), "requires": _requires(args.requires),
+                        "ask": _one_line(args.ask), "end": _one_line(args.end)})
     root.found.append(record)
     root.written.add(anchor)
     root.grouped.update({at: record.id for at in made.get("picked", ())})
-    row = {"id": record.id, "statement": record.statement, "source": root.kind}
+    row = {"id": record.id, "statement": record.statement, "source": root.kind, "ask": record.ask, "end": record.end}
     if root.bus is not None:
         root.bus.publish_custom("scenario_written", row)
     return Rows(summary=f"written {record.id}", rows=[row])
@@ -342,14 +405,17 @@ def rewritten(root: GenerateRoot, args: RewriteArgs) -> Rows:
     statement = " ".join(args.statement.split())
     binding = dict(record.binding if args.binding is None else args.binding)
     requires = list(record.requires) if args.requires is None else _requires(args.requires)
+    ask = record.ask if args.ask is None else _one_line(args.ask)
+    end = record.end if args.end is None else _one_line(args.end)
     why, detail = (statement_refusal(statement, root.world) if statement else EMPTY), ""
+    why = why or pair_refusal(ask, end, root.world)
     why, detail = (why, detail) if why else _near_why(root, statement, args.id, record.situation)
     why, detail = (why, detail) if why else _bound_why(root.world, record.source.kind, binding, requires)
     if why:
         _refuse(root, anchor, why, detail)
-    root.fixed[args.id] = {"statement": statement, "binding": binding, "requires": requires}
+    root.fixed[args.id] = {"statement": statement, "binding": binding, "requires": requires, "ask": ask, "end": end}
     root.written.add(anchor)
-    row = {"id": args.id, "statement": statement, "binding": binding, "requires": requires}
+    row = {"id": args.id, **root.fixed[args.id]}
     if root.bus is not None:
         root.bus.publish_custom("scenario_rewritten", row)
     return Rows(summary=f"rewritten {args.id}", rows=[row])
@@ -360,6 +426,7 @@ def rewritten(root: GenerateRoot, args: RewriteArgs) -> Rows:
 
 def _scenario_row(record: R.Scenario, status: str) -> dict:
     row = {"id": record.id, "statement": record.statement, "status": status}
+    row = {**row, "ask": record.ask, "end": record.end} if record.ask or record.end else row
     return {**row, "situation": record.situation, "variant": record.variant} if record.situation else row
 
 
@@ -466,13 +533,34 @@ def turns_for(root: GenerateRoot) -> int:
     return min(MAX_TURNS, max(MIN_TURNS, TURNS_PER_ITEM * max(len(root.items), len(root.fixing), 1)))
 
 
+def unwritten(root: GenerateRoot) -> list[int]:
+    """The numbers of the session's items no scenario grouped and no skip named yet; the plan's items by the plan."""
+    if root.kind == "plan":
+        return [at for at, item in enumerate(root.items) if not root.plan.holder(item)]
+    return [at for at in range(len(root.items)) if at not in root.grouped]
+
+
+def unfinished_line(root: GenerateRoot) -> str:
+    """What the loop puts to the model when the session would end with items left, or nothing."""
+    left = unwritten(root)
+    if not left:
+        return ""
+    numbers = ", ".join(str(at) for at in left)
+    named = f"item {numbers} is" if len(left) == 1 else f"items {numbers} are"
+    if SKIP_TOOL in SESSION_TOOLS[root.kind]:
+        return f"{named} not written and not skipped: write each, or skip it with {SKIP_TOOL} and its reason."
+    return f"{named} not written and not skipped: write each, or say in one line why each cannot be written."
+
+
 def run(root: GenerateRoot, model: Any, opening: str, stage: str, ceiling: Optional[budget.Ceiling] = None,
         subscribers: tuple = ()) -> bool:
-    """One session on its opening message; whether it stopped on its turn cap. Refusals settle after."""
+    """One session on its opening message; whether it stopped on its turn cap. Refusals settle after.
+
+    A session with items is asked, when it would end, for the items still unwritten (the loop's unfinished hook)."""
     turns = turns_for(root)
     name = getattr(model, "name", None)
     harness = AgentHarness(model=model, max_turns=turns, context=ContextConfig(window=budget.window_for(name)),
-                           bus=root.bus)
+                           bus=root.bus, unfinished=(lambda: unfinished_line(root)) if root.items else None)
     detach = [harness.subscribe(subscriber) for subscriber in subscribers]
     detach.append(harness.subscribe(budget.subscriber(root.workdir, stage, name, ceiling)))
     try:
@@ -485,5 +573,6 @@ def run(root: GenerateRoot, model: Any, opening: str, stage: str, ceiling: Optio
     return bool(capped)
 
 
-__all__ = ["AGENT", "GenerateRoot", "NEAR", "NEAR_REPEAT", "OPENING_GROUPED", "SEARCH_TURNS", "SESSION_TOOLS", "bus_for", "generate_extension", "generate_tools", "rewritten", "run",
-           "settle_refusals", "turns_for", "written"]
+__all__ = ["AGENT", "ASK_SHARES_END", "ASK_WITHOUT_END", "END_WITHOUT_ASK", "TOOL_IN_ASK", "TOOL_IN_END",
+           "GenerateRoot", "pair_refusal", "NEAR", "NEAR_REPEAT", "OPENING_GROUPED", "SEARCH_TURNS", "SESSION_TOOLS", "bus_for", "generate_extension", "generate_tools", "rewritten", "run",
+           "settle_refusals", "turns_for", "unfinished_line", "unwritten", "written"]

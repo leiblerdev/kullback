@@ -102,8 +102,11 @@ class AgentHarness:
         session: Optional[SessionStore] = None,
         context: Optional[ContextConfig] = None,
         bus: Optional[Bus] = None,
+        unfinished: Optional[Callable[[], str]] = None,
     ):
         self.model = model
+        # Asked when a run would end; a non empty line is what is left, put to the model (loop.py).
+        self.unfinished = unfinished
         # The workdir's bus, when there is one: every event goes onto it, and the subscribers are
         # its subscribers, so one durable ordered stream carries what the run did. None keeps the
         # subscribers in this process, which is what a test wants.
@@ -292,6 +295,7 @@ class AgentHarness:
             cancel=CancelToken(),
             config=self.config,
             max_turns=self.max_turns,
+            unfinished=self.unfinished,
         )
         self._steering = []
         self._follow_ups = []

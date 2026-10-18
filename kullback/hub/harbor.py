@@ -23,7 +23,7 @@ The leak scan is the package's (D221), run over what a Harbor task adds: the ins
 the oracle's calls and reply, the Verifier and a rater's words in its metadata. A leak removes the
 dataset and refuses the export, naming each leaking Task (masked) and part and how many strings.
 
-`--tasks verified` (D393) exports every recorded Task with a Verifier on disk, trusted or not, each
+`--tasks verified` (D399) exports every recorded Task with a Verifier on disk, trusted or not, each
 marked with its Spec tier and tier reason (tiers.json) and, given label files, a rater's label.
 """
 
@@ -70,6 +70,7 @@ from kullback.runner.world.environment import BuiltEnvironment
 from kullback.spec.report import REPORT_FILE as TIERS_FILE
 from kullback.spec.schema import Spec, spec_path, spec_verifier_path
 from kullback.spec.split import reference_classes
+from kullback.spec.trust import NO_VERIFIER as NO_VERIFIER_REASON
 from kullback.spec.trust import SYNTHETIC as SYNTHETIC_TIER
 from kullback.spec.trust import runs_on_disk
 from kullback.synthesise import DIR as SYNTHETIC_DIR
@@ -222,7 +223,7 @@ def _synthetic_tasks(workdir: Path) -> dict[str, dict]:
     return out
 
 
-# --- the tier and the label of each Task (D393) ------------------------------------
+# --- the tier and the label of each Task (D399) ------------------------------------
 
 
 def _owner(key: str, exact: set[str], ids: list[str]) -> Optional[str]:
@@ -401,9 +402,10 @@ def starting_state(app: Path) -> dict:
 
 
 def write_task(directory: Path, *, workdir: Path, task_id: str, task_record: dict, instruction: str,
-               policy: Optional[str], verifier_path: Path, calls: list[dict], wheel: Path,
+               policy: Optional[str], verifier_path: Path, calls: Optional[list[dict]], wheel: Path,
                toml: str) -> None:
-    """One Harbor task directory, laid out and checked to load before anything else reads it."""
+    """One Harbor task directory, laid out and checked to load before anything else reads it; with `calls`
+    None it has no solution/ (no Run passes on replay, D399)."""
     environment = directory / "environment"
     world = environment / WORLD_DIR
     world.mkdir(parents=True, exist_ok=True)
@@ -419,6 +421,8 @@ def write_task(directory: Path, *, workdir: Path, task_id: str, task_record: dic
     shutil.copyfile(verifier_path, directory / "tests" / VERIFIER_NAME)
     (directory / "tests" / "test.sh").write_text(TEST_SH, encoding="utf-8")
     (directory / "tests" / "test.sh").chmod(0o755)
+    if calls is None:
+        return
     verifier = Verifier.model_validate(read_json(verifier_path, {}))
     reply = " ".join([DONE_LINE, *said_values(verifier)])
     (directory / "solution").mkdir(exist_ok=True)
@@ -458,10 +462,12 @@ def _parts(row: dict, min_length: int) -> list[tuple[str, set[str], str]]:
     oracle: set[str] = set()
     _strings(row["calls"], oracle, min_length)
     _strings(row["reply"], oracle, min_length)
-    return [("instruction", _text_strings(row["facts"], min_length), ""),
-            ("Verifier", _file_strings(row["verifier"], min_length), row["instruction"]),
-            ("oracle", oracle, row["instruction"]),
-            ("label", _text_strings([row.get("label") or ""], min_length), row["instruction"])]
+    parts = [("instruction", _text_strings(row["facts"], min_length), ""),
+             ("Verifier", _file_strings(row["verifier"], min_length), row["instruction"]),
+             ("oracle", oracle, row["instruction"]),
+             ("label", _text_strings([row.get("label") or ""], min_length), row["instruction"])]
+    # A Task with no solution/ has no oracle part to scan (D399).
+    return [part for part in parts if part[0] != ORACLE_PART or row.get("has_oracle", True)]
 
 
 def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: int = LEAK_MIN_LENGTH,
@@ -469,7 +475,7 @@ def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: 
     """The package's scan (D221) over what each Harbor task adds, counts only.
 
     Per task: the instruction's lines against the world and the harness, then the Verifier, the
-    oracle's calls and its reply and a rater's words in the metadata (D393) against the world, the
+    oracle's calls and its reply and a rater's words in the metadata (D399) against the world, the
     harness and the instruction. Each leaking part is named by its Task, masked, and its part. The policy is
     declared rather than scanned: it is the recorded agent's own system prompt, the text every Run
     the build made was given, and it ships in instruction.md as the policy the agent works under.
@@ -477,11 +483,13 @@ def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: 
     corpus = corpus_strings(raw_dir, min_length) if corpus is None else corpus
     index = _prose_index(corpus, content_min_length)
     harness = harness_text()
-    leaking, echoes, checked = [], 0, 0
+    leaking, echoes, checked, files = [], 0, 0, 0
     for row in scanned:
         world_values, world_text = _baseline(row["world"], WORLD_FILES + ("env", "overlays"), min_length)
         policy = row.get("policy") or ""
-        for part, found, extra in _parts(row, min_length):
+        parts = _parts(row, min_length)
+        files += len(parts)
+        for part, found, extra in parts:
             checked += len(found)
             found = found | embedded_prose(found, index, content_min_length)
             unaccounted = {value for value in found if value in corpus and not (
@@ -491,7 +499,7 @@ def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: 
             echoes += len(unaccounted - leaks)
             if leaks:
                 leaking.append({"task": str(row["task"])[-MASK:], "part": part, "values": len(leaks)})
-    return {"corpus_strings": len(corpus), "values_checked": checked, "files_scanned": 4 * len(scanned),
+    return {"corpus_strings": len(corpus), "values_checked": checked, "files_scanned": files,
             "leaks": sum(row["values"] for row in leaking), "leaking_files": leaking,
             "value_echoes": echoes, "policy": "declared, not scanned"}
 
@@ -598,24 +606,45 @@ def _metadata(build: _Build, task_id: str, synthetic: bool, index: dict, verifie
     }
 
 
+def _write(job: dict, metadata: dict, calls: Optional[list[dict]]) -> None:
+    given, folder = job["given"], job["folder"]
+    category = sorted({str(given["record"].get("category_id") or "")} - {""})
+    keywords = category + sorted({call["name"] for call in calls or ()} & job["write_tools"])
+    toml = task_toml(name=f"{job['org']}/{folder.name}", description=_description(given["instruction"]),
+                     keywords=keywords, metadata=metadata, org=job["org"], judged=metadata["judge_items"])
+    write_task(folder, workdir=job["workdir"], task_id=job["task_id"], task_record=given["record"],
+               instruction=given["instruction"], policy=given["policy"], verifier_path=job["verifier_path"],
+               calls=calls, wheel=job["wheel"], toml=toml)
+
+
 def _lay_with_oracle(job: dict) -> Optional[list[dict]]:
     """Write the task with each candidate oracle in turn and keep the first that holds; None if none does.
-
-    `job` is the whole input of one Task (`_job`), so a process pool can lay Tasks side by side (D401)."""
-    given, metadata, folder = job["given"], job["metadata"], job["folder"]
-    category = sorted({str(given["record"].get("category_id") or "")} - {""})
-    for tried in given["candidates"]:
-        keywords = category + sorted({call["name"] for call in tried} & job["write_tools"])
-        toml = task_toml(name=f"{job['org']}/{folder.name}", description=_description(given["instruction"]),
-                         keywords=keywords, metadata=metadata, org=job["org"],
-                         judged=metadata["judge_items"])
-        write_task(folder, workdir=job["workdir"], task_id=job["task_id"], task_record=given["record"],
-                   instruction=given["instruction"], policy=given["policy"], verifier_path=job["verifier_path"],
-                   calls=tried, wheel=job["wheel"], toml=toml)
+    Under `verified` and `all` a Task none holds for is then written without solution/, marked has_oracle
+    false (D399); it answers [] for that Task. `job` is the whole input of one Task (`_job`), so a process
+    pool can lay Tasks side by side (D401)."""
+    metadata, folder = job["metadata"], job["folder"]
+    for tried in job["given"]["candidates"]:
+        _write(job, dict(metadata, has_oracle=True), tried)
         if oracle_holds(folder):
+            metadata["has_oracle"] = True
             return tried
         shutil.rmtree(folder)
-    return None
+    if job["tasks"] == "trusted":
+        return None
+    metadata.update(has_oracle=False, no_oracle_reason=NO_ORACLE)
+    _write(job, metadata, None)
+    return []
+
+
+def _verified_skip(build: _Build, task_id: str, body: Optional[dict]) -> Optional[str]:
+    """Under `verified`, a recorded Task the tier report rules no_verifier is "no Verifier" whatever file is on
+    disk (a draft the Spec set aside, D399), and one of the synthetic tier is "synthetic"; else None."""
+    if build.tasks != "verified" or body is not None:
+        return None
+    row = (build.tiers or {}).get(task_id) or {}
+    if row.get("reason") == NO_VERIFIER_REASON:
+        return "no Verifier"
+    return "synthetic" if row.get("tier") == SYNTHETIC_TIER else None
 
 
 def _job(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Optional[str], dict]:
@@ -623,10 +652,8 @@ def _job(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Optional[st
     Environment and Runs is read here, once, so laying the Task needs nothing else."""
     given = _inputs(build, task_id, body)
     verifier_path = verifier_of(build.workdir, task_id, body is not None)
-    synthetic_tier = (build.tasks == "verified" and body is None
-                      and ((build.tiers or {}).get(task_id) or {}).get("tier") == SYNTHETIC_TIER)
-    reason = ("no Verifier" if verifier_path is None else "synthetic" if synthetic_tier
-              else "no Run" if not given["candidates"] else "no instruction" if not given["instruction"] else None)
+    reason = ("no Verifier" if verifier_path is None else _verified_skip(build, task_id, body)
+              or ("no Run" if not given["candidates"] else "no instruction" if not given["instruction"] else None))
     if reason:
         return reason, {}
     verifier = Verifier.model_validate(read_json(verifier_path, {}))
@@ -634,7 +661,7 @@ def _job(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Optional[st
     return None, {"task_id": task_id, "given": given, "verifier_path": verifier_path, "folder": folder,
                   "metadata": _metadata(build, task_id, body is not None, given["index"], verifier),
                   "org": build.org, "out": build.out, "workdir": build.workdir, "wheel": build.wheel,
-                  "write_tools": set(build.env.write_tools())}
+                  "tasks": build.tasks, "write_tools": set(build.env.write_tools())}
 
 
 def _export_one(job: dict) -> tuple[Optional[str], dict, dict]:
@@ -645,10 +672,12 @@ def _export_one(job: dict) -> tuple[Optional[str], dict, dict]:
     given, metadata, folder = job["given"], job["metadata"], job["folder"]
     path = folder.relative_to(job["out"]).as_posix()
     listed = {"harbor_name": f"{job['org']}/{folder.name}", "path": path, **metadata}
+    solve = folder / "solution" / "solve.sh"
     scanned = {"name": path, "task": job["task_id"], "world": folder / "environment" / WORLD_DIR,
                "facts": given["facts"] or [given["instruction"]], "label": str(metadata.get("label_gold_diff") or ""),
                "instruction": given["instruction"], "policy": given["policy"], "verifier": job["verifier_path"],
-               "calls": calls, "reply": (folder / "solution" / "solve.sh").read_text(encoding="utf-8")}
+               "has_oracle": metadata["has_oracle"], "calls": calls,
+               "reply": solve.read_text(encoding="utf-8") if solve.is_file() else ""}
     return None, listed, scanned
 
 
@@ -683,7 +712,7 @@ def solution_only(scan: dict, scanned: list[dict]) -> list[dict]:
 
 def _drop_solution_leaks(out: Path, scan: dict, scanned: list[dict], listed: list[dict],
                          skipped: dict) -> tuple[dict, list[str]]:
-    """Take each Task whose only leaking part is its oracle out of the dataset (D393); answers the scan
+    """Take each Task whose only leaking part is its oracle out of the dataset (D399); answers the scan
     over what stays, which still refuses the export on any other part, and the ids taken out."""
     dropped = solution_only(scan, scanned)
     names = {row["name"] for row in dropped}
@@ -697,6 +726,19 @@ def _drop_solution_leaks(out: Path, scan: dict, scanned: list[dict], listed: lis
     taken = [row for row in scan.get("leaking_files") or () if row["task"] in masked]
     scan = dict(scan, leaks=sum(row["values"] for row in kept), leaking_files=kept, solution_leaks=taken)
     return scan, [str(row["task"]) for row in dropped]
+
+
+def _counts(listed: list[dict], recorded: list[dict], skipped: dict) -> dict:
+    def count(test: Any) -> int:
+        return sum(1 for row in listed if test(row))
+
+    return {"exported": len(listed), "recorded": len(recorded),
+            "synthetic": count(lambda row: row["origin"] == "synthetic"),
+            "needs_judge": count(lambda row: row["needs_judge"]),
+            "confirm_gate": count(lambda row: row["confirm_gate"]),
+            "skipped": skipped,
+            "no_oracle": count(lambda row: row.get("has_oracle") is False),
+            "by_tier_and_label": by_tier_and_label(recorded)}
 
 
 def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_oracle: list[str],
@@ -714,13 +756,10 @@ def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_o
         "git_sha": build.sha,
         "reward": dict(REWARD_SHAPE, harbor="gated then weighted; an unscored gate gives 0 and is named "
                                             "unscored_gate in items.json; reward.json carries the number alone"),
-        "counts": {"exported": len(listed),
-                   "recorded": sum(1 for row in listed if row["origin"] == "recorded"),
-                   "synthetic": sum(1 for row in listed if row["origin"] == "synthetic"),
-                   "needs_judge": sum(1 for row in listed if row["needs_judge"]),
-                   "confirm_gate": sum(1 for row in listed if row["confirm_gate"]),
-                   "skipped": skipped,
-                   "by_tier_and_label": by_tier_and_label(recorded)},
+        "counts": _counts(listed, recorded, skipped),
+        # Exported with no solution/: no Run passes on replay (D399). Masked, as left_out.
+        "no_oracle": [{"task": row["kullback_task_id"][-MASK:], "reason": NO_ORACLE}
+                      for row in listed if row.get("has_oracle") is False],
         "tasks": recorded,
         "synthetic": [row for row in listed if row["origin"] == "synthetic"],
         # Masked to the last four characters, as every report masks a Task id.
@@ -758,12 +797,12 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
     of the synthetic tier) or `all`; synthetic store Tasks are never trusted, so they
     come only with `all`, under `synthetic/`. `only` narrows the list to the named Task ids. Every
     recorded Task carries its Spec tier off `tiers` (the workdir's tiers.json by default) and, with
-    `labels`, a rater's label, `unlabelled` where no row names it (D393). A Task whose only leaking part
+    `labels`, a rater's label, `unlabelled` where no row names it (D399). A Task whose only leaking part
     is its oracle is left out as SOLUTION_LEAKS and listed masked; a leak in any other part refuses. A Task
     with no Verifier, no Run or no instruction is left out and counted by reason. The oracle is the
     first of the Task's Runs whose calls, replayed through the exported world, hold every item a judge
     is not needed for; a Task with none is left out too (NO_ORACLE). The Tasks are laid on `workers`
-    processes (None: every core but two) and the dataset is the same whatever the count (D401);
+    processes (None: the default of kullback/processes.py) and the dataset is the same whatever the count (D401);
     `index` is the package's Task index where the caller already holds it, so it is not ruled twice.
     """
     workdir, out = Path(workdir), Path(out)

@@ -1293,7 +1293,9 @@ HARBOR_LABELS = typer.Option(None, "--labels", help="harbor only: a JSON list of
 HARBOR_RUBRIC = typer.Option(None, "--labels-rubric", help="harbor only: the rubric the labels were given under, "
                                                            "named on the card.")
 EXPORT_WORKERS = typer.Option(None, "--workers", help="Processes that rule and lay the Tasks; 1 is serial. The "
-                                                     "output is the same whatever the count. Default: cores - 2.")
+                                                     "output is the same whatever the count. Default: cores - 2, at most "
+                                                     "4 (a worker can take over a gigabyte); ask for more "
+                                                     "where memory allows.")
 
 
 def _harbor_options(tasks: str, tiers: Optional[list[Path]], labels: Optional[list[Path]],
@@ -1371,6 +1373,9 @@ def publish(
     announcement: Optional[Path] = typer.Option(None, "--announcement", help="A Markdown file whose text the "  # noqa: B008
                                                                             "card carries as its News section."),
     workers: Optional[int] = EXPORT_WORKERS,
+    staged: Optional[Path] = typer.Option(None, "--from-staged", help="Reuse the package a dry run laid out "  # noqa: B008
+                                                                     "in this directory, verified first, "
+                                                                     "instead of exporting it again."),
 ):
     """Export the Environment, write its card and upload it as one commit, tagged with its round (D221).
 
@@ -1385,7 +1390,7 @@ def publish(
                             client=client, form=form,
                             harbor_options=_harbor_options(tasks, tiers, labels, labels_rubric),
                             announcement=announcement.read_text(encoding="utf-8") if announcement else None,
-                            workers=workers)
+                            workers=workers, staged=staged)
     _echo_manifest(manifest)
     if manifest.get("harbor"):
         laid = manifest["harbor"]
@@ -1489,6 +1494,7 @@ SCENARIO_BASE_URL = typer.Option(None, "--base-url", help="Endpoint for an OpenA
 SCENARIO_CEILING = typer.Option(None, "--ceiling-usd", help="Spend ceiling for this command (D86).")
 SCENARIO_ASKS = typer.Option(None, "--asks", help="Lines a customer typed, one per line; default scenarios/asks.txt.")
 SCENARIO_DOMAIN = typer.Option(None, "--domain", help="One line describing the business; else environment.json's.")
+SCENARIO_SOURCE = typer.Option(None, "--source", help="Run only these sources: recordings, search, ask, gaps (D398).")
 
 
 def _synth_ceiling(workdir: Path, model: str, ceiling_usd: Optional[float]) -> Any:
@@ -1518,15 +1524,22 @@ def synth_scenarios(
     domain_line: Optional[str] = SCENARIO_DOMAIN,
     corpus_url: Optional[str] = typer.Option(None, "--corpus-url",
                                              help="The source corpus's own repository or paper; never read."),
+    source: Optional[list[str]] = SCENARIO_SOURCE,
 ):
-    """Plan the situations the openings show, then generate scenarios: recordings, a cited web search, typed lines (D372, D380)."""
+    """Plan the situations the openings show, then generate scenarios: recordings, a cited web search, typed
+    lines, then the gaps in the store (D372, D380, D398)."""
     if not model:
         typer.echo("no model: pass --model")
+        raise typer.Exit(2)
+    kinds = _entry("kullback.synth.records", "SOURCE_KINDS")
+    unknown = sorted(set(source or ()) - set(kinds))
+    if unknown:
+        typer.echo(f"unknown source {', '.join(unknown)}: pass one of {', '.join(kinds)}")
         raise typer.Exit(2)
     ceiling = _synth_ceiling(workdir, model, ceiling_usd)
     _entry("kullback.synth.generate", "generate")(workdir, model=_live_model(model, base_url), asks=asks,
                                                    searching=search, batch=batch, description=str(domain_line or ""),
-                                                   corpus_url=corpus_url, ceiling=ceiling)
+                                                   corpus_url=corpus_url, ceiling=ceiling, sources=source or kinds)
     _scenario_report(workdir)
 
 

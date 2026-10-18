@@ -36,6 +36,14 @@ def test_a_worker_exception_reaches_the_caller():
         processes.each([1, 2, 3], _fail_on_two, workers=2)
 
 
-def test_no_worker_count_takes_every_core_but_two_and_never_less_than_one():
-    assert processes.resolve(None) == max(1, (os.cpu_count() or 1) - 2)
+def test_no_worker_count_takes_every_core_but_two_capped_at_four_and_never_less_than_one():
+    assert processes.resolve(None) == max(1, min((os.cpu_count() or 1) - 2, 4))
     assert processes.resolve(0) == 1 and processes.resolve(3) == 3
+
+
+def test_the_default_never_exceeds_four_workers_however_many_cores(monkeypatch):
+    for cores in (1, 3, 6, 8, 64, None):
+        monkeypatch.setattr(os, "cpu_count", lambda cores=cores: cores)
+        assert 1 <= processes.default_workers() <= 4
+    monkeypatch.setattr(os, "cpu_count", lambda: 64)
+    assert processes.default_workers() == 4 and processes.resolve(12) == 12
