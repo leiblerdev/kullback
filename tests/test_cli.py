@@ -58,6 +58,9 @@ def fake_modules(monkeypatch):
             # search with; the stub answers None, which is the case a build without live or a memo hits.
             if name == "search_for":
                 return None
+            # environment_record answers a dict that must validate as an Environment, or None (D407).
+            if name == "environment_record":
+                return None
             if name == "reroll":
                 return reroll(*args, **kwargs)
             if name == "examine":

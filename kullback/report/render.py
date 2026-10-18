@@ -603,6 +603,9 @@ def _coverage(data: ReportData) -> list[str]:
     for item in data.task_coverage:
         if not item.covered:
             lines.append(f"  - {item.task_id}: not covered, {item.reason or 'no reason recorded'}")
+    # Beside D96's replay coverage, not in it: the Tasks a Candidate Run was scored on (D407).
+    scored = sum(1 for task in data.tasks if task_numbers(data, task)["candidate_runs"])
+    lines.append(f"- Candidate Runs scored: {scored} of {len(data.tasks)} Tasks")
     exercised = [c for c in data.policy_items if c.id in set(data.policy_exercised)]
     untested = [c for c in data.policy_items if c.id not in set(data.policy_exercised)]
     lines.append(

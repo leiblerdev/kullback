@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -355,6 +356,7 @@ def test_a_packaged_workdir_passes_the_workdir_check_when_the_build_wrote_no_pol
     manifest = publish_mod.fetch("leibler/nursery", out, client=hub)
     assert manifest["missing_run_inputs"] == []
     assert (out / "env" / "policy.md").read_text(encoding="utf-8") == prompt
+    assert read_json(out / "environment.json", {})["policy_version"] == hashlib.sha256(prompt.encode()).hexdigest()
     assert BuiltEnvironment(out).system_prompt(BuiltEnvironment(out).task("task_one")) == prompt
 
 
@@ -709,3 +711,51 @@ def test_the_built_line_names_the_commit_that_laid_the_harbor_tasks_where_it_dif
     assert f"package built at git {'a' * 16}, Harbor Tasks laid at git {'b' * 16}" in built
     same = card_mod.card_markdown({"git_sha": package_sha, "harbor": {"git_sha": package_sha}}, "someorg/widgets")
     assert f"git {'a' * 16}," in same and "laid at" not in same
+
+
+def _scripted_candidate(monkeypatch):
+    from kullback.ai.provider import TestModel
+    from tests.episode.invented import SCRIPTED_RENAME
+
+    monkeypatch.setattr(cli, "_live_model", lambda model_id, base_url=None: TestModel(SCRIPTED_RENAME, loop=True))
+
+
+def test_a_package_fetched_from_a_staged_publish_scores_a_candidate_run_and_counts_it_in_the_report(
+        tmp_path, hub, monkeypatch):
+    # D407: the build wrote no environment.json; the package derives one, so the regrade gate lets the Verdict through
+    from tests.episode.invented import write_env
+
+    workdir = write_env(tmp_path / "work")
+    (workdir / "environment.json").unlink()
+    (workdir / "db.json").rename(workdir / "env" / "db.json")  # where a build keeps its world, and what a package ships
+    publish_mod.publish(workdir, "leibler/widgets", client=hub, preview=True)
+    out = tmp_path / "fetched"
+    manifest = publish_mod.fetch("leibler/widgets", out, client=hub)
+    assert "environment.json" in manifest["files"] and manifest["missing_run_inputs"] == []
+    _scripted_candidate(monkeypatch)
+    runner = CliRunner()
+    ran = runner.invoke(cli.app, ["run", "--workdir", str(out), "--task", "widget_task", "--model", "test/candidate"])
+    assert ran.exit_code == 0, ran.output
+    scored = runner.invoke(cli.app, ["verdict", "--workdir", str(out), "--task", "widget_task"])
+    assert scored.exit_code == 0 and "refused" not in scored.output, scored.output
+    stored = [read_json(path) for path in (out / "verdicts" / "widget_task").glob("widget_task-0.*.json")]
+    assert [(v["pass"], v["env_id"]) for v in stored] == [(True, manifest["env_id"])]
+    reported = runner.invoke(cli.app, ["report", "--workdir", str(out)])
+    assert reported.exit_code == 0, reported.output
+    assert "- Candidate Runs scored: 1 of 1 Tasks" in (out / "report.md").read_text(encoding="utf-8")
+
+
+def test_a_verdict_the_regrade_gate_refuses_leaves_no_file_behind(tmp_path, monkeypatch):
+    # D407: no environment.json and no policy to derive one from, so the D97 versions are missing
+    from tests.episode.invented import write_env
+
+    workdir = write_env(tmp_path / "work")
+    _scripted_candidate(monkeypatch)
+    runner = CliRunner()
+    ran = runner.invoke(cli.app, ["run", "--workdir", str(workdir), "--task", "widget_task", "--model", "test/candidate"])
+    assert ran.exit_code == 0, ran.output
+    (workdir / "environment.json").unlink()
+    (workdir / "tool_sigs.json").unlink()
+    scored = runner.invoke(cli.app, ["verdict", "--workdir", str(workdir), "--task", "widget_task"])
+    assert scored.exit_code != 0 and "schema_version is not on the Verdict" in scored.output, scored.output
+    assert [path for path in (workdir / "verdicts").rglob("*") if path.is_file()] == []

@@ -72,6 +72,10 @@ GRADER_DIRS: tuple[str, ...] = ("tasks", "verifiers")
 
 # The policy a Run is given, under the world's env/ (D404): the recorded agent prompt where the build has no file.
 POLICY_FILE = "env/policy.md"
+# The D97 versions a Verdict carries, each the content hash of one shipped file (D407).
+ENVIRONMENT_FILE = "environment.json"
+VERSIONED_FILES: dict[str, str] = {"schema_version": "schema.json", "tools_version": "tool_sigs.json",
+                                   "policy_version": POLICY_FILE}
 
 EXPORTED_DIRS: tuple[str, ...] = WORLD_DIRS + GRADER_DIRS
 EXPORTED_FILES: tuple[str, ...] = WORLD_FILES
@@ -502,6 +506,38 @@ def environment_policy(workdir: Path, task_ids: Iterable[str]) -> Optional[str]:
     return next(iter(prompts)) if len(prompts) == 1 and None not in prompts else None
 
 
+def environment_record(directory: Path) -> Optional[dict]:
+    """environment.json for a workdir or a package, written where it lacks the D97 versions (D407).
+
+    Each version is the sha256 of the file it names, the same hash the manifest keeps for that file, and
+    env_id hashes the three, so a build workdir and the package laid from it carry the same values. The
+    policy is the text a package ships (environment_policy). A record that already names all four is kept.
+    Where a versioned file is missing or no single policy exists it writes nothing and answers the record
+    on disk as it stands, or None where there is none.
+    """
+    directory = Path(directory)
+    path = directory / ENVIRONMENT_FILE
+    record = read_json(path, {}) if path.is_file() else {}
+    record = record if isinstance(record, dict) else {}
+    if all(record.get(field) for field in ("env_id", *VERSIONED_FILES)):
+        return record
+    policy = environment_policy(directory, frozen_task_ids(directory))
+    if policy is None:
+        return record or None
+    versions = {}
+    for field, name in VERSIONED_FILES.items():
+        source = directory / name
+        if name == POLICY_FILE:
+            versions[field] = hashlib.sha256(policy.encode("utf-8")).hexdigest()
+        elif source.is_file():
+            versions[field] = hashlib.sha256(source.read_bytes()).hexdigest()
+        else:
+            return record or None
+    record = {**record, "env_id": content_hash(versions), **versions}
+    write_json(path, record)
+    return record
+
+
 def _lay_out(workdir: Path, out: Path, task_ids: list[str]) -> list[str]:
     """Copy the world and the graders into `out`, and answer the relative paths written."""
     written: list[str] = []
@@ -522,6 +558,8 @@ def _lay_out(workdir: Path, out: Path, task_ids: list[str]) -> list[str]:
         (out / POLICY_FILE).parent.mkdir(parents=True, exist_ok=True)
         (out / POLICY_FILE).write_text(policy, encoding="utf-8")
         written.append(POLICY_FILE)
+    if environment_record(out) and ENVIRONMENT_FILE not in written:
+        written.append(ENVIRONMENT_FILE)
     for task_id in task_ids:
         source = workdir / "tasks" / f"{task_id}.json"
         if source.is_file():
@@ -872,7 +910,7 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
     write_json(out / TASKS_INDEX_NAME, {"format": PACKAGE_FORMAT, "tasks": rows})
     write_task_rows(out, rows)
     counts = last_round(workdir)
-    environment = read_json(workdir / "environment.json", {}) or {}
+    environment = read_json(out / ENVIRONMENT_FILE, {}) or {}
     versions = read_json(workdir / "runner_version.json", {}) or {}
     fidelity = replay_fidelity(read_json(workdir / "replays.json", {}) or {}, task_ids)
     manifest = {

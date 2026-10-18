@@ -34,9 +34,10 @@ RELEASE_FIDELITY = FIDELITY_BAR
 
 # What `kullback run` opens in a workdir before it can run a candidate. A fetch reports any of these
 # the package did not carry, so a directory that will not run says so on arrival rather than at the
-# first run. environment.json is not among them: run, verdict and report read it where it exists and a
-# build need not write one (D404).
-RUN_INPUTS: tuple[str, ...] = ("schema.json", "tool_sigs.json", "bodies.json", "env/db.json", "env/policy.md")
+# first run. environment.json is among them: `verdict` stamps its versions on every Verdict and the
+# regrade gate refuses one without them (D407).
+RUN_INPUTS: tuple[str, ...] = ("schema.json", "tool_sigs.json", "bodies.json", "env/db.json", "env/policy.md",
+                               "environment.json")
 
 
 class PublishError(RuntimeError):

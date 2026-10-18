@@ -3931,3 +3931,32 @@ Why. .claude/herdr/publish-1017/fix-r12.md: the card's three commands must work 
 
 Tests: tests/test_cli.py (a Run written by the run command is scored by verdict and read by report);
 tests/hub/test_publish.py (a Task's Run files never include a sibling Task whose id extends it).
+
+### D407. environment.json exists everywhere, and a refused Verdict leaves nothing on disk (2026-10-18)
+
+Number collision: the synth stream also claimed D406 and D407 at its rebase; the fold renumbers one of the two.
+
+What. No build wrote environment.json (kullback/builder/compile_env.py `build_environment` has no caller), so every
+Verdict carried env_id, schema_version, tools_version and policy_version as null, and the regrade gate (D97, frozen)
+refused every `kullback verdict` in a build workdir and in a fetched package alike. `environment_record` in
+kullback/hub/package.py now derives the record from the shipped files: schema_version, tools_version and policy_version
+are the sha256 of schema.json, tool_sigs.json and the policy text a package ships as env/policy.md (the same hash the
+manifest keeps per file), and env_id hashes the three. A record that already names all four is kept. `verdict` calls
+it before scoring, which is where the build's own Verdicts are written, and `package` calls it on the laid-out copy, so
+a build workdir and its fetched package carry the same values. environment.json joins the run inputs a fetch checks.
+`verdict` now scores once with nothing written, runs the gate, and writes the Verdict files and scored_with.jsonl only
+when the gate passes, so a refusal writes nothing. The report keeps D96's coverage line and adds beside it
+"Candidate Runs scored: N of T Tasks", the Tasks with at least one counted Candidate Verdict.
+
+Why D97's intent holds. From now on D97's versions are content-derived, not named by the Builder. D97 asks
+that a Verdict is regraded only against the same Environment it was made under. A content hash of the shipped schema,
+tool signatures and policy changes exactly when one of those files changes, so a stored Verdict is reused only while
+the files it was scored against are byte for byte the same, and is rescored otherwise. A hand-named version could
+drift from the files; a content hash cannot.
+
+Why. .claude/herdr/publish-1017/fix-r13.md, the founder's decision on the fix-r12 options (a with c, plus the report
+line): the card's run, verdict and report commands must work end to end on a fetched package.
+
+Tests: tests/hub/test_publish.py (a package fetched from a staged publish scores a Candidate Run and counts it in the
+report; a Verdict the regrade gate refuses leaves no file behind; a build with no policy file or environment.json
+ships both).

@@ -217,8 +217,9 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
     load_rules = _entry("kullback.runner.canon", "load_rules")
     canon_rules = load_rules(Path(workdir) / "canon-rules.json")
     canon = canon_rules
-    env_path = Path(workdir) / "environment.json"
-    environment = _load(env_path, Environment) if env_path.is_file() else None
+    # The D97 versions come from the shipped files where the build left none (D407).
+    record = _entry("kullback.hub.package", "environment_record")(Path(workdir))
+    environment = Environment.model_validate(record) if record else None
     version = CODE_HASH
     schema = _schema(workdir)
     if schema is None:
@@ -245,19 +246,22 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
         common = dict(environment=environment, runner_version=version, schema=schema,
                       write_tools=write_tools or None, flagged_tools=flagged_tools,
                       rules=canon_rules)
-        verdicts = score(paths, verifier, canon, out_dir=out_dir,
-                         judge_results=_judged_atoms(verifier, paths, judges, Path(workdir)),
-                         judge_version=judge_version,
-                         queue_dir=Path(workdir) if use_queue else None, **common)
-        # Which Verifier scored each Run, so trust lends its judge answers to that Verifier only (D347).
-        _entry("kullback.spec.judged", "record_scored")(out_dir, verdicts, verifier)
-        gated = regrade_gate(verdicts)
+        judged = _judged_atoms(verifier, paths, judges, Path(workdir))
+        # Scored once with nothing written, gated, then scored into the store: a refused Verdict
+        # leaves no file behind for the report to count (D407).
+        gated = regrade_gate(score(paths, verifier, canon, judge_results=judged, judge_version=judge_version,
+                                   **common))
         # getattr, not gated.passed: a test double that stands in for regrade_gate (fake_modules)
         # answers neither attribute, and a stand-in gate must not read as a refusal (D97).
         if not getattr(gated, "passed", True):
             for failure in getattr(gated, "failures", []):
                 typer.echo(f"task {task.id}: refused, {failure}")
             continue
+        verdicts = score(paths, verifier, canon, out_dir=out_dir, judge_results=judged,
+                         judge_version=judge_version,
+                         queue_dir=Path(workdir) if use_queue else None, **common)
+        # Which Verifier scored each Run, so trust lends its judge answers to that Verifier only (D347).
+        _entry("kullback.spec.judged", "record_scored")(out_dir, verdicts, verifier)
         named = _name_causes(verdicts, paths, judges, Path(workdir), out_dir,
                              _rescorer(score_one, verifier, canon, out_dir, judge_version, common))
         scored += 1
