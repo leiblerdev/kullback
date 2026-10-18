@@ -23,18 +23,30 @@ CARD = {
         "fidelity": "Replay fidelity 100.0%, 130 of 130 Tasks, and 42 of them trusted",
         "tiers": "Harbor export, 123 Tasks: a blind model rater labels each Verifier right, partial or wrong",
     },
+    "retail": {
+        "top": "leibler/retail: the second Environment, built and published the same way",
+        "fidelity": "Replay fidelity 100.0%, 223 of 223 Tasks, and 76 of them trusted",
+        "tiers": "Harbor export, 186 Tasks: 72 trusted, 48 of them labelled right",
+    },
 }
 FILES = {
     "tree": "One trusted Task in Harbor format, with an oracle in solution/",
     "instruction": "instruction.md: the user's ask, one line per fact, then the policy",
     "toml": "task.toml: spec tier, label, judge items, oracle, and the judge settings",
     "test": "tests/test.sh replays the agent's calls and scores the Run by code",
-    "end": "The commands come straight from the dataset card",
+    "end": "The commands come straight from the dataset cards",
 }
-HARBOR = [
-    "uv run harbor run -p harbor/airline-task_58d9d004df44 -a oracle",
-    "uv run harbor run -p harbor/airline-task_58d9d004df44 -a <agent> -m <provider/model>",
-]
+# The Harbor commands exactly as each card prints them.
+HARBOR = {
+    "airline": [
+        "uv run harbor run -p harbor/airline-task_58d9d004df44 -a oracle",
+        "uv run harbor run -p harbor/airline-task_58d9d004df44 -a <agent> -m <provider/model>",
+    ],
+    "retail": [
+        "uv run harbor run -p harbor/retail-task_19fa3e612e6a -a oracle",
+        "uv run harbor run -p harbor/retail-task_19fa3e612e6a -a <agent> -m <provider/model>",
+    ],
+}
 
 CAPTION_JS = """(text) => {
   let box = document.getElementById('wt-caption');
@@ -68,8 +80,8 @@ END_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
 body { margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
   background: #f7f7f5; color: #111827; font-family: "Helvetica Neue", Arial, sans-serif; }
 .card { width: 88%; max-width: 1600px; padding: 56px 64px; box-sizing: border-box; margin-bottom: 110px; }
-h1 { font-size: 52px; margin: 0 0 40px; font-weight: 600; }
-.url { font-size: 38px; margin: 0 0 16px; }
+h1 { font-size: 52px; margin: 0 0 36px; font-weight: 600; }
+.url { font-size: 36px; margin: 0 0 12px; }
 h2 { font-size: 30px; font-weight: 500; color: #4b5563; margin: 48px 0 16px; }
 pre { font: 24px/1.6 Menlo, monospace; background: #111827; color: #f9fafb; padding: 28px 32px;
   border-radius: 12px; margin: 0; white-space: pre-wrap; }
@@ -91,7 +103,7 @@ def main(corpora):
 
         # Sync flash: magenta until `sync`, so cut.py can find the offset of the video clock.
         page.set_content('<body style="margin:0;background:#ff00ff;height:100vh"></body>')
-        page.wait_for_timeout(1200)
+        page.wait_for_timeout(3000)
         page.evaluate("document.body.style.background = '#ffffff'")
         page.wait_for_timeout(50)
         marks.append({"shot": "sync", "start": now(), "end": now()})
@@ -110,8 +122,13 @@ def main(corpora):
             return page.evaluate(f"() => Math.round(({selector_js}).getBoundingClientRect().top + scrollY)")
 
         def goto(url):
-            page.goto(url, wait_until="networkidle")
-            page.wait_for_timeout(400)
+            # A dataset viewer that is still converting polls forever, so networkidle never comes.
+            page.goto(url, wait_until="load")
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            page.wait_for_timeout(1500)
 
         for corpus in corpora:
             c = CARD[corpus]
@@ -121,13 +138,13 @@ def main(corpora):
             page.wait_for_timeout(3000)
             card_h1 = top_of("[...document.querySelectorAll('h1')].find(h => h.innerText.trim() === '%s')" % corpus)
             scroll(card_h1 - 90, 1400)
-            page.wait_for_timeout(3500)
+            page.wait_for_timeout(4000)
             marks.append({"shot": f"1-{corpus}", "start": start, "end": now()})
             fid = top_of("[...document.querySelectorAll('table')].find(t => t.innerText.includes('Fidelity over Tasks'))")
             start = now()
             scroll(fid - 40, 1400)
             page.evaluate(CAPTION_JS, c["fidelity"])
-            page.wait_for_timeout(4000)
+            page.wait_for_timeout(4500)
             marks.append({"shot": f"2a-{corpus}", "start": start, "end": now()})
             harbor = top_of("[...document.querySelectorAll('h2')].find(h => h.innerText.includes('Run it with Harbor'))")
             start = now()
@@ -138,26 +155,26 @@ def main(corpora):
 
         corpus, task = TASK
         goto(f"{HUB}/{corpus}/tree/main/{task}")
-        shot("3-tree", FILES["tree"], 3000)
+        shot("3-tree", FILES["tree"], 4000)
         page.click("a[href$='/instruction.md']")
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(400)
-        shot("3-instruction", FILES["instruction"], 4000)
+        page.wait_for_load_state("load")
+        page.wait_for_timeout(1500)
+        shot("3-instruction", FILES["instruction"], 4500)
         goto(f"{HUB}/{corpus}/blob/main/{task}/task.toml")
         page.evaluate(CAPTION_JS, FILES["toml"])
         start = now()
         page.wait_for_timeout(1200)
         scroll(300, 1400)
-        page.wait_for_timeout(4000)
+        page.wait_for_timeout(4500)
         marks.append({"shot": "4-toml", "start": start, "end": now()})
         goto(f"{HUB}/{corpus}/blob/main/{task}/tests/test.sh")
-        shot("5-test", FILES["test"], 3500)
+        shot("5-test", FILES["test"], 4000)
 
         urls = "".join(f'<p class="url">huggingface.co/datasets/leibler/{c}</p>' for c in corpora)
-        cmds = "\n".join(c.replace("<", "&lt;").replace(">", "&gt;") for c in HARBOR)
+        cmds = "\n".join(c.replace("<", "&lt;").replace(">", "&gt;") for k in corpora for c in HARBOR[k])
         page.set_content(END_HTML.replace("%URLS%", urls).replace("%CMDS%", cmds))
         page.wait_for_timeout(300)
-        shot("6-end", FILES["end"], 5000)
+        shot("6-end", FILES["end"], 6500)
 
         video = page.video
         ctx.close()
