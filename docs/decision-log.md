@@ -4187,7 +4187,10 @@ guard over every row and leaf), so the person's nested zip is carried; a list is
 below on nested cells now holds for lists only. builder/run_user._reference_id: a Task with no replay row at all
 takes the first of its seed recordings with user rules on disk, the runner's own pick there, so a build meets a
 born Task with the agent user; a Task with rows but none confirmed still has none, and one with a confirmed row is
-untouched.
+untouched. Correction (r2): where a column holds two different values across the bound rows and leaves, the value
+of the owner is kept and the others dropped; the owner is the one bound row whose key appears as a scalar cell or
+leaf of another bound row (the row the others refer to), so the person's account wins over a shipment's address.
+With no single owner, or an owner holding two values of the column, the column is dropped as before.
 
 Why. The pass@1 benchmark on the born Tasks of one Environment failed on identification: nearly every ask names the
 person by name and place only, its user rules held no other identifying value, and the policy asks for more before
@@ -4205,4 +4208,5 @@ says the record facts, the end stays an end fact, asked_facts lays the records a
 tests/synth/test_tasks.py (a leaf of a nested object a recorded user gives is an on-request fact named by its leaf
 key, a list element is not), tests/builder/test_run_user.py (a Task without replay rows gets the agent user built
 from its recording's rules on disk; one with neither rows nor rules gets none; one whose rows are none confirmed
-gets none).
+gets none). Correction (r2): tests/synth/test_tasks.py (a column two bound rows hold with different values keeps
+the value of the row the other refers to; with no such row it is no fact).

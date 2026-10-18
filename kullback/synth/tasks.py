@@ -175,27 +175,55 @@ def _leaves(column: str, value: Any) -> list[tuple[str, Any]]:
     return out
 
 
+def _bound_leaves(root: Path, binding: dict) -> list[tuple[str, list[tuple[str, Any]]]]:
+    """Each bound row the world holds, as its key and its columns and nested leaves in schema order."""
+    state = world_of(root).state
+    out = []
+    for table, key in (binding or {}).items():
+        rows = state.get(str(table))
+        row = rows.get(str(key)) if isinstance(rows, dict) else None
+        if isinstance(row, dict):
+            out.append((str(key), [leaf for name in _schema_order(root, str(table), row) for leaf in _leaves(name, row[name])]))
+    return out
+
+
+def _owner(rows: list[tuple[str, list[tuple[str, Any]]]]) -> Optional[int]:
+    """The one bound row the others refer to: its key is a scalar cell or leaf of another bound row. None where no
+    row or more than one is referred to."""
+    referred = [at for at, (key, _) in enumerate(rows)
+                if any(str(value) == key for other, (_, leaves) in enumerate(rows) if other != at
+                       for _, value in leaves if isinstance(value, (str, int, float, bool)))]
+    return referred[0] if len(referred) == 1 else None
+
+
+def _values(leaves: list[tuple[str, Any]]) -> dict[str, set[str]]:
+    seen: dict[str, set[str]] = {}
+    for column, value in leaves:
+        seen.setdefault(column, set()).add(json.dumps(value, sort_keys=True))
+    return seen
+
+
 def bound_cells(workdir: Any, binding: dict, fields: set[str]) -> list[tuple[str, Any]]:
     """The scalar cells of the rows a scenario binds, column and value, in schema order and once per column:
     those whose column is one of `fields`, or with no fields the cells holding a bound key (D416). A nested
     object is walked to its scalar leaves, each a cell named by its leaf key; a list is no cell. A column the
-    bound rows hold with two different values (one row's name, another row's nested name) names no one value
-    of the person and is left out."""
-    root = Path(workdir)
-    state = world_of(root).state
+    bound rows hold with two different values (one row's name, another row's nested name) keeps the value of
+    the owner, the one bound row the others refer to by its key, where that row holds one value of it; else it
+    names no one value of the person and is left out."""
+    rows = _bound_leaves(Path(workdir), binding)
+    owner = _owner(rows)
+    seen = _values([leaf for _, leaves in rows for leaf in leaves])
+    own = _values(rows[owner][1]) if owner is not None else {}
     cells: dict[str, Any] = {}
-    seen: dict[str, set[str]] = {}
-    for table, key in (binding or {}).items():
-        row = (state.get(str(table)) or {}).get(str(key)) if isinstance(state.get(str(table)), dict) else None
-        if not isinstance(row, dict):
-            continue
-        for column, value in (leaf for name in _schema_order(root, str(table), row) for leaf in _leaves(name, row[name])):
-            seen.setdefault(column, set()).add(json.dumps(value, sort_keys=True))
+    for at, (key, leaves) in enumerate(rows):
+        for column, value in leaves:
             scalar = isinstance(value, (str, int, float, bool))
-            kept = column in fields if fields else str(value) == str(key)
+            kept = column in fields if fields else str(value) == key
+            if len(seen[column]) > 1:
+                kept = kept and at == owner and len(own[column]) == 1
             if scalar and kept and column not in cells:
                 cells[column] = value
-    return [(column, value) for column, value in cells.items() if len(seen[column]) == 1]
+    return list(cells.items())
 
 
 def user_rules_of(trace: Trace, end: str, cells: list[tuple[str, Any]] = ()) -> dict:

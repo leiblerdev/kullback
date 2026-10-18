@@ -304,3 +304,19 @@ def test_a_column_the_bound_rows_hold_with_two_values_is_not_a_fact(tmp_path):
     workdir = _records_workdir(tmp_path, given=("label", "holder_id"))
     write_json(workdir / "db.json", rows)
     assert bound_cells(workdir, HELD, recorded_fields(workdir)) == [("holder_id", "holder_7")]
+
+
+def test_a_column_two_bound_rows_hold_with_different_values_keeps_the_value_of_the_row_the_other_refers_to(tmp_path):
+    rows = {"holder_rows": {"holder_7": {"holder_id": "holder_7", "home": {"post_code": "40213"}}},
+            "widget_rows": {"W1001": {"widget_id": "W1001", "holder_id": "holder_7", "sent_to": {"post_code": "99001"}}}}
+    workdir = _records_workdir(tmp_path, given=("post_code", "holder_id"))
+    write_json(workdir / "db.json", rows)
+    assert bound_cells(workdir, HELD, recorded_fields(workdir)) == [("holder_id", "holder_7"), ("post_code", "40213")]
+
+
+def test_a_column_held_with_two_values_where_no_bound_row_is_referred_to_is_no_fact(tmp_path):
+    rows = {"holder_rows": {"holder_7": {"holder_id": "holder_7", "home": {"post_code": "40213"}}},
+            "widget_rows": {"W1001": {"widget_id": "W1001", "sent_to": {"post_code": "99001"}}}}
+    workdir = _records_workdir(tmp_path, given=("post_code", "holder_id"))
+    write_json(workdir / "db.json", rows)
+    assert bound_cells(workdir, HELD, recorded_fields(workdir)) == [("holder_id", "holder_7")]
