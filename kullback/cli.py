@@ -4,6 +4,7 @@ hidden state."""
 
 from __future__ import annotations
 
+import glob
 import importlib
 import json
 from datetime import datetime, timezone
@@ -236,8 +237,7 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
         if not path.is_file():
             typer.echo(f"task {task.id}: no Verifier yet, not scored")
             continue
-        verifier, folder = _load(path, Verifier), Path(workdir) / "runs" / task.id
-        paths = sorted(folder.glob("*.jsonl")) if folder.is_dir() else []
+        verifier, paths = _load(path, Verifier), task_run_files(workdir, task.id)
         if not paths:
             typer.echo(f"task {task.id}: no stored Runs")
             continue
@@ -397,6 +397,18 @@ def rescue(
             f"missing {missing} (content {strengths['content']}, "
             f"existence {strengths['existence']}, none {strengths['none']})")
     typer.echo(line + (" (dry run: nothing written)" if dry_run else ""))
+
+
+def task_run_files(workdir: Path, task_id: str) -> list[Path]:
+    """A Task's stored Run files in both layouts (D406): runs/<task>/*.jsonl, which a build's Runner writes,
+    and runs/<task>-<seed>.jsonl, which `kullback run` writes. The seed is digits only, so the Runs of a
+    sibling Task whose id is this one, a dash and more never count as this Task's."""
+    runs = Path(workdir) / "runs"
+    folder = runs / task_id
+    nested = sorted(folder.glob("*.jsonl")) if folder.is_dir() else []
+    flat = sorted(path for path in runs.glob(f"{glob.escape(task_id)}-*.jsonl")
+                  if path.stem[len(task_id) + 1:].isdigit())
+    return nested + flat
 
 
 def _live_model(model_id: str, base_url: Optional[str]):

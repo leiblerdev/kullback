@@ -6,8 +6,8 @@
 
 | Environment | Status | Tasks | Harbor Tasks | Tag |
 | --- | --- | --- | --- | --- |
-| [leibler/airline](https://huggingface.co/datasets/leibler/airline) | release | 130 | 123 | build-20261017 |
-| [leibler/retail](https://huggingface.co/datasets/leibler/retail) | release | 223 | 186 | build-20261017 |
+| [leibler/airline](https://huggingface.co/datasets/leibler/airline) | release | 130 | 123 | build-20261018 |
+| [leibler/retail](https://huggingface.co/datasets/leibler/retail) | release | 223 | 186 | build-20261018 |
 
 ## Use it
 
@@ -15,9 +15,11 @@
 uv pip install git+https://github.com/leiblerdev/kullback.git
 uv run kullback fetch leibler/<environment> --out env
 uv run kullback run --workdir env --task <task id> --model provider/model
-uv run kullback verdict --workdir env
+uv run kullback verdict --workdir env --judge-model provider/model
 uv run kullback report --workdir env
 ```
+
+Without `--judge-model` a Task's judge items stay unjudged and its Run gets no score.
 
 ## Terms
 

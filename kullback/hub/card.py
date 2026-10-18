@@ -93,6 +93,8 @@ def _status(manifest: dict) -> str:
 
 
 # Said once on every card, because a Task's Verifier is a model's reading of the ask, not a ground truth.
+# D406: a Verifier's judge items are answered only by the model `verdict --judge-model` names.
+JUDGE_NOTE = "Without `--judge-model` a Task's judge items stay unjudged and its Run gets no score."
 DISCLAIMER = ("Some Tasks can be wrong. A Verifier can check the wrong thing or a Task can be unfinishable. "
               "Treat a single Task's result with care and the set as a whole as an eval.")
 # The licence every package carries, beside the corpus's own.
@@ -135,9 +137,10 @@ def card_markdown(manifest: dict, repo_id: str, *, github_url: str = "https://gi
     lines += [f"An executable Environment for tool-using agents, rebuilt from recorded traces. {_status(manifest)}", ""]
     lines += ["## Use it", "", "```bash", f"uv run kullback fetch {repo_id} --out env-{name}",
               f"uv run kullback run --workdir env-{name} --task <task id> --model provider/model",
-              f"uv run kullback verdict --workdir env-{name}",
+              f"uv run kullback verdict --workdir env-{name} --judge-model provider/model",
               f"uv run kullback report --workdir env-{name}", "```", "",
-              "`fetch` checks the content hash; `--revision <tag>` fetches an earlier publish.", ""]
+              "`fetch` checks the content hash; `--revision <tag>` fetches an earlier publish. "
+              + JUDGE_NOTE, ""]
     if harbor is not None:
         lines += harbor_section(harbor)
     lines += ["## What is inside", "", _inside(manifest), ""]
@@ -212,8 +215,8 @@ def organisation_card(rows: Iterable[dict], *, organisation: str = ORGANISATION,
               "uv pip install git+" + github_url + ".git",
               f"uv run kullback fetch {organisation}/<environment> --out env",
               "uv run kullback run --workdir env --task <task id> --model provider/model",
-              "uv run kullback verdict --workdir env",
-              "uv run kullback report --workdir env", "```", ""]
+              "uv run kullback verdict --workdir env --judge-model provider/model",
+              "uv run kullback report --workdir env", "```", "", JUDGE_NOTE, ""]
     lines += ["## Terms", ""]
     lines += [f"- {term}" for term in TERMS]
     lines += ["", "## Known issues", "", DISCLAIMER, ""]

@@ -3914,3 +3914,20 @@ unjudged item says nothing about the agent: neither a pass nor a fail may be cou
 Tests: tests/hub/test_harbor.py (an outage on a gated item and on a weighted item leaves the trial unscored; no judge
 named and a judge that cannot start do the same; an answered weighted item scores as before; an unscored trial exits
 with its own code and the test step keeps its reward.json).
+
+### D406. A Run written by `run` is scored by `verdict` (2026-10-18)
+
+What. The defect, found by the r11 proof Run on a package fetched from the Hub: `kullback run` writes
+runs/<task>-<seed>.jsonl straight into runs/ (kullback/runner/tool.py, frozen), while `kullback verdict` read only
+runs/<task>/*.jsonl, so `verdict` said "no stored Runs" right after a successful `run`. The fix, kullback/cli.py:
+`task_run_files(workdir, task_id)` lists a Task's Run files from both layouts, runs/<task>/*.jsonl and
+runs/<task>-<seed>.jsonl with a seed of digits only, so a sibling Task whose id is this one, a dash and more is never
+read as this Task's; `verdict` reads through it. Nothing else in scoring changes. The report already read every
+JSONL under runs/, so it lists the Run; its Task coverage is D96's replay coverage of recorded Traces, which a package
+does not carry, and stays as it was. Both cards' `verdict` line names `--judge-model provider/model` and says that
+without it a Task's judge items stay unjudged and its Run gets no score.
+
+Why. .claude/herdr/publish-1017/fix-r12.md: the card's three commands must work end to end on a fetched package.
+
+Tests: tests/test_cli.py (a Run written by the run command is scored by verdict and read by report);
+tests/hub/test_publish.py (a Task's Run files never include a sibling Task whose id extends it).

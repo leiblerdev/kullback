@@ -366,6 +366,15 @@ def test_tasks_recorded_under_different_prompts_ship_no_policy_and_the_fetch_nam
     assert manifest["missing_run_inputs"] == ["env/policy.md"]
 
 
+def test_a_tasks_run_files_never_include_a_sibling_task_whose_id_extends_it(tmp_path):
+    for name in ("task_one/a.jsonl", "task_one-0.jsonl", "task_one-12.jsonl", "task_one-two-0.jsonl",
+                 "task_one-two/b.jsonl", "task_one-x.jsonl"):
+        (tmp_path / "runs" / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "runs" / name).write_text("", encoding="utf-8")
+    assert [p.relative_to(tmp_path / "runs").as_posix() for p in cli.task_run_files(tmp_path, "task_one")] == \
+        ["task_one/a.jsonl", "task_one-0.jsonl", "task_one-12.jsonl"]
+
+
 def test_a_fetch_verifies_the_hash_and_lays_out_a_directory_the_runner_loads(nursery, tmp_path, hub,
                                                                              toolkit_source):
     publish_mod.publish(nursery, "leibler/nursery", client=hub, preview=True)

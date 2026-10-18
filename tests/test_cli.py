@@ -1125,3 +1125,23 @@ def test_status_and_the_counts_line_print_one_trusted_count_on_a_workdir_with_sp
 def test_train_refuses_without_a_run_id(workdir):
     result = invoke("train", "--workdir", str(workdir))
     assert result.exit_code != 0
+
+
+def test_a_run_written_by_the_run_command_is_scored_by_verdict_and_read_by_report(tmp_path, monkeypatch):
+    # D406: `run` writes runs/<task>-<seed>.jsonl; verdict once read only runs/<task>/ and said "no stored Runs"
+    from kullback.ai.provider import TestModel
+    from tests.episode.invented import SCRIPTED_RENAME, write_env
+
+    workdir = write_env(tmp_path / "env")
+    monkeypatch.setattr(cli, "_live_model", lambda model_id, base_url=None: TestModel(SCRIPTED_RENAME, loop=True))
+    runner = CliRunner()
+    ran = runner.invoke(cli.app, ["run", "--workdir", str(workdir), "--task", "widget_task", "--model", "test/candidate"])
+    assert ran.exit_code == 0, ran.output
+    assert [path.name for path in cli.task_run_files(workdir, "widget_task")] == ["widget_task-0.jsonl"]
+    scored = runner.invoke(cli.app, ["verdict", "--workdir", str(workdir), "--task", "widget_task"])
+    assert scored.exit_code == 0 and "no stored Runs" not in scored.output, scored.output
+    verdicts = [json.loads(path.read_text()) for path in (workdir / "verdicts" / "widget_task").glob("*.json")]
+    assert [v["run_id"] for v in verdicts] == ["widget_task-0"] and verdicts[0]["pass"] is True
+    reported = runner.invoke(cli.app, ["report", "--workdir", str(workdir)])
+    assert reported.exit_code == 0, reported.output
+    assert "widget_task-0" in (workdir / "report.md").read_text(encoding="utf-8")
