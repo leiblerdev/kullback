@@ -39,6 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from kullback import processes
 from kullback.hub import harbor_world
 from kullback.hub.card import ORGANISATION, SOLUTION_LEAKS
 from kullback.hub.harbor_world import DB_NAME, JUDGE_ENV, REPLY_TOOL, TASK_NAME, WORLD_DIR, play
@@ -597,26 +598,29 @@ def _metadata(build: _Build, task_id: str, synthetic: bool, index: dict, verifie
     }
 
 
-def _lay_with_oracle(build: _Build, folder: Path, task_id: str, given: dict, metadata: dict,
-                     verifier_path: Path) -> Optional[list[dict]]:
-    """Write the task with each candidate oracle in turn and keep the first that holds; None if none does."""
+def _lay_with_oracle(job: dict) -> Optional[list[dict]]:
+    """Write the task with each candidate oracle in turn and keep the first that holds; None if none does.
+
+    `job` is the whole input of one Task (`_job`), so a process pool can lay Tasks side by side (D401)."""
+    given, metadata, folder = job["given"], job["metadata"], job["folder"]
     category = sorted({str(given["record"].get("category_id") or "")} - {""})
     for tried in given["candidates"]:
-        keywords = category + sorted({call["name"] for call in tried} & build.env.write_tools())
-        toml = task_toml(name=f"{build.org}/{folder.name}", description=_description(given["instruction"]),
-                         keywords=keywords, metadata=metadata, org=build.org,
+        keywords = category + sorted({call["name"] for call in tried} & job["write_tools"])
+        toml = task_toml(name=f"{job['org']}/{folder.name}", description=_description(given["instruction"]),
+                         keywords=keywords, metadata=metadata, org=job["org"],
                          judged=metadata["judge_items"])
-        write_task(folder, workdir=build.workdir, task_id=task_id, task_record=given["record"],
-                   instruction=given["instruction"], policy=given["policy"], verifier_path=verifier_path,
-                   calls=tried, wheel=build.wheel, toml=toml)
+        write_task(folder, workdir=job["workdir"], task_id=job["task_id"], task_record=given["record"],
+                   instruction=given["instruction"], policy=given["policy"], verifier_path=job["verifier_path"],
+                   calls=tried, wheel=job["wheel"], toml=toml)
         if oracle_holds(folder):
             return tried
         shutil.rmtree(folder)
     return None
 
 
-def _export_one(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Optional[str], dict, dict]:
-    """(why the Task is left out or None, its manifest row, its leak scan row)."""
+def _job(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Optional[str], dict]:
+    """(why the Task is left out or None, the whole input of laying it): what needs the build's shared
+    Environment and Runs is read here, once, so laying the Task needs nothing else."""
     given = _inputs(build, task_id, body)
     verifier_path = verifier_of(build.workdir, task_id, body is not None)
     synthetic_tier = (build.tasks == "verified" and body is None
@@ -624,18 +628,26 @@ def _export_one(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Opti
     reason = ("no Verifier" if verifier_path is None else "synthetic" if synthetic_tier
               else "no Run" if not given["candidates"] else "no instruction" if not given["instruction"] else None)
     if reason:
-        return reason, {}, {}
+        return reason, {}
     verifier = Verifier.model_validate(read_json(verifier_path, {}))
     folder = build.out / (SYNTHETIC_DIR if body is not None else "") / f"{build.name}-{task_id}"
-    metadata = _metadata(build, task_id, body is not None, given["index"], verifier)
-    calls = _lay_with_oracle(build, folder, task_id, given, metadata, verifier_path)
+    return None, {"task_id": task_id, "given": given, "verifier_path": verifier_path, "folder": folder,
+                  "metadata": _metadata(build, task_id, body is not None, given["index"], verifier),
+                  "org": build.org, "out": build.out, "workdir": build.workdir, "wheel": build.wheel,
+                  "write_tools": set(build.env.write_tools())}
+
+
+def _export_one(job: dict) -> tuple[Optional[str], dict, dict]:
+    """(why the Task is left out or None, its manifest row, its leak scan row), off the Task's whole input."""
+    calls = _lay_with_oracle(job)
     if calls is None:
         return NO_ORACLE, {}, {}
-    path = folder.relative_to(build.out).as_posix()
-    listed = {"harbor_name": f"{build.org}/{folder.name}", "path": path, **metadata}
-    scanned = {"name": path, "task": task_id, "world": folder / "environment" / WORLD_DIR,
+    given, metadata, folder = job["given"], job["metadata"], job["folder"]
+    path = folder.relative_to(job["out"]).as_posix()
+    listed = {"harbor_name": f"{job['org']}/{folder.name}", "path": path, **metadata}
+    scanned = {"name": path, "task": job["task_id"], "world": folder / "environment" / WORLD_DIR,
                "facts": given["facts"] or [given["instruction"]], "label": str(metadata.get("label_gold_diff") or ""),
-               "instruction": given["instruction"], "policy": given["policy"], "verifier": verifier_path,
+               "instruction": given["instruction"], "policy": given["policy"], "verifier": job["verifier_path"],
                "calls": calls, "reply": (folder / "solution" / "solve.sh").read_text(encoding="utf-8")}
     return None, listed, scanned
 
@@ -738,7 +750,8 @@ def _read_marks(workdir: Path, task_ids: list[str], tiers: Optional[Iterable[Any
 def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = ORGANISATION,
                   name: Optional[str] = None, scan: bool = True, wheel: Optional[Path] = None,
                   only: Optional[Iterable[str]] = None, tiers: Optional[Iterable[Any]] = None,
-                  labels: Optional[Iterable[Any]] = None, labels_rubric: Optional[str] = None) -> dict:
+                  labels: Optional[Iterable[Any]] = None, labels_rubric: Optional[str] = None,
+                  workers: Optional[int] = None, index: Optional[list[dict]] = None) -> dict:
     """Write a Harbor dataset of the workdir's Tasks to `out` and answer its manifest.
 
     `tasks` is `trusted` (the default), `verified` (every recorded Task with a Verifier on disk, none
@@ -749,7 +762,9 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
     is its oracle is left out as SOLUTION_LEAKS and listed masked; a leak in any other part refuses. A Task
     with no Verifier, no Run or no instruction is left out and counted by reason. The oracle is the
     first of the Task's Runs whose calls, replayed through the exported world, hold every item a judge
-    is not needed for; a Task with none is left out too (NO_ORACLE).
+    is not needed for; a Task with none is left out too (NO_ORACLE). The Tasks are laid on `workers`
+    processes (None: every core but two) and the dataset is the same whatever the count (D401);
+    `index` is the package's Task index where the caller already holds it, so it is not ruled twice.
     """
     workdir, out = Path(workdir), Path(out)
     if tasks not in TASKS_CHOICES:
@@ -757,7 +772,9 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
     if not (workdir / "env").is_dir():
         raise ExportError(f"{workdir} holds no env/ package: there is no Environment to export")
     env = BuiltEnvironment(workdir)
-    rows = {row["task_id"]: row for row in task_index(workdir, frozen_task_ids(workdir))}
+    if index is None:
+        index = task_index(workdir, frozen_task_ids(workdir), workers=workers)
+    rows = {row["task_id"]: row for row in index}
     chosen, synthetic = _choose(workdir, rows, tasks, only)
     tier_rows, label_rows, said = _read_marks(workdir, list(rows), tiers, labels, labels_rubric)
     policy = _fallback_policy(env)
@@ -772,8 +789,10 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
                        tag=build_tag(workdir), sha=git_sha(), wheel=wheel or build_wheel(Path(scratch)),
                        tasks=tasks, tiers=tier_rows, labels=label_rows)
         work = [(task_id, None) for task_id in chosen] + list(synthetic.items())
-        for task_id, body in work:
-            reason, row, scan_row = _export_one(build, task_id, body)
+        jobs = [_job(build, task_id, body) for task_id, body in work]
+        laid = iter(processes.each([job for reason, job in jobs if not reason], _export_one, workers))
+        for (task_id, _), (reason, _) in zip(work, jobs, strict=True):
+            reason, row, scan_row = (reason, {}, {}) if reason else next(laid)
             if reason:
                 skipped[reason] = skipped.get(reason, 0) + 1
                 no_oracle += [task_id] if reason == NO_ORACLE else []

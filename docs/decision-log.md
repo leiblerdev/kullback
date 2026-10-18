@@ -3591,3 +3591,29 @@ keys; labels by masked key with the later file winning, unlabelled, an ambiguous
 not a list refused; a leak named by masked Task, part and count; a rater's words repeating a recording refuse; an
 oracle-only leak leaves the Task out and lists it, an oracle plus another part still refuses; the card's Task set,
 tier by label table and rubric sentence; News on the Environment and organisation cards).
+
+### D401. A publish rules the Task index once and lays its Tasks on a process pool (2026-10-17)
+
+What. kullback/processes.py `each(items, fn, workers)` runs a module-level function over items on a spawn process
+pool and answers the results in the items' order; one worker or one item is a plain loop in this process, and the
+default is every core but two. `spec.trust.intent_tiers` scores the Tasks with a Verifier on it (`workers` defaults to
+1, so builds, rounds and status are unchanged); `status_of`, `trusted_ids`, `task_index`, `package.export`,
+`export_harbor`, `stage` and `publish` pass `workers` on. `stage` rules the Task index once and hands it to both
+exports, which used to rule it twice. In `export_harbor` what needs the shared Environment and Runs is read in the
+parent (`_job`), and laying a Task, its oracle replay and its scan row run in a worker off that one Task's input
+(`_export_one`). `kullback export` and `kullback publish` take `--workers` (1 is serial; default cores - 2).
+
+Why. A publish dry run took about 50 minutes on 130 Tasks and 85 on 223 (founder: launch and benchmark often, so a
+publish must take minutes). Measured, not assumed: the leak scans take under a second; the trust ruling (scoring every
+Run of every Task, in kullback/runner, frozen) and the oracle replay are the cost. On ten airline Tasks the unchanged
+code took 196 s (ruling 80 + 77 s, oracle replay 34 s), this code 100 s serial and 47 s on six workers.
+
+What it does not do: no scan is weakened (the same strings against the same baseline; a leak still refuses), no
+runner code changes, nothing is cached across publishes. The output is byte-identical whatever the count: on the
+ten-Task input the package and Harbor content hashes of the serial and pooled runs are equal, and every file equals
+the unchanged code's but the kullback wheel, which carries the code. Report .claude/herdr/speed-1017/speed-report.md.
+
+Tests: tests/test_processes.py (items' order, one worker in this process, several in others, a worker's exception
+reaches the caller, the default count); tests/spec/test_trust.py (pooled tiers equal serial tiers); tests/hub/
+test_harbor.py (the pooled dataset is byte-identical to the serial one, a recorded turn still refuses under the
+pool, --workers reaches the pool on export and on publish).

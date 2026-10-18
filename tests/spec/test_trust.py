@@ -459,3 +459,14 @@ def test_a_task_born_of_a_scenario_is_tiered_synthetic_never_trusted_and_an_ordi
     assert tiers["t1"].tier == "synthetic" and tiers["t1"].row["tier"] == "synthetic"
     assert tiers["t1"].row["scenario"] == "sc_abc" and tiers["t1"].row["gates"] == ordinary["t1"].row["gates"]
     assert tiers["t2"] == ordinary["t2"]
+
+
+def test_the_tiers_scored_on_a_pool_equal_the_tiers_scored_one_task_at_a_time(tmp_path):
+    _intent_workdir(tmp_path, [_replay(), _fresh(right=False)])
+    other = spec(gaps=["f2"]).model_copy(update={"task_id": "t3"})
+    save_spec(tmp_path, other)
+    _write_verifier(tmp_path, _verifier(spec(gaps=["f2"])).model_copy(update={"task_id": "t3"}), task_id="t3")
+    _write_run(tmp_path / "runs" / "t3", _fresh().model_copy(update={"task_id": "t3"}))
+    serial = T.intent_tiers(tmp_path, workers=1)
+    assert sorted(task_id for task_id, tier in serial.items() if tier.row.get("runs_scored")) == ["t1", "t3"]
+    assert T.intent_tiers(tmp_path, workers=2) == serial
