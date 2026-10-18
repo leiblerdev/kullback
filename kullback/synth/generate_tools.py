@@ -611,13 +611,19 @@ def bus_for(workdir: Any) -> Bus:
     return Bus(R.store_dir(workdir).parent / "bus.jsonl", agent=AGENT)
 
 
-def turns_for(root: GenerateRoot) -> int:
-    """The turn budget of one session, by its kind: its own for the search, else sized per item."""
+def turns_for(root: GenerateRoot, per_item: float = 0) -> int:
+    """The turn budget of one session, by its kind: its own for the search, else sized per item.
+
+    `per_item` is what an earlier pass spent per item; a retry gets at least that many turns per item (D402),
+    since the items it is handed are the ones a first pass could not finish."""
     if root.kind == "search":
         return min(MAX_TURNS, SEARCH_TURNS)
     if root.kind == "plan_search":
         return min(MAX_TURNS, SEARCH_TURNS + TURNS_PER_SITUATION * root.wanted)
-    return min(MAX_TURNS, max(MIN_TURNS, TURNS_PER_ITEM * max(len(root.items), len(root.fixing), 1)))
+    from math import ceil
+
+    count = max(len(root.items), len(root.fixing), 1)
+    return min(MAX_TURNS, max(MIN_TURNS, TURNS_PER_ITEM * count, ceil(per_item * count)))
 
 
 def unwritten(root: GenerateRoot) -> list[int]:
@@ -640,11 +646,12 @@ def unfinished_line(root: GenerateRoot) -> str:
 
 
 def run(root: GenerateRoot, model: Any, opening: str, stage: str, ceiling: Optional[budget.Ceiling] = None,
-        subscribers: tuple = ()) -> bool:
-    """One session on its opening message; whether it stopped on its turn cap. Refusals settle after.
+        subscribers: tuple = (), per_item: float = 0) -> tuple[bool, int]:
+    """One session on its opening message; whether it stopped on its turn cap, and the turns it spent.
 
-    A session with items is asked, when it would end, for the items still unwritten (the loop's unfinished hook)."""
-    turns = turns_for(root)
+    Refusals settle after. A session with items is asked, when it would end or at its cap, for the items still
+    unwritten (the loop's unfinished hook). `per_item` sizes a retry's budget (turns_for)."""
+    turns = turns_for(root, per_item)
     name = getattr(model, "name", None)
     harness = AgentHarness(model=model, max_turns=turns, context=ContextConfig(window=budget.window_for(name)),
                            bus=root.bus, unfinished=(lambda: unfinished_line(root)) if root.items else None)
@@ -657,7 +664,7 @@ def run(root: GenerateRoot, model: Any, opening: str, stage: str, ceiling: Optio
         for unsubscribe in detach:
             unsubscribe()
     settle_refusals(root)
-    return bool(capped)
+    return bool(capped), sum(1 for message in harness.messages if message.role == "assistant")
 
 
 __all__ = ["AGENT", "ASK_SHARES_END", "ASK_WITHOUT_END", "END_WITHOUT_ASK", "TOOL_IN_ASK", "TOOL_IN_END",

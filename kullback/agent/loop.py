@@ -25,12 +25,17 @@ with nothing to say costs one turn and not a loop.
 A cut last turn. A turn the provider cut at the output cap (stop reason length) that called no tool
 is not a stop either: one live session looked rows up for forty turns, had its next answer cut, and
 its summary after that was read as done with nothing written. The loop asks once, with a one-line user
-message, to continue in smaller turns; a second cut turn ends the run.
+message, to continue in smaller turns; a second cut turn ends the run. A cut turn that did call tools had
+its last call cut (the cap falls at the end of the output), so that call is not run: its result is
+CUT_CALL, and the complete calls before it run as usual (D402). Twenty live refusals were a cut call's
+bare argument error, which told the model nothing about why.
 
 Unfinished work. A caller that can tell what is left gives the state an `unfinished` hook. It is asked
 only when the run would otherwise end (no tool call, nothing pending, no follow up); a non empty line is
 appended as a user message, at most UNFINISHED_ASKS times per run, and then the run ends. The line is
-the caller's: the loop knows nothing of what is unfinished.
+the caller's: the loop knows nothing of what is unfinished. At the turn cap the hook is asked once more:
+a non empty line gives the run one last turn, the line after LAST_TURN, so items end written, skipped or
+explained rather than cut off with the cap (D402); the next turn past the cap stops the run.
 
 A refusal that knows the corrected call. A tool may refuse arguments with a `RetryableToolError`,
 whose `ask` is the corrected call in one line; the loop appends that ask as a user message after the
@@ -158,10 +163,11 @@ async def run_agent_loop(
                 await send(TurnEndEvent(turn=turn, message=assistant))
                 await send(AgentEndEvent(messages=new))
                 return new
-            if state.max_turns is not None and turn > state.max_turns:
-                assistant = error_message(f"stopped after max_turns={state.max_turns}", getattr(model, "name", None))
-                await append(assistant)
-                await send(TurnEndEvent(turn=turn, message=assistant))
+            capped = ending.at_cap(turn, state, getattr(model, "name", None))
+            if capped is not None:
+                await append(capped)
+            if isinstance(capped, AssistantMessage):
+                await send(TurnEndEvent(turn=turn, message=capped))
                 await send(AgentEndEvent(messages=new))
                 return new
             assistant, request = await _stream_assistant(state, provider, tools, send)
@@ -173,8 +179,9 @@ async def run_agent_loop(
                 await send(AgentEndEvent(messages=new))
                 return new
             results: list[ToolResultMessage] = []
+            cut = _cut_of(assistant)
             for call in assistant.tool_calls:
-                result = await _execute(call, state, tools, hooks, send)
+                result = await _answer(call, cut, state, tools, hooks, send)
                 results.append(result)
                 await append(result)
             await send(TurnEndEvent(turn=turn, message=assistant, tool_results=results))
@@ -199,6 +206,10 @@ EMPTY_TURN_ASK = ("Your last turn answered nothing and called no tool. Before th
 # What a turn cut at the output cap with no tool call is answered with, once; it names no artifact either.
 CUT_TURN_ASK = ("Your last answer was cut at the output cap and called no tool. Continue with fewer calls per "
                 "turn, and act on each item as soon as what it needs is looked up.")
+# What a call cut at the output cap is answered with in place of running it; it names no artifact either.
+CUT_CALL = "cut at the output cap: make fewer calls per turn"
+# What opens the one last turn at the turn cap, before the caller's unfinished line.
+LAST_TURN = "The turn cap is reached and this is your last turn."
 # How many times per run the caller's unfinished line is put to the model before the run ends.
 UNFINISHED_ASKS = 2
 
@@ -210,6 +221,19 @@ class _EndAsks:
     cut: bool = False  # the cut-turn ask is made once; a second cut ends the run
     summary: bool = False  # the empty-turn ask is made once, never twice
     unfinished: int = 0
+    last_turn: int = 0  # 1 once the last turn at the cap is given
+
+    def at_cap(self, turn: int, state: LoopState, name: Optional[str]) -> Optional[Message]:
+        """Past the turn cap: the one last turn's message from the caller's unfinished line, else the stop.
+
+        None below the cap; a user message gives the last turn; an assistant error message ends the run."""
+        if state.max_turns is None or turn <= state.max_turns + self.last_turn:
+            return None
+        left = "" if self.last_turn or state.unfinished is None else " ".join(str(state.unfinished() or "").split())
+        if not left:
+            return error_message(f"stopped after max_turns={state.max_turns}", name)
+        self.last_turn = 1
+        return user_message(f"{LAST_TURN} {left}", {"unfinished_ask": "last_turn"})
 
     def asks(self, assistant: AssistantMessage, state: LoopState) -> list[Message]:
         """The one user message that keeps the run going, or none and the run ends."""
@@ -228,6 +252,20 @@ class _EndAsks:
             return []
         self.unfinished += 1
         return [user_message(left, {"unfinished_ask": self.unfinished})]
+
+
+def _cut_of(assistant: AssistantMessage) -> Optional[ToolCall]:
+    """The call the output cap cut: the last call of a turn stopped on length, since the cap falls at the end."""
+    return assistant.tool_calls[-1] if assistant.stop_reason == "length" and assistant.tool_calls else None
+
+
+async def _answer(call: ToolCall, cut: Optional[ToolCall], state: LoopState, tools: ToolRegistry, hooks: Hooks,
+                  send) -> ToolResultMessage:
+    """The call run, or the cut call answered with the reason in place of running it."""
+    if call is not cut:
+        return await _execute(call, state, tools, hooks, send)
+    return ToolResultMessage(tool_call_id=call.id, tool_name=call.name, content=CUT_CALL, is_error=True,
+                             details={"cut": True})
 
 
 def _retry_asks(results: list[ToolResultMessage], already: set[str]) -> list[str]:

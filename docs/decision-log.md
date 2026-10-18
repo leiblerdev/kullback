@@ -4086,3 +4086,26 @@ rows too; the review's checked rows are not written into the binding.
 
 Tests: tests/synth/test_review.py (a checked row outside the binding that the world holds passes; a checked row the
 world lacks is refused naming it; feasible yes still needs checked entries code finds and no open requires).
+
+### D402. A retry gets the first pass's turns per item, a capped session gets one last turn, a cut call is named (2026-10-18)
+
+What. A retry session (D394) gets at least the turns per item its source's first pass spent, times its own items,
+never the MIN_TURNS floor alone (turns_for, Generation.spent). At the turn cap the loop asks the caller's unfinished
+hook (D397) once more; a non empty line gives the run one last turn, opened by LAST_TURN, so items end written,
+skipped or explained; the next turn past the cap stops the run. On a turn cut at the output cap that called tools,
+the last call is the cut one: it is not run and its result is CUT_CALL ("cut at the output cap: make fewer calls per
+turn"), while the complete calls before it run. CUT_TURN_ASK stays, once per run, for a cut turn with no call.
+
+Why. The observe report (synth-1016/observe/report.md, patterns 4 and 7): 12 sessions ended on the cap, all 8 small
+retries capped on the floor of 12 turns and wrote 4 scenarios between them, and the unfinished ask fired 0 times,
+since every session with items left ended on the cap before the end of run asks. 20 invalid argument refusals all
+sat on cut turns whose last call was cut, often to {}, and read as a bare "Field required".
+
+What it does not do: the last call of a cut turn is taken as cut without parsing it, since the cap falls at the end
+of the output; a provider that drops the cut call would see its last complete call answered as cut. The last turn
+at the cap is one turn, given once per run. The first pass's turns per item is a mean over its sessions.
+
+Tests: tests/agent/test_loop.py (a session at its turn cap gets one last turn carrying the unfinished line; with
+nothing unfinished it stops on the cap; a call cut at the output cap is answered as cut while the complete calls on
+its turn run), tests/synth/test_generate.py (a retry's turn budget follows the turns per item its first pass spent;
+the first pass turns are counted per kind).

@@ -6,7 +6,16 @@ import asyncio
 from collections import deque
 
 from kullback.agent.events import AgentEnd, ToolExecutionEnd, TurnEnd
-from kullback.agent.loop import CUT_TURN_ASK, EMPTY_TURN_ASK, UNFINISHED_ASKS, Hooks, LoopState, run_agent_loop
+from kullback.agent.loop import (
+    CUT_CALL,
+    CUT_TURN_ASK,
+    EMPTY_TURN_ASK,
+    LAST_TURN,
+    UNFINISHED_ASKS,
+    Hooks,
+    LoopState,
+    run_agent_loop,
+)
 from kullback.agent.messages import AssistantMessage, ToolResultMessage, UserMessage
 from kullback.agent.tools import AgentTool, RetryableToolError, ToolRegistry, ToolResult
 from kullback.ai.provider import ModelReply, TestModel
@@ -337,6 +346,34 @@ def test_the_unfinished_hook_is_asked_only_when_the_run_would_end_and_at_most_tw
     assert len(lines) == UNFINISHED_ASKS == 2 and len(asked) == 2, "not asked after the tool turn, twice at the end"
     assert len(model.calls) == 1 + 1 + UNFINISHED_ASKS
     assert "items 3, 5 are not done" in str(model.calls[2]["messages"][-1]["content"])
+
+
+def test_a_session_at_its_turn_cap_gets_one_last_turn_carrying_the_unfinished_line(add_tool):
+    """Every live session that still had items ended on the cap, so the unfinished ask never fired (D402)."""
+    state = LoopState(system="sys", max_turns=2, unfinished=lambda: "item 1 is not written")
+    model = TestModel([reply(None, call("add", {"a": 1, "b": 1}))], loop=True)
+    events, state = run(model, [add_tool], state=state)
+    last = [m for m in state.messages if m.role == "user" and m.content.startswith(LAST_TURN)]
+    assert [m.content for m in last] == [f"{LAST_TURN} item 1 is not written"]
+    assert len(model.calls) == 3 and "max_turns=2" in state.messages[-1].error_message
+
+
+def test_a_session_at_its_turn_cap_with_nothing_unfinished_stops_on_the_cap(add_tool):
+    state = LoopState(system="sys", max_turns=1, unfinished=lambda: "")
+    model = TestModel([reply(None, call("add", {"a": 1, "b": 1}))], loop=True)
+    events, state = run(model, [add_tool], state=state)
+    assert len(model.calls) == 1 and "max_turns=1" in state.messages[-1].error_message
+
+
+def test_a_call_cut_at_the_output_cap_is_answered_as_cut_while_the_complete_calls_on_its_turn_run(add_tool):
+    """Twenty live refusals were a cut last call's bare argument error (D402)."""
+    cut = ModelReply(tool_calls=[call("add", {"a": 1, "b": 2}), call("add", {"a": 3})], stop_reason="max_tokens")
+    events, state = run(TestModel([cut, "done."]), [add_tool])
+    results = [m for m in state.messages if isinstance(m, ToolResultMessage)]
+    assert [(r.content, r.is_error) for r in results] == [('{"total": 3}', False), (CUT_CALL, True)]
+    ran = [e for e in events if isinstance(e, ToolExecutionEnd)]
+    assert len(ran) == 1, "the cut call is not run"
+    assert not [m for m in state.messages if m.role == "user" and m.content == CUT_TURN_ASK]
 
 
 def test_an_unfinished_hook_with_nothing_left_lets_the_run_end():

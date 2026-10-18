@@ -786,3 +786,20 @@ def test_a_table_with_no_rows_gives_no_possible_cell_and_no_gap_item(tmp_path):
     assert sorted(M.cell_tables(generation.world.state)) == sorted(STATE)
     assert not any(item["gap"].get("table") == "empty_rows" for item in M.gap_items(generation))
     assert M.gap_counts(generation)["possible"] == len(STATE)
+
+
+def test_a_retrys_turn_budget_follows_the_turns_per_item_its_first_pass_spent(tmp_path):
+    """All eight small live retries capped on the floor of MIN_TURNS with the hardest items (D402)."""
+    generation, _ = _generation(tmp_path)
+    root = T.GenerateRoot(world=generation.world, kind="recordings", items=[{}, {}])
+    assert T.turns_for(root) == T.MIN_TURNS
+    assert T.turns_for(root, per_item=20) == 40
+    assert T.turns_for(root, per_item=T.MAX_TURNS) == T.MAX_TURNS
+
+
+def test_the_first_pass_turns_are_counted_per_kind_for_the_retry(tmp_path):
+    generation, _ = _generation(tmp_path)
+    _plan(generation, (MOVE, [0], []), (BROKEN, [1], []))
+    generation.model = TestModel([*_quiet(), *_quiet()])
+    M.from_recordings(generation, batch=8)
+    assert generation.spent["recordings"] == 2 * len(_quiet())

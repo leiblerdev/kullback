@@ -21,7 +21,9 @@ also after a fix rewrites its statement. The fix step is a session too, under th
 
 No session leaves items unwritten (D394): after the batched pass of one source, the items still unwritten
 run once more in batches of half the size, at least RETRY_MIN; a session that ended empty or on its cap
-left its items unwritten, so they are in that set. What the second pass wrote is counted per source.
+left its items unwritten, so they are in that set. What the second pass wrote is counted per source. A retry
+session gets at least the turns per item the first pass spent (D402): its items are the hard ones, and the
+floor alone capped all eight small retries of one live run.
 
 The gaps pass runs last (D398): the recordings mirror the recorded mix, so it asks, by code, for what the
 store lacks: one item per cell of (situation kind, bound table) no kept scenario hits and one per policy
@@ -91,6 +93,7 @@ class Generation:
     ceiling: Optional[budget.Ceiling] = None
     subscribers: tuple = ()
     capped: Counter = field(default_factory=Counter)
+    spent: Counter = field(default_factory=Counter)
     ungrouped: list = field(default_factory=list)
     plan: plan_mod.Plan = field(default_factory=plan_mod.Plan)
     unplanned: list = field(default_factory=list)
@@ -117,11 +120,13 @@ class Generation:
         return search_mod.Crawled(engine, self.world.workdir, keys=pages, corpus_url=corpus_url, exclude=exclude,
                                   notes=self.notes)
 
-    def session(self, kind: str, opening: str, stage: str = STAGE, **root: Any) -> T.GenerateRoot:
+    def session(self, kind: str, opening: str, stage: str = STAGE, per_item: float = 0, **root: Any) -> T.GenerateRoot:
         made = T.GenerateRoot(world=self.world, kind=kind, found=self.found, dropped=self.dropped, bus=self.bus,
                               plan=self.plan, **root)
-        if T.run(made, self.model, opening, stage, self.ceiling, self.subscribers):
+        capped, turns = T.run(made, self.model, opening, stage, self.ceiling, self.subscribers, per_item)
+        if capped:
             self.capped[kind] += 1
+        self.spent[kind] += turns
         return made
 
 
@@ -197,7 +202,7 @@ def plan_openings(generation: Generation, *, batch: int = plan_mod.PLAN_BATCH) -
 
 
 def _pass(generation: Generation, kind: str, items: list[dict], size: int, retry: bool = False,
-          said: str = "") -> list[dict]:
+          said: str = "", per_item: float = 0) -> list[dict]:
     """One session per batch of items of one source, stopping at the ceiling; the items no session grouped."""
     left: list[dict] = []
     for start in range(0, len(items), size):
@@ -205,7 +210,7 @@ def _pass(generation: Generation, kind: str, items: list[dict], size: int, retry
             return left
         chunk = items[start:start + size]
         opening = generate_prompt.opening(kind, _entries(generation.world.workdir), count=len(chunk), items=said)
-        made = generation.session(kind, opening, items=chunk)
+        made = generation.session(kind, opening, per_item=per_item, items=chunk)
         row = {"source": kind, "batch": start // size, "items": len(chunk), "ungrouped": len(chunk) - len(made.grouped)}
         generation.ungrouped.append({**row, "retry": True} if retry else row)
         left += [item for at, item in enumerate(chunk) if at not in made.grouped]
@@ -219,12 +224,14 @@ def _batched(generation: Generation, kind: str, items: list[dict], batch: int,
     `unwritten` names the items still unwritten after the first pass; by default, those no session grouped.
     """
     size = max(int(batch), 1)
+    spent = generation.spent[kind]
     left = _pass(generation, kind, items, size, said=said)
+    per_item = (generation.spent[kind] - spent) / max(len(items), 1)
     left = unwritten() if unwritten is not None else left
     if not left or generation.over():
         return
     before = len(generation.found)
-    _pass(generation, kind, left, max(size // 2, RETRY_MIN), retry=True, said=said)
+    _pass(generation, kind, left, max(size // 2, RETRY_MIN), retry=True, said=said, per_item=per_item)
     generation.retried[kind] = {"items": len(left), "written": len(generation.found) - before}
 
 
