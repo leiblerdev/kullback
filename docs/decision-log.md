@@ -3541,6 +3541,16 @@ a model.
 Tests: tests/synth/test_tasks.py (a born Task's overlay loads through load_overlay with no rows, no steps and empty
 values; a second call writes the overlay a born Task lacks and skips the Task).
 
+### D391. The 100 again and the 253 on the gate and stray head: FAIL on the stray bar only (2026-10-17)
+
+On e04c3eaf (D384 to D388) the 100 hold five of six pre-registered bars (wrong 4 of 90, right 66 of 90, trusted 35
+with 1 wrong against the trace, 1.15 USD per Task) and fail the stray filter (2 of the 6 named set aside
+intent_strayed). Out of sample the 253 trust 83, with 6 of 48 labelled wrong and 2 of 24 trusted wrong; 412.72 USD for
+all 353. With every Verifier labelled, 21 of 319 are wrong against the trace (6.6 percent, 4.3 to 9.9), 5 of 118
+trusted (4.2 percent, 1.8 to 9.5); right 192, partial 106; 34 Tasks end with no Verifier. D387 alone leaves no base on
+7 of 18 no_base Tasks of the 100 and 24 of 59 of the 253, nearly all on gated whole-field lists. Report:
+.claude/herdr/run-1017/run-report.md.
+
 ### D392. Two gated called items on one tool with different args are a contradiction (2026-10-17)
 What: kullback/spec/items.py contradictions now reports the second of two gated called items that name the same
 tool with differing args: "called <tool> with other args beside <first id>; gate the end state row instead, or one
@@ -3557,7 +3567,164 @@ without args, items on different tools, ungated items and two items with equal a
 Tests: tests/spec/test_items.py (the new case fires on the second item; the four non cases report nothing; the
 existing not_called and cell cases still fire).
 
-### D393. Harbor publish of every Task with a Verifier, its Spec tier and a rater's label (2026-10-17)
+### D393. A scenario carries the user's words and the expected end apart (2026-10-17)
+
+What. write_scenario takes two more fields, ask (what the customer says to open the conversation, first person,
+their own words, never what the agent will do and never the outcome) and end (what a correct agent leaves the world
+and the customer with, third person: the rows changed and their values, or nothing changed and why, quoting the
+policy line). rewrite_scenario may carry both, leaving either out keeps it. Both are stored on the Scenario and
+list_scenarios shows them beside the statement; the fix listing shows them too. The statement stays as it was, since
+the fold and the review compare it. A leak check in code, at write and rewrite (generate_tools.pair_refusal), refuses
+an ask and an end that share a sentence (sentences compared through generate.canonical), a tool name in the ask or the
+end (the statement's tool name check), and one of the pair without the other; each has its own reason
+(ask_shares_end, tool_name_in_ask, tool_name_in_end, ask_without_end, end_without_ask), counted in dropped like every
+refusal. Both empty stays allowed, so older records and older sessions keep working. RULE, the write_scenario and
+rewrite_scenario examples, one ask and one end per example shape over placeholders, and the feedback section say it.
+The report prints how many scenarios carry an ask and an end.
+
+Why. The statement says what happens including how it ends, and a born Task made it the single user turn, so the
+model under test was told the resolution; other statements left the end open, so no Verifier could be derived
+(live2 audit finding 3).
+
+What it does not do: ask and end do not reach the Spec writer here; the born Task's user turn becomes the ask in the
+tasks.py Worker's change, not in this one. No model judges a leak, only sentences equal after canonical; a paraphrase
+of the end inside the ask passes.
+
+Tests: tests/synth/test_generate.py (each of the five pair refusals; a shared sentence refused and dropped on the
+second write and counted; ask and end stored, listed beside the statement, read back from the store and kept by a
+rewrite; the report line of scenarios with an ask and an end).
+
+### D394. Items a session left unwritten are retried in halves (2026-10-17)
+
+What. generate._batched runs the batched pass of one source, then once more over the items still unwritten in
+batches of half the size, at least RETRY_MIN = 4. For the recordings source the unwritten items are situation_items
+again, which now also counts what this generation already wrote; for the typed lines, the items no session grouped.
+A session whose answer ended empty or on its cap left its items unwritten, so they are in that set by construction.
+generated.json gains "retried": {"<source>": {"items": n, "written": m}}, a retry batch's ungrouped row carries
+"retry": true, and the report prints per source the retried items and what the second pass wrote. BATCH stays 25:
+the one failed batch of the last run had 25 items and the next of 14 wrote 34, too little to measure a better size,
+and the halved retry covers the failure.
+
+Why. The first airline batch of the last live run did 201 lookups, hit the output cap on one answer and then answered
+with an empty turn, which the stop rule read as done: 0 scenarios from 25 situations (53 variants).
+
+What it does not do: one retry pass only, never a third; no retry for the search session (it has no items); the stop
+rule and the empty answer handling of the harness are unchanged. An item dropped after two refusals in the first pass
+is unwritten, so it gets one more session.
+
+Tests: tests/synth/test_generate.py (eight lines left unwritten run again in two sessions of four and the count holds
+items and written; a recordings retry lists only the situations the first pass left; no second pass when every item is
+written; the report line per source).
+
+### D395. A born Task's recording carries the Environment's shared agent prompt (2026-10-17)
+
+What. kullback/synth/tasks.py recording_of sets the recording's system_prompt to the prompt most recordings of the
+workdir carry (shared_prompt: distinct texts counted over intent_tools.trace_index, the most frequent taken; none
+when no recording carries one). The user turn is the scenario's ask where it has one, else its statement (older
+scenarios; the Scenario field ask is D393's, empty by default on every stored scenario). born_tasks
+also repairs: a Task that already exists whose recording lacks a prompt gets the prompt written into it, the turn
+kept. The counts gain "prompts_written", the recordings written with a prompt, new or repaired.
+
+Why. The Spec writer and the Examiner read the policy off a Task's recording like every recorded Task does
+(env.system_prompt, then env/policy.md, which a work copy does not ship). A born recording had no prompt, so the
+writer said "no recorded agent policy found", the Examiner's policy file said "no policy recorded", and refusal
+scenarios got Verifiers that gate the forbidden action (airline 8 of 17 wrong in the first loop check). The
+recordings of an Environment share one prompt (retail 387 of 400, airline 200 of 217).
+
+What it does not do: no change under kullback/runner (frozen), no policy file written, no prompt invented; a
+workdir whose recordings carry none gives born recordings none.
+
+Tests: tests/synth/test_tasks.py (a born recording carries the prompt most recordings share, the majority winning
+over a second prompt; no prompt when no recording has one; the user turn is the ask when set, else the statement; a
+rerun writes the prompt into a born recording that lacks it, counts it, and a third call writes nothing).
+
+### D396. A gated not_called beside a gated called, and a repeated gated event item, are contradictions (2026-10-17)
+What: kullback/spec/items.py _gated_call_clashes, called from contradictions beside D392's check, reports a gated
+not_called item whose args are none or a subset of a gated called item's args on the same tool ("gated not_called
+<tool> beside gated called <id>; keep the one the ask calls for"), and a gated called or not_called item that
+repeats an earlier one's kind, tool and args ("<kind> <tool> repeats <first id> with the same args; remove this
+one"). An item the older not_called check already names is not named twice.
+
+Why: the measurement of born Verifiers found gated "is called" and "is not called" atoms on one tool, which no Run
+can pass, and the blind judge named contradictory or duplicated checks as the commonest tell of a synthetic
+Verifier. A not_called fails on any call carrying its args, so a subset of the called args is enough to clash; a
+not_called with other args only forbids those and stands.
+
+Also: a called or not_called atom's description names its args ("<tool> is called with <key> <value>, ..."; no
+args reads as before), since the three born Verifiers the measurement named were satisfiable and only read as
+contradictory because the description left the args out.
+
+What it does not do: no change to the Verdict or the writer; ungated items are not checked. D392's note that two
+items with equal args are not a contradiction is superseded: they are now reported as a repeat.
+
+Tests: tests/spec/test_items.py (the clash fires and nothing else does; a not_called with other args passes; a
+repeated pair is reported once on the second item; D392's equal args case now reports the repeat; a called
+description names its args and a not_called without args reads as before).
+
+### D397. A cut answer is not done, and an answer with items unwritten is not final (2026-10-17)
+
+What. kullback/agent/loop.py: a turn the provider cut at the output cap (stop reason length) that called no tool is
+not a stop. The loop appends once per run CUT_TURN_ASK, one line beside EMPTY_TURN_ASK naming no artifact: continue
+with fewer calls per turn and act on each item as soon as what it needs is looked up. A second cut turn ends the run.
+LoopState gains `unfinished` (Callable[[], str], default none), also an AgentHarness keyword: asked only when the run
+would otherwise end (no tool call, nothing pending, no follow up); a non empty line is appended as a user message, at
+most UNFINISHED_ASKS = 2 times per run, then the run ends. The loop knows no items; the line is the caller's.
+kullback/synth/generate_tools.run gives a session with items the hook: the numbers of the items no scenario grouped
+(for the plan session, no situation holds and none skipped), as "items n, m are not written and not skipped", then
+"skip it with skip_opening and its reason" where the session holds the skip tool, else "say in one line why each
+cannot be written". The choice rule gains one sentence: write each scenario as soon as its rows are looked up; never
+look everything up first.
+
+Why. In the live airline regeneration of 2026-10-17 failed sessions spent 20 to 40 turns on 117 to 168 lookups, one
+answer hit the output cap with no tool call, and the next answer was a summary saying nothing was written yet, which
+the loop read as done: 0 scenarios from 25 items. D394's retry pass patches the symptom; this stops the loop reading
+a cut or unfinished answer as the end.
+
+What it does not do: no change to the stop rule, the turn caps or the retry pass; a cut turn that made tool calls is
+run as before; no resume of a cut tool call. The complex route (count lookups per item and force a write after k)
+would buy an earlier nudge at the price of a per role policy in the loop.
+
+Tests: tests/agent/test_loop.py (a cut turn is asked once and a second cut ends the run; a cut then an answer ends on
+the answer; the unfinished hook is asked only when the run would end, at most twice, and its line reaches the model;
+an empty line lets the run end), tests/synth/test_generate.py (the hook names the unwritten item numbers; the plan
+session names the skip tool; no items gives no line; the choice rule holds the sentence), and the retry tests now
+script the two asks.
+
+### D398. A gaps pass asks for the cells and policy lines no scenario covers (2026-10-17)
+
+What. generate.from_gaps runs last in generate(), after the recordings, the search and the typed lines. Its items
+come by code from gap_items: one per cell of (situation kind of the plan, table of the world) that no kept scenario
+of the store or this generation hits ("a <kind> situation bound to a <table> row"), then one per policy line no kept
+scenario quotes ("a situation where this policy line decides: <line>"), GAP_PER = 1 scenario each. A policy line is
+a line of the policy with its list marks stripped, leaving out headings, labels ending in a colon and lines under
+LINE_WORDS = 5 words; a quote covers a line when either holds the other. The items go through _batched, so D394's
+retry applies, with the same write tools, refusals and ceiling; the source kind is "gaps", one number per write as
+for typed lines, and Source.gap keeps the gap filled (what, kind, table or line). A cell's situation kind comes from
+the item, a policy line's from the write's new optional kind field, refused as kind_not_in_plan unless it is one
+of the plan's kinds (the refusal and the gaps opening name them); spread reads a gap scenario's kind from it. A gaps
+write needs its ask and its end: one alone is refused with D393's reasons, both empty as ask_and_end_missing; the
+other sources stay as D393 left them.
+generated.json gains "gaps": {"items", "before", "after"} with the cells hit and the policy lines covered over the
+whole store before and after the pass, and the report prints them. The scenarios verb gains --source, repeatable,
+to run only the sources named; without the recordings no plan session runs and the plan on disk is read.
+
+Why. The recordings source mirrors the recorded mix: the airline store hit 15 of 30 cells and kinds ran change 24,
+booking 6, complaint 5, cancel 2, question 2, refusal 1. A thousand Tasks at that mix are a thousand changes to
+existing bookings. Papers rule 4 (docs/papers.md, the diversity reading): compose from atoms and ask for the atoms not
+yet used.
+
+What it does not do: no new tool; no check that a cell scenario binds the cell's table or that a line scenario quotes
+its line, so cells and lines after the pass are measured, not forced. The kinds of the cells are the plan's kinds,
+so the cells possible stay the plan's kinds by the world's tables. A table with no rows gives no cell, in the
+cells possible and in the gap items alike (cell_tables), since a cell no row can ever fill is no gap.
+
+Tests: tests/synth/test_generate.py (policy lines leave out headings, labels and short lines; gap items are the unhit
+cells and the unquoted lines and a kept scenario removes its own; the pass writes through the same tools, its
+refusals count and its before and after move; a kind outside the plan is refused naming the kinds; a missing ask,
+end or both is refused; a table with no rows gives no cell and no gap item; no pass without a model; --source gaps
+reads the plan on disk; the report lines).
+
+### D399. Harbor publish of every Task with a Verifier, its Spec tier and a rater's label (2026-10-17)
 
 What. `kullback publish --format harbor` and `kullback export --format harbor` take `--tasks verified` beside
 trusted (the default, unchanged) and all (unchanged): every frozen recorded Task with a Verifier on disk, trusted or
@@ -3613,14 +3780,14 @@ older release left and this one lacks leave in the same commit (the Hub keeps .g
 reachable by their tags. LocalHub empties the target before a dry run lays it out, the same behaviour. Found before
 the airline upload: 399 build-20260924 paths would have stayed on main. Tests in tests/hub/test_publish.py.
 
-### D395. The item judge's cap fits a reasoning model, one retry, an outage is not a no (2026-10-17)
+### D400. The item judge's cap fits a reasoning model, one retry, an outage is not a no (2026-10-17)
 What: kullback/judge/items.py judge_item asks at max_tokens JUDGE_TOKENS 4000 instead of 200, and on a reply that
 is empty or cut (stop reason max_tokens or length, or no JSON object in it) asks once more at RETRY_TOKENS 16000. The
 system prompt says to answer with the JSON object first, nothing before it. JudgeScore gains status ("answered",
 "unreadable", "outage"; empty when code scored the item), stop_reason of the last call and retries; cost adds both
 calls. A failed call, or an empty reply after the retry, is status "outage". tally counts outages.
-ITEM_JUDGE_VERSION 2. kullback/hub/harbor_world.py writes status, stop_reason and retries into judge.json. D394 is not
-in the log on this branch; this row follows D393 and the fold renumbers if needed.
+ITEM_JUDGE_VERSION 2. kullback/hub/harbor_world.py writes status, stop_reason and retries into judge.json. First written
+as D395 on the publish branch; renumbered D400 when it merged after the fold's D393 to D398.
 
 Why: in the bench-1017 smoke the Harbor oracle on one airline Task scored 0 twice because gated item j1 came back as
 an empty reply. Reproduced outside Docker: at 200 tokens the model's only content block was thinking (stop reason

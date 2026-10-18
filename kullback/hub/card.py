@@ -151,7 +151,7 @@ def _status(manifest: dict) -> str:
 def card_markdown(manifest: dict, repo_id: str, *, github_url: str = "https://github.com/leiblerdev/kullback",
                   site_url: str = "https://leibler.dev", announcement: Optional[str] = None) -> str:
     """The dataset card of one Environment, every number read off its manifest; `announcement`, the
-    publisher's own words (`publish --announcement FILE`), goes under the status line as is (D393)."""
+    publisher's own words (`publish --announcement FILE`), goes under the status line as is (D399)."""
     name = manifest.get("name") or repo_id.rsplit("/", 1)[-1]
     lines = [front_matter(manifest, tags=[str(name)]), ""]
     lines += [f"# {name}", ""]
@@ -173,10 +173,10 @@ def card_markdown(manifest: dict, repo_id: str, *, github_url: str = "https://gi
     return "\n".join(lines) + "\n"
 
 
-# What each Task set of a Harbor export holds, in the card's words (D393).
+# What each Task set of a Harbor export holds, in the card's words (D399).
 TASK_SETS = {"trusted": "the trusted Tasks", "verified": "every Task with a Verifier, trusted or not",
              "all": "every Task, the synthetic ones too"}
-# A Task whose only leaking part is its oracle (D393): left out of the Harbor form, the dataset not refused.
+# A Task whose only leaking part is its oracle (D399): left out of the Harbor form, the dataset not refused.
 SOLUTION_LEAKS = "solution leaks"
 LABEL_ORDER = ("right", "partial", "wrong", "no_verifier", "unlabelled")
 
@@ -187,7 +187,7 @@ def _skipped(counts: dict) -> str:
 
 
 def tier_label_table(harbor: dict) -> list[str]:
-    """Tasks by tier (trusted, else the untrusted reason) and, where labels were given, by label (D393)."""
+    """Tasks by tier (trusted, else the untrusted reason) and, where labels were given, by label (D399)."""
     table = (harbor.get("counts") or {}).get("by_tier_and_label") or {}
     if not table:
         return []
@@ -209,7 +209,7 @@ def tier_label_table(harbor: dict) -> list[str]:
 
 
 def _solution_leak_lines(harbor: dict) -> list[str]:
-    """The Tasks left out because their oracle repeats a recorded string, by masked id (D393)."""
+    """The Tasks left out because their oracle repeats a recorded string, by masked id (D399)."""
     ids = [str(row.get("task")) for row in harbor.get("left_out") or () if row.get("reason") == SOLUTION_LEAKS]
     if not ids:
         return []
@@ -218,7 +218,7 @@ def _solution_leak_lines(harbor: dict) -> list[str]:
 
 
 def _no_oracle_lines(counts: dict) -> list[str]:
-    """How many Tasks ship without solution/ because no Run passes on replay (D393)."""
+    """How many Tasks ship without solution/ because no Run passes on replay (D399)."""
     count = int(counts.get("no_oracle") or 0)
     if not count:
         return []

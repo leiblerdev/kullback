@@ -13,7 +13,7 @@ evidence and nothing else: no Reference, no expected end state, no user goal.
 A call that fails or a reply that cannot be read gives score None, never a false 0: the reward is
 masked for that Run, the same rule the grader follows.
 
-The cap fits a model that reasons before it answers (D395): a reasoning model spends its output
+The cap fits a model that reasons before it answers (D400): a reasoning model spends its output
 tokens on thinking first, so a cap sized for the JSON alone comes back empty with stop reason
 max_tokens. A reply that is empty or cut is asked once more at a larger cap; empty again, the item
 is a judge outage (status "outage"), still unscored, so a report can tell an outage from a no.
@@ -67,7 +67,7 @@ class JudgeScore(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)  # evidence refs the Run had nothing for
     error: Optional[str] = None
-    status: str = ""  # "" when scored by code, "answered", "unreadable", or "outage" when no answer came back (D395)
+    status: str = ""  # "" when scored by code, "answered", "unreadable", or "outage" when no answer came back (D400)
     stop_reason: Optional[str] = None  # of the last call
     retries: int = 0
     cost_usd: float = 0.0

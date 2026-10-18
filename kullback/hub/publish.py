@@ -70,7 +70,7 @@ FORMATS = ("package", "harbor")
 
 def from_staged(staged: Any, out: Any) -> dict:
     """The package a dry run laid out at `staged`, verified and copied into `out` without its Harbor form,
-    its card or a host's hidden files; answers its manifest as the export wrote it (D393).
+    its card or a host's hidden files; answers its manifest as the export wrote it (D399).
 
     A package that does not verify is refused, naming the first problem: reusing it is only worth
     anything because it is the package that was checked.
@@ -97,7 +97,7 @@ def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, p
     Answers the manifest with the ruling on it. The card is written after the manifest and is not
     part of the content hash: it is prose about the package, rewritten on every publish, and a
     package whose card someone edited has not been tampered with. `harbor_options` go to export_harbor
-    as they are: the Task set, the tier files, the label files and their rubric (D393). `staged` reuses
+    as they are: the Task set, the tier files, the label files and their rubric (D399). `staged` reuses
     the package a dry run laid out there instead of exporting it again (from_staged); the rest is the same.
     """
     resolved = name or repo_id.rsplit("/", 1)[-1]

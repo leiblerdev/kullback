@@ -415,7 +415,7 @@ def test_a_dry_run_publish_lays_harbor_beside_the_package_and_the_package_still_
     assert verify_package(landed) == []
 
 
-# --- the verified Task set, tiers and labels (D393) ----------------------------------------------
+# --- the verified Task set, tiers and labels (D399) ----------------------------------------------
 
 
 def _wheel(tmp_path: Path) -> Path:

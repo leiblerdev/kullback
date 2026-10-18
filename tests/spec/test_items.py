@@ -254,6 +254,52 @@ def test_contradictions_name_a_tool_both_needed_and_forbidden_and_a_cell_expecte
     assert [item_id for item_id, _ in found] == ["e2", "s2"]
 
 
+def test_two_gated_called_items_on_one_tool_with_different_args_contradict_and_only_those():
+    def called(item_id, tool="update_item", **extra):
+        return dict({"id": item_id, "kind": "called", "tool": tool, "fact_ids": ["f1"]}, **extra)
+    a1, b2 = {"item_id": "A1"}, {"item_id": "B2"}
+    found = I.contradictions(_kept(called("c1", args=a1), called("c2", args=b2)))
+    assert found == [("c2", "called update_item with other args beside c1; gate the end state row instead, "
+                             "or one called item with one_of")]
+    assert I.contradictions(_kept(called("c1"), called("c2", args=b2))) == []
+    assert I.contradictions(_kept(called("c1", args=a1), called("c2", tool="add_note", args={"text": "B2"}))) == []
+    assert I.contradictions(_kept(called("c1", args=a1), called("c2", args=b2, gate=False))) == []
+    assert [item_id for item_id, _ in I.contradictions(_kept(called("c1", args=a1), called("c2", args=dict(a1))))] \
+        == ["c2"]
+
+
+def _event(item_id, kind, **extra):
+    return dict({"id": item_id, "kind": kind, "tool": "update_item", "fact_ids": ["f1"]}, **extra)
+
+
+def test_a_gated_not_called_matching_a_gated_called_items_args_contradicts_and_nothing_else_does():
+    call = _event("c1", "called", args={"item_id": "A1", "slot": "seven"})
+    never = _event("n1", "not_called", args={"item_id": "A1"})
+    assert I.contradictions(_kept(call, never)) == [
+        ("n1", "gated not_called update_item beside gated called c1; keep the one the ask calls for")]
+    assert [item_id for item_id, _ in I.contradictions(_kept(call, _event("n1", "not_called")))] == ["n1"]
+    assert I.contradictions(_kept(call, _event("n1", "not_called", args={"item_id": "A1"}, gate=False))) == []
+
+
+def test_a_gated_not_called_with_other_args_stands_beside_the_called_item():
+    call = _event("c1", "called", args={"item_id": "A1", "slot": "seven"})
+    assert I.contradictions(_kept(call, _event("n1", "not_called", args={"item_id": "B2"}))) == []
+    assert I.contradictions(_kept(_event("c1", "called"), _event("n1", "not_called", args={"item_id": "B2"}))) == []
+
+
+def test_an_event_item_description_names_its_args_and_reads_as_before_without_them():
+    call = _verifier(_kept(_event("c1", "called", args={"item_id": "A1", "slot": "seven"}))).atoms[0]
+    assert call.description == "update_item is called with item_id A1, slot seven"
+    never = _verifier(_kept(_event("n1", "not_called"))).atoms[0]
+    assert never.description == "update_item is not called"
+
+
+def test_a_repeated_gated_event_item_is_reported_once_and_the_first_is_kept():
+    never = _event("n1", "not_called", args={"item_id": "B2"})
+    found = I.contradictions(_kept(never, dict(never, id="n2"), _event("n3", "not_called", args={"item_id": "A1"})))
+    assert found == [("n2", "not_called update_item repeats n1 with the same args; remove this one")]
+
+
 def test_counts_split_items_by_kind_gate_and_provenance():
     items = _kept(MOVE, {"id": "t1", "kind": "said", "values": ["seven"], "fact_ids": ["f1"]})
     counts = I.counts_of(items + [I.sanity_item([])])

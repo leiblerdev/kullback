@@ -23,7 +23,7 @@ The leak scan is the package's (D221), run over what a Harbor task adds: the ins
 the oracle's calls and reply, the Verifier and a rater's words in its metadata. A leak removes the
 dataset and refuses the export, naming each leaking Task (masked) and part and how many strings.
 
-`--tasks verified` (D393) exports every recorded Task with a Verifier on disk, trusted or not, each
+`--tasks verified` (D399) exports every recorded Task with a Verifier on disk, trusted or not, each
 marked with its Spec tier and tier reason (tiers.json) and, given label files, a rater's label.
 """
 
@@ -222,7 +222,7 @@ def _synthetic_tasks(workdir: Path) -> dict[str, dict]:
     return out
 
 
-# --- the tier and the label of each Task (D393) ------------------------------------
+# --- the tier and the label of each Task (D399) ------------------------------------
 
 
 def _owner(key: str, exact: set[str], ids: list[str]) -> Optional[str]:
@@ -404,7 +404,7 @@ def write_task(directory: Path, *, workdir: Path, task_id: str, task_record: dic
                policy: Optional[str], verifier_path: Path, calls: Optional[list[dict]], wheel: Path,
                toml: str) -> None:
     """One Harbor task directory, laid out and checked to load before anything else reads it; with `calls`
-    None it has no solution/ (no Run passes on replay, D393)."""
+    None it has no solution/ (no Run passes on replay, D399)."""
     environment = directory / "environment"
     world = environment / WORLD_DIR
     world.mkdir(parents=True, exist_ok=True)
@@ -465,7 +465,7 @@ def _parts(row: dict, min_length: int) -> list[tuple[str, set[str], str]]:
              ("Verifier", _file_strings(row["verifier"], min_length), row["instruction"]),
              ("oracle", oracle, row["instruction"]),
              ("label", _text_strings([row.get("label") or ""], min_length), row["instruction"])]
-    # A Task with no solution/ has no oracle part to scan (D393).
+    # A Task with no solution/ has no oracle part to scan (D399).
     return [part for part in parts if part[0] != ORACLE_PART or row.get("has_oracle", True)]
 
 
@@ -474,7 +474,7 @@ def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: 
     """The package's scan (D221) over what each Harbor task adds, counts only.
 
     Per task: the instruction's lines against the world and the harness, then the Verifier, the
-    oracle's calls and its reply and a rater's words in the metadata (D393) against the world, the
+    oracle's calls and its reply and a rater's words in the metadata (D399) against the world, the
     harness and the instruction. Each leaking part is named by its Task, masked, and its part. The policy is
     declared rather than scanned: it is the recorded agent's own system prompt, the text every Run
     the build made was given, and it ships in instruction.md as the policy the agent works under.
@@ -620,7 +620,7 @@ def _lay_with_oracle(build: _Build, folder: Path, task_id: str, given: dict, met
                      verifier_path: Path) -> Optional[list[dict]]:
     """Write the task with each candidate oracle in turn and keep the first that holds; None if none does.
     Under `verified` and `all` a Task none holds for is then written without solution/, marked has_oracle
-    false (D393); it answers [] for that Task."""
+    false (D399); it answers [] for that Task."""
     for tried in given["candidates"]:
         _write(build, folder, task_id, given, dict(metadata, has_oracle=True), verifier_path, tried)
         if oracle_holds(folder):
@@ -636,7 +636,7 @@ def _lay_with_oracle(build: _Build, folder: Path, task_id: str, given: dict, met
 
 def _verified_skip(build: _Build, task_id: str, body: Optional[dict]) -> Optional[str]:
     """Under `verified`, a recorded Task the tier report rules no_verifier is "no Verifier" whatever file is on
-    disk (a draft the Spec set aside, D393), and one of the synthetic tier is "synthetic"; else None."""
+    disk (a draft the Spec set aside, D399), and one of the synthetic tier is "synthetic"; else None."""
     if build.tasks != "verified" or body is not None:
         return None
     row = (build.tiers or {}).get(task_id) or {}
@@ -701,7 +701,7 @@ def solution_only(scan: dict, scanned: list[dict]) -> list[dict]:
 
 def _drop_solution_leaks(out: Path, scan: dict, scanned: list[dict], listed: list[dict],
                          skipped: dict) -> tuple[dict, list[str]]:
-    """Take each Task whose only leaking part is its oracle out of the dataset (D393); answers the scan
+    """Take each Task whose only leaking part is its oracle out of the dataset (D399); answers the scan
     over what stays, which still refuses the export on any other part, and the ids taken out."""
     dropped = solution_only(scan, scanned)
     names = {row["name"] for row in dropped}
@@ -746,7 +746,7 @@ def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_o
         "reward": dict(REWARD_SHAPE, harbor="gated then weighted; an unscored gate gives 0 and is named "
                                             "unscored_gate in items.json; reward.json carries the number alone"),
         "counts": _counts(listed, recorded, skipped),
-        # Exported with no solution/: no Run passes on replay (D393). Masked, as left_out.
+        # Exported with no solution/: no Run passes on replay (D399). Masked, as left_out.
         "no_oracle": [{"task": row["kullback_task_id"][-MASK:], "reason": NO_ORACLE}
                       for row in listed if row.get("has_oracle") is False],
         "tasks": recorded,
@@ -785,7 +785,7 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
     of the synthetic tier) or `all`; synthetic store Tasks are never trusted, so they
     come only with `all`, under `synthetic/`. `only` narrows the list to the named Task ids. Every
     recorded Task carries its Spec tier off `tiers` (the workdir's tiers.json by default) and, with
-    `labels`, a rater's label, `unlabelled` where no row names it (D393). A Task whose only leaking part
+    `labels`, a rater's label, `unlabelled` where no row names it (D399). A Task whose only leaking part
     is its oracle is left out as SOLUTION_LEAKS and listed masked; a leak in any other part refuses. A Task
     with no Verifier, no Run or no instruction is left out and counted by reason. The oracle is the
     first of the Task's Runs whose calls, replayed through the exported world, hold every item a judge

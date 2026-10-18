@@ -938,6 +938,14 @@ def _from(item: dict) -> dict:
     return {"fact_ids": list(item.get("fact_ids") or []), "policy_line": item.get("policy_line")}
 
 
+def _args_text(args: dict | None) -> str:
+    """" with <key> <value>, ..." for a called item's args, empty when it has none."""
+    if not args:
+        return ""
+    return " with " + ", ".join(
+        f"{key} {value if isinstance(value, str) else json.dumps(value, default=str)}" for key, value in args.items())
+
+
 def _describe(item: dict) -> str:
     kind = item["kind"]
     if kind in ("row_is", "row_keeps"):
@@ -946,7 +954,7 @@ def _describe(item: dict) -> str:
     if kind == "row_new":
         return f"{item.get('count', 1)} new {item['table']} row(s) where {sorted(item['where'])}"
     if kind in ("called", "not_called"):
-        return f"{item['tool']} is {'not ' if kind == 'not_called' else ''}called"
+        return f"{item['tool']} is {'not ' if kind == 'not_called' else ''}called{_args_text(item.get('args'))}"
     if kind == "before":
         return f"{item['first']} comes before {item['then']}"
     if kind == "said":
@@ -1140,8 +1148,70 @@ def sanity_atom(end_states: list[EndState]) -> Atom:
                         "from": {"fact_ids": [], "policy_line": None, "code": True}})
 
 
+def _called_arg_clashes(items: list[dict]) -> list[tuple[str, str]]:
+    """Gated called items naming one tool with different args: the Verdict exact-matches called args, so
+    both hold only for a Run that calls the tool once per arg set (D392)."""
+    out: list[tuple[str, str]] = []
+    first: dict[str, tuple[str, str]] = {}
+    for item in items:
+        if item["kind"] != "called" or not item.get("gate") or not item.get("args"):
+            continue
+        text = json.dumps(item["args"], sort_keys=True, default=str)
+        first_id, first_text = first.setdefault(item["tool"], (item["id"], text))
+        if first_text != text:
+            out.append((item["id"], f"called {item['tool']} with other args beside {first_id}; gate the end state "
+                                    "row instead, or one called item with one_of"))
+    return out
+
+
+def _repeats(events: list[dict]) -> list[tuple[str, str]]:
+    """Gated event items repeating an earlier one's kind, tool and args: the first is kept (D396)."""
+    out: list[tuple[str, str]] = []
+    seen: dict[tuple[str, str, str], str] = {}
+    for item in events:
+        key = (item["kind"], item["tool"], json.dumps(item.get("args") or {}, sort_keys=True, default=str))
+        if key in seen:
+            out.append((item["id"], f"{item['kind']} {item['tool']} repeats {seen[key]} with the same args; "
+                                    "remove this one"))
+        seen.setdefault(key, item["id"])
+    return out
+
+
+def _carries(called: dict, args: dict) -> bool:
+    """Whether a call with the called item's args carries every one of these args."""
+    have = called.get("args") or {}
+    return all(key in have and have[key] == value for key, value in args.items())
+
+
+def _not_called_clashes(events: list[dict], skip: set[str]) -> list[tuple[str, str]]:
+    """Gated not_called items whose args (none, or a subset) a gated called item on one tool carries: a
+    not_called matches any call carrying its args, so one with other args stands beside the called item."""
+    called = [item for item in events if item["kind"] == "called"]
+    out: list[tuple[str, str]] = []
+    for item in events:
+        if item["kind"] != "not_called" or item["id"] in skip:
+            continue
+        clash = next((other["id"] for other in called
+                      if other["tool"] == item["tool"] and _carries(other, item.get("args") or {})), None)
+        if clash:
+            out.append((item["id"], f"gated not_called {item['tool']} beside gated called {clash}; keep the one "
+                                    "the ask calls for"))
+    return out
+
+
+def _gated_call_clashes(items: list[dict], named: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Repeated gated event items, then gated not_called beside gated called items (D396), skipping items
+    already named."""
+    events = [item for item in items if item["kind"] in ("called", "not_called") and item.get("gate")]
+    done = {item_id for item_id, _ in named}
+    repeats = [pair for pair in _repeats(events) if pair[0] not in done]
+    return repeats + _not_called_clashes(events, done | {item_id for item_id, _ in repeats})
+
+
 def contradictions(items: list[dict]) -> list[tuple[str, str]]:
-    """(item id, why) for items no Run can pass together: a tool both called and not, a cell both v and not v."""
+    """(item id, why) for items no Run can pass together: a tool both called and not, a tool gated as called
+    with two different arg sets, a gated not_called beside a gated called, a gated event item repeated, a cell
+    both v and not v."""
     out: list[tuple[str, str]] = []
     needed = {}
     for item in items:
@@ -1152,6 +1222,8 @@ def contradictions(items: list[dict]) -> list[tuple[str, str]]:
     for item in items:
         if item["kind"] == "not_called" and not item.get("args") and item["tool"] in needed:
             out.append((item["id"], f"not_called {item['tool']} beside {needed[item['tool']]}, which needs the call"))
+    out += _called_arg_clashes(items)
+    out += _gated_call_clashes(items, out)
     cells: dict[tuple, tuple[str, str]] = {}
     for item in items:
         if item["kind"] != "row_is":
