@@ -39,6 +39,8 @@ from kullback import difficulty, domain, round_snapshot
 from kullback.gates.verifier_suite import PROSE_MIN_LENGTH, elide_verifier_prose
 from kullback.runner.records import VERDICT_VERSION, Verifier, as_dict, content_hash, read_json, write_json
 from kullback.runner.verdict import REWARD_SHAPE, item_counts
+from kullback.runner.world.environment import BuiltEnvironment
+from kullback.runner.world.loading import EnvironmentError as WorldError
 from kullback.spec.schema import Spec, spec_path
 
 # 2: the manifest carries what the domain reading attests and what this Environment cannot execute
@@ -67,6 +69,9 @@ WORLD_FILES: tuple[str, ...] = ("environment.json", "schema.json", "tool_sigs.js
                                 "canon-rules.json")
 # The graders and the Task list. Scanned against the baseline rather than trusted.
 GRADER_DIRS: tuple[str, ...] = ("tasks", "verifiers")
+
+# The policy a Run is given, under the world's env/ (D404): the recorded agent prompt where the build has no file.
+POLICY_FILE = "env/policy.md"
 
 EXPORTED_DIRS: tuple[str, ...] = WORLD_DIRS + GRADER_DIRS
 EXPORTED_FILES: tuple[str, ...] = WORLD_FILES
@@ -478,6 +483,25 @@ def without_ask_count(package: Path, task_ids: Iterable[str]) -> int:
     return sum(1 for task_id in task_ids if not (read_json(package / "tasks" / f"{task_id}.json", {}) or {}).get("intent"))
 
 
+def environment_policy(workdir: Path, task_ids: Iterable[str]) -> Optional[str]:
+    """The policy text a fetched package's Runs are given (D404), or None where there is no one text.
+
+    The workdir's env/policy.md where it has one, else the recorded agent's system prompt, read the way a
+    Run reads it and the Harbor form lays it per Task, when every listed Task runs under the same one. A
+    package carries no Traces, so Tasks that ran under different prompts cannot share one file: none is
+    written and the fetch names env/policy.md as missing.
+    """
+    shipped = workdir / POLICY_FILE
+    if shipped.is_file():
+        return shipped.read_text(encoding="utf-8")
+    try:
+        env = BuiltEnvironment(workdir)
+        prompts = {env.system_prompt(env.task(task_id)) for task_id in task_ids}
+    except (OSError, ValueError, WorldError):
+        return None
+    return next(iter(prompts)) if len(prompts) == 1 and None not in prompts else None
+
+
 def _lay_out(workdir: Path, out: Path, task_ids: list[str]) -> list[str]:
     """Copy the world and the graders into `out`, and answer the relative paths written."""
     written: list[str] = []
@@ -493,6 +517,11 @@ def _lay_out(workdir: Path, out: Path, task_ids: list[str]) -> list[str]:
         if path.is_file():
             _copy(path, out / name)
             written.append(name)
+    policy = environment_policy(workdir, task_ids)
+    if policy and not (out / POLICY_FILE).is_file():
+        (out / POLICY_FILE).parent.mkdir(parents=True, exist_ok=True)
+        (out / POLICY_FILE).write_text(policy, encoding="utf-8")
+        written.append(POLICY_FILE)
     for task_id in task_ids:
         source = workdir / "tasks" / f"{task_id}.json"
         if source.is_file():

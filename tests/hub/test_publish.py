@@ -18,8 +18,9 @@ from kullback.hub import card as card_mod
 from kullback.hub import package as package_mod
 from kullback.hub import publish as publish_mod
 from kullback.runner.canon import CanonRules
-from kullback.runner.records import Verifier, as_dict, read_json, write_json
+from kullback.runner.records import RawPtr, Trace, Verifier, as_dict, read_json, write_json
 from kullback.runner.tool import ReplayReport
+from kullback.runner.world.environment import BuiltEnvironment
 
 
 def _export(workdir: Path, out: Path, **kwargs):
@@ -329,6 +330,40 @@ def test_publishing_again_writes_a_new_commit_and_a_new_tag_and_leaves_the_old_o
     assert set(tags) == {"round-2", "round-3"}
     assert tags["round-2"] == first.commit != second.commit
     assert len(hub.repos["leibler/nursery"]["commits"]) == 2
+
+
+def _recorded_under(workdir: Path, prompts: dict[str, str]) -> None:
+    """Each Task's recording carries its system prompt, with replay rows the Runner's loader accepts."""
+    replays = read_json(workdir / "replays.json", {})
+    for task_id, prompt in prompts.items():
+        write_json(workdir / "traces" / f"trace-{task_id}.json",
+                   as_dict(Trace(trace_id=f"trace-{task_id}", raw_hash="raw-1", ingest_version="1", source="test",
+                                 system_prompt=prompt, raw_ptr=RawPtr(file_hash="raw-1", sim_index=0))))
+        replays[task_id][f"trace-{task_id}"]["trace_id"] = f"trace-{task_id}"
+    write_json(workdir / "replays.json", replays)
+
+
+def test_a_packaged_workdir_passes_the_workdir_check_when_the_build_wrote_no_policy_file_or_environment_json(
+        nursery, tmp_path, hub):
+    # D404: a build that ran under the recorded agent's prompt and wrote neither file still ships a runnable package
+    (nursery / "env" / "policy.md").unlink()
+    (nursery / "environment.json").unlink()
+    prompt = "# Desk policy\nWater a plot only when it is due.\n"
+    _recorded_under(nursery, {task_id: prompt for task_id in ("task_one", "task_two", "task_three")})
+    publish_mod.publish(nursery, "leibler/nursery", client=hub, preview=True)
+    out = tmp_path / "fetched"
+    manifest = publish_mod.fetch("leibler/nursery", out, client=hub)
+    assert manifest["missing_run_inputs"] == []
+    assert (out / "env" / "policy.md").read_text(encoding="utf-8") == prompt
+    assert BuiltEnvironment(out).system_prompt(BuiltEnvironment(out).task("task_one")) == prompt
+
+
+def test_tasks_recorded_under_different_prompts_ship_no_policy_and_the_fetch_names_it_missing(nursery, tmp_path, hub):
+    (nursery / "env" / "policy.md").unlink()
+    _recorded_under(nursery, {task_id: f"prompt {n}" for n, task_id in enumerate(("task_one", "task_two", "task_three"))})
+    publish_mod.publish(nursery, "leibler/nursery", client=hub, preview=True)
+    manifest = publish_mod.fetch("leibler/nursery", tmp_path / "fetched", client=hub)
+    assert manifest["missing_run_inputs"] == ["env/policy.md"]
 
 
 def test_a_fetch_verifies_the_hash_and_lays_out_a_directory_the_runner_loads(nursery, tmp_path, hub,

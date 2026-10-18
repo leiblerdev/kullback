@@ -3874,3 +3874,23 @@ cannot be run as published, and the two forms of one Task must say the same thin
 
 Tests: tests/hub/test_harbor.py (the package ships the same ask as the Harbor instruction for a Task with a Spec
 Intent; a Task with neither a Spec Intent nor Intent text ships an empty ask and the manifest counts it).
+
+### D404. A fetched package runs as the card says: it ships the policy, and environment.json is optional (2026-10-18)
+
+What. The defect: `kullback fetch` of a published package printed "this package cannot be run as a workdir: it is
+missing environment.json, env/policy.md". Reproduced on a fetch-shaped copy of the staged airline package:
+`kullback run` did not refuse (it loads both files only where they exist), but the Candidate then ran with no policy,
+because a package carries no Traces and the build wrote no env/policy.md; the recorded agent's system prompt was the
+policy every build Run was given. Neither source workdir holds environment.json or env/policy.md. The fix:
+kullback/hub/package.py `environment_policy(workdir, task_ids)` writes `env/policy.md` into the package, the
+workdir's own file where there is one, else the recorded system prompt read the way a Run reads it, when every listed
+Task ran under the same one (one text per Environment in both builds, the text the Harbor form already ships as
+env/policy.md in every Task folder). Tasks recorded under different prompts get no file and the fetch names it.
+kullback/hub/publish.py `RUN_INPUTS` drops environment.json: run, verdict and report read it only where it exists,
+and a build need not write one.
+
+Why. .claude/herdr/publish-1017/package-r11.md: the docs Worker ran the card's own commands and the fetch said the
+package cannot run. A package that runs without its policy is a different Environment from the one that was built.
+
+Tests: tests/hub/test_publish.py (a packaged workdir passes the workdir check when the build wrote no policy file or
+environment.json; Tasks recorded under different prompts ship no policy and the fetch names it missing).
