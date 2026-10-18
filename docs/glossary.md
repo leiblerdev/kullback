@@ -8,8 +8,7 @@ The words Kullback uses, defined once. Other pages link here instead of redefini
 - Task: one goal the agent is asked to reach in an Environment.
 - Run: one attempt by an agent at a Task, recorded step by step.
 - Verifier: the check that decides from the end state whether a Run succeeded.
-- Release and preview: a release is a published Environment that replays at least 90 percent of its Tasks; a
-  preview is one we have not yet checked as thoroughly.
+- Release and preview: a release replays at least 90 percent of its Tasks as recorded; a preview is below that.
 
 ## Contributor words
 
@@ -18,7 +17,9 @@ The words Kullback uses, defined once. Other pages link here instead of redefini
 - Replay fidelity: the share of the recording the rebuilt world reproduces, over Tasks, Runs or calls.
 - Atom: one Verifier check: required, allowed, forbidden, question, communicate or hard.
 - Gate: an accept-or-reject check in code (`kullback/gates/`); inside a Verifier, an item that must hold.
-- Trusted: a Task whose Verifier fails the constructed Runs (doing nothing, one stray write) with no open ruling.
+- Trusted: a Task with an Intent and a Verifier, examined by an Examiner, with no ruling open, every ask of the
+  user checked, not refused or synthetic, and a Verifier that fails both constructed Runs (doing nothing, and one stray write
+  outside its declared rows, with every untouched mutant killed).
 - Open: a Task neither trusted nor refused.
 - Refused: a Task the harness showed nobody can finish.
 - Builder: the agent that turns Traces into an Environment; it never writes a Verifier.
