@@ -148,11 +148,25 @@ def test_feasible_yes_needs_checked_entries_code_finds_and_no_open_requires(tmp_
         _rule(root, record, checked=[])
     with pytest.raises(ValueError, match="tool:paint_widget"):
         _rule(root, record, checked=["tool:paint_widget"])
-    with pytest.raises(ValueError, match="row:widget_rows:W1002"):
-        _rule(root, record, checked=["tool:move_widget", "row:widget_rows:W1002"])
+    with pytest.raises(ValueError, match="row:widget_rows:W9999"):
+        _rule(root, record, checked=["tool:move_widget", "row:widget_rows:W9999"])
     with pytest.raises(ValueError, match="requires what the world lacks"):
         _rule(root, needing)
     assert _rule(root, record).rows[0]["checked"] == CHECKED
+
+
+def test_a_checked_row_outside_the_binding_that_the_world_holds_passes(tmp_path):
+    root, [record] = _root(tmp_path, "a holder wants a widget put in another slot")
+    _read(root)
+    checked = ["tool:move_widget", "row:widget_rows:W1001", "row:widget_rows:W1002"]
+    assert _rule(root, record, checked=checked).rows[0]["checked"] == checked
+
+
+def test_a_checked_row_the_world_lacks_is_refused_naming_it(tmp_path):
+    root, [record] = _root(tmp_path, "a holder wants a widget put in another slot")
+    _read(root)
+    with pytest.raises(ValueError, match="does not hold: row:holder_rows:holder_9;"):
+        _rule(root, record, checked=["tool:move_widget", "row:widget_rows:W1002", "row:holder_rows:holder_9"])
 
 
 def test_a_repeat_ruled_by_the_review_ends_struck_naming_the_scenario_it_repeats(tmp_path):

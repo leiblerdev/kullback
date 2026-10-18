@@ -4069,3 +4069,20 @@ counts matches and a miss shows the key shape and two samples; the rule asks for
 id rule spares a bound row's value and names the matched word; a stem twin kind is refused naming the plan's kind in
 both sessions; the hedge word, the nearest page line and the nearest policy line are quoted and a send back may quote
 requires; the plan_search choice rule asks for a tool or a policy refusal).
+
+### D401. The review accepts any checked row the world holds (2026-10-18)
+
+What. feasible yes on rule_scenario takes "row:<table>:<key>" for any row the world's Starting state holds, bound
+to the scenario or not; only a row the world lacks (or a tool it lacks) is refused, naming each such entry and
+pointing to lookup_rows and find_tools. The binding itself is unchanged: one key per table.
+
+Why. The volume run refused 42 rulings (76 row entries) whose checked rows were real but outside the scenario's
+one key binding: the other order, the second reservation, the target flight. The reviewer was right to check them;
+the rule refused them because the binding holds one key per table.
+
+What it does not do: the binding stays one key per table. A binding with several keys per table (complex) would
+bind a scenario naming two orders, or its target row, in full, so the Verifier and the fix session would know those
+rows too; the review's checked rows are not written into the binding.
+
+Tests: tests/synth/test_review.py (a checked row outside the binding that the world holds passes; a checked row the
+world lacks is refused naming it; feasible yes still needs checked entries code finds and no open requires).

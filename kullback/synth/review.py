@@ -15,7 +15,7 @@ naming the other's id; occurs no strikes it. The web tools are the shared ones (
 this session read with read_page and a span found in that page's cached text; a search result alone is
 no cite and a policy line is no cite, and code refuses anything else, so no trace id ever reaches a
 verdict (D382). The verdict writes the cite's evidence row on its scenario alone. feasible yes names
-the tools and the bound rows it checked, each found by code, and is refused while the scenario's
+the tools and the rows it checked, each found in the world by code (D401), and is refused while the scenario's
 requires is open. Then any unsure puts it on the human queue with the open question; feasible no files
 an Environment finding carrying the scenario's requires and binding, the order to build, and ends it
 infeasible, never a drop; occurs yes and feasible yes passes. `fix_scenario` sends a scenario back to
@@ -133,7 +133,7 @@ class RuleArgs(Strict):
     occurs_span: str = Field(default="", description="The words of that page that show it, word for word.")
     feasible: Answer = Field(description="Can this world serve it with its tools and rows?")
     checked: list[str] = Field(default_factory=list, description=(
-        'For feasible yes: "tool:<name>" for each tool it needs, "row:<table>:<key>" for each bound row you looked up.'))
+        'For feasible yes: "tool:<name>" for each tool it needs, "row:<table>:<key>" for each row you looked up.'))
     missing: str = Field(default="", description="When feasible is no: the tool or the kind of row that is missing.")
     repeat_of: str = Field(default="", description="The id of another scenario this one says again; it ends struck.")
     text: str = Field(description="Why, in one or two sentences.")
@@ -207,13 +207,14 @@ def cited(root: ReviewRoot, args: RuleArgs) -> Optional[dict]:
     return {"tool": "read_page", "url": url, "span": span, "start": where[0], "end": where[1]}
 
 
-def _checked(root: ReviewRoot, record: R.Scenario, item: str) -> bool:
-    """Whether one checked entry is a tool of this world, or a row the scenario is bound to."""
+def _checked(root: ReviewRoot, item: str) -> bool:
+    """Whether one checked entry is a tool of this world, or a row the world holds, bound or not (D401)."""
     kind, _, rest = str(item).partition(":")
     if kind == "tool":
         return rest in {str(tool.get("name")) for tool in root.world.tools}
     table, _, key = rest.partition(":")
-    return kind == "row" and bool(table) and record.binding.get(table) == key
+    rows = root.world.state.get(table)
+    return kind == "row" and bool(table) and isinstance(rows, dict) and key in rows
 
 
 def _feasible(root: ReviewRoot, record: R.Scenario, args: RuleArgs) -> None:
@@ -227,10 +228,11 @@ def _feasible(root: ReviewRoot, record: R.Scenario, args: RuleArgs) -> None:
                          "feasible no with missing, or send it back if the world holds what requires names")
     if not args.checked:
         raise ValueError('feasible yes needs checked: "tool:<name>" for each tool it needs and '
-                         '"row:<table>:<key>" for each bound row you looked up')
-    bad = [item for item in args.checked if not _checked(root, record, item)]
+                         '"row:<table>:<key>" for each row you looked up')
+    bad = [item for item in args.checked if not _checked(root, item)]
     if bad:
-        raise ValueError(f"checked names what this world or this scenario's binding does not hold: {', '.join(bad)}")
+        raise ValueError(f"checked names what this world does not hold: {', '.join(bad)}; look it up with "
+                         "lookup_rows or find_tools and check only what they return")
 
 
 def _filed(root: ReviewRoot, record: R.Scenario, row: dict) -> Rows:
