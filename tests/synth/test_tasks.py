@@ -230,15 +230,19 @@ def test_the_born_recordings_user_rules_carry_the_ask_as_goal_and_the_end_as_a_f
     assert facts[END_FIELD] == END and facts["goal"] == record.ask
 
 
-ROWS = {"holder_rows": {"holder_7": {"holder_id": "holder_7", "contact_mail": "ada@example.org", "post_code": "40213",
-                                     "tags": ["gold"], "home": {"post_code": "40213"}, "rank": 3}},
+ROWS = {"holder_rows": {"holder_7": {"holder_id": "holder_7", "contact_mail": "ada@example.org", "rank": 3,
+                                     "tags": [{"badge_code": "B1"}], "home": {"post_code": "40213",
+                                                                             "floor": {"door_code": "D9"}}}},
         "widget_rows": {"W1001": {"widget_id": "W1001", "holder_id": "holder_7", "slot_code": "two"}}}
 SCHEMA = {"columns": [{"table": "holder_rows", "name": name} for name in ("rank", "post_code", "holder_id", "home", "tags",
                                                                           "contact_mail")]}
 HELD = {"holder_rows": "holder_7", "widget_rows": "W1001"}
 
 
-def _records_workdir(root, given=("post_code", "contact_mail", "holder_id", "tags", "home")):
+GIVEN = ("post_code", "door_code", "badge_code", "contact_mail", "holder_id", "tags", "home")
+
+
+def _records_workdir(root, given=GIVEN):
     """A workdir whose world holds the bound rows and one recorded Run whose user gave the named fields, its rules
     named by its Run id as a recorded Run's are."""
     workdir = _workdir(root)
@@ -248,7 +252,7 @@ def _records_workdir(root, given=("post_code", "contact_mail", "holder_id", "tag
     return workdir
 
 
-def _born_rules(tmp_path, ask, given=("post_code", "contact_mail", "holder_id", "tags", "home")):
+def _born_rules(tmp_path, ask, given=GIVEN):
     record = _scenario("A holder wants a widget moved to slot seven.", binding=HELD, ask=ask)
     write_all(tmp_path / "store", [record])
     workdir = _records_workdir(tmp_path / "env", given)
@@ -259,7 +263,8 @@ def _born_rules(tmp_path, ask, given=("post_code", "contact_mail", "holder_id", 
 def test_a_born_recordings_user_rules_hold_every_bound_scalar_cell_on_request_in_schema_field_order(tmp_path):
     rules, _ = _born_rules(tmp_path, "Move my widget to slot seven please.")
     bound = [(fact["field"], fact["value"]) for fact in rules["facts"] if fact["field"] not in ("goal", END_FIELD)]
-    assert bound == [("post_code", "40213"), ("holder_id", "holder_7"), ("contact_mail", "ada@example.org")]
+    assert bound == [("holder_id", "holder_7"), ("door_code", "D9"), ("post_code", "40213"),
+                     ("contact_mail", "ada@example.org")], "columns in schema order, leaves in the stored key order"
     assert all(fact.get("span") is None and fact["context"] == END for fact in rules["facts"][1:])
     assert {(rule["field"], rule["on_request"]) for rule in rules["disclosure"]} >= {
         ("post_code", True), ("holder_id", True), ("contact_mail", True)}
@@ -272,10 +277,12 @@ def test_a_cell_the_ask_already_states_appears_once_with_the_asks_span_volunteer
     assert not any(rule["field"] == said[0]["field"] and rule["on_request"] for rule in rules["disclosure"])
 
 
-def test_a_nested_cell_a_list_or_an_object_is_not_a_fact(tmp_path):
+def test_a_leaf_of_a_nested_object_is_a_fact_named_by_its_leaf_key_and_a_list_element_is_not(tmp_path):
     rules, _ = _born_rules(tmp_path, "Move my widget to slot seven please.")
-    fields = [fact["field"] for fact in rules["facts"]]
-    assert "tags" not in fields and "home" not in fields
+    facts = {fact["field"]: fact["value"] for fact in rules["facts"]}
+    asked = {rule["field"] for rule in rules["disclosure"] if rule["on_request"]}
+    assert (facts["post_code"], facts["door_code"]) == ("40213", "D9") and {"post_code", "door_code"} <= asked
+    assert not {"tags", "home", "badge_code"} & set(facts)
 
 
 def test_the_end_fact_stays_last_and_keeps_its_field(tmp_path):

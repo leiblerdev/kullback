@@ -15,8 +15,9 @@ the policy off a Task's recording and a work copy ships no policy file. The scen
 (D414): born/<task>.json holds it for the Spec writer, which gates what the end says, and the recording's
 user rules (user_rules/<run id>.json) carry the ask as the goal and the end as a fact, so a user asked to
 confirm the end's change can answer. Both are written in the workdir, so a work copy carries them. The user
-rules also carry the scalar cells of the rows the scenario binds, on request (D416): the person's own records,
-kept where the column is a field the recorded users of the workdir give, else only the bound keys.
+rules also carry the scalar cells of the rows the scenario binds, nested leaves included, on request (D416):
+the person's own records, kept where the column is a field the recorded users of the workdir give, else only
+the bound keys.
 """
 
 from __future__ import annotations
@@ -164,11 +165,22 @@ def _schema_order(workdir: Path, table: str, row: dict) -> list[str]:
     return [name for name in named if name in row] + [name for name in row if name not in named]
 
 
+def _leaves(column: str, value: Any) -> list[tuple[str, Any]]:
+    """The column and its value, then, where the value is an object, every key and value under it at any depth;
+    a list is not walked."""
+    out = [(column, value)]
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            out += _leaves(str(key), inner)
+    return out
+
+
 def bound_cells(workdir: Any, binding: dict, fields: set[str]) -> list[tuple[str, Any]]:
     """The scalar cells of the rows a scenario binds, column and value, in schema order and once per column:
-    those whose column is one of `fields`, or with no fields the cells holding a bound key (D416). A column
-    the bound rows hold with two different values (one row's name, another row's nested name) names no one
-    value of the person and is left out."""
+    those whose column is one of `fields`, or with no fields the cells holding a bound key (D416). A nested
+    object is walked to its scalar leaves, each a cell named by its leaf key; a list is no cell. A column the
+    bound rows hold with two different values (one row's name, another row's nested name) names no one value
+    of the person and is left out."""
     root = Path(workdir)
     state = world_of(root).state
     cells: dict[str, Any] = {}
@@ -177,8 +189,7 @@ def bound_cells(workdir: Any, binding: dict, fields: set[str]) -> list[tuple[str
         row = (state.get(str(table)) or {}).get(str(key)) if isinstance(state.get(str(table)), dict) else None
         if not isinstance(row, dict):
             continue
-        for column in _schema_order(root, str(table), row):
-            value = row[column]
+        for column, value in (leaf for name in _schema_order(root, str(table), row) for leaf in _leaves(name, row[name])):
             seen.setdefault(column, set()).add(json.dumps(value, sort_keys=True))
             scalar = isinstance(value, (str, int, float, bool))
             kept = column in fields if fields else str(value) == str(key)

@@ -47,16 +47,22 @@ def _reference_id(workdir: Any, task_id: str, run_ids: Iterable[str], anchor: An
 
     The seed set is the Task's Runs minus the anchor's held-out Runs; among the confirmed rows
     the Reference is the first one whose rules file exists, the way the Builder's re-roll runner
-    picks the rules its Simulated user answers from.
+    picks the rules its Simulated user answers from. A Task with no replay row at all (a Task born of a
+    scenario has none) takes the first of its seed recordings with user rules on disk, the pick the
+    runner's own Reference choice makes there (D416); one with rows but none confirmed has none.
     """
-    seeds = set(_seed_ids(anchor, task_id, run_ids))
+    ordered = _seed_ids(anchor, task_id, run_ids)
+    seeds = set(ordered)
     rows = _replay_rows(workdir, task_id)
+    rules_dir = Path(workdir) / "user_rules"
+    if not rows:
+        return next((run_id for run_id in ordered
+                     if "/" not in str(run_id) and (rules_dir / f"{run_id}.json").is_file()), None)
     confirmed = [key for key, row in sorted(rows.items())
                  if key in seeds and isinstance(row, dict)
                  and row.get("confirmed") and row.get("path")]
     if not confirmed:
         return None
-    rules_dir = Path(workdir) / "user_rules"
     for key in confirmed:
         trace_id = str(rows[key].get("trace_id") or key)
         if (rules_dir / f"{trace_id}.json").is_file():

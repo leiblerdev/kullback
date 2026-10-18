@@ -4181,7 +4181,13 @@ person's nested name) names no one value of the person and is left out. The ask'
 the ask states is not added again, the end stays last. spec/writer.load_inputs gives a born Task's Intent those
 facts as facts the user says (stance volunteered, condition asked, kind detail, source items.RECORDS_SOURCE), so
 hub/package.asked_facts lays them in the Harbor instruction as it lays a recorded Task's later facts. Born rules
-already on disk are left as they are.
+already on disk are left as they are. Correction (r1): a nested object is walked to its scalar leaves at any depth,
+each leaf a cell named by its leaf key under the same filters (a recorded field, once per column, the two-values
+guard over every row and leaf), so the person's nested zip is carried; a list is still no cell, and the sentence
+below on nested cells now holds for lists only. builder/run_user._reference_id: a Task with no replay row at all
+takes the first of its seed recordings with user rules on disk, the runner's own pick there, so a build meets a
+born Task with the agent user; a Task with rows but none confirmed still has none, and one with a confirmed row is
+untouched.
 
 Why. The pass@1 benchmark on the born Tasks of one Environment failed on identification: nearly every ask names the
 person by name and place only, its user rules held no other identifying value, and the policy asks for more before
@@ -4195,4 +4201,8 @@ recorded Task is untouched.
 Tests: tests/synth/test_tasks.py (bound scalar cells on request in schema order; a cell the ask states appears once;
 a nested cell is no fact; the end stays last; a column no recorded user gave is no fact, a world without recorded
 facts keeps the keys; a column held with two values is no fact), tests/spec/test_spec_end.py (a born Task's Intent
-says the record facts, the end stays an end fact, asked_facts lays the records and never the end).
+says the record facts, the end stays an end fact, asked_facts lays the records and never the end). Correction (r1):
+tests/synth/test_tasks.py (a leaf of a nested object a recorded user gives is an on-request fact named by its leaf
+key, a list element is not), tests/builder/test_run_user.py (a Task without replay rows gets the agent user built
+from its recording's rules on disk; one with neither rows nor rules gets none; one whose rows are none confirmed
+gets none).
