@@ -337,24 +337,86 @@ def test_a_gated_judge_item_the_judge_rejects_scores_zero(tmp_path, monkeypatch)
     assert _oracle_score(out, tmp_path)["reward"] == 0.0
 
 
-def test_with_no_judge_named_a_gated_judge_item_fails_closed_and_judge_json_says_so(tmp_path, monkeypatch):
+JUDGE_WEIGHTED = [{"id": "a1", "kind": "required", "gate": True, "predicate_src": "wrote('rename_widget')",
+                   "target": {"kind": "write", "tool": "rename_widget"}},
+                  {**JUDGE_GATE[0], "gate": False}]
+
+
+def _judge_goes_quiet(monkeypatch) -> None:
+    """The judge model answers every call with nothing, which the judge's own retry ends as an outage (D400)."""
+    from kullback.ai.provider import TestModel
+
+    monkeypatch.setattr(harbor_world, "live_model", lambda model_id: TestModel([""], loop=True))
+    monkeypatch.setenv(harbor_world.JUDGE_VAR, "bedrock/anthropic.some-judge")
+
+
+def _assert_unscored(body: dict, logs: Path, status: str) -> None:
+    """No reward, no reward.txt, a reward.json Harbor refuses as a number, and the judge status in items.json."""
+    assert body["reward"] is None and body["judge_status"] == {"j1": status}
+    assert not (logs / "reward.txt").exists()
+    assert json.loads((logs / "reward.json").read_text()) == {"reward": f"unscored: judge j1 {status}"}
+    items = json.loads((logs / "items.json").read_text())
+    assert {row["id"]: row.get("status") for row in items["items"]}["j1"] == status
+
+
+def test_a_judge_outage_on_a_gated_item_leaves_the_trial_unscored_not_failed(tmp_path, monkeypatch):
+    out = _judged(tmp_path)
+    _judge_goes_quiet(monkeypatch)
+    _assert_unscored(_oracle_score(out, tmp_path), tmp_path / "logs", "outage")
+
+
+def test_a_judge_outage_on_a_weighted_item_leaves_the_trial_unscored_not_passed(tmp_path, monkeypatch):
+    workdir = _workdir(tmp_path / "work", atoms=JUDGE_WEIGHTED)
+    wheel = tmp_path / "k.whl"
+    wheel.write_bytes(b"")
+    harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
+    _judge_goes_quiet(monkeypatch)
+    body = _oracle_score(tmp_path / "out", tmp_path)
+    _assert_unscored(body, tmp_path / "logs", "outage")
+    assert body["reward_had_it_been_scored"] == 1.0, "the masked score that used to be reported"
+
+
+def test_a_weighted_judge_item_the_judge_answers_scores_as_before(tmp_path, monkeypatch):
+    workdir = _workdir(tmp_path / "work", atoms=JUDGE_WEIGHTED)
+    wheel = tmp_path / "k.whl"
+    wheel.write_bytes(b"")
+    harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
+    _judge_says(monkeypatch, 0)
+    body = _oracle_score(tmp_path / "out", tmp_path)
+    assert 0.0 < body["reward"] < 1.0 and "unscored_reason" not in body, "past the gate, the rejected item costs its weight"
+    assert (tmp_path / "logs" / "reward.txt").read_text() == f"{body['reward']}\n"
+    assert json.loads((tmp_path / "logs" / "reward.json").read_text()) == {"reward": body["reward"]}
+
+
+def test_with_no_judge_named_a_judge_item_leaves_the_trial_unscored_and_judge_json_says_so(tmp_path, monkeypatch):
     out = _judged(tmp_path)
     monkeypatch.delenv(harbor_world.JUDGE_VAR, raising=False)
-    body = _oracle_score(out, tmp_path)
-    assert body["reward"] == 0.0 and body["unscored_gates"] == ["j1"]
+    _assert_unscored(_oracle_score(out, tmp_path), tmp_path / "logs", harbor_world.NOT_CONFIGURED)
     assert harbor_world.JUDGE_VAR in json.loads((tmp_path / "logs" / "judge.json").read_text())["error"]
 
 
-def test_a_judge_that_cannot_start_fails_closed(tmp_path, monkeypatch):
+def test_a_judge_that_cannot_start_leaves_the_trial_unscored(tmp_path, monkeypatch):
     out = _judged(tmp_path)
 
     def refused(model_id):
         raise RuntimeError("live model requests are off")
     monkeypatch.setattr(harbor_world, "live_model", refused)
     monkeypatch.setenv(harbor_world.JUDGE_VAR, "bedrock/anthropic.some-judge")
-    body = _oracle_score(out, tmp_path)
-    assert body["reward"] == 0.0 and body["unscored_gates"] == ["j1"]
+    _assert_unscored(_oracle_score(out, tmp_path), tmp_path / "logs", harbor_world.NOT_STARTED)
     assert "live model requests are off" in json.loads((tmp_path / "logs" / "judge.json").read_text())["error"]
+
+
+def test_an_unscored_trial_exits_with_its_own_code_and_the_test_step_keeps_its_reward_json(tmp_path, monkeypatch):
+    out = _judged(tmp_path)
+    _judge_goes_quiet(monkeypatch)
+    app = _app(out, tmp_path)
+    for name, arguments in _solve(out):
+        harbor_world.call(app, name, arguments)
+    verifier = out / "widgets-widget_task" / "tests" / "verifier.json"
+    code = harbor_world.verify_main([str(verifier), "--logs", str(tmp_path / "logs")], app=app)
+    assert code == harbor_world.UNSCORED_EXIT != 0
+    test_sh = (out / "widgets-widget_task" / "tests" / "test.sh").read_text()
+    assert f'-ne {harbor_world.UNSCORED_EXIT} ]' in test_sh and test_sh.rstrip().endswith("exit $status")
 
 
 def test_only_a_task_with_judge_items_passes_the_judge_through_and_opens_the_verifier_network(tmp_path, dataset):
@@ -407,7 +469,7 @@ def test_a_dry_run_publish_lays_harbor_beside_the_package_and_the_package_still_
     landed = tmp_path / "local" / "someorg" / "widgets"
     assert (landed / HARBOR_DIR / "widgets-widget_task" / "task.toml").is_file()
     assert 'name = "someorg/widgets-widget_task"' in (landed / HARBOR_DIR / "widgets-widget_task" / "task.toml").read_text()
-    assert "## Run it with Harbor" in (landed / "README.md").read_text()
+    assert "`harbor/` holds 1 Tasks in the [Harbor]" in (landed / "README.md").read_text()
     assert manifest["harbor"]["counts"]["exported"] == 1
     assert read_json(landed / "manifest.json")["harbor"] == manifest["harbor"]
     readme = (landed / "README.md").read_text()
@@ -539,7 +601,7 @@ def test_a_rater_words_that_repeat_a_recorded_turn_refuse_the_export_as_a_label_
     assert f"Task {TASK[-4:]} label 1" in str(refused.value)
 
 
-def test_the_card_names_the_task_set_and_counts_tasks_by_tier_and_label_under_the_named_rubric(tmp_path, monkeypatch):
+def test_the_manifest_keeps_the_task_set_and_the_tier_and_label_counts_the_card_leaves_out(tmp_path, monkeypatch):
     from kullback.hub import publish
 
     workdir = _workdir(tmp_path / "work", trusted=False)
@@ -551,10 +613,9 @@ def test_the_card_names_the_task_set_and_counts_tasks_by_tier_and_label_under_th
                                   form="harbor", harbor_options={"tasks": "verified", "labels": [labels],
                                                                  "labels_rubric": "rubric r1"})
     readme = (tmp_path / "local" / "someorg" / "widgets" / "README.md").read_text()
-    assert "Task set: `verified`, every Task with a Verifier, trusted or not; 1 exported" in readme
-    assert "| Tier | partial | Tasks |" in readme and "| open_ruling | 1 | 1 |" in readme
-    assert "one blind model rater's judgement" in readme and "rubric r1" in readme
+    assert "| Tier |" not in readme and "rubric r1" not in readme and "Task set" not in readme
     assert manifest["harbor"]["tasks_chosen"] == "verified" and manifest["harbor"]["labels"]["rows"] == 1
+    assert manifest["harbor"]["counts"]["by_tier_and_label"] == {"open_ruling": {"partial": 1}}
 
 
 ANSWER = "the widget now carries the striped label and every other widget is exactly as it was before"
@@ -583,22 +644,23 @@ def test_a_task_whose_oracle_and_another_part_leak_still_refuses_the_export():
     assert [row["task"] for row in harbor.solution_only(scan, scanned)] == ["a0002"]
 
 
-def test_the_card_carries_the_publishers_announcement_and_names_tasks_left_out_for_a_leaking_oracle():
-    from kullback.hub.card import card_markdown, harbor_section
+def test_the_card_runs_harbor_under_use_it_without_the_tier_table_or_left_out_task_ids():
+    from kullback.hub.card import card_markdown
 
-    card = card_markdown({"name": "widgets"}, "someorg/widgets", announcement="Verifiers now come from the ask.\n")
-    assert "## News\n\nVerifiers now come from the ask.\n" in card
-    assert "## News" not in card_markdown({"name": "widgets"}, "someorg/widgets")
-    section = harbor_section({"counts": {"exported": 0, "skipped": {"solution leaks": 1}},
-                              "left_out": [{"task": "0001", "reason": "solution leaks"}]})
-    assert "Left out because their oracle would repeat a recorded string: 0001" in section
+    harbor_manifest = {"counts": {"exported": 2, "skipped": {"solution leaks": 1},
+                                  "by_tier_and_label": {"trusted": {"right": 2}}},
+                       "left_out": [{"task": "0001", "reason": "solution leaks"}],
+                       "tasks": [{"path": "widgets-one"}], "labels": {"rubric": "r"}}
+    card = card_markdown({"name": "widgets"}, "someorg/widgets", harbor=harbor_manifest)
+    usage, inside = card.index("## Use it"), card.index("## What is inside")
+    assert usage < card.index("`harbor/` holds 2 Tasks") < card.index("harbor run -p harbor/widgets-one -a oracle") < inside
+    assert "0001" not in card and "| Tier |" not in card and "rubric" not in card
+    assert "harbor/" not in card_markdown({"name": "widgets"}, "someorg/widgets")
 
 
-def test_the_organisation_card_carries_news_above_the_environments_only_when_given():
+def test_the_organisation_card_carries_no_news_section():
     from kullback.hub.card import organisation_card
 
-    card = organisation_card([], announcement="Verifiers now come from the ask.")
-    assert card.index("## News\n\nVerifiers now come from the ask.") < card.index("## Environments")
     assert "## News" not in organisation_card([])
 
 
@@ -656,11 +718,12 @@ def test_the_leak_scan_has_no_oracle_part_to_scan_for_a_task_without_one(tmp_pat
     assert manifest["leak_scan"]["files_scanned"] == 3
 
 
-def test_the_card_counts_tasks_without_a_solution_and_says_the_oracle_agent_cannot_run_on_them():
-    from kullback.hub.card import harbor_section
+def test_the_known_issues_count_tasks_without_a_solution_and_say_the_oracle_agent_has_nothing_to_run():
+    from kullback.hub.card import card_markdown
 
-    section = harbor_section({"counts": {"exported": 3, "no_oracle": 2}})
-    assert "2 Tasks ship without `solution/`" in section and "oracle agent cannot run on them" in section
+    card = card_markdown({"name": "widgets"}, "someorg/widgets", harbor={"counts": {"exported": 3, "no_oracle": 2}})
+    issues = card.split("## Known issues")[1].split("## How it was built")[0]
+    assert "2 Tasks have no `solution/`, so Harbor's oracle agent has nothing to run on them." in issues
 
 
 def _staged(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
@@ -798,3 +861,30 @@ def test_the_workers_flag_reaches_the_pool_on_export_and_publish(tmp_path, monke
                                           "--dry-run", str(tmp_path / "local")])
     assert result.exit_code == 0, result.output
     assert asked[1:] == [3]
+
+
+def test_the_package_ships_the_same_ask_as_the_harbor_instruction_for_a_task_with_a_spec_intent(tmp_path):
+    from kullback.hub import package
+
+    workdir = _workdir(tmp_path / "work")
+    harbor.export_harbor(workdir, tmp_path / "harbor", name="widgets", wheel=_wheel(tmp_path))
+    manifest = package.export(workdir, tmp_path / "package", name="widgets", preview=True)
+    instruction = (tmp_path / "harbor" / "widgets-widget_task" / "instruction.md").read_text(encoding="utf-8")
+    ask = read_json(tmp_path / "package" / "tasks" / f"{TASK}.json")["intent"]
+    assert ask == f"{package.FACTS_LEAD}\n- wants widget w1 to carry the label striped"
+    assert instruction.startswith(ask + "\n")
+    row = json.loads((tmp_path / "package" / package.TASKS_ROWS_NAME).read_text(encoding="utf-8").splitlines()[0])
+    assert row["instruction"] == ask and manifest["without_ask"] == 0
+
+
+def test_a_task_with_neither_a_spec_intent_nor_intent_text_ships_an_empty_ask_and_the_manifest_counts_it(tmp_path):
+    from kullback.hub import package
+
+    workdir = _workdir(tmp_path / "work")
+    (workdir / "spec" / f"{TASK}.json").unlink()
+    record = read_json(workdir / "tasks" / f"{TASK}.json")
+    write_json(workdir / "tasks" / f"{TASK}.json", dict(record, intent=None))
+    manifest = package.export(workdir, tmp_path / "package", name="widgets", preview=True)
+    assert read_json(tmp_path / "package" / "tasks" / f"{TASK}.json")["intent"] == ""
+    row = json.loads((tmp_path / "package" / package.TASKS_ROWS_NAME).read_text(encoding="utf-8").splitlines()[0])
+    assert row["instruction"] == "" and manifest["without_ask"] == 1

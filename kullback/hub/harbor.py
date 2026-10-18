@@ -42,9 +42,10 @@ from typing import Any, Iterable, Optional
 from kullback import processes
 from kullback.hub import harbor_world
 from kullback.hub.card import ORGANISATION, SOLUTION_LEAKS
-from kullback.hub.harbor_world import DB_NAME, JUDGE_ENV, REPLY_TOOL, TASK_NAME, WORLD_DIR, play
+from kullback.hub.harbor_world import DB_NAME, JUDGE_ENV, REPLY_TOOL, TASK_NAME, UNSCORED_EXIT, WORLD_DIR, play
 from kullback.hub.package import (
     CONTENT_MIN_LENGTH,
+    FACTS_LEAD,
     LEAK_MIN_LENGTH,
     MANIFEST_NAME,
     WORLD_FILES,
@@ -62,13 +63,15 @@ from kullback.hub.package import (
     git_sha,
     harness_text,
     kullback_version,
+    opening,
+    task_ask,
     task_index,
 )
 from kullback.runner.records import Run, Verifier, read_json, write_json
 from kullback.runner.verdict import REWARD_SHAPE
 from kullback.runner.world.environment import BuiltEnvironment
 from kullback.spec.report import REPORT_FILE as TIERS_FILE
-from kullback.spec.schema import Spec, spec_path, spec_verifier_path
+from kullback.spec.schema import spec_verifier_path
 from kullback.spec.split import reference_classes
 from kullback.spec.trust import NO_VERIFIER as NO_VERIFIER_REASON
 from kullback.spec.trust import SYNTHETIC as SYNTHETIC_TIER
@@ -104,36 +107,11 @@ TOOLS_LINE = ("The tools are served two ways from the same world: the MCP server
               "and the `tools` command (`tools list`, then `tools call <name> --json '{...}'`). Everything "
               f"you would say to the user goes through `{REPLY_TOOL}`; the user answers each message, and "
               "your last message is your final reply.")
-FACTS_LEAD = "A user writes in. What they tell you, one line each:"
 ASK_FIRST = "I am about to make the changes you asked for. Shall I go ahead?"
 DONE_LINE = "Done."
-# The stances an Intent fact may have and still be the user's own ask (spec/schema.py IntentFact).
-ASKED = "volunteered"
 
 
 # --- what one Task is made of -------------------------------------------------------
-
-
-def _spec(workdir: Path, task_id: str) -> Optional[Spec]:
-    try:
-        return Spec.model_validate_json(spec_path(workdir, task_id).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
-
-def asked_facts(spec: Optional[Spec]) -> list[str]:
-    """The Intent facts the user volunteered, as the user would say them: no echo of the agent, nothing ruled out."""
-    if spec is None:
-        return []
-    return [fact.text.strip() for fact in spec.intent.facts
-            if fact.stance == ASKED and not fact.echo and not fact.unfounded and fact.text.strip()]
-
-
-def opening(facts: list[str], intent: Optional[str]) -> Optional[str]:
-    """The user's one message: the volunteered facts, one line each, else the Task's Intent text."""
-    if facts:
-        return "\n".join([FACTS_LEAD, *[f"- {fact}" for fact in facts]])
-    return intent.strip() if intent and intent.strip() else None
 
 
 def verifier_of(workdir: Path, task_id: str, synthetic: bool = False) -> Optional[Path]:
@@ -289,7 +267,7 @@ def _toml(value: Any) -> str:
 
 def _verifier_lines(judged: bool) -> str:
     """A Task with judge items lets the test reach a judge: the model and keys come from the host at
-    test time (empty when unset, so an unset judge fails closed), and only the verifier phase has a
+    test time (empty when unset, so an unset judge leaves the trial unscored, D405), and only the verifier phase has a
     network; the agent's never does."""
     if not judged:
         return ""
@@ -346,10 +324,14 @@ TEST_SH = f"""#!/bin/bash
 # Plays the agent's call log from the Starting state and scores the Run by code (kullback D363).
 mkdir -p /logs/verifier
 cd /app
-if ! python -m kullback.hub.harbor_world verify /tests/{VERIFIER_NAME} --logs /logs/verifier; then
+python -m kullback.hub.harbor_world verify /tests/{VERIFIER_NAME} --logs /logs/verifier
+status=$?
+# {UNSCORED_EXIT}: a judge item went unanswered, so the trial is unscored and its reward.json says why (D405).
+if [ "$status" -ne 0 ] && [ "$status" -ne {UNSCORED_EXIT} ]; then
   echo 0 > /logs/verifier/reward.txt
   echo '{{"reward": 0}}' > /logs/verifier/reward.json
 fi
+exit $status
 """
 
 
@@ -571,9 +553,9 @@ def _inputs(build: _Build, task_id: str, body: Optional[dict]) -> dict:
         return {"record": record, "facts": [], "instruction": opening([], record.get("intent")),
                 "candidates": [walk], "policy": build.policy, "index": {"bucket": body.get("bucket")}}
     record = read_json(build.workdir / "tasks" / f"{task_id}.json", {}) or {}
-    facts = asked_facts(_spec(build.workdir, task_id))
+    facts, instruction = task_ask(build.workdir, task_id, record)
     known = task_id in build.env.tasks()
-    return {"record": record, "facts": facts, "instruction": opening(facts, record.get("intent")),
+    return {"record": record, "facts": facts, "instruction": instruction,
             "candidates": candidate_calls(build.workdir, task_id, build.tool_names, build.runs.get(task_id, ())),
             "policy": _policy(build.env, build.env.task(task_id), build.policy) if known else build.policy,
             "index": build.rows[task_id]}
@@ -754,8 +736,8 @@ def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_o
         "tag": build.tag,
         "kullback_version": kullback_version(),
         "git_sha": build.sha,
-        "reward": dict(REWARD_SHAPE, harbor="gated then weighted; an unscored gate gives 0 and is named "
-                                            "unscored_gate in items.json; reward.json carries the number alone"),
+        "reward": dict(REWARD_SHAPE, harbor="gated then weighted; an unanswered judge item leaves the trial unscored "
+                                            f"(reward.json says why, exit {UNSCORED_EXIT}); else reward.json carries the number alone"),
         "counts": _counts(listed, recorded, skipped),
         # Exported with no solution/: no Run passes on replay (D399). Masked, as left_out.
         "no_oracle": [{"task": row["kullback_task_id"][-MASK:], "reason": NO_ORACLE}

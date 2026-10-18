@@ -3831,3 +3831,86 @@ pool, --workers reaches the pool on export and on publish).
 Correction (founder, 2026-10-18): the default is the smaller of cores minus 2 and 4, not cores minus 2 (8 on a 10-core
 laptop), because a publish worker peaks above a gigabyte and the 16 GB laptop crashed twice above six to eight
 drivers; --workers still asks for more where memory allows (tests/test_processes.py, the default never exceeds 4).
+
+### D402. An Environment card is a short page, with no trust numbers on it (2026-10-18)
+
+What. kullback/hub/card.py renders an Environment card in six parts: a one-line summary with its status (release or
+preview and the fidelity over Tasks that decides it), Use it (fetch, run, verdict, report, then the Harbor commands),
+What is inside (how many Tasks and tools, and one Task's first ask quoted), Known issues (one dated list: some Tasks
+can be wrong, Tasks that did not pass every check are not graded, the Tasks with no `solution/`), How it was built
+(three sentences and the Built line: tag, git sha, time, content hash) and Licence. No trusted count, untrusted
+reasons, gate names, tier or label table, leak scan, call or Run fidelity appears on a card; they stay in
+manifest.json, tasks_index.json and harbor/manifest.json. `package.inside` reads the tool count and the example ask
+off the laid package, and `stage` records them as the manifest's `inside`. The organisation card is a mission
+sentence, the Environments table (Environment, Status, Tasks, Harbor Tasks, Tag), Use it, five Terms (Environment,
+Task, Run, Verifier, release and preview), Known issues and Links. `publish --announcement` is removed and neither
+card carries News.
+
+Why. Founder, 2026-10-18, on the retail card: the tier table, the reason strings and the audit details "are not
+needed"; "simple documentation like what is this about, what did we do, how do you use this and why should you care",
+and "a disclaimer should be added that some of the tasks can be wrong". Then: no trusted count on either card, and
+the Words section "simplify this as well, see how other RL environments are released". The release survey
+(.claude/herdr/publish-1017/release-survey-report.md) found that almost no release defines a vocabulary, none shows
+a trust statistic, and use comes first; the section order and the five Terms are taken from it.
+
+Tests: tests/hub/test_publish.py and tests/hub/test_harbor.py (section order on both cards, the disclaimer once,
+no gate or trust word and no audit number on a card, what is inside counts tools and quotes one ask, the Known
+issues lines, the organisation table and Terms, no News).
+
+### D403. The package ships the ask the Harbor form ships, from the Spec Intent (2026-10-18)
+
+What. The defect: every `tasks/<id>.json` in the published airline and retail packages carried `intent: null`, and
+every `instruction` in tasks.jsonl was empty (0 of 130, 0 of 223), because the package export copied the ask from
+`intents/<task>.json`, which Spec builds no longer write, while the Harbor form took it from the Spec Intent. A fetched
+package and the dataset viewer had no ask per Task; harbor/*/instruction.md had it. The fix: kullback/hub/package.py
+`task_ask(workdir, task_id, record)` is the one source of a Task's ask, used by both exports: the facts the user
+volunteered in the Spec Intent as one message (`FACTS_LEAD` and one line each), else the Task record's own Intent
+text, else an older build's mined Intent. `asked_facts`, `opening` and `FACTS_LEAD` moved from harbor.py to
+package.py so the two forms cannot disagree. A Task with no ask ships `intent: ""` and the manifest counts it as
+`without_ask`. The Harbor form gains the mined-Intent fallback, which no Spec build reaches.
+
+Why. Founder, 2026-10-18: "fix the defect". The ask is the one thing a candidate is given; a package without it
+cannot be run as published, and the two forms of one Task must say the same thing.
+
+Tests: tests/hub/test_harbor.py (the package ships the same ask as the Harbor instruction for a Task with a Spec
+Intent; a Task with neither a Spec Intent nor Intent text ships an empty ask and the manifest counts it).
+
+### D404. A fetched package runs as the card says: it ships the policy, and environment.json is optional (2026-10-18)
+
+What. The defect: `kullback fetch` of a published package printed "this package cannot be run as a workdir: it is
+missing environment.json, env/policy.md". Reproduced on a fetch-shaped copy of the staged airline package:
+`kullback run` did not refuse (it loads both files only where they exist), but the Candidate then ran with no policy,
+because a package carries no Traces and the build wrote no env/policy.md; the recorded agent's system prompt was the
+policy every build Run was given. Neither source workdir holds environment.json or env/policy.md. The fix:
+kullback/hub/package.py `environment_policy(workdir, task_ids)` writes `env/policy.md` into the package, the
+workdir's own file where there is one, else the recorded system prompt read the way a Run reads it, when every listed
+Task ran under the same one (one text per Environment in both builds, the text the Harbor form already ships as
+env/policy.md in every Task folder). Tasks recorded under different prompts get no file and the fetch names it.
+kullback/hub/publish.py `RUN_INPUTS` drops environment.json: run, verdict and report read it only where it exists,
+and a build need not write one.
+
+Why. .claude/herdr/publish-1017/package-r11.md: the docs Worker ran the card's own commands and the fetch said the
+package cannot run. A package that runs without its policy is a different Environment from the one that was built.
+
+Tests: tests/hub/test_publish.py (a packaged workdir passes the workdir check when the build wrote no policy file or
+environment.json; Tasks recorded under different prompts ship no policy and the fetch names it missing).
+
+### D405. A judge outage leaves a Harbor trial unscored, never a pass or a fail (2026-10-18)
+
+What. The defect: in the shipped Harbor test step a judge item with no answer was masked out of the weights when it
+was not gated (items.json noted judge_item:<id>:unjudged and score_masked), so a trial's reward rose from 0.857 to
+1.0 when the judge was unreachable, and failed closed to 0 when it was gated. The fix, kullback/hub/harbor_world.py:
+after the judge's own retry (D400), a judge item whose status is not answered (outage, unreadable, not_configured
+when KULLBACK_JUDGE_MODEL is unset, not_started when the judge cannot start) makes the trial unscored. No
+reward.txt, a reward.json of `{"reward": "unscored: judge <item> <status>"}`, items.json with each item and its
+judge status and the score it would have had, and `verify` exits UNSCORED_EXIT (3). The shipped test.sh keeps that
+exit and those files; any other failure still writes 0. Harbor ignores the test step's exit code and refuses a
+non-numeric reward with VerifierOutputParseError, whose message quotes the reason, so the trial lands with
+exception_info and no verifier_result. Items scored by code and answered judge items score as before.
+
+Why. .claude/herdr/publish-1017/package-r11.md: the bench Worker found the masked reward. For a benchmark an
+unjudged item says nothing about the agent: neither a pass nor a fail may be counted.
+
+Tests: tests/hub/test_harbor.py (an outage on a gated item and on a weighted item leaves the trial unscored; no judge
+named and a judge that cannot start do the same; an answered weighted item scores as before; an unscored trial exits
+with its own code and the test step keeps its reward.json).

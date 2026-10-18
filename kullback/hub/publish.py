@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from kullback.hub import package as package_mod
-from kullback.hub.card import FIDELITY_BAR, card_markdown, harbor_section
+from kullback.hub.card import FIDELITY_BAR, card_markdown
 from kullback.hub.client import HostedRepo, HubClient, hub_client, url_for
 from kullback.hub.package import CARD_NAME, HARBOR_DIR, MANIFEST_NAME
 from kullback.runner.records import read_json, write_json
@@ -34,9 +34,9 @@ RELEASE_FIDELITY = FIDELITY_BAR
 
 # What `kullback run` opens in a workdir before it can run a candidate. A fetch reports any of these
 # the package did not carry, so a directory that will not run says so on arrival rather than at the
-# first run.
-RUN_INPUTS: tuple[str, ...] = ("environment.json", "schema.json", "tool_sigs.json", "bodies.json",
-                               "env/db.json", "env/policy.md")
+# first run. environment.json is not among them: run, verdict and report read it where it exists and a
+# build need not write one (D404).
+RUN_INPUTS: tuple[str, ...] = ("schema.json", "tool_sigs.json", "bodies.json", "env/db.json", "env/policy.md")
 
 
 class PublishError(RuntimeError):
@@ -94,8 +94,7 @@ def from_staged(staged: Any, out: Any) -> dict:
 def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, preview: bool = False,
           corpus: Optional[str] = None, corpus_license: Optional[str] = None,
           corpus_url: Optional[str] = None, bar: float = RELEASE_FIDELITY, harbor: bool = False,
-          harbor_options: Optional[dict] = None, announcement: Optional[str] = None,
-          workers: Optional[int] = None, staged: Optional[Any] = None) -> dict:
+          harbor_options: Optional[dict] = None, workers: Optional[int] = None, staged: Optional[Any] = None) -> dict:
     """Export into `out`, decide release or preview, and write the card beside the package.
 
     Answers the manifest with the ruling on it. The card is written after the manifest and is not
@@ -114,6 +113,7 @@ def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, p
         manifest = package_mod.export(workdir, out, name=resolved, corpus=corpus, corpus_license=corpus_license,
                                       corpus_url=corpus_url, preview=preview, workers=workers, index=index)
     manifest["status"] = release_ruling(manifest, preview, bar)
+    laid: Optional[dict] = None
     if harbor:
         # The Harbor form of the same Tasks under harbor/, with its own manifest and leak scan (D363).
         from kullback.hub.harbor import export_harbor
@@ -125,13 +125,11 @@ def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, p
         manifest["harbor"] = {key: laid[key] for key in ("tasks_chosen", "counts", "content_hash", "leak_scan",
                                                          "tiers", "labels", "left_out", "no_oracle", "git_sha")
                               if key in laid}
-        write_json(Path(out) / package_mod.MANIFEST_NAME, manifest)
-    elif staged is not None:
-        write_json(Path(out) / package_mod.MANIFEST_NAME, manifest)
+    # Read off what was laid, so the card says how many tools there are and quotes one Task's ask.
+    manifest["inside"] = package_mod.inside(Path(out), laid)
+    write_json(Path(out) / package_mod.MANIFEST_NAME, manifest)
     # Written after the Harbor form, so the card can name the commit that laid its Tasks.
-    card = card_markdown(manifest, repo_id, announcement=announcement)
-    if harbor:
-        card += "\n" + harbor_section(laid)
+    card = card_markdown(manifest, repo_id, harbor=laid)
     Path(out, CARD_NAME).write_text(card, encoding="utf-8")
     return manifest
 
@@ -140,8 +138,7 @@ def publish(workdir: Any, repo_id: str, *, client: Optional[HubClient] = None, n
             preview: bool = False, corpus: Optional[str] = None, corpus_license: Optional[str] = None,
             corpus_url: Optional[str] = None, keep: Optional[Any] = None,
             bar: float = RELEASE_FIDELITY, form: str = "package",
-            harbor_options: Optional[dict] = None, announcement: Optional[str] = None,
-            workers: Optional[int] = None, staged: Optional[Any] = None) -> tuple[HostedRepo, dict]:
+            harbor_options: Optional[dict] = None, workers: Optional[int] = None, staged: Optional[Any] = None) -> tuple[HostedRepo, dict]:
     """Export, card, upload, tag. Answers where it landed and the manifest that landed there."""
     if form not in FORMATS:
         raise PublishError(f"--format takes {' or '.join(FORMATS)}, not {form}")
@@ -153,7 +150,7 @@ def publish(workdir: Any, repo_id: str, *, client: Optional[HubClient] = None, n
     try:
         manifest = stage(workdir, out, repo_id, name=name, preview=preview, corpus=corpus,
                          corpus_license=corpus_license, corpus_url=corpus_url, bar=bar,
-                         harbor=form == "harbor", harbor_options=harbor_options, announcement=announcement,
+                         harbor=form == "harbor", harbor_options=harbor_options,
                          workers=workers, staged=staged)
         url = host.create_repo(repo_id)
         tag = manifest["tag"]

@@ -39,6 +39,9 @@ from kullback import difficulty, domain, round_snapshot
 from kullback.gates.verifier_suite import PROSE_MIN_LENGTH, elide_verifier_prose
 from kullback.runner.records import VERDICT_VERSION, Verifier, as_dict, content_hash, read_json, write_json
 from kullback.runner.verdict import REWARD_SHAPE, item_counts
+from kullback.runner.world.environment import BuiltEnvironment
+from kullback.runner.world.loading import EnvironmentError as WorldError
+from kullback.spec.schema import Spec, spec_path
 
 # 2: the manifest carries what the domain reading attests and what this Environment cannot execute
 # of it, so a card's numbers say how much of the domain the package covers (D225).
@@ -66,6 +69,9 @@ WORLD_FILES: tuple[str, ...] = ("environment.json", "schema.json", "tool_sigs.js
                                 "canon-rules.json")
 # The graders and the Task list. Scanned against the baseline rather than trusted.
 GRADER_DIRS: tuple[str, ...] = ("tasks", "verifiers")
+
+# The policy a Run is given, under the world's env/ (D404): the recorded agent prompt where the build has no file.
+POLICY_FILE = "env/policy.md"
 
 EXPORTED_DIRS: tuple[str, ...] = WORLD_DIRS + GRADER_DIRS
 EXPORTED_FILES: tuple[str, ...] = WORLD_FILES
@@ -382,33 +388,118 @@ def untrusted_reasons(rows: Iterable[dict]) -> dict:
 # --- the package on disk ------------------------------------------------------------
 
 
+def inside(package: Path, harbor: Optional[dict] = None) -> dict:
+    """What a card says is inside a laid package: how many tools it serves and one Task's first ask.
+
+    The ask is the first listed line of the first Harbor Task's instruction, the Task the card's Harbor
+    commands name, else the first instruction in the viewer rows; both passed the package's leak scan.
+    """
+    tools = read_json(package / "tool_sigs.json", None)
+    rows = list((harbor or {}).get("tasks") or ()) + list((harbor or {}).get("synthetic") or ())
+    texts = []
+    if rows:
+        instruction = package / HARBOR_DIR / str(rows[0]["path"]) / "instruction.md"
+        texts.append(instruction.read_text(encoding="utf-8").split("\n## ", 1)[0] if instruction.is_file() else "")
+    viewer = package / TASKS_ROWS_NAME
+    if viewer.is_file():
+        texts += [json.loads(line).get("instruction") or "" for line in viewer.read_text(encoding="utf-8").splitlines()
+                  if line.strip()]
+    return {"tools": len(tools) if isinstance(tools, (list, dict)) else None,
+            "example_ask": next((ask for ask in map(_first_ask, texts) if ask), None)}
+
+
+def _first_ask(text: str) -> Optional[str]:
+    """The first listed line of an instruction, else its first line."""
+    lines = [line.strip() for line in str(text).splitlines() if line.strip()]
+    listed = [line[2:].strip() for line in lines if line.startswith("- ")]
+    return (listed or lines or [None])[0]
+
+
 def _copy(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(source.read_bytes())
 
 
-def _exported_task(body: Any, intent: Optional[str] = None) -> dict:
-    """One Task record as the package carries it: its instruction, and no id of a recording.
+def _exported_task(body: Any, intent: Optional[str]) -> dict:
+    """One Task record as the package carries it: its ask as `intent`, and no id of a recording.
 
-    The instruction is the one thing a candidate is given, and on a finished build it sits in
-    `intents/<task>.json` rather than on the Task record. That file also holds the spans the Intent
-    was grounded in, which are verbatim turns of the recording, so the file itself never ships and
-    only its text is copied onto the Task where `Task.intent` already belongs.
+    The ask is the one thing a candidate is given (task_ask). The Spec and the mined Intent it comes
+    from also hold spans of the recording, so neither ships; only the ask is put where `Task.intent`
+    already belongs, an empty string where the Task has none, so the manifest can count it (D403).
     """
     record = dict(body) if isinstance(body, dict) else {}
     for field in RECORDING_FIELDS:
         if field in record:
             record[field] = []
-    if intent and not record.get("intent"):
-        record["intent"] = intent
+    record["intent"] = intent or ""
     return record
 
 
 def _intent_text(workdir: Path, task_id: str) -> Optional[str]:
-    """The Intent the build mined for one Task, text only."""
+    """The Intent an older build mined for one Task, text only; a Spec build writes none."""
     body = read_json(workdir / "intents" / f"{task_id}.json", None)
     text = body.get("text") if isinstance(body, dict) else None
     return str(text) if text else None
+
+
+# How the user's one message opens when it lists what they volunteered.
+FACTS_LEAD = "A user writes in. What they tell you, one line each:"
+# The stance an Intent fact has when it is the user's own ask (spec/schema.py IntentFact).
+ASKED = "volunteered"
+
+
+def _spec(workdir: Path, task_id: str) -> Optional[Spec]:
+    try:
+        return Spec.model_validate_json(spec_path(workdir, task_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def asked_facts(spec: Optional[Spec]) -> list[str]:
+    """The Intent facts the user volunteered, as the user would say them: no echo of the agent, nothing ruled out."""
+    if spec is None:
+        return []
+    return [fact.text.strip() for fact in spec.intent.facts
+            if fact.stance == ASKED and not fact.echo and not fact.unfounded and fact.text.strip()]
+
+
+def opening(facts: list[str], intent: Optional[str]) -> Optional[str]:
+    """The user's one message: the volunteered facts, one line each, else the Task's Intent text."""
+    if facts:
+        return "\n".join([FACTS_LEAD, *[f"- {fact}" for fact in facts]])
+    return intent.strip() if intent and intent.strip() else None
+
+
+def task_ask(workdir: Path, task_id: str, record: Any) -> tuple[list[str], Optional[str]]:
+    """A Task's ask, the one both the package and its Harbor form ship (D403): the facts the user
+    volunteered in its Spec Intent and the message they make, else the Task's own or mined Intent text."""
+    body = record if isinstance(record, dict) else {}
+    facts = asked_facts(_spec(workdir, task_id))
+    return facts, opening(facts, body.get("intent") or _intent_text(workdir, task_id))
+
+
+def without_ask_count(package: Path, task_ids: Iterable[str]) -> int:
+    """How many of the Tasks a laid package carries no ask for."""
+    return sum(1 for task_id in task_ids if not (read_json(package / "tasks" / f"{task_id}.json", {}) or {}).get("intent"))
+
+
+def environment_policy(workdir: Path, task_ids: Iterable[str]) -> Optional[str]:
+    """The policy text a fetched package's Runs are given (D404), or None where there is no one text.
+
+    The workdir's env/policy.md where it has one, else the recorded agent's system prompt, read the way a
+    Run reads it and the Harbor form lays it per Task, when every listed Task runs under the same one. A
+    package carries no Traces, so Tasks that ran under different prompts cannot share one file: none is
+    written and the fetch names env/policy.md as missing.
+    """
+    shipped = workdir / POLICY_FILE
+    if shipped.is_file():
+        return shipped.read_text(encoding="utf-8")
+    try:
+        env = BuiltEnvironment(workdir)
+        prompts = {env.system_prompt(env.task(task_id)) for task_id in task_ids}
+    except (OSError, ValueError, WorldError):
+        return None
+    return next(iter(prompts)) if len(prompts) == 1 and None not in prompts else None
 
 
 def _lay_out(workdir: Path, out: Path, task_ids: list[str]) -> list[str]:
@@ -426,11 +517,16 @@ def _lay_out(workdir: Path, out: Path, task_ids: list[str]) -> list[str]:
         if path.is_file():
             _copy(path, out / name)
             written.append(name)
+    policy = environment_policy(workdir, task_ids)
+    if policy and not (out / POLICY_FILE).is_file():
+        (out / POLICY_FILE).parent.mkdir(parents=True, exist_ok=True)
+        (out / POLICY_FILE).write_text(policy, encoding="utf-8")
+        written.append(POLICY_FILE)
     for task_id in task_ids:
         source = workdir / "tasks" / f"{task_id}.json"
         if source.is_file():
-            write_json(out / "tasks" / f"{task_id}.json",
-                       _exported_task(read_json(source, {}), _intent_text(workdir, task_id)))
+            record = read_json(source, {})
+            write_json(out / "tasks" / f"{task_id}.json", _exported_task(record, task_ask(workdir, task_id, record)[1]))
             written.append(f"tasks/{task_id}.json")
         verifier = workdir / "verifiers" / f"{task_id}.json"
         if verifier.is_file():
@@ -771,6 +867,7 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
     out.mkdir(parents=True, exist_ok=True)
     task_ids = frozen_task_ids(workdir)
     _lay_out(workdir, out, task_ids)
+    without_ask = without_ask_count(out, task_ids)
     rows = task_index(workdir, task_ids, workers=workers) if index is None else index
     write_json(out / TASKS_INDEX_NAME, {"format": PACKAGE_FORMAT, "tasks": rows})
     write_task_rows(out, rows)
@@ -788,6 +885,8 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         "tag": build_tag(workdir, counts),
         "counts_source": "the last round record" if counts else NO_ROUND_SOURCE,
         "tasks_total": len(task_ids),
+        # D403: Tasks the package ships with an empty ask, because their Spec Intent volunteered nothing.
+        "without_ask": without_ask,
         # Tasks the build holds a ruling for that are not on the frozen list: they appeared after the
         # freeze, so D96 keeps them out of the denominator and the round line counts them in. Naming
         # the number is what stops the two readings from looking like a mistake.
