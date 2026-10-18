@@ -9,5 +9,7 @@ final cut). No login, no keys. Work data lives in .work-video/ at the worktree r
 
 record.py needs Playwright for Python and its cached Chromium. It starts with a magenta sync
 flash; cut.py finds it to put the script's marks on the video clock, trims each shot and joins
-the shots with 0.3 s fades. Captions are typed in record.py from the cards; check every number
+the shots with 0.3 s fades.
+Pages are zoomed with CSS (ZOOM in record.py, 1.65) and the Hub sidebar hidden, so body text
+reads at playback; device_scale_factor does not work, the recorder captures CSS pixels. Captions are typed in record.py from the cards; check every number
 against the frames after each recording, and add the retail captions to CARD from its card.

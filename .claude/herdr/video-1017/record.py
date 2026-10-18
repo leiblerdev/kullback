@@ -59,7 +59,13 @@ CAPTION_JS = """(text) => {
       font: '500 30px/1.3 "Helvetica Neue", Arial, sans-serif',
       textAlign: 'center', borderRadius: '14px', zIndex: 2147483647,
       transition: 'opacity 250ms ease', opacity: '0'});
-    document.body.appendChild(box);
+    document.documentElement.appendChild(box);  // outside the zoomed body
+    // A band in the page colour behind the caption, so no half-hidden line shows around the box.
+    const band = document.createElement('div');
+    Object.assign(band.style, {position: 'fixed', left: '0', right: '0', bottom: '0', height: '135px',
+      background: getComputedStyle(document.body).backgroundColor || '#ffffff', zIndex: 2147483646});
+    if (band.style.background.includes('rgba(0, 0, 0, 0)')) band.style.background = '#ffffff';
+    document.documentElement.appendChild(band);
   }
   box.textContent = text;
   requestAnimationFrame(() => { box.style.opacity = '1'; });
@@ -89,6 +95,34 @@ pre { font: 24px/1.6 Menlo, monospace; background: #111827; color: #f9fafb; padd
 <h2>Run a Task with Harbor</h2><pre>%CMDS%</pre></div></body></html>"""
 
 
+# Page zoom for legibility (correction r1): body text about 1.65x, the Hub sidebar hidden so the
+# card fills the width. The caption hangs off <html>, so it keeps its size.
+ZOOM = 1.65
+ZOOM_CSS = f"""body {{ zoom: {ZOOM}; }}
+section.md\\:w-64 {{ display: none !important; }}
+section.md\\:col-span-8 {{ grid-column: 1 / -1 !important; }}
+main .container {{ padding-left: 4% !important; padding-right: 4% !important; }}
+body {{ padding-bottom: 100vh; }}
+pre, pre *, code, td.blob-line, td.blob-line * {{ white-space: pre-wrap !important; overflow-wrap: anywhere; }}"""
+FREE = 945  # pixels above the caption box
+
+# Page-coordinate span [top, bottom] from a start element to an end element.
+SPAN_JS = """([a, b]) => {
+  const find = spec => {
+    if (spec.css) return document.querySelector(spec.css);
+    const hits = [...document.querySelectorAll('body *')].filter(e =>
+      e.textContent.trim().startsWith(spec.text));
+    // The deepest matches: no other match inside them.
+    const all = hits.filter(e => !hits.some(o => o !== e && e.contains(o)));
+    return spec.last ? all[all.length - 1] : all[0];
+  };
+  const ea = find(a), eb = b ? find(b) : ea;
+  if (!ea || !eb) return null;
+  const ra = ea.getBoundingClientRect(), rb = eb.getBoundingClientRect();
+  return [ra.top + scrollY, rb.bottom + scrollY];
+}"""
+
+
 def main(corpora):
     marks = []
     with sync_playwright() as p:
@@ -98,6 +132,7 @@ def main(corpora):
                                   record_video_size={"width": 1920, "height": 1080})
         page = ctx.new_page()
         t0 = time.monotonic()
+
         def now():
             return round(time.monotonic() - t0, 3)
 
@@ -109,17 +144,20 @@ def main(corpora):
         marks.append({"shot": "sync", "start": now(), "end": now()})
         page.wait_for_timeout(500)
 
-        def shot(name, caption, hold):
-            page.evaluate(CAPTION_JS, caption)
-            start = now()
-            page.wait_for_timeout(hold)
-            marks.append({"shot": name, "start": start, "end": now()})
-
         def scroll(to, ms=1200):
-            page.evaluate(SCROLL_JS, [to, ms])
+            page.evaluate(SCROLL_JS, [max(0, to), ms])
 
-        def top_of(selector_js):
-            return page.evaluate(f"() => Math.round(({selector_js}).getBoundingClientRect().top + scrollY)")
+        def span(a, b=None):
+            got = page.evaluate(SPAN_JS, [a, b])
+            assert got, f"not found on {page.url}: {a} {b}"
+            return got
+
+        def centre(a, b=None, ms=1400):
+            """Scroll so the span sits centred above the caption; a taller span starts at the top."""
+            top, bottom = span(a, b)
+            h = bottom - top
+            scroll(top - (FREE - h) / 2 if h <= FREE - 40 else top - 20, ms)
+            return top, bottom
 
         def goto(url):
             # A dataset viewer that is still converting polls forever, so networkidle never comes.
@@ -128,53 +166,72 @@ def main(corpora):
                 page.wait_for_load_state("networkidle", timeout=8000)
             except Exception:
                 pass
+            page.add_style_tag(content=ZOOM_CSS)
             page.wait_for_timeout(1500)
+
+        def begin(caption):
+            page.evaluate(CAPTION_JS, caption)
+            return now()
+
+        def end(name, start):
+            marks.append({"shot": name, "start": start, "end": now()})
 
         for corpus in corpora:
             c = CARD[corpus]
             goto(f"{HUB}/{corpus}")
-            page.evaluate(CAPTION_JS, c["top"])
-            start = now()
+            start = begin(c["top"])
             page.wait_for_timeout(3000)
-            card_h1 = top_of("[...document.querySelectorAll('h1')].find(h => h.innerText.trim() === '%s')" % corpus)
-            scroll(card_h1 - 90, 1400)
+            centre({"css": "section.md\\:col-span-8 .prose h1"}, {"text": "Release: replays"})
             page.wait_for_timeout(4000)
-            marks.append({"shot": f"1-{corpus}", "start": start, "end": now()})
-            fid = top_of("[...document.querySelectorAll('table')].find(t => t.innerText.includes('Fidelity over Tasks'))")
+            end(f"1-{corpus}", start)
             start = now()
-            scroll(fid - 40, 1400)
+            top, bottom = centre({"text": "Fidelity over Tasks"}, {"text": "Content hash"})
             page.evaluate(CAPTION_JS, c["fidelity"])
-            page.wait_for_timeout(4500)
-            marks.append({"shot": f"2a-{corpus}", "start": start, "end": now()})
-            harbor = top_of("[...document.querySelectorAll('h2')].find(h => h.innerText.includes('Run it with Harbor'))")
+            page.wait_for_timeout(3500)
+            if bottom - top > FREE - 40:  # too tall for one frame: glide on to its last row
+                scroll(bottom - FREE + 20, 2200)
+                page.wait_for_timeout(2000)
+            end(f"2a-{corpus}", start)
             start = now()
-            scroll(harbor - 50, 1400)
+            centre({"text": "Task set:"}, {"text": "unchecked_ask", "last": True})
             page.evaluate(CAPTION_JS, c["tiers"])
             page.wait_for_timeout(4500)
-            marks.append({"shot": f"2b-{corpus}", "start": start, "end": now()})
+            end(f"2b-{corpus}", start)
 
         corpus, task = TASK
         goto(f"{HUB}/{corpus}/tree/main/{task}")
-        shot("3-tree", FILES["tree"], 4000)
+        centre({"css": "a[href$='/tree/main/" + task + "/environment']"}, {"css": "a[href$='/task.toml']"}, 1)
+        start = begin(FILES["tree"])
+        page.wait_for_timeout(4000)
+        end("3-tree", start)
         page.click("a[href$='/instruction.md']")
         page.wait_for_load_state("load")
+        page.add_style_tag(content=ZOOM_CSS)
         page.wait_for_timeout(1500)
-        shot("3-instruction", FILES["instruction"], 4500)
-        goto(f"{HUB}/{corpus}/blob/main/{task}/task.toml")
-        page.evaluate(CAPTION_JS, FILES["toml"])
-        start = now()
-        page.wait_for_timeout(1200)
-        scroll(300, 1400)
+        centre({"text": "A user writes in"}, {"text": "wants at least", "last": True}, 1)
+        start = begin(FILES["instruction"])
         page.wait_for_timeout(4500)
-        marks.append({"shot": "4-toml", "start": start, "end": now()})
+        end("3-instruction", start)
+        goto(f"{HUB}/{corpus}/blob/main/{task}/task.toml")
+        centre({"text": "[metadata]"}, {"text": "has_oracle"}, 1)
+        start = begin(FILES["toml"])
+        page.wait_for_timeout(4000)
+        centre({"text": "[verifier]"}, {"text": "ANTHROPIC_API_KEY", "last": True})
+        page.wait_for_timeout(3000)
+        end("4-toml", start)
         goto(f"{HUB}/{corpus}/blob/main/{task}/tests/test.sh")
-        shot("5-test", FILES["test"], 4000)
+        centre({"text": "#!/bin/bash"}, {"text": "fi", "last": True}, 1)
+        start = begin(FILES["test"])
+        page.wait_for_timeout(4000)
+        end("5-test", start)
 
         urls = "".join(f'<p class="url">huggingface.co/datasets/leibler/{c}</p>' for c in corpora)
         cmds = "\n".join(c.replace("<", "&lt;").replace(">", "&gt;") for k in corpora for c in HARBOR[k])
         page.set_content(END_HTML.replace("%URLS%", urls).replace("%CMDS%", cmds))
         page.wait_for_timeout(300)
-        shot("6-end", FILES["end"], 6500)
+        start = begin(FILES["end"])
+        page.wait_for_timeout(6500)
+        end("6-end", start)
 
         video = page.video
         ctx.close()

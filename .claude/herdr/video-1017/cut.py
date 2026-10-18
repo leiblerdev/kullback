@@ -55,7 +55,7 @@ subprocess.run([FF, "-v", "error", "-y", "-i", str(HERE / "raw.webm"), "-filter_
                 "-pix_fmt", "yuv420p", "-r", "30", "-movflags", "+faststart", str(mp4)], check=True)
 gif = HERE / f"{stem}.gif"
 subprocess.run([FF, "-v", "error", "-y", "-i", str(mp4), "-filter_complex",
-                "fps=10,scale=960:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];"
+                "fps=8,scale=960:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=64:stats_mode=diff[p];"
                 "[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle", str(gif)], check=True)
 # Where each shot sits in the output, for frame checks.
 t = 0.0
