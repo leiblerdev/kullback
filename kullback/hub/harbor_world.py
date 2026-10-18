@@ -170,11 +170,37 @@ def tool_specs(app: Path) -> list[dict]:
     return HarborEnvironment(app / WORLD_DIR).tool_specs() + [REPLY_SPEC]
 
 
+def argument_error(spec: dict, arguments: dict) -> Optional[str]:
+    """Why a call's arguments do not fit its tool's spec, naming the parameters it takes, or None (D409).
+
+    A required parameter left out or a parameter the spec does not name is refused, for the Task's tools and
+    reply_to_user alike, with no alias for any name: a reply sent under another name would otherwise reach the
+    Run as an empty turn while the agent was answered as if it had been heard.
+    """
+    parameters = spec.get("parameters") or {}
+    expected = sorted(parameters.get("properties") or {})
+    required = [str(name) for name in parameters.get("required") or ()]
+    missing = [name for name in required if name not in arguments]
+    unknown = sorted(name for name in arguments if name not in expected)
+    if not missing and not unknown:
+        return None
+    wrong = ([f"missing {', '.join(missing)}"] if missing else []) + ([f"unknown {', '.join(unknown)}"] if unknown else [])
+    return (f"{spec['name']} takes {', '.join(expected) or 'no parameters'} (required: {', '.join(required) or 'none'}); "
+            + "; ".join(wrong))
+
+
 def call(app: Path, name: str, arguments: dict) -> dict:
-    """Make one call: play the log and the call, append it with its answer, write the world back."""
-    known = {spec["name"] for spec in tool_specs(app)}
-    if name not in known:
+    """Make one call: play the log and the call, append it with its answer, write the world back.
+
+    The shell `tools` command and the MCP server both enter here, so both refuse a call whose arguments do not
+    fit the spec; a refused call is not logged and nobody answers it (D409).
+    """
+    specs = {spec["name"]: spec for spec in tool_specs(app)}
+    if name not in specs:
         return {"result": None, "error": f"no tool named {name}"}
+    wrong = argument_error(specs[name], arguments)
+    if wrong:
+        return {"result": None, "error": wrong}
     entries = read_log(app)
     with tempfile.TemporaryDirectory() as scratch:
         played = play(app, [*entries, {"name": name, "arguments": arguments}], Path(scratch))

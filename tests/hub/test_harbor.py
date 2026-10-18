@@ -228,6 +228,37 @@ def test_an_unknown_tool_is_refused_and_not_logged(dataset, tmp_path):
     assert not (app / ".calls.jsonl").exists()
 
 
+def test_a_reply_under_an_unknown_parameter_name_is_refused_naming_the_expected_ones_and_leaves_no_turn(
+        dataset, tmp_path, capsys):
+    # D409: the shell path once logged {"message": ...} and the Run got an empty assistant turn
+    out, _ = dataset
+    app = _app(out, tmp_path)
+    assert harbor_world.tools_main(["call", "reply_to_user", "--json", '{"message": "Done."}'], app=app) == 1
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert "takes text" in error and "unknown message" in error
+    assert harbor_world.read_log(app) == []
+
+
+def test_a_task_tool_called_without_a_required_parameter_is_refused_the_same_way_over_mcp(dataset, tmp_path):
+    out, _ = dataset
+    app = _app(out, tmp_path)
+    sigs_path = app / harbor_world.WORLD_DIR / "tool_sigs.json"
+    sigs = json.loads(sigs_path.read_text())  # a mined signature lists what it requires
+    for sig in sigs:
+        sig["args_schema"]["required"] = sorted(sig["args_schema"]["properties"])
+    sigs_path.write_text(json.dumps(sigs))
+    request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+               "params": {"name": "rename_widget", "arguments": {"widget_id": "w1"}}}
+    written = io.StringIO()
+    harbor_world.mcp_main(app, io.StringIO(json.dumps(request) + "\n"), written)
+    result = json.loads(written.getvalue())["result"]
+    assert result["isError"] is True and "missing label" in result["content"][0]["text"]
+    assert "rename_widget takes label, widget_id" in result["content"][0]["text"]
+    assert harbor_world.read_log(app) == []
+    assert harbor_world.call(app, "rename_widget", {"widget_id": "w1", "label": "striped"})["error"] is None
+    assert [entry["name"] for entry in harbor_world.read_log(app)] == ["rename_widget"]
+
+
 def test_the_mcp_server_lists_and_calls_the_same_tools(dataset, tmp_path):
     out, _ = dataset
     app = _app(out, tmp_path)

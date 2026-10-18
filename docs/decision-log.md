@@ -3975,3 +3975,23 @@ still leaves the trial unscored.
 Why. .claude/herdr/publish-1017/fix-r14.md: a Run that says nothing gave the judge its answer, and an answer is a number.
 
 Tests: tests/hub/test_harbor.py (a judge item on a Run with no assistant turn is answered 0 and the trial gets a number).
+
+### D409. A Harbor tool call is checked against its tool's spec before it is made (2026-10-18)
+
+Number collision: the synth stream also claimed numbers from D406 at its rebase; the fold renumbers.
+
+What. kullback/hub/harbor_world.py `call` checked only a tool's name. An agent that called reply_to_user over the shell
+`tools` command with {"message": ...} instead of {"text": ...} was answered with the consent line, the call was logged,
+and `play` read the missing `text` as an empty assistant turn, so a reply the agent sent never reached the Run the
+Verifier reads. Found in the benchmark (fix-r14): 9 of 65 Claude Code trials, all through the shell path, every
+reply under `message`. Now `argument_error` checks each call against its tool's spec, the Task's tools and reply_to_user
+alike: a required parameter left out or a parameter the spec does not name is refused with an error that names the
+parameters the tool takes, the call is not logged and nobody answers it. The shell `tools` command and the MCP server
+both enter through `call`, so both see it. No alias for any name.
+
+Why. .claude/herdr/publish-1017/fix-r16.md: one general rule, so an agent learns the right name from the error instead
+of being graded on a turn it never knew was lost.
+
+Tests: tests/hub/test_harbor.py (a reply under an unknown parameter name is refused naming the expected ones and leaves
+no turn; a Task tool called without a required parameter is refused the same way over MCP, and the correct call then goes
+through and is logged).
