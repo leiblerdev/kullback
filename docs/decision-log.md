@@ -4176,10 +4176,12 @@ What. synth/tasks.user_rules_of: the user rules of a born recording also carry t
 bool; never a list or a nested object) of every row the scenario binds, each a UserFact with the column name as the
 schema names it and a DisclosureRule on_request. A column is kept where its name is a field the recorded users of
 the workdir give (the facts of user_rules/ of recordings not born of a scenario); a workdir with none keeps only the
-cells holding a bound key. The ask's facts stay first, a field or value the ask states is not added again, the end
-stays last. spec/writer.load_inputs gives a born Task's Intent those facts as facts the user says (stance
-volunteered, condition asked, kind detail, source items.RECORDS_SOURCE), so hub/package.asked_facts lays them in the
-Harbor instruction as it lays a recorded Task's later facts. Born rules already on disk are left as they are.
+cells holding a bound key. A column the bound rows hold with two different values (a product's name beside the
+person's nested name) names no one value of the person and is left out. The ask's facts stay first, a field or value
+the ask states is not added again, the end stays last. spec/writer.load_inputs gives a born Task's Intent those
+facts as facts the user says (stance volunteered, condition asked, kind detail, source items.RECORDS_SOURCE), so
+hub/package.asked_facts lays them in the Harbor instruction as it lays a recorded Task's later facts. Born rules
+already on disk are left as they are.
 
 Why. The pass@1 benchmark on the born Tasks of one Environment failed on identification: nearly every ask names the
 person by name and place only, its user rules held no other identifying value, and the policy asks for more before
@@ -4192,5 +4194,5 @@ recorded Task is untouched.
 
 Tests: tests/synth/test_tasks.py (bound scalar cells on request in schema order; a cell the ask states appears once;
 a nested cell is no fact; the end stays last; a column no recorded user gave is no fact, a world without recorded
-facts keeps the keys), tests/spec/test_spec_end.py (a born Task's Intent says the record facts, the end stays an end
-fact, asked_facts lays the records and never the end).
+facts keeps the keys; a column held with two values is no fact), tests/spec/test_spec_end.py (a born Task's Intent
+says the record facts, the end stays an end fact, asked_facts lays the records and never the end).

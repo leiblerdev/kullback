@@ -10,7 +10,17 @@ from kullback.runner.world.loading import load_overlay
 from kullback.spec.intent_tools import recordings_of, task_of, trace_index
 from kullback.spec.writer import scenario_end
 from kullback.synth.records import Source, born, write_all
-from kullback.synth.tasks import END_FIELD, bears_task, born_tasks, recording_of, scenario_of, task_id_of, trace_id_of
+from kullback.synth.tasks import (
+    END_FIELD,
+    bears_task,
+    born_tasks,
+    bound_cells,
+    recorded_fields,
+    recording_of,
+    scenario_of,
+    task_id_of,
+    trace_id_of,
+)
 
 RECORDINGS = Source(kind="recordings", task_ids=["task-a1"])
 BOUND = {"widget_rows": "W1001"}
@@ -279,3 +289,11 @@ def test_a_column_no_recorded_user_gave_is_not_a_fact_and_a_world_without_record
     keys, _ = _born_rules(tmp_path / "none", "Move my widget to slot seven please.", given=())
     assert [(fact["field"], fact["value"]) for fact in keys["facts"][1:-1]] == [("holder_id", "holder_7"),
                                                                                ("widget_id", "W1001")]
+
+
+def test_a_column_the_bound_rows_hold_with_two_values_is_not_a_fact(tmp_path):
+    rows = {"holder_rows": {"holder_7": {"holder_id": "holder_7", "label": {"first": "Ada"}}},
+            "widget_rows": {"W1001": {"widget_id": "W1001", "holder_id": "holder_7", "label": "Blue widget"}}}
+    workdir = _records_workdir(tmp_path, given=("label", "holder_id"))
+    write_json(workdir / "db.json", rows)
+    assert bound_cells(workdir, HELD, recorded_fields(workdir)) == [("holder_id", "holder_7")]

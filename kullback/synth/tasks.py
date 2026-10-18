@@ -22,6 +22,7 @@ kept where the column is a field the recorded users of the workdir give, else on
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import Counter
 from pathlib import Path
 from typing import Any, Optional
@@ -165,21 +166,25 @@ def _schema_order(workdir: Path, table: str, row: dict) -> list[str]:
 
 def bound_cells(workdir: Any, binding: dict, fields: set[str]) -> list[tuple[str, Any]]:
     """The scalar cells of the rows a scenario binds, column and value, in schema order and once per column:
-    those whose column is one of `fields`, or with no fields the cells holding a bound key (D416)."""
+    those whose column is one of `fields`, or with no fields the cells holding a bound key (D416). A column
+    the bound rows hold with two different values (one row's name, another row's nested name) names no one
+    value of the person and is left out."""
     root = Path(workdir)
     state = world_of(root).state
     cells: dict[str, Any] = {}
+    seen: dict[str, set[str]] = {}
     for table, key in (binding or {}).items():
         row = (state.get(str(table)) or {}).get(str(key)) if isinstance(state.get(str(table)), dict) else None
         if not isinstance(row, dict):
             continue
         for column in _schema_order(root, str(table), row):
             value = row[column]
+            seen.setdefault(column, set()).add(json.dumps(value, sort_keys=True))
             scalar = isinstance(value, (str, int, float, bool))
             kept = column in fields if fields else str(value) == str(key)
             if scalar and kept and column not in cells:
                 cells[column] = value
-    return list(cells.items())
+    return [(column, value) for column, value in cells.items() if len(seen[column]) == 1]
 
 
 def user_rules_of(trace: Trace, end: str, cells: list[tuple[str, Any]] = ()) -> dict:
