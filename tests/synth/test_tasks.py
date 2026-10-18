@@ -229,14 +229,12 @@ HELD = {"holder_rows": "holder_7", "widget_rows": "W1001"}
 
 
 def _records_workdir(root, given=("post_code", "contact_mail", "holder_id", "tags", "home")):
-    """A workdir whose world holds the bound rows and one recorded user who gave the named fields."""
+    """A workdir whose world holds the bound rows and one recorded Run whose user gave the named fields, its rules
+    named by its Run id as a recorded Run's are."""
     workdir = _workdir(root)
     write_json(workdir / "db.json", ROWS)
     write_json(workdir / "schema.json", SCHEMA)
-    ptr = RawPtr(file_hash="h", section="s")
-    write_json(workdir / "traces" / "rec-a.json", as_dict(Trace(trace_id="rec-a", raw_hash="h", ingest_version="1",
-                                                                source="fixture", turns=[], raw_ptr=ptr)))
-    write_json(workdir / "user_rules" / "rec-a.json", {"facts": [{"field": field, "value": "x"} for field in given]})
+    write_json(workdir / "user_rules" / "run-a.json", {"facts": [{"field": field, "value": "x"} for field in given]})
     return workdir
 
 

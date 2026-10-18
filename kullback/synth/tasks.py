@@ -142,14 +142,15 @@ def _write_end(workdir: Path, task_id: str, scenario: Scenario) -> bool:
 
 
 def recorded_fields(workdir: Any) -> set[str]:
-    """The fact fields the recorded users of the workdir give: over the user rules of every recording that is
-    not born of a scenario."""
+    """The fact fields the recorded users of the workdir give: over the user rules of every Run whose recording is
+    not born of a scenario (a recorded Run's rules are named by its Run id, a born one's by its recording)."""
     root = Path(workdir)
     fields: set[str] = set()
     for path in sorted((root / RULES_DIR).glob("*.json")):
         trace = read_json(root / "traces" / path.name, None)
         rules = read_json(path, None)
-        if isinstance(trace, dict) and trace.get("source") != SOURCE and isinstance(rules, dict):
+        born = isinstance(trace, dict) and trace.get("source") == SOURCE
+        if not born and isinstance(rules, dict):
             fields.update(str(fact.get("field")) for fact in rules.get("facts") or () if isinstance(fact, dict))
     return fields
 
