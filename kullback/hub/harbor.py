@@ -45,6 +45,7 @@ from kullback.hub.card import ORGANISATION, SOLUTION_LEAKS
 from kullback.hub.harbor_world import DB_NAME, JUDGE_ENV, REPLY_TOOL, TASK_NAME, WORLD_DIR, play
 from kullback.hub.package import (
     CONTENT_MIN_LENGTH,
+    FACTS_LEAD,
     LEAK_MIN_LENGTH,
     MANIFEST_NAME,
     WORLD_FILES,
@@ -62,13 +63,15 @@ from kullback.hub.package import (
     git_sha,
     harness_text,
     kullback_version,
+    opening,
+    task_ask,
     task_index,
 )
 from kullback.runner.records import Run, Verifier, read_json, write_json
 from kullback.runner.verdict import REWARD_SHAPE
 from kullback.runner.world.environment import BuiltEnvironment
 from kullback.spec.report import REPORT_FILE as TIERS_FILE
-from kullback.spec.schema import Spec, spec_path, spec_verifier_path
+from kullback.spec.schema import spec_verifier_path
 from kullback.spec.split import reference_classes
 from kullback.spec.trust import NO_VERIFIER as NO_VERIFIER_REASON
 from kullback.spec.trust import SYNTHETIC as SYNTHETIC_TIER
@@ -104,36 +107,11 @@ TOOLS_LINE = ("The tools are served two ways from the same world: the MCP server
               "and the `tools` command (`tools list`, then `tools call <name> --json '{...}'`). Everything "
               f"you would say to the user goes through `{REPLY_TOOL}`; the user answers each message, and "
               "your last message is your final reply.")
-FACTS_LEAD = "A user writes in. What they tell you, one line each:"
 ASK_FIRST = "I am about to make the changes you asked for. Shall I go ahead?"
 DONE_LINE = "Done."
-# The stances an Intent fact may have and still be the user's own ask (spec/schema.py IntentFact).
-ASKED = "volunteered"
 
 
 # --- what one Task is made of -------------------------------------------------------
-
-
-def _spec(workdir: Path, task_id: str) -> Optional[Spec]:
-    try:
-        return Spec.model_validate_json(spec_path(workdir, task_id).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
-
-def asked_facts(spec: Optional[Spec]) -> list[str]:
-    """The Intent facts the user volunteered, as the user would say them: no echo of the agent, nothing ruled out."""
-    if spec is None:
-        return []
-    return [fact.text.strip() for fact in spec.intent.facts
-            if fact.stance == ASKED and not fact.echo and not fact.unfounded and fact.text.strip()]
-
-
-def opening(facts: list[str], intent: Optional[str]) -> Optional[str]:
-    """The user's one message: the volunteered facts, one line each, else the Task's Intent text."""
-    if facts:
-        return "\n".join([FACTS_LEAD, *[f"- {fact}" for fact in facts]])
-    return intent.strip() if intent and intent.strip() else None
 
 
 def verifier_of(workdir: Path, task_id: str, synthetic: bool = False) -> Optional[Path]:
@@ -571,9 +549,9 @@ def _inputs(build: _Build, task_id: str, body: Optional[dict]) -> dict:
         return {"record": record, "facts": [], "instruction": opening([], record.get("intent")),
                 "candidates": [walk], "policy": build.policy, "index": {"bucket": body.get("bucket")}}
     record = read_json(build.workdir / "tasks" / f"{task_id}.json", {}) or {}
-    facts = asked_facts(_spec(build.workdir, task_id))
+    facts, instruction = task_ask(build.workdir, task_id, record)
     known = task_id in build.env.tasks()
-    return {"record": record, "facts": facts, "instruction": opening(facts, record.get("intent")),
+    return {"record": record, "facts": facts, "instruction": instruction,
             "candidates": candidate_calls(build.workdir, task_id, build.tool_names, build.runs.get(task_id, ())),
             "policy": _policy(build.env, build.env.task(task_id), build.policy) if known else build.policy,
             "index": build.rows[task_id]}

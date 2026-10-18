@@ -799,3 +799,30 @@ def test_the_workers_flag_reaches_the_pool_on_export_and_publish(tmp_path, monke
                                           "--dry-run", str(tmp_path / "local")])
     assert result.exit_code == 0, result.output
     assert asked[1:] == [3]
+
+
+def test_the_package_ships_the_same_ask_as_the_harbor_instruction_for_a_task_with_a_spec_intent(tmp_path):
+    from kullback.hub import package
+
+    workdir = _workdir(tmp_path / "work")
+    harbor.export_harbor(workdir, tmp_path / "harbor", name="widgets", wheel=_wheel(tmp_path))
+    manifest = package.export(workdir, tmp_path / "package", name="widgets", preview=True)
+    instruction = (tmp_path / "harbor" / "widgets-widget_task" / "instruction.md").read_text(encoding="utf-8")
+    ask = read_json(tmp_path / "package" / "tasks" / f"{TASK}.json")["intent"]
+    assert ask == f"{package.FACTS_LEAD}\n- wants widget w1 to carry the label striped"
+    assert instruction.startswith(ask + "\n")
+    row = json.loads((tmp_path / "package" / package.TASKS_ROWS_NAME).read_text(encoding="utf-8").splitlines()[0])
+    assert row["instruction"] == ask and manifest["without_ask"] == 0
+
+
+def test_a_task_with_neither_a_spec_intent_nor_intent_text_ships_an_empty_ask_and_the_manifest_counts_it(tmp_path):
+    from kullback.hub import package
+
+    workdir = _workdir(tmp_path / "work")
+    (workdir / "spec" / f"{TASK}.json").unlink()
+    record = read_json(workdir / "tasks" / f"{TASK}.json")
+    write_json(workdir / "tasks" / f"{TASK}.json", dict(record, intent=None))
+    manifest = package.export(workdir, tmp_path / "package", name="widgets", preview=True)
+    assert read_json(tmp_path / "package" / "tasks" / f"{TASK}.json")["intent"] == ""
+    row = json.loads((tmp_path / "package" / package.TASKS_ROWS_NAME).read_text(encoding="utf-8").splitlines()[0])
+    assert row["instruction"] == "" and manifest["without_ask"] == 1

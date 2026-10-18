@@ -39,6 +39,7 @@ from kullback import difficulty, domain, round_snapshot
 from kullback.gates.verifier_suite import PROSE_MIN_LENGTH, elide_verifier_prose
 from kullback.runner.records import VERDICT_VERSION, Verifier, as_dict, content_hash, read_json, write_json
 from kullback.runner.verdict import REWARD_SHAPE, item_counts
+from kullback.spec.schema import Spec, spec_path
 
 # 2: the manifest carries what the domain reading attests and what this Environment cannot execute
 # of it, so a card's numbers say how much of the domain the package covers (D225).
@@ -414,28 +415,67 @@ def _copy(source: Path, target: Path) -> None:
     target.write_bytes(source.read_bytes())
 
 
-def _exported_task(body: Any, intent: Optional[str] = None) -> dict:
-    """One Task record as the package carries it: its instruction, and no id of a recording.
+def _exported_task(body: Any, intent: Optional[str]) -> dict:
+    """One Task record as the package carries it: its ask as `intent`, and no id of a recording.
 
-    The instruction is the one thing a candidate is given, and on a finished build it sits in
-    `intents/<task>.json` rather than on the Task record. That file also holds the spans the Intent
-    was grounded in, which are verbatim turns of the recording, so the file itself never ships and
-    only its text is copied onto the Task where `Task.intent` already belongs.
+    The ask is the one thing a candidate is given (task_ask). The Spec and the mined Intent it comes
+    from also hold spans of the recording, so neither ships; only the ask is put where `Task.intent`
+    already belongs, an empty string where the Task has none, so the manifest can count it (D403).
     """
     record = dict(body) if isinstance(body, dict) else {}
     for field in RECORDING_FIELDS:
         if field in record:
             record[field] = []
-    if intent and not record.get("intent"):
-        record["intent"] = intent
+    record["intent"] = intent or ""
     return record
 
 
 def _intent_text(workdir: Path, task_id: str) -> Optional[str]:
-    """The Intent the build mined for one Task, text only."""
+    """The Intent an older build mined for one Task, text only; a Spec build writes none."""
     body = read_json(workdir / "intents" / f"{task_id}.json", None)
     text = body.get("text") if isinstance(body, dict) else None
     return str(text) if text else None
+
+
+# How the user's one message opens when it lists what they volunteered.
+FACTS_LEAD = "A user writes in. What they tell you, one line each:"
+# The stance an Intent fact has when it is the user's own ask (spec/schema.py IntentFact).
+ASKED = "volunteered"
+
+
+def _spec(workdir: Path, task_id: str) -> Optional[Spec]:
+    try:
+        return Spec.model_validate_json(spec_path(workdir, task_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def asked_facts(spec: Optional[Spec]) -> list[str]:
+    """The Intent facts the user volunteered, as the user would say them: no echo of the agent, nothing ruled out."""
+    if spec is None:
+        return []
+    return [fact.text.strip() for fact in spec.intent.facts
+            if fact.stance == ASKED and not fact.echo and not fact.unfounded and fact.text.strip()]
+
+
+def opening(facts: list[str], intent: Optional[str]) -> Optional[str]:
+    """The user's one message: the volunteered facts, one line each, else the Task's Intent text."""
+    if facts:
+        return "\n".join([FACTS_LEAD, *[f"- {fact}" for fact in facts]])
+    return intent.strip() if intent and intent.strip() else None
+
+
+def task_ask(workdir: Path, task_id: str, record: Any) -> tuple[list[str], Optional[str]]:
+    """A Task's ask, the one both the package and its Harbor form ship (D403): the facts the user
+    volunteered in its Spec Intent and the message they make, else the Task's own or mined Intent text."""
+    body = record if isinstance(record, dict) else {}
+    facts = asked_facts(_spec(workdir, task_id))
+    return facts, opening(facts, body.get("intent") or _intent_text(workdir, task_id))
+
+
+def without_ask_count(package: Path, task_ids: Iterable[str]) -> int:
+    """How many of the Tasks a laid package carries no ask for."""
+    return sum(1 for task_id in task_ids if not (read_json(package / "tasks" / f"{task_id}.json", {}) or {}).get("intent"))
 
 
 def _lay_out(workdir: Path, out: Path, task_ids: list[str]) -> list[str]:
@@ -456,8 +496,8 @@ def _lay_out(workdir: Path, out: Path, task_ids: list[str]) -> list[str]:
     for task_id in task_ids:
         source = workdir / "tasks" / f"{task_id}.json"
         if source.is_file():
-            write_json(out / "tasks" / f"{task_id}.json",
-                       _exported_task(read_json(source, {}), _intent_text(workdir, task_id)))
+            record = read_json(source, {})
+            write_json(out / "tasks" / f"{task_id}.json", _exported_task(record, task_ask(workdir, task_id, record)[1]))
             written.append(f"tasks/{task_id}.json")
         verifier = workdir / "verifiers" / f"{task_id}.json"
         if verifier.is_file():
@@ -798,6 +838,7 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
     out.mkdir(parents=True, exist_ok=True)
     task_ids = frozen_task_ids(workdir)
     _lay_out(workdir, out, task_ids)
+    without_ask = without_ask_count(out, task_ids)
     rows = task_index(workdir, task_ids, workers=workers) if index is None else index
     write_json(out / TASKS_INDEX_NAME, {"format": PACKAGE_FORMAT, "tasks": rows})
     write_task_rows(out, rows)
@@ -815,6 +856,8 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         "tag": build_tag(workdir, counts),
         "counts_source": "the last round record" if counts else NO_ROUND_SOURCE,
         "tasks_total": len(task_ids),
+        # D403: Tasks the package ships with an empty ask, because their Spec Intent volunteered nothing.
+        "without_ask": without_ask,
         # Tasks the build holds a ruling for that are not on the frozen list: they appeared after the
         # freeze, so D96 keeps them out of the denominator and the round line counts them in. Naming
         # the number is what stops the two readings from looking like a mistake.

@@ -3856,3 +3856,21 @@ a trust statistic, and use comes first; the section order and the five Terms are
 Tests: tests/hub/test_publish.py and tests/hub/test_harbor.py (section order on both cards, the disclaimer once,
 no gate or trust word and no audit number on a card, what is inside counts tools and quotes one ask, the Known
 issues lines, the organisation table and Terms, no News).
+
+### D403. The package ships the ask the Harbor form ships, from the Spec Intent (2026-10-18)
+
+What. The defect: every `tasks/<id>.json` in the published airline and retail packages carried `intent: null`, and
+every `instruction` in tasks.jsonl was empty (0 of 130, 0 of 223), because the package export copied the ask from
+`intents/<task>.json`, which Spec builds no longer write, while the Harbor form took it from the Spec Intent. A fetched
+package and the dataset viewer had no ask per Task; harbor/*/instruction.md had it. The fix: kullback/hub/package.py
+`task_ask(workdir, task_id, record)` is the one source of a Task's ask, used by both exports: the facts the user
+volunteered in the Spec Intent as one message (`FACTS_LEAD` and one line each), else the Task record's own Intent
+text, else an older build's mined Intent. `asked_facts`, `opening` and `FACTS_LEAD` moved from harbor.py to
+package.py so the two forms cannot disagree. A Task with no ask ships `intent: ""` and the manifest counts it as
+`without_ask`. The Harbor form gains the mined-Intent fallback, which no Spec build reaches.
+
+Why. Founder, 2026-10-18: "fix the defect". The ask is the one thing a candidate is given; a package without it
+cannot be run as published, and the two forms of one Task must say the same thing.
+
+Tests: tests/hub/test_harbor.py (the package ships the same ask as the Harbor instruction for a Task with a Spec
+Intent; a Task with neither a Spec Intent nor Intent text ships an empty ask and the manifest counts it).
