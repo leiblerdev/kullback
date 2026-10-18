@@ -4195,6 +4195,11 @@ With no single owner, or an owner holding two values of the column, the column i
 field, once per column, the two-values guard over the owner's own leaves), its own key kept; the other bound rows
 (the order or item the Task is about) give no fact, so neither the Harbor instruction nor the simulated user hands
 the agent the Task's targets. No owner, no record facts; a world without recorded facts keeps the owner's key only.
+Correction (r5): where no bound row is referred to, the owner is the one bound row holding a scalar column or leaf
+among the fields recorded users give (a lone account row, or one beside a shared row); no such row or several give
+no owner, and a world without recorded fields keeps only the referred-to rule. The owner's own key, an internal id
+the policy has the agent look up, is no record fact where recorded fields exist (the ask may still state it, and
+then it is the ask's fact); a world without recorded fields keeps it, having nothing else.
 
 Why. The pass@1 benchmark on the born Tasks of one Environment failed on identification: nearly every ask names the
 person by name and place only, its user rules held no other identifying value, and the policy asks for more before
@@ -4216,3 +4221,6 @@ gets none). Correction (r2): tests/synth/test_tasks.py (a column two bound rows 
 the value of the row the other refers to; with no such row it is no fact). Correction (r4): tests/synth/test_tasks.py
 (the other bound rows give no fact even where recorded users gave their columns; with no bound row referred to
 there are no record facts, with or without recorded fields; a world without recorded facts keeps the owner's key).
+Correction (r5): tests/synth/test_tasks.py (a lone bound row holding a recorded field is the owner, also beside a
+shared row; two such rows with nothing referred to give no owner; the owner's key is no record fact with recorded
+fields and the only one without).

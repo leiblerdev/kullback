@@ -263,11 +263,11 @@ def _born_rules(tmp_path, ask, given=GIVEN):
 def test_a_born_recordings_user_rules_hold_every_bound_scalar_cell_on_request_in_schema_field_order(tmp_path):
     rules, _ = _born_rules(tmp_path, "Move my widget to slot seven please.")
     bound = [(fact["field"], fact["value"]) for fact in rules["facts"] if fact["field"] not in ("goal", END_FIELD)]
-    assert bound == [("holder_id", "holder_7"), ("door_code", "D9"), ("post_code", "40213"),
-                     ("contact_mail", "ada@example.org")], "columns in schema order, leaves in the stored key order"
+    assert bound == [("door_code", "D9"), ("post_code", "40213"), ("contact_mail", "ada@example.org")], \
+        "columns in schema order, leaves in the stored key order"
     assert all(fact.get("span") is None and fact["context"] == END for fact in rules["facts"][1:])
     assert {(rule["field"], rule["on_request"]) for rule in rules["disclosure"]} >= {
-        ("post_code", True), ("holder_id", True), ("contact_mail", True)}
+        ("post_code", True), ("contact_mail", True)}
 
 
 def test_a_cell_the_ask_already_states_appears_once_with_the_asks_span_volunteered(tmp_path):
@@ -300,15 +300,15 @@ def test_a_column_no_recorded_user_gave_is_not_a_fact_and_a_world_without_record
 def test_the_other_bound_rows_the_task_is_about_give_no_fact_even_where_a_recorded_user_gave_their_columns(tmp_path):
     rules, _ = _born_rules(tmp_path, "Move my widget to slot seven please.", given=(*GIVEN, "widget_id", "slot_code"))
     fields = {fact["field"] for fact in rules["facts"]}
-    assert not {"widget_id", "slot_code"} & fields and {"holder_id", "post_code", "contact_mail"} <= fields
+    assert not {"widget_id", "slot_code"} & fields and {"post_code", "contact_mail"} <= fields
 
 
-def test_a_column_the_bound_rows_hold_with_two_values_is_not_a_fact(tmp_path):
+def test_a_column_the_owner_holds_only_as_an_object_is_not_a_fact(tmp_path):
     rows = {"holder_rows": {"holder_7": {"holder_id": "holder_7", "label": {"first": "Ada"}}},
             "widget_rows": {"W1001": {"widget_id": "W1001", "holder_id": "holder_7", "label": "Blue widget"}}}
     workdir = _records_workdir(tmp_path, given=("label", "holder_id"))
     write_json(workdir / "db.json", rows)
-    assert bound_cells(workdir, HELD, recorded_fields(workdir)) == [("holder_id", "holder_7")]
+    assert bound_cells(workdir, HELD, recorded_fields(workdir)) == []
 
 
 def test_a_column_two_bound_rows_hold_with_different_values_keeps_the_value_of_the_row_the_other_refers_to(tmp_path):
@@ -316,7 +316,7 @@ def test_a_column_two_bound_rows_hold_with_different_values_keeps_the_value_of_t
             "widget_rows": {"W1001": {"widget_id": "W1001", "holder_id": "holder_7", "sent_to": {"post_code": "99001"}}}}
     workdir = _records_workdir(tmp_path, given=("post_code", "holder_id"))
     write_json(workdir / "db.json", rows)
-    assert bound_cells(workdir, HELD, recorded_fields(workdir)) == [("holder_id", "holder_7"), ("post_code", "40213")]
+    assert bound_cells(workdir, HELD, recorded_fields(workdir)) == [("post_code", "40213")]
 
 
 def test_with_no_bound_row_referred_to_there_are_no_record_facts_with_or_without_recorded_fields(tmp_path):
@@ -326,3 +326,21 @@ def test_with_no_bound_row_referred_to_there_are_no_record_facts_with_or_without
     write_json(workdir / "db.json", rows)
     assert bound_cells(workdir, HELD, recorded_fields(workdir)) == []
     assert bound_cells(workdir, HELD, set()) == []
+
+
+def test_a_lone_bound_row_holding_a_recorded_field_is_the_owner_and_two_such_rows_referring_to_none_give_none(tmp_path):
+    rows = {"holder_rows": {"holder_7": {"holder_id": "holder_7", "home": {"post_code": "40213"}}},
+            "shared_rows": {"all": {"labels": {"blue": "B"}}},
+            "widget_rows": {"W1001": {"widget_id": "W1001", "sent_to": {"post_code": "99001"}}}}
+    workdir = _records_workdir(tmp_path, given=("post_code", "holder_id"))
+    write_json(workdir / "db.json", rows)
+    fields = recorded_fields(workdir)
+    assert bound_cells(workdir, {"holder_rows": "holder_7"}, fields) == [("post_code", "40213")]
+    assert bound_cells(workdir, {"shared_rows": "all", "holder_rows": "holder_7"}, fields) == [("post_code", "40213")]
+    assert bound_cells(workdir, {"holder_rows": "holder_7", "widget_rows": "W1001"}, fields) == []
+
+
+def test_the_owners_key_is_no_record_fact_with_recorded_fields_and_is_the_only_one_without(tmp_path):
+    workdir = _records_workdir(tmp_path, given=("holder_id", "post_code"))
+    assert bound_cells(workdir, HELD, recorded_fields(workdir)) == [("post_code", "40213")]
+    assert bound_cells(workdir, HELD, set()) == [("holder_id", "holder_7")]

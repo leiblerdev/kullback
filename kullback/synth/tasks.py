@@ -15,9 +15,10 @@ the policy off a Task's recording and a work copy ships no policy file. The scen
 (D414): born/<task>.json holds it for the Spec writer, which gates what the end says, and the recording's
 user rules (user_rules/<run id>.json) carry the ask as the goal and the end as a fact, so a user asked to
 confirm the end's change can answer. Both are written in the workdir, so a work copy carries them. The user
-rules also carry, on request, the scalar cells of the owner among the bound rows, the row the others refer to,
-nested leaves included (D416): the person's own record, kept where the column is a field the recorded users of
-the workdir give, else only its key. The other bound rows, what the Task is about, give no fact.
+rules also carry, on request, the scalar cells of the owner among the bound rows (the row the others refer to,
+else the one row holding a field recorded users give), nested leaves included (D416): the person's own record,
+kept where the column is a field the recorded users of the workdir give, never its internal key, else only that
+key. The other bound rows, what the Task is about, give no fact.
 """
 
 from __future__ import annotations
@@ -187,12 +188,20 @@ def _bound_leaves(root: Path, binding: dict) -> list[tuple[str, list[tuple[str, 
     return out
 
 
-def _owner(rows: list[tuple[str, list[tuple[str, Any]]]]) -> Optional[int]:
-    """The one bound row the others refer to: its key is a scalar cell or leaf of another bound row. None where no
-    row or more than one is referred to."""
+def _scalar(value: Any) -> bool:
+    return isinstance(value, (str, int, float, bool))
+
+
+def _owner(rows: list[tuple[str, list[tuple[str, Any]]]], fields: set[str]) -> Optional[int]:
+    """The one bound row the others refer to: its key is a scalar cell or leaf of another bound row. Where no row
+    is referred to, the one bound row holding a scalar column or leaf among `fields` (a world without recorded
+    fields has no such fallback). None where either names no row or more than one."""
     referred = [at for at, (key, _) in enumerate(rows)
                 if any(str(value) == key for other, (_, leaves) in enumerate(rows) if other != at
-                       for _, value in leaves if isinstance(value, (str, int, float, bool)))]
+                       for _, value in leaves if _scalar(value))]
+    if not referred and fields:
+        referred = [at for at, (_, leaves) in enumerate(rows)
+                    if any(column in fields and _scalar(value) for column, value in leaves)]
     return referred[0] if len(referred) == 1 else None
 
 
@@ -204,23 +213,23 @@ def _values(leaves: list[tuple[str, Any]]) -> dict[str, set[str]]:
 
 
 def bound_cells(workdir: Any, binding: dict, fields: set[str]) -> list[tuple[str, Any]]:
-    """The person's own record among the rows a scenario binds: the scalar cells of the owner, the one bound row
-    the others refer to by its key, column and value, in schema order and once per column (D416). Those whose
-    column is one of `fields` are kept, or with no fields the cells holding the owner's key. A nested object is
-    walked to its scalar leaves, each a cell named by its leaf key; a list is no cell. A column the owner holds
-    with two different values names no one value of the person and is left out. The other bound rows give
-    nothing: what the Task is about is for the agent to find from the ask. No owner, no cells."""
+    """The person's own record among the rows a scenario binds: the scalar cells of the owner (`_owner`), column
+    and value, in schema order and once per column (D416). Those whose column is one of `fields` are kept, never
+    the owner's own key, an internal id the agent is to look up; with no fields only the cell holding the owner's
+    key, having nothing else. A nested object is walked to its scalar leaves, each a cell named by its leaf key; a
+    list is no cell. A column the owner holds with two different values names no one value of the person and is
+    left out. The other bound rows give nothing: what the Task is about is for the agent to find from the ask.
+    No owner, no cells."""
     rows = _bound_leaves(Path(workdir), binding)
-    owner = _owner(rows)
+    owner = _owner(rows, fields)
     if owner is None:
         return []
     key, leaves = rows[owner]
     seen = _values(leaves)
     cells: dict[str, Any] = {}
     for column, value in leaves:
-        scalar = isinstance(value, (str, int, float, bool))
-        kept = column in fields if fields else str(value) == key
-        if scalar and kept and len(seen[column]) == 1 and column not in cells:
+        kept = column in fields and str(value) != key if fields else str(value) == key
+        if _scalar(value) and kept and len(seen[column]) == 1 and column not in cells:
             cells[column] = value
     return list(cells.items())
 
