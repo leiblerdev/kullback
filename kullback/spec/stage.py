@@ -20,10 +20,10 @@ from typing import Any, Iterable, Optional
 from kullback.agent.bus import Bus
 from kullback.runner.budget import BudgetedModel
 from kullback.spec import events
+from kullback.spec.events import UNCHECKED_END
 from kullback.spec.intent import STAGE, mine_intent
 from kullback.spec.schema import SpecIntent, is_empty, load_spec, save_spec, spec_path
 from kullback.spec.writer import (
-    UNCHECKED_END,
     is_item_check,
     load_inputs,
     spec_verifier_path,

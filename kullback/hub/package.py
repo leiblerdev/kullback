@@ -460,11 +460,15 @@ def _spec(workdir: Path, task_id: str) -> Optional[Spec]:
 
 
 def asked_facts(spec: Optional[Spec]) -> list[str]:
-    """The Intent facts the user volunteered, as the user would say them: no echo of the agent, nothing ruled out."""
+    """The Intent facts the user volunteered, as the user would say them: no echo of the agent, nothing ruled out,
+    and no fact of a scenario's end, which no user said (D410)."""
+    from kullback.spec.items import is_end_fact
+
     if spec is None:
         return []
     return [fact.text.strip() for fact in spec.intent.facts
-            if fact.stance == ASKED and not fact.echo and not fact.unfounded and fact.text.strip()]
+            if fact.stance == ASKED and not fact.echo and not fact.unfounded and not is_end_fact(fact)
+            and fact.text.strip()]
 
 
 def opening(facts: list[str], intent: Optional[str]) -> Optional[str]:

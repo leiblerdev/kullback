@@ -43,8 +43,8 @@ from pydantic import Field
 
 from kullback.runner.records import Record, Verifier, read_json
 from kullback.spec import effects as tool_effects
+from kullback.spec import events, writer_tools
 from kullback.spec import items as I
-from kullback.spec import writer_tools
 from kullback.spec.actions import action_tables_of, action_tools_of
 from kullback.spec.compile import Compiled, compile_spec
 from kullback.spec.ground import coverage
@@ -357,8 +357,8 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
 
 # Where a born Task's scenario end lies in the workdir, one file per Task (synth/tasks.py writes it, D410).
 BORN_DIR = "born"
-# Why the Spec stage sets a Spec aside: an end fact no gated item cites and no rebuttal excuses.
-UNCHECKED_END = "unchecked_end"
+# Why the Spec stage sets a Spec aside: an end fact no gated item cites and no rebuttal excuses (events.py).
+UNCHECKED_END = events.UNCHECKED_END
 
 
 def born_path(workdir: Any, task_id: str) -> Path:
@@ -887,7 +887,6 @@ def repair_for_ruling(workdir: Path, task_id: str, ruling: dict, model: Any,
     else spec.defended.
     """
     from kullback.agent.bus import Bus
-    from kullback.spec import events
 
     spec = load_spec(workdir, task_id)
     if spec is None:

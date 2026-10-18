@@ -11,8 +11,10 @@ import json
 from kullback.agent.bus import Bus
 from kullback.ai.provider import TestModel
 from kullback.runner.records import write_json
+from kullback.spec import events
 from kullback.spec import items as I
 from kullback.spec import writer as W
+from kullback.spec.router import no_verifier_why
 from kullback.spec.schema import load_spec, spec_verifier_path
 from kullback.spec.stage import write_from_intent
 from tests.spec.test_writer import DONE, ROW, STATE, TOOLS, _workdir, add, inputs
@@ -65,6 +67,16 @@ def test_the_spec_stage_sets_a_spec_leaving_an_end_fact_unchecked_aside_with_no_
     write_from_intent(tmp_path, "t1", inputs().intent, TestModel([add(ROW), DONE, DONE]), 1.0, bus)
     spec = load_spec(tmp_path, "t1")
     assert spec.set_aside == W.UNCHECKED_END and not spec_verifier_path(tmp_path, "t1").exists()
+
+
+def test_the_unchecked_end_reason_keeps_its_code_on_the_bus_and_is_the_tasks_no_verifier_why(tmp_path):
+    assert events.code_of(W.UNCHECKED_END) == "unchecked_end" == events.UNCHECKED_END
+    _born(tmp_path)
+    write_from_intent(tmp_path, "t1", inputs().intent, TestModel([add(ROW), DONE, DONE]), 1.0,
+                      Bus(tmp_path / "bus.jsonl", agent="spec"))
+    assert no_verifier_why(load_spec(tmp_path, "t1")) == "unchecked_end"
+    published = [json.loads(line) for line in (tmp_path / "bus.jsonl").read_text().splitlines()]
+    assert any("unchecked_end" in json.dumps(row) for row in published)
 
 
 def test_a_told_item_citing_an_end_fact_stays_a_gate_and_a_later_yes_gates_the_change():

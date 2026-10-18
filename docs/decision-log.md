@@ -4132,6 +4132,9 @@ match finds most widely: no currency sign, no unit, no trailing zeros, and with 
 thousands group, so "$3,648.02", "3648.02" and "3,648.02" all hold "648.02". The comparison itself lives in the frozen
 Runner (verdict.py, atom_context.t), so it is not changed. The born recording's user rules (user_rules/<run>.json,
 D210) carry the ask as the goal and the end as a fact of field end, so a user asked to confirm can answer.
+End facts never render as the user's words: the package ask and the Harbor instruction (hub/package.asked_facts)
+and the coherence opening asks leave them out, the Examiner's fact view marks them end, and events.UNCHECKED_END is
+a reason code the bus keeps and router.no_verifier_why returns.
 
 Why. S/audit (.claude/herdr/synth-1016/audit): 34 of 69 airline and 45 of 78 retail Verifiers of born Tasks were
 right. The writer saw the ask and the world, never the end the scenario was written with, so the end's changes sat
@@ -4141,8 +4144,7 @@ exclusive writes were both gated, and "3648.02" failed "$3,648.02".
 What it does not do: code does not parse the end into rows; it asks that each end clause be gated or rebutted, and
 the rebuttal must quote the clause or a policy line (D376). The schema has no one-of atom for two writes; alt end
 states are the existing shape. An integer of four digits or more is left whole, so "3648" still misses "3,648".
-No current Run path reads a born Task's user rules (it has no Reference and no replay row); they wait for one. The
-bus payload of the set aside reads other, since events.REASON_CODES is not this change's file.
+No current Run path reads a born Task's user rules (it has no Reference and no replay row); they wait for one.
 
 Tests: tests/spec/test_spec_end.py (the end reaches the writer as end facts, never a user turn; a recorded Task has
 none; a writer leaving an end change ungated is refused and one gating it passes; the stage sets such a Spec aside

@@ -71,6 +71,14 @@ def test_only_volunteered_do_or_told_facts_the_user_raised_unprompted_are_openin
     assert [fact.id for fact in C.opening_asks(intent)] == ["f1", "f2"]
 
 
+def test_opening_asks_leave_out_the_facts_of_a_scenarios_end_which_no_user_said():
+    from kullback.spec.writer import with_end
+
+    intent = with_end(_intent(OPENING), "Item A1 sits in slot seven; the user is told slot seven.")
+    assert [fact.id for fact in intent.facts] == ["f1", "end1", "end2"]
+    assert [fact.id for fact in C.opening_asks(intent)] == ["f1"]
+
+
 def test_a_recording_shows_each_call_with_its_arguments_and_result_and_never_the_tool_turn_twice(tmp_path):
     root = _workdir(tmp_path)
     _trace_with_call(root)

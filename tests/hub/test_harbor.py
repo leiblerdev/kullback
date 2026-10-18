@@ -927,6 +927,23 @@ def test_the_package_ships_the_same_ask_as_the_harbor_instruction_for_a_task_wit
     assert row["instruction"] == ask and manifest["without_ask"] == 0
 
 
+def test_end_facts_of_a_born_task_never_reach_the_package_ask_or_the_harbor_instruction(tmp_path):
+    from kullback.hub import package
+    from kullback.spec.schema import load_spec, save_spec
+    from kullback.spec.writer import with_end
+
+    workdir = _workdir(tmp_path / "work")
+    spec = load_spec(workdir, TASK)
+    end = "Widget w1 carries the label striped; the user is told it is striped."
+    save_spec(workdir, spec.model_copy(update={"intent": with_end(spec.intent, end)}))
+    harbor.export_harbor(workdir, tmp_path / "harbor", name="widgets", wheel=_wheel(tmp_path))
+    package.export(workdir, tmp_path / "package", name="widgets", preview=True)
+    ask = read_json(tmp_path / "package" / "tasks" / f"{TASK}.json")["intent"]
+    assert ask == f"{package.FACTS_LEAD}\n- wants widget w1 to carry the label striped"
+    instruction = (tmp_path / "harbor" / "widgets-widget_task" / "instruction.md").read_text(encoding="utf-8")
+    assert "carries the label striped;" not in instruction and "is told it is striped" not in instruction
+
+
 def test_a_task_with_neither_a_spec_intent_nor_intent_text_ships_an_empty_ask_and_the_manifest_counts_it(tmp_path):
     from kullback.hub import package
 

@@ -192,6 +192,18 @@ def test_the_view_shows_a_side_fact_so_a_ruling_never_asks_to_gate_it(tmp_path):
     assert "never gated, so a ruling never asks to gate it" in P.receives_section()
 
 
+def test_the_view_marks_a_fact_of_the_scenarios_end_so_the_examiner_sees_no_user_said_it(tmp_path):
+    from kullback.spec.writer import with_end
+
+    root = _root(tmp_path)
+    _recordings(tmp_path)
+    held = load_spec(tmp_path, "t1")
+    save_spec(tmp_path, held.model_copy(update={"intent": with_end(held.intent, "Item A1 sits in slot seven.")}))
+    shown = R.spec_view(root, "t1")["facts"]
+    assert shown[-1]["id"] == "end1" and shown[-1]["end"] is True
+    assert all("end" not in fact for fact in shown[:-1])
+
+
 def test_the_view_shows_a_rebuttal_beside_its_fact_so_the_examiner_may_rule_it_wrong(tmp_path):
     root = _root(tmp_path)
     _recordings(tmp_path)

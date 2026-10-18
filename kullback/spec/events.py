@@ -35,7 +35,10 @@ EMPTY_SPEC = "empty_spec"
 UNSATISFIABLE_SPEC = "unsatisfiable_spec"
 # The recorded user strayed from an opening ask (spec/coherence.py): no Verifier for the Task.
 INTENT_STRAYED = "intent_strayed"
-REASON_CODES = (QUOTE_MISSING, *RULING_CODES, NO_AGREEMENT, EMPTY_SPEC, UNSATISFIABLE_SPEC, INTENT_STRAYED)
+# A born Task's Spec left an end fact of its scenario uncited and unrebutted (spec/writer.py unchecked_end, D410).
+UNCHECKED_END = "unchecked_end"
+REASON_CODES = (QUOTE_MISSING, *RULING_CODES, NO_AGREEMENT, EMPTY_SPEC, UNSATISFIABLE_SPEC, INTENT_STRAYED,
+                UNCHECKED_END)
 
 
 def code_of(value: Any) -> str:
@@ -103,6 +106,6 @@ def task_set_aside(bus: Any, task_id: str, reason: str, rounds: int):
 
 __all__ = ["EMPTY_SPEC", "EVENT_NAMES", "INTENT_STRAYED", "NO_AGREEMENT", "QUOTE_MISSING", "REASON_CODES", "REVIEW_ROUND",
            "RULING_ANSWERED", "RULING_CLOSED", "RULING_CODES", "RULING_FILED", "SPEC_DEFENDED", "SPEC_REPAIRED",
-           "SPEC_REPAIR_DEFERRED", "SPEC_WRITTEN", "TASK_SET_ASIDE", "UNSATISFIABLE_SPEC", "code_of", "excerpt_ref",
+           "SPEC_REPAIR_DEFERRED", "SPEC_WRITTEN", "TASK_SET_ASIDE", "UNCHECKED_END", "UNSATISFIABLE_SPEC", "code_of", "excerpt_ref",
            "review_round", "ruling_answered", "ruling_closed", "ruling_filed", "ruling_payload", "spec_defended",
            "spec_repair_deferred", "spec_repaired", "spec_written", "task_set_aside"]

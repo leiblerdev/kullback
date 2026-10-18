@@ -58,12 +58,13 @@ def writer_rounds(rulings: Iterable[Any]) -> int:
 
 
 # Why a Task ends with no Verifier, never a check bent to pass: the turns never show what the user wants and
-# no answer settled it (intent_unclear), or the recorded user strayed from an opening ask (intent_strayed,
-# spec/coherence.py). Recorded on the Spec's set_aside. A wrong Reference is no reason (D367): the
+# no answer settled it (intent_unclear), the recorded user strayed from an opening ask (intent_strayed,
+# spec/coherence.py), or a born Task's Spec left an end fact of its scenario unchecked (unchecked_end, D410). Recorded on the Spec's set_aside. A wrong Reference is no reason (D367): the
 # Verifier comes from the ask, the policy and the world, and a Reference failing it is a finding.
 INTENT_UNCLEAR = "intent_unclear"
 INTENT_STRAYED = events.INTENT_STRAYED
-NO_VERIFIER_WHYS = (INTENT_UNCLEAR, INTENT_STRAYED)
+UNCHECKED_END = events.UNCHECKED_END
+NO_VERIFIER_WHYS = (INTENT_UNCLEAR, INTENT_STRAYED, UNCHECKED_END)
 
 
 def no_verifier_why(spec: Spec, rulings: Iterable[Any] = ()) -> Optional[str]:
@@ -88,4 +89,5 @@ def is_set_aside(spec: Spec, rulings: Iterable[Any] = ()) -> bool:
 
 
 __all__ = ["INTENT_STRAYED", "INTENT_UNCLEAR", "NO_AGREEMENT", "NO_VERIFIER_WHYS", "ROUNDS_CAP", "ROUNDS_CAP_ENV",
+           "UNCHECKED_END",
            "STATE_FILE", "capped_rounds", "is_set_aside", "load_state", "no_verifier_why", "rounds_cap", "state_path", "writer_rounds"]
