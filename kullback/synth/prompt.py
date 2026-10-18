@@ -47,7 +47,7 @@ _EXAMPLES = {
                       '"text": "<why, in one or two sentences>"}. occurs and feasible are yes, no or unsure. occurs '
                       "yes needs a page you read with read_page in this session and a span of its text; a search "
                       "result alone is no cite, and a policy line is no cite. feasible yes needs checked: each "
-                      "tool it needs and each bound row you looked up; a scenario whose requires is not empty is "
+                      "tool it needs and each row you looked up; a scenario whose requires is not empty is "
                       "never feasible yes. feasible no needs missing: the tool or the kind of row this world "
                       'lacks. A scenario that says again what another says takes "repeat_of": "sc_<other id>" '
                       "and ends struck."),
