@@ -786,6 +786,27 @@ def _read_marks(workdir: Path, task_ids: list[str], tiers: Optional[Iterable[Any
     return tier_rows, label_rows, said
 
 
+def _lay_all(build: _Build, work: list[tuple[str, Optional[dict]]],
+             workers: Optional[int]) -> tuple[list[dict], list[dict], dict[str, int], list[str]]:
+    """Lay every Task of `work` on `workers` processes: (manifest rows, scan rows, skipped by reason, the
+    Tasks no Run holds for), in `work`'s order whatever the count (D401)."""
+    jobs = [_job(build, task_id, body) for task_id, body in work]
+    laid = iter(processes.each([job for reason, job in jobs if not reason], _export_one, workers))
+    listed: list[dict] = []
+    scanned: list[dict] = []
+    skipped: dict[str, int] = {}
+    no_oracle: list[str] = []
+    for (task_id, _), (reason, _) in zip(work, jobs, strict=True):
+        reason, row, scan_row = (reason, {}, {}) if reason else next(laid)
+        if reason:
+            skipped[reason] = skipped.get(reason, 0) + 1
+            no_oracle += [task_id] if reason == NO_ORACLE else []
+            continue
+        listed.append(row)
+        scanned.append(scan_row)
+    return listed, scanned, skipped, no_oracle
+
+
 def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = ORGANISATION,
                   name: Optional[str] = None, scan: bool = True, wheel: Optional[Path] = None,
                   only: Optional[Iterable[str]] = None, tiers: Optional[Iterable[Any]] = None,
@@ -818,26 +839,13 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
     tier_rows, label_rows, said = _read_marks(workdir, list(rows), tiers, labels, labels_rubric)
     policy = _fallback_policy(env)
     out.mkdir(parents=True, exist_ok=True)
-    skipped: dict[str, int] = {}
-    no_oracle: list[str] = []
-    listed: list[dict] = []
-    scanned: list[dict] = []
     with tempfile.TemporaryDirectory() as scratch:
         build = _Build(workdir=workdir, out=out, name=name or workdir.resolve().name, org=org, env=env, rows=rows,
                        classes=reference_classes(workdir) or {}, runs=runs_on_disk(workdir), policy=policy,
                        tag=build_tag(workdir), sha=git_sha(), wheel=wheel or build_wheel(Path(scratch)),
                        tasks=tasks, tiers=tier_rows, labels=label_rows)
         work = [(task_id, None) for task_id in chosen] + list(synthetic.items())
-        jobs = [_job(build, task_id, body) for task_id, body in work]
-        laid = iter(processes.each([job for reason, job in jobs if not reason], _export_one, workers))
-        for (task_id, _), (reason, _) in zip(work, jobs, strict=True):
-            reason, row, scan_row = (reason, {}, {}) if reason else next(laid)
-            if reason:
-                skipped[reason] = skipped.get(reason, 0) + 1
-                no_oracle += [task_id] if reason == NO_ORACLE else []
-                continue
-            listed.append(row)
-            scanned.append(scan_row)
+        listed, scanned, skipped, no_oracle = _lay_all(build, work, workers)
     found = leak_scan(out, workdir / "raw", scanned) if scan else {"leaks": 0, "skipped": True}
     found, solution_leaks = _drop_solution_leaks(out, found, scanned, listed, skipped)
     manifest = dict(_manifest(build, tasks, listed, skipped, no_oracle, solution_leaks), **said)

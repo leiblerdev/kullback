@@ -558,6 +558,11 @@ def _scored_tier(job: tuple) -> TaskTier:
                         judged=judge_results_of(root, task_id, verifier, task_runs), keys=ask_keys(spec, effects))
 
 
+def _placed(out: dict[str, Any], scored: list[TaskTier]) -> dict[str, TaskTier]:
+    """`out` with each job's place (an int) replaced by the tier the pool scored for it."""
+    return {task_id: scored[tier] if isinstance(tier, int) else tier for task_id, tier in out.items()}
+
+
 def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None, *,
                  workers: Optional[int] = 1) -> dict[str, TaskTier]:
     """Every Task of the workdir under the intent foundation, the build's sample only when the manifest
@@ -592,8 +597,7 @@ def intent_tiers(workdir: Any, specs: Optional[dict[str, Spec]] = None, *,
         out[task_id] = len(jobs)  # the job's place, filled once the pool answers
         jobs.append((root, task_id, spec, verifier, runs.get(task_id, []), events, canon, tools,
                      references.get(task_id, ()), schema, effects))
-    scored = processes.each(jobs, _scored_tier, workers)
-    out = {task_id: scored[tier] if isinstance(tier, int) else tier for task_id, tier in out.items()}
+    out = _placed(out, processes.each(jobs, _scored_tier, workers))
     return {task_id: _synthetic_tier(root, task_id, task_tier) for task_id, task_tier in out.items()}
 
 
