@@ -388,6 +388,25 @@ def test_a_weighted_judge_item_the_judge_answers_scores_as_before(tmp_path, monk
     assert json.loads((tmp_path / "logs" / "reward.json").read_text()) == {"reward": body["reward"]}
 
 
+def test_a_judge_item_on_a_run_with_no_assistant_turn_is_answered_zero_and_the_trial_gets_a_number(
+        tmp_path, monkeypatch):
+    # D408: the no-evidence shortcut is an answer; it once left status empty and harbor_world read it as not_started
+    workdir = _workdir(tmp_path / "work", atoms=JUDGE_WEIGHTED)
+    wheel = tmp_path / "k.whl"
+    wheel.write_bytes(b"")
+    harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
+    calls = _judge_says(monkeypatch, 1)
+    app = _app(tmp_path / "out", tmp_path)
+    for name, arguments in _solve(tmp_path / "out"):
+        if name != harbor_world.REPLY_TOOL:
+            harbor_world.call(app, name, arguments)
+    body = _reward(app, tmp_path / "out", tmp_path)
+    assert 0.0 < body["reward"] < 1.0 and "unscored_reason" not in body and calls == []
+    record = json.loads((tmp_path / "logs" / "judge.json").read_text())
+    assert [(row["id"], row["status"], row["score"], row["why"]) for row in record["items"]] == \
+        [("j1", "answered", 0, "no evidence")]
+
+
 def test_with_no_judge_named_a_judge_item_leaves_the_trial_unscored_and_judge_json_says_so(tmp_path, monkeypatch):
     out = _judged(tmp_path)
     monkeypatch.delenv(harbor_world.JUDGE_VAR, raising=False)

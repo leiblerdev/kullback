@@ -67,7 +67,7 @@ class JudgeScore(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)  # evidence refs the Run had nothing for
     error: Optional[str] = None
-    status: str = ""  # "" when scored by code, "answered", "unreadable", or "outage" when no answer came back (D400)
+    status: str = ""  # "answered" (also a no-evidence 0, D408), "unreadable", or "outage" when no answer came back (D400)
     stop_reason: Optional[str] = None  # of the last call
     retries: int = 0
     cost_usd: float = 0.0
@@ -155,7 +155,8 @@ def judge_item(model: Model, atom: Atom, run: Run, *, model_id: Optional[str] = 
                         weight=float(getattr(atom, "weight", 1.0)), truncated=cut,
                         evidence=refs, missing=missing, model=name)
     if not has_evidence(run, target):  # nothing to read: 0 by code, no call (D328)
-        result.score, result.why = 0, NO_EVIDENCE
+        # An answer, not an outage: every reader scores it 0 rather than leaving the Run unscored (D408).
+        result.score, result.why, result.status = 0, NO_EVIDENCE, "answered"
         return result
     messages = [{"role": "system", "content": SYSTEM},
                 {"role": "user", "content": judge_message(atom.id, target, evidence)}]

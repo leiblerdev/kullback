@@ -3960,3 +3960,18 @@ line): the card's run, verdict and report commands must work end to end on a fet
 Tests: tests/hub/test_publish.py (a package fetched from a staged publish scores a Candidate Run and counts it in the
 report; a Verdict the regrade gate refuses leaves no file behind; a build with no policy file or environment.json
 ships both).
+
+### D408. A judge item with no evidence to read is answered 0, not left unstarted (2026-10-18)
+
+Number collision: the synth stream also claimed numbers from D406 at its rebase; the fold renumbers.
+
+What. When a Run has no assistant text for the turns a judge item names, the judge scores it 0 by code without a
+call (D328). That shortcut left the item's status empty, and harbor_world's judge_statuses reads an empty status as
+not_started, so since D405 such a trial ended unscored instead of failing the item. The benchmark hit it on 6 of
+its first 24 trials. kullback/judge/items.py now gives the shortcut the status answered, with why "no evidence".
+The Verdict already scored it 0, and harbor_world now does too; judge_statuses is unchanged, so a real outage
+still leaves the trial unscored.
+
+Why. .claude/herdr/publish-1017/fix-r14.md: a Run that says nothing gave the judge its answer, and an answer is a number.
+
+Tests: tests/hub/test_harbor.py (a judge item on a Run with no assistant turn is answered 0 and the trial gets a number).
