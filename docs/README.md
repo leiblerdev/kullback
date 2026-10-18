@@ -8,11 +8,11 @@ changes there. This page lists every doc, one line each.
 ```bash
 uv sync
 uv run kullback fetch leibler/retail --out env-retail
-uv run kullback run --workdir env-retail --task <task id> --model provider/model
-uv run kullback verdict --workdir env-retail
 ```
 
-Every command takes `--help`. Contributors and agents start with [AGENTS.md](../AGENTS.md).
+`fetch` downloads a published Environment and checks its content hash; the package's own README says how to run a
+model on it. To build your own from traces, see [trace-intake.md](trace-intake.md). Every command takes `--help`.
+Contributors and agents start with [AGENTS.md](../AGENTS.md).
 
 ## Start here
 
