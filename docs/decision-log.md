@@ -4635,9 +4635,9 @@ no-write Verifier with a gated judge item keeps it; one of code gates only goes 
 Verifier; a send back answered with a gated judge item keeps it; a gated said item naming a value counts as told),
 tests/spec/test_ungated.py (counts of calls with the added send back).
 
-### D440. Three compile rules no longer fail right Runs: calls per row, one made row, optional hand-offs (2026-10-19)
+### D440. Two compile rules no longer fail right Runs: calls per row, one made row (2026-10-19)
 
-What. Three rules in the Spec compile and the writer's checks (spec/items.py, spec/compile.py, spec/writer.py).
+What. Two rules in the Spec compile and the writer's checks (spec/items.py, spec/compile.py, spec/writer.py).
 First, two gated called items on one tool with different args contradict only when both write one existing row
 with an argument both name set two ways (`items.contradictions(items, world)`, `World.target_rows`): the target
 row is a row of a table the tool's learned effects write whose key a scalar argument names; a read tool and a tool
@@ -4647,31 +4647,21 @@ items on one table, in one end state, with one count and one gate, whose where c
 one item: the where clauses joined, the first id, gate and weight kept, both items' facts cited, a "merged" line in
 the compile reasons (`merged_new_rows`, run in `verifier_of` before the end states). A weighed item never folds into
 a gated one, as `merged_cells` keeps a weighed check from becoming a gate; such a pair stays two items.
-`new_row_overlaps` refuses only the subset pairs no fold can join. Third, a hand-off is read from the World's
-hand-off set, the schema's action tools (a call that writes nothing of the world and ends the Run, D308), never
-from a tool's name. A gated called item on one stays a gate only where its policy line is not the policy's general
-hand-off line (the line that names the hand-off tool, its how-to) and the item confirms the row whose read shows
-the line's condition, or where a scenario end or a rendered fact it cites names the tool; else it is weighed with
-reason `handoff_optional`, at check (`_WEIGHINGS`) and at compile (`weighed_handoffs`), so a recompiled older Spec
-carries it.
+`new_row_overlaps` refuses only the subset pairs no fold can join. A third rule, weighing a hand-off gate nothing
+puts out of scope (`handoff_optional`), was held back, as D434 was: on three fresh examples one was right, and the
+weighed hand-off lets a Run that never hands off pass where the policy requires the hand-off. That leniency is a
+gaming route; the old strictness on a right decline is the smaller harm, and D439 ends such Tasks when References
+disagree. The hand-off rule stays as before (a hand-off gates only where its policy line names one).
 
-Why. On the 309 staged Specs of the first Harbor run, recompiled at this head (base 8fe37510 against this branch,
+Why. On the 309 staged Specs of the first Harbor run, recompiled at this head (base 819840a0 against this branch,
 read in place): Tasks named unsatisfiable go from 18 to 6 airline and 18 to 9 retail. All 20 Tasks with a
 called-args clash (11 airline, 9 retail) lose it; in 8 of their pairs both calls write one row, and none sets an
 argument two ways. The 2 airline Tasks with a row_new overlap lose it. Row_new folds: airline 13 in 7 Tasks, retail
-none; 3 weighed-into-gated pairs in 2 Tasks are kept apart. Hand-off gates: airline 7 Tasks to 2 (both on a line of
-their own with a confirmed row), retail 10 to 0. The brief's first reading (the policy line names the tool) was
-dropped: in both policies the one line naming the hand-off tool is the general scope line, so a writer quoting it
-whole kept the gate and a line of its own never did. Rescored on the recorded trials with their judge answers, no
-pass is lost and 7 fails pass (airline 3, retail 4); D422 drops are unchanged. Read against the ask and the policy
-(pre-registered ten on the first cut, 9 right; three fresh on the final rule, 1 right): the hand-off rule cannot
-tell a request the policy lets the agent decline within scope from one no tool can serve, where the general line
-requires the hand-off (reinstating a cancelled order, 2 of 3 fresh). There the weighed gate lets a Run that never
-hands off pass.
+none; 3 weighed-into-gated pairs in 2 Tasks are kept apart. Rescored on the recorded trials with their judge
+answers, no pass is lost and one airline fail passes (a booking whose three row_new items one made row answers);
+D422 drops are unchanged. Read against the ask (pre-registered seven of these two rules): 7 right.
 
 Tests: tests/spec/test_items.py (two gated calls of one tool contradict only when they write one row two ways; a
-call targets the rows its arguments name in the tables it writes; a hand-off gate on the general line or no line
-is weighed; one on a line of its own stands only with a confirmed row; a scenario end or a rendered fact naming the
-tool keeps it; the compile weighs an older hand-off gate on the general line), tests/spec/test_said_once.py (new-row
-specs one made row can answer are one item whose where is the union; a weighed one never folds into a gated one;
-a merged pair passes the Verdict on one made row; a subset pair with other counts is still refused).
+call targets the rows its arguments name in the tables it writes), tests/spec/test_said_once.py (new-row specs one
+made row can answer are one item whose where is the union; a weighed one never folds into a gated one; a merged
+pair passes the Verdict on one made row; a subset pair with other counts is still refused).

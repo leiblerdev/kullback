@@ -519,7 +519,7 @@ def writer_messages(inputs: WriterInputs) -> tuple[list[dict], int]:
 def world_of(inputs: WriterInputs) -> I.World:
     """The world the writer's tools read and its values are sourced from."""
     return I.World(inputs.state, inputs.policy_text, inputs.intent.facts, inputs.tools, inputs.columns,
-                   inputs.signatures, inputs.reach, inputs.canon, inputs.effects, inputs.action_tools)
+                   inputs.signatures, inputs.reach, inputs.canon, inputs.effects)
 
 
 def store_of(inputs: WriterInputs, items: Iterable[dict] = (), ruled: Optional[set[str]] = None,
@@ -760,12 +760,10 @@ def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:
     Checks of the older demand grammar compile to atoms beside the items, with the must-not atoms when
     the Spec has no item; nothing else gates on them (the Spec stage rewrites such a Spec as items). A
     repeated item atom or end state cell is folded into one, each fold a line of the reasons (D428). Row_new items
-    one made row answers are one item, and a hand-off gate nothing puts out of scope is weighed, each a line too
-    (D440).
+    one made row answers are one item, each fold a line too (D440).
     """
     world = world_of(inputs)
     items, joined = merged_new_rows(item_checks(spec))
-    items, weighed = I.weighed_handoffs(items, world)
     legacy = spec.model_copy(update={"checks": [c for c in spec.checks if not is_item_check(c)]})
     compiled = compile_spec(legacy, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools)
     atoms = list(compiled.verifier.atoms)
@@ -776,7 +774,7 @@ def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:
     if items or not legacy.checks:
         expected, merged = merged_cells(I.end_states_of(items, world, inputs.action_tables, inputs.effects))
         own, folded = merged_atoms([I.atom_of(item) for item in items])
-        atoms, merged = own + [I.sanity_atom(expected)] + atoms, joined + merged + folded + weighed
+        atoms, merged = own + [I.sanity_atom(expected)] + atoms, joined + merged + folded
     verifier = Verifier(task_id=spec.task_id, atoms=atoms,
                         verifier_version=f"spec{spec.version}", seed_run_ids=[], expected=expected)
     return Compiled(verifier, compiled.dropped, compiled.reasons + tuple(merged),

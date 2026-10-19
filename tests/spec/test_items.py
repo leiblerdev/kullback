@@ -435,56 +435,18 @@ def test_an_anchor_answer_is_looked_up_never_computed():
     assert counted["anchors_without_lookup"] == 1
 
 
-# The general hand-off line names the hand-off tool (its how-to); a line of its own names a case out of scope.
-GENERAL_HANDOFF = "Hand the user to a person if and only if you cannot help within your tools; call pass_on to do it."
-OWN_HANDOFF = "If the item is in slot two, you cannot help and a hand-off is needed."
-
-
-def handoff_world(facts=FACTS) -> I.World:
-    """The invented world with a hand-off tool, read as one from the World's hand-off set, never its name (D440)."""
-    tools = [*TOOLS, {"name": "pass_on", "kind": "write", "args": []}]
-    return I.World(STATE, POLICY + f"\n{GENERAL_HANDOFF}\n{OWN_HANDOFF}\n", facts, tools, handoffs=["pass_on"])
-
-
-def test_a_hand_off_gate_on_the_general_line_or_no_line_is_weighed():
-    hand_off = {"id": "h1", "kind": "called", "tool": "pass_on", "gate": True, "fact_ids": ["f1"]}
-    general = "Hand the user to a person if and only if you cannot help within your tools"
-    for item in (hand_off, dict(hand_off, policy_line=general), dict(hand_off, policy_line=GENERAL_HANDOFF),
-                 dict(hand_off, policy_line=general, confirms={"table": "items", "find": {"item_id": "A1"}})):
-        kept, why = handoff_world().check(item, KNOWN, unwitnessed)
-        assert kept["gate"] is False and kept["weighed"] == I.HANDOFF_WEIGHED and "hand-off" in why
-
-
-def test_a_hand_off_gate_stands_on_a_line_of_its_own_whose_condition_a_confirmed_row_shows():
-    hand_off = {"id": "h1", "kind": "called", "tool": "pass_on", "gate": True, "fact_ids": ["f1"],
-                "policy_line": OWN_HANDOFF}
-    assert handoff_world().check(hand_off, KNOWN, unwitnessed)[0]["gate"] is False, "unconfirmed: weighed"
-    confirmed = dict(hand_off, confirms={"table": "items", "find": {"item_id": "A1"}})
-    kept, why = handoff_world().check(confirmed, KNOWN, unwitnessed)
+def test_a_hand_off_item_gates_only_when_its_policy_line_demands_the_hand_off():
+    policy = POLICY + "\nTransfer the user to a person when the slot is taken.\n"
+    tools = [*TOOLS, {"name": "transfer_to_person", "kind": "write", "args": []}]
+    hand_off = {"id": "h1", "kind": "called", "tool": "transfer_to_person", "gate": True, "fact_ids": ["f1"]}
+    kept, why = I.World(STATE, policy, FACTS, tools).check(hand_off, KNOWN, unwitnessed)
+    assert why == "" and kept["gate"] is False, "no policy line: weighed"
+    grounded = dict(hand_off, policy_line="Transfer the user to a person when the slot is taken.")
+    kept, why = I.World(STATE, policy, FACTS, tools).check(grounded, KNOWN, unwitnessed)
     assert why == "" and kept["gate"] is True
     move = {"id": "c1", "kind": "called", "tool": "update_item", "gate": True, "fact_ids": ["f1"],
             "policy_line": PATH_LINE}
-    assert handoff_world().check(move, KNOWN, unwitnessed)[0]["gate"] is True
-
-
-def test_a_hand_off_gate_on_a_scenario_end_or_a_rendered_fact_naming_the_tool_stands():
-    end = IntentFact(id="end1", text="The agent hands the case on.", stance="volunteered",
-                     source=FactSource(recording=I.END_SOURCE, turn=0))
-    asked = IntentFact(id="f9", text="Please pass_on my case.", stance="volunteered",
-                       source=FactSource(recording="rec1", turn=1))
-    known = {**KNOWN, "end1": end, "f9": asked}
-    for fact_id in ("end1", "f9"):
-        item = {"id": "h1", "kind": "called", "tool": "pass_on", "gate": True, "fact_ids": [fact_id]}
-        assert handoff_world([*FACTS, end, asked]).check(item, known, unwitnessed)[0]["gate"] is True
-
-
-def test_the_compile_weighs_an_older_hand_off_gate_on_the_general_line():
-    stored = {"id": "h1", "kind": "called", "tool": "pass_on", "gate": True, "weight": 1.0, "fact_ids": ["f1"],
-              "policy_line": GENERAL_HANDOFF, "confirms": {"table": "items", "row": "A1"}}
-    own = dict(stored, id="h2", policy_line=OWN_HANDOFF)
-    items, lines = I.weighed_handoffs([stored, own, dict(MOVE, gate=True)], handoff_world())
-    assert [item["gate"] for item in items] == [False, True, True] and items[0]["weighed"] == I.HANDOFF_WEIGHED
-    assert lines == ["h1: handoff_optional"]
+    assert I.World(STATE, policy, FACTS, tools).check(move, KNOWN, unwitnessed)[0]["gate"] is True
 
 
 def test_after_pushback_and_a_witnessed_yes_are_evidence_and_no_longer_weigh_a_gate():
