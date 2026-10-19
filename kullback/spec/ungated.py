@@ -8,8 +8,8 @@ end, never the Reference (D369), and change nothing of what is reachable (D387, 
    and no gated row_new. A cell gated to its start value, a one_of holding it, a before or a called item
    never counts as the gate of a write: the Run that does nothing passes each.
 2. `ungated_values`: a number, id or quoted value of a write fact's clause that is a value of the changed
-   row's columns (its own cells, or the cells other rows of its table hold under the same keys, such as a
-   leg or a line item) and that no gated state item carries in its find, expect or where.
+   row (its own cells, nested ones included, such as a leg or a line item; for a new row, what its table holds
+   under the keys its where names) and that no gated state item carries in its find, expect or where.
 
 `send_back` sends both findings to the writer once, through the repair session the Examiner's rulings use
 (writer.repair); what is still found after it is counted on the writer's counts (WRITES_UNGATED,
@@ -121,18 +121,17 @@ def _keyed_leaves(value: Any, key: str = "") -> Iterable[tuple[str, Any]]:
 
 
 def _row_values(item: dict, world: I.World) -> set[str]:
-    """The values of the changed row's columns: its own keys and cells, and what the other rows of its table hold
-    under the keys it holds (for a new row, the keys its where names)."""
+    """The values of the changed row's columns. For a row_is, the row's own key and cells, nested leaves included
+    (a leg or a line item it holds): a value another row happens to hold is not the changed row's. For a row_new,
+    which does not exist yet, its where values and what the table's rows hold under the keys its where names."""
     table = item.get("table", "")
     rows = world.state.get(table) or {}
-    if item["kind"] == "row_new":
-        own, keys = {I.norm(v) for _, v in _keyed_leaves(item.get("where") or {})}, set(item.get("where") or {})
-    else:
+    if item["kind"] != "row_new":
         found = world.find(table, item.get("find"))
-        own = {I.norm(key) for key in found} | {I.norm(v) for key in found for _, v in _keyed_leaves(rows.get(key))}
-        keys = {name for key in found for name, _ in _keyed_leaves(rows.get(key))}
-    held = {I.norm(v) for row in rows.values() for name, v in _keyed_leaves(row) if name in keys}
-    return own | held
+        return {I.norm(key) for key in found} | {I.norm(v) for key in found for _, v in _keyed_leaves(rows.get(key))}
+    where = item.get("where") or {}
+    held = {I.norm(v) for row in rows.values() for name, v in _keyed_leaves(row) if name in where}
+    return {I.norm(v) for _, v in _keyed_leaves(where)} | held
 
 
 def _carried(items: list[dict]) -> set[str]:

@@ -80,6 +80,22 @@ def test_an_end_value_of_the_changed_row_no_gate_carries_is_sent_back_then_count
     assert fixed.spec.checks[0].demand["expect"] == {"slot": "seven", "lot": "L-3"}
 
 
+QTY_STATE = {"items": {"A1": {"item_id": "A1", "slot": "two", "qty": 2},
+                       "B2": {"item_id": "B2", "slot": "four", "qty": 3}}}
+
+
+def test_a_number_only_another_row_holds_is_no_finding_for_a_row_is_but_is_one_under_a_new_rows_where_key():
+    moved = W.write_spec("t1", _ended("Item A1 moves to slot seven with 3 units.", QTY_STATE),
+                         TestModel([add(MOVED), DONE]))
+    assert U.ungated_values(moved.spec, W.world_of(_ended(state=QTY_STATE))) == []
+    new = {"id": "n1", "kind": "row_new", "table": "items", "where": {"slot": "seven", "qty": 2}, "count": 1,
+           "gate": True, "fact_ids": ["f1", "end1"]}
+    ended = _ended("A new item in slot seven holds 3 units.", QTY_STATE)
+    made = W.write_spec("t1", ended, TestModel([add(new), DONE]))
+    assert [check.id for check in made.spec.checks] == ["n1"]
+    assert U.ungated_values(made.spec, W.world_of(ended)) == [{"fact_id": "end1", "value": "3"}]
+
+
 def test_the_values_an_end_clause_names_are_its_quoted_values_and_its_tokens_with_a_digit():
     assert U.end_values('Leg 2 of R-17 is "window seat"; refund $120.50.') == ["window seat", "2", "R-17", "120.50"]
 

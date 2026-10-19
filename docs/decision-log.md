@@ -4308,3 +4308,10 @@ is not sent back; an end value of the changed row no gate carries is sent back t
 repair is not; the values a clause names are its quoted values and its tokens with a digit; a Verifier held by the
 idle Run is refused by the trust gate with its reason; the stage counts a Spec marked ungated and held by the idle
 Run; a Spec with no write end is untouched by all three; the writer is told each rule in words once).
+Correction (r1): for a row_is, rule 2 reads the changed row only: its key and its cells, nested leaves included, so a
+leg or a line item it holds still counts. The values other rows of its table hold under the same keys are read
+only for a row_new, under the keys its where names, since a new row does not exist yet and its where is the one way
+to know its columns. Why: a number the end names (a day count, a seat count, a quantity) that happened to sit in any
+other row of the table became a finding, costing a send back session and a false end_values_ungated count. Tests:
+tests/spec/test_ungated.py (a number only another row holds is no finding for a row_is, and the same number under a
+new row's where key is one).
