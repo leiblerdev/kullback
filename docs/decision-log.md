@@ -4427,7 +4427,8 @@ done:". The package's viewer rows and the Harbor instruction.md still both come 
 The Harbor export then drops every item that cites facts and only facts the instruction does not render (dropped,
 never weighed: a pass counts at reward 1, so a weighted item a right Run cannot satisfy fails it as a gate would). A
 dropped state item's cells leave every end state and become free, so a Run may leave the row or move it; a dropped
-new row frees its table. An item citing no fact, or citing an end fact, stays. The shipped Verifier is the source
+new row frees its table. An item citing no fact, or citing an end fact, stays; a policy line beside the
+cited facts does not keep an item. The shipped Verifier is the source
 file byte for byte when nothing is dropped. The manifest carries the dropped item ids per Task
 (`items_unrenderable`), their count and the Tasks touched in counts, the masked list per package, and the export
 and publish report lines say the count.
