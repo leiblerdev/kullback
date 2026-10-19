@@ -4365,3 +4365,19 @@ writes every failed Task again.
 
 Tests: tests/spec/test_stage.py (a provider refusal leaves no Spec file and its message is counted once, cut at the
 limit; a rerun after a provider refusal writes the Task instead of skipping it).
+
+### D424. A one-item judge reply is read whatever key its one result sits under (2026-10-19)
+
+What. The judge parser reads a reply whose results hold exactly one row as the answer for the item asked,
+whatever that row's key. With several rows the key must still be the item id. The score rule is unchanged: 0 or
+1, anything else leaves the item unscored. When the row was read under another key, the JudgeScore's why ends with
+a short note naming that key, so a reader can see it happened.
+
+Why. Each judge call carries one item (D328), yet the judge sometimes keys its one result "1", "[t2]" or a name
+of its own. Such a reply was "unreadable reply" and left the Run unscored although its answer was well formed: 9
+retail trials of the bench run and 4 of the Opus re-judge. A single row cannot belong to any other item, so
+reading it loses nothing; several rows stay strict because there the key is what picks the answer.
+
+Tests: tests/runner/test_judge_items.py (a reply with one result under another key is read as the item; the
+JudgeScore says so in why; several results with none under the item id leave the item unjudged; a one result
+reply under another key still needs a score of 0 or 1).

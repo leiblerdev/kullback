@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from kullback.ai.provider import ModelReply, TestModel
 from kullback.ai.usage import Usage
 from kullback.judge import items
 from kullback.judge.items import (
     CUT_MARK,
+    _parse,
     build_evidence,
     checkpoint_line,
     judge_item,
@@ -106,6 +109,32 @@ def test_a_results_list_leaves_the_item_unjudged_with_unreadable_reply():
     listed = TestModel([ModelReply(content=json.dumps({"results": [{"score": 1}]}))])
     result = judge_item(listed, _item(), _run(["Your total is $42.50."]))
     assert result.score is None and result.why == "unreadable reply"
+
+
+@pytest.mark.parametrize("key", ["1", "[t2]", "declined_as_asked"])
+def test_a_reply_with_one_result_under_another_key_is_read_as_the_item(key):
+    reply = json.dumps({"results": {key: {"score": 1, "why": "declined as asked"}}})
+    assert _parse(reply, "decline") == (1, "declined as asked")
+
+
+def test_a_one_result_reply_under_another_key_scores_the_item_and_says_so_in_why():
+    model = TestModel([_says(0, why="wrong total", item_id="1")])
+    result = judge_item(model, _item(), _run(["Your total is $40.00."]))
+    assert (result.score, result.status) == (0, "answered")
+    assert result.why.startswith("wrong total") and "'1'" in result.why and "not the item id" in result.why
+    exact = judge_item(TestModel([_says(1)]), _item(), _run(["Your total is $42.50."]))
+    assert exact.why == "ok"
+
+
+def test_several_results_none_under_the_item_id_leave_the_item_unjudged():
+    reply = json.dumps({"results": {"1": {"score": 1, "why": "a"}, "2": {"score": 0, "why": "b"}}})
+    assert _parse(reply, "j1") == (None, "unreadable reply")
+    both = json.dumps({"results": {"x": {"score": 0, "why": "a"}, "j1": {"score": 1, "why": "b"}}})
+    assert _parse(both, "j1") == (1, "b")
+
+
+def test_a_one_result_reply_under_another_key_still_needs_a_score_of_zero_or_one():
+    assert _parse(json.dumps({"results": {"1": {"score": 0.5}}}), "j1") == (None, "score not 0 or 1")
 
 
 def test_empty_evidence_scores_zero_by_code_with_no_model_call_also_after_a_tool_never_called():
