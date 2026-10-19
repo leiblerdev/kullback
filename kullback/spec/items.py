@@ -506,13 +506,19 @@ class World:
         """The (table, key) of each existing row a call of this write tool writes: a row of a table its learned
         effects write whose key one of the call's arguments names, as a scalar (D440). A read tool, and a tool
         that makes a row each call, target none; a write tool with no learned effects may write any table."""
+        named = {norm(value) for value in (args or {}).values() if not isinstance(value, (dict, list))}
+        return {(table, key) for table in self._rewritten_tables(tool) for key in self.state.get(table) or {}
+                if norm(key) in named}
+
+    def _rewritten_tables(self, tool: str) -> list[str]:
+        """The tables whose existing rows a write tool changes: those its learned effects write, every table when
+        it has none; none for a read tool or a tool that makes a row each call."""
         learned = self.effects.get(tool) or {}
         if (self.tools.get(tool) or {}).get("kind") != "write" or learned.get("makes"):
-            return set()
-        tables = {str(row["table"]) for row in learned.get("writes") or []} \
-            | {str(column["table"]) for column in learned.get("columns") or []} or set(self.state)
-        named = {norm(value) for value in (args or {}).values() if not isinstance(value, (dict, list))}
-        return {(table, key) for table in sorted(tables) for key in self.state.get(table) or {} if norm(key) in named}
+            return []
+        writes = learned.get("writes") or []
+        tables = {str(row["table"]) for row in writes} | {str(row["table"]) for row in learned.get("columns") or []}
+        return sorted(tables or self.state)
 
     def general_handoff(self, line: str, tool: str) -> bool:
         """Whether a quoted policy line is part of the policy's general hand-off line: the line that names the
