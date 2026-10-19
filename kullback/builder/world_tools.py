@@ -105,23 +105,28 @@ class WorldReport:
         return cls(**{k: v for k, v in (body or {}).items() if k in known})
 
 
-def dangling_ids(db: dict) -> dict[str, dict]:
+def _listed(rows: dict) -> dict[str, list[str]]:
+    """Per column, every text member of the list values the rows hold there."""
+    listed: dict[str, list[str]] = {}
+    for row in rows.values():
+        for name, value in (row.items() if isinstance(row, dict) else ()):
+            if isinstance(value, list) and value and all(isinstance(member, str) for member in value):
+                listed.setdefault(str(name), []).extend(value)
+    return listed
+
+
+def dangling_ids(db: Optional[dict]) -> dict[str, dict]:
     """Per list column of text values, the ids it lists that name no row of the table they key (D425).
 
     The schema learns no references, so the table a column keys is read off the values: the table whose row
     keys the column's members name most often (ties by name), and a column naming no row key of any table is
-    no list of ids. A row is learned from recordings only, so a user's row can list an order no recording
+    no list of ids. A row is learned from recordings only, so a person's row can list an id no recording
     opened; the count says how many, and nothing is dropped or added.
     """
-    keys = {table: set(rows) for table, rows in db.items() if isinstance(rows, dict)}
+    keys = {table: set(rows) for table, rows in (db or {}).items() if isinstance(rows, dict)}
     found: dict[str, dict] = {}
     for table in sorted(keys):
-        listed: dict[str, list[str]] = {}
-        for row in db[table].values():
-            for name, value in (row.items() if isinstance(row, dict) else ()):
-                if isinstance(value, list) and value and all(isinstance(member, str) for member in value):
-                    listed.setdefault(str(name), []).extend(value)
-        for name, members in sorted(listed.items()):
+        for name, members in sorted(_listed(db[table]).items()):
             named = {other: sum(member in ids for member in members) for other, ids in keys.items()}
             target = max(sorted(named), key=lambda other: named[other])
             missing = sum(member not in keys[target] for member in members)
@@ -532,7 +537,7 @@ def derive_world(workdir: Path, *, reader_model: Any = None,
                if isinstance(row, dict) and row.get("stage") in ("mine", "readers", "cluster")},
         paths=sorted(set(written)),
         from_cache=False,
-        dangling=dangling_ids(db or {}),
+        dangling=dangling_ids(db),
     )
     _write_json(workdir / WORLD_REPORT_FILE, report.to_dict())
     _write_json(workdir / WORLD_LOCK_FILE, {"key": key})
