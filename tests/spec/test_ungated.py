@@ -37,10 +37,10 @@ def _born(root, end: str = MOVE):
 
 
 def test_a_write_gated_to_its_start_value_goes_back_once_and_unrepaired_is_counted_and_marked(tmp_path):
-    model = TestModel([add(AT_START), DONE, CANNOT])
+    model = TestModel([add(AT_START), DONE, CANNOT, CANNOT])
     write_from_intent(_born(tmp_path), "t1", inputs().intent, model, 1.0, Bus(tmp_path / "bus.jsonl", agent="spec"))
     spec = load_spec(tmp_path, "t1")
-    assert len(model.calls) == 3, "one send back, through the repair session"
+    assert len(model.calls) == 4, "one send back for the ungated write, one for the idle Run holding every gate (D441)"
     assert spec.set_aside is None and spec.writer[U.UNGATED_SENT_BACK] == 1
     assert spec.writer[U.WRITES_UNGATED] == 1 and spec.writer[U.UNGATED_FINDINGS][0]["fact_id"] == "end1"
     assert [check.demand["expect"] for check in spec.checks] == [{"slot": "two"}], "never gated to pass"
@@ -114,7 +114,7 @@ def test_the_stage_counts_a_spec_marked_ungated_and_held_by_the_idle_run(tmp_pat
     root = S._workdir(tmp_path)
     write_json(W.born_path(root, "t1"), {"scenario": "sc_0", "end": MOVE})
     at_start = dict(S.ITEM, expect={"slot": "two"}, fact_ids=["f1", "end1"])
-    counts = stage.write_specs(root, ["t1"], TestModel(S._mined() + S._items(at_start) + [CANNOT]))
+    counts = stage.write_specs(root, ["t1"], TestModel(S._mined() + S._items(at_start) + [CANNOT, CANNOT]))
     assert (counts["written"], counts[U.WRITES_UNGATED], counts[TR.HELD_BY_IDLE]) == (1, 1, 1)
     assert load_spec(root, "t1").writer[TR.HELD_BY_IDLE] is True
 
@@ -127,10 +127,11 @@ def test_a_spec_with_no_write_end_is_untouched_by_all_three(tmp_path):
     assert U.send_back(written, ended, TestModel([])) == (written, 0.0)
     verifier = W.verifier_of(written.spec, ended).verifier
     assert not TR.held_by_idle(written.spec, verifier, TR.idle_run("t1", STATE), fn, ended.write_tools)
-    model = TestModel([add(dict(ROW, expect={"slot": "two"})), DONE])
+    model = TestModel([add(dict(ROW, expect={"slot": "two"})), DONE, CANNOT])
     _workdir(tmp_path)
     write_from_intent(tmp_path, "t1", inputs().intent, model, 1.0, Bus(tmp_path / "bus.jsonl", agent="spec"))
     assert not {U.UNGATED_SENT_BACK, TR.HELD_BY_IDLE} & set(load_spec(tmp_path, "t1").writer)
+    assert len(model.calls) == 3, "only the idle Run's send back (D441): its one gate holds at the start"
 
 
 def test_the_writer_is_told_each_rule_in_words_once():

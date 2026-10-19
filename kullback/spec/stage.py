@@ -21,6 +21,11 @@ After compile and the Examiner, `end_unpassable` ends each Task no right Run can
 gated write whose policy precondition names a value the user must give that no rendered fact carries
 (precondition_unrendered), or References none of which holds every gate (no_reference_holds). The Reference
 vetoes a Verifier and never sources one; a Task with no Reference keeps its Verifier.
+
+A Verifier every code gate of which holds on the Run that makes no call and says nothing must carry a gated judge
+item or a gated said item (D441). At write time such a Spec goes back to the writer once (`idle_send_back`); at
+the stage's end, still so, the Task ends with no Verifier as idle_run_passes. An idle Run failing a code gate
+changes nothing.
 """
 
 from __future__ import annotations
@@ -35,12 +40,13 @@ from kullback.gates.trust import schema_of
 from kullback.runner.budget import BudgetedModel
 from kullback.runner.canon import load_rules
 from kullback.runner.records import read_json
+from kullback.runner.verdict import verdict
 from kullback.spec import events
 from kullback.spec.actions import workdir_action_tools
 from kullback.spec.canfail import Outcome, outcome_of
 from kullback.spec.events import UNCHECKED_END
 from kullback.spec.intent import STAGE, mine_intent
-from kullback.spec.items import DEFAULT_GATE, World, _contains, _flat, names_tool, norm, rendered
+from kullback.spec.items import DEFAULT_GATE, World, _contains, _flat, contradictions, names_tool, norm, rendered
 from kullback.spec.judged import judge_results_of
 from kullback.spec.schema import SpecIntent, is_empty, load_spec, save_spec, spec_path
 from kullback.spec.text import STOPWORDS, TOKEN_RE, normalise
@@ -56,11 +62,15 @@ from kullback.spec.ungated import END_VALUES_UNGATED, WRITES_UNGATED, send_back
 from kullback.spec.writer import (
     EFFECTS_COUNT,
     NO_EFFECTS,
+    Ruling,
+    Written,
     is_item_check,
     item_checks,
     load_inputs,
+    repair,
     runner_verifier_path,
     spec_verifier_path,
+    unchecked_end,
     verifier_of,
     write_spec,
     write_verifier,
@@ -115,6 +125,9 @@ def write_from_intent(workdir: Path, task_id: str, intent: SpecIntent, model: An
     if not empty:
         written, again = send_back(written, inputs, priced, model_id=model_id,
                                    ceiling_usd=max(ceiling_usd - spent, 0.0))
+        spent += again
+        written, again = idle_send_back(written, inputs, priced, model_id=model_id,
+                                        ceiling_usd=max(ceiling_usd - spent, 0.0))
         spent += again
     rounds = sum(int(t.session.get("tool_rounds") or 0) for t in tries)
     writer = dict(written.counts, usd=spent, read_rounds=rounds, attempts=len(tries), empty_first=empty_first,
@@ -179,7 +192,8 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
     counts: dict = {"written": 0, "skipped_existing": 0, "failed": 0, "spent_usd": 0.0, "failures": {},
                     "empty_seen": 0, "retried": 0, "set_aside_empty": 0, "set_aside_unsatisfiable": 0,
                     "set_aside_strayed": 0, "set_aside_unchecked_end": 0, "rewritten_older": 0,
-                    "effects_none_learned": 0, WRITES_UNGATED: 0, END_VALUES_UNGATED: 0, HELD_BY_IDLE: 0}
+                    "effects_none_learned": 0, WRITES_UNGATED: 0, END_VALUES_UNGATED: 0, HELD_BY_IDLE: 0,
+                    IDLE_SENT_BACK: 0}
     for task_id in task_ids:
         if written_already(workdir, task_id):
             counts["skipped_existing"] += 1
@@ -199,12 +213,78 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
         counts["empty_seen"] += int(bool(spec.writer.get("empty_first")))
         counts["retried"] += int(spec.writer.get("attempts", 1) > 1)
         counts["effects_none_learned"] += int(spec.writer.get(EFFECTS_COUNT) == NO_EFFECTS)
+        counts[IDLE_SENT_BACK] += int(bool(spec.writer.get(IDLE_SENT_BACK)))
         for mark in (WRITES_UNGATED, END_VALUES_UNGATED, HELD_BY_IDLE):
             counts[mark] += int(bool(spec.writer.get(mark)))
         aside = {events.EMPTY_SPEC: "set_aside_empty", events.UNSATISFIABLE_SPEC: "set_aside_unsatisfiable",
                  events.INTENT_STRAYED: "set_aside_strayed", UNCHECKED_END: "set_aside_unchecked_end"}
         counts[aside.get(spec.set_aside, "written")] += 1
     return counts
+
+
+# --- a Verifier an idle Run passes ships only with a gated judge or said item (D441) ---------------
+
+# The end reason, and the writer's count naming the code gates the idle Run held when the Spec went back.
+IDLE_RUN_PASSES = events.IDLE_RUN_PASSES
+IDLE_SENT_BACK = "idle_sent_back"
+IDLE_FIX = ("Where the right end writes, gate the change: a row_is whose expected value differs from the start, "
+            "or a row_new. Where the right end writes nothing (an ask the policy refuses, a lookup), add a gated "
+            "judge item asking what the right Run must look up and tell the user, from the policy and the user's "
+            "words, or a gated said item with a value the Candidate must state. Where none can be named, change "
+            "nothing and reply with one line starting \"rebut: cannot verify:\" and why.")
+
+
+def _told_gate(atom: Any) -> bool:
+    """A gated judge item, or a gated said item naming a value the Candidate must state."""
+    target = atom.target or {}
+    return bool(atom.gate) and (bool(atom.judge) or (target.get("kind") == "said" and bool(target.get("values"))))
+
+
+def idle_held(verifier: Any, idle: Any, canon: Any = None, write_tools: Any = None,
+              schema: Any = None) -> Optional[list[str]]:
+    """The ids of the code gates the idle Run holds, when no code gate fails on it (judge items left unsettled)
+    and the Verifier carries no gated judge or said item; else None. A Run the scorer cannot read shows nothing."""
+    if any(_told_gate(atom) for atom in verifier.atoms):
+        return None
+    try:
+        result = verdict(idle, verifier, canon, None, write_tools=write_tools, schema=schema)
+    except Exception:  # a Run the scorer cannot read shows nothing either way
+        return None
+    gates = [item for item in result.items if item.gate and item.kind != "judge"]
+    return None if any(item.holds is False for item in gates) else [item.id for item in gates]
+
+
+def idle_ruling(spec: Any, held: list[str]) -> Ruling:
+    """One ruling naming what the idle Run satisfies (every code gate, by its verdict id), ruling on the Spec's gated
+    code items so the repair may replace them."""
+    gated = [item["id"] for item in item_checks(spec) if item.get("gate") is True and item["kind"] != "judge"]
+    named = ", ".join(held) or "none"
+    return Ruling(check_ids=gated, kind=IDLE_RUN_PASSES, fix=IDLE_FIX,
+                  reason=f"a Run that makes no call and says nothing holds every code gate ({named}) and no gated "
+                         f"judge or said item stands, so a do-nothing agent passes the Task")
+
+
+def idle_send_back(written: Written, inputs: Any, model: Any, *, model_id: Optional[str] = None,
+                   ceiling_usd: Optional[float] = None) -> tuple[Written, float]:
+    """(the Written after one send back for an idle Run holding every code gate, its spend); unchanged and 0
+    when the idle Run fails a code gate or a gated judge or said item stands. The counts keep IDLE_SENT_BACK,
+    the gates held, and the unchecked end and clashes as the repair left them; the stage's end judges again. A
+    Spec already set aside for its clashes or an unchecked end is not sent back."""
+    if written.counts.get("unsatisfiable") or written.counts.get(UNCHECKED_END):
+        return written, 0.0
+    idle = idle_run(written.spec.task_id, inputs.state)
+    held = idle_held(verifier_of(written.spec, inputs).verifier, idle, inputs.canon, inputs.write_tools)
+    if held is None:
+        return written, 0.0
+    fixed = repair(written.spec, idle_ruling(written.spec, held), inputs, model, model_id=model_id,
+                   ceiling_usd=ceiling_usd)
+    spec = fixed.spec.model_copy(update={"version": written.spec.version})
+    counts = dict(written.counts, **{IDLE_SENT_BACK: held})
+    counts.pop(UNCHECKED_END, None)
+    if left := unchecked_end(spec):
+        counts[UNCHECKED_END] = left
+    counts["unsatisfiable"] = sorted({item_id for item_id, _ in contradictions(item_checks(spec))})
+    return Written(spec, counts, fixed.session), float(fixed.session.get("usd") or 0.0)
 
 
 # --- the stage's end: a Task no right Run can pass ships no Verifier (D439) -------------------------
@@ -214,7 +294,7 @@ PRECONDITION_UNRENDERED = events.PRECONDITION_UNRENDERED
 # The Task has References and none holds every gate of its Verifier: the Reference vetoes, never sources.
 NO_REFERENCE_HOLDS = events.NO_REFERENCE_HOLDS
 ENDED_COUNTS = {PRECONDITION_UNRENDERED: "set_aside_precondition_unrendered",
-                NO_REFERENCE_HOLDS: "set_aside_no_reference_holds"}
+                NO_REFERENCE_HOLDS: "set_aside_no_reference_holds", IDLE_RUN_PASSES: "set_aside_idle_run_passes"}
 # A policy line that binds before a write: it says must (or needs, has to, is required) ...
 MUST_RE = re.compile(r"\b(?:must|needs?|has to|have to|required)\b")
 # ... and has the user give a value: the user provides, gives or supplies it, or it is obtained from the user.
@@ -345,13 +425,18 @@ def _shared(workdir: Path) -> _Shared:
 
 def end_of(workdir: Path, task_id: str, shared: _Shared) -> Optional[tuple[str, dict]]:
     """(why the Task ends with no Verifier, what decided it), or None for a Task that keeps its Verifier:
-    a policy precondition unrendered first, then no Reference holding."""
+    a policy precondition unrendered first, then an idle Run holding every code gate with no told gate (D441),
+    then no Reference holding."""
     spec, verifier = load_spec(workdir, task_id), load_spec_verifier(workdir, task_id)
     if spec is None or verifier is None or spec.set_aside is not None:
         return None
-    missing = unrendered_field(spec, load_inputs(workdir, task_id, spec.intent))
+    inputs = load_inputs(workdir, task_id, spec.intent)
+    missing = unrendered_field(spec, inputs)
     if missing:
         return PRECONDITION_UNRENDERED, missing
+    held = idle_held(verifier, idle_run(task_id, inputs.state), shared.canon, shared.write_tools, shared.schema)
+    if held is not None:
+        return IDLE_RUN_PASSES, {"held": held}
     kept = set(shared.references.get(task_id) or ())
     runs = [run for run in shared.runs.get(task_id, ()) if run.run_id in kept]
     judged = judge_results_of(workdir, task_id, verifier, runs) if runs else {}
@@ -362,7 +447,8 @@ def end_of(workdir: Path, task_id: str, shared: _Shared) -> Optional[tuple[str, 
 
 def end_unpassable(workdir: Any, task_ids: Iterable[str], *, bus: Optional[Bus] = None) -> dict:
     """After compile and the Examiner, end each named Task no right Run can pass with no Verifier (D439):
-    a gated write's policy precondition the instruction never renders (precondition_unrendered), or
+    a gated write's policy precondition the instruction never renders (precondition_unrendered), an idle
+    Run holding every code gate with no gated judge or said item (idle_run_passes, D441), or
     References none of which holds every gate (no_reference_holds). A Task with no Reference keeps today's
     path. Returns the Tasks checked and the counts per reason, beside write_specs' set_aside counts."""
     workdir = Path(workdir)
@@ -381,7 +467,8 @@ def end_unpassable(workdir: Any, task_ids: Iterable[str], *, bus: Optional[Bus] 
     return counts
 
 
-__all__ = ["ENDED_COUNTS", "FAILURE_CHARS", "NO_REFERENCE_HOLDS", "PRECONDITION_UNRENDERED", "SPEC_TASK_CEILING_USD",
-           "end_of", "end_task", "end_unpassable", "failure_line", "given_fields", "older_grammar", "reference_holds",
+__all__ = ["ENDED_COUNTS", "FAILURE_CHARS", "IDLE_RUN_PASSES", "IDLE_SENT_BACK", "NO_REFERENCE_HOLDS", "PRECONDITION_UNRENDERED", "SPEC_TASK_CEILING_USD",
+           "end_of", "end_task", "end_unpassable", "failure_line", "given_fields", "idle_held", "idle_ruling",
+           "idle_send_back", "older_grammar", "reference_holds",
            "rendered", "tool_fields", "tool_lines", "unrendered_field", "write_from_intent", "write_one",
            "write_specs", "written_already"]

@@ -4610,3 +4610,27 @@ row; canon, hyphen, space and case folding license; a value only canon licenses 
 abbreviation or a choice licenses nothing and the echo gate is weighed naming the three ways; a value nothing holds
 is refused naming them; echo, unfounded and end facts license nothing), tests/spec/test_items.py (an echo-only
 gate is weighed).
+
+### D441. A Verifier an idle Run passes ships only with a gated judge or said item (2026-10-19)
+
+What. At the Spec stage the compiled Verifier is scored on the idle Run (no call, no reply; trust.idle_run, the
+runner's verdict, judge items unsettled). If no code gate fails on it (state, sanity and event items), the Verifier
+must carry a gated judge item or a gated said item naming a value. If it carries neither, `spec/stage.py
+idle_send_back` sends the Spec back to the writer once at write time (after the ungated send back, D419), ruling on
+its gated code items and naming each gate the idle Run holds; the writer count idle_sent_back keeps those gates and
+write_specs counts it. After the Examiner, `end_unpassable` judges again: still so, the Task ends with no Verifier
+as idle_run_passes through the same path as D439 (set_aside, Verifier files removed, task.set_aside on the bus,
+counted as set_aside_idle_run_passes, a router.NO_VERIFIER_WHYS reason the tier report counts). An idle Run that
+fails a code gate changes nothing. A Spec already set aside for clashes or an unchecked end is not sent back.
+
+Why. Gold-blind retail edits left 9 of 45 Verifiers passing the idle Run on every code gate, 3 with no judge gate,
+so a do-nothing agent passed those Tasks outright; the Harbor empty-trial control found the same shape on airline.
+Most are asks the policy refuses, where no write is the right end and only a judge item sees that the right Run
+looked up and told the user why. D419's held_by_idle mark covers only Specs whose end names a write; this rule
+covers every Task. On the 309 staged Verifiers no Task would end (airline 42 of 123 pass the idle Run on code
+gates, all with a gated judge item; retail 1 of 186, likewise); on the 45 blind retail Verifiers 3 would end.
+
+Tests: tests/spec/test_stage_idle.py (a Verifier whose idle Run fails a code gate is neither sent back nor ended; a
+no-write Verifier with a gated judge item keeps it; one of code gates only goes back once and unchanged ends with no
+Verifier; a send back answered with a gated judge item keeps it; a gated said item naming a value counts as told),
+tests/spec/test_ungated.py (counts of calls with the added send back).
