@@ -4381,3 +4381,38 @@ reading it loses nothing; several rows stay strict because there the key is what
 Tests: tests/runner/test_judge_items.py (a reply with one result under another key is read as the item; the
 JudgeScore says so in why; several results with none under the item id leave the item unjudged; a one result
 reply under another key still needs a score of 0 or 1).
+
+### D423. A Verifier cell the scorer cannot read is refused at Spec time and gated at export (2026-10-19)
+
+What. A row_is expect field, a row_keeps field or a judge anchor field whose dotted path meets a list at a part
+that is not an index, on the named start row, is refused by `World.check` (spec/items.py `unreadable_path`).
+The message names the path, the list and its length, and the indexed form to write instead, so the Spec writer's
+tool hands it back and the writer rewrites. A list of one member is refused too, not rewritten to index 0: the
+end row may hold more members than the start row, and only the writer knows which member it meant. A key the row
+lacks and an index past a list's end are kept, since a tool may add either. The Harbor export reads every cell of
+an already written Verifier against the Task's Starting state and sets the Task aside as `unreadable_cell`
+before any oracle is tried, counted under skipped in the manifest. The frozen runner is unchanged.
+
+Why. The scorer's `path_value` steps into a list only by an index, so a cell like row.list.leaf reads None and can
+never hold whatever the Run does. Over the 309 staged Harbor Tasks of 2026-10-17 the gate sets aside 13 airline
+and 25 retail Tasks (29 and 65 cells), and the compile check refuses the same Tasks. Writing those 38 again needs
+model calls and waits.
+
+Tests: tests/spec/test_items.py (a cell path meeting a list without an index is refused naming the path and the
+list; a path past a list's end or to a key the row lacks is kept), tests/hub/test_harbor.py (a Verifier cell the
+scorer cannot read on its start row sets the Task aside and is counted).
+
+### D425. The world report counts listed ids that name no row (2026-10-19)
+
+What. `derive_world` writes `dangling` into world_report.json: per list column of text values, the table its
+members key (the table whose row keys they name most often, ties by name), how many ids it lists and how many name
+no row there (builder/world_tools.py `dangling_ids`). Nothing is pruned and no Task is set aside.
+
+Why. Rows are learned from recordings only, while a person's row carries their full id list, so the agent can open
+an id the person's own row names and get "not found". The schema learns no references between tables (id
+patterns per column and homes only), so the gate the brief allowed with references cannot be built; the count is
+the general route without them. On the staged packages: airline 64 of 159 listed ids, retail 4 of 162, the same
+in every Task's db.json. The bug-1019 repro test stays failing, marked xfail with this reason.
+
+Tests: tests/builder/test_world_tools.py (the world report counts listed ids that name no row of the table they
+key; derive_world writes the count into the world report).
