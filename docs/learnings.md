@@ -83,7 +83,8 @@ line names the decision that enforces it, or says none does yet.
   user's own record. A world built on a slice binds every row the end reads (D425 counts, D429 prunes at export).
 - The canned user says yes only to what it asked; a blanket yes reads as consent to the agent's own offer (D430).
 - A gated value only the Reference supplied is a wrong gate. Where the ask and the policy leave a choice open,
-  write one_of or no gate (D434); a born Task's scenario fixes the value.
+  write one_of or no gate (D438, in build; the literal refusal D434 was held back); a born Task's scenario fixes
+  the value.
 - Duplicate items double an item's weight and give a judge item a second chance to fail; overlapping new-row
   specs starve each other (D428).
 - A said number compiles to bare digits for every Task, so a formatted amount meets its digits (D427).
