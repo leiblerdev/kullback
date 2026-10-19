@@ -581,12 +581,21 @@ class World:
         if value is None:
             return ValueSource(kind="world", ptr={"removed": True})
         text, key, name = norm(value), reach_key(value), leaf_of(field)
-        return self._user_reach(text) or self._tool_reach(table, name, key) or self._start_reach(name, key) \
-            or self._arg_reach(table, name, text)
+        return self._user_reach(text, self._tool_known(table, name)) or self._tool_reach(table, name, key) \
+            or self._start_reach(name, key) or self._arg_reach(table, name, text)
 
-    def _user_reach(self, target: str) -> Optional[ValueSource]:
-        """The user's own words fixing the value: a fact that is not an echo of the agent's proposal."""
+    def _tool_known(self, table: str, name: str) -> bool:
+        """Whether a tool's learned writes or a recorded write result know any value of that field."""
+        reach = self.reach or Reach()
+        return bool((reach.tools.get(table) or {}).get(name) or reach.recorded.get(name))
+
+    def _user_reach(self, target: str, tool_known: bool = False) -> Optional[ValueSource]:
+        """The user's own words fixing the value: a fact that is not an echo of the agent's proposal. An end
+        fact counts only for a field no tool reach knows (D426): where a tool writes the field, its spelling
+        rules, not the end's."""
         for fact in self.facts:
+            if tool_known and is_end_fact(fact):
+                continue
             if not getattr(fact, "echo", False) and _contains(_flat(fact.text), target):
                 return ValueSource(kind="user_turn", ptr={"recording": fact.source.recording,
                                                           "turn": fact.source.turn, "fact": fact.id})

@@ -4746,3 +4746,21 @@ appends counts so the longer list projects; a list value whose length is not the
 value under a list of several members is left unreadable; a one-member list with one value is still named by index 0;
 a new row where path through a list without an index is named unreadable; a called set tests every member of a list
 argument against the set; a prohibited called set is not widened).
+
+### D426. An end fact sources a gated value only for a field no tool reach knows (2026-10-19)
+
+What. In the reach check (D387), a fact of the scenario's end counts as the user's own words only for a field no
+tool reach knows: no learned write of that table and field and no recorded write result under that field name.
+Where a tool reach knows the field, a gated value must come from a tool write, a start row, a real user turn or an
+argument the field is copied from; else it is refused with the field's reachable values, in the refusal's old
+wording. A free value only the end names, under a field no tool writes, stays reachable from the end.
+
+Why. In a hand audit of born Tasks, six of sixteen gates no Run could hold set a status cell to the spelling a
+tool's description gave, while the tool writes another. The scenario end copied the description, the end became an
+end fact, and the reach read it as the user fixing the value, so the gate was kept and every Run failed it. The
+tool's own spelling was in its reach all along. With the end out of the user's words for such a field, the writer
+is refused and re gates on the listed spelling, the way D410 lets a refused writer try again within its turns.
+
+Tests: tests/spec/test_reach.py (a gated value only the end spells is refused where a tool writes the field another
+way, listing the tool's spelling; a value the end names stays reachable for a field no tool reach knows; a real
+user turn still sources a value for a field a tool writes).
