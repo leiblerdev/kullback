@@ -4254,3 +4254,15 @@ no learned writes, with the same count and mark. Why: the source files of the ro
 exactly that, learned before writes were kept, so the stage would still have run silently on them. Tests:
 tests/spec/test_writer.py (a Spec written beside an effects file whose tools carry no writes says none were
 learned); tests/spec/test_stage.py (the learned case now places a tool with writes).
+
+### D418. The published package says nothing about why a Task stopped (2026-10-19)
+
+What. The viewer rows (tasks.jsonl) and the Task index no longer carry `stopped_because`, and the manifest no
+longer carries the `untrusted` reasons table built from it. The fixed phrases behind them (STOPPED_AT) are gone.
+`stage`, `trusted`, `refused` and the D333 trust fields stay, so a reader still sees how far each Task got.
+
+Why. The founder read the dataset viewer and asked for the column to go: phrases such as "the D79 suite did not
+pass" are harness plumbing and mean nothing to a reader of the dataset. The gates still rule and log every reason;
+only the package stops repeating them. Tests: tests/hub/test_publish.py (the viewer rows carry exactly id,
+instruction, stage, trusted, refused, bucket, replay_confirmed and recordings; the index and manifest name no
+reason a Task stopped).

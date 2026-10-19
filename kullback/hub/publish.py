@@ -85,10 +85,6 @@ def from_staged(staged: Any, out: Any) -> dict:
     manifest = dict(read_json(staged / MANIFEST_NAME, {}) or {})
     for key in ("status", "harbor"):
         manifest.pop(key, None)
-    # A package staged when the manifest kept only the commonest untrusted reasons; its own index has them all.
-    rows = (read_json(staged / package_mod.TASKS_INDEX_NAME, {}) or {}).get("tasks")
-    if rows:
-        manifest["untrusted"] = package_mod.untrusted_reasons(rows)
     return manifest
 
 

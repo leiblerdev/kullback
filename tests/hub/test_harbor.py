@@ -811,19 +811,6 @@ def test_a_staged_package_with_a_tampered_file_is_refused_naming_the_file(tmp_pa
                         form="harbor", staged=staged)
 
 
-def test_a_staged_manifest_listing_only_some_untrusted_reasons_publishes_every_reason_from_its_index(
-        tmp_path, monkeypatch):
-    from kullback.hub import publish
-
-    workdir, staged = _staged(tmp_path, monkeypatch)
-    manifest = read_json(staged / "manifest.json")
-    whole = manifest["untrusted"]
-    write_json(staged / "manifest.json", dict(manifest, untrusted=dict(whole, reasons=whole["reasons"][:0])))
-    _, reused = publish.publish(workdir, "someorg/widgets", client=LocalHub(tmp_path / "second"), preview=True,
-                                form="harbor", staged=staged)
-    assert reused["untrusted"] == whole
-
-
 def test_a_card_published_from_a_staged_package_names_the_commit_its_harbor_tasks_were_laid_at(
         tmp_path, monkeypatch):
     from kullback.hub import publish

@@ -1,8 +1,7 @@
 """The cards: one per Environment, one for the organisation, and the template that documents both (D221).
 
 A card is rendered from a manifest and nothing else, so a number on a page is a number the package
-carries. Every reason a card gives is one of the harness's fixed phrases from package.py, never a
-quoted record.
+carries. A card names no reason a Task stopped and quotes no record.
 """
 
 from __future__ import annotations
