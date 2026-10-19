@@ -4521,3 +4521,61 @@ Verifier; one whose asked value a rendered fact gives keeps it; a Task whose Ref
 whose one Reference holds keeps it; a Task with no Reference keeps it; a line binds a field only where the user
 must give it; a line speaks of a tool by name or heading; a tool without learned effects reads the columns of the
 table its argument names).
+
+### D429. The shipped world drops listed ids that name no row, where the keyed table is read without doubt (2026-10-19)
+
+What. At the Harbor export only (the build world stays as learned), each Task's Starting state is read per list
+column of text values (hub/listed_ids.py). A column is read as keying one table when every member that names a row
+names a row of that one table and at least half its members name one; the members naming no row are then dropped
+from the world the task ships, in the shared rows and in the rows the Task's overlay pins. A column whose members
+name rows of two tables, or too few rows, is ambiguous: nothing is dropped and the manifest names it. A Task whose
+kept Reference has a call argument equal to a dropped id is left out as `reads_dropped_id` and listed masked. The
+manifest carries per Task the dropped ids by column (`ids_dropped`) and the ambiguous columns, and in counts the
+ids dropped, the Tasks touched, the columns pruned and the Tasks with an ambiguous column; the export and publish
+report lines say the count.
+
+Why. Rows are learned from recordings only while a person's row lists every id they hold, so the agent opened an
+id the user's own row handed it and the tool answered "not found" (bug-1019 Bug 4: 24 calls in 19 trials). D425
+counted these ids; the schema still learns no references, so the table is read off the values, and only where
+that reading cannot be wrong. On the 309 staged Tasks: airline 6784 ids dropped from one column in all 106
+exported Tasks (64 each), 5 Tasks set aside; retail 644 from one column in all 161 (4 each), none set aside; no
+ambiguous column. Replaying the 19 trials on the new world: none of the 12 calls in exported Tasks is handed the id
+any more; the other 8 trials' Tasks are set aside (4 reads_dropped_id, 4 unreadable_cell, D423). A Task with no
+kept Reference is not checked (36 airline, 22 retail); its oracle still has to pass on the pruned world.
+
+Tests: tests/hub/test_listed_ids.py (a column naming one table drops the members naming no row; two tables or too
+few rows is ambiguous; a column naming no row is not read; pruning reaches shared rows and overlay rows; a call
+reads an id at any depth), tests/hub/test_harbor.py (every id a row of the exported world lists opens with its
+tool; a Task whose Reference reads a dropped id is set aside and counted; an ambiguous column drops nothing and the
+manifest says so).
+
+### D430. The canned user agrees to what it asked and to nothing different (2026-10-19)
+
+What. Every reply of the Harbor trial's user after its opening is "Yes, go ahead with what I asked for. I do not
+agree to anything different from what I asked, and I have nothing to add." (hub/harbor_world.py `CONSENT_LINE`).
+
+Why. The old line, "Yes, please go ahead with what I asked for. I have nothing to add.", was read as a yes to the
+agent's own offer: three trials took it as consent to a refund method the instruction ruled out, and the audit put
+those fails on the harness. The new line still answers a confirm-before-write ask with yes.
+
+Tests: tests/hub/test_harbor.py (the consent line agrees to what was asked and to nothing different; a message to
+the user is answered with the standing consent).
+
+### D433. A Harbor pass is every gate holding; the shaped reward stays beside the items (2026-10-19)
+
+What. `reward_of` answers `reward` 1.0 when every gate holds and 0.0 otherwise, failing closed as before, and
+`shaped_reward`, the gated then weighted reward the Verdict scores. reward.txt and reward.json carry the pass alone;
+items.json carries `shaped_reward` beside the per-item results. The Hub card, which is the package README, says in
+one line what reward.txt means, and the manifest's reward block says the same.
+
+Why. Weighted items shape training past the gates and never pass or fail a Run (the founder's reward design), but
+Harbor counts a pass at reward 1 only, so a weighted item a right Run may skip failed the Task. The shaped reward
+does not go into reward.json, against the brief's wording: Harbor takes every reward.json value as a reward and its
+pass@k gives up on a trial with more than one reward or one other than 0 or 1 (harbor/utils/pass_at_k.py). Rescoring
+the 309 recorded trials of the first run under this rule, code items offline and judge items as recorded: 61 of the
+196 fails become passes (airline 30 of 81, retail 31 of 115), every one of the 113 passes still passes, and the 9
+unscored trials stay unscored. This changes what a pass means, not what the agent did.
+
+Tests: tests/hub/test_harbor.py (a Run holding every gate but missing a weighted item passes in Harbor with its
+shaped reward below 1 in items.json; a failed gate gives 0 whatever the weighted items say; the shaped reward is the
+Verdict score), tests/hub/test_publish.py (the card says in one line that reward.txt is a pass or a fail).
