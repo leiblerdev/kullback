@@ -152,3 +152,23 @@ def test_expose_writes_the_derived_verifier_under_derived_and_leaves_verifiers_a
     assert read_json(workdir / "exam" / "derived" / "t1.json") == as_dict(verifier)
     assert "derived/t1.json" in out["copied"]
     assert not (workdir / "exam" / "verifiers").exists(), "the proposal path stays the Examiner's own"
+
+
+def test_current_reads_the_spec_verifier_and_ignores_a_stale_proposal_under_exam(tmp_path):
+    verifier = _verifier(tmp_path)
+    write_json(tmp_path / "exam" / "verifiers" / "t1.json", as_dict(verifier.model_copy(update={"atoms": []})))
+    root = F.ExamRoot(workdir=tmp_path, verifiers={"t1": verifier})
+    assert root.current("t1") == verifier and root.current("t2") is None
+
+
+def test_check_edit_takes_a_body_edit_only_and_names_what_is_missing(tmp_path):
+    body = {"kind": "body", "path": "env/tools/a.py", "call_id": "c1", "column": "slot", "recorded": "a",
+            "replayed": "b", "why": "w"}
+    assert F.check_edit(body, tmp_path) == body
+    for edit, said in (({"kind": "cell", "task_id": "t1"}, "is a ruling"), (dict(body, column=""), "column")):
+        try:
+            F.check_edit(edit, tmp_path)
+        except ValueError as error:
+            assert said in str(error)
+        else:
+            raise AssertionError(f"{edit} was taken")

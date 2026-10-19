@@ -1,7 +1,7 @@
 """run_record reads the recorded file, so later writes cannot rewrite earlier results (G1).
 
-Needs the step-split patch (docs/frozen-patches/step-split.patch): the interface steps the world
-through `advance`, so this module skips unless the patch is applied.
+The interface steps the world through `advance` (step-split landed); the guard below skips on
+a tree without it.
 """
 
 from __future__ import annotations

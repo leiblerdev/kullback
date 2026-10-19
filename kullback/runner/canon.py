@@ -313,13 +313,6 @@ def canon_record(
     }
 
 
-def record_hash(
-    row: dict, schema: Any = None, table: Optional[str] = None, rules: Optional[CanonRules] = None
-) -> str:
-    """Content hash of a canonicalized row; exempt columns cannot move it."""
-    return content_hash(canon_record(row, schema, table, rules))
-
-
 def _class_of(schema: Any, table: Optional[str], name: str, rules: CanonRules) -> ColumnClass:
     if schema is None:
         return rules.default_class

@@ -27,16 +27,17 @@ from typing import Any, Optional
 from kullback.hub import package as package_mod
 from kullback.hub.card import FIDELITY_BAR, card_markdown
 from kullback.hub.client import HostedRepo, HubClient, hub_client, url_for
-from kullback.hub.package import CARD_NAME
-from kullback.runner.records import read_json
+from kullback.hub.package import CARD_NAME, HARBOR_DIR, MANIFEST_NAME
+from kullback.runner.records import read_json, write_json
 
 RELEASE_FIDELITY = FIDELITY_BAR
 
 # What `kullback run` opens in a workdir before it can run a candidate. A fetch reports any of these
 # the package did not carry, so a directory that will not run says so on arrival rather than at the
-# first run.
-RUN_INPUTS: tuple[str, ...] = ("environment.json", "schema.json", "tool_sigs.json", "bodies.json",
-                               "env/db.json", "env/policy.md")
+# first run. environment.json is among them: `verdict` stamps its versions on every Verdict and the
+# regrade gate refuses one without them (D407).
+RUN_INPUTS: tuple[str, ...] = ("schema.json", "tool_sigs.json", "bodies.json", "env/db.json", "env/policy.md",
+                               "environment.json")
 
 
 class PublishError(RuntimeError):
@@ -65,28 +66,83 @@ def release_ruling(manifest: dict, preview: bool, bar: float = RELEASE_FIDELITY)
     return "release"
 
 
+FORMATS = ("package", "harbor")
+
+
+def from_staged(staged: Any, out: Any) -> dict:
+    """The package a dry run laid out at `staged`, verified and copied into `out` without its Harbor form,
+    its card or a host's hidden files; answers its manifest as the export wrote it (D399).
+
+    A package that does not verify is refused, naming the first problem: reusing it is only worth
+    anything because it is the package that was checked.
+    """
+    staged, out = Path(staged), Path(out)
+    problems = package_mod.verify_package(staged)
+    if problems:
+        raise PublishError(f"the staged package at {staged} does not verify: {problems[0]}")
+    shutil.copytree(staged, out, ignore=lambda folder, names: [
+        name for name in names if name.startswith(".") or (Path(folder) == staged and name in (HARBOR_DIR, CARD_NAME))])
+    manifest = dict(read_json(staged / MANIFEST_NAME, {}) or {})
+    for key in ("status", "harbor"):
+        manifest.pop(key, None)
+    # A package staged when the manifest kept only the commonest untrusted reasons; its own index has them all.
+    rows = (read_json(staged / package_mod.TASKS_INDEX_NAME, {}) or {}).get("tasks")
+    if rows:
+        manifest["untrusted"] = package_mod.untrusted_reasons(rows)
+    return manifest
+
+
 def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, preview: bool = False,
           corpus: Optional[str] = None, corpus_license: Optional[str] = None,
-          corpus_url: Optional[str] = None, bar: float = RELEASE_FIDELITY) -> dict:
+          corpus_url: Optional[str] = None, bar: float = RELEASE_FIDELITY, harbor: bool = False,
+          harbor_options: Optional[dict] = None, workers: Optional[int] = None, staged: Optional[Any] = None) -> dict:
     """Export into `out`, decide release or preview, and write the card beside the package.
 
     Answers the manifest with the ruling on it. The card is written after the manifest and is not
     part of the content hash: it is prose about the package, rewritten on every publish, and a
-    package whose card someone edited has not been tampered with.
+    package whose card someone edited has not been tampered with. `harbor_options` go to export_harbor
+    as they are: the Task set, the tier files, the label files and their rubric (D399). `staged` reuses
+    the package a dry run laid out there instead of exporting it again (from_staged); the rest is the same.
+    The Task index is ruled once, on `workers` processes, and every form that needs it reads it (D401).
     """
     resolved = name or repo_id.rsplit("/", 1)[-1]
-    manifest = package_mod.export(workdir, out, name=resolved, corpus=corpus, corpus_license=corpus_license,
-                                  corpus_url=corpus_url, preview=preview)
+    index = (package_mod.task_index(Path(workdir), package_mod.frozen_task_ids(Path(workdir)), workers=workers)
+             if (Path(workdir) / "env").is_dir() and (harbor or staged is None) else None)
+    if staged is not None:
+        manifest = from_staged(staged, out)
+    else:
+        manifest = package_mod.export(workdir, out, name=resolved, corpus=corpus, corpus_license=corpus_license,
+                                      corpus_url=corpus_url, preview=preview, workers=workers, index=index)
     manifest["status"] = release_ruling(manifest, preview, bar)
-    Path(out, CARD_NAME).write_text(card_markdown(manifest, repo_id), encoding="utf-8")
+    laid: Optional[dict] = None
+    if harbor:
+        # The Harbor form of the same Tasks under harbor/, with its own manifest and leak scan (D363).
+        from kullback.hub.harbor import export_harbor
+
+        organisation = repo_id.split("/", 1)[0] if "/" in repo_id else None
+        laid = export_harbor(workdir, Path(out) / HARBOR_DIR, name=resolved,
+                             **({"org": organisation} if organisation else {}), workers=workers, index=index,
+                             **(harbor_options or {}))
+        manifest["harbor"] = {key: laid[key] for key in ("tasks_chosen", "counts", "content_hash", "leak_scan",
+                                                         "tiers", "labels", "left_out", "no_oracle", "git_sha")
+                              if key in laid}
+    # Read off what was laid, so the card says how many tools there are and quotes one Task's ask.
+    manifest["inside"] = package_mod.inside(Path(out), laid)
+    write_json(Path(out) / package_mod.MANIFEST_NAME, manifest)
+    # Written after the Harbor form, so the card can name the commit that laid its Tasks.
+    card = card_markdown(manifest, repo_id, harbor=laid)
+    Path(out, CARD_NAME).write_text(card, encoding="utf-8")
     return manifest
 
 
 def publish(workdir: Any, repo_id: str, *, client: Optional[HubClient] = None, name: Optional[str] = None,
             preview: bool = False, corpus: Optional[str] = None, corpus_license: Optional[str] = None,
             corpus_url: Optional[str] = None, keep: Optional[Any] = None,
-            bar: float = RELEASE_FIDELITY) -> tuple[HostedRepo, dict]:
+            bar: float = RELEASE_FIDELITY, form: str = "package",
+            harbor_options: Optional[dict] = None, workers: Optional[int] = None, staged: Optional[Any] = None) -> tuple[HostedRepo, dict]:
     """Export, card, upload, tag. Answers where it landed and the manifest that landed there."""
+    if form not in FORMATS:
+        raise PublishError(f"--format takes {' or '.join(FORMATS)}, not {form}")
     host = hub_client(client)
     root = Path(keep) if keep is not None else Path(tempfile.mkdtemp(prefix="kullback-publish-"))
     out = root / repo_id.rsplit("/", 1)[-1]
@@ -94,7 +150,9 @@ def publish(workdir: Any, repo_id: str, *, client: Optional[HubClient] = None, n
         shutil.rmtree(out)
     try:
         manifest = stage(workdir, out, repo_id, name=name, preview=preview, corpus=corpus,
-                         corpus_license=corpus_license, corpus_url=corpus_url, bar=bar)
+                         corpus_license=corpus_license, corpus_url=corpus_url, bar=bar,
+                         harbor=form == "harbor", harbor_options=harbor_options,
+                         workers=workers, staged=staged)
         url = host.create_repo(repo_id)
         tag = manifest["tag"]
         commit = host.upload_folder(repo_id, out, _commit_message(manifest, tag))
@@ -112,8 +170,7 @@ def _commit_message(manifest: dict, tag: str) -> str:
             f"{manifest.get('tasks_total', 0)} Tasks, {manifest.get('trusted', 0)} trusted; "
             f"env {str(manifest.get('env_id') or '')[:12]}, "
             f"content {str(manifest.get('content_hash') or '')[:12]}, "
-            f"runner {str(manifest.get('runner_version') or '')[:12]}, "
-            f"gates {str(manifest.get('gates_version') or '')[:12]}")
+            f"code {str(manifest.get('runner_version') or '')[:12]}")
 
 
 def fetch(repo_id: str, out: Any, *, client: Optional[HubClient] = None,

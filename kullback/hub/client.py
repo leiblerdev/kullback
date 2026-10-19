@@ -42,7 +42,7 @@ class HubClient(Protocol):
         """Make the repository if it is not there; answer its URL."""
 
     def upload_folder(self, repo_id: str, folder: Path, message: str) -> str:
-        """Upload every file under `folder` as one commit; answer the commit id."""
+        """Make the repository hold exactly the files under `folder`, as one commit; answer the commit id."""
 
     def tag(self, repo_id: str, tag: str, revision: Optional[str] = None) -> None:
         """Name a commit, replacing a tag of the same name."""
@@ -65,8 +65,9 @@ class HuggingFaceHub:
         return url_for(repo_id)
 
     def upload_folder(self, repo_id: str, folder: Path, message: str) -> str:
+        # delete_patterns "*" drops what an older release left that this one lacks (the Hub keeps .gitattributes)
         info = self._api.upload_folder(repo_id=repo_id, repo_type=REPO_TYPE, folder_path=str(folder),
-                                       commit_message=message)
+                                       commit_message=message, delete_patterns="*")
         return str(getattr(info, "oid", None) or getattr(info, "commit_id", None) or "")
 
     def tag(self, repo_id: str, tag: str, revision: Optional[str] = None) -> None:
@@ -92,6 +93,39 @@ class HuggingFaceHub:
         raise HubError(
             f"the Hub has no API for an organisation profile: paste the card into "
             f"https://huggingface.co/organizations/{organisation}/settings/profile by hand")
+
+
+class LocalHub:
+    """A host that is a directory: a dry run lays each upload out under `root/<repo_id>` and pushes nothing."""
+
+    def __init__(self, root: Any):
+        self.root = Path(root)
+        self.tags: dict[str, str] = {}
+
+    def create_repo(self, repo_id: str) -> str:
+        (self.root / repo_id).mkdir(parents=True, exist_ok=True)
+        return str(self.root / repo_id)
+
+    def upload_folder(self, repo_id: str, folder: Path, message: str) -> str:
+        import shutil
+
+        target = self.root / repo_id
+        shutil.rmtree(target, ignore_errors=True)
+        shutil.copytree(folder, target)
+        (target / ".commit-message").write_text(message + "\n", encoding="utf-8")
+        return "local"
+
+    def tag(self, repo_id: str, tag: str, revision: Optional[str] = None) -> None:
+        self.tags[repo_id] = tag
+
+    def download(self, repo_id: str, out: Path, revision: Optional[str] = None) -> Path:
+        import shutil
+
+        shutil.copytree(self.root / repo_id, out, dirs_exist_ok=True)
+        return Path(out)
+
+    def set_organisation_card(self, organisation: str, markdown: str) -> str:
+        raise HubError("a local dry run has no organisation page")
 
 
 def url_for(repo_id: str) -> str:

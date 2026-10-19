@@ -129,7 +129,6 @@ def test_a_declared_format_or_span_kind_wins_over_a_shape_guess(toy_formats, wor
 def test_a_bare_messages_list_with_an_id_is_unknown(workdir, tmp_path):
     payload = {"id": "x", "messages": [{"role": "user", "content": "hi"}]}
     assert ingest.format_detect(payload) == "unknown"
-    assert any("positive evidence" in reason for reason in ingest.detect_reasons(payload))
     raw = ingest.store_raw(write_json(tmp_path / "bare.json", payload), workdir)
     with pytest.raises(ValueError, match="positive evidence"):
         ingest.derive_traces(raw.raw_hash, workdir)

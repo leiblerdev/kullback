@@ -1,7 +1,7 @@
 """Driving a Run from outside: reset, scripted steps, a reward by code (G1).
 
-Needs the step-split patch (docs/frozen-patches/step-split.patch): the interface steps the world
-through `advance`, so this module skips unless the patch is applied.
+The interface steps the world through `advance` (step-split landed); the guard below skips on
+a tree without it.
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from kullback.runner import loop
+from kullback.runner.tool import STOP_SHORT_LINE
 
 pytestmark = pytest.mark.skipif(
     not (hasattr(loop, "ask") and hasattr(loop, "advance")),
@@ -58,7 +59,7 @@ def test_reset_hands_the_policy_what_it_needs_to_act():
         info = episode.reset("widget_task", seed=7)
         assert info.run_id == "widget_task-7"
         assert {spec["name"] for spec in info.tools} == {"describe_widget", "rename_widget"}
-        assert info.system_prompt is not None
+        assert info.system_prompt is not None and info.system_prompt.endswith(STOP_SHORT_LINE)
         assert info.opening is not None
         seeded = Episode(env, outdir=Path(tmp) / "out_seeded")
         assert seeded.reset("widget_task", seed=123).seed == 123
@@ -192,3 +193,24 @@ def test_reset_step_and_transcript_outputs_cannot_mutate_world_or_recording(tmp_
     assistant = next(m for m in episode.transcript() if m.get("tool_calls"))
     assistant["tool_calls"][0]["name"] = "changed_by_caller"
     assert next(m for m in episode.transcript() if m.get("tool_calls"))["tool_calls"][0]["name"] == "describe_widget"
+
+
+def test_a_single_turn_task_opens_with_its_facts_folded_in_and_runs_with_no_user(tmp_path):
+    """D332: `facts_in_instruction` folds the user's facts into the opening; no user is built."""
+    import json
+
+    from kullback.runner.world.environment import FACTS_LEAD
+
+    root = write_env(tmp_path / "env")
+    task_path = root / "tasks" / "widget_task.json"
+    task_path.write_text(json.dumps({**json.loads(task_path.read_text()), "facts_in_instruction": True}))
+
+    def no_user(*_):
+        raise AssertionError("a single-turn Task builds no Simulated user")
+
+    episode = Episode(BuiltEnvironment(root), outdir=tmp_path / "out", user_factory=no_user)
+    reset = episode.reset("widget_task", seed=7)
+    assert reset.opening.startswith("give widget w1 the label striped")
+    assert FACTS_LEAD in reset.opening and "- widget id: w1" in reset.opening
+    assert episode._state.user is None
+    assert episode.transcript()[-1] == {"role": "user", "content": reset.opening}

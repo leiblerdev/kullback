@@ -33,7 +33,7 @@ from gates.verifier_fixtures import (
     write_run_with_footer,
     wrong_run,
 )
-from kullback.examiner import derive as V
+from kullback import derive as V
 from kullback.gates import artifacts
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules
@@ -440,7 +440,8 @@ def test_a_zero_cap_has_no_mutant_and_is_not_counted_as_a_failed_flip(tmp_path):
     gate = [g for g in S.validate_verifier(verifier, asked, canon=CanonRules()) if g.stage == "verifier_mutation"][0]
     # The communicate atom is what carries this Verifier, and it flips, so the check passes.
     assert gate.passed is True, gate.failures
-    assert gate.metrics == {"atoms_mutated": 1, "atoms_not_mutable": 1}
+    assert gate.metrics["atoms_mutated"] == 1 and gate.metrics["atoms_not_mutable"] == 1
+    assert gate.metrics["run_id"] == "asked" and gate.metrics["mutated"] == []
 
 
 def test_a_hard_atom_that_judged_no_call_does_not_read_as_held(tmp_path):
@@ -476,8 +477,8 @@ def test_a_verifier_with_no_mutable_atom_fails_the_mutation_check_and_the_text_s
     gate = [g for g in S.validate_verifier(verifier, talking, canon=CanonRules()) if g.stage == "verifier_mutation"][0]
     assert gate.passed is False
     # Three, not two: D190 attaches its no-write claim here too, and a Run with no call at all
-    # gives that rule nothing to judge, so it is inert on this Reference like the other two.
-    assert gate.metrics == {"atoms_mutated": 0, "atoms_not_mutable": 3}
+    assert gate.metrics["atoms_mutated"] == 0 and gate.metrics["atoms_not_mutable"] == 3
+    assert gate.metrics["run_id"] == "talking"
     assert "nothing in it can be falsified" in " ".join(gate.failures)
 
 
@@ -709,10 +710,13 @@ def test_an_empty_run_that_passes_a_verifier_of_allowed_atoms_names_no_atom_and_
     gate = gates["verifier_empty_run"]
     assert gate.passed is False
     assert gate.metrics["passing_atoms"] == []
+    assert gate.metrics["run_id"] == "empty"
     rows = rows_for(gate, {})
-    assert {"check": "verifier_empty_run", "failure": "expected fail, got pass"} in rows
+    assert {"check": "verifier_empty_run", "run": "empty",
+            "expected": "fail", "got": "pass"} in rows
     assert {"check": "verifier_empty_run",
-            "failure": "no atom of the Verifier is one a Run is checked on, so no Run can fail it"} in rows
+            "failure": "no atom of the Verifier is one a Run is checked on, so no Run can fail it",
+            "run": "empty", "expected": "fail", "got": "pass"} in rows
     assert [row for row in rows if "atom" in row] == []
 
 
@@ -726,7 +730,8 @@ def test_an_expected_fail_run_that_passed_names_only_the_atoms_check_run_evaluat
     assert gate.passed is False
     assert gate.metrics["passing_atoms"] == [{"id": "few", "kind": "required"}]
     assert [row for row in rows_for(gate, {}) if "atom" in row] == [
-        {"check": "verifier_empty_run", "atom": "few", "kind": "required"}]
+        {"check": "verifier_empty_run", "atom": "few", "kind": "required", "text": "",
+         "run": "empty", "expected": "fail", "got": "pass"}]
 
 
 def test_an_expected_fail_run_that_failed_or_an_expected_pass_carries_no_passing_atoms(tmp_path):
@@ -735,3 +740,46 @@ def test_an_expected_fail_run_that_failed_or_an_expected_pass_carries_no_passing
     assert gates["verifier_empty_run"].passed is True
     assert "passing_atoms" not in gates["verifier_empty_run"].metrics
     assert "passing_atoms" not in gates["verifier_oracle"].metrics
+
+
+def test_a_mutation_the_reference_survives_names_the_run_and_both_values():
+    """A changed atom the Reference still passes names the mutated field with the original
+    and the mutated value."""
+    from kullback.gates.bindings import rows_for
+
+    verifier = Verifier(task_id="t1", atoms=[S.make_atom("few", "required",
+                                                        {"kind": "entity_count", "count": 5})])
+    reference = reference_run()
+    gate = [g for g in S.validate_verifier(verifier, reference, canon=CanonRules())
+            if g.stage == "verifier_mutation"][0]
+    assert gate.passed is False, gate.failures
+    assert gate.metrics["mutated"] == [{"atom": "few", "field": "count", "old": 5, "new": 4,
+                                        "run": "ref"}]
+    evidence = {"verifier": verifier, "reference": reference, "rules": CanonRules()}
+    rows = rows_for(gate, evidence)
+    assert {"check": "verifier_mutation", "atom": "few", "run": "ref",
+            "expected": "fail", "got": "pass", "field": "count", "old": 5, "new": 4,
+            "text": rows[0]["text"]} in rows
+
+
+def test_a_stated_fact_failure_names_the_answer_turn_and_both_wordings(tmp_path):
+    """A communicate atom the Run does not state names the Run's answer turn with the
+    demanded wording against what that turn said."""
+    from kullback.gates.bindings import rows_for
+    from kullback.runner.target import _assistant_text, _reply
+
+    verifier = derive(tmp_path)
+    reference = reference_run()
+    altered = reference.model_copy(deep=True)
+    for event in altered.events:
+        if event.type == "model_call" and "#W123" in _assistant_text(event):
+            reply = dict(_reply(event), content=_assistant_text(event).replace("#W123", "#W999"))
+            event.payload = dict(event.payload, reply=reply) if "reply" in (event.payload or {}) else reply
+    altered = altered.model_copy(update={"run_id": "altered"})
+    gate = [g for g in S.validate_verifier(verifier, altered, canon=CanonRules())
+            if g.stage == "verifier_oracle"][0]
+    assert gate.passed is False and gate.metrics["failing_atom"] == "c0", gate.failures
+    evidence = {"verifier": verifier, "reference": altered, "rules": CanonRules()}
+    [row] = [row for row in rows_for(gate, evidence) if row.get("atom") == "c0"]
+    assert row["run"] == "altered" and row["call"] == 1 and row["tool"] == "model_call"
+    assert row["old"] == "#W123" and row["new"] == _assistant_text(altered.events[1])

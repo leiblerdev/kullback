@@ -309,6 +309,12 @@ def _cause_counts(graded: list[Verdict]) -> dict[str, int]:
     return causes
 
 
+def _mean_score(verdicts: list[Verdict]) -> tuple[Optional[float], int]:
+    """The mean weighted score (D329) over the Verdicts that carry one, and how many do."""
+    scores = [v.score for v in verdicts if v.score is not None]
+    return (sum(scores) / len(scores) if scores else None), len(scores)
+
+
 def _margin_of(frontier_rate: Optional[float], candidate_rate: Optional[float]) -> Optional[float]:
     """How far the Candidate stands above frontier, or nothing where either side is missing."""
     if frontier_rate is None or candidate_rate is None:
@@ -325,6 +331,8 @@ def task_numbers(data: ReportData, task: Task) -> dict:
     frontier_rate = _rate(sum(1 for v in frontier if v.passed), len(frontier))
     candidate_rate = _rate(sum(1 for v in candidate if v.passed), len(candidate))
     kinds = _atom_kinds(data, task)
+    frontier_score, frontier_scored = _mean_score(frontier)
+    candidate_score, candidate_scored = _mean_score(candidate)
     return {
         "runs_graded": len(graded),
         "assisted_not_counted": len(uncounted),
@@ -335,6 +343,10 @@ def task_numbers(data: ReportData, task: Task) -> dict:
         "frontier_pass_rate": frontier_rate,
         "candidate_runs": len(candidate),
         "candidate_pass_rate": candidate_rate,
+        "frontier_mean_score": frontier_score,
+        "frontier_scored": frontier_scored,
+        "candidate_mean_score": candidate_score,
+        "candidate_scored": candidate_scored,
         "margin": _margin_of(frontier_rate, candidate_rate),
         "failing_atoms": _failing_counts(graded, kinds),
         "causes": _cause_counts(graded),

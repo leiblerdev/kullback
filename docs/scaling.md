@@ -1,23 +1,68 @@
-# Scaling Environments (founder, 2026-09-09: "we need to learn from them to scale our environments as well, that is going to be very important")
+# Scaling Environments
 
-Agent-World (arXiv 2604.18292) and Agent World Model (arXiv 2602.10090) both report agent accuracy scaling with the number of environments, roughly doubling from zero to two thousand and steepest in the first five hundred. Kullback builds one environment per corpus of recorded traces and pushes it to 90 to 95 percent replay fidelity. Both are needed: depth is what makes an environment trustworthy, breadth is what makes training on it generalise. This page is the plan for breadth, in the order the mechanisms are built. Every mechanism keys on classes the harness mines (tool dependency, row identity, column class, difficulty record), never on a corpus.
+The plan for breadth: more Tasks and more Environments, beside the depth (replay fidelity) each build already
+chases. It matters because Agent-World (arXiv 2604.18292) and Agent World Model (arXiv 2602.10090) both report
+agent accuracy rising with the number of environments, steepest in the first five hundred.
+
+Every mechanism here keys on classes the harness mines (tool dependency, row identity, column class, difficulty),
+never on a corpus. Nothing synthetic counts as trusted: synthetic Tasks, specification Environments and forks each
+report under their own heading, so a card says how much of an Environment is recorded and how much is generated.
 
 ## Four axes
 
-1. More Tasks per environment without new traces (D224, building). A tool-call dependency graph is mined from the recordings: an edge from tool A to tool B where a B argument value came from an A result column, and from a read to a write on the same row. Walks over that graph, instantiated with rows of the rebuilt world (real rows and the synthetic rows synth.py already grows), become synthetic Tasks: the Intent is written from the walk in symptom form (D196), the Starting state is the world the walk starts in, the Reference End state is what the walk's writes do when executed in the rebuilt world by code, the Verifier is derived from that executed path by the same derive path References use (D198), and the simulated user's askable facts are the row values the walk's arguments carry (record facts never). Walk length, branching and the number of writes set the difficulty record (D209), which is the second half of the TaskPilot knob: a training run asks for buckets and the generator fills them. Synthetic Tasks go through the D79 suite and the held-out pool but are reported under their own heading, never inside trusted, because no recording gates their fidelity. What they buy: a pool large enough to measure over-strictness on thin corpora, training Runs at chosen difficulty, and coverage of tool paths the customer's users have not yet taken.
+1. More Tasks per Environment, without new traces. In code as `kullback synth`.
+2. Environments from a specification instead of traces. Next.
+3. Forks of a trusted Environment. After 2.
+4. Many corpora at once. Operations.
 
-2. Environments without traces, from a specification (next). Agent World Model writes environments from a schema and tool descriptions. Kullback's Builder already writes data model, tool bodies and policy from evidence; a specification (an API description, an MCP tool list, a schema) is thinner evidence than a trace, so the gates change: replay fidelity is unmeasurable and is replaced by consistency rulings the harness already has (the sensitivity gate D195, round trips, the memorised-values gate, effect checks D215 against the specification's own examples) plus generated unit examples per tool, and the report labels the environment "specification, no recording" with those numbers. Synthetic Tasks (axis 1) supply its Tasks. The first customer of this path is a public API with a good specification, so the environment can be compared with a traced one later.
+### 1. Synthetic Tasks from scenarios
 
-3. Forks of a trusted environment (after 2). environment.json already carries parent_env_id. A fork changes one class of thing (a policy line, a schema column, the row population, a tool's refusal predicate) and keeps the rest, inheriting the parent's Tasks with their Verifiers re-derived where the change touched them. Forks are cheap diversity for training and a controlled experiment for the Examiner (which Tasks flip when one policy line changes). Reported with the parent and the diff.
+A scenario is one situation customers of the business meet, in general words, with the policy lines it touches
+(D372). The generator writes scenarios from three sources: the recordings' opening asks, pages a cited web search
+returns, and lines a customer typed. The Examiner reviews each one blind to its source (D373). A passed scenario
+bound to rows of the world becomes a Task through the same Spec and review loop as a recorded Task, in its own
+`synthetic` tier (D389).
 
-4. Many corpora at once (operations). Builds already run per workdir with cumulative ceilings; a fleet command runs the loop on every corpus under one budget, publishes each environment to the Hub (D221) with its card, and reports the funnel per environment side by side. The diagnosis across Tasks that Agent-World credits for its largest gains sits here as an Examiner stage that ranks weak Tasks by relation class (D211's classes) before the repair beat.
+```bash
+uv run kullback synth scenarios work --model provider/model
+uv run kullback synth review work --model provider/model
+uv run kullback synth tasks work --store work
+```
 
-Beside the four axes: feedback mining from traces (founder, 2026-09-23, production direction), in docs/todo.md under that name.
+The rules a synthetic Task follows: it has no Reference and is never tested against a valid Run; its Verifier
+comes from the scenario; realism is judged against the domain; difficulty rises only by more work in the world,
+never by a vaguer ask or a stricter check.
 
-## What stays fixed
+Before scenarios, the source was walks over the tool-call dependency graph (`kullback synthesise`, D224).
 
-Trusted means a recorded trace replayed at fidelity, a Reference confirmed, a Verifier derived and the suite passed. Nothing synthetic joins that count. Synthetic Tasks, specification environments and forks each carry their own heading and their own numbers, so a card on the Hub says how much of an environment is recorded and how much is generated. The harness stays general: the walk generator, the specification reader and the fork tool name classes, never a domain.
+### 1b. More rows in the Starting state
 
-## Order and measurement
+`builder/synth.py` grows the Starting state past the ids the traces named (D40, D107), through the Builder's
+`grow` tool. Ids and closed vocabularies are drawn by code from the observed rows, related rows grow as one
+bundle, and observed rows are never edited. A Run that reads a grown row is marked assisted, and growth never
+lands in a trusted Task.
 
-D224 first because it needs no new evidence and improves the pool on every corpus today; measured by pool size per Task before and after, over-strictness rulings that become measurable, and Tasks per difficulty bucket. Then the specification path on one public API, measured by the consistency rulings and by a candidate model's pass rate on it against the same model on a traced environment of the same domain. Then forks, measured by how many inherited Verifiers survive a one-line policy change. Throughput last.
+### 2. Environments from a specification
+
+An API description, an MCP tool list or a schema is thinner evidence than a trace. Replay fidelity cannot be
+measured, so consistency rulings take its place: the sensitivity gate (D195), round trips, effect checks (D215)
+against the specification's own examples, plus generated examples per tool. Synthetic Tasks supply the Tasks. The
+card says "specification, no recording".
+
+### 3. Forks
+
+`environment.json` carries `parent_env_id`. A fork changes one class of thing (a policy line, a column, the row
+population, a refusal rule), keeps the rest, and re-derives the Verifiers the change touches. Forks give cheap
+diversity for training and a controlled test of the Examiner: which Tasks flip when one policy line changes.
+
+### 4. A fleet
+
+One command runs every corpus under one budget, publishes each Environment with its card, and reports the
+funnel per Environment side by side.
+
+## How each step is measured
+
+- Synthetic Tasks: Tasks per difficulty bucket and pool size per Task, before and after.
+- Specification Environments: a candidate model's pass rate there against the same model on a traced
+  Environment of the same domain.
+- Forks: how many inherited Verifiers survive a one-line policy change.

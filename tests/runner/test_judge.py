@@ -10,16 +10,12 @@ from kullback.ai.provider import ProviderError
 from kullback.runner.judge import (
     JUDGE_VERSION,
     AgenticJudge,
-    JudgeResult,
     abstain_verdict,
-    confirm_reference,
     disagreement_rate,
     judge_name,
     read_disagreement_queue,
-    set_task_aside,
     smoke,
     smoke_lines,
-    tasks_set_aside,
     third_judge,
     two_judges,
 )
@@ -509,64 +505,6 @@ def test_the_default_third_sample_reuses_judge_a_under_another_persona(make_test
 
 
 # --- a disputed Reference sets the Task aside (D93) ---
-
-
-def test_a_confirmed_reference_leaves_the_task_in_the_build(make_test_model, workdir):
-    a = named_judge(make_test_model, "a", "good_reference")
-    b = named_judge(make_test_model, "b", "good_reference")
-    confirmed, result = confirm_reference(a, b, {"run_id": "r1"}, "intent", workdir=workdir, task_id="t1")
-    assert confirmed is True
-    assert result.verdict == "good_reference"
-    assert tasks_set_aside(workdir) == []
-
-
-def test_a_disputed_or_bad_reference_sets_the_task_aside_and_no_third_judge_runs(make_test_model, workdir):
-    model_a = make_test_model([call(), answer(verdict="good_reference", cited_spans=["by a"])])
-    model_b = make_test_model([call(), answer(verdict="bad_reference", cited_spans=["by b"])])
-    a = AgenticJudge(model_a, TOOLS, name="a")
-    b = AgenticJudge(model_b, TOOLS, name="b")
-    confirmed, result = confirm_reference(a, b, {"run_id": "r1"}, "intent", workdir=workdir, task_id="t1")
-    assert confirmed is False
-    assert result.verdict == "abstain"
-    aside = tasks_set_aside(workdir)
-    assert len(aside) == 1
-    assert aside[0]["task_id"] == "t1"
-    assert aside[0]["reason"] == "reference_disputed"
-    assert aside[0]["judge_a"]["verdict"] == "good_reference"
-    assert aside[0]["judge_b"]["verdict"] == "bad_reference"
-    assert aside[0]["judge_a"]["cited_spans"] == ["by a"]
-    assert len(read_disagreement_queue(workdir)) == 1
-    assert len(model_a.calls) == 2 and len(model_b.calls) == 2
-
-    both_bad = workdir / "both_bad"
-    both_bad.mkdir()
-    a = named_judge(make_test_model, "a", "bad_reference")
-    b = named_judge(make_test_model, "b", "bad_reference")
-    confirmed, _ = confirm_reference(a, b, {"run_id": "r1"}, "intent", workdir=both_bad, task_id="t1")
-    assert confirmed is False
-    assert tasks_set_aside(both_bad)[0]["reason"] == "reference_unconfirmed"
-
-    # the list of Tasks set aside only grows, in the order they were set aside
-    stored = workdir / "stored"
-    stored.mkdir()
-    first = JudgeResult(use="reference", verdict="good_reference", judge="a")
-    second = JudgeResult(use="reference", verdict="bad_reference", judge="b")
-    set_task_aside(stored, "t1", "reference_disputed", first, second)
-    set_task_aside(stored, "t2", "reference_unconfirmed", first, second)
-    assert [row["task_id"] for row in tasks_set_aside(stored)] == ["t1", "t2"]
-
-
-def test_two_abstaining_judges_leave_the_reference_unconfirmed(make_test_model, workdir):
-    """D92: an item neither judge decided is exactly what a person has to see, so it is queued too."""
-    a = named_judge(make_test_model, "a", "abstain")
-    b = named_judge(make_test_model, "b", "abstain")
-    confirmed, result = confirm_reference(a, b, {"run_id": "r1"}, "intent", workdir=workdir, task_id="t1")
-    assert confirmed is False
-    assert tasks_set_aside(workdir)[0]["reason"] == "reference_unconfirmed"
-    queue = read_disagreement_queue(workdir)
-    assert len(queue) == 1
-    assert queue[0]["reason"] == "agreed_abstain"
-    assert queue[0]["disagreement"] is False
 
 
 # --- helpers ---

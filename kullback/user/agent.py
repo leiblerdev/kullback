@@ -19,6 +19,7 @@ The object presents exactly the interface the Runner's loop asks of a Simulated 
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any, Callable, Iterable, Optional, Sequence
 
 from kullback.agent.bus import Bus
@@ -33,8 +34,10 @@ from kullback.runner.records import Event
 from kullback.user import ends as ends_mod
 from kullback.user import guards as guards_mod
 from kullback.user import rules as rules_mod
+from kullback.user.account import ACCOUNT, AccountView, ChoiceBook
 from kullback.user.context import TaskContext, volunteer_allowance
 from kullback.user.extension import user_extension
+from kullback.user.lookup import asked_in
 from kullback.user.tools import Toolbox
 from kullback.user.vocabulary import GENERIC, Vocabulary
 
@@ -44,7 +47,8 @@ from kullback.user.vocabulary import GENERIC, Vocabulary
 TURN_MESSAGE = ("Write your next turn in this conversation. On the first turn, say why you got in "
                 "touch, in your own words, and whatever you would say without being asked. After "
                 "that, read what they just said. Use your tools for anything about yourself you "
-                "are not sure of, and answer with the turn itself and no tool call.")
+                "are not sure of; the rules name which tool answers which question. Answer with "
+                "the turn itself once your tools have answered, never with a tool call as the turn.")
 # A turn is one model answer, however many tool calls it took to get there. The cap is on the tool
 # calls, so a model that loops on its own tools cannot spend a build's ceiling on one turn.
 MAX_TURNS_PER_REPLY = 6
@@ -73,7 +77,8 @@ class AgentUser:
                  goal_writes: Optional[Iterable[str]] = None,
                  answer_strip: Optional[Callable[[str], tuple[str, list]]] = None,
                  record_values: Optional[dict] = None, trace: Any = None,
-                 max_tool_turns: int = MAX_TURNS_PER_REPLY, bus: Optional[Bus] = None):
+                 max_tool_turns: int = MAX_TURNS_PER_REPLY, bus: Optional[Bus] = None,
+                 choices: Optional[ChoiceBook] = None, account: Optional[AccountView] = None):
         self.ctx = ctx
         self.fallback = fallback
         self.model = model
@@ -86,7 +91,7 @@ class AgentUser:
             record_values=record_values, strip=answer_strip)
         self.protocol = guards_mod.EndProtocol(goal_writes, write_tools)
         self.write_tools = frozenset(write_tools or ())
-        self.box = Toolbox(ctx)
+        self.box = Toolbox(ctx, choices=choices, account=account, vocab=vocab)
         self.events: list[Event] = []
         self.done = False
         self.end_reason: Optional[str] = None
@@ -105,21 +110,32 @@ class AgentUser:
         self._turn += 1
         question = _last_assistant(transcript)
         self.box.requested = None
-        asked = rules_mod.asked_fields(question, vocab=self.vocab)
-        text = self._model_turn(transcript)
-        if text is None:
+        request = asked_in(question)  # the same lookup the rule user and my_facts answer from (D332)
+        asked = self.box.store.lookup(request).fields() if request else []
+        made = self._model_turn(transcript)
+        if made is None:
             return self._from_fallback(transcript)
+        text, thinking = made
+        from_account, unasked = guards_mod.account_leak(
+            text, self.box.account_given, self.guards.grounding, question, asked)
+        if unasked:
+            self.guards.counts[guards_mod.ACCOUNT_UNASKED] = (
+                self.guards.counts.get(guards_mod.ACCOUNT_UNASKED, 0) + 1)
+            return self._from_fallback(transcript, dropped=guards_mod.ACCOUNT_UNASKED,
+                                       thinking=thinking)
         outcome = self.guards.check(
             text, facts_allowed=volunteer_allowance(self.trace, _rules_of(self.fallback), self._turn),
-            facts_said=self._facts_said, asked=asked)
+            facts_said=self._facts_said, asked=asked,
+            granted=[*from_account, *self.box.chosen])
         if outcome.dropped:
-            return self._from_fallback(transcript, dropped=outcome.reason)
-        return self._speak(outcome.text, question, transcript, outcome.changed, asked)
+            return self._from_fallback(transcript, dropped=outcome.reason, thinking=thinking)
+        return self._speak(outcome.text, question, transcript, outcome.changed, asked,
+                           thinking=thinking)
 
     # --- the model's turn ----------------------------------------------------------------------
 
-    def _model_turn(self, transcript: Sequence = ()) -> Optional[str]:
-        """One model answer over a harness built for this beat, or None when there is no model."""
+    def _model_turn(self, transcript: Sequence = ()) -> Optional[tuple[str, str]]:
+        """One model answer with what it weighed before writing, or None when there is no model."""
         if self.model is None:
             self.counts[NO_MODEL] += 1
             return None
@@ -148,7 +164,8 @@ class AgentUser:
 
     # --- what is actually said -------------------------------------------------------------------
 
-    def _from_fallback(self, transcript: list, dropped: Optional[str] = None) -> str:
+    def _from_fallback(self, transcript: list, dropped: Optional[str] = None,
+                       thinking: str = "") -> str:
         """The rule-driven user answers this beat, and its end decision stands (D214 rule 3)."""
         self.counts["fallback_turns"] += 1
         seen = len(self.fallback.events)
@@ -156,7 +173,11 @@ class AgentUser:
         self.box.said.append(text)
         event = self.fallback.events[-1] if len(self.fallback.events) > seen else None
         payload = dict(event.payload or {}) if event is not None else {"text": text}
-        payload["driver"] = "rules"
+        payload["user_tools"] = [dict(call) for call in self.box.tool_calls]
+        # What the model weighed before the turn fell, so a later reader can tell whether it
+        # never read or read and was dropped anyway. Empty where no model ran.
+        payload["user_thinking"] = thinking
+        self.box.tool_calls = []
         if dropped:
             payload["agent_turn_dropped"] = dropped
         self.done = bool(getattr(self.fallback, "done", False))
@@ -165,7 +186,7 @@ class AgentUser:
         return text
 
     def _speak(self, text: str, question: str, transcript: list, changed: Sequence[str],
-               asked: Sequence[str] = ()) -> str:
+               asked: Sequence[str] = (), thinking: str = "") -> str:
         """The model's turn, guarded, with the end decided in code (D210, D214 rule 4)."""
         self.counts["agent_user_turns"] += 1
         self.box.said.append(text)
@@ -175,7 +196,7 @@ class AgentUser:
         made = guards_mod.writes_made(transcript, self.write_tools)
         kind = self.protocol.kind(question, said_anything=bool(text.strip()),
                                   had_nothing=self._had_nothing(text, question),
-                                  made=made, requested=self.box.requested,
+                                  made=made,
                                   acted=ends_mod.tool_called(transcript))
         tags = list(changed)
         if kind is not None:
@@ -184,13 +205,37 @@ class AgentUser:
             if not self._end_tagged:
                 tags.append(kind)
                 self._end_tagged = True
-        self._record({"text": text, "driver": "agent", "facts": carried, "tags": tags,
-                      "requested_end": self.box.requested, "user_end": kind}, assisted=False)
+        goal_met = self.protocol.goal_done(made, acted=ends_mod.tool_called(transcript),
+                                           closed=rules_mod.closes(question))
+        payload = {"text": text, "driver": "agent", "facts": carried, "tags": tags,
+                   "requested_end": self.box.requested, "user_end": kind, "user_goal_met": goal_met,
+                   "user_tools": [dict(call) for call in self.box.tool_calls],
+                   "user_thinking": thinking}
+        self.box.tool_calls = []
+        sources = self._sources(text)
+        if sources:
+            payload["sources"] = sources
+        self._record(payload, assisted=False)
         return text
 
+    def _sources(self, text: str) -> dict[str, str]:
+        """Where each value this turn took from a tool came from, so derivation can tell a mined
+        value from one the recorded user said: an account column is tagged `account`, a choice
+        with the layer that answered it."""
+        out: dict[str, str] = {}
+        for value, (kind, source) in self.box.chosen.items():
+            if rules_mod._said_in(text, value):
+                out[kind] = source
+        for column in guards_mod.account_said(text, self.box.account_given, self.guards.grounding).values():
+            out[column] = ACCOUNT
+        return out
+
     def _had_nothing(self, text: str, question: str) -> bool:
-        """This turn answered a question with no fact of its own, which is the scenario running out."""
+        """This turn answered a question with no fact of its own and no yes to what was asked, which
+        is the scenario running out."""
         if not rules_mod._request_sentences(rules_mod._norm(question)):
+            return False
+        if guards_mod.confirms(text, question):
             return False
         return self.guards.facts_in(text) == 0
 
@@ -231,12 +276,15 @@ def _last_assistant(transcript: Sequence) -> str:
     return question or ""
 
 
-def _last_text(harness: AgentHarness) -> str:
-    """Run one turn to the end and answer with the last assistant text the model wrote.
+def _last_text(harness: AgentHarness) -> tuple[str, str]:
+    """Run one turn to the end and answer with the last assistant text and what it weighed.
 
     The harness already carries the turn line last, so this continues on the transcript as it
-    stands rather than appending another line."""
+    stands rather than appending another line. The thinking is the model's reasoning summary
+    for the turn, kept beside the tools it called so a later reader can tell why it read or not.
+    """
     said: list[str] = []
+    weighed: list[str] = []
 
     async def go() -> None:
         async for event in harness.continue_():
@@ -244,9 +292,41 @@ def _last_text(harness: AgentHarness) -> str:
                 text = (getattr(event.message, "content", "") or "").strip()
                 if text:
                     said.append(text)
+                thought = (getattr(event.message, "thinking", "") or "").strip()
+                if thought:
+                    weighed.append(thought)
 
-    asyncio.run(go())
-    return said[-1] if said else ""
+    _run_to_end(go)
+    return (said[-1] if said else ""), "\n".join(weighed)
+
+
+
+def _run_to_end(go: Callable[[], Any]) -> None:
+    """Run one turn's coroutine to its end, from sync code whether or not a loop is running.
+
+    The Runner's loop is sync and asks a turn of this user from inside whatever called it; the
+    Examiner's reroll tool is a coroutine, so there a loop is already running and `asyncio.run` would
+    refuse, every turn would fail, and every beat would go to the floor unseen. The turn then runs on
+    a thread of its own, which the caller waits for.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(go())
+        return
+    failed: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            asyncio.run(go())
+        except BaseException as error:  # handed back to the caller's thread
+            failed.append(error)
+
+    thread = threading.Thread(target=worker, name="agent-user-turn")
+    thread.start()
+    thread.join()
+    if failed:
+        raise failed[0]
 
 
 def run_user(ctx: TaskContext, fallback: Any, model: Optional[Model] = None, **kwargs) -> AgentUser:

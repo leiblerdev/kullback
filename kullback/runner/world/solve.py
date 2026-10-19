@@ -99,7 +99,7 @@ def _attempt(env: BuiltEnvironment, task_id: str, attempt: int, model: Any,
             out = episode.step(episode_message(getattr(reply, "content", None),
                                                getattr(reply, "tool_calls", None)))
             if out.done:
-                return episode.reward().score, False
+                return episode.reward(), False
     except budget.BudgetExceeded:
         episode.abort("budget_exceeded")
         return None, True
@@ -119,21 +119,28 @@ def _attempt(env: BuiltEnvironment, task_id: str, attempt: int, model: Any,
 
 
 def _task_row(env, task_id, model, runs_per_task, outdir, max_turns, stopped):
-    row = {"task": task_id, "runs": 0, "passes": 0, "no_signal": 0, "interrupted": 0, "solve_rate": None}
+    row = {"task": task_id, "runs": 0, "passes": 0, "no_signal": 0, "interrupted": 0, "solve_rate": None,
+           "mean_score": None}
+    scores = []
     for attempt in range(runs_per_task):
         if stopped:
             break
-        score, stopped = _attempt(env, task_id, attempt, model, outdir, max_turns)
+        reward, stopped = _attempt(env, task_id, attempt, model, outdir, max_turns)
         if stopped:
             row["interrupted"] += 1
             break
         row["runs"] += 1
-        if score is None:
+        passed = getattr(reward, "passed", None)
+        if passed is None:
             row["no_signal"] += 1
-        elif score == 1:
-            row["passes"] += 1
+            continue
+        row["passes"] += bool(passed)
+        if reward.score is not None:
+            scores.append(reward.score)
     scoreable = row["runs"] - row["no_signal"]
     row["solve_rate"] = row["passes"] / scoreable if scoreable else None
+    # The weighted score past the gates (D329), over the Runs whose score no open item masked.
+    row["mean_score"] = sum(scores) / len(scores) if scores else None
     return row, stopped
 
 
@@ -170,10 +177,11 @@ def solve_rate(env: BuiltEnvironment, task_ids: list[str], model: Any, *, runs_p
 
 def markdown_table(table: dict) -> list[str]:
     """The table as markdown rows: Task, Runs, passes, no-signal apart, rate over scoreable only."""
-    lines = ["| task | runs | passes | no-signal | solve rate |",
-             "| --- | ---: | ---: | ---: | ---: |"]
+    lines = ["| task | runs | passes | no-signal | solve rate | mean score |",
+             "| --- | ---: | ---: | ---: | ---: | ---: |"]
     for row in table.get("tasks") or []:
-        rate = row["solve_rate"]
+        rate, mean = row["solve_rate"], row.get("mean_score")
         lines.append(f"| {row['task']} | {row['runs']} | {row['passes']} | {row['no_signal']} | "
-                     + ("-" if rate is None else f"{rate:.3f}"))
+                     + ("-" if rate is None else f"{rate:.3f}") + " | "
+                     + ("-" if mean is None else f"{mean:.3f}"))
     return lines

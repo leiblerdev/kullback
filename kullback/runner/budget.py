@@ -28,11 +28,6 @@ from kullback.runner.records import Cost, Event, Usage
 # actually calls: a model priced by neither source is not priced at zero quietly, its calls
 # are counted under unpriced_calls in the totals file and the report shows that count.
 PRICES_CHECKED = "2026-09-23"
-PRICES_NOTE = (
-    "list prices per 1M tokens, checked by hand on "
-    + PRICES_CHECKED
-    + "; update me before trusting a build's cost, and add the models you call"
-)
 PRICES: dict[str, dict[str, float]] = {
     "anthropic/claude-opus-5": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
     "anthropic/claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
@@ -794,6 +789,33 @@ class Ceiling:
             target["direct_calls"] += 1
             target["direct_usd"] += usd
         save_totals(self.workdir, totals)
+
+
+class EffortModel(Model):
+    """A Model that carries one reasoning effort into ModelConfig on every call.
+
+    The flag value lands on both effort fields, so each adapter sends what it knows
+    and ignores the rest: Anthropic reads effort, OpenAI chat reads reasoning_effort.
+    A caller that already named an effort keeps it. The name is the inner model's,
+    so pricing, windows and the ledger read what they always read.
+    """
+
+    def __init__(self, inner: Model, effort: Optional[str] = None):
+        self.inner = inner
+        self.effort = effort
+        self.name = getattr(inner, "name", "model")
+
+    def query(
+        self,
+        messages: list[dict],
+        tools: Optional[list[dict]] = None,
+        config: Optional[ModelConfig] = None,
+    ) -> ModelReply:
+        if self.effort is not None and (config is None or (config.effort is None
+                                                           and config.reasoning_effort is None)):
+            config = (config or ModelConfig()).model_copy(
+                update={"effort": self.effort, "reasoning_effort": self.effort})
+        return self.inner.query(messages, tools=tools, config=config)
 
 
 class BudgetedModel(Model):

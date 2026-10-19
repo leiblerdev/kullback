@@ -4,6 +4,7 @@ hidden state."""
 
 from __future__ import annotations
 
+import glob
 import importlib
 import json
 from datetime import datetime, timezone
@@ -11,11 +12,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 import typer
+from typer.core import TyperCommand as _TyperCommand
 
 from kullback import difficulty, round_snapshot
 from kullback.ai.provider import DEFAULT_MODEL
 from kullback.report import coverage_rows, load, load_tool_sigs, write_report
 from kullback.runner import feed, heartbeat
+from kullback.runner.code_hash import CODE_HASH, SCORING_PACKAGES
 from kullback.runner.records import (
     EntitySchema,
     Environment,
@@ -37,6 +40,26 @@ SECOND_JUDGE_MODEL = typer.Option(None, "--second-judge-model",
                                  help="Model id for the second judge, as provider/model (D160). Without it the "
                                       "second judge is --judge-model's own model under a second persona (D97).")
 BASE_URL = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model.")
+
+#: The build command lets --user-model pass bare: the vendored parser has no optional-value
+#: option, so the command answers a bare --user-model with the empty value before parsing,
+#: which reads as the switch on with no model named, exactly like --user-model "".
+def _with_user_model_value(args: list[str]) -> list[str]:
+    """Copy `args` with "" after each bare --user-model, leaving valued forms alone."""
+    out: list[str] = []
+    for index, arg in enumerate(args):
+        out.append(arg)
+        rest = args[index + 1:]
+        if arg == "--user-model" and (not rest or rest[0].startswith("-")):
+            out.append("")
+    return out
+
+
+class _BuildCommand(_TyperCommand):
+    """The build command, answering a bare --user-model before the parser sees it."""
+
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
+        return super().parse_args(ctx, _with_user_model_value(list(args)))
 
 
 def _entry(path: str, name: str):
@@ -111,11 +134,14 @@ def _judged_atoms(verifier: Verifier, paths: list, judges, workdir: Path) -> dic
         return {}
     load_run = _entry("kullback.runner.verdict", "load_run")
     answer = _entry("kullback.runner.judge", "judge_atom_results")
+    items = _entry("kullback.judge.items", "judge_items")
     out = {}
     for path in paths:
         run = load_run(path)
         out[run.run_id] = answer(verifier, run, judges[0], judges[1],
                                  workdir=workdir, run_id=run.run_id)
+        # Judge items: one call each on the first judge's model (D328).
+        out[run.run_id].update(items(judges[0].model, verifier.atoms, run))
     return out
 
 
@@ -191,9 +217,10 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
     load_rules = _entry("kullback.runner.canon", "load_rules")
     canon_rules = load_rules(Path(workdir) / "canon-rules.json")
     canon = canon_rules
-    env_path, version_path = Path(workdir) / "environment.json", Path(workdir) / "runner_version.json"
-    environment = _load(env_path, Environment) if env_path.is_file() else None
-    version = _load(version_path, RunnerVersion).runner_version if version_path.is_file() else None
+    # The D97 versions come from the shipped files where the build left none (D407).
+    record = _entry("kullback.hub.package", "environment_record")(Path(workdir))
+    environment = Environment.model_validate(record) if record else None
+    version = CODE_HASH
     schema = _schema(workdir)
     if schema is None:
         typer.echo("no EntitySchema on disk (schema.json): exempt columns are not dropped from the diff (D73)")
@@ -211,8 +238,7 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
         if not path.is_file():
             typer.echo(f"task {task.id}: no Verifier yet, not scored")
             continue
-        verifier, folder = _load(path, Verifier), Path(workdir) / "runs" / task.id
-        paths = sorted(folder.glob("*.jsonl")) if folder.is_dir() else []
+        verifier, paths = _load(path, Verifier), task_run_files(workdir, task.id)
         if not paths:
             typer.echo(f"task {task.id}: no stored Runs")
             continue
@@ -220,17 +246,22 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
         common = dict(environment=environment, runner_version=version, schema=schema,
                       write_tools=write_tools or None, flagged_tools=flagged_tools,
                       rules=canon_rules)
-        verdicts = score(paths, verifier, canon, out_dir=out_dir,
-                         judge_results=_judged_atoms(verifier, paths, judges, Path(workdir)),
-                         judge_version=judge_version,
-                         queue_dir=Path(workdir) if use_queue else None, **common)
-        gated = regrade_gate(verdicts)
+        judged = _judged_atoms(verifier, paths, judges, Path(workdir))
+        # Scored once with nothing written, gated, then scored into the store: a refused Verdict
+        # leaves no file behind for the report to count (D407).
+        gated = regrade_gate(score(paths, verifier, canon, judge_results=judged, judge_version=judge_version,
+                                   **common))
         # getattr, not gated.passed: a test double that stands in for regrade_gate (fake_modules)
         # answers neither attribute, and a stand-in gate must not read as a refusal (D97).
         if not getattr(gated, "passed", True):
             for failure in getattr(gated, "failures", []):
                 typer.echo(f"task {task.id}: refused, {failure}")
             continue
+        verdicts = score(paths, verifier, canon, out_dir=out_dir, judge_results=judged,
+                         judge_version=judge_version,
+                         queue_dir=Path(workdir) if use_queue else None, **common)
+        # Which Verifier scored each Run, so trust lends its judge answers to that Verifier only (D347).
+        _entry("kullback.spec.judged", "record_scored")(out_dir, verdicts, verifier)
         named = _name_causes(verdicts, paths, judges, Path(workdir), out_dir,
                              _rescorer(score_one, verifier, canon, out_dir, judge_version, common))
         scored += 1
@@ -246,17 +277,10 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
         raise typer.Exit(1)
 
 
-def runner_version(routing_config: Optional[Path] = None) -> RunnerVersion:
-    """The content hash of every file in runner/ and the routing config, as one RunnerVersion record.
-
-    runner/boundary.py computes it, so freeze-runner and the gate that checks a Run can never
-    disagree; the gates package is hashed beside it as `gates_version` (D122).
-    """
-    compute = _entry("kullback.runner.boundary", "runner_version")
-
-    config = Path(routing_config).read_text(encoding="utf-8") if routing_config else None
-    return compute(Path(__file__).parent, config,
-                   created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+def runner_version() -> RunnerVersion:
+    """The code hash this checkout runs and scores under (runner/code_hash.py), as one RunnerVersion record."""
+    return RunnerVersion(runner_version=CODE_HASH,
+                         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
 
 @app.command()
@@ -379,6 +403,18 @@ def rescue(
     typer.echo(line + (" (dry run: nothing written)" if dry_run else ""))
 
 
+def task_run_files(workdir: Path, task_id: str) -> list[Path]:
+    """A Task's stored Run files in both layouts (D406): runs/<task>/*.jsonl, which a build's Runner writes,
+    and runs/<task>-<seed>.jsonl, which `kullback run` writes. The seed is digits only, so the Runs of a
+    sibling Task whose id is this one, a dash and more never count as this Task's."""
+    runs = Path(workdir) / "runs"
+    folder = runs / task_id
+    nested = sorted(folder.glob("*.jsonl")) if folder.is_dir() else []
+    flat = sorted(path for path in runs.glob(f"{glob.escape(task_id)}-*.jsonl")
+                  if path.stem[len(task_id) + 1:].isdigit())
+    return nested + flat
+
+
 def _live_model(model_id: str, base_url: Optional[str]):
     """One live adapter, or the refusal in words. provider.live_model is the single place the
     live-call flag is ever set, so the screen and the CLI refuse for the same reason."""
@@ -388,16 +424,97 @@ def _live_model(model_id: str, base_url: Optional[str]):
         typer.echo(str(error))
         raise typer.Exit(2) from None
 
-@app.command()
+def _effort_model(adapter: Any, effort: Optional[str]) -> Any:
+    """The adapter with one reasoning effort on every call, or itself where no effort was named."""
+    if adapter is None or not effort:
+        return adapter
+    budget = importlib.import_module("kullback.runner.budget")
+    return budget.EffortModel(adapter, effort)
+
+
+def _spec_switch(adapter: Any, judge_adapter: Any, spec_adapter: Any) -> dict:
+    """The Builder's examine call: References chosen, the Specs written, then the Examiner's review (D320).
+
+    The named Tasks, else every runnable Task of the build's sample, get their References by code,
+    the build's tool effects are learned (builder/tool_effects.py), then a Spec and its Verifier on `spec_adapter` (a Task that has both keeps them, its gates
+    refreshed once a Reference has come); then the Examiner reviews them on `adapter` in rounds,
+    the writer answering open rulings between rounds, so one call runs round one and, where rulings
+    stand open, round two.
+    """
+    examine = _entry("kullback.examiner.session", "examine")
+    examine_rounds = _entry("kullback.examiner.session", "examine_rounds")
+    write_specs = _entry("kullback.spec.stage", "write_specs")
+    spec_candidates = _entry("kullback.builder.domain_tools", "confirmed_task_ids")
+    tool_effects = _entry("kullback.builder.tool_effects", "store")
+
+    def examine_fn(workdir: Any, task_ids: Any) -> Any:
+        ids = list(task_ids) if task_ids is not None else list(spec_candidates(Path(workdir)))
+        code = examine(Path(workdir), task_ids=ids, model=None, judge_model=judge_adapter or adapter)
+        # What each tool always moves and what its calls pass, for the Spec writer's checks (D341).
+        tool_effects(Path(workdir))
+        counts = write_specs(Path(workdir), ids, spec_adapter)
+        typer.echo(f"spec: {json.dumps(counts, default=str, sort_keys=True)}")
+        rounds = examine_rounds(Path(workdir), ids, model=adapter, writer_model=spec_adapter)
+        held, total = rounds.get("held"), rounds.get("total")
+        rows = [f.as_dict() for f in code] + list(rounds.get("findings", []))
+        return {"summary": f"examiner rounds ran, held {held}; rulings {total}", "findings": rows}
+
+    return {"examine_fn": examine_fn}
+
+
+def _task_sample(value: Optional[str]) -> Optional[list[str]]:
+    """The --tasks value as Task ids: a comma list, or @path to a file of ids, one per line."""
+    if value is None:
+        return None
+    if value.startswith("@"):
+        lines = Path(value[1:]).read_text(encoding="utf-8").splitlines()
+    else:
+        lines = value.split(",")
+    return [line.strip() for line in lines if line.strip()]
+
+
+def _store_sample(workdir: Path, sample: Optional[list[str]]) -> None:
+    """The --tasks sample into the build manifest; without one the manifest keeps what it holds."""
+    if sample is not None:
+        from kullback.spec.trust import store_tasks
+
+        store_tasks(workdir, sample)
+
+
+@app.command(cls=_BuildCommand)
 def build(
     workdir: Path = WORKDIR,
     model: str = typer.Option(DEFAULT_MODEL, "--model",
                               help=f"Builder model id, as provider/model; the default is {DEFAULT_MODEL}."),
     judge_model: Optional[str] = typer.Option(None, "--judge-model",
                                               help="Model id for the judges (D160); the default is --model."),
+    run_model: Optional[str] = typer.Option(
+        None, "--run-model",
+        help="Model id for the Candidate: every fresh Run the build plays, the Examiner's "
+             "re-rolls and second paths included. Without it the Candidate runs on --model."),
+    run_effort: Optional[str] = typer.Option(
+        None, "--run-effort",
+        help="Reasoning effort sent on every Candidate call and every agent-user call, and "
+             "nowhere else. Without it no effort is sent."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
     files: Optional[list[Path]] = typer.Option(None, "--file", help="Customer export to ingest first."),  # noqa: B008
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
+    user_model: Optional[str] = typer.Option(
+        None, "--user-model",
+        help="Model id for the agent user every Run meets (D214); the default is --run-model. "
+             "Bare, the switch takes --run-model's model. The agent user's effort follows "
+             "--run-effort."),
+    rule_user: bool = typer.Option(
+        False, "--rule-user",
+        help="Meet every Run with the rule-driven user alone, the default before the agent "
+             "user became the Simulated user. No model is called for the user on this flag."),
+    spec_model: Optional[str] = typer.Option(
+        None, "--spec-model",
+        help="Model id for the Spec writer (intent miner and Verifier writer); the default is --model."),
+    tasks: Optional[str] = typer.Option(
+        None, "--tasks",
+        help="The build's Task sample: a comma list of ids, or @path to a file of ids, one per line. "
+             "Stored in the build manifest; the build plays and examines no Task outside it."),
 ):
     """Run the autonomous Builder session over the ingested Traces and write the Environment.
 
@@ -405,23 +522,47 @@ def build(
     its Environment with the base tools, calls examine when the Environment is ready, acts on the
     findings, and stops when every Task is trusted or refused, when the spend ceiling is reached,
     or when it states why it cannot go further. `--model` drives the session and, unless named
-    otherwise, the Examiner, the judges, the loophole probe and the re-rolls; `--judge-model`
-    puts the judges on a model of their own.
+    otherwise, the Examiner, the judges and the loophole probe; `--judge-model` puts the judges
+    on a model of their own. `--run-model` puts the Candidate on a model of its own instead of
+    --model, and `--run-effort` sends one reasoning effort on the Candidate's calls and the agent
+    user's, never the Builder's, the Examiner's or the judges'. Every Run meets the agent user
+    on the run model over the rule floor, priced under the user stage; `--rule-user` keeps the
+    rule-driven user alone, and `--user-model` names the agent user's own model. The Spec writes
+    every Verifier and the Examiner reviews it (D320); the build ends by writing the tier report
+    (tiers.json) and its line.
     """
+    _store_sample(workdir, _task_sample(tasks))
     adapter = _live_model(model, base_url)
     judge_adapter = _live_model(judge_model, base_url) if judge_model else None
+    run_id = run_model or model
+    run_adapter = adapter if run_id == model else _live_model(run_id, base_url)
+    run_adapter = _effort_model(run_adapter, run_effort)
+    user_kind = "rule" if rule_user else "agent"
+    user_id = None
+    user_adapter = None
+    if not rule_user:
+        user_id = run_id if not user_model else user_model
+        if user_id == run_id:
+            user_adapter = run_adapter
+        else:
+            user_adapter = _effort_model(_live_model(user_id, base_url), run_effort)
     # The screen lists running builds from these heartbeats; the pid tells it who is alive. The
     # pulse keeps beating while the build runs so a screen watching from another directory sees
     # the spend move, rather than a stale $0.0000 until the build is over.
     # The feed is this build's story, opened here and appended to as it goes: /watch reads it to
     # show the calls as they happen instead of a board that only moves when the session ends.
-    feed.start(workdir, model=model, ceiling_usd=ceiling_usd)
+    feed.start(workdir, model=model, ceiling_usd=ceiling_usd, run_model=run_id,
+               run_effort=run_effort or None, user_model=user_id, user_kind=user_kind,
+               judge_model=judge_model)
     pulse = heartbeat.pulse(workdir, model, "running")
     try:
         result = _entry("kullback.builder.session", "build")(
             workdir, adapter, files=list(files or []), ceiling_usd=ceiling_usd,
             subscribers=[_session_subscriber(workdir)], judge_model=judge_adapter,
-            probe_model=adapter, reroll_model=adapter)
+            probe_model=adapter, reroll_model=run_adapter, run_model=run_adapter,
+            user_model=user_adapter,
+            **_spec_switch(adapter, judge_adapter,
+                           adapter if (spec_model or model) == model else _live_model(spec_model, base_url)))
     except Exception:
         pulse.stop()
         heartbeat.beat(workdir, model, "failed")
@@ -431,9 +572,19 @@ def build(
     failed = isinstance(result, dict) and result.get("stopped") == "error"
     heartbeat.beat(workdir, model, "failed" if failed else "done")
     typer.echo(_counts_line(workdir))
+    typer.echo(_tier_line(workdir))
     typer.echo(json.dumps(result, indent=2, default=str))
     if failed:
         raise typer.Exit(code=1)
+
+
+def _tier_line(workdir: Path) -> str:
+    """The tier counts of the report just written to the workdir, after its head and before any warning."""
+    from kullback.spec.report import header_line, write_report
+
+    report = write_report(workdir)
+    counts = "tiers " + ", ".join(f"{tier} {count}" for tier, count in report["tiers"].items())
+    return "\n".join([header_line(report), counts, *(f"warning: {w}" for w in report["warnings"])])
 
 
 def _session_subscriber(workdir: Path):
@@ -462,8 +613,11 @@ def _session_subscriber(workdir: Path):
 
 
 def _counts_line(workdir: Path) -> str:
-    """The workdir counts as one line: trusted, refused and fidelity off the gate rulings."""
+    """The workdir counts as one line: trusted, refused, the pool and fidelity off the gate rulings,
+    trusted read off the Spec tiers where the workdir has Specs (D322)."""
+    from kullback.examiner.reference import pooled_tasks
     from kullback.gates import counts as counts_mod
+    from kullback.spec.trust import spec_tiers_of
 
     root = Path(workdir)
     task_status = _json_at(root, "task_status.json")
@@ -472,9 +626,13 @@ def _counts_line(workdir: Path) -> str:
     result = counts_mod.round_counts(
         task_status, verifiers, {}, {}, _refusal_dicts(root), {}, replays,
         _json_at(root, "rerolls.json"), _entry("kullback.runner.canon", "load_rules")(root / "canon-rules.json"),
-        (_json_at(root, "tool_sigs.json") or {}).get("sigs", []), workdir=root)
-    return (f"trusted {result['trusted']}, refused {result['refused_count']}, "
+        (_json_at(root, "tool_sigs.json") or {}).get("sigs", []), workdir=root,
+        spec_tiers=spec_tiers_of(root))
+    line = (f"trusted {result['trusted']}, refused {result['refused_count']}, "
             f"fidelity {result['fidelity']}/{result['tasks']}")
+    if waiting := pooled_tasks(root):
+        line += f", needs a Reference: {', '.join(waiting)}"
+    return line
 
 
 def _verifier_dicts(root: Path) -> list:
@@ -508,13 +666,14 @@ def _refusal_dicts(root: Path) -> dict:
 def freeze_runner(
     workdir: Path = WORKDIR,
     yes: bool = typer.Option(False, "--yes", help="Skip the confirmation."),
-    routing_config: Optional[Path] = typer.Option(None, "--routing-config", help="Routing config to hash in."),  # noqa: B008
     by: str = typer.Option("unknown", "--by", help="Who confirmed the freeze."),
 ):
-    """Write the RunnerVersion that every later Verdict carries, after a person confirms it."""
-    version = runner_version(routing_config)
-    typer.echo(f"runner version {version.runner_version} over {len(version.file_hashes)} files")
-    typer.echo(f"gates version {version.gates_version} over {len(version.gates_file_hashes)} files")
+    """Record the code hash this build runs on for the export, after a person confirms it.
+
+    It pins no code: every Verdict and tier row carries the live hash of the code that scored it.
+    """
+    version = runner_version()
+    typer.echo(f"code hash {version.runner_version} over {', '.join(SCORING_PACKAGES)}")
     if not yes and not typer.confirm("write this RunnerVersion?"):
         typer.echo("not frozen")
         raise typer.Exit(1)
@@ -813,6 +972,8 @@ def status(
     for name in ("tasks", "fidelity", "reference", "verifier_passed", "trusted", "refused"):
         if name in counts:
             typer.echo(f"{name}: {counts[name]}")
+    if "untrusted" in counts:  # a round closed before D333 has no reasons and flags to print
+        typer.echo(f"trust: {_entry('kullback.gates.trust', 'trust_row')(counts)}")
     for row in report.get("first") or ():
         typer.echo(f"moved: {row['task_id']} at {row['stage']}")
 
@@ -1085,10 +1246,13 @@ def _agent_user_factory(workdir: Path, model_id: str, base_url: Optional[str], c
         model = budget.BudgetedModel(model, stage="user_fidelity", workdir=workdir,
                                      model_id=model_id, ceiling=ceiling, cap_context=True)
     factory = importlib.import_module("kullback.user.factory")
+    goal_of = importlib.import_module("kullback.spec.schema").goal_of
+    writes = importlib.import_module("kullback.user.fidelity").write_tools_of(workdir)
 
     def make(ctx, fallback, record_values):
         return factory.build_user(workdir, ctx.task_id, model, factory.PURPOSE_SCORE, ctx=ctx,
-                                  fallback=fallback, record_values=record_values)
+                                  fallback=fallback, record_values=record_values,
+                                  goal_writes=goal_of(workdir, ctx.task_id, writes)[0])
 
     return make
 
@@ -1136,6 +1300,25 @@ def _rate(value: Optional[float]) -> str:
     return "not measured" if value is None else f"{float(value):.1%}"
 
 
+HARBOR_TASKS = typer.Option("trusted", "--tasks", help="harbor only: trusted, verified (every Task with a "
+                                                        "Verifier, trusted or not), or all (synthetic Tasks too).")
+HARBOR_TIERS = typer.Option(None, "--tiers", help="harbor only: a tier report whose tier each Task carries; "  # noqa: B008
+                                                  "repeat it, later wins. The default is the workdir's tiers.json.")
+HARBOR_LABELS = typer.Option(None, "--labels", help="harbor only: a JSON list of rater label rows keyed by "  # noqa: B008
+                                                    "task; repeat it, later wins. A Task with no row is unlabelled.")
+HARBOR_RUBRIC = typer.Option(None, "--labels-rubric", help="harbor only: the rubric the labels were given under, "
+                                                           "named on the card.")
+EXPORT_WORKERS = typer.Option(None, "--workers", help="Processes that rule and lay the Tasks; 1 is serial. The "
+                                                     "output is the same whatever the count. Default: cores - 2, at most "
+                                                     "4 (a worker can take over a gigabyte); ask for more "
+                                                     "where memory allows.")
+
+
+def _harbor_options(tasks: str, tiers: Optional[list[Path]], labels: Optional[list[Path]],
+                    rubric: Optional[str]) -> dict:
+    return {"tasks": tasks, "tiers": tiers or None, "labels": labels or None, "labels_rubric": rubric}
+
+
 @app.command()
 def export(
     workdir: Path = WORKDIR,
@@ -1146,15 +1329,38 @@ def export(
     corpus_license: Optional[str] = CORPUS_LICENSE,
     corpus_url: Optional[str] = CORPUS_URL,
     preview: bool = typer.Option(False, "--preview", help="Mark the package as below the fidelity bar."),
+    form: str = typer.Option("package", "--format", help="package, or harbor: one Harbor task directory per "
+                                                         "Task (D363)."),
+    tasks: str = HARBOR_TASKS,
+    org: Optional[str] = typer.Option(None, "--org", help="harbor only: the organisation in each task name."),
+    only: Optional[list[str]] = typer.Option(None, "--task", help="harbor only: export this Task id; repeat it."),  # noqa: B008
+    tiers: Optional[list[Path]] = HARBOR_TIERS,
+    labels: Optional[list[Path]] = HARBOR_LABELS,
+    labels_rubric: Optional[str] = HARBOR_RUBRIC,
+    workers: Optional[int] = EXPORT_WORKERS,
 ):
     """Write a self-contained Environment package: the rebuilt world, the Task list, the Verifiers, a manifest.
 
     Nothing of the recordings the world was rebuilt from goes in, and a leak scan over the customer's
     export refuses the package if anything repeats a string only a recording could have said (D221).
+    With --format harbor the same Tasks are written as a Harbor dataset instead (D363).
     """
+    if form == "harbor":
+        harbor = _entry("kullback.hub.harbor", "export_harbor")
+        laid = harbor(workdir, out, name=name, only=only or None, **({"org": org} if org else {}),
+                      workers=workers, **_harbor_options(tasks, tiers, labels, labels_rubric))
+        counts = laid["counts"]
+        typer.echo(f"{counts['exported']} Harbor tasks ({counts['needs_judge']} need a judge, "
+                   f"{counts['synthetic']} synthetic), skipped {counts['skipped'] or 'none'}; leak scan "
+                   f"{laid['leak_scan'].get('leaks', 0)} recorded strings, {laid['leak_scan'].get('value_echoes', 0)} "
+                   "value echoes")
+        typer.echo(str(Path(out) / "manifest.json"))
+        return
+    if form != "package":
+        raise typer.BadParameter(f"--format takes package or harbor, not {form}")
     build = _entry("kullback.hub.package", "export")
     manifest = build(workdir, out, name=name, corpus=corpus, corpus_license=corpus_license,
-                     corpus_url=corpus_url, preview=preview)
+                     corpus_url=corpus_url, preview=preview, workers=workers)
     _echo_manifest(manifest)
     typer.echo(str(Path(out) / "manifest.json"))
 
@@ -1172,6 +1378,18 @@ def publish(
                                                           "on the card saying so."),
     keep: Optional[Path] = typer.Option(None, "--keep", help="Keep the staged package here instead of a "  # noqa: B008
                                                              "temporary directory."),
+    form: str = typer.Option("package", "--format", help="package, or harbor: the package with its Harbor "
+                                                         "form under harbor/ and a card section (D363)."),
+    dry_run: Optional[Path] = typer.Option(None, "--dry-run", help="Lay the upload out under this directory "  # noqa: B008
+                                                                  "and push nothing."),
+    tasks: str = HARBOR_TASKS,
+    tiers: Optional[list[Path]] = HARBOR_TIERS,
+    labels: Optional[list[Path]] = HARBOR_LABELS,
+    labels_rubric: Optional[str] = HARBOR_RUBRIC,
+    workers: Optional[int] = EXPORT_WORKERS,
+    staged: Optional[Path] = typer.Option(None, "--from-staged", help="Reuse the package a dry run laid out "  # noqa: B008
+                                                                     "in this directory, verified first, "
+                                                                     "instead of exporting it again."),
 ):
     """Export the Environment, write its card and upload it as one commit, tagged with its round (D221).
 
@@ -1180,9 +1398,19 @@ def publish(
     numbers; older rounds stay reachable by their tags.
     """
     push = _entry("kullback.hub.publish", "publish")
+    client = _entry("kullback.hub.client", "LocalHub")(dry_run) if dry_run is not None else None
     hosted, manifest = push(workdir, repo, name=name, preview=preview, corpus=corpus,
-                            corpus_license=corpus_license, corpus_url=corpus_url, keep=keep)
+                            corpus_license=corpus_license, corpus_url=corpus_url, keep=keep,
+                            client=client, form=form,
+                            harbor_options=_harbor_options(tasks, tiers, labels, labels_rubric),
+                            workers=workers, staged=staged)
     _echo_manifest(manifest)
+    if manifest.get("harbor"):
+        laid = manifest["harbor"]
+        typer.echo(f"harbor: {laid.get('tasks_chosen')} Tasks, {laid['counts']['exported']} exported, "
+                   f"skipped {laid['counts']['skipped'] or 'none'}; by tier and label "
+                   f"{json.dumps(laid['counts'].get('by_tier_and_label') or {}, sort_keys=True)}; leak scan "
+                   f"{laid['leak_scan'].get('leaks', 0)} recorded strings")
     typer.echo(f"{manifest.get('status', 'preview')} at {hosted.url}, tag {hosted.tag}")
 
 
@@ -1268,6 +1496,103 @@ def read_domain(
     typer.echo("| --- | --- | --- |")
     for row in domain_mod.per_source(body):
         typer.echo(f"| {row['source']} | {row['archetypes']} | {row['mapped']} |")
+
+
+synth_app = typer.Typer(add_completion=False,
+                        help="Scenarios generated from the built Environment, then reviewed (D372, D373).")
+app.add_typer(synth_app, name="synth")
+SCENARIO_WORKDIR = typer.Argument(..., help="The built workdir whose scenarios/ store is read and written.")
+SCENARIO_MODEL = typer.Option(None, "--model", help="Model id, as provider/model.")
+SCENARIO_BASE_URL = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model.")
+SCENARIO_CEILING = typer.Option(None, "--ceiling-usd", help="Spend ceiling for this command (D86).")
+SCENARIO_ASKS = typer.Option(None, "--asks", help="Lines a customer typed, one per line; default scenarios/asks.txt.")
+SCENARIO_DOMAIN = typer.Option(None, "--domain", help="One line describing the business; else environment.json's.")
+SCENARIO_SOURCE = typer.Option(None, "--source", help="Run only these sources: recordings, search, ask, gaps (D398).")
+
+
+def _synth_ceiling(workdir: Path, model: str, ceiling_usd: Optional[float]) -> Any:
+    """The spend ceiling the synth sessions check between batches, resumed from budget.json, or none."""
+    budget = importlib.import_module("kullback.runner.budget")
+    ceiling = budget.Ceiling.from_totals(workdir, ceiling_usd) if ceiling_usd is not None else None
+    if ceiling is not None:
+        ceiling.require_priced(model)
+    return ceiling
+
+
+def _scenario_report(workdir: Path) -> None:
+    for line in _entry("kullback.synth.report", "lines")(workdir):
+        typer.echo(line)
+
+
+@synth_app.command("scenarios")
+def synth_scenarios(
+    workdir: Path = SCENARIO_WORKDIR,
+    asks: Optional[Path] = SCENARIO_ASKS,
+    search: bool = typer.Option(True, "--search/--no-search",
+                                help="Search the web through the harness's reader (D115, D374), only when live requests are on."),
+    batch: int = typer.Option(25, "--batch", help="Opening asks grouped per model call."),
+    ceiling_usd: Optional[float] = SCENARIO_CEILING,
+    model: Optional[str] = SCENARIO_MODEL,
+    base_url: Optional[str] = SCENARIO_BASE_URL,
+    domain_line: Optional[str] = SCENARIO_DOMAIN,
+    corpus_url: Optional[str] = typer.Option(None, "--corpus-url",
+                                             help="The source corpus's own repository or paper; never read."),
+    source: Optional[list[str]] = SCENARIO_SOURCE,
+    target: Optional[int] = typer.Option(None, "--target", help="Run rounds until the store keeps this many (D410)."),
+):
+    """Plan the situations the openings show, then generate scenarios: recordings, a cited web search, typed
+    lines, then the gaps in the store (D372, D380, D398); with --target, rounds with situations from the web."""
+    if not model:
+        typer.echo("no model: pass --model")
+        raise typer.Exit(2)
+    kinds = _entry("kullback.synth.records", "SOURCE_KINDS")
+    unknown = sorted(set(source or ()) - set(kinds))
+    if unknown:
+        typer.echo(f"unknown source {', '.join(unknown)}: pass one of {', '.join(kinds)}")
+        raise typer.Exit(2)
+    ceiling = _synth_ceiling(workdir, model, ceiling_usd)
+    _entry("kullback.synth.generate", "generate")(workdir, model=_live_model(model, base_url), asks=asks,
+                                                   searching=search, batch=batch, description=str(domain_line or ""),
+                                                   corpus_url=corpus_url, ceiling=ceiling, sources=source or kinds,
+                                                   target=target)
+    _scenario_report(workdir)
+
+
+@synth_app.command("review")
+def synth_review(
+    workdir: Path = SCENARIO_WORKDIR,
+    batch: int = typer.Option(10, "--batch", help="Scenarios reviewed per session."),
+    ceiling_usd: Optional[float] = SCENARIO_CEILING,
+    model: Optional[str] = SCENARIO_MODEL,
+    base_url: Optional[str] = SCENARIO_BASE_URL,
+    domain_line: Optional[str] = SCENARIO_DOMAIN,
+):
+    """The Examiner's scenario review: one blind session per batch, the fix loop, then the outcomes (D373)."""
+    if not model:
+        typer.echo("no model: pass --model")
+        raise typer.Exit(2)
+    ceiling = _synth_ceiling(workdir, model, ceiling_usd)
+    out = _entry("kullback.synth.review", "review")(workdir, model=_live_model(model, base_url),
+                                                    batch=batch, ceiling=ceiling,
+                                                    description=str(domain_line or ""))
+    if out.get("stopped_on_ceiling"):
+        typer.echo("stopped at the spend ceiling; review again to continue")
+    _scenario_report(workdir)
+
+
+TASKS_WORKDIR = typer.Argument(..., help="The Environment's workdir the Tasks and recordings are written into.")
+TASKS_STORE = typer.Option(..., "--store", help="The scenario run's workdir, holding scenarios/.")
+
+
+@synth_app.command("tasks")
+def synth_tasks(
+    workdir: Path = TASKS_WORKDIR,
+    store: Path = TASKS_STORE,
+    limit: Optional[int] = typer.Option(None, "--limit", help="At most this many scenarios, in id order."),
+):
+    """One Task and one recording per passed, bound scenario of the recordings (D389); counts as one JSON line."""
+    counts = _entry("kullback.synth.tasks", "born_tasks")(workdir, store, limit=limit)
+    typer.echo(json.dumps(counts, sort_keys=True))
 
 
 

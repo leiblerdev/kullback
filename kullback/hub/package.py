@@ -35,9 +35,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from kullback import difficulty, domain
+from kullback import difficulty, domain, round_snapshot
 from kullback.gates.verifier_suite import PROSE_MIN_LENGTH, elide_verifier_prose
-from kullback.runner.records import Verifier, as_dict, content_hash, read_json, write_json
+from kullback.runner.records import VERDICT_VERSION, Verifier, as_dict, content_hash, read_json, write_json
+from kullback.runner.verdict import REWARD_SHAPE, item_counts
+from kullback.runner.world.environment import BuiltEnvironment
+from kullback.runner.world.loading import EnvironmentError as WorldError
+from kullback.spec.schema import Spec, spec_path
 
 # 2: the manifest carries what the domain reading attests and what this Environment cannot execute
 # of it, so a card's numbers say how much of the domain the package covers (D225).
@@ -49,6 +53,9 @@ TASKS_INDEX_NAME = "tasks_index.json"
 TASKS_ROWS_NAME = "tasks.jsonl"
 # The card publish.py writes beside the package. Named here because the hashes have to leave it out.
 CARD_NAME = "README.md"
+# Where a publish lays the Harbor form of the Environment beside the package (D363). It carries its own
+# manifest and hashes, so the package's hashes leave it out the way they leave out the card.
+HARBOR_DIR = "harbor"
 # The call verdicts that count as agreement, the same three the Runner and the README name.
 AGREEING_VERDICTS = ("same", "cosmetic", "both_refused")
 UNRECORDED_VERDICT = "unrecorded"  # a call the replay made and the recording never did
@@ -62,6 +69,13 @@ WORLD_FILES: tuple[str, ...] = ("environment.json", "schema.json", "tool_sigs.js
                                 "canon-rules.json")
 # The graders and the Task list. Scanned against the baseline rather than trusted.
 GRADER_DIRS: tuple[str, ...] = ("tasks", "verifiers")
+
+# The policy a Run is given, under the world's env/ (D404): the recorded agent prompt where the build has no file.
+POLICY_FILE = "env/policy.md"
+# The D97 versions a Verdict carries, each the content hash of one shipped file (D407).
+ENVIRONMENT_FILE = "environment.json"
+VERSIONED_FILES: dict[str, str] = {"schema_version": "schema.json", "tools_version": "tool_sigs.json",
+                                   "policy_version": POLICY_FILE}
 
 EXPORTED_DIRS: tuple[str, ...] = WORLD_DIRS + GRADER_DIRS
 EXPORTED_FILES: tuple[str, ...] = WORLD_FILES
@@ -126,18 +140,19 @@ def last_round(workdir: Path) -> dict:
 NO_ROUND_SOURCE = "counts from the workdir status, no round closed"
 
 
-def trusted_ids(workdir: Path, counts: Optional[dict] = None) -> set[str]:
+def trusted_ids(workdir: Path, counts: Optional[dict] = None, *, workers: Optional[int] = 1) -> set[str]:
     """The trusted Task ids: the last round's ruling where one closed, else the Builder's status rule.
 
     The status rule is `status_of` in the Builder's domain tools, the same reading its status tool
     answers, so a build killed before any round closed publishes what that tool reported rather than
     nothing. The hub is the top layer and may import the Builder, so there is one rule, not a copy.
+    That rule scores every Task, the slowest step of an export, so `workers` runs it on processes (D401).
     """
     counts = last_round(workdir) if counts is None else counts
     if counts:
         return set(counts.get("trusted_ids") or ())
     from kullback.builder.domain_tools import status_of
-    return {row["task_id"] for row in status_of(workdir)["tasks"] if row.get("state") == "trusted"}
+    return {row["task_id"] for row in status_of(workdir, workers=workers)["tasks"] if row.get("state") == "trusted"}
 
 
 def build_tag(workdir: Path, counts: Optional[dict] = None) -> str:
@@ -280,19 +295,21 @@ def stopped_because(stage: str, status_row: Any) -> Optional[str]:
     return reason
 
 
-def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
+def task_index(workdir: Path, task_ids: Iterable[str], *, workers: Optional[int] = 1) -> list[dict]:
     """One row per Task: the trust ruling, the funnel stage it reached, its difficulty record and bucket."""
     status = read_json(workdir / "task_status.json", {}) or {}
     replays = read_json(workdir / "replays.json", {}) or {}
     counts = last_round(workdir)
-    trusted = trusted_ids(workdir, counts)
+    trusted = trusted_ids(workdir, counts, workers=workers)
     refused = set((counts.get("refused") or {}))
     records = _difficulty_records(workdir)
+    trust = _trust_rows(workdir)
     rows = []
     for task_id in task_ids:
         row = status.get(task_id) or {}
         confirmed = any(_confirmed(entry) for entry in (replays.get(task_id) or {}).values())
-        has_verifier = (workdir / "verifiers" / f"{task_id}.json").is_file()
+        verifier_file = workdir / "verifiers" / f"{task_id}.json"
+        has_verifier = verifier_file.is_file()
         stage = funnel_stage(task_id, status_row=row, replay_confirmed=confirmed, has_verifier=has_verifier,
                              trusted_ids=trusted, refused=refused)
         record = records.get(task_id) or {}
@@ -302,15 +319,28 @@ def task_index(workdir: Path, task_ids: Iterable[str]) -> list[dict]:
             "refused": stage == REFUSED_STAGE,
             "stage": stage,
             "stopped_because": stopped_because(stage, row),
+            # D333: why a Task is not trusted, and the two flags that never gate (None: unscored).
+            **{key: (trust.get(task_id) or {}).get(key) for key in TRUST_FIELDS},
             "replay_confirmed": confirmed,
             # A Task with any confirmed replay, the count replay fidelity reports, so the two agree.
             "reference_confirmed": confirmed,
             "verifier": has_verifier,
+            # The Verifier's gate and scored items (D329), so a reader sees which Tasks score past pass.
+            "items": item_counts(Verifier.model_validate(read_json(verifier_file))) if has_verifier else None,
             "recordings": int(row.get("recordings") or 0),
             "difficulty": {key: value for key, value in record.items() if key != "task_id"} or None,
             "bucket": record.get("bucket"),
         })
     return rows
+
+
+TRUST_FIELDS = ("trust_reason", "reference_passes", "solvable")
+
+
+def _trust_rows(workdir: Path) -> dict[str, dict]:
+    """Each Task's trust reason and flags off the last closed round's table; none where no round closed."""
+    snapshot = round_snapshot.read_snapshot(workdir) or {}
+    return {str(row.get("task_id")): row for row in snapshot.get("rows") or () if isinstance(row, dict)}
 
 
 def _difficulty_records(workdir: Path) -> dict[str, dict]:
@@ -344,8 +374,9 @@ def _domain_counts(workdir: Path) -> dict:
     return {key: int(counts[key]) for key in named if counts.get(key)}
 
 
-def untrusted_reasons(rows: Iterable[dict], top: int = 3) -> dict:
-    """How many Tasks are not trusted and the commonest reasons, in the harness's fixed words."""
+def untrusted_reasons(rows: Iterable[dict]) -> dict:
+    """How many Tasks are not trusted and every reason, commonest first, in the harness's fixed words, so the
+    reasons sum to the count."""
     counted: dict[str, int] = {}
     total = 0
     for row in rows:
@@ -354,11 +385,38 @@ def untrusted_reasons(rows: Iterable[dict], top: int = 3) -> dict:
         total += 1
         reason = row.get("stopped_because") or "not trusted"
         counted[reason] = counted.get(reason, 0) + 1
-    ranked = sorted(counted.items(), key=lambda pair: (-pair[1], pair[0]))[:top]
+    ranked = sorted(counted.items(), key=lambda pair: (-pair[1], pair[0]))
     return {"count": total, "reasons": [{"reason": reason, "tasks": count} for reason, count in ranked]}
 
 
 # --- the package on disk ------------------------------------------------------------
+
+
+def inside(package: Path, harbor: Optional[dict] = None) -> dict:
+    """What a card says is inside a laid package: how many tools it serves and one Task's first ask.
+
+    The ask is the first listed line of the first Harbor Task's instruction, the Task the card's Harbor
+    commands name, else the first instruction in the viewer rows; both passed the package's leak scan.
+    """
+    tools = read_json(package / "tool_sigs.json", None)
+    rows = list((harbor or {}).get("tasks") or ()) + list((harbor or {}).get("synthetic") or ())
+    texts = []
+    if rows:
+        instruction = package / HARBOR_DIR / str(rows[0]["path"]) / "instruction.md"
+        texts.append(instruction.read_text(encoding="utf-8").split("\n## ", 1)[0] if instruction.is_file() else "")
+    viewer = package / TASKS_ROWS_NAME
+    if viewer.is_file():
+        texts += [json.loads(line).get("instruction") or "" for line in viewer.read_text(encoding="utf-8").splitlines()
+                  if line.strip()]
+    return {"tools": len(tools) if isinstance(tools, (list, dict)) else None,
+            "example_ask": next((ask for ask in map(_first_ask, texts) if ask), None)}
+
+
+def _first_ask(text: str) -> Optional[str]:
+    """The first listed line of an instruction, else its first line."""
+    lines = [line.strip() for line in str(text).splitlines() if line.strip()]
+    listed = [line[2:].strip() for line in lines if line.startswith("- ")]
+    return (listed or lines or [None])[0]
 
 
 def _copy(source: Path, target: Path) -> None:
@@ -366,28 +424,122 @@ def _copy(source: Path, target: Path) -> None:
     target.write_bytes(source.read_bytes())
 
 
-def _exported_task(body: Any, intent: Optional[str] = None) -> dict:
-    """One Task record as the package carries it: its instruction, and no id of a recording.
+def _exported_task(body: Any, intent: Optional[str]) -> dict:
+    """One Task record as the package carries it: its ask as `intent`, and no id of a recording.
 
-    The instruction is the one thing a candidate is given, and on a finished build it sits in
-    `intents/<task>.json` rather than on the Task record. That file also holds the spans the Intent
-    was grounded in, which are verbatim turns of the recording, so the file itself never ships and
-    only its text is copied onto the Task where `Task.intent` already belongs.
+    The ask is the one thing a candidate is given (task_ask). The Spec and the mined Intent it comes
+    from also hold spans of the recording, so neither ships; only the ask is put where `Task.intent`
+    already belongs, an empty string where the Task has none, so the manifest can count it (D403).
     """
     record = dict(body) if isinstance(body, dict) else {}
     for field in RECORDING_FIELDS:
         if field in record:
             record[field] = []
-    if intent and not record.get("intent"):
-        record["intent"] = intent
+    record["intent"] = intent or ""
     return record
 
 
 def _intent_text(workdir: Path, task_id: str) -> Optional[str]:
-    """The Intent the build mined for one Task, text only."""
+    """The Intent an older build mined for one Task, text only; a Spec build writes none."""
     body = read_json(workdir / "intents" / f"{task_id}.json", None)
     text = body.get("text") if isinstance(body, dict) else None
     return str(text) if text else None
+
+
+# How the user's one message opens when it lists what they volunteered.
+FACTS_LEAD = "A user writes in. What they tell you, one line each:"
+# The stance an Intent fact has when it is the user's own ask (spec/schema.py IntentFact).
+ASKED = "volunteered"
+
+
+def _spec(workdir: Path, task_id: str) -> Optional[Spec]:
+    try:
+        return Spec.model_validate_json(spec_path(workdir, task_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def asked_facts(spec: Optional[Spec]) -> list[str]:
+    """The Intent facts the user volunteered, as the user would say them: no echo of the agent, nothing ruled out,
+    and no fact of a scenario's end, which no user said (D414)."""
+    from kullback.spec.items import is_end_fact
+
+    if spec is None:
+        return []
+    return [fact.text.strip() for fact in spec.intent.facts
+            if fact.stance == ASKED and not fact.echo and not fact.unfounded and not is_end_fact(fact)
+            and fact.text.strip()]
+
+
+def opening(facts: list[str], intent: Optional[str]) -> Optional[str]:
+    """The user's one message: the volunteered facts, one line each, else the Task's Intent text."""
+    if facts:
+        return "\n".join([FACTS_LEAD, *[f"- {fact}" for fact in facts]])
+    return intent.strip() if intent and intent.strip() else None
+
+
+def task_ask(workdir: Path, task_id: str, record: Any) -> tuple[list[str], Optional[str]]:
+    """A Task's ask, the one both the package and its Harbor form ship (D403): the facts the user
+    volunteered in its Spec Intent and the message they make, else the Task's own or mined Intent text."""
+    body = record if isinstance(record, dict) else {}
+    facts = asked_facts(_spec(workdir, task_id))
+    return facts, opening(facts, body.get("intent") or _intent_text(workdir, task_id))
+
+
+def without_ask_count(package: Path, task_ids: Iterable[str]) -> int:
+    """How many of the Tasks a laid package carries no ask for."""
+    return sum(1 for task_id in task_ids if not (read_json(package / "tasks" / f"{task_id}.json", {}) or {}).get("intent"))
+
+
+def environment_policy(workdir: Path, task_ids: Iterable[str]) -> Optional[str]:
+    """The policy text a fetched package's Runs are given (D404), or None where there is no one text.
+
+    The workdir's env/policy.md where it has one, else the recorded agent's system prompt, read the way a
+    Run reads it and the Harbor form lays it per Task, when every listed Task runs under the same one. A
+    package carries no Traces, so Tasks that ran under different prompts cannot share one file: none is
+    written and the fetch names env/policy.md as missing.
+    """
+    shipped = workdir / POLICY_FILE
+    if shipped.is_file():
+        return shipped.read_text(encoding="utf-8")
+    try:
+        env = BuiltEnvironment(workdir)
+        prompts = {env.system_prompt(env.task(task_id)) for task_id in task_ids}
+    except (OSError, ValueError, WorldError):
+        return None
+    return next(iter(prompts)) if len(prompts) == 1 and None not in prompts else None
+
+
+def environment_record(directory: Path) -> Optional[dict]:
+    """environment.json for a workdir or a package, written where it lacks the D97 versions (D407).
+
+    Each version is the sha256 of the file it names, the same hash the manifest keeps for that file, and
+    env_id hashes the three, so a build workdir and the package laid from it carry the same values. The
+    policy is the text a package ships (environment_policy). A record that already names all four is kept.
+    Where a versioned file is missing or no single policy exists it writes nothing and answers the record
+    on disk as it stands, or None where there is none.
+    """
+    directory = Path(directory)
+    path = directory / ENVIRONMENT_FILE
+    record = read_json(path, {}) if path.is_file() else {}
+    record = record if isinstance(record, dict) else {}
+    if all(record.get(field) for field in ("env_id", *VERSIONED_FILES)):
+        return record
+    policy = environment_policy(directory, frozen_task_ids(directory))
+    if policy is None:
+        return record or None
+    versions = {}
+    for field, name in VERSIONED_FILES.items():
+        source = directory / name
+        if name == POLICY_FILE:
+            versions[field] = hashlib.sha256(policy.encode("utf-8")).hexdigest()
+        elif source.is_file():
+            versions[field] = hashlib.sha256(source.read_bytes()).hexdigest()
+        else:
+            return record or None
+    record = {**record, "env_id": content_hash(versions), **versions}
+    write_json(path, record)
+    return record
 
 
 def _lay_out(workdir: Path, out: Path, task_ids: list[str]) -> list[str]:
@@ -405,11 +557,18 @@ def _lay_out(workdir: Path, out: Path, task_ids: list[str]) -> list[str]:
         if path.is_file():
             _copy(path, out / name)
             written.append(name)
+    policy = environment_policy(workdir, task_ids)
+    if policy and not (out / POLICY_FILE).is_file():
+        (out / POLICY_FILE).parent.mkdir(parents=True, exist_ok=True)
+        (out / POLICY_FILE).write_text(policy, encoding="utf-8")
+        written.append(POLICY_FILE)
+    if environment_record(out) and ENVIRONMENT_FILE not in written:
+        written.append(ENVIRONMENT_FILE)
     for task_id in task_ids:
         source = workdir / "tasks" / f"{task_id}.json"
         if source.is_file():
-            write_json(out / "tasks" / f"{task_id}.json",
-                       _exported_task(read_json(source, {}), _intent_text(workdir, task_id)))
+            record = read_json(source, {})
+            write_json(out / "tasks" / f"{task_id}.json", _exported_task(record, task_ask(workdir, task_id, record)[1]))
             written.append(f"tasks/{task_id}.json")
         verifier = workdir / "verifiers" / f"{task_id}.json"
         if verifier.is_file():
@@ -644,6 +803,7 @@ def file_hashes(package: Path) -> dict[str, str]:
     Two files are left out. The manifest carries this map, so it cannot carry its own hash. The card
     is prose about the package rather than part of it: it is rewritten on every publish and a person
     who edits it has not tampered with a Verifier, so a package with an edited card still verifies.
+    The Harbor form a publish lays beside the package is left out too: it hashes itself (D363).
     """
     skip = {MANIFEST_NAME, CARD_NAME}
     out = {}
@@ -651,7 +811,7 @@ def file_hashes(package: Path) -> dict[str, str]:
         if not path.is_file():
             continue
         relative = path.relative_to(package).as_posix()
-        if relative in skip or _hidden(path.relative_to(package)):
+        if relative in skip or _hidden(path.relative_to(package)) or relative.startswith(f"{HARBOR_DIR}/"):
             continue
         out[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
     return out
@@ -721,6 +881,10 @@ def _row_counts(rows: list[dict]) -> dict:
         "verifier_derived": sum(1 for row in rows if row["verifier"]),
         "trusted": sum(1 for row in rows if row["trusted"]),
         "refused": sum(1 for row in rows if row["refused"]),
+        "trust_reasons": {reason: sum(1 for row in rows if row.get("trust_reason") == reason)
+                          for reason in sorted({row["trust_reason"] for row in rows if row.get("trust_reason")})},
+        **{flag: {"true": sum(1 for row in rows if row.get(flag) is True),
+                  "false": sum(1 for row in rows if row.get(flag) is False)} for flag in TRUST_FIELDS[1:]},
         "funnel": {stage: sum(1 for row in rows if row["stage"] == stage)
                    for stage in FUNNEL + (REFUSED_STAGE,)},
     }
@@ -728,13 +892,16 @@ def _row_counts(rows: list[dict]) -> dict:
 
 def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Optional[str] = None,
            corpus_license: Optional[str] = None, corpus_url: Optional[str] = None,
-           preview: bool = False, scan: bool = True) -> dict:
+           preview: bool = False, scan: bool = True, workers: Optional[int] = None,
+           index: Optional[list[dict]] = None) -> dict:
     """Write a self-contained Environment package from a workdir and answer its manifest.
 
     The workdir is only read. The package holds the rebuilt world, the Task list, the Verifier of
     every Task that has one, and a manifest with the numbers, the versions and a content hash; it
     holds nothing of the recordings the world was rebuilt from. A leak found by the scan raises
     rather than being reported, because a package with a leak in it must not exist on disk.
+    `workers` is how many processes rule the Tasks (None: the default of kullback/processes.py; the package is the same
+    whatever the count, D401), and `index` is the Task index where the caller already holds it.
     """
     workdir, out = Path(workdir), Path(out)
     if not (workdir / "env").is_dir():
@@ -742,11 +909,12 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
     out.mkdir(parents=True, exist_ok=True)
     task_ids = frozen_task_ids(workdir)
     _lay_out(workdir, out, task_ids)
-    rows = task_index(workdir, task_ids)
+    without_ask = without_ask_count(out, task_ids)
+    rows = task_index(workdir, task_ids, workers=workers) if index is None else index
     write_json(out / TASKS_INDEX_NAME, {"format": PACKAGE_FORMAT, "tasks": rows})
     write_task_rows(out, rows)
     counts = last_round(workdir)
-    environment = read_json(workdir / "environment.json", {}) or {}
+    environment = read_json(out / ENVIRONMENT_FILE, {}) or {}
     versions = read_json(workdir / "runner_version.json", {}) or {}
     fidelity = replay_fidelity(read_json(workdir / "replays.json", {}) or {}, task_ids)
     manifest = {
@@ -759,6 +927,8 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         "tag": build_tag(workdir, counts),
         "counts_source": "the last round record" if counts else NO_ROUND_SOURCE,
         "tasks_total": len(task_ids),
+        # D403: Tasks the package ships with an empty ask, because their Spec Intent volunteered nothing.
+        "without_ask": without_ask,
         # Tasks the build holds a ruling for that are not on the frozen list: they appeared after the
         # freeze, so D96 keeps them out of the denominator and the round line counts them in. Naming
         # the number is what stops the two readings from looking like a mistake.
@@ -767,6 +937,8 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         **_row_counts(rows),
         "buckets": _buckets(rows),
         "untrusted": untrusted_reasons(rows),
+        # D329: what a Run's reward is, pass and score, under the Verdict version the graders score at.
+        "reward": dict(REWARD_SHAPE, verdict_version=VERDICT_VERSION),
         # D225: what the domain's own public material was read to attest, and how much of it this
         # Environment holds no tool for. Both are counts and nothing of any page travels with them.
         "domain": _domain_counts(workdir),
@@ -776,7 +948,6 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         "tools_version": environment.get("tools_version"),
         "assisted_tools": list(environment.get("assisted_tools") or ()),
         "runner_version": versions.get("runner_version"),
-        "gates_version": versions.get("gates_version"),
         "kullback_version": kullback_version(),
         "git_sha": git_sha(),
         "leak_scan": leak_scan(out, workdir / "raw") if scan else {"baseline": LEAK_BASELINE, "leaks": 0,

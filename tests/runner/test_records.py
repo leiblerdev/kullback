@@ -14,6 +14,7 @@ from kullback.runner.records import (
     ALL_RECORDS,
     Atom,
     Column,
+    Conduct,
     Cost,
     Environment,
     Event,
@@ -103,10 +104,11 @@ def _examiner_records() -> list[Record]:
             VerifierHistory(task_id="t1", versions=[version]),
             Refusal(task_id="t1", reason="no frontier Run finished", round=1, admitted=True, finished_runs=[]),
             Finding(finding_id="f1", task_id="t1", kind="assisted_tool", text="the tool never fails", run_id="probe-t1-1",
-                    tool="cancel", suggested="compile_tool", round=1),
+                    tool="cancel", round=1),
             Finding(finding_id="f2", task_id="t1", kind="fidelity", text="the Intent names what no Run says",
-                    suggested="repair_intent", hint="the Runs only cancel one order and never mention a refund",
-                    round=1),
+                    change="the Runs only cancel one order and never mention a refund",
+                    edits=[{"kind": "text", "path": "intents/t1.json", "where": "one order",
+                            "replace": "both orders", "why": "the user named both"}], round=1),
             RoundRecord(round=1, counts={"trusted": 1, "fidelity": 1}, exit="done")]
 
 
@@ -350,3 +352,8 @@ def test_the_run_loader_refuses_a_file_that_holds_two_runs_instead_of_splicing_t
                      {"run_id": "shared", "task_id": "t2"})
     with pytest.raises(records_module.ForeignRunError, match="more than one Run: task_id t1 and t2"):
         records_module.load_run_jsonl(path)
+
+
+def test_a_stored_handoff_conduct_rule_reads_as_called():
+    rule = Conduct.model_validate({"kind": "handoff", "tool": "call_person", "source": {"kind": "policy"}})
+    assert rule.kind == "called"

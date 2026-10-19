@@ -1364,8 +1364,35 @@ class BedrockOpenAIModel(BedrockAuth, OpenAIModel):
         vendor = split_vendor(self.wire_id)
         return reasoning_family(vendor[1] if vendor else self.wire_id or "")
 
+    def query(
+        self,
+        messages: list[dict],
+        tools: Optional[list[dict]] = None,
+        config: Optional[ModelConfig] = None,
+    ) -> ModelReply:
+        """A call with tools or a reasoning effort goes to the Responses route; any other stays on chat.
+
+        Bedrock's Chat Completions route refuses function tools together with a reasoning effort
+        (HTTP 400, live pilot 2026-10-05); its Responses route on the same host takes both.
+        """
+        config = config or ModelConfig()
+        if tools or config.effort or config.reasoning_effort:
+            return self.responses().query(messages, tools, config)
+        return super().query(messages, tools, config)
+
+    def responses(self) -> "BedrockOpenAIResponsesModel":
+        """The Responses sibling of this adapter: same host, wire id, keys, client and retry rules."""
+        sibling = getattr(self, "_responses", None)
+        if sibling is None:
+            sibling = BedrockOpenAIResponsesModel(
+                self.name, api_key=self.api_key, base_url=self.base_url, client=self._client, retry=self.retry,
+                env=self.env, sleep=self.sleep, rng=self.rng, timeout=self.timeout)
+            self._responses = sibling
+        return sibling
+
 
 # The Bedrock adapter per vendor segment of the wire id; a vendor with no row speaks the Messages API.
+# The openai row routes per call: Chat Completions, or Responses when the call carries tools or an effort.
 BEDROCK_VENDOR_ADAPTERS: dict[str, type] = {"openai": BedrockOpenAIModel}
 
 
@@ -1487,6 +1514,7 @@ class OpenAIResponsesModel(HttpModel):
             headers["authorization"] = f"Bearer {self.api_key}"
         return opencode_headers(self.base_url, headers)
 
+
     def build_body(self, messages: list[dict], tools: Optional[list[dict]], config: ModelConfig) -> dict:
         body: dict[str, Any] = {
             "model": self.wire_id,
@@ -1507,8 +1535,6 @@ class OpenAIResponsesModel(HttpModel):
         if reasoning is not None:
             body["reasoning"] = reasoning
         if config.logprobs or config.top_logprobs is not None:
-            # This endpoint returns logprobs only for what `include` asks for, so asking for them
-            # is two fields, not one.
             if config.top_logprobs is not None:
                 body["top_logprobs"] = config.top_logprobs
             include = list(body.get("include") or [])
@@ -1593,6 +1619,25 @@ def _responses_text_of(output: Any, item_type: str, parts_key: str, text_type: s
             if isinstance(part, dict) and part.get("type") == text_type:
                 texts.append(part.get("text") or "")
     return texts
+
+
+class BedrockOpenAIResponsesModel(BedrockAuth, OpenAIResponsesModel):
+    """OpenAI's models through Amazon Bedrock's `/openai/v1/responses`: the Responses body, AWS authentication.
+
+    The body and the parsing are OpenAIResponsesModel's; the host, the wire id and the keys are
+    BedrockAuth's. BedrockOpenAIModel hands it every call that carries tools or a reasoning effort.
+    """
+
+    bedrock_route = "openai/v1"
+    path = "/responses"
+
+    def __init__(self, model_id: str, base_url: Optional[str] = None, **kwargs):
+        super().__init__(model_id, base_url=base_url, **kwargs)
+        # Bedrock never answers without credentials, so a missing key is refused before the call.
+        self.key_required = True
+
+    def headers(self, body: Optional[bytes] = None) -> dict:
+        return self.authorized({"content-type": "application/json"}, body)
 
 
 def _responses_tool(tool: dict) -> dict:

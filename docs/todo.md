@@ -1,81 +1,51 @@
 # Deferred work
 
-What the old builds taught is in learnings.md. The papers and repos the founder sent are in papers.md. The
-list was cleared on 2026-09-22 for the overhaul and rebuilt on 2026-09-24 after the build published as build-20260924.
+The harness work that is known and not done, so nobody plans it twice. The company's list of 2026-09-10 is
+in [archive/company-todo.md](archive/company-todo.md); what past builds taught is in [learnings.md](learnings.md).
 
 ## Next
 
-- Deep search over the failures of both build-20260924 builds: Examiner findings, refused tool calls, repeated failing
-  calls, turns per repair and stop reasons. Find where the model struggles and propose tools, skills and prompts
-  that raise the Verifier and trusted counts. Workdirs:
-  /Users/krishuagarwal/.herdr/worktrees/kullback/overhaul-0922-smoke9/.work-retail and .work-airline.
-- Synthetic Task generation, on the D224 to D226 path: grounded scenarios, augmented seeds and traps, then
-  generated Tasks hardened the way TauForge augments, validates and hardens. Every generated Task needs concise
-  instructions and a high quality Verifier (founder, 2026-09-23).
-- Re-freeze the runner under the new hash before the next build, because the recorded tool-context feed changed
-  kullback/runner. Verdicts from before and after the re-freeze are not comparable (D61). The patches still waiting
-  in docs/frozen-patches (safe-write, speed-1, speed-3, confinement-holes and the others tests name) land in the
-  same re-freeze, including the speed-1 variant gate that examiner/stage.py keeps serial until then.
-- Two Runner version labels. `kullback run` puts the live `runner/tool.py:version()` hash (runner/ plus two agent
-  core files) on a Run and its first Verdict, while `kullback verdict` and `regrade` put the frozen hash from
-  runner_version.json on later Verdicts of the same Run, and the two never match. Founder to decide which one a
-  Verdict carries, or whether run should refuse when the live code differs from the frozen record.
-- Re-roll batches. One Builder run call plays at most RUNS_PER_CALL = 20 fresh Runs, which is why builds re-roll
-  10 to 20 Tasks at a time. Measure whether a larger cap or parallel Runs helps.
-- Cheaper runner model experiment. Record the Run kind in the ledger first, since second-path Runs dominate the
-  runner's spend.
-- The airline body's hand-rolled id rule should go back to the context's new_id in the next build.
+- Read the failures of the latest builds (Examiner findings, refused tool calls, repeated failing calls, turns
+  per repair, stop reasons) and propose tools, skills and prompts that raise the Verifier and trusted counts.
+- Synthetic Tasks: grounded scenarios, augmented seeds and traps, then generated Tasks hardened the way
+  TauForge augments, validates and hardens. Each needs concise instructions and a high quality Verifier.
+  The scenario layer is in [scaling.md](scaling.md).
+- Two patches wait in [frozen-patches/](frozen-patches/): `confinement-holes` (needs a rebase: its module-shape
+  rule refuses today's generated skeleton) and `speed-3` (written against an older `budget.py`).
+- Re-roll batches: one Builder run call plays at most `RUNS_PER_CALL = 20` fresh Runs. Measure whether a larger
+  cap or parallel Runs helps.
+- A cheaper runner model. Record the Run kind in the ledger first, since second-path Runs dominate runner spend.
+- Move the airline body's hand-rolled id rule back to the context's `new_id`.
+- Check the rebuilt world against evidence outside the recording; replay only confirms recorded calls.
 
-## Before the first training run (founder, 2026-09-25)
+## Before the first training run
 
-- Compare every built Task with the benchmark's test tasks, one by one: which test task each Task came from, and
-  how close each synthetic Task sits to a test task (same request, same rows changed). The held-out anchor
-  (builder/world_tools.py draw_anchor) holds out recordings inside a Task, not Tasks, so today every benchmark
-  task the traces cover is built and would be trained on. Decide from the comparison how to split by task
-  before ingest, and write the held-out task ids into the package manifest. Do this when training is about to start.
+Compare every built Task with the benchmark's test tasks: which test task each came from, and how close each
+synthetic Task sits to one. The held-out anchor (`builder/world_tools.py draw_anchor`) holds out recordings
+inside a Task, not Tasks, so today every benchmark task the traces cover is built and would be trained on.
+Decide how to split by task before ingest, and write the held-out task ids into the package manifest.
 
-## Priority order after the overhaul (founder, 2026-09-23)
+## Later
 
-Item 1, every trace passes, is met by build-20260924 (replay fidelity 1.00 on retail and airline). Synthetic Tasks moved
-to Next. What remains:
+- Kitaru (ZenML, https://www.zenml.io/product/kitaru): build evals on the built Environment. Kitaru records,
+  replays and evaluates agents against frozen production sessions.
+- The difficulty knob: `difficulty.py` measures the buckets; the second half is a rule that shifts Task difficulty
+  as training proceeds.
+- A real sandbox for model-written code. Today a tool body runs in a subprocess with imports blocked
+  (`builder/sandbox.py`, `gates/confinement.py`), which is not a security boundary.
+- Builder memory: deferred by the founder ("memory is totally different now, we will talk about it later").
+- Feedback mining from traces: report in aggregate what customers ask for, hand over, are refused, give up on and
+  want that the tools cannot do. Personal data stripped. Not before synthetic Tasks.
 
-1. Kitaru (ZenML), https://www.zenml.io/product/kitaru: build evals on top of the built Environment. From the page,
-   Kitaru is a replay-based evaluation tool that records, replays and evaluates agents against frozen production
-   sessions before a change ships.
-2. The difficulty knob ("TaskPilot and FrogNano: what a difficulty knob would look like in Kullback"). difficulty.py
-   measures the buckets; the second half is a selection rule that shifts Task difficulty as training proceeds.
+## Route checks (deferred)
 
-## Sandbox
+A Verifier scores the end state and what the user was told, never the route, so a right result reached by a
+wrong method passes. The founder deferred route checks: "how the tools should run is the route check, maybe
+don't do that, add it in todo". Parked:
 
-A generated tool body runs in a subprocess with its imports blocked, which reduces the blast radius but is not a
-security boundary (builder/sandbox.py, gates/confinement.py, gates/artifacts.py). A real sandbox for model-written
-code is still open.
+- the tools that should run for a Task, as a Hard atom over `called_before`;
+- a no-detour check that no write outside the Task's fix touched a row the Task names;
+- loosening an ending action from required to allowed when every re-roll fails only on it.
 
-## Builder memory
-
-Deferred by the founder on 2026-09-23: "memory is totally different now, we will talk about it later." The reading
-of omp, pi and tau and the candidate decisions M1 to M7 are in .claude/reports/memory-management-2026-09-23.md (repo
-checkout, untracked). Nothing of it is built. Revisit when the founder describes the new memory design.
-
-## Feedback mining from traces (founder, 2026-09-23, production direction)
-
-The recorded traces and the Environments built from them already hold what customers ask for (Intents), what they
-know and hand over (typed facts), what they ask (question atoms), where policy stops them (refusals), where they
-give up (terminations) and what they want that the tools cannot do (off-path requests). Report it in aggregate
-only, with personal data stripped, never as a view of one customer. Not built before synthetic Tasks.
-
-## Environment comparison
-
-The Verifier scores the End state and what the user was told, never the route, so a right output reached by a
-wrong method passes by design. An Environment that scores the route gives a different refusal rate, so a
-comparison across Environments is fair only once every Environment scores the same thing. Forbidden routes are
-Hard atoms written per Task.
-
-## Route checking (founder, 2026-09-25)
-
-Deferred: "how the tools should run is the route check, maybe don't do that, add it in todo". Today a Verifier scores
-the End state and what the user was told. Two route checks are parked here, for recorded and synthetic Tasks alike:
-the tools that should run for a Task, and a no-detour check that no write outside the Task's fix touched a row the
-Task names. The second catches a detour that undoes itself (change a field, change it back); a detour that leaves a
-row behind (place an order, then cancel it) is already caught by the End state. Evidence that the class is large:
 PAE (arXiv 2603.03116) finds 27 to 78 percent of reported tau-bench successes broke a required procedure.
+Comparing Environments is fair only once every Environment scores the same thing.

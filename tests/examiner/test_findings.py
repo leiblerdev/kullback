@@ -77,14 +77,14 @@ def _plan(tmp_path: Path, *, status: dict, fidelity: dict, references: dict,
 
 def test_an_assisted_tool_is_filed_as_a_finding_naming_the_tasks_it_blocks_and_the_column_that_differs():
     """The finding is about the tool, not the Task, so one tool blocking two Tasks is one finding with
-    a count and both ids; the hint is the corpus gate's own words for the first differing call."""
+    a count and both ids; the change line is the corpus gate's own words for the first differing call."""
     rows = F.assisted_tool_rows(_status(), _fidelity())
     renew = next(r for r in rows if r["tool"] == "renew_loan")
-    assert renew["task_ids"] == [HOLD, RENEW] and renew["suggested"] == "repair_recompile"
+    assert renew["task_ids"] == [HOLD, RENEW] and "suggested" not in renew
     assert renew["kind"] == "assisted_tool" and renew["key"] == "assisted_tool:renew_loan:"
     assert "2 Tasks' own recorded calls differently" in renew["text"]
     assert "replays 14 of 16 recorded calls of the corpus and 3 Tasks call it" in renew["text"]
-    assert DUE_DATE in renew["text"] and renew["hint"] == DUE_DATE
+    assert DUE_DATE in renew["text"] and renew["change"] == DUE_DATE
 
 
 def test_a_task_that_calls_an_assisted_tool_its_own_calls_replay_is_not_counted_against_it():
@@ -93,7 +93,7 @@ def test_a_task_that_calls_an_assisted_tool_its_own_calls_replay_is_not_counted_
     rows = F.assisted_tool_rows(_status(), _fidelity())
     assert CARD not in next(r for r in rows if r["tool"] == "renew_loan")["task_ids"]
     assert [r["task_ids"] for r in rows if r["tool"] == "place_hold"] == [[HOLD]]
-    assert next(r for r in rows if r["tool"] == "place_hold")["hint"] == NO_SHELF
+    assert next(r for r in rows if r["tool"] == "place_hold")["change"] == NO_SHELF
 
 
 def test_a_tool_that_is_assisted_and_blocks_no_task_is_not_a_finding():
@@ -102,16 +102,15 @@ def test_a_tool_that_is_assisted_and_blocks_no_task_is_not_a_finding():
     assert F.assisted_tool_rows(status, _fidelity()) == []
 
 
-def test_a_d79_check_that_failed_and_the_same_check_never_run_are_two_findings_with_two_verbs():
+def test_a_d79_check_that_failed_and_the_same_check_never_run_are_two_findings():
     """A check whose gate never ran is a Task short of an input, not a wrong Verifier: it asks for a
     Run, where a check that ran and failed asks the Examiner to repair the Verifier."""
     rows = {row["key"]: row for row in F.suite_rows(_status())}
     assert set(rows) == {"suite:mutation_flips:", "suite:second_path_passes:not_run"}
     failed = rows["suite:mutation_flips:"]
-    assert failed["task_ids"] == [FINE] and failed["suggested"] == "repair" and failed["kind"] == "suite"
+    assert failed["task_ids"] == [FINE] and failed["kind"] == "suite"
     assert "failed on 1 Tasks" in failed["text"]
     missing = rows["suite:second_path_passes:not_run"]
-    assert missing["suggested"] == "reroll_then_derive", "the Examiner's own reroll then derive (D173)"
     assert "one Reference, so there is no second path to score" in missing["text"]
     assert "missing Run, not a wrong Verifier" in missing["text"]
 
@@ -128,8 +127,8 @@ def test_a_leak_the_strip_missed_is_filed_per_task_and_column():
     assert "intent_leak:loans.fine:task_late" in rows
     assert "suite:leak_check_clean:" not in rows, "the grouped row is the fallback, not the answer"
     row = rows["intent_leak:renew_loan.due_date:task_late"]
-    assert row["kind"] == "intent_leak" and row["suggested"] == "repair_intent"
-    assert row["task_ids"] == ["task_late"] and "renew_loan.due_date" in row["hint"]
+    assert row["kind"] == "intent_leak"
+    assert row["task_ids"] == ["task_late"] and "renew_loan.due_date" in row["change"]
 
 
 def test_a_leak_on_a_task_that_names_no_column_is_still_filed_as_the_one_grouped_finding():
@@ -160,15 +159,14 @@ def test_a_verifier_is_filed_against_its_task_only_when_it_rejects_every_held_ou
              "canon_rules": CanonRules()}
     row = F.false_rejection_rows(store)[0]
     assert row["kind"] == "false_rejection" and row["task_id"] == TASK and row["run_id"] == "rr2"
-    assert row["suggested"] == "repair" and "reject all 1 held-out" in row["text"]
-    assert "w0.reason" in row["hint"] and "w0.reason" in row["text"], "the atom that rejected the Run"
+    assert "reject all 1 held-out" in row["text"]
+    assert "w0.reason" in row["change"] and "w0.reason" in row["text"], "the atom that rejected the Run"
     accepting = dict(store, verifiers=[base(tmp_path).model_copy(update={"seed_run_ids": ["ref"]})])
     assert F.false_rejection_rows(accepting) == [], "a Verifier that accepts a held-out Run is not filed"
 
 
 def test_a_task_whose_recordings_disagree_is_filed_for_refusal_and_one_a_tool_blocks_is_not():
-    """The corpus not settling on an End state is the Task's own loss and `repair_refuse_task` answers
-    it. A Task whose recordings disagree because its tool replays differently is the tool's loss, and
+    """The corpus not settling on an End state is the Task's own loss and refusing it answers it. A Task whose recordings disagree because its tool replays differently is the tool's loss, and
     refusing it would give up a Task the Builder can still fix."""
     references = {
         FINE: {"references": [], "recordings": ["r1", "r2"], "failed": {},
@@ -181,7 +179,7 @@ def test_a_task_whose_recordings_disagree_is_filed_for_refusal_and_one_a_tool_bl
     }
     rows = F.disagreement_rows(_status(), references)
     assert [row["task_id"] for row in rows] == [FINE], "only the Task no assisted tool explains"
-    assert rows[0]["kind"] == "reference_disagreement" and rows[0]["suggested"] == "repair_refuse_task"
+    assert rows[0]["kind"] == "reference_disagreement"
     assert "A: renew_loan on L1; B: no writes" in rows[0]["text"]
 
 
@@ -190,7 +188,7 @@ def test_a_task_the_judge_failed_on_every_recording_is_filed_as_a_disagreement_t
                          "failed": {"r1": "judge: neither state does it", "r2": "judge: neither state does it"},
                          "reason": "the judge failed every recording"}}
     row = F.disagreement_rows({}, references)[0]
-    assert row["suggested"] == "repair_refuse_task" and "the judge failed all 2 recordings" in row["text"]
+    assert "the judge failed all 2 recordings" in row["text"]
     assert F.disagreement_rows({}, {FINE: dict(references[FINE], failed={"r1": "judge: no"})}) == [], \
         "a judge that failed one recording of two has not failed the Task"
 
@@ -212,12 +210,12 @@ def test_a_task_whose_replay_never_reached_its_end_state_is_filed_as_the_fidelit
     assert [r["task_id"] for r in rows] == [CARD, HOLD, RENEW], "one per Task, none for the confirmed one"
     renew = next(r for r in rows if r["task_id"] == RENEW)
     assert renew["kind"] == "fidelity" and renew["tool"] == "renew_loan"
-    assert renew["suggested"] == "repair_recompile" and renew["hint"] == DUE_DATE
+    assert renew["change"] == DUE_DATE
     assert DUE_DATE in renew["text"] and "renew_loan" in renew["text"]
     assert next(r for r in rows if r["task_id"] == HOLD)["tool"] == "place_hold", "its own blocker"
     card = next(r for r in rows if r["task_id"] == CARD)
-    assert card["tool"] is None and card["suggested"] == "none", "no tool is named, so no verb is"
-    assert card["hint"] == "the End state was never reached"
+    assert card["tool"] is None and card["edits"] == [], "no tool is named, so no body edit is"
+    assert card["change"] == "the End state was never reached"
 
 
 def test_a_runs_disagree_finding_validates_and_is_filed(tmp_path):
@@ -226,7 +224,7 @@ def test_a_runs_disagree_finding_validates_and_is_filed(tmp_path):
     from kullback.runner.records import Finding
 
     assert Finding(finding_id="finding-1", kind="runs_disagree", text="two versions of one row",
-                   key="k", suggested="none").kind == "runs_disagree"
+                   key="k").kind == "runs_disagree"
     pins = {"runs_disagree": [
         {"task_id": RENEW, "table": "loans", "key_class": "own", "column_classes": ["hard"],
          "columns": 1, "run_ids": ["trace-1", "trace-9"], "split_candidate": True},
@@ -234,7 +232,54 @@ def test_a_runs_disagree_finding_validates_and_is_filed(tmp_path):
     row = F.runs_disagree_rows(pins)[0]
     plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={})
     filed = F.file_finding(plan, kind=row["kind"], text=row["text"], key=row["key"],
-                           suggested=row["suggested"], task_id=row["task_id"],
+                           change=row["change"], task_id=row["task_id"],
                            task_ids=row["task_ids"])
-    assert filed.kind == "runs_disagree" and filed.suggested == "none"
+    assert filed.kind == "runs_disagree" and filed.edits == []
     assert plan.store["findings"][-1]["kind"] == "runs_disagree"
+
+
+# --- one finding shape: a diff with the why and the rows (D317) --------------------------
+
+def test_a_differing_call_becomes_a_body_edit_naming_call_column_and_both_values_and_no_verb():
+    worded = "call c7: due_date recorded 2026-03-15 ours 2026-03-01"
+    calls = [{"call_id": "c7", "column": "due_date", "recorded": "2026-03-15", "ours": "2026-03-01"}]
+    fidelity = {"tools": {"renew_loan": {"calls": 2, "replayed": 1}},
+                "tasks": {RENEW: {"renew_loan": {"replayed": 1, "differing": 1, "reasons": [worded],
+                                                 "differing_calls": calls}}}}
+    status = {RENEW: {"reference_confirmed": False, "blocking_tools": ["renew_loan"]}}
+    for row in (F.assisted_tool_rows(status, fidelity)[0],
+                F.fidelity_rows(status, fidelity, {RENEW: {"trace-1": {"confirmed": False, "reasons": [worded]}}})[0]):
+        assert "suggested" not in row and "hint" not in row
+        [edit] = row["edits"]
+        assert edit == {"kind": "body", "path": "env/tools/renew_loan.py", "call_id": "c7", "column": "due_date",
+                        "recorded": "2026-03-15", "replayed": "2026-03-01", "why": edit["why"]}
+        assert edit["why"]
+
+
+def test_a_fidelity_file_written_before_differing_calls_gives_no_edit_and_keeps_the_change_line():
+    worded = "call c7: due_date recorded 2026-03-15 ours 2026-03-01"
+    fidelity = {"tools": {"renew_loan": {"calls": 2, "replayed": 1}},
+                "tasks": {RENEW: {"renew_loan": {"replayed": 1, "differing": 1, "reasons": [worded]}}}}
+    status = {RENEW: {"reference_confirmed": False, "blocking_tools": ["renew_loan"]}}
+    [row] = F.assisted_tool_rows(status, fidelity)
+    assert row["edits"] == [] and row["change"] == worded
+
+
+def test_a_rule_finding_files_its_edits_into_the_store(tmp_path):
+    plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={})
+    edit = {"kind": "body", "path": "env/tools/renew_loan.py", "call_id": "c7", "column": "due_date",
+            "recorded": "a", "replayed": "b", "why": "the recording is the standard"}
+    filed = F.file_finding(plan, kind="fidelity", text="x", key="k", change="due_date differs",
+                           edits=[edit], task_ids=[RENEW])
+    assert filed.edits == [edit] and plan.store["findings"][-1]["edits"] == [edit]
+
+
+def test_a_findings_file_written_with_a_verb_and_a_hint_still_loads():
+    from kullback.runner.records import Finding
+
+    old = {"finding_id": "finding-1", "task_id": RENEW, "kind": "assisted_tool", "text": "x",
+           "tool": "renew_loan", "suggested": "compile_tool", "hint": DUE_DATE, "round": 1,
+           "status": "open", "task_ids": [RENEW], "key": "assisted_tool:renew_loan:"}
+    loaded = Finding.model_validate(old)
+    assert loaded.change == DUE_DATE and loaded.edits == []
+    assert "suggested" not in loaded.model_dump() and "hint" not in loaded.model_dump()

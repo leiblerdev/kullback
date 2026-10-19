@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from kullback import derive as verifier_mod
 from kullback.builder import effects as effects_mod
-from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite as suite
 from kullback.runner import replay
 from kullback.runner.canon import CanonRules

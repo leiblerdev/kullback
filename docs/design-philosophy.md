@@ -1,6 +1,7 @@
 # Design philosophy
 
 > Status (2026-09-10): frozen narrative. Counts were corrected on 2026-09-10; the decision log and docs/adr are the current record.
+> Status (2026-10-16): the source of truth is restated in docs/vision.md; the trace is one input, see D365.
 
 This is why Kullback looks the way it does, in one place. What I built, why, and what I left out on purpose. The decision log (`decision-log.md`, D01 to D291) has every single choice next to the alternative it beat. The ADRs in `adr/` hold the eleven I can't easily undo. This document is the shape of the whole thing.
 

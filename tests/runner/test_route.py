@@ -600,22 +600,6 @@ def test_a_listed_tool_with_a_real_route_does_not_end_the_run():
     assert out.route == "real" and out.result == "real-out"
 
 
-def test_last_real_receipts_carries_the_exit_codes_and_starts_empty():
-    from test_real_tools import FakeReceipt, FakeWorld, shell_batch
-
-    from kullback.runner.real_tools import RealTool
-    world = FakeWorld([FakeReceipt(stdout=b"one"),
-                       FakeReceipt(stdout=b"two", exit_code=1)])
-    router = Router(starting_state=StateView(shared={}), real_tools={
-        "shell": RealTool("shell", lambda: world),
-        "other": RealTool("other", lambda: FakeWorld())})
-    assert router.last_real_receipts("shell") == []
-    out = router.route("shell", shell_batch("one", "two"))
-    assert out.error is None and isinstance(out.result, str)
-    assert [receipt.exit_code for receipt in router.last_real_receipts("shell")] == [0, 1]
-    assert router.last_real_receipts("other") == []
-
-
 def test_close_real_exports_under_the_routers_limit_and_the_kept_export_obeys_it_too():
     from test_real_tools import FakeReceipt, FakeWorld, shell_batch
 

@@ -37,12 +37,12 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from kullback import derive as derive_mod
 from kullback import difficulty
 from kullback import graph as graph_mod
+from kullback import variants as variants_mod
 from kullback.builder import compile_env, mine, synth
-from kullback.examiner import derive as derive_mod
 from kullback.examiner import reference as reference_mod
-from kullback.examiner import variants as variants_mod
 from kullback.gates import tool_runs, verifier_suite
 from kullback.gates.tool_runs import CRASH_ERRORS
 from kullback.runner import canon, route
@@ -72,9 +72,6 @@ FORMAT = 1
 ATTEMPTS_PER_TASK = 6
 # How many rewrites of a kept walk are run to look for a second path to the same End state (D199).
 SECOND_PATH_LIMIT = 4
-# A walk is bound and run before it is replayed; this is how deep an argument value is looked for in
-# an earlier answer before the walk gives up on the binding.
-MISSING_BINDING = "an earlier step's answer did not carry the value the edge names"
 
 REFUSED = "refused"
 CRASHED = "crashed"

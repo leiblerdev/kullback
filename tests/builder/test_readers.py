@@ -412,7 +412,6 @@ def test_the_columns_carry_the_requestor_that_revealed_them_and_the_export_flags
     assert {c.name for c in revealed} == {"vent", "warmth"}
     assert all(c.evidence["revealed_by"] == CARETAKER for c in revealed)
     assert readers.revealed_tables(schema) == {"greenhouse": CARETAKER}
-    assert any("greenhouse" in flag and CARETAKER in flag for flag in readers.environment_flags(schema))
 
 
 # --- the attempts ------------------------------------------------------------

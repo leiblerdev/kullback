@@ -1,87 +1,66 @@
-# Learnings from the build loop (2026-08-24 to 2026-09-22)
+# Learnings
 
-This page is the synthesis. The record of each decision, with its counts, sits in decision-log.md; the standing instructions sit in founder-words.md; the open items sit in todo.md. What follows is what the loop taught about building a harness that turns recorded traces into trusted Tasks, written so the next person (or the next model) does not relearn it by spending a build.
+The rules the build loop taught that still apply, one line each. Read them before you diagnose a build or design
+a fix, so you do not relearn one by spending a build. How each rule was found, with its counts, is in the
+[decision log](decision-log.md); terms are in the [glossary](glossary.md).
 
-## 1. How to read a failure before fixing it
+## Reading a failure
 
-Check what code the build ran on before attributing a failure to an open class. Three builds read on 2026-09-09 showed twelve failure classes; six were already closed by decisions the builds never ran on (D198 to D206), because workdirs are frozen at a runner and gates hash and only the user re-freezes. A reader that does not check runner_version.json first writes a brief for a fix that exists. The reading brief now asks for the frozen hash and marks every pattern a shipped decision claims to close.
+- Check the code hash a build ran on before you blame an open class; the fix may already exist
+  ([architecture](architecture.md#one-code-hash)).
+- A reader's count is a premise to check, not a result. Builders measure; readers overstate (D211).
+- Take absolutes from live builds. A copy of a workdir carries stale history; measure only deltas on it.
+- Read one snapshot, written once. Rulings that keep moving make a regression look like bookkeeping drift (D218).
+- A cache key must cover all the code a stage reaches, or every number read off the cache is about old code.
+- Measure a proposed failure class before you build a mechanism for it. Two mechanisms shipped on classes with
+  zero instances.
+- Every search that can end without a ruling writes a reason. An empty record is a bug.
 
-Readers overstate, builders measure. The retail reader counted 64 rows in disagreement between the round snapshot and the live status file; the builder joining the same files counted 38. The nested-scope reader named twelve Tasks as a homing fault; the builder found zero instances and four low-fidelity bodies underneath. A brief states the reader's count as a premise to be checked, and every decision-log entry has a paragraph that says where the measurement disagreed with the premise. A fix whose premise fails is not shipped for its own sake; the real class has to be found instead (D211).
+## Trust and what silently stops it
 
-Absolutes come from live builds only. A copy of a workdir carries a stale version history (verifiers ahead of examiner history), so trusted on a copy reads low (65 against 119). Measure deltas on copies, absolutes on the build, and say which.
+- Replay compares each call's own result, so check the effect of a write on rows the call did not name (D215).
+- A value present on one side only is never cosmetic (D217).
+- Do not ask a fail-only judge to choose among end states; it abstains every time (D198).
+- Retire derived artefacts with their source, or a withdrawn Reference keeps scoring (D208).
+- A writer may probe the world, never the held-out split it is graded on.
+- A body whose answers do not move when its inputs move is a constant; the sensitivity gate catches it (D195).
+- A repair lands only if it fixed its target and cost nothing elsewhere (D201); a kept body is replaced only by
+  one that beats it (D184).
+- A scorer that fails every Run on an atom no code can evaluate zeroes trust everywhere.
+- A thinner sighting of a row is not a new version of it.
+- Every requestor's call through a listed tool is a sighting of the world, not only the assistant's.
+- A corpus that builds on an empty world with no gate failing is worse than one that refuses to build.
 
-One snapshot per reading, written once. Task-level rulings that keep moving after a report is taken (loosening, re-derives, cache recomputes) make a regression indistinguishable from bookkeeping drift: the retail reader counted 64 rows in disagreement where the builder joining the same files counted 38. What worked is one Task-row table written at a single point, per-tool compile rulings in their own file, every live row stamped with the reading it belongs to, and a printed drift count. Every search that can end without a ruling writes a reason; an empty record is a bug.
+## Design rules
 
-A cache key that misses the code a stage calls serves a stale artifact, and every number read off it is about code the build never ran. Six stages carried no code version, so the build hash covered only the closure around them and an edit to the miner left the cache entry valid: the retail Environment measured at 88.2 percent had been built on a schema mined before the nested-homes change, which is the whole of its body_error cause. Two later readings that blamed the same class measured false, prompt byte drift between arms and hand-set stage versions (keys were already hashed from source; what is hand-set is twelve record-format constants), so what is worth building is the test that nothing a stage reaches is missing from its key.
+- Every rule keys on a class the harness mines, never on a corpus, tool, table or column name.
+- Anything derived from the harness's own proposals is not an identity; key on recorded bytes (D216).
+- Strictness must hold at every layer on its own: seeding, reading and comparing.
+- A stalled body needs a different lesson, not another round (D211).
+- Filter what a writer sees by held-out membership, never by value (D215).
+- Ship counters with every decision. A mechanism whose counter reads zero live is shipped and unexercised.
+- The writer of a check and its judge never share a hand (D320).
+- Feedback must carry the rows that differ; counts and gate words give a Builder nothing to act on.
+- A repair verb that calls a fresh one-shot writer is not an edit; it never accumulates what failed.
+- A result opens with the ruling of the target it names; a refused call hands back the corrected call once.
+- Compact automatically at a share of the model's real window; model-first forgetting tools measured badly.
 
-Measure a proposed class before building a mechanism for it. Two mechanisms shipped on premises that measured inert. Time-varying rows: of 1645 airline rows a Task pinned, 688 were read twice cleanly inside one Task and none had a column that moved, and of 1291 telecom rows, 363 were read twice and none moved; the airline read that was blamed makes 112 recorded calls over 43 argument shapes and no shape has two different recorded results anywhere in the corpus, because those 112 are keyless partial results no reader turns into columns. Nested keys: across 3714 and 13472 sightings no key was composed from a parent, none was named by its position, and the class had zero instances, while the twelve Tasks the reader blamed were tool bodies that never reproduced their own recordings and were kept anyway (34 of 77 recorded calls, 35 of 76, 2 of 19). Both times the fix the failures actually needed was a reader, or a body that reads state, not the mechanism that was built.
+## Process
 
-## 2. What makes a Task trusted, and what silently stops it
+- Never run a build from a temporary directory; keep worktrees, logs and briefs under the repo.
+- Run long test suites in chunks covering the whole tree.
+- A report carries Task ids, tool names and column names only, never customer data.
+- A model change makes the next round a new baseline, not a harness delta.
+- Read counts on the way out of whatever ended the work; earn an exit against the number the loop is for.
+- An agent repairs only what it was shown, and a number no script can print from the records is not a number.
+- A view of a build is a subscriber: it never fails the build, and the decisive numbers come from files on disk.
 
-The funnel is fidelity, Reference confirmed, Verifier derived, the D79 suite, false rejection over a held-out pool, trusted. Each stage has been found to lose Tasks for a reason unrelated to the Task's own quality:
+## What outside work contributed
 
-Fidelity. Replay compares each call's own result. It cannot see a write that changed a row the call did not name (a balance debited on another table, a history entry appended, a total recomputed from two catalogue rows) unless a later call rereads that row, and then it blames the read (D215 adds an effect check on the write and effect evidence for the writer). A cosmetic verdict reached through an exempt column or an unresolved semantic column confirmed Traces whose answers named different states (D217: a value present on one side only is never cosmetic; the judge is asked only when both sides carry the same domain tokens). A replay cursor that assumed alternating roles stalled on every telecom Trace (D204). A column only ever written was seeded to a corpus-wide constant (D202 runs the write's own body backwards to find the pre-state).
-
-Reference. A fail-only judge asked to choose among surviving End states abstains every time (13 of 13, three separate measurements). Stop asking it to choose: derive a Verifier per survivor and let the suite and the pool decide (D198). A Verifier whose Reference was withdrawn stays on disk and is scored as strictness (34 of 206 retail, 23 of 85 airline) unless derived artefacts are retired with their source (D208).
-
-Verifier and suite. A shape atom checked against the row the call writes rejects its own Reference when the value was read off another row (D206, retail oracle failures 15 to 1). A Task with one recorded path can never pass check 5, so every single-path Task on all three corpora was untrusted (54, 38, 9); D199 writes a second path from the Reference Run by reordering, repeating and dropping independent calls, and the difficulty record (D209) reports trusted per path count so this block is visible.
-
-Pool. The held-out pool admitted Runs by termination reason alone; 146 of 569 retail and 198 of 250 airline pool Runs never finished the Task (D210 types the end kinds; whether the pool should admit goal_satisfied only is the next reading).
-
-The writer may probe the world, never the split it is graded on. A body-writing model that can read one row of the Starting state, and run its draft through the same gates the attempt will face, is cheaper than a bigger prompt and can change nothing, as long as both tools run on the shown calls only with an empty held-out list: the split the loop hides from the model has to stay hidden from the model's own probing too. Each probe is recorded as what was asked (the table and key, or the hash of a tested body, and the answer's size), never the row and never the body.
-
-A kept body can be a constant, and no gate said so. On one corpus 21 of the 26 kept assisted bodies answered the same thing whatever the world held, every call taking no arguments, and 2 of 23 under the readers stage. The rule that catches them needs the world as part of the input, because differing arguments alone mark nothing there; a body whose answers do not move when its inputs move is marked on the tool row, on the body, in the ruling and as a lesson, which is where the sensitivity gate (D195) comes from.
-
-Repairs. A shared tool recompile that fixed nothing landed anyway and sank 24 airline Tasks between two rounds (28 trusted to 5). A repair lands only if it fixed what it targeted and cost nothing elsewhere (D201), and a kept body is replaced only by one that beats it (D184).
-
-## 3. Design rules the loop kept confirming
-
-Every rule keys on a class the harness mines (provenance class, atom kind, column class, call position, Run membership), never on a corpus, tool, table or column name. A fix that only moves the corpus it was read from is suspect and says so.
-
-Anything derived from the harness's own proposals is not an identity. Task grouping keyed on the mined column view regrouped the telecom corpus whenever readers or a cache format changed (73 frozen Tasks stranded, 219 added). Keyed on the recorded bytes per tool and row (D216) the grouping is byte identical across those changes. The same principle produced D200 (the frozen list is authoritative) and D212 (probe membership keyed on Run identity, not Task order).
-
-Strictness must hold at every layer independently. The telecom reboot tool showed the chain: a column the world never pinned (seeding gap), a body reading it (unwitnessed read), a verdict folding the wrong answer into cosmetic (lenient comparer). Fixing one layer without the others hides the fault at the next.
-
-A stalled body needs a different lesson, not another round. Eleven kept bodies sat under 0.5 fidelity for 12 to 31 rounds because the lesson showed one leaf of one call. D211 gives the full diff, the relation catalogue across failing calls, the branches nothing witnessed, and a stall limit that forces a rewrite.
-
-Evidence shown to a writer is filtered by held-out membership, never by value. Greptile's held-out concern on D211 was right in kind; the mechanism is that held-out Runs contribute nothing to what a writer sees, which holds for effect evidence too (D215).
-
-Counters over claims. Every decision ships the counters a reader needs to see it work on the next build (auto_loosen_*, second_path_synthesised, cosmetic_by_judge, status_drift, tasks_frozen_only). A mechanism whose counter reads zero live is reported as shipped and unexercised, not as working.
-
-## 4. What outside work contributed
-
-Repo2RLEnv (huggingface): a sensitivity gate that a body must answer differently when the state moves (D195), and Intents written from symptoms only (D196). The harness design survey (pi.dev and others): transactional repairs (D201). TaskPilot (FrogNano): an objective difficulty record and buckets so the Task distribution can be shifted as training proceeds (D209; the knob's second half is in todo.md). tau-tau-Bench: typed facts the simulated user holds and an explicit end protocol with end kinds (D210). Mastra: keyed sampling so membership never depends on iteration order (D212). The agent-as-user question: an agent user grounded in the curated context as a fallback first (D214), primary where its fidelity beats the rules, then its own loop and gate.
-
-Model-first context management was an experiment nobody had shipped, and it is dropped. No shipped agent (Claude Code, Codex CLI, OpenCode, Amp) gave the model a standing forget tool with code as the last resort: all of them trigger compaction from code at 75 to 95 percent of the window and let the model write only the summary, and one vendor's compaction is documented as one the model cannot influence at all. A study of thirteen memory-control configurations found pure model-controlled forgetting losing to a hybrid where code protects dependencies the model has not tagged, and a leaderboard found weaker models over-trigger memory operations and lose score for it. The harness's four context tools (forget, recall, load, unload) were built on that bet and measured badly: one Examiner turn read five whole files, the context reached 466 percent of the line, the floor freed nothing because the guards protect recent tool output, the next turn filed 24 findings on a prompt of 1,793,682 tokens, and over that round the agent wrote 3.9M fresh tokens against 153k read from cache and compacted 15 times. Beside it every harness ran on a default window of 200,000 while the model's was 400,000, because no caller passed the real one. The replacement is automatic compaction at a fixed share of the real window, the older prefix summarised by the model, recent turns kept verbatim.
-
-## 5. Process learnings
-
-Builds never run from a temporary directory (a scratchpad wipe killed a build mid round on 2026-09-08); worktrees, logs and briefs live under the repo's own ignored directory. Long test suites stall agents; run the suite in chunks covering the whole tree, in the background, and poll. One merge agent lands branches serially through PRs; Greptile findings are accepted, declined with a checked reason, or answered, never ignored. Customer data reaches reports easily (an address, passenger names, id-shaped tokens were scrubbed twice); a report carries task ids, tool names and column names only. A model change (the contributor model from 2026-09-09) makes the next round a new baseline, not a harness delta. After a re-freeze the first reading is of the counters the frozen decisions promised.
-
-Round bookkeeping was its own source of wrong numbers. A telecom round closed with the exit "done" at fidelity 0 of 183 and no Task with a Reference, because done was read off counts that were empty and the first call on a fresh workdir read green gates off an empty file. The D135 experiment of 2026-09-06 stalled on gate counts alone: 48 repair requests were recorded, none changed a byte, and the stall rule could not tell that from a round that changed everything and moved no count. A ten-round arm ran 19 hours with fidelity sitting at 153 for six rounds and never fired the stalled exit. An airline round lost a beat to a tool that raised and printed its defaults, fidelity 0 of 0 on a round whose replay had confirmed 75 Tasks of 119, and a retail round reported spend 0.0000 against a real 0.1746. Every workdir held an all-zero table under rounds/1, because a second invocation opens its counter at 1 whatever the workdir already holds. What survives the round's removal: counts are read on the way out of whatever ended the work, inside their own guard, and an exit is earned against the number the loop is for, never against a count of iterations.
-
-A report is only what its records can print, and an agent repairs only what it was shown. The mechanic in that experiment read a status capped at 25 lines: it saw four broken tools and 13 of 184 Intent lines, repaired the four and never learned the other 171 existed. A number the model has not seen is a repair it cannot make, and a number no script can print from the records is not a number, so a build that wants a new number adds the record first. The same holds for whatever watches a build: a view is a subscriber, anything it raises is swallowed rather than failing the build, and the two numbers that decide a live build, what the gates said and what has been spent against the ceiling, are read back from the files the build writes and never from state the view keeps.
-
-## 6. What is still open
-
-Effect checks make fidelity stricter before they make it higher; the first contributor round will show the drop and the recompiles that recover it. The unresolved semantic route (no judge at replay) forgives 387 telecom calls and needs its own route and count. The pool rule on end kinds, the difficulty knob's second half, the held-out gate mirror, the schema check at the call boundary and the quality pass (complexity, CRAP, mutants, as CI checks) were listed in todo.md until it was cleared on 2026-09-22 and have to be re-earned against the rebuilt harness.
-
-## 7. What the live rounds of 2026-09-22 taught
-
-Feedback that is delivered is not feedback that is usable. In airline rounds 6 and 7 the Builder received every finding and the bodies never changed: the kept body's hash (176ea811) was the same at the end of round 7 as before round 6, across six recompile attempts and six reverts. The findings carried counts and gate words, never the rows that differed, so a Builder holding the finding still had nothing it could act on.
-
-A repair verb that calls a fresh one-shot writer is not an edit. Each recompile attempt starts a new writer with no memory of what the last attempt tried, the kept body is never shown to it, and keep-by-beating can only answer that the new attempt was worse, never why. A repair loop built this way converges on nothing, because it never accumulates what has already failed.
-
-Findings that land one round late pay for a round in which nothing can move. Round 6 produced nine Verifier-suite findings, but the two findings that actually named the fidelity failure did not surface until round 7, after round 6's spend was already gone. Seventy-two percent of a round's spend goes to stages that cannot change a body at all (rerolls 34, policy 26, reference judge 9, probes 3), so a round can burn most of its budget before the one finding that would matter even arrives.
-
-A scorer that fails every Run on an atom no code can evaluate zeroes trust everywhere. Every Verifier the harness derives carries at least one policy rule compiled as a judge must-hold hard atom (airline 54 of 54, retail 194 of 194, telecom 26 of 26), and since check_run fails a Run on any judge atom, oracle_passes and second_path_passes fail for every Task in every corpus. The 46 trusted the baseline shows was a count left on disk from an earlier build, not a live measurement.
-
-A thinner sighting of a row is not a new version of it. Comparing sightings over the union of both sightings' columns turns a column one sighting simply does not mention into a disagreement, so 502 subset rows (a reservation's embedded flight record, a status answer) get pinned as new versions, 53 exports end in conflict, and the gate that checks execution against the starting state ties forever, sixteen recompiles in a row, on a tool whose faithful body it keeps refusing.
-
-Every requestor's call through a listed tool is a sighting of the world, not just the assistant's own calls. Keeping only the proposal's own requestor drops 42 of 51 calls in one Task before any reader runs, so a simulated user's device-tool calls are never witnessed, the assistant's writes on that user's tables earn no credit, and 76 telecom Tasks fail before any body of theirs has written anything.
-
-A corpus that builds on an empty world with no gate failing is worse than one that refuses to build. The intake floor for AgentTrove fails every sample file, but mine, readers, cluster and the laws all succeed on an empty world anyway: one tool, zero tables, zero columns, 64 Tasks with no intent, and no gate stops it, so a build would compile an imitated shell and print a fidelity number for it as if the number meant something.
-
-Where the readings disagreed. fid-deep-loop called PR #116's claimed recovery of 7 airline Tasks unreproduced by the live round, but that round ran code without #116 merged, so it stays a claim, not a refutation, until the free replay runs on the merged branch. The Sonnet telecom reading named the loss body content; the Opus reading found that 76 of 194 Tasks fail before any body of theirs writes, that the causal columns exist and credit scopes block them rather than being missing as an earlier reading said, and it ranked the speed-test family last where that earlier reading ranked it first. fid-trusted and fid-deep-loop reach the same H1 conclusion by different routes, the atom-set property versus a reproduced oracle check, and agree on 54 of 54.
-
-A repair result that is not about its own target teaches the wrong lesson. A recompile answered with the compile gate's first failure, which belonged to another tool, so a repair that worked was read as one that failed, and a whole round read every repair as changing nothing because it compared artifacts against a fingerprint taken after the repairs had run. A finding that suggests a verb only the other agent can call is closed by the agent that cannot act on it: one Examiner suggested its own repair verb 33 times and called it once, another 18 times and once, and that one call was refused for a payload of the wrong shape and never tried again, while the Builder asked to refuse a Task 17 times with 0 admitted, four of them repeated word for word two rounds later. A result opens with the ruling of the target it names, and a refused call hands back the corrected call once per distinct ask.
+| Source | Taken as |
+|---|---|
+| Repo2RLEnv | Sensitivity gate (D195), Intents written from symptoms only (D196) |
+| Harness design survey (pi.dev and others) | Transactional repairs (D201) |
+| TaskPilot | Difficulty record and buckets (D209) |
+| tau-tau-Bench | Typed user facts and an end protocol (D210) |
+| Mastra | Keyed sampling (D212) |

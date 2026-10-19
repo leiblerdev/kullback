@@ -1,45 +1,40 @@
 # leibler
 
-[Leibler](https://leibler.dev) rebuilds the system a working agent ran in from its traces, then grades other models in code on what they change there. [Kullback](https://github.com/leiblerdev/kullback) is the open-source Builder and Runner behind it, under Apache-2.0.
+[Leibler](https://leibler.dev) rebuilds the system a working agent ran in from its traces and grades other models in code on what they change there, with [Kullback](https://github.com/leiblerdev/kullback), its open-source harness.
 
 ## Environments
 
-| Environment | Fidelity over Tasks | Call fidelity | Verifiers | Trusted | Status |
-| --- | --- | --- | --- | --- | --- |
-| [leibler/retail](https://huggingface.co/datasets/leibler/retail) | 100.0% (223 of 223) | 100.00% of 3220 | 222 | 193 of 223 | release |
-| [leibler/airline](https://huggingface.co/datasets/leibler/airline) | 100.0% (130 of 130) | 99.93% of 1513 | 128 | 82 of 130 | release |
+| Environment | Status | Tasks | Harbor Tasks |
+| --- | --- | --- | --- |
+| [leibler/airline](https://huggingface.co/datasets/leibler/airline) | release | 130 | 123 |
+| [leibler/retail](https://huggingface.co/datasets/leibler/retail) | release | 223 | 186 |
 
-Both are the 2026-09-24 build (tag `build-20260924`), built and examined with Claude Opus 5.5 on Amazon Bedrock. Both come from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora (MIT); no package carries the recordings, and the export's leak scan found none.
-
-## Words
-
-- Run and Trace: a Run is an agent's conversation with the tools; a Trace is a recorded one.
-- Reference: the Trace a Task's user context comes from.
-- Replay and agree: a replay re-drives a Trace's turns; a call agrees when its verdict is same, cosmetic or both refused.
-- Confirmed: a replay where every call agrees and nothing is missing, reordered or crashed.
-- Fidelity over Tasks: Tasks with a confirmed replay, over all Tasks.
-- Fidelity over Runs: confirmed replays over all replays.
-- Call fidelity: agreeing calls over all recorded calls.
-- Verifier: a Task's End-state check, written only by the Examiner, never by the Builder.
-- Atom: one Verifier check: required, allowed, forbidden, question, communicate or hard.
-- Gates: oracle replay, suite, loosening, false rejection, trusted.
-- Trusted: suite passed, probes fail, last version, no loosening, not over strict, not refused.
-- Open: not yet trusted.
-- Refused: a Task the Builder showed nobody can finish.
-- Release and preview: a release replays at least 90% of its Tasks; a preview is below that.
-
-## Fetch and run
+## Use it
 
 ```bash
 uv pip install git+https://github.com/leiblerdev/kullback.git
 uv run kullback fetch leibler/<environment> --out env
 uv run kullback run --workdir env --task <task id> --model provider/model
-uv run kullback verdict --workdir env
+uv run kullback verdict --workdir env --judge-model provider/model
 uv run kullback report --workdir env
 ```
+
+Without `--judge-model` a Task's judge items stay unjudged and its Run gets no score.
+
+## Terms
+
+- Environment: a simulated world with tools and rules that an agent acts in.
+- Task: one goal the agent is asked to reach in an Environment.
+- Run: one attempt by an agent at a Task, recorded step by step.
+- Verifier: the check that decides from the end state whether a Run succeeded.
+
+## Known issues
+
+Some Tasks can be wrong. A Verifier can check the wrong thing or a Task can be unfinishable. Treat a single Task's result with care and the set as a whole as an eval.
 
 ## Links
 
 - Harness: https://github.com/leiblerdev/kullback
 - Site: https://leibler.dev
 - Licence: Apache-2.0 for the harness and every package; each corpus keeps its own.
+

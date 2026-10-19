@@ -17,7 +17,7 @@ from typing import Any, Iterable, Optional
 
 from kullback import sampling
 from kullback.runner import canon
-from kullback.runner.records import EntitySchema, Task, ToolSig, Trace, UserRules, Verifier
+from kullback.runner.records import GOAL, SPOKEN_FIELDS, EntitySchema, Task, ToolSig, Trace, UserRules, Verifier
 from kullback.runner.world import clock, loading
 from kullback.runner.world.loading import EnvironmentError, _record, _shaped_json
 
@@ -229,6 +229,13 @@ class BuiltEnvironment:
         """The tools that change the world, by mined kind, for the Simulated user."""
         return {sig.name for sig in self.sigs if getattr(sig, "kind", None) == "write"}
 
+    def opening(self, task: Task) -> Optional[str]:
+        """The first user message of a Run with no Simulated user: the instruction, and on a
+        single-turn Task (D332) the user's facts folded in after it."""
+        if not task.facts_in_instruction:
+            return task.intent
+        return facts_instruction(task.intent, self.rules(task))
+
     def agent_driven(self, task_id: str) -> bool:
         """Whether the build's own ruling gave this Task to the agent user (D214 rule 3).
 
@@ -303,3 +310,31 @@ def _field(call: Any, name: str) -> Any:
     if isinstance(call, dict):
         return call.get(name)
     return getattr(call, name, None)
+
+
+# The line before the folded facts. It names no domain: what follows is what the user would have
+# answered had the agent asked.
+FACTS_LEAD = "Details you may need from me:"
+
+
+def facts_instruction(intent: Optional[str], rules: Optional[UserRules]) -> Optional[str]:
+    """The instruction with the user's facts folded in, one line per field (D332).
+
+    The facts are the ones the user would have given when asked (the rules facts and the argument
+    facts), never a spoken line; two values of one field are both given, in the order stated. A Task
+    with no instruction opens on the goal the recorded user stated.
+    """
+    facts = list(getattr(rules, "facts", None) or ())
+    goal = next((str(f.value) for f in facts if f.field == GOAL and f.value), None)
+    head = intent or goal or ""
+    values: dict[str, list[str]] = {}
+    for fact in facts:
+        if fact.field in SPOKEN_FIELDS or fact.value is None:
+            continue
+        said = values.setdefault(fact.field, [])
+        if str(fact.value) not in said:
+            said.append(str(fact.value))
+    if not values:
+        return head or None
+    lines = [f"- {field.replace('_', ' ')}: {', '.join(said)}" for field, said in values.items()]
+    return "\n".join([head, "", FACTS_LEAD, *lines]).strip()

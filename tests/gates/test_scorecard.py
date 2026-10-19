@@ -318,5 +318,6 @@ def test_a_frozen_list_written_as_ids_alone_is_filled_in_from_the_per_task_files
     (build_dir / "tasks" / "t1.json").write_text(json.dumps(as_dict(Task(id="t1", run_ids=["r1"]))),
                                                  encoding="utf-8")
     assert frozen_tasks(build_dir) == [{"id": "t1", "category_id": None, "run_ids": ["r1"], "intent": None,
-                                        "unguarded": False, "name": None, "anchor_run_ids": []},
+                                        "unguarded": False, "name": None, "anchor_run_ids": [], "write_labels": {},
+                                        "facts_in_instruction": False},
                                        {"id": "t2", "run_ids": []}]

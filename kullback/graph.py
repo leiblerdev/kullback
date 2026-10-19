@@ -27,9 +27,9 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Iterable, Optional
 
-from kullback.examiner.variants import MAX_ID_CHARS, row_ids
 from kullback.runner.records import plain
 from kullback.sampling import sample_key, sample_unit
+from kullback.variants import MAX_ID_CHARS, row_ids
 
 # The artifact this module writes and the shape's version, bumped when an edge's fields or the way
 # a weight is counted change, so a file written under an older meaning reads as an older file.

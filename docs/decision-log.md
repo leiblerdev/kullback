@@ -2134,3 +2134,2123 @@ polls for its slot without blocking the loop. A 429 sets a cooldown every waiter
 the Retry-After the blocking path already honoured, now shared with streaming under the
 handle's caps. Live check (12 concurrent calls, cap in_flight 3): one bucket, peak in flight 3,
 9 waits, 0 rate limited, 12 answers, no errors.
+### D296. The agent user is the Simulated user by default (2026-09-27)
+
+Every Run a build makes meets the agent user on the run model over the rule floor; `--rule-user` keeps the rule-driven user alone. The rule user answered 0 of 60 dead turns, the agent user 45 of 60 (founder, 2026-09-27).
+
+### D296. Verifiers stop demanding one model's habits: question atoms read the Run, facts answer the request (2026-09-25)
+
+The seeds are the recording plus re-rolls by one model, so what they all did includes that model's habits, and derivation demanded them: 15 of one corpus's and 4 of the other's trusted-lost Tasks failed every held-out recorded Run on a question or stated-fact atom. Four changes, all general. First, a `q.field` atom is derived only when some seed could not read the value from a tool result before its write (`derive._read_before`, by the leak check's own match): reading it or asking are both right, and a Run that guesses a value it never read or was told still fails on the write value atom. Second, a confirmation is a user reply after the agent's question that holds an affirmation and no denial (`target._confirms`), not one that starts with it: a yes anywhere counts, any denial vetoes it, single words are token-matched, and bare "not" vetoes only next to an affirmation, since it negates product options and hedges far more often than consent. Third, a volunteered value satisfies the question atom at scoring time while derivation still asks for elicited ones alone (`question_keys` `elicited_only`), so asking again is not demanded where the user already told. Fourth, from the common facts only those answering the Intent or a user question turn are demanded (`asked_facts` reads "?"-bearing user turns); the rest are reported, as the D190 fallback already held for the reference-only set. Checked in code: `tests/runner/test_question_reading.py` (mid-reply yes, "yes, but wait, no", volunteered and guessed values), `tests/examiner/test_question_fact_demands.py` (world-readable, unreadable and mixed fields; stated, requested and questioned facts); the fixture pin moves to `224c6771…` for the fourth change alone. Measured offline by re-deriving every Task of both smoke 9 corpora from the stored Reference and seeds: 9 false rejections cleared, 6 Tasks clean gained, no wrong Run newly passes (every probe that newly passes skipped a read every seed made, and every probe of a gained Task fails on its confirmation atom); 8 Tasks leave the suite, each either exposing such a skip or left with no demanded value to swap, which is the hand-off work's case. Remaining overfit: none in code; one known weakness is a multi-request user turn, whose denial of a second request vetoes the confirmation of the first.
+
+### D299. A run file carries what its Simulated user recorded about its turn (2026-09-27)
+
+The agent user logged its tool calls and its reasoning summary on its own turn event, but the runner wrote its own narrower turn record into the run file: text, tags, sources, refusals. So no run file could say whether the model read before it wrote, and the per-turn log was dead bytes wherever anyone counted. Now `runner/loop._user_payload` carries the user's own turn record with the turn: the tool log even when empty (no read is the finding, not a missing field), what the model weighed before writing, the driver, the drop reason, and the end marks. Whatever a Simulated user records about its turn travels with the turn, whichever user it is.
+
+### D300. The turn message states the stop rule as sequencing, not as a tool ban (2026-09-27)
+
+Every turn told the model to "answer with the turn itself and no tool call", and the model read that as a ban which overrode the rules' "call first": 19 of 69 fitting no-read turns said so in their reasoning summaries, and fitting reads sat at 1 of 70. The turn still ends when the model answers in text, so the line now says that: use the reading tools the rules name for the question in front of you, then answer with the turn itself, never with a tool call as the turn. Same five Tasks before and after: 0.25 to 1.53 reads per turn, fitting reads 1 of 32 to 22 of 29, with the residual misses being answers the context already holds.
+
+### D301. The Spec keeps the writer's session counts (2026-10-05)
+
+`stage.write_one` dropped what the writer session counted (demands, kept, each refusal, gaps, parse error, truncated characters), so a smoke build could not say why a Spec came out thin without rerunning it. Spec now carries a `writer` dict with those counts, the session's spend and read rounds, the attempts, and the sent-back counts of D302 and D303; old Spec files load with it empty. After a retry the first attempt's counts and spend stay under `writer.first_attempt`, so why it came out empty is kept. The split into `write_from_intent` lets a before and after measurement hold the mined Intent fixed and change only the writer. Costs one small dict per Spec file.
+
+### D302. An empty Spec is a writer failure, retried once, then set aside (2026-10-05)
+
+A Spec that kept no check, or whose every Intent fact was a gap, still got a Verifier, and that Verifier passed or failed Runs on nothing the user asked for. Now the writer runs once more in a fresh session on what is left of the Task ceiling; empty again, the Spec is saved with `set_aside = empty_spec`, `task.set_aside` is published and no Verifier is written, and a resumed build counts the set-aside Spec as done. A Spec that keeps a no_write or cap check is not empty, so a Task with no expected write still has one. `write_specs` returns empty_seen, retried and set_aside_empty. The tier report shows such a Task as set_aside with the Spec's reason, not untrusted for want of a Verifier file. Costs at most one extra writer session per empty Task.
+
+### D303. A write demand must quote its condition, and refused demands go back once (2026-10-05)
+
+In the smoke build 7 of 40 Specs demanded a write nothing asked for: 4 passed the because rule only by naming a policy section, 3 quoted a user fact that does not ask for that action. A write's because must now also quote at least 12 characters of a witnessed Intent fact or of the policy text (`ground.valid_write_because`); naming a section is not enough, the refusal code is condition_unquoted, and the prompt says so in one rule line. Other demands keep the old rule. Demands refused as ungrounded, unwitnessed or condition_unquoted go back to the writer in one follow-up turn of the same conversation with each id, code and rule, and the corrections that ground are kept under their old check ids; `writer.sent_back` and `sent_back_kept` count them. Costs one extra writer call on a Spec with a refused demand, and a write grounded on policy now needs both the section name and the quoted sentence.
+
+### D304. A ruling re-roll starts at the Task's next free seed (2026-10-05)
+
+In both smoke builds a second ruling re-roll on one Task died with FileExistsError on `ruling-<task>-0.jsonl`, and every later examine call failed with it, so the Builder stopped. The runner names a prefixed Run `<prefix>-<task_id>-<seed>` and writes a Run file once (D281), and the router's re-roll and the derivation's `run_rerolls` both started every batch at seed 0. Both now pass `first_seed` from one helper, `runners.next_seed`: one past the highest seed among the Task's Run files under that prefix in runs/, 0 when none. D281 and the frozen runner are unchanged. Checked in code: two router re-rolls of one Task against real files leave seeds 0 and 1.
+
+### D305. The intent tier report scores the Run files the build wrote (2026-10-05)
+
+`intent_tiers` read its Runs from exam/task_runs.json, which nothing writes under `--verifier-from intent`, so every row scored no Run and failed can_fail. It now reads every runs/**/*.jsonl that loads as a Run, grouped by the Run's Task, and skips a file that does not load; the replay prefix and which Runs count as fresh are unchanged. On the two smoke workdirs, read only: retail 20 of 20 rows score at least one Run (164 Runs), airline 18 of 20 (170 Runs, the other two set aside), where before every row scored none.
+
+### D306. A yes to what the Candidate asked to do is an answered turn (2026-10-05)
+
+The agent user counted a turn that answers a request with no fact as unanswerable, and a bare "yes, go ahead" is such a turn, so a Candidate that asked for a second yes before writing hit `UNANSWERABLE_LIMIT` and the Run ended scenario_exhausted just before the write (22 Runs, 9 Tasks in the diagnosis). `guards.confirms` reads a confirmation with the rules' own cues: the Candidate's turn matches `CONFIRM_REQUEST` and a sentence of the user's turn opens on `AFFIRM_CUE`, with none opening on `NEGATIVE_CUE`. `AgentUser._had_nothing` returns False for such a turn, so it never counts toward the limit; the limit and the other end kinds are unchanged. Replayed on the recorded user turns of the 22 Runs with no model: the old reading reproduces every recorded end, and all 20 that ended scenario_exhausted would not have ended at that turn (the other 2 ended handed_off and goal_satisfied, untouched).
+
+### D307. The guard strip takes out only the flagged value (2026-10-05)
+
+`Guards._strip_values` (D196) dropped every sentence the strip flagged a value in, which also lost the user id, payment id, reason or item ids said in the same sentence (24 Runs, 9 Tasks). It now keeps the sentence and removes only the words the strip changed, found by a word diff of the sentence against the strip's own output (`_unchanged_words`, words compared as `canonical` spells them); nothing stands in for the value, because the strip's stand-ins (a month, a code's last characters) still say part of it. A sentence the strip flags without changing is still dropped whole, and STRIPPED is counted as before. Not measurable on the recorded Runs: a Run file keeps the post-guard text only, so 0 of the 24 can be replayed.
+
+### D308. A tool the world records as an action is scored as a call, never as a write (2026-10-05)
+
+dg-runs group 1 (47 Runs, 7 Tasks, the largest cause): the tool D282 made a write so an atom could demand it sat in the write set the Spec path scores under, so the no-write atom, the cap and the extra-write check failed Runs whose only "write" was the hand-off, and an allowed or required hand-off demand compiled to nothing for want of an id_field. The signal is the schema's own: the actions table's columns name the tools whose calls they record (`evidence.actions_of`, read by `spec/actions.py`), no tool name read for meaning. `load_inputs` and `intent_tiers` take those tools out of the write set they pass to compile, `must_not` and `check_run`. A write or no-write demand on such a tool compiles to an action atom (`atoms.action_atoms`): required is a Hard rule that some successful call of the tool is in the Run, forbidden is the no-write rule over that tool alone, allowed is an allowed whole-tool write atom that check_run does not evaluate; required and allowed both carry that allowed atom, so a scorer that still counts the tool as a write (the Runner's Verdict reads `env.write_tools()`) names no extra write. Re-scored offline on the 204 diagnosed Runs: 56 of 141 failing Runs pass (all 47 of group 1 plus 9 "handed off wrongly" whose Spec allows the hand-off and requires no write), 26 of 63 wrong passes now fail (two retail Specs that require the hand-off, which compiled to nothing before). Limit: a required action answers nothing on a Run with no successful call at all (the Hard wrapper judges calls only), so such a Run passes it; closing that needs kullback/runner or kullback/gates. Status: built 2026-10-05 on sp-1005/pl-compile.
+
+### D309. A no-write and a cap that name a tool cover that tool only (2026-10-05)
+
+`_no_write` and `_cap` ignored `demand["tool"]`. A no-write naming a tool is now the no-write rule over that tool alone; a cap naming a tool is a Hard rule that the Run makes at most `count` successful calls of it, because the frozen `entity_count` counts every write and cannot be scoped. With no tool both are unchanged. Re-scored offline on the 204 diagnosed Runs: no verdict moves (6 no-write and 1 cap demands on disk name a tool, none decides a diagnosed Run). Status: built 2026-10-05 on sp-1005/pl-compile.
+
+### D310. A Spec no Run can pass goes back once, then is set aside (2026-10-05)
+
+Compile names three reasons, each with its check ids (`compile.unsatisfiable`): a no-write beside a required write on a tool it covers, a forbidden demand equal to a required one, a required write with no id_field or an object entity. The writer gets those checks back in its one follow-up turn of the same conversation, beside the because refusals of D303, with a rule line per code; still unpassable, the stage saves the Spec set aside as unsatisfiable_spec, publishes task.set_aside and writes no Verifier. On the 40 Specs on disk, read only: alone it would reject 6 (5 required writes naming no row, 1 no-write beside a required write), with D308 applied 3 (2 and 1), since a hand-off demand is no longer a write; no Spec has a forbidden demand equal to a required one. The repair path (`apply_repair`) does not check it yet. Costs at most one writer turn per unpassable Spec. Status: built 2026-10-05 on sp-1005/pl-compile.
+
+### D311. A replay is known by its recorded model, never by its run id (2026-10-05)
+
+`is_replay` used the replay prefix off replays.json when one was known, so a recorded-model Run under another prefix counted as fresh and could feed independent_pass: 50 airline and 39 retail Runs (all `synth-path-r0-`). A Run is now a replay when the recorded model is among the models it names (`run.model` and `reply.model` of its model_call events, `trust.run_models`), and fresh only when it names a model and that model is not the recorded one; a Run that names no model is neither. `replay_prefix` and the `prefix` argument are gone, nothing else read them. On clones of the two resume-b workdirs no tier row and no gate value moved: the 21 moved Runs on scored Tasks all fail their Verifier, and the 280 dg Muse Runs stay fresh with their verdicts unchanged.
+
+### D312. A Verifier that fails a faithful replay of a kept Reference is not trusted (2026-10-05)
+
+A new gate, reference_replay, sits between can_fail and independent_pass: the Verifier must pass every replay with fidelity 1 and confirmed (replays.json) of a recording the harness keeps as the Task's Reference (references.json), never the benchmark's gold. A Task with no such replay passes the gate. The row's `reference_replay` names the replays scored, the first one failed and its first failing atom; replay_only now needs this gate too. On clones of the two resume-b workdirs the gate fails on 4 Tasks (airline 2 right, 1 wrong; retail 1 right), all on an extra hand-off write the recording made, and none changes a tier: all four already fail can_fail. The one on a wrong Reference punishes a Verifier that was right, a cost this gate accepts because the harness cannot tell a wrong Reference from a right one.
+
+### D313. Tasks are cut by the user's request alone; the write set is a label (2026-10-05)
+
+`cluster_runs` used to split the recordings by the set of write tools that went through before it clustered by intent, so a recording that skipped the write left its siblings of the same request and became the Reference of a Task with nobody to dissent. Now the harness's own intent clustering (user turns only, threshold 0.4 unchanged) runs over all recordings, then the starting-world split (D74) as before. Each Run's confirmed write set rides on the Task as `write_labels`; a Task whose Runs carry two labels dissents, and the cluster gate counts `multi_run` and `dissenting`. A Category is now the Tasks whose Runs mostly carry one label, a summary over the cut. `GROUPING_FORMAT` is 3, and a grouping frozen under an older format names `format` as what moved instead of raising. Live check on the smoke9 recordings, no model: retail 223 to 166 Tasks, 57 dissenting, all-wrong Tasks 65 to 17, 67 of 95 lone wrong recordings now beside a right one; airline 130 to 103 Tasks, 29 dissenting, all-wrong 43 to 24, 14 of 50. Every Task id changes against earlier builds (ds-recut report, .claude/herdr/outcome-1005).
+
+### D314. One content hash on every tier row replaces the freeze of the Runner and the gates (2026-10-05)
+
+Freezing was a convention: `freeze-runner` wrote a hash of runner/ (and a separate gates hash, D122) that only regrade Verdicts carried, while `kullback run` put a different hash of runner/ plus two agent files on Runs; the two never matched, nothing compared them, `regrade_gate` asked only that one be present, and nine fixes waited in docs/frozen-patches. Founder decision 5 of 2026-10-05 opens the freeze. Now `runner/code_hash.py` hashes every `.py` file under runner/, gates/ and spec/ from their bytes at import, and that one hash is the `runner_version` on every Run, Replay and Verdict and the `code_hash` on every tier row; the tier report prints it at its head and in its table line and warns on mixed rows or on a replaced report scored under other code. This folds the gates hash into the one hash, reversing D122's "never folded": a tier row is scored by both, so either moving makes rows incomparable. `boundary.runner_version`, the routing config hash and `gates_version` are gone; `freeze-runner` records the live hash for the export only. The agent core files (agent/loop.py, agent/harness.py) are no longer in a Run's hash: they change how a Run plays, not how it is scored. Agents still may not write runner/ or gates/ (`gates.PROTECTED`); people land fixes there as ordinary commits. Live check, no model: the two 20-Task Step B workdirs re-tier to the same tier on every row as their stored tiers.json and as the code before this change, with the hash on 20 of 20 rows.
+
+### D315. A Task carries its expected end states with a source on every value, and a forbidden list (2026-10-06)
+
+A Task is the user's demand (the Intent), its starting state (the rebuilt world at the Task's seed), one or more expected end states and a forbidden list. An expected end state is the Reference's world diff, start to end, as data: `ExpectedCell(table, row_id, field, value, source, row_source)` in an `EndState` whose `allowed` names what else may differ; nothing else moves. A Task carries several when a user turn names alternatives, and a Run passes on any one. Every value and row id carries a `ValueSource`: a user turn (recording, turn), a policy clause (quoted), or the recording's tool result; anything else is unsupported, marked by a None source and counted, never filled in. `Forbidden` names a write or a Run-ending call that must not happen, sourced only from a user negation in their own turn or a recorded refusal; the collateral rule is not enumerated, the end state check enforces it. `Conduct` names a confirmation before a write, a refusal or a hand-off the event log must show. `runner/expected.py` derives all of this by code from a Reference Run (`expected_from_run`, `alternatives_from_turns`, `forbidden_from`, `refusals_of`) and checks a Run's end state against it (`match`, a result with `ok` true, false or None and a readable `why`). A list or dict value is sourced by its leaves that are new or changed at their path, each the same way, kept in `leaf_sources`; the cell is sourced when every such leaf is, and a nested value with no new leaf (reordered only) is `unchanged`. The new Verifier fields default empty, so every stored Verifier still loads. Rejected: a model as a witness of a value, reads in the forbidden list, and a value sourced by anything but a user turn, a policy clause or a tool result. The alternatives rule is literal ("a or b", "either a or b", "a, b or c" on bare words) and says in its docstring what it misses.
+
+### D316. The verdict gates on the end state, the forbidden list and conduct, then weighs the atoms; unknown blocks (2026-10-06)
+
+`verdict` now decides its gates first: one expected end state matches with no collateral move, no forbidden write or call happened (read off the calls and the diff), and each conduct rule holds off the event log (`confirm_before_write`: a user turn opening a sentence on a yes, none on a no, before the tool's first write, as D306 reads a confirmation; `refusal`: the recorded refusal message shows again in the Run; `handoff`: the Run-ending call happened). A False fails the Run naming the gate and the cell or rule (`gate:expected:cell:...`, `gate:forbidden:...`, `gate:conduct:...`); a None leaves it not verdicted naming the unsettled pair, and a definite failure wins over an unsettled gate as it does for atoms. Then the atoms as before; the extra-write check is skipped when expected end states exist, since collateral answers for it. This also closes a fail-open: `_tally_atom` dropped a forbidden atom whose check returned None, so a forbidden predicate that raised let the Run pass while the comment above claimed the opposite; a non-judge forbidden atom that cannot be checked now leaves the Run not verdicted. Predicates get deep copies of calls, results, the start and end state and every helper's return, and the context copies them off the Run, so a predicate that mutates a row cannot make a later check pass. A Verifier with no expected end state, forbidden or conduct rule is checked by its atoms alone, exactly as before.
+
+### D317. A finding is a diff with the why and the rows, one shape for the Builder and the Spec; the repair verbs are gone (2026-10-06)
+
+A finding used to carry a repair verb (`suggested`) and a one-line `hint` from the old round driver, while the Builder prompt already said verbs no longer exist and the Examiner's own Finding carried a path and a line. Two shapes, and neither said exactly what to change: a line the Builder has to interpret is a guess. Now one Finding carries `edits` beside its path, change line and rows. A body edit names the Environment file, the recorded call, the first differing column, the recorded value and the replayed one; the Builder reads the body and makes the one edit that moves the replayed value to the recorded one. A text edit names an Intent or Task file, the verbatim current text and its replacement, and is refused when the text is not found or is found more than once, so the Builder applies it with `edit` exactly as given. An atoms edit names the atoms to drop and add on a Task's Verifier; the Spec applies these (the next wave), this one carries the shape. Every edit carries its why in one sentence. The rule findings read their body edits off the per-Task rows of `tool_fidelity.json`; the Examiner's finding tool validates the edits it is given and its prompt asks for an edit whenever the values can be named or the text quoted. `FindingVerb`, `suggested` and `hint` are removed; a findings file written before this still loads, its verb dropped and its hint read as the change line.
+
+Rejected: a whole body or a whole Intent returned as a finding (the founder's words: "not the whole file, diffs are more robust"; a whole file hides which line changed and the gates rule on the file, not on the claim); a finding with no rows (a claim with no evidence the gates or the Builder can check); keeping the verbs as a hint for which stage to run (the path is the whole address).
+
+### D318. OpenTelemetry GenAI spans and Claude Code transcripts enter through the adapter seam (2026-10-06)
+
+The two detector-only adapters now map (`maps = True`), same contract as terminus-2, every detect vote unchanged. `otel_genai` reads an OTLP JSON export or a flat span list, one recording per `traceId` with spans ordered by start time. A model-call span gives turns and calls from `gen_ai.input.messages` and `gen_ai.output.messages` (parts of type text, `tool_call`, `tool_call_response`) or from the message events (`gen_ai.system.message`, `gen_ai.user.message`, `gen_ai.assistant.message`, `gen_ai.tool.message`, `gen_ai.choice`); input a later span repeats from the earlier history is not mapped twice. An `execute_tool` span answers the call with its `gen_ai.tool.call.id`, latency from the asking span's end to the tool span's end, `error.type` or an error status through the error classes; a `tool_call_response` part answers only when no tool span did. `tools_declared` comes from `gen_ai.tool.definitions` or `gen_ai.request.tools`, `system_prompt` from the system message or `gen_ai.system_instructions`. A trace whose GenAI spans carry nothing to map is rejected with the span names in the reason. `claude_code_jsonl` reads one recording per `sessionId`: user, assistant and system lines with a `message` are turns, ordered by the `parentUuid` chain with file order as the fallback when a parent is missing; a `tool_use` block is a call, the `tool_result` with its id answers it, `is_error` true goes through the error classes. Every other line type is counted in the sidecar as `non_turn_lines`, beside the chain note; `system_prompt` and `tools_declared` stay None. Pointers: a turn or call cites the span index (or line index) and the attribute, event or block it was read from; the Trace itself cites the recording index, which the ruling reads.
+
+### D319. Trust is decided by code on the expected end states; unconfirmed is a tier; no model on the trust path (2026-10-06)
+
+`gates/trust.py` rules every Verifier that carries expected end states (D315) by code alone, in order: one end state has a source on every value and row (else `unconfirmed`, naming the first unsupported cell); every faithful replay of the kept Reference matches it with the forbidden list and conduct holding (a False is a Verifier defect ruled back to the Spec, `pending`; a None or any unknown gate leaves the Task `unconfirmed`, naming the column kind, which is D312 widened); the empty Run fails it, where empty now means the Reference's start state unmoved with no write and none of the required conduct (`verifier_suite.empty_run`), so a Task whose expected diff is empty still has to demand its conduct (D295); the wrong Run fails it (D286) and the leak check is clean (D287), read off the suite's row. Refusals (D128), the Reference pool and seed attribution (D281) are kept as they were. Each status row carries `trust_tier` (trusted, unconfirmed, refused, pending) and `unsupported_cells`, on the round snapshot that `kullback status` and the report read; the one line they print sets the tiers beside the count the pre-D319 rule gives (`_legacy_trusted`, kept for this release only; that column leaves next release) and beside D133's held-out number as "valid other solutions failing", computed as before. A Verifier with no expected end state keeps the pre-D319 ruling and its words this release (`legacy_only` names it), because every stored Verifier is atom-only until the Spec writes end states. Pre-registered rule (docs/validation/trust-1006.md, written before computing): on Tasks with a benchmark sidecar, the share of trusted Tasks resting on a wrong Reference must be under 10 percent under the new gate, or the sourcing gate is not doing the work and the design is wrong, not the corpus. Outcome on the smoke9 retail copy: 64 of 191 (33.5 percent, Wilson 95 percent 27.2 to 40.5) against 63 of 193 (32.6 percent) under the old gate. The rule fails: a value found in a user turn or a lookup result is sourced whether or not the recorded agent chose it rightly, so sourcing does not tell a right Reference from a wrong one. Rejected: a model as a witness of a value or of a Run, probe pools as trust evidence, and reading the faithful replay as correctness (it says the Environment reproduced the recording, never that the recorded agent was right).
+
+### D320. The Spec writes and repairs Verifiers; the Examiner reads and reviews with a diff; derivation, repair and probes leave the Examiner (2026-10-06)
+
+The Examiner used to write the Verifiers it then judged: it derived one per Task from the Runs, edited atoms through edit_verifier, wrote probes, bought re-rolls and loosened by code, so one hand wrote the test and ruled on it. Now the Spec is the one writer. `write_verifier` builds the whole Verifier from the Task's Reference Run by code: the expected end states (`expected_from_run`, with `alternatives_from_turns`), the forbidden list (`forbidden_from`) and the conduct rules from the grounded demands (a confirmation before a write, a refusal from the Reference's recorded refusal message, a hand-off), each with its source; facts told and questions asked stay weighted atoms. The writer never writes a predicate for a write or a conduct rule: a demand carrying code is refused with "write demands are end-state cells" and sent back once (D303). A Spec written before its Task had a Reference has its gates rewritten by code once one comes, with no model call. The Examiner keeps its reading tools and files one review per Task: a finding with what is wrong, why, the rows and the edit (D317), or no_finding with its reason, recorded as "no finding". It writes no Verifier and runs nothing. The Builder's examine tool sends a finding's atoms and text edits to the Spec by code (`spec/review.py`), which applies them, rewrites the Verifier and runs the grounded, can-fail and Reference-replay gates; the Builder reads only the body edits and one line counting the Spec's repairs. Each review round is counted on the Spec, and a Task the gates still refuse at the round ceiling is set aside as pending, never refused by the Examiner alone. derive.py and variants.py leave the Examiner for the package root, where the Reference stage's survivor choice and synthesis still use them; runners.py's user factory moves to the Builder's run tool; loosen.py, the edit, try and probe tools, the re-roll tool and `--verifier-from` are removed. gates/probes.py and gates/loosening.py stay, read by the gates.
+
+Rejected: the Examiner writing any artifact (a Verifier, a probe, a Run), because the writer and the judge of a test must not share a hand; a review without rows, because a claim with no evidence is a guess the Spec cannot apply and the gates cannot rule on; probes as a trust input, because a hand-written Run the Verifier's own author chose measures that author's imagination, not the Verifier, and the end-state gates already fail the empty, wrong-entity and swapped-value Runs by code.
+
+### D321. Consistency with the request is checked by code and does not separate a wrong Reference (2026-10-06)
+
+D319's sourcing says a value was available, not that the user asked for it. Two checks in `kullback/runner/expected.py`, read by `code_ruling` after sourcing and before the replay match, add the other direction: `contradicts_user` (a changed value or leaf whose column's start-state domain the user named values of, and which is none of them) and `unasked_writes` (a successful write with no earlier user turn naming one of its argument values and no user yes, D306's reading). Either leaves the Task unconfirmed naming the cell or tool. Pre-registered (docs/validation/trust-1006.md, round 2): trusted-on-wrong-Reference under 10 percent on the same 222 Tasks. Outcome: 55 of 132 (41.7 percent, Wilson 95 percent 33.6 to 50.2); the checks withheld 9 wrong and 48 right References. The rule fails and no third check follows: a user names a column's value to describe the row as it stands as often as to ask for it, and a wrong Reference writes on the rows the user named after a yes. Both checks stay in code as reported numbers of this release; whether they stay on the trust path is the founder's decision. Numbered D321 because D317 and D318 are held by other streams of this wave.
+
+### D322. One trust ruling: the Spec's tiers carry the code gates; consistency checks are flags (2026-10-06)
+
+After the verify-1006 fold two rulings decided trust for the same Task: the Spec's five gates (`spec/trust.py tier_of_task`) and the code ruling on the expected end states (`gates/trust.py code_ruling`, D319). They could disagree, and the Spec's grounded gate let a Verifier with unsupported cells through, which is exactly what `code_ruling` refuses. Now `tier_of_task` carries a gate `sourced` between grounded and can_fail, computed by `code_ruling` on the Spec's Verifier with the Task's faithful References and its status row. It holds when `code_ruling` answers trusted; unconfirmed becomes the Task's tier with the ruling's reason as `failing`; pending and refused pass through as tiers. The tier order is set_aside, then the code ruling's tier, then the Spec's own. `spec.trust.workdir_ruling` hands the Spec's tiers to `gates.trust.workdir_trusted_ruling`, which maps trusted to trusted and every other tier to untrusted with its word and reason, so `builder status`, the round snapshot, `kullback status` and the report print one tier per Task from one place. The gates sit below the Spec in the import layers, so the tiers are passed in rather than read there. The atom-only rule (`_legacy_trusted`) stays for the legacy column only.
+
+The consistency checks of D321 (`contradicts_user`, `unasked_writes`) leave the trusted decision: `code_ruling` still computes them and the row carries them as `contradicts` and `unasked`, counted in the status table as "consistency flags" and never gating. This is the fold's reading pending the founder's decision on D321, and it is reversible in one place: where `code_ruling` builds the flags it can return unconfirmed again.
+
+Rejected: two rulings on one Task, because a reader could not say which tier a Task has; unsupported cells passing the grounded gate, because a value nobody sourced is not evidence the Task is right; the consistency checks as gates until the founder decides, because D321 found they do not separate a wrong Reference.
+
+### D323. Cells only for what someone said or wrote; the world's own values ride with the write (2026-10-07)
+
+`kullback/runner/expected.py expected_from_run` changes three ways. With a schema, a table whose columns record tool
+calls (evidence.actions_of, D308) gives no cells and one `allowed` entry for the whole table ("action table: calls are
+conduct, not state"); with no schema nothing changes. A value no source holds and no call passed, on a row the last
+successful sourced call named (every key part among its arguments), showed in its result, or made (passed one of the
+new row's values), is the world's answer to that call: `_world_source`, a `tool_result` source with `world` in its ptr.
+A minted row id gets the same `row_source`. A value a call passed, which an assistant turn stated and the next user turn
+opened on a yes to (D306's cue), is sourced by that user turn (`affirmed` in the ptr). Why: the 2026-10-07 failure
+analysis put 42 airline and 27 retail unconfirmed Tasks on action-table cells, 30 and 21 on world-made values, 17 and 4
+on agent-stated values. Re-derived on the vf-live copies, the unconfirmed Tasks whose fewest-unsupported end state has
+no unsupported cell go from 0 of 52 to 38 (airline) and 1 of 48 to 46 (retail); the code ruling then trusts 16 airline
+(2 on a wrong Reference) and 37 retail (5 wrong), and 22 airline and 8 retail land on "the empty Run passes": their only
+change was the hand-off, which is now conduct and gates only where the Spec demands it. Limits: the source kind is
+`tool_result` because `ValueSource.kind` has no `world`; a yes affirms every value of the turn before it; a short value
+is still found by plain containment. The wrong-trust bound must be re-measured before this ships.
+Status: built 2026-10-07 on fix-1007/cells.
+Folded 2026-10-07 on fix-1007/fold
+
+### D324. Refusals and no-writes are forbidden writes, say lists values, conduct must be in the Reference (2026-10-07)
+
+The failure analysis of 2026-10-07 found four Spec writer mechanisms. A refuse demand the Reference never recorded was
+counted unsupported and a no_write demand left no gate, so the empty Run passed (airline 22, retail 23 Tasks). A say
+demand was one sentence the final answer rarely held word for word (airline 3 untrusted and 8 of 117 right replays
+failing, retail 10). A hand-off or confirmation demand on a tool the Reference never called failed every faithful
+replay (airline 3, retail 9 "Verifier defect"). Write values named columns the tool does not take (airline 9, retail 17).
+
+Now `spec/end_state.py forbidden_of` turns a refuse demand with no recorded refusal, and a no_write demand, into
+`Forbidden(kind="write")` entries: one for the demand's tool, else one per write tool (`_forbidden_happened` reads a
+tool None with no table as unknown, not "any write"), with the demand's entity as the row. A tool the Reference
+called is never forbidden, so the Reference passes its own list. `conduct_of` drops a hand-off or confirmation whose
+tool the Reference never called and counts it in the new `Gates.unseen`, shown in `end_state_counts`; the writer gets
+it back in its one follow-up turn as `unseen_conduct`, read off `WriterInputs.reference_tools`, which the model never
+sees. `compile._say` compiles a say demand's `values` list to one communicate atom per value. `writer._check_of`
+refuses a write whose values name a key that is not an argument of its tool (`value_not_argument`) and sends it back
+with the tool's argument names. The prompt asks for say values, keeps a hand-off out of writes and caps, and says an
+id_field names a row. `gates_of` passes `schema.json` into `expected_from_run`.
+
+On the live Specs of verify-1006, read only: airline 77 of 128 Tasks gain 437 forbidden entries, retail 23 of 222
+gain 88; unseen conduct airline 4, retail 9; writes with values that are not arguments airline 14, retail 27.
+
+Limit: the empty Run still passes a Verifier whose expected diff is empty and whose forbidden list is non-empty
+(`gates/trust.py _empty_run_passes`, the return at line 412), since it writes nothing; such a Task is judged by its
+forbidden list on the wrong Run instead, which that function does not yet say. A tool signature with no argument
+list is read as unknown and never refuses a value. Status: built 2026-10-07 on fix-1007/demands.
+Folded 2026-10-07 on fix-1007/fold
+
+### D325. Examiner edits reach what gates: atom ids that exist, end-state and conduct edits, no silent no-finding (2026-10-07)
+
+The analysis of the verify-1006 live run (analyze-1007) found the Examiner's review edits mostly reached nothing. 179 atom
+drops named check ids (c<n>) or fact ids while the compiled atoms are i<n>; `spec/review.py` stored every drop and counted it
+applied, and 0 atoms were removed. 116 findings carried no edit because no kind existed for what they asked (re-pick a
+Reference 23, a conduct rule 18, a cell to drop or allow 17, among others). 40 no-finding reviews sat on Tasks with an
+unsupported cell, and `ExamRoot.current` read stale proposals under exam/verifiers/ before the Spec's Verifier.
+
+Now an atoms edit whose drop names no atom of the live Verifier is refused with the atom ids, and one dropping more than
+half of the atoms at once (its adds counted, since the fold) is refused.
+Each Task's line in the opening shows every atom id beside the check that made it, and the
+prompt shows an added atom in the shape the Spec accepts. Three edit kinds join body, text and atoms: `cell` (allow or drop a
+cell of every expected end state), `conduct` (add or remove a handoff, refusal or confirm_before_write rule; the conduct's
+kind sits under the key `conduct`, since `kind` names the edit) and `reference` (a Run on disk proposed as the Reference).
+Cell and conduct edits are kept on the Spec as `end_state_edits` and applied by code after each rewrite, both Verifier copies
+written with the version marked; an added conduct's source is a policy source whose clause is the review's why, since
+ValueSource has no examiner kind. A reference edit promotes nothing: it writes a `reference_proposed` row to
+examiner/reviews.json and opens a ruling on the Spec, so the Task's no_open_ruling gate fails until someone acts.
+`no_finding` is refused while the Task's Verifier holds a cell without a value or row source, naming the cells.
+`ExamRoot.current` reads the Spec's Verifier only.
+
+Limit: only `apply_review` reapplies the end-state edits; another rewrite of the Verifier (a router repair through
+`spec/writer.py write_verifier`) drops them until the next review round. Nothing closes a reference ruling yet. The finding
+tool's own field description (examiner/domain_tools.py) still lists the three old edit kinds; the prompt lists all six.
+Rejected: an examiner kind on ValueSource, a records change for one pointer; promoting the proposed Run by code, which would
+let the Examiner pick the Reference it is then judged against.
+Status: built 2026-10-07 on fix-1007/examiner.
+Folded 2026-10-07 on fix-1007/fold
+
+### D326. The rule user hears id asks, confirms only a pending write, and ends only when the job is done (2026-10-07)
+
+The fix-1007 failure analysis put 273 of 334 failing airline Runner Runs on the rule user and 57 of 213 retail Runs on a
+goal marked satisfied after part of the job. Six changes, all over names read at run time:
+- `user/fidelity.py vocabulary_of`: with no valid vocabulary.json, the Vocabulary is the generic core plus every id
+  argument of the mined signatures (`user/vocabulary.py from_signatures`, cues from `_base_cues`). The generic core alone
+  heard no id ask, and the user restated its goal and closed (260 Runs).
+- `user/simulated.py _asked`: a held fact the agent's turn names is answered under a confirm cue too; a fact whose value
+  the turn states is a confirmation, not an ask.
+- `_respond`: once the goal's writes are made, a confirm cue past the recorded confirmations gets the goal or the close,
+  never the reused yes (5 Runs looped to max_turns). A line said again with no write in between is replaced by one
+  generic "what else do you need" line; the third time the user closes, `scenario_exhausted` with the tag `user_repeat`.
+- `_close`: a closing line that carries the transfer token is said without it, and the token goes on the next turn, so
+  the agent keeps one turn for its hand-off call (6 Runs ended `transfer` with no hand-off).
+- `_goal_done`: with `goal_counts` (`user/rules.py goal_write_counts`, the Reference's successful writes per tool), the
+  goal is done only when every requested write is made, not one of each tool.
+- `runner/tool.py runner_prompt`: the Runner prompt ends with one line asking the agent to list every item the user
+  asked for and say whether it was done (173 retail Runs stopped short). Not in `_system_prompt_for`, which the Spec
+  writer reads as policy text; `runner/world/episode.py` still passes the bare instructions.
+
+Limits: `builder/run_user.py` builds the exam user with the generic core and no `goal_counts`, and `user/factory.py` and
+`builder/domain_tools.py` pass no `goal_counts`; until they pass `vocabulary_of(workdir)` and
+`goal_write_counts(reference, writes)` those Runs keep the old behaviour. A count per tool stands in for a count per
+entity, so the same row written twice satisfies a count of two. "Pending write" is read as the goal not done, not as the
+turn naming the write. No Run was made to measure the change.
+
+Status: built 2026-10-07 on fix-1007/user.
+Folded 2026-10-07 on fix-1007/fold
+
+### D327. Not run apart from failed; the writer's disagreement with the Reference as a flag (2026-10-07)
+
+What changed: `spec/trust.py tier_of_task` puts `fresh_runs` on the row, and a replay_only Task with no fresh Run
+says "not run: no fresh Run on disk" while one whose fresh Runs all fail keeps "no fresh Run passes"; the
+independent pass was `any()` over nothing, so 40 retail and 3 airline Tasks never played read like failures.
+`writer_disagreement` compares the Spec's write demands with the Reference's diff by code: a required write demand
+whose tool the Reference never called or whose row is in no diffed row (the demand half; a row half, a diffed row
+no write demand names, was dropped at the fold). It rides on the row as `writer_disagrees` beside `contradicts`
+and `unasked`, never gating. The trust row prints "replay_only N (not run M)" and "writer disagrees N".
+Why: the failure analysis of 2026-10-07 found the blind writer named a write the Reference never made on 18 wrong
+retail References against 1 right one, and nothing read it. Measured (docs/validation/trust-1007.md): the demand
+half has precision 0.82 and recall 0.45 for a wrong retail Reference (22 of 27 flagged Tasks wrong); the row half
+fires on 19 right and 0 wrong. Limit: it flags 1 of the 6 wrong-trusted retail Tasks, since on the other 5 the
+writer demanded what the Reference did; gating on it would hold back 5 right retail References with 22 wrong.
+Status: built 2026-10-07 on fix-1007/trust.
+Folded 2026-10-07 on fix-1007/fold
+
+### D328. Judge items: one call per item, 0 or 1, recorded on the Verdict (2026-10-07)
+
+What changed: a judge atom whose target is {question, anchor, evidence} is a judge item. `judge/items.py
+judge_item` asks one model call per item at temperature 0 with MiMo's checkpoint prompt nearly verbatim (one
+objective checkpoint, met 1 or not met 0, no partial credit, nothing guessed, a target in cut evidence scores 0 with
+"evidence truncated"), prices it and returns score, why, truncated. The anchor is {answer, accepted, reject} (a
+string is the answer alone); the prompt shows all three. Evidence refs are written before any Run exists, so none
+names an event index: `assistant_turns` (default since the fold), `final_answer`, `assistant:<k>`, `after_call:<tool>`; each turn
+is clamped at 4000 chars, the block at 24000, and cuts are marked. A failed call or an unreadable reply is score
+None, never 0. `Atom` gains `gate` and `weight` (dumped only when not the default, so old hashes hold). `Verdict`
+gains `items` keyed by atom id; `runner/verdict.py` records every judge item there. A scored item never moves
+pass; a gate item scored 0 fails the Run; a gate item with no score leaves it not verdicted; a scored item with no
+score blocks nothing. `cli._judged_atoms` sends item atoms to the item judge on the first judge's model, and
+`judge_atom_results` skips them. `judge/shape.py` holds the provider-free half so the Verdict still has no import
+path to a model (D76). The trust gates pass no judge results, so constructed Runs are judged by code only.
+`scripts/judge_calibrate.py` judges stored Runs and counts agreement with Examiner anchor rulings where present.
+Why: the redesign of 2026-10-07 (v2, v3) moves what the Candidate told the user into judge items derived from the
+Intent, one item per call, evidence from the event log, and lets the item's gate field decide whether it gates.
+Narrows D255: a judge's opinion enters the pass condition again, but only for an item the Spec marks gate; the
+two-judge agentic path (D76, D92) stays for older judge atoms, equivalence and cause.
+Measured (hand-written items, 8 Tasks, 23 Runs, 66 judged items, Opus 5.5 on Bedrock): 34 met, 32 not met,
+0 unjudged after the clamp fix, 0.36 USD; scores identical on 65 of 65 items judged twice. A hand check found 2 of
+23 hand-written anchors wrong (an ambiguous reference in the Intent), which the judge followed faithfully.
+Limit: no Examiner anchor ruling exists yet, so judge against Examiner agreement is not measured.
+Fold: a gate judge item is settled by the judge's opinion (holds is its 0 or 1); it stays open only when the call
+failed, which leaves the Run not verdicted with the score masked. Empty evidence scores 0 by code before any call.
+This retires D76's "stays open" rule for item-shaped judge atoms. The judge's record is `JudgeScore`; Verdict.items is
+the one item table, judge items in it beside every other item.
+Status: built 2026-10-07 on shape-1007/judge.
+
+### D329. Every item gates or scores; the Verdict carries pass and a weighted score; a sanity item for every Task (2026-10-07)
+
+What changed: `Atom`, `ExpectedCell`, `Forbidden` and `Conduct` (runner/records.py) and the Spec's `Check` carry
+`gate` and `weight`; a Check also carries `policy_line`, and `compile_spec` puts its gate and weight on every atom it
+compiles to. Left unsaid, an atom's gate follows its kind: the kinds that failed a Run before (required, question,
+communicate, hard, forbidden) gate, allowed does not; cells, forbidden and conduct rules gate. Both fields leave the
+dump at their default, so stored records dump and hash as before. `verdict` builds one item per end state cell (of
+the end state the Run matches; any one may match), the sanity item, each forbidden and conduct rule and each atom,
+and keeps them on the Verdict as `items`. Pass is every gate item holding; a definite gate failure wins over an open
+gate, and an open gate leaves the Run not verdicted, as D316. `score` is 0 when a gate failed, else the weighted
+mean of every item with the gate items counted as held and holding at least half the weight (agreed 2026-09-27);
+None when the Run is not verdicted or an env error, or when a scored item is open (an unrun judge), never a false
+0. The sanity item is code for every Task: with end states, nothing outside the matched end state's cells and
+`allowed` moved (the collateral half of `match`, now `expected.collateral`, named `gate:sanity:...`); with atoms
+only, no write that no atom declares (the old extra-write rule). `check_run` reads gate atoms only, so the two
+scorers agree. `Episode.reward` carries `passed` beside `score`; birth's walk and do-nothing checks and the solve
+table read the pass, and the solve table adds the mean score. The report's Task numbers and Verdict lines, the
+package manifest (`reward`, the Verdict version) and its Task rows (`items`: gate and scored counts) and the card
+glossary show both numbers. VERDICT_VERSION is 4.
+Why: the gated weighted reward agreed on 2026-09-27 and the v3 shape of 2026-10-07: correctness gates, process
+scores past the gates, and a stray write fails every Task by code.
+Measured (live Verifiers of verify-1006-live, 2659 stored Runs, base 4b11e3b8 against this code): pass and class
+identical on every Run; 77 failures are now named by the sanity item instead of `gate:expected:collateral`. No live
+item is scored yet, so every live score is 0 or 1. Scoring question and communicate atoms instead of gating them
+would flip 104 of 191 Runs on the 34 Tasks that carry them from fail to pass (mean score of those 0.74 retail,
+0.79 airline); that is the founder's open point, so the default stays the gate and the writer sets `gate` per item.
+Retired: the whole-Run binary reward of `Episode.reward` (1 or 0 from the class) and the score-blind
+`match_any` inside the verdict.
+Status: built 2026-10-07 on shape-1007/reward.
+
+### D330. The Spec writer is blind to the Reference: items from the Intent, the policy and the world (2026-10-07)
+
+What changed: the writer writes typed items (`spec/items.py`): state (`row_is`, `row_new`, `row_keeps`), event
+(`called`, `not_called`, `before`), text (`said`) and judge (`{question, anchor, evidence}`), each with gate, weight
+and provenance (fact_ids or a verbatim policy_line). It searches the world with tools (`read_schema`, `find_rows`,
+`read_row`, `read_policy`) and adds items with `add_items`, which refuses a value no world row, policy line or user
+turn holds, a find matching no row or several, a field the table lacks, and says why ("find, do not invent").
+A judge anchor cites the one row it was read from and its answer states that row's fields; only an anchor quoting
+the item's policy line goes without a row. Code adds the sanity item (`nothing_else`) to every Task: no row outside
+the declared rows changes. A cell value may be a list (members in any order); `free` on a row_is names
+fields a tool sets to a value no search finds (records it fills in, a computed balance), allowed to move
+unchecked. Items with `alt` make several end states, any one may match. The Verdict decides every item
+(D335): the fold deleted `runner/items.py` and `spec/end_state.py`. Contradicting items go back once; any left set
+the Task aside.
+Retired: the Reference path of the Spec package. D320's Reference-derived `write_verifier` and `refresh_gates`;
+D315's `expected_from_run` as the Verifier source (it stays for fidelity measurement); D323's Reference reading
+on the Verifier path; D324's unseen conduct (`reference_tools`) and the demand send-back. `gates_of` takes no
+Reference; `reference_run` moved to `spec/witness.py` for the witness flag. A source test fails if `kullback/spec`
+imports `kullback.runner.expected` or the writer path reads references.json. A refusal is the sanity item plus a
+judge item, with no refusal kind. Older demand Specs still compile, Reference-free, and the Spec stage rewrites
+them as items (D335).
+Why: COMMON shape-1007: Verifier items come from the Intent, the policy and the world, never from the Reference
+Run, so a wrong Reference can no longer write its own Verifier.
+Limit (closed at the fold): D327's `writer_disagreement` is retired by D333.
+Status: built 2026-10-07 on shape-1007/writer.
+
+### D331. The Examiner gives feedback and never edits; rulings, two rounds (2026-10-07)
+
+What changed: the Examiner files rulings (`spec/rulings.py`), one file each under exam/rulings/<task>: the item (a check,
+atom, Intent fact or the task), a kind and code (derivation, judge, code, scope), the reason and the fix in one sentence
+each, blocking or note. `examiner/rule_tool.py` holds rule, close, verify (the do-nothing Run, a stray write and the
+Reference end state through the Verifier, cited by a passes_do_nothing or fails_reference ruling, which names the wrong
+side) and the writer's world tools lookup_rows and search_rows, so a judge anchor is checked against the world.
+`spec/review.py answer_rulings` has the writer apply (Verifier rewritten) or rebut each ruling with why;
+`spec/rounds.py run_rounds` runs Examiner, writer, Examiner (ROUNDS_CAP 2), logged to spec/state/rounds.jsonl and the
+bus. The Spec's `rulings_open` counts open blocking rulings and `round` the last round: an open blocking ruling after
+the last round holds the Task untrusted. A ruling that the Reference is wrong is a note, never asked of the writer.
+Retired: the D325 edit kinds (atoms, text, cell, conduct, reference) and `reference_proposed`; the D317 text and atoms
+edit shape on the Spec (`atom_edits`, `end_state_edits`, dropped on load); the bus-driven Router and its moves on run,
+check, intent and environment targets (`spec/router.py` keeps the set-aside state); reject_reference; the quote
+requirement on rulings. A finding keeps body edits for the Builder only.
+Why: sh-examiner (shape-1007): an Examiner that edits the Spec grades its own work; feedback the writer answers keeps
+one author per Verifier and leaves a trail.
+Status: built 2026-10-07 on shape-1007/examiner.
+
+### D332. The user looks facts up; its goal never ends a Run; a single-turn Task shape (2026-10-07)
+
+What changed: `user/lookup.py` holds the user's facts (rules facts and argument facts) keyed by field name, with
+the Vocabulary's aliases, from the signatures where no build Vocabulary exists (D326). One lookup takes question
+text and returns the facts it asks for: field words, then an alias, then plain-word overlap with the words a
+question points at ("which", "what", "your"; not "your" in an offer, never in a closing question). A fact whose
+value the question states is not asked for; a field named but held nowhere comes back `missing`, which the rule
+user hands to its Starting state reader (the seam for the user reading its own rows later). The rule user's
+`_asked` and the agent user's asked fields call it on the turn's request sentences; `my_facts(question=...)`
+replaces `my_facts(asked=[fields])`, and each call logs the fields found and missing, never values.
+Run ending: `goal_done` no longer ends a Run in `SimulatedUser._end_kind` or `guards.EndProtocol.kind`. The
+Candidate's close, the scenario running out and the turn limit end Runs; where one of them ends a Run with the
+goal's writes made, the end is reported `goal_satisfied` (a label), and every user turn carries `user_goal_met`.
+No module in spec/, gates/, runner/verdict.py or runner/records.py read the goal (a source test keeps it so).
+Single-turn shape: `Task.facts_in_instruction` (default off) folds the user's facts into the opening message
+(`world/environment.py facts_instruction`) and runs with no Simulated user in `runner/tool.py run` and
+`Episode.reset`. The spoken field names moved to `runner/records.py` so the world folds without importing the user.
+Why: the cue lists heard an ask only in the words a corpus showed, and the goal that ended Runs is read off the
+Reference's writes, which may decide nothing trust or the Verifier reads (verifier-redesign-1007 v2).
+Measured (live replay, every fresh Run of verify-1006-live, same Candidate request sentences): retail 176
+questions, answered 43 by the lookup vs 27 by the cues; airline 212, 14 vs 5; no question the cues answered was
+lost. By hand about 5 of the 25 new hits are wrong (yes/no asks, a statement, another traveller's name). One live
+Run per corpus with the agent user on Muse contributor: 4 and 2 `my_facts` calls, found and missing logged.
+Retired: the cue matching of D115 in both users' hearing (`asked_fields` and `named_fields` stay for rule
+derivation), D210's "a Run whose goal writes are confirmed is done whatever the Candidate said next", and the D214
+`my_facts(asked=[...])` argument. Limits: the overlap has no labelled truth beyond the hand read; derivation in
+`rules.py` still mines asks with the cues. Since the fold the goal label is read off the Spec's write items (D335),
+never the Reference's writes.
+Status: built 2026-10-07 on shape-1007/user.
+
+### D333. Trust is two constructed Runs failing and no open ruling; Reference and solvable are flags (2026-10-07)
+
+What changed: `spec/trust.py tier_of_task` rules a Task trusted when the do-nothing Run and a stray-write Run both
+fail its Verifier and no ruling is open; otherwise untrusted with one reason, read in order: no_intent (no Spec, an
+empty Spec, no Intent fact, a Verifier that checks nothing, no Verifier file, or a refused Task), open_ruling (a
+ruling open, or set aside by the router's rule), constructed_run_passed (a constructed Run passed, or none could be
+built). The stray-write Run is built by code: a passing Run of the Task (a faithful kept Reference first, then a
+fresh Run, else the do-nothing Run) plus one write to a row outside every row the Verifier declares (expected
+cells, `allowed`, forbidden rows), skipping tables that record calls and exempt columns. It counts as failed only
+when it fails at the sanity check (collateral) on a base the Verifier passes; failing at a cell or an atom, or on a
+failing do-nothing base, it never tested the sanity check, so the Task reads constructed_run_passed with the row's
+detail stray_untested (round 1 correction). Since the fold every Verifier, a refusal's too, must fail the
+do-nothing Run, and only a definite gate failure counts (D335). Two flags ride
+on the row and never gate: reference_passes (every faithful replay of a kept Reference passes; None without one)
+and solvable (any fresh Run passed; None without one). A failing kept Reference becomes a blocking code ruling
+(fails_reference) filed before the Examiner's first round, who rules which side is wrong (D335). Counts (`round_snapshot.counts_of`,
+`gates.trust.tier_counts` and `trust_row`), the tier report and its README table, the Spec review's repair gates
+and the package rows and manifest read the tier, the reason and the flags; round snapshots move to format 2.
+Retired: the grounded, sourced, can_fail (the D79 mutation suite, `spec/canfail.py can_fail`), reference_replay
+(D312) and independent_pass gates; the tiers replay_only, set_aside, unconfirmed, pending and refused as Task tiers
+(D319's words stay only in the untrusted text of a workdir with no Spec, whose untrusted Tasks read no_intent);
+the code ruling as a gate inside the Spec's tiers (D322's sourced gate); D327 in full (the not-run split and
+`writer_disagreement`, replaced by the reference_passes flag).
+Why: the founder's v3 shape (verifier-redesign-1007.md): trust by code with no model, sourced enforced in the
+writer's tool, the Reference a witness only.
+Limits (closed at the fold): the sanity item landed with D329; the stray write reads it.
+Status: built 2026-10-07 on shape-1007/trust.
+
+### D334. Dead code out: the Builder's memory tree, triage skill, body writer and Intent writer (2026-10-07)
+
+What changed: code no command, module or script reaches is deleted, found by vulture plus a reference count per
+name over kullback, tests, scripts and docs, then a module-aware pass for private names. Whole modules:
+`builder/memory.py` (D64, D69, D87 version tree and lessons file; nothing imported it), `builder/triage.py` (the D150
+skill text; nothing loaded it), `agent/reading.py` (G21 helpers; only its test), `builder/body_skill.py` (D168). In
+`compile_env` the model-written body path: `write_tool_body`, its prompt chain and the D117 lookup_rows and test_body
+loop, whose flag was always off. `builder/intent.py` loses the Intent writer and its grounding (D47, D83, D113,
+D143, D157 as code; the Spec stage writes Intents); at the fold `user/factory.py` imports the value strip directly
+and the module is gone. Smaller: helpers in mine,
+readers, lesson, feed, route, ingest and agent tools that only their own tests called, and three scripts that
+imported removed modules or measured removed code (`reroll_snapshot.py`, `user2_wider.py`, `request_snapshot.py`,
+`prompt_snapshot.py`). Tests of behaviour that still exists were kept or rewritten (apply_intent, the blocked lesson).
+Why: carve, never rewrite; dead code is read by every agent that greps the tree and costs review and mutation time.
+Kept on purpose: `builder/skills.py` and the container world and cheat suite, which D rows and ADR 0010 name as the
+mechanism for planned work; `runner/world/birth.py`, which the trust redesign may reuse for constructed Runs; the
+`kullback/ai` and `kullback/agent` surfaces that mirror tau; the hub package; documented CLI commands.
+Measured: 245 functions and classes and 80 tests removed (one test added), 5705 lines deleted; suite 4153 to 4074.
+Status: built 2026-10-07 on shape-1007/deadcode. Renumbered D334 at the fold.
+
+### D335. The fold: one item table, echo facts, refusal gates, review and audit fixes (2026-10-07)
+
+What changed: the seven shape-1007 streams folded with 22 wiring items. The gate flag decides, never the kind:
+state items are read as the end state's cells (which carry the item's gate and its weight shared over its cells),
+event items (`called`, `not_called`, `before`, `said`) are decided in the Verdict from the atom, judge items by
+their score; `runner/items.py`, `spec/end_state.py`, the writer's add cap and `gates_of` are gone. The conduct kind
+`handoff` reads `called` (old values load). Empty judge evidence scores 0 by code. Judge evidence defaults to every
+agent turn up to the first transfer or hand-off call; `after_call` reads to that point too, past the next user turn;
+a narrower ref needs `evidence_why`. A refusal judge item always gates. Trust counts a definite gate failure only,
+the stray write reads the sanity item, every Verifier must fail the do-nothing Run, and a failing kept Reference
+is a blocking fails_reference ruling before round 1. `free` is {field: reason}; an expect naming only the find key,
+a free field without a reason and a free field whose value an Intent fact names are refused. Older demand Specs are
+rewritten as items by the Spec stage. The user's goal label comes from the Spec's write items (`spec.schema.goal_of`).
+An Intent fact is `echo` when the user only accepted it or a value of it (a token with a digit) was in the agent's
+line and not the user's; a gate value may not rest on echo facts alone (the policy or the item's own row may carry
+it), and echo facts are counted per Task. A judge anchor stating a number its row and the policy do not hold is
+refused as computed. A hand-off `called` item gates only when its policy line names the hand-off. Conditional
+branches are separate end states, counted per Task. Refusals are counted by the family of code wording they carry,
+never by their text. The confirm matcher strips markdown emphasis and a leading conjunction. A Spec that writes with
+no confirm-turn `before` item gets one fixed question to the writer before the Examiner's first round.
+Why: the critical review (sh-review-report.md) and the Verifier audit (sh-audit-report.md) of the seven streams.
+Retired: D76's "stays open" rule for item-shaped judge atoms; the forbids_only exemption and `at_sanity` in trust;
+`ATOM_DEMANDS`, `MAX_ADDS`; `builder/intent.py`; the dead code deferred by D334 that the fold left unreferenced.
+Status: built 2026-10-07 on shape-1007/fold.
+
+### D336. A Task with no Reference left waits in the pool instead of being refused (2026-09-25; was D294, moved for the main collision)
+
+When the Examiner rejected every Reference of a Task, the Task was refused as `reference_wrong` and left the Environment. Those are often the hard Tasks, the ones where no recording solved them, so throwing them out throws out what the next build most needs to learn. Now such a Task waits in `exam/reference_pool.json` with the reason and the excluded runs: it stays in the Environment, untrusted for want of a Reference, and not refused. Any later finished Run whose End state nobody excluded is picked by the normal D111 rule and takes the Task out of the pool; a Run reaching an excluded End state is failed with it, so the rejected answer cannot come back under a new run id. The refuse gate is strict again: every refusal needs no finished frontier Run.
+
+### D337. Keep the two question-atom loosenings that pay; drop the volunteered-value and stated-fact ones (2026-09-27; was D297, moved for the main collision)
+
+Per-change ablation of D296 showed the clean-task gain is carried by the world-readable question drop and the anywhere-confirmation (retail +3, airline +6 together, more than all four changes combined). The volunteered-value rule added nothing alone and the stated-fact narrowing lost clean Tasks alone and beside the others, so both are reverted; their tests go with them and the derivation pin rests back on its pre-D296 value, which the kept changes leave byte-identical on the fixture. The kept confirmation rule edits a frozen scoring path, so its PR needs the founder's allowance, and its denial list is English-only.
+
+### D338. The agent user is told its two readings, and both find what they should (2026-09-25; was D298, moved for the main collision)
+
+The agent user's prompt never named `my_choices` or `my_account`, so the model saw only the schemas and rarely called them; a kind in the model's own words matched nothing and stayed nothing; and a customer keyed by an id alone got no account, because the lookup matched only the person-shaped identity. Now the prompt names both tools with one example call each, the choice rule says to call `my_choices` first, and the company-holds example says the account is the exception: what it shows may be said, but only when asked. A kind that matches nothing answers with the kinds held, nearest layer first with their sources, so the model can ask again with one of them. The account lookup takes the ids the rules hold outside the identity as row-id keys: one row so named is the owner with the same carried rows, two unrelated rows are no account, and where two named rows carry each other the one another row carries as a plain value is the owner. The row, column, and unasked-value limits are unchanged. One line outside the owned files: the examiner passes `id_keys` through to `account_view`.
+
+
+### D339. The Examiner reviews one Task per session; an unexamined Task is untrusted (2026-10-08)
+
+Review_specs runs one session per Task over one round bus with REVIEW_TURNS_PER_TASK turns each, and reports the capped and examined Task lists. Examined rounds are recorded on the Spec file by sync_spec and unioned into the round summary by run_rounds. A Task whose Spec shows no examined round is untrusted with reason not_examined, read after no_intent and before open_ruling.
+
+### D340. The Examiner checks the Intent against what the user said (2026-10-08)
+
+An audit of 50 live Verifiers found 21 wrong, 13 because the Intent copied a failed recording's path (a refusal, a transfer, a fallback accepted after things went wrong) and the writer gated it; the Examiner saw the Intent but no user turn, so a Verifier matching a wrong Intent looked right. Each Task's view now holds every recording's user turns (index, the agent's last line before it, the user's text, read by the Intent miner's own `user_turns_of`) and each fact's source turn, stance, echo and unfounded flags. `how_it_works(query)` returns the policy paragraphs and the tools that match a few words, so the Examiner looks up what the world allows before it accepts an ask. Three scope codes, always blocking: intent_unfounded (applying it marks the fact `unfounded`, and the writer's tool refuses a gate resting on unfounded facts alone), gated_against_ask, and not_enough_truth (fix "keep untrusted"; the writer cannot apply it, only rebut it by citing a user turn, and an open one holds the Task untrusted with reason not_enough_truth, read after not_examined). The choice rule decides from the user turns, the world and the policy, the Intent being the writer's reading of the turns. A Task session gets 20 turns.
+
+### D341. Learned tool effects free the sanity item; called items are checked against recorded calls (2026-10-08)
+
+The sanity item froze every field outside the declared cells, including fields a write tool always changes (a history list appended on the row it writes, a count lowered on related rows), and called items could carry an argument no real call takes (a bare list where the tool takes objects, two arguments equal that no call ever made equal). Once per build the Builder replays every successful recorded write call in the sandbox (`Sandbox.run_diff`, the transition gate's per-call world diff) and stores, at exam/review/effects.json, per write tool the columns every call moved on rows it kept (list positions as N) and the tables every call made rows in, and per tool the argument types (tool_sigs.json first), object keys and never-equal text pairs of the recorded calls (builder/tool_effects.py, spec/effects.py). An end state frees each always-moved column of every tool it expects (a called item, or the one tool that alone answers a row_is or row_new) on its declared rows, or on the whole table where it declares none, with why "free: tool effect: <tool>"; a cell on the same field stays and no rule is added there. The writer's check refuses a called item whose argument type or object shape no recorded call shows, or whose never-equal pair is equal, and checks a list of objects on its key field. Offline on the 50-Task sample: sanity failed the kept Reference on 3 of 25 retail and 4 of 20 airline Verifiers before, on 0 and 3 after; 4 airline called items refused.
+
+### D342. The Examiner reads the whole policy in its prompt; the search finds tools only (2026-10-08)
+
+On the live run of 2026-10-08 (one review session per Task, 25 per corpus) retail sessions opened exam/review/policy.md in 0 of 25 sessions and airline in 5 of 25. `how_it_works` matched keywords against policy paragraphs, so the Examiner ruled on what the world allows without the rules in front of it, and the policy is only about 7 KB per corpus. A review session's system prompt now carries the full text of exam/review/policy.md as the section `examiner_policy`, after what the session receives and before the stop rule, so it is cached across turns; with no policy file there is no section. The views are written before the extension loads, so the file exists when the prompt is built. The search tool is renamed `find_tools` and returns only the tools whose name or description match a few words (at most 8); the policy-paragraph half and `policy_paragraphs` are gone. The choice rule now says the whole policy is in the prompt, to read the part that governs the ask before accepting or ruling, and to check the world rows (lookup_rows, search_rows) for what the world allows; the rest of it is unchanged. This does not change the full examine session's prompt, the Spec writer, the ruling tools, the policy file on disk or how it is written.
+
+### D343. A writer repair keeps the Spec's review fields (2026-10-08)
+
+In the live retail run every one of the 25 sample Tasks had a round one Examiner session, yet the tiers said not_examined on 15. Those 15 were exactly the Tasks with rulings: the writer's repair (spec/review.py `_settle`) rewrote the Spec from the repaired copy and carried over only rulings_open and round, so examined_rounds, set by `rulings.sync_spec` at the end of the round, was lost. not_examined is read before not_enough_truth and open_ruling, so it hid both. The repair now carries every field the review loop and the Spec stage own (`REVIEW_FIELDS`: rulings_open, truth_open, round, examined_rounds, pending_repair, set_aside) from the Spec as it stood. A test files a ruling on an examined Task, has the writer apply it, and reads the Task still examined and untrusted for its open ruling. The run's Specs were restored outside git from the bus (Examiner sessions of round one), with backups in the attic, and the tiers recomputed with no model calls.
+
+### D344. A review session's subscribers come off the shared bus when it ends (2026-10-08)
+
+On the live run of 2026-10-08 the Examiner's review round booked each model call many times over. `_review_one` subscribed the budget pricer (and the caller's watchers) once per Task session, but a harness with a bus subscribes on the bus, and every session in a round shares one bus, so session k's calls were priced by k subscribers. In the round's events.jsonl model_call rows, grouped by (history_hash, output, cache_read), retail had 166 calls booked 2190 times (1 to 25 copies each), 46.26 USD booked against 3.58 real, and airline had 168 calls booked 2163 times, 52.31 USD against 4.03. The driver's spend guard read the false sum and skipped round two and the Runs. `_review_one` now keeps the unsubscribe handles and calls them in a finally, so each call is booked and watched once. The other places that subscribe a pricer (the full examine session, the agentic judge, the Intent miner, the Builder and the trainer) either run without a bus or make a fresh one for their single session, so none had this fault and none changed. The bus semantics of `AgentHarness.subscribe` are unchanged, and budget.json from this run is not rewritten: the reprice script under .claude/herdr/truth-1008/tierfix gives the corrected figures.
+
+### D345. verify says a judge item nobody answered is not judged, never failed (2026-10-09)
+
+The Examiner's verify tool scored the Reference by code only: the Verdict never calls a model, so a judge item without an answer stays open and the Run is not verdicted. verify printed that open item as "reference: fails on j1", and the Examiner ruled on a failure that never happened. On the 2026-10-08 run, 18 of the 30 Reference failures were judge items never asked (retail 5, airline 13); 12 were real code gates. verify now reads the Reference three ways: passes, fails on an item (only a gate item that holds False, named with its kind), or not judged on an item ("reference: not judged on j1 (no judge answer)", or "not settled" for an item code could not evaluate).
+
+### D346. verify judges the Reference; the judge's reason goes to the Examiner only (2026-10-09)
+
+verify asks the item judge (kullback/judge/items.judge_items, the single-call judge the score stage also runs: one call per judge item, yes or no and a short reason) on the Reference and passes the answers into the Verdict. For each judge item it shows the Examiner whether the item held, the judge's reason and at most three of the agent lines the judge read. The answers are kept under exam/judged/<task>/<run>.<verifier hash>.json, so a second verify on the same Verifier and Run spends nothing; a failed call is not kept. The judge model is the Examiner's own unless review_specs is given another. The reason never reaches the writer: a ruling keeps the verify rows without the judge rows, and the writer reads neither exam/judged nor the views. The Examiner may still paraphrase the judge in a ruling's reason or fix, which the writer does read; that path is noted, not blocked.
+
+### D347. Trust reads the judge answers already saved; stray_untested is a reason (2026-10-09)
+
+Trust scored every Run without judge answers, so a fresh Run that passed only with its judge items read as not verdicted: the stray write had no passing base, landed on the do-nothing Run, was marked untested, and the Task was held as constructed_run_passed although no constructed Run passed. tier_of_task now takes the judge answers kept per Run (spec/judged.py): the newest Verdict the score stage saved under verdicts/<task>/ for a fresh Run, verify's kept answers for the Reference. The stray write copies its base's turns, so it carries the base's answers. When the do-nothing Run fails and no Run passed to lay the stray write on, the reason is the new stray_untested, read last after constructed_run_passed; the tier report and docs/builds/README.md gain its column. gates/trust.py keeps its own older reason list (frozen).
+
+A saved Verdict carries no Verifier content hash (verifier_version is a label), so a writer round that rewrites a judge item under the same id would let trust reuse the answer to the old question. The score stage (cli.py `_score`) now appends to verdicts/<task>/scored_with.jsonl the run id and the content hash of the Verifier it scored each Run with; trust reuses a saved judge answer only when the last line for that Run names the current Verifier's hash. No line, or another hash, gives no answer, and the item stays not judged. The file is JSONL so no reader of the Verdicts' *.json takes it for a Verdict.
+
+### D348. The writer's prompt gates the ask, not the recording's path; rebuttals cite (2026-10-09)
+
+Round two of the 2026-10-08 run showed the writer rebutting all 12 scope rulings with no reason, dropping a ruled item whenever the Examiner's fix offered a drop, and once cloning items to cover a fact; the Verifier audit (vq2) found most wrong Verifiers gate the recording's path: what the user only accepted after the agent proposed it or refused, the one option the recorded agent took where the policy allows several, and writes the agent never made turned into not_called or row_keeps gates. The writer prompt now says, in its choice rule: one item per ask; gate what the user asked for and the policy requires; what the user only accepted after a proposal or a refusal is weighted, not gated; where the user left a choice open and the policy allows several, accept any allowed one or weight it; a forbid (not_called, row_keeps) gates only with the policy line that forbids it, else it is weighted. The "leave it as it is" example (row_keeps) gave way to one on accepting every allowed option. The repair prompt now says: fix what the ruling names in the ruled items; drop a ruled item only when it asks for something the user never asked for, and say so; cover a missing fact in a ruled item's fact_ids or with one new item, never a copy; a rebuttal quotes the user's words or the policy line it rests on, and with neither the writer applies the ruling. A reply that changes nothing always starts with "rebut:", also when the ruling asks for no item change: rerunning the twelve round-one rulings answered empty, the writer had given a reason in ten of them, but not on a "rebut:" line, so the harness logged them as empty. Code is unchanged: these are prompt rules, and the checker still refuses what it refused before. A live feasibility check on the 14 Tasks vq2 labelled wrong plus 6 controls is in .claude/herdr/truth-1008/wr-prompt-report.md.
+
+### D352. A called check honours a set of allowed values (2026-10-09)
+
+When the user leaves a choice open, the writer accepts every allowed value as a set (D348), but the check never honoured it. A called target is exact-matched, so a set value compared as a literal never equals the scalar the Run called with, and the item fails whatever the value, even one in the set; seen live on d3a4 k10, whose Reference value is allowed. A called item with a set-valued argument now compiles to a Hard rule that matches the Verdict's own way with the set widened to any member, and a legacy write value naming a set compiles to the same rule scoped to its row. State cells already match sets and are unchanged. A Run calling with any allowed value now holds the check, and any other value fails it. The live spec has since dropped the set argument, so the proof reconstructs that item in memory and scores the Reference with it.
+### D353. A wish said after pushback is weighed, never gated alone (2026-10-09)
+
+The Intent miner flagged volunteered-or-accepted wishes as required goals when the user said
+them only after the agent declined, failed, or offered another way. IntentFact carries
+after_pushback (spec/schema.py): the miner marks it under one prompt sentence, and code backs
+it from the agent line before the turn with general words only, and only before the agent's
+first completed tool call in that recording (spec/intent_tools.py is_after_pushback). A gate
+resting only on after-pushback or accepted facts, with no policy line beside them, is weighed
+by code (spec/items.py _pushback_only, placed after the kind checks so the echo refusal still
+fires first); mixed support still gates. The kept line tells the writer in one line why its
+gate was weighed. Both views show the flag (spec/writer.py _facts_view,
+examiner/rule_tool.py _fact). Live feasibility on the 8 goal-wrong Tasks plus 6 controls,
+re-run after review: report .claude/herdr/truth-1008/gread-report.md, section r1.
+Code backing from the agent line was tried, fired zero times on the 14 re-mined Tasks, and was
+removed; the miner's mark is the only source of the flag.
+
+### D350. Three writer rounds per Task; the cap counts writer rounds (2026-10-09)
+
+With ROUNDS_CAP at 2 the review loop ran Examiner round one, writer round two, Examiner round two and stopped, so a ruling filed in Examiner round two could never be answered: on the 2026-10-09 airline re-review two Tasks stayed held on rulings filed on a false verify message. ROUNDS_CAP is now 3 (spec/router.py). In `run_rounds` the writer's first write is writer round one and each Examiner round short of the cap is followed by a writer round, so the cap gives the writer three rounds (the write and two answers) and the Examiner three.
+
+The Spec's `round` is the last Examiner round, which an Examiner-only re-review moves without a writer round. So the set-aside rule now counts writer rounds where it has the Task's rulings: `router.writer_rounds` is one plus the distinct rounds in which the writer answered a ruling, and `is_set_aside(spec, rulings)` holds a Task at the cap only when that count reaches it with a ruling open. Without ruling records it falls back to the Spec's round, which the loop keeps equal to the writer rounds. `rounds.task_rows` reports both. Trust still holds any Task with an open blocking ruling, cap or no cap, so the rule changes the set-aside label, never a tier.
+
+A writer round only ever answered rulings with no answer, so a ruling the Examiner kept open after the writer's answer never went back: on the 2026-10-09 data that was 10 of 14 open retail rulings and 10 of 16 open airline ones. `rulings.unanswered` now also returns a ruling kept open in the answer's round or later (Examiner round n follows writer round n), and the repair shows the writer its last answer and the Examiner's why for keeping it open. The cap bounds the back and forth.
+
+### D351. Every writer session is saved whole (2026-10-09)
+
+Only the writer's token rows were kept, so what it read, tried and was refused could not be traced when a round went wrong. Each writer session (the first write, every repair, the confirm question) now appends one line to exam/writer/<task>.jsonl: kind, round (1 for the write, the Spec's round plus one for a repair), the ruling answered, spend, counts, the final text, and every conversation it held in full (messages, tool calls with their answers, replies with summarized thinking; a follow-up or retry turn is a second conversation). The model is wrapped to keep its last call, so nothing in the session loop changed. The writer is never shown these files: its inputs come from `load_inputs`, which reads no exam/ path, and the Examiner's root copies no writer directory.
+
+### D349. The Examiner questions the goal before it reads the items (2026-10-09)
+
+The Examiner had every user turn and the intent_unfounded, gated_against_ask and not_enough_truth codes (D340) but read the Intent as truth: of the 7 audited wrong Verifiers that rest on a wrong or incomplete Intent echoing a recording where the agent refused, failed or proposed and the user went along, it questioned the goal on about 2. The choice rule now opens with the goal step on every Task: from the user's own requests, as made before the agent refused, failed or proposed anything, and from the policy alone, say in one or two lines what a correct agent leaves behind; hold the Intent against it (a fact the user only accepted after a proposal, refusal or failure is intent_unfounded; a request no fact or item carries is missing_fact, or uncovered_fact where a fact has no item; where the turns never show the wish once the policy allows the request, not_enough_truth); only then check the items. The old fact-against-turn sentences are replaced, not added to, and a later round's opening also allows a new ruling on a goal the Intent still gets wrong. No new codes. Feasibility check on 14 wrong and 6 right Tasks (one run each, own rating, not blind): sessions that opened as a later round, with earlier rulings to close, filed no ruling on any of the 20 Tasks; fresh round-one sessions, with earlier rulings set aside, filed goal rulings on 10 of 14 wrong Tasks (before: 6), naming the audit's problem on 6 of them (3 yes, 3 partly), and on 3 of 6 right Tasks (before: 1). Those are blocking, factually defensible rulings on facts no gate needs. Report in .claude/herdr/truth-1008/ex-goal-report.md. r1 (a second look at the same 20 Tasks with the prompt tuned on them, not a held-out test): intent_unfounded is ruled only where a gate, or an item that decides the verdict, rests on the accepted fact, else the review text says so and nothing is filed, and a later round opens with the goal step; fresh sessions then filed intent_unfounded on 0 of 6 right Tasks (before 3; one blocking uncovered ask remained) and named the audit's problem on 6 of the 12 wrong Tasks they reached (4 yes, 2 partly), while later-round sessions stated the goal in every session but still filed no new ruling on any of the 20.
+### D354. What the user volunteered is gated or answered, in one follow-up turn (2026-10-09)
+
+Trusted partial Verifiers scored the ask instead of requiring it: a told value, a chosen variant, a named method sat in scored items (fail-report group G2, 9 of 25 trusted). After the contradictions turn, `write_spec` sends volunteered facts (stance volunteered, not after pushback, not unfounded) with no gated cover back once more in the same conversation (`asked_missing`, uncovered or weighted only per `ground.coverage`); the writer gates each or answers in one line quoting the policy or the user. The choice rule drops the leave-text-and-judge-ungated sentence for two: a told value is a gated judge item anchored on the world row holding it, a named variant or method a gated check on that field. D353 keeps accepted and after-pushback facts out of this check, so the two never claim the same fact. Live feasibility on the 9 partials plus 6 controls: report .claude/herdr/truth-1008/asked-report.md.
+### D356. Code mutants of a passing Reference, report only (2026-10-10)
+
+The two constructed Runs show a Verifier can fail, not that it fails where it should. `spec/mutants.py` makes mutants by code from a Reference the Verifier passes, each its end state with one change: value (a field the Reference wrote set to the same field of another start row, else the stray value), undone (a written field back to its start value, an inserted row removed), untouched (one write per table on an undeclared row through `trust.stray_writes`, which `stray_write_run` now takes the first of, and one per field the Reference left alone on a row it wrote) and extra_row (a copy of an inserted row under a new key). At most 40 per Task, shuffled per operator with a fixed seed and taken round robin; each is scored with the Reference's judge answers and named killed, survived or open, with whether a failing gate item reads the mutated cell. `scripts/mutants.py` writes exam/mutants/<task>.json and prints per Task counts. Nothing feeds trust, rulings or the writer. Mutants change the end state only, so call and judge items never see them. Experiment on the truth-1008 clone, pre-registered: 240 Tasks scored, 3813 mutants, 71 survivors, every one on the 50 later-round Verifiers the audit labelled; 19 of 60 hand-labelled survivors are real holes, all on partial Verifiers, and they re-find the audit's written hole on each of those 8 Tasks. Report in .claude/herdr/truth-1008/mutants-report.md.
+
+### D357. A Reference failure names the step and the side at fault (2026-10-10)
+
+When verify showed the Reference failing a check the Examiner filed fails_reference with a bare wrong_side guess, and the last live round loosened two Verifiers until wrong References passed. The verify answer now carries the Reference steps (user turns, tool calls, replies; results and stop left out) as the investigation input, no new tool. A fails_reference ruling must carry ref_step, one of the Reference event indexes, and code refuses one with no step or a step outside that Reference; wrong_side reference keeps the Verifier standing as a note the writer never answers, wrong_side verifier blocks as before. The choice rule says to investigate before ruling and that a passing Reference is never a reason to change a check. Judge reasons and step text stay in the session: the ruling carries the index only. A wrong Reference, or a not_enough_truth ruling the Examiner keeps open after the writer's answer (or still open at the round cap), ends the Task with no Verifier: the Spec's set_aside records reference_wrong or intent_unclear once, trust reads it as reason no_verifier with that why (untrusted, not an error, kept out of the build table's columns), and the writer is asked nothing more on that Task. The repair prompt tells the writer to reply "rebut: cannot verify: <why>" when the only fix would loosen a check so the recorded run passes. Live feasibility: report .claude/herdr/truth-1008/refwhy-report.md.
+
+r1 (2026-10-10): ref_step is one of the steps the verify answer shows (a user turn, a tool call, a reply), or "never" for a write or call the Reference never made, accepted only when the failing check is a state cell or a called check (bad_never otherwise). The no_step and bad_step refusals say the ruling still stands and how to refile. The choice rule asks, before a side is named, whether a right solve of the user's own requests under the policy would pass the check; if not, the check is wrong whatever the Reference did. The r1 rerun showed trust's routed fails_reference rows being closed with the diagnosis in free text (9 of 10), so nothing recorded side, step or no Verifier: closing a routed row with no side is now refused (unsided_close), and a sided fails_reference ruling closes the Task's routed rows on filing.
+### D358. The Examiner derives its own expected end state, report only (2026-10-10)
+
+The writer derives its Verifier from the Intent, and the Intent echoes recordings where the agent refused, failed or proposed something; a check on the Verifier that reads the same Intent inherits the error. `kullback/examiner/goal.py` runs one model session per Task that says what the world should look like after a right solve from other evidence: the user's own words in every recording (never the agent's lines, its tool calls or their results), the policy, the Starting state through the writer's four read tools, and the tool signatures. It never loads the Intent, the writer's items, a Verifier, a Run, a Reference or an End state, and the Starting state goes through `refuse_run_inputs`. It writes exam/goal/<task>.json: required cells with the user's words or the policy line they rest on, choice cells with the allowed set or any valid, untouched rows, told items, refusals, unknowns and cannot_tell; code names a cell on a missing table or row, a required cell resting on nothing, and a quote no user turn or policy holds, and refuses nothing. Nothing reads exam/goal/ for trust, rulings or the writer yet. A final answer is read from its last goal object (an answer may restate a broken first try), and an answer with none is no answer, never cannot_tell. Trial against tau2's gold end state on the 50 audited Tasks (Opus 5.5, one run plus 10 reruns, 5.09 USD): 41 of 50 Tasks with no wrong required cell, but wrong required cells 13.8 percent of 246 and 52 percent of gold changed cells covered, so the pre-registered bar is not met; where the goal and the Verifier disagree in a way gold decides, gold sides with the goal on 27 cells (all a Verifier value the goal leaves free) and with the Verifier on 17 (all a wrong goal value the Verifier leaves free); 10 of 10 reruns name the same cells, 8 the same values. Pre-registration .claude/herdr/truth-1008/goal/prereg.json, report .claude/herdr/truth-1008/goal-report.md.
+
+r1 (2026-10-11): three general fixes in `goal.py`: a value only a tool sets (a status label, a list a tool rebuilds, a computed amount) is choice or unknown unless the policy states it; a required cell an unknown also names (by table and row) goes back once in the same conversation and, if still there, code moves it to unknown; an empty forced answer gets one plain ask for the goal object. Held-out trial on 50 other Tasks, both prompts, 9.23 USD: the old prompt meets the pre-registered bar (5.4 percent wrong, 80.6 covered), the new one misses b (10.5 percent wrong, 77.3 covered), so r1 is not better as scored. 21 of its 26 wrong cells are list elements written as indexed paths the scorer cannot place (16 right read into gold's list, 5 a tau2 gold bug on multi-item swaps); fix 1 removed the status-label errors (7 of the old arm's 14), the empty ask recovered the one no-answer Task, the clash ask fired on 5 Tasks and moved nothing. Report .claude/herdr/truth-1008/goal-report.md, section r1.
+
+r2 (2026-10-11): a list field in the goal is the whole list or an append, never an indexed path; a required or choice cell with a bracketed indexed path or on a table the Starting state lacks goes back once in the same ask as the clash, and a cell still there after it moves to unknown. Held-out trial on 50 other Tasks (19 with an abstain or a wrong Reference), three prompts, 13.10 USD: old 9.1 percent wrong and 80.8 covered, r1 8.7 and 78.4, r2 5.3 and 78.8; all three meet the bar and r2 is better by the pre-registered rule. The r2 checks never fired on this sample, so the gap is run-to-run spread, not the change; dotted indexes (items.0.price) escape both the check and the scorer, and on hard Tasks r2 is no better than r1. tau2's multi-item modify sets every swapped item from the last variant; gold gives each item its own, vendor unpatched. Report .claude/herdr/truth-1008/goal-report.md, section r2.
+
+### D359. The round cap is a setting, 5 by default; every answered round counts (2026-10-10)
+
+The truth-1008 full50 measurement caps the writer and the Examiner at 4 rounds, and ROUNDS_CAP was a constant 3. `router.rounds_cap()` now reads the environment variable KULLBACK_ROUNDS_CAP, a whole number of at least one (anything else is refused, never read as another cap), else ROUNDS_CAP; `is_set_aside` and `run_rounds` read it at call time, so a run's cap is set where it is launched. The test of a cap of 4 showed that `writer_rounds` undercounted: a ruling kept open was answered again in a later round and the answer overwrote its round, so a ruling answered in rounds 2, 3 and 4 counted as one writer round and the Task never reached the cap. The answer now keeps every round it was given in (`rounds`), and `writer_rounds` counts the union (`rulings.answer_rounds`); an answer saved before this names its last round only. Trust still holds any Task with an open blocking ruling, so the fix moves the set-aside label and the intent_unclear why at the cap, never a tier from untrusted to trusted.
+
+r1 (2026-10-11): founder: the default cap is 5 (ROUNDS_CAP 5, four answers after the first write). The truth-1008 full50 table of 50 Tasks was measured at a cap of 4 (KULLBACK_ROUNDS_CAP=4), as pre-registered; a fifth round given afterwards to the 3 Tasks still at the cap with a ruling open closed none of them (report .claude/herdr/truth-1008/full50-report.md). Tests that pin a loop at another cap set the variable.
+
+### D361. A side fact is scored, never gated (2026-10-11)
+
+full50 blind labels found 13 of 23 wrong or partial Verifiers gating a judge item on a question only the recording's user asked along the way; a fresh Run whose user never asks it fails a right Verifier. The miner now reads each fact's kind (do, keep, told, detail; `add_facts` requires it) and code alone sets `side` (`intent_tools.mark_side`): a told fact is side when another fact of the Task is do or keep, unless it is said in its recording's opening ask, the first user turn carrying a do, keep or told fact (greetings and turns with no fact do not count); a Task whose only asks are told has none. The writer weighs a gate resting on a side fact like an after-pushback gate (`items._weighed_gate`): a judge or said item citing one, or any item citing one and no do or keep fact, is kept with gate false and `weighed: side fact`, and the kept line tells the writer why; a policy line does not lift it. The asked follow-up (D354) never sends a side fact back, the writer prompt says so in one sentence, and the Examiner's view shows the flag. The contradiction send-back runs again after the asked follow-up, so a gated row check the follow-up adds that clashes with another is sent back once instead of setting the Spec aside; a Task with no follow-up writes the same bytes. A request the user makes only in reply to an agent line that refused, could not, or proposed another way is a fallback (a third stance): the miner quotes that line (`in_reply_to`, the turn and a span), code keeps the stance only when the line carries the span, else the fact is volunteered and the Intent counts `fallback_unquoted`; any gate citing a fallback fact is weighed (`weighed: fallback`), the asked follow-up never sends one back, and the Examiner's view shows the stance and the quote. A fact mined before kinds has no kind and is never side; a workdir with no told facts writes the same Spec and Verifier bytes as before. Trial on the 13 Tasks, mined and written once (no Examiner), 4.28 USD: no gate on a side fact in any Task, one gate weighed by code and it was no gold ask, blind labels 5 right, 4 partial, 3 wrong, 1 no Verifier against 0, 7, 6 before, so it passes by the pre-registered rule. The cost: 4 side facts in 3 Tasks are told values the gold requires (an opening ask among them), now scored only, which the rater named as holes. Report .claude/herdr/truth-1008/fix-side-report.md.
+
+### D362. Surviving mutants become Examiner rulings; the stray gate reads the untouched sample (2026-10-11)
+
+D356 scored mutants of a passing Reference but nobody acted on a survivor. After verify finds the Reference passing,
+`spec/mutant_rulings.py` files each survivor by code in the Examiner's round, with the same shape, blocking flag and
+round cap as the Examiner's own rulings. A value survivor on a field that a Spec check reads, where that check rests on
+a volunteered fact (not an echo, not after pushback, not unfounded), becomes derivation/unchecked_field on that check.
+An undone survivor on a row where every undone mutant survived becomes unchecked_write. An untouched or extra_row
+survivor becomes unchecked_row, one per table. Any other survivor is a note. A ruling names the table and field, never
+a value, and one stands per cell, write or table per Task. The mutant report gives each survivor its ruling number or
+"note". A review session that never called verify gets the verify step by code afterwards. In trust, a passing base
+whose one stray write fails is held stray_untested unless every untouched mutant in the capped sample is killed. A
+row-level no-effect diff was tried for speed and withdrawn: unproven equivalent, it can drop real mutants.
+
+Trial on 12 labelled Tasks of the full50 clone: one Examiner round, Opus 5.5 on Bedrock, 2.56 USD. Mutants could be
+built on only 2 of the 5 missing_ask Tasks; the other 3 have no passing Reference or no write to miss. 7915 got two
+unchecked_field rulings and one unchecked_write. The writer re-gated the row with no new value, then the Examiner
+reopened it as unasked. On 52e2 the writer rebutted unchecked_write and the Examiner agreed, so it stays ungated. Bar a
+fails, 1 of 2 where mutants ran, and that one is contested. Bar b holds: no applied repair pinned a value. Of the 7
+stray_untested Tasks, 1 (f25a) left it and is trusted: the forced verify judged its Reference, and 10 of 10 untouched
+mutants were killed. 5 stayed, and 1 became no_verifier. With the sample gate on versus off over all 50, 1 retail Task
+moves from trusted to stray_untested. Report .claude/herdr/truth-1008/fix-mutants-report.md.
+
+D358 r3 (2026-10-11): a dotted number after a list (field.0.key) goes back like a bracketed index; after a dict it stays a key. Three runs per arm on the same 50 Tasks: mean wrong r1 5.30 percent (range 1.9), r3 5.83 (range 1.6), so no difference shown by the pre-registered rule and the r2 gain was within run-to-run noise. Wrong cells sit on four fallback and open-call Tasks in both arms; that rule is next, measured on hard Tasks.
+
+D358 r4 (2026-10-11): tried and not kept: prompt rules (a later acceptance or concession is choice, a step left open is unknown, a label is spelled as the Starting state or policy spells it) and three send-backs asked once (fallback, open call, off label). Three runs against r1 re-scored with indexed cells once per leaf: no harm on the 46 Tasks the rules were not read from (wrong cells 2.33 per run against a line of 3.0, coverage 89.73 against 88.27), no gain beyond noise (hard 19.83 against 19.33 percent wrong, all 5.37 against 5.50). Not kept because the session keeps a flagged cell required when asked, so the asks do not move the answer, and the one label aimed at is misspelled in the policy text itself.
+
+### D363. A built Environment exports as a Harbor dataset, one Harbor task per Task (2026-10-11)
+
+`kullback export --format harbor` writes, beside the package export, one Harbor task directory per Task (trusted by default, `--tasks all` adds the synthetic store under `synthetic/`) and a dataset manifest carrying the package manifest's fields with the Harbor task names. Each task holds instruction.md (the Intent's volunteered facts, not echoes and not accepted ones, then the recorded policy, then one line on the tools), task.toml (schema 1.3, name `<org>/<env>-<task id>`, metadata tier, trust reason, reference_class, difficulty bucket, needs_judge, origin, build tag, git sha; no network), environment/ (a digest-pinned Python base, kullback from a wheel, the one Task's world, no recorded calls, Verifiers, traces or References), tests/ (the Verifier and test.sh) and solution/solve.sh (the tool calls, reads and writes, of the first of the Task's Runs, kept References first, whose replay through the exported world holds every item a judge is not needed for; a prose-length argument is put as a neutral line; then a reply built from the values the Verifier needs said and the anchor answer each judge item is held to; a Task with no such Run is left out, counted, and named in the manifest by its last four characters). In the container `kullback.hub.harbor_world` serves the tools as a `tools` CLI and an MCP stdio server; every call replays the call log from the Starting state under seed 0, so ids and times stay deterministic, appends to /app/.calls.jsonl and writes the world back to /app/db.json; `reply_to_user` carries what the agent says. A consent user answers each reply with a yes, so confirm-before-write gates stay satisfiable without a live user. The reward is `verdict` scored as kullback scores it (D329): gates first, weighted after; a gated judge item that cannot be scored fails closed, unscored weighted items leave the denominator. Harbor reads reward.json as numbers only, so reward.json holds the reward and items.json beside it every item (id, kind, gate, weight, held, why). The D221 leak scan runs per task over the instruction, the tests and the solution; the policy is declared, not scanned. `kullback publish --format harbor` adds the directory under `harbor/` in the same dataset repo with a "Run it with Harbor" card section, and `--dry-run DIR` publishes into a local directory. Judge items are scored in the container by the model the variable KULLBACK_JUDGE_MODEL names at test time (founder 2026-10-11), one call per item (D328), behind the Harness's live-call switch; a Task with judge items passes that variable, the switch and the key variables through verifier.env as host templates and opens the network to the verifier phase only; the judge's answers and spend go to judge.json; with no judge named, or one that cannot start or answer, the fail-closed rule stands. The export's own oracle check never calls a judge. Accepted on two Tasks played on the host with Opus 5.5 on Bedrock as the judge, 0.05 USD in all: oracle 1.0 on one and fail-closed 0 on the other when one judge call came back empty, do-nothing and stray write 0 on both, and 0 on both oracles with the variable unset. The harbor CLI is a dev dependency local to kullback (Python 3.12 and later). Report .claude/herdr/truth-1008/harbor-report.md.
+
+### D364. Heldout 100: unseen Tasks pass every pre-registered bar; trusted is not right (2026-10-12)
+
+What was measured: 100 Tasks drawn unseen, 50 retail and 50 airline, built on bb3a0a5c at a round cap of 5, each
+Verifier labelled right, partial, wrong or no_verifier by one blind rater per corpus against the benchmark gold, which
+was a ruler only. Report .claude/herdr/truth-1008/heldout-report.md; every number below is from it, with its section.
+
+What it cannot show (the report's own opening): one rater per corpus and no second rater, one run and no replicate, a
+rater of the same model family as the writer and the Examiner, and a draw and a code version that both differ from
+full50, so no gain over full50 can be split between the fixes and easier Tasks. 26 of the 100 were in goal r1's
+held-out set. Two airline Tasks (a3f5, f94c) crashed on a harness bug in the Spec cell reader, fixed at 55b8b1e4 and not
+in this run, and are rated no_verifier as the founder ruled.
+
+Bars (section Bars), verdict PASS. Primary, wrong at most 20 of 100: 9 (full50 10 of 50). Primary, right plus partial
+plus no_verifier at least 80 of 100: 91 (89 without the two crashes counted). Generalisation, right at least 18 percent
+of reached: 43 percent (full50 28). Standing, beside the verdict, trusted on a wrong Reference at most 10 percent by the
+sidecar class: 4 of 62, 6 percent (full50 3 of 26). Confound: draw and code both differ, stated, not testable.
+
+Labels (section M3): retail 20 right, 16 partial, 7 wrong, 7 no_verifier; airline 23, 11, 2, 14; all 43, 27, 9, 21.
+Outside goal r1 (74 Tasks): 31, 21, 8, 14.
+
+Labels by tier (section Labels by tier): trusted 63 hold 38 right, 17 partial and 8 wrong (13 percent wrong; full50 6 of
+27); open_ruling 6 hold 1, 4, 1; stray_untested 9 hold 3, 6, 0; all 18 no_verifier reference_wrong set-asides were rated
+no_verifier; intent_unclear 2 hold 1 right and 1 no_verifier. All 4 trusted Tasks on a wrong Reference are labelled
+wrong, and 4 more wrong ones sit on a right Reference, so trust kept out none of the wrong-Reference Verifiers that
+reached the trusted tier.
+
+The wrong Verifiers (section The wrong Verifiers): retail 4770, 1f8a, e04c, d79a and d01d on a wrong Reference; airline
+b8ba, retail 222a, retail 2417 and airline d73f on a right one. Patterns (section Patterns): a core write left ungated
+(d79a, d01d, b8ba); the Verifier carries a wrong Reference's outcome as a gate (4770, 1f8a, e04c); gated tell items the
+user never needs (2417, d73f); one misread (222a). The loosening search (section Loosening search) finds six repairs on
+three trusted Tasks, all labelled wrong, that let a wrong Reference pass (d01d by a fails_reference ruling, d79a and 4770
+by other rulings). Mutants (section M4) are built from the Reference's writes, so they measure fit to the Reference,
+not the ask: survivors per Verifier were 1.40 on right, 3.40 on partial and 0.75 on wrong.
+
+Three general fixes proposed, none built (section Three simplest general fixes): a repair cannot buy a pass (a repair
+that ungates a gate citing a volunteered do fact in answer to fails_reference or gated_against_ask ends the Task
+no_verifier reference_wrong); a gated tell item needs a told fact or a policy line naming the statement, else it is
+weighed; one gate per written row. Pattern 2 has no code fix: it needs a truth source other than the Reference, which
+D365 sets.
+
+### D365. The product vision and the source of truth: the ask, the policy and the world (2026-10-15 and 2026-10-16)
+
+The founder, 2026-10-15: "essentially the vision to it have something like you say the agent what kind of behaviour
+you want and then the agent builds the evals and training data for the same ( traces and everything for the
+environments )." And: "the whole point is to construct the environment and tasks from the traces, we cannot use the
+gold for anything", "i mean references are good for fidelity that this passed in the users environment and this wisll
+pass in my environment as well but they are not good for anything post that", "we need to remove trusted by agreeement
+it just doesn't make sense", "the mutants should measure fit to the ask".
+
+The founder, 2026-10-16: "traces should be one of the inputs not the whole to be honest :), the database structure and
+business knowledge graph. Where we come in is take all of these using this construct as realistic environment as much
+possible and then heavily augment it with real world synthetic data which we need to generate now. that is the vision
+of the product an agent which asks you the right behaviour you want and then we generate the evals or the same and then
+the human sees some of the evals and then we benchmark all the models across it and then train the model then and
+there :)"
+
+What: the product is an agent that asks for the behaviour wanted and builds the evals and the training data for it; a
+human reviews a sample of the evals; every model is benchmarked on them; the chosen model is trained on the same set.
+Traces are one input beside the database structure, the business knowledge graph and the policy; the Environment is
+built from all of them as realistically as possible, then augmented with synthetic Tasks from the real world bound to
+real rows. The source of truth is three things: the ask (with branches conditioned on the world or the policy), the
+policy and the world. The Intent, the Verifier, the mutants, trust and the Examiner's rulings derive from them. The
+Reference is for fidelity only and never enters the Verifier, repair or the mutants; a Reference that fails a Verifier
+is a finding about the Reference. Reactions to the agent's conduct inside a trace (a transfer after a failure, giving
+up, a late improvised ask) are recorded and never gate. Benchmark gold and scripts are a ruler, never an input. Mined
+held-out Tasks are the eval; synthetic Tasks are training data, measured on the mined held-out set. Lives in:
+docs/vision.md.
+
+Why: in the heldout 100 (D364) the nine wrong Verifiers came from leaning on the Reference: read against this rule, six
+gated the Reference agent's failures as the user voiced them, two came through the fails_reference repair path, one
+was a misread (the report's own patterns group them by mechanism; see docs/vision.md, section Why). All four trusted
+Tasks on a wrong Reference were wrong, and agreement with the Reference cannot see that, since fresh Runs agree with a
+wrong Reference as readily as with a right one.
+
+Supersedes: "The trace is the only truth" in docs/design-philosophy.md, and D66 where it reads the raw trace as the
+only truth; D66's storage, hashing and provenance stand, the trace becomes one input whose agent side is evidence.
+Trust by agreement of 2026-10-05 (executed end states agreeing with the recording) as a truth source. Left for the
+follow-on stream to revisit, not changed here: D312's reference_replay gate and D357's fails_reference repair route,
+both of which let the Reference act on a Verifier.
+
+Follow-on: stream clean-ask, D366 onward, built separately (.claude/herdr/ask-1016/clean-ask.md): the miner marks what
+each fact is conditioned on, the Reference leaves the Verifier, repair and the mutants, and mutants key to the ask.
+Not built and named as gaps: the behaviour statement's shape, the synthesiser, the human review step, the training
+loop, a realism measure.
+
+### D366. Each fact names its condition; reactions never gate; the writer confirms a claimed condition (2026-10-16)
+
+What: an Intent fact carries a condition, what prompted it: none (said in the user's first turn), asked (the agent
+asked for it, or offered it and the user said yes), world_or_policy (the agent stated a fact of the world or a rule
+and the user names the branch they want), agent (the agent could not, declined citing no rule, stalled or proposed
+another way, and the user reacts). A fact of either of the last two has the stance fallback whatever its kind, and the
+miner quotes the agent line in in_reply_to. Code checks position (H1): a fact first said after the user's first turn
+must quote the agent line it answers; without a quote code finds, it is sent back once, then kept as condition agent.
+A reaction that another recording's user volunteers in a turn before any agent tool call is promoted to condition
+none: it was the ask there. A gate citing a reaction is weighed (scored, never gated). A gate citing a world_or_policy
+fact is weighed unless the item confirms the claim itself (H2): a policy_line, or confirms {table, find} naming the
+one row whose read shows it; the writer is told to gate the branch the world selects, not the branch the recording
+took. The pushback bar goes: after_pushback and a witnessed yes are evidence on the fact view and no longer weigh a
+gate alone. A legacy fallback with no condition reads as a reaction. The saved Intent counts late_sent_back,
+late_unplaced and promoted beside fallback_unquoted. The miner's examples are rewritten over placeholders, one per
+kind and per condition.
+
+Why: D365 makes the ask, the policy and the world the source of truth, and the heldout 100 showed six wrong Verifiers
+that gated the Reference agent's failures as the user voiced them. Those are reactions to the agent's conduct; a run
+whose agent meets the first ask never reaches them. A branch the user names under a rule the agent stated is a real
+ask, but only when the rule or the row holds, which the writer can check and the recording cannot.
+
+What it cannot do: the condition is the miner's reading; code checks only that a quote exists in the agent line and
+that the stance and condition agree, not that the line declined or stated a rule. Promotion needs several recordings
+of one Task.
+
+Lives in: kullback/spec/schema.py (Condition, is_reaction, is_ask), kullback/spec/intent_tools.py (_placed, is_late,
+promote), kullback/spec/intent.py (prompt), kullback/spec/items.py (_weighed_gate, World._confirms),
+kullback/spec/writer.py (prompt, facts view, side counts), kullback/examiner/rule_tool.py (fact view).
+
+### D367. The Reference never repairs a Verifier: no fails_reference ruling, no reference_wrong set-aside (2026-10-16)
+
+What: the repair door the Reference held is closed. The code ruling fails_reference is gone from the ruling codes,
+with its wrong_side and ref_step arguments, the step checks behind them, and the close refusal on a ruling with no
+side. Trust no longer files a failing kept Reference as a blocking ruling before the first round
+(route_reference_fails and its call in the review loop are gone). A kept Reference that fails its Verifier is now a
+finding about the Reference for the Builder (examiner/findings.py reference_fails_rows, kind other, key
+reference_fails), filed after the review rounds against the final Verifier; the Verifier stands and no ruling opens.
+reference_passes stays a flag on the tier row. No Verifier has one reason left, intent_unclear; reference_wrong is no
+longer a why. The Examiner's prompt drops the fails_reference sentences and asks of every gate whether a right solve
+of the user's own requests, under the policy and the world, would pass it, whatever any Run did. Rulings and Specs
+written before this still load: a fails_reference ruling asks nothing of the writer, and a Spec set aside
+reference_wrong stays set aside (held, not no_verifier) until it is written again.
+
+Count: 18 of the 100 first-run heldout Tasks (11 airline, 7 retail) were set aside reference_wrong and carried no
+Verifier; under this rule they would carry one, and whether it is right is for the next run's labels to say. The other
+2 no_verifier Tasks were intent_unclear and stay.
+
+Why: D365. The heldout 100 traced two of the nine wrong Verifiers to the fails_reference repair route, and a wrong
+Reference ending a Task with no Verifier let the recording decide what the ask was. The ask, the policy and the world
+decide the Verifier; the Reference says only whether the recording did that here.
+
+Lives in: kullback/spec/rulings.py, kullback/spec/router.py, kullback/spec/trust.py (reference_fails),
+kullback/spec/rounds.py, kullback/spec/review.py, kullback/examiner/rule_tool.py, kullback/examiner/session.py
+(examine_rounds, reference_finding_rows), kullback/examiner/findings.py, kullback/examiner/prompt.py.
+
+### D368. Mutants key to the ask on a passing fresh Run; trust needs one (2026-10-16)
+
+What: the mutant check changes only what the ask gates. ask_keys reads the Spec's gated items whose facts are asks
+(kind do or keep, not a reaction): row_is and row_keeps give their cells, row_new its table, called the columns the
+tool writes (effects). Mutants are built from those keys only, on the newest fresh Run (a live model, not a replay of
+the recording) that passes the Verifier. The Reference is never a base any more, for mutants or for the stray write.
+With no passing fresh Run the mutant report has status no_passing_run, the Examiner's verify line says "mutants: not
+built (no_passing_run)", and trust holds the Task untrusted with reason no_passing_run. That reason sits outside the
+frozen REASONS columns and the report counts it under side_reasons, beside trusted. The mutant ruling text names the
+passing Run's write, and usable facts drop reactions, echoes, unfounded and side facts.
+
+What this cannot do (H4): a mutant that survives says a change to an ask cell went unchecked; a killed mutant says
+only that some gate noticed. Mutants cannot tell a wrong gate from a right one: a gate that demands the wrong value
+kills every mutant of its cell just as well as a right gate does.
+
+Why trust needs a passing fresh Run (H5): a Verifier no live model has passed is not shown solvable, and a pass by a
+replay says only that the recording did what the Verifier asks, which D367 makes no evidence for the Verifier. Keying
+to the ask keeps the check on the user's requests rather than on whatever else the base Run wrote.
+
+Lives in: kullback/spec/mutants.py (ask_keys, passing_base, task_mutants), kullback/spec/mutant_rulings.py,
+kullback/spec/trust.py (NO_PASSING_RUN), kullback/spec/report.py (side_reasons), kullback/examiner/rule_tool.py,
+scripts/mutants.py.
+
+### D369. A gated tell needs a told fact or a policy line (2026-10-16)
+
+What: a gate item of a told kind (judge, said: it checks what the agent told the user) that cites no fact of kind told
+and quotes no policy_line is weighed, never gated, with reason "untold" kept on the item (items.TELL_WEIGHED), on the
+same path as the side, reaction and unconfirmed-condition weighings. The weighing rules now run from one ordered table
+(items._WEIGHINGS). The writer counts these gates as tell_weighed. A refusal judge item is untouched: with no row it
+must quote its policy line (D330), so it always has one. The writer prompt says a told item other than a refusal gates
+only citing a told fact or quoting the policy line that requires the telling.
+
+Why: D365. A gate on what the agent said that nobody asked to hear and no rule requires checks the recording's
+manners, not the ask: a right solve that does the change and says it differently fails it. Scoring it keeps it as
+signal without letting it end a Run.
+
+Count: the dry pass over the 100 first-run Specs counts the gates this weighs (clean-ask report). A recorded workdir
+with no fact kinds now changes in one way: its said gate citing a kindless fact is weighed (the byte-for-byte writer
+test now pins that).
+
+Lives in: kullback/spec/items.py (TELL_WEIGHED, _untold, _WEIGHINGS), kullback/spec/writer.py (choice rule,
+tell_weighed count).
+
+### D370. Every ask has a gate: unchecked_ask, filed by code, holds trust (2026-10-16)
+
+What: every do or keep fact that is not a reaction (schema.is_reaction) and not a filed gap must be cited by at least
+one gate item; a write, a forbid, a kept row and a judge refusal all count, a weighed item does not
+(schema.unchecked_asks). At verify, before the mutants and needing no passing Run, code files each uncited ask as a
+blocking derivation ruling unchecked_ask on the task, one per fact, ever (mutant_rulings.ask_rulings); the verify line
+says "unchecked asks filed: <numbers>". The writer answers it like any ruling: gate the fact or file it as a gap.
+Trust reads the Spec itself: while an ask is uncited the Task is untrusted with reason unchecked_ask, after
+open_ruling and before the constructed Runs. The reason sits outside the frozen REASONS columns and the report counts
+it under side_reasons.
+
+Counts over the 63 trusted first-run heldout Specs (one rater per corpus; labels right 38, partial 17, wrong 8): -
+Worker, before piece 1 (do facts only, no excusals): blocks right 26, partial 12, wrong 6; with gaps excused right 17,
+partial 7, wrong 6. By the first brief's bar this declined the rule. - Orchestrator recount (reaction-shaped do facts
+excused: fallback, accepted, after pushback, echo; gaps excused): blocks right 0, partial 1, wrong 2 (d79a, d01d). -
+Worker, the rule as built (do and keep, reactions and gaps excused): blocks right 9, partial 4, wrong 5. With
+accepted, after-pushback and echo facts also excused: right 2, partial 2, wrong 2.
+
+Why the built count differs: the first-run Specs carry no condition (D366), so only fallback facts read as reactions;
+accepted, after-pushback and echo facts the new miner would mark condition agent still read as asks. The built rule's
+count on Specs mined under D366 needs a miner run and is not shown here.
+
+Why: D365. An ask no gate holds lets a Run that ignores the user pass. On the first run the built rule finds an
+uncited ask on 5 of the 8 wrong Verifiers the review left trusted; code sees it without a model, where uncovered_fact
+waits on the Examiner's judgment.
+
+Lives in: kullback/spec/schema.py (unchecked_asks), kullback/spec/rulings.py, kullback/spec/mutant_rulings.py
+(ask_rulings, UNCHECKED_ASK), kullback/spec/trust.py (UNCHECKED_ASK).
+
+### D371. The Examiner never sees a Run: verify runs the constructed Runs and the ask's mutants (2026-10-16)
+
+What: the Examiner judges the Verifier against the Intent (stances, conditions, quotes), the policy, the world, the
+Spec and the compiled Verifier. The verify tool no longer loads the Reference: it lays the do-nothing Run and the
+stray write on the Task's newest passing fresh Run (D368), files the unchecked asks (D370) and the ask-keyed mutant
+rulings, and answers with the constructed Runs' word and whether a passing fresh Run existed. The Reference's word,
+its steps (user turns, tool calls, replies) and the judge's answers with the agent lines it read are gone from the
+answer (reference_steps, judge_rows and the Reference word are removed). Judge answers for a fresh Run with none kept
+are asked once and kept as before. The review session's file tools refuse any read under the Run copies or what was
+read off them (runs, spoken, judged, user_rules, replays and task_runs files, reference files) and a grep or find over
+the whole root, with the reason. The user turns of every recording stay in the Task's view, with the agent's last line
+before each, only to check where a fact was said. The Examiner prompt says so: the view's turns are there to check
+provenance, conditions are described, no recording's steps are shown, and what a Run did never decides a ruling; the
+verify text names the fresh base, unchecked_ask and the ask-keyed mutants.
+
+Why: D365 and D367. Showing the Examiner the Reference let the recording argue for what the ask was; with the repair
+door closed, the only use left for the Reference in review was to anchor judgment on it.
+
+Not changed: the examine session that files fidelity findings for the Builder still reads the Reference
+(check_reference); the Reference is for fidelity (D365).
+
+Lives in: kullback/examiner/rule_tool.py (verify_rows, verify_line, verify_task), kullback/examiner/session.py
+(_refuse_recordings, review_extension), kullback/examiner/prompt.py (receives, verify).
+
+D370 r1 (2026-10-16):
+
+The unchecked_ask ruling's fix reads "add a gate item citing <fact>, or rebut quoting why no gate may hold it", not
+"file it as a gap": the writer files no gap itself; code lists as a gap every fact no check names (ground.coverage).
+That is also a hole in D370, left open for the founder: an ask with no item at all is a code-filled gap and is
+excused, so the rule catches only asks cited by weighted items. On the 100 first-run Specs 25 trusted Tasks (16 right,
+8 partial, 1 wrong) hold such an ask; counting them would block mostly right Verifiers.
+
+### D372. Scenario records and the miner: three sources, general statements, frequency kept (2026-10-16)
+
+A scenario is one situation customers of the business meet, stated in general words in one or two sentences, with
+the policy lines it touches. Each lives as one record under workdir/scenarios (kullback/synth/records.py): its id
+from the source kind and the statement, the statement, its source, the sources folded into it, the policy lines, the
+frequency, the review rows, the evidence and the status (born, fixing, passed, unsure, infeasible, struck).
+
+The miner (kullback/synth/miner.py, mine_tools.py, mine_prompt.py) is the synthetic generator, and it is a role on
+the shared agent harness and event stream as the Examiner and the Builder are: one session per batch of one source,
+base tools over the scenario store, its own tools with pydantic arguments and results carrying rows (list_openings,
+list_scenarios, write_scenario, rewrite_scenario), prompt sections in GEPA order with examples over placeholders and
+the stop rule last, the workdir bus under the agent name synth and the budget subscriber under the stage
+synth_mining. A batch session gets three turns per item, at least 12 and at most 80; the search session has no items
+and gets its own budget, SEARCH_TURNS (60), and mined.json counts the sessions that stopped on their cap per kind
+(capped). Recordings: a session reads a batch of opening asks, the first user turn of every recording or the turn
+the Spec marks as the opening, and writes statements naming the numbers each groups; frequency is the number
+grouped. An opening belongs to one scenario per session (a typed line is rewritten once): a write picking one
+already grouped is refused naming the scenario that holds it, counted as no refusal of a new scenario, and coverage
+counts per batch the items no scenario grouped (openings_ungrouped). Search: one session holds the harness's reader
+(D374), searches, reads pages through the D225 crawl, and writes a statement only with a span of a page it read,
+kept as its byte range; a statement that copies the page or the corpus is refused. Its search and read_page are the
+shared web tools, D377's, over the adapter search.Crawled, which reads each page through the crawl so the agent
+reads the cached text a span is checked against. Asks: a session reads a batch of lines a customer typed and
+rewrites each as a scenario in the third person; the line as typed stays in the source only, since the customer's
+own shape would tell the blind review where it came from, and a line naming a tool is dropped before any session.
+The rule is held by the write tools, which refuse with the reason as the tool result so the agent writes again: no
+tool name or its words, no id shaped value (a code, an order number, an email, a phone number; no value of the
+Starting state is read for the rule), no policy line the policy does not hold, no span the page does not hold, no
+typed line copied as typed. A second refusal of the same scenario drops it, and one refused once and never written
+again is dropped at the end of the session, counted per reason. No model judges a repeat. The agent lists the
+scenarios already written before it writes, which is where repeats are avoided; then repeats fold by code only,
+statements equal up to case, punctuation and spacing, into the first record, which keeps the others as also_from
+(two recordings records add their frequency). The review may rule a scenario a repeat of another (D373). Mining
+again adds records and never resets one already held, nor one whose statement folds into it. The coverage (per
+source, search scenarios the recordings never show, ask lines nothing else covers, folded, dropped) is written to
+scenarios/mined.json. The fix step the review asks for is a session too, under the stage synth_fix, whose
+rewrite_scenario holds the same rule; a scenario it does not rewrite ends unsure. The verb is `kullback synth mine`,
+the live adapter under the budget subscriber and a ceiling checked between sessions, as the review's sessions are
+wired.
+
+Names. The package is kullback/synth (tests/synth), the CLI group `kullback synth` with the verbs mine and review,
+the bus agent and the budget stages synth (synth_mining, synth_review, synth_fix), the report heading "## synth". The
+store under the workdir stays scenarios/, since the records are scenarios. kullback/synthesise.py (D224) and
+kullback/builder/synth.py are older paths and keep their names.
+
+What it cannot show: nothing ran on a model or on a real workdir. Every test uses a scripted TestModel over an
+abstract fixture, so whether a model groups openings well, writes general statements, quotes real spans, lists
+before it writes, or writes again well after a refusal is unmeasured. Without a judge model the fold catches only
+exact canonical repeats.
+
+Tests: tests/synth/test_records.py, tests/synth/test_miner.py (each source as a session, refusals, the bus and the
+stage), tests/synth/test_end_to_end.py (mining and review as sessions on one bus).
+
+### D373. The Examiner's scenario review: blind, on the shared harness, outcomes by code (2026-10-16)
+
+The review (kullback/synth/review.py) is a role on the shared agent harness, bus and budget subscriber, as the
+Examiner's own sessions are: one session per batch of born scenarios, under stage synth_review. It is blind: each
+scenario is written as a view under scenarios/review that drops its source, the sources folded into it, its
+frequency and its fix count, and the base tools read only that root. Its tools read a view, list by status, search
+the web and read a page, look up and search the starting rows, find tools by words, file a verdict and send a
+scenario back. The search and read_page are the shared web tools, D377's; their on_call keeps every call as evidence
+on each scenario of the session, the URLs a search returned and the URL a page read. A verdict answers occurs,
+feasible and serves_ask; occurs yes needs a cite and feasible no needs what is missing, or the call is refused. A
+cite is a URL a search in a session that reviewed the scenario returned, checked against the evidence kept on the
+record, or a substring of the policy; anything else is refused with that reason, so no trace id reaches a verdict
+and the blind review never cites where a scenario came from. The outcome is read off the verdict by code, occurs
+first: a repeat of another scenario (repeat_of, an id the store holds and not its own) strikes it with that id as
+the cite; occurs no strikes it; any unsure puts it on the human queue (scenarios/human.json); feasible no marks it
+infeasible and files one Environment finding through examiner/findings.py naming what to add, never a drop;
+otherwise it passes. A send back has the miner rewrite the statement once from the same source with the reason,
+keeping the id, and the rewrite is reviewed again in the same call; a second send back, or a rewrite that breaks the
+rule, ends it unsure on the human queue. The prompt (kullback/synth/prompt.py) runs in GEPA order, its examples over
+placeholders, one per outcome. The verb is `kullback synth review`, under a spend ceiling. Both verbs print the
+synth report under its own heading (kullback/synth/report.py), never in the build table.
+
+What it cannot show: nothing ran on a model. Whether a reviewer searches before ruling, cites what it read, or rules
+the same scenario the same way twice is unmeasured; the cite is checked against what the scenario's search returned
+and the policy, never against what the page says. Whether blindness changes verdicts was not tested against a sighted arm.
+
+Tests: tests/synth/test_review.py, tests/synth/test_end_to_end.py, including a test that no prompt line holds
+a tool, table or field name of the fixture Environment.
+
+### D374. The scenario layer searches through the D115 reader, behind the live switch (2026-10-16)
+
+The scenario layer has no search reader of its own. kullback/synth/search.py is a seam onto kullback/builder/search.py
+(D115): TinyFish search and fetch when TINYFISH_API_KEY is set, then Firecrawl keyless, in one chain, every answer
+memoized under workdir/web_cache keyed by the request, and nothing live unless the switch that turns model calls on
+(HARNESS_ALLOW_MODEL_REQUESTS) is set; with the switch off a memo is still served, and with no memo there is no reader.
+The seam hands the miner and the review one adapter of the D115 shape, search.Crawled, as the search of the shared
+web tools (D377): its search passes through, and its fetch reads each URL through the D225 crawl with the reader's
+fetch as the page fetch, so a fetched page still lands in the crawl's cache and a span's byte range cites it as before. One key variable,
+named in notes, its value never read here or printed. Where nothing is live the note says the search is off, names
+the switch and the key the chain reads first. The second reader of round 0 (its own URL and key variables, a default
+endpoint and a cache under cache/search) is gone; it posted without the live switch, which is how two test runs of
+round 0 reached the network.
+
+What it cannot show: no request reached a real provider; every test answers through builder.search.TestSearch inside
+the memo and chain the live path builds.
+
+Tests: tests/synth/test_search.py (the adapter passes a search through and a repeat is served from the memo with
+live off; a page is read through the crawl and its text is the cached text under the key recorded; a refused or
+unread page is a Page error and a note; no module holds the old reader's names), tests/synth/test_miner.py (with live
+off and no memo the miner writes no query and reads no page; with no reader the shared tools answer off),
+tests/synth/test_review.py (no reader with live off; the shared tools answer off and the evidence names the switch).
+tests/synth/conftest.py clears the switch for every test, so a reader the test did not inject is None, and fails a
+test that resolves a host name, so every destination check runs on the fixture's scripted resolver.
+
+### D375. The mutant base is built by code from the Verifier, never from a Run (2026-10-16)
+
+What: the end state the stray write and the ask's mutants are laid on is the Task's start state with every gated
+state cell set to its expected value and every gated new row made (spec/mutants.py constructed_base); code then
+checks that every gated state item and the sanity item hold on it, else it is no base. The start state is read off
+any Run of the Task (it is the Task's), the built Run has no call and no message. A gated cell whose expectation
+is not one literal value (a one_of set of several members, a not set, a row the start state does not hold) cannot
+be built: then the base is the newest fresh Run the Verifier passes, as under D368, and with neither the status is
+no_base (renamed from no_passing_run; kept outside REASONS and counted beside them). A mutant is scored against
+its base: it is killed when a gate item that held on the base fails on it, so a called gate failing on the built
+base (no call was made) kills nothing. A keyed cell the base left as it was (a kept row the ask names) is flipped
+by the value operator too, so a keep the ask names must hold. Called and judge gates have no base to mutate: the
+do-nothing Run tests a called gate (no call made, it must fail); judge gates stay untested by mutants. The
+do-nothing Run is unchanged. solvable (any fresh Run passed) stays a flag beside trusted, never a trust input. The
+Examiner's verify line names the base: built from the Verifier, the newest passing fresh Run, or none.
+
+Why: D368 tied trust to the runner solving the Task: on the first run 78 of 100 Tasks had no passing fresh Run, so
+no mutant and no stray-write test, whatever their Verifier. The expected end state is the Verifier's own claim;
+laying mutants on it asks whether the gates hold what they declare without waiting on any agent. H4 still holds: a
+gate on the wrong cell or with the wrong value passes its own built base and kills its own mutants.
+
+Count (dry pass, no model call, the 100 first-run Specs under this code):
+84 of 100 Verifiers construct a base, 3 fall back to the newest passing fresh Run, 13 are no_base. Trusted: 40
+(by rater label, of the 63 first-run trusted: 25 right, 11 partial, 2 wrong; of the 37 untrusted: 1 right, 1
+partial). The dry pass files no new mutant ruling, so this is an upper bound (.claude/herdr/ask-1016/base-report.md).
+
+Lives in: kullback/spec/mutants.py (constructed_base, mutant_base, held_gates, _kept_cells, NO_BASE),
+kullback/spec/trust.py (_stray_base, NO_BASE), kullback/examiner/rule_tool.py (verify_rows, verify_line),
+kullback/examiner/prompt.py (verify text).
+
+### D376. An ask is excused only by the writer's rebuttal (2026-10-16)
+
+What: a new writer tool rebut_fact(fact_id, why) answers an ask code sent back for want of a gate: in the
+asked_missing follow-up turn, and in the repair session of an unchecked_ask ruling (spec/writer_tools.py
+ItemStore.rebut). Code keeps it only for a fact sent back in that session and only when why quotes at least 12
+characters of the user's words of that fact or of a policy line, set off in quotes or after a colon (the write
+because check, ground.valid_write_because); else it refuses with the reason, in the session. The Spec records kept
+rebuttals as {fact id: why} (Spec.rebuttals; dumped only when there is one, so older Specs hash as before).
+unchecked_asks excuses a fact only when it is rebutted or compile dropped its check with a reason (a gap written
+"<check id>: <reason>"), never because it is a coverage gap. The Examiner's view shows the rebuttal beside its fact;
+the Examiner may rule unchecked_ask on that fact id when it finds the rebuttal wrong, and that open ruling holds
+trust like any other. The repair of an unchecked_ask ruling drops the ruled fact's old rebuttal, so the writer gates
+it or rebuts anew. coverage stays the report's count of facts no check names.
+
+Why a tool and not an argument on add_items or drop_items: a rebuttal is not an item and changes none; it names a
+fact, not an item id, and code answers it on its own (kept or refused with the reason), so one plain tool is
+simpler than an optional argument read differently by two tools. A reply line "rebut:" stays the answer to other
+rulings; it never excuses an ask.
+
+Why: D370 r1 left a hole open: an ask with no item at all became a code-filled gap and was excused, so the rule
+caught only asks cited by weighted items. Now nothing the writer did not argue, in words code can check, excuses an
+ask.
+
+Count (dry pass, no model call, the 100 first-run Specs, which hold no rebuttal):
+trusted 22 (12 right, 6 partial, 2 wrong of the first-run trusted; 1 right, 1
+partial of the untrusted): of the 40 trusted under D375, 18 (13 right, 5 partial, 0 wrong) hold an ask now unexcused.
+
+Lives in: kullback/spec/schema.py (unchecked_asks, dropped_facts, Spec.rebuttals), kullback/spec/writer_tools.py
+(rebut_fact, ItemStore.rebut), kullback/spec/writer.py (TOOLS_TEXT, ASKED_FOLLOWUP_PROMPT, REPAIR_PROMPT,
+asks_ruled, Ruling.facts), kullback/spec/mutant_rulings.py (ask_rulings fix), kullback/examiner/rule_tool.py
+(spec_view), kullback/examiner/prompt.py (examples_section).
+
+### D377. One shared pair of web tools in the agent core, the search injected by the role (2026-10-16)
+
+The founder, 2026-10-16: "common set of tools are exposed right ?" Decided: web search and page reading are one module,
+`kullback/agent/web_tools.py`, and any role on the agent harness (the Examiner, the Builder, the synthetic generator)
+registers them with `register_web_tools(api, *, search, refuse, on_call=None)`. No role wraps the chain itself. The
+agent core sits below the Builder and the domain module (pyproject.toml, layers), so the module imports neither: the
+role builds the D115 chain where its layer allows (`builder.search.search_for(workdir, env)` in the Builder and the
+synthetic generator, the CLI for the Examiner) and passes it in as `search`, duck typed (`search(query, limit)` and
+`fetch(urls)`), with `refuse`, the domain module's `destination_refusal`. `search(query, limit)` returns rows of title,
+url, snippet and site, at most ten, and its summary is the hit count and the query. `read_page(url, max_chars,
+from_line)` asks `refuse` first (a refusal is a summary with no rows, never an exception to the model) and returns the
+page as numbered lines from from_line up to max_chars, numbered as in the whole page so a span's line is the same in
+every call. A line that does not fit is cut to what fits and ends the window, so it never hides the lines after it,
+and while lines remain the summary says "call again with from_line=<next>", with the title, the length and any Page
+error. With
+`search=None` both tools still register and say the search is off, naming no variable: the agent core does not know
+the chain's variables, and the role's own note names them. `on_call(name, args, result)` gets a copy of every result
+so a role can keep evidence (the synthetic generator keeps its searches on the scenario) and cannot change what the
+model reads. The base tool `web_search` (base_tools) stays as it is and is a different thing: the provider's own
+search inside the model call, with no memo, no citation span and no page fetch; these tools are the harness's own
+search, with a memo and page text a cite can rest on.
+
+What it cannot show: nothing ran live; no role registers the tools yet, so whether a model uses them, and what a live
+provider answers, is unmeasured. Tests (`tests/agent/test_web_tools.py`) run on `TestSearch` inside `MemoSearch` over a
+tmp workdir as the search and `destination_refusal` over a scripted resolver as `refuse`, with no network call; one
+test pins the module's harness imports to `kullback.agent` and `kullback.ai`.
+
+### D378. The scenario step is named generate, not mine (2026-10-17)
+
+The CLI verb is `kullback synth scenarios`, the stage `synth_generation`, the summary `generated.json`. The word mine
+read as rebuilding the Environment; the step reads the built Environment and writes scenarios.
+
+### D380. A plan session puts every opening in one situation before any scenario is written (2026-10-17)
+
+The founder, 2026-10-17: "lets add the planning / reasoning stage to first understand everything and then derive the
+scenarios from it" and "lets give it this tool" (attach openings to an existing scenario). The first live run worked in
+batches of 25 opening asks with no memory across sessions: it skipped 172 of 456 retail openings as already covered and
+wrote 57 repeats where it did not notice the twin.
+
+What: `kullback synth scenarios` now plans first. A session of kind plan (kullback/synth/plan.py, generate_tools
+SESSION_TOOLS["plan"]) reads up to PLAN_BATCH (150) numbered opening asks (generate.openings) and holds list_openings,
+list_plan (id, statement, kind, how many openings, variants), write_situation(statement, kind, openings, variants),
+attach_openings(id, openings) and skip_opening(openings, why). A situation is one sentence in general words saying one
+thing that happens, a one word kind the model picks, the openings that show it and zero or more one line variants
+that change what the agent must do; its id is "si_" plus a 12 hex content hash of the statement. Code refuses with
+why: an opening another situation holds or one already skipped (naming the holder), an item number outside the
+batch, an empty statement, a tool name or an id shape (rule.statement_refusal, on the variants too), a hedged
+statement holding "sometimes" or " or " (split it into variants), a statement the plan already holds (attach
+instead), a kind of more than one word, a skip with no reason. attach_openings reaches a situation of this or any
+earlier session, and of an earlier call: the plan is read from <workdir>/scenarios/plan.json first and written after
+every session as {"format": 1, "situations": [{id, statement, kind, openings: [{task_id, recording, text}],
+variants}], "skipped": [{task_id, recording, why}]}. Every plan session's opening message lists the plan so far (id,
+statement, count) and says every numbered item ends in exactly one situation or skipped. After the batches, one more
+plan session runs over the openings in no situation and not skipped, if any; what still remains is written to
+generated.json as coverage.openings_unplanned (count and the masked Task ids). The plan prompt runs in GEPA order
+under the same section names, with its own texts (generate_prompt.sections(names, "plan")): the rule, the tools
+with one example call each, a placeholder situation and variant, the choice rule ("one situation per distinct thing
+that happens; the same thing at another step or with another remedy is a variant, never a second situation and
+never a hedge"), feedback and the stop rule last.
+
+Provenance by construction: a planned opening carries its task_id and recording from the rows, so no model lists
+an opening number after the plan. Until D381, the recordings sessions still read openings as before.
+
+What it cannot show: nothing ran on a model. Whether a model reads 150 items before it writes, splits hedges into
+variants, or attaches rather than writes again is unmeasured; the turn budget of a plan session is the batch
+budget (at most 80 turns), not a measured need.
+
+Tests: tests/synth/test_plan.py (a session writes and skips and a later session attaches to the earlier situation;
+a held opening is refused naming the holder; a hedged statement is refused; the retry session sees only the
+unassigned; plan.json has its shape; openings_unplanned counts and masks; planning again reads the plan on disk).
+
+### D381. Scenarios are written per situation of the plan and bound to rows of the world (2026-10-17)
+
+The founder, 2026-10-17: "bind each scenario to real rows of the world at generation time: this user, this order,
+this product with these option values, this amount"; "we should have required as well that it requires these users
+and the tools and these amendments to the datasets"; "as close to the real world / deployment settings" and "diverse
+data". The first live run's statements said "a customer with a pet" where the world holds a named customer, a cat,
+an airport and a capped amount, so nothing downstream could be judged from them; it also listed wrong item numbers
+on 9 of 144 statements.
+
+What. The recordings sessions take the plan's situations (D380) as items, 25 per session: each item shows the
+statement, its kind, its variants and the texts of at most five of its openings, the rest counted (more_openings).
+The model writes one scenario per situation and one per variant: write_scenario takes `situation` (the si_ id) and
+`variant` (the variant line word for word, or empty); code fills source.task_ids and frequency from the plan, never
+from the model, and `openings` stays only for the ask source. A write for a situation and variant already written,
+in this session or in the store, is refused naming the scenario that holds it, so a repeat cannot be written; a
+situation whose situation and variants are all written is left out of the next call's items. Records carry
+`situation`, `variant`, `binding` and `requires`; the review's view hides `situation` beside source and frequency
+and shows the binding and requires. coverage.openings_ungrouped now counts, per recordings batch, the situations no
+scenario was written for.
+
+Binding. Every generation session but the plan (recordings, search, ask, fix) holds lookup_rows, search_rows and
+find_tools, the three the review holds, now defined once in kullback/synth/world_tools.py and used by both roles.
+write_scenario takes `binding` (table to row key, as lookup_rows names them) and `requires` (what the world lacks,
+in words); rewrite_scenario takes both as optional, kept when left out. Code checks every binding entry: the table is
+in the Starting state and the key is a row of it, else refused binding_not_in_world naming the table and key. A
+recordings or search scenario with an empty binding and an empty requires is refused unbound (on a fix too, by the
+record's source kind). The statement rule stays for tool names and id shapes, since ids live in the binding; the
+corpus contamination check on search statements is dropped, because world values are now allowed in the words;
+copies_page stays. The rule text (generate_prompt.RULE) now says a scenario is two to four sentences in the third
+person about one customer of this world: who they are as the bound rows name them, what they have, what they ask,
+what they bring with them; every fact from a bound row or the policy; values said, never an id or a tool name, a
+date in words; what the world lacks goes into requires and the scenario is still written; different customers and
+rows across one session. This supersedes D372's sentence that a scenario is one or two sentences in general words
+that never name a value. The fix session's items show the binding and requires beside the reason.
+
+A batch session's turn budget is six turns per item (was three), at least 12 and at most 160 (was 80), since each
+bound scenario looks its rows up before it is written; SEARCH_TURNS stays 60.
+
+What it cannot show: nothing ran on a model. Whether a model looks rows up before it binds, picks rows that fit the
+situation, spreads customers across a session, or says the values without an id is unmeasured; whether the bound
+user matches the recording's own Task user is measured only by the live driver. The turn budget is a setting.
+
+Tests: tests/synth/test_generate.py (a session binds to fixture rows and the record carries them with the plan's
+Tasks and frequency and the requires; a key or a table not in the world is refused naming it; an unbound scenario is
+refused; a second write for the same situation and variant is refused naming the holder, in the session and from the
+store; every session but the plan holds the world tools), tests/synth/test_review.py (the view shows binding and
+requires and hides the situation), tests/synth/test_end_to_end.py.
+
+### D382. The reviewer cites a page it read, names what it checked, and quotes what a send back changes (2026-10-17)
+
+The founder, 2026-10-17, on the cite rule: "lets fix this". In the first live run the reviewer never opened a page
+in 35 sessions, because the cite rule accepted a search result URL or a policy line, and its send backs said
+"narrow" without saying which words. Its infeasible rulings named real gaps (a policy promises something no tool
+issues), which the founder wants kept as an order to build.
+
+What. rule_scenario (kullback/synth/review.py RuleArgs) takes `occurs_url` and `occurs_span` in place of
+`occurs_cite`. occurs yes needs a URL this session read with read_page and a span found in that page's cached text
+(rule.byte_range over domain.cached_text under the key the search.Crawled reader kept for the URL), else it is
+refused saying so. A search result alone is no cite; a policy line is no cite, since it shows the business
+anticipated the situation, not that customers bring it. A page read in an earlier session is no cite in the next
+(ReviewRoot.read is reset per session). occurs no may carry a URL read and a span, checked the same way, or
+nothing. `serves_ask` is removed; no outcome read it. New `checked`: for feasible yes, "tool:<name>" for each tool
+of this world the scenario needs and "row:<table>:<key>" for each bound row looked up, each verified by code (the
+tool in the world's tool list, the row in the scenario's binding); feasible yes with an empty or unverified
+checked is refused, and feasible yes on a scenario whose requires is not empty is refused (rule feasible no with
+missing, or send it back if the world holds what requires names). feasible no needs missing as before, and its
+Environment finding now carries one edit of kind world holding the scenario's requires and binding, the order to
+build. A repeat's verdict keeps repeat_of as its own field; occurs_cite no longer carries the other id.
+
+Evidence per scenario. The shared web tools' on_call no longer writes every call onto every scenario of the batch:
+a search is not kept, and a read_page only makes its URL citable in the session. The verdict writes one evidence
+row on its own scenario: {"tool": "read_page", "url", "span", "start", "end"}. This supersedes D373's sentences that
+every search and read_page call is kept as evidence on each scenario of the session, that a cite is a URL a search
+returned or a substring of the policy, and that a verdict answers serves_ask; and D374's sentence that with no
+reader the evidence names the switch (with no reader nothing is read, so occurs yes cannot be ruled and the
+reviewer rules unsure).
+
+Send backs. fix_scenario takes `quote` (a substring of the statement, checked by code, else refused), `why` and
+`change` (what it should say instead, or what to look up); the review row keeps all three, and the fix session's
+items show them as quote, why and change lines beside the binding and requires (D381).
+
+Prompt (kullback/synth/prompt.py, skills.py): the receives section drops the ask question; the rule_scenario and
+fix_scenario examples show the new arguments; the examples cite a page read and a quote; the choice section says to
+read the page before citing it, to name the rows and tools checked, and that a send back quotes the words.
+
+What it cannot show: nothing ran on a model. Whether a reviewer reads before it cites, picks a span that shows
+customers meet the situation rather than one that merely mentions it, or quotes the right words is unmeasured; code
+checks only that the span is on the page and the quote in the statement.
+
+Tests: tests/synth/test_review.py (a search URL alone is refused; a policy line is refused; a span not on the page is
+refused; a read page and its span file the verdict and the evidence row sits on that scenario alone; a page of an
+earlier session is no cite; feasible yes with empty checked, an unknown tool or a row outside the binding is
+refused, and with open requires is refused; a quote not in the statement is refused; the finding carries requires
+and binding; the fix session reads quote, why and change), tests/synth/test_end_to_end.py.
+
+### D383. A statement that nearly repeats a written scenario is refused at the write (2026-10-17)
+
+The founder, 2026-10-17, asked for synthetic data as close to the deployment setting as possible and diverse on
+purpose, and for the papers on it (.claude/herdr/synth-1016/papers-diversity.md, rules 6 to 8). The first live run
+struck 57 repeats after the fact, in the review; each was a model call spent on a twin, and the twin sat in the store
+until then.
+
+What. kullback/synth/rule.py `rouge_l(a, b)`: the F1 of the longest common subsequence over lowercased word tokens
+(split on whitespace, punctuation stripped at the edges of each token), 0.0 when either side is empty, no dependency.
+kullback/synth/generate_tools.py NEAR_REPEAT = 0.7 and the refusal `near_repeat`. In write_scenario, after the
+statement and policy checks and before the binding check, the statement is scored against every statement in the
+store and in this session; the first at or above 0.7 refuses the write through the ordinary refusal, naming the
+twin's id, so a second refusal drops it and generated.json counts it under dropped. rewrite_scenario runs the same
+check against every statement but its own. Two pairs are left out of the gate: an exact twin (score 1.0), which the
+fold still folds by code so a second source lands under also_from as before; and a scenario of the same situation of
+the plan, since a variant is close to its situation by design and one per situation and variant is already held
+(D381). The generator prompt's feedback names the new refusal.
+
+The threshold. 0.7 ROUGE-L is Self-Instruct's choice, taken as is and fixed here before any run on scenarios; it was
+not tuned on scenarios, and Persona Hub's 0.9 is on embeddings, a different measure.
+
+Why at the write. A refusal at the write costs one tool result and leaves no twin in the store; the review's repeat
+ruling stays for what surface form cannot see.
+
+Spread (no row of its own). coverage in generated.json gains `spread` (scenarios per situation kind, per bound table,
+per policy line touched) and `cells` (distinct situation kind and bound table pairs hit, of the kinds seen times the
+tables of the world), and the synth report prints one line each.
+
+What it does not do: no embedding, no paraphrase that changes most words, no comparison across corpora or against
+another store. Whether 0.7 refuses real distinct scenarios or lets real repeats through is unmeasured; nothing ran on
+a model.
+
+Tests: tests/synth/test_generate.py (rouge_l on the same words, disjoint words and a pair of known value 2/3; a
+paraphrase of a stored scenario is refused naming it and the second attempt is dropped and counted; two statements of
+different situations both pass; a rewrite never scores against its own statement and is refused near another; the
+spread counters and cells; the report lines).
+
+### D384. A Task whose recorded user strayed from an opening ask is set aside as intent_strayed (2026-10-17)
+
+Briefed as D381; D380 to D382 were already taken on the base (733964b8) and D383 by another stream, so the row takes
+the next free number.
+
+Why. Every recording was made with a model-simulated user, and that user sometimes strays: withholds what the agent
+needs, swaps values, stops after the first confirmation, holds an ask pending a check that never comes. The miner
+records it faithfully, so the Verifier is right for the conversation and wrong for the ask. The founder wants these
+filtered by a simple mechanism, not by trace agreement.
+
+What. kullback/spec/coherence.py asks one judge question per Task between the miner and the writer, from the Intent
+and the recordings only (never a Run, never the Reference): for each opening ask (a volunteered do or told fact of
+condition none), by the end of the recordings was it carried_out, refused_or_withdrawn (refused on a policy ground or
+withdrawn in the user's own words), or strayed. The judge names the recording and quotes one line; code keeps an
+answer only when the quote sits word for word in one line of that recording. Any kept strayed answer sets the Task
+aside as intent_strayed (a new set_aside value and task.set_aside reason code, in router.NO_VERIFIER_WHYS beside
+intent_unclear), so no writer runs and the tiers read reason no_verifier, why intent_strayed. Code decides a Task
+with no opening ask (no call). A failed call or unreadable reply sets nothing aside and the Spec says why. The record
+lives on the Spec as `coherence` (dropped from the dump when empty, so older Specs hash as before). write_specs takes
+`judge_model`, None asking on the writer's model; the CLI's examine passes the judge adapter.
+
+Measured (pre-registered in .claude/herdr/stray-1017/filter-prereg.md): over the 100 rerun Tasks, one pass on
+Opus 5.5, 3.76 USD, every Task decided by the judge, no failed quote, no error. It set aside 5 of the 6 Tasks the raters
+marked intent_wrong (bar at least 4: holds) and 15 of the other 94 (bar at most 5: fails). Verdict FAIL. Most false
+positives end in a hand-off or a stop right after a confirmation, with no write: the clause "the conversation ended
+with the ask neither done nor refused nor withdrawn" catches the agent failing as well as the user straying, and the
+true positives rest on the same clause, so dropping it post hoc loses them too (2 of 6 caught, 8 false).
+
+What it cannot show: one judge, one pass; the six are the raters' call; whether the question can separate a user who
+strayed from an agent who failed at the end is open.
+
+Tests: tests/spec/test_coherence.py (opening asks; recording lines; the quote check; each of the three answers; a
+strayed answer with a quote not in the named recording sets nothing aside; no opening ask decided by code with no
+call; unreadable reply and failed call; the stage set-aside with no Verifier and the bus told; the tier reads
+no_verifier why intent_strayed; a held Task keeps the record; an empty record is not dumped), tests/spec/test_stage.py,
+tests/examiner/test_refwhy.py.
+
+### D385. The coherence judge names who ended an ask; only the user's ending sets aside (2026-10-17)
+
+Why. D384's question folded the user changing course, an agent failure or hand-off, and a condition that did not hold
+into one answer, strayed; most of its 15 false positives of 94 ended in a hand-off or a stop after a confirmation.
+
+What. kullback/spec/coherence.py: each opening ask is answered carried_out, refused_or_withdrawn, or ended_by with an
+ender: user (changed what they wanted in their own words, asked for the opposite, or withheld what the policy requires
+when asked), agent (failed, stopped or handed off without acting, also after a confirmation) or world (a condition the
+user set did not hold, or a call failed). Only ended_by user sets the Task aside as intent_strayed. Code keeps a user
+ending only when its quote sits in a user line of the named recording and still carries words once any control
+marker (###NAME###) is taken out, so a stop or hand-off marker alone is never the user straying. Every answer keeps
+its ender on the Spec's coherence record. This supersedes D384's strayed answer.
+
+Measured (pre-registered in .claude/herdr/stray-1017/filter-prereg-r2.md, same bars, scorer unchanged): over the same
+100 rerun Tasks, one pass on Opus 5.5, 3.60 USD, no failed quote, no error. Enders: 5 user, 13 agent, 17 world. It set
+aside 2 of the 6 intent_wrong Tasks (bar at least 4: fails) and 2 of the other 94 (bar at most 5: holds). Verdict
+FAIL. Lost: two ended by the agent or the world by definition (a hand-off, a failed call), one the judge gave to the
+agent rather than the user, and one the user withdrew in their own words, as in D384.
+
+What it cannot show: one judge, one pass, the six are the raters' call, and round 1 had read the labels.
+
+Tests: tests/spec/test_coherence.py (the user ending in their own words sets aside; agent and world endings set
+nothing aside and keep the ender; a user ending quoted from the agent or a marker alone is refused; an ender on
+another answer or outside the three is not kept; a user ending not in the named recording is refused).
+
+### D388. The miner answers each opening ask's outcome; no separate judge call (2026-10-17)
+
+Why. A second model call for a small classification is not acceptable, and D385's two false positives were the user
+dropping an ask after hearing a price or a refusal, read as the user ending it.
+
+What. kullback/spec/intent.py and intent_tools.py: the miner's add_facts row for an opening ask carries an outcome
+(answer, ender, recording, quote, why) in the same call it keeps the fact with; there is no judge call and write_specs
+has no judge_model. kullback/spec/coherence.py keeps the definitions the prompt quotes and the code checks: the quote
+check and the user-ender rule of D385 are unchanged, and an opening ask with no outcome sets nothing aside and is
+counted. One sentence is added: when the user drops or declines an ask in their own words after hearing a price, a
+condition or a refusal, that is refused_or_withdrawn, not a user ending. The stage reads the miner's coherence record
+and sets a Task aside as intent_strayed with no Verifier exactly as before. This supersedes D385's separate call.
+
+Measured (pre-registered in .claude/herdr/stray-1017/filter-prereg-r3.md, scorer unchanged): 30 Tasks, the 6
+intent_wrong and 24 drawn by seed 1017 from the other 94, mined fresh on Opus 5.5, 2.50 USD, no unquoted or
+unanswered outcome. Set aside 4770 and 1f8a (bar: both) and 0 of the 24 (bar: at most 1). Verdict PASS. Both D385
+false positives now hold: one is in the 24 and reads as a withdrawal after the refund amount, the other (a named extra
+outside the verdict) reads as an agent hand-off. Extra miner output is about 220 tokens per Task, about 0.004 USD,
+against D385's separate call at about 0.036 USD per Task.
+
+What it cannot show: one pass, a sample of 24 for the false-positive side, labels already read in D384 and D385, and
+the Intent is mined fresh, so it can differ from the one the rerun's Verifier was written from.
+
+Tests: tests/spec/test_coherence.py rewritten around the miner's outcome rows (the prompt carries the rule and the
+withdrawal sentence; the outcome rides in add_facts with no further call; withdrawal, user, agent and world endings;
+marker and agent quotes refused for the user; wrong ender or recording; no opening ask; unanswered counted; stage
+set-aside, tiers, held Task). tests/spec/test_stage.py: `_mined` takes the fact with its outcome.
+
+### D386. The 100 held-out rerun on the clean-ask head fails all five bars (2026-10-17)
+
+The 100 held-out rerun on the clean-ask head fails all five pre-registered bars (wrong 22 of 96, trusted 43 with 8
+wrong, 1.28 USD per Task); the Reference used to catch unreachable gate values and recording-only transfer gates;
+reports in .claude/herdr/ask-1016/rerun-report.md and rerun-analysis.md.
+
+### D387. A gated value must be reachable (2026-10-17)
+
+What: a gated literal value for a cell (row_is expect, row_new where, the end state cells the Verifier compiles from
+them) is kept only when it is reachable from one of four sources: a write tool's learned writes for that table and
+field name (the build's sandbox replays, spec/effects.py `writes`: the literal values, at most 12 distinct, and the
+arguments a field is copied from, `from_args`, where any value the start state holds or the user said reaches it);
+a write tool's result in a recording of the Task holding the value under that field name (its presence only, never
+the recording's path); the user's own words in an Intent fact (an echo fact does not count); a start row holding it
+under that field name, any table. Matching is on the normalised string, numbers as numbers. Nulls and not sets are
+never checked; each member of a list or a one_of is. A policy line alone never reaches a value. Code refuses a gated
+item naming any other value in add_items, with the item id, the field, the value and up to ten reachable values, and
+the writer re-gates or weighs it in the same session; a weighed item is kept with the same finding as a warning. The
+writer's prompt has one sentence on it, and its tool list shows what each write tool writes. A gated cell's source
+is where it is reachable from (None when nothing reaches it), and the constructed mutant base (D375) never builds a
+cell with no source. The Spec counts it: writer.reachability {refused, warned} per session, end_state.reachability
+{refused, warned, gated} on the final Verifier. A world with no learned writes still applies the other three sources.
+
+Why: D386. Seven retail Verifiers gated an order status the policy spells wrong on one line and the tool spells
+right, so no Run could pass them; the Reference Run used to fail such a gate and the repair took it away, and D367
+took the Reference out of verification without anything taking that job. Nothing checked that a gated value can
+exist. A value no tool writes and no user fixed cannot be a correct end state, whatever the policy text says.
+
+Count (dry pass, no model call, the 100 rerun Specs under this code): retail 8 gated values refused on 7 Tasks, all
+the policy's misspelt status, and 2 weighed values warned (the misspelt status on the eighth Task, a computed
+amount); airline none. Before from_args (post hoc, added after the first pass) the same pass refused 21 on 10 retail
+and 1 airline Tasks, 13 of them right values a tool copies from its arguments under another field name.
+
+Live (the eight Tasks, Examiner cache cleared, 14.36 USD of a 15 cap). Arm A, the full Spec stage with the writes view
+shown: 0 refusals in any session; the writer never offered the misspelt status, and no final Verifier gated the tool's
+status either, because the older found rule refused the tool's status 19 times across all eight Tasks. Arm B (post
+hoc), the first write only with the writes view hidden: the refusal fired on 7 of 8 Tasks, and on 6 the writer then
+gated the tool's status, which the older found rule refused as not in the world, the policy or a user turn; so the
+found rule now takes a value a tool writes. Arm C (post hoc, two Tasks): the writer offered the tool's status first,
+the refusal did not fire, and on one Task the gated tool status was kept.
+
+What it cannot show: the reach is per table and field name, not per tool and path, so a value one tool writes to a
+field reaches the same field name another tool writes; a value a tool computes (an amount) is reachable only when a
+recording or the world shows it; no run showed a refusal followed by a kept re-gate in one session; arm C fails its
+pre-registered bar; the eight Tasks are the dry pass's own hits, so nothing here measures false refusals on fresh
+Tasks.
+
+Lives in: kullback/spec/items.py (Reach, World.reach_of, World.unreachable, World._tool_written, _gate_source),
+kullback/spec/effects.py (literal_writes, EFFECTS_VERSION), kullback/builder/tool_effects.py (call_diffs),
+kullback/spec/writer.py (load_inputs reach, _writes_view, FEEDBACK, reachability), kullback/spec/writer_tools.py
+(ItemStore.warned), kullback/spec/mutants.py (_build_state).
+
+### D389. Tasks are born of passed scenarios through the existing mechanism, in a synthetic tier (2026-10-17)
+
+The founder, 2026-10-17, as .claude/herdr/synth-1016/tasks-design.md records the words: "the existing mechanism
+derives the Tasks; the Examiner checks whether the Verifier matches the Intent and the Task; keep it simple and check
+that one loop first, with the one question the other loop asks: does the Verifier actually check what is asked for."
+
+What. kullback/synth/tasks.py `born_tasks(workdir, store_dir, limit=None)`: every scenario of the store with status
+passed, source kind recordings, a non empty binding and an empty requires, in id order, up to limit, becomes one Task
+and one recording in the Environment's workdir; a scenario whose Task exists is skipped. The Task's id is "task_"
+and the first 12 hex of the sha256 of the scenario id, its run_ids the one recording, unguarded, no anchor; the
+Task record is plain, with no field of its own (kullback/runner stays frozen). The recording names the scenario:
+"sc-" and the same 12 hex, source "scenario", raw_hash and both pointers' file_hash the scenario id, section
+"scenario", one user turn whose content is the scenario statement and nothing else, no agent turn, no tool call.
+`scenario_of(workdir, task_id)` reads it back: the scenario id when every recording of the Task has source
+"scenario", else None. The Task is written under tasks/ and appended to tasks.json in its own shape; the recording
+under traces/<trace id>.json. Where build.json holds a Task sample, the born ids are appended to it, so the tiers,
+which read only the sample, see them. The binding
+and the policy lines are copied nowhere: the miner, the writer, the review rounds and the Examiner run unchanged over
+the one turn and read the world themselves. `kullback synth tasks <workdir> --store <scenario workdir> [--limit N]`
+prints the counts (candidates, born, skipped_existing, ids) as one JSON line.
+
+Trust. spec/trust.py intent_tiers gives a Task for which scenario_of names a scenario the tier "synthetic", whatever
+its gates say, with the row kept and the scenario id on it: by the synthetic principles of 2026-10-11 such a Task has
+no Reference and is never tested against a valid Run, so it never counts in trusted. "synthetic" is kept out of TIERS,
+the build table's columns; spec/report.py counts a tier outside them instead of failing on it.
+
+What it does not do: no Reference, no Run, no fidelity number for these Tasks; the Examiner's rulings are the only
+check and the hand audit the only check of the Examiner. The one turn in the third person is not a conversation, so
+the miner and the coherence check see less than on a recording. Nothing ran on a model.
+
+Tests: tests/synth/test_tasks.py (only passed, bound scenarios of the recordings with nothing required bear Tasks;
+the Task and recording read back through task_of and recordings_of with one user turn holding the statement; a
+second call skips what exists; the limit holds; scenario_of names the scenario of a born Task and None for another;
+the born ids join a build sample and the tiers call the born Task synthetic; no sample, no build file),
+tests/spec/test_trust.py (a Task whose recording is a scenario's is tiered synthetic and never trusted, an ordinary
+Task unchanged).
+
+### D390. A born Task's Starting state is the shared world: an empty overlay (2026-10-17)
+
+What. kullback/synth/tasks.py born_tasks writes, for every born Task, overlays/<task id>.json in the shape every
+recorded Task's overlay has: {"overlay": {"task_id", "rows": [], "steps": []}, "values": {}, "runs": {},
+"reference_run_id": ""}, through write_json (synth is read by spec/trust.py, so it does not import the Builder's
+writer). A Task that already exists but lacks its overlay gets one on the next call, so a rerun of
+`kullback synth tasks` repairs Tasks born before this row; an overlay that exists is never rewritten. The counts gain
+"overlays_written".
+
+Why. The first live loop check failed in the Spec stage on every born Task: the writer reads the Starting state
+through env.overlay like every recorded Task, and load_overlay raises where no overlay file exists. A scenario is
+bound to rows that exist in db.json, so nothing needs pinning; the empty overlay says the Starting state is the
+shared world as it stands.
+
+What it does not do: no row is pinned, no step, no Run layer; kullback/runner is unchanged (frozen). Nothing ran on
+a model.
+
+Tests: tests/synth/test_tasks.py (a born Task's overlay loads through load_overlay with no rows, no steps and empty
+values; a second call writes the overlay a born Task lacks and skips the Task).
+
+### D391. The 100 again and the 253 on the gate and stray head: FAIL on the stray bar only (2026-10-17)
+
+On e04c3eaf (D384 to D388) the 100 hold five of six pre-registered bars (wrong 4 of 90, right 66 of 90, trusted 35
+with 1 wrong against the trace, 1.15 USD per Task) and fail the stray filter (2 of the 6 named set aside
+intent_strayed). Out of sample the 253 trust 83, with 6 of 48 labelled wrong and 2 of 24 trusted wrong; 412.72 USD for
+all 353. With every Verifier labelled, 21 of 319 are wrong against the trace (6.6 percent, 4.3 to 9.9), 5 of 118
+trusted (4.2 percent, 1.8 to 9.5); right 192, partial 106; 34 Tasks end with no Verifier. D387 alone leaves no base on
+7 of 18 no_base Tasks of the 100 and 24 of 59 of the 253, nearly all on gated whole-field lists. Report:
+.claude/herdr/run-1017/run-report.md.
+
+### D392. Two gated called items on one tool with different args are a contradiction (2026-10-17)
+What: kullback/spec/items.py contradictions now reports the second of two gated called items that name the same
+tool with differing args: "called <tool> with other args beside <first id>; gate the end state row instead, or one
+called item with one_of". The reason reaches the Spec writer by the existing send-back turn (writer._clash_rows and
+FOLLOWUP_PROMPT) and, if left, counts["unsatisfiable"]; writer.py is unchanged.
+
+Why: the Verdict exact-matches a called target, so such a pair holds only for a Run that calls the tool once per
+arg set. In the first loop check the writer wrote one called item per row the user named; it meant the end state of
+those rows, which row_is items check.
+
+What it does not do: no alt on called items, no change to the Verdict (kullback/runner is unchanged, frozen). Items
+without args, items on different tools, ungated items and two items with equal args are not contradictions.
+
+Tests: tests/spec/test_items.py (the new case fires on the second item; the four non cases report nothing; the
+existing not_called and cell cases still fire).
+
+### D393. A scenario carries the user's words and the expected end apart (2026-10-17)
+
+What. write_scenario takes two more fields, ask (what the customer says to open the conversation, first person,
+their own words, never what the agent will do and never the outcome) and end (what a correct agent leaves the world
+and the customer with, third person: the rows changed and their values, or nothing changed and why, quoting the
+policy line). rewrite_scenario may carry both, leaving either out keeps it. Both are stored on the Scenario and
+list_scenarios shows them beside the statement; the fix listing shows them too. The statement stays as it was, since
+the fold and the review compare it. A leak check in code, at write and rewrite (generate_tools.pair_refusal), refuses
+an ask and an end that share a sentence (sentences compared through generate.canonical), a tool name in the ask or the
+end (the statement's tool name check), and one of the pair without the other; each has its own reason
+(ask_shares_end, tool_name_in_ask, tool_name_in_end, ask_without_end, end_without_ask), counted in dropped like every
+refusal. Both empty stays allowed, so older records and older sessions keep working. RULE, the write_scenario and
+rewrite_scenario examples, one ask and one end per example shape over placeholders, and the feedback section say it.
+The report prints how many scenarios carry an ask and an end.
+
+Why. The statement says what happens including how it ends, and a born Task made it the single user turn, so the
+model under test was told the resolution; other statements left the end open, so no Verifier could be derived
+(live2 audit finding 3).
+
+What it does not do: ask and end do not reach the Spec writer here; the born Task's user turn becomes the ask in the
+tasks.py Worker's change, not in this one. No model judges a leak, only sentences equal after canonical; a paraphrase
+of the end inside the ask passes.
+
+Tests: tests/synth/test_generate.py (each of the five pair refusals; a shared sentence refused and dropped on the
+second write and counted; ask and end stored, listed beside the statement, read back from the store and kept by a
+rewrite; the report line of scenarios with an ask and an end).
+
+### D394. Items a session left unwritten are retried in halves (2026-10-17)
+
+What. generate._batched runs the batched pass of one source, then once more over the items still unwritten in
+batches of half the size, at least RETRY_MIN = 4. For the recordings source the unwritten items are situation_items
+again, which now also counts what this generation already wrote; for the typed lines, the items no session grouped.
+A session whose answer ended empty or on its cap left its items unwritten, so they are in that set by construction.
+generated.json gains "retried": {"<source>": {"items": n, "written": m}}, a retry batch's ungrouped row carries
+"retry": true, and the report prints per source the retried items and what the second pass wrote. BATCH stays 25:
+the one failed batch of the last run had 25 items and the next of 14 wrote 34, too little to measure a better size,
+and the halved retry covers the failure.
+
+Why. The first airline batch of the last live run did 201 lookups, hit the output cap on one answer and then answered
+with an empty turn, which the stop rule read as done: 0 scenarios from 25 situations (53 variants).
+
+What it does not do: one retry pass only, never a third; no retry for the search session (it has no items); the stop
+rule and the empty answer handling of the harness are unchanged. An item dropped after two refusals in the first pass
+is unwritten, so it gets one more session.
+
+Tests: tests/synth/test_generate.py (eight lines left unwritten run again in two sessions of four and the count holds
+items and written; a recordings retry lists only the situations the first pass left; no second pass when every item is
+written; the report line per source).
+
+### D395. A born Task's recording carries the Environment's shared agent prompt (2026-10-17)
+
+What. kullback/synth/tasks.py recording_of sets the recording's system_prompt to the prompt most recordings of the
+workdir carry (shared_prompt: distinct texts counted over intent_tools.trace_index, the most frequent taken; none
+when no recording carries one). The user turn is the scenario's ask where it has one, else its statement (older
+scenarios; the Scenario field ask is D393's, empty by default on every stored scenario). born_tasks
+also repairs: a Task that already exists whose recording lacks a prompt gets the prompt written into it, the turn
+kept. The counts gain "prompts_written", the recordings written with a prompt, new or repaired.
+
+Why. The Spec writer and the Examiner read the policy off a Task's recording like every recorded Task does
+(env.system_prompt, then env/policy.md, which a work copy does not ship). A born recording had no prompt, so the
+writer said "no recorded agent policy found", the Examiner's policy file said "no policy recorded", and refusal
+scenarios got Verifiers that gate the forbidden action (airline 8 of 17 wrong in the first loop check). The
+recordings of an Environment share one prompt (retail 387 of 400, airline 200 of 217).
+
+What it does not do: no change under kullback/runner (frozen), no policy file written, no prompt invented; a
+workdir whose recordings carry none gives born recordings none.
+
+Tests: tests/synth/test_tasks.py (a born recording carries the prompt most recordings share, the majority winning
+over a second prompt; no prompt when no recording has one; the user turn is the ask when set, else the statement; a
+rerun writes the prompt into a born recording that lacks it, counts it, and a third call writes nothing).
+
+### D396. A gated not_called beside a gated called, and a repeated gated event item, are contradictions (2026-10-17)
+What: kullback/spec/items.py _gated_call_clashes, called from contradictions beside D392's check, reports a gated
+not_called item whose args are none or a subset of a gated called item's args on the same tool ("gated not_called
+<tool> beside gated called <id>; keep the one the ask calls for"), and a gated called or not_called item that
+repeats an earlier one's kind, tool and args ("<kind> <tool> repeats <first id> with the same args; remove this
+one"). An item the older not_called check already names is not named twice.
+
+Why: the measurement of born Verifiers found gated "is called" and "is not called" atoms on one tool, which no Run
+can pass, and the blind judge named contradictory or duplicated checks as the commonest tell of a synthetic
+Verifier. A not_called fails on any call carrying its args, so a subset of the called args is enough to clash; a
+not_called with other args only forbids those and stands.
+
+Also: a called or not_called atom's description names its args ("<tool> is called with <key> <value>, ..."; no
+args reads as before), since the three born Verifiers the measurement named were satisfiable and only read as
+contradictory because the description left the args out.
+
+What it does not do: no change to the Verdict or the writer; ungated items are not checked. D392's note that two
+items with equal args are not a contradiction is superseded: they are now reported as a repeat.
+
+Tests: tests/spec/test_items.py (the clash fires and nothing else does; a not_called with other args passes; a
+repeated pair is reported once on the second item; D392's equal args case now reports the repeat; a called
+description names its args and a not_called without args reads as before).
+
+### D397. A cut answer is not done, and an answer with items unwritten is not final (2026-10-17)
+
+What. kullback/agent/loop.py: a turn the provider cut at the output cap (stop reason length) that called no tool is
+not a stop. The loop appends once per run CUT_TURN_ASK, one line beside EMPTY_TURN_ASK naming no artifact: continue
+with fewer calls per turn and act on each item as soon as what it needs is looked up. A second cut turn ends the run.
+LoopState gains `unfinished` (Callable[[], str], default none), also an AgentHarness keyword: asked only when the run
+would otherwise end (no tool call, nothing pending, no follow up); a non empty line is appended as a user message, at
+most UNFINISHED_ASKS = 2 times per run, then the run ends. The loop knows no items; the line is the caller's.
+kullback/synth/generate_tools.run gives a session with items the hook: the numbers of the items no scenario grouped
+(for the plan session, no situation holds and none skipped), as "items n, m are not written and not skipped", then
+"skip it with skip_opening and its reason" where the session holds the skip tool, else "say in one line why each
+cannot be written". The choice rule gains one sentence: write each scenario as soon as its rows are looked up; never
+look everything up first.
+
+Why. In the live airline regeneration of 2026-10-17 failed sessions spent 20 to 40 turns on 117 to 168 lookups, one
+answer hit the output cap with no tool call, and the next answer was a summary saying nothing was written yet, which
+the loop read as done: 0 scenarios from 25 items. D394's retry pass patches the symptom; this stops the loop reading
+a cut or unfinished answer as the end.
+
+What it does not do: no change to the stop rule, the turn caps or the retry pass; a cut turn that made tool calls is
+run as before; no resume of a cut tool call. The complex route (count lookups per item and force a write after k)
+would buy an earlier nudge at the price of a per role policy in the loop.
+
+Tests: tests/agent/test_loop.py (a cut turn is asked once and a second cut ends the run; a cut then an answer ends on
+the answer; the unfinished hook is asked only when the run would end, at most twice, and its line reaches the model;
+an empty line lets the run end), tests/synth/test_generate.py (the hook names the unwritten item numbers; the plan
+session names the skip tool; no items gives no line; the choice rule holds the sentence), and the retry tests now
+script the two asks.
+
+### D398. A gaps pass asks for the cells and policy lines no scenario covers (2026-10-17)
+
+What. generate.from_gaps runs last in generate(), after the recordings, the search and the typed lines. Its items
+come by code from gap_items: one per cell of (situation kind of the plan, table of the world) that no kept scenario
+of the store or this generation hits ("a <kind> situation bound to a <table> row"), then one per policy line no kept
+scenario quotes ("a situation where this policy line decides: <line>"), GAP_PER = 1 scenario each. A policy line is
+a line of the policy with its list marks stripped, leaving out headings, labels ending in a colon and lines under
+LINE_WORDS = 5 words; a quote covers a line when either holds the other. The items go through _batched, so D394's
+retry applies, with the same write tools, refusals and ceiling; the source kind is "gaps", one number per write as
+for typed lines, and Source.gap keeps the gap filled (what, kind, table or line). A cell's situation kind comes from
+the item, a policy line's from the write's new optional kind field, refused as kind_not_in_plan unless it is one
+of the plan's kinds (the refusal and the gaps opening name them); spread reads a gap scenario's kind from it. A gaps
+write needs its ask and its end: one alone is refused with D393's reasons, both empty as ask_and_end_missing; the
+other sources stay as D393 left them.
+generated.json gains "gaps": {"items", "before", "after"} with the cells hit and the policy lines covered over the
+whole store before and after the pass, and the report prints them. The scenarios verb gains --source, repeatable,
+to run only the sources named; without the recordings no plan session runs and the plan on disk is read.
+
+Why. The recordings source mirrors the recorded mix: the airline store hit 15 of 30 cells and kinds ran change 24,
+booking 6, complaint 5, cancel 2, question 2, refusal 1. A thousand Tasks at that mix are a thousand changes to
+existing bookings. Papers rule 4 (docs/papers.md, the diversity reading): compose from atoms and ask for the atoms not
+yet used.
+
+What it does not do: no new tool; no check that a cell scenario binds the cell's table or that a line scenario quotes
+its line, so cells and lines after the pass are measured, not forced. The kinds of the cells are the plan's kinds,
+so the cells possible stay the plan's kinds by the world's tables. A table with no rows gives no cell, in the
+cells possible and in the gap items alike (cell_tables), since a cell no row can ever fill is no gap.
+
+Tests: tests/synth/test_generate.py (policy lines leave out headings, labels and short lines; gap items are the unhit
+cells and the unquoted lines and a kept scenario removes its own; the pass writes through the same tools, its
+refusals count and its before and after move; a kind outside the plan is refused naming the kinds; a missing ask,
+end or both is refused; a table with no rows gives no cell and no gap item; no pass without a model; --source gaps
+reads the plan on disk; the report lines).
+
+### D399. Harbor publish of every Task with a Verifier, its Spec tier and a rater's label (2026-10-17)
+
+What. `kullback publish --format harbor` and `kullback export --format harbor` take `--tasks verified` beside
+trusted (the default, unchanged) and all (unchanged): every frozen recorded Task with a Verifier on disk, trusted or
+not; a Task with no Verifier is left out as "no Verifier" and one of the synthetic tier as "synthetic", both counted
+in the manifest's skipped. A Task the tier report rules no_verifier is "no Verifier" too, though the Spec left a draft
+Verifier file on disk when it set the Task aside (the first airline dry run shipped 2 such drafts). Every recorded Task's task.toml metadata gains spec_tier and spec_tier_reason, read off the
+tier report: the workdir's tiers.json, or the files `--tiers` names (repeatable, later wins; tiers.json's rows or a
+"tasks" map from id to row). `--labels` (repeatable, later wins) reads JSON lists of rater rows keyed by task and adds
+label, label_matches_gold and label_gold_diff; a Task no row names is "unlabelled". A key matches a Task id exactly or
+as the end of exactly one id, since reports mask ids; a key that names no single Task is counted unmatched. The Harbor
+manifest says the Task set (tasks_chosen), counts Tasks by tier cell (trusted, else the untrusted reason) and label,
+and records the tier and label files, rows and unmatched counts and the rubric (`--labels-rubric`). The card's Harbor
+section names the Task set and what was left out, carries the tier by label table and says that a label is one blind
+model rater's judgement under the named rubric.
+
+Leaks (D221 unchanged in rule). The scan also covers a rater's words in the metadata (part "label"). Every leaking
+part is reported by Task, masked, part (instruction, Verifier, oracle, label) and count, in the manifest and in the
+refusal, never the strings. A Task whose only leaking part is its oracle (solution/) is left out as "solution leaks"
+and listed masked in the manifest's left_out and on the card (founder 2026-10-17, proposed and reversible before any
+upload); a leak in any other part still refuses the dataset.
+
+Cards. `publish --announcement FILE` puts the publisher's words on the Environment card as a News section, and
+organisation_card takes the same text, so neither carries hard-coded news.
+
+No oracle. Under `verified` and `all` a Task none of whose Runs replays to a pass through the exported world is
+exported with no solution/, has_oracle = false and no_oracle_reason in task.toml, counted as counts.no_oracle and
+listed masked under no_oracle (not left_out); every other Task carries has_oracle = true. The leak scan has no
+oracle part for such a Task. The card says how many ship without solution/ and that Harbor's oracle agent cannot run
+on them. Under `trusted` such a Task is still left out (decided 2026-10-17: the founder asked for every Task with a
+Verifier, right, partial and wrong alike).
+
+Reuse. `kullback publish --from-staged DIR` takes the package a dry run laid out, verifies it against its manifest
+(refusing with the first mismatch), copies it without harbor/, the card or hidden files, and does what stage() does
+after the package step: the Harbor export, manifest["harbor"], the card. A dry run's hour of package export is not
+repeated to change the Harbor form or the card.
+
+What it does not do: tiers are read, never recomputed (a tier run costs model calls and hours); a label is one model
+rater's judgement, not ground truth; nothing was uploaded. Acceptance: dry runs on the merged retail and airline
+workdirs, report .claude/herdr/publish-1017/verified-report.md.
+
+Tests: tests/hub/test_harbor.py (verified exports an untrusted Task with a Verifier and leaves out one without, and
+one of the synthetic tier; tier and reason off tiers.json, not_recorded without a row, a named tier file with masked
+keys; labels by masked key with the later file winning, unlabelled, an ambiguous key unmatched, a label file that is
+not a list refused; a leak named by masked Task, part and count; a rater's words repeating a recording refuse; an
+oracle-only leak leaves the Task out and lists it, an oracle plus another part still refuses; the card's Task set,
+tier by label table and rubric sentence; News on the Environment and organisation cards; a Task no Run passes for
+ships without solution/ marked has_oracle false, counted and listed under no_oracle, still left out under trusted,
+no oracle part scanned, and the card's line on it; a Task ruled no_verifier ships no draft; publishing from a staged
+package gives the manifest a plain stage gives, and a tampered staged file is refused by name).
+
+A release replaces the repository (r4): HuggingFaceHub.upload_folder passes delete_patterns "*", so files an
+older release left and this one lacks leave in the same commit (the Hub keeps .gitattributes); older builds stay
+reachable by their tags. LocalHub empties the target before a dry run lays it out, the same behaviour. Found before
+the airline upload: 399 build-20260924 paths would have stayed on main. Tests in tests/hub/test_publish.py.
+
+### D400. The item judge's cap fits a reasoning model, one retry, an outage is not a no (2026-10-17)
+What: kullback/judge/items.py judge_item asks at max_tokens JUDGE_TOKENS 4000 instead of 200, and on a reply that
+is empty or cut (stop reason max_tokens or length, or no JSON object in it) asks once more at RETRY_TOKENS 16000. The
+system prompt says to answer with the JSON object first, nothing before it. JudgeScore gains status ("answered",
+"unreadable", "outage"; empty when code scored the item), stop_reason of the last call and retries; cost adds both
+calls. A failed call, or an empty reply after the retry, is status "outage". tally counts outages.
+ITEM_JUDGE_VERSION 2. kullback/hub/harbor_world.py writes status, stop_reason and retries into judge.json. First written
+as D395 on the publish branch; renumbered D400 when it merged after the fold's D393 to D398.
+
+Why: in the bench-1017 smoke the Harbor oracle on one airline Task scored 0 twice because gated item j1 came back as
+an empty reply. Reproduced outside Docker: at 200 tokens the model's only content block was thinking (stop reason
+max_tokens, 200 out); at 4000 it answered in 101 tokens. The adapter always sends adaptive thinking to this model and
+it cannot be turned off, so the cap must hold the thinking and the answer. With 68 of 73 staged airline Tasks holding
+judged items, a judge that comes back empty makes the dataset measure the judge, not the agent.
+
+What it does not do: an outage still leaves the item unscored, so a gated item still fails closed; the change only
+makes an outage visible beside a no. No change to evidence building, the Verdict or kullback/runner (frozen).
+
+Tests: tests/runner/test_judge_items.py (a cut reply is asked once more at the larger cap and parses; an empty reply
+after the retry is an outage, unscored and tallied; an answer on the first call is not retried and records its stop
+reason; the judge is told to answer with the JSON first).
+
+### D401. A publish rules the Task index once and lays its Tasks on a process pool (2026-10-17)
+
+What. kullback/processes.py `each(items, fn, workers)` runs a module-level function over items on a spawn process
+pool and answers the results in the items' order; one worker or one item is a plain loop in this process, and the
+default is every core but two. `spec.trust.intent_tiers` scores the Tasks with a Verifier on it (`workers` defaults to
+1, so builds, rounds and status are unchanged); `status_of`, `trusted_ids`, `task_index`, `package.export`,
+`export_harbor`, `stage` and `publish` pass `workers` on. `stage` rules the Task index once and hands it to both
+exports, which used to rule it twice. In `export_harbor` what needs the shared Environment and Runs is read in the
+parent (`_job`), and laying a Task, its oracle replay and its scan row run in a worker off that one Task's input
+(`_export_one`). `kullback export` and `kullback publish` take `--workers` (1 is serial; default cores - 2).
+
+Why. A publish dry run took about 50 minutes on 130 Tasks and 85 on 223 (founder: launch and benchmark often, so a
+publish must take minutes). Measured, not assumed: the leak scans take under a second; the trust ruling (scoring every
+Run of every Task, in kullback/runner, frozen) and the oracle replay are the cost. On ten airline Tasks the unchanged
+code took 196 s (ruling 80 + 77 s, oracle replay 34 s), this code 100 s serial and 47 s on six workers.
+
+What it does not do: no scan is weakened (the same strings against the same baseline; a leak still refuses), no
+runner code changes, nothing is cached across publishes. The output is byte-identical whatever the count: on the
+ten-Task input the package and Harbor content hashes of the serial and pooled runs are equal, and every file equals
+the unchanged code's but the kullback wheel, which carries the code. Report .claude/herdr/speed-1017/speed-report.md.
+
+Tests: tests/test_processes.py (items' order, one worker in this process, several in others, a worker's exception
+reaches the caller, the default count); tests/spec/test_trust.py (pooled tiers equal serial tiers); tests/hub/
+test_harbor.py (the pooled dataset is byte-identical to the serial one, a recorded turn still refuses under the
+pool, --workers reaches the pool on export and on publish).
+
+Correction (founder, 2026-10-18): the default is the smaller of cores minus 2 and 4, not cores minus 2 (8 on a 10-core
+laptop), because a publish worker peaks above a gigabyte and the 16 GB laptop crashed twice above six to eight
+drivers; --workers still asks for more where memory allows (tests/test_processes.py, the default never exceeds 4).
+
+### D402. An Environment card is a short page, with no trust numbers on it (2026-10-18)
+
+What. kullback/hub/card.py renders an Environment card in six parts: a one-line summary with its status (release or
+preview and the fidelity over Tasks that decides it), Use it (fetch, run, verdict, report, then the Harbor commands),
+What is inside (how many Tasks and tools, and one Task's first ask quoted), Known issues (one dated list: some Tasks
+can be wrong, Tasks that did not pass every check are not graded, the Tasks with no `solution/`), How it was built
+(three sentences and the Built line: tag, git sha, time, content hash) and Licence. No trusted count, untrusted
+reasons, gate names, tier or label table, leak scan, call or Run fidelity appears on a card; they stay in
+manifest.json, tasks_index.json and harbor/manifest.json. `package.inside` reads the tool count and the example ask
+off the laid package, and `stage` records them as the manifest's `inside`. The organisation card is a mission
+sentence, the Environments table (Environment, Status, Tasks, Harbor Tasks, Tag), Use it, five Terms (Environment,
+Task, Run, Verifier, release and preview), Known issues and Links. `publish --announcement` is removed and neither
+card carries News.
+
+Why. Founder, 2026-10-18, on the retail card: the tier table, the reason strings and the audit details "are not
+needed"; "simple documentation like what is this about, what did we do, how do you use this and why should you care",
+and "a disclaimer should be added that some of the tasks can be wrong". Then: no trusted count on either card, and
+the Words section "simplify this as well, see how other RL environments are released". The release survey
+(.claude/herdr/publish-1017/release-survey-report.md) found that almost no release defines a vocabulary, none shows
+a trust statistic, and use comes first; the section order and the five Terms are taken from it.
+
+Tests: tests/hub/test_publish.py and tests/hub/test_harbor.py (section order on both cards, the disclaimer once,
+no gate or trust word and no audit number on a card, what is inside counts tools and quotes one ask, the Known
+issues lines, the organisation table and Terms, no News).
+
+### D403. The package ships the ask the Harbor form ships, from the Spec Intent (2026-10-18)
+
+What. The defect: every `tasks/<id>.json` in the published airline and retail packages carried `intent: null`, and
+every `instruction` in tasks.jsonl was empty (0 of 130, 0 of 223), because the package export copied the ask from
+`intents/<task>.json`, which Spec builds no longer write, while the Harbor form took it from the Spec Intent. A fetched
+package and the dataset viewer had no ask per Task; harbor/*/instruction.md had it. The fix: kullback/hub/package.py
+`task_ask(workdir, task_id, record)` is the one source of a Task's ask, used by both exports: the facts the user
+volunteered in the Spec Intent as one message (`FACTS_LEAD` and one line each), else the Task record's own Intent
+text, else an older build's mined Intent. `asked_facts`, `opening` and `FACTS_LEAD` moved from harbor.py to
+package.py so the two forms cannot disagree. A Task with no ask ships `intent: ""` and the manifest counts it as
+`without_ask`. The Harbor form gains the mined-Intent fallback, which no Spec build reaches.
+
+Why. Founder, 2026-10-18: "fix the defect". The ask is the one thing a candidate is given; a package without it
+cannot be run as published, and the two forms of one Task must say the same thing.
+
+Tests: tests/hub/test_harbor.py (the package ships the same ask as the Harbor instruction for a Task with a Spec
+Intent; a Task with neither a Spec Intent nor Intent text ships an empty ask and the manifest counts it).
+
+### D404. A fetched package runs as the card says: it ships the policy, and environment.json is optional (2026-10-18)
+
+What. The defect: `kullback fetch` of a published package printed "this package cannot be run as a workdir: it is
+missing environment.json, env/policy.md". Reproduced on a fetch-shaped copy of the staged airline package:
+`kullback run` did not refuse (it loads both files only where they exist), but the Candidate then ran with no policy,
+because a package carries no Traces and the build wrote no env/policy.md; the recorded agent's system prompt was the
+policy every build Run was given. Neither source workdir holds environment.json or env/policy.md. The fix:
+kullback/hub/package.py `environment_policy(workdir, task_ids)` writes `env/policy.md` into the package, the
+workdir's own file where there is one, else the recorded system prompt read the way a Run reads it, when every listed
+Task ran under the same one (one text per Environment in both builds, the text the Harbor form already ships as
+env/policy.md in every Task folder). Tasks recorded under different prompts get no file and the fetch names it.
+kullback/hub/publish.py `RUN_INPUTS` drops environment.json: run, verdict and report read it only where it exists,
+and a build need not write one.
+
+Why. .claude/herdr/publish-1017/package-r11.md: the docs Worker ran the card's own commands and the fetch said the
+package cannot run. A package that runs without its policy is a different Environment from the one that was built.
+
+Tests: tests/hub/test_publish.py (a packaged workdir passes the workdir check when the build wrote no policy file or
+environment.json; Tasks recorded under different prompts ship no policy and the fetch names it missing).
+
+### D405. A judge outage leaves a Harbor trial unscored, never a pass or a fail (2026-10-18)
+
+What. The defect: in the shipped Harbor test step a judge item with no answer was masked out of the weights when it
+was not gated (items.json noted judge_item:<id>:unjudged and score_masked), so a trial's reward rose from 0.857 to
+1.0 when the judge was unreachable, and failed closed to 0 when it was gated. The fix, kullback/hub/harbor_world.py:
+after the judge's own retry (D400), a judge item whose status is not answered (outage, unreadable, not_configured
+when KULLBACK_JUDGE_MODEL is unset, not_started when the judge cannot start) makes the trial unscored. No
+reward.txt, a reward.json of `{"reward": "unscored: judge <item> <status>"}`, items.json with each item and its
+judge status and the score it would have had, and `verify` exits UNSCORED_EXIT (3). The shipped test.sh keeps that
+exit and those files; any other failure still writes 0. Harbor ignores the test step's exit code and refuses a
+non-numeric reward with VerifierOutputParseError, whose message quotes the reason, so the trial lands with
+exception_info and no verifier_result. Items scored by code and answered judge items score as before.
+
+Why. .claude/herdr/publish-1017/package-r11.md: the bench Worker found the masked reward. For a benchmark an
+unjudged item says nothing about the agent: neither a pass nor a fail may be counted.
+
+Tests: tests/hub/test_harbor.py (an outage on a gated item and on a weighted item leaves the trial unscored; no judge
+named and a judge that cannot start do the same; an answered weighted item scores as before; an unscored trial exits
+with its own code and the test step keeps its reward.json).
+
+### D406. A Run written by `run` is scored by `verdict` (2026-10-18)
+
+What. The defect, found by the r11 proof Run on a package fetched from the Hub: `kullback run` writes
+runs/<task>-<seed>.jsonl straight into runs/ (kullback/runner/tool.py, frozen), while `kullback verdict` read only
+runs/<task>/*.jsonl, so `verdict` said "no stored Runs" right after a successful `run`. The fix, kullback/cli.py:
+`task_run_files(workdir, task_id)` lists a Task's Run files from both layouts, runs/<task>/*.jsonl and
+runs/<task>-<seed>.jsonl with a seed of digits only, so a sibling Task whose id is this one, a dash and more is never
+read as this Task's; `verdict` reads through it. Nothing else in scoring changes. The report already read every
+JSONL under runs/, so it lists the Run; its Task coverage is D96's replay coverage of recorded Traces, which a package
+does not carry, and stays as it was. Both cards' `verdict` line names `--judge-model provider/model` and says that
+without it a Task's judge items stay unjudged and its Run gets no score.
+
+Why. .claude/herdr/publish-1017/fix-r12.md: the card's three commands must work end to end on a fetched package.
+
+Tests: tests/test_cli.py (a Run written by the run command is scored by verdict and read by report);
+tests/hub/test_publish.py (a Task's Run files never include a sibling Task whose id extends it).
+
+### D407. environment.json exists everywhere, and a refused Verdict leaves nothing on disk (2026-10-18)
+
+Number collision: the synth stream also claimed D406 and D407 at its rebase; the fold renumbers one of the two.
+
+What. No build wrote environment.json (kullback/builder/compile_env.py `build_environment` has no caller), so every
+Verdict carried env_id, schema_version, tools_version and policy_version as null, and the regrade gate (D97, frozen)
+refused every `kullback verdict` in a build workdir and in a fetched package alike. `environment_record` in
+kullback/hub/package.py now derives the record from the shipped files: schema_version, tools_version and policy_version
+are the sha256 of schema.json, tool_sigs.json and the policy text a package ships as env/policy.md (the same hash the
+manifest keeps per file), and env_id hashes the three. A record that already names all four is kept. `verdict` calls
+it before scoring, which is where the build's own Verdicts are written, and `package` calls it on the laid-out copy, so
+a build workdir and its fetched package carry the same values. environment.json joins the run inputs a fetch checks.
+`verdict` now scores once with nothing written, runs the gate, and writes the Verdict files and scored_with.jsonl only
+when the gate passes, so a refusal writes nothing. The report keeps D96's coverage line and adds beside it
+"Candidate Runs scored: N of T Tasks", the Tasks with at least one counted Candidate Verdict.
+
+Why D97's intent holds. From now on D97's versions are content-derived, not named by the Builder. D97 asks
+that a Verdict is regraded only against the same Environment it was made under. A content hash of the shipped schema,
+tool signatures and policy changes exactly when one of those files changes, so a stored Verdict is reused only while
+the files it was scored against are byte for byte the same, and is rescored otherwise. A hand-named version could
+drift from the files; a content hash cannot.
+
+Why. .claude/herdr/publish-1017/fix-r13.md, the founder's decision on the fix-r12 options (a with c, plus the report
+line): the card's run, verdict and report commands must work end to end on a fetched package.
+
+Tests: tests/hub/test_publish.py (a package fetched from a staged publish scores a Candidate Run and counts it in the
+report; a Verdict the regrade gate refuses leaves no file behind; a build with no policy file or environment.json
+ships both).
+
+### D408. A judge item with no evidence to read is answered 0, not left unstarted (2026-10-18)
+
+Number collision: the synth stream also claimed numbers from D406 at its rebase; the fold renumbers.
+
+What. When a Run has no assistant text for the turns a judge item names, the judge scores it 0 by code without a
+call (D328). That shortcut left the item's status empty, and harbor_world's judge_statuses reads an empty status as
+not_started, so since D405 such a trial ended unscored instead of failing the item. The benchmark hit it on 6 of
+its first 24 trials. kullback/judge/items.py now gives the shortcut the status answered, with why "no evidence".
+The Verdict already scored it 0, and harbor_world now does too; judge_statuses is unchanged, so a real outage
+still leaves the trial unscored.
+
+Why. .claude/herdr/publish-1017/fix-r14.md: a Run that says nothing gave the judge its answer, and an answer is a number.
+
+Tests: tests/hub/test_harbor.py (a judge item on a Run with no assistant turn is answered 0 and the trial gets a number).
+
+### D409. A Harbor tool call is checked against its tool's spec before it is made (2026-10-18)
+
+Number collision: the synth stream also claimed numbers from D406 at its rebase; the fold renumbers.
+
+What. kullback/hub/harbor_world.py `call` checked only a tool's name. An agent that called reply_to_user over the shell
+`tools` command with {"message": ...} instead of {"text": ...} was answered with the consent line, the call was logged,
+and `play` read the missing `text` as an empty assistant turn, so a reply the agent sent never reached the Run the
+Verifier reads. Found in the benchmark (fix-r14): 9 of 65 Claude Code trials, all through the shell path, every
+reply under `message`. Now `argument_error` checks each call against its tool's spec, the Task's tools and reply_to_user
+alike: a required parameter left out or a parameter the spec does not name is refused with an error that names the
+parameters the tool takes, the call is not logged and nobody answers it. The shell `tools` command and the MCP server
+both enter through `call`, so both see it. No alias for any name.
+
+Why. .claude/herdr/publish-1017/fix-r16.md: one general rule, so an agent learns the right name from the error instead
+of being graded on a turn it never knew was lost.
+
+Tests: tests/hub/test_harbor.py (a reply under an unknown parameter name is refused naming the expected ones and leaves
+no turn; a Task tool called without a required parameter is refused the same way over MCP, and the correct call then goes
+through and is logged).
+
+### D410. Situations from the web, and a target count of scenarios per store (2026-10-18)
+
+What. A plan session of a second kind, plan_search (generate.plan_search), holds list_plan, the shared web tools and
+its own write_situation: a statement, a kind and the URL and span of a page it read. The situation lands in the plan
+with no openings and no variants, its span kept under "source" in the Source shape a search scenario carries (URL,
+cache key, byte range) and the span text beside it; the plan is written to disk after every session, so a later run
+reads it like the rest. The write is refused for a page never read, a span the page does not hold, a kind the plan
+does not hold (naming the kinds), and a statement at NEAR_REPEAT (ROUGE-L 0.7) or over against any situation of the
+plan (near_repeat, naming the holder). Its opening asks for a count, at most PLAN_SEARCH_BATCH = 25 per session,
+and lists the plan's kinds with their situation counts, fewest first, naming the THIN = 3 thinnest; sessions run
+until the count is written or a session writes none. Its turn budget is SEARCH_TURNS plus TURNS_PER_SITUATION = 4
+per situation asked for, under MAX_TURNS.
+The recordings pass treats a search-born situation as any other (same tools, binding, ask and end rules); its item
+lists the page span, and its scenario's source is the situation's span (kind search, frequency 0). The loose search
+pass keeps working, but a search write now names a kind from the plan, refused as kind_not_in_plan as a policy line
+gap's is (D398); Scenario.kind keeps it and spread reads it, so a search scenario no longer counts under "none".
+`kullback synth scenarios --target N`: the one pass as before is round 1; while the store keeps fewer than N, each
+round runs plan_search for ceil((N minus kept) / PER_SITUATION = 3) situations, the recordings pass over the
+situations with no scenario yet, then the gaps pass. Each round's findings are folded and written before the next.
+The rounds stop when the store keeps N ("target"), a round adds under STOP_SHARE = 5 percent of N ("slow"), or the
+ceiling is spent ("ceiling"). generated.json gains target, rounds (situations from the web, born per source, kept)
+and stop, and diversity over the whole store: the median pairwise ROUGE-L of the statements, scenarios per situation
+kind, cells hit of possible and situations per kind of the plan. The report prints one line per round, the stop
+reason and the diversity. Without --target nothing changes but the search kind.
+
+Why. The thousand run kept about 250 scenarios per corpus: the recordings source is bounded by the plan, about three
+scenarios per situation, and the plan's situations came from the recorded openings only. The founder asked for 500
+per corpus, very diverse, with situations from the search as well. Its search scenarios also had no kind, which
+brought a "none" kind into the cells and missed bar 2 on both corpora.
+
+What it does not do: scenarios of search-born situations have source kind search, so bears_task still turns them
+down; whether they should bear Tasks is a separate decision. Nothing forces diversity beyond naming the thin kinds
+and the near repeat gate; the diversity numbers are measured, not targets. No check that a situation fits the
+world's rows beyond the binding of its scenarios. The pairwise ROUGE-L is computed over every pair of the store,
+quadratic in its size.
+
+Tests: tests/synth/test_volume.py (a plan_search session writes situations on a span with no openings into the plan
+on disk; a near repeat is refused naming the holder, a kind outside the plan naming the kinds, an unread page as
+such; the opening asks for the count and names the thinnest kinds; a scenario of a search-born situation carries
+its span; a search scenario takes a kind from the plan and counts under it; --target runs rounds and stops on the
+target and on the 5 percent rule, generated.json holds the rounds; no rounds without a target; the report lines).
+
+### D411. The generator's prompt and refusals from the observation of the live runs (2026-10-18)
+
+What. Seven fixes from the observation of the two live generator runs (synth-1016/observe/report.md), each
+simple. The rule sentence says customers and rows used in earlier sessions may be used again, only this session's
+scenarios need different ones, and list_scenarios marks those with this_session (104 thinking turns hunted the store
+for unused customers). A row search says how many keys match and how many it does not show, and a key a table does
+not hold is answered with the table's key shape and two sample keys (200 misses, 84 cut searches). The rule binds
+the rows that fit whichever customer holds them and writes requires only when a search shows no row fits (32
+infeasible scenarios, all with requires). The id shape rule spares a word that is a value of a bound row outside the
+world's keys, and the refusal names the word that matched (22 refusals, 19 of them on amounts, zips and options). A
+kind sharing its stem with an earlier kind of the plan is refused naming that kind, in the plan session and in
+plan_search (book and booking, 8 situations). The hedge, span and policy line refusals quote the hedging word, the
+nearest line of the page and the nearest policy line, and the review's send back takes a quote from the statement,
+the ask, the end or requires (17 copy slips). The plan_search choice rule writes a situation only where the tool list
+holds an action for it or the policy says to refuse it (4 of 25).
+
+Why. Each pattern was counted in the traces with quoted examples; every fix is a prompt sentence, a refusal message or
+a result shape, none names a corpus, table, field or tool.
+
+What it does not do: a search over several field and value pairs at once stays out, since it is a query surface over
+rows; the count and the key shape are the simple part. No code checks that requires is true (a row search over the
+requires words would enforce it). The stem check is a small ending list and a four letter prefix, so two kinds that
+mean the same thing in different words still pass. The lookup shape lives in the synth world tools only; the Spec
+writer's and the Examiner's lookups keep theirs, so their recorded replays stay valid. review.py was touched for the
+span and quote refusals although the brief did not list it.
+
+Tests: tests/synth/test_gfix.py (list_scenarios marks this session's scenarios and the rule allows reuse; a search
+counts matches and a miss shows the key shape and two samples; the rule asks for requires only when no row fits; the
+id rule spares a bound row's value and names the matched word; a stem twin kind is refused naming the plan's kind in
+both sessions; the hedge word, the nearest page line and the nearest policy line are quoted and a send back may quote
+requires; the plan_search choice rule asks for a tool or a policy refusal).
+
+### D412. The review accepts any checked row the world holds (2026-10-18)
+
+What. feasible yes on rule_scenario takes "row:<table>:<key>" for any row the world's Starting state holds, bound
+to the scenario or not; only a row the world lacks (or a tool it lacks) is refused, naming each such entry and
+pointing to lookup_rows and find_tools. The binding itself is unchanged: one key per table.
+
+Why. The volume run refused 42 rulings (76 row entries) whose checked rows were real but outside the scenario's
+one key binding: the other order, the second reservation, the target flight. The reviewer was right to check them;
+the rule refused them because the binding holds one key per table.
+
+What it does not do: the binding stays one key per table. A binding with several keys per table (complex) would
+bind a scenario naming two orders, or its target row, in full, so the Verifier and the fix session would know those
+rows too; the review's checked rows are not written into the binding.
+
+Tests: tests/synth/test_review.py (a checked row outside the binding that the world holds passes; a checked row the
+world lacks is refused naming it; feasible yes still needs checked entries code finds and no open requires).
+
+### D413. A retry gets the first pass's turns per item, a capped session gets one last turn, a cut call is named (2026-10-18)
+
+What. A retry session (D394) gets at least the turns per item its source's first pass spent, times its own items,
+never the MIN_TURNS floor alone (turns_for, Generation.spent). At the turn cap the loop asks the caller's unfinished
+hook (D397) once more; a non empty line gives the run one last turn, opened by LAST_TURN, so items end written,
+skipped or explained; the next turn past the cap stops the run. On a turn cut at the output cap that called tools,
+the last call is the cut one: it is not run and its result is CUT_CALL ("cut at the output cap: make fewer calls per
+turn"), while the complete calls before it run. CUT_TURN_ASK stays, once per run, for a cut turn with no call.
+
+Why. The observe report (synth-1016/observe/report.md, patterns 4 and 7): 12 sessions ended on the cap, all 8 small
+retries capped on the floor of 12 turns and wrote 4 scenarios between them, and the unfinished ask fired 0 times,
+since every session with items left ended on the cap before the end of run asks. 20 invalid argument refusals all
+sat on cut turns whose last call was cut, often to {}, and read as a bare "Field required".
+
+What it does not do: the last call of a cut turn is taken as cut without parsing it, since the cap falls at the end
+of the output; a provider that drops the cut call would see its last complete call answered as cut. The last turn
+at the cap is one turn, given once per run. The first pass's turns per item is a mean over its sessions.
+
+Tests: tests/agent/test_loop.py (a session at its turn cap gets one last turn carrying the unfinished line; with
+nothing unfinished it stops on the cap; a call cut at the output cap is answered as cut while the complete calls on
+its turn run), tests/synth/test_generate.py (a retry's turn budget follows the turns per item its first pass spent;
+the first pass turns are counted per kind).
+
+### D414. The Spec writer of a born Task gates what its scenario's end says (2026-10-18)
+
+What. A Task born of a scenario carries the scenario's end: synth/tasks.born_tasks writes born/<task>.json in the
+workdir ({"scenario", "end"}), so a work copy carries it, and writes it for a born Task that lacks it on a rerun.
+spec/writer.load_inputs adds the end to the Intent as end facts, one per clause split at a full stop or a semicolon,
+ids end1, end2, ..., kind do, their source the end itself (items.END_SOURCE), never a user turn; the facts view
+marks them end. A recorded Task has no born file and its Intent is unchanged. The writer's prompt gains END_RULE:
+every change an end fact names is a gated state item on the row, field and value it names; every action or change it
+rules out is gated absent (not_called or row_keeps); every told value is a gated judge or said item; a gate no end
+fact names and no policy line demands is weighed; a change after a later yes is gated, never a not_called; writes
+the user picks between are alternative end states (alt), and where alt cannot hold them one gated judge item on the
+outcome. Code: an end fact is an ask, so one no gated item cites goes back in the asked follow-up turn like any ask,
+and writer.unchecked_end (schema.unchecked_asks named for the end) lists those still uncited and unrebutted; the
+writer's counts carry them and the Spec stage sets such a Spec aside as unchecked_end with no Verifier. A told item
+citing an end fact keeps its gate (items._untold). Two rules for every Task: a gated called item stands only where
+its policy line names that tool (items.names_tool), else it is weighed as "path not fixed" and the writer is told
+why; a hand-off keeps its own rule. Identification is gated by its outcome, never by the lookup used (prompt). A
+said value that is one number compiles (items.atom_of, said_shape) to the shape the Runner's lowercased substring
+match finds most widely: no currency sign, no unit, no trailing zeros, and with cents only the digits past the last
+thousands group, so "$3,648.02", "3648.02" and "3,648.02" all hold "648.02". The comparison itself lives in the frozen
+Runner (verdict.py, atom_context.t), so it is not changed. The born recording's user rules (user_rules/<run>.json,
+D210) carry the ask as the goal and the end as a fact of field end, so a user asked to confirm can answer.
+End facts never render as the user's words: the package ask and the Harbor instruction (hub/package.asked_facts)
+and the coherence opening asks leave them out, the Examiner's fact view marks them end, and events.UNCHECKED_END is
+a reason code the bus keeps and router.no_verifier_why returns.
+
+Why. S/audit (.claude/herdr/synth-1016/audit): 34 of 69 airline and 45 of 78 retail Verifiers of born Tasks were
+right. The writer saw the ask and the world, never the end the scenario was written with, so the end's changes sat
+weighed or free, its forbids were not gated, a change after a later yes was forbidden, one lookup path was gated, two
+exclusive writes were both gated, and "3648.02" failed "$3,648.02".
+
+What it does not do: code does not parse the end into rows; it asks that each end clause be gated or rebutted, and
+the rebuttal must quote the clause or a policy line (D376). The schema has no one-of atom for two writes; alt end
+states are the existing shape. An integer of four digits or more is left whole, so "3648" still misses "3,648".
+No current Run path reads a born Task's user rules (it has no Reference and no replay row); they wait for one.
+
+Tests: tests/spec/test_spec_end.py (the end reaches the writer as end facts, never a user turn; a recorded Task has
+none; a writer leaving an end change ungated is refused and one gating it passes; the stage sets such a Spec aside
+with no Verifier; a told item citing an end fact stays a gate and a later yes gates the change; a called gate stands
+only where its policy line names the tool; exclusive writes are alternative end states; a said number compiles to
+the shape every writing of it holds), tests/synth/test_tasks.py (the end lies beside a born Task; a rerun writes the
+end and user rules a born Task lacks; the user rules carry the ask and the end).
+
+### D415. A scenario bears a Task whatever its source (2026-10-18)
+
+What. synth/tasks.bears_task: a scenario bears a Task when it is passed, bound to rows, has an ask and an end, and
+requires nothing, whatever its source kind; the test on source kind recordings is gone. A search born scenario
+carries the page URL and the byte span of the cached page text it rests on (Source.url, start, end) as its
+provenance, as a recordings one carries its Task ids, so a born Task of either is traced back the same way
+(scenario_of, then the scenario record).
+
+Why. The fix loop of .claude/herdr/synth-1016 aims at 500 scenarios per corpus, most from search, typed lines and
+gaps; only the recordings source bore Tasks. The end is now required since the Spec writer gates it (D414).
+
+What it does not do: a passed scenario with no ask or no end bears no Task, so older records without them are left
+out; no change to how any source writes a scenario.
+
+Tests: tests/synth/test_tasks.py (passed bound scenarios with an ask and an end bear Tasks of any source; one with
+no ask or no end bears none).
+
+### D416. A born recording's user knows their own records (2026-10-18)
+
+What. synth/tasks.user_rules_of: the user rules of a born recording also carry the scalar cells (string, number,
+bool; never a list or a nested object) of every row the scenario binds, each a UserFact with the column name as the
+schema names it and a DisclosureRule on_request. A column is kept where its name is a field the recorded users of
+the workdir give (the facts of user_rules/ of recordings not born of a scenario); a workdir with none keeps only the
+cells holding a bound key. A column the bound rows hold with two different values (a product's name beside the
+person's nested name) names no one value of the person and is left out. The ask's facts stay first, a field or value
+the ask states is not added again, the end stays last. spec/writer.load_inputs gives a born Task's Intent those
+facts as facts the user says (stance volunteered, condition asked, kind detail, source items.RECORDS_SOURCE), so
+hub/package.asked_facts lays them in the Harbor instruction as it lays a recorded Task's later facts. Born rules
+already on disk are left as they are. Correction (r1): a nested object is walked to its scalar leaves at any depth,
+each leaf a cell named by its leaf key under the same filters (a recorded field, once per column, the two-values
+guard over every row and leaf), so the person's nested zip is carried; a list is still no cell, and the sentence
+below on nested cells now holds for lists only. builder/run_user._reference_id: a Task with no replay row at all
+takes the first of its seed recordings with user rules on disk, the runner's own pick there, so a build meets a
+born Task with the agent user; a Task with rows but none confirmed still has none, and one with a confirmed row is
+untouched. Correction (r2): where a column holds two different values across the bound rows and leaves, the value
+of the owner is kept and the others dropped; the owner is the one bound row whose key appears as a scalar cell or
+leaf of another bound row (the row the others refer to), so the person's account wins over a shipment's address.
+With no single owner, or an owner holding two values of the column, the column is dropped as before. Correction
+(r4): the record facts come from the owner row only, its cells and nested leaves under the same filters (a recorded
+field, once per column, the two-values guard over the owner's own leaves), its own key kept; the other bound rows
+(the order or item the Task is about) give no fact, so neither the Harbor instruction nor the simulated user hands
+the agent the Task's targets. No owner, no record facts; a world without recorded facts keeps the owner's key only.
+Correction (r5): where no bound row is referred to, the owner is the one bound row holding a scalar column or leaf
+among the fields recorded users give (a lone account row, or one beside a shared row); no such row or several give
+no owner, and a world without recorded fields keeps only the referred-to rule. The owner's own key, an internal id
+the policy has the agent look up, is no record fact where recorded fields exist (the ask may still state it, and
+then it is the ask's fact); a world without recorded fields keeps it, having nothing else.
+
+Why. The pass@1 benchmark on the born Tasks of one Environment failed on identification: nearly every ask names the
+person by name and place only, its user rules held no other identifying value, and the policy asks for more before
+any action, so every agent stopped there and the benchmark measured nothing. A recorded user gives such values when
+asked, most of them later than the opening words; the bound rows are the person's own records.
+
+What it does not do: the user volunteers nothing and the ask (the one user turn) does not change; the record facts
+are no end facts and no asks, so no gate is demanded for them. A value inside a nested cell is not carried. A
+recorded Task is untouched.
+
+Tests: tests/synth/test_tasks.py (bound scalar cells on request in schema order; a cell the ask states appears once;
+a nested cell is no fact; the end stays last; a column no recorded user gave is no fact, a world without recorded
+facts keeps the keys; a column held with two values is no fact), tests/spec/test_spec_end.py (a born Task's Intent
+says the record facts, the end stays an end fact, asked_facts lays the records and never the end). Correction (r1):
+tests/synth/test_tasks.py (a leaf of a nested object a recorded user gives is an on-request fact named by its leaf
+key, a list element is not), tests/builder/test_run_user.py (a Task without replay rows gets the agent user built
+from its recording's rules on disk; one with neither rows nor rules gets none; one whose rows are none confirmed
+gets none). Correction (r2): tests/synth/test_tasks.py (a column two bound rows hold with different values keeps
+the value of the row the other refers to; with no such row it is no fact). Correction (r4): tests/synth/test_tasks.py
+(the other bound rows give no fact even where recorded users gave their columns; with no bound row referred to
+there are no record facts, with or without recorded fields; a world without recorded facts keeps the owner's key).
+Correction (r5): tests/synth/test_tasks.py (a lone bound row holding a recorded field is the owner, also beside a
+shared row; two such rows with nothing referred to give no owner; the owner's key is no record fact with recorded
+fields and the only one without).
+
+### D417. The Spec stage says when it wrote without learned effects (2026-10-18)
+
+What. spec/effects.load also says whether the learned effects file (exam/review/effects.json) was found.
+spec/writer.load_inputs sets WriterInputs.effects_missing when it was not and the workdir has write tools;
+write_spec then records the count "effects": "none learned" in its counts, which ride into Spec.writer, the field
+that already holds the writer's counts, so every Spec written that way carries the reason. A repair keeps the first
+write's Spec.writer and so keeps the mark. spec/stage.write_specs counts such Specs as effects_none_learned in the
+stage summary the CLI prints. The Specs are still written; nothing is refused.
+
+Why. The reach check (D387) accepts a gated state value only from the user's words, a start row, a recorded write
+result or the learned tool writes. A workdir copied without the effects file gives load empty effects silently, so
+the writer is told the written row's own values are unreachable and its items on those rows are refused or rewritten.
+Born Tasks (D414) are written in copied workdirs, and one such round had about half of one Environment's Tasks told
+this; most wrong Verifiers of its hand audit sat on exactly those items. The gap was invisible because load returns
+the same empty shape for a missing file as for a tool that writes nothing.
+
+What it does not do: it does not learn the effects (builder/tool_effects.store does, and the CLI's Spec switch runs it
+first) and it does not change the reach rule. A file that is present but stale or learned before writes were kept
+counts as found.
+
+Tests: tests/spec/test_writer.py (a Spec written with write tools and no learned effects says none were learned; one
+written beside an effects file carries no mark), tests/spec/test_stage.py (write_specs counts and marks a Spec
+written without learned effects; a workdir whose effects were learned is not counted).
+Correction (r1): a present effects file in which no tool carries a non empty writes list counts the same as a
+missing one: WriterInputs.effects_missing is set when the workdir has write tools and the file is absent or holds
+no learned writes, with the same count and mark. Why: the source files of the round that showed the gap were
+exactly that, learned before writes were kept, so the stage would still have run silently on them. Tests:
+tests/spec/test_writer.py (a Spec written beside an effects file whose tools carry no writes says none were
+learned); tests/spec/test_stage.py (the learned case now places a tool with writes).

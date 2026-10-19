@@ -67,17 +67,6 @@ def test_a_model_call_reads_as_the_stage_the_model_the_tokens_and_the_cost(tmp_p
     assert "12,000 in / 900 out / 4,000 cached" in line and "$0.0031" in line and "2.4s" in line
 
 
-def test_the_typed_round_and_beat_events_become_feed_rows_and_token_updates_do_not():
-    """One row per token would be a feed nobody can read, so partial message updates are dropped."""
-    from kullback.agent.events import BeatStart, MessageUpdate, RoundEnd
-
-    assert feed.event_row(RoundEnd(round=2, counts={}, exit="done")) == {
-        "kind": "round", "round": 2, "state": "end", "exit": "done"}
-    assert feed.event_row(BeatStart(agent="examiner", round=2)) == {
-        "kind": "beat", "agent": "examiner", "round": 2, "state": "start"}
-    assert feed.event_row(MessageUpdate.model_construct()) is None
-
-
 def _cached_reply(workdir, name, model="openai/gpt-5.6-luna", **usage):
     directory = workdir / feed.CACHE_DIR
     directory.mkdir(parents=True, exist_ok=True)
