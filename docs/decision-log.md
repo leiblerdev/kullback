@@ -4493,3 +4493,31 @@ cells on one field with one value score as one item; a cell and a set it satisfi
 weighted exact cell beside a gated set stays two cells; two cells whose values differ are refused naming both
 values; cells in two alternative end states never clash; two new-row specs one row can match are refused naming
 both).
+
+### D439. A Task no right Run can pass ends with no Verifier at the Spec stage (2026-10-19)
+
+What. After compile and the Examiner, `spec/stage.py end_unpassable` (called by the examine path after the review
+rounds) ends a Task with no Verifier for one of two reasons, set on the Spec's set_aside, its Verifier files
+removed and task.set_aside published. precondition_unrendered: a gated called write's tool has a policy line that
+binds (must, needs, has to, required) and has the user give a value (the user provides, gives or supplies it, or it
+is obtained from the user), that clause names a field of the tool's schema (its arguments, the columns of the tables
+its learned effects write, or of the tables holding a column named as an argument), the world holds values in that
+field, and no rendered Intent fact (as the Harbor instruction renders them, D422) carries one. A line speaks of a
+tool when it names it (items.names_tool) or sits under a heading sharing a word with the tool's name.
+no_reference_holds: the Task has faithful Reference replays and none holds every gate of its Verifier (a gate
+left open is not failed). A Task with no Reference keeps today's path. Both reasons join router.NO_VERIFIER_WHYS
+and the bus codes; the stage prints their counts after the rounds, and the tier report counts each no_verifier
+why (`no_verifier_whys`) beside the side reasons.
+
+Why. The standing rule (no Verifier over gaming): a wrong Reference or an unclear ask ends as no Verifier, never a
+check bent to pass. This amends D367: the Reference still never sources or repairs a Verifier, but where none
+holds it vetoes one. On the 309 staged Tasks: airline 2 precondition_unrendered, 19 no_reference_holds; retail 0
+and 39. Of the 58 vetoes, 21 fail only on list cells D423 already refuses. The veto costs 7 recorded bench passes
+(airline 1 of 42, retail 6 of 71). The heading match was chosen after reading the measured policy, where no line
+names a write tool.
+
+Tests: tests/spec/test_stage_end.py (a gated write whose policy asks a value no rendered fact gives ends with no
+Verifier; one whose asked value a rendered fact gives keeps it; a Task whose References all fail a gate ends; one
+whose one Reference holds keeps it; a Task with no Reference keeps it; a line binds a field only where the user
+must give it; a line speaks of a tool by name or heading; a tool without learned effects reads the columns of the
+table its argument names).
