@@ -742,3 +742,10 @@ def test_a_verdict_the_regrade_gate_refuses_leaves_no_file_behind(tmp_path, monk
     scored = runner.invoke(cli.app, ["verdict", "--workdir", str(workdir), "--task", "widget_task"])
     assert scored.exit_code != 0 and "schema_version is not on the Verdict" in scored.output, scored.output
     assert [path for path in (workdir / "verdicts").rglob("*") if path.is_file()] == []
+
+
+def test_the_card_says_in_one_line_that_reward_txt_is_a_pass_or_a_fail_and_where_the_shaped_reward_is():
+    body = card_mod.card_markdown({}, "someorg/widgets", harbor={"counts": {"exported": 1}})
+    lines = [line for line in body.splitlines() if "`reward.txt`" in line]
+    assert len(lines) == 1 and "1 when every gated item holds and 0 otherwise" in lines[0]
+    assert "`shaped_reward` in `items.json`" in lines[0]
