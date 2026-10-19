@@ -296,6 +296,8 @@ class WriterInputs(NamedTuple):
     reach: Optional[I.Reach] = None
     # Where the sessions are saved (exam/writer); None saves nothing. Never shown to the writer.
     workdir: Optional[Path] = None
+    # The workdir has write tools but no learned effects file, so no tool write can reach a value (D417).
+    effects_missing: bool = False
 
 
 class Ruling(Record):
@@ -308,6 +310,11 @@ class Ruling(Record):
     kind: str = ""
     # The fact ids an unchecked_ask ruling filed by code names (its verified rows, D376).
     facts: list[str] = Field(default_factory=list)
+
+
+# The writer count and the Spec's reason when the Spec was written without learned effects (D417).
+EFFECTS_COUNT = "effects"
+NO_EFFECTS = "none learned"
 
 
 class Written(NamedTuple):
@@ -354,7 +361,7 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
                         action_tables=frozenset(action_tables_of(env.schema)), columns=_columns(env.schema),
                         effects=effects, signatures=learned.get("signatures") or {},
                         reach=I.reach_of_inputs(effects, _write_results(workdir, task_id, traces, write_tools)),
-                        workdir=Path(workdir))
+                        workdir=Path(workdir), effects_missing=not learned.get("found") and bool(write_tools))
 
 
 # Where a born Task's scenario end lies in the workdir, one file per Task (synth/tasks.py writes it, D414).
@@ -730,6 +737,8 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
     counts.update(_side_counts(inputs.intent, items))
     if asked_clashes:
         counts["asked_clash_sent_back"] = len(asked_clashes)
+    if inputs.effects_missing:
+        counts[EFFECTS_COUNT] = NO_EFFECTS
     save_session(inputs, task_id, "write", 1, session, counts)
     return Written(spec, counts, session)
 

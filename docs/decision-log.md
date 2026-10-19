@@ -4224,3 +4224,27 @@ there are no record facts, with or without recorded fields; a world without reco
 Correction (r5): tests/synth/test_tasks.py (a lone bound row holding a recorded field is the owner, also beside a
 shared row; two such rows with nothing referred to give no owner; the owner's key is no record fact with recorded
 fields and the only one without).
+
+### D417. The Spec stage says when it wrote without learned effects (2026-10-18)
+
+What. spec/effects.load also says whether the learned effects file (exam/review/effects.json) was found.
+spec/writer.load_inputs sets WriterInputs.effects_missing when it was not and the workdir has write tools;
+write_spec then records the count "effects": "none learned" in its counts, which ride into Spec.writer, the field
+that already holds the writer's counts, so every Spec written that way carries the reason. A repair keeps the first
+write's Spec.writer and so keeps the mark. spec/stage.write_specs counts such Specs as effects_none_learned in the
+stage summary the CLI prints. The Specs are still written; nothing is refused.
+
+Why. The reach check (D387) accepts a gated state value only from the user's words, a start row, a recorded write
+result or the learned tool writes. A workdir copied without the effects file gives load empty effects silently, so
+the writer is told the written row's own values are unreachable and its items on those rows are refused or rewritten.
+Born Tasks (D414) are written in copied workdirs, and one such round had about half of one Environment's Tasks told
+this; most wrong Verifiers of its hand audit sat on exactly those items. The gap was invisible because load returns
+the same empty shape for a missing file as for a tool that writes nothing.
+
+What it does not do: it does not learn the effects (builder/tool_effects.store does, and the CLI's Spec switch runs it
+first) and it does not change the reach rule. A file that is present but stale or learned before writes were kept
+counts as found.
+
+Tests: tests/spec/test_writer.py (a Spec written with write tools and no learned effects says none were learned; one
+written beside an effects file carries no mark), tests/spec/test_stage.py (write_specs counts and marks a Spec
+written without learned effects; a workdir whose effects were learned is not counted).

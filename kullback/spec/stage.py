@@ -24,6 +24,8 @@ from kullback.spec.events import UNCHECKED_END
 from kullback.spec.intent import STAGE, mine_intent
 from kullback.spec.schema import SpecIntent, is_empty, load_spec, save_spec, spec_path
 from kullback.spec.writer import (
+    EFFECTS_COUNT,
+    NO_EFFECTS,
     is_item_check,
     load_inputs,
     spec_verifier_path,
@@ -116,7 +118,8 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
     ceiling = SPEC_TASK_CEILING_USD if ceiling_usd is None else ceiling_usd
     counts: dict = {"written": 0, "skipped_existing": 0, "failed": 0, "spent_usd": 0.0, "failures": {},
                     "empty_seen": 0, "retried": 0, "set_aside_empty": 0, "set_aside_unsatisfiable": 0,
-                    "set_aside_strayed": 0, "set_aside_unchecked_end": 0, "rewritten_older": 0}
+                    "set_aside_strayed": 0, "set_aside_unchecked_end": 0, "rewritten_older": 0,
+                    "effects_none_learned": 0}
     for task_id in task_ids:
         if written_already(workdir, task_id):
             counts["skipped_existing"] += 1
@@ -131,6 +134,7 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
         spec = load_spec(workdir, task_id)
         counts["empty_seen"] += int(bool(spec.writer.get("empty_first")))
         counts["retried"] += int(spec.writer.get("attempts", 1) > 1)
+        counts["effects_none_learned"] += int(spec.writer.get(EFFECTS_COUNT) == NO_EFFECTS)
         aside = {events.EMPTY_SPEC: "set_aside_empty", events.UNSATISFIABLE_SPEC: "set_aside_unsatisfiable",
                  events.INTENT_STRAYED: "set_aside_strayed", UNCHECKED_END: "set_aside_unchecked_end"}
         counts[aside.get(spec.set_aside, "written")] += 1

@@ -250,11 +250,12 @@ def _same(one: Any, two: Any) -> bool:
 
 
 def load(workdir: Any) -> dict:
-    """The build's learned effects and signatures (builder/tool_effects.py writes them); none when absent."""
+    """The build's learned effects and signatures (builder/tool_effects.py writes them); none when absent,
+    and `found` says whether the file was there (D417)."""
     stored = read_json(Path(workdir) / EFFECTS_FILE, None)
     if not isinstance(stored, dict):
-        return {"effects": {}, "signatures": {}}
-    return {"effects": stored.get("effects") or {}, "signatures": stored.get("signatures") or {}}
+        return {"effects": {}, "signatures": {}, "found": False}
+    return {"effects": stored.get("effects") or {}, "signatures": stored.get("signatures") or {}, "found": True}
 
 
 __all__ = ["EFFECTS_FILE", "EFFECTS_VERSION", "MAX_LITERAL", "always", "call_effects", "call_writes", "literal_writes",
