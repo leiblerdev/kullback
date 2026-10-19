@@ -141,13 +141,15 @@ def _cited(atom: Any) -> set[str]:
 def unrenderable(verifier: Verifier, spec: Any) -> list[str]:
     """The ids of the items that cite facts and every one a fact the instruction does not render (D422): a
     right Run cannot be told them, so they are dropped, not weighed. A scenario's end facts are what the Verifier
-    checks and no user says (D414), so an item on them stays; so does an item citing no fact."""
+    checks and no user says (D414), so an item on them stays; so does an item citing no fact, and one citing a
+    policy line, which the instruction carries."""
     if spec is None:
         return []
     from kullback.spec.items import is_end_fact
 
     hidden = {fact.id for fact in spec.intent.facts if not rendered(fact) and not is_end_fact(fact)}
-    return [atom.id for atom in verifier.atoms if _cited(atom) and _cited(atom) <= hidden]
+    return [atom.id for atom in verifier.atoms
+            if _cited(atom) and _cited(atom) <= hidden and not ((atom.target or {}).get("from") or {}).get("policy_line")]
 
 
 def _cells(targets: Iterable[dict]) -> set[tuple]:

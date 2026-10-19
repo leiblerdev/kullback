@@ -4427,8 +4427,8 @@ done:". The package's viewer rows and the Harbor instruction.md still both come 
 The Harbor export then drops every item that cites facts and only facts the instruction does not render (dropped,
 never weighed: a pass counts at reward 1, so a weighted item a right Run cannot satisfy fails it as a gate would). A
 dropped state item's cells leave every end state and become free, so a Run may leave the row or move it; a dropped
-new row frees its table. An item citing no fact, or citing an end fact, stays; a policy line beside the
-cited facts does not keep an item. The shipped Verifier is the source
+new row frees its table. An item citing no fact, citing an end fact, or citing a policy line stays:
+the policy ships in the instruction, so a right Run can satisfy such an item from there. The shipped Verifier is the source
 file byte for byte when nothing is dropped. The manifest carries the dropped item ids per Task
 (`items_unrenderable`), their count and the Tasks touched in counts, the masked list per package, and the export
 and publish report lines say the count.
@@ -4442,7 +4442,8 @@ it removes only items that rest on the agent's echo or on facts ruled unfounded.
 Tests: tests/hub/test_harbor.py (a detail the user gave when the agent asked reaches the instruction; a fallback ask
 reaches the instruction under the later lead after the volunteered ones; an instruction with only volunteered facts
 has no later lead; the instruction says what the user volunteered, then what they said later, never the echo; an
-item resting only on unrendered facts is dropped, its cell freed and counted; a Verifier with nothing unrendered
+item resting only on unrendered facts is dropped, its cell freed and counted; an item citing a policy line
+is kept whatever facts it cites; a Verifier with nothing unrendered
 ships byte for byte).
 
 ### D427. A said amount compiles to the digits every spelling of it holds, for every Task (2026-10-19)

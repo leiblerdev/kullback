@@ -1016,3 +1016,14 @@ def test_a_verifier_with_nothing_unrendered_ships_byte_for_byte(dataset, tmp_pat
     source = tmp_path / "work" / "verifiers" / f"{TASK}.json"
     assert (out / "widgets-widget_task" / "tests" / harbor.VERIFIER_NAME).read_bytes() == source.read_bytes()
     assert manifest["counts"]["items_unrenderable"] == 0 and manifest["items_unrenderable"] == []
+
+
+def test_an_item_citing_a_policy_line_is_kept_whatever_facts_it_cites(tmp_path):
+    ruled = [{**UNRENDERED[0], "target": {**UNRENDERED[0]["target"],
+                                          "from": {"fact_ids": ["f3"], "policy_line": "Widgets keep their label."}}},
+             JUDGE_WEIGHTED[0]]
+    workdir = _workdir(tmp_path / "work", atoms=ruled)
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path))
+    shipped = read_json(tmp_path / "out" / "widgets-widget_task" / "tests" / harbor.VERIFIER_NAME)
+    assert [atom["id"] for atom in shipped["atoms"]] == ["keep", "a1"]
+    assert manifest["counts"]["items_unrenderable"] == 0
