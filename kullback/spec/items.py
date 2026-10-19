@@ -16,7 +16,8 @@ policy line). Code adds the sanity item (`nothing_else`): no row outside the dec
 "Find, do not invent": `World.check` refuses a value no world row, policy line or user turn holds, a
 find that names no row or several, and a field the table does not have, each with the reason; a row_is
 whose expect is empty or holds only the find key, a free field with no reason, and a free field holding
-a value an Intent fact names elsewhere in the world (that value belongs in expect). A judge
+a value an Intent fact names elsewhere in the world (that value belongs in expect), and a cell path the
+scorer cannot read on the row (it meets a list at a part that is not an index, D423). A judge
 anchor cites the row it was read from (one row by a world search) and its answer states those fields;
 only an anchor whose answer quotes the item's policy line goes without a row, and that refusal item
 always gates.
@@ -129,6 +130,26 @@ def path_value(row: Any, field: str) -> Any:
         else:
             return None
     return node
+
+
+def unreadable_path(row: Any, field: Any) -> str:
+    """Why a cell's dotted path cannot be read on this row, else empty (D423): it meets a list at a part that
+    is not an index, so `path_value` reads None whatever the Run does. A key the row lacks and an index
+    past a list's end are left alone: a tool may add either."""
+    node, walked = row, []
+    for part in str(field).split("."):
+        if isinstance(node, list) and not part.isdigit():
+            at, rest = ".".join(walked), str(field)[len(".".join(walked)) + 1:]
+            return (f"{field!r} cannot be read: {at!r} is a list of {len(node)} and only an index steps into a "
+                    f"list; name the member by its index, as {at}.<index>.{rest}")
+        if isinstance(node, dict):
+            node = node.get(part)
+        elif isinstance(node, list):
+            node = node[int(part)] if int(part) < len(node) else None
+        else:
+            return ""
+        walked.append(part)
+    return ""
 
 
 def _contains(haystack: str, needle: str) -> bool:
@@ -696,10 +717,13 @@ class World:
         kept["alt"] = alt
         return ""
 
-    def _field(self, table: str, field: Any) -> str:
-        """A field the table has; any field of a table with no row and no declared column is unknown, not refused."""
+    def _field(self, table: str, field: Any, row_key: Optional[str] = None) -> str:
+        """A field the table has; any field of a table with no row and no declared column is unknown, not refused.
+        On a named row the path must also be one the scorer can read there (`unreadable_path`)."""
         top, columns = str(field or "").split(".")[0], self.columns(table)
-        return "" if top in columns or (top and not columns) else f"{table} has no field {field!r}"
+        if not (top in columns or (top and not columns)):
+            return f"{table} has no field {field!r}"
+        return unreadable_path(self.row(table, row_key), field) if row_key is not None else ""
 
     def _row_is(self, item: dict, kept: dict) -> str:
         why = self._one_row(item, kept)
@@ -711,7 +735,7 @@ class World:
                                              for r in free.values()):
             return "free is {field: one line on why a tool sets it to a value you cannot find}"
         for field, value in expect.items():
-            why = self._field(kept["table"], field) or self._value(value, f"{field}")[1]
+            why = self._field(kept["table"], field, kept["row"]) or self._value(value, f"{field}")[1]
             if why:
                 return why
         for field in free:
@@ -779,7 +803,7 @@ class World:
         if why or not isinstance(fields, list) or not fields:
             return why or "fields lists the fields that must not change"
         for field in fields:
-            why = self._field(kept["table"], field)
+            why = self._field(kept["table"], field, kept["row"])
             if why:
                 return why
         row = self.row(kept["table"], kept["row"]) or {}
@@ -909,7 +933,7 @@ class World:
             return None, f"anchor.row: {why or 'fields lists the fields the answer states'}"
         row, values = self.row(kept["table"], kept["row"]) or {}, {}
         for field in fields:
-            why = self._field(kept["table"], field)
+            why = self._field(kept["table"], field, kept["row"])
             if why:
                 return None, f"anchor.row: {why}"
             values[str(field)] = path_value(row, str(field))

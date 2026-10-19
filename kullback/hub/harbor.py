@@ -70,6 +70,7 @@ from kullback.hub.package import (
 from kullback.runner.records import Run, Verifier, read_json, write_json
 from kullback.runner.verdict import REWARD_SHAPE
 from kullback.runner.world.environment import BuiltEnvironment
+from kullback.spec.items import unreadable_path
 from kullback.spec.report import REPORT_FILE as TIERS_FILE
 from kullback.spec.schema import spec_verifier_path
 from kullback.spec.split import reference_classes
@@ -94,6 +95,8 @@ VERIFIER_NAME = "verifier.json"
 ORACLE_NAME = "oracle.json"
 # A Task none of whose Runs, replayed through the exported world, scores 1.0: it ships no oracle.
 NO_ORACLE = "no Run passes on replay"
+# A Task whose Verifier holds a cell the scorer cannot read on its start row: it can never hold (D423).
+UNREADABLE_CELL = "unreadable_cell"
 ORACLE_PART = "oracle"
 MASK = 4
 PROSE_LINE = "The user asked for this change; the details are in the conversation."
@@ -376,6 +379,18 @@ def _lay_world(workdir: Path, target: Path, task_id: str, task_record: dict, ins
     write_json(target / TASK_NAME, {"task_id": task_id, "instruction": instruction})
 
 
+def unreadable_cells(verifier: Verifier, start: dict) -> list[str]:
+    """Each cell of the Verifier's end states whose path the scorer cannot read on its start row (D423)."""
+    found = []
+    for end_state in verifier.expected:
+        for cell in end_state.cells:
+            row = (start.get(cell.table) or {}).get(cell.row_id)
+            why = unreadable_path(row, cell.field) if cell.field else ""
+            if why:
+                found.append(f"{cell.table}.{cell.row_id}: {why}")
+    return found
+
+
 def starting_state(app: Path) -> dict:
     """The world the agent starts in, as `db.json` shows it: the Task's world played with no call."""
     with tempfile.TemporaryDirectory() as scratch:
@@ -646,8 +661,23 @@ def _job(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Optional[st
                   "tasks": build.tasks, "write_tools": set(build.env.write_tools())}
 
 
+def _start_of(job: dict) -> dict:
+    """The Task's Starting state, as its image's db.json will hold it, off its world laid in a scratch folder."""
+    given = job["given"]
+    with tempfile.TemporaryDirectory() as scratch:
+        app = Path(scratch)
+        (app / WORLD_DIR).mkdir()
+        _lay_world(job["workdir"], app / WORLD_DIR, job["task_id"], given["record"], given["instruction"],
+                   given["policy"])
+        return starting_state(app)
+
+
 def _export_one(job: dict) -> tuple[Optional[str], dict, dict]:
-    """(why the Task is left out or None, its manifest row, its leak scan row), off the Task's whole input."""
+    """(why the Task is left out or None, its manifest row, its leak scan row), off the Task's whole input. A
+    Verifier with a cell no Run can make hold is left out as UNREADABLE_CELL before any oracle is tried."""
+    verifier = Verifier.model_validate(read_json(job["verifier_path"], {}))
+    if unreadable_cells(verifier, _start_of(job)):
+        return UNREADABLE_CELL, {}, {}
     calls = _lay_with_oracle(job)
     if calls is None:
         return NO_ORACLE, {}, {}
@@ -802,7 +832,8 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
     recorded Task carries its Spec tier off `tiers` (the workdir's tiers.json by default) and, with
     `labels`, a rater's label, `unlabelled` where no row names it (D399). A Task whose only leaking part
     is its oracle is left out as SOLUTION_LEAKS and listed masked; a leak in any other part refuses. A Task
-    with no Verifier, no Run or no instruction is left out and counted by reason. The oracle is the
+    with no Verifier, no Run or no instruction, or a Verifier cell the scorer cannot read (UNREADABLE_CELL,
+    D423), is left out and counted by reason. The oracle is the
     first of the Task's Runs whose calls, replayed through the exported world, hold every item a judge
     is not needed for; a Task with none is left out too (NO_ORACLE). The Tasks are laid on `workers`
     processes (None: the default of kullback/processes.py) and the dataset is the same whatever the count (D401);

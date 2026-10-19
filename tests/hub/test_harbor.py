@@ -540,6 +540,18 @@ def _toml(out: Path) -> dict:
     return tomllib.loads((out / "widgets-widget_task" / "task.toml").read_text())["metadata"]
 
 
+def test_a_verifier_cell_the_scorer_cannot_read_on_its_start_row_sets_the_task_aside_and_is_counted(tmp_path):
+    workdir = _workdir(tmp_path / "work")
+    write_json(workdir / "db.json", {"widgets": {"w1": {"widget_id": "w1", "label": [{"tone": "plain"}]}}})
+    verifier = read_json(workdir / "verifiers" / f"{TASK}.json", {})
+    cells = [{"table": "widgets", "row_id": "w1", "field": "label.tone", "value": "striped"}]
+    write_json(workdir / "verifiers" / f"{TASK}.json", dict(verifier, expected=[{"cells": cells}]))
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path), tasks="verified")
+    assert manifest["counts"]["exported"] == 0
+    assert manifest["counts"]["skipped"] == {harbor.UNREADABLE_CELL: 1}
+    assert not (tmp_path / "out" / "widgets-widget_task").exists()
+
+
 def test_verified_exports_an_untrusted_task_that_has_a_verifier(tmp_path):
     workdir = _workdir(tmp_path / "work", trusted=False)
     manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path), tasks="verified")
