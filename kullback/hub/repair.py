@@ -4,9 +4,10 @@
    exactly one member on the start row (the row the writer saw): the writer can only have meant that
    member, so the path names it by index 0. The start row alone decides; the Reference is never read and
    no value changes. A list of several members is left as it is, and the D423 gate sets the Task aside.
-2. The world's own effects are not the agent's collateral. A tool the Verifier requires (a called item
-   naming it, or the tool the Task's first oracle candidate, its kept Reference, calls on a table the end
-   state declares a row in) moves columns every one of its calls moves (spec/effects.py). Each end state
+2. The world's own effects are not the agent's collateral. A tool the Verifier requires moves columns every one
+   of its calls moves (spec/effects.py). Required are: a tool a called item names; the one tool whose learned
+   effects alone answer a declared row, as the Spec stage reads it (spec/items.py `expected_tools`); and a tool
+   the Task's kept References call on a table the end state declares a row in. Each end state
    gains an allowed rule per such column, on the declared rows of its table or on every row where the
    end state declares none, unless a cell already checks it or a rule already frees it. A tool the Verifier
    does not require gains nothing, so a stray write still fails sanity.
@@ -21,7 +22,7 @@ from typing import Any, Iterable, Optional
 
 from kullback.runner.records import Verifier, as_dict, write_json
 from kullback.spec import effects as learned_effects
-from kullback.spec.items import unreadable_path
+from kullback.spec.items import expected_tools, unreadable_path
 
 EFFECT_WHY = "free: learned effect: {tool}"
 FROM_FILE = "effects file"
@@ -113,11 +114,25 @@ def _touched(learned: dict) -> set[str]:
     return {str(column["table"]) for column in learned.get("columns") or []} | set(learned.get("makes") or [])
 
 
+def _items(verifier: Verifier) -> list[dict]:
+    """The Verifier read back as the Spec stage's items: its called items, one row_is per declared row of an end
+    state with the columns its cells expect, one row_new per declared new row."""
+    called = [dict(atom.target or {}) for atom in verifier.atoms if (atom.target or {}).get("kind") == "called"]
+    rows: dict[tuple, dict] = {}
+    for state in verifier.expected:
+        for cell in state.cells:
+            row = rows.setdefault((cell.table, cell.row_id), {"kind": "row_is", "table": cell.table,
+                                                             "row": cell.row_id, "expect": {}})
+            row["expect"].update({cell.field: cell.value} if cell.field else {})
+    made = [{"kind": "row_new", "table": str(row.get("table"))} for state in verifier.expected for row in state.new_rows]
+    return called + list(rows.values()) + made
+
+
 def required_tools(verifier: Verifier, effects: dict, oracle: Iterable[dict] = ()) -> list[str]:
-    """The write tools the Verifier requires: those a called item names, and those the oracle candidate calls
-    whose learned effects move or make rows in a table the end states declare a row in."""
-    named = {str((atom.target or {}).get("tool")) for atom in verifier.atoms
-             if (atom.target or {}).get("kind") == "called"}
+    """The write tools the Verifier requires: those its items expect (`expected_tools`: a called item's tool, the
+    one tool that alone answers a declared row), and those the oracle calls whose learned effects move or make
+    rows in a table the end states declare a row in."""
+    named = set(expected_tools(_items(verifier), effects))
     tables = _declared_tables(verifier)
     made = {name for name in (str(call.get("name")) for call in oracle)
             if name in effects and tables & _touched(effects[name])}

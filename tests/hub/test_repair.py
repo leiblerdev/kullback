@@ -65,6 +65,17 @@ def test_a_tool_the_verifier_does_not_require_frees_nothing_so_its_write_still_f
     assert match(fixed.expected[0], START, end).ok is False
 
 
+def test_the_one_tool_whose_learned_effects_alone_answer_a_declared_row_is_required_without_a_called_item():
+    cells = [{"table": "shelves", "row_id": "s1", "field": "free", "value": 3}]
+    assert repair.required_tools(_verifier(cells), EFFECTS) == ["stack"]
+
+
+def test_a_declared_row_two_tools_could_answer_requires_neither():
+    cells = [{"table": "crates", "row_id": "c1", "field": "count", "value": 8}]
+    both = dict(EFFECTS, paint={"columns": [{"table": "crates", "column": "count"}], "makes": [], "writes": []})
+    assert repair.required_tools(_verifier(cells), both) == []
+
+
 def test_a_column_on_a_declared_row_is_freed_on_that_row_only():
     cells = [{"table": "crates", "row_id": "c1", "field": "note", "value": "y"}]
     fixed, _ = repair.allow_effects(_verifier(cells, [_called("stack")]), EFFECTS)
@@ -73,7 +84,7 @@ def test_a_column_on_a_declared_row_is_freed_on_that_row_only():
 
 
 def test_the_oracle_tool_that_moves_a_declared_table_is_required_and_one_on_another_table_is_not():
-    cells = [{"table": "shelves", "row_id": "s1", "field": "free", "value": 3}]
+    cells = [{"table": "shelves", "row_id": "s1", "field": "slots", "value": []}]
     oracle = [{"name": "stack", "arguments": {}}, {"name": "paint", "arguments": {}}, {"name": "look", "arguments": {}}]
     assert repair.required_tools(_verifier(cells), EFFECTS, oracle) == ["stack"]
 
