@@ -178,8 +178,9 @@ END_RULE = """\
 # The scenario's end
 Facts marked end are the truth this Task was written with. Every change an end fact names is a gated \
 state item (row_is or row_new) on the row and field it names, with the value it names, citing that fact. \
-Every action or change an end fact rules out is gated absent: not_called or row_keeps, citing it. Every \
-value an end fact says the user is told is a gated judge or said item citing it. A gate no end fact names \
+Every action or change an end fact rules out is gated absent: not_called or row_keeps, citing it. A \
+value an end fact says the user is told gates only beside a fact the user said asking for it or the policy \
+line requiring the telling; else code weighs it, so answer that end fact with rebut_fact. A gate no end fact names \
 and no policy line demands is weighed. Where an end fact says the change happens once the user confirms, \
 the user will say yes: gate the change (and a before item on confirm_turn where the policy asks for the \
 yes), never a not_called on it. Where the end has the user pick one of several writes, write each as its \

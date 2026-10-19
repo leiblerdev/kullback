@@ -17,7 +17,7 @@ from kullback.spec import writer as W
 from kullback.spec.router import no_verifier_why
 from kullback.spec.schema import load_spec, spec_verifier_path
 from kullback.spec.stage import write_from_intent
-from tests.spec.test_writer import DONE, ROW, STATE, TOOLS, _workdir, add, inputs
+from tests.spec.test_writer import DONE, ROW, STATE, TOOLS, _workdir, add, call, inputs
 
 END = "Item A1 sits in slot seven; the user is told slot seven."
 PATH_LINE = "Moves go through update_item and no other tool."
@@ -55,9 +55,11 @@ def test_a_recorded_task_has_no_end_and_its_intent_is_unchanged(tmp_path):
 def test_a_writer_leaving_an_end_change_ungated_is_refused_and_one_gating_it_passes():
     told = {"id": "j1", "kind": "said", "values": ["seven"], "gate": True, "fact_ids": ["end2"]}
     left = W.write_spec("t1", _ended(), TestModel([add(ROW, told), DONE, DONE]))
-    assert left.counts["asked_sent_back"] == 1 and left.counts[W.UNCHECKED_END] == ["end1"]
-    assert W.unchecked_end(left.spec) == ["end1"]
-    gated = W.write_spec("t1", _ended(), TestModel([add(dict(ROW, fact_ids=["f1", "end1"]), told), DONE]))
+    assert left.counts["asked_sent_back"] == 2 and left.counts[W.UNCHECKED_END] == ["end1", "end2"]
+    assert W.unchecked_end(left.spec) == ["end1", "end2"]
+    rebut = call("rebut_fact", fact_id="end2", why='the end names it: "the user is told slot seven."')
+    gated = W.write_spec("t1", _ended(), TestModel([add(dict(ROW, fact_ids=["f1", "end1"]), told), DONE, rebut, DONE]))
+    assert gated.spec.checks[-1].gate is False
     assert W.UNCHECKED_END not in gated.counts and W.unchecked_end(gated.spec) == []
 
 
@@ -79,15 +81,38 @@ def test_the_unchecked_end_reason_keeps_its_code_on_the_bus_and_is_the_tasks_no_
     assert any("unchecked_end" in json.dumps(row) for row in published)
 
 
-def test_a_told_item_citing_an_end_fact_stays_a_gate_and_a_later_yes_gates_the_change():
+def test_a_told_item_citing_only_end_facts_is_weighed_with_the_end_told_note():
     facts = _ended().intent.facts
     world = I.World(STATE, "", facts, TOOLS)
     told = {"id": "j1", "kind": "said", "values": ["seven"], "gate": True, "fact_ids": ["end2"]}
     kept, why = world.check(told, {fact.id: fact for fact in facts})
-    assert why == "" and kept["gate"] is True
+    assert kept["gate"] is False and kept["weighed"] == I.END_TOLD_WEIGHED
+    assert why.startswith("told gate weighed: only the end names it")
+    judge = {"id": "j2", "kind": "judge", "question": "Was the user told the item's slot?", "gate": True,
+             "fact_ids": ["end2"], "anchor": {"answer": "A1 is in slot two",
+                                              "row": {"table": "items", "find": {"item_id": "A1"}, "fields": ["slot"]}}}
+    kept, why = world.check(judge, {fact.id: fact for fact in facts})
+    assert kept["gate"] is False and kept["weighed"] == I.END_TOLD_WEIGHED, why
     rule = " ".join(W.END_RULE.split())
     assert "once the user confirms, the user will say yes: gate the change" in rule
     assert "never a not_called on it" in rule
+
+
+def test_a_told_item_citing_an_end_fact_beside_a_user_turn_fact_stays_a_gate():
+    facts = _ended().intent.facts
+    world = I.World(STATE, "", facts, TOOLS)
+    told = {"id": "j1", "kind": "said", "values": ["seven"], "gate": True, "fact_ids": ["f1", "end2"]}
+    kept, why = world.check(told, {fact.id: fact for fact in facts})
+    assert why == "" and kept["gate"] is True and "weighed" not in kept
+
+
+def test_a_told_item_citing_only_end_facts_with_its_policy_line_stays_a_gate():
+    facts = _ended().intent.facts
+    line = "Tell the user the slot an item moves to."
+    world = I.World(STATE, line + "\n", facts, TOOLS)
+    told = {"id": "j1", "kind": "said", "values": ["seven"], "gate": True, "fact_ids": ["end2"], "policy_line": line}
+    kept, why = world.check(told, {fact.id: fact for fact in facts})
+    assert why == "" and kept["gate"] is True and "weighed" not in kept
 
 
 def test_a_called_gate_stands_only_where_its_policy_line_names_the_tool():

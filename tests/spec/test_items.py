@@ -313,6 +313,21 @@ def test_a_call_targets_the_rows_its_arguments_name_in_the_tables_it_writes():
     assert at.target_rows("update_item", {"item_id": "Z9"}) == set()
 
 
+def test_a_freeze_on_a_field_the_specs_own_write_expects_on_that_row_contradicts_naming_the_write():
+    frozen = {"id": "k1", "kind": "row_keeps", "table": "items", "find": {"item_id": "A1"}, "fields": ["slot"],
+              "fact_ids": ["f1"]}
+    found = I.contradictions(_kept(MOVE, frozen))
+    assert ("k1", "row_keeps holds slot of that row, which s1 changes; drop the freeze on that field or the write") \
+        in found and {item_id for item_id, _ in found} == {"k1"}
+
+
+def test_a_freeze_on_another_field_or_another_row_stands_beside_the_write():
+    label = {"id": "k1", "kind": "row_keeps", "table": "items", "find": {"item_id": "A1"}, "fields": ["label"],
+             "fact_ids": ["f1"]}
+    other = dict(label, id="k2", find={"item_id": "B2"}, fields=["slot"])
+    assert I.contradictions(_kept(MOVE, label, other)) == []
+
+
 def _event(item_id, kind, **extra):
     return dict({"id": item_id, "kind": kind, "tool": "update_item", "fact_ids": ["f1"]}, **extra)
 

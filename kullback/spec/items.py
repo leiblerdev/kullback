@@ -37,10 +37,11 @@ State items may name an alternative end state (`alt`); one without belongs to ev
 Run passes the state items when any one end state matches.
 A gated called item stands only where its policy line names the tool (D414): any other path is the
 agent's to choose, so the gate is weighed. Two gated calls of one tool contradict only when they write one
-existing row with an argument set two ways (`World.target_rows`, D440). A told item citing a fact of a
-scenario's end (`is_end_fact`) is a told item asked for. A said value that is one amount compiles to the
-shape the frozen Runner's substring match finds most widely (`said_shape`, D427); the item's description keeps
-the value as written.
+existing row with an argument set two ways (`World.target_rows`, D440). A told item citing only facts of a
+scenario's end (`is_end_fact`) and no policy line is weighed (D435): an end fact is never the user's word. A
+row_keeps beside a row_is on the same row expecting one of its fields contradicts it (D436). A said value that
+is one amount compiles to the shape the frozen Runner's substring match finds most widely (`said_shape`,
+D427); the item's description keeps the value as written.
 """
 
 from __future__ import annotations
@@ -235,6 +236,13 @@ def _untold(kept: dict, facts: list) -> bool:
         and not any(getattr(fact, "kind", None) == "told" or is_end_fact(fact) for fact in facts)
 
 
+def _end_told(kept: dict, facts: list) -> bool:
+    """Whether a told item (judge, said) rests on end facts alone and no policy line: only the scenario's end
+    names the telling, no user turn asks for it and no rule requires it (D435)."""
+    return kept.get("kind") in TOLD_KINDS and not kept.get("policy_line") \
+        and bool(facts) and all(is_end_fact(fact) for fact in facts)
+
+
 def names_tool(line: Any, tool: str) -> bool:
     """Whether a policy line names the tool, as written or with its underscores read as spaces."""
     text = _flat(line)
@@ -250,6 +258,8 @@ def _unfixed_path(kept: dict, facts: list) -> bool:
 
 # Why a told gate with no told fact and no policy line is weighed (D369).
 TELL_WEIGHED = "untold"
+# Why a told gate citing end facts alone and no policy line is weighed (D435).
+END_TOLD_WEIGHED = "end told"
 # Why a called gate whose policy line does not name its tool is weighed (D414).
 PATH_WEIGHED = "path not fixed"
 
@@ -272,6 +282,10 @@ _WEIGHINGS = (
      "gate weighed: it checks what the agent told the user, but no fact asks to be told it and no "
      "policy_line says the agent must tell it; it is scored, never gated. Gate it only citing a told "
      "fact or quoting the policy line that requires the telling"),
+    (_end_told, END_TOLD_WEIGHED,
+     "told gate weighed: only the end names it, no user turn asks to be told it and no policy_line says "
+     "the agent must tell it; it is scored, never gated. Gate it only citing a fact the user said or "
+     "quoting the policy line that requires the telling"),
     (_unfixed_path, PATH_WEIGHED,
      "gate weighed: a called gate stands only where its policy_line names that tool as the only way; any "
      "other path is the agent's to choose. Gate the outcome instead (the row the call changes or finds), "
@@ -1441,11 +1455,35 @@ def _gated_call_clashes(items: list[dict], named: list[tuple[str, str]]) -> list
     return repeats + _not_called_clashes(events, done | {item_id for item_id, _ in repeats})
 
 
+def _changes(item: dict, keep: dict) -> list[str]:
+    """The fields of a row_keeps that a row_is (expect) or row_new (where) of the same end state names on its
+    table and row."""
+    alts = (item.get("alt"), keep.get("alt"))
+    if (item["table"], item.get("row")) != (keep["table"], keep["row"]) or (None not in alts and alts[0] != alts[1]):
+        return []
+    named = {str(field).split(".")[0] for field in item.get("expect" if item["kind"] == "row_is" else "where") or {}}
+    return sorted({str(field).split(".")[0] for field in keep.get("fields") or []} & named)
+
+
+def _kept_changed(items: list[dict]) -> list[tuple[str, str]]:
+    """row_keeps items holding a field the Spec's own write changes on that row (`_changes`, D436). A row_new
+    mints its row, so it names a kept row only where it carries that row."""
+    out: list[tuple[str, str]] = []
+    writes = [item for item in items if item["kind"] in ("row_is", "row_new") and item.get("row") is not None]
+    for keep in [item for item in items if item["kind"] == "row_keeps"]:
+        changed = next(((item["id"], fields) for item in writes for fields in [_changes(item, keep)] if fields), None)
+        if changed:
+            out.append((keep["id"], f"row_keeps holds {', '.join(changed[1])} of that row, which {changed[0]} "
+                                    "changes; drop the freeze on that field or the write"))
+    return out
+
+
 def contradictions(items: list[dict], world: Optional[World] = None) -> list[tuple[str, str]]:
     """(item id, why) for items no Run can pass together: a tool both called and not, a tool gated as called
     with two different arg sets writing one row (D440; every pair with no World), a gated not_called beside a
     gated called, a gated event item repeated, one cell expected two ways neither of which implies the other,
-    two row_new whose where clauses overlap and cannot be one made row (D428, D440)."""
+    two row_new whose where clauses overlap and cannot be one made row (D428, D440), a freeze on a cell the
+    Spec's own write changes (D436)."""
     out: list[tuple[str, str]] = []
     needed = {}
     for item in items:
@@ -1458,6 +1496,7 @@ def contradictions(items: list[dict], world: Optional[World] = None) -> list[tup
             out.append((item["id"], f"not_called {item['tool']} beside {needed[item['tool']]}, which needs the call"))
     out += _called_arg_clashes(items, world)
     out += _gated_call_clashes(items, out)
+    out += _kept_changed(items)
     return out + cell_clashes(items) + new_row_overlaps(items)
 
 
@@ -1480,5 +1519,5 @@ def counts_of(items: list[dict]) -> dict:
 
 __all__ = ["CONFIRM_TURN", "DEFAULT_GATE", "EVENT_KINDS", "ITEM_KINDS", "Reach", "SANITY", "SANITY_ID", "STATE_KINDS",
            "UNREACHABLE", "World", "effect_reach", "reach_of_inputs", "recorded_reach", "atom_of", "because_of", "contradictions", "counts_of", "effect_rules", "end_states_of",
-           "expected_tools", "END_SOURCE", "RECORDS_SOURCE", "PATH_WEIGHED", "is_end_fact", "names_tool",
+           "expected_tools", "END_SOURCE", "END_TOLD_WEIGHED", "RECORDS_SOURCE", "PATH_WEIGHED", "is_end_fact", "names_tool",
            "said_shape", "norm", "sanity_atom", "sanity_item"]
