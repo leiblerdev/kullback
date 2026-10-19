@@ -13,7 +13,8 @@ Verifier, or a Task refused), no_verifier (the intent unclear:
 no Verifier for this Task, its `why` intent_unclear, never a check bent to pass), not_examined (no round's Examiner session ran over the Task),
 not_enough_truth (a not_enough_truth ruling open: the recordings never show what the user wants where
 the Verifier must decide), open_ruling (a ruling open, or the Task set aside by the router's rule),
-constructed_run_passed (a constructed Run passed, or none could be built: not shown to fail),
+held_by_idle (the scenario end names a write and every gate but the judge items holds on the do-nothing
+Run, D419), constructed_run_passed (a constructed Run passed, or none could be built: not shown to fail),
 no_base (the do-nothing Run fails but there is no base to lay the stray write on: the Verifier's end state
 cannot be built by code and no fresh Run passes it, so the sanity check was never tested; D375, was
 no_passing_run under D368), stray_untested (an untouched mutant of the sample was not killed; D347, D362). A
@@ -43,6 +44,7 @@ Sourced is enforced in the writer's tool, not here. Every row names the Runs it 
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from typing import Any, Iterable, NamedTuple, Optional
@@ -53,8 +55,9 @@ from kullback.gates.verifier_suite import empty_run
 from kullback.runner.atom_context import AtomContext
 from kullback.runner.canon import load_rules
 from kullback.runner.code_hash import CODE_HASH
-from kullback.runner.records import Run, Verifier, load_run_jsonl, read_json, read_jsonl
+from kullback.runner.records import Event, Run, Verifier, load_run_jsonl, read_json, read_jsonl
 from kullback.runner.replay import RECORDED
+from kullback.runner.verdict import verdict
 from kullback.spec import effects as effects_mod
 from kullback.spec.actions import action_tables_of, workdir_action_tools
 from kullback.spec.canfail import Outcome, outcome_of
@@ -66,6 +69,7 @@ from kullback.spec.router import (  # noqa: F401  (ROUNDS_CAP re-exported for re
     no_verifier_why,
 )
 from kullback.spec.schema import Spec, is_empty, load_spec, spec_ids, unchecked_asks
+from kullback.spec.ungated import write_facts
 from kullback.spec.writer import spec_verifier_path
 
 TRUSTED, UNTRUSTED = "trusted", "untrusted"
@@ -88,6 +92,10 @@ STRAY_UNTESTED = "stray_untested"
 NO_BASE = "no_base"
 # An ask of the user no gate item cites (D370): outside REASONS too, counted beside them.
 UNCHECKED_ASK = "unchecked_ask"
+# A Verifier whose scenario end names a write and whose code side (every gate but the judge items) holds on
+# the Run that does nothing (D419): only a judge item, which scores 0 on a silent Run, stands for the write.
+# Outside REASONS too, counted beside them.
+HELD_BY_IDLE = "held_by_idle"
 REASONS = (NO_INTENT, NOT_EXAMINED, NOT_ENOUGH_TRUTH, OPEN_RULING, CONSTRUCTED_RUN_PASSED, STRAY_UNTESTED)
 # The two constructed Runs, each of which must fail.
 CONSTRUCTED = ("do_nothing", "stray_write")
@@ -226,6 +234,26 @@ def _do_nothing(runs: list[Run]) -> Optional[Run]:
     return empty_run(base) if base is not None else None
 
 
+def idle_run(task_id: str, state: dict) -> Run:
+    """The Run that does nothing on a start state given as tables of rows (the Spec stage has no Run to copy)."""
+    stop = Event(idx=0, type="stop", payload={"start_state": copy.deepcopy(state), "end_state": copy.deepcopy(state)})
+    return Run(run_id=f"{task_id}.idle", task_id=task_id, events=[stop], termination_reason="max_turns")
+
+
+def held_by_idle(spec: Spec, verifier: Verifier, idle: Optional[Run], canon: Any = None,
+                 write_tools: Optional[Iterable[str]] = None, schema: Any = None) -> bool:
+    """Whether the Spec's end names a write (ungated.write_facts) and no gate of the code side (state, sanity and
+    event items; judge items left out) holds False on the Run that does nothing (D419). No idle Run, or one the
+    scorer cannot read, is not held."""
+    if idle is None or not write_facts(spec, write_tools):
+        return False
+    try:
+        result = verdict(idle, verifier, canon, None, write_tools=write_tools, schema=schema)
+    except Exception:  # a Run the scorer cannot read shows nothing either way
+        return False
+    return not any(item.gate and item.kind != "judge" and item.holds is False for item in result.items)
+
+
 def _judge(verifier: Verifier, run: Run, canon: Any, write_tools: Any, schema: Any = None,
            judge_results: Optional[dict] = None) -> Outcome:
     try:
@@ -347,7 +375,8 @@ def _flag(verdicts: dict[str, Outcome], run_ids: Iterable[str], every: bool) -> 
     return all(scored) if every else any(scored)
 
 
-def _untrusted_reason(spec: Spec, verifier: Verifier, gates: dict, constructed: dict) -> Optional[str]:
+def _untrusted_reason(spec: Spec, verifier: Verifier, gates: dict, constructed: dict,
+                      held: bool = False) -> Optional[str]:
     """The one reason the Task is not trusted, read in order, else None for trusted."""
     if is_empty(spec) or not spec.intent.facts or not verifier_items(verifier):
         return NO_INTENT
@@ -361,6 +390,8 @@ def _untrusted_reason(spec: Spec, verifier: Verifier, gates: dict, constructed: 
         return OPEN_RULING
     if unchecked_asks(spec):
         return UNCHECKED_ASK
+    if held:
+        return HELD_BY_IDLE
     if not all(gates[f"{name}_fails"] for name in constructed):
         return _constructed_reason(gates, constructed)
     return None
@@ -404,7 +435,8 @@ def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: I
     set_aside = set_aside_of(spec, rulings)
     gates = {f"{name}_fails": constructed[name]["failed"] for name in constructed}
     gates["no_open_ruling"] = spec.rulings_open == 0 and not set_aside
-    reason = _untrusted_reason(spec, verifier, gates, constructed)
+    held = held_by_idle(spec, verifier, _do_nothing(runs), canon, tools, schema)
+    reason = _untrusted_reason(spec, verifier, gates, constructed, held)
     failed_reference = next((run_id for run_id in kept if verdicts[run_id].failed), None)
     row = {"task_id": spec.task_id, "tier": UNTRUSTED if reason else TRUSTED, "reason": reason, "gates": gates,
            "constructed": constructed,
@@ -415,7 +447,7 @@ def tier_of_task(spec: Spec, verifier: Verifier, runs: Iterable[Run], rulings: I
            "runs_scored": sorted(verdicts), "fresh_runs": len(fresh),
            "fresh_passed": sorted(r for r in fresh if verdicts[r][0]),
            "judged_runs": sorted(set(judged) & set(verdicts)), "rulings_open": spec.rulings_open, "truth_open": spec.truth_open, "round": spec.round,
-           "set_aside": set_aside, "why": no_verifier_why(spec),
+           "set_aside": set_aside, "why": no_verifier_why(spec), HELD_BY_IDLE: held,
            "code_hash": CODE_HASH}
     return TaskTier(row["tier"], row)
 

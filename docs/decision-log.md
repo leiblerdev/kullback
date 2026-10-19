@@ -4266,3 +4266,45 @@ pass" are harness plumbing and mean nothing to a reader of the dataset. The gate
 only the package stops repeating them. Tests: tests/hub/test_publish.py (the viewer rows carry exactly id,
 instruction, stage, trusted, refused, bucket, replay_confirmed and recordings; the index and manifest name no
 reason a Task stopped).
+
+### D419. Every write a born Task's end names is gated by a differing cell, on every named column (2026-10-19)
+
+What. Three code checks in the Spec stage of a born Task (D414), each with its mark on Spec.writer and its count in
+the stage summary. The end's writes are the end facts an item ties to a change: a row_is or row_new citing the fact,
+or a called or before item on a write tool citing it (spec/ungated.write_facts). Rule 1 (ungated_writes): each write
+fact needs a gated row_is whose expected value differs from the cell the row holds at the start, or a gated row_new;
+a cell gated to its start value, a one_of holding it, a before item and a called item never count. Rule 2
+(ungated_values): every number, id or quoted value of the write fact's clause that is a value of the changed row's
+columns (its own cells, or what other rows of its table hold under the same keys, such as a leg or a line item)
+must appear in a gated state item's find, expect or where. After the writer's session, stage.write_from_intent
+calls ungated.send_back: findings of either rule go back once as one ruling (kind ungated_write) through the repair
+session the Examiner's rulings use (writer.repair, D331); what is still found is counted as writes_ungated and
+end_values_ungated with the findings by fact, and the Spec stands. Rule 3 is a trust gate with its own reason
+(spec/trust.held_by_idle, reason held_by_idle): a Verifier whose end names a write and whose code side (every gate
+but the judge items) holds on the Run that does nothing is not trusted; tier_of_task reads it on the do-nothing Run
+it already builds, and the Spec stage runs it after writing on an idle Run built from the start state
+(trust.idle_run) and marks the Spec held_by_idle. The writer's prompt gains one line on rules 1 and 2 in END_RULE
+and two lines in CHOICE_RULE: one judge question asks one thing and never names the answer it wants, and only a
+value the user asked for or the policy demands is gated.
+
+Why. Over the 210 born Tasks 20 of 123 Verifiers whose end names a write still held on the code side when the Run
+did nothing; by hand 5 were true misses (the written cell gated to its start value, softened to a one_of of it, or
+missing) with a vacuous before item on confirm_turn standing in for the gate. The top Examiner code in both corpora
+was derivation/unchecked_field: the end names a value of the changed row that no gate carries. The writer had these
+rules in words only; the Spec stage now holds them by code before the Examiner sees the Spec.
+
+What it does not do: the checks read the Spec and the end, never the Reference, so the writer stays blind (D369);
+the reach rule (D387), the end facts (D414) and the asked follow-up turn
+(D366) are unchanged, and nothing new is reachable. A send back that fails
+leaves the mark and never gates the start value. An end clause the writer ties to no state item and no write tool
+(a write it covered only by a judge item) is not seen as a write. The held_by_idle mark is the stage's reading at
+write time; trust reads the gate afresh on every ruling. Judge leading and unasked items stay the Examiner's
+(judge/leading, derivation/unasked_item); the writer is told them, no new code check. The born Specs on disk still
+lack the marks until a live re-spec (the effects mark of D417 is the precedent).
+
+Tests: tests/spec/test_ungated.py (a write gated to its start value goes back once and unrepaired is counted and
+marked; a one_of holding the start value or a before item is no gate of a write; a write gated by a differing row_is
+is not sent back; an end value of the changed row no gate carries is sent back then counted, and carried after the
+repair is not; the values a clause names are its quoted values and its tokens with a digit; a Verifier held by the
+idle Run is refused by the trust gate with its reason; the stage counts a Spec marked ungated and held by the idle
+Run; a Spec with no write end is untouched by all three; the writer is told each rule in words once).
