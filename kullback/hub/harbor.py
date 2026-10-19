@@ -867,8 +867,7 @@ def _counts(listed: list[dict], recorded: list[dict], skipped: dict) -> dict:
             "columns_pruned": sorted({name for row in listed for name in row.get("ids_dropped") or {}}),
             "tasks_with_ambiguous_column": count(lambda row: bool(row.get("ambiguous_columns"))),
             "ambiguous_columns": sorted({name for row in listed for name in row.get("ambiguous_columns") or ()}),
-            "cells_resolved": sum(len(row.get("cells_resolved") or ()) for row in listed),
-            "effects_allowed": sum(int(row.get("effects_allowed") or 0) for row in listed),
+            **repair.counts(listed),
             "by_tier_and_label": by_tier_and_label(recorded)}
 
 

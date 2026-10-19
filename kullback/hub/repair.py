@@ -83,6 +83,13 @@ def resolve_job(job: dict, verifier: Verifier, start: dict) -> Verifier:
     return verifier
 
 
+def counts(listed: Iterable[dict]) -> dict:
+    """The manifest's totals over the exported Tasks' rows: cells resolved (D431), allowed rules added (D432)."""
+    rows = list(listed)
+    return {"cells_resolved": sum(len(row.get("cells_resolved") or ()) for row in rows),
+            "effects_allowed": sum(int(row.get("effects_allowed") or 0) for row in rows)}
+
+
 # --- 2. the world's own effects (D432) -----------------------------------------------
 
 
@@ -174,5 +181,5 @@ def allow_effects(verifier: Verifier, effects: dict, oracle: Iterable[dict] = ()
     return verifier.model_copy(update={"expected": states}), len(added)
 
 
-__all__ = ["EFFECT_WHY", "FROM_FILE", "LEARNED_ABSENT", "LEARNED_STALE", "allow_effects", "indexed_path",
+__all__ = ["EFFECT_WHY", "counts", "FROM_FILE", "LEARNED_ABSENT", "LEARNED_STALE", "allow_effects", "indexed_path",
            "required_tools", "resolve_cells", "resolve_job", "tool_effects"]
