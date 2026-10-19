@@ -150,24 +150,32 @@ def unrenderable(verifier: Verifier, spec: Any) -> list[str]:
     return [atom.id for atom in verifier.atoms if _cited(atom) and _cited(atom) <= hidden]
 
 
+def _cells(targets: Iterable[dict]) -> set[tuple]:
+    """(table, row, field) of every cell the state items among `targets` expect."""
+    return {(t.get("table"), t.get("row"), field) for t in targets if t.get("kind") in STATE_ROW_KINDS
+            for field in t.get("expect") or {}}
+
+
+def _freed(state: Any, freed: set[tuple], gone: set[str], tables: list[str]) -> Any:
+    """One end state without the freed cells and the dropped new rows, which it now allows."""
+    allowed = [{"table": table, "row_id": row, "field": field, "why": UNRENDERABLE_WHY}
+               for table, row, field in sorted(freed, key=str)] + [{"table": table} for table in tables]
+    return state.model_copy(update={
+        "cells": [cell for cell in state.cells if (cell.table, cell.row_id, cell.field) not in freed],
+        "new_rows": [row for row in state.new_rows if row.get("item") not in gone],
+        "allowed": list(state.allowed) + allowed})
+
+
 def without_items(verifier: Verifier, dropped: Iterable[str]) -> Verifier:
     """The Verifier without the named items. A dropped state item's cells leave every end state and the cells
     become free, so a Run may leave the row as it was or move it; a dropped new row frees its table."""
     gone = set(dropped)
     kept = [atom for atom in verifier.atoms if atom.id not in gone]
     out = [atom.target or {} for atom in verifier.atoms if atom.id in gone]
-    held = {(t.get("table"), t.get("row"), field) for t in (atom.target or {} for atom in kept)
-            if t.get("kind") in STATE_ROW_KINDS for field in t.get("expect") or {}}
-    freed = {(t.get("table"), t.get("row"), field) for t in out if t.get("kind") in STATE_ROW_KINDS
-             for field in t.get("expect") or {}} - held
+    freed = _cells(out) - _cells(atom.target or {} for atom in kept)
     tables = sorted({str(t.get("table")) for t in out if t.get("kind") == "row_new"})
-    states = [state.model_copy(update={
-        "cells": [cell for cell in state.cells if (cell.table, cell.row_id, cell.field) not in freed],
-        "new_rows": [row for row in state.new_rows if row.get("item") not in gone],
-        "allowed": list(state.allowed) + [{"table": table, "row_id": row, "field": field, "why": UNRENDERABLE_WHY}
-                                          for table, row, field in sorted(freed, key=str)]
-        + [{"table": table} for table in tables]}) for state in verifier.expected]
-    return verifier.model_copy(update={"atoms": kept, "expected": states})
+    return verifier.model_copy(update={"atoms": kept,
+                                       "expected": [_freed(state, freed, gone, tables) for state in verifier.expected]})
 
 
 def _unprosed(value: Any) -> Any:
