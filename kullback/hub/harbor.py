@@ -46,6 +46,7 @@ from kullback.hub.harbor_world import DB_NAME, JUDGE_ENV, REPLY_TOOL, TASK_NAME,
 from kullback.hub.package import (
     CONTENT_MIN_LENGTH,
     FACTS_LEAD,
+    LATER_LEAD,
     LEAK_MIN_LENGTH,
     MANIFEST_NAME,
     WORLD_FILES,
@@ -53,6 +54,7 @@ from kullback.hub.package import (
     _baseline,
     _file_strings,
     _prose_index,
+    _spec,
     _strings,
     build_tag,
     content_hash,
@@ -64,10 +66,11 @@ from kullback.hub.package import (
     harness_text,
     kullback_version,
     opening,
+    rendered,
     task_ask,
     task_index,
 )
-from kullback.runner.records import Run, Verifier, read_json, write_json
+from kullback.runner.records import Run, Verifier, as_dict, read_json, write_json
 from kullback.runner.verdict import REWARD_SHAPE
 from kullback.runner.world.environment import BuiltEnvironment
 from kullback.spec.items import unreadable_path
@@ -124,6 +127,47 @@ def verifier_of(workdir: Path, task_id: str, synthetic: bool = False) -> Optiona
     else:
         candidates = [spec_verifier_path(workdir, task_id), workdir / "verifiers" / f"{task_id}.json"]
     return next((path for path in candidates if path.is_file()), None)
+
+
+# Why a dropped state item's cells are free in the shipped end states (D422).
+UNRENDERABLE_WHY = "dropped: rests only on facts the instruction does not render"
+STATE_ROW_KINDS = ("row_is", "row_keeps")
+
+
+def _cited(atom: Any) -> set[str]:
+    return {str(fact_id) for fact_id in ((atom.target or {}).get("from") or {}).get("fact_ids") or ()}
+
+
+def unrenderable(verifier: Verifier, spec: Any) -> list[str]:
+    """The ids of the items that cite facts and every one a fact the instruction does not render (D422): a
+    right Run cannot be told them, so they are dropped, not weighed. A scenario's end facts are what the Verifier
+    checks and no user says (D414), so an item on them stays; so does an item citing no fact."""
+    if spec is None:
+        return []
+    from kullback.spec.items import is_end_fact
+
+    hidden = {fact.id for fact in spec.intent.facts if not rendered(fact) and not is_end_fact(fact)}
+    return [atom.id for atom in verifier.atoms if _cited(atom) and _cited(atom) <= hidden]
+
+
+def without_items(verifier: Verifier, dropped: Iterable[str]) -> Verifier:
+    """The Verifier without the named items. A dropped state item's cells leave every end state and the cells
+    become free, so a Run may leave the row as it was or move it; a dropped new row frees its table."""
+    gone = set(dropped)
+    kept = [atom for atom in verifier.atoms if atom.id not in gone]
+    out = [atom.target or {} for atom in verifier.atoms if atom.id in gone]
+    held = {(t.get("table"), t.get("row"), field) for t in (atom.target or {} for atom in kept)
+            if t.get("kind") in STATE_ROW_KINDS for field in t.get("expect") or {}}
+    freed = {(t.get("table"), t.get("row"), field) for t in out if t.get("kind") in STATE_ROW_KINDS
+             for field in t.get("expect") or {}} - held
+    tables = sorted({str(t.get("table")) for t in out if t.get("kind") == "row_new"})
+    states = [state.model_copy(update={
+        "cells": [cell for cell in state.cells if (cell.table, cell.row_id, cell.field) not in freed],
+        "new_rows": [row for row in state.new_rows if row.get("item") not in gone],
+        "allowed": list(state.allowed) + [{"table": table, "row_id": row, "field": field, "why": UNRENDERABLE_WHY}
+                                          for table, row, field in sorted(freed, key=str)]
+        + [{"table": table} for table in tables]}) for state in verifier.expected]
+    return verifier.model_copy(update={"atoms": kept, "expected": states})
 
 
 def _unprosed(value: Any) -> Any:
@@ -506,7 +550,7 @@ def leak_scan(dataset: Path, raw_dir: Path, scanned: list[dict], *, min_length: 
 
 def _description(text: str) -> str:
     return next((line.strip("- ").strip() for line in text.splitlines()
-                 if line.strip() and line.strip() != FACTS_LEAD), "")
+                 if line.strip() and line.strip() not in (FACTS_LEAD, LATER_LEAD)), "")
 
 
 def _policy(env: BuiltEnvironment, task: Any, fallback: Optional[str]) -> Optional[str]:
@@ -535,6 +579,8 @@ class _Build:
     tiers: Optional[dict] = None
     # None where no label file was given: then no Task carries a label field.
     labels: Optional[dict] = None
+    # Where a Verifier with items dropped as unrenderable is written before it is laid (D422).
+    scratch: Optional[Path] = None
 
     @property
     def tool_names(self) -> set[str]:
@@ -654,9 +700,14 @@ def _job(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Optional[st
     if reason:
         return reason, {}
     verifier = Verifier.model_validate(read_json(verifier_path, {}))
+    dropped = [] if body is not None else unrenderable(verifier, _spec(build.workdir, task_id))
+    if dropped:
+        verifier = without_items(verifier, dropped)
+        verifier_path = write_json(Path(build.scratch or build.out) / "verifiers" / f"{task_id}.json", as_dict(verifier))
     folder = build.out / (SYNTHETIC_DIR if body is not None else "") / f"{build.name}-{task_id}"
     return None, {"task_id": task_id, "given": given, "verifier_path": verifier_path, "folder": folder,
-                  "metadata": _metadata(build, task_id, body is not None, given["index"], verifier),
+                  "metadata": dict(_metadata(build, task_id, body is not None, given["index"], verifier),
+                                   items_unrenderable=dropped),
                   "org": build.org, "out": build.out, "workdir": build.workdir, "wheel": build.wheel,
                   "tasks": build.tasks, "write_tools": set(build.env.write_tools())}
 
@@ -687,7 +738,7 @@ def _export_one(job: dict) -> tuple[Optional[str], dict, dict]:
     solve = folder / "solution" / "solve.sh"
     scanned = {"name": path, "task": job["task_id"], "world": folder / "environment" / WORLD_DIR,
                "facts": given["facts"] or [given["instruction"]], "label": str(metadata.get("label_gold_diff") or ""),
-               "instruction": given["instruction"], "policy": given["policy"], "verifier": job["verifier_path"],
+               "instruction": given["instruction"], "policy": given["policy"], "verifier": folder / "tests" / VERIFIER_NAME,
                "has_oracle": metadata["has_oracle"], "calls": calls,
                "reply": solve.read_text(encoding="utf-8") if solve.is_file() else ""}
     return None, listed, scanned
@@ -750,6 +801,9 @@ def _counts(listed: list[dict], recorded: list[dict], skipped: dict) -> dict:
             "confirm_gate": count(lambda row: row["confirm_gate"]),
             "skipped": skipped,
             "no_oracle": count(lambda row: row.get("has_oracle") is False),
+            # Items shipped nowhere because they rest only on facts the instruction does not render (D422).
+            "items_unrenderable": sum(len(row.get("items_unrenderable") or ()) for row in listed),
+            "tasks_with_items_unrenderable": count(lambda row: bool(row.get("items_unrenderable"))),
             "by_tier_and_label": by_tier_and_label(recorded)}
 
 
@@ -772,6 +826,8 @@ def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_o
         # Exported with no solution/: no Run passes on replay (D399). Masked, as left_out.
         "no_oracle": [{"task": row["kullback_task_id"][-MASK:], "reason": NO_ORACLE}
                       for row in listed if row.get("has_oracle") is False],
+        "items_unrenderable": [{"task": row["kullback_task_id"][-MASK:], "items": row["items_unrenderable"]}
+                               for row in listed if row.get("items_unrenderable")],
         "tasks": recorded,
         "synthetic": [row for row in listed if row["origin"] == "synthetic"],
         # Masked to the last four characters, as every report masks a Task id.
@@ -856,7 +912,7 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
         build = _Build(workdir=workdir, out=out, name=name or workdir.resolve().name, org=org, env=env, rows=rows,
                        classes=reference_classes(workdir) or {}, runs=runs_on_disk(workdir), policy=policy,
                        tag=build_tag(workdir), sha=git_sha(), wheel=wheel or build_wheel(Path(scratch)),
-                       tasks=tasks, tiers=tier_rows, labels=label_rows)
+                       tasks=tasks, tiers=tier_rows, labels=label_rows, scratch=Path(scratch))
         work = [(task_id, None) for task_id in chosen] + list(synthetic.items())
         listed, scanned, skipped, no_oracle = _lay_all(build, work, workers)
     found = leak_scan(out, workdir / "raw", scanned) if scan else {"leaks": 0, "skipped": True}

@@ -403,6 +403,8 @@ def _intent_text(workdir: Path, task_id: str) -> Optional[str]:
 
 # How the user's one message opens when it lists what they volunteered.
 FACTS_LEAD = "A user writes in. What they tell you, one line each:"
+# The lead of what the user said later in the recording: on request, or after a refusal or a proposal (D422).
+LATER_LEAD = "What they tell you later, when you ask or when what they first asked for cannot be done:"
 # The stance an Intent fact has when it is the user's own ask (spec/schema.py IntentFact).
 ASKED = "volunteered"
 
@@ -414,23 +416,45 @@ def _spec(workdir: Path, task_id: str) -> Optional[Spec]:
         return None
 
 
-def asked_facts(spec: Optional[Spec]) -> list[str]:
-    """The Intent facts the user volunteered, as the user would say them: no echo of the agent, nothing ruled out,
-    and no fact of a scenario's end, which no user said (D414)."""
+class AskedFacts(list):
+    """The fact lines an instruction renders, the volunteered ones first; `later` counts those at the end the
+    user said later (stance fallback or accepted), which render under LATER_LEAD."""
+
+    def __init__(self, first: Iterable[str] = (), later: Iterable[str] = ()) -> None:
+        later = list(later)
+        super().__init__([*first, *later])
+        self.later = len(later)
+
+
+def rendered(fact: Any) -> bool:
+    """Whether the instruction carries this Intent fact: any stance, but no echo of the agent, nothing ruled
+    out, no fact of a scenario's end, which no user said (D414), and no empty text (D422)."""
     from kullback.spec.items import is_end_fact
 
+    return not fact.echo and not fact.unfounded and not is_end_fact(fact) and bool(fact.text.strip())
+
+
+def asked_facts(spec: Optional[Spec]) -> AskedFacts:
+    """The Intent facts the user said, as the user would say them (`rendered`): the volunteered ones, then what
+    they said on request or after a refusal or proposal (D422). A value given when asked is the user's value."""
     if spec is None:
-        return []
-    return [fact.text.strip() for fact in spec.intent.facts
-            if fact.stance == ASKED and not fact.echo and not fact.unfounded and not is_end_fact(fact)
-            and fact.text.strip()]
+        return AskedFacts()
+    said = [fact for fact in spec.intent.facts if rendered(fact)]
+    return AskedFacts([fact.text.strip() for fact in said if fact.stance == ASKED],
+                      [fact.text.strip() for fact in said if fact.stance != ASKED])
 
 
 def opening(facts: list[str], intent: Optional[str]) -> Optional[str]:
-    """The user's one message: the volunteered facts, one line each, else the Task's Intent text."""
-    if facts:
-        return "\n".join([FACTS_LEAD, *[f"- {fact}" for fact in facts]])
-    return intent.strip() if intent and intent.strip() else None
+    """The user's one message: the volunteered facts, one line each, then the later ones under LATER_LEAD, else
+    the Task's Intent text."""
+    if not facts:
+        return intent.strip() if intent and intent.strip() else None
+    later = getattr(facts, "later", 0)
+    first, rest = list(facts)[:len(facts) - later], list(facts)[len(facts) - later:]
+    lines = [FACTS_LEAD, *[f"- {fact}" for fact in first]]
+    if rest:
+        lines += ["", LATER_LEAD, *[f"- {fact}" for fact in rest]]
+    return "\n".join(lines)
 
 
 def task_ask(workdir: Path, task_id: str, record: Any) -> tuple[list[str], Optional[str]]:

@@ -1351,7 +1351,9 @@ def export(
                       workers=workers, **_harbor_options(tasks, tiers, labels, labels_rubric))
         counts = laid["counts"]
         typer.echo(f"{counts['exported']} Harbor tasks ({counts['needs_judge']} need a judge, "
-                   f"{counts['synthetic']} synthetic), skipped {counts['skipped'] or 'none'}; leak scan "
+                   f"{counts['synthetic']} synthetic), skipped {counts['skipped'] or 'none'}; "
+                   f"{counts.get('items_unrenderable', 0)} items unrenderable in "
+                   f"{counts.get('tasks_with_items_unrenderable', 0)} Tasks; leak scan "
                    f"{laid['leak_scan'].get('leaks', 0)} recorded strings, {laid['leak_scan'].get('value_echoes', 0)} "
                    "value echoes")
         typer.echo(str(Path(out) / "manifest.json"))
@@ -1408,7 +1410,8 @@ def publish(
     if manifest.get("harbor"):
         laid = manifest["harbor"]
         typer.echo(f"harbor: {laid.get('tasks_chosen')} Tasks, {laid['counts']['exported']} exported, "
-                   f"skipped {laid['counts']['skipped'] or 'none'}; by tier and label "
+                   f"skipped {laid['counts']['skipped'] or 'none'}; "
+                   f"{laid['counts'].get('items_unrenderable', 0)} items unrenderable; by tier and label "
                    f"{json.dumps(laid['counts'].get('by_tier_and_label') or {}, sort_keys=True)}; leak scan "
                    f"{laid['leak_scan'].get('leaks', 0)} recorded strings")
     typer.echo(f"{manifest.get('status', 'preview')} at {hosted.url}, tag {hosted.tag}")

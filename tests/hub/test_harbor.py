@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from kullback.hub import harbor, harbor_world
+from kullback.hub import harbor, harbor_world, package
 from kullback.hub.client import LocalHub
 from kullback.hub.package import HARBOR_DIR, verify_package
 from kullback.runner.records import ItemResult, read_json, write_json
@@ -26,6 +26,9 @@ from kullback.spec.trust import runs_on_disk
 from tests.episode.invented import SCRIPTED_RENAME, write_env
 
 TASK = "widget_task"
+# The fixture Spec's ask: the volunteered fact, then the accepted one under the later lead; the echo never (D422).
+ASK = (f"{package.FACTS_LEAD}\n- wants widget w1 to carry the label striped\n\n{package.LATER_LEAD}\n"
+       "- agreed to a label the agent proposed")
 EXPECTED = [{"cells": [{"table": "widgets", "row_id": "w1", "field": "label", "value": "striped"}]}]
 
 
@@ -112,11 +115,13 @@ def test_an_untrusted_task_is_left_out_by_default_and_exported_with_all(tmp_path
     assert harbor.export_harbor(workdir, tmp_path / "b", name="w", wheel=wheel, tasks="all")["counts"]["exported"] == 1
 
 
-def test_the_instruction_says_only_what_the_user_volunteered_then_the_policy_and_the_tools(dataset):
+def test_the_instruction_says_what_the_user_volunteered_then_what_they_said_later_never_the_echo_then_policy_and_tools(
+        dataset):
     out, _ = dataset
     text = (out / "widgets-widget_task" / "instruction.md").read_text()
-    assert "wants widget w1 to carry the label striped" in text
-    assert "proposed" not in text and "only the agent said" not in text
+    first, later = text.split(package.LATER_LEAD)
+    assert "wants widget w1 to carry the label striped" in first and "proposed" not in first
+    assert "- agreed to a label the agent proposed" in later and "only the agent said" not in text
     assert "Be helpful with widgets." in text and "tools call <name>" in text and "reply_to_user" in text
 
 
@@ -920,7 +925,7 @@ def test_the_package_ships_the_same_ask_as_the_harbor_instruction_for_a_task_wit
     manifest = package.export(workdir, tmp_path / "package", name="widgets", preview=True)
     instruction = (tmp_path / "harbor" / "widgets-widget_task" / "instruction.md").read_text(encoding="utf-8")
     ask = read_json(tmp_path / "package" / "tasks" / f"{TASK}.json")["intent"]
-    assert ask == f"{package.FACTS_LEAD}\n- wants widget w1 to carry the label striped"
+    assert ask == ASK
     assert instruction.startswith(ask + "\n")
     row = json.loads((tmp_path / "package" / package.TASKS_ROWS_NAME).read_text(encoding="utf-8").splitlines()[0])
     assert row["instruction"] == ask and manifest["without_ask"] == 0
@@ -938,7 +943,7 @@ def test_end_facts_of_a_born_task_never_reach_the_package_ask_or_the_harbor_inst
     harbor.export_harbor(workdir, tmp_path / "harbor", name="widgets", wheel=_wheel(tmp_path))
     package.export(workdir, tmp_path / "package", name="widgets", preview=True)
     ask = read_json(tmp_path / "package" / "tasks" / f"{TASK}.json")["intent"]
-    assert ask == f"{package.FACTS_LEAD}\n- wants widget w1 to carry the label striped"
+    assert ask == ASK
     instruction = (tmp_path / "harbor" / "widgets-widget_task" / "instruction.md").read_text(encoding="utf-8")
     assert "carries the label striped;" not in instruction and "is told it is striped" not in instruction
 
@@ -954,3 +959,60 @@ def test_a_task_with_neither_a_spec_intent_nor_intent_text_ships_an_empty_ask_an
     assert read_json(tmp_path / "package" / "tasks" / f"{TASK}.json")["intent"] == ""
     row = json.loads((tmp_path / "package" / package.TASKS_ROWS_NAME).read_text(encoding="utf-8").splitlines()[0])
     assert row["instruction"] == "" and manifest["without_ask"] == 1
+
+
+# --- what the user said later reaches the instruction; an item it cannot satisfy never ships (D422) ---
+
+
+def _said(*facts: IntentFact) -> str:
+    return package.opening(package.asked_facts(Spec(task_id=TASK, intent=SpecIntent(task_id=TASK, facts=list(facts)))),
+                           None) or ""
+
+
+def test_a_detail_the_user_gave_when_the_agent_asked_reaches_the_instruction():
+    text = _said(_fact("f1", "wants widget w1 relabelled", kind="do"),
+                 _fact("f2", "badge number is 00000", stance="fallback", condition="world_or_policy"),
+                 _fact("f3", "account name is ann_0000", stance="accepted"))
+    assert "- badge number is 00000" in text and "- account name is ann_0000" in text
+
+
+def test_a_fallback_ask_reaches_the_instruction_under_the_later_lead_after_the_volunteered_ones():
+    text = _said(_fact("f2", "wants widget w1 removed instead if the label cannot change", stance="fallback",
+                       kind="do", condition="world_or_policy"),
+                 _fact("f1", "wants widget w1 to carry the label striped", kind="do"))
+    first, later = text.split(package.LATER_LEAD)
+    assert "- wants widget w1 to carry the label striped" in first
+    assert later.strip() == "- wants widget w1 removed instead if the label cannot change"
+
+
+def test_an_instruction_with_only_volunteered_facts_has_no_later_lead():
+    assert package.LATER_LEAD not in _said(_fact("f1", "wants widget w1 to carry the label striped"))
+
+
+UNRENDERED = [{"id": "keep", "kind": "allowed", "gate": True, "description": "w1 holds the label",
+               "target": {"kind": "row_is", "table": "widgets", "row": "w1", "expect": {"label": "striped"},
+                          "from": {"fact_ids": ["f3"], "policy_line": None}}},
+              {"id": "named", "kind": "allowed", "gate": True, "description": "rename_widget is called",
+               "target": {"kind": "called", "tool": "rename_widget", "from": {"fact_ids": ["f1", "f3"],
+                                                                              "policy_line": None}}},
+              JUDGE_WEIGHTED[0]]
+
+
+def test_an_item_resting_only_on_unrendered_facts_is_dropped_its_cell_freed_and_counted(tmp_path):
+    workdir = _workdir(tmp_path / "work", atoms=UNRENDERED)
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path))
+    shipped = read_json(tmp_path / "out" / "widgets-widget_task" / "tests" / harbor.VERIFIER_NAME)
+    assert [atom["id"] for atom in shipped["atoms"]] == ["named", "a1"]
+    state = shipped["expected"][0]
+    assert not state["cells"]
+    assert {"table": "widgets", "row_id": "w1", "field": "label", "why": harbor.UNRENDERABLE_WHY} in state["allowed"]
+    assert manifest["counts"]["items_unrenderable"] == 1 and manifest["counts"]["tasks_with_items_unrenderable"] == 1
+    assert manifest["items_unrenderable"] == [{"task": TASK[-4:], "items": ["keep"]}]
+    assert manifest["tasks"][0]["items_unrenderable"] == ["keep"] and manifest["tasks"][0]["has_oracle"]
+
+
+def test_a_verifier_with_nothing_unrendered_ships_byte_for_byte(dataset, tmp_path):
+    out, manifest = dataset
+    source = tmp_path / "work" / "verifiers" / f"{TASK}.json"
+    assert (out / "widgets-widget_task" / "tests" / harbor.VERIFIER_NAME).read_bytes() == source.read_bytes()
+    assert manifest["counts"]["items_unrenderable"] == 0 and manifest["items_unrenderable"] == []
