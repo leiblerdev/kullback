@@ -44,7 +44,7 @@ from kullback.runner.records import (
 from kullback.runner.world.loading import OVERLAY_DIR
 from kullback.spec import intent_tools
 from kullback.spec.writer import born_path
-from kullback.synth.records import FORMAT, Scenario, load_scenarios
+from kullback.synth.records import FORMAT, Scenario, bound_keys, load_scenarios
 from kullback.synth.rule import world_of
 from kullback.user.rules import derive_user_rules
 
@@ -180,7 +180,7 @@ def _bound_leaves(root: Path, binding: dict) -> list[tuple[str, list[tuple[str, 
     """Each bound row the world holds, as its key and its columns and nested leaves in schema order."""
     state = world_of(root).state
     out = []
-    for table, key in (binding or {}).items():
+    for table, key in bound_keys(binding):
         rows = state.get(str(table))
         row = rows.get(str(key)) if isinstance(rows, dict) else None
         if isinstance(row, dict):

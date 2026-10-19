@@ -16,6 +16,7 @@ from typing import Any, Iterable, Optional
 
 from kullback.runner.records import read_json
 from kullback.spec import intent_tools
+from kullback.synth.records import bound_keys
 
 TOOL_NAME = "tool_name"
 ID_SHAPE = "id_shape"
@@ -129,7 +130,7 @@ def _leaves(node: Any) -> Iterable[str]:
 def row_values(world: World, binding: dict) -> set[str]:
     """Every value the bound rows hold outside the world's keys, as words: the words the id rule spares (D411)."""
     keys = {str(key).lower() for rows in world.state.values() if isinstance(rows, dict) for key in rows}
-    bound = [world.state.get(str(table), {}).get(str(key)) for table, key in (binding or {}).items()
+    bound = [world.state.get(str(table), {}).get(str(key)) for table, key in bound_keys(binding)
              if isinstance(world.state.get(str(table)), dict)]
     out = {word for text in _leaves(bound) for word in (text.lower(), *(w.strip(_EDGE).lower() for w in text.split()))}
     return {word for word in out if word and word not in keys}

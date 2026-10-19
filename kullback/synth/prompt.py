@@ -50,7 +50,9 @@ _EXAMPLES = {
                       "tool it needs and each row you looked up; a scenario whose requires is not empty is "
                       "never feasible yes. feasible no needs missing: the tool or the kind of row this world "
                       'lacks. A scenario that says again what another says takes "repeat_of": "sc_<other id>" '
-                      "and ends struck."),
+                      'and ends struck. An end that leaves the outcome to a choice the customer makes in the '
+                      'conversation takes "end_outcome": "choice" and goes back to the generator; an end naming one '
+                      'outcome, the rows changed or nothing changed, is "one", the default.'),
     "fix_scenario": ('fix_scenario: send a scenario back to the generator once, e.g. {"id": "sc_<id>", "quote": '
                      '"<the wrong words of the statement, copied exactly>", "why": "<why they are wrong>", '
                      '"change": "<what they should say instead, or what to look up>"}. A second request on one '
@@ -81,7 +83,9 @@ def examples_section() -> str:
             "unsure: the evidence is split, or the world may serve it only through a path you cannot confirm.\n"
             "repeat: the scenario says what another scenario already says in other words (repeat_of names it).\n"
             "send back: the words say a value the bound rows do not hold, or join two situations; quote those "
-            "words, say why, and say what they should say instead or what to look up.")
+            "words, say why, and say what they should say instead or what to look up.\n"
+            "choice: the end says the row changes if the customer agrees and nothing changes if not; the outcome "
+            "is left to the conversation (end_outcome choice).")
 
 
 def choice_section() -> str:

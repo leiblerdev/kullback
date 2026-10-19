@@ -20,7 +20,8 @@ requires is open. Then any unsure puts it on the human queue with the open quest
 an Environment finding carrying the scenario's requires and binding, the order to build, and ends it
 infeasible, never a drop; occurs yes and feasible yes passes. `fix_scenario` sends a scenario back to
 the generator with the words it quotes, why and the change; the generator rewrites it once from the
-same source, and a second request on the same scenario ends it unsure.
+same source, and a second request on the same scenario ends it unsure. A verdict ruling the end a choice left to
+the conversation (end_outcome choice, a ruling code) sends the scenario back the same way, quoting its end (D420).
 """
 
 from __future__ import annotations
@@ -136,6 +137,9 @@ class RuleArgs(Strict):
         'For feasible yes: "tool:<name>" for each tool it needs, "row:<table>:<key>" for each row you looked up.'))
     missing: str = Field(default="", description="When feasible is no: the tool or the kind of row that is missing.")
     repeat_of: str = Field(default="", description="The id of another scenario this one says again; it ends struck.")
+    end_outcome: Literal["one", "choice"] = Field(default="one", description=(
+        "one where the end names one outcome (the rows changed, or nothing changes); choice where it leaves the "
+        "outcome to a choice in the conversation, which sends the scenario back."))
     text: str = Field(description="Why, in one or two sentences.")
 
 
@@ -250,12 +254,19 @@ def _repeat(root: ReviewRoot, record: R.Scenario, args: RuleArgs) -> Rows:
     return _filed(root, record, {"kind": "verdict", **args.model_dump(exclude={"id"})})
 
 
+CHOICE_WHY = "the end leaves the outcome to a choice in the conversation (D420)"
+CHOICE_CHANGE = "name one outcome: the rows changed and their new values, or that nothing changes and why"
+
+
 def ruled(root: ReviewRoot, args: RuleArgs) -> Rows:
     """The verdict on the record, its cite's evidence row on this scenario alone; refused with why where the
     cite, the checked entries or `missing` do not hold."""
     record = _record(root, args.id)
     if args.repeat_of:
         return _repeat(root, record, args)
+    if args.end_outcome == "choice":
+        return sent_back(root, FixArgs(id=record.id, quote=record.end or record.statement, why=CHOICE_WHY,
+                                       change=CHOICE_CHANGE))
     evidence = cited(root, args)
     if args.occurs == "yes" and evidence is None:
         raise ValueError(f"occurs yes needs {CITE}")

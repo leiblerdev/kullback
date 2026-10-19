@@ -22,17 +22,16 @@ def _run(tools, name, **args):
     return asyncio.run(tool.execute(tool.args_model(**args)))
 
 
-def test_reuse_across_sessions_is_allowed_and_list_scenarios_marks_the_scenarios_of_this_session(tmp_path):
+def test_list_scenarios_in_the_fix_session_marks_the_scenarios_of_this_session(tmp_path):
     workdir = make_workdir(tmp_path)
     earlier = R.born("Ada Byron wants a widget moved", R.Source(kind="recordings", task_ids=["task-a1"]), frequency=1)
     R.write_all(workdir, [earlier])
     now = R.born("Ada Byron wants a sealed widget swapped", R.Source(kind="recordings", task_ids=["task-b2"]),
                  frequency=1)
-    root = T.GenerateRoot(world=World(workdir=workdir), kind="recordings", found=[now])
+    root = T.GenerateRoot(world=World(workdir=workdir), kind="fix", found=[now])
     listed = _run(T.generate_tools(root), "list_scenarios")
     assert listed.summary == "2 scenarios, 1 of this session"
     assert [(row["id"], row["this_session"]) for row in listed.rows] == [(earlier.id, False), (now.id, True)]
-    assert "used in earlier sessions may be used again" in generate_prompt.RULE
 
 
 def test_a_search_says_how_many_keys_match_and_a_missing_key_shows_the_key_shape_and_two_samples(tmp_path):
@@ -45,10 +44,11 @@ def test_a_search_says_how_many_keys_match_and_a_missing_key_shows_the_key_shape
     assert json.loads(_run(tools, "lookup_rows", table="spots", key="R001").summary) == {"place": "north"}
 
 
-def test_the_rule_asks_for_requires_only_when_a_search_shows_no_row_fits_and_binds_whoever_holds_the_rows():
-    assert "Write requires only when a search shows no row of the world fits" in generate_prompt.RULE
-    assert "whichever customer holds them" in generate_prompt.RULE
-    assert "What the world lacks for this situation goes into requires" not in generate_prompt.RULE
+def test_the_rule_writes_onto_the_slice_asks_for_no_requires_and_one_outcome_in_the_end():
+    rule = generate_prompt.RULE
+    assert "Write each scenario onto its own slice" in rule and "The slice is the world" in rule
+    assert "requires" not in rule and "names one outcome" in rule
+    assert "never an outcome left to a choice the customer makes in the conversation" in rule
 
 
 def test_the_id_rule_spares_a_value_of_a_bound_row_and_a_refusal_names_the_word_that_matched(tmp_path):

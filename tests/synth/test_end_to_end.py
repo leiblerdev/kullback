@@ -9,6 +9,7 @@ import re
 from typer.testing import CliRunner
 
 from kullback import cli
+from kullback.agent.loop import UNFINISHED_ASKS
 from kullback.ai.provider import ModelReply, TestModel
 from kullback.runner.records import read_json
 from kullback.synth import records as R
@@ -16,7 +17,7 @@ from kullback.synth import report as T
 from kullback.synth import review as V
 from kullback.synth.generate import generate
 from kullback.synth.plan import situation_id
-from tests.synth.fixture import BOUND, REFUSE, URL, call, make_workdir, planned, web
+from tests.synth.fixture import REFUSE, URL, call, make_workdir, planned, web
 
 SPAN = "Customers often ask to move a widget after it has been sealed."
 PLAIN = "a holder wants a widget moved to another slot"
@@ -38,11 +39,12 @@ def _generator_model() -> TestModel:
     """Four sessions: the plan, a batch of openings, the web, a batch of typed lines."""
     return TestModel([
         *planned((PLAIN, [0]), (VAGUE, [1, 2])),
-        _write("m0", PLAIN, "recordings", situation=situation_id(PLAIN), binding=BOUND),
-        _write("m1", VAGUE, "recordings", situation=situation_id(VAGUE), binding=BOUND),
+        _write("m0", PLAIN, "recordings", situation=situation_id(PLAIN)),
+        _write("m1", VAGUE, "recordings", situation=situation_id(VAGUE)),
         ModelReply(content="Wrote two."),
         call("search", {"query": "what holders ask about sealed widgets"}, "s0"), call("read_page", {"url": URL}, "s1"),
-        _write("s2", SEALED, "search", url=URL, span=SPAN, binding=BOUND, kind="change"), ModelReply(content="Wrote one."),
+        _write("s2", SEALED, "search", url=URL, span=SPAN, openings=[0], kind="change"),
+        *[ModelReply(content="Wrote one.")] * (1 + UNFINISHED_ASKS),
         _write("a0", WHICH, "ask", openings=[0]), _write("a1", PAINT, "ask", openings=[1]),
         ModelReply(content="Wrote two.")])
 
@@ -140,3 +142,80 @@ def test_both_scenario_verbs_refuse_without_a_model_and_name_the_option(tmp_path
     for verb in ("scenarios", "review"):
         result = CliRunner().invoke(cli.app, ["synth", verb, str(workdir)])
         assert result.exit_code == 2 and "--model" in result.output
+
+
+# Six variants per situation, each a sentence of its own, so no two written statements nearly repeat.
+VARIANTS = (("a mover not yet verified asks first", "two mail addresses send one request",
+             "the request names last spring's slot", "a deadline of tonight comes with it",
+             "a neighbour calls on behalf of someone", "the request arrives in a hurried voice note"),
+            ("an angry note demands it anyway", "a manager is asked for an exception",
+             "replacement is refused outright by them", "proof of sealing gets questioned loudly",
+             "they threaten to close their account", "a refund gets offered instead"),
+            ("only the colour is remembered", "several widgets share one name here",
+             "an old receipt lists another number", "slot labels were changed recently",
+             "they spell their own name differently", "a child asks for their parent"))
+
+
+class _SliceWriter(TestModel):
+    """A scripted generator that plans three situations of six variants each, then writes one scenario per item
+    its session's opening lists, onto that item's slice."""
+
+    def __init__(self) -> None:
+        super().__init__([ModelReply(content="unused")])
+        self.openings: list[str] = []
+
+    def query(self, messages, tools=None, config=None):
+        self.calls.append({"messages": messages, "tools": tools, "config": config})
+        if any(message["role"] == "assistant" for message in messages):
+            return ModelReply(content="Wrote them.")
+        if "write_situation" in {tool["name"] for tool in tools or ()}:
+            return self._situations()
+        opening = next(message["content"] for message in messages if message["role"] == "user")
+        self.openings.append(opening)
+        return self._scenarios(opening)
+
+    @staticmethod
+    def _situations() -> ModelReply:
+        rows = enumerate(((PLAIN, "change"), (SEALED, "refusal"), (WHICH, "question")))
+        return ModelReply(tool_calls=[call("write_situation", {"statement": text, "kind": kind, "openings": [at],
+                                                               "variants": list(VARIANTS[at])}, f"p{at}").tool_calls[0]
+                                      for at, (text, kind) in rows])
+
+    @staticmethod
+    def _scenarios(opening: str) -> ModelReply:
+        items = [json.loads(line.split(": ", 1)[1]) for line in opening.splitlines() if re.match(r"item \d+: ", line)]
+        return ModelReply(tool_calls=[call("write_scenario", {
+            "statement": item["variant"] or item["statement"], "source": "recordings", "situation": item["situation"],
+            "variant": item["variant"], "policy_lines": [item["policy_line"]], "ask": "Please help me with my widget.",
+            "end": "Nothing changes, since the policy does not allow it."}, f"w{item['number']}").tool_calls[0]
+            for item in items])
+
+
+def _tool_names(calls: list[dict]) -> set[str]:
+    return {tool["name"] for call_ in calls for tool in call_["tools"] or ()}
+
+
+def _kept_shape(kept: list[R.Scenario]) -> dict:
+    """What the kept scenarios are bound to and spread over."""
+    return {"owners": {key for record in kept for key in R.listed(record.binding)["holder_rows"]},
+            "situations": len({record.situation for record in kept}),
+            "lines per scenario": {len(record.policy_lines) for record in kept},
+            "lines": len({line for record in kept for line in record.policy_lines})}
+
+
+def _openings_shape(model: _SliceWriter) -> dict:
+    """How many slice sessions opened and whether each opening carries its items and slices."""
+    marks = ("slice:", "holder_rows holder_7: ", "item 0: ")
+    writers = [call_ for call_ in model.calls if "write_scenario" in _tool_names([call_])]
+    return {"sessions": len(model.openings), "marked": all(m in o for o in model.openings for m in marks),
+            "listing tools": _tool_names(writers) & {"list_scenarios", "list_plan", "lookup_rows", "search_rows"}}
+
+
+def test_twenty_scenarios_are_written_onto_slices_through_the_rounds_each_bound_to_its_owner(tmp_path):
+    workdir = make_workdir(tmp_path)
+    model = _SliceWriter()
+    body = generate(workdir, model=model, sources=("recordings",), target=20)
+    kept = R.load_scenarios(workdir)
+    assert (len(kept), body["stop"], body["rounds"][0]["kept"]) == (21, "target", 21)
+    assert _kept_shape(kept) == {"owners": {"holder_7"}, "situations": 3, "lines per scenario": {1}, "lines": 3}
+    assert _openings_shape(model) == {"sessions": 5, "marked": True, "listing tools": set()}
