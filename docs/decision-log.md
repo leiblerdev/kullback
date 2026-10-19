@@ -4416,3 +4416,30 @@ in every Task's db.json. The bug-1019 repro test stays failing, marked xfail wit
 
 Tests: tests/builder/test_world_tools.py (the world report counts listed ids that name no row of the table they
 key; derive_world writes the count into the world report).
+
+### D422. The Harbor instruction says what the user said later, and ships no item it cannot satisfy (2026-10-19)
+
+What. `asked_facts` renders every Intent fact the user said, whatever its stance, keeping out only the agent's
+echo, facts ruled unfounded, a scenario's end facts (D414) and empty text. The volunteered facts come first under
+the opening lead; the facts the user said on request or after a refusal or proposal (stance fallback or accepted)
+follow under one general lead, "What they tell you later, when you ask or when what they first asked for cannot be
+done:". The package's viewer rows and the Harbor instruction.md still both come from `opening(asked_facts(spec))`.
+The Harbor export then drops every item that cites facts and only facts the instruction does not render (dropped,
+never weighed: a pass counts at reward 1, so a weighted item a right Run cannot satisfy fails it as a gate would). A
+dropped state item's cells leave every end state and become free, so a Run may leave the row or move it; a dropped
+new row frees its table. An item citing no fact, or citing an end fact, stays. The shipped Verifier is the source
+file byte for byte when nothing is dropped. The manifest carries the dropped item ids per Task
+(`items_unrenderable`), their count and the Tasks touched in counts, the masked list per package, and the export
+and publish report lines say the count.
+
+Why. The miner labels a value the user gave when the agent asked (an identity detail) and an ask said after a
+refusal ("then do this instead") as fallback or accepted. The instruction carried only volunteered facts, the
+Harbor user can only consent, and the Verifier still gated on those facts: 94 of 187 scored fails of the bench run
+were touched, 55 decisive (bug-1019 Bugs 1 and 2, attr-1019). With every said fact rendered, the drop is a guard:
+it removes only items that rest on the agent's echo or on facts ruled unfounded.
+
+Tests: tests/hub/test_harbor.py (a detail the user gave when the agent asked reaches the instruction; a fallback ask
+reaches the instruction under the later lead after the volunteered ones; an instruction with only volunteered facts
+has no later lead; the instruction says what the user volunteered, then what they said later, never the echo; an
+item resting only on unrendered facts is dropped, its cell freed and counted; a Verifier with nothing unrendered
+ships byte for byte).
