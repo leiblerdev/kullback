@@ -27,6 +27,12 @@ a write tool's result in a recording of the Task shows it there, the user's own 
 row holds it under that field name. A gated row_is or row_new naming any other
 value is refused with the field's reachable values; a weighed one is kept with the same finding as a
 warning. Nulls and `not` sets are never checked. A World built without a `Reach` checks nothing here.
+What licenses a value the user gave (D438, `World.licence`): a rendered Intent fact or a policy line names it; a
+rendered fact names a world row (by its key, or by one field value that picks one row) and that row holds it;
+or it equals a rendered fact's words after the scorer's canon with hyphen, space and case folding. A value
+none of these reach and no world row, policy line, user turn or tool write holds is refused naming the three
+ways. A gated value whose only user source is an echo fact (the user said yes to the agent's own offer) stays
+a gate only where one of the three holds; else it is weighed (`ECHO_WEIGHED`).
 State items may name an alternative end state (`alt`); one without belongs to every end state, and a
 Run passes the state items when any one end state matches.
 A gated called item stands only where its policy line names the tool (D414): any other path is the
@@ -43,6 +49,7 @@ import re
 from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 from kullback.runner.atom_context import is_transfer
+from kullback.runner.canon import canonicalize
 from kullback.runner.records import Atom, EndState, ExpectedCell, ValueSource
 from kullback.spec.atoms import called_set_atom
 from kullback.spec.compile import cell_clashes, new_row_overlaps
@@ -213,6 +220,12 @@ def is_end_fact(fact: Any) -> bool:
     return getattr(getattr(fact, "source", None), "recording", None) == END_SOURCE
 
 
+def rendered(fact: Any) -> bool:
+    """Whether the instruction says this Intent fact, as the Harbor instruction renders it (hub/package.py
+    rendered, D422): no echo of the agent, nothing ruled out, no scenario end, no empty text."""
+    return not fact.echo and not fact.unfounded and not is_end_fact(fact) and bool(fact.text.strip())
+
+
 def _untold(kept: dict, facts: list) -> bool:
     """Whether a told item (judge, said) rests on no told fact, no end fact and no policy line: nobody asked
     to be told it and no rule says the agent must tell it (D369)."""
@@ -277,6 +290,25 @@ def _weighed_gate(kept: dict, known: dict) -> str:
             kept.update(gate=False, weighed=reason)
             return line
     return ""
+
+
+# The licences of a value the user gave (D438, `World.licence`), as the counts and notes name them.
+NAMED_LICENCE, ROW_LICENCE, CANON_LICENCE = "named", "row", "canon"
+# The three ways, as every refusal and weighing that wants a licence says them.
+LICENCE_WAYS = ("a rendered Intent fact or a policy line names the value; a rendered fact names a world row (by "
+                "its key, or by one field value that picks one row) and that row holds the value; or the value "
+                "equals a rendered fact's words after canon, hyphen, space and case folding")
+# Why a gate on a value only an echo fact gives, and none of the three ways licenses, is weighed (D438).
+ECHO_WEIGHED = "echo"
+# The edge characters a word of a fact sheds before canon: punctuation that closes or quotes it.
+WORD_EDGES = ".,;:!?\"'()[]"
+
+
+def folded(text: Any, canon: Callable[[Any], Any] = canonicalize) -> str:
+    """Text as the canon licence compares it (D438): each word through the scorer's canon, hyphens read as
+    spaces, case folded, one space between words. No abbreviation is expanded."""
+    words = [str(canon(word.strip(WORD_EDGES))) for word in str(text or "").split() if word.strip(WORD_EDGES)]
+    return " ".join(" ".join(words).replace("-", " ").casefold().split())
 
 
 # The finding a gated value no source reaches carries (D387); a weighed item gets it as a warning.
@@ -363,11 +395,29 @@ def _members(value: Any) -> list:
     return list(value) if isinstance(value, list) else [value]
 
 
+def _told(value: str, said: list[str]) -> bool:
+    return any(value in text and _contains(text, value) for text in said)
+
+
+def _picked_keys(rows: dict, said: list[str]) -> list[str]:
+    """The keys of the rows these texts name: a row's key, or a value (three characters or more) one row holds and
+    no other row of the table (D438)."""
+    holders: dict[str, set[str]] = {}
+    for key, row in rows.items():
+        if isinstance(row, dict):
+            for value in [norm(key)] + [norm(leaf) for leaf in _leaves(row)]:
+                holders.setdefault(value, set()).add(key)
+    picked = [next(iter(keys)) for value, keys in holders.items()
+              if len(keys) == 1 and len(value) >= 3 and _told(value, said)]
+    return picked + [key for key, row in rows.items() if isinstance(row, dict) and _told(norm(key), said)]
+
+
 class World:
     """The Starting state, the policy and the user turns, for finding rows and sourcing values."""
 
     def __init__(self, state: dict, policy_text: str = "", facts: Iterable[Any] = (), tools: Iterable[dict] = (),
-                 columns: Optional[dict] = None, signatures: Optional[dict] = None, reach: Optional[Reach] = None):
+                 columns: Optional[dict] = None, signatures: Optional[dict] = None, reach: Optional[Reach] = None,
+                 canon: Callable[[Any], Any] = canonicalize):
         self.state = {table: rows for table, rows in (state or {}).items() if isinstance(rows, dict)}
         # The schema's columns per table, for a table the Starting state holds no row of.
         self.declared = {table: list(names) for table, names in (columns or {}).items()}
@@ -379,7 +429,10 @@ class World:
         self.signatures = dict(signatures or {})
         # What tools can write (D387); None checks no gated value for reachability.
         self.reach = reach
+        # The Environment's canonicaliser, the scorer's own, for the canon licence (D438).
+        self.canon = canon
         self._values: Optional[dict[str, tuple[str, str]]] = None
+        self._named: Optional[list[dict]] = None
         self._by_name: Optional[dict[str, dict[str, tuple[str, str, Any]]]] = None
         # The item being checked, so a value can be read against its gate and its row.
         self._kept: dict = {}
@@ -526,8 +579,9 @@ class World:
         return None
 
     def _unfound(self, value: Any) -> bool:
-        """A value no user turn, policy line, world row or tool write holds."""
-        return self.source(value) is None and not self._tool_written(value)
+        """A value no user turn, policy line, world row or tool write holds, and none of the three ways
+        licenses (D438)."""
+        return self.source(value) is None and not self._tool_written(value) and not self.licence(value)
 
     def _tool_written(self, value: Any) -> bool:
         """A value some tool's learned writes or a recorded write result hold under any field: found, so a
@@ -546,6 +600,61 @@ class World:
         held = self._world_values().get(target) if fed else None
         return ValueSource(kind="tool_result", ptr={"field": name, "seen": f"arg:{fed[0]}", "table": held[0],
                                                     "row": held[1]}) if held else None
+
+    # --- licensing (D438) ------------------------------------------------------------------------
+    def licence(self, value: Any) -> str:
+        """How the ask licenses a value, else empty: a rendered fact or a policy line names it (NAMED_LICENCE),
+        a rendered fact names a row holding it (ROW_LICENCE), or it equals a rendered fact's words folded
+        (CANON_LICENCE). An echo fact, an unfounded fact and a scenario end license nothing."""
+        target = norm(value)
+        if not target:
+            return ""
+        said = [fact.text for fact in self.facts if rendered(fact)]
+        if any(_contains(_flat(text), target) for text in said + [self.policy]):
+            return NAMED_LICENCE
+        if any(target in {norm(leaf) for leaf in _leaves(row)} for row in self.named_rows()):
+            return ROW_LICENCE
+        shape = folded(value, self.canon)
+        if shape and any(_contains(folded(text, self.canon), shape) for text in said):
+            return CANON_LICENCE
+        return ""
+
+    def named_rows(self) -> list[dict]:
+        """The world rows a rendered fact names: by the row's key, or by a field value (three characters or more)
+        that one row of its table holds and no other."""
+        if self._named is None:
+            said = [_flat(fact.text) for fact in self.facts if rendered(fact)]
+            named: dict[tuple[str, str], dict] = {}
+            for table, rows in sorted(self.state.items()):
+                for key in _picked_keys(rows, said):
+                    named.setdefault((table, key), rows[key])
+            self._named = list(named.values())
+        return self._named
+
+    def _echo_sourced(self, value: Any) -> bool:
+        """A value some fact holds where every fact holding it is an echo of the agent's own offer."""
+        target = norm(value)
+        facts = [fact for fact in self.facts if _contains(_flat(fact.text), target)]
+        return bool(facts) and all(getattr(fact, "echo", False) for fact in facts)
+
+    def echo_values(self, kept: dict) -> list[tuple[str, Any, str]]:
+        """(field, value, licence) per value a row_is expects or a row_new holds that only echo facts give."""
+        cells = kept.get("expect") if kept.get("kind") == "row_is" else kept.get("where")
+        return [(str(field), one, self.licence(one)) for field, value in sorted((cells or {}).items())
+                for one in _members(value) if one is not None and self._echo_sourced(one)]
+
+    def _echo_weighed(self, kept: dict) -> str:
+        """One line for the writer when a gate's echo value none of the three ways licenses weighs it, else
+        empty (D438): the user only said yes to the agent's offer, so the value may be the recorded agent's
+        own pick among others the ask allows."""
+        loose = [(field, value) for field, value, licence in self.echo_values(kept) if not licence]
+        if not kept.get("gate") or not loose:
+            return ""
+        kept.update(gate=False, weighed=ECHO_WEIGHED)
+        named = ", ".join(f"{field} {json.dumps(value)}" for field, value in loose)
+        return (f"gate weighed: {named} rests only on echo facts (the user said yes to the agent's offer), and "
+                f"none of three ways licenses it: {LICENCE_WAYS}. It is scored, never gated; cite the fact or "
+                "policy line that names it, or write {\"one_of\": [...]} over the values the ask allows")
 
     def candidates(self, table: str, field: Any) -> list:
         """The reachable values of a field a finding lists: tools' writes, recorded results, start rows."""
@@ -607,7 +716,9 @@ class World:
 
     def _reachable(self, kept: dict, note: str) -> tuple[Optional[dict], str]:
         """The kept item and its note, or the refusal when a gated value no source reaches (D387); a weighed
-        item naming one keeps the finding as a warning in its note."""
+        item naming one keeps the finding as a warning in its note. A gate on an echo value no licence reaches is
+        weighed first (`_echo_weighed`)."""
+        note = note or self._echo_weighed(kept)
         found = self.unreachable(kept)
         if found and kept["gate"]:
             return None, (f"gate value unreachable: {self.unreachable_line(kept, found)}. A gated value must be "
@@ -671,26 +782,9 @@ class World:
                 return None, f"{what}: name one scalar field per cell, not a nested value"
             if one is not None and self._unfound(one):
                 return None, (f"{what}: value {json.dumps(one)} is not in the world, the policy or a user turn, "
-                              "nor what a tool writes; find it with the tools, or demand another field")
-            if one is not None and self._echo_only(one):
-                return None, (f"{what}: value {json.dumps(one)} rests only on echo facts (the user said yes to the "
-                              "agent's proposal); a gate value needs the user's own words, the policy or the row "
-                              "the item names: make the item scored (gate false) or demand another field")
+                              f"nor what a tool writes, and none of three ways licenses it: {LICENCE_WAYS}; find "
+                              "it with the tools, or demand another field")
         return value, ""
-
-    def _echo_only(self, value: Any) -> bool:
-        """A gate item's value whose only user source is an echo fact, found in neither the policy nor
-        the row the item names. A scored item may rest on an echo fact."""
-        if not self._kept.get("gate"):
-            return False
-        target = norm(value)
-        facts = [fact for fact in self.facts if _contains(_flat(fact.text), target)]
-        if not facts or not all(getattr(fact, "echo", False) for fact in facts):
-            return False
-        if _contains(_flat(self.policy), target):
-            return False
-        row = self.row(self._kept["table"], self._kept["row"]) if self._kept.get("row") else None
-        return not (row and any(norm(leaf) == target for leaf in _leaves(row)))
 
     def _table(self, item: dict) -> str:
         table = str(item.get("table") or "")

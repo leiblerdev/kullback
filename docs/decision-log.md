@@ -4579,3 +4579,34 @@ unscored trials stay unscored. This changes what a pass means, not what the agen
 Tests: tests/hub/test_harbor.py (a Run holding every gate but missing a weighted item passes in Harbor with its
 shaped reward below 1 in items.json; a failed gate gives 0 whatever the weighted items say; the shaped reward is the
 Verdict score), tests/hub/test_publish.py (the card says in one line that reward.txt is a pass or a fail).
+
+### D438. A value the user gave is licensed three ways, an echo value only by them (2026-10-19)
+
+What. `World.licence` (spec/items.py) licenses a value when a rendered Intent fact (no echo, nothing ruled
+unfounded, no scenario end; `items.rendered`, which spec/stage.py now imports) or a policy line names it; or a
+rendered fact names a world row, by its key or by one field value (three characters or more) that picks one row of
+its table, and that row holds the value in some field (`World.named_rows`); or the value equals a rendered fact's
+words after the Environment's canon (the scorer's, passed to the World by the writer), with hyphens read as spaces
+and case folded (`items.folded`). No abbreviation table, no domain list. "Find, do not invent" (`World._unfound`)
+keeps refusing a value no user turn, policy line, world row or tool write holds and no licence reaches, and its
+refusal names the three ways (`LICENCE_WAYS`). A gated row_is or row_new value whose only user source is an echo
+fact (the user said yes to the agent's own offer) stays a gate only where one of the three ways holds; else the
+item is weighed with reason `echo` (`ECHO_WEIGHED`) and a line naming the three ways. This replaces the echo-only
+refusal, which also kept a gate when the item's own row held the value. A choice ("cheapest") is no licence.
+
+Why. The retail hand re-spec found gates the writer had to weigh because the echo rule read the user's words
+literally (3 of 47 Tasks). D434's literal pick check was held back (17 of 17 refusals rated wrong); this widens
+what licenses instead. On the 309 staged Tasks, each state cell checked alone as a gate: airline 5 values in 1
+Task and retail 29 in 19 newly kept, all by the row licence; canon licensed none that literal matching missed.
+Echo-sourced values forced to a gate: airline 12 kept before, 17 after; retail 60 and 88. As written, echo values
+in gated items: airline 12 and 12, retail 43 and 42 (one item of one Task weighed). Ten newly licensed values
+read against the ask: 8 right, 2 wrong, both a product row holding every variant where the ask left several
+open. A cheapest pick passes the same way when the named row holds it. The ask's "my other order" and an
+abbreviated city license nothing, so the address read off another row stays weighed.
+
+Tests: tests/spec/test_licence.py (a value a rendered fact or the policy names is licensed and its echo gate
+stands; a value on the row a fact names by key or by one picking value is licensed; a value two rows hold picks no
+row; canon, hyphen, space and case folding license; a value only canon licenses passes the no-invention rule; an
+abbreviation or a choice licenses nothing and the echo gate is weighed naming the three ways; a value nothing holds
+is refused naming them; echo, unfounded and end facts license nothing), tests/spec/test_items.py (an echo-only
+gate is weighed).

@@ -519,7 +519,7 @@ def writer_messages(inputs: WriterInputs) -> tuple[list[dict], int]:
 def world_of(inputs: WriterInputs) -> I.World:
     """The world the writer's tools read and its values are sourced from."""
     return I.World(inputs.state, inputs.policy_text, inputs.intent.facts, inputs.tools, inputs.columns,
-                   inputs.signatures, inputs.reach)
+                   inputs.signatures, inputs.reach, inputs.canon)
 
 
 def store_of(inputs: WriterInputs, items: Iterable[dict] = (), ruled: Optional[set[str]] = None,

@@ -40,7 +40,7 @@ from kullback.spec.actions import workdir_action_tools
 from kullback.spec.canfail import Outcome, outcome_of
 from kullback.spec.events import UNCHECKED_END
 from kullback.spec.intent import STAGE, mine_intent
-from kullback.spec.items import DEFAULT_GATE, World, _contains, _flat, is_end_fact, names_tool, norm
+from kullback.spec.items import DEFAULT_GATE, World, _contains, _flat, names_tool, norm, rendered
 from kullback.spec.judged import judge_results_of
 from kullback.spec.schema import SpecIntent, is_empty, load_spec, save_spec, spec_path
 from kullback.spec.text import STOPWORDS, TOKEN_RE, normalise
@@ -266,12 +266,6 @@ def tool_fields(inputs: Any, tool: str) -> set[str]:
               if isinstance(write, dict)}
     tables |= {table for table in world.state if args & set(world.columns(table))}
     return args | {field for table in tables if table for field in world.columns(table)}
-
-
-def rendered(fact: Any) -> bool:
-    """Whether the instruction says this Intent fact, as the Harbor instruction renders it (hub/package.py
-    rendered, D422): no echo of the agent, nothing ruled out, no scenario end, no empty text."""
-    return not fact.echo and not fact.unfounded and not is_end_fact(fact) and bool(fact.text.strip())
 
 
 def _field_values(state: dict, field: str) -> set[str]:

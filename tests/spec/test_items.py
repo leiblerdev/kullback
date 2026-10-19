@@ -372,7 +372,7 @@ def test_a_free_field_holding_a_value_an_intent_fact_names_is_refused():
     assert world().check(item, KNOWN, unwitnessed)[1] == "", "no fact names a slot the world holds"
 
 
-def test_an_echo_fact_is_never_the_sole_source_of_a_gate_value_but_a_scored_item_may_cite_it():
+def test_a_gate_whose_value_only_an_echo_fact_gives_is_weighed_and_a_scored_item_may_cite_it():
     """Two turns: the agent proposes slot 9, the user says yes. The fact is echo by code."""
     from kullback.spec.intent_tools import UserTurn, is_echo
     turn = UserTurn(index=1, text="Yes, that works.", agent_before="I can move A1 to slot 9 for you, ok?")
@@ -386,7 +386,7 @@ def test_an_echo_fact_is_never_the_sole_source_of_a_gate_value_but_a_scored_item
             "fact_ids": ["f3"]}
     gate_world = I.World(STATE, POLICY, [*FACTS, echo], TOOLS)
     kept, why = gate_world.check(item, known, unwitnessed)
-    assert kept is None and "echo" in why
+    assert kept["gate"] is False and kept["weighed"] == I.ECHO_WEIGHED and "rests only on echo facts" in why
     kept, why = gate_world.check({**item, "gate": False}, known, unwitnessed)
     assert why == "" and kept["gate"] is False
 
