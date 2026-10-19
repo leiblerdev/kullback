@@ -4444,3 +4444,51 @@ reaches the instruction under the later lead after the volunteered ones; an inst
 has no later lead; the instruction says what the user volunteered, then what they said later, never the echo; an
 item resting only on unrendered facts is dropped, its cell freed and counted; a Verifier with nothing unrendered
 ships byte for byte).
+
+### D427. A said amount compiles to the digits every spelling of it holds, for every Task (2026-10-19)
+
+What. A said item's value that is one number written as an amount (a currency sign, a thousands comma, decimals or
+a unit of up to three letters) compiles to its digits past the last thousands group, decimals kept without
+trailing zeros: "$1,194" and "1194" both hold "194", "$408" holds "408", "$3,131.10" holds "131.1"
+(spec/items.py `said_shape`, applied in `atom_of` to every Task's Spec). A bare integer may be an id and stays as
+written, as does a value with more than one number or any other text. The item's description keeps the values as
+the writer wrote them, the form the user reads. The frozen runner is unchanged.
+
+Why. The runner canonises the said needle ("$408" to "408 usd", "1,194" to "1194") while the reply keeps its sign
+and comma, so a needle in either canonical form misses the reply. D414 shortened only values with cents. The tail
+of digits is the one substring both spellings share; it is looser (a "$1,000" needle is "000"), which costs only
+on a said value, never on a cell. Over the 309 staged Harbor Tasks of 2026-10-17, recompiled: 12 of 80 said values
+rewritten, the same 12 the base tree's D414 rewrites (the staged Verifiers predate D414); 2 of 187 scored fails
+flip to pass on rescore (one airline, one retail said amount), both on the base tree too. The one plain integer
+the attribution named stays as written, so that trial still fails.
+
+Tests: tests/spec/test_said_once.py (a said amount compiles to digits every spelling of it holds; a said amount
+passes a reply that keeps its sign and comma; a bare integer or text with a number stays as written; the
+description keeps the values as written).
+
+### D428. Each check is said once at compile; what cannot be one is refused (2026-10-19)
+
+What. At compile (spec/compile.py, called from the writer's `verifier_of`): two item atoms of one kind on one
+target, provenance aside, are one atom, the first id kept, a gate where either was (`merged_atoms`). Two cells on
+one (table, row, field) of one end state are one cell where one absorbs the other: equal values keep the first,
+a gate where either was; a value implying the other (a member of its one_of, a value outside its not) keeps the
+stricter, but only when the stricter is a gate wherever the other is, so a weighted exact value never becomes a
+gate (`merged_cells`). Each fold is a "merged" line in the compile reasons and in the Spec's end_state counts. Two
+state items expecting one cell of one end state with values neither of which implies the other, and two row_new
+items on one table of one end state where one's where is a subset of the other's, are contradictions naming both
+ids and both values (`cell_clashes`, `new_row_overlaps` in `items.contradictions`), so the writer is sent back to
+narrow them. A cell expected as "seven" and as one_of ["seven", "eight"] is no longer named unsatisfiable.
+
+Why. Duplicates doubled an item's weight in partial reward, and the runner's `new_row_counts` (frozen) gives a made
+row to the first matching spec only. On the 309 staged Tasks: atoms merged airline 16 in 9 Tasks, retail 36 in 16;
+cells merged airline 43 in 16, retail 170 in 38; cells refused airline 0, retail 5 in 2 Tasks; new-row pairs refused
+airline 5 in 2 Tasks, retail 0; Tasks named unsatisfiable go from 18 to 18 airline and 33 to 18 retail (the older
+row_is check named compatible pairs). Rescored, no pass turns to a fail and no fail flips past the two of D427;
+15 partial rewards move by at most 0.07. A first cut that made the stricter cell a gate always took one trial from
+0.944 to 0, and was narrowed as above.
+
+Tests: tests/spec/test_said_once.py (two atoms of one kind on one target are one atom keeping the first id; two
+cells on one field with one value score as one item; a cell and a set it satisfies fold to the stricter value; a
+weighted exact cell beside a gated set stays two cells; two cells whose values differ are refused naming both
+values; cells in two alternative end states never clash; two new-row specs one row can match are refused naming
+both).
