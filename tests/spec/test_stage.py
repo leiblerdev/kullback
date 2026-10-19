@@ -104,7 +104,8 @@ def test_write_specs_counts_and_marks_a_spec_written_without_learned_effects(tmp
 def test_write_specs_does_not_count_a_workdir_whose_effects_were_learned(tmp_path):
     root = _workdir(tmp_path)
     (root / EFFECTS_FILE).parent.mkdir(parents=True)
-    (root / EFFECTS_FILE).write_text(json.dumps({"effects": {}, "signatures": {}}))
+    writes = [{"table": "items", "field": "slot", "values": ["seven"]}]
+    (root / EFFECTS_FILE).write_text(json.dumps({"effects": {"update_item": {"writes": writes}}, "signatures": {}}))
     counts = stage.write_specs(root, ["t1"], TestModel(_one_task_replies()))
     assert (counts["written"], counts["effects_none_learned"]) == (1, 0)
     assert EFFECTS_COUNT not in load_spec(root, "t1").writer

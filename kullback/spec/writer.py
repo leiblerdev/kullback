@@ -296,7 +296,8 @@ class WriterInputs(NamedTuple):
     reach: Optional[I.Reach] = None
     # Where the sessions are saved (exam/writer); None saves nothing. Never shown to the writer.
     workdir: Optional[Path] = None
-    # The workdir has write tools but no learned effects file, so no tool write can reach a value (D417).
+    # The workdir has write tools but no learned writes (no effects file, or one where no tool carries writes),
+    # so no learned tool write can reach a value (D417).
     effects_missing: bool = False
 
 
@@ -361,7 +362,8 @@ def load_inputs(workdir: Path, task_id: str, intent: Optional[SpecIntent] = None
                         action_tables=frozenset(action_tables_of(env.schema)), columns=_columns(env.schema),
                         effects=effects, signatures=learned.get("signatures") or {},
                         reach=I.reach_of_inputs(effects, _write_results(workdir, task_id, traces, write_tools)),
-                        workdir=Path(workdir), effects_missing=not learned.get("found") and bool(write_tools))
+                        workdir=Path(workdir), effects_missing=bool(write_tools) and not (
+                            learned.get("found") and any(row.get("writes") for row in effects.values())))
 
 
 # Where a born Task's scenario end lies in the workdir, one file per Task (synth/tasks.py writes it, D414).

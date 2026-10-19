@@ -4248,3 +4248,9 @@ counts as found.
 Tests: tests/spec/test_writer.py (a Spec written with write tools and no learned effects says none were learned; one
 written beside an effects file carries no mark), tests/spec/test_stage.py (write_specs counts and marks a Spec
 written without learned effects; a workdir whose effects were learned is not counted).
+Correction (r1): a present effects file in which no tool carries a non empty writes list counts the same as a
+missing one: WriterInputs.effects_missing is set when the workdir has write tools and the file is absent or holds
+no learned writes, with the same count and mark. Why: the source files of the round that showed the gap were
+exactly that, learned before writes were kept, so the stage would still have run silently on them. Tests:
+tests/spec/test_writer.py (a Spec written beside an effects file whose tools carry no writes says none were
+learned); tests/spec/test_stage.py (the learned case now places a tool with writes).

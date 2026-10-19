@@ -163,15 +163,27 @@ def test_a_spec_written_with_write_tools_and_no_learned_effects_says_none_were_l
     assert written.counts[W.EFFECTS_COUNT] == W.NO_EFFECTS
 
 
-def test_a_spec_written_beside_a_learned_effects_file_carries_no_missing_effects_mark(tmp_path):
+def _effects_file(root, effects: dict) -> None:
     from kullback.spec.effects import EFFECTS_FILE
 
+    (root / EFFECTS_FILE).parent.mkdir(parents=True)
+    (root / EFFECTS_FILE).write_text(json.dumps({"effects": effects, "signatures": {}}))
+
+
+def test_a_spec_written_beside_a_learned_effects_file_carries_no_missing_effects_mark(tmp_path):
     _workdir(tmp_path)
-    (tmp_path / EFFECTS_FILE).parent.mkdir(parents=True)
-    (tmp_path / EFFECTS_FILE).write_text(json.dumps({"effects": {}, "signatures": {}}))
+    _effects_file(tmp_path, {"update_item": {"writes": [{"table": "items", "field": "slot", "values": ["seven"]}]}})
     loaded = W.load_inputs(tmp_path, "t1", inputs().intent)
     assert not loaded.effects_missing
     assert W.EFFECTS_COUNT not in W.write_spec("t1", loaded, TestModel([add(ROW), DONE])).counts
+
+
+def test_a_spec_written_beside_an_effects_file_whose_tools_carry_no_writes_says_none_were_learned(tmp_path):
+    _workdir(tmp_path)
+    _effects_file(tmp_path, {"update_item": {"writes": []}})
+    loaded = W.load_inputs(tmp_path, "t1", inputs().intent)
+    assert loaded.effects_missing
+    assert W.write_spec("t1", loaded, TestModel([add(ROW), DONE])).counts[W.EFFECTS_COUNT] == W.NO_EFFECTS
 
 
 def test_a_tool_the_schema_records_as_an_action_is_kept_out_of_the_write_tools(tmp_path):
