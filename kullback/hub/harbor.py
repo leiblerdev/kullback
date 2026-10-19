@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from kullback import processes
-from kullback.hub import harbor_world, listed_ids
+from kullback.hub import harbor_world, listed_ids, repair
 from kullback.hub.card import ORGANISATION, SOLUTION_LEAKS
 from kullback.hub.harbor_world import DB_NAME, JUDGE_ENV, REPLY_TOOL, TASK_NAME, UNSCORED_EXIT, WORLD_DIR, play
 from kullback.hub.listed_ids import READS_DROPPED_ID
@@ -737,15 +737,18 @@ def _job(build: _Build, task_id: str, body: Optional[dict]) -> tuple[Optional[st
         return reason, {}
     verifier = Verifier.model_validate(read_json(verifier_path, {}))
     dropped = [] if body is not None else unrenderable(verifier, _spec(build.workdir, task_id))
-    if dropped:
-        verifier = without_items(verifier, dropped)
-        verifier_path = write_json(Path(build.scratch or build.out) / "verifiers" / f"{task_id}.json", as_dict(verifier))
+    verifier = without_items(verifier, dropped) if dropped else verifier
+    effects, effects_from = repair.tool_effects(build.workdir)
+    verifier, allowed = repair.allow_effects(verifier, effects, given["reference"])  # D432
+    scratch = Path(build.scratch or build.out) / "verifiers"
+    if dropped or allowed:
+        verifier_path = write_json(scratch / f"{task_id}.json", as_dict(verifier))
     folder = build.out / (SYNTHETIC_DIR if body is not None else "") / f"{build.name}-{task_id}"
     return None, {"task_id": task_id, "given": given, "verifier_path": verifier_path, "folder": folder,
                   "metadata": dict(_metadata(build, task_id, body is not None, given["index"], verifier),
-                                   items_unrenderable=dropped),
+                                   items_unrenderable=dropped, effects_allowed=allowed, effects_from=effects_from),
                   "org": build.org, "out": build.out, "workdir": build.workdir, "wheel": build.wheel,
-                  "tasks": build.tasks, "write_tools": set(build.env.write_tools())}
+                  "tasks": build.tasks, "write_tools": set(build.env.write_tools()), "scratch": scratch}
 
 
 def _start_of(job: dict) -> dict:
@@ -772,8 +775,8 @@ def _export_one(job: dict) -> tuple[Optional[str], dict, dict]:
     """(why the Task is left out or None, its manifest row, its leak scan row), off the Task's whole input. A Task
     whose Reference reads a listed id the shipped world drops is left out as READS_DROPPED_ID (D429), and a
     Verifier with a cell no Run can make hold as UNREADABLE_CELL, both before any oracle is tried."""
-    verifier = Verifier.model_validate(read_json(job["verifier_path"], {}))
     start = _start_of(job)
+    verifier = repair.resolve_job(job, Verifier.model_validate(read_json(job["verifier_path"], {})), start)  # D431
     plan, dropped, ambiguous = listed_plan(start)
     gone = {member for columns in plan.values() for members in columns.values() for member in members}
     if gone and listed_ids.reads(job["given"].get("reference") or (), gone):
@@ -864,6 +867,8 @@ def _counts(listed: list[dict], recorded: list[dict], skipped: dict) -> dict:
             "columns_pruned": sorted({name for row in listed for name in row.get("ids_dropped") or {}}),
             "tasks_with_ambiguous_column": count(lambda row: bool(row.get("ambiguous_columns"))),
             "ambiguous_columns": sorted({name for row in listed for name in row.get("ambiguous_columns") or ()}),
+            "cells_resolved": sum(len(row.get("cells_resolved") or ()) for row in listed),
+            "effects_allowed": sum(int(row.get("effects_allowed") or 0) for row in listed),
             "by_tier_and_label": by_tier_and_label(recorded)}
 
 

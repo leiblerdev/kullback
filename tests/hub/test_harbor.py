@@ -586,7 +586,8 @@ def _toml(out: Path) -> dict:
 
 def test_a_verifier_cell_the_scorer_cannot_read_on_its_start_row_sets_the_task_aside_and_is_counted(tmp_path):
     workdir = _workdir(tmp_path / "work")
-    write_json(workdir / "db.json", {"widgets": {"w1": {"widget_id": "w1", "label": [{"tone": "plain"}]}}})
+    tones = [{"tone": "plain"}, {"tone": "dotted"}]
+    write_json(workdir / "db.json", {"widgets": {"w1": {"widget_id": "w1", "label": tones}}})
     verifier = read_json(workdir / "verifiers" / f"{TASK}.json", {})
     cells = [{"table": "widgets", "row_id": "w1", "field": "label.tone", "value": "striped"}]
     write_json(workdir / "verifiers" / f"{TASK}.json", dict(verifier, expected=[{"cells": cells}]))
@@ -595,6 +596,33 @@ def test_a_verifier_cell_the_scorer_cannot_read_on_its_start_row_sets_the_task_a
     assert manifest["counts"]["skipped"] == {harbor.UNREADABLE_CELL: 1}
     assert not (tmp_path / "out" / "widgets-widget_task").exists()
 
+
+def test_a_cell_on_a_one_member_start_list_ships_named_by_index_and_the_manifest_says_so(tmp_path):
+    workdir = _workdir(tmp_path / "work")
+    write_json(workdir / "db.json", {"widgets": {"w1": {"widget_id": "w1", "label": [{"tone": "plain"}]}}})
+    verifier = read_json(workdir / "verifiers" / f"{TASK}.json", {})
+    cells = [{"table": "widgets", "row_id": "w1", "field": "label.tone", "value": "striped"}]
+    write_json(workdir / "verifiers" / f"{TASK}.json", dict(verifier, expected=[{"cells": cells}]))
+    out = tmp_path / "out"
+    manifest = harbor.export_harbor(workdir, out, name="widgets", wheel=_wheel(tmp_path), tasks="verified")
+    shipped = read_json(out / "widgets-widget_task" / "tests" / "verifier.json", {})
+    assert shipped["expected"][0]["cells"][0]["field"] == "label.0.tone"
+    assert manifest["tasks"][0]["cells_resolved"] == ["widgets: label.tone -> label.0.tone"]
+    assert manifest["counts"]["cells_resolved"] == 1 and manifest["counts"]["skipped"] == {}
+
+
+def test_what_the_oracle_tool_always_moves_reaches_the_shipped_verifier_as_allowed_and_is_counted(tmp_path):
+    workdir = _workdir(tmp_path / "work")
+    effects = {"rename_widget": {"columns": [{"table": "widgets", "column": "label"}, {"table": "widgets", "column": "stamp"}],
+                                 "makes": [], "writes": [{"table": "widgets", "field": "label", "values": ["striped"]}]}}
+    write_json(workdir / "exam" / "review" / "effects.json", {"effects": effects, "signatures": {}})
+    out = tmp_path / "out"
+    manifest = harbor.export_harbor(workdir, out, name="widgets", wheel=_wheel(tmp_path))
+    shipped = read_json(out / "widgets-widget_task" / "tests" / "verifier.json", {})
+    assert shipped["expected"][0]["allowed"] == [{"table": "widgets", "row_id": "w1", "field": "stamp",
+                                                  "why": "free: learned effect: rename_widget"}]
+    assert manifest["tasks"][0]["effects_allowed"] == 1 and manifest["counts"]["effects_allowed"] == 1
+    assert manifest["tasks"][0]["effects_from"] == "effects file"
 
 def test_verified_exports_an_untrusted_task_that_has_a_verifier(tmp_path):
     workdir = _workdir(tmp_path / "work", trusted=False)
