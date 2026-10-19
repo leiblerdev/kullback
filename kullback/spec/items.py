@@ -31,8 +31,8 @@ State items may name an alternative end state (`alt`); one without belongs to ev
 Run passes the state items when any one end state matches.
 A gated called item stands only where its policy line names the tool (D414): any other path is the
 agent's to choose, so the gate is weighed. A told item citing a fact of a scenario's end (`is_end_fact`)
-is a told item asked for. A said value that is one number compiles to the shape the frozen Runner's
-substring match finds most widely (`said_shape`).
+is a told item asked for. A said value that is one amount compiles to the shape the frozen Runner's
+substring match finds most widely (`said_shape`, D427); the item's description keeps the value as written.
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ from typing import Any, Callable, Iterable, NamedTuple, Optional
 from kullback.runner.atom_context import is_transfer
 from kullback.runner.records import Atom, EndState, ExpectedCell, ValueSource
 from kullback.spec.atoms import called_set_atom
+from kullback.spec.compile import cell_clashes, new_row_overlaps
 from kullback.spec.effects import type_of
 from kullback.spec.schema import is_reaction
 
@@ -1018,7 +1019,8 @@ def _describe(item: dict) -> str:
     if kind == "before":
         return f"{item['first']} comes before {item['then']}"
     if kind == "said":
-        return f"the Candidate states {len(item['values'])} value(s), not {len(item['not_values'])}"
+        # The values as the writer wrote them, the form the user reads; the target holds `said_shape`'s (D427).
+        return f"the Candidate states {item['values']}, not {item.get('not_values') or []}"
     return f"judge: {item['question']}"
 
 
@@ -1053,19 +1055,27 @@ def atom_of(item: dict) -> Atom:
 
 
 # One number as a said value may carry: a currency sign before, a short unit after.
-SAID_NUMBER = re.compile(r"[$\u20ac\u00a3]?\s*(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*[a-z%]{0,3}", re.IGNORECASE)
+SAID_NUMBER = re.compile(r"([$\u20ac\u00a3])?\s*(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*([a-z%]{0,3})", re.IGNORECASE)
 
 
 def said_shape(value: Any) -> Any:
-    """A said value as the Runner's lowercased substring match finds it most widely (D414): a value that is one
-    number loses its currency sign, its unit and its trailing zeros, and with cents its digits past the last
-    thousands group, so "$3,648.02", "3648.02" and "3,648.02" all hold "648.02". Anything else is unchanged."""
+    """A said value as the Runner's lowercased substring match finds it most widely (D414, D427).
+
+    The Runner canonises the needle ("$408" to "408 usd", "1,194" to "1194") but not the reply, which keeps
+    its sign and comma. A value that is one number written as an amount (a currency sign, a thousands
+    comma, decimals or a short unit) loses its sign, its unit and its decimals' trailing zeros, and keeps
+    only its digits past the last thousands group: "$1,194" and "1194" both hold "194", "$3,648.02" and
+    "3648.02" both hold "648.02". A bare integer may be an id and stays as written, as does anything else.
+    """
     found = SAID_NUMBER.fullmatch(str(value).strip()) if isinstance(value, (str, int, float)) \
         and not isinstance(value, bool) else None
     if found is None:
         return value
-    whole, cents = found.group(1).replace(",", ""), (found.group(2) or "").rstrip("0").rstrip(".")
-    return (whole[-3:] if cents and len(whole) > 3 else whole) + cents
+    sign, digits, decimals, unit = found.groups()
+    whole, cents = digits.replace(",", ""), (decimals or "").rstrip("0").rstrip(".")
+    if not (sign or unit or decimals or "," in digits):
+        return value if isinstance(value, str) else whole
+    return whole[-3:] + cents
 
 
 def value_set_of(value: Any) -> bool:
@@ -1288,8 +1298,8 @@ def _gated_call_clashes(items: list[dict], named: list[tuple[str, str]]) -> list
 
 def contradictions(items: list[dict]) -> list[tuple[str, str]]:
     """(item id, why) for items no Run can pass together: a tool both called and not, a tool gated as called
-    with two different arg sets, a gated not_called beside a gated called, a gated event item repeated, a cell
-    both v and not v."""
+    with two different arg sets, a gated not_called beside a gated called, a gated event item repeated, one
+    cell expected two ways neither of which implies the other, two row_new whose where clauses overlap (D428)."""
     out: list[tuple[str, str]] = []
     needed = {}
     for item in items:
@@ -1302,17 +1312,7 @@ def contradictions(items: list[dict]) -> list[tuple[str, str]]:
             out.append((item["id"], f"not_called {item['tool']} beside {needed[item['tool']]}, which needs the call"))
     out += _called_arg_clashes(items)
     out += _gated_call_clashes(items, out)
-    cells: dict[tuple, tuple[str, str]] = {}
-    for item in items:
-        if item["kind"] != "row_is":
-            continue
-        for field, value in item["expect"].items():
-            key = (item.get("alt"), item["table"], item["row"], field)
-            text = json.dumps(value, sort_keys=True, default=str)
-            if key in cells and cells[key][1] != text:
-                out.append((item["id"], f"{field} of that row is also expected by {cells[key][0]}"))
-            cells.setdefault(key, (item["id"], text))
-    return out
+    return out + cell_clashes(items) + new_row_overlaps(items)
 
 
 def counts_of(items: list[dict]) -> dict:
