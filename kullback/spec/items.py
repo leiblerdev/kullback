@@ -36,9 +36,14 @@ a gate only where one of the three holds; else it is weighed (`ECHO_WEIGHED`).
 State items may name an alternative end state (`alt`); one without belongs to every end state, and a
 Run passes the state items when any one end state matches.
 A gated called item stands only where its policy line names the tool (D414): any other path is the
-agent's to choose, so the gate is weighed. A told item citing a fact of a scenario's end (`is_end_fact`)
-is a told item asked for. A said value that is one amount compiles to the shape the frozen Runner's
-substring match finds most widely (`said_shape`, D427); the item's description keeps the value as written.
+agent's to choose, so the gate is weighed. A hand-off (an action tool: its call writes nothing of the world and
+ends the Run) gates only where a policy line of its own, not the general hand-off line that names the tool, has
+its condition shown by a confirmed row, or a scenario end or rendered fact names it; else it is weighed as
+`handoff_optional`, at check and at compile (D440). Two gated calls of one tool contradict only when they write
+one existing row with an argument set two ways (`World.target_rows`, D440). A told item citing a fact of a
+scenario's end (`is_end_fact`) is a told item asked for. A said value that is one amount compiles to the
+shape the frozen Runner's substring match finds most widely (`said_shape`, D427); the item's description keeps
+the value as written.
 """
 
 from __future__ import annotations
@@ -48,7 +53,6 @@ import math
 import re
 from typing import Any, Callable, Iterable, NamedTuple, Optional
 
-from kullback.runner.atom_context import is_transfer
 from kullback.runner.canon import canonicalize
 from kullback.runner.records import Atom, EndState, ExpectedCell, ValueSource
 from kullback.spec.atoms import called_set_atom
@@ -239,37 +243,59 @@ def names_tool(line: Any, tool: str) -> bool:
     return bool(tool) and any(_flat(name) in text for name in (tool, tool.replace("_", " ")))
 
 
-def _unfixed_path(kept: dict, facts: list) -> bool:
+def _unfixed_path(kept: dict, facts: list, world: Optional[World] = None) -> bool:
     """Whether a called gate names a tool its policy line does not name: the path is not fixed (D414). A
-    hand-off keeps its own rule (`World.check`): it gates where its policy line names a hand-off."""
+    hand-off keeps its own rule (`_optional_handoff`)."""
     tool = str(kept.get("tool") or "")
-    return kept.get("kind") == "called" and not is_transfer(tool) and not names_tool(kept.get("policy_line"), tool)
+    return kept.get("kind") == "called" and tool not in (world.handoffs if world else ()) \
+        and not names_tool(kept.get("policy_line"), tool)
+
+
+def _optional_handoff(kept: dict, facts: list, world: Optional[World] = None) -> bool:
+    """Whether a called gate on a hand-off tool rests on nothing that puts this request out of the agent's scope
+    (D440). What does: a policy line of its own, not the general hand-off line (`World.general_handoff`), with the
+    row whose read shows the line's condition confirmed (confirms); a scenario end it cites; a rendered fact it
+    cites naming the tool. The general line ("hand off when you cannot help") lets a right Run decline within scope,
+    so on it alone the hand-off is the agent's to choose."""
+    tool = str(kept.get("tool") or "")
+    if world is None or kept.get("kind") != "called" or tool not in world.handoffs:
+        return False
+    line = kept.get("policy_line")
+    return not (line and kept.get("confirms") and not world.general_handoff(line, tool)) \
+        and not any(is_end_fact(fact) or (rendered(fact) and names_tool(fact.text, tool)) for fact in facts)
 
 
 # Why a told gate with no told fact and no policy line is weighed (D369).
 TELL_WEIGHED = "untold"
 # Why a called gate whose policy line does not name its tool is weighed (D414).
 PATH_WEIGHED = "path not fixed"
+# Why a hand-off gate nothing puts out of the agent's scope is weighed (D440).
+HANDOFF_WEIGHED = "handoff_optional"
+HANDOFF_LINE = ("gate weighed: a hand-off gates only where a policy_line other than the general hand-off line puts "
+                "this request out of scope and confirms names the row whose read shows its condition; the general "
+                "line lets a right run decline within scope, so the hand-off is scored, never gated")
 
-# Each weighing rule in order: the test on (kept item, its facts), the reason kept on it, the line for the writer.
+# Each weighing rule in order: the test on (kept item, its facts, the World), the reason kept on it, the line for
+# the writer.
 _WEIGHINGS = (
-    (lambda kept, facts: any(is_reaction(fact) for fact in facts), AGENT_WEIGHED,
+    (lambda kept, facts, world: any(is_reaction(fact) for fact in facts), AGENT_WEIGHED,
      "gate weighed: it cites a reaction, a fact the user said in answer to the agent's own conduct "
      "(could not, declined citing no rule, stalled, proposed another way), which a run whose agent "
      "meets the first ask never reaches; it is scored, never gated. If the item checks the Task's ask, "
      "add it again citing only the ask's facts"),
-    (_unconfirmed, UNCONFIRMED_WEIGHED,
+    (lambda kept, facts, world: _unconfirmed(kept, facts), UNCONFIRMED_WEIGHED,
      "gate weighed: it cites a conditional ask whose condition is the agent's claim about the world or "
      "the rules; confirm it yourself (confirms: the row whose read shows it, or the policy_line that "
      "states it) and gate the branch the world selects, or leave it scored"),
-    (_on_side, SIDE_WEIGHED,
+    (lambda kept, facts, world: _on_side(kept, facts), SIDE_WEIGHED,
      "gate weighed: it rests on a side fact, a question asked beside the Task's ask, which a run "
      "whose user never asks it cannot meet; it is scored, never gated. If the item checks the "
      "Task's ask, add it again citing only the ask's facts"),
-    (_untold, TELL_WEIGHED,
+    (lambda kept, facts, world: _untold(kept, facts), TELL_WEIGHED,
      "gate weighed: it checks what the agent told the user, but no fact asks to be told it and no "
      "policy_line says the agent must tell it; it is scored, never gated. Gate it only citing a told "
      "fact or quoting the policy line that requires the telling"),
+    (_optional_handoff, HANDOFF_WEIGHED, HANDOFF_LINE),
     (_unfixed_path, PATH_WEIGHED,
      "gate weighed: a called gate stands only where its policy_line names that tool as the only way; any "
      "other path is the agent's to choose. Gate the outcome instead (the row the call changes or finds), "
@@ -277,16 +303,16 @@ _WEIGHINGS = (
 )
 
 
-def _weighed_gate(kept: dict, known: dict) -> str:
+def _weighed_gate(kept: dict, known: dict, world: Optional[World] = None) -> str:
     """One line for the writer when its gate is weighed, else empty: it cites a reaction (condition agent),
     or a conditional ask whose condition it does not confirm, or a side fact, or it is a told item with no
-    told fact and no policy line. A scored item may rest on them. after_pushback and echo are evidence, not
-    this rule (D366)."""
+    told fact and no policy line, or a hand-off or a called path nothing fixes. A scored item may rest on them.
+    after_pushback and echo are evidence, not this rule (D366)."""
     if not kept.get("gate"):
         return ""
     facts = [known[f] for f in kept.get("fact_ids") or []]
     for applies, reason, line in _WEIGHINGS:
-        if applies(kept, facts):
+        if applies(kept, facts, world):
             kept.update(gate=False, weighed=reason)
             return line
     return ""
@@ -417,7 +443,8 @@ class World:
 
     def __init__(self, state: dict, policy_text: str = "", facts: Iterable[Any] = (), tools: Iterable[dict] = (),
                  columns: Optional[dict] = None, signatures: Optional[dict] = None, reach: Optional[Reach] = None,
-                 canon: Callable[[Any], Any] = canonicalize):
+                 canon: Callable[[Any], Any] = canonicalize, effects: Optional[dict] = None,
+                 handoffs: Iterable[str] = ()):
         self.state = {table: rows for table, rows in (state or {}).items() if isinstance(rows, dict)}
         # The schema's columns per table, for a table the Starting state holds no row of.
         self.declared = {table: list(names) for table, names in (columns or {}).items()}
@@ -431,6 +458,11 @@ class World:
         self.reach = reach
         # The Environment's canonicaliser, the scorer's own, for the canon licence (D438).
         self.canon = canon
+        # The build's learned effects per tool (spec/effects.py): the tables a call writes, the rows it makes.
+        self.effects = dict(effects or {})
+        # The hand-off tools: those whose call writes nothing of the world and ends the Run, which the schema
+        # records as actions (spec/actions.py, D308), never read off a tool's name (D440).
+        self.handoffs = frozenset(handoffs)
         self._values: Optional[dict[str, tuple[str, str]]] = None
         self._named: Optional[list[dict]] = None
         self._by_name: Optional[dict[str, dict[str, tuple[str, str, Any]]]] = None
@@ -469,6 +501,24 @@ class World:
                 if len(hits) >= FIND_LIMIT:
                     return hits
         return hits
+
+    def target_rows(self, tool: str, args: Any) -> set[tuple[str, str]]:
+        """The (table, key) of each existing row a call of this write tool writes: a row of a table its learned
+        effects write whose key one of the call's arguments names, as a scalar (D440). A read tool, and a tool
+        that makes a row each call, target none; a write tool with no learned effects may write any table."""
+        learned = self.effects.get(tool) or {}
+        if (self.tools.get(tool) or {}).get("kind") != "write" or learned.get("makes"):
+            return set()
+        tables = {str(row["table"]) for row in learned.get("writes") or []} \
+            | {str(column["table"]) for column in learned.get("columns") or []} or set(self.state)
+        named = {norm(value) for value in (args or {}).values() if not isinstance(value, (dict, list))}
+        return {(table, key) for table in sorted(tables) for key in self.state.get(table) or {} if norm(key) in named}
+
+    def general_handoff(self, line: str, tool: str) -> bool:
+        """Whether a quoted policy line is part of the policy's general hand-off line: the line that names the
+        hand-off tool itself, the how-to of every hand-off, binding no one ask (D440)."""
+        quote = _flat(line)
+        return bool(quote) and any(quote in _flat(raw) and names_tool(raw, tool) for raw in self.policy.splitlines())
 
     def row(self, table: str, key: str) -> Optional[dict]:
         row = (self.state.get(table) or {}).get(key)
@@ -704,15 +754,12 @@ class World:
         weight = item.get("weight", 1.0)
         if not isinstance(gate, bool) or not isinstance(weight, (int, float)) or weight <= 0:
             return None, "gate is true or false and weight a positive number"
-        if gate and item["kind"] == "called" and is_transfer(str(item.get("tool") or "")) \
-                and not is_transfer(kept["policy_line"] or ""):
-            gate = False  # a hand-off gates only where its policy line names one; else it is weighed
         kept.update(gate=gate, weight=float(weight))
         self._kept = kept
         why = self._kind_rules(item, kept)
         if why:
             return None, why
-        return self._reachable(kept, _weighed_gate(kept, known_facts))
+        return self._reachable(kept, _weighed_gate(kept, known_facts, self))
 
     def _reachable(self, kept: dict, note: str) -> tuple[Optional[dict], str]:
         """The kept item and its note, or the refusal when a gated value no source reaches (D387); a weighed
@@ -1330,19 +1377,39 @@ def sanity_atom(end_states: list[EndState]) -> Atom:
                         "from": {"fact_ids": [], "policy_line": None, "code": True}})
 
 
-def _called_arg_clashes(items: list[dict]) -> list[tuple[str, str]]:
-    """Gated called items naming one tool with different args: the Verdict exact-matches called args, so
-    both hold only for a Run that calls the tool once per arg set (D392)."""
+def _clashing_calls(a: dict, b: dict, world: Optional[World]) -> bool:
+    """Whether two gated calls of one tool with different args cannot both be right: they write one existing row
+    (`World.target_rows`) with an argument both name set two ways (D440). Calls on other rows, a lookup and a call
+    that makes its own row each stand: one Run makes every call. On one row with no argument set two ways one call
+    carrying every argument answers both, since a called item holds for a call carrying its args. With no World
+    every pair clashes (D392)."""
+    if world is None:
+        return True
+    if not world.target_rows(a["tool"], a["args"]) & world.target_rows(b["tool"], b["args"]):
+        return False
+    return any(_text_of(a["args"][name]) != _text_of(b["args"][name]) for name in set(a["args"]) & set(b["args"]))
+
+
+def _text_of(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _called_arg_clashes(items: list[dict], world: Optional[World] = None) -> list[tuple[str, str]]:
+    """Gated called items naming one tool with different args that write one row two ways (`_clashing_calls`):
+    the row can hold one value (D392, D440)."""
     out: list[tuple[str, str]] = []
-    first: dict[str, tuple[str, str]] = {}
+    seen: list[dict] = []
     for item in items:
         if item["kind"] != "called" or not item.get("gate") or not item.get("args"):
             continue
-        text = json.dumps(item["args"], sort_keys=True, default=str)
-        first_id, first_text = first.setdefault(item["tool"], (item["id"], text))
-        if first_text != text:
-            out.append((item["id"], f"called {item['tool']} with other args beside {first_id}; gate the end state "
+        clash = next((other["id"] for other in seen if other["tool"] == item["tool"]
+                      and _text_of(other["args"]) != _text_of(item["args"]) and _clashing_calls(other, item, world)),
+                     None)
+        if clash:
+            row = "" if world is None else ", writing one row two ways"
+            out.append((item["id"], f"called {item['tool']} with other args beside {clash}{row}; gate the end state "
                                     "row instead, or one called item with one_of"))
+        seen.append(item)
     return out
 
 
@@ -1390,10 +1457,11 @@ def _gated_call_clashes(items: list[dict], named: list[tuple[str, str]]) -> list
     return repeats + _not_called_clashes(events, done | {item_id for item_id, _ in repeats})
 
 
-def contradictions(items: list[dict]) -> list[tuple[str, str]]:
+def contradictions(items: list[dict], world: Optional[World] = None) -> list[tuple[str, str]]:
     """(item id, why) for items no Run can pass together: a tool both called and not, a tool gated as called
-    with two different arg sets, a gated not_called beside a gated called, a gated event item repeated, one
-    cell expected two ways neither of which implies the other, two row_new whose where clauses overlap (D428)."""
+    with two different arg sets writing one row (D440; every pair with no World), a gated not_called beside a
+    gated called, a gated event item repeated, one cell expected two ways neither of which implies the other,
+    two row_new whose where clauses overlap and cannot be one made row (D428, D440)."""
     out: list[tuple[str, str]] = []
     needed = {}
     for item in items:
@@ -1404,9 +1472,24 @@ def contradictions(items: list[dict]) -> list[tuple[str, str]]:
     for item in items:
         if item["kind"] == "not_called" and not item.get("args") and item["tool"] in needed:
             out.append((item["id"], f"not_called {item['tool']} beside {needed[item['tool']]}, which needs the call"))
-    out += _called_arg_clashes(items)
+    out += _called_arg_clashes(items, world)
     out += _gated_call_clashes(items, out)
     return out + cell_clashes(items) + new_row_overlaps(items)
+
+
+def weighed_handoffs(items: list[dict], world: World) -> tuple[list[dict], list[str]]:
+    """The items with each hand-off gate nothing puts out of scope weighed (`_optional_handoff`, D440), as the
+    compile applies it so a recompiled older Spec carries the rule; one "<id>: handoff_optional" line each."""
+    facts = {fact.id: fact for fact in world.facts}
+    out: list[dict] = []
+    lines: list[str] = []
+    for item in items:
+        cited = [facts[fact_id] for fact_id in item.get("fact_ids") or [] if fact_id in facts]
+        if item.get("gate") and _optional_handoff(item, cited, world):
+            item = dict(item, gate=False, weighed=HANDOFF_WEIGHED)
+            lines.append(f"{item['id']}: {HANDOFF_WEIGHED}")
+        out.append(item)
+    return out, lines
 
 
 def counts_of(items: list[dict]) -> dict:
@@ -1428,5 +1511,6 @@ def counts_of(items: list[dict]) -> dict:
 
 __all__ = ["CONFIRM_TURN", "DEFAULT_GATE", "EVENT_KINDS", "ITEM_KINDS", "Reach", "SANITY", "SANITY_ID", "STATE_KINDS",
            "UNREACHABLE", "World", "effect_reach", "reach_of_inputs", "recorded_reach", "atom_of", "because_of", "contradictions", "counts_of", "effect_rules", "end_states_of",
-           "expected_tools", "END_SOURCE", "RECORDS_SOURCE", "PATH_WEIGHED", "is_end_fact", "names_tool",
+           "expected_tools", "END_SOURCE", "HANDOFF_WEIGHED", "RECORDS_SOURCE", "PATH_WEIGHED", "is_end_fact",
+           "names_tool", "weighed_handoffs",
            "said_shape", "norm", "sanity_atom", "sanity_item"]

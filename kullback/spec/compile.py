@@ -5,8 +5,9 @@ appended to every atom's description, and drops a check whose because is not gro
 no-write demand on an action tool (spec/actions.py, D308) compiles to an action atom instead.
 
 Items say each check once (D428): two atoms of one kind on one target are one atom (`merged_atoms`), two
-cells on one (table, row, field) of one end state are one cell (`merged_cells`), and what cannot be one is
-refused back to the writer (`cell_clashes`, `new_row_overlaps`).
+cells on one (table, row, field) of one end state are one cell (`merged_cells`), two row_new items one made row
+can answer together are one item (`merged_new_rows`, D440), and what cannot be one is refused back to the writer
+(`cell_clashes`, `new_row_overlaps`).
 """
 
 from __future__ import annotations
@@ -316,16 +317,48 @@ def cell_clashes(items: list[dict]) -> list[tuple[str, str]]:
     return list(dict.fromkeys(out))
 
 
+def _one_made_row(a: dict, b: dict) -> bool:
+    """Whether one made row can answer two row_new items: one table, one end state, one count, one gate, and no
+    field their where clauses both name set two ways (D440). A weighed item never folds into a gated one, so a
+    fold never makes a weighed check a gate (as `merged_cells`)."""
+    where_a, where_b = a.get("where") or {}, b.get("where") or {}
+    return a["table"] == b["table"] and a.get("alt") == b.get("alt") and a.get("count") == b.get("count") \
+        and bool(a.get("gate")) == bool(b.get("gate")) \
+        and all(_text(where_a[field]) == _text(where_b[field]) for field in set(where_a) & set(where_b))
+
+
+def merged_new_rows(items: list[dict]) -> tuple[list[dict], list[str]]:
+    """The items with each row_new one made row can answer beside an earlier one (`_one_made_row`) folded into
+    it: the where clauses joined, the first id, gate and weight kept, both items' facts cited.
+    One "<kept>: merged <dropped>" line per fold (D440). A row spread over several items (the route in one, the
+    people in another) is then one row the Run makes, never several rows no one booking can be."""
+    out: list[dict] = []
+    lines: list[str] = []
+    for item in items:
+        at = next((n for n, other in enumerate(out) if item.get("kind") == "row_new" == other.get("kind")
+                   and _one_made_row(other, item)), None)
+        if at is None:
+            out.append(item)
+            continue
+        first = out[at]
+        out[at] = dict(first, where={**(first.get("where") or {}), **(item.get("where") or {})},
+                       fact_ids=list(dict.fromkeys([*(first.get("fact_ids") or []), *(item.get("fact_ids") or [])])))
+        lines.append(f"{first['id']}: merged {item['id']}, one made {item['table']} row")
+    return out, lines
+
+
 def new_row_overlaps(items: list[dict]) -> list[tuple[str, str]]:
     """(item id, why) for two row_new items on one table of one end state where one's where is a subset of
-    the other's: a made row matching both answers only the first, so the other never counts (D428)."""
+    the other's and one made row cannot answer both (other counts): a made row matching both answers only the
+    first, so the other never counts (D428). Those one row can answer are merged at compile (`merged_new_rows`)."""
     out: list[tuple[str, str]] = []
     for scope in _scopes(items, ("row_new",)):
         for n, item in enumerate(scope):
             mine = {(field, _text(value)) for field, value in (item.get("where") or {}).items()}
             for other in scope[:n]:
                 theirs = {(field, _text(value)) for field, value in (other.get("where") or {}).items()}
-                if other["table"] == item["table"] and (mine <= theirs or theirs <= mine):
+                if other["table"] == item["table"] and (mine <= theirs or theirs <= mine) \
+                        and not _one_made_row(other, item):
                     out.append((item["id"], f"row_new on {item['table']} overlaps {other['id']}: one made row "
                                             "matches both where clauses; narrow one where so each row answers one"))
     return list(dict.fromkeys(out))

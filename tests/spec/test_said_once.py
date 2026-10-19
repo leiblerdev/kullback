@@ -8,7 +8,7 @@ from __future__ import annotations
 from kullback.runner.records import Verifier
 from kullback.runner.verdict import verdict
 from kullback.spec import items as I
-from kullback.spec.compile import cell_clashes, implies, merged_atoms, merged_cells, new_row_overlaps
+from kullback.spec.compile import cell_clashes, implies, merged_atoms, merged_cells, merged_new_rows, new_row_overlaps
 from tests.spec.test_items import STATE, _run, world
 
 
@@ -106,10 +106,36 @@ def test_a_value_implies_a_set_only_when_every_value_it_admits_the_set_admits():
     assert implies({"one_of": ["seven"]}, {"not": ["two"]}) and not implies("two", {"not": ["two"]})
 
 
-def test_two_new_row_specs_whose_where_clauses_one_row_can_match_are_refused_naming_both():
-    wide, narrow = _note("w1", {"item_id": "A1"}), _note("w2", {"item_id": "A1", "text": "moved"})
+def test_two_new_row_specs_one_row_matches_with_other_counts_are_refused_naming_both():
+    wide, narrow = _note("w1", {"item_id": "A1"}), dict(_note("w2", {"item_id": "A1", "text": "moved"}), count=2)
     found = new_row_overlaps([wide, narrow])
     assert [item_id for item_id, _ in found] == ["w2"] and "w1" in found[0][1]
-    assert new_row_overlaps([wide, dict(wide, id="w3")])[0][0] == "w3"
+    assert new_row_overlaps([wide, dict(wide, id="w3", count=2)])[0][0] == "w3"
     assert new_row_overlaps([wide, _note("w4", {"item_id": "B2"})]) == []
     assert new_row_overlaps([wide, dict(narrow, table="items")]) == []
+    assert new_row_overlaps([wide, dict(narrow, count=1)]) == []
+
+
+def test_new_row_specs_one_made_row_can_answer_are_one_item_whose_where_is_the_union():
+    """D440: a row spread over items (the slot in one, the text in another) is one row the Run makes."""
+    slot = _note("w1", {"item_id": "A1"}, fact_ids=["f1"])
+    text = _note("w2", {"text": "moved"}, fact_ids=["f2"])
+    other = _note("w3", {"item_id": "B2"})
+    merged, lines = merged_new_rows([slot, text, other, _row("m1", {"slot": "seven"})])
+    assert [item["id"] for item in merged] == ["w1", "w3", "m1"] and lines == ["w1: merged w2, one made notes row"]
+    assert merged[0]["where"] == {"item_id": "A1", "text": "moved"} and merged[0]["fact_ids"] == ["f1", "f2"]
+    assert merged_new_rows([slot, dict(text, alt=1)])[1] == []
+    assert merged_new_rows([slot, dict(text, count=2)])[1] == []
+
+
+def test_a_weighed_new_row_spec_never_folds_into_a_gated_one():
+    gated, weighed = _note("w1", {"item_id": "A1"}), _note("w2", {"text": "moved"}, gate=False)
+    merged, lines = merged_new_rows([gated, weighed])
+    assert lines == [] and [item["gate"] for item in merged] == [True, False]
+
+
+def test_one_made_row_answering_merged_new_row_specs_passes_the_verdict():
+    items, _ = merged_new_rows([_note("w1", {"item_id": "A1"}), _note("w2", {"text": "moved"})])
+    verifier, _ = _compiled(items)
+    end = {**STATE, "notes": {"N1": {"item_id": "A1", "text": "moved"}}}
+    assert verdict(_run(end), verifier).passed is True
