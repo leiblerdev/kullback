@@ -13,7 +13,9 @@ gate refuses it, spec/trust.py). The stage counts each mark. The miner also says
 code (spec/coherence.py); a Task whose user strayed is set aside as intent_strayed before the writer, no
 Verifier written. A set-aside Spec counts as done. Every call is priced under the `spec` stage of the workdir ledger (budget.json):
 the miner through the harness subscriber, the writer through BudgetedModel, the two seams every
-other stage uses. A Task that fails is counted by its error class and the loop goes on.
+other stage uses. A Task that fails is counted with its error class and message, its Spec file put back as it was
+before the attempt (so a rerun writes it again), and the loop goes on; the first failure message stands once
+in the counts as first_failure.
 """
 
 from __future__ import annotations
@@ -42,6 +44,8 @@ from kullback.spec.writer import (
 
 # What one Task's mining and writing may spend together when the caller names no ceiling.
 SPEC_TASK_CEILING_USD = 1.0
+# How much of a failed Task's error message its failure entry keeps.
+FAILURE_CHARS = 200
 
 
 def older_grammar(spec: Any) -> bool:
@@ -129,6 +133,19 @@ def write_one(workdir: Path, task_id: str, model: Any, ceiling_usd: float, bus: 
     return spent + write_from_intent(workdir, task_id, mined.intent, model, rest, bus, coherence=coherence)
 
 
+def failure_line(error: Exception) -> str:
+    """A failed Task's entry: the error class and the front of its message."""
+    return f"{type(error).__name__}: {error}"[:FAILURE_CHARS]
+
+
+def _restore(path: Path, before: Optional[bytes]) -> None:
+    """Put the Spec file back as it was before a failed attempt, so a rerun writes the Task again (D421)."""
+    if before is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_bytes(before)
+
+
 def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
                 ceiling_usd: Optional[float] = None, bus: Optional[Bus] = None) -> dict:
     """Write the Spec of every named Task that has none; counts of written, skipped, failed, set aside, and the spend."""
@@ -144,11 +161,15 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
             counts["skipped_existing"] += 1
             continue
         counts["rewritten_older"] += int(older_grammar(load_spec(workdir, task_id)))
+        path = spec_path(workdir, task_id)
+        before = path.read_bytes() if path.is_file() else None
         try:
             counts["spent_usd"] += write_one(workdir, task_id, model, ceiling, bus)
         except Exception as error:  # one Task's failure is recorded; the others are still written
+            _restore(path, before)
             counts["failed"] += 1
-            counts["failures"][task_id] = type(error).__name__
+            counts["failures"][task_id] = failure_line(error)
+            counts.setdefault("first_failure", counts["failures"][task_id])
             continue
         spec = load_spec(workdir, task_id)
         counts["empty_seen"] += int(bool(spec.writer.get("empty_first")))
@@ -162,4 +183,5 @@ def write_specs(workdir: Any, task_ids: Iterable[str], model: Any, *,
     return counts
 
 
-__all__ = ["SPEC_TASK_CEILING_USD", "older_grammar", "write_from_intent", "write_one", "write_specs", "written_already"]
+__all__ = ["FAILURE_CHARS", "SPEC_TASK_CEILING_USD", "failure_line", "older_grammar", "write_from_intent", "write_one",
+           "write_specs", "written_already"]

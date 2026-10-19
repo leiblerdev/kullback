@@ -4350,3 +4350,18 @@ numbers), tests/synth/test_generate.py (a session prompt carries each item with 
 requires refused; an end value outside the slice refused naming it; written bindings), tests/synth/test_review.py
 (a choice end is sent back quoting the end), tests/synth/test_end_to_end.py (21 scenarios written onto slices
 through generate's rounds on the fixture world with scripted replies, stop at the target).
+
+### D421. A failed Spec write says why and leaves no Spec behind (2026-10-19)
+
+What. When one Task's mining or writing raises, the Spec stage records the error class and the front of its
+message (200 characters) under failures, keeps the first such message once as first_failure in the stage counts,
+and puts the Task's Spec file back as it was before the attempt: removed when there was none, its old bytes when
+there was one. The miner still saves the Intent before the writer runs; the rollback undoes it on failure.
+
+Why. A round against a provider that refused every call logged only the error class, so the cause took a direct
+probe to find, and each failed Task kept a Spec file with an empty Intent and no checks that a relaunch could read
+as written. With the message in the counts the cause is in the stage line, and with the file rolled back a rerun
+writes every failed Task again.
+
+Tests: tests/spec/test_stage.py (a provider refusal leaves no Spec file and its message is counted once, cut at the
+limit; a rerun after a provider refusal writes the Task instead of skipping it).
