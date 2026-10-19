@@ -4665,3 +4665,55 @@ Tests: tests/spec/test_items.py (two gated calls of one tool contradict only whe
 call targets the rows its arguments name in the tables it writes), tests/spec/test_said_once.py (new-row specs one
 made row can answer are one item whose where is the union; a weighed one never folds into a gated one; a merged
 pair passes the Verdict on one made row; a subset pair with other counts is still refused).
+
+### D431. A cell on a one-member start list is named by its index at export (2026-10-19)
+
+What. Before the D423 gate, the Harbor export reads each Verifier cell the scorer cannot read against the Task's
+start row, the row the writer saw (hub/repair.py `resolve_cells`). Where every list the path meets at a part that is
+not an index holds exactly one member there, the path names that member by index 0 (row.list.leaf becomes
+row.list.0.leaf); the gate then reads the cell like any other. The resolution reads the start row only, never the
+Reference, and never changes a value, a gate or a weight; it runs on the start row before the D429 prune. A cell on
+a list of several members, or of none, is left as it is, so its Task still goes to the D423 gate and waits for the
+writer with the D423 message. The manifest row of each exported Task carries `cells_resolved` ("table: old path ->
+new path") and the counts their total. This narrows D423, which refused a one-member list as well.
+
+Why. A list of one member on the start row can only have meant that member; a tool may append members later, and the
+cell still names the one that was there. Writing the 38 set-aside Tasks again needs model calls. On the staged
+packages 2 airline and 10 retail one-member paths resolve, but only 2 retail Tasks (and 1 of the bench's
+scenario-born airline Tasks) have every unreadable cell on a one-member list; the other 36 hold a cell on a list of
+2 to 5 members and stay aside. Rescored on the recorded bench trials, one retail fail becomes a pass when a pass is
+every gate holding (D433).
+
+Tests: tests/hub/test_repair.py (a cell on a one-member start list is named by index and its value kept; a cell on a
+list of several members is left unreadable; a readable cell is never touched), tests/hub/test_harbor.py (a cell on a
+one-member start list ships named by index and the manifest says so; a cell the scorer cannot read on a
+several-member list still sets the Task aside).
+
+### D432. What a required tool always moves is allowed, not collateral (2026-10-19)
+
+What. The Harbor export adds to each end state's allowed list the columns the learned effects
+(exam/review/effects.json, spec/effects.py) say a tool the Verifier requires moves on every call (hub/repair.py
+`allow_effects`), each with why "free: learned effect: <tool>". Required are a tool a called item names, the one
+tool whose learned effects alone answer a declared row (the Spec stage's `expected_tools`), and a tool the Task's
+kept References call on a table the end state declares a row in. A rule frees the column on the declared rows of its
+table, or on every row where the end state declares none; a column a cell checks, or a rule already frees, gains
+nothing. Effects of tools the Verifier does not require are not added, so a stray write still fails sanity. Where
+the workdir has no effects file, or one whose every writes list is empty, the effects are learned again from the
+recordings offline (builder/tool_effects.py `learn`) and the manifest row says so (`effects_from`); each Task's row
+counts its added rules (`effects_allowed`). Made rows are not freed: the only allowed rule that admits a made row
+frees every column of every row of its table.
+
+Why. The sanity item failed Runs on the world's own effects (a seat count, a payment history) where a Spec was
+written without learned effects (D417). Over the staged packages 13 airline, 33 retail and 25 of the bench's
+scenario-born airline Tasks gain rules (at most 5, 18 and 4 per Task). Rescored on the recorded bench trials, three
+scenario-born fails become passes when a pass is every gate holding (D433), two at shaped reward 1, and no recorded
+pass is lost; the real sets move by none. A column a tool moves only on some calls (a payment method's balance) is
+not learned as an always effect, so those fails remain. The Verifier-implied tool came after a first rescore showed
+scenario-born Tasks have no called item and no Reference.
+
+Tests: tests/hub/test_repair.py (a required tool frees what it always moves so a right Run passes sanity; a tool the
+Verifier does not require frees nothing so its write still fails sanity; the one tool whose learned effects alone
+answer a declared row is required; a declared row two tools could answer requires neither; the Reference's tool on a
+declared table is required and one on another table is not; a column a cell checks or a rule already frees gains no
+rule; a stale effects file is learned again and says so), tests/hub/test_harbor.py (what the oracle tool always
+moves reaches the shipped Verifier as allowed and is counted).
