@@ -4717,3 +4717,32 @@ answer a declared row is required; a declared row two tools could answer require
 declared table is required and one on another table is not; a column a cell checks or a rule already frees gains no
 rule; a stale effects file is learned again and says so), tests/hub/test_harbor.py (what the oracle tool always
 moves reaches the shipped Verifier as allowed and is counted).
+
+### D437. A list leaf cell compiles to one cell per member; a list where path is refused (2026-10-21)
+
+Decision. The Harbor export's repair step (hub/repair.py `resolve_cell`) reads a cell whose path meets a list at a
+non-index part on the Task's start row. A value that is a list with one entry per member of that list compiles to one
+indexed cell per member: the same gate, the weight split evenly, value i on member i. Members a required tool appends
+count where that tool's learned effects write into the list (a `<list>.N` pattern); the effects file does not say how
+many members a call appends, so the value's excess over the start members is taken as appended only where such a tool
+exists. Where every start member's own leaf is among the values, each member takes its own and the rest follow in the
+writer's order. A one-member list with one value keeps D431 (index 0, value and weight kept): D431 is now the one
+member case of this function. A value list whose length does not match, one value under a list of several members,
+and a member leaf that is itself a list stay as they are, and the D423 gate sets the Task aside: no member is guessed.
+The export's D423 gate (hub/harbor.py `unreadable_cells`) also reads each where key of a declared new row on the start
+rows of its table and sets the Task aside as UNREADABLE_CELL, naming the new row. A called rule over a set of values
+(spec/atoms.py `called_set_atom`), not a prohibition, tests every member of a list argument against the set
+(hub/repair.py `list_sets`); the manifest counts the rules changed (`list_sets`). The Reference is never read.
+
+Why. The writer wrote a list leaf as the whole list, and the scorer reads a list only by its index, so the cell never
+held. On the recompiled originals of the 309 bench Tasks, 30 Tasks gain projected cells (7 airline, 23 retail), 10
+airline Tasks are set aside for a new row where path through a list, and 7 called rules change (4 airline, 3 retail).
+Rescored on the recorded bench trials against the same compile without D437, 16 Tasks move to a pass (3 airline, 13
+retail; 12 of the retail ones were set aside before) and no pass is lost.
+
+Tests: tests/hub/test_repair.py (a list value with one entry per start member becomes one indexed cell per member with
+the weight split; members whose leaves are unchanged are matched in the start row's order; a member a required tool
+appends counts so the longer list projects; a list value whose length is not the member count is left unreadable; one
+value under a list of several members is left unreadable; a one-member list with one value is still named by index 0;
+a new row where path through a list without an index is named unreadable; a called set tests every member of a list
+argument against the set; a prohibited called set is not widened).
