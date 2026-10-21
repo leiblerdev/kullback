@@ -1,9 +1,11 @@
-"""Two repairs the Harbor export makes to a written Verifier, by code, before it is laid (D431, D432).
+"""Three repairs the Harbor export makes to a written Verifier, by code, before it is laid (D431, D432, D437).
 
-1. A cell the scorer cannot read (D423) whose path meets a list at a non-index part, where that list holds
-   exactly one member on the start row (the row the writer saw): the writer can only have meant that
-   member, so the path names it by index 0. The start row alone decides; the Reference is never read and
-   no value changes. A list of several members is left as it is, and the D423 gate sets the Task aside.
+1. A cell the scorer cannot read (D423) whose path meets a list at a non-index part, read on the start row (the
+   row the writer saw). A value that is a list with one entry per member of that list, members a required tool
+   appends included (its learned effects write into that list), is one indexed cell per member: the same gate,
+   the weight split evenly, in the start row's member order (D437). A list of exactly one member and one value
+   names that member by index 0 (D431, the one-member case). Any other count is left as it is, and the D423
+   gate sets the Task aside: no member is guessed. The Reference is never read.
 2. The world's own effects are not the agent's collateral. A tool the Verifier requires moves columns every one
    of its calls moves (spec/effects.py). Required are: a tool a called item names; the one tool whose learned
    effects alone answer a declared row, as the Spec stage reads it (spec/items.py `expected_tools`); and a tool
@@ -11,17 +13,23 @@
    gains an allowed rule per such column, on the declared rows of its table or on every row where the
    end state declares none, unless a cell already checks it or a rule already frees it. A tool the Verifier
    does not require gains nothing, so a stray write still fails sanity.
+3. A called rule over a set of values (spec/atoms.py `called_set_atom`) matches a set against one argument value,
+   so a list argument never holds. Each such rule, not a prohibition, tests every member of a list argument
+   against the set (D437).
 """
 
 from __future__ import annotations
 
+import json
 import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from kullback.runner.expected import path_value
 from kullback.runner.records import Verifier, as_dict, write_json
 from kullback.spec import effects as learned_effects
+from kullback.spec.atoms import CALLED_SET_ATOM
 from kullback.spec.items import expected_tools, unreadable_path
 
 EFFECT_WHY = "free: learned effect: {tool}"
@@ -30,63 +38,130 @@ LEARNED_ABSENT = "learned from the recordings: no effects file"
 LEARNED_STALE = "learned from the recordings: every writes list in the effects file is empty"
 
 
-# --- 1. a cell on a one-member list (D431) -------------------------------------------
+# --- 1. a cell on a list leaf (D431, D437) ---------------------------------------------
 
 
-def indexed_path(row: Any, field: str) -> Optional[str]:
-    """`field` with each one-member list it meets at a non-index part named by index 0, on `row`; None where
-    a list it meets that way holds no member or several, or nothing needed naming."""
-    node, parts, changed = row, [], False
-    for part in str(field).split("."):
+def _list_at(row: Any, field: str) -> Optional[tuple[str, list, str]]:
+    """(the path to the first list `field` meets at a non-index part, that list on `row`, the rest of the path),
+    or None where it meets none."""
+    node, walked, parts = row, [], str(field).split(".")
+    for n, part in enumerate(parts):
         if isinstance(node, list) and not part.isdigit():
-            if len(node) != 1:
-                return None
-            parts.append("0")
-            node, changed = node[0], True
-        parts.append(part)
+            return ".".join(walked), node, ".".join(parts[n:])
         if isinstance(node, dict):
             node = node.get(part)
         elif isinstance(node, list):
-            node = node[int(part)] if part.isdigit() and int(part) < len(node) else None
+            node = node[int(part)] if int(part) < len(node) else None
         else:
-            node = None
-    return ".".join(parts) if changed else None
+            return None
+        walked.append(part)
+    return None
 
 
-def resolve_cells(verifier: Verifier, start: dict) -> tuple[Verifier, list[str]]:
-    """The Verifier with every unreadable cell on a one-member start list named by index, and what moved,
-    "<table>: <old path> -> <new path>" once per path. Values, gates and weights are kept."""
+def _appends(effects: dict, tools: Iterable[str], table: str, at: str) -> bool:
+    """Whether a required tool's learned effects write into the list at `at` (a list pattern `<at>.N`), so
+    the end may hold members the start row lacks."""
+    want = ".".join("N" if part.isdigit() else part for part in at.split(".")) + ".N"
+    return any(str(column["table"]) == table and any(str(p) == want or str(p).startswith(want + ".")
+                                                     for p in column.get("patterns") or ())
+               for tool in tools for column in (effects.get(tool) or {}).get("columns") or [])
+
+
+def _key(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _aligned(values: list, members: list, rest: str) -> list:
+    """`values` in the start row's member order: where the members' own leaves are all among the values, each
+    member takes its own and the rest follow in the writer's order; else the writer's order as it is."""
+    leaves = [_key(path_value(member, rest)) for member in members]
+    pool = [_key(value) for value in values]
+    if any(pool.count(leaf) < leaves.count(leaf) for leaf in set(leaves)):
+        return list(values)
+    left = list(values)
+    head = []
+    for leaf in leaves:
+        at = next(n for n, value in enumerate(left) if _key(value) == leaf)
+        head.append(left.pop(at))
+    return head + left
+
+
+def _members(cell: Any, at: str, values: list, members: list, rest: str) -> list:
+    """One cell per member of the list at `at`: same gate, the weight split evenly, value i on member i."""
+    weight = cell.weight / len(values)
+    return [cell.model_copy(update={"field": f"{at}.{n}.{rest}", "value": value, "weight": weight,
+                                    "leaf_sources": {k[len(f"{n}."):]: v for k, v in cell.leaf_sources.items()
+                                                     if k.startswith(f"{n}.")}})
+            for n, value in enumerate(_aligned(values, members, rest))]
+
+
+def resolve_cell(cell: Any, row: Any, appends: Any = lambda at: False) -> list:
+    """The cells an unreadable cell on a list leaf stands for, on its start `row`, or [cell] where none can.
+
+    A value that is a list with one entry per member (members a required tool appends included, `appends(at)`
+    true where one does) is one indexed cell per member (D437). Else a list of exactly one member names it by
+    index 0 and keeps the value (D431), where the value is one value or the member's leaf is itself a list (the
+    value is then the whole leaf). A value list whose length does not match the member count stays as it is,
+    as does one value under a list of several: no member is guessed.
+    """
+    found = _list_at(row, cell.field) if cell.field else None
+    if found is None:
+        return [cell]
+    at, members, rest = found
+    values = cell.value
+    whole_leaf = any(isinstance(path_value(member, rest), list) for member in members)
+    if isinstance(values, list) and values and not whole_leaf and (
+            len(values) == len(members) or (len(values) > len(members) and appends(at))):
+        cells = _members(cell, at, values, members, rest)
+    elif len(members) == 1 and (whole_leaf or not isinstance(values, list)):
+        cells = [cell.model_copy(update={"field": f"{at}.0.{rest}"})]
+    else:
+        return [cell]
+    return [one for made in cells for one in resolve_cell(made, row, appends)]
+
+
+def resolve_cells(verifier: Verifier, start: dict, effects: Optional[dict] = None) -> tuple[Verifier, list[str]]:
+    """The Verifier with every unreadable cell on a start list resolved (`resolve_cell`), and what moved,
+    "<table>: <old path> -> <new path>, ..." once per change. Gates are kept; a projected cell's weight is split.
+    `effects` (per tool, its learned effects) decides which tools the Verifier requires and so may append."""
+    effects = effects or {}
+    tools = required_tools(verifier, effects) if effects else []
     resolved: list[str] = []
     states = []
     for state in verifier.expected:
         cells = []
         for cell in state.cells:
             row = (start.get(cell.table) or {}).get(cell.row_id)
-            new = indexed_path(row, cell.field) if cell.field and unreadable_path(row, cell.field) else None
-            if new is None:
-                cells.append(cell)
-                continue
-            moved = f"{cell.table}: {cell.field} -> {new}"
-            resolved += [moved] if moved not in resolved else []
-            cells.append(cell.model_copy(update={"field": new}))
+            made = resolve_cell(cell, row, lambda at, table=cell.table: _appends(effects, tools, table, at)) \
+                if cell.field and unreadable_path(row, cell.field) else [cell]
+            cells += made
+            if made != [cell]:
+                moved = f"{cell.table}: {cell.field} -> {', '.join(str(one.field) for one in made)}"
+                resolved += [moved] if moved not in resolved else []
         states.append(state.model_copy(update={"cells": cells}))
     return verifier.model_copy(update={"expected": states}), resolved
 
 
 def resolve_job(job: dict, verifier: Verifier, start: dict) -> Verifier:
-    """`resolve_cells` on one export job (hub/harbor.py `_job`): the paths moved go to its metadata as
-    `cells_resolved`, and a Verifier that changed is written under the job's scratch folder and laid from there."""
-    verifier, resolved = resolve_cells(verifier, start)
+    """`resolve_cells` and `list_sets` on one export job (hub/harbor.py `_job`), with the build's learned effects:
+    the paths moved go to its metadata as `cells_resolved`, the rules widened as `list_sets`, and a Verifier that
+    changed is written under the job's scratch folder and laid from there."""
+    effects, _ = tool_effects(Path(job["workdir"]))
+    verifier, resolved = resolve_cells(verifier, start, effects)
+    verifier, widened = list_sets(verifier)
     job["metadata"]["cells_resolved"] = resolved
-    if resolved:
+    job["metadata"]["list_sets"] = widened
+    if resolved or widened:
         job["verifier_path"] = write_json(Path(job["scratch"]) / f"{job['task_id']}.json", as_dict(verifier))
     return verifier
 
 
 def counts(listed: Iterable[dict]) -> dict:
-    """The manifest's totals over the exported Tasks' rows: cells resolved (D431), allowed rules added (D432)."""
+    """The manifest's totals over the exported Tasks' rows: cells resolved (D431, D437), called sets widened over
+    a list (D437), allowed rules added (D432)."""
     rows = list(listed)
     return {"cells_resolved": sum(len(row.get("cells_resolved") or ()) for row in rows),
+            "list_sets": sum(len(row.get("list_sets") or ()) for row in rows),
             "effects_allowed": sum(int(row.get("effects_allowed") or 0) for row in rows)}
 
 
@@ -181,5 +256,36 @@ def allow_effects(verifier: Verifier, effects: dict, oracle: Iterable[dict] = ()
     return verifier.model_copy(update={"expected": states}), len(added)
 
 
-__all__ = ["EFFECT_WHY", "counts", "FROM_FILE", "LEARNED_ABSENT", "LEARNED_STALE", "allow_effects", "indexed_path",
-           "required_tools", "resolve_cells", "resolve_job", "tool_effects"]
+# --- 3. a called set over a list argument (D437) ---------------------------------------
+
+# The line of the called-set rule (spec/atoms.py `called_set_atom`) that matches a set against one value, and
+# what it becomes: a list argument, where no member of the set is itself a list, holds when every member does.
+SET_LINE = '        return any(_same(one, got) for one in want["one_of"])\n'
+SET_OVER_LIST = (
+    '        if any(_same(one, got) for one in want["one_of"]):\n'
+    '            return True\n'
+    '        return (isinstance(got, (list, tuple)) and len(got) > 0\n'
+    '                and not any(isinstance(one, (list, tuple)) for one in want["one_of"])\n'
+    '                and all(any(_same(one, member) for one in want["one_of"]) for member in got))\n')
+
+
+def list_sets(verifier: Verifier) -> tuple[Verifier, list[str]]:
+    """The Verifier with each called-set rule (not a prohibition) testing every member of a list argument against
+    its set, and the ids of the rules changed. A rule whose source lacks the set line is left as it is."""
+    widened: list[str] = []
+    atoms = []
+    for atom in verifier.atoms:
+        target = atom.target or {}
+        if target.get("derived_as") != CALLED_SET_ATOM or target.get("negate") or SET_LINE not in (
+                atom.predicate_src or ""):
+            atoms.append(atom)
+            continue
+        widened.append(atom.id)
+        source = {"predicate_src": str(target.get("predicate_src") or "").replace(SET_LINE, SET_OVER_LIST)}
+        atoms.append(atom.model_copy(update={"predicate_src": atom.predicate_src.replace(SET_LINE, SET_OVER_LIST),
+                                             "target": dict(target, **source)}))
+    return verifier.model_copy(update={"atoms": atoms}), widened
+
+
+__all__ = ["EFFECT_WHY", "counts", "FROM_FILE", "LEARNED_ABSENT", "LEARNED_STALE", "allow_effects", "list_sets",
+           "required_tools", "resolve_cell", "resolve_cells", "resolve_job", "tool_effects"]
