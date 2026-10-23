@@ -2,7 +2,7 @@
 
 The rules the build loop taught that still apply, one line each. Read them before you diagnose a build or design
 a fix, so you do not relearn one by spending a build. How each rule was found, with its counts, is in the
-[decision log](decision-log.md); terms are in the [glossary](glossary.md).
+[decisions](decisions.md); terms are in the [glossary](glossary.md).
 
 ## Reading a failure
 

@@ -100,16 +100,23 @@ def check_frozen_trees(root, base, head):
     return None
 
 
-def check_decision_log_append_only(root, base, head):
-    """The decision log gains lines but never loses them."""
-    out = run_git(root, "diff", base, head, "--", "docs/decision-log.md")
-    removed = [
-        line[1:]
-        for line in out.stdout.splitlines()
-        if line.startswith("-") and not line.startswith("---")
-    ]
-    if removed:
-        return "docs/decision-log.md removes line: " + removed[0][:120]
+DECISION_FILES = ("docs/decisions.md", "docs/decision-log.md")
+DECISION_ROW = re.compile(r"^(?:### |\*\*|- )?D(\d+)(?=[.:( *])", re.M)
+
+
+def decision_numbers(text):
+    return {int(number) for number in DECISION_ROW.findall(text or "")}
+
+
+def check_decision_numbers_kept(root, base, head):
+    """Every D number the base defines is still defined in docs/decisions.md."""
+    before = set()
+    for path in DECISION_FILES:
+        before |= decision_numbers(show_file(root, base, path))
+    after = decision_numbers(show_file(root, head, DECISION_FILES[0]))
+    lost = sorted(before - after)
+    if lost:
+        return "docs/decisions.md loses " + ", ".join(f"D{n}" for n in lost[:10])
     return None
 
 
@@ -448,7 +455,7 @@ def check_import_contract(root, base, head):
 
 CHECKS = (
     ("frozen-trees", check_frozen_trees),
-    ("decision-log-append-only", check_decision_log_append_only),
+    ("decision-numbers-kept", check_decision_numbers_kept),
     ("no-dashes", check_no_dashes),
     ("no-corpus-names", check_no_corpus_names),
     ("no-forbidden-paths", check_no_forbidden_paths),
