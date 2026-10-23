@@ -15,9 +15,10 @@ from kullback.spec import ungated as U
 from kullback.spec import writer as W
 from kullback.spec.schema import load_spec
 from kullback.spec.stage import write_from_intent
+from tests.helpers.scripted import tool_reply
 from tests.spec import test_stage as S
 from tests.spec.fixtures import fn
-from tests.spec.test_writer import DONE, ROW, STATE, _workdir, add, call, inputs
+from tests.spec.test_writer import DONE, ROW, STATE, _workdir, add, born, inputs
 
 MOVE = "Item A1 moves to slot seven."
 AT_START = dict(ROW, expect={"slot": "two"}, fact_ids=["f1", "end1"])
@@ -30,15 +31,9 @@ def _ended(end: str = MOVE, state: dict = STATE):
     return base._replace(intent=W.with_end(base.intent, end))
 
 
-def _born(root, end: str = MOVE):
-    _workdir(root)
-    write_json(W.born_path(root, "t1"), {"scenario": "sc_0", "end": end})
-    return root
-
-
 def test_a_write_gated_to_its_start_value_goes_back_once_and_unrepaired_is_counted_and_marked(tmp_path):
     model = TestModel([add(AT_START), DONE, CANNOT, CANNOT])
-    write_from_intent(_born(tmp_path), "t1", inputs().intent, model, 1.0, Bus(tmp_path / "bus.jsonl", agent="spec"))
+    write_from_intent(born(tmp_path, MOVE), "t1", inputs().intent, model, 1.0, Bus(tmp_path / "bus.jsonl", agent="spec"))
     spec = load_spec(tmp_path, "t1")
     assert len(model.calls) == 4, "one send back for the ungated write, one for the idle Run holding every gate (D441)"
     assert spec.set_aside is None and spec.writer[U.UNGATED_SENT_BACK] == 1
@@ -57,7 +52,7 @@ def test_a_one_of_holding_the_start_value_or_a_before_item_is_no_gate_of_a_write
 
 def test_a_write_gated_by_a_differing_row_is_is_not_sent_back(tmp_path):
     model = TestModel([add(MOVED), DONE])
-    write_from_intent(_born(tmp_path), "t1", inputs().intent, model, 1.0, Bus(tmp_path / "bus.jsonl", agent="spec"))
+    write_from_intent(born(tmp_path, MOVE), "t1", inputs().intent, model, 1.0, Bus(tmp_path / "bus.jsonl", agent="spec"))
     spec = load_spec(tmp_path, "t1")
     assert len(model.calls) == 2
     assert not {U.UNGATED_SENT_BACK, U.WRITES_UNGATED, U.END_VALUES_UNGATED, TR.HELD_BY_IDLE} & set(spec.writer)
@@ -122,7 +117,7 @@ def test_the_stage_counts_a_spec_marked_ungated_and_held_by_the_idle_run(tmp_pat
 def test_a_spec_with_no_write_end_is_untouched_by_all_three(tmp_path):
     told = {"id": "j1", "kind": "said", "values": ["seven"], "gate": True, "fact_ids": ["end1"]}
     ended = _ended("The user is told slot seven.")
-    rebut = call("rebut_fact", fact_id="end1", why='the end names it: "The user is told slot seven."')
+    rebut = tool_reply("rebut_fact", fact_id="end1", why='the end names it: "The user is told slot seven."')
     written = W.write_spec("t1", ended, TestModel([add(dict(ROW, expect={"slot": "two"}), told), DONE, rebut, DONE]))
     assert U.write_facts(written.spec, ended.write_tools) == []
     assert U.send_back(written, ended, TestModel([])) == (written, 0.0)

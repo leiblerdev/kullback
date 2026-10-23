@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from kullback.runner.expected import match_context
 from kullback.runner.records import Event, Run
 from kullback.spec.schema import Check, FactSource, IntentFact, Spec, SpecIntent, intent_text, tier_of
 
@@ -46,3 +47,9 @@ def reference_run() -> Run:
         _event(5, "model_call", reply={"content": "Item A1 is now in slot seven."}),
     ]
     return Run(run_id="ref", task_id="t1", termination_reason="success", events=events)
+
+
+def matches(end_states, context):
+    """Any one end state matching passes; else an unsettled one is None; else False."""
+    oks = [match_context(state, context).ok for state in end_states]
+    return True if True in oks else (None if None in oks else False)

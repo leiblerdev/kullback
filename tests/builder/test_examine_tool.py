@@ -8,9 +8,9 @@ import json
 from examiner.worlds import make_world
 from kullback.ai.provider import TestModel
 from kullback.builder import domain_tools as domain_tools_mod
-from tests.builder.session_fixtures import reply
 from tests.builder.test_domain_tools import _with_prose_result, _workdir
 from tests.examiner.test_session import materialize
+from tests.helpers.scripted import reply
 
 
 def _tools(root, model):

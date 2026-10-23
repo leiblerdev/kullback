@@ -31,11 +31,6 @@ RESPONSE = {
 CHAT = {"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": 3, "completion_tokens": 1}}
 
 
-@pytest.fixture
-def live(monkeypatch):
-    monkeypatch.setattr(pv, "ALLOW_MODEL_REQUESTS", True)
-
-
 def bedrock(seen, env=None):
     def handle(request):
         seen.append(request)

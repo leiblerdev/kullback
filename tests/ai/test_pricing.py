@@ -11,11 +11,7 @@ import pytest
 
 from kullback.ai import pricing
 from kullback.runner import budget
-
-
-def transport_of(handler):
-    """An httpx client whose every request is answered by handler; nothing leaves the machine."""
-    return httpx.Client(transport=httpx.MockTransport(handler))
+from tests.helpers.wire import transport_of
 
 
 def write_snapshot(path, catalog, fetched_at=None):

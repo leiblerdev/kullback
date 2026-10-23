@@ -14,6 +14,7 @@ from kullback.gates import verifier_suite as S
 from kullback.runner.atom_context import AtomContext
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import Event, Run
+from tests.helpers.records import assistant, atom_by_id, call, event, result, user
 
 ASSIGN = "assign_locker"
 ROSTER = "read_roster"
@@ -24,28 +25,8 @@ WORLD = {"lockers": {"L9": {"locker_id": "L9", "badge_code": "QX41", "floor": 27
          "desk": {"free_lockers": 12}}
 
 
-def _event(type_: str, **payload) -> dict:
-    return {"type": type_, "payload": payload}
-
-
-def user(text: str) -> dict:
-    return _event("user_turn", content=text)
-
-
-def says(text: str) -> dict:
-    return _event("model_call", reply={"content": text})
-
-
-def call(name: str, args: dict, kind: str = "write", cid: str = "c1") -> dict:
-    return _event("tool_call", id=cid, name=name, args=args, kind=kind)
-
-
-def result(data: Any, cid: str = "c1") -> dict:
-    return _event("tool_result", id=cid, result=data)
-
-
 def stop() -> dict:
-    return _event("stop", start_state=WORLD)
+    return event("stop", start_state=WORLD)
 
 
 def run(run_id: str, events: list[dict]) -> Run:
@@ -66,7 +47,7 @@ def assignment_events(badge: str = "QX41", read_badge: Optional[str] = None) -> 
         result({"locker_id": "L9", "badge_code": badge if read_badge is None else read_badge}, cid="c0"),
         call(ASSIGN, {"locker_id": "L9", "badge_code": badge}, cid="c1"),
         result({"locker_id": "L9", "assigned": True}, cid="c1"),
-        says("Locker L9 is yours."),
+        assistant("Locker L9 is yours."),
     ]
 
 
@@ -75,17 +56,11 @@ def derive(reference: Run, reruns: list[Run] = (), **kwargs) -> Any:
     return V.derive_verifier(kwargs.pop("task", "t1"), reference, list(reruns), CanonRules(), **kwargs)
 
 
-def atom(verifier: Any, atom_id: str) -> Any:
-    found = [a for a in verifier.atoms if a.id == atom_id]
-    assert found, f"no atom {atom_id} in {[a.id for a in verifier.atoms]}"
-    return found[0]
-
-
 # --- rule 1: a required value is one a user said, else a shape ---------------
 
 def test_a_written_value_no_user_said_becomes_a_shape_over_its_own_column():
     verifier = derive(run("ref", assignment_events()))
-    shape = atom(verifier, "w0.badge_code")
+    shape = atom_by_id(verifier, "w0.badge_code")
     assert shape.kind == "hard"
     payload = S.atom_payload(shape)
     assert payload["derived_as"] == V.SHAPE_ATOM
@@ -134,7 +109,7 @@ def copy_across_rows_events() -> list[dict]:
         result({"locker_id": "L9", "badge_code": "QX41"}, cid="c0"),
         call(ASSIGN, {"locker_id": "L4", "badge_code": "QX41"}, cid="c1"),
         result({"locker_id": "L4", "assigned": True}, cid="c1"),
-        says("Locker L4 is yours, under badge QX41."),
+        assistant("Locker L4 is yours, under badge QX41."),
     ]
 
 
@@ -146,7 +121,7 @@ def prose_events() -> list[dict]:
         result("Locker L9 on floor 27 is issued against badge QX41.", cid="c0"),
         call(ASSIGN, {"locker_id": "L4", "badge_code": "QX41"}, cid="c1"),
         result({"locker_id": "L4", "assigned": True}, cid="c1"),
-        says("Locker L4 is yours, under badge QX41."),
+        assistant("Locker L4 is yours, under badge QX41."),
     ]
 
 
@@ -158,12 +133,12 @@ def unread_value_events() -> list[dict]:
         result({"locker_id": "L4", "spare_badge": "ZZ01"}, cid="c0"),
         call(ASSIGN, {"locker_id": "L4", "badge_code": "ZZ01"}, cid="c1"),
         result({"locker_id": "L4", "assigned": True}, cid="c1"),
-        says("Locker L4 is yours."),
+        assistant("Locker L4 is yours."),
     ]
 
 
 def source_of(verifier: Any, atom_id: str) -> str:
-    return S.atom_payload(atom(verifier, atom_id)).get("shape_source")
+    return S.atom_payload(atom_by_id(verifier, atom_id)).get("shape_source")
 
 
 def test_a_value_read_off_another_rows_result_satisfies_the_shape():
@@ -193,7 +168,7 @@ def test_a_value_the_run_never_read_is_rejected_wherever_the_write_lands():
     invented = run("other", copy_across_rows_events()[:3] + [
         call(ASSIGN, {"locker_id": "L4", "badge_code": "ZZ99"}, cid="c1"),
         result({"locker_id": "L4", "assigned": True}, cid="c1"),
-        says("Locker L4 is yours."),
+        assistant("Locker L4 is yours."),
     ])
     passed, failing = S.check_run(verifier, invented, CanonRules(), write_tools=WRITE_TOOLS)
     assert not passed and failing == "w0.badge_code"
@@ -210,7 +185,7 @@ def test_a_shape_that_would_reject_its_own_reference_is_counted_and_not_stored()
     verifier = derive(reference)
     assert [a.id for a in verifier.atoms if a.id == "w0.badge_code"] == []
     assert V.derivation_counts(verifier)["atoms_dropped_as_shape_self_reject"] == 1
-    assert S.atom_payload(atom(verifier, "w0"))["shape_self_reject"] == ["badge_code"]
+    assert S.atom_payload(atom_by_id(verifier, "w0"))["shape_self_reject"] == ["badge_code"]
     assert S.check_run(verifier, reference, CanonRules(), write_tools=WRITE_TOOLS)[0]
 
 
@@ -220,7 +195,7 @@ def test_a_row_whose_column_is_empty_demands_nothing_under_it():
     seeded = Run(run_id="ref", task_id="t1", termination_reason="success",
                  events=[Event(idx=number, type=e["type"], payload=e["payload"])
                          for number, e in enumerate(unread_value_events()
-                                                    + [_event("stop", start_state=empty)])])
+                                                    + [event("stop", start_state=empty)])])
     verifier = derive(seeded)
     assert source_of(verifier, "w0.badge_code") == "no_column"
     assert S.check_run(verifier, seeded, CanonRules(), write_tools=WRITE_TOOLS)[0]
@@ -241,7 +216,7 @@ def test_a_shape_the_row_rule_accepted_keeps_the_row_rule_and_turns_a_swap_away(
         result({"locker_id": "L4", "badge_code": "TM08"}, cid="c0"),
         call(ASSIGN, {"locker_id": "L9", "badge_code": "TM08"}, cid="c1"),
         result({"locker_id": "L9", "assigned": True}, cid="c1"),
-        says("Locker L9 is yours."),
+        assistant("Locker L9 is yours."),
     ])
     passed, failing = S.check_run(verifier, swapped, CanonRules(), write_tools=WRITE_TOOLS)
     assert not passed and failing == "w0.badge_code"
@@ -268,13 +243,13 @@ def handover_events() -> list[dict]:
         user("I would rather speak to a person about this."),
         call(ROSTER, {"scope": "shift"}, kind="read", cid="c0"),
         result({"on_shift": "yes"}, cid="c0"),
-        says("Of course. I am handing you to a colleague now."),
+        assistant("Of course. I am handing you to a colleague now."),
     ]
 
 
 def test_a_task_that_wrote_nothing_and_told_nothing_claims_its_end_state_is_its_start_state():
     verifier = derive(run("ref", handover_events()))
-    claim = atom(verifier, V.NO_WRITE_ATOM)
+    claim = atom_by_id(verifier, V.NO_WRITE_ATOM)
     assert claim.kind == "hard"
     assert V.derivation_counts(verifier)["atoms_added_for_falsification"] == 1
     assert S.check_run(verifier, run("ref", handover_events()), CanonRules(), write_tools=WRITE_TOOLS)[0]
@@ -285,9 +260,9 @@ def test_a_run_that_wrote_fails_the_no_write_claim():
     wrote = run("wrote", handover_events()[:-1] + [
         call(ASSIGN, {"locker_id": "L4", "badge_code": "TM08"}, cid="c1"),
         result({"locker_id": "L4", "assigned": True}, cid="c1"),
-        says("I have assigned you locker L4 instead."),
+        assistant("I have assigned you locker L4 instead."),
     ])
-    assert S.hard_holds(atom(verifier, V.NO_WRITE_ATOM), wrote, WRITE_TOOLS) is False
+    assert S.hard_holds(atom_by_id(verifier, V.NO_WRITE_ATOM), wrote, WRITE_TOOLS) is False
     assert not S.check_run(verifier, wrote, CanonRules(), write_tools=WRITE_TOOLS)[0]
 
 
@@ -307,7 +282,7 @@ def audit_events(question: str) -> list[dict]:
         user(question),
         call(ROSTER, {"scope": "desk"}, kind="read", cid="c0"),
         result({"free_lockers": 12, "audit_age": 30}, cid="c0"),
-        says("There are 12 free lockers left, and the last audit was 30 days ago."),
+        assistant("There are 12 free lockers left, and the last audit was 30 days ago."),
     ]
 
 

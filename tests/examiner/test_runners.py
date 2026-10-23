@@ -5,30 +5,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
+from kullback.ai.provider import TestModel
 from kullback.ai.usage import Usage
 from kullback.builder import run_user as R
 from kullback.runner import budget, tool
 from kullback.runner.records import Verifier, write_json
+from tests.helpers.widget import rename_script
 from tests.runner.test_tool import _env_with_trace
-
-
-def _rename_script():
-    """A model that reads the widget and writes the striped label, then stops."""
-    return TestModel([
-        ModelReply(content=None, model="test", tool_calls=[
-            ToolCallRequest(id="m1", name="describe_widget", arguments={"widget_id": "w1"})]),
-        ModelReply(content=None, model="test", tool_calls=[
-            ToolCallRequest(id="m2", name="rename_widget",
-                            arguments={"widget_id": "w1", "label": "striped"})]),
-        ModelReply(content="Done.", model="test"),
-    ], loop=True)
 
 
 def _exam_env(root: Path) -> Path:
     """The invented environment with one confirmed replay row to seed from."""
     env = _env_with_trace(root)
-    seed = tool.run(env, "widget_task", _rename_script(), workdir=root)
+    seed = tool.run(env, "widget_task", rename_script(), workdir=root)
     write_json(root / "replays.json", {"widget_task": {
         "rec1": {"trace_id": "rec1", "run_id": seed.run_id,
                  "confirmed": True, "path": seed.path}}})
@@ -45,7 +34,7 @@ def _priced_script():
     """The rename script under a priced model id, each turn carrying a provider's usage."""
     usage = Usage(input=1890, output=17)
     return TestModel([reply.model_copy(update={"model": None, "usage": usage})
-                      for reply in _rename_script().replies], loop=True, name=next(iter(budget.PRICES)))
+                      for reply in rename_script().replies], loop=True, name=next(iter(budget.PRICES)))
 
 
 

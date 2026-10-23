@@ -21,7 +21,6 @@ from gates.examiner_fixtures import (
 )
 from gates.verifier_fixtures import (
     alt_path_run,
-    make_run,
     other_reason_run,
     reference_events,
     reference_run,
@@ -42,6 +41,7 @@ from kullback.runner.records import (
     ValueSource,
     Verifier,
 )
+from tests.helpers.records import make_run
 
 REFUSAL = {TASK: {"task_id": TASK, "reason": "no frontier Run reaches the End state", "round": 1}}
 NOTHING_FINISHED = ({TASK: {"tr1": replay_row("tr1", False)}}, {TASK: [reroll_row("reroll-t1-0", "max_steps")]})

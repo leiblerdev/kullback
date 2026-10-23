@@ -22,16 +22,12 @@ from kullback.ai.messages import AssistantMessage, ToolCall, ToolResultMessage, 
 from kullback.ai.model_limits import request_rules_for
 from kullback.ai.usage import Usage
 from kullback.runner import budget
+from tests.helpers.wire import sse
 
 MODEL = "bedrock/global.anthropic.claude-opus-5-5"
 KEYS = {"AWS_ACCESS_KEY_ID": "AKIDEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-real-secret"}
 TOOL = {"name": "look_up", "description": "d", "input_schema": {"type": "object"}}
 SIGNED_THINKING = {"type": "thinking", "thinking": "", "signature": "sig-abc"}
-
-
-@pytest.fixture
-def live():
-    pv.enable_live_calls_from_env({pv.LIVE_ENV_VAR: "1"})
 
 
 def ok_reply(content=None, usage=None):
@@ -231,10 +227,6 @@ def test_a_transcript_without_thinking_blocks_dumps_as_it_did_before():
 
 
 # --- streaming ---
-
-
-def sse(chunks):
-    return "".join(f"data: {chunk}\n\n" for chunk in chunks).encode("utf-8")
 
 
 def test_the_stream_is_signed_over_the_bytes_it_posts_and_keeps_the_signed_thinking(live):

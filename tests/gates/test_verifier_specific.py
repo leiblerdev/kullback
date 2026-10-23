@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import pytest
 
-from gates.verifier_fixtures import assistant, call, make_run, result, user, write_events_jsonl
+from gates.verifier_fixtures import write_events_jsonl
 from kullback import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import Event, Run, Task, Verifier
+from tests.helpers.records import assistant, call, make_run, result, user
 
 LOOKUP, MOVE = "lookup_booking", "move_seat"
 ROWS = {

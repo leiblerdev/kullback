@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
+from kullback.ai.provider import ModelReply, TestModel
 from kullback.builder import run_user as R
 from kullback.runner.records import load_run_jsonl
 from kullback.runner.state import StateView
@@ -14,6 +14,7 @@ from kullback.runner.world.environment import BuiltEnvironment
 from kullback.user.agent import AgentUser
 from kullback.user.simulated import SimulatedUser
 from tests.examiner.test_runners import _exam_env as _bare_env
+from tests.helpers.widget import rename_script
 
 
 def _exam_env(path: Path) -> Path:
@@ -33,15 +34,7 @@ ANSWER = "The second one suits me best."
 
 def _asking_candidate() -> TestModel:
     """A candidate that asks the uncued question first, then does the rename and stops."""
-    return TestModel([
-        ModelReply(content=UNCUED_QUESTION, model="test"),
-        ModelReply(content=None, model="test", tool_calls=[
-            ToolCallRequest(id="m1", name="describe_widget", arguments={"widget_id": "w1"})]),
-        ModelReply(content=None, model="test", tool_calls=[
-            ToolCallRequest(id="m2", name="rename_widget",
-                            arguments={"widget_id": "w1", "label": "striped"})]),
-        ModelReply(content="Done.", model="test"),
-    ], loop=True)
+    return rename_script(ModelReply(content=UNCUED_QUESTION, model="test"))
 
 
 def _user_model() -> TestModel:

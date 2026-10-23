@@ -8,39 +8,15 @@ import json
 from kullback.ai.provider import TestModel
 from kullback.builder import domain_tools as domain_tools_mod
 from kullback.builder import env_files, world_tools
-from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, write_json
-from tests.builder.session_fixtures import reply
+from kullback.runner.records import ToolCall, Trace, Turn, write_json
 from tests.episode.invented import write_env
-
-PTR = RawPtr(file_hash="f" * 64, sim_index=0, msg_index=0)
+from tests.helpers.scripted import reply
+from tests.helpers.widget import PTR, write_widget_trace
 
 
 def _workdir(tmp_path, **env):
     root = write_env(tmp_path / "work", **env)
-    traces = root / "traces"
-    traces.mkdir(parents=True, exist_ok=True)
-    turns = [
-        Turn(idx=0, role="assistant", content="Hi! How can I help?", raw_ptr=PTR),
-        Turn(idx=1, role="user", content="Give widget w1 the label striped.", raw_ptr=PTR),
-        Turn(idx=2, role="assistant", content=None, tool_call_ids=["c1"], raw_ptr=PTR),
-        Turn(idx=3, role="tool", content='{"widget_id": "w1"}', tool_call_ids=["c1"],
-             raw_ptr=PTR),
-        Turn(idx=4, role="assistant", content=None, tool_call_ids=["c2"], raw_ptr=PTR),
-        Turn(idx=5, role="tool", content='{"widget_id": "w1"}', tool_call_ids=["c2"],
-             raw_ptr=PTR),
-        Turn(idx=6, role="assistant", content="Done.", raw_ptr=PTR),
-        Turn(idx=7, role="user", content="Thanks, that is the right label.", raw_ptr=PTR),
-    ]
-    calls = [
-        ToolCall(id="c1", name="describe_widget", args={"widget_id": "w1"},
-                 result={"widget_id": "w1", "label": "plain"}, raw_ptr=PTR, trace_id="rec1"),
-        ToolCall(id="c2", name="rename_widget", args={"widget_id": "w1", "label": "striped"},
-                 result={"widget_id": "w1", "label": "striped"}, raw_ptr=PTR, trace_id="rec1"),
-    ]
-    trace = Trace(trace_id="rec1", raw_hash="r" * 64, ingest_version="1", source="test",
-                  turns=turns, tool_calls=calls, raw_ptr=PTR)
-    (traces / "rec1.json").write_text(json.dumps(trace.model_dump(mode="json", by_alias=True)),
-                                      encoding="utf-8")
+    write_widget_trace(root)
     return root
 
 

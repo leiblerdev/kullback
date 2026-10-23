@@ -8,10 +8,12 @@ from __future__ import annotations
 from functools import partial
 from pathlib import Path
 
-from kullback.ai.provider import ModelReply, ToolCallRequest
+from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.builder.search import Chain, MemoSearch, TestSearch
 from kullback.domain import destination_refusal
 from kullback.runner.records import RawPtr, Task, Trace, Turn, as_dict, write_json
+from kullback.synth import generate as M
+from kullback.synth import generate_tools as T
 
 PTR = RawPtr(file_hash="fixture", sim_index=0)
 POLICY = ("A widget may be moved to another slot only before it is sealed.\n"
@@ -87,3 +89,10 @@ def planned(*situations: tuple[str, list[int]]) -> list[ModelReply]:
     calls = [call("write_situation", {"statement": text, "kind": "change", "openings": list(at)}, f"p{n}")
              for n, (text, at) in enumerate(rows)]
     return [*calls, ModelReply(content="Planned them.")]
+
+
+def new_generation(tmp_path, *replies) -> tuple[M.Generation, TestModel]:
+    """A generation over a fresh workdir, played by a model scripted with `replies`."""
+    model = TestModel([*replies])
+    workdir = make_workdir(tmp_path)
+    return M.Generation(world=M.world_of(workdir), model=model, bus=T.bus_for(workdir)), model

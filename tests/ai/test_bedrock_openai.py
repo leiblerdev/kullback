@@ -11,27 +11,18 @@ import json
 import random
 
 import httpx
-import pytest
 
 from kullback.ai import provider as pv
 from kullback.ai import sigv4
 from kullback.ai.messages import UserMessage
 from kullback.ai.openai_compatible import OpenAICompatibleProvider
+from tests.helpers.wire import sse
 
 MODEL = "bedrock/global.openai.gpt-6-sol"
 KEYS = {"AWS_ACCESS_KEY_ID": "AKIDEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-real-secret"}
 TOOL = {"name": "look_up", "description": "d", "input_schema": {"type": "object"}}
 USAGE = {"prompt_tokens": 900, "completion_tokens": 7,
          "prompt_tokens_details": {"cached_tokens": 600, "cache_write_tokens": 250}}
-
-
-@pytest.fixture
-def live(monkeypatch):
-    monkeypatch.setattr(pv, "ALLOW_MODEL_REQUESTS", True)
-
-
-def sse(chunks):
-    return "".join(f"data: {chunk}\n\n" for chunk in chunks).encode("utf-8")
 
 
 def handle_for(seen, response):

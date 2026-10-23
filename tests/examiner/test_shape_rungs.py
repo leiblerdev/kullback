@@ -15,19 +15,8 @@ import pytest
 from kullback import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules
-from tests.test_derive_provenance import (
-    ASSIGN,
-    ROSTER,
-    WRITE_TOOLS,
-    assignment_events,
-    atom,
-    call,
-    derive,
-    result,
-    run,
-    says,
-    user,
-)
+from tests.helpers.records import assistant, atom_by_id, call, result, user
+from tests.test_derive_provenance import ASSIGN, ROSTER, WRITE_TOOLS, assignment_events, derive, run
 
 
 def new_locker_events(badge: str = "QX41", read: bool = True) -> list[dict]:
@@ -37,14 +26,14 @@ def new_locker_events(badge: str = "QX41", read: bool = True) -> list[dict]:
     return [user("Please assign the new locker L7 to me, under the badge code of locker L9.")] + reading + [
         call(ASSIGN, {"locker_id": "L7", "badge_code": badge}, cid="c1"),
         result({"locker_id": "L7", "assigned": True}, cid="c1"),
-        says("Locker L7 is yours."),
+        assistant("Locker L7 is yours."),
     ]
 
 
 def stored(order: str, monkeypatch, events: list[dict]) -> tuple[str, tuple]:
     """The source that answered on the Reference, and the sources the stored rule accepts."""
     monkeypatch.setattr(V, "SHAPE_RUNG_ORDER", order)
-    shape = atom(derive(run("ref", events)), "w0.badge_code")
+    shape = atom_by_id(derive(run("ref", events)), "w0.badge_code")
     sources = re.search(r"^_SOURCES = (.*)$", shape.predicate_src, re.M).group(1)
     return S.atom_payload(shape).get("shape_source"), ast.literal_eval(sources)
 

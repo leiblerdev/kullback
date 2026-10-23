@@ -18,26 +18,9 @@ from kullback.ai._sse import stream_sse_events
 from kullback.ai.limits import Bucket, RateSpec
 from kullback.ai.openai_compatible import ChatStreamParser
 from kullback.ai.retry import RetryPolicy, rate_limit_delay
+from tests.helpers.wire import CHAT_CHUNKS, sse, transport_of
 
 OK = {"choices": [{"message": {"content": "ok"}}], "usage": {}}
-
-CHAT_CHUNKS = [
-    '{"id": "r1", "model": "m", "choices": [{"delta": {"content": "Hel"}}]}',
-    '{"id": "r1", "model": "m", "choices": [{"delta": {"content": "lo"}}]}',
-    '{"id": "r1", "model": "m", "choices": [{"delta": {}, "finish_reason": "stop"}],'
-    ' "usage": {"prompt_tokens": 12, "completion_tokens": 3}}',
-    "[DONE]",
-]
-
-
-def sse(chunks):
-    return "".join(f"data: {chunk}\n\n" for chunk in chunks).encode("utf-8")
-
-
-def transport_of(handler):
-    """An httpx client whose every request is answered by handler; nothing leaves the machine."""
-    return httpx.Client(transport=httpx.MockTransport(handler))
-
 
 def streaming_client(responses):
     """An async client answering each request from the (status, headers, body) queue in order."""
@@ -62,12 +45,6 @@ class FakeClock:
 
     def advance(self, seconds):
         self.t += seconds
-
-
-@pytest.fixture
-def live():
-    """Adapters refuse to run while ALLOW_MODEL_REQUESTS is False; the mock transport keeps it offline."""
-    pv.enable_live_calls_from_env({pv.LIVE_ENV_VAR: "1"})
 
 
 @pytest.fixture(autouse=True)

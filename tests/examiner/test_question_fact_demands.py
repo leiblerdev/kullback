@@ -6,18 +6,12 @@ question atom.
 
 from __future__ import annotations
 
-from gates.verifier_fixtures import (
-    assistant,
-    call,
-    make_run,
-    result,
-    user,
-    write_events_jsonl,
-)
+from gates.verifier_fixtures import write_events_jsonl
 from kullback import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import Task
+from tests.helpers.records import assistant, call, make_run, result, user
 
 WRITE_TOOLS = {"shelve_parcel"}
 PARCEL = {"parcel_id": "P-7", "slot": "morning", "weight": "2kg"}

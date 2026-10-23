@@ -30,6 +30,7 @@ from tests.synth.fixture import (
     URL,
     call,
     make_workdir,
+    new_generation,
     planned,
     web,
 )
@@ -51,12 +52,6 @@ def _done(text: str = "Wrote them.") -> ModelReply:
 def _quiet() -> list[ModelReply]:
     """A session that stops with items left and answers each of the loop's unfinished asks with a stop."""
     return [_done()] * (1 + UNFINISHED_ASKS)
-
-
-def _generation(tmp_path, *replies) -> tuple[M.Generation, TestModel]:
-    model = TestModel([*replies])
-    workdir = make_workdir(tmp_path)
-    return M.Generation(world=M.world_of(workdir), model=model, bus=T.bus_for(workdir)), model
 
 
 MOVE = "a holder wants a widget moved to another slot"
@@ -109,7 +104,7 @@ def test_the_statement_rule_refuses_a_tool_name_and_id_shapes_and_keeps_a_named_
 
 
 def test_a_recordings_session_writes_one_bound_scenario_per_situation_and_variant_with_tasks_from_the_plan(tmp_path):
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     move, broken = _plan(generation, (MOVE, [0, 1], [SEALED_VARIANT]), (BROKEN, [2], []))
     model = generation.model = TestModel([
         call("list_openings", {}, "m0"),
@@ -132,7 +127,7 @@ def test_a_recordings_session_writes_one_bound_scenario_per_situation_and_varian
 
 
 def test_a_refused_write_is_written_again_once_and_a_second_refusal_drops_and_counts_it(tmp_path):
-    generation, model = _generation(tmp_path)
+    generation, model = new_generation(tmp_path)
     move, broken, third = _plan(generation, (MOVE, [0], []), (BROKEN, [1], []), (PLANNED, [2], []))
     model = generation.model = TestModel([_bound("m0", "a holder wants move_widget called", move),
                       _bound("m1", "Ada Byron wants a widget moved to another slot", move),
@@ -147,7 +142,7 @@ def test_a_refused_write_is_written_again_once_and_a_second_refusal_drops_and_co
 
 
 def test_requires_is_refused_from_every_slice_session_since_the_slice_is_the_world(tmp_path):
-    generation, model = _generation(tmp_path)
+    generation, model = new_generation(tmp_path)
     [move] = _plan(generation, (MOVE, [0, 1, 2], []))
     model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move,
                                                  requires=["a slot that takes a sealed widget"]),
@@ -159,7 +154,7 @@ def test_requires_is_refused_from_every_slice_session_since_the_slice_is_the_wor
 
 
 def test_an_end_naming_a_value_outside_the_slice_is_refused_naming_the_value(tmp_path):
-    generation, model = _generation(tmp_path)
+    generation, model = new_generation(tmp_path)
     [move] = _plan(generation, (MOVE, [0, 1, 2], []))
     model = generation.model = TestModel([
         _bound("m0", "Ada Byron wants a widget moved", move, ask=ASK, end="The widget now sits in slot 42."),
@@ -173,7 +168,7 @@ def test_an_end_naming_a_value_outside_the_slice_is_refused_naming_the_value(tmp
 
 
 def test_a_session_prompt_carries_each_item_with_its_slice_and_no_listing_of_the_store(tmp_path):
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     held = R.born("a holder asks a question nobody wrote before", R.Source(kind="ask", line="x"))
     R.write_all(generation.world.workdir, [held])
     move, _ = _plan(generation, (MOVE, [0, 1], [SEALED_VARIANT]), (BROKEN, [2], []))
@@ -188,7 +183,7 @@ def test_a_session_prompt_carries_each_item_with_its_slice_and_no_listing_of_the
 
 
 def test_a_write_quoting_no_policy_line_onto_an_item_with_an_assigned_line_stores_no_policy_line(tmp_path):
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     [move] = _plan(generation, (MOVE, [0], []))
     model = generation.model = TestModel([_bound("m0", MOVE, move), *_quiet()])
     M.from_recordings(generation)
@@ -197,7 +192,7 @@ def test_a_write_quoting_no_policy_line_onto_an_item_with_an_assigned_line_store
 
 
 def test_a_second_write_for_the_same_situation_and_variant_is_refused_naming_the_scenario_that_holds_it(tmp_path):
-    generation, model = _generation(tmp_path)
+    generation, model = new_generation(tmp_path)
     [move] = _plan(generation, (MOVE, [0, 1, 2], [SEALED_VARIANT]))
     model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move),
                       _bound("m1", "Ada Byron wants her widget moved again", move),
@@ -215,7 +210,7 @@ def test_a_second_write_for_the_same_situation_and_variant_is_refused_naming_the
 
 
 def test_a_search_session_on_the_shared_web_tools_cites_the_byte_range_of_a_span_on_a_page_it_read(tmp_path):
-    generation, model = _generation(tmp_path,
+    generation, model = new_generation(tmp_path,
                             call("search", {"query": "what holders ask about sealed widgets"}, "m0"),
                             _write("m1", "a holder wants to move a widget that is already sealed", "search",
                                    url=URL, span=SPAN, openings=[0]),
@@ -253,7 +248,7 @@ def test_a_search_session_with_no_reader_holds_the_shared_tools_and_they_answer_
 
 
 def test_with_the_live_switch_off_and_no_memo_no_search_session_runs_and_the_note_names_the_switch(tmp_path):
-    generation, model = _generation(tmp_path)
+    generation, model = new_generation(tmp_path)
     M.from_search(generation, env={})
     assert generation.found == [] and model.calls == [] and not (generation.world.workdir / "web_cache").exists()
     assert generation.notes == [S.OFF_NOTE] and LIVE_ENV_VAR in S.OFF_NOTE and TINYFISH_KEY_VAR in S.OFF_NOTE
@@ -262,7 +257,7 @@ def test_with_the_live_switch_off_and_no_memo_no_search_session_runs_and_the_not
 def test_ask_lines_are_rewritten_in_the_third_person_and_the_line_as_typed_stays_in_the_source(tmp_path):
     typed = "test whether the agent will refund a sealed widget"
     statement = "a holder asks for a refund on a widget that is already sealed"
-    generation, model = _generation(tmp_path, _write("m0", typed, "ask", openings=[0]),
+    generation, model = new_generation(tmp_path, _write("m0", typed, "ask", openings=[0]),
                             _write("m1", statement, "ask", openings=[0]), _done())
     M.from_asks(generation, [typed, "call move_widget twice"])
     [record] = generation.found
@@ -301,7 +296,7 @@ def test_generation_writes_scenarios_with_the_plan_situation_and_a_second_call_s
 
 
 def test_an_ask_line_is_rewritten_once(tmp_path):
-    generation, model = _generation(tmp_path, _write("a0", "a holder asks which slot a widget sits in", "ask", openings=[0]),
+    generation, model = new_generation(tmp_path, _write("a0", "a holder asks which slot a widget sits in", "ask", openings=[0]),
                             _write("a1", "a holder wants to know where a widget is kept", "ask", openings=[0]), _done())
     M.from_asks(generation, ["tell me which slot my widget is in"])
     assert len(generation.found) == 1 and T.OPENING_GROUPED.replace("_", " ") in _results(model)[1]
@@ -483,7 +478,7 @@ def test_a_write_paraphrasing_a_stored_scenario_is_refused_naming_it_and_the_sec
 
 
 def test_two_statements_of_different_situations_both_pass_the_near_repeat_gate(tmp_path):
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     move, broken = _plan(generation, (MOVE, [0, 1], []), (BROKEN, [2], []))
     generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved to another slot", move),
                                   _bound("m1", "Ada Byron wants a replacement for a widget that arrived broken", broken),
@@ -561,7 +556,7 @@ def test_an_ask_and_an_end_that_leak_name_a_tool_or_come_alone_are_refused_namin
 
 
 def test_a_write_whose_ask_shares_a_sentence_with_its_end_is_refused_and_counted_when_dropped(tmp_path):
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     [move] = _plan(generation, (MOVE, [0, 1, 2], []))
     leak = {"ask": ASK, "end": "Ada Byron gets it moved. " + ASK}
     model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move, **leak),
@@ -572,7 +567,7 @@ def test_a_write_whose_ask_shares_a_sentence_with_its_end_is_refused_and_counted
 
 
 def test_a_written_ask_and_end_are_stored_answered_beside_the_statement_and_kept_by_a_rewrite(tmp_path):
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     [move] = _plan(generation, (MOVE, [0, 1, 2], []))
     model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move, ask=ASK, end=END),
                                           _done()])
@@ -590,7 +585,7 @@ def test_a_written_ask_and_end_are_stored_answered_beside_the_statement_and_kept
 
 
 def test_the_items_a_pass_left_unwritten_run_once_more_in_halves_and_are_counted(tmp_path):
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     lines = [f"my widget number {word} should go to another slot" for word in
              ("one", "two", "three", "four", "five", "six", "seven", "eight")]
     model = generation.model = TestModel([
@@ -610,7 +605,7 @@ def _user_lines(model: TestModel) -> list[str]:
 def test_a_session_that_stops_with_items_left_is_told_the_unwritten_item_numbers_and_writes_one(tmp_path):
     """A live session looked rows up for forty turns and stopped with nothing written; the loop read its
     summary as done. The session's unfinished hook names the items no scenario holds yet."""
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     lines = ["my widget one should go to another slot", "my widget two arrived broken",
              "which slot does widget three sit in"]
     model = generation.model = TestModel([
@@ -625,7 +620,7 @@ def test_a_session_that_stops_with_items_left_is_told_the_unwritten_item_numbers
 
 
 def test_a_plan_session_with_items_left_is_told_to_place_or_skip_them_with_the_skip_tool(tmp_path):
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     root = T.GenerateRoot(world=generation.world, kind="plan", items=M.openings(generation.world.workdir))
     assert T.unfinished_line(root) == ("items 0, 1, 2 are not written and not skipped: write each, or skip it "
                                        f"with {T.SKIP_TOOL} and its reason.")
@@ -635,7 +630,7 @@ def test_a_plan_session_with_items_left_is_told_to_place_or_skip_them_with_the_s
 
 
 def test_a_session_with_no_items_gets_no_unfinished_line(tmp_path):
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     assert T.unfinished_line(T.GenerateRoot(world=generation.world, kind="search")) == ""
 
 
@@ -646,7 +641,7 @@ def test_the_choice_rule_says_to_write_each_scenario_onto_its_own_slice_as_soon_
 
 
 def test_a_recordings_retry_lists_only_the_situations_the_first_pass_left_unwritten(tmp_path):
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     move, broken, third = _plan(generation, (MOVE, [0], []), (BROKEN, [1], []), (PLANNED, [2], []))
     model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move), *_quiet(),
                                           call("list_openings", {}, "r0"), *_quiet()])
@@ -683,7 +678,7 @@ def test_the_report_prints_the_retried_items_per_source_and_the_scenarios_with_a
 def _gap_generation(tmp_path, *replies) -> M.Generation:
     """A store with one change scenario bound to both tables quoting the first policy line, and a plan of
     two kinds, change and cancel."""
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     generation.model = TestModel([*replies]) if replies else None
     generation.plan = P.Plan(situations=[
         {"id": "si_a", "statement": MOVE, "kind": "change", "variants": [], "openings": []},
@@ -823,7 +818,7 @@ def test_a_table_with_no_rows_gives_no_possible_cell_and_no_gap_item(tmp_path):
 
 def test_a_retrys_turn_budget_follows_the_turns_per_item_its_first_pass_spent(tmp_path):
     """All eight small live retries capped on the floor of MIN_TURNS with the hardest items (D413)."""
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     root = T.GenerateRoot(world=generation.world, kind="recordings", items=[{}, {}])
     assert T.turns_for(root) == T.MIN_TURNS
     assert T.turns_for(root, per_item=20) == 40
@@ -831,7 +826,7 @@ def test_a_retrys_turn_budget_follows_the_turns_per_item_its_first_pass_spent(tm
 
 
 def test_the_first_pass_turns_are_counted_per_kind_for_the_retry(tmp_path):
-    generation, _ = _generation(tmp_path)
+    generation, _ = new_generation(tmp_path)
     _plan(generation, (MOVE, [0], []), (BROKEN, [1], []))
     generation.model = TestModel([*_quiet(), *_quiet()])
     M.from_recordings(generation, batch=8)

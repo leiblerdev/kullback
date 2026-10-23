@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 from kullback import cli
 from kullback.runner.code_hash import CODE_HASH
 from kullback.runner.records import Environment, Task, Verdict, Verifier, as_dict
+from tests.helpers.terminal import rescue_turns
 
 runner = CliRunner()
 
@@ -99,7 +100,7 @@ def test_ingest_ingests_each_file_under_the_declared_floor(tmp_path, workdir):
         path = tmp_path / f"{name}.json"
         path.write_text(json.dumps({"rows": [{
             "row_idx": 0, "truncated_cells": [],
-            "row": {"conversations": _rescue_turns(f"# invented {name}\nSolve invented.\n"),
+            "row": {"conversations": rescue_turns(f"# invented {name}\nSolve invented.\n"),
                     "trial_name": f"invented-task-{name}__invented", "original_source": "invented-source"},
         }]}), encoding="utf-8")
         paths.append(path)
@@ -599,18 +600,6 @@ def test_tui_defaults_to_work_when_it_holds_a_build(tmp_path, monkeypatch):
     assert _default_workdir(Path("/elsewhere")) == Path("/elsewhere")
 
 
-def _rescue_turns(instruction: str) -> list[dict]:
-    """An invented recording whose first user turn carries the instruction between headers."""
-    return [
-        {"role": "user",
-         "content": ("Invented preamble.\n\nTask Description:\n" + instruction
-                     + "\n\nCurrent terminal state:\n\ninvented-ready")},
-        {"role": "assistant", "content": json.dumps({"commands": [
-            {"keystrokes": "invented-solo"}]})},
-        {"role": "user", "content": "New Terminal Output:\n\ninvented solo output"},
-    ]
-
-
 def _rescue_blob(instruction: str, with_content_check: bool) -> str:
     """An invented registry entry on the wire: base64 of the gzipped task tar."""
     import base64
@@ -646,7 +635,7 @@ def _rescue_workdir(tmp_path: Path, workdir: Path) -> dict:
     ]
     envelope = {"rows": [
         {"row_idx": index,
-         "row": {"conversations": _rescue_turns(instruction), "trial_name": trial,
+         "row": {"conversations": rescue_turns(instruction), "trial_name": trial,
                  "original_source": "invented-source"},
          "truncated_cells": []}
         for index, (trial, instruction) in enumerate(rows)]}
@@ -711,7 +700,7 @@ def test_rescue_reaches_set_aside_recordings(tmp_path, workdir):
     """Set-aside recordings keep their sidecar, so the lookup reads them like eligible ones."""
     from kullback.builder import ingest
 
-    clean = {"conversations": _rescue_turns("# invented clean\nSolve invented.\n"),
+    clean = {"conversations": rescue_turns("# invented clean\nSolve invented.\n"),
              "trial_name": "invented-task-31__invented-a", "original_source": "invented-source"}
     damaged = {"conversations": [
         {"role": "user",

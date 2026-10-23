@@ -10,8 +10,8 @@ from kullback.builder import domain_tools as domain_tools_mod
 from kullback.builder import env_files
 from kullback.builder import session as session_mod
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
-from tests.builder.session_fixtures import reply
 from tests.episode.invented import write_env
+from tests.helpers.scripted import reply
 
 PTR = RawPtr(file_hash="f" * 64, sim_index=0, msg_index=0)
 

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 
-from gates.verifier_fixtures import assistant, call, make_run, result, user
 from kullback.ai.provider import TestModel
 from kullback.examiner import reference as ref
 from kullback.runner.records import Constraint
+from tests.helpers.records import assistant, call, make_run, result, user
 
 # A parcel courier desk, invented for these tests: a pending delivery is cancelled with a reason.
 WRITES = {"cancel_pending_delivery", "redirect_delivered_parcel"}

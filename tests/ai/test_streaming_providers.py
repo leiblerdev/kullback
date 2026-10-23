@@ -6,26 +6,13 @@ import asyncio
 import json
 
 import httpx
-import pytest
 
-from kullback.ai import provider as pv
 from kullback.ai.anthropic import AnthropicProvider
 from kullback.ai.messages import UserMessage
 from kullback.ai.openai_compatible import OpenAICompatibleProvider
 from kullback.ai.provider import AnthropicModel, MemoModel, ModelReply, OpenAIModel, TestModel
 from kullback.ai.replay import ReplayProvider
-
-CHAT_CHUNKS = [
-    '{"id": "r1", "model": "m", "choices": [{"delta": {"content": "Hel"}}]}',
-    '{"id": "r1", "model": "m", "choices": [{"delta": {"content": "lo"}}]}',
-    '{"id": "r1", "model": "m", "choices": [{"delta": {}, "finish_reason": "stop"}],'
-    ' "usage": {"prompt_tokens": 12, "completion_tokens": 3}}',
-    "[DONE]",
-]
-
-
-def sse(chunks):
-    return "".join(f"data: {chunk}\n\n" for chunk in chunks).encode("utf-8")
+from tests.helpers.wire import CHAT_CHUNKS, sse
 
 
 class Gate:
@@ -62,12 +49,6 @@ def collect(provider, **kwargs):
         return [event async for event in provider.stream_response(**kwargs)]
 
     return asyncio.run(run())
-
-
-@pytest.fixture
-def live(monkeypatch):
-    """The transports below never leave the machine, so the live-call gate is opened for them."""
-    monkeypatch.setattr(pv, "ALLOW_MODEL_REQUESTS", True)
 
 
 def chat_provider(client, **kwargs):

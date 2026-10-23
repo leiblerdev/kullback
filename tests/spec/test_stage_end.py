@@ -30,8 +30,8 @@ MOVED = {"id": "s1", "kind": "row_is", "table": "items", "find": {"item_id": "A1
          "fact_ids": ["f1"]}
 
 
-def _environment(root, facts, *items):
-    """A workdir whose one Task's Spec and Verifier the stage wrote from the facts and the items."""
+def written(root, facts, items, *send_back):
+    """A workdir whose one Task the stage wrote from the facts and the items; `send_back` answers D441's ask."""
     _workdir(root)
     (root / "env" / "policy.md").write_text(POLICY)
     (root / "db.json").write_text(json.dumps(START))
@@ -41,9 +41,15 @@ def _environment(root, facts, *items):
     (root / "traces" / "rec-a.json").write_text(json.dumps(trace))
     mined = [_call("user_turns", {"recording": "rec-a"}), _call("add_facts", {"facts": list(facts)}),
              ModelReply(content="kept.", usage=Usage(input=100, output=5))]
-    model = TestModel([*mined, *_items(*items), DONE])  # the writer's one send-back, where it asks one
+    model = TestModel([*mined, *_items(*items), DONE, *send_back])  # DONE: the writer's own one follow-up
     counts = stage.write_specs(root, ["t1"], model)
     assert counts["written"] == 1, counts
+    return counts, model
+
+
+def _environment(root, facts, *items):
+    """A workdir whose one Task's Spec and Verifier the stage wrote from the facts and the items."""
+    written(root, facts, items)
     return root
 
 

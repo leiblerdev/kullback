@@ -9,7 +9,7 @@ from gates.examiner_fixtures import SIGS
 from kullback.agent.events import ToolExecutionEnd
 from kullback.agent.extensions import load_extensions
 from kullback.agent.harness import AgentHarness, drive_tool
-from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
+from kullback.ai.provider import TestModel
 from kullback.examiner import domain_tools as exam_tools
 from kullback.examiner import session as S
 from kullback.examiner import stage as stage_mod
@@ -17,13 +17,9 @@ from kullback.examiner.exam_files import ExamRoot
 from kullback.runner import budget, tool
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import as_dict, read_json, write_json
+from tests.helpers.scripted import reply
+from tests.helpers.widget import rename_script
 from tests.runner.test_tool import _env_with_trace
-
-
-def reply(content, *calls) -> ModelReply:
-    """One scripted assistant turn, the shape tests/builder/session_fixtures.py:reply gives."""
-    return ModelReply(content=content, tool_calls=[ToolCallRequest(id=f"c{i}", name=n, arguments=a)
-                                                  for i, (n, a) in enumerate(calls)])
 
 
 def with_specs(world) -> None:
@@ -148,22 +144,10 @@ def test_an_examiner_session_prices_its_model_calls_into_the_ledger_under_its_st
     assert stage["calls"] == 1 and stage["usd"] > 0
 
 
-def _rename_loop() -> TestModel:
-    """A model that reads the widget and writes the striped label, then stops, on every Run."""
-    return TestModel([
-        ModelReply(content=None, model="test", tool_calls=[
-            ToolCallRequest(id="m1", name="describe_widget", arguments={"widget_id": "w1"})]),
-        ModelReply(content=None, model="test", tool_calls=[
-            ToolCallRequest(id="m2", name="rename_widget",
-                            arguments={"widget_id": "w1", "label": "striped"})]),
-        ModelReply(content="Done.", model="test"),
-    ], loop=True)
-
-
 def _replayed_root(tmp_path):
     """The invented environment with one seed Run played into its own runs/ and a replay row naming it."""
     root = _env_with_trace(tmp_path / "env")
-    seed = tool.run(root, "widget_task", _rename_loop(), workdir=root)
+    seed = tool.run(root, "widget_task", rename_script(), workdir=root)
     write_json(root / "replays.json", {"widget_task": {
         "rec1": {"trace_id": "rec1", "run_id": seed.run_id, "confirmed": True, "path": seed.path}}})
     write_json(root / "rerolls.json", {"widget_task": []})

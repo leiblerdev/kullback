@@ -4,7 +4,6 @@ import asyncio
 import json
 
 import httpx
-import pytest
 
 import kullback.ai.provider as pv
 from kullback.ai.messages import UserMessage
@@ -16,11 +15,6 @@ PLAIN = [
     '{"id": "r1", "model": "m", "choices": [{"delta": {}, "finish_reason": "stop"}]}',
     "[DONE]",
 ]
-
-
-@pytest.fixture
-def live(monkeypatch):
-    monkeypatch.setattr(pv, "ALLOW_MODEL_REQUESTS", True)
 
 
 def test_a_streamed_shape_400_is_retried_once_and_ends_in_a_normal_done(live):

@@ -10,10 +10,11 @@ import json
 
 import pytest
 
-from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
+from kullback.ai.provider import ModelReply, TestModel
 from kullback.examiner import goal as G
 from kullback.runner.records import RawPtr, Trace, Turn
 from kullback.spec import writer_tools as T
+from tests.helpers.scripted import tool_reply
 
 STATE = {"boxes": {"A1": {"box_id": "A1", "slot": "two"}, "B2": {"box_id": "B2", "slot": "four"}}}
 POLICY = "# Store policy\n\n## Moving boxes\n\nMove a box only to a free slot.\n"
@@ -52,10 +53,6 @@ def _workdir(root):
     (root / "exam" / "references.json").write_text(json.dumps({"t1": "SEEN"}))
 
 
-def call(name: str, **arguments) -> ModelReply:
-    return ModelReply(tool_calls=[ToolCallRequest(id=f"{name}-1", name=name, arguments=arguments)])
-
-
 def answer(**goal) -> ModelReply:
     return ModelReply(content=json.dumps(goal))
 
@@ -66,7 +63,7 @@ MOVE = {"table": "boxes", "row": "A1", "field": "slot", "value": "seven", "user"
 def test_the_session_sees_the_user_words_and_never_the_intent_items_verifier_runs_or_agent_lines(tmp_path):
     _workdir(tmp_path)
     inputs = G.load_goal_inputs(tmp_path, "t1")
-    model = TestModel([call("read_row", table="boxes", key="A1"), answer(required=[MOVE])])
+    model = TestModel([tool_reply("read_row", table="boxes", key="A1"), answer(required=[MOVE])])
     G.write_goal("t1", inputs, model)
     shown = json.dumps([c["messages"] for c in model.calls])
     assert ASK in shown and "SEEN" not in shown and "AGENTLINE" not in shown
@@ -87,7 +84,7 @@ def test_the_session_is_given_only_the_read_tools():
 
 def test_a_tool_outside_the_reads_is_answered_as_unknown(tmp_path):
     _workdir(tmp_path)
-    model = TestModel([call("add_items", items=[]), answer(required=[])])
+    model = TestModel([tool_reply("add_items", items=[]), answer(required=[])])
     G.write_goal("t1", G.load_goal_inputs(tmp_path, "t1"), model)
     assert model.calls[1]["messages"][-1]["content"] == "unknown tool"
 
@@ -157,7 +154,7 @@ def test_the_prompt_says_a_value_only_a_tool_sets_is_choice_or_unknown_unless_th
 
 def test_an_empty_last_answer_gets_one_plain_ask_for_the_goal_object(tmp_path):
     _workdir(tmp_path)
-    model = TestModel([call("read_row", table="boxes", key="A1"), ModelReply(content=""), answer(required=[MOVE])])
+    model = TestModel([tool_reply("read_row", table="boxes", key="A1"), ModelReply(content=""), answer(required=[MOVE])])
     goal = G.write_goal("t1", G.load_goal_inputs(tmp_path, "t1"), model)
     last = model.calls[-1]["messages"]
     assert goal["asked"] == ["empty"] and goal["required"] == [MOVE] and goal["answered"] is True

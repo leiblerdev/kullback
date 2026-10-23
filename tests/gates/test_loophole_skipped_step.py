@@ -3,18 +3,11 @@
 from __future__ import annotations
 
 from gates.examiner_fixtures import SIGS, TASK, history, pool, probe, replay_row, reroll_row, status, version
-from gates.verifier_fixtures import (
-    alt_path_run,
-    derive,
-    empty_run,
-    make_run,
-    other_reason_run,
-    reference_events,
-    reference_run,
-)
+from gates.verifier_fixtures import alt_path_run, derive, empty_run, other_reason_run, reference_events, reference_run
 from kullback.gates import trust as T
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules
+from tests.helpers.records import make_run
 
 
 def check(tmp_path, test_model, run, seeds=None):

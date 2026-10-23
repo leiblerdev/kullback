@@ -39,15 +39,14 @@ from kullback.gates.loosening import false_rejection_gate, loosening_gate
 from kullback.gates.tool_runs import MEMORISED_STAGE, SensitivityPair
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import (
-    Column,
     Constraint,
-    EntitySchema,
     FieldStat,
     RawPtr,
     ToolCall,
     ToolSig,
     as_dict,
 )
+from tests.helpers.schemas import widget_status_schema
 
 DB = {
     "widgets": {
@@ -66,11 +65,6 @@ WRONG_ON_W2 = ("row = self.db.widgets[widget_id]\n"
                "return {\"widget_id\": row.widget_id, \"status\": row.status}\n")
 
 
-def _schema() -> EntitySchema:
-    columns = [Column(table="widgets", name=name, **{"class": "hard"}) for name in ("widget_id", "status")]
-    return EntitySchema(tables=["widgets"], columns=columns, id_patterns={"widgets.widget_id": r"^W-\d+$"})
-
-
 def _sig() -> ToolSig:
     return ToolSig(name="set_status", description="Move one widget to a new status.",
                    args_fields=[FieldStat(name="widget_id", types=["str"], optional=False),
@@ -87,7 +81,7 @@ CALLS = [_call("c1", "W-1", "done"), _call("c2", "W-2", "done")]
 
 
 def _source(body: str) -> str:
-    return ce.module_source(_schema(), [_sig()], {"set_status": body})
+    return ce.module_source(widget_status_schema(), [_sig()], {"set_status": body})
 
 
 def _execute(box_dir: Path):
@@ -105,7 +99,7 @@ def _write(root: Path, rel: str, text: str) -> str:
 
 
 def _evidence(**overrides) -> dict:
-    evidence: dict = {"calls": CALLS, "schema": _schema(), "db": dict(DB)}
+    evidence: dict = {"calls": CALLS, "schema": widget_status_schema(), "db": dict(DB)}
     evidence.update(overrides)
     return evidence
 
@@ -164,7 +158,7 @@ def test_a_write_read_off_the_workdir_files_rules_the_same_way(tmp_path):
     (work / "traces").mkdir(parents=True)
     (work / "traces" / "t1.json").write_text(
         json.dumps({"tool_calls": [as_dict(call) for call in CALLS]}), encoding="utf-8")
-    (work / "schema.json").write_text(json.dumps(as_dict(_schema())), encoding="utf-8")
+    (work / "schema.json").write_text(json.dumps(as_dict(widget_status_schema())), encoding="utf-8")
     (work / "db.json").write_text(json.dumps(DB), encoding="utf-8")
     rulings = rulings_for(root, rel, work, execute=_execute(tmp_path / "box"))
     refused = next(ruling for ruling in rulings if not ruling.passed and ruling.stage != MEMORISED_STAGE)
@@ -219,7 +213,7 @@ def test_an_executor_taking_the_trace_table_is_handed_every_traced_call_of_the_w
         handed.append(trace_calls)
         return sb.Sandbox(source, DB, tmp_path / "box", trace_calls=trace_calls).run(list(calls))
 
-    rulings_for(root, rel, work, execute=execute, evidence={"db": dict(DB), "schema": _schema()})
+    rulings_for(root, rel, work, execute=execute, evidence={"db": dict(DB), "schema": widget_status_schema()})
     assert handed
     assert {call.id for call in handed[0]["t1"]} == {"a1", "a2"}
 
@@ -257,7 +251,7 @@ def _refusals(root: Path, work: Path, rel: str, **kwargs) -> list:
 
 
 def test_every_refusal_names_its_rows(tmp_path):
-    schema, db = _schema(), dict(DB)
+    schema, db = widget_status_schema(), dict(DB)
     pair = SensitivityPair(first=CALLS[0], second=CALLS[1], columns=("status",), tasks=("t1", "t2"))
     same = [{"ok": True, "value": {"widget_id": "W-1", "status": "done"}}]
     varied = [_call("c1", "W-1", "done"), _call("c2", "W-2", "held")]

@@ -12,7 +12,8 @@ from pathlib import Path
 from kullback import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules
-from kullback.runner.records import Atom, Event, Run, Task, Verifier, as_dict
+from kullback.runner.records import Run, Task, Verifier, as_dict
+from tests.helpers.records import assistant, call, make_run, result, user
 
 WRITE_TOOLS = {"cancel_pending_order"}
 ORDER = {"order_id": "#W123", "status": "pending", "total": 150.0}
@@ -21,45 +22,18 @@ TASK = Task(id="t1", intent="cancel the pending order and record the reason")
 
 # --- tiny hand-built Runs -------------------------------------------------
 
-def _ev(type_: str, **payload) -> dict:
-    return {"type": type_, "payload": payload}
-
-
-def user(text: str) -> dict:
-    return _ev("user_turn", content=text)
-
-
-def assistant(text: str) -> dict:
-    return _ev("model_call", reply={"content": text})
-
-
-def call(name: str, args: dict, kind: str = "write", cid: str = "c1") -> dict:
-    return _ev("tool_call", id=cid, name=name, args=args, kind=kind)
-
-
-def result(data, cid: str = "c1") -> dict:
-    return _ev("tool_result", id=cid, result=data)
-
-
-def make_run(run_id: str, events: list[dict], task_id: str = "t1", termination_reason: str = "success") -> Run:
-    return Run(
-        run_id=run_id,
-        task_id=task_id,
-        termination_reason=termination_reason,
-        events=[Event(idx=i, type=e["type"], payload=e["payload"]) for i, e in enumerate(events)],
-    )
-
-
 def reference_events(reason: str = "no longer needed",
-                     final: str = "Your order #W123 is cancelled and 150.0 is refunded.") -> list[dict]:
+                     final: str = "Your order #W123 is cancelled and 150.0 is refunded.",
+                     written: str = "#W123", answered: str | None = None) -> list[dict]:
+    """The Reference's events; `written` is the id the cancel names, `answered` the id its result names."""
     return [
         user("Please cancel my order #W123."),
         assistant("Sure. Why do you want to cancel it?"),
         user(reason),
         call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
         result(ORDER, cid="c0"),
-        call("cancel_pending_order", {"order_id": "#W123", "reason": reason}, cid="c1"),
-        result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
+        call("cancel_pending_order", {"order_id": written, "reason": reason}, cid="c1"),
+        result({"order_id": answered or written, "status": "cancelled"}, cid="c1"),
         assistant(final),
     ]
 
@@ -105,16 +79,7 @@ def failed_run() -> Run:
 
 def wrong_run() -> Run:
     """Plausible but wrong: the wrong entity, everything else in place."""
-    return make_run("wrong", [
-        user("Please cancel my order #W123."),
-        assistant("Sure. Why do you want to cancel it?"),
-        user("no longer needed"),
-        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
-        result(ORDER, cid="c0"),
-        call("cancel_pending_order", {"order_id": "#W999", "reason": "no longer needed"}, cid="c1"),
-        result({"order_id": "#W999", "status": "cancelled"}, cid="c1"),
-        assistant("Your order #W123 is cancelled and 150.0 is refunded."),
-    ])
+    return make_run("wrong", reference_events(written="#W999"))
 
 
 def empty_run() -> Run:
@@ -152,12 +117,6 @@ def derive(tmp_path: Path, reruns=None, **kwargs) -> Verifier:
     paths = [write_events_jsonl(r, tmp_path / f"{r.run_id}.jsonl") for r in reruns]
     kwargs.setdefault("write_tools", WRITE_TOOLS)
     return V.derive_verifier(TASK, reference_run(), paths, kwargs.pop("canon", CanonRules()), **kwargs)
-
-
-def atom_by_id(verifier: Verifier, atom_id: str) -> Atom:
-    found = [a for a in verifier.atoms if a.id == atom_id]
-    assert found, f"no atom {atom_id} in {[a.id for a in verifier.atoms]}"
-    return found[0]
 
 
 def payloads(verifier: Verifier) -> list[dict]:

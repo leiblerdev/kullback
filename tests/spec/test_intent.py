@@ -11,6 +11,7 @@ from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.spec import intent_tools as T
 from kullback.spec.intent import intent_system_prompt, mine_intent
 from kullback.spec.schema import Spec, load_spec, save_spec
+from tests.helpers.scripted import tool_reply_as
 from tests.spec.fixtures import check, spec
 
 SECRET_RESULT = "row value only the tool knew"
@@ -65,10 +66,6 @@ def _run(tool, **args):
 
 def _tools(state):
     return {tool.name: tool for tool in T.miner_tools(state)}
-
-
-def _call(call_id, name, arguments):
-    return ModelReply(content=None, tool_calls=[ToolCallRequest(id=call_id, name=name, arguments=arguments)])
 
 
 # --- what the miner is shown -----------------------------------------------------------------------
@@ -162,11 +159,11 @@ def test_one_call_keeps_the_good_facts_and_refuses_a_repeat_and_a_turn_that_is_n
 def test_the_miner_reads_the_recordings_keeps_facts_and_writes_them_to_the_spec_keeping_its_checks(workdir):
     save_spec(workdir, spec(checks=[check()]).model_copy(update={"task_id": "t1"}))
     model = TestModel([
-        _call("a", "list_recordings", {"task_id": "t1"}),
-        _call("b", "user_turns", {"recording": "rec-a"}),
-        _call("c", "add_facts", {"facts": [{"text": "move the blue lamp order to Oak street",
-                                            "recording": "rec-a", "turn": 1, "stance": "volunteered",
-                                            "kind": "do"}]}),
+        tool_reply_as("a", "list_recordings", {"task_id": "t1"}),
+        tool_reply_as("b", "user_turns", {"recording": "rec-a"}),
+        tool_reply_as("c", "add_facts", {"facts": [{"text": "move the blue lamp order to Oak street",
+                                                    "recording": "rec-a", "turn": 1, "stance": "volunteered",
+                                                    "kind": "do"}]}),
         ModelReply(content="1 fact kept."),
     ])
     out = mine_intent(workdir, "t1", model, ceiling_usd=1.0)
@@ -190,7 +187,7 @@ def test_the_call_past_the_cap_is_blocked_and_the_session_stops_saying_so(workdi
 
 
 def test_a_spent_ceiling_stops_the_session_after_the_call_that_reached_it(workdir):
-    model = TestModel([_call("a", "list_recordings", {"task_id": "t1"})], loop=True)
+    model = TestModel([tool_reply_as("a", "list_recordings", {"task_id": "t1"})], loop=True)
     out = mine_intent(workdir, "t1", model, ceiling_usd=0.0)
     assert out.stopped == "ceiling 0.00 USD reached"
     assert len(model.calls) == 1
@@ -207,8 +204,8 @@ def test_the_prompt_names_each_tool_with_an_example_and_ends_on_the_stop_rule():
 def test_the_cap_stops_the_session_and_the_facts_kept_before_it_are_saved(workdir):
     kept = {"text": "move the blue lamp order to Oak street", "recording": "rec-a", "turn": 1,
             "stance": "volunteered", "kind": "do"}
-    model = TestModel([_call("a", "add_facts", {"facts": [kept]}),
-                       _call("b", "user_turns", {"recording": "rec-b"})], loop=True)
+    model = TestModel([tool_reply_as("a", "add_facts", {"facts": [kept]}),
+                       tool_reply_as("b", "user_turns", {"recording": "rec-b"})], loop=True)
     out = mine_intent(workdir, "t1", model, ceiling_usd=1.0, max_calls=1)
     assert out.stopped == "call cap 1 reached" and out.tool_calls == {"add_facts": 1, "user_turns": 1}
     assert [f.text for f in load_spec(workdir, "t1").intent.facts] == [kept["text"]]
@@ -217,7 +214,7 @@ def test_the_cap_stops_the_session_and_the_facts_kept_before_it_are_saved(workdi
 def test_refused_facts_are_counted_on_the_result_and_in_the_spec_file_as_a_number(workdir):
     bad = {"text": "wants a green chair", "recording": "rec-a", "turn": 1, "stance": "volunteered", "kind": "do"}
     good = {**bad, "text": "move the blue lamp order to Oak street"}
-    model = TestModel([_call("a", "add_facts", {"facts": [bad, good, good]}), ModelReply(content="1 kept.")])
+    model = TestModel([tool_reply_as("a", "add_facts", {"facts": [bad, good, good]}), ModelReply(content="1 kept.")])
     out = mine_intent(workdir, "t1", model, ceiling_usd=1.0)
     written = load_spec(workdir, "t1")
     assert out.refusals == 2 and written.intent.refusals == 2
@@ -326,12 +323,12 @@ def test_the_saved_intent_counts_unquoted_fallbacks_and_a_task_with_none_saves_n
     fact = {"text": "Please move my blue lamp order to the Oak street address.", "recording": "rec-a",
             "turn": 1, "stance": "fallback", "condition": "agent", "kind": "do",
             "in_reply_to": {"turn": 1, "quote": "no such words"}}
-    model = TestModel([_call("a", "add_facts", {"facts": [fact]}), ModelReply(content="1 kept.")])
+    model = TestModel([tool_reply_as("a", "add_facts", {"facts": [fact]}), ModelReply(content="1 kept.")])
     mine_intent(workdir, "t1", model, ceiling_usd=1.0)
     saved = json.loads((workdir / "spec" / "t1.json").read_text())["intent"]
     assert saved["fallback_unquoted"] == 1 and saved["facts"][0]["stance"] == "volunteered"
     assert "in_reply_to" not in saved["facts"][0] and "condition" not in saved["facts"][0]
-    model = TestModel([_call("a", "add_facts", {"facts": [dict(fact, stance="volunteered", condition="none")]}),
+    model = TestModel([tool_reply_as("a", "add_facts", {"facts": [dict(fact, stance="volunteered", condition="none")]}),
                        ModelReply(content="1 kept.")])
     (workdir / "spec" / "t1.json").unlink()
     mine_intent(workdir, "t1", model, ceiling_usd=1.0)
@@ -342,7 +339,7 @@ def test_the_saved_intent_counts_unquoted_fallbacks_and_a_task_with_none_saves_n
 def test_the_saved_intent_counts_late_facts_sent_back_kept_unplaced_and_promoted(workdir):
     late = {"text": "refund the shipping fee to the card", "recording": "rec-a", "turn": 5,
             "stance": "accepted", "kind": "do"}
-    model = TestModel([_call("a", "add_facts", {"facts": [late]}), _call("b", "add_facts", {"facts": [late]}),
+    model = TestModel([tool_reply_as("a", "add_facts", {"facts": [late]}), tool_reply_as("b", "add_facts", {"facts": [late]}),
                        ModelReply(content="1 kept.")])
     mine_intent(workdir, "t1", model, ceiling_usd=1.0)
     saved = json.loads((workdir / "spec" / "t1.json").read_text())["intent"]
@@ -418,7 +415,7 @@ def test_the_miner_keeps_each_facts_kind_and_code_sets_side_on_the_saved_intent(
             "stance": "volunteered", "kind": "do"}
     fee = {"text": "refund the shipping fee to my card", "recording": "rec-b", "turn": 2,
            "stance": "accepted", "kind": "told", "in_reply_to": {"turn": 2, "quote": "shipping fee refunded"}}
-    model = TestModel([_call("a", "add_facts", {"facts": [move, sent, fee]}), ModelReply(content="3 kept.")])
+    model = TestModel([tool_reply_as("a", "add_facts", {"facts": [move, sent, fee]}), ModelReply(content="3 kept.")])
     mine_intent(workdir, "t1", model, ceiling_usd=1.0)
     saved = load_spec(workdir, "t1").intent.facts
     assert [(fact.kind, fact.side) for fact in saved] == [("do", False), ("do", False), ("told", True)]

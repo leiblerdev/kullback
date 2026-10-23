@@ -13,7 +13,7 @@ from kullback.synth import generate_prompt
 from kullback.synth import generate_tools as T
 from kullback.synth import plan as P
 from kullback.synth import records as R
-from tests.synth.fixture import OPENINGS, call, make_workdir
+from tests.synth.fixture import OPENINGS, call, make_workdir, new_generation
 
 MOVE = "a holder wants a widget moved to another slot"
 BROKEN = "a holder wants a replacement for a widget that arrived broken"
@@ -32,14 +32,8 @@ def _results(model: TestModel, at: int = -1) -> list[str]:
     return [str(m.get("content")) for m in model.calls[at]["messages"] if m.get("role") == "tool"]
 
 
-def _generation(tmp_path, *replies) -> tuple[M.Generation, TestModel]:
-    model = TestModel([*replies])
-    workdir = make_workdir(tmp_path)
-    return M.Generation(world=M.world_of(workdir), model=model, bus=T.bus_for(workdir)), model
-
-
 def test_a_plan_session_writes_skips_and_a_later_session_attaches_to_a_situation_written_earlier(tmp_path):
-    generation, model = _generation(
+    generation, model = new_generation(
         tmp_path,
         call("list_openings", {}, "p0"),
         _situation("p1", MOVE, [0], variants=["the widget is already sealed, so a replacement is offered"]),
@@ -57,7 +51,7 @@ def test_a_plan_session_writes_skips_and_a_later_session_attaches_to_a_situation
 
 
 def test_an_opening_a_situation_holds_is_refused_naming_the_holder(tmp_path):
-    generation, model = _generation(
+    generation, model = new_generation(
         tmp_path, _situation("p0", MOVE, [0, 1]), _situation("p1", BROKEN, [1, 2], kind="complaint"),
         _situation("p2", BROKEN, [2], kind="complaint"), _done())
     M.plan_openings(generation)
@@ -69,15 +63,15 @@ def test_an_opening_a_situation_holds_is_refused_naming_the_holder(tmp_path):
 @pytest.mark.parametrize("hedged", ["a holder sometimes wants a widget moved",
                                     "a holder wants a widget moved or replaced"])
 def test_a_hedged_statement_is_refused_and_asks_for_a_variant(tmp_path, hedged):
-    generation, model = _generation(tmp_path, _situation("p0", hedged, [0, 1, 2]), _situation("p1", MOVE, [0, 1, 2]),
-                                    _done())
+    generation, model = new_generation(tmp_path, _situation("p0", hedged, [0, 1, 2]), _situation("p1", MOVE, [0, 1, 2]),
+                                       _done())
     M.plan_openings(generation)
     assert "hedged" in _results(model)[0] and "variant" in _results(model)[0]
     assert [s["statement"] for s in generation.plan.situations] == [MOVE]
 
 
 def test_the_retry_session_runs_only_over_the_openings_left_in_no_situation(tmp_path):
-    generation, model = _generation(
+    generation, model = new_generation(
         tmp_path, _situation("p0", MOVE, [0, 1]), *[_done()] * (1 + UNFINISHED_ASKS),
         call("list_openings", {}, "r0"), _situation("r1", BROKEN, [0], kind="complaint"), _done())
     M.plan_openings(generation)
@@ -88,8 +82,8 @@ def test_the_retry_session_runs_only_over_the_openings_left_in_no_situation(tmp_
 
 
 def test_the_plan_is_written_with_its_shape_after_every_session(tmp_path):
-    generation, _ = _generation(tmp_path, _situation("p0", MOVE, [0, 1]),
-                                call("skip_opening", {"openings": [2], "why": "no ask"}, "p1"), _done())
+    generation, _ = new_generation(tmp_path, _situation("p0", MOVE, [0, 1]),
+                                   call("skip_opening", {"openings": [2], "why": "no ask"}, "p1"), _done())
     M.plan_openings(generation)
     body = json.loads(P.plan_path(generation.world.workdir).read_text())
     assert body == {"format": 1, "situations": [
@@ -107,7 +101,7 @@ def test_openings_unplanned_counts_what_the_retry_left_and_masks_the_task_ids(tm
 
 
 def test_planning_again_reads_the_plan_on_disk_and_runs_no_session_when_every_opening_has_its_place(tmp_path):
-    generation, _ = _generation(tmp_path, _situation("p0", MOVE, [0, 1, 2]), _done())
+    generation, _ = new_generation(tmp_path, _situation("p0", MOVE, [0, 1, 2]), _done())
     M.plan_openings(generation)
     again = M.Generation(world=generation.world, model=TestModel([]))
     M.plan_openings(again)

@@ -23,6 +23,7 @@ from kullback.builder.registry import (
     unpack_task_binary,
     verifier_strength,
 )
+from tests.helpers.terminal import rescue_turns
 
 
 def make_tar_bytes(files: dict[str, bytes], links: dict[str, str] | None = None) -> bytes:
@@ -304,24 +305,14 @@ def test_rescue_attaches_the_sound_row_when_another_row_is_corrupt(tmp_path, wor
     from kullback import cli
     from kullback.builder import ingest
 
-    def _turns(instruction: str) -> list[dict]:
-        return [
-            {"role": "user",
-             "content": ("Invented preamble.\n\nTask Description:\n" + instruction
-                         + "\n\nCurrent terminal state:\n\ninvented-ready")},
-            {"role": "assistant", "content": json.dumps({"commands": [
-                {"keystrokes": "invented-solo"}]})},
-            {"role": "user", "content": "New Terminal Output:\n\ninvented solo output"},
-        ]
-
     envelope = {"rows": [
         {"row_idx": 0,
-         "row": {"conversations": _turns("# invented forty-one\nSolve invented.\n"),
+         "row": {"conversations": rescue_turns("# invented forty-one\nSolve invented.\n"),
                  "trial_name": "invented-task-41__invented-a",
                  "original_source": "invented-source"},
          "truncated_cells": []},
         {"row_idx": 1,
-         "row": {"conversations": _turns("# invented forty-two\nSolve invented.\n"),
+         "row": {"conversations": rescue_turns("# invented forty-two\nSolve invented.\n"),
                  "trial_name": "invented-task-42__invented-b",
                  "original_source": "invented-source"},
          "truncated_cells": []}]}

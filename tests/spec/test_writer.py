@@ -14,15 +14,15 @@ from pydantic import ValidationError
 
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.runner.atom_context import AtomContext
-from kullback.runner.expected import match_context
-from kullback.runner.records import Event, Run, Verifier
+from kullback.runner.records import Event, Run, Verifier, write_json
 from kullback.runner.verdict import verdict
 from kullback.spec import writer as W
 from kullback.spec import writer_tools as T
 from kullback.spec.intent_tools import mark_side
 from kullback.spec.items import AGENT_WEIGHED, SIDE_WEIGHED, TELL_WEIGHED, UNCONFIRMED_WEIGHED
 from kullback.spec.schema import FactSource, IntentFact, ReplyQuote, SpecIntent, intent_text, load_spec
-from tests.spec.fixtures import FACTS, WRITE_TOOLS, check, fn, reference_run
+from tests.helpers.scripted import tool_reply
+from tests.spec.fixtures import FACTS, WRITE_TOOLS, check, fn, matches, reference_run
 
 STATE = {"items": {"A1": {"item_id": "A1", "slot": "two"}, "B2": {"item_id": "B2", "slot": "four"}}}
 SECTION = "section:moving items"
@@ -30,12 +30,6 @@ POLICY = "# Store policy\n\n## Moving items\n\nMove an item only to a free slot.
 TOOLS = [{"name": "list_items", "kind": "read", "args": []},
          {"name": "update_item", "kind": "write", "args": ["item_id", "slot"]},
          {"name": "delete_item", "kind": "write", "args": ["item_id"]}]
-
-
-def _matches(end_states, context):
-    """Any one end state matching passes; else an unsettled one is None; else False."""
-    oks = [match_context(state, context).ok for state in end_states]
-    return True if True in oks else (None if None in oks else False)
 
 
 def inputs(facts=FACTS, state=STATE) -> W.WriterInputs:
@@ -50,10 +44,6 @@ def answer(key: str, items: list) -> ModelReply:
 
 def add(*items: dict) -> ModelReply:
     return ModelReply(tool_calls=[ToolCallRequest(id="a1", name="add_items", arguments={"items": list(items)})])
-
-
-def call(name: str, **arguments) -> ModelReply:
-    return ModelReply(tool_calls=[ToolCallRequest(id=f"{name}-1", name=name, arguments=arguments)])
 
 
 DONE = ModelReply(content="done")
@@ -145,12 +135,19 @@ def _workdir(root):
     (root / "verifiers" / "t1.json").write_text(json.dumps({"task_id": "t1", "atoms": [], "note": "SEEN"}))
 
 
+def born(root, end):
+    """The workdir with Task t1 born from a scenario whose end is `end`."""
+    _workdir(root)
+    write_json(W.born_path(root, "t1"), {"scenario": "sc_0", "end": end})
+    return root
+
+
 def test_inputs_come_from_the_environment_files_and_never_from_runs_or_verifiers(tmp_path):
     _workdir(tmp_path)
     loaded = W.load_inputs(tmp_path, "t1", inputs().intent)
     assert loaded.policy_text == POLICY and loaded.sections == T.policy_sections_of(tmp_path)
     assert loaded.state == STATE and loaded.write_tools == {"update_item"}
-    model = TestModel([call("read_row", table="items", key="A1"), DONE, DONE])
+    model = TestModel([tool_reply("read_row", table="items", key="A1"), DONE, DONE])
     W.write_spec("t1", loaded, model)
     assert "SEEN" not in json.dumps(model.calls[0]["messages"])
 
@@ -234,7 +231,7 @@ def test_a_spent_ceiling_makes_the_next_call_the_answer():
 
 def test_the_writer_reads_the_world_adds_items_and_a_refused_value_comes_back_with_its_reason():
     invented = dict(ROW, id="s2", expect={"slot": "nine"})
-    model = TestModel([call("find_rows", value="A1"), add(ROW, invented), DONE])
+    model = TestModel([tool_reply("find_rows", value="A1"), add(ROW, invented), DONE])
     written = W.write_spec("t1", inputs(), model)
     assert [check.id for check in written.spec.checks] == ["s1"]
     told = model.calls[2]["messages"][-1]["content"]
@@ -267,7 +264,7 @@ def test_the_compiled_verifier_passes_the_right_run_and_fails_a_wrong_slot_and_a
 
     def ok(run):
         context = AtomContext(run)
-        return _matches(verifier.expected, context), {item.id: item.holds for item in verdict(run, verifier).items}
+        return matches(verifier.expected, context), {item.id: item.holds for item in verdict(run, verifier).items}
 
     end = {"items": {"A1": {"item_id": "A1", "slot": "seven"}, "B2": STATE["items"]["B2"]}}
     assert ok(_ended(end)) == (True, {"state:items.A1.slot": True, "sanity": True})
@@ -295,7 +292,7 @@ def _ended(end: dict) -> Run:
 
 def test_items_no_run_can_pass_together_go_back_once_and_a_left_clash_is_named_unsatisfiable():
     other = dict(ROW, id="s2", expect={"slot": "four"})
-    fixed = TestModel([add(ROW, other), DONE, call("drop_items", ids=["s2"]), DONE])
+    fixed = TestModel([add(ROW, other), DONE, tool_reply("drop_items", ids=["s2"]), DONE])
     written = W.write_spec("t1", inputs(), fixed)
     assert written.counts["sent_back"] == 1 and written.counts["unsatisfiable"] == []
     assert "s2" in fixed.calls[2]["messages"][-1]["content"] and [c.id for c in written.spec.checks] == ["s1"]
@@ -353,7 +350,7 @@ def test_repair_drops_only_ruled_items_and_adds_under_the_same_rules():
     told = {"id": "t1", "kind": "said", "values": ["seven"], "fact_ids": ["f1"]}
     spec = W.write_spec("t1", inputs(), TestModel([add(ROW, told), DONE])).spec
     ruling = W.Ruling(check_ids=["t1"], reason="the value is not what the user hears", excerpt="x" * 5000)
-    model = TestModel([call("drop_items", ids=["t1", "s1"]),
+    model = TestModel([tool_reply("drop_items", ids=["t1", "s1"]),
                        add(dict(told, id="t2", values=["slot seven"]), dict(told, id="t3", values=["eleven"])), DONE])
     written = W.repair(spec, ruling, inputs(), model)
     assert [check.id for check in written.spec.checks] == ["s1", "t2"]
@@ -475,7 +472,7 @@ def test_a_rebuttal_is_kept_only_for_a_sent_back_fact_and_only_when_its_why_quot
 
 def test_a_rebuttal_in_the_follow_up_is_recorded_on_the_spec_by_fact_id():
     quoted = "the user said only: move item A1 to slot seven"
-    model = TestModel([add(dict(ROW, gate=False)), DONE, call("rebut_fact", fact_id="f1", why=quoted), DONE])
+    model = TestModel([add(dict(ROW, gate=False)), DONE, tool_reply("rebut_fact", fact_id="f1", why=quoted), DONE])
     written = W.write_spec("t1", inputs(), model)
     assert written.spec.rebuttals == {"f1": quoted} and written.counts["rebutted"] == 1
     assert written.spec.model_dump()["rebuttals"] == {"f1": quoted}
@@ -531,10 +528,10 @@ def test_an_unchecked_ask_repair_drops_the_facts_old_rebuttal_and_keeps_a_new_on
               "verified": [{"fact_id": "f2"}], "reason": "f2 is an ask no gate cites", "fix": "gate it or rebut"}
     assert W.repair_for_ruling(tmp_path, "t1", ruling, TestModel([DONE])).rebuttals == {}
     quoted = "the user wants: a note saying it was urgent"
-    rebut = TestModel([call("rebut_fact", fact_id="f2", why=quoted), DONE])
+    rebut = TestModel([tool_reply("rebut_fact", fact_id="f2", why=quoted), DONE])
     assert W.repair_for_ruling(tmp_path, "t1", ruling, rebut).rebuttals == {"f2": quoted}
     other = dict(ruling, code="other", verified=[])
-    keep = TestModel([call("rebut_fact", fact_id="f2", why="a new why"), DONE, DONE])
+    keep = TestModel([tool_reply("rebut_fact", fact_id="f2", why="a new why"), DONE, DONE])
     assert W.repair_for_ruling(tmp_path, "t1", other, keep).rebuttals == {"f2": quoted}
 
 
@@ -570,7 +567,7 @@ def test_a_writing_spec_with_no_confirm_item_is_asked_the_fixed_question_and_the
 def test_every_writer_session_is_saved_whole_and_the_next_session_is_never_shown_it(tmp_path):
     _ruled_workdir(tmp_path)
     ruling = {"number": 1, "check_ids": ["s1"], "reason": "not asked", "code": "unasked_item", "kind": "derivation"}
-    model = TestModel([call("read_row", table="items", key="A1"),
+    model = TestModel([tool_reply("read_row", table="items", key="A1"),
                        ModelReply(content="rebut: the user asks for slot seven, said once.")])
     W.repair_for_ruling(tmp_path, "t1", ruling, model)
     first, second = [json.loads(line) for line in W.sessions_path(tmp_path, "t1").read_text().splitlines()]
@@ -693,7 +690,7 @@ def test_a_recorded_workdir_with_no_told_facts_changes_only_by_weighing_its_unto
 
 def test_an_item_the_asked_followup_adds_that_clashes_is_sent_back_once():
     clashing = dict(ROW, id="s2", expect={"slot": "four"})
-    model = TestModel([add(dict(ROW, gate=False)), DONE, add(clashing), DONE, call("drop_items", ids=["s1"]), DONE])
+    model = TestModel([add(dict(ROW, gate=False)), DONE, add(clashing), DONE, tool_reply("drop_items", ids=["s1"]), DONE])
     written = W.write_spec("t1", inputs(), model)
     assert written.counts["asked_sent_back"] == 1 and written.counts["asked_clash_sent_back"] == 1
     assert written.counts["unsatisfiable"] == [] and [c.id for c in written.spec.checks] == ["s2"]

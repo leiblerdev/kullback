@@ -20,8 +20,8 @@ from kullback.runner.records import (
     read_json,
     write_json,
 )
-from tests.builder.session_fixtures import reply
 from tests.builder.test_domain_tools import _run, _workdir
+from tests.helpers.scripted import reply
 
 TASK = "widget_task"
 

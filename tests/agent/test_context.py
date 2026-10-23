@@ -11,13 +11,7 @@ from kullback.agent.session import SessionInfoEntry, SessionStore
 from kullback.agent.tools import ToolResult
 from kullback.ai.provider import ModelReply, TestModel
 from kullback.ai.usage import Usage
-from tests.agent.conftest import call, collect, reply
-
-
-def harness_with_session(tmp_path, model, tools=(), **config):
-    store = SessionStore(tmp_path / "session.jsonl")
-    return AgentHarness(model, system="sys", tools=list(tools), session=store, context=ContextConfig(**config))
-
+from tests.agent.conftest import call, collect, harness_with_session, reply
 
 # --- the estimate ---
 

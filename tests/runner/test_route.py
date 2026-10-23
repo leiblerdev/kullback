@@ -6,12 +6,12 @@ import json
 import types
 
 import pytest
-from pydantic import BaseModel
 
 from kullback.ai.provider import TestModel
 from kullback.runner.records import ErrorShape, OverlayRow, TaskOverlay, ToolSig
 from kullback.runner.route import Router, canonical_args, recording, recording_key
 from kullback.runner.state import StateView
+from runner.replay_fixtures import DB
 
 
 def tools_module() -> types.ModuleType:
@@ -41,16 +41,6 @@ SHARED = {"orders": {"123": {"id": "123", "status": "delivered", "total": 25}}}
 
 def shared() -> dict:
     return json.loads(json.dumps(SHARED))
-
-
-class Order(BaseModel):
-    id: str
-    status: str
-    total: int = 0
-
-
-class DB(BaseModel):
-    orders: dict[str, Order] = {}
 
 
 class Toolkit:

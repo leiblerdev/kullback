@@ -8,11 +8,10 @@ file happened to write them first.
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 from kullback.ai.http_errors import ProviderError
-from kullback.ai.provider import Model, ModelReply, ToolCallRequest
+from kullback.ai.provider import Model, ModelReply
 from kullback.ai.usage import Usage
 
 COMPARED = ("bodies.json", "constraints.json", "gates.json", "environment.json", "replays.json",
@@ -24,23 +23,10 @@ def fixture_path(request) -> Path:
     return Path(request.config.rootpath) / "tests" / "fixtures" / "tau2_retail_small.json"
 
 
-def reply(content, *calls) -> ModelReply:
-    """One scripted assistant turn: some text, and the tool calls it asks for in order."""
-    return ModelReply(content=content, tool_calls=[ToolCallRequest(id=f"c{i}", name=n, arguments=a)
-                                                  for i, (n, a) in enumerate(calls)])
-
-
 def priced(model_reply: ModelReply, **usage) -> ModelReply:
     """The same scripted turn carrying the usage a provider reports, so the ledger has a call to price."""
     return model_reply.model_copy(update={"usage": Usage(**(usage or {"input": 1890, "output": 17,
                                                                         "cache_write": 1887}))})
-
-
-def collect(aiter) -> list:
-    """Every event of one harness run, in order."""
-    async def go():
-        return [event async for event in aiter]
-    return asyncio.run(go())
 
 
 def tree(workdir: Path) -> dict:

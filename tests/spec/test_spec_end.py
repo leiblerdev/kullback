@@ -17,16 +17,11 @@ from kullback.spec import writer as W
 from kullback.spec.router import no_verifier_why
 from kullback.spec.schema import load_spec, spec_verifier_path
 from kullback.spec.stage import write_from_intent
-from tests.spec.test_writer import DONE, ROW, STATE, TOOLS, _workdir, add, call, inputs
+from tests.helpers.scripted import tool_reply
+from tests.spec.test_writer import DONE, ROW, STATE, TOOLS, _workdir, add, born, inputs
 
 END = "Item A1 sits in slot seven; the user is told slot seven."
 PATH_LINE = "Moves go through update_item and no other tool."
-
-
-def _born(root, end=END):
-    _workdir(root)
-    write_json(W.born_path(root, "t1"), {"scenario": "sc_0", "end": end})
-    return root
 
 
 def _ended():
@@ -35,7 +30,7 @@ def _ended():
 
 
 def test_a_born_tasks_end_reaches_the_writer_as_end_facts_and_never_as_a_user_turn(tmp_path):
-    loaded = W.load_inputs(_born(tmp_path), "t1", inputs().intent)
+    loaded = W.load_inputs(born(tmp_path, END), "t1", inputs().intent)
     ends = [fact for fact in loaded.intent.facts if I.is_end_fact(fact)]
     assert [(fact.id, fact.text) for fact in ends] == [("end1", "Item A1 sits in slot seven;"),
                                                        ("end2", "the user is told slot seven.")]
@@ -57,14 +52,14 @@ def test_a_writer_leaving_an_end_change_ungated_is_refused_and_one_gating_it_pas
     left = W.write_spec("t1", _ended(), TestModel([add(ROW, told), DONE, DONE]))
     assert left.counts["asked_sent_back"] == 2 and left.counts[W.UNCHECKED_END] == ["end1", "end2"]
     assert W.unchecked_end(left.spec) == ["end1", "end2"]
-    rebut = call("rebut_fact", fact_id="end2", why='the end names it: "the user is told slot seven."')
+    rebut = tool_reply("rebut_fact", fact_id="end2", why='the end names it: "the user is told slot seven."')
     gated = W.write_spec("t1", _ended(), TestModel([add(dict(ROW, fact_ids=["f1", "end1"]), told), DONE, rebut, DONE]))
     assert gated.spec.checks[-1].gate is False
     assert W.UNCHECKED_END not in gated.counts and W.unchecked_end(gated.spec) == []
 
 
 def test_the_spec_stage_sets_a_spec_leaving_an_end_fact_unchecked_aside_with_no_verifier(tmp_path):
-    _born(tmp_path)
+    born(tmp_path, END)
     bus = Bus(tmp_path / "bus.jsonl", agent="spec")
     write_from_intent(tmp_path, "t1", inputs().intent, TestModel([add(ROW), DONE, DONE]), 1.0, bus)
     spec = load_spec(tmp_path, "t1")
@@ -73,7 +68,7 @@ def test_the_spec_stage_sets_a_spec_leaving_an_end_fact_unchecked_aside_with_no_
 
 def test_the_unchecked_end_reason_keeps_its_code_on_the_bus_and_is_the_tasks_no_verifier_why(tmp_path):
     assert events.code_of(W.UNCHECKED_END) == "unchecked_end" == events.UNCHECKED_END
-    _born(tmp_path)
+    born(tmp_path, END)
     write_from_intent(tmp_path, "t1", inputs().intent, TestModel([add(ROW), DONE, DONE]), 1.0,
                       Bus(tmp_path / "bus.jsonl", agent="spec"))
     assert no_verifier_why(load_spec(tmp_path, "t1")) == "unchecked_end"
@@ -150,7 +145,7 @@ def test_a_born_tasks_intent_says_its_record_facts_the_end_stays_an_end_and_aske
     from kullback.hub.package import asked_facts
     from kullback.spec.schema import Spec
 
-    _born(tmp_path)
+    born(tmp_path, END)
     write_json(tmp_path / "tasks" / "t1.json", {"id": "t1", "run_ids": ["sc-1"]})
     write_json(tmp_path / "user_rules" / "sc-1.json", {
         "facts": [{"field": "goal", "value": "Move A1.", "span": {"file_hash": "sc_0"}},

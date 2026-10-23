@@ -5,8 +5,8 @@ from __future__ import annotations
 from kullback.ai.provider import TestModel
 from kullback.builder import domain_tools as domain_tools_mod
 from kullback.runner import budget
-from tests.builder.session_fixtures import reply
 from tests.builder.test_domain_tools import _run, _workdir
+from tests.helpers.scripted import reply
 
 
 def _candidate() -> TestModel:

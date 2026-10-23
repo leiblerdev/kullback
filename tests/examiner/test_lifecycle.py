@@ -14,12 +14,13 @@ from pathlib import Path
 import pytest
 
 from examiner.worlds import World
-from gates.verifier_fixtures import make_run, write_events_jsonl
+from gates.verifier_fixtures import write_events_jsonl
 from kullback.examiner import lifecycle, stage
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import false_rejection_gate
 from kullback.gates.trust import trusted_gate
 from kullback.runner.records import Run, Task, ToolSig, Verifier
+from tests.helpers.records import assistant, call, make_run, result, user
 
 WITHDRAWN, KEPT = "t1", "t2"
 RESERVE = "reserve_copy"
@@ -31,37 +32,17 @@ COPY = {"copy_id": "C7", "branch": "north", "state": "on the shelf"}
 
 # --- the world -------------------------------------------------------------------------
 
-def _ev(type_: str, **payload) -> dict:
-    return {"type": type_, "payload": payload}
-
-
-def user(text: str) -> dict:
-    return _ev("user_turn", content=text)
-
-
-def says(text: str) -> dict:
-    return _ev("model_call", reply={"content": text})
-
-
-def call(name: str, args: dict, kind: str = "write", cid: str = "c1") -> dict:
-    return _ev("tool_call", id=cid, name=name, args=args, kind=kind)
-
-
-def result(data, cid: str = "c1") -> dict:
-    return _ev("tool_result", id=cid, result=data)
-
-
 def _asked_then_reserved(run_id: str, task_id: str, opening: str = "Put a reserve on the almanac.") -> Run:
     """The recorded path: the branch is confirmed with the reader, then the reserve is placed."""
     return make_run(run_id, [
         user(opening),
         call(RECORD, {"copy_id": "C7"}, kind="read", cid="c0"),
         result(COPY, cid="c0"),
-        says("Shall I reserve the north branch copy?"),
+        assistant("Shall I reserve the north branch copy?"),
         user("yes"),
         call(RESERVE, {"copy_id": "C7", "branch": "north"}, cid="c1"),
         result({"copy_id": "C7", "state": "reserved"}, cid="c1"),
-        says("Copy C7 at the north branch is reserved for you."),
+        assistant("Copy C7 at the north branch is reserved for you."),
     ], task_id=task_id)
 
 
@@ -73,12 +54,12 @@ def _reserved_without_asking(run_id: str, task_id: str) -> Run:
         result(COPY, cid="c0"),
         call(RESERVE, {"copy_id": "C7", "branch": "north"}, cid="c1"),
         result({"copy_id": "C7", "state": "reserved"}, cid="c1"),
-        says("Copy C7 at the north branch is reserved for you."),
+        assistant("Copy C7 at the north branch is reserved for you."),
     ], task_id=task_id)
 
 
 def _reserved_nothing(run_id: str = "probe") -> Run:
-    return make_run(run_id, [user("Put a reserve on the almanac."), says("I have noted it down.")],
+    return make_run(run_id, [user("Put a reserve on the almanac."), assistant("I have noted it down.")],
                     task_id=WITHDRAWN)
 
 

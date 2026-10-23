@@ -10,7 +10,6 @@ import pytest
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.runner import tool
 from kullback.runner.records import (
-    RawPtr,
     ToolCall,
     Trace,
     Turn,
@@ -22,39 +21,12 @@ from kullback.runner.records import (
 )
 from kullback.runner.world.loading import EnvironmentError
 from tests.episode.invented import write_env
-
-PTR = RawPtr(file_hash="f" * 64, sim_index=0, msg_index=0)
-
-
-def _trace() -> Trace:
-    turns = [
-        Turn(idx=0, role="assistant", content="Hi! How can I help?", raw_ptr=PTR),
-        Turn(idx=1, role="user", content="Give widget w1 the label striped.", raw_ptr=PTR),
-        Turn(idx=2, role="assistant", content=None, tool_call_ids=["c1"], raw_ptr=PTR),
-        Turn(idx=3, role="tool", content='{"widget_id": "w1"}', tool_call_ids=["c1"],
-             raw_ptr=PTR),
-        Turn(idx=4, role="assistant", content=None, tool_call_ids=["c2"], raw_ptr=PTR),
-        Turn(idx=5, role="tool", content='{"widget_id": "w1"}', tool_call_ids=["c2"],
-             raw_ptr=PTR),
-        Turn(idx=6, role="assistant", content="Done.", raw_ptr=PTR),
-        Turn(idx=7, role="user", content="Thanks, that is the right label.", raw_ptr=PTR),
-    ]
-    calls = [
-        ToolCall(id="c1", name="describe_widget", args={"widget_id": "w1"},
-                 result={"widget_id": "w1", "label": "plain"}, raw_ptr=PTR, trace_id="rec1"),
-        ToolCall(id="c2", name="rename_widget", args={"widget_id": "w1", "label": "striped"},
-                 result={"widget_id": "w1", "label": "striped"}, raw_ptr=PTR, trace_id="rec1"),
-    ]
-    return Trace(trace_id="rec1", raw_hash="r" * 64, ingest_version="1", source="test",
-                 turns=turns, tool_calls=calls, raw_ptr=PTR)
+from tests.helpers.widget import PTR, rename_script, write_widget_trace
 
 
 def _env_with_trace(root: Path) -> Path:
     write_env(root)
-    traces = root / "traces"
-    traces.mkdir(parents=True, exist_ok=True)
-    write_json(traces / "rec1.json", _trace().model_dump(mode="json", by_alias=True))
-    return root
+    return write_widget_trace(root)
 
 
 def _break_rename(root: Path) -> None:
@@ -197,28 +169,9 @@ def test_run_plays_verdicts_and_diffs_one_run(tmp_path):
     assert report.verdict is not None and report.verdict.passed is True
     assert report.runner_version == tool.version()
     assert report.termination_reason in ("agent_stop", "user_stop")
-    rerolled = tool.reroll(root, "widget_task", TestModel([
-        ModelReply(content=None, model="test", tool_calls=[
-            ToolCallRequest(id="m1", name="describe_widget", arguments={"widget_id": "w1"})]),
-        ModelReply(content=None, model="test", tool_calls=[
-            ToolCallRequest(id="m2", name="rename_widget",
-                            arguments={"widget_id": "w1", "label": "striped"})]),
-        ModelReply(content="Done.", model="test"),
-    ], loop=True), count=2, workdir=tmp_path / "work")
+    rerolled = tool.reroll(root, "widget_task", rename_script(), count=2, workdir=tmp_path / "work")
     # Seed 0 was already played above, so the re-roll of it is a new attempt and not the old file.
     assert [item.run_id for item in rerolled] == ["widget_task-0-a2", "widget_task-1"]
-
-
-def _rename_script():
-    """A model that reads the widget and writes the striped label, then stops."""
-    return TestModel([
-        ModelReply(content=None, model="test", tool_calls=[
-            ToolCallRequest(id="m1", name="describe_widget", arguments={"widget_id": "w1"})]),
-        ModelReply(content=None, model="test", tool_calls=[
-            ToolCallRequest(id="m2", name="rename_widget",
-                            arguments={"widget_id": "w1", "label": "striped"})]),
-        ModelReply(content="Done.", model="test"),
-    ], loop=True)
 
 
 def test_probe_scores_the_write_it_was_told_to_reach_and_lands_under_probes(tmp_path):
@@ -226,7 +179,7 @@ def test_probe_scores_the_write_it_was_told_to_reach_and_lands_under_probes(tmp_
     root = _env_with_trace(tmp_path / "env")
     verifier = Verifier.model_validate(json.loads(
         (root / "verifiers" / "widget_task.json").read_text(encoding="utf-8")))
-    report = tool.probe(root, "widget_task", _rename_script(), verifier=verifier,
+    report = tool.probe(root, "widget_task", rename_script(), verifier=verifier,
                         workdir=tmp_path / "work")
     assert report.run_id == "probe-widget_task"
     assert report.path == "probes/probe-widget_task.jsonl"
@@ -257,13 +210,13 @@ def test_replay_calls_writes_the_given_run_id_under_the_task_and_reseeds_stably(
 def test_reroll_with_prefix_names_its_files_for_the_buyer_and_carries_user_end(tmp_path):
     """Prefixed re-rolls file under the buyer's name and every report carries user_end."""
     root = _env_with_trace(tmp_path / "env")
-    reports = tool.reroll(root, "widget_task", _rename_script(), count=2,
+    reports = tool.reroll(root, "widget_task", rename_script(), count=2,
                           workdir=tmp_path / "work", prefix="second-path-r0-b0")
     assert [report.run_id for report in reports] == ["second-path-r0-b0-widget_task-0", "second-path-r0-b0-widget_task-1"]
     assert all(Path(report.path).name.startswith("second-path-r0-b0-") for report in reports)
     assert all((tmp_path / "work" / report.path).is_file() for report in reports)
     assert all("user_end" in report.as_dict() for report in reports)
-    direct = tool.run(root, "widget_task", _rename_script(), workdir=tmp_path / "named", run_id="custom-7")
+    direct = tool.run(root, "widget_task", rename_script(), workdir=tmp_path / "named", run_id="custom-7")
     assert direct.run_id == "custom-7" and (tmp_path / "named" / "runs" / "custom-7.jsonl").is_file()
 
 
@@ -272,7 +225,7 @@ def test_every_run_path_a_report_stores_is_relative_to_the_workdir_whatever_the_
     """A workdir named relative to the cwd still stores runs/..., which opens against the workdir."""
     root = _env_with_trace(tmp_path / "env")
     monkeypatch.chdir(tmp_path)
-    played = tool.run(root, "widget_task", _rename_script(), workdir="work")
+    played = tool.run(root, "widget_task", rename_script(), workdir="work")
     replayed = tool.replay(root, "widget_task", workdir="work")
     assert played.path == "runs/widget_task-0.jsonl"
     assert replayed.path.startswith("runs/widget_task/") and not Path(replayed.path).is_absolute()
@@ -315,7 +268,7 @@ def test_a_round_with_two_tasks_writes_two_files_and_each_loads_back_its_own_run
     root = _env_with_trace(tmp_path / "env")
     write_env(root, task_id="other_task", run_id="rec1")
     reports = [report for task_id in ("widget_task", "other_task")
-               for report in tool.reroll(root, task_id, _rename_script(), count=1,
+               for report in tool.reroll(root, task_id, rename_script(), count=1,
                                          workdir=tmp_path / "work", prefix="second-path-r0-b1")]
     files = {report.task_id: tmp_path / "work" / report.path for report in reports}
     assert len(set(files.values())) == 2

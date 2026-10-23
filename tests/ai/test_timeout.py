@@ -10,16 +10,6 @@ import pytest
 from kullback.ai import provider as pv
 
 
-@pytest.fixture
-def live():
-    """Adapters refuse to run while ALLOW_MODEL_REQUESTS is False; the fake client keeps it offline.
-
-    The flag is turned on through the module's own switch, the one path a person's environment
-    takes; conftest's autouse no_live_models restores it to False when the test ends.
-    """
-    pv.enable_live_calls_from_env({pv.LIVE_ENV_VAR: "1"})
-
-
 class FakeResponse:
     """What the fake client answers with: a status, headers and a JSON body."""
 

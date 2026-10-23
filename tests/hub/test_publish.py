@@ -12,7 +12,6 @@ import pytest
 from nursery_domain import ELICITED_VALUE, RECORDED_TURN, build_unclosed_workdir
 from typer.testing import CliRunner
 
-from gates.verifier_fixtures import call, make_run, result
 from kullback import cli
 from kullback.gates import verifier_suite as S
 from kullback.hub import card as card_mod
@@ -22,6 +21,7 @@ from kullback.runner.canon import CanonRules
 from kullback.runner.records import RawPtr, Trace, Verifier, as_dict, read_json, write_json
 from kullback.runner.tool import ReplayReport
 from kullback.runner.world.environment import BuiltEnvironment
+from tests.helpers.records import call, make_run, result
 
 
 def _export(workdir: Path, out: Path, **kwargs):

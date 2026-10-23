@@ -1124,7 +1124,7 @@ async def _drain(aiter):
 
 
 def _held(tmp_path, *replies, keep_recent_batches=None, hold_at=1):
-    from tests.builder.session_fixtures import reply
+    from tests.helpers.scripted import reply
 
     session = _HeldSession([reply("Writing the body.", ("write", {"path": "tools/rename.py"})),
                             *[reply(*r) for r in replies]], keep_recent_batches, hold_at)

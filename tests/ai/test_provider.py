@@ -10,21 +10,7 @@ import httpx
 import pytest
 
 from kullback.ai import provider as pv
-
-
-def transport_of(handler):
-    """An httpx client whose every request is answered by handler; nothing leaves the machine."""
-    return httpx.Client(transport=httpx.MockTransport(handler))
-
-
-@pytest.fixture
-def live():
-    """Adapters refuse to run while ALLOW_MODEL_REQUESTS is False; the mock transport keeps it offline.
-
-    The flag is turned on through the module's own switch, the one path a person's environment
-    takes; conftest's autouse no_live_models restores it to False when the test ends.
-    """
-    pv.enable_live_calls_from_env({pv.LIVE_ENV_VAR: "1"})
+from tests.helpers.wire import registry_snapshot, transport_of
 
 
 @pytest.fixture
@@ -498,15 +484,6 @@ def test_live_calls_turn_on_only_from_the_environment():
     require_live_calls_enabled_ok = pv.require_live_calls_enabled()
     assert require_live_calls_enabled_ok is None
     assert pv.enable_live_calls_from_env({}) is False
-
-
-def registry_snapshot(tmp_path, monkeypatch, catalog):
-    """A models.dev snapshot on disk, and the provider module pointed at it."""
-    path = tmp_path / "models.dev.json"
-    path.write_text(json.dumps({"fetched_at": "2026-09-01T00:00:00+00:00", "catalog": catalog}),
-                    encoding="utf-8")
-    monkeypatch.setattr(pv, "REGISTRY_SNAPSHOT_PATH", str(path))
-    return path
 
 
 REGISTRY = {

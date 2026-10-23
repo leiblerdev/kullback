@@ -14,6 +14,7 @@ from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.examiner import judge as J
 from kullback.examiner import reference as ref
 from kullback.runner.records import Constraint
+from tests.helpers.scripted import tool_reply_as
 
 WRITE_TOOLS = {"cancel_permit"}
 READ_TOOLS = {"find_permit"}
@@ -74,10 +75,6 @@ def noting_run(tmp_path, run_id: str = "c") -> ref.Recording:
     return ref.load(path, ref.RECORDING, run_id=run_id, trace_id=run_id, write_tools=WRITE_TOOLS, fn=_canon)
 
 
-def _call(call_id: str, name: str, arguments: dict) -> ModelReply:
-    return ModelReply(content=None, tool_calls=[ToolCallRequest(id=call_id, name=name, arguments=arguments)])
-
-
 def _judge(model, **kw) -> J.AgentJudge:
     return J.AgentJudge(model, constraints=kw.pop("constraints", ()), write_tools=WRITE_TOOLS,
                         read_tools=READ_TOOLS, fn=_canon, **kw)
@@ -105,8 +102,8 @@ RULING = ruling(fails("B", CANCELLED_KEY, "PK-77", "A"))
 def test_the_judge_asks_for_the_rows_and_the_rules_on_a_refusal_the_policy_allows(tmp_path):
     """The state that wrote nothing was right, and the judge can only tell by reading the rule and
     the row. The one-shot judge sees neither and fails it for making no writes."""
-    model = TestModel([_call("t1", "policy", {"query": "final month"}),
-                       _call("t2", "rows", {"group": "A"}),
+    model = TestModel([tool_reply_as("t1", "policy", {"query": "final month"}),
+                       tool_reply_as("t2", "rows", {"group": "A"}),
                        ModelReply(content=RULING)])
     out = ref.confirm([refusing_run(tmp_path), cancelling_run(tmp_path)], intent=INTENT,
                       policy_lines=POLICY, judge=_judge(model), phrases=["permit PK-77"])
@@ -152,7 +149,7 @@ def test_the_answer_tool_gives_the_last_thing_one_run_said_and_no_more_of_the_co
 
 def test_the_judge_over_the_cap_falls_back_to_the_one_shot_judge_and_the_record_says_so(tmp_path):
     """Seven calls is one past the cap; the session ends and the judge that reads one prompt rules."""
-    model = TestModel([_call(f"t{i}", "intent", {}) for i in range(J.MAX_CALLS + 1)]
+    model = TestModel([tool_reply_as(f"t{i}", "intent", {}) for i in range(J.MAX_CALLS + 1)]
                       + [ModelReply(content=RULING)])
     out = ref.confirm([refusing_run(tmp_path), cancelling_run(tmp_path)], intent=INTENT,
                       policy_lines=POLICY, judge=_judge(model))
@@ -175,7 +172,7 @@ def test_a_turn_that_asks_for_many_tools_at_once_still_looks_only_six_times(tmp_
 
 
 def test_the_judge_is_told_to_answer_once_it_has_spent_its_calls(tmp_path):
-    model = TestModel([_call(f"t{i}", "intent", {}) for i in range(J.MAX_CALLS)] + [ModelReply(content=RULING)])
+    model = TestModel([tool_reply_as(f"t{i}", "intent", {}) for i in range(J.MAX_CALLS)] + [ModelReply(content=RULING)])
     out = ref.confirm([refusing_run(tmp_path), cancelling_run(tmp_path)], intent=INTENT,
                       policy_lines=POLICY, judge=_judge(model))
     said = [message["content"] for call in model.calls for message in call["messages"]
@@ -197,7 +194,7 @@ def test_a_judgement_that_will_not_parse_falls_back_and_the_fallback_rules(tmp_p
 def test_a_ruling_that_rests_on_a_row_it_read_is_not_an_abstention(tmp_path):
     """The one-shot judge had three sources and abstained on any other name; this judge has its six
     tools too, so naming the rows it read is naming something it was given (D93)."""
-    model = TestModel([_call("t1", "rows", {"group": "B"}),
+    model = TestModel([tool_reply_as("t1", "rows", {"group": "B"}),
                        ModelReply(content=ruling(fails("B", CANCELLED_KEY, "PK-77", "A"),
                                                 evidence=("rows", "policy"),
                                                 reason="the permit row is in its final month"))])
@@ -208,7 +205,7 @@ def test_a_ruling_that_rests_on_a_row_it_read_is_not_an_abstention(tmp_path):
 
 
 def test_a_judgement_that_needs_the_conversation_abstains_and_fails_nothing(tmp_path):
-    model = TestModel([_call("t1", "answer", {"group": "B"}),
+    model = TestModel([tool_reply_as("t1", "answer", {"group": "B"}),
                        ModelReply(content=ruling(fails("A", CANCELLED_KEY, ref.NO_VALUE, "B"),
                                                 evidence=("transcript",),
                                                 reason="the holder agreed to the cancellation when asked"))])
@@ -224,7 +221,7 @@ def test_a_failure_of_the_agent_that_cites_nothing_the_states_differ_on_abstains
     states hold, so its failure settles none of the disagreement and the judgement is dropped whole.
     A failure on the key they do differ on, with the value that state holds, still fails it."""
     def rule(reply):
-        model = TestModel([_call("t1", "rows", {"group": "B"}), ModelReply(content=reply)])
+        model = TestModel([tool_reply_as("t1", "rows", {"group": "B"}), ModelReply(content=reply)])
         return ref.confirm([refusing_run(tmp_path), cancelling_run(tmp_path)], intent=INTENT,
                            policy_lines=POLICY, judge=_judge(model))
 
@@ -249,9 +246,9 @@ def test_a_policy_line_the_agent_never_searched_for_cannot_be_what_the_value_sho
         return ref.confirm([refusing_run(tmp_path), cancelling_run(tmp_path)], intent=INTENT,
                            policy_lines=POLICY, judge=_judge(model))
 
-    unread = rule(_call("t1", "rows", {"group": "B"}))
+    unread = rule(tool_reply_as("t1", "rows", {"group": "B"}))
     assert unread.judge_uncited and unread.references == []
-    read = rule(_call("t1", "policy", {"query": "final month"}))
+    read = rule(tool_reply_as("t1", "policy", {"query": "final month"}))
     assert not read.judge_uncited and [r.run_id for r in read.references] == ["a"]
 
 

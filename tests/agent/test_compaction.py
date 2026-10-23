@@ -6,19 +6,13 @@ from __future__ import annotations
 import asyncio
 
 from kullback.agent.compaction import SUMMARY_PROMPT, mechanical_summary, units
-from kullback.agent.context import ContextConfig
 from kullback.agent.extensions import ExtensionAPI
 from kullback.agent.harness import AgentHarness
 from kullback.agent.messages import AssistantMessage, ToolResultMessage, UserMessage
-from kullback.agent.session import CompactionEntry, MessageEntry, SessionStore
+from kullback.agent.session import CompactionEntry, MessageEntry
 from kullback.ai.provider import ModelReply, TestModel
 from kullback.ai.usage import Usage
-from tests.agent.conftest import call, collect, reply, types_of
-
-
-def harness_with_session(tmp_path, model, tools=(), **config):
-    store = SessionStore(tmp_path / "session.jsonl")
-    return AgentHarness(model, system="sys", tools=list(tools), session=store, context=ContextConfig(**config))
+from tests.agent.conftest import call, collect, harness_with_session, reply, types_of
 
 
 def two_turn_harness(tmp_path, replies, **config):

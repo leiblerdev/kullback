@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import inspect
 
-from gates.verifier_fixtures import _ev, assistant, call, make_run, result, user
 from kullback import claims
 from kullback.gates.verifier_suite import atom_payload, make_atom
 from kullback.runner.records import Verifier
 from kullback.runner.target import check_run
 from kullback.spec import must_not as M
+from tests.helpers.records import assistant, call, event, make_run, result, user
 
 ETCH = "etch"
 MEND = "mend"
@@ -68,7 +68,7 @@ def _said(*lines, run_id="rc"):
 
 def _refused(tool, cid="c9"):
     return [call(tool, {"tablet": "t1"}, cid=cid),
-            _ev("tool_result", id=cid, error={"message": "refused"})]
+            event("tool_result", id=cid, error={"message": "refused"})]
 
 
 def test_tier_of_maps_required_writes_to_critical():

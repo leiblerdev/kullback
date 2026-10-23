@@ -6,14 +6,17 @@ Invented tools and tables only. Skipped unless the one-scorer patch is applied.
 from __future__ import annotations
 
 import importlib.util
+from functools import partial
 
 import pytest
 
 from kullback.gates import verifier_suite as S
 from kullback.runner.atom_context import _evaluate
 from kullback.runner.canon import CanonRules
-from kullback.runner.records import Atom, Event, Run, Verifier
+from kullback.runner.records import Atom, Run, Verifier
 from kullback.runner.verdict import verdict
+from tests.helpers import records
+from tests.helpers.records import assistant, call, event, result, user
 
 try:
     from kullback.runner import target as T
@@ -26,36 +29,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 WRITE_TOOLS = {"archive_entry"}
-
-
-def _ev(type_: str, **payload) -> dict:
-    return {"type": type_, "payload": payload}
-
-
-def user(text: str) -> dict:
-    return _ev("user_turn", content=text)
-
-
-def assistant(text: str) -> dict:
-    return _ev("model_call", reply={"content": text})
+make_run = partial(records.make_run, task_id="t9")
 
 
 def assistant_with_call(text: str, name: str, args: dict, cid: str) -> dict:
     return {"type": "model_call",
             "payload": {"reply": {"content": text, "tool_calls": [{"name": name, "arguments": args, "id": cid}]}}}
-
-
-def call(name: str, args: dict, kind: str = "write", cid: str = "c1") -> dict:
-    return _ev("tool_call", id=cid, name=name, args=args, kind=kind)
-
-
-def result(data, cid: str = "c1") -> dict:
-    return _ev("tool_result", id=cid, result=data)
-
-
-def make_run(run_id: str, events: list[dict]) -> Run:
-    return Run(run_id=run_id, task_id="t9", termination_reason="success",
-               events=[Event(idx=i, type=e["type"], payload=e["payload"]) for i, e in enumerate(events)])
 
 
 def _key(value) -> str:
@@ -199,9 +178,9 @@ def test_a_judged_run_still_names_and_records_its_unsettled_semantic_pair(tmp_pa
     run = make_run("r-combined", [
         user("Please cancel order W123."),
         assistant("Done."),
-        _ev("stop", termination_reason="done",
-            start_state={"orders": {"W123": {"status": "pending", "note": "cancelled by the user"}}},
-            end_state={"orders": {"W123": {"status": "cancelled", "note": "cancelled by user"}}}),
+        event("stop", termination_reason="done",
+              start_state={"orders": {"W123": {"status": "pending", "note": "cancelled by the user"}}},
+              end_state={"orders": {"W123": {"status": "cancelled", "note": "cancelled by user"}}}),
     ])
     schema = EntitySchema(tables=["orders"], columns=[
         Column(table="orders", name="status", **{"class": "hard"}),

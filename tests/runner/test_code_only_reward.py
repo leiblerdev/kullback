@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from functools import partial
 from typing import get_args
 
 import pytest
@@ -8,52 +9,26 @@ import pytest
 from kullback.gates import verifier_suite as S
 from kullback.runner import target as T
 from kullback.runner.canon import CanonRules
-from kullback.runner.records import Atom, AtomKind, Column, EntitySchema, Event, Run, Verdict, Verifier, as_dict
+from kullback.runner.records import Atom, AtomKind, Column, EntitySchema, Run, Verdict, Verifier, as_dict
 from kullback.runner.regrade import cache_key, regrade_run, verdict_path
 from kullback.runner.verdict import MUST_HOLD, VERDICT_VERSION, verdict
+from tests.helpers import records
+from tests.helpers.records import assistant, call, event, result, user
 
 WRITE_TOOLS = {"archive_entry"}
-
-
-def _ev(type_: str, **payload) -> dict:
-    return {"type": type_, "payload": payload}
-
-
-def _user(text: str) -> dict:
-    return _ev("user_turn", content=text)
-
-
-def _assistant(text: str) -> dict:
-    return _ev("model_call", reply={"content": text})
-
-
-def _call(name: str, args: dict, kind: str = "write", cid: str = "c1") -> dict:
-    return _ev("tool_call", id=cid, name=name, args=args, kind=kind)
-
-
-def _result(data, cid: str = "c1") -> dict:
-    return _ev("tool_result", id=cid, result=data)
-
-
-def _make_run(run_id: str, events: list[dict]) -> Run:
-    return Run(
-        run_id=run_id,
-        task_id="t9",
-        termination_reason="success",
-        events=[Event(idx=i, type=e["type"], payload=e["payload"]) for i, e in enumerate(events)],
-    )
+make_run = partial(records.make_run, task_id="t9")
 
 
 def _passing_run() -> Run:
-    return _make_run(
+    return make_run(
         "r1",
         [
-            _user("Please archive entry E-100."),
-            _call("fetch_entry", {"entry_id": "E-100"}, kind="read", cid="c0"),
-            _result({"entry_id": "E-100", "title": "ledger"}, cid="c0"),
-            _call("archive_entry", {"entry_id": "E-100"}, cid="c1"),
-            _result({"entry_id": "E-100", "archived": True}, cid="c1"),
-            _assistant("Done, entry E-100 is archived."),
+            user("Please archive entry E-100."),
+            call("fetch_entry", {"entry_id": "E-100"}, kind="read", cid="c0"),
+            result({"entry_id": "E-100", "title": "ledger"}, cid="c0"),
+            call("archive_entry", {"entry_id": "E-100"}, cid="c1"),
+            result({"entry_id": "E-100", "archived": True}, cid="c1"),
+            assistant("Done, entry E-100 is archived."),
         ],
     )
 
@@ -248,11 +223,11 @@ def _entity(value: str) -> str:
 
 
 def _quiet_run() -> Run:
-    return _make_run(
+    return make_run(
         "r0",
         [
-            _user("Please archive entry E-100."),
-            _assistant("Archived."),
+            user("Please archive entry E-100."),
+            assistant("Archived."),
         ],
     )
 
@@ -274,15 +249,15 @@ def test_grounded_communicate_still_scores_without_any_judge(tmp_path):
     key = T._key(T.canon_fn(CanonRules()), "E-999")
     atom = S.make_atom("c0", "communicate", {"kind": "communicate", "value": key, "text": "E-999"})
     verifier = Verifier(task_id="t9", verifier_version="v1", atoms=[atom])
-    run = _make_run(
+    run = make_run(
         "r1",
         [
-            _user("Please archive entry E-100."),
-            _call("fetch_entry", {"entry_id": "E-100"}, kind="read", cid="c0"),
-            _result({"entry_id": "E-100", "title": "ledger"}, cid="c0"),
-            _call("archive_entry", {"entry_id": "E-100"}, cid="c1"),
-            _result({"entry_id": "E-100", "archived": True}, cid="c1"),
-            _assistant("Done, entry E-999 is archived."),
+            user("Please archive entry E-100."),
+            call("fetch_entry", {"entry_id": "E-100"}, kind="read", cid="c0"),
+            result({"entry_id": "E-100", "title": "ledger"}, cid="c0"),
+            call("archive_entry", {"entry_id": "E-100"}, cid="c1"),
+            result({"entry_id": "E-100", "archived": True}, cid="c1"),
+            assistant("Done, entry E-999 is archived."),
         ],
     )
     assert T.communicate_values(run, T.canon_fn(CanonRules())) == {}
@@ -462,41 +437,41 @@ def test_broken_predicate_keeps_unproven_coverage_unverdicted():
 
 
 def _extra_run() -> Run:
-    return _make_run(
+    return make_run(
         "r2",
         [
-            _user("Please archive entry E-100 and purge entry E-100."),
-            _call("archive_entry", {"entry_id": "E-100"}, cid="c1"),
-            _result({"entry_id": "E-100", "archived": True}, cid="c1"),
-            _call("purge_entry", {"entry_id": "E-100"}, cid="c2"),
-            _result({"entry_id": "E-100", "purged": True}, cid="c2"),
-            _assistant("Done."),
+            user("Please archive entry E-100 and purge entry E-100."),
+            call("archive_entry", {"entry_id": "E-100"}, cid="c1"),
+            result({"entry_id": "E-100", "archived": True}, cid="c1"),
+            call("purge_entry", {"entry_id": "E-100"}, cid="c2"),
+            result({"entry_id": "E-100", "purged": True}, cid="c2"),
+            assistant("Done."),
         ],
     )
 
 
 def _unmarked_write_run() -> Run:
-    return _make_run(
+    return make_run(
         "r1",
         [
-            _user("Please archive entry E-100."),
-            _ev("tool_call", id="c1", name="archive_entry",
-                args={"entry_id": "E-100"}),
-            _result({"entry_id": "E-100", "archived": True}, cid="c1"),
-            _assistant("Done, entry E-100 is archived."),
+            user("Please archive entry E-100."),
+            event("tool_call", id="c1", name="archive_entry",
+                  args={"entry_id": "E-100"}),
+            result({"entry_id": "E-100", "archived": True}, cid="c1"),
+            assistant("Done, entry E-100 is archived."),
         ],
     )
 
 
 def _unmarked_purge_run() -> Run:
-    return _make_run(
+    return make_run(
         "r2",
         [
-            _user("Please purge entry E-100."),
-            _ev("tool_call", id="c1", name="purge_entry",
-                args={"entry_id": "E-100"}),
-            _result({"entry_id": "E-100", "purged": True}, cid="c1"),
-            _assistant("Done."),
+            user("Please purge entry E-100."),
+            event("tool_call", id="c1", name="purge_entry",
+                  args={"entry_id": "E-100"}),
+            result({"entry_id": "E-100", "purged": True}, cid="c1"),
+            assistant("Done."),
         ],
     )
 
@@ -589,33 +564,33 @@ def _side_effects(out) -> str:
 
 
 def _unmarked_double_write_run() -> Run:
-    return _make_run(
+    return make_run(
         "r3",
         [
-            _user("Please archive entry E-100."),
-            _ev("tool_call", id="c1", name="archive_entry",
-                args={"entry_id": "E-100"}),
-            _result({"entry_id": "E-100", "archived": True}, cid="c1"),
-            _ev("tool_call", id="c2", name="archive_entry",
-                args={"entry_id": "E-100"}),
-            _result({"entry_id": "E-100", "archived": True}, cid="c2"),
-            _assistant("Done."),
+            user("Please archive entry E-100."),
+            event("tool_call", id="c1", name="archive_entry",
+                  args={"entry_id": "E-100"}),
+            result({"entry_id": "E-100", "archived": True}, cid="c1"),
+            event("tool_call", id="c2", name="archive_entry",
+                  args={"entry_id": "E-100"}),
+            result({"entry_id": "E-100", "archived": True}, cid="c2"),
+            assistant("Done."),
         ],
     )
 
 
 def _unmarked_mixed_write_run() -> Run:
-    return _make_run(
+    return make_run(
         "r4",
         [
-            _user("Please archive entry E-100."),
-            _ev("tool_call", id="c1", name="archive_entry",
-                args={"entry_id": "E-100"}),
-            _ev("tool_result", id="c1", result=None, error={"class": "body_fault"}),
-            _ev("tool_call", id="c2", name="archive_entry",
-                args={"entry_id": "E-100"}),
-            _result({"entry_id": "E-100", "archived": True}, cid="c2"),
-            _assistant("Done."),
+            user("Please archive entry E-100."),
+            event("tool_call", id="c1", name="archive_entry",
+                  args={"entry_id": "E-100"}),
+            event("tool_result", id="c1", result=None, error={"class": "body_fault"}),
+            event("tool_call", id="c2", name="archive_entry",
+                  args={"entry_id": "E-100"}),
+            result({"entry_id": "E-100", "archived": True}, cid="c2"),
+            assistant("Done."),
         ],
     )
 

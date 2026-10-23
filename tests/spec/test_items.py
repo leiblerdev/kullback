@@ -6,17 +6,11 @@ The world, the policy and the facts are invented: two items in slots, one user a
 from __future__ import annotations
 
 from kullback.runner.atom_context import AtomContext
-from kullback.runner.expected import match_context
 from kullback.runner.records import Event, Run, Verifier
 from kullback.runner.verdict import verdict
 from kullback.spec import items as I
 from kullback.spec.schema import FactSource, IntentFact
-
-
-def _matches(end_states, context):
-    """Any one end state matching passes; else an unsettled one is None; else False."""
-    oks = [match_context(state, context).ok for state in end_states]
-    return True if True in oks else (None if None in oks else False)
+from tests.spec.fixtures import matches
 
 
 def _holds(verifier, run):
@@ -185,8 +179,8 @@ def test_the_sanity_item_fails_a_stray_write_and_holds_on_the_declared_row():
     verifier = _verifier(_kept(MOVE))
     right = _run(_moved(), [("update_item", {"item_id": "A1", "slot": "seven"})])
     stray = _run(_moved(items={"B2": dict(STATE["items"]["B2"], label="blue")}))
-    assert _matches(verifier.expected, AtomContext(right)) and _holds(verifier, right) == {CELL: True, "sanity": True}
-    assert _matches(verifier.expected, AtomContext(stray)) is False
+    assert matches(verifier.expected, AtomContext(right)) and _holds(verifier, right) == {CELL: True, "sanity": True}
+    assert matches(verifier.expected, AtomContext(stray)) is False
     assert _holds(verifier, stray) == {CELL: True, "sanity": False}
     assert _holds(verifier, _run(STATE)) == {CELL: False, "sanity": True}
 
@@ -194,8 +188,8 @@ def test_the_sanity_item_fails_a_stray_write_and_holds_on_the_declared_row():
 def test_with_no_state_item_the_one_end_state_has_no_cell_and_any_change_fails_it():
     verifier = _verifier([])
     assert len(verifier.expected) == 1 and verifier.expected[0].cells == []
-    assert _matches(verifier.expected, AtomContext(_run(STATE)))
-    assert _matches(verifier.expected, AtomContext(_run(_moved()))) is False
+    assert matches(verifier.expected, AtomContext(_run(STATE)))
+    assert matches(verifier.expected, AtomContext(_run(_moved()))) is False
 
 
 def test_alternative_end_states_pass_on_any_one_and_value_sets_and_new_rows_are_matched():
@@ -205,15 +199,15 @@ def test_alternative_end_states_pass_on_any_one_and_value_sets_and_new_rows_are_
     verifier = _verifier(_kept(seven, four, note))
     assert len(verifier.expected) == 2 and all(s.new_rows for s in verifier.expected)
     with_note = {"N-9": {"item": "A1", "text": "moved"}}
-    assert _matches(verifier.expected, AtomContext(_run(_moved("four", notes=with_note))))
+    assert matches(verifier.expected, AtomContext(_run(_moved("four", notes=with_note))))
     missing = _holds(verifier, _run(_moved("four")))
     assert missing["new_rows:notes:1"] is False  # the count is its own gated item now, not sanity
     assert verdict(_run(_moved("four")), verifier).passed is False
     two = {"N-9": {"item": "A1"}, "N-10": {"item": "A1"}}
     assert _holds(verifier, _run(_moved("seven", notes=two)))["new_rows:notes:1"] is False
     banned = _verifier(_kept(dict(MOVE, expect={"slot": {"not": ["two", "four"]}})))
-    assert _matches(banned.expected, AtomContext(_run(_moved("seven"))))
-    assert _matches(banned.expected, AtomContext(_run(STATE))) is False
+    assert matches(banned.expected, AtomContext(_run(_moved("seven"))))
+    assert matches(banned.expected, AtomContext(_run(STATE))) is False
 
 
 def test_an_alternative_whose_new_row_count_holds_beats_an_earlier_tie():
@@ -378,10 +372,10 @@ def test_a_list_value_matches_its_members_in_any_order_and_a_free_field_may_move
         b2 = dict(STATE["items"]["B2"], label="computed by a tool")
         moved = {"items": {"A1": dict(STATE["items"]["A1"], slot="seven", tags=["seven", "four"]), "B2": b2},
                  "notes": {}}
-        assert _matches(verifier.expected, AtomContext(_run(moved)))
+        assert matches(verifier.expected, AtomContext(_run(moved)))
         assert _holds(verifier, _run(moved))["sanity"] is True
         short = {**moved, "items": {**moved["items"], "A1": dict(moved["items"]["A1"], tags=["seven"])}}
-        assert _matches(verifier.expected, AtomContext(_run(short))) is False
+        assert matches(verifier.expected, AtomContext(_run(short))) is False
         assert "is in expect and in free" in keep(dict(MOVE, free={"slot": "a tool sets it"}))[1]
     finally:
         del STATE["items"]["A1"]["tags"]

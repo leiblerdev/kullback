@@ -14,8 +14,6 @@ from kullback.builder import sandbox as sb
 from kullback.builder.env_files import executor
 from kullback.gates.bindings import rulings_for
 from kullback.runner.records import (
-    Column,
-    EntitySchema,
     FieldStat,
     RawPtr,
     ToolCall,
@@ -23,6 +21,7 @@ from kullback.runner.records import (
     ToolSig,
     as_dict,
 )
+from tests.helpers.schemas import widget_status_schema
 
 DB = {"widgets": {"W-1": {"widget_id": "W-1", "status": "new"},
                   "W-2": {"widget_id": "W-2", "status": "new"}}}
@@ -32,11 +31,6 @@ SET_BODY = ("row = self.db.widgets[widget_id]\n"
             "return {\"widget_id\": row.widget_id, \"status\": row.status}\n")
 GET_BODY = ("row = self.db.widgets[widget_id]\n"
             "return {\"widget_id\": row.widget_id, \"status\": row.status}\n")
-
-
-def _schema() -> EntitySchema:
-    columns = [Column(table="widgets", name=name, **{"class": "hard"}) for name in ("widget_id", "status")]
-    return EntitySchema(tables=["widgets"], columns=columns, id_patterns={"widgets.widget_id": r"^W-\d+$"})
 
 
 def _sigs() -> list[ToolSig]:
@@ -49,7 +43,7 @@ def _sigs() -> list[ToolSig]:
 
 
 def _source(set_body: str = SET_BODY) -> str:
-    return ce.module_source(_schema(), _sigs(), {"set_status": set_body, "get_widget": GET_BODY})
+    return ce.module_source(widget_status_schema(), _sigs(), {"set_status": set_body, "get_widget": GET_BODY})
 
 
 def _call(call_id: str, trace: str, at: int, name: str, args: dict, result=None, error=None) -> ToolCall:
@@ -89,9 +83,9 @@ def test_the_memoised_state_key_differs_between_the_two_prefixes(tmp_path):
 
 def test_the_replay_gate_passes_both_traces_with_the_prefix_and_fails_the_later_read_without(tmp_path):
     reads = [READ_AFTER, READ_ALONE]
-    plain = sb.gate_replay_fidelity(sb.Sandbox(_source(), DB, tmp_path / "plain"), reads, _schema())
+    plain = sb.gate_replay_fidelity(sb.Sandbox(_source(), DB, tmp_path / "plain"), reads, widget_status_schema())
     prefixed = sb.gate_replay_fidelity(sb.Sandbox(_source(), DB, tmp_path / "prefix", trace_calls=TABLE),
-                                       reads, _schema())
+                                       reads, widget_status_schema())
     assert not plain.passed
     assert prefixed.passed
 
@@ -163,7 +157,7 @@ def _workdir(tmp_path):
     work, env = tmp_path / "work", tmp_path / "work" / "env"
     (work / "traces").mkdir(parents=True)
     (env / "tools").mkdir(parents=True)
-    (work / "schema.json").write_text(json.dumps(as_dict(_schema())), encoding="utf-8")
+    (work / "schema.json").write_text(json.dumps(as_dict(widget_status_schema())), encoding="utf-8")
     (work / "tool_sigs.json").write_text(json.dumps([as_dict(sig) for sig in _sigs()]), encoding="utf-8")
     (work / "db.json").write_text(json.dumps(DB), encoding="utf-8")
     for name, calls in (("t1", [WRITE, READ_AFTER]), ("t2", [READ_ALONE])):

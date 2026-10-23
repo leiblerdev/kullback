@@ -7,8 +7,9 @@ import json
 from kullback.ai.provider import TestModel
 from kullback.builder import domain_tools as domain_tools_mod
 from kullback.runner import budget
-from tests.builder.session_fixtures import priced, reply
+from tests.builder.session_fixtures import priced
 from tests.builder.test_domain_tools import _run, _workdir
+from tests.helpers.scripted import reply
 
 PRICED_ID = next(iter(budget.PRICES))
 

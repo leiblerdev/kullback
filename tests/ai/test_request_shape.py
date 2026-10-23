@@ -11,11 +11,6 @@ import kullback.ai.provider as pv
 GPT = "gpt" + "-"
 
 
-@pytest.fixture
-def live():
-    pv.enable_live_calls_from_env({pv.LIVE_ENV_VAR: "1"})
-
-
 @pytest.mark.parametrize(("wire", "family"), [
     (GPT + "5.6-x", True),
     (GPT + "6-x", True),

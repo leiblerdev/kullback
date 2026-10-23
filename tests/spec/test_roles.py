@@ -22,10 +22,10 @@ from kullback.spec.canfail import judge_run
 from kullback.spec.router import ROUNDS_CAP_ENV as ROUTER_CAP_ENV
 from kullback.spec.schema import FactSource, IntentFact, intent_text, load_spec
 from kullback.spec.trust import NOT_EXAMINED, OPEN_RULING, constructed_runs, tier_of_task
+from tests.helpers.scripted import tool_reply
 from tests.spec.fixtures import FACTS, check, fn
 from tests.spec.fixtures import spec as _spec
 from tests.spec.test_writer import _workdir as _environment
-from tests.spec.test_writer import call
 from tests.spec.test_writer import inputs as _inputs
 
 TURN = "Please move item A1 to slot seven and call it blue."
@@ -145,7 +145,7 @@ def test_a_ruling_names_the_checks_the_writer_may_change_for_a_check_an_atom_or_
 def test_an_applied_ruling_rewrites_both_verifier_copies_and_a_rebutted_one_keeps_them(tmp_path):
     root = _told(tmp_path)
     _ruling(root, 1)
-    model = TestModel([call("drop_items", ids=["c2"]), ModelReply(content="done")])
+    model = TestModel([tool_reply("drop_items", ids=["c2"]), ModelReply(content="done")])
     before = _both_copies(root)
     assert RV.answer_rulings(root, "t1", model, 2)["applied"] == 1
     _ruling(root, 2, item="s1", code="fixed_value")
@@ -176,10 +176,10 @@ def test_a_ruling_kept_open_after_the_answer_goes_back_with_that_answer_and_the_
 def test_an_empty_rebuttal_keeps_what_code_refused_so_it_reads_apart_from_a_reasoned_one(tmp_path):
     root = _told(tmp_path)
     _ruling(root, 1)
-    RV.answer_rulings(root, "t1", TestModel([call("drop_items", ids=["c2"]), ModelReply(content="done")]), 2)
+    RV.answer_rulings(root, "t1", TestModel([tool_reply("drop_items", ids=["c2"]), ModelReply(content="done")]), 2)
     _ruling(root, 2, item="s1", code="fixed_value")
     unfound = dict(ROW, expect={"slot": "nine_42"})
-    twice = [call("add_items", items=[unfound]), ModelReply(content="done")] * 2
+    twice = [tool_reply("add_items", items=[unfound]), ModelReply(content="done")] * 2
     RV.answer_rulings(root, "t1", TestModel(twice), 2)
     ruling = RL.load_rulings(root, "t1")[1]
     assert ruling.answer["action"] == "rebutted" and ruling.answer["why"] == RV.REBUT_NONE
@@ -364,7 +364,7 @@ def test_an_examined_task_whose_ruling_the_writer_applies_stays_examined_and_wai
     root = _told(tmp_path)
     _ruling(root, 1)
     RL.sync_spec(root, "t1", 1)
-    model = TestModel([call("drop_items", ids=["c2"]), ModelReply(content="done")])
+    model = TestModel([tool_reply("drop_items", ids=["c2"]), ModelReply(content="done")])
     assert RV.answer_rulings(root, "t1", model, 1)["applied"] == 1
     after = load_spec(root, "t1")
     assert after.examined_rounds == [1] and after.rulings_open == 1
@@ -379,7 +379,7 @@ def _unfounded_ruling(root):
 def test_an_applied_intent_unfounded_ruling_stops_the_fact_backing_a_gate(tmp_path):
     root, _ = _written(tmp_path)
     _unfounded_ruling(root)
-    regate = [call("drop_items", ids=["s1"]), call("add_items", items=[ROW]), ModelReply(content="done")]
+    regate = [tool_reply("drop_items", ids=["s1"]), tool_reply("add_items", items=[ROW]), ModelReply(content="done")]
     assert RV.answer_rulings(root, "t1", TestModel(regate), 2)["applied"] == 1
     after = load_spec(root, "t1")
     assert [f.id for f in after.intent.facts if f.unfounded] == ["f3"] and after.checks == []
@@ -427,7 +427,7 @@ def test_the_writer_cannot_apply_not_enough_truth(tmp_path):
     root, _ = _written(tmp_path)
     _no_truth(root)
     before = _both_copies(root)
-    out = RV.answer_rulings(root, "t1", TestModel([call("drop_items", ids=["s1"]), ModelReply(content="done")]), 2)
+    out = RV.answer_rulings(root, "t1", TestModel([tool_reply("drop_items", ids=["s1"]), ModelReply(content="done")]), 2)
     assert out["applied"] == 0 and out["rebutted"] == 1
     [ruling] = RL.load_rulings(root, "t1")
     assert ruling.answer["action"] == "rebutted" and ruling.answer["changed"] == [] and ruling.status == "open"

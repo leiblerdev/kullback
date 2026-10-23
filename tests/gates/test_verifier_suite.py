@@ -15,19 +15,13 @@ from gates.verifier_fixtures import (
     TASK,
     WRITE_TOOLS,
     alt_path_run,
-    assistant,
-    atom_by_id,
-    call,
     derive,
     empty_run,
     extra_write_run,
     failed_run,
-    make_run,
     other_reason_run,
     reference_events,
     reference_run,
-    result,
-    user,
     write_events_jsonl,
     write_run_json,
     write_run_with_footer,
@@ -40,6 +34,7 @@ from kullback.runner.canon import CanonRules
 from kullback.runner.confinement import confine
 from kullback.runner.records import Constraint, Intent, StrippedValue, Task, UserRules, Verifier
 from runner.replay_fixtures import Toolkit, do_replay
+from tests.helpers.records import assistant, atom_by_id, call, make_run, result, user
 
 # --- reading re-runs from disk (D91) --------------------------------------
 

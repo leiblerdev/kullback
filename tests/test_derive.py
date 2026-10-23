@@ -17,27 +17,21 @@ from gates.verifier_fixtures import (
     ORDER,
     TASK,
     WRITE_TOOLS,
-    _ev,
     alt_path_run,
-    assistant,
-    atom_by_id,
-    call,
     derive,
     empty_run,
     extra_write_run,
     failed_run,
-    make_run,
     other_reason_run,
     reference_events,
     reference_run,
-    result,
-    user,
     write_events_jsonl,
 )
 from kullback import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules, canon_value
 from kullback.runner.records import Constraint, ForeignRunError, Run, Task, Verifier, as_dict, content_hash
+from tests.helpers.records import assistant, atom_by_id, call, event, make_run, result, user
 
 # The derivation over verifier_fixtures.derive(tmp_path): seven atoms, seeds ref, alt and rr2. It was
 # pinned at the commit the phase 5 move started from (a40812c, 77d497a99ac9e8c1) to hold that the
@@ -233,8 +227,8 @@ def test_a_write_whose_result_carried_an_error_is_not_an_effect(tmp_path):
     ref = make_run("ref", [
         user("Please cancel my order #W123."),
         call("cancel_pending_order", {"order_id": "#W124", "reason": "customer request"}, cid="c1"),
-        _ev("tool_result", id="c1", result=None,
-            error={"class": "not_found_entity", "payload": "no such order"}),
+        event("tool_result", id="c1", result=None,
+              error={"class": "not_found_entity", "payload": "no such order"}),
         call("cancel_pending_order", {"order_id": "#W123", "reason": "customer request"}, cid="c2"),
         result({"order_id": "#W123", "status": "cancelled"}, cid="c2"),
         assistant("Cancelled."),
@@ -293,7 +287,7 @@ def test_a_user_side_write_keeps_its_requestor(tmp_path):
     """D71: a write the logs record as the user's own says so on the atom and in the tau2 export."""
     ref = make_run("ref", [
         user("I will pay the bill myself now."),
-        _ev("tool_call", id="u1", name="pay_bill", args={"bill_id": "B1"}, kind="write", requestor="user"),
+        event("tool_call", id="u1", name="pay_bill", args={"bill_id": "B1"}, kind="write", requestor="user"),
         result({"paid": True}, cid="u1"),
         assistant("Thanks, I see the payment."),
     ])
@@ -319,16 +313,7 @@ def test_successful_run_ids_decides_which_reruns_agree(tmp_path):
 
 def test_the_canonicalizer_makes_two_spellings_of_an_id_agree(tmp_path):
     """D39: the shipped canonicalizer under the customer's own learned rules, not a stand-in for it."""
-    shouty = make_run("shouty", [
-        user("Please cancel my order #W123."),
-        assistant("Sure. Why do you want to cancel it?"),
-        user("no longer needed"),
-        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
-        result(ORDER, cid="c0"),
-        call("cancel_pending_order", {"order_id": "#w123", "reason": "no longer needed"}, cid="c1"),
-        result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
-        assistant("Your order #W123 is cancelled and 150.0 is refunded."),
-    ])
+    shouty = make_run("shouty", reference_events(written="#w123", answered="#W123"))
     paths = [write_events_jsonl(shouty, tmp_path / "shouty.jsonl")]
     rules = CanonRules(id_patterns={"orders.order_id": r"#[Ww]\d+"})
     plain = V.derive_verifier(TASK, reference_run(), paths, lambda value: value, write_tools=WRITE_TOOLS)

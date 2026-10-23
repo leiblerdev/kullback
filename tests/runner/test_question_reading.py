@@ -6,37 +6,21 @@ that holds an affirmation and no negation.
 
 from __future__ import annotations
 
+from functools import partial
+
 from kullback.gates import verifier_suite as S
 from kullback.runner import target as T
 from kullback.runner.canon import CanonRules
-from kullback.runner.records import Event, Run, Verifier
+from kullback.runner.records import Run, Verifier
+from tests.helpers import records
+from tests.helpers.records import assistant, event, result, user
 
 WRITE_TOOLS = {"shelve_parcel"}
-
-
-def _ev(type_: str, **payload) -> dict:
-    return {"type": type_, "payload": payload}
-
-
-def user(text: str) -> dict:
-    return _ev("user_turn", content=text)
-
-
-def assistant(text: str) -> dict:
-    return _ev("model_call", reply={"content": text})
+make_run = partial(records.make_run, task_id="t9")
 
 
 def call(name: str, args: dict, cid: str = "c1") -> dict:
-    return _ev("tool_call", id=cid, name=name, args=args)
-
-
-def result(data, cid: str = "c1") -> dict:
-    return _ev("tool_result", id=cid, result=data)
-
-
-def make_run(run_id: str, events: list[dict]) -> Run:
-    return Run(run_id=run_id, task_id="t9", termination_reason="success",
-               events=[Event(idx=i, type=e["type"], payload=e["payload"]) for i, e in enumerate(events)])
+    return event("tool_call", id=cid, name=name, args=args)
 
 
 def fn():

@@ -7,6 +7,9 @@ import asyncio
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from kullback.agent.context import ContextConfig
+from kullback.agent.harness import AgentHarness
+from kullback.agent.session import SessionStore
 from kullback.agent.tools import AgentTool
 from kullback.ai.provider import ModelReply, ToolCallRequest
 
@@ -18,6 +21,12 @@ def collect(aiter):
         return [event async for event in aiter]
 
     return asyncio.run(go())
+
+
+def harness_with_session(tmp_path, model, tools=(), **config):
+    """A harness over `model` whose session is stored under tmp_path."""
+    store = SessionStore(tmp_path / "session.jsonl")
+    return AgentHarness(model, system="sys", tools=list(tools), session=store, context=ContextConfig(**config))
 
 
 def types_of(events) -> list[str]:
