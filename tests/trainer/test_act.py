@@ -18,7 +18,7 @@ def ask_kwargs(**over):
     return base
 
 
-def test_ask_tasks_publishes_the_ask_on_first_request(tmp_path):
+def test_ask_tasks_publishes_the_ask_on_first_request_to_an_empty_bus(tmp_path):
     bus = Bus(tmp_path / "bus.jsonl", agent="t")
     got = act.ask_tasks(bus, **ask_kwargs())
     assert got["published"] is True
@@ -48,12 +48,6 @@ def test_ask_tasks_refuses_on_a_hand_written_open_ask(tmp_path):
     got = act.ask_tasks(bus, **ask_kwargs())
     assert got["published"] is False and ask_id in got["reason"]
     assert len(bus.replay()) == 1
-
-
-def test_ask_tasks_publishes_where_the_bus_is_empty(tmp_path):
-    bus = Bus(tmp_path / "bus.jsonl", agent="t")
-    got = act.ask_tasks(bus, **ask_kwargs())
-    assert got["published"] is True
 
 
 def test_smoke_sample_is_stable_per_key_and_capped_at_the_pool(tmp_path):

@@ -610,8 +610,7 @@ def test_slash_fragment_with_one_match_runs_it(tmp_path):
     pytest.param("/help", "[provider/model]", id="help_keeps_the_bracketed_arguments_a_command_takes"),
     pytest.param("/context", "no session yet", id="context_before_any_session_says_there_is_none"),
     pytest.param("/nudge", "/nudge needs text", id="a_nudge_with_no_text_says_what_it_needs"),
-    pytest.param("/status", "no build yet", id="status_before_any_build_says_there_is_none"),
-    pytest.param("/status", "no build yet", id="status_with_no_files_says_no_build_yet"),
+    pytest.param("/status", "no build yet", id="status_before_any_build_says_no_build_yet"),
     pytest.param("/zzz", "no command matches /zzz", id="slash_fragment_with_no_match_says_so"),
 ])
 def test_a_command_with_nothing_to_act_on_says_so_in_words_and_keeps_the_screen(tmp_path, line, expected):
@@ -755,23 +754,9 @@ def test_the_login_menu_offers_every_provider_it_can_resolve_and_says_the_range_
     assert "deepseek" in offered and "openrouter" in offered
 
 
-def test_the_login_menu_offers_the_providers_only_the_local_registry_names(tmp_path, monkeypatch):
+def test_the_login_menu_offers_a_local_registry_provider_but_not_one_the_resolver_cannot_reach(tmp_path, monkeypatch):
     """A provider models.dev does not list is one entry in the local registry away from being
-    logged into by name, at the first model that entry carries."""
-    from kullback.ai import pricing
-
-    _snapshot(monkeypatch, tmp_path)
-    (tmp_path / pricing.LOCAL_PROVIDERS_NAME).write_text(json.dumps(
-        {"a-host": {"id": "a-host", "npm": "@ai-sdk/openai-compatible",
-                    "api": "https://a-host.invalid/v1", "env": ["A_HOST_API_KEY"],
-                    "models": {"quick-1": {"cost": {"input": 1.0, "output": 2.0}}}}}),
-        encoding="utf-8")
-    offered = Screen(tmp_path, console=_console())._login_defaults()
-    assert offered["a-host"] == "a-host/quick-1"
-
-
-def test_the_login_menu_does_not_offer_a_provider_the_resolver_cannot_reach(tmp_path, monkeypatch):
-    """A row with model rows but no host, and a row served through a request shape this Harness
+    logged into by name, at the first model that entry carries. A row with model rows but no host, and a row served through a request shape this Harness
     does not build, are rows nobody can log into. Offering one says a number is there to pick and
     picking it fails on the line after, so the menu asks of a row what the resolver will."""
     from kullback.ai import pricing

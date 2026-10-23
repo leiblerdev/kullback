@@ -40,11 +40,6 @@ def test_a_name_heard_with_no_value_reaches_the_held_facts_sharing_its_words():
     assert {hit.field for hit in found.hits} == {"address1", "address2"} and found.missing == []
 
 
-def test_a_field_named_but_held_nowhere_comes_back_missing():
-    found = store(("slot_count", "3")).lookup("What is your email?")
-    assert found.hits == [] and found.missing == ["email"]
-
-
 def test_a_value_the_question_states_is_not_asked_for():
     found = store(("widget_id", "WG-17")).lookup("Shall I cancel widget WG-17 for you?")
     assert found.hits == []
@@ -101,7 +96,7 @@ def test_a_closing_question_or_an_offer_on_your_thing_asks_for_no_fact():
         == ["widget_id"]
 
 
-def test_a_missing_name_reaches_only_held_facts_sharing_its_words():
+def test_a_field_named_but_held_nowhere_comes_back_missing_beside_a_held_fact_sharing_its_words():
     found = store(("widget_id", "WG-17")).lookup("Before I change your widget I need your email.")
     assert found.hits == [] and found.missing == ["email"]
 

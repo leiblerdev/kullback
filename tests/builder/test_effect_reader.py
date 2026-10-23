@@ -78,32 +78,13 @@ def test_a_sentence_answer_naming_a_row_and_column_is_a_checked_effect_with_the_
     assert effects.counts(seen)["effect_columns_checked"] == 1
 
 
-def test_the_same_sentence_answers_leave_the_column_unattributed_without_the_reader():
+def test_the_same_sentence_answers_leave_the_column_unchecked_and_unattributed_without_the_reader():
     seen = effects.observe_effects([sentence_trace()], schema(), {WRITE, AUDIT}, db=dict(START))
     columns = balance_columns(seen)
     assert len(columns) == 1
     assert (columns[0].before, columns[0].after) == (100, 82)
     assert columns[0].checked is False
     assert columns[0].unattributed is True
-    assert effects.counts(seen)["effect_columns_checked"] == 0
-
-
-def test_effect_evidence_reads_through_the_given_reader(tmp_path):
-    """The evidence reads results through the reader it is handed."""
-    seen = effects.observe_effects([sentence_trace()], schema(), {WRITE, AUDIT},
-                                   db=dict(START), worlds=None, read_result=sentence_reader)
-    columns = [column for column in balance_columns(seen) if column.checked]
-    assert len(columns) == 1
-    assert (columns[0].before, columns[0].after) == (100, 82)
-
-
-def test_effect_evidence_without_a_reader_leaves_the_column_unchecked():
-    """With no reader the effect is seen but not checked."""
-    seen = effects.observe_effects([sentence_trace()], schema(), {WRITE, AUDIT},
-                                   db=dict(START), read_result=None)
-    columns = balance_columns(seen)
-    assert len(columns) == 1
-    assert (columns[0].before, columns[0].after) == (100, 82)
     assert effects.counts(seen)["effect_columns_checked"] == 0
 
 

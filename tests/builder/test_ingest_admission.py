@@ -111,12 +111,6 @@ def test_the_ruling_carries_reasons_and_the_set_aside_mix(workdir, tmp_path):
 # --- each standing ------------------------------------------------------------
 
 
-def test_a_duplicate_recording_is_evidence_only(workdir, tmp_path):
-    ingest_raises(wrap([good_sim("same"), good_sim("same")]), workdir, tmp_path)
-    ruling = json.loads((workdir / "intake_ruling.json").read_text(encoding="utf-8"))
-    assert ruling["reasons"] == {"complete_record": 1, "duplicate": 1}
-
-
 def test_a_failed_intake_publishes_no_traces_rescued_or_not(workdir, tmp_path):
     with pytest.raises(ingest.IntakeGateError):
         ingest_payload(wrap([good_sim("g1"), dangling_sim("b1")]), workdir, tmp_path)
@@ -149,7 +143,7 @@ def test_customer_keys_ending_in_ptr_are_not_blanked_for_duplicates(workdir, tmp
     assert ruling["reasons"] == {"complete_record": 2}
 
 
-def test_recordings_with_no_id_match_by_content_not_by_fallback_id(workdir, tmp_path):
+def test_a_duplicate_recording_is_evidence_only_matched_by_content_even_with_no_id(workdir, tmp_path):
     sims = [{"termination_reason": "user_stop", "messages": [plain_msg("same")]},
             {"termination_reason": "user_stop", "messages": [plain_msg("same")]}]
     ingest_raises(wrap(sims), workdir, tmp_path)

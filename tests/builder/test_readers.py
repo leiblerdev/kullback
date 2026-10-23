@@ -181,13 +181,6 @@ def read(result):
     assert len(ruling.failures) == 1 and "answered a str" in ruling.failures[0]
 
 
-def test_a_reader_that_reads_nothing_out_of_a_shape_is_counted_and_not_refused(tmp_path):
-    """The refusing version of this rule was measured on a customer corpus and bought nothing."""
-    _, ruling = gated(tmp_path, proposal_json())
-    assert ruling.failures == []
-    assert ruling.silent == {"open_vent": 1}, "the write's own result asserts no column value"
-
-
 def test_a_key_no_column_was_proposed_for_becomes_a_column_of_the_table(tmp_path):
     proposal, ruling = gated(tmp_path, proposal_json(columns=("vent",)))
     assert ruling.failures == []
@@ -529,7 +522,8 @@ def test_a_render_that_drops_a_word_fails_with_its_tool_and_its_masked_shape_nam
     assert ruling.round_trips_matched == 1 and ruling.round_trips == 2
 
 
-def test_a_result_that_asserts_nothing_is_rendered_as_the_constant_the_tool_answers(tmp_path):
+def test_a_result_that_asserts_nothing_is_rendered_as_the_constant_and_counted_not_refused(tmp_path):
+    """The refusing version of this rule was measured on a customer corpus and bought nothing."""
     _proposal, ruling = gated(tmp_path, proposal_json())
     assert ruling.failures == []
     assert ruling.silent == {"open_vent": 1}, "the write asserts no column and still renders"

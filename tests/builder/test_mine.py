@@ -266,14 +266,6 @@ def test_calculation_and_handoff_names_are_generic_as_tau2_has_them():
     assert propose_kind("transfer_funds").kind != "generic"
 
 
-def test_unknown_name_defaults_to_read_and_unclassified(fixture_traces):
-    traces = [one_trace("t1", [{"name": "frobnicate", "args": {}, "result": "ok"}])]
-    sig = sig_by_name(mine_tools(traces), "frobnicate")
-    assert sig.kind == "read"
-    assert sig.unclassified is True
-    assert sig.kind_confidence == "low"
-
-
 def test_the_llm_kind_hook_sees_the_evidence_and_mine_tools_applies_its_class(make_test_model):
     traces = [one_trace("t1", [{"name": "frobnicate", "args": {"id": "1"}, "result": "ok"}])]
     model = json_model(make_test_model, [{"kind": "write", "confidence": "high", "reason": "writes"}])
@@ -295,7 +287,7 @@ def test_the_llm_kind_hook_sees_the_evidence_and_mine_tools_applies_its_class(ma
     assert payload["evidence"] == {"note": "n"}
 
 
-def test_low_confidence_llm_leaves_the_D70_default(make_test_model):
+def test_an_unknown_name_defaults_to_read_and_unclassified_even_when_a_low_confidence_llm_guesses(make_test_model):
     traces = [one_trace("t1", [{"name": "frobnicate", "args": {}, "result": "ok"}])]
     model = json_model(make_test_model, [{"kind": "write", "confidence": "low", "reason": "guessing"}])
     sig = sig_by_name(mine_tools(traces, model=model), "frobnicate")
