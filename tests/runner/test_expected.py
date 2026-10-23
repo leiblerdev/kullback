@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from kullback.runner.expected import (
     alternatives_from_turns,
     contradicts_user,
@@ -118,20 +120,19 @@ def _cell_state(field, value, row_id="A1"):
         **START["orders"][row_id], field: value}}}), []).model_copy()
 
 
-def test_a_cell_holding_a_value_the_user_named_is_not_contradicted():
-    state = _cell_state("method", "gift_9")
-    assert contradicts_user(state, ["Refund A1 to gift_9 please."], WALLET) == []
+@pytest.mark.parametrize("value, turns", [
+    ("gift_9", ["Refund A1 to gift_9 please."]),
+    ("paypal_4", ["Refund A1 however you like."]),
+], ids=["a cell holding a value the user named", "a column the user never named a value of"])
+def test_a_cell_is_not_contradicted_when_the_user_named_its_value_or_no_value_of_its_column(value, turns):
+    state = _cell_state("method", value)
+    assert contradicts_user(state, turns, WALLET) == []
 
 
 def test_a_cell_holding_another_value_of_a_column_the_user_named_a_choice_of_contradicts_the_user():
     state = _cell_state("method", "paypal_4")
     turns = ["Refund A1 please.", "Put it on gift_9, not my card."]
     assert contradicts_user(state, turns, WALLET) == ["orders.A1.method"]
-
-
-def test_a_column_the_user_never_named_a_value_of_is_not_contradicted():
-    state = _cell_state("method", "paypal_4")
-    assert contradicts_user(state, ["Refund A1 however you like."], WALLET) == []
 
 
 def _write_run(turns):

@@ -648,11 +648,6 @@ def test_a_state_gate_on_a_do_fact_with_no_policy_line_is_never_weighed_as_untol
     assert store.items[ROW["id"]]["gate"] is True and "weighed" not in store.items[ROW["id"]]
 
 
-def test_a_side_fact_is_never_sent_back_by_the_asked_followup():
-    intent = SpecIntent(task_id="t1", facts=_side_facts())
-    assert W.asked_missing([ROW], intent) == []
-
-
 def test_the_writer_shows_the_side_flag_and_counts_side_facts_and_weighed_gates():
     model = TestModel([add(ROW, dict(SAID_SLOT, fact_ids=["f3"])), DONE])
     written = W.write_spec("t1", inputs(facts=_side_facts()), model)
@@ -763,8 +758,9 @@ def test_a_confirms_that_names_no_one_row_is_refused_with_the_reason(confirms):
     assert "s1" not in store.items and "confirms" in store.refused[0]["reason"]
 
 
-def test_a_fallback_fact_is_never_sent_back_by_the_asked_followup():
-    intent = SpecIntent(task_id="t1", facts=_fallback_facts())
+@pytest.mark.parametrize("facts", [_side_facts, _fallback_facts], ids=["a side fact", "a fallback fact"])
+def test_a_side_or_fallback_fact_is_never_sent_back_by_the_asked_followup(facts):
+    intent = SpecIntent(task_id="t1", facts=facts())
     assert W.asked_missing([ROW], intent) == []
 
 

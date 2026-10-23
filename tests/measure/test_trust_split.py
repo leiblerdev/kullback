@@ -7,6 +7,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "measure"))
 
 import trust_split as T  # noqa: E402
@@ -183,18 +185,15 @@ def test_a_workdir_without_a_round_file_is_an_error(tmp_path, capsys):
     assert "no rounds" in capsys.readouterr().out
 
 
-def test_a_corrupt_round_file_is_an_error(tmp_path, capsys):
+@pytest.mark.parametrize("text, message", [
+    ('{"rows": [{"task_id":', "unreadable round file"),
+    ("[1, 2]", "malformed round file"),
+], ids=["a corrupt round file", "a round file with the wrong shape"])
+def test_a_corrupt_or_wrongly_shaped_round_file_is_an_error(tmp_path, capsys, text, message):
     wd = fixture(tmp_path)
-    (wd / "rounds" / "2" / "tasks.json").write_text('{"rows": [{"task_id":', encoding="utf-8")
+    (wd / "rounds" / "2" / "tasks.json").write_text(text, encoding="utf-8")
     assert T.main([str(wd)]) == 2
-    assert "unreadable round file" in capsys.readouterr().out
-
-
-def test_a_round_file_with_the_wrong_shape_is_an_error(tmp_path, capsys):
-    wd = fixture(tmp_path)
-    (wd / "rounds" / "2" / "tasks.json").write_text("[1, 2]", encoding="utf-8")
-    assert T.main([str(wd)]) == 2
-    assert "malformed round file" in capsys.readouterr().out
+    assert message in capsys.readouterr().out
 
 
 def test_a_json_output_inside_the_workdir_is_refused(tmp_path, capsys):
