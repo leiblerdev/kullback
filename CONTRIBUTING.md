@@ -1,6 +1,6 @@
 # Contributing to Kullback
 
-Thanks for looking. This file says how to get a change in and what a change has to respect. The design lives in `docs/harness-design.md` and the reasons in `docs/decision-log.md`; when this file and those disagree, those win.
+Thanks for looking. This file says how to get a change in and what a change has to respect. The design lives in `docs/architecture.md` and the reasons in `docs/decision-log.md`; when this file and those disagree, those win.
 
 ## Ways to help
 
@@ -17,7 +17,7 @@ uv sync
 uv run pytest
 ```
 
-Python 3.11 or newer. The test suite holds over 3,700 tests and never calls a model. Install the pre-commit hook once, `uv run pre-commit install`; it runs `ruff check` on the files you stage and fixes what it safely can. To run the offline slice on real data, `scripts/fetch_tau2_traces.sh` downloads Sierra's public tau2 retail runs into `data/raw/`; that directory is gitignored and stays that way.
+Python 3.11 or newer. The test suite holds over 4,800 tests and never calls a model. Install the pre-commit hook once, `uv run pre-commit install`; it runs `ruff check` on the files you stage and fixes what it safely can. To run the offline slice on real data, `scripts/fetch_tau2_traces.sh` downloads Sierra's public tau2 retail runs into `data/raw/`; that directory is gitignored and stays that way.
 
 ## The workflow
 
@@ -60,7 +60,7 @@ Commit messages say what changed and why in the first line, in the imperative, u
 
 ## Changing the design
 
-Small clarifications go straight into `docs/harness-design.md` in the same pull request as the code. A change of decision needs a new entry in `docs/decision-log.md` with the next D number, what it replaces, and the alternative it beat. An ADR in `docs/adr/` is only for a decision that is hard to reverse, surprising without context, and the result of a real trade-off; most changes are not that.
+Small clarifications go straight into `docs/architecture.md` in the same pull request as the code. A change of decision needs a new entry in `docs/decision-log.md` with the next D number, what it replaces, and the alternative it beat. An ADR in `docs/adr/` is only for a decision that is hard to reverse, surprising without context, and the result of a real trade-off; most changes are not that.
 
 New numbers from an experiment go into `docs/builds/README.md` or a decision log entry, with the script that produced them and the seed and held-out figures side by side. Numbers without the script do not get merged.
 
