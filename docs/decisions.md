@@ -1310,6 +1310,7 @@ D218: a round's Task rows are written once, at round close, and every, dropped f
 D231: round accounting survives a raised beat, dropped from the log on 2026-09-22 (founder's cut).
 D240: a Task's re-roll Runs run side by side in Run number order, dropped from the log on 2026-09-22 (founder's cut).
 D246: the compile heads are built once per build and the helper specs, dropped from the log on 2026-09-22 (founder's cut).
+D251: number held for the write-end branch, no row written, never built.
 D264: User population per Task drawn by key from good recordings, component removed (kullback/user/population.py).
 D265: One typed user-signal record with one owner per field, component removed (kullback/user/signals.py).
 D268: Merges proven by code, embeddings proposer not adopted, never built (grepped merge proof and embedding in kullback/).
