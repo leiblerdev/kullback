@@ -12,9 +12,10 @@ from gates.verifier_fixtures import WRITE_TOOLS, alt_path_run, derive, reference
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "experiments"))
 
-from kullback.runner.records import as_dict  # noqa: E402
 import vf_lib as L  # noqa: E402
 import vf_measure as M  # noqa: E402
+
+from kullback.runner.records import as_dict  # noqa: E402
 
 TASK = "t1"
 OTHER = "t2"

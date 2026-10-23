@@ -1,4 +1,4 @@
-"""A Builder write of a Verifier file draws the trusted ruling from the Spec's tiers (D322), end to end.
+"""A Builder write of a Verifier file draws the trusted ruling the Spec's trust decides (D333), end to end.
 
 The write goes through `gate_writes` wired as `builder/session.py` wires it, the Spec loader the only
 evidence. The workdir is tests/spec/test_trust.py's, laid out like a live one (task_status.json, one

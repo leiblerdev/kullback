@@ -1,8 +1,6 @@
 from collections import deque
 from types import SimpleNamespace
 
-import pytest
-
 from kullback.builder import compile_env as ce
 from kullback.runner import replay
 from kullback.runner.records import Column, EntitySchema, FieldStat, RawPtr, ToolCall, ToolSig
@@ -37,7 +35,6 @@ def test_one_recorded_call_does_not_reuse_its_id_twice():
     tools.ctx.feed_call({'new_ids': {'loans': ['L101']}, 'now': None})
     assert tools.ctx.new_id('loans') != tools.ctx.new_id('loans')
 
-@pytest.mark.skipif(not hasattr(replay.ScoredRouter, "_feed_context"), reason="needs tool-context replay patch")
 def test_replay_feeds_each_recorded_call_even_if_previous_body_ignored_context():
     first = call('open_plain', 'c1', {'loan_id': 'L101', 'opened': '2024-03-04T05:06:07'})
     second = call('open_context', 'c2', {'loan_id': 'L102', 'opened': '2024-03-05T05:06:07'})

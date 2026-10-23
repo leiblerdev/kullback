@@ -12,9 +12,6 @@ only validate with it.
 from __future__ import annotations
 
 import json
-from typing import get_args
-
-import pytest
 
 from kullback.builder.mine import (
     mine_schema,
@@ -25,13 +22,8 @@ from kullback.builder.mine import (
 from kullback.report.data import ReportData
 from kullback.report.numbers import mined_evidence_counts
 from kullback.report.render import _mined_evidence_lines
-from kullback.runner.records import ClassifiedBy, Trace
+from kullback.runner.records import Trace
 from tests.builder.trace_fixtures import col, one_trace, sig_by_name
-
-pytestmark = pytest.mark.skipif(
-    "declared" not in get_args(ClassifiedBy),
-    reason="needs the mined-evidence frozen patch (ClassifiedBy gains declared)",
-)
 
 
 def harbour_corpus() -> list[Trace]:

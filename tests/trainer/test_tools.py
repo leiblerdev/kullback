@@ -6,23 +6,15 @@ import asyncio
 import json
 import sys
 
-import pytest
-
-from kullback.agent.bus import Bus  # noqa: E402
-from kullback.ai.provider import TestModel  # noqa: E402
-from kullback.runner import loop  # noqa: E402
-from kullback.runner.world import BuiltEnvironment  # noqa: E402
-from kullback.trainer import act  # noqa: E402
-from kullback.trainer import remote as remote_mod  # noqa: E402
-from kullback.trainer.remote import RemoteConfig  # noqa: E402
-from kullback.trainer.tools import TrainerContext, trainer_tools  # noqa: E402
-from tests.episode.invented import write_env  # noqa: E402
-from tests.trainer.policy_fixtures import rename_policy  # noqa: E402
-
-NEEDS_SPLIT = pytest.mark.skipif(
-    not (hasattr(loop, "ask") and hasattr(loop, "advance")),
-    reason="needs the step-split patch",
-)
+from kullback.agent.bus import Bus
+from kullback.ai.provider import TestModel
+from kullback.runner.world import BuiltEnvironment
+from kullback.trainer import act
+from kullback.trainer import remote as remote_mod
+from kullback.trainer.remote import RemoteConfig
+from kullback.trainer.tools import TrainerContext, trainer_tools
+from tests.episode.invented import write_env
+from tests.trainer.policy_fixtures import rename_policy
 
 
 def call(tool, args):
@@ -185,14 +177,12 @@ def test_observe_tools_without_an_environment_name_it(tmp_path):
     assert "no built Environment" in call(tools["check_env"], {})["error"]
 
 
-@NEEDS_SPLIT
 def test_check_env_through_the_tool_counts_and_rejects(tmp_path):
     env = BuiltEnvironment(write_env(tmp_path / "env"))
     got = call(by_name(bare_ctx(tmp_path, env=env))["check_env"], {})
     assert got["task_count"] == 1 and got["do_nothing_passes"] is False
 
 
-@NEEDS_SPLIT
 def test_smoke_test_through_the_tool_with_a_scripted_policy(tmp_path):
     env = BuiltEnvironment(write_env(tmp_path / "env"))
     ctx = bare_ctx(tmp_path, env=env, policy=rename_policy, policy_model_id="m")

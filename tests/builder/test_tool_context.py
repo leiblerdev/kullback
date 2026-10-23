@@ -1,7 +1,6 @@
 """The tool context: a body takes time, randomness and new ids from one context.
 
-The tool context landed with the confinement imports change; the guard below skips on a tree
-without them. Every tool and table here is invented.
+Every tool and table here is invented.
 """
 
 from __future__ import annotations
@@ -14,20 +13,6 @@ from kullback.gates import confinement as confinement_module
 from kullback.gates.confinement import gate_confined, source_confinement
 from kullback.runner.records import Column, EntitySchema, FieldStat, RawPtr, ToolCall, ToolSig
 from kullback.runner.world.recorded import TIME_RE
-
-
-def _patch_applied() -> bool:
-    """Whether the tool context patch is applied: the four modules are gone and the
-    refusal names the new name the bodies use instead."""
-    if "random" in confinement_module.ALLOWED_IMPORTS:
-        return False
-    source = ("class DomainTools:\n    def fetch_widget(self, x):\n"
-              "        import random\n        return random.random()\n")
-    return any("self.ctx" in line for line in source_confinement(source))
-
-
-pytestmark = pytest.mark.skipif(not _patch_applied(), reason="needs tool-context.patch")
-
 
 LOANS_SCHEMA = EntitySchema(
     tables=["loans"],

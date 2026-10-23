@@ -4,19 +4,11 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
-from kullback.agent.bus import Bus  # noqa: E402
-from kullback.runner import loop  # noqa: E402
-from kullback.runner.world import BuiltEnvironment  # noqa: E402
-from kullback.trainer import act  # noqa: E402
-from tests.episode.invented import write_env  # noqa: E402
-from tests.trainer.policy_fixtures import rename_policy  # noqa: E402
-
-NEEDS_SPLIT = pytest.mark.skipif(
-    not (hasattr(loop, "ask") and hasattr(loop, "advance")),
-    reason="needs the step-split patch",
-)
+from kullback.agent.bus import Bus
+from kullback.runner.world import BuiltEnvironment
+from kullback.trainer import act
+from tests.episode.invented import write_env
+from tests.trainer.policy_fixtures import rename_policy
 
 
 def ask_kwargs(**over):
@@ -74,7 +66,6 @@ def test_smoke_sample_is_stable_per_key_and_capped_at_the_pool(tmp_path):
     assert set(act.smoke_sample(env, 1, "k1")) <= {"second_task", "widget_task"}
 
 
-@NEEDS_SPLIT
 def test_smoke_test_plays_the_sample_and_summarises(tmp_path):
     root = write_env(tmp_path / "env")
     env = BuiltEnvironment(root)
@@ -86,7 +77,6 @@ def test_smoke_test_plays_the_sample_and_summarises(tmp_path):
     assert got["stop_reasons"] and (tmp_path / "out" / "solve_rates.jsonl").is_file()
 
 
-@NEEDS_SPLIT
 def test_check_env_counts_and_rejects_the_do_nothing_run(tmp_path):
     root = write_env(tmp_path / "env")
     got = act.check_env(BuiltEnvironment(root))
@@ -94,7 +84,6 @@ def test_check_env_counts_and_rejects_the_do_nothing_run(tmp_path):
                    "do_nothing_task": "widget_task", "do_nothing_passes": False,
                    "do_nothing_class": "fail"}
 
-@NEEDS_SPLIT
 def test_check_env_plays_the_first_rule_driven_task(tmp_path):
     root = write_env(tmp_path / "env")
     write_env(root, task_id="second_task")

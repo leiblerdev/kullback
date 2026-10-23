@@ -147,12 +147,10 @@ def test_steering_leak_counts_values_past_the_opening_turn(tmp_path):
     assert leak["steered_demand_becauses"] == 1
     assert leak["user_turns"] == 2
 
-def test_because_accepts_a_policy_section_name():
-    from intentv import valid_because
 
-    demand = {"because": "per section:cancel pending order, the run may cancel"}
 def test_policy_sections_names_recorded_headers(tmp_path):
     import json
+
     from intentv import corpus_policy, policy_sections
 
     (tmp_path / "raw").mkdir()
@@ -164,6 +162,7 @@ def test_policy_sections_names_recorded_headers(tmp_path):
 
 def test_writer_prompts_differ_only_by_revision():
     import json
+
     from intentv import SYSTEM_PROMPT, SYSTEM_PROMPT_R0, writer_messages
 
     def body(**kwargs):

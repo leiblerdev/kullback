@@ -1,8 +1,4 @@
-"""One Task played k times under the rule user, scored by code, written as one line (G1).
-
-Needs the step-split patch (docs/frozen-patches/step-split.patch): the rollout plays the
-Task through the Episode interface, so this module skips unless the patch is applied.
-"""
+"""One Task played k times under the rule user, scored by code, written as one line (G1)."""
 
 from __future__ import annotations
 
@@ -10,18 +6,11 @@ import json
 
 import pytest
 
-from kullback.runner import loop
-
-pytestmark = pytest.mark.skipif(
-    not (hasattr(loop, "ask") and hasattr(loop, "advance")),
-    reason="needs the step-split patch",
-)
-
-from kullback import curriculum  # noqa: E402
-from kullback.runner.world import BuiltEnvironment  # noqa: E402
-from kullback.trainer.rollout import TaskSkipped, play, rollout_seed, run_group  # noqa: E402
-from tests.episode.invented import write_env  # noqa: E402
-from tests.trainer.policy_fixtures import rename_policy  # noqa: E402
+from kullback import curriculum
+from kullback.runner.world import BuiltEnvironment
+from kullback.trainer.rollout import TaskSkipped, play, rollout_seed, run_group
+from tests.episode.invented import write_env
+from tests.trainer.policy_fixtures import rename_policy
 
 
 def done_policy(messages, tools):
