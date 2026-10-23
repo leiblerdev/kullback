@@ -46,7 +46,7 @@ from kullback.spec import effects as tool_effects
 from kullback.spec import events, writer_tools
 from kullback.spec import items as I
 from kullback.spec.actions import action_tables_of, action_tools_of
-from kullback.spec.compile import Compiled, compile_spec
+from kullback.spec.compile import Compiled, compile_spec, merged_atoms, merged_cells, merged_new_rows
 from kullback.spec.ground import coverage
 from kullback.spec.intent_tools import mark_echo, mark_side, recordings_of, task_of, trace_index
 from kullback.spec.must_not import must_not
@@ -170,19 +170,24 @@ row with find_rows and read_row (cite it in confirms) or the rule with read_poli
 policy_line), and gate the branch the world selects, not the branch the recording took; a claim you \
 cannot confirm leaves the item scored. A called gate stands only where its policy_line names that tool as \
 the only way; code weighs any other. Gate who the user is by the outcome (the writes on the rows of the \
-user the agent found), never by which lookup tool found them."""
+user the agent found), never by which lookup tool found them.
+One judge question asks one thing, and never names the answer it wants.
+Gate only a value the user asked for or the policy demands; weigh any other."""
 
 END_RULE = """\
 # The scenario's end
 Facts marked end are the truth this Task was written with. Every change an end fact names is a gated \
 state item (row_is or row_new) on the row and field it names, with the value it names, citing that fact. \
-Every action or change an end fact rules out is gated absent: not_called or row_keeps, citing it. Every \
-value an end fact says the user is told is a gated judge or said item citing it. A gate no end fact names \
+Every action or change an end fact rules out is gated absent: not_called or row_keeps, citing it. A \
+value an end fact says the user is told gates only beside a fact the user said asking for it or the policy \
+line requiring the telling; else code weighs it, so answer that end fact with rebut_fact. A gate no end fact names \
 and no policy line demands is weighed. Where an end fact says the change happens once the user confirms, \
 the user will say yes: gate the change (and a before item on confirm_turn where the policy asks for the \
 yes), never a not_called on it. Where the end has the user pick one of several writes, write each as its \
 own end state (alt 0, 1, ...), never both gated in one; where alt cannot hold them, gate neither and add \
-one gated judge item on the outcome. An end fact that needs no item of its own (a step on the way, what \
+one gated judge item on the outcome. A write's gate expects a value other than the start row's and carries \
+every number, id or quoted value the end names of the changed row; a before or called item never gates a write. \
+An end fact that needs no item of its own (a step on the way, what \
 the user does) goes to rebut_fact, copying its words. Code refuses a Spec with an end fact no gated item \
 cites and no rebuttal excuses."""
 
@@ -515,7 +520,7 @@ def writer_messages(inputs: WriterInputs) -> tuple[list[dict], int]:
 def world_of(inputs: WriterInputs) -> I.World:
     """The world the writer's tools read and its values are sourced from."""
     return I.World(inputs.state, inputs.policy_text, inputs.intent.facts, inputs.tools, inputs.columns,
-                   inputs.signatures, inputs.reach)
+                   inputs.signatures, inputs.reach, inputs.canon, inputs.effects)
 
 
 def store_of(inputs: WriterInputs, items: Iterable[dict] = (), ruled: Optional[set[str]] = None,
@@ -690,7 +695,8 @@ def _side_counts(intent: SpecIntent, items: list[dict]) -> dict:
 
 def _clash_rows(store: writer_tools.ItemStore) -> list[dict]:
     """Items no run can pass together, each with why, as one send-back turn lists them."""
-    return [{"id": item_id, "reason": why} for item_id, why in I.contradictions(list(store.items.values()))]
+    clashes = I.contradictions(list(store.items.values()), store.world)
+    return [{"id": item_id, "reason": why} for item_id, why in clashes]
 
 
 def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Optional[str] = None,
@@ -728,7 +734,7 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
     items = list(store.items.values())
     counts = _store_counts(store)
     counts.update(sent_back=len(clashes), unsatisfiable=sorted(
-        {item_id for item_id, _ in I.contradictions(items)}),
+        {item_id for item_id, _ in I.contradictions(items, store.world)}),
         asked_sent_back=len(missing), truncated_chars=cut, unfinished=bool(session.get("unfinished")))
     spec = _spec_of(task_id, items, counts, inputs, store.rebuttals)
     left = unchecked_end(spec)
@@ -753,23 +759,27 @@ def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:
     """The Spec's Verifier: items to atoms (the verdict decides each), end states with the sanity item.
 
     Checks of the older demand grammar compile to atoms beside the items, with the must-not atoms when
-    the Spec has no item; nothing else gates on them (the Spec stage rewrites such a Spec as items).
+    the Spec has no item; nothing else gates on them (the Spec stage rewrites such a Spec as items). A
+    repeated item atom or end state cell is folded into one, each fold a line of the reasons (D428). Row_new items
+    one made row answers are one item, each fold a line too (D440).
     """
-    items = item_checks(spec)
+    world = world_of(inputs)
+    items, joined = merged_new_rows(item_checks(spec))
     legacy = spec.model_copy(update={"checks": [c for c in spec.checks if not is_item_check(c)]})
     compiled = compile_spec(legacy, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools)
     atoms = list(compiled.verifier.atoms)
     if not items and legacy.checks:
         must = [atom for atom in atoms if atom.kind in ("required", "allowed")]
         atoms += must_not(must, spec.intent.text, inputs.constraints, sorted(inputs.write_tools))
-    expected = []
+    expected, merged = [], []
     if items or not legacy.checks:
-        expected = I.end_states_of(items, world_of(inputs), inputs.action_tables, inputs.effects)
-        atoms = [I.atom_of(item) for item in items] + [I.sanity_atom(expected)] + atoms
+        expected, merged = merged_cells(I.end_states_of(items, world, inputs.action_tables, inputs.effects))
+        own, folded = merged_atoms([I.atom_of(item) for item in items])
+        atoms, merged = own + [I.sanity_atom(expected)] + atoms, joined + merged + folded
     verifier = Verifier(task_id=spec.task_id, atoms=atoms,
                         verifier_version=f"spec{spec.version}", seed_run_ids=[], expected=expected)
-    return Compiled(verifier, compiled.dropped, compiled.reasons,
-                    compiled.unsatisfiable + tuple(I.contradictions(items)))
+    return Compiled(verifier, compiled.dropped, compiled.reasons + tuple(merged),
+                    compiled.unsatisfiable + tuple(I.contradictions(items, world)))
 
 
 def runner_verifier_path(workdir: Path, task_id: str) -> Path:
@@ -808,9 +818,13 @@ def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = N
     the same bytes. The counts ride on the saved Spec as `end_state`.
     """
     inputs = inputs or load_inputs(workdir, spec.task_id, spec.intent)
-    verifier: Verifier = verifier_of(spec, inputs).verifier
+    compiled = verifier_of(spec, inputs)
+    verifier: Verifier = compiled.verifier
     text = json.dumps(verifier.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
     counts = end_state_counts(verifier, spec)
+    merged = [line for line in compiled.reasons if ": merged" in line]
+    if merged:
+        counts["merged"] = merged
     if inputs.reach is not None:
         counts["reachability"] = reachability(spec, inputs)
     spec = spec.model_copy(update={"end_state": counts})

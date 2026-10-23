@@ -142,3 +142,21 @@ def test_derive_world_writes_one_user_rules_file_per_trace_and_rewrites_it_uncha
     assert not world_tools.derive_world(theirs).from_cache
     for path in sorted((ours / "user_rules").glob("*.json")):
         assert path.read_bytes() == (theirs / "user_rules" / path.name).read_bytes(), path.name
+
+
+def test_the_world_report_counts_listed_ids_that_name_no_row_of_the_table_they_key():
+    from kullback.builder.world_tools import dangling_ids
+
+    db = {"owners": {"o1": {"owner_id": "o1", "boxes": ["b1", "b2", "b9"], "tags": ["red", "blue"]},
+                     "o2": {"owner_id": "o2", "boxes": ["b8"]}},
+          "boxes": {"b1": {"box_id": "b1"}, "b2": {"box_id": "b2"}}}
+    assert dangling_ids(db) == {"owners.boxes": {"table": "boxes", "listed": 4, "missing": 2}}
+
+
+def test_derive_world_writes_the_dangling_id_count_into_the_world_report(tmp_path):
+    from kullback.builder.world_tools import WORLD_REPORT_FILE, dangling_ids
+
+    report = _first_pass(tmp_path)
+    db = json.loads((tmp_path / "db.json").read_text())
+    assert report.dangling == dangling_ids(db)
+    assert json.loads((tmp_path / WORLD_REPORT_FILE).read_text())["dangling"] == report.dangling

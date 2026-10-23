@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from kullback.hub import harbor, harbor_world
+from kullback.hub import harbor, harbor_world, package
 from kullback.hub.client import LocalHub
 from kullback.hub.package import HARBOR_DIR, verify_package
 from kullback.runner.records import ItemResult, read_json, write_json
@@ -26,6 +26,9 @@ from kullback.spec.trust import runs_on_disk
 from tests.episode.invented import SCRIPTED_RENAME, write_env
 
 TASK = "widget_task"
+# The fixture Spec's ask: the volunteered fact, then the accepted one under the later lead; the echo never (D422).
+ASK = (f"{package.FACTS_LEAD}\n- wants widget w1 to carry the label striped\n\n{package.LATER_LEAD}\n"
+       "- agreed to a label the agent proposed")
 EXPECTED = [{"cells": [{"table": "widgets", "row_id": "w1", "field": "label", "value": "striped"}]}]
 
 
@@ -33,9 +36,33 @@ def _fact(ident: str, text: str, stance: str = "volunteered", **flags) -> Intent
     return IntentFact(id=ident, text=text, source=FactSource(recording="rec1", turn=0), stance=stance, **flags)
 
 
-def _workdir(root: Path, *, atoms: list | None = None, trusted: bool = True) -> Path:
-    """The invented world as a finished build: a trusted Task, its Spec, its Reference Run, a raw export."""
+SHELF_MODEL = '''
+
+class Shelf(BaseModel):
+    """One row of shelves."""
+    holds: Optional[Any] = Field(default=None)
+'''
+
+
+def _add_shelves(root: Path, holds: list[str]) -> None:
+    """A second table whose one row lists widget ids: the build world as learned, ids naming no row included."""
+    model = (root / "env" / "data_model.py").read_text()
+    model = model.replace("\n\nclass DomainDB", SHELF_MODEL + "\n\nclass DomainDB").replace(
+        "    widgets: Dict[str, Widget] = Field(default_factory=dict)\n",
+        "    widgets: Dict[str, Widget] = Field(default_factory=dict)\n"
+        "    shelves: Dict[str, Shelf] = Field(default_factory=dict)\n")
+    (root / "env" / "data_model.py").write_text(model)
+    db = json.loads((root / "db.json").read_text())
+    write_json(root / "db.json", dict(db, shelves={"s1": {"holds": holds}}))
+
+
+def _workdir(root: Path, *, atoms: list | None = None, trusted: bool = True, holds: list[str] | None = None,
+             script: list | None = None) -> Path:
+    """The invented world as a finished build: a trusted Task, its Spec, its Reference Run, a raw export; with
+    `holds`, a shelf row listing those widget ids; `script` is the Reference Run's turns."""
     write_env(root, verifier_atoms=atoms)
+    if holds is not None:
+        _add_shelves(root, holds)
     verifier = json.loads((root / "verifiers" / f"{TASK}.json").read_text())
     write_json(root / "verifiers" / f"{TASK}.json", dict(verifier, expected=EXPECTED))
     write_json(root / "rounds.json", [{"round": 1, "counts": {"trusted_ids": [TASK] if trusted else []}}])
@@ -46,7 +73,7 @@ def _workdir(root: Path, *, atoms: list | None = None, trusted: bool = True) -> 
     write_json(root / "spec" / f"{TASK}.json", spec.model_dump())
     episode = Episode(BuiltEnvironment(root), outdir=root / "scratch", max_turns=10)
     episode.reset(TASK)
-    for message in SCRIPTED_RENAME:
+    for message in script or SCRIPTED_RENAME:
         episode.step(message)
     run = root / "runs" / TASK / "reference.jsonl"
     run.parent.mkdir(parents=True, exist_ok=True)
@@ -112,11 +139,13 @@ def test_an_untrusted_task_is_left_out_by_default_and_exported_with_all(tmp_path
     assert harbor.export_harbor(workdir, tmp_path / "b", name="w", wheel=wheel, tasks="all")["counts"]["exported"] == 1
 
 
-def test_the_instruction_says_only_what_the_user_volunteered_then_the_policy_and_the_tools(dataset):
+def test_the_instruction_says_what_the_user_volunteered_then_what_they_said_later_never_the_echo_then_policy_and_tools(
+        dataset):
     out, _ = dataset
     text = (out / "widgets-widget_task" / "instruction.md").read_text()
-    assert "wants widget w1 to carry the label striped" in text
-    assert "proposed" not in text and "only the agent said" not in text
+    first, later = text.split(package.LATER_LEAD)
+    assert "wants widget w1 to carry the label striped" in first and "proposed" not in first
+    assert "- agreed to a label the agent proposed" in later and "only the agent said" not in text
     assert "Be helpful with widgets." in text and "tools call <name>" in text and "reply_to_user" in text
 
 
@@ -215,6 +244,12 @@ def test_each_call_is_logged_and_the_world_written_back_so_the_next_process_sees
     assert [row["name"] for row in logged] == ["rename_widget", "describe_widget"]
 
 
+def test_the_consent_line_agrees_to_what_was_asked_and_to_nothing_different():
+    line = harbor_world.CONSENT_LINE
+    assert line.startswith("Yes, go ahead with what I asked for.")
+    assert "I do not agree to anything different from what I asked" in line
+
+
 def test_a_message_to_the_user_is_answered_with_the_standing_consent(dataset, tmp_path):
     out, _ = dataset
     answer = harbor_world.call(_app(out, tmp_path), "reply_to_user", {"text": "Shall I go ahead?"})
@@ -286,22 +321,28 @@ def test_an_unscored_gate_gives_zero_and_is_named_unscored_gate():
     assert {row["id"]: row.get("status") for row in body["items"]}["j"] == "unscored_gate"
 
 
-def test_an_unscored_weighted_item_leaves_the_denominator_and_is_named_unscored():
+def test_an_unscored_weighted_item_leaves_the_shaped_denominator_and_is_named_unscored():
     body = harbor_world.reward_of([_item("g", True, True), _item("s", False, False),
                                    _item("j", False, None, kind="judge")])
-    assert body["reward"] == pytest.approx(0.5) and body["unscored"] == ["j"]
+    assert body["shaped_reward"] == pytest.approx(0.5) and body["unscored"] == ["j"]
 
 
 def test_a_failed_gate_gives_zero_whatever_the_weighted_items_say():
-    assert harbor_world.reward_of([_item("g", True, False), _item("s", False, True)])["reward"] == 0.0
+    body = harbor_world.reward_of([_item("g", True, False), _item("s", False, True)])
+    assert body["reward"] == 0.0 and body["shaped_reward"] == 0.0
 
 
-def test_the_reward_is_the_verdict_score_when_every_item_is_scored():
+def test_a_run_holding_every_gate_passes_whatever_weighted_items_it_misses():
+    body = harbor_world.reward_of([_item("g", True, True), _item("s", False, False), _item("t", False, False)])
+    assert body["reward"] == 1.0 and body["shaped_reward"] < 1.0
+
+
+def test_the_shaped_reward_is_the_verdict_score_when_every_item_is_scored():
     from kullback.runner.verdict import _Item, _score
 
     items = [_item("g", True, True, 2.0), _item("s", False, True, 1.0), _item("t", False, False, 3.0)]
     expected = _score([_Item(item, item.id) for item in items], True, True, [])
-    assert harbor_world.reward_of(items)["reward"] == pytest.approx(expected)
+    assert harbor_world.reward_of(items)["shaped_reward"] == pytest.approx(expected)
 
 
 def test_items_json_carries_every_item_with_id_kind_gate_weight_held_and_why(dataset, tmp_path):
@@ -407,16 +448,19 @@ def test_a_judge_outage_on_a_weighted_item_leaves_the_trial_unscored_not_passed(
     assert body["reward_had_it_been_scored"] == 1.0, "the masked score that used to be reported"
 
 
-def test_a_weighted_judge_item_the_judge_answers_scores_as_before(tmp_path, monkeypatch):
+def test_a_run_holding_every_gate_but_missing_a_weighted_item_passes_in_harbor_with_its_shaped_reward_below_one(
+        tmp_path, monkeypatch):
     workdir = _workdir(tmp_path / "work", atoms=JUDGE_WEIGHTED)
     wheel = tmp_path / "k.whl"
     wheel.write_bytes(b"")
     harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
     _judge_says(monkeypatch, 0)
     body = _oracle_score(tmp_path / "out", tmp_path)
-    assert 0.0 < body["reward"] < 1.0 and "unscored_reason" not in body, "past the gate, the rejected item costs its weight"
-    assert (tmp_path / "logs" / "reward.txt").read_text() == f"{body['reward']}\n"
-    assert json.loads((tmp_path / "logs" / "reward.json").read_text()) == {"reward": body["reward"]}
+    assert body["reward"] == 1.0 and "unscored_reason" not in body
+    assert (tmp_path / "logs" / "reward.txt").read_text() == "1.0\n"
+    assert json.loads((tmp_path / "logs" / "reward.json").read_text()) == {"reward": 1.0}, "pass@k takes one key"
+    items = json.loads((tmp_path / "logs" / "items.json").read_text())
+    assert 0.0 < items["shaped_reward"] < 1.0, "past the gate, the rejected item costs its weight"
 
 
 def test_a_judge_item_on_a_run_with_no_assistant_turn_is_answered_zero_and_the_trial_gets_a_number(
@@ -432,7 +476,7 @@ def test_a_judge_item_on_a_run_with_no_assistant_turn_is_answered_zero_and_the_t
         if name != harbor_world.REPLY_TOOL:
             harbor_world.call(app, name, arguments)
     body = _reward(app, tmp_path / "out", tmp_path)
-    assert 0.0 < body["reward"] < 1.0 and "unscored_reason" not in body and calls == []
+    assert 0.0 < body["shaped_reward"] < 1.0 and "unscored_reason" not in body and calls == []
     record = json.loads((tmp_path / "logs" / "judge.json").read_text())
     assert [(row["id"], row["status"], row["score"], row["why"]) for row in record["items"]] == \
         [("j1", "answered", 0, "no evidence")]
@@ -539,6 +583,46 @@ def _wheel(tmp_path: Path) -> Path:
 def _toml(out: Path) -> dict:
     return tomllib.loads((out / "widgets-widget_task" / "task.toml").read_text())["metadata"]
 
+
+def test_a_verifier_cell_the_scorer_cannot_read_on_its_start_row_sets_the_task_aside_and_is_counted(tmp_path):
+    workdir = _workdir(tmp_path / "work")
+    tones = [{"tone": "plain"}, {"tone": "dotted"}]
+    write_json(workdir / "db.json", {"widgets": {"w1": {"widget_id": "w1", "label": tones}}})
+    verifier = read_json(workdir / "verifiers" / f"{TASK}.json", {})
+    cells = [{"table": "widgets", "row_id": "w1", "field": "label.tone", "value": "striped"}]
+    write_json(workdir / "verifiers" / f"{TASK}.json", dict(verifier, expected=[{"cells": cells}]))
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path), tasks="verified")
+    assert manifest["counts"]["exported"] == 0
+    assert manifest["counts"]["skipped"] == {harbor.UNREADABLE_CELL: 1}
+    assert not (tmp_path / "out" / "widgets-widget_task").exists()
+
+
+def test_a_cell_on_a_one_member_start_list_ships_named_by_index_and_the_manifest_says_so(tmp_path):
+    workdir = _workdir(tmp_path / "work")
+    write_json(workdir / "db.json", {"widgets": {"w1": {"widget_id": "w1", "label": [{"tone": "plain"}]}}})
+    verifier = read_json(workdir / "verifiers" / f"{TASK}.json", {})
+    cells = [{"table": "widgets", "row_id": "w1", "field": "label.tone", "value": "striped"}]
+    write_json(workdir / "verifiers" / f"{TASK}.json", dict(verifier, expected=[{"cells": cells}]))
+    out = tmp_path / "out"
+    manifest = harbor.export_harbor(workdir, out, name="widgets", wheel=_wheel(tmp_path), tasks="verified")
+    shipped = read_json(out / "widgets-widget_task" / "tests" / "verifier.json", {})
+    assert shipped["expected"][0]["cells"][0]["field"] == "label.0.tone"
+    assert manifest["tasks"][0]["cells_resolved"] == ["widgets: label.tone -> label.0.tone"]
+    assert manifest["counts"]["cells_resolved"] == 1 and manifest["counts"]["skipped"] == {}
+
+
+def test_what_the_oracle_tool_always_moves_reaches_the_shipped_verifier_as_allowed_and_is_counted(tmp_path):
+    workdir = _workdir(tmp_path / "work")
+    effects = {"rename_widget": {"columns": [{"table": "widgets", "column": "label"}, {"table": "widgets", "column": "stamp"}],
+                                 "makes": [], "writes": [{"table": "widgets", "field": "label", "values": ["striped"]}]}}
+    write_json(workdir / "exam" / "review" / "effects.json", {"effects": effects, "signatures": {}})
+    out = tmp_path / "out"
+    manifest = harbor.export_harbor(workdir, out, name="widgets", wheel=_wheel(tmp_path))
+    shipped = read_json(out / "widgets-widget_task" / "tests" / "verifier.json", {})
+    assert shipped["expected"][0]["allowed"] == [{"table": "widgets", "row_id": "w1", "field": "stamp",
+                                                  "why": "free: learned effect: rename_widget"}]
+    assert manifest["tasks"][0]["effects_allowed"] == 1 and manifest["counts"]["effects_allowed"] == 1
+    assert manifest["tasks"][0]["effects_from"] == "effects file"
 
 def test_verified_exports_an_untrusted_task_that_has_a_verifier(tmp_path):
     workdir = _workdir(tmp_path / "work", trusted=False)
@@ -811,19 +895,6 @@ def test_a_staged_package_with_a_tampered_file_is_refused_naming_the_file(tmp_pa
                         form="harbor", staged=staged)
 
 
-def test_a_staged_manifest_listing_only_some_untrusted_reasons_publishes_every_reason_from_its_index(
-        tmp_path, monkeypatch):
-    from kullback.hub import publish
-
-    workdir, staged = _staged(tmp_path, monkeypatch)
-    manifest = read_json(staged / "manifest.json")
-    whole = manifest["untrusted"]
-    write_json(staged / "manifest.json", dict(manifest, untrusted=dict(whole, reasons=whole["reasons"][:0])))
-    _, reused = publish.publish(workdir, "someorg/widgets", client=LocalHub(tmp_path / "second"), preview=True,
-                                form="harbor", staged=staged)
-    assert reused["untrusted"] == whole
-
-
 def test_a_card_published_from_a_staged_package_names_the_commit_its_harbor_tasks_were_laid_at(
         tmp_path, monkeypatch):
     from kullback.hub import publish
@@ -921,7 +992,7 @@ def test_the_package_ships_the_same_ask_as_the_harbor_instruction_for_a_task_wit
     manifest = package.export(workdir, tmp_path / "package", name="widgets", preview=True)
     instruction = (tmp_path / "harbor" / "widgets-widget_task" / "instruction.md").read_text(encoding="utf-8")
     ask = read_json(tmp_path / "package" / "tasks" / f"{TASK}.json")["intent"]
-    assert ask == f"{package.FACTS_LEAD}\n- wants widget w1 to carry the label striped"
+    assert ask == ASK
     assert instruction.startswith(ask + "\n")
     row = json.loads((tmp_path / "package" / package.TASKS_ROWS_NAME).read_text(encoding="utf-8").splitlines()[0])
     assert row["instruction"] == ask and manifest["without_ask"] == 0
@@ -939,7 +1010,7 @@ def test_end_facts_of_a_born_task_never_reach_the_package_ask_or_the_harbor_inst
     harbor.export_harbor(workdir, tmp_path / "harbor", name="widgets", wheel=_wheel(tmp_path))
     package.export(workdir, tmp_path / "package", name="widgets", preview=True)
     ask = read_json(tmp_path / "package" / "tasks" / f"{TASK}.json")["intent"]
-    assert ask == f"{package.FACTS_LEAD}\n- wants widget w1 to carry the label striped"
+    assert ask == ASK
     instruction = (tmp_path / "harbor" / "widgets-widget_task" / "instruction.md").read_text(encoding="utf-8")
     assert "carries the label striped;" not in instruction and "is told it is striped" not in instruction
 
@@ -955,3 +1026,115 @@ def test_a_task_with_neither_a_spec_intent_nor_intent_text_ships_an_empty_ask_an
     assert read_json(tmp_path / "package" / "tasks" / f"{TASK}.json")["intent"] == ""
     row = json.loads((tmp_path / "package" / package.TASKS_ROWS_NAME).read_text(encoding="utf-8").splitlines()[0])
     assert row["instruction"] == "" and manifest["without_ask"] == 1
+
+
+# --- what the user said later reaches the instruction; an item it cannot satisfy never ships (D422) ---
+
+
+def _said(*facts: IntentFact) -> str:
+    return package.opening(package.asked_facts(Spec(task_id=TASK, intent=SpecIntent(task_id=TASK, facts=list(facts)))),
+                           None) or ""
+
+
+def test_a_detail_the_user_gave_when_the_agent_asked_reaches_the_instruction():
+    text = _said(_fact("f1", "wants widget w1 relabelled", kind="do"),
+                 _fact("f2", "badge number is 00000", stance="fallback", condition="world_or_policy"),
+                 _fact("f3", "account name is ann_0000", stance="accepted"))
+    assert "- badge number is 00000" in text and "- account name is ann_0000" in text
+
+
+def test_a_fallback_ask_reaches_the_instruction_under_the_later_lead_after_the_volunteered_ones():
+    text = _said(_fact("f2", "wants widget w1 removed instead if the label cannot change", stance="fallback",
+                       kind="do", condition="world_or_policy"),
+                 _fact("f1", "wants widget w1 to carry the label striped", kind="do"))
+    first, later = text.split(package.LATER_LEAD)
+    assert "- wants widget w1 to carry the label striped" in first
+    assert later.strip() == "- wants widget w1 removed instead if the label cannot change"
+
+
+def test_an_instruction_with_only_volunteered_facts_has_no_later_lead():
+    assert package.LATER_LEAD not in _said(_fact("f1", "wants widget w1 to carry the label striped"))
+
+
+UNRENDERED = [{"id": "keep", "kind": "allowed", "gate": True, "description": "w1 holds the label",
+               "target": {"kind": "row_is", "table": "widgets", "row": "w1", "expect": {"label": "striped"},
+                          "from": {"fact_ids": ["f3"], "policy_line": None}}},
+              {"id": "named", "kind": "allowed", "gate": True, "description": "rename_widget is called",
+               "target": {"kind": "called", "tool": "rename_widget", "from": {"fact_ids": ["f1", "f3"],
+                                                                              "policy_line": None}}},
+              JUDGE_WEIGHTED[0]]
+
+
+def test_an_item_resting_only_on_unrendered_facts_is_dropped_its_cell_freed_and_counted(tmp_path):
+    workdir = _workdir(tmp_path / "work", atoms=UNRENDERED)
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path))
+    shipped = read_json(tmp_path / "out" / "widgets-widget_task" / "tests" / harbor.VERIFIER_NAME)
+    assert [atom["id"] for atom in shipped["atoms"]] == ["named", "a1"]
+    state = shipped["expected"][0]
+    assert not state["cells"]
+    assert {"table": "widgets", "row_id": "w1", "field": "label", "why": harbor.UNRENDERABLE_WHY} in state["allowed"]
+    assert manifest["counts"]["items_unrenderable"] == 1 and manifest["counts"]["tasks_with_items_unrenderable"] == 1
+    assert manifest["items_unrenderable"] == [{"task": TASK[-4:], "items": ["keep"]}]
+    assert manifest["tasks"][0]["items_unrenderable"] == ["keep"] and manifest["tasks"][0]["has_oracle"]
+
+
+def test_a_verifier_with_nothing_unrendered_ships_byte_for_byte(dataset, tmp_path):
+    out, manifest = dataset
+    source = tmp_path / "work" / "verifiers" / f"{TASK}.json"
+    assert (out / "widgets-widget_task" / "tests" / harbor.VERIFIER_NAME).read_bytes() == source.read_bytes()
+    assert manifest["counts"]["items_unrenderable"] == 0 and manifest["items_unrenderable"] == []
+
+
+def test_an_item_citing_a_policy_line_is_kept_whatever_facts_it_cites(tmp_path):
+    ruled = [{**UNRENDERED[0], "target": {**UNRENDERED[0]["target"],
+                                          "from": {"fact_ids": ["f3"], "policy_line": "Widgets keep their label."}}},
+             JUDGE_WEIGHTED[0]]
+    workdir = _workdir(tmp_path / "work", atoms=ruled)
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=_wheel(tmp_path))
+    shipped = read_json(tmp_path / "out" / "widgets-widget_task" / "tests" / harbor.VERIFIER_NAME)
+    assert [atom["id"] for atom in shipped["atoms"]] == ["keep", "a1"]
+    assert manifest["counts"]["items_unrenderable"] == 0
+
+
+def _listed_export(tmp_path: Path, script: list | None = None) -> tuple[Path, dict]:
+    """The shelf world exported, its references.json naming the Reference by the id its Run file carries."""
+    workdir = _workdir(tmp_path / "work", holds=["w1", "w9"], script=script)
+    run_id = runs_on_disk(workdir)[TASK][0].run_id
+    write_json(workdir / "references.json", {TASK: {"references": [{"kind": "recording", "run_id": run_id}]}})
+    wheel = tmp_path / "k.whl"
+    wheel.write_bytes(b"")
+    return tmp_path / "out", harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
+
+
+def test_every_id_a_row_of_the_exported_world_lists_opens_with_its_tool(tmp_path):
+    out, manifest = _listed_export(tmp_path)
+    app = _app(out, tmp_path)
+    listed = json.loads((app / "db.json").read_text())["shelves"]["s1"]["holds"]
+    assert listed == ["w1"]
+    played = harbor_world.play(app, [{"name": "describe_widget", "arguments": {"widget_id": rid}} for rid in listed],
+                               tmp_path / "s")
+    assert all(answer["error"] is None for answer in played.answers)
+    assert manifest["tasks"][0]["ids_dropped"] == {"shelves.holds": 1}
+    assert manifest["counts"]["ids_dropped"] == 1 and manifest["counts"]["columns_pruned"] == ["shelves.holds"]
+    assert json.loads((tmp_path / "work" / "db.json").read_text())["shelves"]["s1"]["holds"] == ["w1", "w9"], \
+        "the build world stays as learned"
+
+
+def test_a_task_whose_reference_reads_a_dropped_id_is_set_aside_and_counted(tmp_path):
+    reads_dropped = [{"content": None, "tool_calls": [{"id": "c0", "name": "describe_widget",
+                                                       "arguments": {"widget_id": "w9"}}]}, *SCRIPTED_RENAME]
+    _, manifest = _listed_export(tmp_path, script=reads_dropped)
+    assert manifest["counts"]["exported"] == 0
+    assert manifest["counts"]["skipped"] == {harbor.READS_DROPPED_ID: 1}
+    assert manifest["left_out"] == [{"task": TASK[-4:], "reason": harbor.READS_DROPPED_ID}]
+
+
+def test_an_ambiguous_column_drops_nothing_and_the_manifest_says_so(tmp_path):
+    workdir = _workdir(tmp_path / "work", holds=["w1", "s1", "w9"])
+    wheel = tmp_path / "k.whl"
+    wheel.write_bytes(b"")
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
+    app = _app(tmp_path / "out", tmp_path)
+    assert json.loads((app / "db.json").read_text())["shelves"]["s1"]["holds"] == ["w1", "s1", "w9"]
+    assert manifest["ambiguous_columns"] == [{"task": TASK[-4:], "columns": ["shelves.holds"]}]
+    assert manifest["counts"]["tasks_with_ambiguous_column"] == 1 and manifest["counts"]["ids_dropped"] == 0

@@ -5,7 +5,7 @@ and where each build stage lives. Read it before you change code, so a change la
 The boundaries matter because they keep an agent from grading its own work.
 
 Every module has one line on the [module page](architecture/modules.md). Words like Task, Verifier and trusted
-are defined in the [glossary](glossary.md). Why the code has this shape is in the [decision log](decision-log.md)
+are defined in the [glossary](glossary.md). Why the code has this shape is in the [decisions](decisions.md)
 and the [ADRs](adr/), ADR-0007 (two agents, gates no agent can write) and ADR-0011 (one core, one bus) first.
 
 ## Packages

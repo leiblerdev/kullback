@@ -82,6 +82,22 @@ def test_a_find_must_name_exactly_one_row_and_a_field_must_exist():
     assert "has no field 'colour'" in keep(dict(MOVE, expect={"colour": "red"}))[1]
 
 
+def test_a_cell_path_meeting_a_list_without_an_index_is_refused_naming_the_path_and_the_list():
+    state = {"items": dict(STATE["items"], A1=dict(STATE["items"]["A1"], parts=[{"slot": "two"}, {"slot": "four"}]))}
+    w = I.World(state, POLICY, FACTS, TOOLS)
+    _, why = w.check(dict(MOVE, expect={"parts.slot": "seven"}), KNOWN, unwitnessed)
+    assert "'parts.slot' cannot be read" in why and "'parts' is a list of 2" in why and "parts.<index>.slot" in why
+    assert w.check(dict(MOVE, expect={"parts.1.slot": "seven"}), KNOWN, unwitnessed)[1] == ""
+    _, why = w.check({"id": "k1", "kind": "row_keeps", "table": "items", "find": {"item_id": "A1"},
+                      "fields": ["parts.slot"], "fact_ids": ["f1"]}, KNOWN, unwitnessed)
+    assert "cannot be read" in why
+
+
+def test_a_cell_path_past_a_lists_end_or_to_a_key_the_row_lacks_is_kept_for_a_tool_may_add_it():
+    assert I.unreadable_path({"parts": [{"slot": "two"}]}, "parts.3.slot") == ""
+    assert I.unreadable_path({"parts": {"p1": {"slot": "two"}}}, "parts.p9.slot") == ""
+
+
 def test_provenance_is_required_a_policy_line_must_be_verbatim_and_unwitnessed_facts_alone_are_refused():
     assert "fact_ids" in keep(dict(MOVE, fact_ids=[]))[1]
     assert "verbatim" in keep(dict(MOVE, fact_ids=[], policy_line="move anything anywhere at all"))[1]
@@ -273,6 +289,45 @@ def test_two_gated_called_items_on_one_tool_with_different_args_contradict_and_o
         == ["c2"]
 
 
+def test_two_gated_calls_of_one_tool_contradict_only_when_they_write_one_row_two_ways():
+    """D440: with a World, calls on other rows, lookups and calls that make their own row each stand."""
+    def called(name, tool="update_item", **args):
+        return {"id": name, "kind": "called", "tool": tool, "gate": True, "args": args}
+    at = I.World(STATE, POLICY, FACTS, TOOLS)
+    assert I.contradictions([called("c1", item_id="A1", slot="seven"), called("c2", item_id="B2", slot="eight")],
+                            at) == []
+    found = I.contradictions([called("c1", item_id="A1", slot="seven"), called("c2", item_id="A1", slot="eight")], at)
+    assert [item_id for item_id, _ in found] == ["c2"] and "one row two ways" in found[0][1]
+    assert I.contradictions([called("c1", "list_items", item_id="A1"), called("c2", "list_items", item_id="B2")],
+                            at) == []
+    made = I.World(STATE, POLICY, FACTS, TOOLS, effects={"update_item": {"makes": ["items"]}})
+    assert I.contradictions([called("c1", item_id="A1", slot="seven"), called("c2", item_id="A1", slot="eight")],
+                            made) == []
+
+
+def test_a_call_targets_the_rows_its_arguments_name_in_the_tables_it_writes():
+    effects = {"update_item": {"writes": [{"table": "items", "field": "slot"}], "columns": []}}
+    at = I.World(STATE, POLICY, FACTS, TOOLS, effects=effects)
+    assert at.target_rows("update_item", {"item_id": "B2", "slot": "four"}) == {("items", "B2")}
+    assert at.target_rows("list_items", {"item_id": "B2"}) == set()
+    assert at.target_rows("update_item", {"item_id": "Z9"}) == set()
+
+
+def test_a_freeze_on_a_field_the_specs_own_write_expects_on_that_row_contradicts_naming_the_write():
+    frozen = {"id": "k1", "kind": "row_keeps", "table": "items", "find": {"item_id": "A1"}, "fields": ["slot"],
+              "fact_ids": ["f1"]}
+    found = I.contradictions(_kept(MOVE, frozen))
+    assert ("k1", "row_keeps holds slot of that row, which s1 changes; drop the freeze on that field or the write") \
+        in found and {item_id for item_id, _ in found} == {"k1"}
+
+
+def test_a_freeze_on_another_field_or_another_row_stands_beside_the_write():
+    label = {"id": "k1", "kind": "row_keeps", "table": "items", "find": {"item_id": "A1"}, "fields": ["label"],
+             "fact_ids": ["f1"]}
+    other = dict(label, id="k2", find={"item_id": "B2"}, fields=["slot"])
+    assert I.contradictions(_kept(MOVE, label, other)) == []
+
+
 def _event(item_id, kind, **extra):
     return dict({"id": item_id, "kind": kind, "tool": "update_item", "fact_ids": ["f1"]}, **extra)
 
@@ -356,7 +411,7 @@ def test_a_free_field_holding_a_value_an_intent_fact_names_is_refused():
     assert world().check(item, KNOWN, unwitnessed)[1] == "", "no fact names a slot the world holds"
 
 
-def test_an_echo_fact_is_never_the_sole_source_of_a_gate_value_but_a_scored_item_may_cite_it():
+def test_a_gate_whose_value_only_an_echo_fact_gives_is_weighed_and_a_scored_item_may_cite_it():
     """Two turns: the agent proposes slot 9, the user says yes. The fact is echo by code."""
     from kullback.spec.intent_tools import UserTurn, is_echo
     turn = UserTurn(index=1, text="Yes, that works.", agent_before="I can move A1 to slot 9 for you, ok?")
@@ -370,7 +425,7 @@ def test_an_echo_fact_is_never_the_sole_source_of_a_gate_value_but_a_scored_item
             "fact_ids": ["f3"]}
     gate_world = I.World(STATE, POLICY, [*FACTS, echo], TOOLS)
     kept, why = gate_world.check(item, known, unwitnessed)
-    assert kept is None and "echo" in why
+    assert kept["gate"] is False and kept["weighed"] == I.ECHO_WEIGHED and "rests only on echo facts" in why
     kept, why = gate_world.check({**item, "gate": False}, known, unwitnessed)
     assert why == "" and kept["gate"] is False
 

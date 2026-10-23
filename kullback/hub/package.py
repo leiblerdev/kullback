@@ -106,17 +106,6 @@ FUNNEL: tuple[str, ...] = ("clustered", "replay_confirmed", "reference_confirmed
                            "verifier_passed", "trusted")
 REFUSED_STAGE = "refused"
 
-# What stopped a Task, in the harness's own fixed words. A status row's own reason quotes the
-# customer's world back (see difficulty.py), so it never reaches a manifest or a card.
-STOPPED_AT = {
-    "clustered": "no replay of the Task was confirmed",
-    "replay_confirmed": "the Reference is not confirmed",
-    "reference_confirmed": "no Verifier was derived",
-    "verifier_derived": "the D79 suite did not pass",
-    "verifier_passed": "the Verifier passed the suite and is not the trusted one",
-    REFUSED_STAGE: "the Task was refused: no frontier Run of it finished",
-}
-
 
 class ExportError(RuntimeError):
     """An export that must not produce a package: a workdir with no Environment, or a leak."""
@@ -277,24 +266,6 @@ def funnel_stage(task_id: str, *, status_row: Any, replay_confirmed: bool, has_v
     return "replay_confirmed" if replay_confirmed else "clustered"
 
 
-def stopped_because(stage: str, status_row: Any) -> Optional[str]:
-    """Why a Task went no further, in fixed words; None for a Task that reached the top.
-
-    A Task stopped at the D79 suite names the checks that failed, because those names are the
-    harness's own and let a reader group the Tasks that stop there (D198). Nothing else off the
-    status row is quoted.
-    """
-    if stage == "trusted":
-        return None
-    reason = STOPPED_AT.get(stage, "")
-    if stage == "verifier_derived":
-        row = status_row if isinstance(status_row, dict) else {}
-        failed = sorted(name for name, ok in (row.get("checks") or {}).items() if ok is False)
-        if failed:
-            return f"{reason}: {', '.join(failed)}"
-    return reason
-
-
 def task_index(workdir: Path, task_ids: Iterable[str], *, workers: Optional[int] = 1) -> list[dict]:
     """One row per Task: the trust ruling, the funnel stage it reached, its difficulty record and bucket."""
     status = read_json(workdir / "task_status.json", {}) or {}
@@ -318,7 +289,6 @@ def task_index(workdir: Path, task_ids: Iterable[str], *, workers: Optional[int]
             "trusted": stage == "trusted",
             "refused": stage == REFUSED_STAGE,
             "stage": stage,
-            "stopped_because": stopped_because(stage, row),
             # D333: why a Task is not trusted, and the two flags that never gate (None: unscored).
             **{key: (trust.get(task_id) or {}).get(key) for key in TRUST_FIELDS},
             "replay_confirmed": confirmed,
@@ -372,21 +342,6 @@ def _domain_counts(workdir: Path) -> dict:
         return {}
     named = ("archetypes_extracted", "archetypes_mapped", "archetype_gaps")
     return {key: int(counts[key]) for key in named if counts.get(key)}
-
-
-def untrusted_reasons(rows: Iterable[dict]) -> dict:
-    """How many Tasks are not trusted and every reason, commonest first, in the harness's fixed words, so the
-    reasons sum to the count."""
-    counted: dict[str, int] = {}
-    total = 0
-    for row in rows:
-        if row.get("trusted"):
-            continue
-        total += 1
-        reason = row.get("stopped_because") or "not trusted"
-        counted[reason] = counted.get(reason, 0) + 1
-    ranked = sorted(counted.items(), key=lambda pair: (-pair[1], pair[0]))
-    return {"count": total, "reasons": [{"reason": reason, "tasks": count} for reason, count in ranked]}
 
 
 # --- the package on disk ------------------------------------------------------------
@@ -448,6 +403,8 @@ def _intent_text(workdir: Path, task_id: str) -> Optional[str]:
 
 # How the user's one message opens when it lists what they volunteered.
 FACTS_LEAD = "A user writes in. What they tell you, one line each:"
+# The lead of what the user said later in the recording: on request, or after a refusal or a proposal (D422).
+LATER_LEAD = "What they tell you later, when you ask or when what they first asked for cannot be done:"
 # The stance an Intent fact has when it is the user's own ask (spec/schema.py IntentFact).
 ASKED = "volunteered"
 
@@ -459,23 +416,45 @@ def _spec(workdir: Path, task_id: str) -> Optional[Spec]:
         return None
 
 
-def asked_facts(spec: Optional[Spec]) -> list[str]:
-    """The Intent facts the user volunteered, as the user would say them: no echo of the agent, nothing ruled out,
-    and no fact of a scenario's end, which no user said (D414)."""
+class AskedFacts(list):
+    """The fact lines an instruction renders, the volunteered ones first; `later` counts those at the end the
+    user said later (stance fallback or accepted), which render under LATER_LEAD."""
+
+    def __init__(self, first: Iterable[str] = (), later: Iterable[str] = ()) -> None:
+        later = list(later)
+        super().__init__([*first, *later])
+        self.later = len(later)
+
+
+def rendered(fact: Any) -> bool:
+    """Whether the instruction carries this Intent fact: any stance, but no echo of the agent, nothing ruled
+    out, no fact of a scenario's end, which no user said (D414), and no empty text (D422)."""
     from kullback.spec.items import is_end_fact
 
+    return not fact.echo and not fact.unfounded and not is_end_fact(fact) and bool(fact.text.strip())
+
+
+def asked_facts(spec: Optional[Spec]) -> AskedFacts:
+    """The Intent facts the user said, as the user would say them (`rendered`): the volunteered ones, then what
+    they said on request or after a refusal or proposal (D422). A value given when asked is the user's value."""
     if spec is None:
-        return []
-    return [fact.text.strip() for fact in spec.intent.facts
-            if fact.stance == ASKED and not fact.echo and not fact.unfounded and not is_end_fact(fact)
-            and fact.text.strip()]
+        return AskedFacts()
+    said = [fact for fact in spec.intent.facts if rendered(fact)]
+    return AskedFacts([fact.text.strip() for fact in said if fact.stance == ASKED],
+                      [fact.text.strip() for fact in said if fact.stance != ASKED])
 
 
 def opening(facts: list[str], intent: Optional[str]) -> Optional[str]:
-    """The user's one message: the volunteered facts, one line each, else the Task's Intent text."""
-    if facts:
-        return "\n".join([FACTS_LEAD, *[f"- {fact}" for fact in facts]])
-    return intent.strip() if intent and intent.strip() else None
+    """The user's one message: the volunteered facts, one line each, then the later ones under LATER_LEAD, else
+    the Task's Intent text."""
+    if not facts:
+        return intent.strip() if intent and intent.strip() else None
+    later = getattr(facts, "later", 0)
+    first, rest = list(facts)[:len(facts) - later], list(facts)[len(facts) - later:]
+    lines = [FACTS_LEAD, *[f"- {fact}" for fact in first]]
+    if rest:
+        lines += ["", LATER_LEAD, *[f"- {fact}" for fact in rest]]
+    return "\n".join(lines)
 
 
 def task_ask(workdir: Path, task_id: str, record: Any) -> tuple[list[str], Optional[str]]:
@@ -936,7 +915,6 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         "replay_fidelity": fidelity,
         **_row_counts(rows),
         "buckets": _buckets(rows),
-        "untrusted": untrusted_reasons(rows),
         # D329: what a Run's reward is, pass and score, under the Verdict version the graders score at.
         "reward": dict(REWARD_SHAPE, verdict_version=VERDICT_VERSION),
         # D225: what the domain's own public material was read to attest, and how much of it this
@@ -979,7 +957,6 @@ def task_rows(package: Path, index_rows: Iterable[dict]) -> list[dict]:
             "stage": row["stage"],
             "trusted": bool(row["trusted"]),
             "refused": bool(row["refused"]),
-            "stopped_because": row.get("stopped_because"),
             "bucket": row.get("bucket"),
             "replay_confirmed": bool(row["replay_confirmed"]),
             "recordings": int(row["recordings"]),

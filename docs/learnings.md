@@ -2,7 +2,7 @@
 
 The rules the build loop taught that still apply, one line each. Read them before you diagnose a build or design
 a fix, so you do not relearn one by spending a build. How each rule was found, with its counts, is in the
-[decision log](decision-log.md); terms are in the [glossary](glossary.md).
+[decisions](decisions.md); terms are in the [glossary](glossary.md).
 
 ## Reading a failure
 
@@ -64,3 +64,34 @@ a fix, so you do not relearn one by spending a build. How each rule was found, w
 | TaskPilot | Difficulty record and buckets (D209) |
 | tau-tau-Bench | Typed user facts and an end protocol (D210) |
 | Mastra | Keyed sampling (D212) |
+
+## From the first Harbor benchmark run (2026-10-19)
+
+What the attribution of the failed trials of the first Harbor run taught Spec writing and Task generation. Each
+line names the decision that enforces it, or says none does yet.
+
+- The instruction carries everything the Verifier gates on. A fact the user said later, on request or after a
+  refusal, is still the user's fact: render it or drop the item, since a canned user cannot supply it (D422). A
+  born Task's ask is complete at birth; an end fact is never the user's words (D414).
+- Every Verifier cell path is readable on the start row, a list stepped by index and never by name. A plausible
+  Verifier is not a readable one (D423; D431 resolves a one-member list from the start row, never the Reference).
+- Weighted items are not free when a pass needs reward 1. Gate only what a right Run must do and weigh only what
+  shapes training; the Harbor pass is gates only (D433), and a writer still never weighs an ask the user never makes.
+- Learned effects are present and fresh when a Spec is written, or the world's own side effects fail sanity as
+  collateral. An effects file with empty write lists counts as absent (D417, D432).
+- The world is self-consistent: a row that lists ids holds those rows, or the agent reads "not found" off the
+  user's own record. A world built on a slice binds every row the end reads (D425 counts, D429 prunes at export).
+- The canned user says yes only to what it asked; a blanket yes reads as consent to the agent's own offer (D430).
+- A gated value only the Reference supplied is a wrong gate. Where the ask and the policy leave a choice open,
+  write one_of or no gate (D438, in build; the literal refusal D434 was held back); a born Task's scenario fixes
+  the value.
+- Duplicate items double an item's weight and give a judge item a second chance to fail; overlapping new-row
+  specs starve each other (D428).
+- A said number compiles to bare digits for every Task, so a formatted amount meets its digits (D427).
+- A judge reply with one result is read whatever its key, and an unscored Run is an outage to count, never a
+  silent fail (D424).
+- Every benchmark ships with an empty-trial control and an offline code rescore. A rescore that reproduces the
+  shipped reward says the scorer is faithful, not that the Verifier is right; a Verifier audit needs a blind
+  second rater before its wrong rate is acted on (no decision row yet).
+- Attribute every failed trial to the harness or the model in one read-only pass after each benchmark, before
+  touching the agent or the prompts (no decision row yet).

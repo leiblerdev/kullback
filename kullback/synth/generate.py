@@ -34,6 +34,12 @@ situations, each on a page span, into the plan on disk, the thinnest kinds named
 then writes their scenarios, the source carrying the span. With a target, generate runs in rounds (plan_search,
 the recordings pass over the situations with no scenario yet, the gaps pass) until the store keeps the target
 or a round adds under STOP_SHARE of it; the diversity of what is kept is measured at the end.
+
+Rows first (D420): before any scenario session, code hands each item a slice of the world (slice.py), spread over
+owners the store has not used, a kind and a policy line chosen by distance from the recorded share (plan.py
+by_distance: kinds by the recorded Tasks behind them, merged by stem; policy lines evenly, since no recorded
+share of a line is held), and the session writes onto them, a few slices per session (SLICE_BATCH). The search
+session gets SEARCH_SLICES slices to write its pages' stories onto.
 """
 
 from __future__ import annotations
@@ -56,7 +62,9 @@ from kullback.synth import generate_tools as T
 from kullback.synth import plan as plan_mod
 from kullback.synth import records as R
 from kullback.synth import search as search_mod
+from kullback.synth import slice as slice_mod
 from kullback.synth.rule import EMPTY, ID_SHAPE, TOOL_NAME, World, rouge_l, statement_refusal, world_of
+from kullback.synth.tasks import recorded_fields
 
 # How many opening asks or typed lines one session generates from.
 BATCH = 25
@@ -78,6 +86,9 @@ PER_SITUATION = 3
 STOP_SHARE = 0.05
 # How many of the thinnest kinds the plan_search opening names (D410).
 THIN = 3
+# How many slices one scenario session writes onto at most, and how many the search session gets (D420).
+SLICE_BATCH = 5
+SEARCH_SLICES = 5
 
 
 @dataclass
@@ -99,6 +110,8 @@ class Generation:
     unplanned: list = field(default_factory=list)
     retried: dict = field(default_factory=dict)
     gaps: dict = field(default_factory=dict)
+    used: set = field(default_factory=set)
+    fields: set = field(default_factory=set)
 
     def over(self) -> bool:
         if self.ceiling is not None and self.ceiling.remaining <= 0:
@@ -201,15 +214,21 @@ def plan_openings(generation: Generation, *, batch: int = plan_mod.PLAN_BATCH) -
     generation.unplanned = plan_mod.unplanned(generation.plan, rows)
 
 
+def items_text(generation: Generation, chunk: list[dict]) -> str:
+    """A slice session's items as its opening lists them, the plan's kinds once (D420)."""
+    rows = [T.item_row(at, item) for at, item in enumerate(chunk)]
+    return generate_prompt.slice_items(rows, generation.plan.kinds())
+
+
 def _pass(generation: Generation, kind: str, items: list[dict], size: int, retry: bool = False,
-          said: str = "", per_item: float = 0) -> list[dict]:
+          per_item: float = 0) -> list[dict]:
     """One session per batch of items of one source, stopping at the ceiling; the items no session grouped."""
     left: list[dict] = []
     for start in range(0, len(items), size):
         if generation.over():
             return left
         chunk = items[start:start + size]
-        opening = generate_prompt.opening(kind, _entries(generation.world.workdir), count=len(chunk), items=said)
+        opening = generate_prompt.opening(kind, count=len(chunk), items=items_text(generation, chunk))
         made = generation.session(kind, opening, per_item=per_item, items=chunk)
         row = {"source": kind, "batch": start // size, "items": len(chunk), "ungrouped": len(chunk) - len(made.grouped)}
         generation.ungrouped.append({**row, "retry": True} if retry else row)
@@ -218,44 +237,83 @@ def _pass(generation: Generation, kind: str, items: list[dict], size: int, retry
 
 
 def _batched(generation: Generation, kind: str, items: list[dict], batch: int,
-             unwritten: Optional[Callable[[], list[dict]]] = None, said: str = "") -> None:
+             unwritten: Optional[Callable[[], list[dict]]] = None) -> None:
     """The batched pass of one source, then once more over what it left unwritten in halves (D394).
 
     `unwritten` names the items still unwritten after the first pass; by default, those no session grouped.
     """
-    size = max(int(batch), 1)
+    size = max(min(int(batch), SLICE_BATCH), 1)
     spent = generation.spent[kind]
-    left = _pass(generation, kind, items, size, said=said)
+    left = _pass(generation, kind, items, size)
     per_item = (generation.spent[kind] - spent) / max(len(items), 1)
     left = unwritten() if unwritten is not None else left
     if not left or generation.over():
         return
     before = len(generation.found)
-    _pass(generation, kind, left, max(size // 2, RETRY_MIN), retry=True, said=said, per_item=per_item)
+    _pass(generation, kind, left, max(size // 2, RETRY_MIN), retry=True, per_item=per_item)
     generation.retried[kind] = {"items": len(left), "written": len(generation.found) - before}
 
 
 def situation_items(generation: Generation) -> list[dict]:
-    """The plan's situations as items, leaving out those whose situation and every variant are written, in the
-    store or by this generation."""
+    """The plan's situations as items, one per situation and one per variant not yet written, in the store or by
+    this generation (D420)."""
     held = {(r.situation, r.variant) for r in [*R.load_scenarios(generation.world.workdir), *generation.found]
             if r.situation}
     out = []
     for situation in generation.plan.situations:
-        wanted = {(situation["id"], variant) for variant in ["", *situation["variants"]]}
-        if not wanted <= held:
+        for variant in ["", *situation["variants"]]:
+            if (situation["id"], variant) in held:
+                continue
             item = {"situation": situation["id"], "statement": situation["statement"], "kind": situation["kind"],
-                    "variants": list(situation["variants"]), "openings": list(situation["openings"])}
+                    "variant": variant, "openings": list(situation["openings"])}
             out.append({**item, "source": situation["source"], "span": situation["span"]} if situation.get("source")
                        else item)
     return out
 
 
+def _owners_used(generation: Generation) -> set[str]:
+    """The owner keys the kept scenarios are bound to, and those handed out by this generation."""
+    owner = slice_mod.slicer(generation.world, generation.fields).owner_table
+    held = {key for record in _kept(generation) for key in R.listed(record.binding).get(owner, ())} if owner else set()
+    return held | generation.used
+
+
+def sliced(generation: Generation, items: list[dict], label: str) -> list[dict]:
+    """Each item handed a kind, a policy line and a slice (D420). The kind and the line an item names stay; the
+    rest are chosen by distance from the recorded share (plan.by_distance), counting the kept scenarios and the
+    items handed out before it; the slice is picked by seed over owners not yet used, holding a row of the table a
+    cell gap names where one does."""
+    world, plan = generation.world, generation.plan
+    kept = _kept(generation)
+    kind_of = _kinds(kept, plan)
+    have_kinds = Counter(kind_of.values())
+    have_lines = Counter(line for record in kept for line in record.policy_lines)
+    want_kinds = dict(plan_mod.recorded_kinds(plan))
+    want_lines = {line: 1 for line in policy_lines(world.policy)}
+    used = _owners_used(generation)
+    out = []
+    for at, item in enumerate(items):
+        gap = item.get("gap") or {}
+        kind = item.get("kind") or gap.get("kind") or plan_mod.by_distance(want_kinds, have_kinds)
+        line = item.get("line") or gap.get("line") or plan_mod.by_distance(want_lines, have_lines)
+        have_kinds[plan_mod.canonical_kind(plan, kind)] += 1
+        have_lines[line] += 1
+        seed = f"{label}:{len(kept)}:{at}:{item.get('situation') or item.get('text', '')}:{item.get('variant', '')}"
+        cut = slice_mod.pick_slice(world, seed, used, str(gap.get("table") or ""), generation.fields)
+        if cut is not None:
+            used.add(cut.owner_key)
+            generation.used.add(cut.owner_key)
+        out.append({**item, "kind": kind, "line": line, "slice": cut})
+    return out
+
+
 def from_recordings(generation: Generation, *, batch: int = BATCH) -> None:
-    """One scenario per situation of the plan and one per variant, bound to rows, one session per batch (D381)."""
+    """One scenario per situation of the plan and one per variant, each onto its slice, one session per batch
+    (D381, D420)."""
     if generation.model is None:
         return
-    _batched(generation, "recordings", situation_items(generation), batch, lambda: situation_items(generation))
+    _batched(generation, "recordings", sliced(generation, situation_items(generation), "recordings"), batch,
+             lambda: sliced(generation, situation_items(generation), "recordings"))
 
 
 # --- the search -------------------------------------------------------------------------
@@ -275,9 +333,11 @@ def from_search(generation: Generation, *, engine: Any = None, env: Optional[dic
     reader = generation.search_reader(engine, env, corpus_url, exclude, pages)
     if reader is None or generation.over():
         return
-    opening = generate_prompt.opening("search", _entries(generation.world.workdir),
-                                      items=", ".join(generation.plan.kinds()) or "none yet")
-    generation.session("search", opening, reader=reader, pages=pages, refuse=refuse or domain.destination_refusal)
+    items = sliced(generation, [{"text": "a story a page you read shows, written onto this slice"}] * SEARCH_SLICES,
+                   "search")
+    opening = generate_prompt.opening("search", count=len(items), items=items_text(generation, items))
+    generation.session("search", opening, reader=reader, pages=pages, refuse=refuse or domain.destination_refusal,
+                       items=items)
 
 
 def thin_line(plan: plan_mod.Plan) -> str:
@@ -327,7 +387,7 @@ def ask_lines(path: Any) -> list[str]:
 
 
 def from_asks(generation: Generation, lines: Iterable[str], *, batch: int = BATCH) -> None:
-    """Each line a customer typed, rewritten as a scenario under the rule, one session per batch.
+    """Each line a customer typed, rewritten as a scenario under the rule onto its slice, one session per batch.
 
     A line naming a tool of the Environment is dropped and counted before any session.
     """
@@ -342,7 +402,7 @@ def from_asks(generation: Generation, lines: Iterable[str], *, batch: int = BATC
         if kept:
             generation.notes.append("no model, so no ask line was rewritten as a scenario")
         return
-    _batched(generation, "ask", kept, batch)
+    _batched(generation, "ask", sliced(generation, kept, "ask"), batch)
 
 
 # --- the gaps (D398) --------------------------------------------------------------------
@@ -414,9 +474,8 @@ def from_gaps(generation: Generation, *, batch: int = BATCH) -> None:
     if generation.model is None:
         return
     before = gap_counts(generation)
-    items = gap_items(generation)
-    kinds = sorted({situation["kind"] for situation in generation.plan.situations})
-    _batched(generation, "gaps", items, batch, said=", ".join(kinds))
+    items = sliced(generation, gap_items(generation), "gaps")
+    _batched(generation, "gaps", items, batch)
     generation.gaps = {"items": len(items), "before": before, "after": gap_counts(generation)}
 
 
@@ -450,9 +509,10 @@ def fold(records: list[R.Scenario]) -> tuple[list[R.Scenario], list[dict]]:
 
 def _kinds(kept: list[R.Scenario], plan: plan_mod.Plan) -> dict[str, str]:
     """Each kept scenario's situation kind: its situation's in the plan, else the kind it was written with (a
-    search scenario, D410), else the gap it fills, else none."""
+    search scenario, D410), else the gap it fills, else none; merged by stem with the plan's first such kind (D420)."""
     kinds = {situation["id"]: situation["kind"] for situation in plan.situations}
-    return {r.id: kinds.get(r.situation) or r.kind or r.source.gap.get("kind") or "none" for r in kept}
+    return {r.id: plan_mod.canonical_kind(plan, kinds.get(r.situation) or r.kind or r.source.gap.get("kind") or "none")
+            for r in kept}
 
 
 def spread(kept: list[R.Scenario], plan: plan_mod.Plan, tables: Iterable[str]) -> tuple[dict, dict]:
@@ -576,7 +636,7 @@ def generate(workdir: Any, *, model: Any, asks: Any = None, searching: bool = Tr
     wanted = set(sources)
     world = world_of(workdir, description)
     generation = Generation(world=world, model=model, bus=T.bus_for(workdir), ceiling=ceiling,
-                    subscribers=tuple(subscribers))
+                    subscribers=tuple(subscribers), fields=recorded_fields(workdir))
     web = {"engine": engine, "env": env, "corpus_url": corpus_url, "exclude": exclude, "refuse": refuse}
     _one_pass(generation, wanted, searching, asks, batch, web)
     folds: list[dict] = []
@@ -643,7 +703,7 @@ def fix(world: World, sent: list[tuple[R.Scenario, str]], model: Any, *, bus: An
     return [_fixed(record, why, root.fixed.get(record.id)) for record, why in sent]
 
 
-__all__ = ["BATCH", "GAP_PER", "PER_SITUATION", "PLAN_SEARCH_BATCH", "STOP_SHARE", "THIN", "diversity",
+__all__ = ["SEARCH_SLICES", "SLICE_BATCH", "items_text", "sliced", "BATCH", "GAP_PER", "PER_SITUATION", "PLAN_SEARCH_BATCH", "STOP_SHARE", "THIN", "diversity",
            "plan_search", "thin_line", "LINE_WORDS", "cell_tables", "from_gaps", "gap_counts", "gap_items", "gap_text", "policy_lines",
            "RETRY_MIN", "plan_openings", "EMPTY", "FIX_STAGE", "ID_SHAPE", "Generation", "STAGE", "TOOL_NAME", "World", "canonical", "coverage", "spread",
            "fix", "fold", "from_asks", "from_recordings", "from_search", "generate", "openings", "source_text",

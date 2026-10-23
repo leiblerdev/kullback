@@ -132,18 +132,27 @@ def test_changed_frozen_file_fails_frozen_trees(tmp_path, tree, path):
     assert f"FAIL frozen-trees: {tree} differs between {base} and HEAD" in lines
 
 
-def test_removed_decision_log_line_fails_append_only(tmp_path):
+def test_a_decision_number_dropped_from_the_decisions_file_fails(tmp_path):
     repo = make_repo(tmp_path)
-    write_file(repo, "docs/decision-log.md", "## Log\n\n- First entry kept.\n- Second entry kept.\n")
-    base = commit_paths(repo, "add log", ["docs/decision-log.md"])
-    write_file(repo, "docs/decision-log.md", "## Log\n\n- First entry kept.\n")
-    commit_paths(repo, "trim log", ["docs/decision-log.md"])
+    write_file(repo, "docs/decisions.md", "# Decisions\n\nD1 (2026-01-01). First. Where: docs only.\n\nD2: second, never built.\n")
+    base = commit_paths(repo, "add decisions", ["docs/decisions.md"])
+    write_file(repo, "docs/decisions.md", "# Decisions\n\nD1 (2026-01-01). First. Where: docs only.\n")
+    commit_paths(repo, "drop a number", ["docs/decisions.md"])
     code, lines = run_checks(repo, base)
     assert code == 1
-    assert (
-        "FAIL decision-log-append-only: docs/decision-log.md removes line: - Second entry kept."
-        in lines
-    )
+    assert "FAIL decision-numbers-kept: docs/decisions.md loses D2" in lines
+
+
+def test_the_old_log_condensed_into_the_decisions_file_with_every_number_passes(tmp_path):
+    repo = make_repo(tmp_path)
+    write_file(repo, "docs/decision-log.md", "## Log\n\n### D70. A row (2026-01-01)\n\n- D18. Removed, no learning.\n")
+    base = commit_paths(repo, "add log", ["docs/decision-log.md"])
+    write_file(repo, "docs/decisions.md", "# Decisions\n\nD70 (2026-01-01). A row. Where: docs only.\n\nD18: removed, dropped.\n")
+    subprocess.run(["git", "rm", "-q", "docs/decision-log.md"], cwd=repo, check=True)
+    commit_paths(repo, "condense", ["docs/decisions.md"])
+    code, lines = run_checks(repo, base)
+    assert "ok decision-numbers-kept" in lines
+    assert code == 0
 
 
 def test_risen_function_under_ceiling_passes_complexity_ceiling(tmp_path):
@@ -226,9 +235,9 @@ def test_a_change_the_allow_trailer_names_passes_frozen_trees(tmp_path, path, tr
 
 def test_branch_behind_moved_base_still_passes(tmp_path):
     repo = make_repo(tmp_path)
-    write_file(repo, "docs/decision-log.md", "## Log\n\n- First entry kept.\n")
+    write_file(repo, "docs/decisions.md", "# Decisions\n\nD1 (2026-01-01). First entry kept.\n")
     write_file(repo, "kullback/toolbox.py", "def double(n):\n    if n:\n        return 2 * n\n    return 0\n")
-    commit_paths(repo, "add base files", ["docs/decision-log.md", "kullback/toolbox.py"])
+    commit_paths(repo, "add base files", ["docs/decisions.md", "kullback/toolbox.py"])
     branch = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         cwd=repo,
@@ -244,17 +253,17 @@ def test_branch_behind_moved_base_still_passes(tmp_path):
     )
     commit_paths(repo, "add a small function", ["kullback/toolbox.py"])
     subprocess.run(["git", "checkout", "-q", "mainline"], cwd=repo, check=True)
-    write_file(repo, "docs/decision-log.md", "## Log\n\n- First entry kept.\n- Main appended this line.\n")
-    commit_paths(repo, "main moves on", ["docs/decision-log.md"])
+    write_file(repo, "docs/decisions.md", "# Decisions\n\nD1 (2026-01-01). First entry kept.\n\nD2 (2026-01-02). Main appended this line.\n")
+    commit_paths(repo, "main moves on", ["docs/decisions.md"])
     subprocess.run(["git", "checkout", "-q", branch], cwd=repo, check=True)
     raw = subprocess.run(
-        ["git", "diff", "mainline", "HEAD", "--", "docs/decision-log.md"],
+        ["git", "diff", "mainline", "HEAD", "--", "docs/decisions.md"],
         cwd=repo,
         check=True,
         capture_output=True,
         text=True,
     )
-    assert "-- Main appended this line." in raw.stdout
+    assert "-D2 (2026-01-02). Main appended this line." in raw.stdout
     code, lines = run_checks(repo, "mainline")
     assert code == 0
     assert not any(line.startswith("FAIL ") for line in lines)
@@ -304,10 +313,10 @@ def test_configured_import_contract_passes(tmp_path):
 def test_clean_change_passes_every_check(tmp_path):
     repo = make_repo(tmp_path)
     write_file(repo, "README.md", "Hello\n")
-    write_file(repo, "docs/decision-log.md", "## Log\n\n- First entry kept.\n")
+    write_file(repo, "docs/decisions.md", "# Decisions\n\nD1 (2026-01-01). First entry kept.\n")
     write_file(repo, "kullback/toolbox.py", "def double(n):\n    if n:\n        return 2 * n\n    return 0\n")
     base = commit_paths(
-        repo, "add base files", ["README.md", "docs/decision-log.md", "kullback/toolbox.py"]
+        repo, "add base files", ["README.md", "docs/decisions.md", "kullback/toolbox.py"]
     )
     write_file(
         repo,

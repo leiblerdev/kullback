@@ -34,7 +34,7 @@ Never print a key.
 - Never edit: `README.md`, `docs/adr/`, `docs/founder-words.md`, `kullback/runner/`, `kullback/gates/`,
   `docs/builds/README.md`. `branch_checks.py` fails a branch that changes the first five.
 - Never patch `vendor/`.
-- `docs/decision-log.md` rows are append-only; a new decision takes the next D number.
+- `docs/decisions.md` changes only by a new D number; the entry it replaces moves to Retired. Numbers are never reused.
 
 ## Never committed
 

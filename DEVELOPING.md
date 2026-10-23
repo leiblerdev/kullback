@@ -2,7 +2,7 @@
 
 The Builder turns a customer's traces into an Environment (state, tools, Hard constraints, Simulated user) and the Verifiers for its Tasks; the Runner re-executes Runs with a Candidate in that Environment and computes each Verdict.
 
-Map: `docs/architecture.md`. Spec: `docs/harness-design.md`. Reasoning: `docs/adr/` and `docs/decision-log.md` (D01 to D97, then D120 onwards for the rebuild). Rules for contributors, human or agent: `CONTRIBUTING.md`. What each build measured: `docs/builds/README.md`.
+Map: `docs/architecture.md`. Spec (archived): `docs/archive/harness-design.md`. Reasoning: `docs/adr/` and `docs/decisions.md` (the live decisions by area, retired numbers indexed). Rules for contributors, human or agent: `CONTRIBUTING.md`. What each build measured: `docs/builds/README.md`.
 
 ## Layout
 
@@ -22,17 +22,23 @@ kullback/
               tool_runs, fidelity, confinement, scorecard, probes, loosening, trust, counts, bindings,
               hook, ledger (the one gates.json writer both agents use)
   user/       the Simulated user as an agent: simulated, agent, rules, ends, guards, fidelity (D214)
-  builder/    ingest, sources/ (one reader per trace format), mine, cluster, intent, compile_env,
-              policy, user_sim, memory, sandbox, synth, vocabulary, search, parallel, triage,
+  builder/    ingest, sources/ (one reader per trace format), mine, cluster, compile_env,
+              policy, user_sim, sandbox, synth, vocabulary, search, parallel,
               session (the Builder as an extension on the agent core, behind `kullback build`)
-  examiner/   derive, reference (D111 confirmation), stage (the derive stage), plan, judge, loosen,
-              variants, findings, lifecycle, session (the Examiner as an extension, called by the Builder)
-  hub/        package, card, publish and client: the export, its card, the upload and the fetch (D221)
+  examiner/   reference (D111 confirmation), stage (the derive stage), plan, judge,
+              findings, lifecycle, session (the Examiner as an extension, called by the Builder)
+  spec/       mines each Task's Intent, writes its Verifier, runs the review loop, rules trust
+  judge/      judge items: one model call per Verifier item (D328)
+  synth/      the scenario layer of the synthetic generator (D372 to D374)
+  trainer/    the training agent behind `kullback train`
+  hub/        package, card, publish, client and harbor: the export, its card, the upload, the fetch
+              and the Harbor dataset (D221, D363)
   report/     the customer-facing report
   tui/        the terminal screen
   cli.py      the command line
   graph.py, synthesise.py, domain.py, difficulty.py, laws.py, consistency.py, claims.py, sampling.py,
-  round_snapshot.py, store.py, store_specs.py, container_*.py   one-file modules the frontends share
+  round_snapshot.py, store.py, store_specs.py, derive.py, variants.py, curriculum.py, processes.py,
+  container_*.py   one-file modules the frontends share
 tests/
   ai/ runner/ builder/ ...   one directory per package, mirroring the layout above
   fixtures/   the small tau2 file and tau2-bench's retail domain files

@@ -97,22 +97,14 @@ def test_a_build_with_a_round_record_keeps_the_rounds_trusted_count_and_tag(nurs
     assert manifest["counts_source"] == "the last round record"
 
 
-def test_every_task_carries_its_funnel_stage_and_why_it_stopped(nursery, tmp_path):
+def test_every_task_carries_its_funnel_stage_and_nothing_about_why_it_stopped(nursery, tmp_path):
     out = tmp_path / "package"
     manifest = _export(nursery, out)
     rows = {row["task_id"]: row for row in read_json(out / package_mod.TASKS_INDEX_NAME)["tasks"]}
-    assert rows["task_one"]["stage"] == "trusted"
-    assert rows["task_one"]["stopped_because"] is None
-    assert rows["task_two"]["stage"] == "verifier_derived"
-    assert "mutation_flips" in rows["task_two"]["stopped_because"]
-    assert "second_path_passes" in rows["task_two"]["stopped_because"]
-    assert rows["task_three"]["stage"] == "clustered"
-    assert rows["task_three"]["stopped_because"] == "no replay of the Task was confirmed"
-    # the manifest's untrusted reasons are the harness's own words and quote no record
-    assert manifest["untrusted"]["count"] == 2
-    reasons = {entry["reason"] for entry in manifest["untrusted"]["reasons"]}
-    assert "no replay of the Task was confirmed" in reasons
-    assert all(entry["tasks"] == 1 for entry in manifest["untrusted"]["reasons"])
+    assert {task_id: row["stage"] for task_id, row in rows.items()} == {
+        "task_one": "trusted", "task_two": "verifier_derived", "task_three": "clustered"}
+    assert all("stopped_because" not in row for row in rows.values())
+    assert "untrusted" not in manifest
 
 
 def test_a_workdir_with_no_environment_is_refused(tmp_path):
@@ -491,7 +483,7 @@ def test_a_file_the_host_lays_down_beside_the_package_does_not_stop_it_verifying
 # --- the viewer rows -----------------------------------------------------------------
 
 
-def test_the_package_carries_one_flat_row_per_task_for_a_dataset_viewer_and_the_front_matter_names_it(
+def test_the_viewer_rows_carry_one_flat_row_per_task_with_no_reason_it_stopped_and_the_front_matter_names_them(
         nursery, tmp_path):
     out = tmp_path / "package"
     manifest = package_mod.export(nursery, out, name="nursery", preview=True)
@@ -502,6 +494,8 @@ def test_the_package_carries_one_flat_row_per_task_for_a_dataset_viewer_and_the_
         task = read_json(out / "tasks" / f"{row['task_id']}.json")
         assert row["instruction"] == task.get("intent", "")
         assert row["stage"] and isinstance(row["trusted"], bool)
+        assert set(row) == {"task_id", "instruction", "stage", "trusted", "refused", "bucket", "replay_confirmed",
+                            "recordings"}
     assert package_mod.TASKS_ROWS_NAME in manifest["files"]
     body = card_mod.card_markdown(manifest, "leibler/nursery")
     front = body.split("---")[1]
@@ -651,18 +645,6 @@ def test_a_dry_run_upload_leaves_no_file_an_earlier_upload_had_and_this_one_lack
     assert not (target / "gone.json").exists()
 
 
-def test_the_manifest_names_every_untrusted_reason_and_the_reasons_sum_to_the_count():
-    suite = package_mod.STOPPED_AT["verifier_derived"]
-    stopped = [reason for stage, reason in package_mod.STOPPED_AT.items() if stage != "trusted"]
-    stopped += [f"{suite}: check_a", f"{suite}: check_a, check_b", f"{suite}: check_b, check_c, check_d"]
-    rows = [{"trusted": True}] * 2 + [{"trusted": False, "stopped_because": reason}
-                                      for times, reason in enumerate(stopped, start=1) for _ in range(times)]
-    rows.append({"trusted": False, "stopped_because": None})
-    untrusted = package_mod.untrusted_reasons(rows)
-    assert untrusted["count"] == len(rows) - 2 == sum(entry["tasks"] for entry in untrusted["reasons"])
-    assert {entry["reason"] for entry in untrusted["reasons"]} == set(stopped) | {"not trusted"}
-
-
 UNTRUSTED_REASON = "a reason only the manifest holds"
 
 
@@ -760,3 +742,10 @@ def test_a_verdict_the_regrade_gate_refuses_leaves_no_file_behind(tmp_path, monk
     scored = runner.invoke(cli.app, ["verdict", "--workdir", str(workdir), "--task", "widget_task"])
     assert scored.exit_code != 0 and "schema_version is not on the Verdict" in scored.output, scored.output
     assert [path for path in (workdir / "verdicts").rglob("*") if path.is_file()] == []
+
+
+def test_the_card_says_in_one_line_that_reward_txt_is_a_pass_or_a_fail_and_where_the_shaped_reward_is():
+    body = card_mod.card_markdown({}, "someorg/widgets", harbor={"counts": {"exported": 1}})
+    lines = [line for line in body.splitlines() if "`reward.txt`" in line]
+    assert len(lines) == 1 and "1 when every gated item holds and 0 otherwise" in lines[0]
+    assert "`shaped_reward` in `items.json`" in lines[0]

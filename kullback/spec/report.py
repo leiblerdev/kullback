@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 from kullback.runner.code_hash import SHORT
 from kullback.spec.split import reference_classes
-from kullback.spec.trust import FLAGS, REASONS, TIERS, TaskTier, workdir_tiers
+from kullback.spec.trust import FLAGS, NO_VERIFIER, REASONS, TIERS, TaskTier, workdir_tiers
 
 # The report file in the workdir, one per build.
 REPORT_FILE = "tiers.json"
@@ -63,6 +63,8 @@ def build_report(tiers: dict[str, TaskTier], *, corpus: Optional[str] = None,
     reasons = {reason: 0 for reason in REASONS}
     # Reasons outside the table's columns (no_verifier, no_base, unchecked_ask), counted beside them.
     side: dict[str, int] = {}
+    # Why each no_verifier Task has none (router.NO_VERIFIER_WHYS), the stage's end reasons among them (D439).
+    whys: dict[str, int] = {}
     flags = {f"{flag}{end}": 0 for flag in FLAGS for end in ("", "_false")}
     for task_tier in tiers.values():
         counts[task_tier.tier] = counts.get(task_tier.tier, 0) + 1
@@ -71,6 +73,8 @@ def build_report(tiers: dict[str, TaskTier], *, corpus: Optional[str] = None,
             reasons[reason] += 1
         elif reason:
             side[reason] = side.get(reason, 0) + 1
+        if reason == NO_VERIFIER and task_tier.row.get("why"):
+            whys[task_tier.row["why"]] = whys.get(task_tier.row["why"], 0) + 1
         for flag in FLAGS:
             value = task_tier.row.get(flag)
             if value is not None:
@@ -80,7 +84,7 @@ def build_report(tiers: dict[str, TaskTier], *, corpus: Optional[str] = None,
     hashes = code_hashes(rows)
     return {"build": build, "corpus": corpus, "tasks": len(tiers),
             "code_hash": hashes[0] if len(hashes) == 1 else None, "warnings": _hash_warnings(hashes),
-            "tiers": counts, "reasons": reasons, "side_reasons": side, "flags": flags,
+            "tiers": counts, "reasons": reasons, "side_reasons": side, "no_verifier_whys": whys, "flags": flags,
             "trusted_by_reference": split, "rows": rows}
 
 

@@ -99,8 +99,10 @@ def test_the_choice_rule_asks_whether_a_right_solve_would_pass_and_never_moves_a
     assert "fails_reference" not in rule and "ref_step" not in P.tools_section()
 
 
-def test_no_verifier_reasons_are_the_intent_unclear_or_strayed_or_an_unchecked_end_never_a_wrong_reference(tmp_path):
-    assert ROUTER.NO_VERIFIER_WHYS == (ROUTER.INTENT_UNCLEAR, ROUTER.INTENT_STRAYED, ROUTER.UNCHECKED_END)
+def test_no_verifier_reasons_add_the_stage_end_veto_but_never_a_reference_wrong_set_aside(tmp_path):
+    assert ROUTER.NO_VERIFIER_WHYS == (ROUTER.INTENT_UNCLEAR, ROUTER.INTENT_STRAYED, ROUTER.UNCHECKED_END,
+                                       "precondition_unrendered", "no_reference_holds",
+                                       "idle_run_passes")
     assert not hasattr(ROUTER, "REFERENCE_WRONG")
     root = _told(tmp_path)
     spec = load_spec(root, "t1")

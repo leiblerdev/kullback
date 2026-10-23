@@ -3,14 +3,20 @@
 Each demand compiles exactly as the intentv experiment compiled it; the Spec adds only its because,
 appended to every atom's description, and drops a check whose because is not grounded. A write or
 no-write demand on an action tool (spec/actions.py, D308) compiles to an action atom instead.
+
+Items say each check once (D428): two atoms of one kind on one target are one atom (`merged_atoms`), two
+cells on one (table, row, field) of one end state are one cell (`merged_cells`), two row_new items one made row
+can answer together are one item (`merged_new_rows`, D440), and what cannot be one is refused back to the writer
+(`cell_clashes`, `new_row_overlaps`).
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 from kullback.gates import verifier_suite
-from kullback.runner.records import Atom, Verifier
+from kullback.runner.records import Atom, EndState, Verifier
 from kullback.runner.target import _key as canon_key
 from kullback.spec.atoms import action_atoms, called_set_atom, no_write_atom, shape_atom, tool_cap_atom
 from kullback.spec.ground import valid_because
@@ -207,3 +213,152 @@ def compile_spec(spec, write_tools: Iterable[str], canon_fn: Callable,
                for check in spec.checks]
     return compile_demands(demands, spec.intent.text, policy_sections, write_tools, canon_fn,
                            task_id=spec.task_id, version=f"spec{spec.version}", action_tools=action_tools)
+
+
+# --- one check said once (D428) ---
+
+def _text(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _set_of(value: Any) -> tuple[str, set[str]]:
+    """("one_of" or "not", its members as text) for a value set, ("is", {the value}) for a value."""
+    if isinstance(value, dict) and len(value) == 1 and next(iter(value)) in ("one_of", "not") \
+            and isinstance(next(iter(value.values())), list):
+        name, members = next(iter(value.items()))
+        return name, {_text(member) for member in members}
+    return "is", {_text(value)}
+
+
+def implies(a: Any, b: Any) -> bool:
+    """Whether every value cell `a` admits, cell `b` admits too: `a` is the stricter, so `b` adds nothing."""
+    (kind_a, set_a), (kind_b, set_b) = _set_of(a), _set_of(b)
+    if kind_b == "not":
+        return set_a.isdisjoint(set_b) if kind_a != "not" else set_a >= set_b
+    if kind_b == "one_of":
+        return kind_a != "not" and set_a <= set_b
+    return kind_a == "is" and set_a == set_b
+
+
+def merged_atoms(atoms: list[Atom]) -> tuple[list[Atom], list[str]]:
+    """The atoms with each repeat of one kind on one target (provenance aside) folded into the first, which
+    keeps its id and becomes a gate where either was; one "<kept>: merged <dropped>" line per repeat."""
+    kept: dict[tuple, int] = {}
+    out: list[Atom] = []
+    lines: list[str] = []
+    for atom in atoms:
+        target = {key: value for key, value in (atom.target or {}).items() if key != "from"}
+        key = (atom.kind, atom.judge, _text(target)) if target.get("kind") else (atom.id,)
+        if key not in kept:
+            kept[key] = len(out)
+            out.append(atom)
+            continue
+        first = out[kept[key]]
+        out[kept[key]] = first.model_copy(update={"gate": bool(first.gate or atom.gate)})
+        lines.append(f"{first.id}: merged {atom.id}, the same {target['kind']} target")
+    return out, lines
+
+
+def _absorbs(a, b) -> bool:
+    """Whether cell `a` checks all cell `b` does: its value implies b's, and it is a gate wherever b is."""
+    return implies(a.value, b.value) and (bool(a.gate) or not b.gate)
+
+
+def merged_cells(states: list[EndState]) -> tuple[list[EndState], list[str]]:
+    """Each end state with its cells on one (table, row, field) folded into one where one absorbs the other
+    (`_absorbs`): equal values keep the first cell, a gate where either was; else the stricter cell stays. A
+    weighted exact value beside a gated set stays two cells, so folding never makes a weighed check a gate.
+    One "<table>.<row>.<field>: merged" line per folded cell."""
+    out: list[EndState] = []
+    lines: list[str] = []
+    for state in states:
+        cells: list = []
+        for cell in state.cells:
+            same = next((n for n, other in enumerate(cells) if (other.table, other.row_id, other.field)
+                         == (cell.table, cell.row_id, cell.field)
+                         and (_text(other.value) == _text(cell.value) or _absorbs(other, cell)
+                              or _absorbs(cell, other))), None)
+            if same is None:
+                cells.append(cell)
+                continue
+            other = cells[same]
+            if _text(other.value) == _text(cell.value):
+                cells[same] = other.model_copy(update={"gate": bool(cell.gate or other.gate)})
+            elif not _absorbs(other, cell):
+                cells[same] = cell
+            lines.append(f"{cell.table}.{cell.row_id}.{cell.field}: merged")
+        out.append(state.model_copy(update={"cells": cells}))
+    return out, lines
+
+
+def _scopes(items: list[dict], kinds: tuple[str, ...]) -> list[list[dict]]:
+    """The items of these kinds in each end state: those without `alt` belong to every one."""
+    state = [item for item in items if item.get("kind") in kinds]
+    alts = sorted({item["alt"] for item in state if item.get("alt") is not None}, key=str) or [None]
+    return [[item for item in state if item.get("alt") in (None, alt)] for alt in alts]
+
+
+def cell_clashes(items: list[dict]) -> list[tuple[str, str]]:
+    """(item id, why) for two state items expecting one cell of one end state with values neither of which
+    implies the other: no single value holds both, or one would silently lose its check (D428)."""
+    out: list[tuple[str, str]] = []
+    for scope in _scopes(items, ("row_is", "row_keeps")):
+        seen: dict[tuple, tuple[str, Any]] = {}
+        for item in scope:
+            for field, value in (item.get("expect") or {}).items():
+                key = (item["table"], item["row"], field)
+                if key not in seen:
+                    seen[key] = (item["id"], value)
+                    continue
+                first, other = seen[key]
+                if not (implies(value, other) or implies(other, value)):
+                    out.append((item["id"], f"{field} of {item['table']} row {item['row']} is {_text(value)} here "
+                                            f"and {_text(other)} in {first}; keep one value"))
+    return list(dict.fromkeys(out))
+
+
+def _one_made_row(a: dict, b: dict) -> bool:
+    """Whether one made row can answer two row_new items: one table, one end state, one count, one gate, and no
+    field their where clauses both name set two ways (D440). A weighed item never folds into a gated one, so a
+    fold never makes a weighed check a gate (as `merged_cells`)."""
+    where_a, where_b = a.get("where") or {}, b.get("where") or {}
+    return a["table"] == b["table"] and a.get("alt") == b.get("alt") and a.get("count") == b.get("count") \
+        and bool(a.get("gate")) == bool(b.get("gate")) \
+        and all(_text(where_a[field]) == _text(where_b[field]) for field in set(where_a) & set(where_b))
+
+
+def merged_new_rows(items: list[dict]) -> tuple[list[dict], list[str]]:
+    """The items with each row_new one made row can answer beside an earlier one (`_one_made_row`) folded into
+    it: the where clauses joined, the first id, gate and weight kept, both items' facts cited.
+    One "<kept>: merged <dropped>" line per fold (D440). A row spread over several items (the route in one, the
+    people in another) is then one row the Run makes, never several rows no one booking can be."""
+    out: list[dict] = []
+    lines: list[str] = []
+    for item in items:
+        at = next((n for n, other in enumerate(out) if item.get("kind") == "row_new" == other.get("kind")
+                   and _one_made_row(other, item)), None)
+        if at is None:
+            out.append(item)
+            continue
+        first = out[at]
+        out[at] = dict(first, where={**(first.get("where") or {}), **(item.get("where") or {})},
+                       fact_ids=list(dict.fromkeys([*(first.get("fact_ids") or []), *(item.get("fact_ids") or [])])))
+        lines.append(f"{first['id']}: merged {item['id']}, one made {item['table']} row")
+    return out, lines
+
+
+def new_row_overlaps(items: list[dict]) -> list[tuple[str, str]]:
+    """(item id, why) for two row_new items on one table of one end state where one's where is a subset of
+    the other's and one made row cannot answer both (other counts): a made row matching both answers only the
+    first, so the other never counts (D428). Those one row can answer are merged at compile (`merged_new_rows`)."""
+    out: list[tuple[str, str]] = []
+    for scope in _scopes(items, ("row_new",)):
+        for n, item in enumerate(scope):
+            mine = {(field, _text(value)) for field, value in (item.get("where") or {}).items()}
+            for other in scope[:n]:
+                theirs = {(field, _text(value)) for field, value in (other.get("where") or {}).items()}
+                if other["table"] == item["table"] and (mine <= theirs or theirs <= mine) \
+                        and not _one_made_row(other, item):
+                    out.append((item["id"], f"row_new on {item['table']} overlaps {other['id']}: one made row "
+                                            "matches both where clauses; narrow one where so each row answers one"))
+    return list(dict.fromkeys(out))

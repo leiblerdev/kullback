@@ -44,20 +44,21 @@ Every command takes `--help`. Contributors and agents start with [AGENTS.md](../
 - [benchmark-landscape.md](benchmark-landscape.md): public benchmarks that could serve as a second reference.
 - [trace-sources/](trace-sources/README.md): public trace datasets, one page each.
 - [papers.md](papers.md): papers and repos the founder sent, and what each fed.
-- [hf/](hf/): Hugging Face cards.
+- [hf/environment-card-template.md](hf/environment-card-template.md) and [hf/organization-card.md](hf/organization-card.md):
+  the Hugging Face cards for an Environment and for the organisation.
 - [validation/](validation/README.md): competitors and dated trust measurements.
 
 ## Records
 
 Kept as written; not updated.
 
-- [decision-log.md](decision-log.md): every numbered decision (D numbers), append-only.
+- [decisions.md](decisions.md): the live decisions (D numbers) by area, and the retired ones indexed.
 - [founder-words.md](founder-words.md): the founder's messages, verbatim.
 - [builds/README.md](builds/README.md): what each build measured.
 - [reviews/](reviews/README.md): dated audits of the code and the tests.
 - [overhaul/learnings-ledger.md](overhaul/learnings-ledger.md): where each earlier learning landed in the 2026-09-22
   overhaul.
-- [frozen-patches/](frozen-patches/): patches waiting to be rebased.
+- [frozen-patches/](frozen-patches/): patches waiting to be rebased, `confinement-holes.patch` and `speed-3.patch`.
 - [archive/harness-design.md](archive/harness-design.md): the design proposal of 2026-08-27, superseded by
   ADR-0007, ADR-0011 and architecture.md.
 - [archive/cross-domain-check.md](archive/cross-domain-check.md): the cross-domain audit of 2026-08-28.

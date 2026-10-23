@@ -2,7 +2,7 @@
 
 > Record of 2026-09-22: the index the overhaul was judged against. On 2026-09-24 two module paths were corrected to where the code now lives.
 
-Every decision (D01 to D278), every learning in `docs/learnings.md` without a decision of its own (L<section>.<n>) and every standing founder word (F<n>) has a row here, and each row says where that learning lives in the shape of ADR-0011 or why it is dropped. Two counts, so the next reader does not re-derive them: the table has 264 decision rows, one for every decision the log ever carried, and after the prune of 2026-09-22 `docs/decision-log.md` holds 212 of them, 155 as headed entries from D69 on and 57 as earlier bold entries in the same file. The 52 that were removed are the ones the log's own "Removed on 2026-09-22" list names, and every one of their rows says so in its reason column: 27 are dropped and the other 25 keep the place that carries what they taught.
+Every decision (D01 to D278), every learning in `docs/learnings.md` without a decision of its own (L<section>.<n>) and every standing founder word (F<n>) has a row here, and each row says where that learning lives in the shape of ADR-0011 or why it is dropped. Two counts, so the next reader does not re-derive them: the table has 264 decision rows, one for every decision the log ever carried, and after the prune of 2026-09-22 `docs/decision-log.md at 8c6a2d00` holds 212 of them, 155 as headed entries from D69 on and 57 as earlier bold entries in the same file. The 52 that were removed are the ones the log's own "Removed on 2026-09-22" list names, and every one of their rows says so in its reason column: 27 are dropped and the other 25 keep the place that carries what they taught.
 How to use it: a brief cites the rows its stream owns, and it may not carry a learning that no row points at its package.
 A stream's acceptance re-checks its own rows: for each one, the module named is present at the named path, the gate named rules, the prompt section named exists, or the drop is still true.
 A row that says "dropped" carries no work, but the paragraph it points at in `docs/learnings.md` still holds and the next reader must be able to find it.
@@ -254,7 +254,7 @@ Locations use the vocabulary of the brief (carried module, gate, hook, prompt se
 | **standing rules (people, not code)** | | | |
 | D17 | Simplicity by default, and complexity where it is worth it | standing rule (docs/design-philosophy.md) | |
 | D18 | Study real environments first, so the generator has a reference set | standing rule (docs/design-philosophy.md) | build order of the first build, kept as history; the decision entry was removed from the log on 2026-09-22, no learning |
-| D21 | A good Task is one where two domain experts would independently reach the same verdict | standing rule (docs/decision-log.md principles) | |
+| D21 | A good Task is one where two domain experts would independently reach the same verdict | standing rule (docs/decision-log.md at 8c6a2d00 principles) | |
 | D23 | Unbiased reporting: say where the sources disagree and where coverage is thin | standing rule | |
 | D24 | Build for the hardest case | standing rule | |
 | D28 | Deferrals are written down with their reason | standing rule (docs/todo.md) | the list was cleared on 2026-09-22 and is re-earned against the rebuilt harness; the decision entry was removed from the log on 2026-09-22, no learning |
@@ -274,7 +274,7 @@ Locations use the vocabulary of the brief (carried module, gate, hook, prompt se
 | D97 | Remaining details are closed by defaults and revised by measurement, not by more grilling | standing rule | The decision entry was removed from the log on 2026-09-22, no learning |
 | D121 | Packages depend one way only, and the frozen code is hashed | standing rule (docs/architecture.md) | the package set grew; the one-way rule and the hash stand |
 | D129 | The package is kullback at the repo root, and harness retires as a code name | standing rule (docs/architecture.md) | |
-| D278 | What the grill removes, and what stays | standing rule (docs/decision-log.md) | |
+| D278 | What the grill removes, and what stays | standing rule (docs/decision-log.md at 8c6a2d00) | |
 | L1.2 | Readers overstate, builders measure: a reader's count is a premise to be checked | standing rule | |
 | L1.3 | Absolutes come from live builds only, deltas may come from copies, and each says which | standing rule | |
 | L3.1 | Every rule keys on a class the harness mines, never on a corpus, tool, table or column name | standing rule (house rule) | |
@@ -339,7 +339,7 @@ Locations use the vocabulary of the brief (carried module, gate, hook, prompt se
 
 ## Counts
 
-314 rows: 264 decisions (D01 to D278, every entry of `docs/decision-log.md`), 28 learnings of `docs/learnings.md` that have no decision of their own, 22 standing founder words.
+314 rows: 264 decisions (D01 to D278, every entry of `docs/decision-log.md at 8c6a2d00`), 28 learnings of `docs/learnings.md` that have no decision of their own, 22 standing founder words.
 
 | location | rows |
 |---|---|
@@ -352,4 +352,4 @@ Locations use the vocabulary of the brief (carried module, gate, hook, prompt se
 | base tool | 5 |
 | hook | 3 |
 
-Twenty-seven rows are dropped, all of them to ADR-0011, and every one of them names the section of `docs/learnings.md` that keeps what it taught or says it carried no learning. Fifty-two decisions were removed from `docs/decision-log.md` on 2026-09-22: those 27 are the ones the new shape has no place for, and the other 25 keep the location they had, because a module, a gate, a tool, a prompt section or a standing rule still carries what the entry taught although the entry itself is gone, and their reason column says so. Nothing else is dropped: the other 287 rows name a module, a gate, a hook, a prompt section, a tool or a document that a later stream has to produce.
+Twenty-seven rows are dropped, all of them to ADR-0011, and every one of them names the section of `docs/learnings.md` that keeps what it taught or says it carried no learning. Fifty-two decisions were removed from `docs/decision-log.md at 8c6a2d00` on 2026-09-22: those 27 are the ones the new shape has no place for, and the other 25 keep the location they had, because a module, a gate, a tool, a prompt section or a standing rule still carries what the entry taught although the entry itself is gone, and their reason column says so. Nothing else is dropped: the other 287 rows name a module, a gate, a hook, a prompt section, a tool or a document that a later stream has to produce.

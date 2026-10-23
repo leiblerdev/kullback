@@ -439,11 +439,12 @@ def _spec_switch(adapter: Any, judge_adapter: Any, spec_adapter: Any) -> dict:
     the build's tool effects are learned (builder/tool_effects.py), then a Spec and its Verifier on `spec_adapter` (a Task that has both keeps them, its gates
     refreshed once a Reference has come); then the Examiner reviews them on `adapter` in rounds,
     the writer answering open rulings between rounds, so one call runs round one and, where rulings
-    stand open, round two.
+    stand open, round two. Last, a Task no right Run can pass ends with no Verifier (spec/stage.py, D439).
     """
     examine = _entry("kullback.examiner.session", "examine")
     examine_rounds = _entry("kullback.examiner.session", "examine_rounds")
     write_specs = _entry("kullback.spec.stage", "write_specs")
+    end_unpassable = _entry("kullback.spec.stage", "end_unpassable")
     spec_candidates = _entry("kullback.builder.domain_tools", "confirmed_task_ids")
     tool_effects = _entry("kullback.builder.tool_effects", "store")
 
@@ -455,6 +456,9 @@ def _spec_switch(adapter: Any, judge_adapter: Any, spec_adapter: Any) -> dict:
         counts = write_specs(Path(workdir), ids, spec_adapter)
         typer.echo(f"spec: {json.dumps(counts, default=str, sort_keys=True)}")
         rounds = examine_rounds(Path(workdir), ids, model=adapter, writer_model=spec_adapter)
+        # A Task no right Run can pass ends with no Verifier, after compile and the Examiner (D439).
+        ended = end_unpassable(Path(workdir), ids)
+        typer.echo(f"spec end: {json.dumps({k: v for k, v in ended.items() if k != 'ended'}, sort_keys=True)}")
         held, total = rounds.get("held"), rounds.get("total")
         rows = [f.as_dict() for f in code] + list(rounds.get("findings", []))
         return {"summary": f"examiner rounds ran, held {held}; rulings {total}", "findings": rows}
@@ -1351,7 +1355,11 @@ def export(
                       workers=workers, **_harbor_options(tasks, tiers, labels, labels_rubric))
         counts = laid["counts"]
         typer.echo(f"{counts['exported']} Harbor tasks ({counts['needs_judge']} need a judge, "
-                   f"{counts['synthetic']} synthetic), skipped {counts['skipped'] or 'none'}; leak scan "
+                   f"{counts['synthetic']} synthetic), skipped {counts['skipped'] or 'none'}; "
+                   f"{counts.get('items_unrenderable', 0)} items unrenderable in "
+                   f"{counts.get('tasks_with_items_unrenderable', 0)} Tasks; {counts.get('ids_dropped', 0)} listed ids "
+                   f"dropped in {counts.get('tasks_with_ids_dropped', 0)} Tasks, "
+                   f"{counts.get('tasks_with_ambiguous_column', 0)} with an ambiguous column; leak scan "
                    f"{laid['leak_scan'].get('leaks', 0)} recorded strings, {laid['leak_scan'].get('value_echoes', 0)} "
                    "value echoes")
         typer.echo(str(Path(out) / "manifest.json"))
@@ -1408,7 +1416,9 @@ def publish(
     if manifest.get("harbor"):
         laid = manifest["harbor"]
         typer.echo(f"harbor: {laid.get('tasks_chosen')} Tasks, {laid['counts']['exported']} exported, "
-                   f"skipped {laid['counts']['skipped'] or 'none'}; by tier and label "
+                   f"skipped {laid['counts']['skipped'] or 'none'}; "
+                   f"{laid['counts'].get('items_unrenderable', 0)} items unrenderable; "
+                   f"{laid['counts'].get('ids_dropped', 0)} listed ids dropped; by tier and label "
                    f"{json.dumps(laid['counts'].get('by_tier_and_label') or {}, sort_keys=True)}; leak scan "
                    f"{laid['leak_scan'].get('leaks', 0)} recorded strings")
     typer.echo(f"{manifest.get('status', 'preview')} at {hosted.url}, tag {hosted.tag}")

@@ -1,8 +1,7 @@
 """The cards: one per Environment, one for the organisation, and the template that documents both (D221).
 
 A card is rendered from a manifest and nothing else, so a number on a page is a number the package
-carries. Every reason a card gives is one of the harness's fixed phrases from package.py, never a
-quoted record.
+carries. A card names no reason a Task stopped and quotes no record.
 """
 
 from __future__ import annotations
@@ -166,6 +165,8 @@ def harbor_section(harbor: dict) -> list[str]:
     return [f"`{HARBOR_DIR}/` holds {counts.get('exported', 0)} Tasks in the [Harbor](https://harborframework.com) "
             f"task format; a judge item is scored at test time by the model `{JUDGE_VAR}` names, with "
             f"`{LIVE_ENV_VAR}=1` and the model's keys; without an answer the trial is unscored, not 0.", "",
+            "`reward.txt` is 1 when every gated item holds and 0 otherwise, a pass or a fail; the weighted items "
+            "shape a reward past the gates, kept as `shaped_reward` in `items.json`.", "",
             "```bash", f"uv run harbor run -p {HARBOR_DIR}/{example} -a oracle",
             f"uv run harbor run -p {HARBOR_DIR}/{example} -a <agent> -m <provider/model>", "```", ""]
 

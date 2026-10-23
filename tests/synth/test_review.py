@@ -29,7 +29,7 @@ CHECKED = ["tool:move_widget", "row:widget_rows:W1001"]
 def _root(tmp_path, *statements, requires=()):
     workdir = make_workdir(tmp_path)
     records = [R.born(text, R.Source(kind="recordings", task_ids=["task-a1"]), frequency=3).model_copy(
-        update={"binding": dict(BOUND), "requires": list(requires)}) for text in statements]
+        update={"binding": R.listed(BOUND), "requires": list(requires)}) for text in statements]
     R.write_all(workdir, records)
     root = V.ReviewRoot(world=M.world_of(workdir), reader=S.Crawled(web(workdir)[0], workdir), refuse=REFUSE)
     return root, records
@@ -79,11 +79,11 @@ def test_the_session_holds_the_review_tools_and_reads_only_no_tool_writes_a_file
 def test_the_view_hides_where_a_scenario_came_from_and_how_often_and_shows_its_binding_and_requires(tmp_path):
     root, [record] = _root(tmp_path, "a holder wants a widget put in another slot")
     R.write_scenario(root.workdir, record.model_copy(update={
-        "situation": "si_0123456789ab", "binding": {"widget_rows": "W1001"}, "requires": ["a tool that seals"]}))
+        "situation": "si_0123456789ab", "binding": {"widget_rows": ["W1001"]}, "requires": ["a tool that seals"]}))
     paths = V.write_views(root, [record.id])
     body = json.loads((root.dir / paths[record.id]).read_text())
     assert not set(body) & {"source", "also_from", "frequency", "situation"}
-    assert body["binding"] == {"widget_rows": "W1001"} and body["requires"] == ["a tool that seals"]
+    assert body["binding"] == {"widget_rows": ["W1001"]} and body["requires"] == ["a tool that seals"]
     assert body["statement"] == record.statement
     assert "recordings" not in json.dumps(body) and "task-a1" not in json.dumps(body)
 
@@ -187,7 +187,7 @@ def test_a_scenario_this_world_cannot_serve_files_one_finding_carrying_its_requi
     [finding] = read_json(root.workdir / "examiner" / "findings.json")
     assert (finding["kind"], finding["change"]) == ("environment", "add a tool that paints a widget")
     [order] = finding["edits"]
-    assert order["requires"] == ["a tool that paints a widget"] and order["binding"] == BOUND
+    assert order["requires"] == ["a tool that paints a widget"] and order["binding"] == R.listed(BOUND)
     assert R.load_scenario(root.workdir, record.id).status == "infeasible"
 
 
@@ -205,6 +205,17 @@ def test_a_send_back_quotes_words_of_the_statement_and_a_second_one_ends_it_unsu
     assert R.load_scenario(root.workdir, record.id).status == "unsure"
     [row] = read_json(R.store_dir(root.workdir) / R.HUMAN)
     assert row["id"] == record.id and "still too broad" in row["question"]
+
+
+def test_an_end_left_to_a_choice_the_customer_makes_is_sent_back_by_the_ruling_quoting_the_end(tmp_path):
+    root, [record] = _root(tmp_path, "a holder wants a widget moved to another slot")
+    R.write_scenario(root.workdir, record.model_copy(update={
+        "ask": "Please move my widget.", "end": "The widget moves to slot seven, or stays if the holder declines."}))
+    _read(root)
+    _rule(root, record, end_outcome="choice")
+    held = R.load_scenario(root.workdir, record.id)
+    assert held.status == "fixing" and held.review[-1]["kind"] == "fix_requested"
+    assert held.review[-1]["quote"] == held.end and held.review[-1]["why"] == V.CHOICE_WHY
 
 
 def test_a_review_built_with_no_reader_injected_and_live_off_has_no_reader(tmp_path):
@@ -286,4 +297,4 @@ def test_the_fix_session_reads_the_quote_why_and_change_and_keeps_the_binding(tm
     sent = json.dumps(fixer.calls[0]["messages"])
     assert 'quote: \\"things\\"' in sent and "why: names a value" in sent and "change: say the slot" in sent
     fixed = R.load_scenario(root.workdir, record.id)
-    assert fixed.statement == "Ada Byron wants her widget moved" and fixed.binding == BOUND
+    assert fixed.statement == "Ada Byron wants her widget moved" and fixed.binding == R.listed(BOUND)

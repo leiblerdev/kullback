@@ -10,6 +10,7 @@ same sections. The stop rule is last.
 
 from __future__ import annotations
 
+import json
 from typing import Iterable
 
 from kullback.synth.prompt import _EXAMPLES as _WORLD_EXAMPLES
@@ -17,32 +18,37 @@ from kullback.synth.prompt import held_line, wrap
 
 TOOLS = ("list_openings", "list_scenarios", "search", "read_page", "lookup_rows", "search_rows", "find_tools",
          "write_scenario", "rewrite_scenario")
+# The sessions that write onto slices and hold no base tools over the store (D420).
+SLICED = ("recordings", "ask", "gaps", "search")
 
 RULE = ("A scenario is two to four sentences in the third person saying exactly what happens to one customer of "
-        "this world: who they are as the bound rows name them, what they have (the order or reservation, the "
+        "this world: who they are as the slice's rows name them, what they have (the order or reservation, the "
         "product with its options, the amounts, the dates, the places), what they ask, and what they bring with "
-        "them (what they know, what they get wrong, what they want instead). Every fact comes from a row you "
-        "looked up and bound, or from the policy; say the values, never an id and never a tool or system name, "
-        "and write a date in words. Bind to rows that fit the situation, whichever customer holds them. Write "
-        "requires only when a search shows no row of the world fits; then say in words what the world lacks, and "
-        "the scenario is still written. Customers and rows used in earlier sessions may be used again; only the "
-        "scenarios of this session need different ones, and list_scenarios marks them. Beside the statement write two parts apart. The ask is what "
-        "the customer says to open the conversation, in the first person and their own words: who they are as the "
-        "bound rows name them, what they have, what they want and what they bring with them, including what they get "
-        "wrong; never what the agent will do and never how it ends. The end is what a correct agent leaves the world "
-        "and the customer with, in the third person: the rows changed and their new values, or that nothing changed "
-        "and why, quoting the policy line. The ask and the end share no sentence.")
+        "them (what they know, what they get wrong, what they want instead). Each item hands you a slice of the "
+        "world: one customer's row and the rows around it, with the kind of situation and the policy line it is to "
+        "exercise. Write each scenario onto its own slice: every fact comes from a row of that slice or from the "
+        "policy; say the values, never an id and never a tool or system name, and write a date in words. The "
+        "slice is the world: a story it cannot carry is not written, and nothing is written as missing; write "
+        "another story the slice carries. Beside the statement write two parts apart. The ask is what the customer "
+        "says to open the conversation, in the first person and their own words: who they are as the slice names "
+        "them, what they have, what they want and what they bring with them, including what they get wrong; never "
+        "what the agent will do and never how it ends. The end is what a correct agent leaves the world and the "
+        "customer with, in the third person, and it names one outcome: the rows changed and their new values, or "
+        "that nothing changes and why, quoting the policy line; never an outcome left to a choice the customer "
+        "makes in the conversation. Every number, id and quoted value of the end is a value of the slice or of a "
+        "policy line you quote, or a sum or difference of two amounts of the slice. The ask and the end share no "
+        "sentence.")
 
 
 def receives_section() -> str:
     return ("You write scenarios for one business. " + RULE + " Each session generates from one source, named in the "
             "opening message: situations of the plan, each with the opening asks of real conversations that show "
-            "it and its variants, numbered; the web, searched and read; lines a person typed, numbered, each "
-            "naming a situation in their own words; gaps in the store, numbered, each a kind of situation "
-            "and a table no scenario is bound to yet or a policy line no scenario turns on; or scenarios a reviewer "
-            "sent back with the reason. The policy, "
-            "the tool list and the one-line description of the business sit beside this text. Your root is the "
-            'scenario store, "."; read it, never edit it.')
+            "it, one item per situation or variant; the web, searched and read, with numbered slices to write its "
+            "stories onto; lines a person typed, numbered, each naming a situation in their own words; gaps in the "
+            "store, numbered, each a kind of situation and a table no scenario is bound to yet or a policy line no "
+            "scenario turns on; or scenarios a reviewer sent back with the reason. Every numbered item carries its "
+            "slice, its kind and its policy line in the opening message. The policy, the tool list and the "
+            "one-line description of the business sit beside this text.")
 
 
 _EXAMPLES = {
@@ -50,16 +56,14 @@ _EXAMPLES = {
     "list_scenarios": ("list_scenarios: the scenarios already written, so you never write one twice; this_session "
                        "marks the ones written in this session, e.g. {}."),
     **{name: _WORLD_EXAMPLES[name] for name in ("lookup_rows", "search_rows", "find_tools")},
-    "write_scenario": ('write_scenario: write one scenario, e.g. {"statement": "<the scenario>", "source": "<the '
-                       'source of this session>", "situation": "si_<id>", "variant": "", "binding": {"<table>": '
-                       '"<row key>"}, "requires": [], "policy_lines": ["<a policy line, word for word>"], '
-                       '"openings": [], "url": "", "span": "", "ask": "<the opening words, first person>", '
-                       '"end": "<what a correct agent leaves behind>"}. For a situation give its id and the variant line '
-                       "word for word, or empty for the situation itself; for a typed line the one number it "
-                       "rewrites; for a gap the one number it fills and, for a policy line, the kind in one word; "
-                       "for a page the URL you read and the span it rests on, word for word. binding "
-                       "names each row you looked up by table and key; requires says in words what the world "
-                       "lacks."),
+    "write_scenario": ('write_scenario: write one scenario onto its slice, e.g. {"statement": "<the scenario>", '
+                       '"source": "<the source of this session>", "situation": "si_<id>", "variant": "", '
+                       '"policy_lines": ["<a policy line, word for word>"], "openings": [], "url": "", "span": "", '
+                       '"ask": "<the opening words, first person>", "end": "<the one outcome a correct agent leaves>"}. '
+                       "For a situation give its id and its item's variant line word for word, or empty for the "
+                       "situation itself; for a typed line, a gap or a page the one item number it is written onto; "
+                       "for a page also the URL you read and the span it rests on, word for word. The rows it is "
+                       "bound to are the slice rows it names, found by code."),
     "rewrite_scenario": ('rewrite_scenario: rewrite one scenario sent back, e.g. {"id": "sc_<id>", "statement": '
                          '"<the scenario, rewritten>", "binding": {"<table>": "<row key>"}, "ask": "<the opening '
                          'words>", "end": "<what a correct agent leaves behind>"}; leave binding, requires, ask or '
@@ -67,57 +71,55 @@ _EXAMPLES = {
 }
 
 
-def tools_section(names: Iterable[str] = TOOLS) -> str:
+def tools_section(names: Iterable[str] = TOOLS, base: bool = True) -> str:
     names = list(names)
-    return held_line(names) + "\n" + "\n".join(_EXAMPLES[name] for name in names if name in _EXAMPLES)
+    head = held_line(names) if base else "Tools, one example call each; the web tools carry theirs in their descriptions."
+    return head + "\n" + "\n".join(_EXAMPLES[name] for name in names if name in _EXAMPLES)
 
 
 def examples_section() -> str:
     return ("Examples of scenarios, over placeholders, one per shape, each with its ask and its end.\n"
-            "<name from the bound row> bought <the product with its option values> on <the date> for <the amount>. "
+            "<name from the slice> bought <the product with its option values> on <the date> for <the amount>. "
             "It has already <reached a later step>, and they want to <change> it to <the other option>. They do "
             "not know the rules allow that only before <the step>.\n"
             "ask: Hi, I am <name>. I bought <the product> on <the date> and I want it changed to <the other "
             "option>, today if you can.\n"
             "end: Nothing changed, since <the policy line, word for word>; <name> was told so and offered <what "
             "the policy allows>.\n"
-            "<name from the bound row> holds <the booking with its places and dates> and asks for <a remedy> the "
-            "policy promises; the world holds no way to make it, so requires says <what is missing>.\n"
-            "ask: I have <the booking> from <the place> on <the date>, and I was promised <the remedy>.\n"
-            "end: <name> is told <the remedy> is due under <the policy line>; no row changed, since the world "
-            "holds no way to make it.\n"
-            "<name from the bound row> reports that <the item with its options> <went wrong> and gives <a wrong "
+            "<name from the slice> holds <the booking with its places and dates> and asks for <a remedy> the "
+            "policy does not allow for <the reason they give>.\n"
+            "ask: I have <the booking> from <the place> on <the date>, and I want <the remedy>.\n"
+            "end: Nothing changes, since <the policy line, word for word>; <name> is told so.\n"
+            "<name from the slice> reports that <the item with its options> <went wrong> and gives <a wrong "
             "detail> at first; they want <a remedy> worth <the amount>.\n"
             "ask: My <item> <went wrong>. It was the <wrong detail> one, and I want <the remedy>.\n"
             "end: <the row> now holds <the new value>, and <name> has <the remedy> worth <the amount>.")
 
 
 def choice_section() -> str:
-    return ("Choosing. List the scenarios already written before you write, and write none twice. Look the rows "
-            "up before you write and bind every row the scenario names. Write each scenario as soon as its rows "
-            "are looked up; never look everything up first. Quote a policy line only word for word. "
-            "From situations of the plan, write one scenario for each situation and one for each of its variants. "
+    return ("Choosing. Write one scenario per numbered item, onto that item's slice, in the item's kind, "
+            "exercising its policy line, and write each as soon as you have read its item. Name in the statement, "
+            "ask or end every row of the slice the story is about. Quote a policy line only word for word. "
+            "From situations of the plan, write the situation or the variant its item names. "
             "From the web, search for what customers of this kind of business ask for, how its workflows go and "
-            "what goes wrong, read the pages, and write only what a page shows, with the span it rests on, bound "
-            "to rows that fit it; never search for an academic paper, a benchmark, a dataset or a code repository. "
+            "what goes wrong, read the pages, and write only what a page shows and a slice carries, with the span "
+            "it rests on; never search for an academic paper, a benchmark, a dataset or a code repository. "
             "From typed lines, write each line as a scenario of the situation it names, never the line as typed. "
             "From gaps, write one specific scenario per gap that could reach this business's support in the real "
-            "world, bound to real rows you looked up, quoting the policy line a line gap names; where the world "
-            "holds no rows for it, write it with requires naming what is missing. A search result says how many "
-            "keys match and how many it does not show, and a key a table does not hold is answered with the "
-            "table's key shape and sample keys: search by a field rather than guess a key. "
+            "world, quoting the policy line a line gap names. "
             "From scenarios sent back, follow the reason: change the quoted words as asked, keep the binding or "
             "change it to rows that fit.")
 
 
 def feedback_section() -> str:
-    return ("Feedback. A written scenario answers with its id. A refused write says why: a tool name, an id shaped "
-            "value (naming the word that matched; a value of a bound row is no id), a policy line the policy does "
-            "not hold (quoting the nearest policy line), a span the page does not hold (quoting the nearest line), a line copied as typed, "
-            "a binding the world does not hold (naming the table and key), a scenario bound to nothing with "
-            "nothing required, a situation and variant already written (naming the scenario), a statement that "
-            "says what a written scenario says (naming it), an ask and an end that share a sentence, a tool name "
-            "in the ask or the end, an ask without an end or an end without an ask. Write it again "
+    return ("Feedback. A written scenario answers with its id and the rows it is bound to. A refused write says "
+            "why: a tool name, an id shaped value (naming the word that matched; a value of a named row is no id), "
+            "a policy line the policy does not hold (quoting the nearest policy line), a span the page does not "
+            "hold (quoting the nearest line), a line copied as typed, requires given (the slice is the world), a "
+            "value of the end outside the slice and the quoted policy lines (naming it), a situation and variant "
+            "already written (naming the scenario), a statement that says what a written scenario says (naming "
+            "it), an ask and an end that share a sentence, a tool name in the ask or the end, an ask without an end "
+            "or an end without an ask. Write it again "
             "once, following the reason; a second refusal of the same scenario drops it. Each typed line belongs "
             "to one scenario: a write picking a line already rewritten is refused naming the scenario that holds "
             "it.")
@@ -231,7 +233,8 @@ def sections(names: Iterable[str] = TOOLS, kind: str = "") -> list[tuple[str, st
     if kind == "plan_search":
         return [(name, wrap(text)) for name, text in plan_search_texts(list(names))]
     return [(name, wrap(text)) for name, text in (
-        ("receives", receives_section()), ("tools", tools_section(names)), ("examples", examples_section()),
+        ("receives", receives_section()), ("tools", tools_section(names, kind not in SLICED)),
+        ("examples", examples_section()),
         ("choice", choice_section()), ("feedback", feedback_section()), ("stop", stop_section()))]
 
 
@@ -240,15 +243,14 @@ OPENINGS = {
              "exactly one situation or skipped; write a situation for what the plan does not hold, attach to "
              "what it holds.\n\nThe plan so far:\n{items}"),
     "recordings": ("Generate scenarios from this batch of situations of the plan: source recordings, {count} items. "
-                   "Write one scenario per situation and one per variant, each bound to rows of the world."),
-    "ask": "Generate scenarios from this batch of lines a person typed: source ask, {count} items.",
+                   "Write one scenario per item, onto its slice.\n\n{items}"),
+    "ask": "Generate scenarios from this batch of lines a person typed: source ask, {count} items.\n\n{items}",
     "gaps": ("Generate scenarios for the gaps in the store: source gaps, {count} items. Each item is a gap in the "
-             "store; write one specific scenario for it, bound to real rows (look them up), that could reach this "
-             "business's support in the real world; if the world has no rows for it, write it with requires naming "
-             "what is missing. Every gap scenario has an ask and an end. A policy line gap's kind is one of the "
-             "plan's kinds: {items}."),
-    "search": ("Generate scenarios from the web for this business: source search. Search, read the pages, write what "
-               "they show. Give each scenario the kind of situation it is, one of the plan's kinds: {items}."),
+             "store; write one specific scenario for it onto its slice that could reach this business's support in "
+             "the real world. Every gap scenario has an ask and an end.\n\n{items}"),
+    "search": ("Generate scenarios from the web for this business: source search, {count} slices. Search, read the "
+               "pages, and write what they show onto the slices, one scenario per slice, giving its number.\n\n"
+               "{items}"),
     "plan_search": ("Add {count} situations to the plan from the web. The kinds of the plan with how many situations "
                     "each holds, fewest first: {items}. Fill the thinnest kinds first.\n\nThe plan so far is "
                     "what list_plan shows."),
@@ -263,9 +265,24 @@ def plan_listing(rows: Iterable[dict]) -> str:
 
 
 def opening(kind: str, entries: Iterable[str] = (), count: int = 0, items: str = "") -> str:
-    """The opening message of one session: what it generates from and what the root holds."""
+    """The opening message of one session: what it generates from and, outside the slice sessions, what the root
+    holds; a slice session's opening holds its items and no store listing (D420)."""
+    if kind in SLICED:
+        head = OPENINGS[kind].partition("{items}")[0].format(count=count).strip()
+        return wrap(head) + "\n\n" + items
     listed = ", ".join(entries) or "nothing yet"
     return wrap(OPENINGS[kind].format(count=count, items=items) + f"\n\nThe root holds: {listed}.")
 
 
-__all__ = ["plan_search_texts", "PLAN_RULE", "RULE", "TOOLS", "opening", "plan_listing", "sections"]
+def slice_items(rows: Iterable[dict], kinds: Iterable[str] = ()) -> str:
+    """The items of a slice session as its opening lists them: the plan's kinds once, then each item with its kind,
+    its policy line and its slice, one row per line (D420)."""
+    out = [f"The plan's kinds: {', '.join(kinds) or 'none yet'}."]
+    for row in rows:
+        head = {key: value for key, value in row.items() if key != "slice"}
+        out += [f"item {row['number']}: " + json.dumps(head, ensure_ascii=False), "slice:", row.get("slice") or
+                "no slice: this world holds no owner table"]
+    return "\n".join(out)
+
+
+__all__ = ["SLICED", "slice_items", "plan_search_texts", "PLAN_RULE", "RULE", "TOOLS", "opening", "plan_listing", "sections"]

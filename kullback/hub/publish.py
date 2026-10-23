@@ -85,10 +85,6 @@ def from_staged(staged: Any, out: Any) -> dict:
     manifest = dict(read_json(staged / MANIFEST_NAME, {}) or {})
     for key in ("status", "harbor"):
         manifest.pop(key, None)
-    # A package staged when the manifest kept only the commonest untrusted reasons; its own index has them all.
-    rows = (read_json(staged / package_mod.TASKS_INDEX_NAME, {}) or {}).get("tasks")
-    if rows:
-        manifest["untrusted"] = package_mod.untrusted_reasons(rows)
     return manifest
 
 
@@ -124,7 +120,8 @@ def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, p
                              **({"org": organisation} if organisation else {}), workers=workers, index=index,
                              **(harbor_options or {}))
         manifest["harbor"] = {key: laid[key] for key in ("tasks_chosen", "counts", "content_hash", "leak_scan",
-                                                         "tiers", "labels", "left_out", "no_oracle", "git_sha")
+                                                         "tiers", "labels", "left_out", "no_oracle", "items_unrenderable",
+                                                         "ids_dropped", "ambiguous_columns", "git_sha")
                               if key in laid}
     # Read off what was laid, so the card says how many tools there are and quotes one Task's ask.
     manifest["inside"] = package_mod.inside(Path(out), laid)

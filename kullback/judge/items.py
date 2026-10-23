@@ -126,8 +126,12 @@ def judge_message(item_id: str, target: dict, evidence: str) -> str:
     return f"[Evidence]\n{evidence}\n\n[Checkpoint]\n{checkpoint_line(item_id, target)}"
 
 
-def _parse(content: Optional[str], item_id: str) -> tuple[Optional[int], str]:
-    """(score, why) from the reply; score None when the reply is not the asked-for object."""
+def _read(content: Optional[str], item_id: str) -> tuple[Optional[int], str, Optional[str]]:
+    """(score, why, key) from the reply; score None when the reply is not the asked-for object.
+
+    Each call asks one item (D328), so a reply with exactly one result is read whatever its key; with
+    several the key must be the item id (D424). `key` is the key read when it is not the item id.
+    """
     text = (content or "").strip()
     match = re.search(r"\{.*\}", text, re.S)
     try:
@@ -135,13 +139,22 @@ def _parse(content: Optional[str], item_id: str) -> tuple[Optional[int], str]:
     except ValueError:
         body = None
     results = body.get("results") if isinstance(body, dict) else None
-    row = results.get(item_id) if isinstance(results, dict) else None
+    key = None
+    if isinstance(results, dict) and item_id not in results and len(results) == 1:
+        key = next(iter(results))
+    row = results.get(item_id if key is None else key) if isinstance(results, dict) else None
     if not isinstance(row, dict):
-        return None, "unreadable reply"
+        return None, "unreadable reply", None
     score = row.get("score")
     if isinstance(score, bool) or score not in (0, 1):
-        return None, "score not 0 or 1"
-    return int(score), str(row.get("why") or "")[:WHY_CHARS * 2]
+        return None, "score not 0 or 1", key
+    return int(score), str(row.get("why") or "")[:WHY_CHARS * 2], key
+
+
+def _parse(content: Optional[str], item_id: str) -> tuple[Optional[int], str]:
+    """(score, why) from the reply; score None when the reply is not the asked-for object."""
+    score, why, _ = _read(content, item_id)
+    return score, why
 
 
 def judge_item(model: Model, atom: Atom, run: Run, *, model_id: Optional[str] = None) -> JudgeScore:
@@ -169,7 +182,9 @@ def judge_item(model: Model, atom: Atom, run: Run, *, model_id: Optional[str] = 
             return result
         result.cost_usd += call_cost(reply.usage, name) if name else 0.0
         result.stop_reason = reply.stop_reason
-        result.score, result.why = _parse(reply.content, atom.id)
+        result.score, result.why, key = _read(reply.content, atom.id)
+        if key is not None:  # the one result came back under another key; say so (D424)
+            result.why += f" [read under key {key[:WHY_CHARS]!r}, not the item id]"
         if result.score is not None or not _empty_or_cut(reply) or cap == RETRY_TOKENS:
             break
         result.retries += 1

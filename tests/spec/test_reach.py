@@ -156,3 +156,28 @@ def test_a_gated_cell_takes_its_reachable_source_and_an_unreachable_one_none():
     (state,) = I.end_states_of([kept, unreached], w)
     sources = {cell.row_id: cell.source for cell in state.cells}
     assert sources["A1"].kind == "tool_result" and sources["B2"] is None
+
+
+END = IntentFact(id="e1", text="Item A1 ends in slot eight with the state moved (pendng).", stance="volunteered",
+                 source=FactSource(recording=I.END_SOURCE, turn=0))
+SAID = IntentFact(id="f3", text="Mark it moved (pendng), as the note says.", stance="volunteered",
+                  source=FactSource(recording="rec1", turn=5))
+
+
+def test_a_gated_value_only_the_end_spells_is_refused_where_a_tool_writes_the_field_another_way():
+    w = I.World(STATE, POLICY, FACTS + [END], TOOLS, reach=I.reach_of_inputs(EFFECTS, ()))
+    assert w.reach_of("items", "state", "moved (pendng)") is None
+    kept, why = w.check(row_is({"state": "moved (pendng)"}), KNOWN)
+    assert kept is None and I.UNREACHABLE in why and '"moved (pending)"' in why
+
+
+def test_a_value_the_end_names_stays_reachable_for_a_field_no_tool_reach_knows():
+    w = I.World(STATE, POLICY, FACTS + [END], TOOLS, reach=I.reach_of_inputs(EFFECTS, ()))
+    assert w.reach_of("items", "shelf", "eight").ptr["recording"] == I.END_SOURCE
+    assert I.World(STATE, POLICY, FACTS + [END], TOOLS, reach=I.Reach()).reach_of(
+        "items", "state", "moved (pendng)").kind == "user_turn"
+
+
+def test_a_real_user_turn_still_sources_a_value_for_a_field_a_tool_writes():
+    w = I.World(STATE, POLICY, FACTS + [END, SAID], TOOLS, reach=I.reach_of_inputs(EFFECTS, ()))
+    assert w.reach_of("items", "state", "moved (pendng)").ptr["fact"] == "f3"

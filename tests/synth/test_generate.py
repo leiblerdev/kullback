@@ -74,8 +74,11 @@ def _plan(generation: M.Generation, *situations: tuple[str, list[int], list[str]
 
 
 def _bound(call_id: str, statement: str, situation: str, variant: str = "", **args) -> ModelReply:
-    return _write(call_id, statement, situation=situation, variant=variant,
-                  **{"binding": dict(BOUND), **args})
+    return _write(call_id, statement, situation=situation, variant=variant, **args)
+
+
+ASK = "Hi, I am Ada Byron. My widget sits in slot two and I want it in slot seven."
+END = "The widget of Ada Byron now sits in slot seven."
 
 
 def _results(model: TestModel, session: int = 0) -> list[str]:
@@ -109,22 +112,22 @@ def test_a_recordings_session_writes_one_bound_scenario_per_situation_and_varian
     generation, _ = _generation(tmp_path)
     move, broken = _plan(generation, (MOVE, [0, 1], [SEALED_VARIANT]), (BROKEN, [2], []))
     model = generation.model = TestModel([
-        call("list_openings", {}, "m0"), call("lookup_rows", {"table": "widget_rows", "key": "W1001"}, "m1"),
+        call("list_openings", {}, "m0"),
         _bound("m2", "Ada Byron wants her widget in slot two moved to slot seven before it is sealed.", move,
                policy_lines=[SEALED_LINE]),
-        _bound("m3", "Ada Byron wants her sealed widget in slot four moved; it cannot move.", move, SEALED_VARIANT,
-               requires=["a tool that swaps a sealed widget"]),
+        _bound("m3", "Ada Byron wants her sealed widget in slot four moved; it cannot move.", move, SEALED_VARIANT),
         _done(), _done()])
     M.from_recordings(generation)
     first, second = generation.found
     assert [(r.situation, r.variant) for r in generation.found] == [(move, ""), (move, SEALED_VARIANT)]
     assert first.source.task_ids == second.source.task_ids == ["task-a1", "task-b2"] and first.frequency == 2
-    assert first.binding == BOUND and first.policy_lines == [SEALED_LINE]
-    assert second.requires == ["a tool that swaps a sealed widget"] and generation.dropped == Counter()
+    assert first.binding == {"holder_rows": ["holder_7"]} and first.policy_lines[0] == SEALED_LINE
+    assert second.binding == {"holder_rows": ["holder_7"], "widget_rows": ["W1002"]} and second.requires == []
+    assert generation.dropped == Counter()
     listed = _results(model)[0]
     assert OPENINGS["task-b2"] in listed and SEALED_VARIANT in listed and broken in listed
-    assert '"is_sealed": false' in _results(model)[1]
-    assert generation.ungrouped == [{"source": "recordings", "batch": 0, "items": 2, "ungrouped": 1},
+    assert '\\"is_sealed\\":false' in listed
+    assert generation.ungrouped == [{"source": "recordings", "batch": 0, "items": 3, "ungrouped": 1},
                                     {"source": "recordings", "batch": 0, "items": 1, "ungrouped": 1, "retry": True}]
 
 
@@ -143,29 +146,54 @@ def test_a_refused_write_is_written_again_once_and_a_second_refusal_drops_and_co
     assert "write it again once" in results[0] and "dropped" in results[3]
 
 
-def test_a_binding_the_world_does_not_hold_is_refused_naming_the_table_and_key(tmp_path):
+def test_requires_is_refused_from_every_slice_session_since_the_slice_is_the_world(tmp_path):
     generation, model = _generation(tmp_path)
     [move] = _plan(generation, (MOVE, [0, 1, 2], []))
-    model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move, binding={"widget_rows": "W9999"}),
-                      _bound("m1", "Ada Byron wants a widget moved", move, binding={"gadget_rows": "W1001"}),
-                      _done()])
+    model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move,
+                                                 requires=["a slot that takes a sealed widget"]),
+                                          _bound("m1", "Ada Byron wants a widget moved", move), _done()])
     M.from_recordings(generation)
-    first, second = _results(model)
-    assert T.BINDING.replace("_", " ") in first and "'widget_rows'" in first and "'W9999'" in first
-    assert "'gadget_rows'" in second and "dropped" in second
-    assert generation.found == [] and generation.dropped == Counter({T.BINDING: 1})
-
-
-def test_a_scenario_bound_to_nothing_with_nothing_required_is_refused_as_unbound(tmp_path):
-    generation, model = _generation(tmp_path)
-    [move] = _plan(generation, (MOVE, [0, 1, 2], []))
-    model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move, binding={}),
-                      _bound("m1", "Ada Byron wants a widget moved", move, binding={},
-                             requires=["a slot that takes a sealed widget"]), _done()])
-    M.from_recordings(generation)
-    assert T.UNBOUND in _results(model)[0]
+    assert T.REQUIRES.replace("_", " ") in _results(model)[0]
     [record] = generation.found
-    assert record.binding == {} and record.requires == ["a slot that takes a sealed widget"]
+    assert record.requires == [] and record.binding == {"holder_rows": ["holder_7"]}
+
+
+def test_an_end_naming_a_value_outside_the_slice_is_refused_naming_the_value(tmp_path):
+    generation, model = _generation(tmp_path)
+    [move] = _plan(generation, (MOVE, [0, 1, 2], []))
+    model = generation.model = TestModel([
+        _bound("m0", "Ada Byron wants a widget moved", move, ask=ASK, end="The widget now sits in slot 42."),
+        _bound("m1", "Ada Byron wants a widget moved", move, ask=ASK, end="Widget W1001 now sits in slot four."),
+        _done()])
+    M.from_recordings(generation)
+    refusal = _results(model)[0]
+    assert T.VALUE.replace("_", " ") in refusal and "42 is not in the slice" in refusal
+    [record] = generation.found
+    assert record.binding == {"holder_rows": ["holder_7"], "widget_rows": ["W1001", "W1002"]}
+
+
+def test_a_session_prompt_carries_each_item_with_its_slice_and_no_listing_of_the_store(tmp_path):
+    generation, _ = _generation(tmp_path)
+    held = R.born("a holder asks a question nobody wrote before", R.Source(kind="ask", line="x"))
+    R.write_all(generation.world.workdir, [held])
+    move, _ = _plan(generation, (MOVE, [0, 1], [SEALED_VARIANT]), (BROKEN, [2], []))
+    model = generation.model = TestModel([*_quiet()])
+    M.from_recordings(generation)
+    [system, opening] = [m["content"] for m in model.calls[0]["messages"][:2]]
+    assert "item 0: " in opening and f'"situation": "{move}"' in opening and "slice:" in opening
+    assert "holder_rows holder_7: " in opening and "widget_rows W1002: " in opening
+    assert held.id not in system + opening and held.statement not in system + opening
+    names = {tool["name"] for tool in model.calls[0]["tools"]}
+    assert names == {"list_openings", "find_tools", "write_scenario"}
+
+
+def test_a_write_quoting_no_policy_line_onto_an_item_with_an_assigned_line_stores_no_policy_line(tmp_path):
+    generation, _ = _generation(tmp_path)
+    [move] = _plan(generation, (MOVE, [0], []))
+    model = generation.model = TestModel([_bound("m0", MOVE, move), *_quiet()])
+    M.from_recordings(generation)
+    [record] = generation.found
+    assert '"policy_line": ' in model.calls[0]["messages"][1]["content"] and record.policy_lines == []
 
 
 def test_a_second_write_for_the_same_situation_and_variant_is_refused_naming_the_scenario_that_holds_it(tmp_path):
@@ -190,19 +218,19 @@ def test_a_search_session_on_the_shared_web_tools_cites_the_byte_range_of_a_span
     generation, model = _generation(tmp_path,
                             call("search", {"query": "what holders ask about sealed widgets"}, "m0"),
                             _write("m1", "a holder wants to move a widget that is already sealed", "search",
-                                   url=URL, span=SPAN, binding=BOUND),
+                                   url=URL, span=SPAN, openings=[0]),
                             call("read_page", {"url": URL}, "m2"),
                             _write("m3", "a holder wants to move a widget that is already sealed", "search",
-                                   url=URL, span=SPAN, binding=BOUND),
+                                   url=URL, span=SPAN, openings=[0]),
                             _write("m4", "a holder wants their widget painted", "search", url=URL,
-                                   span="We paint widgets on request.", binding=BOUND),
-                            _done())
+                                   span="We paint widgets on request.", openings=[1]),
+                            *_quiet())
     engine, inner = web(generation.world.workdir)
     M.from_search(generation, engine=engine, refuse=REFUSE)
     [record] = generation.found
     raw = domain.cached_text(generation.world.workdir, record.source.key).encode("utf-8")
     assert raw[record.source.start:record.source.end].decode("utf-8") == SPAN
-    assert record.source.url == URL and record.frequency == 0 and record.binding == BOUND
+    assert record.source.url == URL and record.frequency == 0 and record.binding == {"holder_rows": ["holder_7"]}
     assert generation.dropped == Counter({T.NO_SPAN: 1}) and T.NOT_READ.replace("_", " ") in _results(model)[1]
     assert inner.queries == ["what holders ask about sealed widgets"] and inner.fetched == [URL]
     assert URL in _results(model)[0] and SPAN in _results(model)[2]
@@ -267,7 +295,7 @@ def test_generation_writes_scenarios_with_the_plan_situation_and_a_second_call_s
     M.generate(workdir, model=model, searching=False)
     [record] = R.load_scenarios(workdir)
     assert record.situation == P.situation_id(PLANNED) and record.source.task_ids == list(OPENINGS)
-    assert record.frequency == 3 and record.binding == BOUND
+    assert record.frequency == 3 and record.binding == {"holder_rows": ["holder_7"]}
     body = M.generate(workdir, model=TestModel([]), searching=False)
     assert body["born"] == 0 and body["coverage"]["openings_unplanned"]["count"] == 0
 
@@ -282,13 +310,15 @@ def test_an_ask_line_is_rewritten_once(tmp_path):
 
 def test_a_search_session_gets_its_own_turn_budget_and_a_capped_session_is_counted_under_its_kind(tmp_path):
     workdir = make_workdir(tmp_path)
-    endless = [call("list_scenarios", {}, f"s{at}") for at in range(T.MAX_TURNS + 5)]
+    endless = [call("find_tools", {"query": "move"}, f"s{at}") for at in range(T.MAX_TURNS + 5)]
     # the recordings session and its retry write nothing, so each stops after its two unfinished asks
     quiet = [*_quiet(), *_quiet()]
     model = TestModel([*planned(), *quiet, *endless])
     body = M.generate(workdir, model=model, engine=web(workdir)[0], refuse=REFUSE, description=DESCRIPTION,
                       sources=FIRST)
-    assert len(model.calls) - 2 - len(quiet) == T.SEARCH_TURNS == T.turns_for(T.GenerateRoot(world=M.world_of(workdir), kind="search"))
+    # the search session has slices as items, so at its cap the loop asks once for the unwritten ones
+    assert len(model.calls) - 2 - len(quiet) == T.SEARCH_TURNS + 1
+    assert T.SEARCH_TURNS == T.turns_for(T.GenerateRoot(world=M.world_of(workdir), kind="search"))
     assert body["capped"] == {"search": 1}
     assert json.loads((R.store_dir(workdir) / R.GENERATED).read_text())["capped"] == {"search": 1}
 
@@ -350,9 +380,9 @@ def test_generation_again_keeps_the_status_and_review_of_a_record_already_held(t
 def test_a_fix_session_rewrites_once_from_the_same_source_keeps_the_id_and_a_failed_rewrite_ends_unsure(tmp_path):
     world = M.world_of(make_workdir(tmp_path))
     first = R.born("a holder wants things", R.Source(kind="recordings", task_ids=["task-a1"]),
-                   frequency=1).model_copy(update={"binding": dict(BOUND)})
+                   frequency=1).model_copy(update={"binding": R.listed(BOUND)})
     second = R.born("a holder wants stuff", R.Source(kind="recordings", task_ids=["task-c3"]),
-                    frequency=1).model_copy(update={"binding": dict(BOUND)})
+                    frequency=1).model_copy(update={"binding": R.listed(BOUND)})
     model = TestModel([call("rewrite_scenario", {"id": first.id, "statement": "a holder wants a widget moved"}, "f0"),
                        call("rewrite_scenario", {"id": second.id, "statement": "run get_widget"}, "f1"),
                        call("rewrite_scenario", {"id": second.id, "statement": "run move_widget"}, "f2"),
@@ -404,7 +434,7 @@ def test_a_ceiling_with_room_runs_the_generation_sessions_as_without_one(tmp_pat
     assert M.CEILING_NOTE not in body["notes"]
 
 
-def test_every_generation_session_but_the_two_plan_sessions_holds_the_world_tools_the_review_holds(tmp_path):
+def test_every_scenario_session_holds_find_tools_and_no_row_lookup_and_only_the_fix_session_holds_the_lookups(tmp_path):
     from kullback.agent.extensions import load_extensions
     from kullback.agent.harness import AgentHarness
     from kullback.synth import world_tools as W
@@ -414,8 +444,12 @@ def test_every_generation_session_but_the_two_plan_sessions_holds_the_world_tool
     for kind in T.SESSION_TOOLS:
         harness = AgentHarness(model=TestModel([]))
         load_extensions(harness, [T.generate_extension(T.GenerateRoot(world=world, kind=kind, refuse=REFUSE))])
-        held[kind] = set(W.NAMES) <= set(harness.registry.names())
-    assert held == {"plan": False, "plan_search": False, "recordings": True, "ask": True, "gaps": True, "search": True, "fix": True}
+        names = set(harness.registry.names())
+        held[kind] = (set(W.NAMES) & names, bool({"list_scenarios", "list_plan", "ls", "read"} & names))
+    lookups = set(W.NAMES)
+    assert held == {"plan": (set(), True), "plan_search": (set(), True), "recordings": ({"find_tools"}, False),
+                    "ask": ({"find_tools"}, False), "gaps": ({"find_tools"}, False), "search": ({"find_tools"}, False),
+                    "fix": (lookups, True)}
 
 
 # --- the near repeat gate and the spread (D383) -----------------------------------------------
@@ -461,9 +495,9 @@ def test_two_statements_of_different_situations_both_pass_the_near_repeat_gate(t
 def test_a_rewrite_is_scored_against_every_other_statement_and_never_against_its_own(tmp_path):
     world = M.world_of(make_workdir(tmp_path))
     source = R.Source(kind="recordings", task_ids=["task-a1"])
-    own = R.born(STORED, source, frequency=1).model_copy(update={"binding": dict(BOUND)})
+    own = R.born(STORED, source, frequency=1).model_copy(update={"binding": R.listed(BOUND)})
     other = R.born("a holder wants a replacement for a broken widget", source,
-                   frequency=1).model_copy(update={"binding": dict(BOUND)})
+                   frequency=1).model_copy(update={"binding": R.listed(BOUND)})
     R.write_all(world.workdir, [own, other])
     model = TestModel([call("rewrite_scenario", {"id": own.id, "statement": STORED + " before noon"}, "f0"),
                        call("rewrite_scenario", {"id": other.id, "statement": STORED + " soon"}, "f1"),
@@ -481,7 +515,7 @@ def _spread_store() -> tuple[list[R.Scenario], P.Plan, list[str]]:
                               {"id": "si_b", "statement": BROKEN, "kind": "cancel", "variants": [], "openings": []}])
     source = R.Source(kind="recordings", task_ids=["task-a1"])
     kept = [R.born("a holder wants a widget moved", source, [lines[0], lines[1]]).model_copy(
-                update={"situation": "si_a", "binding": dict(BOUND)}),
+                update={"situation": "si_a", "binding": R.listed(BOUND)}),
             R.born("a holder wants a broken widget gone", source, [lines[1], lines[2], lines[2]]).model_copy(
                 update={"situation": "si_b", "binding": {"widget_rows": "W1002"}}),
             R.born("someone asks where a widget sits", R.Source(kind="ask", line="where is it"), [lines[0]])]
@@ -514,8 +548,6 @@ def test_the_report_prints_one_line_per_spread_counter_and_the_cells_hit(tmp_pat
     assert "cells hit: 3 of 6" in printed
 
 
-ASK = "Hi, I am Ada Byron. My widget sits in slot two and I want it in slot seven."
-END = "The widget of Ada Byron now sits in slot seven."
 
 
 def test_an_ask_and_an_end_that_leak_name_a_tool_or_come_alone_are_refused_naming_which(tmp_path):
@@ -539,15 +571,15 @@ def test_a_write_whose_ask_shares_a_sentence_with_its_end_is_refused_and_counted
     assert generation.found == [] and generation.dropped == Counter({T.ASK_SHARES_END: 1})
 
 
-def test_a_written_ask_and_end_are_stored_listed_beside_the_statement_and_kept_by_a_rewrite(tmp_path):
+def test_a_written_ask_and_end_are_stored_answered_beside_the_statement_and_kept_by_a_rewrite(tmp_path):
     generation, _ = _generation(tmp_path)
     [move] = _plan(generation, (MOVE, [0, 1, 2], []))
     model = generation.model = TestModel([_bound("m0", "Ada Byron wants a widget moved", move, ask=ASK, end=END),
-                                          call("list_scenarios", {}, "m1"), _done()])
+                                          _done()])
     M.from_recordings(generation)
     [record] = generation.found
     assert (record.ask, record.end) == (ASK, END)
-    listed = _results(model)[1]
+    listed = _results(model)[0]
     assert ASK in listed and END in listed and record.statement in listed
     R.write_all(generation.world.workdir, [record])
     assert R.load_scenarios(generation.world.workdir)[0].ask == ASK
@@ -562,12 +594,13 @@ def test_the_items_a_pass_left_unwritten_run_once_more_in_halves_and_are_counted
     lines = [f"my widget number {word} should go to another slot" for word in
              ("one", "two", "three", "four", "five", "six", "seven", "eight")]
     model = generation.model = TestModel([
-        *_quiet(), _write("a0", "a holder wants a widget put in a new slot", "ask", openings=[0]), *_quiet(), *_quiet()])
+        *_quiet(), *_quiet(), _write("a0", "a holder wants a widget put in a new slot", "ask", openings=[0]),
+        *_quiet(), *_quiet()])
     M.from_asks(generation, lines, batch=8)
     assert generation.retried == {"ask": {"items": 8, "written": 1}}
-    assert [(row["items"], row.get("retry", False)) for row in generation.ungrouped] == [(8, False), (4, True),
-                                                                                          (4, True)]
-    assert len(model.calls) == 3 * (1 + UNFINISHED_ASKS) + 1
+    assert [(row["items"], row.get("retry", False)) for row in generation.ungrouped] == [(5, False), (3, False),
+                                                                                          (4, True), (4, True)]
+    assert len(model.calls) == 4 * (1 + UNFINISHED_ASKS) + 1
 
 
 def _user_lines(model: TestModel) -> list[str]:
@@ -606,9 +639,10 @@ def test_a_session_with_no_items_gets_no_unfinished_line(tmp_path):
     assert T.unfinished_line(T.GenerateRoot(world=generation.world, kind="search")) == ""
 
 
-def test_the_choice_rule_says_to_write_each_scenario_as_soon_as_its_rows_are_looked_up():
-    assert ("Write each scenario as soon as its rows are looked up; never look everything up first."
-            in generate_prompt.choice_section())
+def test_the_choice_rule_says_to_write_each_scenario_onto_its_own_slice_as_soon_as_its_item_is_read():
+    said = " ".join(generate_prompt.choice_section().split())
+    assert "Write one scenario per numbered item, onto that item's slice" in said
+    assert "write each as soon as you have read its item" in said and "look" not in said.split("Choosing.")[1][:200]
 
 
 def test_a_recordings_retry_lists_only_the_situations_the_first_pass_left_unwritten(tmp_path):
@@ -655,7 +689,7 @@ def _gap_generation(tmp_path, *replies) -> M.Generation:
         {"id": "si_a", "statement": MOVE, "kind": "change", "variants": [], "openings": []},
         {"id": "si_b", "statement": BROKEN, "kind": "cancel", "variants": [], "openings": []}])
     held = R.born("Ada Byron wants her widget moved", R.Source(kind="recordings", task_ids=["task-a1"]),
-                  [SEALED_LINE]).model_copy(update={"situation": "si_a", "binding": dict(BOUND)})
+                  [SEALED_LINE]).model_copy(update={"situation": "si_a", "binding": R.listed(BOUND)})
     R.write_all(generation.world.workdir, [held])
     return generation
 
@@ -690,12 +724,12 @@ def test_the_gaps_pass_writes_through_the_same_tools_its_refusals_count_and_its_
     generation = _gap_generation(
         tmp_path,
         call("list_openings", {}, "g0"),
-        _gap_write("g1", "a holder wants widget W1002 cancelled", 1, binding={"widget_rows": "W1002"}),
-        _gap_write("g2", "a holder wants widget W1002 dropped now", 1, binding={"widget_rows": "W1002"}),
-        _gap_write("g3", "Ada Byron wants to cancel her slot holding", 0, binding={"holder_rows": "holder_7"}),
-        _gap_write("g4", "Ada Byron asks to cancel her holding twice", 0, binding={"holder_rows": "holder_7"}),
-        _gap_write("g5", "Ada Byron asks for a replacement of her sealed widget", 2, kind="Cancel",
-                   binding={"widget_rows": "W1002"}, policy_lines=[lines[1]]),
+        _gap_write("g1", "a holder wants widget W1002 cancelled", 1),
+        _gap_write("g2", "a holder wants widget W1002 dropped now", 1),
+        _gap_write("g3", "Ada Byron wants to cancel her slot holding", 0),
+        _gap_write("g4", "Ada Byron asks to cancel her holding twice", 0),
+        _gap_write("g5", "Ada Byron asks for a replacement of her sealed widget in slot four", 2, kind="Cancel",
+                   policy_lines=[lines[1]]),
         _done(), _done())
     M.from_gaps(generation, batch=8)
     model = generation.model
@@ -716,10 +750,10 @@ def test_the_gaps_pass_writes_through_the_same_tools_its_refusals_count_and_its_
 def test_a_policy_line_gap_with_a_kind_outside_the_plan_is_refused_naming_the_kinds_and_counted_when_dropped(tmp_path):
     line = POLICY.splitlines()[1]
     write = partial(_gap_write, statement="Ada Byron asks for a replacement of her sealed widget", at=2,
-                    binding={"widget_rows": "W1002"}, policy_lines=[line])
+                    policy_lines=[line])
     generation = _gap_generation(tmp_path, write("k0", kind="exchange"), write("k1", kind="change"),
                                  write("k2", statement="Ada Byron wants her sealed widget swapped today", at=3,
-                                       kind=""),
+                                       kind="exchange"),
                                  write("k3", statement="Ada Byron wants her sealed widget swapped today", at=3,
                                        kind="exchange"), _done(), _done())
     M.from_gaps(generation, batch=8)
@@ -731,7 +765,7 @@ def test_a_policy_line_gap_with_a_kind_outside_the_plan_is_refused_naming_the_ki
 
 
 def test_a_gaps_write_without_its_ask_or_its_end_or_both_is_refused_and_counted(tmp_path):
-    bound = {"binding": {"holder_rows": "holder_7"}}
+    bound: dict = {}
     generation = _gap_generation(
         tmp_path, _gap_write("p0", "Ada Byron wants to cancel her slot holding", 0, ask="", end="", **bound),
         _gap_write("p1", "Ada Byron wants to cancel her slot holding", 0, ask="", end="", **bound),
@@ -754,8 +788,7 @@ def test_generate_with_only_the_gaps_source_reads_the_plan_on_disk_and_runs_no_o
     generation = _gap_generation(tmp_path)
     workdir = generation.world.workdir
     P.write_plan(workdir, generation.plan)
-    model = TestModel([_gap_write("g0", "Ada Byron wants to cancel her slot holding", 0,
-                                  binding={"holder_rows": "holder_7"}), _done(), _done(), _done()])
+    model = TestModel([_gap_write("g0", "Ada Byron wants to cancel her slot holding", 0), _done(), _done(), _done()])
     body = M.generate(workdir, model=model, sources=["gaps"])
     assert body["born"] == 1 and body["coverage"]["per_kind"]["gaps"] == 1 and body["notes"] == []
     assert body["gaps"]["before"]["hit"] == 2 and body["gaps"]["after"]["hit"] == 3
