@@ -52,7 +52,7 @@ Every command takes `--help`. Contributors and agents start with [AGENTS.md](../
 
 Kept as written; not updated.
 
-- [decision-log.md](decision-log.md): every numbered decision (D numbers), append-only.
+- [decisions.md](decisions.md): the live decisions (D numbers) by area, and the retired ones indexed.
 - [founder-words.md](founder-words.md): the founder's messages, verbatim.
 - [builds/README.md](builds/README.md): what each build measured.
 - [reviews/](reviews/README.md): dated audits of the code and the tests.

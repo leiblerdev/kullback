@@ -1,9 +1,9 @@
 # Design philosophy
 
-> Status (2026-09-10): frozen narrative. Counts were corrected on 2026-09-10; the decision log and docs/adr are the current record.
+> Status (2026-09-10): frozen narrative. Counts were corrected on 2026-09-10; docs/decisions.md and docs/adr are the current record.
 > Status (2026-10-16): the source of truth is restated in docs/vision.md; the trace is one input, see D365.
 
-This is why Kullback looks the way it does, in one place. What I built, why, and what I left out on purpose. The decision log (`decision-log.md`, D01 to D291) has every single choice next to the alternative it beat. The ADRs in `adr/` hold the eleven I can't easily undo. This document is the shape of the whole thing.
+This is why Kullback looks the way it does, in one place. What I built, why, and what I left out on purpose. The decisions file (`decisions.md`) holds every live choice; the full log with the alternatives each beat is in git at 8c6a2d00. The ADRs in `adr/` hold the eleven I can't easily undo. This document is the shape of the whole thing.
 
 ## Where it starts
 
@@ -111,4 +111,4 @@ The design budgeted 2,700 to 3,700 lines. The code is about 13,800 after the fir
 
 ## How to argue with any of this
 
-Find the D number, read the alternative it beat, and open an issue that names it. A changed decision is a new entry in the decision log. An ADR is only for a decision that is hard to reverse, surprising without context, and the result of a real trade-off. Numbers that contradict a decision are the strongest argument there is, and the README's measured section is where they go, with the script that produced them.
+Find the D number, read the alternative it beat, and open an issue that names it. A changed decision is a new entry in `decisions.md`. An ADR is only for a decision that is hard to reverse, surprising without context, and the result of a real trade-off. Numbers that contradict a decision are the strongest argument there is, and the README's measured section is where they go, with the script that produced them.

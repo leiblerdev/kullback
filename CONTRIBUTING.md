@@ -1,10 +1,10 @@
 # Contributing to Kullback
 
-Thanks for looking. This file says how to get a change in and what a change has to respect. The design lives in `docs/architecture.md` and the reasons in `docs/decision-log.md`; when this file and those disagree, those win.
+Thanks for looking. This file says how to get a change in and what a change has to respect. The design lives in `docs/architecture.md` and the decisions in `docs/decisions.md`; when this file and those disagree, those win.
 
 ## Ways to help
 
-Open an issue for a bug, a wrong number in a report, a trace format I do not read, or a place where the design and the code disagree. Open a pull request for a fix or a small feature. For anything that changes a decision in the decision log, open an issue first and say which decision and why; the log records the alternative each decision beat, so read that entry before arguing against it.
+Open an issue for a bug, a wrong number in a report, a trace format I do not read, or a place where the design and the code disagree. Open a pull request for a fix or a small feature. For anything that changes a decision in `docs/decisions.md`, open an issue first and say which decision and why; read that entry, and its history in git, before arguing against it.
 
 Good first contributions: an ingest mapper for a trace format you use (OpenTelemetry GenAI, Claude Code JSONL, MCP logs), a canonicalization rule with a test, a survivor from `mutmut` turned into a real test, a number in the README's Environments table that you can check or extend.
 
@@ -60,9 +60,9 @@ Commit messages say what changed and why in the first line, in the imperative, u
 
 ## Changing the design
 
-Small clarifications go straight into `docs/architecture.md` in the same pull request as the code. A change of decision needs a new entry in `docs/decision-log.md` with the next D number, what it replaces, and the alternative it beat. An ADR in `docs/adr/` is only for a decision that is hard to reverse, surprising without context, and the result of a real trade-off; most changes are not that.
+Small clarifications go straight into `docs/architecture.md` in the same pull request as the code. A change of decision needs a new entry in `docs/decisions.md` with the next D number; the entry it replaces moves to Retired. An ADR in `docs/adr/` is only for a decision that is hard to reverse, surprising without context, and the result of a real trade-off; most changes are not that.
 
-New numbers from an experiment go into `docs/builds/README.md` or a decision log entry, with the script that produced them and the seed and held-out figures side by side. Numbers without the script do not get merged.
+New numbers from an experiment go into `docs/builds/README.md` or a decision entry, with the script that produced them and the seed and held-out figures side by side. Numbers without the script do not get merged.
 
 ## Reporting problems with a customer's data
 
