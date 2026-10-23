@@ -201,7 +201,7 @@ def send_back(written: Written, inputs: Any, model: Any, *, model_id: Optional[s
     counts.pop(UNCHECKED_END, None)
     if left := unchecked_end(spec):
         counts[UNCHECKED_END] = left
-    counts["unsatisfiable"] = sorted({item_id for item_id, _ in I.contradictions(item_checks(spec))})
+    counts["unsatisfiable"] = sorted({item_id for item_id, _ in I.contradictions(item_checks(spec), world)})
     return Written(spec, counts, fixed.session), float(fixed.session.get("usd") or 0.0)
 
 

@@ -41,8 +41,10 @@ UNCHECKED_END = "unchecked_end"
 # and no rendered fact gives it, or the Task's References exist and none holds every gate.
 PRECONDITION_UNRENDERED = "precondition_unrendered"
 NO_REFERENCE_HOLDS = "no_reference_holds"
+# A Run that makes no call and says nothing holds every code gate and no gated judge or said item stands (D441).
+IDLE_RUN_PASSES = "idle_run_passes"
 REASON_CODES = (QUOTE_MISSING, *RULING_CODES, NO_AGREEMENT, EMPTY_SPEC, UNSATISFIABLE_SPEC, INTENT_STRAYED,
-                UNCHECKED_END, PRECONDITION_UNRENDERED, NO_REFERENCE_HOLDS)
+                UNCHECKED_END, PRECONDITION_UNRENDERED, NO_REFERENCE_HOLDS, IDLE_RUN_PASSES)
 
 
 def code_of(value: Any) -> str:
@@ -108,7 +110,7 @@ def task_set_aside(bus: Any, task_id: str, reason: str, rounds: int):
                                                "rounds": int(rounds)})
 
 
-__all__ = ["EMPTY_SPEC", "EVENT_NAMES", "INTENT_STRAYED", "NO_AGREEMENT", "NO_REFERENCE_HOLDS",
+__all__ = ["EMPTY_SPEC", "EVENT_NAMES", "IDLE_RUN_PASSES", "INTENT_STRAYED", "NO_AGREEMENT", "NO_REFERENCE_HOLDS",
            "PRECONDITION_UNRENDERED", "QUOTE_MISSING", "REASON_CODES", "REVIEW_ROUND",
            "RULING_ANSWERED", "RULING_CLOSED", "RULING_CODES", "RULING_FILED", "SPEC_DEFENDED", "SPEC_REPAIRED",
            "SPEC_REPAIR_DEFERRED", "SPEC_WRITTEN", "TASK_SET_ASIDE", "UNCHECKED_END", "UNSATISFIABLE_SPEC", "code_of", "excerpt_ref",

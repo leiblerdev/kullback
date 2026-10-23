@@ -289,6 +289,30 @@ def test_two_gated_called_items_on_one_tool_with_different_args_contradict_and_o
         == ["c2"]
 
 
+def test_two_gated_calls_of_one_tool_contradict_only_when_they_write_one_row_two_ways():
+    """D440: with a World, calls on other rows, lookups and calls that make their own row each stand."""
+    def called(name, tool="update_item", **args):
+        return {"id": name, "kind": "called", "tool": tool, "gate": True, "args": args}
+    at = I.World(STATE, POLICY, FACTS, TOOLS)
+    assert I.contradictions([called("c1", item_id="A1", slot="seven"), called("c2", item_id="B2", slot="eight")],
+                            at) == []
+    found = I.contradictions([called("c1", item_id="A1", slot="seven"), called("c2", item_id="A1", slot="eight")], at)
+    assert [item_id for item_id, _ in found] == ["c2"] and "one row two ways" in found[0][1]
+    assert I.contradictions([called("c1", "list_items", item_id="A1"), called("c2", "list_items", item_id="B2")],
+                            at) == []
+    made = I.World(STATE, POLICY, FACTS, TOOLS, effects={"update_item": {"makes": ["items"]}})
+    assert I.contradictions([called("c1", item_id="A1", slot="seven"), called("c2", item_id="A1", slot="eight")],
+                            made) == []
+
+
+def test_a_call_targets_the_rows_its_arguments_name_in_the_tables_it_writes():
+    effects = {"update_item": {"writes": [{"table": "items", "field": "slot"}], "columns": []}}
+    at = I.World(STATE, POLICY, FACTS, TOOLS, effects=effects)
+    assert at.target_rows("update_item", {"item_id": "B2", "slot": "four"}) == {("items", "B2")}
+    assert at.target_rows("list_items", {"item_id": "B2"}) == set()
+    assert at.target_rows("update_item", {"item_id": "Z9"}) == set()
+
+
 def _event(item_id, kind, **extra):
     return dict({"id": item_id, "kind": kind, "tool": "update_item", "fact_ids": ["f1"]}, **extra)
 
@@ -372,7 +396,7 @@ def test_a_free_field_holding_a_value_an_intent_fact_names_is_refused():
     assert world().check(item, KNOWN, unwitnessed)[1] == "", "no fact names a slot the world holds"
 
 
-def test_an_echo_fact_is_never_the_sole_source_of_a_gate_value_but_a_scored_item_may_cite_it():
+def test_a_gate_whose_value_only_an_echo_fact_gives_is_weighed_and_a_scored_item_may_cite_it():
     """Two turns: the agent proposes slot 9, the user says yes. The fact is echo by code."""
     from kullback.spec.intent_tools import UserTurn, is_echo
     turn = UserTurn(index=1, text="Yes, that works.", agent_before="I can move A1 to slot 9 for you, ok?")
@@ -386,7 +410,7 @@ def test_an_echo_fact_is_never_the_sole_source_of_a_gate_value_but_a_scored_item
             "fact_ids": ["f3"]}
     gate_world = I.World(STATE, POLICY, [*FACTS, echo], TOOLS)
     kept, why = gate_world.check(item, known, unwitnessed)
-    assert kept is None and "echo" in why
+    assert kept["gate"] is False and kept["weighed"] == I.ECHO_WEIGHED and "rests only on echo facts" in why
     kept, why = gate_world.check({**item, "gate": False}, known, unwitnessed)
     assert why == "" and kept["gate"] is False
 

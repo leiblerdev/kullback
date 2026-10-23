@@ -101,7 +101,8 @@ def test_the_choice_rule_asks_whether_a_right_solve_would_pass_and_never_moves_a
 
 def test_no_verifier_reasons_add_the_stage_end_veto_but_never_a_reference_wrong_set_aside(tmp_path):
     assert ROUTER.NO_VERIFIER_WHYS == (ROUTER.INTENT_UNCLEAR, ROUTER.INTENT_STRAYED, ROUTER.UNCHECKED_END,
-                                       "precondition_unrendered", "no_reference_holds")
+                                       "precondition_unrendered", "no_reference_holds",
+                                       "idle_run_passes")
     assert not hasattr(ROUTER, "REFERENCE_WRONG")
     root = _told(tmp_path)
     spec = load_spec(root, "t1")

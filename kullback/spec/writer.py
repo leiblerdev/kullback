@@ -46,7 +46,7 @@ from kullback.spec import effects as tool_effects
 from kullback.spec import events, writer_tools
 from kullback.spec import items as I
 from kullback.spec.actions import action_tables_of, action_tools_of
-from kullback.spec.compile import Compiled, compile_spec, merged_atoms, merged_cells
+from kullback.spec.compile import Compiled, compile_spec, merged_atoms, merged_cells, merged_new_rows
 from kullback.spec.ground import coverage
 from kullback.spec.intent_tools import mark_echo, mark_side, recordings_of, task_of, trace_index
 from kullback.spec.must_not import must_not
@@ -519,7 +519,7 @@ def writer_messages(inputs: WriterInputs) -> tuple[list[dict], int]:
 def world_of(inputs: WriterInputs) -> I.World:
     """The world the writer's tools read and its values are sourced from."""
     return I.World(inputs.state, inputs.policy_text, inputs.intent.facts, inputs.tools, inputs.columns,
-                   inputs.signatures, inputs.reach)
+                   inputs.signatures, inputs.reach, inputs.canon, inputs.effects)
 
 
 def store_of(inputs: WriterInputs, items: Iterable[dict] = (), ruled: Optional[set[str]] = None,
@@ -694,7 +694,8 @@ def _side_counts(intent: SpecIntent, items: list[dict]) -> dict:
 
 def _clash_rows(store: writer_tools.ItemStore) -> list[dict]:
     """Items no run can pass together, each with why, as one send-back turn lists them."""
-    return [{"id": item_id, "reason": why} for item_id, why in I.contradictions(list(store.items.values()))]
+    clashes = I.contradictions(list(store.items.values()), store.world)
+    return [{"id": item_id, "reason": why} for item_id, why in clashes]
 
 
 def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Optional[str] = None,
@@ -732,7 +733,7 @@ def write_spec(task_id: str, inputs: WriterInputs, model: Any, *, model_id: Opti
     items = list(store.items.values())
     counts = _store_counts(store)
     counts.update(sent_back=len(clashes), unsatisfiable=sorted(
-        {item_id for item_id, _ in I.contradictions(items)}),
+        {item_id for item_id, _ in I.contradictions(items, store.world)}),
         asked_sent_back=len(missing), truncated_chars=cut, unfinished=bool(session.get("unfinished")))
     spec = _spec_of(task_id, items, counts, inputs, store.rebuttals)
     left = unchecked_end(spec)
@@ -758,9 +759,11 @@ def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:
 
     Checks of the older demand grammar compile to atoms beside the items, with the must-not atoms when
     the Spec has no item; nothing else gates on them (the Spec stage rewrites such a Spec as items). A
-    repeated item atom or end state cell is folded into one, each fold a line of the reasons (D428).
+    repeated item atom or end state cell is folded into one, each fold a line of the reasons (D428). Row_new items
+    one made row answers are one item, each fold a line too (D440).
     """
-    items = item_checks(spec)
+    world = world_of(inputs)
+    items, joined = merged_new_rows(item_checks(spec))
     legacy = spec.model_copy(update={"checks": [c for c in spec.checks if not is_item_check(c)]})
     compiled = compile_spec(legacy, inputs.write_tools, inputs.canon, inputs.sections, inputs.action_tools)
     atoms = list(compiled.verifier.atoms)
@@ -769,13 +772,13 @@ def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:
         atoms += must_not(must, spec.intent.text, inputs.constraints, sorted(inputs.write_tools))
     expected, merged = [], []
     if items or not legacy.checks:
-        expected, merged = merged_cells(I.end_states_of(items, world_of(inputs), inputs.action_tables, inputs.effects))
+        expected, merged = merged_cells(I.end_states_of(items, world, inputs.action_tables, inputs.effects))
         own, folded = merged_atoms([I.atom_of(item) for item in items])
-        atoms, merged = own + [I.sanity_atom(expected)] + atoms, merged + folded
+        atoms, merged = own + [I.sanity_atom(expected)] + atoms, joined + merged + folded
     verifier = Verifier(task_id=spec.task_id, atoms=atoms,
                         verifier_version=f"spec{spec.version}", seed_run_ids=[], expected=expected)
     return Compiled(verifier, compiled.dropped, compiled.reasons + tuple(merged),
-                    compiled.unsatisfiable + tuple(I.contradictions(items)))
+                    compiled.unsatisfiable + tuple(I.contradictions(items, world)))
 
 
 def runner_verifier_path(workdir: Path, task_id: str) -> Path:

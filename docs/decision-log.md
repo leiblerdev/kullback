@@ -4579,3 +4579,170 @@ unscored trials stay unscored. This changes what a pass means, not what the agen
 Tests: tests/hub/test_harbor.py (a Run holding every gate but missing a weighted item passes in Harbor with its
 shaped reward below 1 in items.json; a failed gate gives 0 whatever the weighted items say; the shaped reward is the
 Verdict score), tests/hub/test_publish.py (the card says in one line that reward.txt is a pass or a fail).
+
+### D438. A value the user gave is licensed three ways, an echo value only by them (2026-10-19)
+
+What. `World.licence` (spec/items.py) licenses a value when a rendered Intent fact (no echo, nothing ruled
+unfounded, no scenario end; `items.rendered`, which spec/stage.py now imports) or a policy line names it; or a
+rendered fact names a world row, by its key or by one field value (three characters or more) that picks one row of
+its table, and that row holds the value in some field (`World.named_rows`); or the value equals a rendered fact's
+words after the Environment's canon (the scorer's, passed to the World by the writer), with hyphens read as spaces
+and case folded (`items.folded`). No abbreviation table, no domain list. "Find, do not invent" (`World._unfound`)
+keeps refusing a value no user turn, policy line, world row or tool write holds and no licence reaches, and its
+refusal names the three ways (`LICENCE_WAYS`). A gated row_is or row_new value whose only user source is an echo
+fact (the user said yes to the agent's own offer) stays a gate only where one of the three ways holds; else the
+item is weighed with reason `echo` (`ECHO_WEIGHED`) and a line naming the three ways. This replaces the echo-only
+refusal, which also kept a gate when the item's own row held the value. A choice ("cheapest") is no licence.
+
+Why. The retail hand re-spec found gates the writer had to weigh because the echo rule read the user's words
+literally (3 of 47 Tasks). D434's literal pick check was held back (17 of 17 refusals rated wrong); this widens
+what licenses instead. On the 309 staged Tasks, each state cell checked alone as a gate: airline 5 values in 1
+Task and retail 29 in 19 newly kept, all by the row licence; canon licensed none that literal matching missed.
+Echo-sourced values forced to a gate: airline 12 kept before, 17 after; retail 60 and 88. As written, echo values
+in gated items: airline 12 and 12, retail 43 and 42 (one item of one Task weighed). Ten newly licensed values
+read against the ask: 8 right, 2 wrong, both a product row holding every variant where the ask left several
+open. A cheapest pick passes the same way when the named row holds it. The ask's "my other order" and an
+abbreviated city license nothing, so the address read off another row stays weighed.
+
+Tests: tests/spec/test_licence.py (a value a rendered fact or the policy names is licensed and its echo gate
+stands; a value on the row a fact names by key or by one picking value is licensed; a value two rows hold picks no
+row; canon, hyphen, space and case folding license; a value only canon licenses passes the no-invention rule; an
+abbreviation or a choice licenses nothing and the echo gate is weighed naming the three ways; a value nothing holds
+is refused naming them; echo, unfounded and end facts license nothing), tests/spec/test_items.py (an echo-only
+gate is weighed).
+
+### D441. A Verifier an idle Run passes ships only with a gated judge or said item (2026-10-19)
+
+What. At the Spec stage the compiled Verifier is scored on the idle Run (no call, no reply; trust.idle_run, the
+runner's verdict, judge items unsettled). If no code gate fails on it (state, sanity and event items), the Verifier
+must carry a gated judge item or a gated said item naming a value. If it carries neither, `spec/stage.py
+idle_send_back` sends the Spec back to the writer once at write time (after the ungated send back, D419), ruling on
+its gated code items and naming each gate the idle Run holds; the writer count idle_sent_back keeps those gates and
+write_specs counts it. After the Examiner, `end_unpassable` judges again: still so, the Task ends with no Verifier
+as idle_run_passes through the same path as D439 (set_aside, Verifier files removed, task.set_aside on the bus,
+counted as set_aside_idle_run_passes, a router.NO_VERIFIER_WHYS reason the tier report counts). An idle Run that
+fails a code gate changes nothing. A Spec already set aside for clashes or an unchecked end is not sent back.
+
+Why. Gold-blind retail edits left 9 of 45 Verifiers passing the idle Run on every code gate, 3 with no judge gate,
+so a do-nothing agent passed those Tasks outright; the Harbor empty-trial control found the same shape on airline.
+Most are asks the policy refuses, where no write is the right end and only a judge item sees that the right Run
+looked up and told the user why. D419's held_by_idle mark covers only Specs whose end names a write; this rule
+covers every Task. On the 309 staged Verifiers no Task would end (airline 42 of 123 pass the idle Run on code
+gates, all with a gated judge item; retail 1 of 186, likewise); on the 45 blind retail Verifiers 3 would end.
+
+Tests: tests/spec/test_stage_idle.py (a Verifier whose idle Run fails a code gate is neither sent back nor ended; a
+no-write Verifier with a gated judge item keeps it; one of code gates only goes back once and unchanged ends with no
+Verifier; a send back answered with a gated judge item keeps it; a gated said item naming a value counts as told),
+tests/spec/test_ungated.py (counts of calls with the added send back).
+
+### D440. Two compile rules no longer fail right Runs: calls per row, one made row (2026-10-19)
+
+What. Two rules in the Spec compile and the writer's checks (spec/items.py, spec/compile.py, spec/writer.py).
+First, two gated called items on one tool with different args contradict only when both write one existing row
+with an argument both name set two ways (`items.contradictions(items, world)`, `World.target_rows`): the target
+row is a row of a table the tool's learned effects write whose key a scalar argument names; a read tool and a tool
+that makes a row each call target none. A called item holds for a call carrying its args, so one call answers two
+items on one row that set no argument two ways. With no World every pair still clashes (D392). Second, two row_new
+items on one table, in one end state, with one count and one gate, whose where clauses set no field two ways, are
+one item: the where clauses joined, the first id, gate and weight kept, both items' facts cited, a "merged" line in
+the compile reasons (`merged_new_rows`, run in `verifier_of` before the end states). A weighed item never folds into
+a gated one, as `merged_cells` keeps a weighed check from becoming a gate; such a pair stays two items.
+`new_row_overlaps` refuses only the subset pairs no fold can join. A third rule, weighing a hand-off gate nothing
+puts out of scope (`handoff_optional`), was held back, as D434 was: on three fresh examples one was right, and the
+weighed hand-off lets a Run that never hands off pass where the policy requires the hand-off. That leniency is a
+gaming route; the old strictness on a right decline is the smaller harm, and D439 ends such Tasks when References
+disagree. The hand-off rule stays as before (a hand-off gates only where its policy line names one).
+
+Why. On the 309 staged Specs of the first Harbor run, recompiled at this head (base 819840a0 against this branch,
+read in place): Tasks named unsatisfiable go from 18 to 6 airline and 18 to 9 retail. All 20 Tasks with a
+called-args clash (11 airline, 9 retail) lose it; in 8 of their pairs both calls write one row, and none sets an
+argument two ways. The 2 airline Tasks with a row_new overlap lose it. Row_new folds: airline 13 in 7 Tasks, retail
+none; 3 weighed-into-gated pairs in 2 Tasks are kept apart. Rescored on the recorded trials with their judge
+answers, no pass is lost and one airline fail passes (a booking whose three row_new items one made row answers);
+D422 drops are unchanged. Read against the ask (pre-registered seven of these two rules): 7 right.
+
+Tests: tests/spec/test_items.py (two gated calls of one tool contradict only when they write one row two ways; a
+call targets the rows its arguments name in the tables it writes), tests/spec/test_said_once.py (new-row specs one
+made row can answer are one item whose where is the union; a weighed one never folds into a gated one; a merged
+pair passes the Verdict on one made row; a subset pair with other counts is still refused).
+
+### D431. A cell on a one-member start list is named by its index at export (2026-10-19)
+
+What. Before the D423 gate, the Harbor export reads each Verifier cell the scorer cannot read against the Task's
+start row, the row the writer saw (hub/repair.py `resolve_cells`). Where every list the path meets at a part that is
+not an index holds exactly one member there, the path names that member by index 0 (row.list.leaf becomes
+row.list.0.leaf); the gate then reads the cell like any other. The resolution reads the start row only, never the
+Reference, and never changes a value, a gate or a weight; it runs on the start row before the D429 prune. A cell on
+a list of several members, or of none, is left as it is, so its Task still goes to the D423 gate and waits for the
+writer with the D423 message. The manifest row of each exported Task carries `cells_resolved` ("table: old path ->
+new path") and the counts their total. This narrows D423, which refused a one-member list as well.
+
+Why. A list of one member on the start row can only have meant that member; a tool may append members later, and the
+cell still names the one that was there. Writing the 38 set-aside Tasks again needs model calls. On the staged
+packages 2 airline and 10 retail one-member paths resolve, but only 2 retail Tasks (and 1 of the bench's
+scenario-born airline Tasks) have every unreadable cell on a one-member list; the other 36 hold a cell on a list of
+2 to 5 members and stay aside. Rescored on the recorded bench trials, one retail fail becomes a pass when a pass is
+every gate holding (D433).
+
+Tests: tests/hub/test_repair.py (a cell on a one-member start list is named by index and its value kept; a cell on a
+list of several members is left unreadable; a readable cell is never touched), tests/hub/test_harbor.py (a cell on a
+one-member start list ships named by index and the manifest says so; a cell the scorer cannot read on a
+several-member list still sets the Task aside).
+
+### D432. What a required tool always moves is allowed, not collateral (2026-10-19)
+
+What. The Harbor export adds to each end state's allowed list the columns the learned effects
+(exam/review/effects.json, spec/effects.py) say a tool the Verifier requires moves on every call (hub/repair.py
+`allow_effects`), each with why "free: learned effect: <tool>". Required are a tool a called item names, the one
+tool whose learned effects alone answer a declared row (the Spec stage's `expected_tools`), and a tool the Task's
+kept References call on a table the end state declares a row in. A rule frees the column on the declared rows of its
+table, or on every row where the end state declares none; a column a cell checks, or a rule already frees, gains
+nothing. Effects of tools the Verifier does not require are not added, so a stray write still fails sanity. Where
+the workdir has no effects file, or one whose every writes list is empty, the effects are learned again from the
+recordings offline (builder/tool_effects.py `learn`) and the manifest row says so (`effects_from`); each Task's row
+counts its added rules (`effects_allowed`). Made rows are not freed: the only allowed rule that admits a made row
+frees every column of every row of its table.
+
+Why. The sanity item failed Runs on the world's own effects (a seat count, a payment history) where a Spec was
+written without learned effects (D417). Over the staged packages 13 airline, 33 retail and 25 of the bench's
+scenario-born airline Tasks gain rules (at most 5, 18 and 4 per Task). Rescored on the recorded bench trials, three
+scenario-born fails become passes when a pass is every gate holding (D433), two at shaped reward 1, and no recorded
+pass is lost; the real sets move by none. A column a tool moves only on some calls (a payment method's balance) is
+not learned as an always effect, so those fails remain. The Verifier-implied tool came after a first rescore showed
+scenario-born Tasks have no called item and no Reference.
+
+Tests: tests/hub/test_repair.py (a required tool frees what it always moves so a right Run passes sanity; a tool the
+Verifier does not require frees nothing so its write still fails sanity; the one tool whose learned effects alone
+answer a declared row is required; a declared row two tools could answer requires neither; the Reference's tool on a
+declared table is required and one on another table is not; a column a cell checks or a rule already frees gains no
+rule; a stale effects file is learned again and says so), tests/hub/test_harbor.py (what the oracle tool always
+moves reaches the shipped Verifier as allowed and is counted).
+
+### D437. A list leaf cell compiles to one cell per member; a list where path is refused (2026-10-21)
+
+Decision. The Harbor export's repair step (hub/repair.py `resolve_cell`) reads a cell whose path meets a list at a
+non-index part on the Task's start row. A value that is a list with one entry per member of that list compiles to one
+indexed cell per member: the same gate, the weight split evenly, value i on member i. Members a required tool appends
+count where that tool's learned effects write into the list (a `<list>.N` pattern); the effects file does not say how
+many members a call appends, so the value's excess over the start members is taken as appended only where such a tool
+exists. Where every start member's own leaf is among the values, each member takes its own and the rest follow in the
+writer's order. A one-member list with one value keeps D431 (index 0, value and weight kept): D431 is now the one
+member case of this function. A value list whose length does not match, one value under a list of several members,
+and a member leaf that is itself a list stay as they are, and the D423 gate sets the Task aside: no member is guessed.
+The export's D423 gate (hub/harbor.py `unreadable_cells`) also reads each where key of a declared new row on the start
+rows of its table and sets the Task aside as UNREADABLE_CELL, naming the new row. A called rule over a set of values
+(spec/atoms.py `called_set_atom`), not a prohibition, tests every member of a list argument against the set
+(hub/repair.py `list_sets`); the manifest counts the rules changed (`list_sets`). The Reference is never read.
+
+Why. The writer wrote a list leaf as the whole list, and the scorer reads a list only by its index, so the cell never
+held. On the recompiled originals of the 309 bench Tasks, 30 Tasks gain projected cells (7 airline, 23 retail), 10
+airline Tasks are set aside for a new row where path through a list, and 7 called rules change (4 airline, 3 retail).
+Rescored on the recorded bench trials against the same compile without D437, 16 Tasks move to a pass (3 airline, 13
+retail; 12 of the retail ones were set aside before) and no pass is lost.
+
+Tests: tests/hub/test_repair.py (a list value with one entry per start member becomes one indexed cell per member with
+the weight split; members whose leaves are unchanged are matched in the start row's order; a member a required tool
+appends counts so the longer list projects; a list value whose length is not the member count is left unreadable; one
+value under a list of several members is left unreadable; a one-member list with one value is still named by index 0;
+a new row where path through a list without an index is named unreadable; a called set tests every member of a list
+argument against the set; a prohibited called set is not widened).
