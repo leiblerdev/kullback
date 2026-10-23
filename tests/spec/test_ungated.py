@@ -17,7 +17,7 @@ from kullback.spec.schema import load_spec
 from kullback.spec.stage import write_from_intent
 from tests.spec import test_stage as S
 from tests.spec.fixtures import fn
-from tests.spec.test_writer import DONE, ROW, STATE, _workdir, add, inputs
+from tests.spec.test_writer import DONE, ROW, STATE, _workdir, add, call, inputs
 
 MOVE = "Item A1 moves to slot seven."
 AT_START = dict(ROW, expect={"slot": "two"}, fact_ids=["f1", "end1"])
@@ -122,7 +122,8 @@ def test_the_stage_counts_a_spec_marked_ungated_and_held_by_the_idle_run(tmp_pat
 def test_a_spec_with_no_write_end_is_untouched_by_all_three(tmp_path):
     told = {"id": "j1", "kind": "said", "values": ["seven"], "gate": True, "fact_ids": ["end1"]}
     ended = _ended("The user is told slot seven.")
-    written = W.write_spec("t1", ended, TestModel([add(dict(ROW, expect={"slot": "two"}), told), DONE]))
+    rebut = call("rebut_fact", fact_id="end1", why='the end names it: "The user is told slot seven."')
+    written = W.write_spec("t1", ended, TestModel([add(dict(ROW, expect={"slot": "two"}), told), DONE, rebut, DONE]))
     assert U.write_facts(written.spec, ended.write_tools) == []
     assert U.send_back(written, ended, TestModel([])) == (written, 0.0)
     verifier = W.verifier_of(written.spec, ended).verifier

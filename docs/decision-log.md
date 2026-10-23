@@ -4746,3 +4746,54 @@ appends counts so the longer list projects; a list value whose length is not the
 value under a list of several members is left unreadable; a one-member list with one value is still named by index 0;
 a new row where path through a list without an index is named unreadable; a called set tests every member of a list
 argument against the set; a prohibited called set is not widened).
+
+### D426. An end fact sources a gated value only for a field no tool reach knows (2026-10-19)
+
+What. In the reach check (D387), a fact of the scenario's end counts as the user's own words only for a field no
+tool reach knows: no learned write of that table and field and no recorded write result under that field name.
+Where a tool reach knows the field, a gated value must come from a tool write, a start row, a real user turn or an
+argument the field is copied from; else it is refused with the field's reachable values, in the refusal's old
+wording. A free value only the end names, under a field no tool writes, stays reachable from the end.
+
+Why. In a hand audit of born Tasks, six of sixteen gates no Run could hold set a status cell to the spelling a
+tool's description gave, while the tool writes another. The scenario end copied the description, the end became an
+end fact, and the reach read it as the user fixing the value, so the gate was kept and every Run failed it. The
+tool's own spelling was in its reach all along. With the end out of the user's words for such a field, the writer
+is refused and re gates on the listed spelling, the way D410 lets a refused writer try again within its turns.
+
+Tests: tests/spec/test_reach.py (a gated value only the end spells is refused where a tool writes the field another
+way, listing the tool's spelling; a value the end names stays reachable for a field no tool reach knows; a real
+user turn still sources a value for a field a tool writes).
+
+### D435. A told item resting on end facts alone is weighed (2026-10-19)
+
+What. A told item (judge, said) whose cited facts are all end facts (D410, writer.end_facts), with no fact from a
+user turn and no policy line, is weighed (gate false) with the note "told gate weighed: only the end names it" and
+the reason end told kept on the item. It stays gated where any cited fact comes from a user turn or its policy line
+requires the telling. D369's rule stands beside it: a told item with no told fact, no end fact and no policy line
+is still weighed as untold. The writer's end rule now says so, and an end fact that only names a telling goes to
+rebut_fact.
+
+Why. In a hand audit of 210 born Tasks, told gates the user never asked for (a refund timeline, a card named, two
+amounts quoted) were kept because the scenario end narrated them and an end fact counted as a foundation for a
+told gate. A Run whose agent meets the ask without that telling failed. The founder's Harbor learning is to weigh
+nothing the user never asks for, and an end fact is never the user's words; D426 drew the same line for a value a
+tool writes.
+
+Tests: tests/spec/test_spec_end.py (a said and a judge item citing only end facts are weighed with the note; the
+same item citing a user turn fact stays gated; the same item with its policy line stays gated; a writer rebutting
+a told end fact passes the end check), tests/spec/test_ungated.py (a told end fact answered by rebut_fact).
+
+### D436. A freeze on a cell the Spec's own write changes contradicts that write (2026-10-19)
+
+What. `items.contradictions` names a row_keeps item when a row_is (expect) or row_new (where) of the same end state,
+on the same table and the same resolved row, names one of its fields; the reason names the item that changes the
+cell. Like every contradiction it goes back to the writer once, and one still there makes the Spec unsatisfiable.
+A row_new mints its row, so it names a kept row only where it carries that row.
+
+Why. In the same audit, freezes held a cell the Spec's own write changes: a list field frozen on a row whose
+row_is expects the new entry in it, so every correct Run failed the Verifier. World.check sees one item at a
+time, so the rule sits where the kept items are read together.
+
+Tests: tests/spec/test_items.py (a freeze on a field a row_is of that row expects contradicts, naming the write;
+a freeze on another field or another row stands).
