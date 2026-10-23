@@ -22,9 +22,9 @@ TOOLS = [{"name": "move_widget", "kind": "write", "description": "Move one widge
          {"name": "get_widget", "kind": "read", "description": "Read one widget.",
           "args_fields": [{"name": "widget_id"}]}]
 STATE = {"widget_rows": {"W1001": {"widget_id": "W1001", "slot_code": "two", "is_sealed": False,
-                                  "holder_name": "Ada Byron"},
+                                  "holder_name": "Ada Byron", "holder_id": "holder_7"},
                         "W1002": {"widget_id": "W1002", "slot_code": "four", "is_sealed": True,
-                                  "holder_name": "Ada Byron"}},
+                                  "holder_name": "Ada Byron", "holder_id": "holder_7"}},
          "holder_rows": {"holder_7": {"holder_name": "Ada Byron", "contact_mail": "ada@example.org"}}}
 OPENINGS = {"task-a1": "Hi, I need my widget moved to slot seven please.",
             "task-b2": "Can you move my widget to another slot? It is already sealed.",

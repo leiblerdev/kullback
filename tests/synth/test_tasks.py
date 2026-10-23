@@ -9,7 +9,7 @@ from kullback.runner.records import RawPtr, Task, Trace, as_dict, write_json
 from kullback.runner.world.loading import load_overlay
 from kullback.spec.intent_tools import recordings_of, task_of, trace_index
 from kullback.spec.writer import scenario_end
-from kullback.synth.records import Source, born, write_all
+from kullback.synth.records import Source, born, listed, write_all
 from kullback.synth.tasks import (
     END_FIELD,
     bears_task,
@@ -29,7 +29,7 @@ END = "The widget W1001 sits in slot seven; the holder is told the new slot."
 
 def _scenario(statement, status="passed", source=RECORDINGS, binding=None, requires=(), ask=None, end=END):
     record = born(statement, source)
-    return record.model_copy(update={"status": status, "binding": dict(BOUND if binding is None else binding),
+    return record.model_copy(update={"status": status, "binding": listed(BOUND if binding is None else binding),
                                      "requires": list(requires), "ask": statement if ask is None else ask,
                                      "end": end})
 

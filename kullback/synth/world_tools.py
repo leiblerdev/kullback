@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from kullback.agent.tools import AgentTool
 from kullback.examiner.domain_tools import find_tools
 from kullback.spec.writer_tools import read_tools
+from kullback.synth.records import bound_keys
 from kullback.synth.rule import World
 
 NAMES = ("lookup_rows", "search_rows", "find_tools")
@@ -113,7 +114,7 @@ def world_tools(world: World) -> list[AgentTool]:
 
 def binding_refusal(binding: dict, world: World) -> str:
     """The first binding entry the world does not hold, named as table and key, or nothing."""
-    for table, key in (binding or {}).items():
+    for table, key in bound_keys(binding):
         rows = world.state.get(str(table))
         if not isinstance(rows, dict) or str(key) not in rows:
             return f"table {table!r} key {key!r}"

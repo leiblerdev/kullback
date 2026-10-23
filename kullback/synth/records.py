@@ -16,7 +16,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Iterable, Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from kullback.runner.records import Record, read_json, write_json
 
@@ -58,9 +58,10 @@ class Source(Record):
 class Scenario(Record):
     """One real-world situation: the statement, its source, the policy lines it touches, how often the
     recordings open with it, the Examiner's verdicts and its status; the plan's situation and variant it
-    was written for, the rows of the world it is bound to (table to key) and what the world lacks for it
-    (D381); the user's own opening words, first person, and what the world looks like after a correct
-    agent (both empty on older records); the plan's kind a search scenario names (D410), empty for the rest."""
+    was written for, the rows of the world it is bound to (table to its keys, D420; the older one key form is
+    read as a list of one) and what the world lacks for it (D381); the user's own opening words, first person,
+    and what the world looks like after a correct agent (both empty on older records); the kind it was written
+    for (D410, D420), empty where its situation names it."""
 
     id: str
     statement: str
@@ -74,11 +75,29 @@ class Scenario(Record):
     fixes: int = 0
     situation: str = ""
     variant: str = ""
-    binding: dict[str, str] = Field(default_factory=dict)
+    binding: dict[str, list[str]] = Field(default_factory=dict)
     requires: list[str] = Field(default_factory=list)
     ask: str = ""
     end: str = ""
     kind: str = ""
+
+    @field_validator("binding", mode="before")
+    @classmethod
+    def _keys(cls, value: Any) -> Any:
+        return listed(value) if isinstance(value, dict) else value
+
+
+def listed(binding: Any) -> dict[str, list[str]]:
+    """A binding as table to a list of keys; a table naming one key in the older form becomes a list of one."""
+    out: dict[str, list[str]] = {}
+    for table, keys in (binding or {}).items():
+        out[str(table)] = [str(keys)] if isinstance(keys, (str, int)) else [str(key) for key in keys or ()]
+    return out
+
+
+def bound_keys(binding: Any) -> list[tuple[str, str]]:
+    """Every (table, key) a binding names, in either form."""
+    return [(table, key) for table, keys in listed(binding).items() for key in keys]
 
 
 def scenario_id(statement: str, kind: str) -> str:
@@ -165,6 +184,6 @@ def load_scenarios(workdir: Any) -> list[Scenario]:
             for path in sorted(folder.glob("sc_*.json"))] if folder.is_dir() else []
 
 
-__all__ = ["ASKS", "DIR", "HUMAN", "INDEX", "MARKER", "GENERATED", "SETTLED", "SOURCE_KINDS", "STATUSES", "Scenario",
+__all__ = ["bound_keys", "listed", "ASKS", "DIR", "HUMAN", "INDEX", "MARKER", "GENERATED", "SETTLED", "SOURCE_KINDS", "STATUSES", "Scenario",
            "Source", "born", "load_scenario", "load_scenarios", "mask", "policy_lines_in", "record_path",
            "scenario_id", "store_dir", "write_all", "write_scenario"]

@@ -170,7 +170,9 @@ row with find_rows and read_row (cite it in confirms) or the rule with read_poli
 policy_line), and gate the branch the world selects, not the branch the recording took; a claim you \
 cannot confirm leaves the item scored. A called gate stands only where its policy_line names that tool as \
 the only way; code weighs any other. Gate who the user is by the outcome (the writes on the rows of the \
-user the agent found), never by which lookup tool found them."""
+user the agent found), never by which lookup tool found them.
+One judge question asks one thing, and never names the answer it wants.
+Gate only a value the user asked for or the policy demands; weigh any other."""
 
 END_RULE = """\
 # The scenario's end
@@ -182,7 +184,9 @@ and no policy line demands is weighed. Where an end fact says the change happens
 the user will say yes: gate the change (and a before item on confirm_turn where the policy asks for the \
 yes), never a not_called on it. Where the end has the user pick one of several writes, write each as its \
 own end state (alt 0, 1, ...), never both gated in one; where alt cannot hold them, gate neither and add \
-one gated judge item on the outcome. An end fact that needs no item of its own (a step on the way, what \
+one gated judge item on the outcome. A write's gate expects a value other than the start row's and carries \
+every number, id or quoted value the end names of the changed row; a before or called item never gates a write. \
+An end fact that needs no item of its own (a step on the way, what \
 the user does) goes to rebut_fact, copying its words. Code refuses a Spec with an end fact no gated item \
 cites and no rebuttal excuses."""
 

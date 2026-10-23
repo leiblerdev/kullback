@@ -11,8 +11,8 @@ from kullback.synth import generate_tools as T
 from kullback.synth import plan as P
 from kullback.synth import records as R
 from kullback.synth import report
-from tests.synth.fixture import BOUND, DESCRIPTION, PLANNED, REFUSE, URL, call, make_workdir, web
-from tests.synth.test_generate import MOVE, SPAN, _bound, _done, _results, _write
+from tests.synth.fixture import DESCRIPTION, PLANNED, REFUSE, URL, call, make_workdir, web
+from tests.synth.test_generate import MOVE, SPAN, _bound, _done, _quiet, _results, _write
 
 SEARCHED = "a holder asks to move a widget that is already sealed"
 SEALED_ASK = "Ada Byron asks to move her widget that is already sealed to slot one"
@@ -93,8 +93,8 @@ def test_a_scenario_of_a_search_born_situation_carries_its_span_and_lists_the_sp
 def test_a_search_scenario_takes_a_kind_from_the_plan_and_counts_under_it(tmp_path):
     workdir, plan = _planned_store(tmp_path, "change")
     model = TestModel([call("read_page", {"url": URL}, "s1"),
-                       _write("s2", SEARCHED, "search", url=URL, span=SPAN, binding=BOUND),
-                       _write("s3", SEARCHED, "search", url=URL, span=SPAN, binding=BOUND, kind="change"), _done()])
+                       _write("s2", SEARCHED, "search", url=URL, span=SPAN, openings=[0], kind="paint"),
+                       _write("s3", SEARCHED, "search", url=URL, span=SPAN, openings=[0], kind="change"), *_quiet()])
     generation = _searching(workdir, model)
     M.from_search(generation, engine=web(workdir)[0], refuse=REFUSE)
     [record] = generation.found
@@ -105,7 +105,7 @@ def test_a_search_scenario_takes_a_kind_from_the_plan_and_counts_under_it(tmp_pa
 
 def _round_model(*more) -> TestModel:
     """Round 1: the recordings session writes the planned situation's scenario, the loose search writes none."""
-    return TestModel([_bound("m0", MOVE, P.situation_id(PLANNED)), _done(), _done(), *more])
+    return TestModel([_bound("m0", MOVE, P.situation_id(PLANNED)), _done(), *_quiet(), *more])
 
 
 def test_a_target_runs_rounds_of_situations_from_the_web_and_their_scenarios_until_the_store_keeps_it(tmp_path):

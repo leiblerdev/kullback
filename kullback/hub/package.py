@@ -106,17 +106,6 @@ FUNNEL: tuple[str, ...] = ("clustered", "replay_confirmed", "reference_confirmed
                            "verifier_passed", "trusted")
 REFUSED_STAGE = "refused"
 
-# What stopped a Task, in the harness's own fixed words. A status row's own reason quotes the
-# customer's world back (see difficulty.py), so it never reaches a manifest or a card.
-STOPPED_AT = {
-    "clustered": "no replay of the Task was confirmed",
-    "replay_confirmed": "the Reference is not confirmed",
-    "reference_confirmed": "no Verifier was derived",
-    "verifier_derived": "the D79 suite did not pass",
-    "verifier_passed": "the Verifier passed the suite and is not the trusted one",
-    REFUSED_STAGE: "the Task was refused: no frontier Run of it finished",
-}
-
 
 class ExportError(RuntimeError):
     """An export that must not produce a package: a workdir with no Environment, or a leak."""
@@ -277,24 +266,6 @@ def funnel_stage(task_id: str, *, status_row: Any, replay_confirmed: bool, has_v
     return "replay_confirmed" if replay_confirmed else "clustered"
 
 
-def stopped_because(stage: str, status_row: Any) -> Optional[str]:
-    """Why a Task went no further, in fixed words; None for a Task that reached the top.
-
-    A Task stopped at the D79 suite names the checks that failed, because those names are the
-    harness's own and let a reader group the Tasks that stop there (D198). Nothing else off the
-    status row is quoted.
-    """
-    if stage == "trusted":
-        return None
-    reason = STOPPED_AT.get(stage, "")
-    if stage == "verifier_derived":
-        row = status_row if isinstance(status_row, dict) else {}
-        failed = sorted(name for name, ok in (row.get("checks") or {}).items() if ok is False)
-        if failed:
-            return f"{reason}: {', '.join(failed)}"
-    return reason
-
-
 def task_index(workdir: Path, task_ids: Iterable[str], *, workers: Optional[int] = 1) -> list[dict]:
     """One row per Task: the trust ruling, the funnel stage it reached, its difficulty record and bucket."""
     status = read_json(workdir / "task_status.json", {}) or {}
@@ -318,7 +289,6 @@ def task_index(workdir: Path, task_ids: Iterable[str], *, workers: Optional[int]
             "trusted": stage == "trusted",
             "refused": stage == REFUSED_STAGE,
             "stage": stage,
-            "stopped_because": stopped_because(stage, row),
             # D333: why a Task is not trusted, and the two flags that never gate (None: unscored).
             **{key: (trust.get(task_id) or {}).get(key) for key in TRUST_FIELDS},
             "replay_confirmed": confirmed,
@@ -372,21 +342,6 @@ def _domain_counts(workdir: Path) -> dict:
         return {}
     named = ("archetypes_extracted", "archetypes_mapped", "archetype_gaps")
     return {key: int(counts[key]) for key in named if counts.get(key)}
-
-
-def untrusted_reasons(rows: Iterable[dict]) -> dict:
-    """How many Tasks are not trusted and every reason, commonest first, in the harness's fixed words, so the
-    reasons sum to the count."""
-    counted: dict[str, int] = {}
-    total = 0
-    for row in rows:
-        if row.get("trusted"):
-            continue
-        total += 1
-        reason = row.get("stopped_because") or "not trusted"
-        counted[reason] = counted.get(reason, 0) + 1
-    ranked = sorted(counted.items(), key=lambda pair: (-pair[1], pair[0]))
-    return {"count": total, "reasons": [{"reason": reason, "tasks": count} for reason, count in ranked]}
 
 
 # --- the package on disk ------------------------------------------------------------
@@ -936,7 +891,6 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
         "replay_fidelity": fidelity,
         **_row_counts(rows),
         "buckets": _buckets(rows),
-        "untrusted": untrusted_reasons(rows),
         # D329: what a Run's reward is, pass and score, under the Verdict version the graders score at.
         "reward": dict(REWARD_SHAPE, verdict_version=VERDICT_VERSION),
         # D225: what the domain's own public material was read to attest, and how much of it this
@@ -979,7 +933,6 @@ def task_rows(package: Path, index_rows: Iterable[dict]) -> list[dict]:
             "stage": row["stage"],
             "trusted": bool(row["trusted"]),
             "refused": bool(row["refused"]),
-            "stopped_because": row.get("stopped_because"),
             "bucket": row.get("bucket"),
             "replay_confirmed": bool(row["replay_confirmed"]),
             "recordings": int(row["recordings"]),

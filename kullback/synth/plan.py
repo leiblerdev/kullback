@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -172,16 +173,46 @@ def kind_twin(plan: Plan, kind: str) -> str:
     """The plan's first kind sharing a stem with this one where it is another word, or nothing (D411).
 
     Two stems meet when they are equal or one starts the other at four letters or more."""
-    mine = stem(kind)
     for situation in plan.situations:
         other = str(situation["kind"])
-        theirs = stem(other)
         if other == kind:
             return ""
-        short, long_ = sorted((mine, theirs), key=len)
-        if short == long_ or (len(short) >= 4 and long_.startswith(short)):
+        if meet(kind, other):
             return other
     return ""
+
+
+def meet(one: str, other: str) -> bool:
+    """Whether two kinds are one by stem: equal stems, or one starting the other at four letters or more."""
+    short, long_ = sorted((stem(one), stem(other)), key=len)
+    return short == long_ or (len(short) >= 4 and long_.startswith(short))
+
+
+def canonical_kind(plan: Plan, kind: str) -> str:
+    """The plan's first kind one with this one by stem, or the kind itself: kinds merge before they spread (D420)."""
+    word = str(kind or "")
+    return next((str(s["kind"]) for s in plan.situations if meet(word, str(s["kind"]))), word) if word else word
+
+
+def recorded_kinds(plan: Plan) -> Counter:
+    """Per kind of the plan, merged by stem, the recorded Tasks whose openings its situations hold."""
+    tasks: dict[str, set] = {}
+    for situation in plan.situations:
+        held = tasks.setdefault(canonical_kind(plan, situation["kind"]), set())
+        held.update(opening["task_id"] for opening in situation["openings"])
+    return Counter({kind: len(ids) for kind, ids in tasks.items()})
+
+
+def by_distance(want: dict, have: Counter) -> str:
+    """The choice furthest under its wanted share: wanted share less the share it holds, largest first, ties by
+    name (D420). A choice wanted by nothing is wanted evenly with the rest where nothing is wanted at all."""
+    choices = sorted(want)
+    if not choices:
+        return ""
+    total = sum(want.values())
+    shares = {c: (want[c] / total if total else 1 / len(choices)) for c in choices}
+    held = sum(have.get(c, 0) for c in choices)
+    return max(choices, key=lambda c: (shares[c] - (have.get(c, 0) / held if held else 0.0), -choices.index(c)))
 
 
 def _no_twin(plan: Plan, kind: str) -> None:
@@ -262,5 +293,5 @@ def skip_opening(plan: Plan, items: list[dict], openings: Iterable[int], why: st
     return rows
 
 
-__all__ = ["HEDGED", "HELD", "KIND", "NEAR", "TWIN", "kind_twin", "stem", "near_holder", "write_searched", "PLAN", "PLAN_BATCH", "Plan", "attach_openings", "load_plan", "opening_key",
+__all__ = ["by_distance", "canonical_kind", "meet", "recorded_kinds", "HEDGED", "HELD", "KIND", "NEAR", "TWIN", "kind_twin", "stem", "near_holder", "write_searched", "PLAN", "PLAN_BATCH", "Plan", "attach_openings", "load_plan", "opening_key",
            "plan_path", "situation_id", "skip_opening", "unplanned", "write_plan", "write_situation"]

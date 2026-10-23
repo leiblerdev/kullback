@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from kullback.agent.bus import Bus
+from kullback.ai.http_errors import ProviderError
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.runner import budget
 from kullback.runner.records import Usage
@@ -145,6 +146,32 @@ def test_write_specs_records_a_failing_task_and_goes_on_to_the_next(tmp_path):
     assert (counts["written"], counts["failed"]) == (1, 1)
     assert set(counts["failures"]) == {"t0"}
     assert not spec_path(root, "t0").exists() and spec_path(root, "t1").is_file()
+
+
+class RefusingModel(TestModel):
+    """A provider that refuses every call, as one with a bad key does."""
+
+    def query(self, messages, tools=None, config=None):
+        self.calls.append({"messages": messages})
+        raise ProviderError("provider/model: HTTP 403: Authentication failed " + "x" * 300, status=403)
+
+
+def test_a_provider_refusal_leaves_no_spec_file_and_its_message_is_counted_once(tmp_path):
+    root = _workdir(tmp_path)
+    counts = stage.write_specs(root, ["t1"], RefusingModel())
+    assert (counts["written"], counts["failed"]) == (0, 1)
+    entry = counts["failures"]["t1"]
+    assert entry.startswith("ProviderError: provider/model: HTTP 403: Authentication failed")
+    assert len(entry) == stage.FAILURE_CHARS and counts["first_failure"] == entry
+    assert not spec_path(root, "t1").exists()
+
+
+def test_a_rerun_after_a_provider_refusal_writes_the_task_instead_of_skipping_it(tmp_path):
+    root = _workdir(tmp_path)
+    stage.write_specs(root, ["t1"], RefusingModel())
+    again = stage.write_specs(root, ["t1"], TestModel(_one_task_replies()))
+    assert (again["skipped_existing"], again["written"], again["failed"]) == (0, 1, 0)
+    assert "first_failure" not in again and spec_verifier_path(root, "t1").is_file()
 
 
 def test_an_empty_first_spec_is_written_once_more_and_the_second_stands(tmp_path):

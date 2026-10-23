@@ -4254,3 +4254,114 @@ no learned writes, with the same count and mark. Why: the source files of the ro
 exactly that, learned before writes were kept, so the stage would still have run silently on them. Tests:
 tests/spec/test_writer.py (a Spec written beside an effects file whose tools carry no writes says none were
 learned); tests/spec/test_stage.py (the learned case now places a tool with writes).
+
+### D418. The published package says nothing about why a Task stopped (2026-10-19)
+
+What. The viewer rows (tasks.jsonl) and the Task index no longer carry `stopped_because`, and the manifest no
+longer carries the `untrusted` reasons table built from it. The fixed phrases behind them (STOPPED_AT) are gone.
+`stage`, `trusted`, `refused` and the D333 trust fields stay, so a reader still sees how far each Task got.
+
+Why. The founder read the dataset viewer and asked for the column to go: phrases such as "the D79 suite did not
+pass" are harness plumbing and mean nothing to a reader of the dataset. The gates still rule and log every reason;
+only the package stops repeating them. Tests: tests/hub/test_publish.py (the viewer rows carry exactly id,
+instruction, stage, trusted, refused, bucket, replay_confirmed and recordings; the index and manifest name no
+reason a Task stopped).
+
+### D419. Every write a born Task's end names is gated by a differing cell, on every named column (2026-10-19)
+
+What. Three code checks in the Spec stage of a born Task (D414), each with its mark on Spec.writer and its count in
+the stage summary. The end's writes are the end facts an item ties to a change: a row_is or row_new citing the fact,
+or a called or before item on a write tool citing it (spec/ungated.write_facts). Rule 1 (ungated_writes): each write
+fact needs a gated row_is whose expected value differs from the cell the row holds at the start, or a gated row_new;
+a cell gated to its start value, a one_of holding it, a before item and a called item never count. Rule 2
+(ungated_values): every number, id or quoted value of the write fact's clause that is a value of the changed row's
+columns (its own cells, or what other rows of its table hold under the same keys, such as a leg or a line item)
+must appear in a gated state item's find, expect or where. After the writer's session, stage.write_from_intent
+calls ungated.send_back: findings of either rule go back once as one ruling (kind ungated_write) through the repair
+session the Examiner's rulings use (writer.repair, D331); what is still found is counted as writes_ungated and
+end_values_ungated with the findings by fact, and the Spec stands. Rule 3 is a trust gate with its own reason
+(spec/trust.held_by_idle, reason held_by_idle): a Verifier whose end names a write and whose code side (every gate
+but the judge items) holds on the Run that does nothing is not trusted; tier_of_task reads it on the do-nothing Run
+it already builds, and the Spec stage runs it after writing on an idle Run built from the start state
+(trust.idle_run) and marks the Spec held_by_idle. The writer's prompt gains one line on rules 1 and 2 in END_RULE
+and two lines in CHOICE_RULE: one judge question asks one thing and never names the answer it wants, and only a
+value the user asked for or the policy demands is gated.
+
+Why. Over the 210 born Tasks 20 of 123 Verifiers whose end names a write still held on the code side when the Run
+did nothing; by hand 5 were true misses (the written cell gated to its start value, softened to a one_of of it, or
+missing) with a vacuous before item on confirm_turn standing in for the gate. The top Examiner code in both corpora
+was derivation/unchecked_field: the end names a value of the changed row that no gate carries. The writer had these
+rules in words only; the Spec stage now holds them by code before the Examiner sees the Spec.
+
+What it does not do: the checks read the Spec and the end, never the Reference, so the writer stays blind (D369);
+the reach rule (D387), the end facts (D414) and the asked follow-up turn
+(D366) are unchanged, and nothing new is reachable. A send back that fails
+leaves the mark and never gates the start value. An end clause the writer ties to no state item and no write tool
+(a write it covered only by a judge item) is not seen as a write. The held_by_idle mark is the stage's reading at
+write time; trust reads the gate afresh on every ruling. Judge leading and unasked items stay the Examiner's
+(judge/leading, derivation/unasked_item); the writer is told them, no new code check. The born Specs on disk still
+lack the marks until a live re-spec (the effects mark of D417 is the precedent).
+
+Tests: tests/spec/test_ungated.py (a write gated to its start value goes back once and unrepaired is counted and
+marked; a one_of holding the start value or a before item is no gate of a write; a write gated by a differing row_is
+is not sent back; an end value of the changed row no gate carries is sent back then counted, and carried after the
+repair is not; the values a clause names are its quoted values and its tokens with a digit; a Verifier held by the
+idle Run is refused by the trust gate with its reason; the stage counts a Spec marked ungated and held by the idle
+Run; a Spec with no write end is untouched by all three; the writer is told each rule in words once).
+Correction (r1): for a row_is, rule 2 reads the changed row only: its key and its cells, nested leaves included, so a
+leg or a line item it holds still counts. The values other rows of its table hold under the same keys are read
+only for a row_new, under the keys its where names, since a new row does not exist yet and its where is the one way
+to know its columns. Why: a number the end names (a day count, a seat count, a quantity) that happened to sit in any
+other row of the table became a finding, costing a send back session and a false end_values_ungated count. Tests:
+tests/spec/test_ungated.py (a number only another row holds is no finding for a row_is, and the same number under a
+new row's where key is one).
+
+### D420. Rows first: scenario sessions write onto a code picked slice of the world (2026-10-19)
+
+What. A new module synth/slice.py picks, by code, the slice of the world each scenario is written onto: the owner
+row, every row with a scalar cell equal to the owner key, and the rows those rows refer to one level down, rendered
+one row per line under a size limit that names the rows it cuts. The owner table is found generally: the table whose
+keys other rows name most in scalar cells, else the table holding the most columns recorded users gave (as
+tasks.recorded_fields finds them). pick_slice is deterministic by seed and spreads over owners not yet used. The
+recordings, ask, gaps and search sessions get each item with its slice, its kind and one policy line in the opening;
+they lose list_scenarios, list_plan, lookup_rows and search_rows (find_tools stays), and the plan's kinds are listed
+once. The fix session keeps its tools. At write time the binding is computed by code (D381 stays the shape a Task is
+built from): every slice row the statement, ask or end names, the owner always, now dict[str, list[str]] with the old
+single key form still read. Every number, id shaped word and quoted value in the end must be in the slice, in a quoted
+policy line, or a sum or difference of two slice amounts, else the write is refused naming the value; requires is
+refused, since the slice is the world. The review (D412) gains end_outcome: a ruling of "choice" sends the scenario
+back by code, quoting its end. Each item is assigned the kind and the policy line furthest below their recorded
+share (plan.by_distance); kinds merge by stem. TURNS_PER_ITEM goes from 6 to 4 and a session holds at most five
+slices.
+
+Why. Sessions spent most of their turns listing the store and looking up rows, and bound scenarios to rows they
+had not read, so ends named values no row held and Verifiers built on them were wrong. Picking the rows by code
+and checking the end's values against them moves both failures from the model to code, and an assignment by
+distance spreads kinds and policy lines without asking the model to keep count.
+
+What it does not do. It does not check that an end's value is the right one, only that it is one the slice or the
+policy holds. The policy line share is uniform, since no recorded share of lines is held. The near repeat check
+(D383), the no item left unwritten pass (D394) and the stop rule (D410) stay as they were; D416's owner rules for
+facts are unchanged and read the new binding form. Nothing under runner, spec or gates changes.
+
+Tests: tests/synth/test_slice.py (owner by referral and by recorded columns, slice rows one level down and no
+further, size limit, deterministic pick spread over owners, binding by code, value check with sums and policy
+numbers), tests/synth/test_generate.py (a session prompt carries each item with its slice and no store listing;
+requires refused; an end value outside the slice refused naming it; written bindings), tests/synth/test_review.py
+(a choice end is sent back quoting the end), tests/synth/test_end_to_end.py (21 scenarios written onto slices
+through generate's rounds on the fixture world with scripted replies, stop at the target).
+
+### D421. A failed Spec write says why and leaves no Spec behind (2026-10-19)
+
+What. When one Task's mining or writing raises, the Spec stage records the error class and the front of its
+message (200 characters) under failures, keeps the first such message once as first_failure in the stage counts,
+and puts the Task's Spec file back as it was before the attempt: removed when there was none, its old bytes when
+there was one. The miner still saves the Intent before the writer runs; the rollback undoes it on failure.
+
+Why. A round against a provider that refused every call logged only the error class, so the cause took a direct
+probe to find, and each failed Task kept a Spec file with an empty Intent and no checks that a relaunch could read
+as written. With the message in the counts the cause is in the stage line, and with the file rolled back a rerun
+writes every failed Task again.
+
+Tests: tests/spec/test_stage.py (a provider refusal leaves no Spec file and its message is counted once, cut at the
+limit; a rerun after a provider refusal writes the Task instead of skipping it).
