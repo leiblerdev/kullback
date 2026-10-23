@@ -36,9 +36,33 @@ def _fact(ident: str, text: str, stance: str = "volunteered", **flags) -> Intent
     return IntentFact(id=ident, text=text, source=FactSource(recording="rec1", turn=0), stance=stance, **flags)
 
 
-def _workdir(root: Path, *, atoms: list | None = None, trusted: bool = True) -> Path:
-    """The invented world as a finished build: a trusted Task, its Spec, its Reference Run, a raw export."""
+SHELF_MODEL = '''
+
+class Shelf(BaseModel):
+    """One row of shelves."""
+    holds: Optional[Any] = Field(default=None)
+'''
+
+
+def _add_shelves(root: Path, holds: list[str]) -> None:
+    """A second table whose one row lists widget ids: the build world as learned, ids naming no row included."""
+    model = (root / "env" / "data_model.py").read_text()
+    model = model.replace("\n\nclass DomainDB", SHELF_MODEL + "\n\nclass DomainDB").replace(
+        "    widgets: Dict[str, Widget] = Field(default_factory=dict)\n",
+        "    widgets: Dict[str, Widget] = Field(default_factory=dict)\n"
+        "    shelves: Dict[str, Shelf] = Field(default_factory=dict)\n")
+    (root / "env" / "data_model.py").write_text(model)
+    db = json.loads((root / "db.json").read_text())
+    write_json(root / "db.json", dict(db, shelves={"s1": {"holds": holds}}))
+
+
+def _workdir(root: Path, *, atoms: list | None = None, trusted: bool = True, holds: list[str] | None = None,
+             script: list | None = None) -> Path:
+    """The invented world as a finished build: a trusted Task, its Spec, its Reference Run, a raw export; with
+    `holds`, a shelf row listing those widget ids; `script` is the Reference Run's turns."""
     write_env(root, verifier_atoms=atoms)
+    if holds is not None:
+        _add_shelves(root, holds)
     verifier = json.loads((root / "verifiers" / f"{TASK}.json").read_text())
     write_json(root / "verifiers" / f"{TASK}.json", dict(verifier, expected=EXPECTED))
     write_json(root / "rounds.json", [{"round": 1, "counts": {"trusted_ids": [TASK] if trusted else []}}])
@@ -49,7 +73,7 @@ def _workdir(root: Path, *, atoms: list | None = None, trusted: bool = True) -> 
     write_json(root / "spec" / f"{TASK}.json", spec.model_dump())
     episode = Episode(BuiltEnvironment(root), outdir=root / "scratch", max_turns=10)
     episode.reset(TASK)
-    for message in SCRIPTED_RENAME:
+    for message in script or SCRIPTED_RENAME:
         episode.step(message)
     run = root / "runs" / TASK / "reference.jsonl"
     run.parent.mkdir(parents=True, exist_ok=True)
@@ -220,6 +244,12 @@ def test_each_call_is_logged_and_the_world_written_back_so_the_next_process_sees
     assert [row["name"] for row in logged] == ["rename_widget", "describe_widget"]
 
 
+def test_the_consent_line_agrees_to_what_was_asked_and_to_nothing_different():
+    line = harbor_world.CONSENT_LINE
+    assert line.startswith("Yes, go ahead with what I asked for.")
+    assert "I do not agree to anything different from what I asked" in line
+
+
 def test_a_message_to_the_user_is_answered_with_the_standing_consent(dataset, tmp_path):
     out, _ = dataset
     answer = harbor_world.call(_app(out, tmp_path), "reply_to_user", {"text": "Shall I go ahead?"})
@@ -291,22 +321,28 @@ def test_an_unscored_gate_gives_zero_and_is_named_unscored_gate():
     assert {row["id"]: row.get("status") for row in body["items"]}["j"] == "unscored_gate"
 
 
-def test_an_unscored_weighted_item_leaves_the_denominator_and_is_named_unscored():
+def test_an_unscored_weighted_item_leaves_the_shaped_denominator_and_is_named_unscored():
     body = harbor_world.reward_of([_item("g", True, True), _item("s", False, False),
                                    _item("j", False, None, kind="judge")])
-    assert body["reward"] == pytest.approx(0.5) and body["unscored"] == ["j"]
+    assert body["shaped_reward"] == pytest.approx(0.5) and body["unscored"] == ["j"]
 
 
 def test_a_failed_gate_gives_zero_whatever_the_weighted_items_say():
-    assert harbor_world.reward_of([_item("g", True, False), _item("s", False, True)])["reward"] == 0.0
+    body = harbor_world.reward_of([_item("g", True, False), _item("s", False, True)])
+    assert body["reward"] == 0.0 and body["shaped_reward"] == 0.0
 
 
-def test_the_reward_is_the_verdict_score_when_every_item_is_scored():
+def test_a_run_holding_every_gate_passes_whatever_weighted_items_it_misses():
+    body = harbor_world.reward_of([_item("g", True, True), _item("s", False, False), _item("t", False, False)])
+    assert body["reward"] == 1.0 and body["shaped_reward"] < 1.0
+
+
+def test_the_shaped_reward_is_the_verdict_score_when_every_item_is_scored():
     from kullback.runner.verdict import _Item, _score
 
     items = [_item("g", True, True, 2.0), _item("s", False, True, 1.0), _item("t", False, False, 3.0)]
     expected = _score([_Item(item, item.id) for item in items], True, True, [])
-    assert harbor_world.reward_of(items)["reward"] == pytest.approx(expected)
+    assert harbor_world.reward_of(items)["shaped_reward"] == pytest.approx(expected)
 
 
 def test_items_json_carries_every_item_with_id_kind_gate_weight_held_and_why(dataset, tmp_path):
@@ -412,16 +448,19 @@ def test_a_judge_outage_on_a_weighted_item_leaves_the_trial_unscored_not_passed(
     assert body["reward_had_it_been_scored"] == 1.0, "the masked score that used to be reported"
 
 
-def test_a_weighted_judge_item_the_judge_answers_scores_as_before(tmp_path, monkeypatch):
+def test_a_run_holding_every_gate_but_missing_a_weighted_item_passes_in_harbor_with_its_shaped_reward_below_one(
+        tmp_path, monkeypatch):
     workdir = _workdir(tmp_path / "work", atoms=JUDGE_WEIGHTED)
     wheel = tmp_path / "k.whl"
     wheel.write_bytes(b"")
     harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
     _judge_says(monkeypatch, 0)
     body = _oracle_score(tmp_path / "out", tmp_path)
-    assert 0.0 < body["reward"] < 1.0 and "unscored_reason" not in body, "past the gate, the rejected item costs its weight"
-    assert (tmp_path / "logs" / "reward.txt").read_text() == f"{body['reward']}\n"
-    assert json.loads((tmp_path / "logs" / "reward.json").read_text()) == {"reward": body["reward"]}
+    assert body["reward"] == 1.0 and "unscored_reason" not in body
+    assert (tmp_path / "logs" / "reward.txt").read_text() == "1.0\n"
+    assert json.loads((tmp_path / "logs" / "reward.json").read_text()) == {"reward": 1.0}, "pass@k takes one key"
+    items = json.loads((tmp_path / "logs" / "items.json").read_text())
+    assert 0.0 < items["shaped_reward"] < 1.0, "past the gate, the rejected item costs its weight"
 
 
 def test_a_judge_item_on_a_run_with_no_assistant_turn_is_answered_zero_and_the_trial_gets_a_number(
@@ -437,7 +476,7 @@ def test_a_judge_item_on_a_run_with_no_assistant_turn_is_answered_zero_and_the_t
         if name != harbor_world.REPLY_TOOL:
             harbor_world.call(app, name, arguments)
     body = _reward(app, tmp_path / "out", tmp_path)
-    assert 0.0 < body["reward"] < 1.0 and "unscored_reason" not in body and calls == []
+    assert 0.0 < body["shaped_reward"] < 1.0 and "unscored_reason" not in body and calls == []
     record = json.loads((tmp_path / "logs" / "judge.json").read_text())
     assert [(row["id"], row["status"], row["score"], row["why"]) for row in record["items"]] == \
         [("j1", "answered", 0, "no evidence")]
@@ -1027,3 +1066,47 @@ def test_an_item_citing_a_policy_line_is_kept_whatever_facts_it_cites(tmp_path):
     shipped = read_json(tmp_path / "out" / "widgets-widget_task" / "tests" / harbor.VERIFIER_NAME)
     assert [atom["id"] for atom in shipped["atoms"]] == ["keep", "a1"]
     assert manifest["counts"]["items_unrenderable"] == 0
+
+
+def _listed_export(tmp_path: Path, script: list | None = None) -> tuple[Path, dict]:
+    """The shelf world exported, its references.json naming the Reference by the id its Run file carries."""
+    workdir = _workdir(tmp_path / "work", holds=["w1", "w9"], script=script)
+    run_id = runs_on_disk(workdir)[TASK][0].run_id
+    write_json(workdir / "references.json", {TASK: {"references": [{"kind": "recording", "run_id": run_id}]}})
+    wheel = tmp_path / "k.whl"
+    wheel.write_bytes(b"")
+    return tmp_path / "out", harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
+
+
+def test_every_id_a_row_of_the_exported_world_lists_opens_with_its_tool(tmp_path):
+    out, manifest = _listed_export(tmp_path)
+    app = _app(out, tmp_path)
+    listed = json.loads((app / "db.json").read_text())["shelves"]["s1"]["holds"]
+    assert listed == ["w1"]
+    played = harbor_world.play(app, [{"name": "describe_widget", "arguments": {"widget_id": rid}} for rid in listed],
+                               tmp_path / "s")
+    assert all(answer["error"] is None for answer in played.answers)
+    assert manifest["tasks"][0]["ids_dropped"] == {"shelves.holds": 1}
+    assert manifest["counts"]["ids_dropped"] == 1 and manifest["counts"]["columns_pruned"] == ["shelves.holds"]
+    assert json.loads((tmp_path / "work" / "db.json").read_text())["shelves"]["s1"]["holds"] == ["w1", "w9"], \
+        "the build world stays as learned"
+
+
+def test_a_task_whose_reference_reads_a_dropped_id_is_set_aside_and_counted(tmp_path):
+    reads_dropped = [{"content": None, "tool_calls": [{"id": "c0", "name": "describe_widget",
+                                                       "arguments": {"widget_id": "w9"}}]}, *SCRIPTED_RENAME]
+    _, manifest = _listed_export(tmp_path, script=reads_dropped)
+    assert manifest["counts"]["exported"] == 0
+    assert manifest["counts"]["skipped"] == {harbor.READS_DROPPED_ID: 1}
+    assert manifest["left_out"] == [{"task": TASK[-4:], "reason": harbor.READS_DROPPED_ID}]
+
+
+def test_an_ambiguous_column_drops_nothing_and_the_manifest_says_so(tmp_path):
+    workdir = _workdir(tmp_path / "work", holds=["w1", "s1", "w9"])
+    wheel = tmp_path / "k.whl"
+    wheel.write_bytes(b"")
+    manifest = harbor.export_harbor(workdir, tmp_path / "out", name="widgets", wheel=wheel)
+    app = _app(tmp_path / "out", tmp_path)
+    assert json.loads((app / "db.json").read_text())["shelves"]["s1"]["holds"] == ["w1", "s1", "w9"]
+    assert manifest["ambiguous_columns"] == [{"task": TASK[-4:], "columns": ["shelves.holds"]}]
+    assert manifest["counts"]["tasks_with_ambiguous_column"] == 1 and manifest["counts"]["ids_dropped"] == 0

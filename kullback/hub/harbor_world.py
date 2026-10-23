@@ -11,11 +11,13 @@ The agent reaches the tools two ways from this one code path: `tools` on the PAT
 `tools call <name> --json '{...}'`) and an MCP server over stdio. One tool more than the Task's,
 `reply_to_user`, is how the agent speaks to the user. There is no live user in a Harbor trial, so
 every message is answered with the user's standing consent line: a confirm-before-write rule then
-still asks the agent to ask before it writes, and the user can never say no.
+still asks the agent to ask before it writes. The line says yes to what the user asked and no to anything
+different (D430), so an offer of something else is never read as agreed.
 
 The Verifier runs the same play over the log the agent left, then scores the Run with the
-Verdict by code. The reward is gated then weighted as the Verdict scores it, and it fails closed:
-a gated item that cannot be scored by code gives 0 and is named.
+Verdict by code. The reward Harbor reads is a pass or a fail (D433): 1 when every gate holds, else 0, and
+it fails closed: a gated item that cannot be scored by code gives 0 and is named. The gated then weighted
+reward the Verdict scores, which shapes training past the gates, goes to items.json as shaped_reward.
 
 Judge items are scored by the model JUDGE_VAR names at test time, one call per item (D328), when it
 is set and live calls are allowed (the Harness's own switch); its answers and spend go to judge.json.
@@ -53,7 +55,8 @@ DB_NAME = "db.json"
 # What the export writes beside the world: the Task id and the instruction the user opens with.
 TASK_NAME = "harbor-task.json"
 REPLY_TOOL = "reply_to_user"
-CONSENT_LINE = "Yes, please go ahead with what I asked for. I have nothing to add."
+CONSENT_LINE = ("Yes, go ahead with what I asked for. I do not agree to anything different from what I asked, "
+                "and I have nothing to add.")
 REPLY_SPEC = {"name": REPLY_TOOL,
               "description": "Send a message to the user. The last message you send is your final reply.",
               "parameters": {"type": "object", "properties": {"text": {"type": "string"}},
@@ -222,9 +225,12 @@ def _row(item: ItemResult, unscored: str = "") -> dict:
 
 
 def reward_of(items: list[ItemResult], *, failed_closed: bool = False) -> dict:
-    """The gated then weighted reward of a Verdict's items, failing closed on an open gate.
+    """The pass of a Verdict's items as `reward` (1.0 when every gate holds, else 0.0, D433) and the gated then
+    weighted reward as `shaped_reward`, both failing closed on an open gate.
 
-    The same formula as the Verdict's own score (runner/verdict.py `_score`, D329): 0 when a gate does
+    A weighted item a right Run may skip never fails the Task: weighted items shape the reward past the gates,
+    for training, and Harbor counts a pass at reward 1 only. The shaped reward is the same formula as the
+    Verdict's own score (runner/verdict.py `_score`, D329): 0 when a gate does
     not hold; past the gates the gate weight, at least half of the whole, plus the held weighted
     items, over the gate weight plus every weighted item. Two differences, both closed: a gate that
     cannot be scored gives 0 where the Verdict gives no number, and a weighted item that cannot be
@@ -235,8 +241,8 @@ def reward_of(items: list[ItemResult], *, failed_closed: bool = False) -> dict:
     unscored_gates = [item.id for item in gates if item.holds is None]
     rows = [_row(item, _status(item)) for item in items]
     if failed_closed or unscored_gates or any(item.holds is False for item in gates):
-        return {"reward": 0.0, "items": rows, "unscored_gates": unscored_gates}
-    return {"reward": _weighted(gates, weighted), "items": rows, "unscored_gates": [],
+        return {"reward": 0.0, "shaped_reward": 0.0, "items": rows, "unscored_gates": unscored_gates}
+    return {"reward": 1.0, "shaped_reward": _weighted(gates, weighted), "items": rows, "unscored_gates": [],
             "unscored": [item.id for item in weighted if item.holds is None]}
 
 
@@ -304,8 +310,9 @@ def score(app: Path, verifier_path: Path, logs: Path, *, use_judge: bool = True)
     if unjudged:
         return _unscored(body, unjudged, logs)
     (logs / "reward.txt").write_text(f"{body['reward']}\n", encoding="utf-8")
-    # Harbor reads reward.json before reward.txt and takes every value in it as a reward, so it
-    # carries the number alone; the items go beside it, where the trial keeps them.
+    # Harbor reads reward.json before reward.txt and takes every value in it as a reward, and its pass@k
+    # takes only one reward of 0 or 1, so it carries the pass alone; the items and the shaped reward go
+    # beside it in items.json, where the trial keeps them.
     write_json(logs / "reward.json", {"reward": body["reward"]})
     write_json(logs / "items.json", body)
     return body
@@ -326,7 +333,7 @@ def _unscored(body: dict, unjudged: dict[str, str], logs: Path) -> dict:
     for row in body["items"]:
         if row["id"] in unjudged:
             row["status"] = unjudged[row["id"]]
-    body.update({"reward": None, "unscored_reason": reason, "judge_status": unjudged,
+    body.update({"reward": None, "shaped_reward": None, "unscored_reason": reason, "judge_status": unjudged,
                  "reward_had_it_been_scored": body["reward"]})
     (logs / "reward.txt").unlink(missing_ok=True)
     write_json(logs / "reward.json", {"reward": reason})

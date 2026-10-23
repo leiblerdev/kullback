@@ -40,9 +40,10 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from kullback import processes
-from kullback.hub import harbor_world
+from kullback.hub import harbor_world, listed_ids
 from kullback.hub.card import ORGANISATION, SOLUTION_LEAKS
 from kullback.hub.harbor_world import DB_NAME, JUDGE_ENV, REPLY_TOOL, TASK_NAME, UNSCORED_EXIT, WORLD_DIR, play
+from kullback.hub.listed_ids import READS_DROPPED_ID
 from kullback.hub.package import (
     CONTENT_MIN_LENGTH,
     FACTS_LEAD,
@@ -210,6 +211,14 @@ def candidate_calls(workdir: Path, task_id: str, tools: set[str], runs: Iterable
         if calls not in out:
             out.append(calls)
     return out
+
+
+def reference_calls(workdir: Path, task_id: str, runs: Iterable[Run]) -> list[dict]:
+    """Every tool call of the Task's kept References, arguments as recorded (D429 reads them for dropped ids)."""
+    row = (read_json(workdir / "references.json", {}) or {}).get(task_id) or {}
+    kept = {str((reference or {}).get("run_id") or "") for reference in row.get("references") or ()}
+    return [{"name": str(event.payload.get("name")), "arguments": dict(event.payload.get("args") or {})}
+            for run in runs if run.run_id in kept for event in run.events if event.type == "tool_call"]
 
 
 def oracle_holds(folder: Path) -> bool:
@@ -433,6 +442,21 @@ def _lay_world(workdir: Path, target: Path, task_id: str, task_record: dict, ins
     write_json(target / TASK_NAME, {"task_id": task_id, "instruction": instruction})
 
 
+def prune_world(world: Path, task_id: str, plan: dict) -> None:
+    """Drop the planned list members from a laid world: the shared rows and the rows the Task's overlay pins (D429)."""
+    if not plan:
+        return
+    db = read_json(world / "env" / DB_NAME, {}) or {}
+    for table, gone in plan.items():
+        listed_ids.prune_rows(db.get(table), gone)
+    write_json(world / "env" / DB_NAME, db)
+    overlay = world / "overlays" / f"{task_id}.json"
+    if overlay.is_file():
+        payload = read_json(overlay, {}) or {}
+        listed_ids.prune_overlay(payload, plan)
+        write_json(overlay, payload)
+
+
 def unreadable_cells(verifier: Verifier, start: dict) -> list[str]:
     """Each cell of the Verifier's end states whose path the scorer cannot read on its start row (D423)."""
     found = []
@@ -454,13 +478,14 @@ def starting_state(app: Path) -> dict:
 
 def write_task(directory: Path, *, workdir: Path, task_id: str, task_record: dict, instruction: str,
                policy: Optional[str], verifier_path: Path, calls: Optional[list[dict]], wheel: Path,
-               toml: str) -> None:
+               toml: str, prune: Optional[dict] = None) -> None:
     """One Harbor task directory, laid out and checked to load before anything else reads it; with `calls`
-    None it has no solution/ (no Run passes on replay, D399)."""
+    None it has no solution/ (no Run passes on replay, D399). `prune` names the listed ids its world drops (D429)."""
     environment = directory / "environment"
     world = environment / WORLD_DIR
     world.mkdir(parents=True, exist_ok=True)
     _lay_world(workdir, world, task_id, task_record, instruction, policy)
+    prune_world(world, task_id, prune or {})
     write_json(environment / DB_NAME, starting_state(environment))
     shutil.copyfile(wheel, environment / wheel.name)
     (environment / "Dockerfile").write_text(dockerfile(wheel.name), encoding="utf-8")
@@ -622,12 +647,13 @@ def _inputs(build: _Build, task_id: str, body: Optional[dict]) -> dict:
         walk = [{"name": str(step.get("tool")), "arguments": dict(step.get("args") or {})}
                 for step in body.get("walk") or () if str(step.get("tool")) in build.tool_names]
         return {"record": record, "facts": [], "instruction": opening([], record.get("intent")),
-                "candidates": [walk], "policy": build.policy, "index": {"bucket": body.get("bucket")}}
+                "candidates": [walk], "reference": walk, "policy": build.policy, "index": {"bucket": body.get("bucket")}}
     record = read_json(build.workdir / "tasks" / f"{task_id}.json", {}) or {}
     facts, instruction = task_ask(build.workdir, task_id, record)
     known = task_id in build.env.tasks()
     return {"record": record, "facts": facts, "instruction": instruction,
             "candidates": candidate_calls(build.workdir, task_id, build.tool_names, build.runs.get(task_id, ())),
+            "reference": reference_calls(build.workdir, task_id, build.runs.get(task_id, ())),
             "policy": _policy(build.env, build.env.task(task_id), build.policy) if known else build.policy,
             "index": build.rows[task_id]}
 
@@ -667,7 +693,7 @@ def _write(job: dict, metadata: dict, calls: Optional[list[dict]]) -> None:
                      keywords=keywords, metadata=metadata, org=job["org"], judged=metadata["judge_items"])
     write_task(folder, workdir=job["workdir"], task_id=job["task_id"], task_record=given["record"],
                instruction=given["instruction"], policy=given["policy"], verifier_path=job["verifier_path"],
-               calls=calls, wheel=job["wheel"], toml=toml)
+               calls=calls, wheel=job["wheel"], toml=toml, prune=job.get("prune"))
 
 
 def _lay_with_oracle(job: dict) -> Optional[list[dict]]:
@@ -733,18 +759,36 @@ def _start_of(job: dict) -> dict:
         return starting_state(app)
 
 
+def listed_plan(start: dict) -> tuple[dict, dict[str, int], list[str]]:
+    """What the Task's shipped world drops off its Starting state (D429): the plan by table and column, the
+    count dropped per column, and the ambiguous columns, from which nothing is dropped."""
+    found = listed_ids.columns(start)
+    plan = listed_ids.drops(found)
+    dropped = {column.name: len(column.missing) for column in found if column.keys is not None}
+    return plan, dropped, [column.name for column in found if column.keys is None]
+
+
 def _export_one(job: dict) -> tuple[Optional[str], dict, dict]:
-    """(why the Task is left out or None, its manifest row, its leak scan row), off the Task's whole input. A
-    Verifier with a cell no Run can make hold is left out as UNREADABLE_CELL before any oracle is tried."""
+    """(why the Task is left out or None, its manifest row, its leak scan row), off the Task's whole input. A Task
+    whose Reference reads a listed id the shipped world drops is left out as READS_DROPPED_ID (D429), and a
+    Verifier with a cell no Run can make hold as UNREADABLE_CELL, both before any oracle is tried."""
     verifier = Verifier.model_validate(read_json(job["verifier_path"], {}))
-    if unreadable_cells(verifier, _start_of(job)):
+    start = _start_of(job)
+    plan, dropped, ambiguous = listed_plan(start)
+    gone = {member for columns in plan.values() for members in columns.values() for member in members}
+    if gone and listed_ids.reads(job["given"].get("reference") or (), gone):
+        return READS_DROPPED_ID, {}, {}
+    for table, columns in plan.items():
+        listed_ids.prune_rows(start.get(table), columns)
+    if unreadable_cells(verifier, start):
         return UNREADABLE_CELL, {}, {}
-    calls = _lay_with_oracle(job)
+    calls = _lay_with_oracle(dict(job, prune=plan))
     if calls is None:
         return NO_ORACLE, {}, {}
     given, metadata, folder = job["given"], job["metadata"], job["folder"]
     path = folder.relative_to(job["out"]).as_posix()
-    listed = {"harbor_name": f"{job['org']}/{folder.name}", "path": path, **metadata}
+    listed = {"harbor_name": f"{job['org']}/{folder.name}", "path": path, **metadata,
+              "ids_dropped": dropped, "ambiguous_columns": ambiguous}
     solve = folder / "solution" / "solve.sh"
     scanned = {"name": path, "task": job["task_id"], "world": folder / "environment" / WORLD_DIR,
                "facts": given["facts"] or [given["instruction"]], "label": str(metadata.get("label_gold_diff") or ""),
@@ -814,10 +858,16 @@ def _counts(listed: list[dict], recorded: list[dict], skipped: dict) -> dict:
             # Items shipped nowhere because they rest only on facts the instruction does not render (D422).
             "items_unrenderable": sum(len(row.get("items_unrenderable") or ()) for row in listed),
             "tasks_with_items_unrenderable": count(lambda row: bool(row.get("items_unrenderable"))),
+            # Listed ids the shipped world drops, the columns they leave, and the columns read as ambiguous (D429).
+            "ids_dropped": sum(sum((row.get("ids_dropped") or {}).values()) for row in listed),
+            "tasks_with_ids_dropped": count(lambda row: bool(row.get("ids_dropped"))),
+            "columns_pruned": sorted({name for row in listed for name in row.get("ids_dropped") or {}}),
+            "tasks_with_ambiguous_column": count(lambda row: bool(row.get("ambiguous_columns"))),
+            "ambiguous_columns": sorted({name for row in listed for name in row.get("ambiguous_columns") or ()}),
             "by_tier_and_label": by_tier_and_label(recorded)}
 
 
-def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_oracle: list[str],
+def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, left: list[tuple[str, str]],
               solution_leaks: Iterable[str] = ()) -> dict:
     recorded = [row for row in listed if row["origin"] == "recorded"]
     return {
@@ -830,8 +880,9 @@ def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_o
         "tag": build.tag,
         "kullback_version": kullback_version(),
         "git_sha": build.sha,
-        "reward": dict(REWARD_SHAPE, harbor="gated then weighted; an unanswered judge item leaves the trial unscored "
-                                            f"(reward.json says why, exit {UNSCORED_EXIT}); else reward.json carries the number alone"),
+        "reward": dict(REWARD_SHAPE, harbor="reward.txt and reward.json are 1 when every gate holds, else 0 (D433); "
+                                            "items.json keeps the gated then weighted shaped_reward; an unanswered judge "
+                                            f"item leaves the trial unscored (reward.json says why, exit {UNSCORED_EXIT})"),
         "counts": _counts(listed, recorded, skipped),
         # Exported with no solution/: no Run passes on replay (D399). Masked, as left_out.
         "no_oracle": [{"task": row["kullback_task_id"][-MASK:], "reason": NO_ORACLE}
@@ -841,7 +892,11 @@ def _manifest(build: _Build, tasks: str, listed: list[dict], skipped: dict, no_o
         "tasks": recorded,
         "synthetic": [row for row in listed if row["origin"] == "synthetic"],
         # Masked to the last four characters, as every report masks a Task id.
-        "left_out": [{"task": task_id[-MASK:], "reason": NO_ORACLE} for task_id in no_oracle]
+        "ids_dropped": [{"task": row["kullback_task_id"][-MASK:], "columns": row["ids_dropped"]}
+                        for row in listed if row.get("ids_dropped")],
+        "ambiguous_columns": [{"task": row["kullback_task_id"][-MASK:], "columns": row["ambiguous_columns"]}
+                              for row in listed if row.get("ambiguous_columns")],
+        "left_out": [{"task": task_id[-MASK:], "reason": reason} for task_id, reason in left]
         + [{"task": task_id[-MASK:], "reason": SOLUTION_LEAKS} for task_id in solution_leaks],
     }
 
@@ -865,24 +920,25 @@ def _read_marks(workdir: Path, task_ids: list[str], tiers: Optional[Iterable[Any
 
 
 def _lay_all(build: _Build, work: list[tuple[str, Optional[dict]]],
-             workers: Optional[int]) -> tuple[list[dict], list[dict], dict[str, int], list[str]]:
+             workers: Optional[int]) -> tuple[list[dict], list[dict], dict[str, int], list[tuple[str, str]]]:
     """Lay every Task of `work` on `workers` processes: (manifest rows, scan rows, skipped by reason, the
-    Tasks no Run holds for), in `work`'s order whatever the count (D401)."""
+    Tasks no Run holds for or set aside as reading a dropped id, each with its reason), in `work`'s order
+    whatever the count (D401)."""
     jobs = [_job(build, task_id, body) for task_id, body in work]
     laid = iter(processes.each([job for reason, job in jobs if not reason], _export_one, workers))
     listed: list[dict] = []
     scanned: list[dict] = []
     skipped: dict[str, int] = {}
-    no_oracle: list[str] = []
+    left: list[tuple[str, str]] = []
     for (task_id, _), (reason, _) in zip(work, jobs, strict=True):
         reason, row, scan_row = (reason, {}, {}) if reason else next(laid)
         if reason:
             skipped[reason] = skipped.get(reason, 0) + 1
-            no_oracle += [task_id] if reason == NO_ORACLE else []
+            left += [(task_id, reason)] if reason in (NO_ORACLE, READS_DROPPED_ID) else []
             continue
         listed.append(row)
         scanned.append(scan_row)
-    return listed, scanned, skipped, no_oracle
+    return listed, scanned, skipped, left
 
 
 def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = ORGANISATION,
@@ -899,7 +955,9 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
     `labels`, a rater's label, `unlabelled` where no row names it (D399). A Task whose only leaking part
     is its oracle is left out as SOLUTION_LEAKS and listed masked; a leak in any other part refuses. A Task
     with no Verifier, no Run or no instruction, or a Verifier cell the scorer cannot read (UNREADABLE_CELL,
-    D423), is left out and counted by reason. The oracle is the
+    D423), is left out and counted by reason. The shipped world drops the listed ids that name no row where the
+    table a column keys is read without doubt, counted per Task; a Task whose Reference reads one is left out as
+    READS_DROPPED_ID (D429). The oracle is the
     first of the Task's Runs whose calls, replayed through the exported world, hold every item a judge
     is not needed for; a Task with none is left out too (NO_ORACLE). The Tasks are laid on `workers`
     processes (None: the default of kullback/processes.py) and the dataset is the same whatever the count (D401);
@@ -924,10 +982,10 @@ def export_harbor(workdir: Any, out: Any, *, tasks: str = "trusted", org: str = 
                        tag=build_tag(workdir), sha=git_sha(), wheel=wheel or build_wheel(Path(scratch)),
                        tasks=tasks, tiers=tier_rows, labels=label_rows, scratch=Path(scratch))
         work = [(task_id, None) for task_id in chosen] + list(synthetic.items())
-        listed, scanned, skipped, no_oracle = _lay_all(build, work, workers)
+        listed, scanned, skipped, left = _lay_all(build, work, workers)
     found = leak_scan(out, workdir / "raw", scanned) if scan else {"leaks": 0, "skipped": True}
     found, solution_leaks = _drop_solution_leaks(out, found, scanned, listed, skipped)
-    manifest = dict(_manifest(build, tasks, listed, skipped, no_oracle, solution_leaks), **said)
+    manifest = dict(_manifest(build, tasks, listed, skipped, left, solution_leaks), **said)
     manifest["leak_scan"] = found
     if manifest["leak_scan"].get("leaks"):
         shutil.rmtree(out, ignore_errors=True)

@@ -165,6 +165,8 @@ def harbor_section(harbor: dict) -> list[str]:
     return [f"`{HARBOR_DIR}/` holds {counts.get('exported', 0)} Tasks in the [Harbor](https://harborframework.com) "
             f"task format; a judge item is scored at test time by the model `{JUDGE_VAR}` names, with "
             f"`{LIVE_ENV_VAR}=1` and the model's keys; without an answer the trial is unscored, not 0.", "",
+            "`reward.txt` is 1 when every gated item holds and 0 otherwise, a pass or a fail; the weighted items "
+            "shape a reward past the gates, kept as `shaped_reward` in `items.json`.", "",
             "```bash", f"uv run harbor run -p {HARBOR_DIR}/{example} -a oracle",
             f"uv run harbor run -p {HARBOR_DIR}/{example} -a <agent> -m <provider/model>", "```", ""]
 
