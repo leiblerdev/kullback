@@ -3,17 +3,12 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 from test_ingest import rescue_path
 
 from kullback.builder import ingest
-
-
-def write_json(path: Path, obj) -> Path:
-    path.write_text(json.dumps(obj), encoding="utf-8")
-    return path
+from tests.builder.trace_fixtures import write_json
 
 
 def wrap(simulations, info=None) -> dict:

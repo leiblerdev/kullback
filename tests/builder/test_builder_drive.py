@@ -5,13 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 
-from kullback.ai.provider import TestModel
 from kullback.builder import domain_tools as domain_tools_mod
 from kullback.builder import env_files
 from kullback.builder import session as session_mod
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
+from tests.builder.trace_fixtures import _candidate
 from tests.episode.invented import write_env
-from tests.helpers.scripted import reply
 
 PTR = RawPtr(file_hash="f" * 64, sim_index=0, msg_index=0)
 
@@ -57,11 +56,6 @@ def _tools(root, model=None):
 
 def _run(tool, arguments):
     return asyncio.run(tool.run(arguments))
-
-
-def _candidate():
-    return TestModel([reply(None, ("rename_widget", {"widget_id": "w1", "label": "striped"})),
-                      reply("Done, widget w1 is labelled striped.")], loop=True)
 
 
 def test_replay_with_no_task_id_reports_every_task_once_and_the_per_tool_rows(tmp_path):

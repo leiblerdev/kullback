@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 from kullback.builder import ingest, sources
 from kullback.runner.records import RawPtr, Trace
+from tests.builder.trace_fixtures import write_json
 
 
 class EmberAdapter:
@@ -71,11 +70,6 @@ def toy_formats():
     finally:
         sources.unregister("ember")
         sources.unregister("harbor")
-
-
-def write_json(path: Path, obj) -> Path:
-    path.write_text(json.dumps(obj), encoding="utf-8")
-    return path
 
 
 # --- the seam needs no edit to add a format ---------------------------------

@@ -15,13 +15,13 @@ unattributed.
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
 from conftest import PTR
 from kullback.builder import effects
-from kullback.runner.records import Column, EntitySchema, ToolCall, Trace, Turn
+from kullback.runner.records import Column, EntitySchema, ToolCall, Trace
+from tests.builder.trace_fixtures import call_turns
 
 READ = "get_account"
 WRITE = "adjust_account"
@@ -58,17 +58,9 @@ def sentence_trace() -> Trace:
         call("c4", READ, {"account_id": "AC01"}, "Account AC01 carries balance 82."),
         call("c5", READ, {"account_id": "AC01"}, {"account_id": "AC01", "balance": 82}),
     ]
-    turns = [Turn(idx=0, role="assistant", content="How can I help?", raw_ptr=PTR),
-             Turn(idx=1, role="user", content="Move the balance.", raw_ptr=PTR)]
-    for one in calls:
-        turns.append(Turn(idx=len(turns), role="assistant", content=None,
-                          tool_call_ids=[one.id], raw_ptr=PTR))
-        turns.append(Turn(idx=len(turns), role="tool", content=json.dumps(one.result),
-                          tool_call_ids=[one.id], raw_ptr=PTR))
-    turns.append(Turn(idx=len(turns), role="assistant", content="Done.", raw_ptr=PTR))
-    turns.append(Turn(idx=len(turns), role="user", content="Thanks. ###STOP###", raw_ptr=PTR))
     return Trace(trace_id="tr1", raw_hash="r" * 64, ingest_version="1", source="test",
-                 turns=turns, tool_calls=calls, raw_ptr=PTR, system_prompt="You are the agent.")
+                 turns=call_turns("Move the balance.", calls), tool_calls=calls, raw_ptr=PTR,
+                 system_prompt="You are the agent.")
 
 
 def balance_columns(seen) -> list:

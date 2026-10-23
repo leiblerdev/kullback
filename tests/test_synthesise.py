@@ -9,7 +9,8 @@ import pytest
 
 from kullback import graph, synthesise
 from kullback.ai import TestModel
-from kullback.runner.records import Column, EntitySchema, FieldStat, ToolSig, write_json
+from kullback.runner.records import Column, EntitySchema, write_json
+from tests.sig_fixtures import tool_sig
 
 # One world nobody's customer has: kites on spools. Two reads and one write, the write refusing a
 # kite that is already tied at the length it is asked for, so a walk can be refused by the world.
@@ -28,16 +29,9 @@ BODIES = {
                   "return {'kite_id': kite.kite_id, 'length': kite.length}",
 }
 
-def _sig(name: str, kind: str, *args: str) -> ToolSig:
-    return ToolSig(name=name, kind=kind,
-                   args_fields=[FieldStat(name=arg, types=["str"], optional=False) for arg in args],
-                   args_schema={"type": "object",
-                                "properties": {arg: {"type": ["str"]} for arg in args},
-                                "required": list(args)})
 
-
-SIGS = [_sig("find_kite", "read", "colour"), _sig("get_kite", "read", "kite_id"),
-        _sig("retie_kite", "write", "kite_id", "length")]
+SIGS = [tool_sig("find_kite", "read", "colour"), tool_sig("get_kite", "read", "kite_id"),
+        tool_sig("retie_kite", "write", "kite_id", "length")]
 
 DB = {"kites": {f"k{n}": {"kite_id": f"k{n}", "colour": f"teal{n}", "spool_id": f"s{n}",
                           "length": f"{30 + n}"}

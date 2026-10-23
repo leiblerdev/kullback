@@ -11,6 +11,7 @@ import pytest
 from kullback.ai.provider import TestModel
 from kullback.builder import ingest
 from kullback.runner.records import Trace
+from tests.builder.trace_fixtures import write_json
 
 # --- helpers ---------------------------------------------------------------
 
@@ -47,11 +48,6 @@ def tool_msg(idx, call_id, content, error=False, ts=None) -> dict:
         "turn_idx": idx,
         "timestamp": ts,
     }
-
-
-def write_json(path: Path, obj) -> Path:
-    path.write_text(json.dumps(obj), encoding="utf-8")
-    return path
 
 
 @pytest.fixture

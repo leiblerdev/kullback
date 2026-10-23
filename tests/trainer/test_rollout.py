@@ -20,15 +20,8 @@ pytestmark = pytest.mark.skipif(
 from kullback import curriculum  # noqa: E402
 from kullback.runner.world import BuiltEnvironment  # noqa: E402
 from kullback.trainer.rollout import TaskSkipped, play, rollout_seed, run_group  # noqa: E402
-from tests.episode.invented import SCRIPTED_RENAME, write_env  # noqa: E402
-
-
-def rename_policy(messages, tools):
-    """Replay the scripted rename: the turn count picks the scripted line."""
-    n = sum(1 for message in messages if message.get("role") == "assistant")
-    step = SCRIPTED_RENAME[min(n, len(SCRIPTED_RENAME) - 1)]
-    return {"content": step.get("content"),
-            "tool_calls": [dict(call) for call in step.get("tool_calls", [])]}
+from tests.episode.invented import write_env  # noqa: E402
+from tests.trainer.policy_fixtures import rename_policy  # noqa: E402
 
 
 def done_policy(messages, tools):

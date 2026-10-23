@@ -7,13 +7,12 @@ standing in for the bodies a build would have compiled by the time this stage ru
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from conftest import PTR
 from kullback.builder import compile_env as ce
-from kullback.runner.records import Column, EntitySchema, FieldStat, Task, ToolCall, ToolSig, Trace
+from kullback.runner.records import Column, EntitySchema, FieldStat, Task, ToolCall, ToolSig
+from tests.builder.trace_fixtures import _call, _pinned, _pins, _trace
 
 FLIP_SEAL_BODY = """
 meter = self.db.meters[meter_id]
@@ -48,26 +47,8 @@ def _sigs():
             ToolSig(name="cycle_mode", kind="write", unclassified=False, args_fields=meter)]
 
 
-def _call(name, args, result=None, idx=0):
-    return ToolCall(id=f"c{idx}", name=name, args=args, result=result, raw_ptr=PTR)
-
-
-def _trace(trace_id, calls):
-    return Trace(trace_id=trace_id, raw_hash="rawhash", ingest_version="1", source="tau2",
-                 tool_calls=calls, raw_ptr=PTR)
-
-
 def _meter(meter_id, sealed, mode, reading=41):
     return {"meter_id": meter_id, "sealed": sealed, "mode": mode, "reading": reading}
-
-
-def _pinned(workdir, task_id):
-    overlay, values = ce.load_overlay(workdir, task_id)
-    return {(row.table, row.id): values[row.version_hash] for row in overlay.rows}
-
-
-def _pins(workdir):
-    return json.loads((workdir / ce.PINS_FILE).read_text(encoding="utf-8"))
 
 
 @pytest.fixture

@@ -5,37 +5,9 @@ import pytest
 
 from kullback.container_grader import GradeError, GradeReceipt, grade
 from kullback.container_world import StepReceipt
+from tests.container_fixtures import ScriptedWorld, ok_receipt
 
 CHUNK = 6
-
-
-def _ok(stdout=b"", stderr=b"", code=0):
-    return StepReceipt(stdout, stderr, code, False, False)
-
-
-class _FakeWorld:
-    """Fake at the World boundary: records step commands, answers by script."""
-
-    def __init__(self, answers=()):
-        self._answers = list(answers)
-        self.commands = []
-        self.reset_calls = 0
-        self.close_calls = 0
-
-    def reset(self):
-        self.reset_calls += 1
-        return "fake-container-id"
-
-    def step(self, command):
-        self.commands.append(command)
-        item = self._answers.pop(0) if self._answers else _ok()
-        if isinstance(item, BaseException):
-            raise item
-        return item
-
-    def close(self):
-        self.close_calls += 1
-        return True
 
 
 def _maker(fake):
@@ -52,8 +24,8 @@ def test_grade_feeds_the_state_then_the_grader_and_passes_on_clean_exit():
     token = "ab12cd34"
     grader_dir = "/workspace/grader-" + token
     final = "STATE_DIR=/workspace/state GRADER_DIR=" + grader_dir + "; export STATE_DIR GRADER_DIR; " + command
-    answers = [_ok()] * 7 + [_ok(b"graded\n", b"", 0)]
-    fake = _FakeWorld(answers)
+    answers = [ok_receipt()] * 7 + [ok_receipt(b"graded\n", b"", 0)]
+    fake = ScriptedWorld(answers)
     receipt = grade(
         _maker(fake),
         state_tar=state,
@@ -93,7 +65,7 @@ def test_grade_feeds_the_state_then_the_grader_and_passes_on_clean_exit():
 
 def test_grade_hides_the_grader_in_a_fresh_token_dir_made_after_the_state_unpacks():
     token = "ab12cd34"
-    fake = _FakeWorld()
+    fake = ScriptedWorld()
     grade(_maker(fake), state_tar=b"abcdef", grader_tar=b"123456", command="true", chunk_bytes=CHUNK, token=token)
     grader_dir = "/workspace/grader-" + token
     staging = "/workspace/.grader-" + token + ".b64"
@@ -108,9 +80,9 @@ def test_grade_hides_the_grader_in_a_fresh_token_dir_made_after_the_state_unpack
     def grader_dirs(fake):
         return [c for c in fake.commands if c.startswith("mkdir /workspace/grader-")]
 
-    first_fake = _FakeWorld()
+    first_fake = ScriptedWorld()
     grade(_maker(first_fake), state_tar=b"", grader_tar=b"", command="true")
-    second_fake = _FakeWorld()
+    second_fake = ScriptedWorld()
     grade(_maker(second_fake), state_tar=b"", grader_tar=b"", command="true")
     assert len(grader_dirs(first_fake)) == 1
     assert len(grader_dirs(second_fake)) == 1
@@ -128,7 +100,7 @@ def test_grade_hides_the_grader_in_a_fresh_token_dir_made_after_the_state_unpack
     ids=["exit-1-has-no-pass", "timed-out-has-no-pass", "truncated-has-no-pass", "clean-exit-0-passes"],
 )
 def test_grade_passed_only_for_clean_exit_zero(answer, passed):
-    fake = _FakeWorld([_ok(), _ok(), answer])
+    fake = ScriptedWorld([ok_receipt(), ok_receipt(), answer])
     receipt = grade(_maker(fake), state_tar=b"", grader_tar=b"", command="true")
     assert receipt.passed is passed
     assert receipt.exit_code == answer.exit_code
@@ -143,11 +115,11 @@ def test_grade_passed_only_for_clean_exit_zero(answer, passed):
     ("answers", "stage"),
     [
         ([StepReceipt(b"", b"nope\n", 1, False, False)], "state mkdir"),
-        ([_ok(), StepReceipt(b"", b"nope\n", 1, False, False)], "state chunk 0"),
-        ([_ok(), _ok(), StepReceipt(b"", b"nope\n", 1, False, False)], "state unpack"),
-        ([_ok(), _ok(), StepReceipt(b"part", b"", 0, True, False)], "state unpack"),
-        ([_ok(), _ok(), StepReceipt(b"part", b"", 0, False, True)], "state unpack"),
-        ([_ok(), _ok(), _ok(), StepReceipt(b"", b"exists\n", 1, False, False)], "grader mkdir"),
+        ([ok_receipt(), StepReceipt(b"", b"nope\n", 1, False, False)], "state chunk 0"),
+        ([ok_receipt(), ok_receipt(), StepReceipt(b"", b"nope\n", 1, False, False)], "state unpack"),
+        ([ok_receipt(), ok_receipt(), StepReceipt(b"part", b"", 0, True, False)], "state unpack"),
+        ([ok_receipt(), ok_receipt(), StepReceipt(b"part", b"", 0, False, True)], "state unpack"),
+        ([ok_receipt(), ok_receipt(), ok_receipt(), StepReceipt(b"", b"exists\n", 1, False, False)], "grader mkdir"),
     ],
     ids=[
         "mkdir-failure-names-stage",
@@ -159,7 +131,7 @@ def test_grade_passed_only_for_clean_exit_zero(answer, passed):
     ],
 )
 def test_grade_feeding_failure_names_stage_skips_grade_and_closes(answers, stage):
-    fake = _FakeWorld(answers)
+    fake = ScriptedWorld(answers)
     with pytest.raises(GradeError, match=stage):
         grade(
             _maker(fake),
@@ -175,7 +147,7 @@ def test_grade_feeding_failure_names_stage_skips_grade_and_closes(answers, stage
 
 
 def test_grade_close_runs_and_interrupt_propagates_on_step_interrupt():
-    fake = _FakeWorld([_ok(), KeyboardInterrupt()])
+    fake = ScriptedWorld([ok_receipt(), KeyboardInterrupt()])
     with pytest.raises(KeyboardInterrupt):
         grade(_maker(fake), state_tar=b"123456", grader_tar=b"", command="true", chunk_bytes=CHUNK)
     assert fake.close_calls == 1
@@ -211,7 +183,7 @@ _NO_INPUTS = {"state_tar": b"", "grader_tar": b"", "command": "true"}
     ],
 )
 def test_grade_refuses_bad_inputs_before_any_world_call_and_accepts_the_ceiling(kwargs, calls):
-    fake = _FakeWorld()
+    fake = ScriptedWorld()
     expectation = pytest.raises(GradeError) if calls == 0 else contextlib.nullcontext()
     with expectation:
         receipt = grade(_maker(fake), **kwargs)

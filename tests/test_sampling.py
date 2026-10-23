@@ -9,21 +9,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from kullback import sampling
 from kullback.builder import world_tools
 from kullback.runner.records import Task
 
 SALT = "loan-desk-salt"
 TASKS = ("open-facility", "raise-limit", "close-account", "restate-terms", "waive-fee")
-
-
-@pytest.fixture()
-def workdir(tmp_path):
-    path = tmp_path / "work"
-    path.mkdir()
-    return path
 
 
 def _tasks(ids, runs=10):

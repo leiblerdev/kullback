@@ -16,7 +16,8 @@ from kullback.trainer import act  # noqa: E402
 from kullback.trainer import remote as remote_mod  # noqa: E402
 from kullback.trainer.remote import RemoteConfig  # noqa: E402
 from kullback.trainer.tools import TrainerContext, trainer_tools  # noqa: E402
-from tests.episode.invented import SCRIPTED_RENAME, write_env  # noqa: E402
+from tests.episode.invented import write_env  # noqa: E402
+from tests.trainer.policy_fixtures import rename_policy  # noqa: E402
 
 NEEDS_SPLIT = pytest.mark.skipif(
     not (hasattr(loop, "ask") and hasattr(loop, "advance")),
@@ -44,12 +45,6 @@ def make_cfg(root):
     root.mkdir(parents=True, exist_ok=True)
     return RemoteConfig(host="local", root=str(root), python=sys.executable)
 
-
-def rename_policy(messages, tools):
-    n = sum(1 for message in messages if message.get("role") == "assistant")
-    step = SCRIPTED_RENAME[min(n, len(SCRIPTED_RENAME) - 1)]
-    return {"content": step.get("content"),
-            "tool_calls": [dict(call) for call in step.get("tool_calls", [])]}
 
 def test_failed_sync_answers_sync_error(tmp_path):
     cfg = make_cfg(tmp_path / "remote")

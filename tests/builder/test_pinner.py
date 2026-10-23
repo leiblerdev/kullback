@@ -10,7 +10,6 @@ import json
 
 import pytest
 
-from conftest import PTR
 from kullback.builder import compile_env as ce
 from kullback.runner import route
 from kullback.runner.records import (
@@ -18,10 +17,9 @@ from kullback.runner.records import (
     EntitySchema,
     FieldStat,
     Task,
-    ToolCall,
     ToolSig,
-    Trace,
 )
+from tests.builder.trace_fixtures import _call, _pinned, _pins, _trace
 
 
 def _schema(hard=("status", "reading", "carrier", "surface"), tables=("routes", "legs", "meters")):
@@ -34,25 +32,10 @@ def _schema(hard=("status", "reading", "carrier", "surface"), tables=("routes", 
                         id_patterns={"routes": r"^R\d+$", "legs": r"^L\d+$", "meters": r"^M\d+$"})
 
 
-def _call(name, args, result=None, idx=0):
-    return ToolCall(id=f"c{idx}", name=name, args=args, result=result, raw_ptr=PTR)
-
-
-def _trace(trace_id, calls):
-    return Trace(trace_id=trace_id, raw_hash="rawhash", ingest_version="1", source="tau2",
-                 tool_calls=calls, raw_ptr=PTR)
-
-
 def _sigs():
     return [ToolSig(name="search_routes", kind="read", unclassified=False),
             ToolSig(name="get_route_details", kind="read", unclassified=False),
             ToolSig(name="get_meter_reading", kind="read", unclassified=False)]
-
-
-def _pinned(workdir, task_id):
-    """The one row version each pinned row carries, as {(table, id): row}."""
-    overlay, values = ce.load_overlay(workdir, task_id)
-    return {(row.table, row.id): values[row.version_hash] for row in overlay.rows}
 
 
 def test_a_parent_row_and_the_child_rows_it_embeds_at_any_depth_are_pinned(workdir):
@@ -323,10 +306,6 @@ def _run_schema() -> EntitySchema:
         id_patterns={"routes.route_id": r"^R\d+$", "runs.run_id": r"^N\d+$"},
         composite_keys={"runs": ["run_id", "day"]},
     )
-
-
-def _pins(workdir):
-    return json.loads((workdir / ce.PINS_FILE).read_text(encoding="utf-8"))
 
 
 def test_a_nested_element_is_named_by_its_own_key_and_not_by_where_it_sits_in_the_list(workdir):

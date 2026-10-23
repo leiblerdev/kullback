@@ -11,7 +11,8 @@ from __future__ import annotations
 from conftest import PTR
 from kullback.builder import compile_env as ce
 from kullback.builder import effects
-from kullback.runner.records import Column, EntitySchema, ToolCall, Trace
+from kullback.runner.records import Column, EntitySchema, Trace
+from tests.builder.trace_fixtures import _call
 
 
 def dock_schema() -> EntitySchema:
@@ -23,10 +24,6 @@ def dock_schema() -> EntitySchema:
         id_patterns={"docks.dock_id": r"^dock_\d$"},
         composite_keys={"docks": ["dock_id", "shift"]},
     )
-
-
-def _call(name, args, result=None, idx=0):
-    return ToolCall(id=f"c{idx}", name=name, args=args, result=result, raw_ptr=PTR)
 
 
 def _trace(trace_id, calls):

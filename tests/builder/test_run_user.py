@@ -6,12 +6,7 @@ from kullback.ai.provider import TestModel
 from kullback.builder import domain_tools as domain_tools_mod
 from kullback.runner import budget
 from tests.builder.test_domain_tools import _run, _workdir
-from tests.helpers.scripted import reply
-
-
-def _candidate() -> TestModel:
-    return TestModel([reply(None, ("rename_widget", {"widget_id": "w1", "label": "striped"})),
-                      reply("Done, widget w1 is labelled striped.")], loop=True)
+from tests.builder.trace_fixtures import _candidate
 
 
 def _run_tool(root, model):

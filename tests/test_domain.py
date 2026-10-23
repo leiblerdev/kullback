@@ -14,7 +14,8 @@ import pytest
 
 from kullback import domain, graph
 from kullback.ai import TestModel
-from kullback.runner.records import Column, EntitySchema, FieldStat, ToolSig, write_json
+from kullback.runner.records import Column, EntitySchema, write_json
+from tests.sig_fixtures import tool_sig
 
 HOST = "https://help.lantern-rental.invalid"
 OTHER = "https://payments.elsewhere.invalid"
@@ -100,16 +101,8 @@ BODIES = {
 }
 
 
-def _sig(name: str, kind: str, *args: str) -> ToolSig:
-    return ToolSig(name=name, kind=kind,
-                   args_fields=[FieldStat(name=arg, types=["str"], optional=False) for arg in args],
-                   args_schema={"type": "object",
-                                "properties": {arg: {"type": ["str"]} for arg in args},
-                                "required": list(args)})
-
-
-SIGS = [_sig("find_hire", "read", "holder"), _sig("get_hire", "read", "hire_id"),
-        _sig("extend_hire", "write", "hire_id", "nights"), _sig("scrap_depot", "write", "depot_id")]
+SIGS = [tool_sig("find_hire", "read", "holder"), tool_sig("get_hire", "read", "hire_id"),
+        tool_sig("extend_hire", "write", "hire_id", "nights"), tool_sig("scrap_depot", "write", "depot_id")]
 
 DB = {"hires": {f"h{n}": {"hire_id": f"h{n}", "holder": f"holder{n}", "nights": f"{n + 1}"}
                 for n in range(1, 6)},

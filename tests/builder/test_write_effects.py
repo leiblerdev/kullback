@@ -23,8 +23,9 @@ from conftest import PTR
 from kullback.builder import effects
 from kullback.gates.tool_runs import body_memorised_values_gate
 from kullback.runner import replay
-from kullback.runner.records import Column, EntitySchema, FieldStat, ToolCall, ToolSig, Trace, Turn
+from kullback.runner.records import Column, EntitySchema, FieldStat, ToolCall, ToolSig, Trace
 from kullback.runner.route import Router
+from tests.builder.trace_fixtures import call_turns
 
 WRITE = "borrow_title"
 
@@ -71,15 +72,7 @@ def borrowing_calls() -> list[ToolCall]:
 
 
 def trace_of(calls: list[ToolCall], trace_id: str = "tr1") -> Trace:
-    turns = [Turn(idx=0, role="assistant", content="How can I help?", raw_ptr=PTR),
-             Turn(idx=1, role="user", content="Swap my loan to another title.", raw_ptr=PTR)]
-    for one in calls:
-        turns.append(Turn(idx=len(turns), role="assistant", content=None,
-                          tool_call_ids=[one.id], raw_ptr=PTR))
-        turns.append(Turn(idx=len(turns), role="tool", content=json.dumps(one.result),
-                          tool_call_ids=[one.id], raw_ptr=PTR))
-    turns.append(Turn(idx=len(turns), role="assistant", content="Done.", raw_ptr=PTR))
-    turns.append(Turn(idx=len(turns), role="user", content="Thanks. ###STOP###", raw_ptr=PTR))
+    turns = call_turns("Swap my loan to another title.", calls)
     for one in calls:
         one.trace_id = trace_id
     return Trace(trace_id=trace_id, raw_hash="r" * 64, ingest_version="1", source="test",

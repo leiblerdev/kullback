@@ -18,12 +18,9 @@ from kullback.container_cheats import (
     scan_start,
 )
 from kullback.container_world import ExportError, StepReceipt, WorldError
+from tests.container_fixtures import ScriptedWorld, ok_receipt
 
 COMMAND = "run-checks"
-
-
-def _ok(stdout=b"", stderr=b"", code=0):
-    return StepReceipt(stdout, stderr, code, False, False)
 
 
 def _timed_out():
@@ -56,7 +53,7 @@ class _FakeCandidate:
 
     def step(self, command):
         self.commands.append(command)
-        item = self._answers.pop(0) if self._answers else _ok()
+        item = self._answers.pop(0) if self._answers else ok_receipt()
         if isinstance(item, BaseException):
             raise item
         return item
@@ -66,31 +63,6 @@ class _FakeCandidate:
         if self._export_error is not None:
             raise self._export_error
         return self._state
-
-    def close(self):
-        self.close_calls += 1
-        return True
-
-
-class _FakeGrader:
-    """Grader-side fake: the scripted answers drive container_grader.grade for real."""
-
-    def __init__(self, answers=()):
-        self._answers = list(answers)
-        self.commands = []
-        self.reset_calls = 0
-        self.close_calls = 0
-
-    def reset(self):
-        self.reset_calls += 1
-        return "fake-grader-id"
-
-    def step(self, command):
-        self.commands.append(command)
-        item = self._answers.pop(0) if self._answers else _ok()
-        if isinstance(item, BaseException):
-            raise item
-        return item
 
     def close(self):
         self.close_calls += 1
@@ -133,11 +105,11 @@ SCAN_TAR = _make_tar(
 
 
 def _grader_defeated():
-    return [_ok(), _ok(), _ok(), _ok(), _failed(1)]
+    return [ok_receipt(), ok_receipt(), ok_receipt(), ok_receipt(), _failed(1)]
 
 
 def _grader_passed():
-    return [_ok(), _ok(), _ok(), _ok(), _ok(b"graded\n")]
+    return [ok_receipt(), ok_receipt(), ok_receipt(), ok_receipt(), ok_receipt(b"graded\n")]
 
 
 def _run_single(cheat, candidate_answers=(), state=b"", export_error=None, grader_answers=None):
@@ -147,7 +119,7 @@ def _run_single(cheat, candidate_answers=(), state=b"", export_error=None, grade
         grader_answers = _grader_defeated()
     report = run_cheats(
         _maker(candidates, lambda: _FakeCandidate(candidate_answers, state, export_error)),
-        _maker(graders, lambda: _FakeGrader(grader_answers)),
+        _maker(graders, lambda: ScriptedWorld(grader_answers)),
         grader_tar=GRADER_TAR,
         command=COMMAND,
         cheats=(cheat,),
@@ -160,7 +132,7 @@ def _run_full_suite():
     graders = []
     report = run_cheats(
         _maker(candidates, _FakeCandidate),
-        _maker(graders, lambda: _FakeGrader(_grader_defeated())),
+        _maker(graders, lambda: ScriptedWorld(_grader_defeated())),
         grader_tar=GRADER_TAR,
         command=COMMAND,
     )
@@ -192,9 +164,9 @@ def test_all_defeated_needs_a_run_and_every_cheat_defeated():
 
     def make_grader():
         if graders:
-            fake = _FakeGrader(_grader_passed())
+            fake = ScriptedWorld(_grader_passed())
         else:
-            fake = _FakeGrader(_grader_defeated())
+            fake = ScriptedWorld(_grader_defeated())
         graders.append(fake)
         return fake
 
@@ -220,7 +192,7 @@ def test_all_defeated_needs_a_run_and_every_cheat_defeated():
 
 def test_run_cheats_nonzero_cheat_step_still_grades():
     cheat = next(c for c in CHEATS if c.name == "aim_at_grader")
-    report, candidates, graders = _run_single(cheat, candidate_answers=[_failed(), _ok(), _ok()])
+    report, candidates, graders = _run_single(cheat, candidate_answers=[_failed(), ok_receipt(), ok_receipt()])
     assert report.results[0].outcome == "defeated"
     assert len(graders[0].commands) == 5
 
@@ -257,7 +229,7 @@ EXPORT_LIMIT = 16_777_216
         pytest.param(
             (_cheat("delete_tests"),),
             lambda _i: _FakeCandidate([WorldError("nope")]),
-            lambda: _FakeGrader(_grader_defeated()),
+            lambda: ScriptedWorld(_grader_defeated()),
             ["no_verdict"],
             "nope",
             [1],
@@ -268,7 +240,7 @@ EXPORT_LIMIT = 16_777_216
         pytest.param(
             (_cheat("delete_tests"),),
             lambda _i: _FakeCandidate(export_error=ExportError("disk gone")),
-            lambda: _FakeGrader(_grader_defeated()),
+            lambda: ScriptedWorld(_grader_defeated()),
             ["no_verdict"],
             "disk gone",
             [1],
@@ -279,7 +251,7 @@ EXPORT_LIMIT = 16_777_216
         pytest.param(
             (_cheat("fake_exit_code"),),
             lambda _i: _FakeCandidate([_timed_out()]),
-            lambda: _FakeGrader(_grader_defeated()),
+            lambda: ScriptedWorld(_grader_defeated()),
             ["no_verdict"],
             "timed out",
             [1],
@@ -290,7 +262,7 @@ EXPORT_LIMIT = 16_777_216
         pytest.param(
             (_cheat("fake_exit_code"),),
             lambda _i: _FakeCandidate([_truncated()]),
-            lambda: _FakeGrader(_grader_defeated()),
+            lambda: ScriptedWorld(_grader_defeated()),
             ["no_verdict"],
             "truncated output",
             [1],
@@ -301,7 +273,7 @@ EXPORT_LIMIT = 16_777_216
         pytest.param(
             (_cheat("do_nothing"),),
             lambda _i: _FakeCandidate(),
-            lambda: _FakeGrader([_failed()]),
+            lambda: ScriptedWorld([_failed()]),
             ["no_verdict"],
             "",
             [1],
@@ -323,7 +295,7 @@ EXPORT_LIMIT = 16_777_216
         pytest.param(
             (CHEATS[0],),
             _raising(WorldError("launch gone")),
-            lambda: _FakeGrader(_grader_defeated()),
+            lambda: ScriptedWorld(_grader_defeated()),
             ["no_verdict"],
             "launch gone",
             [],
@@ -334,7 +306,7 @@ EXPORT_LIMIT = 16_777_216
         pytest.param(
             (CHEATS[0], CHEATS[1]),
             lambda i: _BadClose() if i == 0 else _FakeCandidate(),
-            lambda: _FakeGrader(_grader_defeated()),
+            lambda: ScriptedWorld(_grader_defeated()),
             ["no_verdict", "defeated"],
             "stuck lid",
             [1, 1],
@@ -386,7 +358,7 @@ def test_run_cheats_fault_propagates_after_close_without_next_cheat(fault, candi
     with pytest.raises(fault):
         run_cheats(
             _maker(candidates, candidate),
-            _maker(graders, lambda: _FakeGrader(_grader_defeated())),
+            _maker(graders, lambda: ScriptedWorld(_grader_defeated())),
             grader_tar=GRADER_TAR,
             command=COMMAND,
             cheats=cheats,
@@ -415,11 +387,11 @@ ID_E = "e" * 40
 
 
 def _history_answers(all_out, head_out, fsck_out, repo=b"/workspace/a/.git\n"):
-    return [_ok(b""), _ok(repo), _ok(b"/usr/bin/git\n"), all_out, head_out, fsck_out]
+    return [ok_receipt(b""), ok_receipt(repo), ok_receipt(b"/usr/bin/git\n"), all_out, head_out, fsck_out]
 
 
 def _ids(*ids):
-    return _ok(("\n".join(ids) + "\n").encode())
+    return ok_receipt(("\n".join(ids) + "\n").encode())
 
 
 def _sha_line(data, path):
@@ -428,7 +400,7 @@ def _sha_line(data, path):
 
 def test_scan_hidden_test_hit_reports_path_and_member():
     listing = _sha_line(ANSWER_CONTENT, "/workspace/work.txt") + _sha_line(b"other", "/workspace/other.txt")
-    make, store = _scan_candidate([_ok(listing.encode()), _ok(b"")])
+    make, store = _scan_candidate([ok_receipt(listing.encode()), ok_receipt(b"")])
     report = scan_start(make, grader_tar=SCAN_TAR)
     assert isinstance(report, ScanReport)
     assert report.hidden_tests.outcome == "hit"
@@ -444,8 +416,8 @@ def test_scan_hidden_test_hit_reports_path_and_member():
 @pytest.mark.parametrize(
     ("answers", "members", "ground"),
     [
-        ([_ok(b""), _ok(b"")], (), "not_run"),
-        ([_ok(b""), _ok(), _ok(), StepReceipt(b"", b"", 1, False, False), _ok(b"")], ("expected.txt",), "clean"),
+        ([ok_receipt(b""), ok_receipt(b"")], (), "not_run"),
+        ([ok_receipt(b""), ok_receipt(), ok_receipt(), StepReceipt(b"", b"", 1, False, False), ok_receipt(b"")], ("expected.txt",), "clean"),
     ],
     ids=["empty-workspace", "ground-truth-no-match"],
 )
@@ -475,13 +447,13 @@ _GROUND = ("expected.txt",)
     ("candidate", "members", "want", "close_error", "closes"),
     [
         pytest.param(
-            lambda: _FakeCandidate([_failed(1), _ok(b"")]), (), _HIDDEN_NO_SIGNAL, "", [1], id="listing-exit-1"
+            lambda: _FakeCandidate([_failed(1), ok_receipt(b"")]), (), _HIDDEN_NO_SIGNAL, "", [1], id="listing-exit-1"
         ),
         pytest.param(
-            lambda: _FakeCandidate([_timed_out(), _ok(b"")]), (), _HIDDEN_NO_SIGNAL, "", [1], id="listing-timeout"
+            lambda: _FakeCandidate([_timed_out(), ok_receipt(b"")]), (), _HIDDEN_NO_SIGNAL, "", [1], id="listing-timeout"
         ),
         pytest.param(
-            lambda: _FakeCandidate([WorldError("lost"), _ok(b"")]),
+            lambda: _FakeCandidate([WorldError("lost"), ok_receipt(b"")]),
             (),
             _HIDDEN_NO_SIGNAL,
             "",
@@ -489,7 +461,7 @@ _GROUND = ("expected.txt",)
             id="listing-world-error",
         ),
         pytest.param(
-            lambda: _FakeCandidate([_ok(b"bogus line\n"), _ok(b"")]),
+            lambda: _FakeCandidate([ok_receipt(b"bogus line\n"), ok_receipt(b"")]),
             (),
             _HIDDEN_NO_SIGNAL,
             "",
@@ -497,7 +469,7 @@ _GROUND = ("expected.txt",)
             id="unparsable-sha-line",
         ),
         pytest.param(
-            lambda: _FakeCandidate([_ok(b""), _ok(), _ok(), StepReceipt(b"", b"err\n", 2, False, False), _ok(b"")]),
+            lambda: _FakeCandidate([ok_receipt(b""), ok_receipt(), ok_receipt(), StepReceipt(b"", b"err\n", 2, False, False), ok_receipt(b"")]),
             _GROUND,
             _GROUND_NO_SIGNAL,
             "",
@@ -505,7 +477,7 @@ _GROUND = ("expected.txt",)
             id="ground-truth-exit-2",
         ),
         pytest.param(
-            lambda: _FakeCandidate([_ok(b""), _ok(), _ok(), _timed_out(), _ok(b"")]),
+            lambda: _FakeCandidate([ok_receipt(b""), ok_receipt(), ok_receipt(), _timed_out(), ok_receipt(b"")]),
             _GROUND,
             _GROUND_NO_SIGNAL,
             "",
@@ -513,7 +485,7 @@ _GROUND = ("expected.txt",)
             id="ground-truth-timeout",
         ),
         pytest.param(
-            lambda: _FakeCandidate([_ok(b""), _failed(), _ok(b"")]),
+            lambda: _FakeCandidate([ok_receipt(b""), _failed(), ok_receipt(b"")]),
             _GROUND,
             _GROUND_NO_SIGNAL,
             "",
@@ -521,7 +493,7 @@ _GROUND = ("expected.txt",)
             id="ground-truth-feed-failure",
         ),
         pytest.param(
-            lambda: _FakeCandidate(_history_answers(_failed(128), _ids(ID_A), _ok(b""))),
+            lambda: _FakeCandidate(_history_answers(_failed(128), _ids(ID_A), ok_receipt(b""))),
             (),
             _HISTORY_NO_SIGNAL,
             "",
@@ -529,7 +501,7 @@ _GROUND = ("expected.txt",)
             id="history-all-listing-exit-128",
         ),
         pytest.param(
-            lambda: _FakeCandidate(_history_answers(_truncated(), _ids(ID_A), _ok(b""))),
+            lambda: _FakeCandidate(_history_answers(_truncated(), _ids(ID_A), ok_receipt(b""))),
             (),
             _HISTORY_NO_SIGNAL,
             "",
@@ -537,7 +509,7 @@ _GROUND = ("expected.txt",)
             id="history-all-listing-truncated",
         ),
         pytest.param(
-            lambda: _FakeCandidate(_history_answers(_ok(b"lots\n"), _ids(ID_A), _ok(b""))),
+            lambda: _FakeCandidate(_history_answers(ok_receipt(b"lots\n"), _ids(ID_A), ok_receipt(b""))),
             (),
             _HISTORY_NO_SIGNAL,
             "",
@@ -545,7 +517,7 @@ _GROUND = ("expected.txt",)
             id="history-junk-in-all",
         ),
         pytest.param(
-            lambda: _FakeCandidate(_history_answers(_ids(ID_A), _ok(b"lots\n"), _ok(b""))),
+            lambda: _FakeCandidate(_history_answers(_ids(ID_A), ok_receipt(b"lots\n"), ok_receipt(b""))),
             (),
             _HISTORY_NO_SIGNAL,
             "",
@@ -553,13 +525,13 @@ _GROUND = ("expected.txt",)
             id="history-junk-in-head",
         ),
         pytest.param(
-            lambda: _FakeCandidate([_ok(b""), _failed(1)]), (), _HISTORY_NO_SIGNAL, "", [1], id="repo-listing-exit-1"
+            lambda: _FakeCandidate([ok_receipt(b""), _failed(1)]), (), _HISTORY_NO_SIGNAL, "", [1], id="repo-listing-exit-1"
         ),
         pytest.param(
-            lambda: _FakeCandidate([_ok(b""), _timed_out()]), (), _HISTORY_NO_SIGNAL, "", [1], id="repo-listing-timeout"
+            lambda: _FakeCandidate([ok_receipt(b""), _timed_out()]), (), _HISTORY_NO_SIGNAL, "", [1], id="repo-listing-timeout"
         ),
         pytest.param(
-            lambda: _FakeCandidate([_ok(b""), WorldError("lost")]),
+            lambda: _FakeCandidate([ok_receipt(b""), WorldError("lost")]),
             (),
             _HISTORY_NO_SIGNAL,
             "",
@@ -567,7 +539,7 @@ _GROUND = ("expected.txt",)
             id="repo-listing-world-error",
         ),
         pytest.param(
-            lambda: _FakeCandidate([_ok(b""), _ok(b"/workspace/a/.git\n"), StepReceipt(b"", b"", 1, False, False)]),
+            lambda: _FakeCandidate([ok_receipt(b""), ok_receipt(b"/workspace/a/.git\n"), StepReceipt(b"", b"", 1, False, False)]),
             (),
             _HISTORY_NO_SIGNAL,
             "",
@@ -575,7 +547,7 @@ _GROUND = ("expected.txt",)
             id="no-git-binary",
         ),
         pytest.param(
-            lambda: _FakeCandidate([_ok(b""), _ok(b"/workspace/a/.git\n"), _ok(b"/usr/bin/git\n"), WorldError("lost")]),
+            lambda: _FakeCandidate([ok_receipt(b""), ok_receipt(b"/workspace/a/.git\n"), ok_receipt(b"/usr/bin/git\n"), WorldError("lost")]),
             (),
             _HISTORY_NO_SIGNAL,
             "",
@@ -583,7 +555,7 @@ _GROUND = ("expected.txt",)
             id="repo-step-world-error",
         ),
         pytest.param(
-            lambda: _FakeCandidate(_history_answers(_ids(ID_A, ID_B, ID_C, ID_D), _failed(128), _ok(b""))),
+            lambda: _FakeCandidate(_history_answers(_ids(ID_A, ID_B, ID_C, ID_D), _failed(128), ok_receipt(b""))),
             (),
             _HISTORY_NO_SIGNAL,
             "",
@@ -591,7 +563,7 @@ _GROUND = ("expected.txt",)
             id="history-head-failure",
         ),
         pytest.param(
-            lambda: _BadClose([_ok(b""), _ok(b"")]),
+            lambda: _BadClose([ok_receipt(b""), ok_receipt(b"")]),
             (),
             {"hidden_tests": "clean", "history": "clean"},
             "stuck lid",
@@ -641,11 +613,11 @@ def test_an_unreadable_scan_is_no_signal_never_clean(candidate, members, want, c
 
 def test_scan_ground_truth_hit_lists_workspace_files():
     answers = [
-        _ok(b""),
-        _ok(),
-        _ok(),
-        _ok(b"/workspace/copy.txt\n/workspace/.scan-patterns.txt\n\n"),
-        _ok(b""),
+        ok_receipt(b""),
+        ok_receipt(),
+        ok_receipt(),
+        ok_receipt(b"/workspace/copy.txt\n/workspace/.scan-patterns.txt\n\n"),
+        ok_receipt(b""),
     ]
     make, store = _scan_candidate(answers)
     report = scan_start(make, grader_tar=SCAN_TAR, answer_members=("expected.txt",))
@@ -659,7 +631,7 @@ def test_scan_ground_truth_hit_lists_workspace_files():
 
 
 def test_scan_ground_truth_only_matching_itself_is_clean():
-    answers = [_ok(b""), _ok(), _ok(), _ok(b"/workspace/.scan-patterns.txt\n"), _ok(b"")]
+    answers = [ok_receipt(b""), ok_receipt(), ok_receipt(), ok_receipt(b"/workspace/.scan-patterns.txt\n"), ok_receipt(b"")]
     make, _store = _scan_candidate(answers)
     report = scan_start(make, grader_tar=SCAN_TAR, answer_members=("expected.txt",))
     assert report.ground_truth.outcome == "clean"
@@ -670,7 +642,7 @@ def test_scan_ground_truth_only_matching_itself_is_clean():
     [
         pytest.param(
             _history_answers(
-                _ids(ID_A, ID_B, ID_C, ID_D, ID_E), _ids(ID_A, ID_B, ID_C), _ok(b""), repo=b"/workspace/proj/.git\n"
+                _ids(ID_A, ID_B, ID_C, ID_D, ID_E), _ids(ID_A, ID_B, ID_C), ok_receipt(b""), repo=b"/workspace/proj/.git\n"
             ),
             "hit",
             (ScanHit("history", "/workspace/proj/.git", "", "all=5 head=3 unreachable=0"),),
@@ -680,7 +652,7 @@ def test_scan_ground_truth_only_matching_itself_is_clean():
             _history_answers(
                 _ids(ID_A, ID_B, ID_C),
                 _ids(ID_A, ID_B, ID_C),
-                _ok(b"unreachable commit abc123\nunreachable blob def456\n"),
+                ok_receipt(b"unreachable commit abc123\nunreachable blob def456\n"),
                 repo=b"/workspace/proj/.git\n",
             ),
             "hit",
@@ -688,7 +660,7 @@ def test_scan_ground_truth_only_matching_itself_is_clean():
             id="unreachable-commit-only",
         ),
         pytest.param(
-            _history_answers(_ids(ID_A), _ids(ID_A), _ok(b"dangling commit abc123\n")),
+            _history_answers(_ids(ID_A), _ids(ID_A), ok_receipt(b"dangling commit abc123\n")),
             "hit",
             (ScanHit("history", "/workspace/a/.git", "", "all=1 head=1 unreachable=1"),),
             id="dangling-commit",
@@ -696,8 +668,8 @@ def test_scan_ground_truth_only_matching_itself_is_clean():
         pytest.param(
             _history_answers(
                 _ids(ID_A, ID_B),
-                _ok((ID_A + "\n\n" + ID_B + "\n").encode()),
-                _ok(b"unreachable blob def456\n"),
+                ok_receipt((ID_A + "\n\n" + ID_B + "\n").encode()),
+                ok_receipt(b"unreachable blob def456\n"),
                 repo=b"/workspace/proj/.git\n\n",
             ),
             "clean",
@@ -706,13 +678,13 @@ def test_scan_ground_truth_only_matching_itself_is_clean():
         ),
         pytest.param(
             _history_answers(
-                _ids(ID_A, ID_B), _ids(ID_A, ID_B), _ok(b"warning: 2 commits were skipped\n\nunreachable blob def456\n")
+                _ids(ID_A, ID_B), _ids(ID_A, ID_B), ok_receipt(b"warning: 2 commits were skipped\n\nunreachable blob def456\n")
             ),
             "clean",
             (),
             id="warning-and-blob-lines",
         ),
-        pytest.param([_ok(b""), _ok(b"")], "clean", (), id="no-git-dir"),
+        pytest.param([ok_receipt(b""), ok_receipt(b"")], "clean", (), id="no-git-dir"),
     ],
 )
 def test_scan_history_hits_only_on_commits_hidden_beyond_head(answers, outcome, hits):
@@ -787,7 +759,7 @@ def test_bad_cheat_arguments_are_refused_before_any_container_starts(call, messa
     with pytest.raises(ValueError) as excinfo:
         call(
             _maker(candidates, _FakeCandidate),
-            _maker(graders, lambda: _FakeGrader(_grader_defeated())),
+            _maker(graders, lambda: ScriptedWorld(_grader_defeated())),
         )
     assert message in str(excinfo.value)
     assert candidates == []
@@ -796,7 +768,7 @@ def test_bad_cheat_arguments_are_refused_before_any_container_starts(call, messa
 
 def test_a_hostile_repo_path_is_quoted_in_every_command():
     repo = "/workspace/my dir/o'brien/.git"
-    make, store = _scan_candidate(_history_answers(_ids(ID_A), _ids(ID_A), _ok(b""), repo=(repo + "\n").encode()))
+    make, store = _scan_candidate(_history_answers(_ids(ID_A), _ids(ID_A), ok_receipt(b""), repo=(repo + "\n").encode()))
     report = scan_start(make, grader_tar=SCAN_TAR)
     assert report.history.outcome == "clean"
     quoted = shlex.quote(repo)

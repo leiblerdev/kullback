@@ -9,7 +9,6 @@ from __future__ import annotations
 import pytest
 
 from kullback.ai.provider import TestModel
-from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
 from kullback.user import context as context_mod
 from kullback.user import factory as factory_mod
 from kullback.user import fidelity as fidelity_mod
@@ -17,39 +16,7 @@ from kullback.user import rules as rules_mod
 from kullback.user import simulated as simulated_mod
 from kullback.user import value_strip as intent_mod
 from kullback.user.agent import AgentUser
-from kullback.user.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
-
-PTR = RawPtr(file_hash="testfile", sim_index=0)
-
-VOCAB = Vocabulary(domain="garden", fields=[
-    *[f.model_copy(deep=True) for f in GENERIC_FIELDS],
-    FieldSpec(field="plot_id", kind="reference", pattern=r"\bPLOT-\d{4}\b",
-              cues=[r"\bplot (?:id|number)\b", r"\byour plot\b"], aliases=["plot id"]),
-    FieldSpec(field="delivery_slot", kind="value", pattern=r"\b(?:0[1-9]|1[0-9]|2[0-3]):00\b",
-              cues=[r"\bdelivery slot\b", r"\bwhat time\b"], aliases=["delivery slot"]),
-])
-
-
-def turn(idx: int, role: str, content: str) -> Turn:
-    return Turn(idx=idx, role=role, content=content, tool_call_ids=[], raw_ptr=PTR)
-
-
-def recorded_trace() -> Trace:
-    return Trace(trace_id="t1", raw_hash="h", ingest_version="v", source="test", raw_ptr=PTR,
-                 turns=[
-                     turn(0, "user", "Hello, please could you move my plant delivery to a later slot."),
-                     turn(1, "assistant", "Of course. Could you provide your plot number?"),
-                     turn(2, "user", "Thanks, my plot number is PLOT-4471."),
-                     turn(3, "assistant", "Thank you. What delivery slot would you like?"),
-                     turn(4, "user", "Please make it 16:00."),
-                     turn(5, "assistant", "Done, your delivery is moved. Anything else?"),
-                     turn(6, "user", "No, that is all. Thank you."),
-                 ],
-                 tool_calls=[ToolCall(id="c1", name="move_delivery",
-                                      args={"plot_id": "PLOT-4471", "slot": "16:00"},
-                                      result={"plot_id": "PLOT-4471", "slot": "16:00",
-                                              "courier_ref": "CR-90881"},
-                                      raw_ptr=PTR)])
+from tests.user.garden_fixtures import VOCAB, recorded_trace
 
 
 @pytest.fixture

@@ -21,9 +21,9 @@ from kullback.runner.records import (
     ToolCall,
     ToolCallError,
     ToolSig,
-    Trace,
     Verifier,
 )
+from tests.builder.trace_fixtures import _trace
 
 # --- hand-written tool bodies, standing in for what a model would write ---
 
@@ -156,17 +156,6 @@ def sigs():
 
 def _call(name, args, result=None, error=None, idx=0):
     return ToolCall(id=f"c{idx}", name=name, args=args, result=result, error=error, raw_ptr=PTR)
-
-
-def _trace(trace_id, calls):
-    return Trace(
-        trace_id=trace_id,
-        raw_hash="rawhash",
-        ingest_version="1",
-        source="tau2",
-        tool_calls=calls,
-        raw_ptr=PTR,
-    )
 
 
 @pytest.fixture

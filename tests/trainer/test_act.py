@@ -10,7 +10,8 @@ from kullback.agent.bus import Bus  # noqa: E402
 from kullback.runner import loop  # noqa: E402
 from kullback.runner.world import BuiltEnvironment  # noqa: E402
 from kullback.trainer import act  # noqa: E402
-from tests.episode.invented import SCRIPTED_RENAME, write_env  # noqa: E402
+from tests.episode.invented import write_env  # noqa: E402
+from tests.trainer.policy_fixtures import rename_policy  # noqa: E402
 
 NEEDS_SPLIT = pytest.mark.skipif(
     not (hasattr(loop, "ask") and hasattr(loop, "advance")),
@@ -23,13 +24,6 @@ def ask_kwargs(**over):
             "step": 3, "level": "easy", "count": 2}
     base.update(over)
     return base
-
-
-def rename_policy(messages, tools):
-    n = sum(1 for message in messages if message.get("role") == "assistant")
-    step = SCRIPTED_RENAME[min(n, len(SCRIPTED_RENAME) - 1)]
-    return {"content": step.get("content"),
-            "tool_calls": [dict(call) for call in step.get("tool_calls", [])]}
 
 
 def test_ask_tasks_publishes_the_ask_on_first_request(tmp_path):
