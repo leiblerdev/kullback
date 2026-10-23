@@ -168,8 +168,10 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `hub/client.py` | The whole surface a dataset host is spoken to through, and the one adapter that speaks it (D221). |
 | `hub/harbor_world.py` | One Kullback Task as it runs inside a Harbor container: the tools, the call log, the Verifier (D363). |
 | `hub/harbor.py` | An Environment as a Harbor dataset: one Harbor task directory per Kullback Task (D363). |
+| `hub/listed_ids.py` | The listed ids a shipped world drops: members of an id list that name no row of the table they key (D429). |
 | `hub/package.py` | The Environment package: the rebuilt world and the graders, with a manifest and a leak scan (D221). |
 | `hub/publish.py` | Publishing an Environment and fetching one back (D221). |
+| `hub/repair.py` | Three repairs the Harbor export makes to a written Verifier, by code, before it is laid (D431, D432, D437). |
 
 ### kullback/judge
 
@@ -261,6 +263,7 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `spec/stage.py` | The Spec stage of a build: each named Task's Intent mined, its Spec and Verifier written, the bus told. |
 | `spec/text.py` | The word-level text rules the Builder and the Spec both read (moved from builder/cluster.py and intent.py). |
 | `spec/trust.py` | Trust on the Spec's Verifier: constructed Runs fail and no ruling is open, by code (D333). |
+| `spec/ungated.py` | Every write a born Task's scenario end names is gated by a differing cell, on every named column (D419). |
 | `spec/witness.py` | The Task's Reference as a witness Run, for the reference_passes flag only; the writer never reads it. |
 | `spec/writer_tools.py` | The writer's only tools: world search, the policy, and the one tool that adds items; the bounded session. |
 | `spec/writer.py` | The Verifier writer: items from the Intent, the policy and the world, never from a Reference. |
@@ -281,6 +284,7 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `synth/rule.py` | The world a synthetic generator session reads, and the statement rule its tools hold to (D372). |
 | `synth/search.py` | The scenario layer's seam onto the harness's one web reader (D374, D115) and the shared web tools (D377). |
 | `synth/skills.py` | The scenario review skill: the order one review of a scenario reads in (D373, D382). |
+| `synth/slice.py` | The slice of the world one scenario is written onto, picked by code before any session (D420). |
 | `synth/tasks.py` | Tasks born of passed scenarios, through the mechanism every recorded Task already goes through (D389). |
 | `synth/world_tools.py` | The world tools every scenario session holds: rows by key, rows by a field's value, tools by words (D381). |
 
