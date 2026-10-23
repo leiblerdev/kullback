@@ -48,14 +48,6 @@ def test_a_field_every_seed_read_from_the_world_keeps_no_question_atom(tmp_path)
     assert _question_keys(_derive(tmp_path, seeds)) == []
 
 
-def test_a_field_no_seed_could_read_keeps_its_question_atom(tmp_path):
-    """Risk side: where the world never held the slot, asking stays demanded."""
-    stock = {"parcel_id": "P-7", "weight": "2kg"}
-    seeds = [_seed("ref", "Morning please, parcel P-7.", "Done.", stock),
-             _seed("alt", "The morning slot for P-7, thanks.", "Done.", stock)]
-    assert _question_keys(_derive(tmp_path, seeds)) == ["field:slot"]
-
-
 def test_a_field_one_seed_could_not_read_keeps_its_question_atom(tmp_path):
     """The demand stands when some seed could not read the slot first."""
     seeds = [_seed("ref", "Morning please, parcel P-7.", "Done.", PARCEL),

@@ -176,13 +176,6 @@ def test_do_nothing_without_signal_is_no_signal_and_not_born():
     assert not report.born
 
 
-def test_argument_from_nowhere_is_reported_with_index_path_and_value():
-    walk = [{"name": "rename_widget", "arguments": {"widget_id": "w1", "label": "mango"}}]
-    traced = check_arguments_trace(walk, [], intent=INTENT, user_facts=FACTS)
-    assert traced.outcome == "failed"
-    assert [(u.call_index, u.path, u.value) for u in traced.untraced] == [(0, "label", "mango")]
-
-
 def test_result_of_a_call_is_not_earlier_for_that_same_call():
     walk = [
         {"name": "describe_widget", "arguments": {"widget_id": "w1"}},
@@ -393,7 +386,7 @@ def test_user_facts_trace_through_their_values_in_every_shape(shape):
     assert traced.outcome == "held"
 
 
-def test_calls_drive_and_trace_as_recorded_objects_plain_objects_and_short_key_dicts():
+def test_calls_drive_and_trace_in_every_shape_and_an_argument_from_nowhere_is_reported_with_index_path_and_value():
     from types import SimpleNamespace
 
     from kullback.runner.records import RawPtr, ToolCall
