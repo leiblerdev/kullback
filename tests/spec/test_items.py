@@ -82,6 +82,22 @@ def test_a_find_must_name_exactly_one_row_and_a_field_must_exist():
     assert "has no field 'colour'" in keep(dict(MOVE, expect={"colour": "red"}))[1]
 
 
+def test_a_cell_path_meeting_a_list_without_an_index_is_refused_naming_the_path_and_the_list():
+    state = {"items": dict(STATE["items"], A1=dict(STATE["items"]["A1"], parts=[{"slot": "two"}, {"slot": "four"}]))}
+    w = I.World(state, POLICY, FACTS, TOOLS)
+    _, why = w.check(dict(MOVE, expect={"parts.slot": "seven"}), KNOWN, unwitnessed)
+    assert "'parts.slot' cannot be read" in why and "'parts' is a list of 2" in why and "parts.<index>.slot" in why
+    assert w.check(dict(MOVE, expect={"parts.1.slot": "seven"}), KNOWN, unwitnessed)[1] == ""
+    _, why = w.check({"id": "k1", "kind": "row_keeps", "table": "items", "find": {"item_id": "A1"},
+                      "fields": ["parts.slot"], "fact_ids": ["f1"]}, KNOWN, unwitnessed)
+    assert "cannot be read" in why
+
+
+def test_a_cell_path_past_a_lists_end_or_to_a_key_the_row_lacks_is_kept_for_a_tool_may_add_it():
+    assert I.unreadable_path({"parts": [{"slot": "two"}]}, "parts.3.slot") == ""
+    assert I.unreadable_path({"parts": {"p1": {"slot": "two"}}}, "parts.p9.slot") == ""
+
+
 def test_provenance_is_required_a_policy_line_must_be_verbatim_and_unwitnessed_facts_alone_are_refused():
     assert "fact_ids" in keep(dict(MOVE, fact_ids=[]))[1]
     assert "verbatim" in keep(dict(MOVE, fact_ids=[], policy_line="move anything anywhere at all"))[1]

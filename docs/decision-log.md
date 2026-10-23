@@ -4365,3 +4365,131 @@ writes every failed Task again.
 
 Tests: tests/spec/test_stage.py (a provider refusal leaves no Spec file and its message is counted once, cut at the
 limit; a rerun after a provider refusal writes the Task instead of skipping it).
+
+### D424. A one-item judge reply is read whatever key its one result sits under (2026-10-19)
+
+What. The judge parser reads a reply whose results hold exactly one row as the answer for the item asked,
+whatever that row's key. With several rows the key must still be the item id. The score rule is unchanged: 0 or
+1, anything else leaves the item unscored. When the row was read under another key, the JudgeScore's why ends with
+a short note naming that key, so a reader can see it happened.
+
+Why. Each judge call carries one item (D328), yet the judge sometimes keys its one result "1", "[t2]" or a name
+of its own. Such a reply was "unreadable reply" and left the Run unscored although its answer was well formed: 9
+retail trials of the bench run and 4 of the Opus re-judge. A single row cannot belong to any other item, so
+reading it loses nothing; several rows stay strict because there the key is what picks the answer.
+
+Tests: tests/runner/test_judge_items.py (a reply with one result under another key is read as the item; the
+JudgeScore says so in why; several results with none under the item id leave the item unjudged; a one result
+reply under another key still needs a score of 0 or 1).
+
+### D423. A Verifier cell the scorer cannot read is refused at Spec time and gated at export (2026-10-19)
+
+What. A row_is expect field, a row_keeps field or a judge anchor field whose dotted path meets a list at a part
+that is not an index, on the named start row, is refused by `World.check` (spec/items.py `unreadable_path`).
+The message names the path, the list and its length, and the indexed form to write instead, so the Spec writer's
+tool hands it back and the writer rewrites. A list of one member is refused too, not rewritten to index 0: the
+end row may hold more members than the start row, and only the writer knows which member it meant. A key the row
+lacks and an index past a list's end are kept, since a tool may add either. The Harbor export reads every cell of
+an already written Verifier against the Task's Starting state and sets the Task aside as `unreadable_cell`
+before any oracle is tried, counted under skipped in the manifest. The frozen runner is unchanged.
+
+Why. The scorer's `path_value` steps into a list only by an index, so a cell like row.list.leaf reads None and can
+never hold whatever the Run does. Over the 309 staged Harbor Tasks of 2026-10-17 the gate sets aside 13 airline
+and 25 retail Tasks (29 and 65 cells), and the compile check refuses the same Tasks. Writing those 38 again needs
+model calls and waits.
+
+Tests: tests/spec/test_items.py (a cell path meeting a list without an index is refused naming the path and the
+list; a path past a list's end or to a key the row lacks is kept), tests/hub/test_harbor.py (a Verifier cell the
+scorer cannot read on its start row sets the Task aside and is counted).
+
+### D425. The world report counts listed ids that name no row (2026-10-19)
+
+What. `derive_world` writes `dangling` into world_report.json: per list column of text values, the table its
+members key (the table whose row keys they name most often, ties by name), how many ids it lists and how many name
+no row there (builder/world_tools.py `dangling_ids`). Nothing is pruned and no Task is set aside.
+
+Why. Rows are learned from recordings only, while a person's row carries their full id list, so the agent can open
+an id the person's own row names and get "not found". The schema learns no references between tables (id
+patterns per column and homes only), so the gate the brief allowed with references cannot be built; the count is
+the general route without them. On the staged packages: airline 64 of 159 listed ids, retail 4 of 162, the same
+in every Task's db.json. The bug-1019 repro test stays failing, marked xfail with this reason.
+
+Tests: tests/builder/test_world_tools.py (the world report counts listed ids that name no row of the table they
+key; derive_world writes the count into the world report).
+
+### D422. The Harbor instruction says what the user said later, and ships no item it cannot satisfy (2026-10-19)
+
+What. `asked_facts` renders every Intent fact the user said, whatever its stance, keeping out only the agent's
+echo, facts ruled unfounded, a scenario's end facts (D414) and empty text. The volunteered facts come first under
+the opening lead; the facts the user said on request or after a refusal or proposal (stance fallback or accepted)
+follow under one general lead, "What they tell you later, when you ask or when what they first asked for cannot be
+done:". The package's viewer rows and the Harbor instruction.md still both come from `opening(asked_facts(spec))`.
+The Harbor export then drops every item that cites facts and only facts the instruction does not render (dropped,
+never weighed: a pass counts at reward 1, so a weighted item a right Run cannot satisfy fails it as a gate would). A
+dropped state item's cells leave every end state and become free, so a Run may leave the row or move it; a dropped
+new row frees its table. An item citing no fact, citing an end fact, or citing a policy line stays:
+the policy ships in the instruction, so a right Run can satisfy such an item from there. The shipped Verifier is the source
+file byte for byte when nothing is dropped. The manifest carries the dropped item ids per Task
+(`items_unrenderable`), their count and the Tasks touched in counts, the masked list per package, and the export
+and publish report lines say the count.
+
+Why. The miner labels a value the user gave when the agent asked (an identity detail) and an ask said after a
+refusal ("then do this instead") as fallback or accepted. The instruction carried only volunteered facts, the
+Harbor user can only consent, and the Verifier still gated on those facts: 94 of 187 scored fails of the bench run
+were touched, 55 decisive (bug-1019 Bugs 1 and 2, attr-1019). With every said fact rendered, the drop is a guard:
+it removes only items that rest on the agent's echo or on facts ruled unfounded.
+
+Tests: tests/hub/test_harbor.py (a detail the user gave when the agent asked reaches the instruction; a fallback ask
+reaches the instruction under the later lead after the volunteered ones; an instruction with only volunteered facts
+has no later lead; the instruction says what the user volunteered, then what they said later, never the echo; an
+item resting only on unrendered facts is dropped, its cell freed and counted; an item citing a policy line
+is kept whatever facts it cites; a Verifier with nothing unrendered
+ships byte for byte).
+
+### D427. A said amount compiles to the digits every spelling of it holds, for every Task (2026-10-19)
+
+What. A said item's value that is one number written as an amount (a currency sign, a thousands comma, decimals or
+a unit of up to three letters) compiles to its digits past the last thousands group, decimals kept without
+trailing zeros: "$1,194" and "1194" both hold "194", "$408" holds "408", "$3,131.10" holds "131.1"
+(spec/items.py `said_shape`, applied in `atom_of` to every Task's Spec). A bare integer may be an id and stays as
+written, as does a value with more than one number or any other text. The item's description keeps the values as
+the writer wrote them, the form the user reads. The frozen runner is unchanged.
+
+Why. The runner canonises the said needle ("$408" to "408 usd", "1,194" to "1194") while the reply keeps its sign
+and comma, so a needle in either canonical form misses the reply. D414 shortened only values with cents. The tail
+of digits is the one substring both spellings share; it is looser (a "$1,000" needle is "000"), which costs only
+on a said value, never on a cell. Over the 309 staged Harbor Tasks of 2026-10-17, recompiled: 12 of 80 said values
+rewritten, the same 12 the base tree's D414 rewrites (the staged Verifiers predate D414); 2 of 187 scored fails
+flip to pass on rescore (one airline, one retail said amount), both on the base tree too. The one plain integer
+the attribution named stays as written, so that trial still fails.
+
+Tests: tests/spec/test_said_once.py (a said amount compiles to digits every spelling of it holds; a said amount
+passes a reply that keeps its sign and comma; a bare integer or text with a number stays as written; the
+description keeps the values as written).
+
+### D428. Each check is said once at compile; what cannot be one is refused (2026-10-19)
+
+What. At compile (spec/compile.py, called from the writer's `verifier_of`): two item atoms of one kind on one
+target, provenance aside, are one atom, the first id kept, a gate where either was (`merged_atoms`). Two cells on
+one (table, row, field) of one end state are one cell where one absorbs the other: equal values keep the first,
+a gate where either was; a value implying the other (a member of its one_of, a value outside its not) keeps the
+stricter, but only when the stricter is a gate wherever the other is, so a weighted exact value never becomes a
+gate (`merged_cells`). Each fold is a "merged" line in the compile reasons and in the Spec's end_state counts. Two
+state items expecting one cell of one end state with values neither of which implies the other, and two row_new
+items on one table of one end state where one's where is a subset of the other's, are contradictions naming both
+ids and both values (`cell_clashes`, `new_row_overlaps` in `items.contradictions`), so the writer is sent back to
+narrow them. A cell expected as "seven" and as one_of ["seven", "eight"] is no longer named unsatisfiable.
+
+Why. Duplicates doubled an item's weight in partial reward, and the runner's `new_row_counts` (frozen) gives a made
+row to the first matching spec only. On the 309 staged Tasks: atoms merged airline 16 in 9 Tasks, retail 36 in 16;
+cells merged airline 43 in 16, retail 170 in 38; cells refused airline 0, retail 5 in 2 Tasks; new-row pairs refused
+airline 5 in 2 Tasks, retail 0; Tasks named unsatisfiable go from 18 to 18 airline and 33 to 18 retail (the older
+row_is check named compatible pairs). Rescored, no pass turns to a fail and no fail flips past the two of D427;
+15 partial rewards move by at most 0.07. A first cut that made the stricter cell a gate always took one trial from
+0.944 to 0, and was narrowed as above.
+
+Tests: tests/spec/test_said_once.py (two atoms of one kind on one target are one atom keeping the first id; two
+cells on one field with one value score as one item; a cell and a set it satisfies fold to the stricter value; a
+weighted exact cell beside a gated set stays two cells; two cells whose values differ are refused naming both
+values; cells in two alternative end states never clash; two new-row specs one row can match are refused naming
+both).

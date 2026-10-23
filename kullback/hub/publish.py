@@ -120,7 +120,8 @@ def stage(workdir: Any, out: Any, repo_id: str, *, name: Optional[str] = None, p
                              **({"org": organisation} if organisation else {}), workers=workers, index=index,
                              **(harbor_options or {}))
         manifest["harbor"] = {key: laid[key] for key in ("tasks_chosen", "counts", "content_hash", "leak_scan",
-                                                         "tiers", "labels", "left_out", "no_oracle", "git_sha")
+                                                         "tiers", "labels", "left_out", "no_oracle", "items_unrenderable",
+                                                         "git_sha")
                               if key in laid}
     # Read off what was laid, so the card says how many tools there are and quotes one Task's ask.
     manifest["inside"] = package_mod.inside(Path(out), laid)

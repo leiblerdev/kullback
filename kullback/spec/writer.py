@@ -46,7 +46,7 @@ from kullback.spec import effects as tool_effects
 from kullback.spec import events, writer_tools
 from kullback.spec import items as I
 from kullback.spec.actions import action_tables_of, action_tools_of
-from kullback.spec.compile import Compiled, compile_spec
+from kullback.spec.compile import Compiled, compile_spec, merged_atoms, merged_cells
 from kullback.spec.ground import coverage
 from kullback.spec.intent_tools import mark_echo, mark_side, recordings_of, task_of, trace_index
 from kullback.spec.must_not import must_not
@@ -757,7 +757,8 @@ def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:
     """The Spec's Verifier: items to atoms (the verdict decides each), end states with the sanity item.
 
     Checks of the older demand grammar compile to atoms beside the items, with the must-not atoms when
-    the Spec has no item; nothing else gates on them (the Spec stage rewrites such a Spec as items).
+    the Spec has no item; nothing else gates on them (the Spec stage rewrites such a Spec as items). A
+    repeated item atom or end state cell is folded into one, each fold a line of the reasons (D428).
     """
     items = item_checks(spec)
     legacy = spec.model_copy(update={"checks": [c for c in spec.checks if not is_item_check(c)]})
@@ -766,13 +767,14 @@ def verifier_of(spec: Spec, inputs: WriterInputs) -> Compiled:
     if not items and legacy.checks:
         must = [atom for atom in atoms if atom.kind in ("required", "allowed")]
         atoms += must_not(must, spec.intent.text, inputs.constraints, sorted(inputs.write_tools))
-    expected = []
+    expected, merged = [], []
     if items or not legacy.checks:
-        expected = I.end_states_of(items, world_of(inputs), inputs.action_tables, inputs.effects)
-        atoms = [I.atom_of(item) for item in items] + [I.sanity_atom(expected)] + atoms
+        expected, merged = merged_cells(I.end_states_of(items, world_of(inputs), inputs.action_tables, inputs.effects))
+        own, folded = merged_atoms([I.atom_of(item) for item in items])
+        atoms, merged = own + [I.sanity_atom(expected)] + atoms, merged + folded
     verifier = Verifier(task_id=spec.task_id, atoms=atoms,
                         verifier_version=f"spec{spec.version}", seed_run_ids=[], expected=expected)
-    return Compiled(verifier, compiled.dropped, compiled.reasons,
+    return Compiled(verifier, compiled.dropped, compiled.reasons + tuple(merged),
                     compiled.unsatisfiable + tuple(I.contradictions(items)))
 
 
@@ -812,9 +814,13 @@ def write_verifier(spec: Spec, workdir: Path, inputs: Optional[WriterInputs] = N
     the same bytes. The counts ride on the saved Spec as `end_state`.
     """
     inputs = inputs or load_inputs(workdir, spec.task_id, spec.intent)
-    verifier: Verifier = verifier_of(spec, inputs).verifier
+    compiled = verifier_of(spec, inputs)
+    verifier: Verifier = compiled.verifier
     text = json.dumps(verifier.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
     counts = end_state_counts(verifier, spec)
+    merged = [line for line in compiled.reasons if ": merged" in line]
+    if merged:
+        counts["merged"] = merged
     if inputs.reach is not None:
         counts["reachability"] = reachability(spec, inputs)
     spec = spec.model_copy(update={"end_state": counts})

@@ -16,7 +16,8 @@ policy line). Code adds the sanity item (`nothing_else`): no row outside the dec
 "Find, do not invent": `World.check` refuses a value no world row, policy line or user turn holds, a
 find that names no row or several, and a field the table does not have, each with the reason; a row_is
 whose expect is empty or holds only the find key, a free field with no reason, and a free field holding
-a value an Intent fact names elsewhere in the world (that value belongs in expect). A judge
+a value an Intent fact names elsewhere in the world (that value belongs in expect), and a cell path the
+scorer cannot read on the row (it meets a list at a part that is not an index, D423). A judge
 anchor cites the row it was read from (one row by a world search) and its answer states those fields;
 only an anchor whose answer quotes the item's policy line goes without a row, and that refusal item
 always gates.
@@ -30,8 +31,8 @@ State items may name an alternative end state (`alt`); one without belongs to ev
 Run passes the state items when any one end state matches.
 A gated called item stands only where its policy line names the tool (D414): any other path is the
 agent's to choose, so the gate is weighed. A told item citing a fact of a scenario's end (`is_end_fact`)
-is a told item asked for. A said value that is one number compiles to the shape the frozen Runner's
-substring match finds most widely (`said_shape`).
+is a told item asked for. A said value that is one amount compiles to the shape the frozen Runner's
+substring match finds most widely (`said_shape`, D427); the item's description keeps the value as written.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ from typing import Any, Callable, Iterable, NamedTuple, Optional
 from kullback.runner.atom_context import is_transfer
 from kullback.runner.records import Atom, EndState, ExpectedCell, ValueSource
 from kullback.spec.atoms import called_set_atom
+from kullback.spec.compile import cell_clashes, new_row_overlaps
 from kullback.spec.effects import type_of
 from kullback.spec.schema import is_reaction
 
@@ -129,6 +131,26 @@ def path_value(row: Any, field: str) -> Any:
         else:
             return None
     return node
+
+
+def unreadable_path(row: Any, field: Any) -> str:
+    """Why a cell's dotted path cannot be read on this row, else empty (D423): it meets a list at a part that
+    is not an index, so `path_value` reads None whatever the Run does. A key the row lacks and an index
+    past a list's end are left alone: a tool may add either."""
+    node, walked = row, []
+    for part in str(field).split("."):
+        if isinstance(node, list) and not part.isdigit():
+            at, rest = ".".join(walked), str(field)[len(".".join(walked)) + 1:]
+            return (f"{field!r} cannot be read: {at!r} is a list of {len(node)} and only an index steps into a "
+                    f"list; name the member by its index, as {at}.<index>.{rest}")
+        if isinstance(node, dict):
+            node = node.get(part)
+        elif isinstance(node, list):
+            node = node[int(part)] if int(part) < len(node) else None
+        else:
+            return ""
+        walked.append(part)
+    return ""
 
 
 def _contains(haystack: str, needle: str) -> bool:
@@ -696,10 +718,13 @@ class World:
         kept["alt"] = alt
         return ""
 
-    def _field(self, table: str, field: Any) -> str:
-        """A field the table has; any field of a table with no row and no declared column is unknown, not refused."""
+    def _field(self, table: str, field: Any, row_key: Optional[str] = None) -> str:
+        """A field the table has; any field of a table with no row and no declared column is unknown, not refused.
+        On a named row the path must also be one the scorer can read there (`unreadable_path`)."""
         top, columns = str(field or "").split(".")[0], self.columns(table)
-        return "" if top in columns or (top and not columns) else f"{table} has no field {field!r}"
+        if not (top in columns or (top and not columns)):
+            return f"{table} has no field {field!r}"
+        return unreadable_path(self.row(table, row_key), field) if row_key is not None else ""
 
     def _row_is(self, item: dict, kept: dict) -> str:
         why = self._one_row(item, kept)
@@ -711,7 +736,7 @@ class World:
                                              for r in free.values()):
             return "free is {field: one line on why a tool sets it to a value you cannot find}"
         for field, value in expect.items():
-            why = self._field(kept["table"], field) or self._value(value, f"{field}")[1]
+            why = self._field(kept["table"], field, kept["row"]) or self._value(value, f"{field}")[1]
             if why:
                 return why
         for field in free:
@@ -779,7 +804,7 @@ class World:
         if why or not isinstance(fields, list) or not fields:
             return why or "fields lists the fields that must not change"
         for field in fields:
-            why = self._field(kept["table"], field)
+            why = self._field(kept["table"], field, kept["row"])
             if why:
                 return why
         row = self.row(kept["table"], kept["row"]) or {}
@@ -909,7 +934,7 @@ class World:
             return None, f"anchor.row: {why or 'fields lists the fields the answer states'}"
         row, values = self.row(kept["table"], kept["row"]) or {}, {}
         for field in fields:
-            why = self._field(kept["table"], field)
+            why = self._field(kept["table"], field, kept["row"])
             if why:
                 return None, f"anchor.row: {why}"
             values[str(field)] = path_value(row, str(field))
@@ -994,7 +1019,8 @@ def _describe(item: dict) -> str:
     if kind == "before":
         return f"{item['first']} comes before {item['then']}"
     if kind == "said":
-        return f"the Candidate states {len(item['values'])} value(s), not {len(item['not_values'])}"
+        # The values as the writer wrote them, the form the user reads; the target holds `said_shape`'s (D427).
+        return f"the Candidate states {item['values']}, not {item.get('not_values') or []}"
     return f"judge: {item['question']}"
 
 
@@ -1029,19 +1055,27 @@ def atom_of(item: dict) -> Atom:
 
 
 # One number as a said value may carry: a currency sign before, a short unit after.
-SAID_NUMBER = re.compile(r"[$\u20ac\u00a3]?\s*(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*[a-z%]{0,3}", re.IGNORECASE)
+SAID_NUMBER = re.compile(r"([$\u20ac\u00a3])?\s*(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*([a-z%]{0,3})", re.IGNORECASE)
 
 
 def said_shape(value: Any) -> Any:
-    """A said value as the Runner's lowercased substring match finds it most widely (D414): a value that is one
-    number loses its currency sign, its unit and its trailing zeros, and with cents its digits past the last
-    thousands group, so "$3,648.02", "3648.02" and "3,648.02" all hold "648.02". Anything else is unchanged."""
+    """A said value as the Runner's lowercased substring match finds it most widely (D414, D427).
+
+    The Runner canonises the needle ("$408" to "408 usd", "1,194" to "1194") but not the reply, which keeps
+    its sign and comma. A value that is one number written as an amount (a currency sign, a thousands
+    comma, decimals or a short unit) loses its sign, its unit and its decimals' trailing zeros, and keeps
+    only its digits past the last thousands group: "$1,194" and "1194" both hold "194", "$3,648.02" and
+    "3648.02" both hold "648.02". A bare integer may be an id and stays as written, as does anything else.
+    """
     found = SAID_NUMBER.fullmatch(str(value).strip()) if isinstance(value, (str, int, float)) \
         and not isinstance(value, bool) else None
     if found is None:
         return value
-    whole, cents = found.group(1).replace(",", ""), (found.group(2) or "").rstrip("0").rstrip(".")
-    return (whole[-3:] if cents and len(whole) > 3 else whole) + cents
+    sign, digits, decimals, unit = found.groups()
+    whole, cents = digits.replace(",", ""), (decimals or "").rstrip("0").rstrip(".")
+    if not (sign or unit or decimals or "," in digits):
+        return value if isinstance(value, str) else whole
+    return whole[-3:] + cents
 
 
 def value_set_of(value: Any) -> bool:
@@ -1264,8 +1298,8 @@ def _gated_call_clashes(items: list[dict], named: list[tuple[str, str]]) -> list
 
 def contradictions(items: list[dict]) -> list[tuple[str, str]]:
     """(item id, why) for items no Run can pass together: a tool both called and not, a tool gated as called
-    with two different arg sets, a gated not_called beside a gated called, a gated event item repeated, a cell
-    both v and not v."""
+    with two different arg sets, a gated not_called beside a gated called, a gated event item repeated, one
+    cell expected two ways neither of which implies the other, two row_new whose where clauses overlap (D428)."""
     out: list[tuple[str, str]] = []
     needed = {}
     for item in items:
@@ -1278,17 +1312,7 @@ def contradictions(items: list[dict]) -> list[tuple[str, str]]:
             out.append((item["id"], f"not_called {item['tool']} beside {needed[item['tool']]}, which needs the call"))
     out += _called_arg_clashes(items)
     out += _gated_call_clashes(items, out)
-    cells: dict[tuple, tuple[str, str]] = {}
-    for item in items:
-        if item["kind"] != "row_is":
-            continue
-        for field, value in item["expect"].items():
-            key = (item.get("alt"), item["table"], item["row"], field)
-            text = json.dumps(value, sort_keys=True, default=str)
-            if key in cells and cells[key][1] != text:
-                out.append((item["id"], f"{field} of that row is also expected by {cells[key][0]}"))
-            cells.setdefault(key, (item["id"], text))
-    return out
+    return out + cell_clashes(items) + new_row_overlaps(items)
 
 
 def counts_of(items: list[dict]) -> dict:
