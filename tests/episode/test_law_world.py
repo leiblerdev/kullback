@@ -17,7 +17,6 @@ from kullback.laws import (
     SUCCESS_CHANGED_SOMETHING,
     check_laws,
 )
-from kullback.runner import loop
 from kullback.runner.records import RawPtr, ToolCall, Trace
 from kullback.runner.world.environment import BuiltEnvironment
 from kullback.runner.world.law_world import EnvironmentLawWorld
@@ -62,7 +61,6 @@ def test_check_laws_runs_over_the_built_fixture_and_reports_a_number(tmp_path):
     assert sum(report.broken.values()) == 0
 
 
-@pytest.mark.skipif(not hasattr(loop, "advance"), reason="needs the step-split patch")
 def test_reset_matches_the_episode_starting_state(tmp_path):
     from kullback.runner.world import Episode
 

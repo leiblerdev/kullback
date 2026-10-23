@@ -1,8 +1,4 @@
-"""run_record reads the recorded file, so later writes cannot rewrite earlier results (G1).
-
-The interface steps the world through `advance` (step-split landed); the guard below skips on
-a tree without it.
-"""
+"""run_record reads the recorded file, so later writes cannot rewrite earlier results (G1)."""
 
 from __future__ import annotations
 
@@ -10,15 +6,8 @@ import json
 
 import pytest
 
-from kullback.runner import loop
-
-pytestmark = pytest.mark.skipif(
-    not (hasattr(loop, "ask") and hasattr(loop, "advance")),
-    reason="needs the step-split patch",
-)
-
-from kullback.runner.world import BuiltEnvironment, Episode, EpisodeError  # noqa: E402
-from tests.episode.invented import DOMAIN_DB, TOOLKIT_HEAD, WIDGET_ROW, write_env  # noqa: E402
+from kullback.runner.world import BuiltEnvironment, Episode, EpisodeError
+from tests.episode.invented import DOMAIN_DB, TOOLKIT_HEAD, WIDGET_ROW, write_env
 
 DATA_MODEL_UNCOPYABLE = WIDGET_ROW + '''
     def __deepcopy__(self, memo):

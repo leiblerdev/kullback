@@ -2,10 +2,6 @@ import json
 
 import pytest
 
-from kullback.runner import loop
-
-pytestmark = pytest.mark.skipif(not hasattr(loop, "advance"), reason="needs the step-split patch")
-
 
 def test_episode_uses_the_shared_strip_on_nonheld_evidence(tmp_path):
     from kullback.runner.records import RawPtr, ToolCall, Trace

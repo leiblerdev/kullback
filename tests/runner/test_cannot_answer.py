@@ -1,34 +1,19 @@
-"""A listed tool no code can answer ends the Run as Environment cannot answer (G28).
-
-These tests need both frozen patches applied: body-transactions (the transaction
-snapshot the Router builds on) and cannot-answer (the new outcome itself). Without
-them they skip: the Router knows no cannot-answer route, so every assertion here
-would fail for the wrong reason.
-"""
+"""A listed tool no code can answer ends the Run as Environment cannot answer (G28)."""
 
 from __future__ import annotations
 
 import json
 import types
-from typing import get_args
 
 import pytest
 
 from kullback.ai.provider import TestModel
 from kullback.runner import loop as loop_mod
 from kullback.runner import route as route_mod
-from kullback.runner.records import ErrorClass, Route, ToolSig, Verifier
-from kullback.runner.route import Router
+from kullback.runner.records import ToolSig, Verifier
+from kullback.runner.route import CANNOT_ANSWER_REASON, Router
 from kullback.runner.state import StateView
 from kullback.runner.verdict import verdict
-
-CANNOT_ANSWER_REASON = getattr(route_mod, "CANNOT_ANSWER_REASON", "environment_cannot_answer")
-
-HAS_BODY = hasattr(route_mod, "_snapshot_world")
-HAS_CANNOT = (hasattr(route_mod, "refuse_stand_in") and hasattr(route_mod, "CANNOT_ANSWER_REASON")
-              and "cannot_answer" in get_args(ErrorClass) and "cannot_answer" in get_args(Route))
-pytestmark = pytest.mark.skipif(not (HAS_BODY and HAS_CANNOT),
-                                reason="needs the body-transactions and cannot-answer frozen patches applied")
 
 
 def tools_module() -> types.ModuleType:

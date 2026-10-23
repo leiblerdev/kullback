@@ -1,23 +1,12 @@
-"""Driving a Run from outside: reset, scripted steps, a reward by code (G1).
-
-The interface steps the world through `advance` (step-split landed); the guard below skips on
-a tree without it.
-"""
+"""Driving a Run from outside: reset, scripted steps, a reward by code (G1)."""
 
 from __future__ import annotations
 
 import pytest
 
-from kullback.runner import loop
 from kullback.runner.tool import STOP_SHORT_LINE
-
-pytestmark = pytest.mark.skipif(
-    not (hasattr(loop, "ask") and hasattr(loop, "advance")),
-    reason="needs the step-split patch",
-)
-
-from kullback.runner.world import BuiltEnvironment, Episode, EpisodeError  # noqa: E402
-from tests.episode.invented import SCRIPTED_RENAME, write_env  # noqa: E402
+from kullback.runner.world import BuiltEnvironment, Episode, EpisodeError
+from tests.episode.invented import SCRIPTED_RENAME, write_env
 
 
 def drive(env_root, outdir, messages) -> Episode:

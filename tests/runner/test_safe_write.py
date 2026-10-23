@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fnmatch
-import inspect
 import json
 import os
 import threading
@@ -11,13 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from kullback.runner import records as records_module
 from kullback.runner.records import read_json, write_json
-
-pytestmark = pytest.mark.skipif(
-    "os.replace" not in inspect.getsource(records_module.write_json),
-    reason="safe-write.patch is not applied",
-)
 
 
 class _Token:

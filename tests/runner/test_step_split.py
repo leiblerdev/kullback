@@ -1,7 +1,6 @@
 """The Runner's step is two functions: ask the policy, advance the world (G2).
 
-Ask and advance live in runner/loop.py (step-split landed); the guard below skips on a tree
-without them.
+Ask and advance live in runner/loop.py.
 """
 
 from __future__ import annotations
@@ -18,12 +17,6 @@ from kullback.runner.loop import finish, new_run_state, run, step
 from kullback.runner.records import ToolSig, as_dict
 from kullback.runner.route import Router
 from kullback.runner.state import StateView
-
-pytestmark = pytest.mark.skipif(
-    not (hasattr(loop, "ask") and hasattr(loop, "advance")),
-    reason="needs the step-split patch",
-)
-
 
 WIDGET_TOOLS = [{"name": "describe_widget"}, {"name": "rename_widget"}]
 

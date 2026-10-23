@@ -1,32 +1,22 @@
 """One scorer (G3): the structured target is the only meaning for non-Hard atoms.
 
-Invented tools and tables only. Skipped unless the one-scorer patch is applied.
+Invented tools and tables only.
 """
 
 from __future__ import annotations
 
-import importlib.util
 from functools import partial
 
 import pytest
 
 from kullback.gates import verifier_suite as S
+from kullback.runner import target as T
 from kullback.runner.atom_context import _evaluate
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import Atom, Run, Verifier
 from kullback.runner.verdict import verdict
 from tests.helpers import records
 from tests.helpers.records import assistant, call, event, result, user
-
-try:
-    from kullback.runner import target as T
-except ImportError:  # without the one-scorer patch the module is absent and every test skips
-    T = None  # type: ignore
-
-pytestmark = pytest.mark.skipif(
-    importlib.util.find_spec("kullback.runner.target") is None,
-    reason="needs the one-scorer patch",
-)
 
 WRITE_TOOLS = {"archive_entry"}
 make_run = partial(records.make_run, task_id="t9")

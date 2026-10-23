@@ -2,19 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
-
-from kullback.runner import loop
-
-pytestmark = pytest.mark.skipif(
-    not (hasattr(loop, "ask") and hasattr(loop, "advance")),
-    reason="needs the step-split patch",
-)
-
-from kullback.ai.provider import TestModel  # noqa: E402
-from kullback.runner.world import BuiltEnvironment  # noqa: E402
-from kullback.runner.world.solve import markdown_table, solve_rate  # noqa: E402
-from tests.episode.invented import write_env  # noqa: E402
+from kullback.ai.provider import TestModel
+from kullback.runner.world import BuiltEnvironment
+from kullback.runner.world.solve import markdown_table, solve_rate
+from tests.episode.invented import write_env
 
 
 def test_solve_rate_counts_passes_and_leaves_no_signal_out():

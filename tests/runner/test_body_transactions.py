@@ -1,27 +1,19 @@
-"""Every tool call is a transaction, and a crashed body is its own outcome (G27).
-
-The body-transactions change landed in the Runner (it was a frozen patch until D313). The guard
-below still skips on a tree where the Router takes no snapshot and knows no body fault.
-"""
+"""Every tool call is a transaction, and a crashed body is its own outcome (G27)."""
 
 from __future__ import annotations
 
 import json
 import types
-from typing import Any, get_args
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
 
 from kullback.runner import loop as loop_mod
-from kullback.runner import route as route_mod
-from kullback.runner.records import ErrorClass, ErrorShape, ToolSig, Verifier, as_dict
+from kullback.runner.records import ErrorShape, ToolSig, Verifier, as_dict
 from kullback.runner.route import Router
 from kullback.runner.state import StateView
 from kullback.runner.verdict import _env_marks, verdict
-
-HAS_PATCH = hasattr(route_mod, "_snapshot_world") and "body_fault" in get_args(ErrorClass)
-pytestmark = pytest.mark.skipif(not HAS_PATCH, reason="needs the body-transactions frozen patch applied")
 
 
 class PickyRefusal(ValueError):

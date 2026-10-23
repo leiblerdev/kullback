@@ -421,7 +421,7 @@ def test_a_failed_replay_that_is_not_a_faithful_kept_reference_sets_no_flag(tmp_
     assert tiers["t1"].row["reference_passes"] is None and T.reference_fails(tiers) == []
 
 
-# --- D322: one trust ruling, the code gates inside the Spec's tiers ---
+# --- D333: one trust ruling, the code gates inside the Spec's tiers ---
 
 def test_an_unsupported_cell_is_no_trust_gate_any_more_sourced_lives_in_the_writers_tool():
     assert _tier([_replay(), _fresh()], verifier=_verifier(spec(gaps=["f2"]), sourced=False)).tier == "trusted"

@@ -7,21 +7,15 @@ from pathlib import Path
 
 import pytest
 
+from kullback.ai.provider import (
+    ModelReply,
+    TestModel,
+)
+from kullback.ai.usage import Usage
 from kullback.runner import loop
-
-pytestmark = pytest.mark.skipif(
-    not (hasattr(loop, "ask") and hasattr(loop, "advance")),
-    reason="needs the step-split patch",
-)
-
-from kullback.ai.provider import (  # noqa: E402
-    ModelReply,  # noqa: E402
-    TestModel,  # noqa: E402
-)
-from kullback.ai.usage import Usage  # noqa: E402
-from kullback.runner.world import BuiltEnvironment  # noqa: E402
-from kullback.runner.world.solve import solve_rate  # noqa: E402
-from tests.episode.invented import write_env  # noqa: E402
+from kullback.runner.world import BuiltEnvironment
+from kullback.runner.world.solve import solve_rate
+from tests.episode.invented import write_env
 
 
 def _stub_priced(monkeypatch):
@@ -178,7 +172,6 @@ def test_policy_error_aborts_without_reward(tmp_path, monkeypatch):
 
 
 def test_env_error_counts_as_no_signal(tmp_path, monkeypatch):
-    from kullback.runner import loop
     from kullback.runner.world import Episode
     from kullback.runner.world.episode import EpisodeError
 
