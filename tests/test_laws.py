@@ -427,13 +427,6 @@ def test_write_failing_only_on_replay_reports_both_laws(world_cls, sequences):
     }
 
 
-def test_live_snapshot_mutating_read_is_still_caught():
-    report = _run(LiveReadWorld())
-    assert [(v.law, v.tool) for v in report.violations] == [(READ_CHANGES_NOTHING, "scan")]
-    (violation,) = report.violations
-    assert len(violation.sequence) == 1
-
-
 class CrashProbeWorld:
     def __init__(self):
         self.cells = {}
@@ -599,9 +592,13 @@ def test_minted_ids_unique_per_path_hold_minted_law(world_cls):
     assert report.consistency == 1.0
 
 
-def test_missing_mint_path_breaks_minted_law():
-    report = _run(MissingMintWorld())
-    assert [(v.law, v.tool) for v in report.violations] == [(MINTED_IDS_UNIQUE, "make")]
+@pytest.mark.parametrize(("world", "law", "tool"), [
+    pytest.param(LiveReadWorld, READ_CHANGES_NOTHING, "scan", id="live_snapshot_mutating_read_is_still_caught"),
+    pytest.param(MissingMintWorld, MINTED_IDS_UNIQUE, "make", id="missing_mint_path_breaks_minted_law"),
+])
+def test_a_world_breaking_one_law_is_caught_by_a_one_call_sequence(world, law, tool):
+    report = _run(world())
+    assert [(v.law, v.tool) for v in report.violations] == [(law, tool)]
     (violation,) = report.violations
     assert len(violation.sequence) == 1
 

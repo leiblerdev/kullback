@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from conftest import PTR
 from kullback.builder import compile_env as ce
 from kullback.builder import sandbox as sb
@@ -176,29 +178,23 @@ def test_a_body_that_leaves_a_witnessed_column_alone_because_the_world_held_it_a
     assert ruling.metrics["transition_agrees"] == 1
 
 
-def test_a_body_that_leaves_a_column_alone_while_the_world_holds_another_is_refused(tmp_path):
-    schema, sig = _schema(), _sig()
-    source = ce.module_source(schema, [sig], {sig.name: ANSWERS_RIGHT_WRITES_NOTHING})
-    box = sb.Sandbox(source, KILN, tmp_path)
-    ruling = sb.gate_transition(box, [_call("c1", "POT-01", "sprout")], schema,
-                                _evidence(("c1", "POT-01", "sprout")))
-    assert ruling.passed is False
-    assert "stage" in ruling.failures[0]
-
-
 DELETES_THE_ROW = ("pot = self.db.pots[pot_id]\n"
                    "del self.db.pots[pot_id]\n"
                    "return {\"pot_id\": pot_id, \"stage\": new_stage}\n")
 
 
-def test_a_witnessed_row_the_world_does_not_have_after_the_call_is_still_missing(tmp_path):
+@pytest.mark.parametrize(("body", "named"), [
+    pytest.param(ANSWERS_RIGHT_WRITES_NOTHING, "stage", id="a_body_that_leaves_a_column_alone"),
+    pytest.param(DELETES_THE_ROW, "did not move", id="a_witnessed_row_the_world_does_not_have_after_the_call"),
+])
+def test_a_body_that_leaves_a_column_alone_or_drops_the_witnessed_row_is_refused(tmp_path, body, named):
     schema, sig = _schema(), _sig()
-    source = ce.module_source(schema, [sig], {sig.name: DELETES_THE_ROW})
+    source = ce.module_source(schema, [sig], {sig.name: body})
     box = sb.Sandbox(source, KILN, tmp_path)
     ruling = sb.gate_transition(box, [_call("c1", "POT-01", "sprout")], schema,
                                 _evidence(("c1", "POT-01", "sprout")))
     assert ruling.passed is False
-    assert "did not move" in ruling.failures[0]
+    assert named in ruling.failures[0]
 
 
 def test_a_short_diff_run_that_answers_for_fewer_calls_than_given_fails_closed(tmp_path):

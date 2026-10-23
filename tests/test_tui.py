@@ -266,11 +266,16 @@ def test_the_ceiling_the_screen_was_opened_with_reaches_the_build(tmp_path):
     assert screen.runner.calls[0]["ceiling_usd"] == 2.5
 
 
-@pytest.mark.parametrize("line", ["/run", "/run --count 3"])
-def test_run_needs_a_task_id_and_says_so_instead_of_guessing_one(tmp_path, line):
+@pytest.mark.parametrize(("line", "expected"), [
+    pytest.param("/build --file", "--file needs a value after it", id="a_flag_with_no_value"),
+    pytest.param("/build --file --iterate", "--file needs a value after it", id="a_flag_followed_by_another_flag"),
+    pytest.param("/run", "run needs a task id", id="run_with_no_task_id"),
+    pytest.param("/run --count 3", "run needs a task id", id="run_with_a_count_and_no_task_id"),
+])
+def test_a_command_missing_its_argument_says_so_in_words_and_starts_nothing(tmp_path, line, expected):
     screen = _screen(tmp_path)
     screen.command(line)
-    assert "run needs a task id" in _text(screen.console)
+    assert expected in _text(screen.console)
     assert screen.runner.calls == []
 
 
@@ -321,12 +326,6 @@ def test_status_reads_the_last_build_off_disk_and_runs_no_stage(tmp_path):
     assert screen.runner.calls == []
 
 
-def test_status_before_any_build_says_there_is_none(tmp_path):
-    screen = _screen(tmp_path)
-    screen.command("/status")
-    assert "no build yet" in _text(screen.console)
-
-
 def test_keys_says_which_are_set_and_never_what_they_are():
     out = _keys({"OPENAI_API_KEY": "sk-secret-value", "HARNESS_ALLOW_MODEL_REQUESTS": "1"}).plain
     assert "sk-secret-value" not in out
@@ -335,13 +334,6 @@ def test_keys_says_which_are_set_and_never_what_they_are():
 
 
 # --- a flag typed without its value is a usage message, not an IndexError (Greptile, PR 1) ---
-
-@pytest.mark.parametrize("line", ["/build --file", "/build --file --iterate"])
-def test_a_flag_with_no_value_is_told_in_words_and_starts_nothing(tmp_path, line):
-    screen = _screen(tmp_path)
-    screen.command(line)
-    assert "--file needs a value after it" in _text(screen.console)
-    assert screen.runner.calls == []
 
 
 @pytest.mark.parametrize("line,message", [
@@ -612,10 +604,20 @@ def test_slash_fragment_with_one_match_runs_it(tmp_path):
     assert screen._pending is None
 
 
-def test_slash_fragment_with_no_match_says_so(tmp_path):
+@pytest.mark.parametrize(("line", "expected"), [
+    # rich reads [provider/model] as a style tag and drops it, which left /login in the help
+    # looking like it takes no model.
+    pytest.param("/help", "[provider/model]", id="help_keeps_the_bracketed_arguments_a_command_takes"),
+    pytest.param("/context", "no session yet", id="context_before_any_session_says_there_is_none"),
+    pytest.param("/nudge", "/nudge needs text", id="a_nudge_with_no_text_says_what_it_needs"),
+    pytest.param("/status", "no build yet", id="status_before_any_build_says_there_is_none"),
+    pytest.param("/status", "no build yet", id="status_with_no_files_says_no_build_yet"),
+    pytest.param("/zzz", "no command matches /zzz", id="slash_fragment_with_no_match_says_so"),
+])
+def test_a_command_with_nothing_to_act_on_says_so_in_words_and_keeps_the_screen(tmp_path, line, expected):
     screen = _screen(tmp_path)
-    assert screen.command("/zzz") is True
-    assert "no command matches /zzz" in _text(screen.console)
+    assert screen.command(line) is True
+    assert expected in _text(screen.console)
 
 
 def test_a_bare_number_picks_from_the_menu(tmp_path):
@@ -632,12 +634,6 @@ def test_a_bare_number_outside_the_list_says_the_range(tmp_path):
     screen.command("/")
     assert screen.command("99") is True
     assert "pick 1-" in _text(screen.console)
-
-
-def test_status_with_no_files_says_no_build_yet(tmp_path):
-    screen = _screen(tmp_path)
-    assert screen.command("/status") is True
-    assert "no build yet" in _text(screen.console)
 
 
 def test_status_reads_rounds_gates_and_spend_not_just_the_pipeline(tmp_path):
@@ -861,14 +857,6 @@ def test_the_login_menu_starts_each_provider_at_a_model_the_key_variable_rule_ca
         # PROVIDER_API_KEY by the rule, or the variable an adapter of its own names
         # (Bedrock's AWS_BEARER_TOKEN_BEDROCK).
         assert re.fullmatch(r"[A-Z][A-Z0-9_]*", screen._key_var_for(name, model))
-
-
-def test_help_keeps_the_bracketed_arguments_a_command_takes(tmp_path):
-    """rich reads [provider/model] as a style tag and drops it, which left /login in the help
-    looking like it takes no model."""
-    screen = _screen(tmp_path)
-    screen.command("/help")
-    assert "[provider/model]" in _text(screen.console)
 
 
 def test_watching_shows_the_calls_off_the_builds_own_feed(tmp_path, monkeypatch):
@@ -1216,23 +1204,11 @@ def test_context_prints_the_window_used_and_share_of_the_session(tmp_path):
     assert "compactions 0" in out
 
 
-def test_context_before_any_session_says_there_is_none(tmp_path):
-    screen = _screen(tmp_path)
-    screen.command("/context")
-    assert "no session yet" in _text(screen.console)
-
-
 @pytest.mark.parametrize("line", ["/nudge read the calls", "/tell then stop", "/stop", "/compact"])
 def test_a_control_with_no_session_running_is_refused_in_words(tmp_path, line):
     screen = _screen(tmp_path)
     screen.command(line)
     assert "no session running" in _text(screen.console)
-
-
-def test_a_nudge_with_no_text_says_what_it_needs(tmp_path):
-    screen = _screen(tmp_path)
-    screen.command("/nudge")
-    assert "/nudge needs text" in _text(screen.console)
 
 
 def test_a_second_build_while_one_runs_is_refused(tmp_path):

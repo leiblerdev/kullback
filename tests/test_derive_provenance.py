@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+import pytest
+
 from kullback import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.atom_context import AtomContext
@@ -141,18 +143,15 @@ def source_of(verifier: Any, atom_id: str) -> str:
     return S.atom_payload(atom_by_id(verifier, atom_id)).get("shape_source")
 
 
-def test_a_value_read_off_another_rows_result_satisfies_the_shape():
-    reference = run("ref", copy_across_rows_events())
+@pytest.mark.parametrize(("events", "source"), [
+    pytest.param(copy_across_rows_events, "prior_result", id="a_value_read_off_another_rows_result"),
+    # A tool that answers in words is still the Run reading the value for itself.
+    pytest.param(prose_events, "result_text", id="a_value_a_prose_result_states"),
+])
+def test_a_value_the_run_read_for_itself_satisfies_the_shape(events, source):
+    reference = run("ref", events())
     verifier = derive(reference)
-    assert source_of(verifier, "w0.badge_code") == "prior_result"
-    assert S.check_run(verifier, reference, CanonRules(), write_tools=WRITE_TOOLS)[0]
-
-
-def test_a_value_a_prose_result_states_satisfies_the_shape():
-    """A tool that answers in words is still the Run reading the value for itself."""
-    reference = run("ref", prose_events())
-    verifier = derive(reference)
-    assert source_of(verifier, "w0.badge_code") == "result_text"
+    assert source_of(verifier, "w0.badge_code") == source
     assert S.check_run(verifier, reference, CanonRules(), write_tools=WRITE_TOOLS)[0]
 
 
@@ -294,13 +293,14 @@ def _kind_of(verifier: Any, text: str) -> list[str]:
             and S.atom_payload(a).get("kind") in ("communicate", V.REPORTED_COMMUNICATE)]
 
 
-def test_a_number_only_the_mined_intent_repeats_does_not_make_a_fact_a_demand():
-    """The Intent is mined from the recordings (D83), so a number in it may be one the desk found."""
-    verifier = derive(run("ref", audit_events("How many free lockers are left?")), intent=INTENT)
-    assert _kind_of(verifier, "30") == ["allowed"]
+@pytest.mark.parametrize(("ask", "kind"), [
+    # The Intent is mined from the recordings (D83), so a number in it may be one the desk found.
+    pytest.param("How many free lockers are left?", "allowed", id="only_the_mined_intent_repeats_it"),
+    pytest.param("How many free lockers are left, and was the last audit 30 days ago?", "communicate",
+                 id="a_user_of_the_task_said_it"),
+])
+def test_a_number_is_a_demand_only_when_a_user_of_the_task_said_it(ask, kind):
+    verifier = derive(run("ref", audit_events(ask)), intent=INTENT)
+    assert _kind_of(verifier, "30") == [kind]
 
 
-def test_the_same_number_is_a_demand_when_a_user_of_the_task_said_it():
-    verifier = derive(run("ref", audit_events("How many free lockers are left, and was the "
-                                              "last audit 30 days ago?")), intent=INTENT)
-    assert _kind_of(verifier, "30") == ["communicate"]

@@ -6,6 +6,8 @@ import ast
 import json
 from pathlib import Path
 
+import pytest
+
 from kullback.builder import compile_env, env_files
 from kullback.gates.bindings import rulings_for
 from kullback.gates.confinement import ALLOWED_IMPORTS, CONTEXT_READS, DENIED_BUILTINS, PROVIDED_HELPERS
@@ -197,21 +199,16 @@ def _runner_refusal(module: str) -> str:
     return ""
 
 
-def test_a_body_importing_a_module_off_the_list_fails_the_write_gate_as_the_runner_would(tmp_path):
+@pytest.mark.parametrize(("prefix", "named"), [
+    pytest.param("import ast\n", "rename_widget imports ast", id="a_body_importing_a_module_off_the_list"),
+    pytest.param('label = eval("label")\n', "rename_widget uses eval", id="a_body_naming_eval"),
+])
+def test_a_body_off_the_confinement_list_fails_the_write_gate_as_the_runner_would(tmp_path, prefix, named):
     root = write_env(tmp_path / "work")
-    ruled = _write_rename(root, "import ast\n" + RENAME_BODY)
+    ruled = _write_rename(root, prefix + RENAME_BODY)
     refusal = _runner_refusal(ruled["module"])
     assert not ruled["confined"].passed
-    assert "rename_widget imports ast" in ruled["confined"].failures
-    assert refusal and all(failure in refusal for failure in ruled["confined"].failures)
-
-
-def test_a_body_naming_eval_fails_the_write_gate_as_the_runner_would(tmp_path):
-    root = write_env(tmp_path / "work")
-    ruled = _write_rename(root, 'label = eval("label")\n' + RENAME_BODY)
-    refusal = _runner_refusal(ruled["module"])
-    assert not ruled["confined"].passed
-    assert "rename_widget uses eval" in ruled["confined"].failures
+    assert named in ruled["confined"].failures
     assert refusal and all(failure in refusal for failure in ruled["confined"].failures)
 
 
