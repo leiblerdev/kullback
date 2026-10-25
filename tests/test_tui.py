@@ -63,11 +63,11 @@ def test_a_stage_that_starts_and_ends_keeps_its_order_and_its_last_word(tmp_path
 def test_the_board_reads_the_typed_stage_events_of_the_agent_core_too(tmp_path):
     """A subscriber on the Builder's harness can feed the board the StageStart and StageEnd events
     the pipeline emits (phase 4); anything else on the stream is not for the board."""
-    from kullback.agent.events import AgentStart, StageEnd, StageStart
+    from kullback.agent.events import AgentStartEvent, StageEnd, StageStart
 
     board = Board(tmp_path)
     board.event(StageStart(name="mine"))
-    board.event(AgentStart())
+    board.event(AgentStartEvent())
     board.event(StageEnd(name="mine", counts={"status": "cached", "attempts": 1, "rulings": ["mine"]}))
     board.event(StageStart(name="cluster"))
     board.event(StageEnd(name="cluster", counts={"status": "failed", "attempts": 3}))

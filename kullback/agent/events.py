@@ -224,9 +224,5 @@ AgentEvent = Annotated[
 
 # The names this package used before it took tau's. The packages above still import them; the
 # stream that rewrites each of those packages onto the tau names drops its line here.
-AgentStart = AgentStartEvent
-AgentEnd = AgentEndEvent
-TurnStart = TurnStartEvent
-TurnEnd = TurnEndEvent
 MessageEnd = MessageEndEvent
 ToolExecutionEnd = ToolExecutionEndEvent

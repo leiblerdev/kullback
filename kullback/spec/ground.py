@@ -63,17 +63,3 @@ def coverage(spec) -> list[str]:
     named = {fact_id for check in spec.checks for fact_id in check.fact_ids}
     listed = set(spec.gaps)
     return [fact.id for fact in spec.intent.facts if fact.id not in named and fact.id not in listed]
-
-
-def ground_spec(spec, policy_sections: Iterable[str] = ()) -> list[str]:
-    """Every reason the Spec is not grounded; empty means grounded. Never raises."""
-    try:
-        sections = list(policy_sections or ())
-        intent = spec.intent.text
-        refusals = [f"check {check.id}: because quotes neither the Intent nor a policy section"
-                    for check in spec.checks if not valid_because(check.because, intent, sections)]
-        refusals += [f"fact {fact_id}: no check names it and it is not listed as a gap"
-                     for fact_id in coverage(spec)]
-        return refusals
-    except Exception as exc:  # a malformed Spec is refused, never raised
-        return [f"spec unreadable: {type(exc).__name__}"]

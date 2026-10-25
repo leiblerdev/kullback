@@ -13,7 +13,7 @@ import threading
 import pytest
 
 from kullback.agent.bus import Bus, BusRecord
-from kullback.agent.events import AgentEnd, CustomEvent, TurnStart
+from kullback.agent.events import AgentEndEvent, CustomEvent, TurnStartEvent
 from kullback.agent.harness import AgentHarness
 from kullback.ai.provider import TestModel
 from tests.agent.conftest import collect
@@ -21,8 +21,8 @@ from tests.agent.conftest import collect
 
 def test_every_published_event_becomes_one_numbered_line_carrying_the_writers_name(tmp_path):
     bus = Bus(tmp_path / "bus.jsonl", agent="builder")
-    first = bus.publish_sync(TurnStart(turn=1))
-    second = bus.publish_sync(AgentEnd())
+    first = bus.publish_sync(TurnStartEvent(turn=1))
+    second = bus.publish_sync(AgentEndEvent())
     assert [r.seq for r in (first, second)] == [1, 2]
     lines = (tmp_path / "bus.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
@@ -35,12 +35,12 @@ def test_every_published_event_becomes_one_numbered_line_carrying_the_writers_na
 
 def test_replay_reads_the_log_back_as_typed_events_after_a_sequence_number(tmp_path):
     bus = Bus(tmp_path / "bus.jsonl")
-    bus.publish_sync(TurnStart(turn=1))
-    bus.publish_sync(TurnStart(turn=2))
+    bus.publish_sync(TurnStartEvent(turn=1))
+    bus.publish_sync(TurnStartEvent(turn=2))
     reader = Bus(tmp_path / "bus.jsonl")
     records = reader.replay()
     assert [type(r).__name__ for r in records] == ["BusRecord", "BusRecord"]
-    assert isinstance(records[0], BusRecord) and isinstance(records[0].event, TurnStart)
+    assert isinstance(records[0], BusRecord) and isinstance(records[0].event, TurnStartEvent)
     assert [e.turn for e in reader.events()] == [1, 2]
     assert [e.turn for e in reader.events(since_seq=1)] == [2]
     # a custom event carries a name and a payload the core never reads
@@ -52,10 +52,10 @@ def test_replay_reads_the_log_back_as_typed_events_after_a_sequence_number(tmp_p
 def test_a_line_the_reader_cannot_parse_is_skipped_and_the_rest_still_reads(tmp_path):
     path = tmp_path / "bus.jsonl"
     bus = Bus(path)
-    bus.publish_sync(TurnStart(turn=1))
+    bus.publish_sync(TurnStartEvent(turn=1))
     with path.open("a", encoding="utf-8") as handle:
         handle.write("not a record\n")
-    bus.publish_sync(TurnStart(turn=2))
+    bus.publish_sync(TurnStartEvent(turn=2))
     assert [e.turn for e in Bus(path).events()] == [1, 2]
 
 
@@ -64,9 +64,9 @@ def test_subscribers_are_called_in_registration_order_and_unsubscribe_stops_one(
     seen = []
     bus.subscribe(lambda e: seen.append(("first", e.type)))
     unsubscribe = bus.subscribe(lambda e: seen.append(("second", e.type)))
-    bus.publish_sync(TurnStart(turn=1))
+    bus.publish_sync(TurnStartEvent(turn=1))
     unsubscribe()
-    bus.publish_sync(TurnStart(turn=2))
+    bus.publish_sync(TurnStartEvent(turn=2))
     assert seen == [("first", "turn_start"), ("second", "turn_start"), ("first", "turn_start")]
     # an async subscriber is awaited by publish and by the harness
     bus = Bus(tmp_path / "async.jsonl")
@@ -77,7 +77,7 @@ def test_subscribers_are_called_in_registration_order_and_unsubscribe_stops_one(
         heard.append(event.type)
 
     bus.subscribe(watch)
-    asyncio.run(bus.publish(TurnStart(turn=1)))
+    asyncio.run(bus.publish(TurnStartEvent(turn=1)))
     assert heard == ["turn_start"]
     harness = AgentHarness(TestModel(["one"]))
     harness.subscribe(watch)
@@ -114,7 +114,7 @@ def test_a_harness_feeds_subscribers_through_its_bus_log_or_in_process_without_o
 def test_a_follower_reads_what_is_there_and_then_what_appears(tmp_path):
     path = tmp_path / "bus.jsonl"
     writer = Bus(path)
-    writer.publish_sync(TurnStart(turn=1))
+    writer.publish_sync(TurnStartEvent(turn=1))
     turns = []
     done = threading.Event()
 
@@ -125,7 +125,7 @@ def test_a_follower_reads_what_is_there_and_then_what_appears(tmp_path):
     follower = threading.Thread(target=follow)
     follower.start()
     for turn in (2, 3):
-        writer.publish_sync(TurnStart(turn=turn))
+        writer.publish_sync(TurnStartEvent(turn=turn))
     while len(turns) < 3 and follower.is_alive():
         pass
     done.set()
@@ -139,9 +139,9 @@ def test_two_processes_appending_to_one_log_number_every_record_once(tmp_path):
         "import sys;"
         "sys.path.insert(0, sys.argv[3]);"
         "from kullback.agent.bus import Bus;"
-        "from kullback.agent.events import TurnStart;"
+        "from kullback.agent.events import TurnStartEvent;"
         "bus = Bus(sys.argv[1], agent=sys.argv[2]);"
-        "[bus.publish_sync(TurnStart(turn=i)) for i in range(20)]"
+        "[bus.publish_sync(TurnStartEvent(turn=i)) for i in range(20)]"
     )
     root = str(__import__("pathlib").Path(__file__).resolve().parents[2])
     writers = [

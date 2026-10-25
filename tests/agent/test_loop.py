@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 
-from kullback.agent.events import AgentEnd, ToolExecutionEnd, TurnEnd
+from kullback.agent.events import AgentEndEvent, ToolExecutionEnd, TurnEndEvent
 from kullback.agent.loop import (
     CUT_CALL,
     CUT_TURN_ASK,
@@ -57,7 +57,7 @@ def test_a_plain_answer_emits_one_turn_of_message_events_and_leaves_the_answer_i
     ]
     assert [m.role for m in state.messages] == ["user", "assistant"]
     assert state.messages[-1].content == "done."
-    assert isinstance(events[-1], AgentEnd) and len(events[-1].messages) == 2
+    assert isinstance(events[-1], AgentEndEvent) and len(events[-1].messages) == 2
     # message_update carries the stream event and the partial at that point
     updates = [e for e in events if e.type == "message_update"]
     assert [u.stream_event.type for u in updates] == ["start", "text_start", "text_delta", "text_end"]
@@ -85,7 +85,7 @@ def test_a_tool_call_runs_and_its_result_reaches_the_transcript_and_the_next_mod
     assert isinstance(tool_message, ToolResultMessage)
     assert tool_message.tool_call_id == state.messages[1].tool_calls[0].id
     assert tool_message.content == '{"total": 5}' and tool_message.is_error is False
-    first_turn_end = next(e for e in events if isinstance(e, TurnEnd))
+    first_turn_end = next(e for e in events if isinstance(e, TurnEndEvent))
     assert first_turn_end.turn == 1 and first_turn_end.tool_results == [tool_message]
     # the second model call saw the tool result on the wire, without details
     second = model.calls[1]["messages"]
@@ -217,7 +217,7 @@ def test_follow_up_is_delivered_when_the_run_would_otherwise_stop_and_not_while_
     events, state = run(model, state=state)
     assert [m.content for m in state.messages] == ["go", "one", "second", "two", "third", "three"]
     assert types_of(events).count("turn_start") == 3
-    turn_ends = [e for e in events if isinstance(e, TurnEnd)]
+    turn_ends = [e for e in events if isinstance(e, TurnEndEvent)]
     assert [t.turn for t in turn_ends] == [1, 2, 3]
     assert events[-1].type == "agent_end" and len(events[-1].messages) == 6
     # each follow-up was its own model call on the transcript so far
