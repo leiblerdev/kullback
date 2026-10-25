@@ -11,9 +11,6 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `claims.py` | What a Run's transcript claims it did, against what its state actually received (D223). |
 | `cli.py` | The Typer app behind the `kullback` command; each subcommand imports its module only when it runs. |
 | `consistency.py` | Shrinks a failing call sequence to its shortest failing subsequence, for the laws checker. |
-| `container_cheats.py` | Cheat suite and birth scan for container Tasks. |
-| `container_grader.py` | Grade an exported end state inside a fresh, locked-down container. |
-| `container_world.py` | Disposable container backend: run commands in a fresh container per world. |
 | `curriculum.py` | Shared curriculum records and counting rules for the training agent. |
 | `derive.py` | Derive one Task's Verifier from its Reference and k re-runs read off disk (D42, D43, D91). |
 | `difficulty.py` | Every Task's objective difficulty, and the buckets a round reports trusted coverage over (D209). |
