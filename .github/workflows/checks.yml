@@ -32,6 +32,6 @@ jobs:
       - name: end to end tests
         run: uv run pytest tests/test_e2e.py -q -x
       - name: unit tests by directory
-        run: for d in tests/*/; do case "$d" in tests/fixtures/|tests/__pycache__/|tests/hub/) continue;; esac; uv run pytest "$d" -q -x; done
+        run: for d in tests/*/; do case "$d" in tests/fixtures/|tests/__pycache__/|tests/hub/|tests/helpers/) continue;; esac; uv run pytest "$d" -q -x; done
       - name: hub tests
         run: uv run pytest tests/hub -q -x
