@@ -24,7 +24,6 @@ from kullback.builder.sandbox import (
     DB_CLASS,
     Sandbox,
     SandboxError,
-    args_text,
     calls_by_trace,
     id_pattern_for,
     key_fields,
@@ -142,12 +141,6 @@ class ToolBuild:
     # D171: one row per recorded call of this tool, so the miss can be attributed to the Task whose
     # Trace made the call. The corpus gate keeps one fidelity number; this keeps which call it was.
     call_outcomes: list[dict] = field(default_factory=list)
-    # A kept assisted body that answers every recorded call the same way while the recordings differ:
-    # not a body with a bug in it, a body that never read its arguments (`hardcoded_body`).
-    hardcoded: bool = False
-    # Only ever set by `grade_body`: a body carried over from an earlier run of the stage that
-    # answered none of the recorded calls under the world as it stands now.
-    could_not_run: bool = False
     # D211: what the code-only steps read off this body's own replay, as a `lesson.Diagnosis`. Set
     # by `grade_body` alone, since it is a reading of the body a tool already has and what it is
     # for is the ask the next writer is given. It is never serialized: the lesson it renders is.
@@ -2782,40 +2775,6 @@ def split_calls(calls: Iterable[ToolCall], every: int = 3) -> tuple[list[ToolCal
     return _shape_split(calls, unique, every)
 
 
-
-
-
-
-def body_could_not_run(gates: Iterable[GateResult], rows: Iterable[dict]) -> bool:
-    """True when this body answered none of the recorded calls: it cannot be a candidate at all.
-
-    A body kept from an earlier run of the stage is replayed under the world as it stands now, and
-    the world may have moved out from under it: a table it read is gone, a column it indexed is
-    renamed, and every call raises. Such a body still has a score, and on a corpus where the new
-    attempt is no better the tie rule would hand the tool back to it. So it is told apart from a
-    body that merely scores badly, and the tie does not save it.
-
-    Answering nothing is read off the per-call rows and not off the executes ruling, because that
-    ruling counts only the exceptions that are a fault of the module itself: a KeyError is how a
-    tool refuses an id it does not hold (`CRASH_ERRORS`), and a body whose table is gone raises
-    exactly that on every call. The rows say what each call actually answered (`answer_digest`
-    marks a raise) and whether it matched the recording, so the reading is: every recorded call
-    raised and none of them matched. Before the rows there is the module itself: one that does not
-    parse, or a sandbox that could not run it, answered nothing either. A tool with no recorded
-    call has nothing to have failed and is never this.
-    """
-    for gate in gates:
-        if gate.stage == "parses" and not gate.passed:
-            return True
-        # The sandbox's own failure (the module did not load, or the run timed out) leaves no
-        # crash count, only the message; a ruling with a count is about the body, not the module.
-        if gate.stage == "executes_on_s0" and not gate.passed and "crashes" not in gate.metrics:
-            return True
-    answered = [row for row in rows if row.get("answer") is not None]
-    return bool(answered) and all(str(row["answer"]).startswith("error:") and not row.get("replayed")
-                                  for row in answered)
-
-
 def _read_pair(tool: str, theirs: Any, ours: Any, readers: Any) -> tuple[Any, Any]:
     """Two prose answers of one tool as the columns its reader finds in them (D176, D187).
 
@@ -2930,8 +2889,6 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
                         rules=rules, timeout=timeout, readers=readers)
         if build.assisted else
         [{"tool": toolsig.name, "call_id": call.id, "replayed": True, "detail": ""} for call in calls])
-    build.could_not_run = body_could_not_run(build.gates, build.call_outcomes)
-    build.hardcoded = build.assisted and hardcoded_body(calls, build.call_outcomes)
     if build.assisted:
         build.diagnosis = diagnose_body(toolsig, source, sandbox, calls, shown, build.call_outcomes,
                                         build.gates, unbeaten=unbeaten, blocked=blocked, rules=rules,
@@ -3122,45 +3079,6 @@ def answer_digest(result: Any) -> str:
         return f"error:{result.get('error') or 'unknown'}"
     value = result.get("value") if isinstance(result, dict) else result
     return content_hash(canon(value))
-
-
-def recorded_digest(call: ToolCall) -> str:
-    """The same key for what the recording answered, so the two can be compared."""
-    if call.error is not None:
-        return f"error:{getattr(call.error, 'class_', '') or 'unknown'}"
-    return content_hash(canon(parse_result(call.result)))
-
-
-
-
-def hardcoded_body(calls: Iterable[ToolCall], rows: Iterable[dict]) -> bool:
-    """True when the body answered differing inputs identically and the recordings did not.
-
-    A kept assisted body is a body no attempt got through the gates, and the gates say which one it
-    fell at; none of them says the body never read what it was given. One live build kept a body
-    that picked the first row of a table and raised one fixed refusal on every call, and the round
-    after it, and the round after that: assisted was all anyone was told, and a hint written against
-    a single failing call cannot reach a body that reads nothing. Three things have to hold
-    together: the recorded calls carry more than one input, the body gave them all one answer, and
-    the recordings did not.
-
-    An input is the arguments and the world the call ran on, not the arguments alone. A tool that
-    takes no arguments at all is answered out of the Starting state of the Task that called it, and
-    that is exactly the tool the live build kept: every call carried `{}`, the recordings answered
-    two different ways, and the body answered one way whatever world it stood on. Where the
-    recordings themselves answer everything the same way, that is what the tool does
-    (`_constant_evidence_note`), and this stays quiet.
-    """
-    by_id = {row["call_id"]: row for row in rows if row.get("call_id")}
-    inputs, body_answers, recorded = set(), set(), set()
-    for call in calls:
-        row = by_id.get(call.id) or {}
-        if not call.id or row.get("answer") is None:
-            continue
-        inputs.add((args_text(call), str(row.get("world") or "")))
-        body_answers.add(row["answer"])
-        recorded.add(recorded_digest(call))
-    return len(inputs) > 1 and len(body_answers) == 1 and len(recorded) > 1
 
 
 def _clamped_detail(text: str) -> str:

@@ -187,7 +187,6 @@ class Compactor:
         session.append(entry)
         manager.after_compaction()
         manager.stats.compactions += 1
-        manager.stats.fallback_compactions += 1
         manager.stats.entries_replaced += len(replaced_ids)
         if failure is not None:
             manager.stats.mechanical_summaries += 1

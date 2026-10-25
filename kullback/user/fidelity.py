@@ -69,7 +69,6 @@ class TaskScore(Record):
     driver: str = RULES_DRIVER
     score: float = 0.0
     turns: int = 0
-    turn_scores: list[TurnScore] = []
     missed: list[str] = []
     invented: list[str] = []
     record_spoken: list[str] = []
@@ -128,7 +127,6 @@ def score_of(turns: Sequence[TurnScore]) -> float:
 def as_task_score(task_id: str, driver: str, turns: Sequence[TurnScore]) -> TaskScore:
     return TaskScore(
         task_id=task_id, driver=driver, score=score_of(turns), turns=len(turns),
-        turn_scores=list(turns),
         missed=list(dict.fromkeys(f for t in turns for f in t.missed)),
         invented=list(dict.fromkeys(f for t in turns for f in t.invented)),
         record_spoken=list(dict.fromkeys(f for t in turns for f in t.record_spoken)),

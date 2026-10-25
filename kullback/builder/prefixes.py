@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 from kullback.runner.records import as_dict, content_hash
 
@@ -22,7 +22,6 @@ class PrefixSelection:
     turn_end: int
     retained_turns: tuple
     retained_calls: tuple
-    last_result_ptr: Any
     standing: str
 
 
@@ -221,7 +220,6 @@ def _assemble(trace, turns, calls, valid, raw_hash, sim_index, turn_map, content
         turn_end=turn_end,
         retained_turns=kept_turns,
         retained_calls=kept_calls,
-        last_result_ptr=top.result_ptr.model_copy(deep=True),
         standing=EVIDENCE_ONLY,
     )
 

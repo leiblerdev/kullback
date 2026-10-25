@@ -172,9 +172,6 @@ class ContextStats(BaseModel):
     mechanical_summaries: int = 0
     entries_replaced: int = 0
     fill_at_turn_end: list[float] = Field(default_factory=list)
-    # `fallback_compactions` is what the round driver's footer reads today. The stream that removes
-    # the round driver removes it with it.
-    fallback_compactions: int = 0
 
 
 # --- the manager ---
