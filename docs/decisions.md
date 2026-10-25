@@ -1,7 +1,7 @@
 # Decisions
 
 The decisions that govern the harness now, one entry each, by area; retired numbers are indexed at the end so citations resolve.
-A decision changes by a new D number: the old entry moves to Retired with "superseded by D<n>"; numbers are never reused; next free: D442.
+A decision changes by a new D number: the old entry moves to Retired with "superseded by D<n>"; numbers are never reused; next free: D443.
 The full history is docs/decision-log.md in git, last held at commit 8c6a2d00cf7a407f65b770a0fed1fcfb4eb8b646.
 
 ## World and builder
@@ -223,6 +223,11 @@ the span or line read from. Where: kullback/builder/sources.
 
 D425 (2026-10-19). derive_world writes dangling into world_report.json: per list column of text ids, the table they key and how many name no row
 (dangling_ids); nothing is pruned. Where: kullback/builder/world_tools.py.
+
+D442 (2026-10-25). Six modules no command, module or script reaches are deleted with their tests: container_world.py 50441fb6, container_cheats.py
+10c2aae8, container_grader.py 10c2aae8, builder/skills.py c9ff6ebf, store.py 50441fb6, store_specs.py 10c2aae8; this supersedes D267 and narrows
+D334's kept list; ADR-0010's real-tool route keeps its factory seam in runner/real_tools.py, and the backend returns from history when a real-tool
+build starts. Where: docs only.
 
 ## Spec, Intent and Verifier
 
@@ -1210,10 +1215,6 @@ D258 (2026-09-18). Environment consistency: code-generated call sequences check 
 an error changes nothing, a write reads back, minted ids unique, no crash or hang); a broken law is shrunk and handed to repair; published beside
 fidelity, never called fidelity; Traces that break a law on purpose turn it off for that tool. Where: kullback/cli.py.
 
-D267 (2026-09-18). One workdir store declares every artifact once (name, shape, format, owner), writes by temporary file then swap, reads as value,
-missing or torn and never a silent default, one lock per workdir; an append-only round journal records run, round, beat and close events. Where:
-kullback/store_specs.py.
-
 D276 (2026-09-18). The round loop's stop rule reads the fidelity rate and the trusted share and records a reason every time it stops. Where: docs
 only.
 
@@ -1313,6 +1314,7 @@ D246: the compile heads are built once per build and the helper specs, dropped f
 D251: number held for the write-end branch, no row written, never built.
 D264: User population per Task drawn by key from good recordings, component removed (kullback/user/population.py).
 D265: One typed user-signal record with one owner per field, component removed (kullback/user/signals.py).
+D267: one workdir store and an append-only journal, superseded by D442.
 D268: Merges proven by code, embeddings proposer not adopted, never built (grepped merge proof and embedding in kullback/).
 D270: User prompt examples mined per corpus by situation, component removed (kullback/user/examples.py).
 D274: a stage's cache key is computed from the code it imports, dropped from the log on 2026-09-22 (founder's cut).
