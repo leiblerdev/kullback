@@ -20,8 +20,6 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `processes.py` | A process pool for independent CPU-bound work, the trust ruling's Tasks and a Harbor export's (D401). |
 | `round_snapshot.py` | One round, one Task table, written once and never rewritten (D218). |
 | `sampling.py` | One keyed draw for every sample the harness takes per Task or per Run (D212). |
-| `store_specs.py` | Every single-file workdir artifact the package writes today, declared once (D267, registry step only). |
-| `store.py` | `WorkdirStore`: the durable, locked read and write of a declared workdir artifact. |
 | `synthesise.py` | Synthetic Tasks: a walk over the mined graph, run in the rebuilt world, derived and reported apart (D224). |
 | `variants.py` | Second paths synthesised from a Run's own calls, code only (D199). |
 

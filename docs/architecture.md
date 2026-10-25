@@ -78,7 +78,7 @@ of the Builder and any dynamic import (D89, D91).
 
 ## How a build runs
 
-A build lives in one workdir. Single-file records are declared once in `kullback/store_specs.py`.
+A build lives in one workdir. Each stage writes its single-file records through `write_json` in `kullback/runner/records.py`.
 
 ```mermaid
 flowchart LR

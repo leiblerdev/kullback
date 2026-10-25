@@ -37,8 +37,8 @@ kullback/
   tui/        the terminal screen
   cli.py      the command line
   graph.py, synthesise.py, domain.py, difficulty.py, laws.py, consistency.py, claims.py, sampling.py,
-  round_snapshot.py, store.py, store_specs.py, derive.py, variants.py, curriculum.py, processes.py,
-  container_*.py   one-file modules the frontends share
+  round_snapshot.py, derive.py, variants.py, curriculum.py, processes.py
+              one-file modules the frontends share
 tests/
   ai/ runner/ builder/ ...   one directory per package, mirroring the layout above
   fixtures/   the small tau2 file and tau2-bench's retail domain files
