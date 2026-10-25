@@ -9,7 +9,7 @@ overhaul removes (the stream that removes the round driver removes those four wi
 
 Two field names differ from tau and are kept because the packages above read them: the tool
 execution events carry `arguments` (tau's `args`, also readable under that name) and the message
-update carries `stream_event` (tau's `assistant_message_event`).
+update carries `stream_event` (tau's `assistant_message_event`, also readable under that name).
 """
 
 from __future__ import annotations
@@ -61,6 +61,11 @@ class MessageUpdateEvent(_Event):
     type: Literal["message_update"] = "message_update"
     message: AssistantMessage
     stream_event: StreamEvent
+
+    @property
+    def assistant_message_event(self) -> StreamEvent:
+        """tau's name for `stream_event`."""
+        return self.stream_event
 
 
 class MessageEndEvent(_Event):

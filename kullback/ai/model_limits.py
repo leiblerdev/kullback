@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Protocol, runtime_checkable
 
 # What a model is assumed to take when the snapshot lists no window for it. Deliberately small:
 # compacting earlier than needed costs a summary, compacting later than the model allows costs the
@@ -45,6 +45,14 @@ class ModelLimits:
     def compaction_token_limit(self) -> int:
         """The filled context at which the core compacts: 40 percent of the usable window."""
         return max(1, self.effective_context_window * COMPACTION_SHARE_PERCENT // 100)
+
+
+@runtime_checkable
+class ModelLimitsProvider(Protocol):
+    """A provider that can be asked what one model's limits are on its surface."""
+
+    def discover_model_limits(self, model: str) -> Optional[ModelLimits]:
+        ...
 
 
 def limits_for(model_id: Optional[str], *, path: Optional[str] = None,
