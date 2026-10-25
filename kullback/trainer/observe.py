@@ -95,8 +95,8 @@ def metrics(workdir: Any, run_id: str, window: int = 3) -> dict:
     }
 
 
-def _metric_rows(path: Path) -> list[dict]:
-    """The dict bodies of the metric lines, in file order."""
+def dict_lines(path: Path) -> list[dict]:
+    """The dict bodies of a JSONL file's lines, in file order; an unreadable file reads as empty."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
@@ -117,7 +117,7 @@ def _metric_rows(path: Path) -> list[dict]:
 
 def _trend(path: Path) -> dict:
     """First, last and mean per numeric key over the last 20 metric lines."""
-    rows = _metric_rows(path)[-20:]
+    rows = dict_lines(path)[-20:]
     out: dict[str, dict] = {}
     keys = sorted({k for row in rows for k, v in row.items()
                    if k != "step" and isinstance(v, (int, float))

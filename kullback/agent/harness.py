@@ -24,7 +24,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Literal, Optional, Union
 
-from kullback.agent.bus import Bus
+from kullback.agent.bus import Bus, notify_sync
 from kullback.agent.context import ContextConfig, ContextManager, ContextStats, prompt_block
 from kullback.agent.events import AgentEvent, CustomMessage, MessageEndEvent, MessageStartEvent
 from kullback.agent.loop import (
@@ -258,16 +258,7 @@ class AgentHarness:
         if self.bus is not None:
             self.bus.publish_sync(event)
             return
-        for subscriber in list(self._subscribers):
-            result = subscriber(event)
-            if inspect.isawaitable(result):
-                try:
-                    task = asyncio.get_running_loop().create_task(_await(result))
-                except RuntimeError:
-                    asyncio.run(_await(result))
-                else:
-                    self._pending.add(task)
-                    task.add_done_callback(self._pending.discard)
+        notify_sync(self._subscribers, self._pending, event)
 
     # --- runs ---
 
@@ -359,10 +350,6 @@ class AgentHarness:
 
         context_note.hook_name = "context_note"  # type: ignore[attr-defined]
         return context_note
-
-
-async def _await(value: Awaitable[None]) -> None:
-    await value
 
 
 def drive_tool(harness: AgentHarness, name: str, arguments: dict, call_id: str = "driver") -> ToolResult:

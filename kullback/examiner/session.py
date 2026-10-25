@@ -38,12 +38,11 @@ from kullback.examiner.exam_files import (
     save_history,
     seeded_history,
 )
-from kullback.examiner.plan import merged_rerolls
+from kullback.examiner.plan import merged_rerolls, task_runs_of
 from kullback.gates import names_protected_path
 from kullback.gates.hook import WRITE_TOOLS
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import finished_run_ids
-from kullback.gates.verifier_suite import load_run
 from kullback.runner import budget
 from kullback.runner.canon import load_rules, rules_of
 from kullback.runner.records import Constraint, Task, ToolSig, UserRules, Verifier, read_json, run_path, write_json
@@ -472,34 +471,6 @@ def _load_keyed(folder: Path, single: str) -> dict:
             if isinstance(body, dict):
                 out[body.get("task_id") or body.get("trace_id") or path.stem] = body
     return out
-
-
-def task_runs_of(replays: dict, rerolls: dict, *, workdir: Any) -> dict[str, list]:
-    """Every Run on disk per Task, loaded tolerantly: a missing file is skipped (D133).
-
-    A row's path is resolved against the workdir (records.run_path)."""
-    out: dict[str, list] = {}
-    for task_id, rows in sorted((replays or {}).items()):
-        for _, row in sorted((rows or {}).items()):
-            _append_run(out, task_id, row, workdir)
-    for task_id, rows in sorted((rerolls or {}).items()):
-        for row in rows or []:
-            _append_run(out, task_id, row, workdir)
-    return out
-
-
-def _append_run(out: dict, task_id: str, row: Any, workdir: Any) -> None:
-    stored = row.get("path") if isinstance(row, dict) else None
-    path = run_path(workdir, stored) if stored else None
-    if path is None or not path.is_file():
-        return
-    try:
-        run = load_run(str(path))
-    except (OSError, ValueError, TypeError):
-        return
-    if any(r.run_id == run.run_id for r in out.get(task_id, [])):
-        return
-    out.setdefault(task_id, []).append(run)
 
 
 def derive_findings(workdir: Any, store: dict) -> list[Finding]:

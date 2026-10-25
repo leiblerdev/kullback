@@ -115,11 +115,6 @@ class ClaudeCodeJsonlDetector:
             source=self.name,
             turns=turns,
             tool_calls=calls,
-            tools_declared=None,
-            system_prompt=None,
-            tools_declared_ptr=None,
-            system_prompt_ptr=None,
-            info_ptr=None,
             # The ruling finds a Trace's recording by this index, so it is the recording's own.
             raw_ptr=RawPtr(file_hash=ctx.raw_hash, sim_index=ctx.index),
         )

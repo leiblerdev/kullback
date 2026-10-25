@@ -21,7 +21,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterator, Optional, Union
+from typing import Any, Awaitable, Callable, Iterable, Iterator, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -83,16 +83,7 @@ class Bus:
     def publish_sync(self, event: AgentEvent) -> BusRecord:
         """Append the event from synchronous code; an async subscriber is scheduled, or run."""
         record = self.append(event)
-        for subscriber in list(self._subscribers):
-            result = subscriber(event)
-            if inspect.isawaitable(result):
-                try:
-                    task = asyncio.get_running_loop().create_task(_await(result))
-                except RuntimeError:
-                    asyncio.run(_await(result))
-                else:
-                    self._pending.add(task)
-                    task.add_done_callback(self._pending.discard)
+        notify_sync(self._subscribers, self._pending, event)
         return record
 
     def publish_custom(self, name: str, payload: Optional[dict[str, Any]] = None) -> BusRecord:
@@ -208,6 +199,21 @@ def _parse(line: str) -> Optional[BusRecord]:
                          event=_EVENT.validate_python(data["event"]))
     except Exception:  # noqa: BLE001 - a line the reader cannot read is a line it skips
         return None
+
+
+def notify_sync(subscribers: Iterable[Callable], pending: set, event: AgentEvent) -> None:
+    """Call each subscriber from synchronous code: an async one is scheduled on the running loop,
+    or run to completion when no loop is running. A scheduled task stays in `pending` until done."""
+    for subscriber in list(subscribers):
+        result = subscriber(event)
+        if inspect.isawaitable(result):
+            try:
+                task = asyncio.get_running_loop().create_task(_await(result))
+            except RuntimeError:
+                asyncio.run(_await(result))
+            else:
+                pending.add(task)
+                task.add_done_callback(pending.discard)
 
 
 async def _await(value: Awaitable[None]) -> None:

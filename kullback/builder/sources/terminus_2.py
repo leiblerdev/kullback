@@ -103,11 +103,6 @@ class Terminus2Adapter:
             source=self.name,
             turns=turns,
             tool_calls=calls,
-            tools_declared=None,
-            system_prompt=None,
-            tools_declared_ptr=None,
-            system_prompt_ptr=None,
-            info_ptr=None,
             raw_ptr=ptr,
         )
 

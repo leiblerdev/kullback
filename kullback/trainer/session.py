@@ -9,7 +9,6 @@ filed.
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -24,6 +23,7 @@ from kullback.runner.world.environment import BuiltEnvironment
 from kullback.trainer import act as act_mod
 from kullback.trainer import prompt as prompt_mod
 from kullback.trainer import remote as remote_mod
+from kullback.trainer.observe import dict_lines
 from kullback.trainer.tools import TrainerContext, trainer_tools
 
 TRAINER_BASE_ONLY = ("read", "write", "edit", "grep", "find", "ls")
@@ -70,23 +70,7 @@ def trainer_extension(ctx: TrainerContext) -> Callable[[ExtensionAPI], None]:
 
 def _read_findings(workdir: Any) -> list[dict]:
     """The filed notes, oldest first; nothing filed reads as empty."""
-    path = Path(workdir) / "training" / "findings.jsonl"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return []
-    out: list[dict] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            body = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(body, dict):
-            out.append(body)
-    return out
+    return dict_lines(Path(workdir) / "training" / "findings.jsonl")
 
 
 def train(workdir: Any, model: Any, *, policy_model: Any = None,
