@@ -101,7 +101,6 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `builder/sandbox.py` | Runs a generated tool body only in a subprocess, and the five gates that check it before it is trusted. |
 | `builder/search.py` | Web search and page fetch for the Builder (D115). |
 | `builder/session.py` | The autonomous Builder as an extension on the core. |
-| `builder/skills.py` | Phase 6 skills: the stage prompts the model may rewrite, versioned by content hash (D130). |
 | `builder/sources/__init__.py` | One intake seam: every trace format enters through a registered adapter. |
 | `builder/sources/claude_code_jsonl.py` | The Claude Code JSONL adapter: one session transcript mapped to one Trace. |
 | `builder/sources/otel_genai.py` | The OpenTelemetry GenAI adapter: model-call and tool-execution spans mapped to a Trace. |
