@@ -336,18 +336,6 @@ def _result(text: str, usage: dict, price: Optional[Callable[[dict], float]], ro
             "thinking": thinking, "tool_uses": uses, **extra}
 
 
-def parse_list(text: str, key: str) -> tuple[list, str]:
-    """The list under `key` in the one JSON object of a final answer, or why there is none."""
-    try:
-        data = json.loads(text[text.index("{"):text.rindex("}") + 1])
-    except (ValueError, IndexError):
-        return [], "no JSON object"
-    items = data.get(key) if isinstance(data, dict) else None
-    if not isinstance(items, list):
-        return [], f"no {key} list"
-    return items, ""
-
-
 def _section(name: str) -> str:
     return "section:" + re.sub(r"\s+", " ", name).strip().casefold()
 

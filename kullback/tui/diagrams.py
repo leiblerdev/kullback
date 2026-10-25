@@ -104,7 +104,7 @@ def _state_label(state: str, tries: int) -> str:
     return state if tries <= 1 else f"{state} ×{tries}"
 
 
-def loop_text(rounds: list[dict], current_round: int = 0, agent: str = "") -> Text:
+def loop_text(rounds: list[dict], agent: str = "") -> Text:
     """The session loop: Builder tools, gates ruling on writes, examine, findings back to the Builder."""
     out = Text()
     out.append("Builder base tools + domain tools ──▶ gates rule on writes\n", style="bold")

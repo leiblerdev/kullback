@@ -581,7 +581,6 @@ def _read_assistant_replies(path: Path) -> list[ModelReply]:
 
 
 ENV_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-CACHE_CONTROL = cache_control()
 TEXT_BLOCK_TYPES = ("text", "reasoning", "thinking")
 # The Messages API's reasoning blocks, which a later request sends back byte for byte.
 THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
@@ -1805,15 +1804,6 @@ def live_model(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model
         raise RuntimeError(
             f"live model requests are off; put {LIVE_ENV_VAR}=1 in .env or export it")
     return model_for(model_id, base_url, **kwargs)
-
-
-def live_provider(model_id: str, base_url: Optional[str] = None, **kwargs) -> Any:
-    """One live streaming provider, after the environment has said live calls are allowed."""
-    load_dotenv()
-    if not enable_live_calls_from_env():
-        raise RuntimeError(
-            f"live model requests are off; put {LIVE_ENV_VAR}=1 in .env or export it")
-    return provider_for(model_id, base_url, **kwargs)
 
 
 def _anthropic_tool(tool: dict) -> dict:

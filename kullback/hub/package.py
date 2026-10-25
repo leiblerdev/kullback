@@ -77,9 +77,6 @@ ENVIRONMENT_FILE = "environment.json"
 VERSIONED_FILES: dict[str, str] = {"schema_version": "schema.json", "tools_version": "tool_sigs.json",
                                    "policy_version": POLICY_FILE}
 
-EXPORTED_DIRS: tuple[str, ...] = WORLD_DIRS + GRADER_DIRS
-EXPORTED_FILES: tuple[str, ...] = WORLD_FILES
-
 # Named so the guard below can say what it refused, and so a reader of this module can see what is
 # being kept out without reading a build. Nothing here is ever a source path of an exported file.
 NEVER_EXPORTED: tuple[str, ...] = ("raw", "runs", "cache", "model_cache", "traces", "builder",

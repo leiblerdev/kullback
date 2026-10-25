@@ -13,7 +13,7 @@ not hold the loop.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncIterator, Optional, Sequence
+from typing import AsyncIterator, Optional, Sequence
 
 from kullback.ai._provider_events import ProviderErrorEvent, ProviderEvent
 from kullback.ai.events import StreamEvent
@@ -75,10 +75,3 @@ class ReplayProvider:
             return
         async for event in reply_events(reply, call_id_prefix=prefix):
             yield event
-
-
-def provider_of(model: Any) -> Any:
-    """A handle as a provider, and a provider as itself. One call wherever either may arrive."""
-    if hasattr(model, "stream_response"):
-        return model
-    return ReplayProvider(model)

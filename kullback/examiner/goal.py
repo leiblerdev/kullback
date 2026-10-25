@@ -31,7 +31,6 @@ MAX_GOAL_ROUNDS = 16
 GOAL_DIR = Path("exam") / "goal"
 STAGE = "goal"
 NEW_ROW = "new:"
-ANY_VALID = "any valid"
 KEYS = ("required", "choice", "untouched", "told", "refuse", "unknown")
 
 WHAT_YOU_RECEIVE = """\

@@ -208,29 +208,6 @@ class TextResult(BaseModel):
 TASK_PREFIX = "task "
 
 
-def counted_failure(ruling: Any) -> str:
-    """One ruling as a tool result carries it: the name, pass or fail, and how wide a failure is.
-
-    A gate rules over every target at once, so its first failure is about whichever target sorts
-    first and not about the one the call was for. Printed bare, that line reads as a verdict on the
-    target just repaired: a live build repaired seven Intents, six of them grounded, and every
-    result still said `intent fail (task <another Task>: ...)`, so the model read all seven as
-    refused and stopped. A gate that fails on more than one target therefore says how many and
-    names the first as an example, never as the answer. Failures that all name a Task are counted
-    in Tasks and the `task ` prefix is folded into that word.
-    """
-    if ruling.passed:
-        return f"{ruling.stage} pass"
-    failures = [str(f) for f in (ruling.failures or [])]
-    if not failures:
-        return f"{ruling.stage} fail"
-    if len(failures) == 1:
-        return f"{ruling.stage} fail ({failures[0]})"
-    tasks = all(f.startswith(TASK_PREFIX) for f in failures)
-    first = failures[0][len(TASK_PREFIX):] if tasks else failures[0]
-    return f"{ruling.stage} fail ({len(failures)} {'Tasks' if tasks else 'failures'}, first {first})"
-
-
 # --- how a gate's ruling reaches the model ------------------------------------
 
 RULING_TAG = "ruling"

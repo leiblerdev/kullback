@@ -73,10 +73,9 @@ BASIS_NAME = "name"
 BASIS_LLM = "llm"
 # Whether the installed records can hold a declared basis. The value rides the frozen patch until
 # the founder's re-freeze; where the runtime tree predates it, a declaration is recorded as a rule
-# with the wait said out loud, never emitted as a value nothing can read back. The wait marker
-# below is what the counters read, so the fact stays machine-readable in both schema states.
+# with the wait said out loud, never emitted as a value nothing can read back. The words
+# "waits on the re-freeze" in the reason are what the counters read, so the fact stays machine-readable in both schema states.
 _DECLARED_BASIS_ALLOWED = BASIS_DECLARED in get_args(ClassifiedBy)
-DECLARED_WAIT_MARKER = "waits on the re-freeze"
 # How many supporting (trace id, call index) pairs a fact keeps; the full count rides beside them.
 MAX_SUPPORT_CALLS = 5
 # Keys the column facts ride on inside Column.evidence, which is free form: the class fact, the

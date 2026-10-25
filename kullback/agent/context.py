@@ -172,11 +172,9 @@ class ContextStats(BaseModel):
     mechanical_summaries: int = 0
     entries_replaced: int = 0
     fill_at_turn_end: list[float] = Field(default_factory=list)
-    # `fallback_compactions` and `cuts` are what the round driver's footer reads today. The stream
-    # that removes the round driver removes these two with it; `cuts` is always 0, because the
-    # floor no longer cuts a guarded result in place, it compacts the prefix like tau.
+    # `fallback_compactions` is what the round driver's footer reads today. The stream that removes
+    # the round driver removes it with it.
     fallback_compactions: int = 0
-    cuts: int = 0
 
 
 # --- the manager ---
@@ -362,9 +360,6 @@ class ContextManager:
     def skills_section(self) -> str:
         """The `<skills>` block an extension places by adding a section named `skills`."""
         return self.skills.section()
-
-    def refresh_skills_section(self) -> None:
-        self.skills.refresh_section()
 
     # --- the line ---
 

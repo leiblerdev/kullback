@@ -575,7 +575,6 @@ class ContainerWorld:
         self.pids_limit = pids_limit
         self.docker = _resolve_docker(docker, executor is not None)
         self._executor = executor
-        self._image_metadata = image_metadata
         self._nonce = secrets.token_hex(8)
         self._name = "kullback-cw-" + self._nonce
         self._container_id: str | None = None

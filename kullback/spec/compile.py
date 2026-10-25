@@ -28,7 +28,6 @@ WRITE_WITHOUT_ENTITY = "write without entity"
 NO_WRITE_BESIDE_REQUIRED = "no_write_beside_required_write"
 FORBIDDEN_EQUALS_REQUIRED = "forbidden_equals_required"
 WRITE_WITHOUT_ROW = "required_write_without_row"
-UNSATISFIABLE = (NO_WRITE_BESIDE_REQUIRED, FORBIDDEN_EQUALS_REQUIRED, WRITE_WITHOUT_ROW)
 # The keys of a demand dict that say why and how strongly, not what is demanded.
 _NOT_DEMANDED = ("kind", "because", "check_id", "gate", "weight")
 
@@ -45,7 +44,7 @@ class Compiled(NamedTuple):
     dropped: int
     # One line per drop this module can name, "<check id>: <reason>"; an ungrounded because is counted only.
     reasons: tuple[str, ...] = ()
-    # (check id, one of UNSATISFIABLE) per check that makes the Spec unpassable; empty when a Run can pass.
+    # (check id, one of the three reasons above) per check that makes the Spec unpassable; empty when a Run can pass.
     unsatisfiable: tuple[tuple[str, str], ...] = ()
 
 

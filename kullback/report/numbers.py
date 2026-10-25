@@ -65,7 +65,7 @@ def _count_report_kinds(tool_sigs: list, counts: dict) -> None:
         reason = getattr(sig, "kind_reason", None) or ""
         if "waits on the re-freeze" in reason:
             # A declaration the old schema could not hold: still a declared fact, not a name one.
-            # The string mirrors mine.DECLARED_WAIT_MARKER, repeated here because the report reads
+            # The string mirrors the reason mine.py writes, repeated here because the report reads
             # records and never reaches into the Builder (design section 4 item 18).
             basis = "declared"
         else:

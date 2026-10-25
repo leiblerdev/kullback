@@ -83,7 +83,6 @@ class ExaminerPlan:
     unprotect: Callable[[Iterable[str]], None] = field(init=False, repr=False, default=_no_unprotect)
     entry_id_for: Callable[[str], Optional[str]] = field(init=False, repr=False, default=_no_entry)
     ceiling_reached: bool = field(init=False, default=False)
-    last_rulings: list = field(init=False, default_factory=list)
     extra_rerolls: dict = field(init=False, default_factory=dict)
 
     def __post_init__(self) -> None:

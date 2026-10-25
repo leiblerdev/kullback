@@ -7,7 +7,7 @@ keeps, so this module adds a shape a caller can read rather than a second source
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Protocol, runtime_checkable
+from typing import Optional
 
 from kullback.ai.model_limits import ModelLimits
 
@@ -34,14 +34,6 @@ class ModelCatalog:
     def model(self, model_id: str) -> Optional[CatalogModel]:
         """One advertised model by its exact id."""
         return next((model for model in self.models if model.id == model_id), None)
-
-
-@runtime_checkable
-class ModelCatalogProvider(Protocol):
-    """A provider that can be asked what it serves."""
-
-    def discover_models(self) -> ModelCatalog:
-        ...
 
 
 def catalog_from_snapshot(*, path: Optional[str] = None,

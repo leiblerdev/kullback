@@ -222,26 +222,6 @@ def organisation_card(rows: Iterable[dict], *, organisation: str = ORGANISATION,
     return "\n".join(lines) + "\n"
 
 
-def environment_card_template(fields: Optional[Iterable[tuple[str, str]]] = None) -> str:
-    """What every field an Environment card reads means and where its value comes from."""
-    rows = list(fields) if fields is not None else CARD_FIELDS
-    lines = ["# Environment card fields", "",
-             "`kullback/hub/card.py` renders every card from the package's `manifest.json` alone, in six parts: "
-             "a summary with its status, use it, what is inside, known issues (a dated list that says some Tasks "
-             "can be wrong), how it was built with a Built line, and the licence. These are the fields the card "
-             "reads; every other number stays in `manifest.json` and "
-             "`tasks_index.json`.", "",
-             "| Field | Meaning | Read from |", "| --- | --- | --- |"]
-    lines += [f"| {name} | {meaning} | {source} |" for name, meaning, source in rows]
-    lines += ["", "## Front matter", "",
-              f"`license` is the corpus licence as the host's id, or `{UNKNOWN_LICENSE}` when none was named; "
-              f"`tags` is {', '.join('`' + tag + '`' for tag in BASE_TAGS)} and the Environment's name.", "",
-              "## Harbor", "",
-              f"Where the package carries a Harbor form, the card reads `{HARBOR_DIR}/manifest.json` for the "
-              "exported count, the Tasks without an oracle and the example Task's path.", ""]
-    return "\n".join(lines) + "\n"
-
-
 CARD_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("name", "The Environment's name, which is also its domain tag", "`--name`, or the last segment of `--repo`"),
     ("source", "The corpus, its licence and its URL", "`--corpus`, `--corpus-license`, `--corpus-url`"),

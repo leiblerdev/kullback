@@ -47,7 +47,6 @@ HINT_CHARS = 400
 # and costs it a turn, so a round that files one per Task spends its whole allowance restating the
 # list instead of working it. The list is ranked before it is cut, so what is dropped is always
 # what costs the fewest Tasks, and the next round files it once the ones above it are closed.
-RULE_FINDING_LIMIT = 10
 # How many masked shapes an unread-result finding names. The shapes are the grain the readers stage
 # reports and repairs on, and a tool with forty of them says nothing more in forty lines than in
 # three; the count in the same sentence says how many there are.
@@ -64,7 +63,6 @@ CLAIMS_FILE = "claims.json"
 # The kinds whose rows are deduplicated on the Task and tool pairs they cover (D192), beside the key.
 # Both name a tool and the Tasks it costs rather than a loss ranked by a moving set of Tasks, so a
 # pair another finding already carries is that finding's news and not a second message.
-PAIR_DEDUPED = frozenset({"fidelity", "environment"})
 
 # The check name each D79 gate stage reports under, inverted from the suite's own map, so a status
 # row's `not_run` (which holds stage names) can be read against its `checks` (which holds these).
@@ -101,51 +99,9 @@ def open_by_key(plan: ExaminerPlan) -> dict[str, str]:
             if isinstance(row, dict) and row.get("status") == "open" and row.get("key")}
 
 
-def told_task_tools(plan: ExaminerPlan) -> set[tuple[str, str]]:
-    """Every Task and tool pair a finding of this build already covers, whatever kind it was filed
-    under and whether it is open or closed.
-
-    A fidelity row about a Task and a tool says the same thing as the assisted_tool finding about
-    that tool which lists the Task among the ones it costs, and two messages saying one thing cost
-    the Builder two turns. The pair is what makes them the same, not the kind, so this is compared
-    beside the key and not through it.
-
-    Closed counts as told, not only open. A pair covered by an open finding and skipped for it would
-    come back as news the round after, when the Builder has answered that finding and closed it, and
-    the round would hand it the same loss under a second name; `cost_by_key` refuses that for a key
-    and this refuses it for a pair.
-    """
-    pairs: set[tuple[str, str]] = set()
-    for row in plan.store.get("findings", []):
-        if not isinstance(row, dict) or not row.get("tool"):
-            continue
-        tasks = list(row.get("task_ids") or ([row["task_id"]] if row.get("task_id") else []))
-        pairs.update((str(task), str(row["tool"])) for task in tasks)
-    return pairs
-
-
 def covered_pairs(row: dict) -> set[tuple[str, str]]:
     """The Task and tool pairs one row covers; empty for a row that names no tool."""
     return {(str(task), str(row["tool"])) for task in row.get("task_ids") or ()} if row.get("tool") else set()
-
-
-def cost_by_key(plan: ExaminerPlan) -> dict[str, list[str]]:
-    """The Tasks the last finding under each key said it cost, whatever became of that finding.
-
-    This is what tells a loss that is still there from a loss that has changed. A round exits only
-    when no finding is pending (D126), so filing the same loss again every round would keep the
-    loop running forever over a build that has stopped moving: a code-driven build reached round
-    454 on a three Task fixture before this rule existed. The answer is not to file it once and
-    forget it, which would hide a repair that made things worse, but to file it again only when the
-    Tasks it costs are a different set: fewer Tasks means the repair worked and the rest is new
-    news, more means it did not, and the same set means the loop has said all it has to say and the
-    stalled exit is the honest end (D170).
-    """
-    seen: dict[str, list[str]] = {}
-    for row in plan.store.get("findings", []):
-        if isinstance(row, dict) and row.get("key"):
-            seen[row["key"]] = sorted(row.get("task_ids") or ([row["task_id"]] if row.get("task_id") else []))
-    return seen
 
 
 def file_finding(plan: ExaminerPlan, *, kind: str, text: str, key: str, change: str = "",
@@ -571,23 +527,5 @@ def claimed_unwritten_rows(claims_body: dict) -> list[dict]:
 
 
 # --- the whole pass ---------------------------------------------------------------------
-
-def rule_rows(plan: ExaminerPlan) -> list[dict]:
-    """Every loss the round's records show, ranked by the Tasks it costs, most first.
-
-    The tie-break is the key, so the same records give the same order however the dicts were built.
-    """
-    status = plan.store.get("task_status") or {}
-    fidelity = plan.store.get("tool_fidelity") or _json(plan.workdir / "tool_fidelity.json", {}) or {}
-    references = _json(plan.workdir / "references.json", {}) or {}
-    reader_gaps = _json(plan.workdir / READERS_FILE, {}) or {}
-    pins = _json(plan.workdir / PINS_FILE, {}) or {}
-    claims_body = _json(plan.workdir / CLAIMS_FILE, {}) or {}
-    rows = (assisted_tool_rows(status, fidelity) + suite_rows(status)
-            + false_rejection_rows(plan.store) + disagreement_rows(status, references)
-            + fidelity_rows(status, fidelity, plan.store.get("replays") or {})
-            + unread_result_rows(reader_gaps, status) + runs_disagree_rows(pins)
-            + claimed_unwritten_rows(claims_body))
-    return sorted(rows, key=lambda row: (-len(row["task_ids"]), row["key"]))
 
 

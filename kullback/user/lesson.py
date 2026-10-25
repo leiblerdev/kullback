@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from kullback.runner.records import Record, read_json, write_json
+from kullback.runner.records import Record, read_json
 from kullback.user.fidelity import AGENT_DRIVER, RULES_DRIVER
 
 FILE_NAME = "user_lessons.json"
@@ -108,11 +108,6 @@ def drives(lessons: Iterable[Lesson], task_id: str, agent: Optional[float], rule
     if stalled(lessons, task_id, key):
         return False
     return agent > rules
-
-
-def write_lessons(workdir: Any, lessons: Iterable[Lesson]) -> Path:
-    body = {"format": FORMAT, "lessons": [lesson.model_dump(mode="json") for lesson in lessons or ()]}
-    return write_json(Path(workdir) / FILE_NAME, body)
 
 
 def load_lessons(workdir: Any) -> list[Lesson]:

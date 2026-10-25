@@ -40,7 +40,6 @@ class StoreError(RuntimeError):
 
 class WriteDurabilityError(StoreError):
     replaced = True
-    durability = "unknown"
 
     def __init__(self, path: Path):
         self.path = path

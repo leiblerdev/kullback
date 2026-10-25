@@ -31,7 +31,7 @@ QUOTE_MISSING = "quote_missing"
 NO_AGREEMENT = "no_agreement"
 # The writer kept no check twice running (spec/stage.py).
 EMPTY_SPEC = "empty_spec"
-# No Run could pass the Spec, still so after one send-back (spec/compile.py UNSATISFIABLE).
+# No Run could pass the Spec, still so after one send-back (spec/compile.py Compiled.unsatisfiable).
 UNSATISFIABLE_SPEC = "unsatisfiable_spec"
 # The recorded user strayed from an opening ask (spec/coherence.py): no Verifier for the Task.
 INTENT_STRAYED = "intent_strayed"

@@ -139,7 +139,6 @@ class ToolBuild:
     nodes: list[dict] = field(default_factory=list)
     gates: list[GateResult] = field(default_factory=list)
     assisted: bool = False
-    kept_attempt: Optional[int] = None  # which attempt's body this is, when no attempt passed
     # D171: one row per recorded call of this tool, so the miss can be attributed to the Task whose
     # Trace made the call. The corpus gate keeps one fidelity number; this keeps which call it was.
     call_outcomes: list[dict] = field(default_factory=list)
@@ -721,8 +720,6 @@ def _requestor_worlds(traces: Iterable[Trace], write_tools: set[str],
 
 
 # --- who saw a pinned value (D220 rule 2) -----------------------------------
-
-MASKED = "<held out>"  # what the body writer is shown where only a held-out Run witnessed a value
 
 
 def _same(left: Any, right: Any) -> bool:

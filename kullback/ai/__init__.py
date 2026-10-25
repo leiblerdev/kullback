@@ -49,11 +49,10 @@ from kullback.ai.provider import (
     RecordedModel,
     TestModel,
     live_model,
-    live_provider,
     model_for,
     provider_for,
 )
-from kullback.ai.replay import ReplayProvider, provider_of
+from kullback.ai.replay import ReplayProvider
 from kullback.ai.stream import canonicalize_provider_stream, stream
 from kullback.ai.usage import Usage
 
