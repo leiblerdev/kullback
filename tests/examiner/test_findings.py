@@ -218,26 +218,6 @@ def test_a_task_whose_replay_never_reached_its_end_state_is_filed_as_the_fidelit
     assert card["change"] == "the End state was never reached"
 
 
-def test_a_runs_disagree_finding_validates_and_is_filed(tmp_path):
-    """The kind D213 files under was not one FindingKind carried, so every such filing raised on
-    validation and the finding never reached the Builder (D227)."""
-    from kullback.runner.records import Finding
-
-    assert Finding(finding_id="finding-1", kind="runs_disagree", text="two versions of one row",
-                   key="k").kind == "runs_disagree"
-    pins = {"runs_disagree": [
-        {"task_id": RENEW, "table": "loans", "key_class": "own", "column_classes": ["hard"],
-         "columns": 1, "run_ids": ["trace-1", "trace-9"], "split_candidate": True},
-    ]}
-    row = F.runs_disagree_rows(pins)[0]
-    plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={})
-    filed = F.file_finding(plan, kind=row["kind"], text=row["text"], key=row["key"],
-                           change=row["change"], task_id=row["task_id"],
-                           task_ids=row["task_ids"])
-    assert filed.kind == "runs_disagree" and filed.edits == []
-    assert plan.store["findings"][-1]["kind"] == "runs_disagree"
-
-
 # --- one finding shape: a diff with the why and the rows (D317) --------------------------
 
 def test_a_differing_call_becomes_a_body_edit_naming_call_column_and_both_values_and_no_verb():

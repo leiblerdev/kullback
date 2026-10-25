@@ -37,7 +37,6 @@ RECORDING = "recording"
 OTHER_RECORDING = "other_recording"
 POPULATION = "population"
 ACCOUNT = "account"
-CHOICE_SOURCES = (RECORDING, OTHER_RECORDING, POPULATION)
 
 NO_CHOICE = "You have no record of choosing that."
 NO_ACCOUNT = "Your account shows nothing for that."

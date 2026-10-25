@@ -26,14 +26,14 @@ rulings and the status the derivation wrote (D66, D122).
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional
+from typing import Iterable, Optional
 
 from kullback.examiner.plan import ExaminerPlan
 from kullback.gates import verifier_suite
 from kullback.gates.fidelity import unconfirmed_reason
 from kullback.gates.loosening import discarded_runs, false_rejection, legitimate_runs, over_strict
 from kullback.gates.probes import write_tools_of
-from kullback.runner.records import Finding, as_dict, read_json
+from kullback.runner.records import Finding, as_dict
 
 # How many body edits one rule finding carries. Each is one recorded call the body answers
 # differently, and the first few are what the next edit is made against; the count is in the text.
@@ -43,42 +43,9 @@ EDITS_PER_FINDING = 5
 # wide table runs to thousands of characters, and a lesson that long is not a lesson. Only the
 # rules cut: a change line the model wrote is its own sentence and is kept whole.
 HINT_CHARS = 400
-# How many rule findings one round files. Each one reaches the Builder as its own follow-up message
-# and costs it a turn, so a round that files one per Task spends its whole allowance restating the
-# list instead of working it. The list is ranked before it is cut, so what is dropped is always
-# what costs the fewest Tasks, and the next round files it once the ones above it are closed.
-# How many masked shapes an unread-result finding names. The shapes are the grain the readers stage
-# reports and repairs on, and a tool with forty of them says nothing more in forty lines than in
-# three; the count in the same sentence says how many there are.
-SHAPES_NAMED = 3
-# The build's readers artifact, read for the results no reader answers (D203). Named here rather
-# than imported from the builder so the examiner package keeps its one-way dependency on the records.
-READERS_FILE = "readers.json"
-# What the Starting-state pinner ruled, read for the Tasks whose own Runs part on the column that
-# names a row they write (D213). Named here for the same reason READERS_FILE is.
-PINS_FILE = "overlay_pins.json"
-# What the round's claim pass ruled, read for the Tasks whose every failing held-out Run claims a
-# write the state never received (D223). Named here for the same reason PINS_FILE is.
-CLAIMS_FILE = "claims.json"
-# The kinds whose rows are deduplicated on the Task and tool pairs they cover (D192), beside the key.
-# Both name a tool and the Tasks it costs rather than a loss ranked by a moving set of Tasks, so a
-# pair another finding already carries is that finding's news and not a second message.
-
 # The check name each D79 gate stage reports under, inverted from the suite's own map, so a status
 # row's `not_run` (which holds stage names) can be read against its `checks` (which holds these).
 CHECK_OF_STAGE: dict[str, str] = dict(verifier_suite.D79_STAGES)
-
-
-def _json(path: Any, default: Any) -> Any:
-    """One record file the rules read; a missing or half-written one is the default.
-
-    A build killed mid-write must leave the round with the findings it can read rather than an
-    exception out of the derivation that was otherwise finished.
-    """
-    try:
-        return read_json(path, default)
-    except (OSError, ValueError):
-        return default
 
 
 # --- what makes two findings the same finding ------------------------------------------
@@ -420,108 +387,6 @@ def reference_fails_rows(failing: Iterable[dict]) -> list[dict]:
             "text": (f"The kept Reference {row.get('run_id') or ''} fails the Task's Verifier at {atom}: the "
                      "recording did not do what the ask, the policy and the world require, or it replays "
                      "differently here. The Verifier stands; the Reference is for fidelity only."),
-        })
-    return rows
-
-
-def unread_result_rows(readers_artifact: dict, status: dict) -> list[dict]:
-    """One row per tool whose homed prose results nothing reads, so its rows hold no pinned column.
-
-    D203 closes most of that class in code: a reader is derived from the tool's own recorded
-    results, and where the corpus cannot settle a slot one forced proposal is asked for. What is
-    left over is a real gap in the world and not a body's fault, so it is filed as an environment
-    finding naming the tool and the masked shapes still unread. A Run reading such a result is
-    served the seed's own value however the Task's overlay is pinned, and nothing else in the build
-    says so.
-
-    The Tasks named are the ones this tool blocks (D171), so the pair dedup can see that another
-    finding already covers them; a tool that blocks nobody is still filed, ranked last, because the
-    loss it names is in the world rather than in a Task's ruling.
-    """
-    gaps = ((readers_artifact or {}).get("gaps") or {})
-    unread = ((gaps.get("totals") or {}).get("results_unread_by_tool") or {})
-    blocked: dict[str, list[str]] = {}
-    for task_id, row in sorted((status or {}).items()):
-        if not isinstance(row, dict) or row.get("reference_confirmed"):
-            continue
-        for name in row.get("blocking_tools") or []:
-            blocked.setdefault(str(name), []).append(task_id)
-    rows = []
-    for name, count in sorted(unread.items()):
-        entry = (gaps.get("tools") or {}).get(name) or {}
-        shapes = sorted({str(shape) for shape in entry.get("unread_shapes") or []})[:SHAPES_NAMED]
-        rows.append({
-            "kind": "environment", "tool": str(name), "task_ids": blocked.get(str(name), []),
-            "task_id": None, "key": finding_key("environment", str(name)),
-            "change": (f"no reader answers {shapes[0]}" if shapes
-                     else "no reader answers this tool's results"),
-            "text": (f"{name} answers {int(count)} recorded results the world homes on a row and "
-                     f"nothing reads columns out of, so those rows hold no pinned value and every "
-                     f"Run reading them is served the seed's own (D203). Neither the derivation "
-                     f"from its own results nor a forced proposal settled them."
-                     + (f" Shapes still unread: {'; '.join(shapes)}." if shapes else "")),
-        })
-    return rows
-
-
-def runs_disagree_rows(pins: dict) -> list[dict]:
-    """One row per Task whose own Runs recorded a row of the world in two versions (D213).
-
-    The Starting state no longer settles this by call order: what the Runs agree on is the Task's
-    overlay and each Run replays against its own value, so the disagreement costs no fidelity. It is
-    still a fact about the grouping the Examiner has to see, because a Task whose Runs part on the
-    column that names a row one of its writes touched may be two Tasks the mining ran together, and
-    that is what `split_candidate` says. Only the split candidates are filed: the rest is a world
-    the build already serves correctly and would be a message with nothing to do about it.
-
-    The row names the table, how the table's rows are keyed and which classes of column parted, and
-    never a value out of a record.
-    """
-    by_task: dict[str, list[dict]] = {}
-    for row in (pins or {}).get("runs_disagree") or ():
-        if isinstance(row, dict) and row.get("split_candidate") and row.get("task_id"):
-            by_task.setdefault(str(row["task_id"]), []).append(row)
-    rows = []
-    for task_id, found in sorted(by_task.items()):
-        tables = sorted({str(row.get("table")) for row in found})
-        classes = sorted({str(name) for row in found for name in row.get("column_classes") or ()})
-        runs = sorted({str(run) for row in found for run in row.get("run_ids") or ()})
-        rows.append({
-            "kind": "runs_disagree", "tool": None, "task_ids": [task_id], "task_id": task_id,
-            "key": finding_key("runs_disagree", "", task_id),
-            "change": (f"{len(runs)} runs part on a {found[0].get('key_class')} key column of "
-                     f"{tables[0]}"),
-            "text": (f"The Task's own Runs recorded {len(found)} row(s) of {', '.join(tables)} in "
-                     f"different versions, parting on a column that names the row and that one of "
-                     f"its writes touched ({', '.join(classes)}). Each Run replays against its own "
-                     f"version, so no fidelity is lost, but a goal that writes a row the Runs do "
-                     f"not agree is the same row may be two Tasks grouped as one; the Runs are "
-                     f"{', '.join(runs)}."),
-        })
-    return rows
-
-
-def claimed_unwritten_rows(claims_body: dict) -> list[dict]:
-    """One row per Task whose every failing held-out Run claimed a write the state never received (D223).
-
-    A Verdict grades state and never words (D46), so these Runs already fail; what the records could
-    not say before is that they all fail the same way. A Task where every failing held-out Run said
-    the work was done and no write atom moved for it is a Task the Simulated user let go on a
-    sentence, and the answer is the end protocol rather than the Verifier: nothing here carries an
-    edit, because the file that would fix it is not one the Builder or the Examiner owns.
-    """
-    rows = []
-    for task_id in sorted((claims_body or {}).get("flagged") or ()):
-        seen = ((claims_body.get("tasks") or {}).get(task_id) or {})
-        rows.append({
-            "kind": "other", "tool": None, "task_ids": [str(task_id)], "task_id": str(task_id),
-            "key": finding_key("claimed_unwritten", "", str(task_id)),
-            "change": "every failing held-out Run of this Task claims a write the state never received",
-            "text": (f"All {int(seen.get('failing_runs') or 0)} failing held-out Runs of this Task claim "
-                     f"a write in words that no write atom of its Verifier received "
-                     f"({int(seen.get('claims_unwritten') or 0)} such claims). The Verdict is right to "
-                     f"fail them (D46); what to read next is the Simulated user's end protocol, which "
-                     f"ended these conversations on what the Candidate said (D210, D223)."),
         })
     return rows
 

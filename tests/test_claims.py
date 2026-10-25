@@ -10,7 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from kullback import claims, difficulty, report
-from kullback.examiner import findings
 from kullback.report.render import _claims_table
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import Atom, Event, Run, ToolSig, Verifier, as_dict, write_json
@@ -230,12 +229,3 @@ def test_the_claims_file_carries_the_four_counters_off_the_rows_it_wrote(tmp_pat
 def test_a_build_with_no_claim_record_says_so_rather_than_showing_an_empty_table():
     lines = _claims_table(report.ReportData())
     assert any("No claim record was written" in line for line in lines)
-
-
-def test_a_flagged_task_is_filed_as_a_finding_pointing_at_the_end_protocol():
-    rows = findings.claimed_unwritten_rows({"flagged": ["task_1"],
-                                            "tasks": {"task_1": {"failing_runs": 2, "claims_unwritten": 2}}})
-    assert [row["task_id"] for row in rows] == ["task_1"]
-    assert "edits" not in rows[0], "no Builder or Examiner file owns the end protocol"
-    assert "end protocol" in rows[0]["text"]
-    assert findings.claimed_unwritten_rows({}) == []

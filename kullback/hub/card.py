@@ -220,20 +220,3 @@ def organisation_card(rows: Iterable[dict], *, organisation: str = ORGANISATION,
     lines += ["", "## Known issues", "", DISCLAIMER, ""]
     lines += ["## Links", "", f"- Harness: {github_url}", f"- Site: {site_url}", f"- Licence: {PACKAGE_LICENCE}", ""]
     return "\n".join(lines) + "\n"
-
-
-CARD_FIELDS: tuple[tuple[str, str, str], ...] = (
-    ("name", "The Environment's name, which is also its domain tag", "`--name`, or the last segment of `--repo`"),
-    ("source", "The corpus, its licence and its URL", "`--corpus`, `--corpus-license`, `--corpus-url`"),
-    ("tasks_total", "Tasks on the frozen list", "`tasks_frozen.json`, or the newest round snapshot"),
-    ("inside.tools", "Tools the Environment serves", "`tool_sigs.json` in the laid package"),
-    ("inside.example_ask", "One Task's first ask, as its instruction states it",
-     "the first Harbor Task's `instruction.md`, else `tasks.jsonl`"),
-    ("replay_fidelity.tasks_rate", "Share of Tasks with at least one confirmed replay", "`replays.json`"),
-    ("preview", "Whether it was published as a preview", "`--preview` on the publish"),
-    ("tag", "The tag this publish carries", "`round-<n>`, else `build-<YYYYMMDD>` of the newest session write"),
-    ("git_sha", "Commit the export ran from; the card also names the Harbor form's where it differs",
-     "`git rev-parse HEAD`"),
-    ("created_at", "When the package was exported", "the export's clock, UTC"),
-    ("content_hash", "One hash over every file of the package, which a fetch checks", "computed at export"),
-)

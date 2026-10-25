@@ -86,9 +86,7 @@ from kullback.ai.usage import (
 # The names below were defined here before the modules above were carved out of this one. They
 # stay importable from `kullback.ai.provider` because the rest of the Harness spells them that way.
 _error_text = error_text
-_retryable_status = retryable_status
 _reasoning_share = reasoning_share
-_reasoning_of = reasoning_of
 
 # Tests never call a real model. Only a real adapter checks this flag; TestModel, RecordedModel
 # and MemoModel ignore it: the first two never leave the machine and the third only forwards to

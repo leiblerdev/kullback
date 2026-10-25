@@ -67,8 +67,6 @@ UNRECORDED_VERDICT = "unrecorded"  # a call the replay made and the recording ne
 WORLD_DIRS: tuple[str, ...] = ("env", "overlays")
 WORLD_FILES: tuple[str, ...] = ("environment.json", "schema.json", "tool_sigs.json", "bodies.json",
                                 "canon-rules.json")
-# The graders and the Task list. Scanned against the baseline rather than trusted.
-GRADER_DIRS: tuple[str, ...] = ("tasks", "verifiers")
 
 # The policy a Run is given, under the world's env/ (D404): the recorded agent prompt where the build has no file.
 POLICY_FILE = "env/policy.md"

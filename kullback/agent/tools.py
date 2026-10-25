@@ -203,11 +203,6 @@ class TextResult(BaseModel):
     text: str = Field(default="")
 
 
-# --- how a gate's ruling reads in a tool result -------------------------------
-
-TASK_PREFIX = "task "
-
-
 # --- how a gate's ruling reaches the model ------------------------------------
 
 RULING_TAG = "ruling"
