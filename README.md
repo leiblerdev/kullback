@@ -30,10 +30,11 @@ released them on Hugging Face: [leibler/retail](https://huggingface.co/datasets/
 [leibler/airline](https://huggingface.co/datasets/leibler/airline) with 130 Tasks. Every Task replays its recording in
 the rebuilt world, and each Verifier is derived from the user's ask and the policy, never from the recorded answer.
 
-The third, [leibler/travel-agency](https://huggingface.co/datasets/leibler/travel-agency), is a harder set for
-TripDesk, an online travel agency that sells airlines, rail, hotels, rides, rental cars and cruises. It differs from the
-first two: the customer sends one message and there is no simulated user, and a run is graded on the end state, the
-policy checks on each write and checks on the reply. All 263 deliberately wrong walks are caught and all 134 alternative right walks are
+The third, [leibler/travel-agency](https://huggingface.co/datasets/leibler/travel-agency), has 65 hard Tasks for an
+online travel agency (TripDesk) across airlines, rail, hotels, rides, rental cars and cruises, each built from a real
+public complaint and shipped as [Harbor](https://huggingface.co/datasets/leibler/travel-agency) tasks. It differs from the first two: the customer
+sends one message and there is no simulated user, and a run is graded on the end state, the policy checks on each
+write and checks on the reply. All 263 deliberately wrong walks are caught and all 134 alternative right walks are
 accepted.
 
 ## How to use it
