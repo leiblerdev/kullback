@@ -21,6 +21,13 @@ released them on Hugging Face: [leibler/retail](https://huggingface.co/datasets/
 [leibler/airline](https://huggingface.co/datasets/leibler/airline) with 130 Tasks. Every Task replays its recording in
 the rebuilt world, and each Verifier is derived from the user's ask and the policy, never from the recorded answer.
 
+The third, [leibler/travel-agency](https://huggingface.co/datasets/leibler/travel-agency), has 65 hard Tasks for an
+online travel agency (TripDesk) across airlines, rail, hotels, rides, rental cars and cruises, each built from a real
+public complaint and shipped as [Harbor](https://huggingface.co/datasets/leibler/travel-agency) tasks. It differs from the first two: the customer
+sends one message and there is no simulated user, and a run is graded on the end state, the policy checks on each
+write and checks on the reply. All 263 deliberately wrong walks are caught and all 134 alternative right walks are
+accepted.
+
 ## How to use it
 
 ```bash
@@ -36,6 +43,16 @@ calls need `HARNESS_ALLOW_MODEL_REQUESTS=1` and the provider's key (see `.env.ex
 Runs and `report` writes `report.md`. To build an Environment from your own traces, start with `kullback ingest` and
 `kullback build`; [docs/trace-intake.md](docs/trace-intake.md) covers the trace formats, and
 [docs/README.md](docs/README.md) lists every doc.
+
+The travel Tasks run under Harbor with Docker; Harbor's oracle agent plays each reference solution at no cost:
+
+```bash
+hf download leibler/travel-agency --repo-type dataset --local-dir travel-agency
+harbor run -p travel-agency -a oracle -n 4
+```
+
+Grading a real agent needs a judge model for the reply checks; [the dataset card](https://huggingface.co/datasets/leibler/travel-agency)
+lists the variables and the agent commands.
 
 ## Why it matters
 
