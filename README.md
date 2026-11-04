@@ -32,10 +32,9 @@ the rebuilt world, and each Verifier is derived from the user's ask and the poli
 
 The third, [leibler/travel-agency](https://huggingface.co/datasets/leibler/travel-agency), has 65 hard Tasks for an
 online travel agency (TripDesk) across airlines, rail, hotels, rides, rental cars and cruises, each built from a real
-public complaint and shipped as [Harbor](https://huggingface.co/datasets/leibler/travel-agency) tasks. It differs from the first two: the customer
-sends one message and there is no simulated user, and a run is graded on the end state, the policy checks on each
-write and checks on the reply. All 263 deliberately wrong walks are caught and all 134 alternative right walks are
-accepted.
+public complaint and shipped as Harbor tasks. It differs from the first two: the customer sends one message and there
+is no simulated user, and a run is graded on the end state, the policy checks on each write and checks on the reply.
+All 263 deliberately wrong walks are caught and all 134 alternative right walks are accepted.
 
 ## How to use it
 
