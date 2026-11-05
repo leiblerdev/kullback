@@ -40,7 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serial
 
 # ruff: noqa: F401 - the imports below that this module does not itself use are the re-exports
 # named in the note under them: the rest of the Harness spells them kullback.ai.provider.X.
-from kullback.ai import calllog
+from kullback.ai import calllog, warmup
 from kullback.ai.cache import CACHE_TTLS, MAX_CACHE_POINTS, cache_control, count_cache_points
 from kullback.ai.events import StreamEvent
 from kullback.ai.http import (
@@ -100,7 +100,6 @@ _reasoning_of = reasoning_of
 ALLOW_MODEL_REQUESTS = False
 
 # The harness default for every role: Opus 5.5 on Bedrock's global profile (founder decision 2026-09-24).
-# Gemini 4 Argon through Google's own Interactions API (GoogleInteractionsModel) is a valid choice by id.
 DEFAULT_MODEL = "bedrock/global.anthropic.claude-opus-5-5"
 
 # The one way to turn live calls on: a person exports this before running the CLI. There is
@@ -830,8 +829,10 @@ class HttpModel(Model):
         return f"no API key for {self.name}; set {self.key_env_var} or pass api_key"
 
     def encode_body(self, body: dict) -> bytes:
-        """The exact bytes posted: httpx's own JSON encoding, spelled here so a signer sees them."""
-        return json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        """The exact bytes posted: httpx's own JSON encoding, spelled here so a signer sees them, with sorted keys so
+        two calls that send the same tools and messages send the same bytes (a provider caches a byte prefix)."""
+        return json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+                          sort_keys=True).encode("utf-8")
 
     def client(self) -> Any:
         # httpx.Client is safe to share across threads; creating it is the one step that is
@@ -853,7 +854,7 @@ class HttpModel(Model):
             raise ProviderError(self.missing_key_message())
         config = config or ModelConfig()
         body = self.build_body(messages, tools, config)
-        with calllog.attempts() as retried:
+        with warmup.gate(self.name, messages, tools), calllog.attempts() as retried:
             return self._query(messages, tools, config, body, retried)
 
     def _query(self, messages: list[dict], tools: Optional[list[dict]], config: ModelConfig, body: dict,
@@ -889,6 +890,8 @@ class HttpModel(Model):
         """The row's extras: the temperature the body carried and the effort asked (what was sent, which a gateway
         may still drop), the status of every failed HTTP attempt (a 429 a retry hid included), and the reply's own (reply_meta)."""
         meta = {"temperature_sent": body.get("temperature"), "effort_sent": config.reasoning_effort or config.effort}
+        if warmup.waited_ms():
+            meta["warmup_wait_ms"] = warmup.waited_ms()  # held back while an earlier call warmed the shared prefix
         if retried:
             meta["failed_statuses"] = list(retried)
         return {**meta, **self.reply_meta(posted)}
@@ -1564,6 +1567,15 @@ PRICING_PATH = "/api/pricing"  # {route: {model: USD per 1M tokens: input, cache
 # Routes whose provider caches only where the request marks it (Anthropic cache_control, which the gateway keeps
 # as sent); the other routes cache a shared prefix on their own and get no marks.
 MARKED_ROUTES = ("cc", "bedrock")
+# The shortest prefix a mark may close: Claude caches nothing under 512 tokens (Opus 5.5 and Sonnet 5.5; older
+# models more). Prompts here run 2.4 characters a token, so 4 a token is a safe floor.
+MIN_CACHED_TOKENS, CHARS_PER_TOKEN_FLOOR = 512, 4
+MIN_CACHED_CHARS = MIN_CACHED_TOKENS * CHARS_PER_TOKEN_FLOOR
+# Routes that cache by a key the request names rather than by marks: a constant key per stage (from the call log's
+# run id and stage) in the body's prompt_cache_key and the x-grok-conv-id header, so the calls of one stage land on
+# the same cache. Other routes ignore the field, so it is sent only here.
+CACHE_KEY_ROUTES = ("cu/grok-",)
+CONV_ID_HEADER = "x-grok-conv-id"
 # Routes whose Claude models give the thinking text back when asked: with an effort set, it is asked back
 # summarized. The gateway's chat completions translator takes this body field for it and removes it before the
 # provider sees the request. The subscription route returns no thinking text either way (probe 2026-11-05).
@@ -1608,16 +1620,22 @@ def _route(wire_id: str) -> str:
     return wire_id.split("/", 1)[0] if "/" in wire_id else ""
 
 
-def marked_steps(messages: list[dict]) -> list[int]:
+def marked_steps(messages: list[dict], tools_chars: int = 0) -> list[int]:
     """The messages that carry a cache mark (at most MAX_CACHE_POINTS with the system): the last message, and the
     last two assistant messages before it, where an append-only prompt's next call (the next question on the same
-    conversation, the next turn of a loop) shares everything up to."""
+    conversation, the next turn of a loop) shares everything up to. A mark whose prefix (tools, then the messages up
+    to and including it) is under the provider's cacheable minimum (MIN_CACHED_CHARS) is left off: it would cache
+    nothing and use up a checkpoint."""
     if not messages:
         return []
     last = len(messages) - 1
     earlier = [i for i in range(last) if messages[i].get("role") == "assistant"][-(MAX_CACHE_POINTS - 2):]
     systems = [i for i, m in enumerate(messages) if m.get("role") == "system"][:1]
-    return sorted(set(systems + earlier + [last]))
+    sizes, total = [], tools_chars
+    for message in messages:
+        total += len(_text_of(message))
+        sizes.append(total)
+    return sorted(i for i in set(systems + earlier + [last]) if sizes[i] >= MIN_CACHED_CHARS)
 
 
 def _mark(message: dict) -> dict:
@@ -1658,7 +1676,15 @@ class OmniRouteModel(OpenAICompatibleModel):
         tag = ".".join(str(context[k]) for k in ("run_id", "stage") if context.get(k))
         if tag:
             out["X-OmniRoute-Session-Id"] = tag
+        if self.wire_id.startswith(CACHE_KEY_ROUTES) and self.cache_key():
+            out[CONV_ID_HEADER] = self.cache_key()
         return out
+
+    def cache_key(self) -> Optional[str]:
+        """The stage's constant cache key: a UUID made from the run id and stage, None outside a stage."""
+        context = calllog.current()
+        tag = ".".join(str(context[k]) for k in ("run_id", "stage") if context.get(k))
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, tag)) if tag else None
 
     @functools.cached_property
     def rate_bucket(self) -> Optional[Bucket]:
@@ -1726,8 +1752,11 @@ class OmniRouteModel(OpenAICompatibleModel):
         """The chat completions body, with cache marks on a route that needs them (MARKED_ROUTES) and the thinking
         asked back summarized on a Claude route with an effort set."""
         body = super().build_body(messages, tools, config)
+        if self.wire_id.startswith(CACHE_KEY_ROUTES) and self.cache_key():
+            body["prompt_cache_key"] = self.cache_key()
         if _route(self.wire_id) in MARKED_ROUTES:
-            marked = set(marked_steps(body["messages"]))
+            tools_chars = len(json.dumps(body.get("tools"), sort_keys=True)) if body.get("tools") else 0
+            marked = set(marked_steps(body["messages"], tools_chars))
             body["messages"] = [_mark(m) if i in marked else m for i, m in enumerate(body["messages"])]
         if (config.reasoning_effort or config.effort) and self.wire_id.startswith(CLAUDE_ROUTES):
             body.update(SUMMARIZED_THINKING)

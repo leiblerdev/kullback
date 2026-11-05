@@ -133,7 +133,7 @@ def _marks(body):
             and any("cache_control" in block for block in m["content"])]
 
 
-LOOP = [{"role": "system", "content": "S"}] + [
+LOOP = [{"role": "system", "content": "S" * 3000}] + [
     {"role": role, "content": f"{role} {i}"} for i in range(4) for role in ("user", "assistant")] + [
     {"role": "user", "content": "last"}]
 
@@ -237,3 +237,30 @@ def test_a_subscription_route_holds_the_gateways_cap_in_one_bucket_its_models_sh
     assert pv.model_for("cc/model-a", env=ROUTED).rate_bucket.in_flight == 2
     assert pv.model_for("cc/model-a", env=ROUTED).rate_bucket is not first.rate_bucket
     limits.reset()
+
+
+def test_a_mark_whose_prefix_is_under_the_cacheable_minimum_is_left_off():
+    short = [{"role": "system", "content": "S"}, {"role": "user", "content": "u"},
+             {"role": "assistant", "content": "a"}, {"role": "user", "content": "q" * 3000}]
+    assert _marks(_body("cc/model-a", short)) == [3]
+    assert _marks(_body("cc/model-a", short[:3] + [{"role": "user", "content": "q"}])) == []
+
+
+def test_a_route_that_caches_by_key_gets_one_constant_key_per_stage_in_body_and_header(tmp_path):
+    seen = []
+
+    def handler(request):
+        seen.append((request.headers.get("x-grok-conv-id"), json.loads(request.content).get("prompt_cache_key")))
+        return httpx.Response(200, json=dict(REPLY, model="grok-a"),
+                              headers=dict(ANSWERED, **{"X-OmniRoute-Provider": "cu", "X-OmniRoute-Model": "grok-a"}))
+
+    pv.enable_live_calls_from_env({pv.LIVE_ENV_VAR: "1"})
+    model = pv.model_for("cu/grok-a", env=ROUTED, client=httpx.Client(transport=httpx.MockTransport(handler)),
+                         sleep=lambda _s: None, rng=random.Random(0))
+    calls.begin(tmp_path, "stage-a", run_id="r1")
+    for _ in range(2):
+        model.query([{"role": "user", "content": "hi"}], config=ModelConfig(temperature=1.0))
+    calls.begin(tmp_path, "stage-b", run_id="r1")
+    model.query([{"role": "user", "content": "hi"}], config=ModelConfig(temperature=1.0))
+    assert seen[0] == seen[1] and seen[0][0] == seen[0][1] and seen[0][0] and seen[2][0] != seen[0][0]
+    assert "prompt_cache_key" not in _body("cu/model-a", LOOP)
