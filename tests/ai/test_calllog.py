@@ -19,6 +19,8 @@ def no_call_log():
     yield
     calls.install(None)
     calls.set_default()
+    calls.forget_catalog_prices()
+    calls._CATALOG_STATE["path"] = None
 
 
 def _price(usage, _model):
@@ -221,3 +223,105 @@ def test_the_call_log_package_imports_nothing_from_kullback_outside_its_own_pack
 def test_a_price_from_the_gateways_pricing_table_stands_in_when_its_cost_header_gave_none():
     out = calls.dollars(Usage(input=1000, output=100), "paid/model-a", "paid", None, None, priced=0.003)
     assert (out["usd_gateway"], out["usd_actual"], out["price_source"]) == (0.003, 0.003, "pricing")
+
+
+def _long_record(model, text="C" * 4000):
+    steps = [{"role": "user", "content": text}, {"role": "assistant", "content": "Read."},
+             {"role": "user", "content": "rule"}]
+    return dict(_record(steps, 0), model=model)
+
+
+def test_a_prompt_another_model_finished_is_not_expected_from_the_cache_and_a_same_model_repeat_is(tmp_path):
+    log = calls.Log(tmp_path, cost=lambda *_: 0.0, warn=lambda _l: None)
+    log(_long_record("google/model-a"))
+    log(_long_record("google/model-b"))
+    log(_long_record("google/model-a"))
+    assert (log.rows[1]["expected_cached"], log.rows[1]["miss"]) == (0, False)
+    assert log.rows[2]["expected_cached"] > 0 and log.rows[2]["miss"]
+
+
+def _snapshot(tmp_path, models):
+    import json
+
+    path = tmp_path / "cache" / "snapshot.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"fetched_at": "2026-11-01T00:00:00+00:00",
+                                "catalog": {"vendor": {"id": "vendor", "models": models}}}))
+    calls._CATALOG_STATE["path"] = str(path)
+    calls.forget_catalog_prices()
+
+
+def test_a_paid_call_no_other_source_prices_is_priced_from_the_catalog_and_flagged(tmp_path):
+    _snapshot(tmp_path, {"model-a": {"cost": {"input": 3.0, "output": 15.0}}})
+    out = calls.dollars(Usage(input=1_000_000, output=100_000), "vendor/model-a", "vendor", 0.0, None)
+    assert (out["usd_gateway"], out["usd_actual"], out["price_source"]) == (4.5, 4.5, "catalog")
+
+
+def test_a_paid_call_nothing_prices_has_a_null_cost_and_the_rollup_counts_it_as_unknown(tmp_path):
+    _snapshot(tmp_path, {"model-a": {"cost": {"input": 3.0, "output": 15.0}}})
+    out = calls.dollars(Usage(input=10, output=1), "vendor/nowhere", "vendor", 0.0, None)
+    assert (out["usd_gateway"], out["usd_actual"], out["price_source"]) == (None, None, None)
+    log = calls.Log(tmp_path)
+    log(dict(_record([{"role": "user", "content": "hi"}], 0, provider="vendor"), model="vendor/nowhere"))
+    log(dict(_record([{"role": "user", "content": "hi"}], 0, provider="vendor"), model="vendor/model-a"))
+    assert log.rows[0]["usd_actual"] is None and log.rows[1]["usd_actual"] > 0
+    stage = calls.rollup(calls.read(tmp_path))["s"]
+    assert (stage["cost_unknown"], stage["calls"]) == (1, 2) and stage["usd_actual"] == log.rows[1]["usd_actual"]
+    assert any("cost unknown on 1" in line for line in calls.rollup_lines(calls.read(tmp_path)))
+
+
+def test_a_subscription_route_stays_free_and_is_not_counted_as_unknown_cost(tmp_path):
+    out = calls.dollars(Usage(input=10, output=1), "cc/nowhere", "cc", None, None)
+    assert (out["usd_actual"], out["price_source"]) == (0.0, "free")
+    assert calls.rollup([dict(out, stage="s")])["s"]["cost_unknown"] == 0
+
+
+def test_an_unreadable_price_catalog_means_unknown_cost_and_old_rows_without_the_field_still_read(tmp_path):
+    bad = tmp_path / "snapshot.json"
+    bad.write_text("not json")
+    calls._CATALOG_STATE["path"] = str(bad)
+    calls.forget_catalog_prices()
+    assert calls.dollars(Usage(input=10), "vendor/model-a", "vendor", None, None)["usd_actual"] is None
+    old = {"stage": "s", "input": 5, "usd_actual": 0.0}
+    assert calls.rollup([old, {"stage": "s", "input": 5}])["s"]["cost_unknown"] == 0
+
+
+def test_prefixes_older_than_two_ttl_are_gone_after_a_later_add_and_a_live_one_still_reads_as_shared():
+    prefixes = calllog._Prefixes(ttl_s=10.0)
+    old, live = ["old system", "old step"], ["live system", "live step"]
+    prefixes.add(old, 0.0)
+    prefixes.add(live, 15.0)
+    prefixes.add(["fresh"], 25.0)  # a sweep: old finished 25 ago, live 10 ago
+    assert not any(h in prefixes.done for h in calllog._hashes(old))
+    assert prefixes.shared(live, 24.0)[0] == len("live system") + len("live step")
+    assert prefixes.shared(old, 26.0) == (0, 0)
+
+
+def test_the_step_text_a_prefix_keeps_is_bounded_and_the_shared_count_is_exact_up_to_the_bound():
+    prefixes = calllog._Prefixes(keep_chars=50)
+    prefixes.add(["system", "x" * 10_000], 1.0)
+    assert all(len(text) <= 50 for text in prefixes.next_step.values())
+    assert prefixes.shared(["system", "x" * 10_000 + "tail"], 2.0)[1] == 50
+    assert prefixes.shared(["system", "x" * 20 + "other"], 2.0)[1] == 20
+
+
+def test_the_prefixes_kept_are_bounded_by_dropping_the_oldest_first():
+    prefixes = calllog._Prefixes(max_entries=8)
+    for n in range(30):
+        prefixes.add([f"system {n}", f"step {n}"], float(n))
+    assert len(prefixes.done) <= 8
+    assert calllog._hashes(["system 29", "step 29"])[1] in prefixes.done
+
+
+def test_parallel_first_calls_with_the_calls_folder_set_share_one_log_and_one_run_id(tmp_path, monkeypatch):
+    calls.install(None)
+    calls.set_default()
+    monkeypatch.delenv(calls.RUN_ID_VAR, raising=False)
+    monkeypatch.setenv(calls.CALLS_DIR_VAR, str(tmp_path))
+
+    def send(i):
+        calls.emit("free/model-a", "free", "", [{"role": "user", "content": str(i)}], None, Usage(input=1))
+
+    _each(range(24), send, 24)
+    rows = calls.read(tmp_path)
+    assert len(rows) == 24 and len({row["run_id"] for row in rows}) == 1

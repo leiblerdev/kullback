@@ -70,3 +70,139 @@ def test_the_longest_shared_prefix_decides_and_the_model_is_part_of_it():
     assert keys[: len(warmup.boundaries("route/model-a", SHARED + [{"role": "user", "content": "q"}]))] == \
         warmup.boundaries("route/model-a", SHARED + [{"role": "user", "content": "q"}])
     assert warmup.boundaries("route/model-b", longer) != warmup.boundaries("route/model-a", longer)
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def _until(condition):
+    deadline = time.monotonic() + 5.0
+    while not condition():
+        assert time.monotonic() < deadline, "condition never held"
+        threading.Event().wait(0.002)
+
+
+def _start(gate, keys, name, log, hold=None, fail=False):
+    def run():
+        try:
+            with gate.first(keys):
+                log.append(("start", name))
+                if hold is not None:
+                    hold.wait(5.0)
+                log.append(("end", name))
+                if fail:
+                    raise RuntimeError("boom")
+        except RuntimeError as exc:
+            log.append(("raised", name, str(exc)))
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    return thread
+
+
+def _join(*threads):
+    for thread in threads:
+        thread.join(5.0)
+        assert not thread.is_alive()
+
+
+def test_with_the_stage_prefix_warm_the_first_call_on_a_new_task_goes_at_once_and_the_same_task_waits_for_it():
+    gate, log, hold = warmup.Gate(), [], threading.Event()
+    with gate.first(["stage"]):
+        pass
+    first = _start(gate, ["stage", "taskA"], "a1", log, hold)
+    _until(lambda: ("start", "a1") in log)
+    second = _start(gate, ["stage", "taskA"], "a2", log, hold)
+    _until(lambda: gate.waited == 1)
+    assert ("start", "a2") not in log
+    other = _start(gate, ["stage", "taskB"], "b1", log)
+    _until(lambda: ("end", "b1") in log)
+    assert gate.waited == 1
+    hold.set()
+    _join(first, second, other)
+    assert log.index(("end", "a1")) < log.index(("start", "a2"))
+
+
+def test_two_calls_waiting_on_the_stage_prefix_share_a_task_prefix_so_one_goes_first_and_the_other_waits():
+    gate, log, hold, stage_hold = warmup.Gate(), [], threading.Event(), threading.Event()
+    stage = _start(gate, ["stage"], "stage", log, stage_hold)
+    _until(lambda: ("start", "stage") in log)
+    one = _start(gate, ["stage", "task"], "one", log, hold)
+    two = _start(gate, ["stage", "task"], "two", log, hold)
+    _until(lambda: gate.waited == 2)
+    stage_hold.set()
+    _until(lambda: any(e[0] == "start" and e[1] in ("one", "two") for e in log))
+    hold.set()
+    _join(stage, one, two)
+    starts = [e[1] for e in log if e[0] == "start" and e[1] != "stage"]
+    ends = [e[1] for e in log if e[0] == "end" and e[1] != "stage"]
+    assert log.index(("end", starts[0])) < log.index(("start", starts[1]))
+    assert starts == ends
+    assert gate.waited == 2
+
+
+def test_the_wait_deadline_is_shared_across_waits_so_a_late_recheck_goes_at_once_and_claims_nothing():
+    clock = _Clock()
+    gate, log, hold, stage_hold = warmup.Gate(clock=clock), [], threading.Event(), threading.Event()
+    stage = _start(gate, ["stage"], "stage", log, stage_hold)
+    _until(lambda: ("start", "stage") in log)
+    one = _start(gate, ["stage", "task"], "one", log, hold)
+    two = _start(gate, ["stage", "task"], "two", log, hold)
+    _until(lambda: gate.waited == 2)
+    clock.now = warmup.MAX_WAIT_S + 10.0
+    stage_hold.set()
+    _until(lambda: ("start", "one") in log and ("start", "two") in log)  # both inside the block together
+    assert sum(1 for e in gate.entries.values() if e is gate.entries["task"]) == 1
+    hold.set()
+    _join(stage, one, two)
+    assert gate.waited == 2
+
+
+def test_waited_ms_is_the_total_held_time_and_a_call_is_counted_once_however_many_waits_it_did():
+    clock, seen = _Clock(), []
+    gate, log, hold = warmup.Gate(clock=clock), [], threading.Event()
+    stage = _start(gate, ["stage"], "stage", log, hold)
+    _until(lambda: ("start", "stage") in log)
+
+    def waiter():
+        with gate.first(["stage"]):
+            seen.append(warmup.waited_ms())
+
+    thread = threading.Thread(target=waiter)
+    thread.start()
+    _until(lambda: gate.waited == 1)
+    clock.now = 2.0
+    hold.set()
+    _join(stage, thread)
+    assert seen == [2000] and gate.waited == 1
+
+
+def test_a_call_whose_longest_prefix_is_warm_goes_at_once_and_registers_nothing():
+    gate = warmup.Gate()
+    with gate.first(["stage"]):
+        pass
+    before = dict(gate.entries)
+    with gate.first(["stage"]):
+        pass
+    assert gate.entries == before and gate.waited == 0
+
+
+def test_a_failed_first_call_raises_and_one_waiter_becomes_the_first_instead_of_all_going_cold_together():
+    gate, log, fail_hold, hold = warmup.Gate(), [], threading.Event(), threading.Event()
+    failing = _start(gate, ["k"], "failing", log, fail_hold, fail=True)
+    _until(lambda: ("start", "failing") in log)
+    one = _start(gate, ["k"], "one", log, hold)
+    two = _start(gate, ["k"], "two", log, hold)
+    _until(lambda: gate.waited == 2)
+    fail_hold.set()
+    _until(lambda: any(e[0] == "start" and e[1] in ("one", "two") for e in log))
+    hold.set()
+    _join(failing, one, two)
+    assert ("raised", "failing", "boom") in log
+    starts = [e[1] for e in log if e[0] == "start" and e[1] != "failing"]
+    assert log.index(("end", starts[0])) < log.index(("start", starts[1]))

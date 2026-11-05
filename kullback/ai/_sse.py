@@ -34,6 +34,27 @@ from kullback.ai.retry import (
 )
 
 
+class StreamFacts:
+    """What one streamed call's posts said beyond their events, for its call-log row (streamlog.py): how many HTTP
+    requests it made, the statuses that failed, the last body and parser, and the answer's headers."""
+
+    def __init__(self) -> None:
+        self.posts, self.failed = 0, []
+        self.body: dict = {}
+        self.parser: Any = None
+        self.headers: Any = None
+        self.status: Optional[int] = None
+
+    def posted(self, payload: dict, parser: Any) -> None:
+        self.posts += 1
+        self.body, self.parser = payload, parser
+
+    def answered(self, response: httpx.Response) -> None:
+        self.headers, self.status = response.headers, response.status_code
+        if response.status_code >= 400:
+            self.failed.append(response.status_code)
+
+
 class StreamParser(Protocol):
     """One endpoint's reading of the SSE chunks, driven by the envelope below."""
 
@@ -104,6 +125,10 @@ def _release_slot(rate_bucket: Optional[Bucket], taken: bool) -> None:
         rate_bucket.release()
 
 
+def _told(facts: Optional[StreamFacts]) -> StreamFacts:
+    return facts if facts is not None else StreamFacts()
+
+
 def stream_sse_events(
     *,
     client: Callable[[], httpx.AsyncClient],
@@ -121,6 +146,7 @@ def stream_sse_events(
     retry_policy: Optional[RetryPolicy] = None,
     rng: Optional[random.Random] = None,
     rate_bucket: Optional[Bucket] = None,
+    facts: Optional[StreamFacts] = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Post once and report what comes back, trying a transient failure again from the start.
 
@@ -128,9 +154,10 @@ def stream_sse_events(
     consumer has seen part of an answer, and a second attempt would give it a second one.
 
     `content`, when given, is `payload` already encoded: the exact bytes the headers were signed
-    over, posted as they are rather than encoded a second time.
+    over, posted as they are rather than encoded a second time. `facts` is told about each post.
     """
     sent = {"content": content} if content is not None else {"json": payload}
+    told = _told(facts)
     async def iterator() -> AsyncIterator[ProviderEvent]:
         attempt = 0
         while True:
@@ -142,7 +169,9 @@ def stream_sse_events(
                 return
             try:
                 retry_delay: Optional[float] = None
+                told.posted(payload, parser)
                 async with client().stream("POST", url, headers=headers, **sent) as response:
+                    told.answered(response)
                     if response.status_code >= 400:
                         body = (await response.aread()).decode(errors="replace")
                         if attempt < max_retries and retryable_status(response.status_code):

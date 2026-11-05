@@ -861,6 +861,7 @@ class HttpModel(Model):
                retried: list) -> ModelReply:
         started = time.monotonic()
         posted = reply = None
+        spent = 0  # the HTTP requests a first post made before a shape retry
         try:
             try:
                 posted = self._post_full(body)
@@ -870,14 +871,17 @@ class HttpModel(Model):
                 retry = self.build_body(messages, tools, config) if self.learn_shape(error, config) else body
                 if retry == body:
                     raise
-                body = retry
+                body, spent = retry, error.attempts
                 posted = self._post_full(body)
+                posted = posted._replace(attempts=posted.attempts + spent)
             wall_ms = (time.monotonic() - started) * 1000.0
             reply = self.parse_reply(posted.data)
             self.check_reply(posted)
         except Exception as error:
             # A reply refused after it was paid for (check_reply) is logged with its usage.
-            attempts = posted.attempts if posted is not None else getattr(error, "attempts", None) or 1
+            attempts = posted.attempts if posted is not None else spent + (getattr(error, "attempts", None) or 1)
+            if posted is None and isinstance(error, ProviderError):
+                error.attempts = attempts  # a Run's error event says the same count
             self._log(messages, tools, reply.usage if reply is not None else None, attempts,
                       (time.monotonic() - started) * 1000.0, f"{type(error).__name__}: {str(error)[:200]}",
                       self._meta(posted, body, config, retried))
@@ -898,6 +902,10 @@ class HttpModel(Model):
 
     def check_reply(self, posted: Posted) -> None:
         """Raise when the answer is not one this call may use (a gateway that answered with another model)."""
+
+    def names_a_model(self, posted: Posted) -> bool:
+        """Whether the answer so far says which model gave it; a stream learns it part way (streamlog.py)."""
+        return False
 
     def reply_meta(self, posted: Optional[Posted]) -> dict:
         """What the call log keeps from the reply besides its usage (a gateway's request id); none by default."""
@@ -1644,8 +1652,8 @@ def marked_steps(messages: list[dict], tools_chars: int = 0) -> list[int]:
     return sorted(i for i in set(systems + earlier + [last]) if sizes[i] >= MIN_CACHED_CHARS)
 
 
-def _mark(message: dict) -> dict:
-    """The message with an ephemeral cache mark on its last content block."""
+def _mark(message: dict, ttl: Optional[str] = None) -> dict:
+    """The message with an ephemeral cache mark, of the lifetime asked, on its last content block."""
     content = message.get("content")
     if isinstance(content, str):
         blocks = [{"type": "text", "text": content}]
@@ -1653,7 +1661,7 @@ def _mark(message: dict) -> dict:
         blocks = [dict(block) for block in content]
     else:
         return message
-    blocks[-1] = {**blocks[-1], "cache_control": cache_control()}
+    blocks[-1] = {**blocks[-1], "cache_control": cache_control(ttl)}
     return {**message, "content": blocks}
 
 
@@ -1715,6 +1723,10 @@ class OmniRouteModel(OpenAICompatibleModel):
                                 f"{' (emergency fallback)' if headers.get(FALLBACK_HEADER) else ''}, "
                                 f"not the model asked ({self.wire_id})")
 
+    def names_a_model(self, posted: Posted) -> bool:
+        headers = posted.headers or {}
+        return bool(headers.get(ANSWERED_MODEL) or headers.get(FALLBACK_HEADER) or posted.data.get("model"))
+
     def reply_meta(self, posted: Optional[Posted]) -> dict:
         """What the row keeps from the gateway: the route, the model and provider it says answered, the id its call
         log keys the call by (correlation id), the session tag we sent, its own latency, its list price (the cost
@@ -1730,12 +1742,13 @@ class OmniRouteModel(OpenAICompatibleModel):
                     gateway_ms=_number(headers.get(LATENCY_HEADER)), usd_gateway=_number(headers.get(COST_HEADER)))
         usage = (posted.data or {}).get("usage") if isinstance(posted.data, dict) else None
         if usage is not None:
-            meta.update(self._usage_meta(usage, priced=meta["usd_gateway"] is None))
+            meta.update(self._usage_meta(usage, priced=not meta["usd_gateway"]))
         return meta
 
     def _usage_meta(self, usage: dict, priced: bool) -> dict:
-        """From the reply's usage: the billed cost, the list price from the pricing table when there was no cost
-        header (a stream: a 0 there means no pricing row), and reasoning null when no thinking count is reported."""
+        """From the reply's usage: the billed cost, the list price from the pricing table when the cost header is
+        absent or 0 (it reads 0 on a stream, and on a model with no pricing row, which then stays no price), and
+        reasoning null when no thinking count is reported."""
         meta = {"usd_billed": _number(usage.get("cost"))}
         if priced:
             meta["usd_priced"] = pricing_usd(self.pricing(), self.wire_id, usage_from_openai_chat(usage))
@@ -1765,7 +1778,7 @@ class OmniRouteModel(OpenAICompatibleModel):
         if _route(self.wire_id) in MARKED_ROUTES:
             tools_chars = len(json.dumps(body.get("tools"), sort_keys=True)) if body.get("tools") else 0
             marked = set(marked_steps(body["messages"], tools_chars))
-            body["messages"] = [_mark(m) if i in marked else m for i, m in enumerate(body["messages"])]
+            body["messages"] = [_mark(m, config.cache_ttl) if i in marked else m for i, m in enumerate(body["messages"])]
         if (config.reasoning_effort or config.effort) and self.wire_id.startswith(CLAUDE_ROUTES):
             body.update(SUMMARIZED_THINKING)
         return body
@@ -2007,6 +2020,7 @@ def _responses_text(content: Any) -> str:
 GOOGLE_TOOL_CHOICE = {"auto": "auto", "required": "any", "none": "none"}
 # An interaction's status as the stop words the loop reads (stream.normalize_stop_reason).
 INTERACTION_STOP_REASONS = {"completed": "stop", "requires_action": "tool_calls", "incomplete": "length"}
+INTERACTION_FAILED_STATUSES = ("failed", "cancelled")
 # The base the old OpenAI-compatible route was reached on ends in this; the same host serves the
 # Interactions API one level up, so a GOOGLE_BASE_URL still set to the old base keeps working.
 GOOGLE_COMPAT_SUFFIX = "/openai"
@@ -2072,7 +2086,13 @@ class GoogleInteractionsModel(HttpModel):
 
 
 def interactions_reply(data: dict, model: Optional[str]) -> ModelReply:
-    """One Interactions API reply as ours: its output text, its calls, its thought steps verbatim."""
+    """One Interactions API reply as ours: its output text, its calls, its thought steps verbatim. An interaction
+    that failed or was cancelled is an error with the provider's message, never an answer."""
+    if data.get("status") in INTERACTION_FAILED_STATUSES:
+        error = data.get("error")
+        message = error.get("message") if isinstance(error, dict) else None
+        raise ProviderError(f"{model}: the interaction {data['status']}: {message or 'the provider gave no reason'}",
+                            body=data)
     text: list[str] = []
     summaries: list[str] = []
     calls: list[ToolCallRequest] = []

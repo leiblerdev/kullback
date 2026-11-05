@@ -69,11 +69,13 @@ CACHE_TAIL = {"google": 2049}
 CACHE_MIN = {"google": 1024}
 TTL_S = 600.0  # how long a finished request's step prefixes count as cached
 MISS_SHARE = 0.9  # a call whose cache_read is under this share of what it should have read is a miss
+STEP_KEEP_CHARS = 20_000  # the leading characters of a next step kept to compare with; `inside` is exact up to this
+MAX_PREFIXES = 20_000  # most step prefixes kept per model; past it the oldest go
 WARN_FIRST, WARN_EVERY = 10, 100  # miss warnings: the first ones, then one in every WARN_EVERY
 
 _SINK: Optional[Callable[[dict], None]] = None
 _DEFAULT: dict[str, Any] = {}
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()  # re-entrant: _from_env holds it across begin, which takes it again
 _OVERRIDE: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("calllog_context", default=None)
 _RETRIED: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar("calllog_retried", default=None)
 
@@ -84,7 +86,8 @@ _RETRIED: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar("calll
 def install(sink: Optional[Callable[[dict], None]]) -> None:
     """The process's one sink (None removes it)."""
     global _SINK
-    _SINK = sink
+    with _LOCK:
+        _SINK = sink
 
 
 def installed() -> Optional[Callable[[dict], None]]:
@@ -161,9 +164,10 @@ def _from_env() -> Optional[Callable[[dict], None]]:
     folder = os.environ.get(CALLS_DIR_VAR)
     if not folder:
         return None
-    with _LOCK:
-        stage_now = _DEFAULT.get("stage")
-    return begin(folder, stage_now or DEFAULT_STAGE, keep_context=True)
+    with _LOCK:  # check and install are one step: parallel first calls share one log and one run id
+        if _SINK is not None:
+            return _SINK
+        return begin(folder, _DEFAULT.get("stage") or DEFAULT_STAGE, keep_context=True)
 
 
 def begin(folder: Path | str, stage: str, run_id: Optional[str] = None, keep_context: bool = False,
@@ -215,24 +219,91 @@ def _local_usd(usage: Any, model_id: str) -> Optional[float]:
             + usage.cache_write * row["cache_write"]) / 1_000_000
 
 
+_CATALOG_PRICES: dict[str, Optional[dict[str, float]]] = {}
+_CATALOG_STATE: dict[str, Any] = {"loaded": False, "catalog": None, "path": None}
+
+
+def forget_catalog_prices() -> None:
+    """Drop the catalog and every price looked up from it (the next call reads the snapshot again)."""
+    with _LOCK:
+        _CATALOG_PRICES.clear()
+        _CATALOG_STATE.update(loaded=False, catalog=None)
+
+
+def _catalog() -> Optional[dict]:
+    """The price catalog's snapshot on disk, read once. Never the network (live calls are not asked for here), and a
+    snapshot that cannot be read is no catalog."""
+    if not _CATALOG_STATE["loaded"]:
+        try:
+            from kullback.ai import pricing  # deferred: pricing imports the provider, which imports this module
+
+            _CATALOG_STATE["catalog"] = pricing.refresh(path=_CATALOG_STATE["path"], env={})
+        except Exception:  # noqa: BLE001 - unknown cost is null, the log never fails the call it logs
+            _CATALOG_STATE["catalog"] = None
+        _CATALOG_STATE["loaded"] = True
+    return _CATALOG_STATE["catalog"]
+
+
+def catalog_prices(model_id: str) -> Optional[dict[str, float]]:
+    """The catalog's per 1M token prices of a model id, looked up once per id; None when nothing lists it."""
+    with _LOCK:
+        if model_id in _CATALOG_PRICES:
+            return _CATALOG_PRICES[model_id]
+        found = None
+        try:
+            from kullback.ai import model_limits, pricing
+
+            catalog = _catalog()
+            for _step, candidate in model_limits.catalog_candidates(model_id):
+                found = pricing.price_from_catalog(catalog, candidate)
+                if found is not None:
+                    break
+        except Exception:  # noqa: BLE001
+            found = None
+        _CATALOG_PRICES[model_id] = found
+        return found
+
+
+def _catalog_usd(usage: Any, model_id: str) -> Optional[float]:
+    row = catalog_prices(model_id) if usage is not None and model_id else None
+    if row is None:
+        return None
+    return (usage.input * row["input"] + usage.output * row["output"] + usage.cache_read * row["cache_read"]
+            + usage.cache_write * row["cache_write"]) / 1_000_000
+
+
+def _list_price(usage: Any, model_id: str, route: str, gateway: Optional[float],
+                priced: Optional[float]) -> tuple[Optional[float], Optional[str]]:
+    """The call's price and where it came from, in order: the gateway's cost header (above 0), `priced`, our
+    LOCAL_PRICES on a local-priced route, the price catalog. (None, None) when nothing prices it."""
+    if gateway:
+        return gateway, "gateway"
+    if priced is not None:
+        return priced, "pricing"
+    local = _local_usd(usage, model_id) if route in LOCAL_PRICED_ROUTES else None
+    if local is not None:
+        return local, "local"
+    catalog = _catalog_usd(usage, model_id)
+    if catalog is not None:
+        return catalog, "catalog"
+    return None, None
+
+
 def dollars(usage: Any, model_id: str, route: str, gateway: Optional[float], billed: Optional[float],
             priced: Optional[float] = None) -> dict:
     """usd_gateway: the gateway's cache-aware list price of the call. Its cost header when above 0 (it reads 0 on a
     stream and on a model with no pricing row, which is no price, not free), else `priced` (the usage times the
-    gateway's own pricing table), else our LOCAL_PRICES on a local-priced route, flagged. usd_billed: the cost the
-    upstream billed, when it says. usd_actual: 0 on a subscription route, else billed, else usd_gateway."""
-    source = "gateway" if gateway else None
-    if not gateway and priced is not None:
-        gateway, source = priced, "pricing"
-    if not gateway and route in LOCAL_PRICED_ROUTES:
-        local = _local_usd(usage, model_id)
-        if local is not None:
-            gateway, source = local, "local"
-    actual = 0.0 if route in FREE_ROUTES else (billed if billed is not None else gateway or 0.0)
-    if billed is not None and route not in FREE_ROUTES:
-        source = "billed"
-    return {"usd_gateway": _round(gateway), "usd_billed": _round(billed), "usd_actual": _round(actual),
-            "price_source": "free" if route in FREE_ROUTES else source}
+    gateway's own pricing table), else our LOCAL_PRICES on a local-priced route, else the price catalog; flagged by
+    price_source. usd_billed: the cost the upstream billed, when it says. usd_actual: 0 on a subscription route, else
+    billed, else usd_gateway. A cost nothing prices is null (usd_actual, usd_gateway, price_source), never 0."""
+    free = route in FREE_ROUTES
+    price, source = _list_price(usage, model_id, route, gateway, priced)
+    if free:
+        return {"usd_gateway": _round(price if price is not None else gateway), "usd_billed": _round(billed),
+                "usd_actual": 0.0, "price_source": "free"}
+    actual = billed if billed is not None else price
+    return {"usd_gateway": _round(price), "usd_billed": _round(billed), "usd_actual": _round(actual),
+            "price_source": "billed" if billed is not None else source}
 
 
 def _round(value: Optional[float]) -> Optional[float]:
@@ -280,14 +351,18 @@ def _common(a: str, b: str) -> int:
 
 class _Prefixes:
     """The step prefixes finished calls sent, with the first and last time each finished, to say what a new call
-    should read from cache."""
+    should read from cache. Memory is bounded: the text kept of a next step is cut to STEP_KEEP_CHARS, entries
+    older than twice the TTL go in a sweep made at most once per TTL, and past MAX_PREFIXES the oldest go."""
 
-    def __init__(self, ttl_s: float = TTL_S):
-        self.ttl_s, self.done, self.next_step = ttl_s, {}, {}
+    def __init__(self, ttl_s: float = TTL_S, keep_chars: int = STEP_KEEP_CHARS, max_entries: int = MAX_PREFIXES):
+        self.ttl_s, self.keep_chars, self.max_entries = ttl_s, keep_chars, max_entries
+        self.done: dict[str, tuple[float, float]] = {}
+        self.next_step: dict[str, str] = {}
+        self.swept_at: Optional[float] = None
 
     def shared(self, parts: list[str], sent_at: float) -> tuple[int, int]:
         """(characters of the leading whole steps a call finished before `sent_at` sent, characters this call
-        shares with an earlier one inside the next step: shared, but past the last boundary)."""
+        shares with an earlier one inside the next step: shared, but past the last boundary; at most keep_chars)."""
         hashes = _hashes(parts)
         whole = 0
         for k, h in enumerate(hashes):
@@ -310,8 +385,22 @@ class _Prefixes:
             first, _last = self.done.get(h, (finished_at, finished_at))
             self.done[h] = (min(first, finished_at), finished_at)
             if k + 1 < len(parts):
-                self.next_step[h] = parts[k + 1]
-        self.next_step[""] = parts[0]
+                self.next_step[h] = parts[k + 1][: self.keep_chars]
+        self.next_step[""] = parts[0][: self.keep_chars]
+        self.evict(finished_at)
+
+    def evict(self, now_s: float) -> None:
+        """Drop what no call can still read as shared. Entries are kept for 2 TTL, not 1, so a call already in flight
+        (sent up to a TTL ago) reads the same answer it would have read without the sweep."""
+        due = self.swept_at is None or now_s - self.swept_at >= self.ttl_s
+        if not due and len(self.done) <= self.max_entries:
+            return
+        self.swept_at = now_s
+        self.done = {h: v for h, v in self.done.items() if now_s - v[1] <= 2 * self.ttl_s}
+        if len(self.done) > self.max_entries:
+            newest = sorted(self.done.items(), key=lambda item: item[1][1], reverse=True)
+            self.done = dict(newest[: self.max_entries * 3 // 4])
+        self.next_step = {h: t for h, t in self.next_step.items() if h == "" or h in self.done}
 
 
 def _identity(ctx: dict, record: dict, model: str, route: str) -> dict:
@@ -338,7 +427,7 @@ class Log:
         self.warn = warn or (lambda line: print(line, file=sys.stderr, flush=True))
         self.rows: list[dict] = []
         self.lock = threading.Lock()
-        self.prefixes = _Prefixes()
+        self.prefixes: dict[tuple[str, str], _Prefixes] = {}  # per model and route: a cache is not shared across them
         self.misses = 0
 
     def __call__(self, record: dict) -> None:
@@ -347,9 +436,10 @@ class Log:
         parts = steps(record.get("system") or "", record.get("messages") or [], record.get("tools"))
         row = self.row(record, parts)
         with self.lock:
-            shared, inside = self.prefixes.shared(parts, sent)
+            prefixes = self.prefixes.setdefault((row["model"], row["route"]), _Prefixes())
+            shared, inside = prefixes.shared(parts, sent)
             if record.get("usage") is not None:
-                self.prefixes.add(parts, finished)
+                prefixes.add(parts, finished)
             self.expect(row, record, parts, shared, inside)
             self.append(row)
 

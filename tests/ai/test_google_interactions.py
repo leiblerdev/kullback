@@ -254,3 +254,15 @@ def test_a_failed_interaction_ends_the_stream_in_an_error(live):
     chunks = ['{"interaction":{"status":"failed","error":{"message":"quota"}},"event_type":"interaction.completed"}']
     last = streamed(chunks, messages=[UserMessage(content="hi")])[-1]
     assert last.type == "error" and "quota" in (last.error.error_message or "")
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_a_blocking_interaction_that_ended_badly_raises_the_providers_message(status):
+    with pytest.raises(pv.ProviderError, match="the quota ran out"):
+        pv.interactions_reply({"status": status, "error": {"message": "the quota ran out"}, "steps": []}, "m")
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_a_blocking_interaction_that_ended_badly_with_no_message_still_raises(status):
+    with pytest.raises(pv.ProviderError, match=status):
+        pv.interactions_reply({"status": status}, "m")

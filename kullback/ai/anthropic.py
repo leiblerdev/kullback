@@ -19,11 +19,12 @@ from kullback.ai._provider_events import (
     ProviderThinkingDelta,
     ProviderToolCall,
 )
-from kullback.ai._sse import async_client, loads_object, stream_sse_events
+from kullback.ai._sse import StreamFacts, async_client, loads_object, stream_sse_events
 from kullback.ai.events import StreamEvent
 from kullback.ai.messages import AssistantMessage, Message, ToolCall, to_wire
 from kullback.ai.provider import CancellationToken, ModelConfig, require_live_calls_enabled
 from kullback.ai.stream import canonicalize_provider_stream
+from kullback.ai.streamlog import logged_stream
 from kullback.ai.tool_call_ids import clean_tool_call_id
 from kullback.ai.usage import Usage, usage_from_anthropic
 
@@ -81,15 +82,14 @@ class AnthropicProvider:
     ) -> AsyncIterator[ProviderEvent]:
         """The endpoint's own report, before anything is canonicalised."""
         require_live_calls_enabled()
-        payload = dict(
-            self.handle.build_body(to_wire(messages, system or None), list(tools) or None,
-                                   config or ModelConfig())
-        )
+        settings, wire, tool_list = config or ModelConfig(), to_wire(messages, system or None), list(tools) or None
+        payload = dict(self.handle.build_body(wire, tool_list, settings))
         payload["stream"] = True
         # Encoded once, here: a handle that signs its requests signs these bytes, and these are
         # the bytes posted.
         content = self.handle.encode_body(payload)
-        return stream_sse_events(
+        facts = StreamFacts()
+        events = stream_sse_events(
             client=self._get_client,
             url=self.handle.base_url + self.handle.path,
             headers=self.handle.headers(content),
@@ -104,7 +104,9 @@ class AnthropicProvider:
             retry_policy=self.handle.retry,
             rng=self.handle.rng,
             rate_bucket=self.handle.rate_bucket,
+            facts=facts,
         )
+        return logged_stream(self.handle, events, wire, tool_list, settings, facts)
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:

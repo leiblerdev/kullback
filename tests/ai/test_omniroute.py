@@ -33,6 +33,9 @@ def no_call_log():
     calls.set_default()
 
 
+ECHO = [{"name": "echo", "parameters": {"type": "object"}}]
+SHAPE_REFUSAL = {"error": {"message": "Function tools with reasoning_effort are not supported; "
+                                     "set reasoning_effort to 'none'."}}
 ANSWERED = {"X-OmniRoute-Provider": "gemini", "X-OmniRoute-Model": "gemini-4-argon", "x-correlation-id": "req-7",
             "X-OmniRoute-Response-Cost": "0.0012"}
 
@@ -194,18 +197,59 @@ def test_a_reply_with_no_cost_header_is_priced_from_the_gateways_pricing_table_r
     pv._PRICING.clear()
 
 
-def test_a_cost_header_of_zero_means_no_price_and_reads_no_pricing_table(tmp_path):
-    seen = []
+def test_a_cost_header_of_zero_with_no_pricing_row_means_no_price_not_a_free_call(tmp_path):
+    def handler(request):
+        if request.url.path.endswith("/api/pricing"):
+            return httpx.Response(200, json={})
+        return httpx.Response(200, json=dict(REPLY, model="model-a"), headers={
+            "X-OmniRoute-Provider": "route-a", "X-OmniRoute-Model": "model-a", "X-OmniRoute-Response-Cost": "0"})
+
+    pv.enable_live_calls_from_env({pv.LIVE_ENV_VAR: "1"})
+    model = pv.model_for("route-a/model-a", env=ROUTED, client=httpx.Client(transport=httpx.MockTransport(handler)),
+                         sleep=lambda _s: None, rng=random.Random(0))
+    calls.begin(tmp_path, "s")
+    model.query([{"role": "user", "content": "hi"}], config=ModelConfig(temperature=1.0))
+    (row,) = calls.read(tmp_path)
+    assert (row["usd_gateway"], row["usd_actual"], row["price_source"]) == (None, None, None)
+
+
+def test_a_cache_mark_carries_the_lifetime_the_config_asks():
+    model = pv.model_for("bedrock/us.anthropic.claude-sonnet-5-5", env=ROUTED)
+    body = model.build_body(LOOP, None, ModelConfig(temperature=1.0, cache_ttl="1h"))
+    marks = [m["content"][-1]["cache_control"] for m in body["messages"] if isinstance(m.get("content"), list)]
+    assert marks and all(mark == {"type": "ephemeral", "ttl": "1h"} for mark in marks)
+
+
+def test_a_shape_retry_counts_the_requests_of_both_posts_when_the_second_succeeds(tmp_path):
+    bodies = []
 
     def handler(request):
-        seen.append(request.url.path)
-        return httpx.Response(200, json=REPLY, headers=dict(ANSWERED, **{"X-OmniRoute-Response-Cost": "0"}))
+        bodies.append(json.loads(request.content))
+        if len(bodies) == 1:
+            return httpx.Response(400, json=SHAPE_REFUSAL)
+        return httpx.Response(200, json=REPLY, headers=ANSWERED)
 
     calls.begin(tmp_path, "s")
-    _routed_model(handler).query([{"role": "user", "content": "hi"}], config=ModelConfig(temperature=1.0))
+    _routed_model(handler).query([{"role": "user", "content": "hi"}], tools=ECHO, config=ModelConfig(temperature=1.0))
     (row,) = calls.read(tmp_path)
-    assert all(not path.endswith("/api/pricing") for path in seen)
-    assert (row["usd_gateway"], row["usd_actual"], row["price_source"]) == (0.0, 0.0, None)
+    assert row["http_attempts"] == 2 and len(bodies) == 2
+
+
+def test_a_shape_retry_counts_the_requests_of_both_posts_when_the_second_fails(tmp_path):
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        if len(bodies) == 1:
+            return httpx.Response(400, json=SHAPE_REFUSAL)
+        return httpx.Response(403, json={"error": {"message": "not allowed"}})
+
+    calls.begin(tmp_path, "s")
+    with pytest.raises(pv.ProviderError) as caught:
+        _routed_model(handler).query([{"role": "user", "content": "hi"}], tools=ECHO,
+                                     config=ModelConfig(temperature=1.0))
+    (row,) = calls.read(tmp_path)
+    assert row["http_attempts"] == 2 and caught.value.attempts == 2 and row["error"]
 
 
 def test_the_row_keeps_the_gateways_latency_and_the_session_tag_we_sent(tmp_path):

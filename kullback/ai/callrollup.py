@@ -2,7 +2,7 @@
 
 A step is one label within a stage (the label a caller set with calllog.labelled). Each bucket holds the calls, every token
 kind, the cached share of all input (and on the first call of a group, a Run, against the later ones), the
-dollars actually paid beside the gateway's estimate (the list price on a subscription route) and the upstream's billed cost, the wall time
+dollars actually paid (a call with no price counts in cost_unknown, not as 0) beside the gateway's estimate (the list price on a subscription route) and the upstream's billed cost, the wall time
 p50 and p90, retries, errors, cache misses and the expected-cached counters. A pin row (a model a run pinned) is
 no call: it is printed, never counted.
 """
@@ -52,7 +52,7 @@ def _share(cached: int, sent: int) -> float:
 
 def _bucket() -> dict:
     return {"calls": 0, **dict.fromkeys(TOKENS, 0), **dict.fromkeys(DOLLARS, 0.0), "reasoning_unreported": 0,
-            "retries": 0, "errors": 0, "failed_statuses": {}, "expected_cached": 0, "actual_on_expected": 0,
+            "retries": 0, "errors": 0, "cost_unknown": 0, "failed_statuses": {}, "expected_cached": 0, "actual_on_expected": 0,
             "misses": 0, "uncacheable_shared": 0, "first": [0, 0], "later": [0, 0], "wall": []}
 
 
@@ -63,6 +63,7 @@ def _add(b: dict, row: dict, first: Optional[bool]) -> None:
     b["reasoning_unreported"] += "reasoning" in row and row["reasoning"] is None
     for key in DOLLARS:
         b[key] += float(row.get(key) or 0.0)
+    b["cost_unknown"] += "usd_actual" in row and row["usd_actual"] is None
     _add_failures(b, row)
     _add_cache(b, row, first)
     b["wall"].append(float(row.get("wall_ms") or 0.0))
@@ -132,7 +133,8 @@ def _line(kind: str, name: str, b: dict) -> str:
             f"{b['cached_share_later']:.2%}), cache_write {b['cache_write']}, output {b['output']} (reasoning "
             f"{b['reasoning']}, unreported on {b['reasoning_unreported']}), usd actual {b['usd_actual']:.4f} "
             f"(gateway {b['usd_gateway']:.4f}, billed {b['usd_billed']:.4f}), p50 {b['p50_ms']} ms, p90 {b['p90_ms']} ms, "
-            f"retries {b['retries']}, failed statuses {statuses}, errors {b['errors']}, misses {b['misses']}")
+            f"retries {b['retries']}, failed statuses {statuses}, errors {b['errors']}, misses {b['misses']}"
+            + (f", cost unknown on {b['cost_unknown']}" if b["cost_unknown"] else ""))
 
 
 def _cache_line(name: str, b: dict) -> str:

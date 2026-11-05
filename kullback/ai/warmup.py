@@ -6,9 +6,16 @@ So a call whose prompt shares a long prefix with a call still in flight waits fo
 the waiters go together, bounded only by the route's own limiter.
 
 The prefix is read at step boundaries: the tools, then each message in turn, the last message left out (it is the
-part that differs). A call registers every boundary prefix of at least MIN_PREFIX_CHARS as warming, and later calls
-look for the longest of their own boundary prefixes that a call has warmed or is warming. Warming: wait for it
-(at most MAX_WAIT_S). Warmed within TTL_S: go at once. Neither: this call is the first, and goes at once.
+part that differs). A call looks for the longest of its boundary prefixes that a call is warming or has warmed within TTL_S. Warming:
+it waits for that call (all waits of one call share one deadline of MAX_WAIT_S; past it the call goes at once and
+claims nothing), then looks again. Warm, or none found: every boundary longer than that one is cold, so this call
+claims them all as its own entries and goes first; when there are none, it goes at once and claims nothing.
+
+This nests the warm-up. With the stage prefix warm, the first call on a new Task prefix beneath it claims that
+prefix and goes at once, and other calls on the same Task prefix wait for it. When several calls wait on the stage
+prefix and share a longer Task prefix, one of them goes first on the Task prefix after the stage warms, and the
+others wait for it. When a first call raises, its entries are removed before its waiters are released, so one of
+them becomes the first on a look again, instead of all of them going cold together.
 
 No text is kept: a boundary is a hash of the model id and the prefix bytes. With KULLBACK_WARMUP=0 every call goes
 at once (for a measured comparison).
@@ -73,43 +80,70 @@ class Gate:
         self.waited = 0  # calls that waited for a first call (for tests and reports)
 
     def _claim(self, keys: list[str]) -> tuple[Optional[_Entry], Optional[_Entry]]:
-        """(the entry to wait for, or None) and (this call's own entry, when it goes first on some prefix)."""
+        """(the warming entry to wait for, or None) and (this call's own entry, when it goes first on cold prefixes)."""
         now = self.clock()
         with self.lock:
-            for key in reversed(keys):  # the longest shared prefix decides
-                entry = self.entries.get(key)
+            found = -1
+            for index in range(len(keys) - 1, -1, -1):  # the longest live prefix decides
+                entry = self.entries.get(keys[index])
                 if entry is None:
                     continue
                 if not entry.done.is_set():
                     return entry, None
                 if now - entry.at <= TTL_S:
-                    return None, None
+                    found = index
+                    break
+            cold = keys[found + 1 :]
+            if not cold:
+                return None, None
             mine = _Entry()
-            for key in keys:
-                entry = self.entries.get(key)
-                if entry is None or (entry.done.is_set() and now - entry.at > TTL_S):
-                    self.entries[key] = mine
+            for key in cold:
+                self.entries[key] = mine
             return None, mine
+
+    def _admit(self, keys: list[str]) -> Optional[_Entry]:
+        """Wait while the longest live prefix is warming (one deadline for all waits), then claim what is cold."""
+        deadline, held = None, 0.0
+        while True:
+            wait_for, mine = self._claim(keys)
+            if wait_for is None:
+                break
+            start = self.clock()
+            if deadline is None:
+                deadline = start + MAX_WAIT_S
+                self.waited += 1  # a call counts once however many waits it does
+            if deadline - start <= 0:
+                break
+            wait_for.done.wait(deadline - start)
+            held += self.clock() - start
+        _LOCAL.waited_ms = round(held * 1000.0)
+        return mine
+
+    def _release(self, mine: _Entry, ok: bool) -> None:
+        with self.lock:
+            if ok:
+                mine.at = self.clock()
+            else:
+                for key in [k for k, e in self.entries.items() if e is mine]:
+                    del self.entries[key]
+            mine.done.set()
 
     @contextmanager
     def first(self, keys: list[str]) -> Iterator[None]:
-        """Run the block once the longest shared prefix is warm, or at once when this call warms it."""
+        """Run the block once the longest live prefix is warm, claiming the colder prefixes beneath it."""
         _LOCAL.waited_ms = 0.0
         if not keys or not enabled():
             yield
             return
-        wait_for, mine = self._claim(keys)
-        if wait_for is not None:
-            self.waited += 1
-            start = time.monotonic()
-            wait_for.done.wait(MAX_WAIT_S)
-            _LOCAL.waited_ms = round((time.monotonic() - start) * 1000.0)
+        mine = self._admit(keys)
         try:
             yield
-        finally:
+        except BaseException:
             if mine is not None:
-                mine.at = self.clock()
-                mine.done.set()  # a failed first call releases its waiters too; one of them writes the entry
+                self._release(mine, ok=False)  # waiters look again; one of them becomes the first
+            raise
+        if mine is not None:
+            self._release(mine, ok=True)
 
     def reset(self) -> None:
         with self.lock:

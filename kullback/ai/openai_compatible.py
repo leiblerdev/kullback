@@ -23,7 +23,7 @@ from kullback.ai._provider_events import (
     ProviderThinkingDelta,
     ProviderToolCall,
 )
-from kullback.ai._sse import async_client, loads_object, stream_sse_events
+from kullback.ai._sse import StreamFacts, async_client, loads_object, stream_sse_events
 from kullback.ai.events import StreamEvent
 from kullback.ai.http_errors import ProviderError
 from kullback.ai.messages import AssistantMessage, Message, ToolCall, to_wire
@@ -34,6 +34,7 @@ from kullback.ai.provider import (
     require_live_calls_enabled,
 )
 from kullback.ai.stream import canonicalize_provider_stream
+from kullback.ai.streamlog import logged_stream
 from kullback.ai.tool_call_ids import clean_tool_call_id
 from kullback.ai.usage import Usage, usage_from_openai_chat, usage_from_openai_responses
 
@@ -108,22 +109,25 @@ class OpenAICompatibleProvider:
         if session_id and not settings.prompt_cache_key:
             settings.prompt_cache_key = session_id
         wire, tool_list = to_wire(messages, system or None), list(tools) or None
-        return self._stream_learning_shape(wire, tool_list, settings, signal)
+        facts = StreamFacts()
+        return logged_stream(self.handle, self._stream_learning_shape(wire, tool_list, settings, signal, facts),
+                             wire, tool_list, settings, facts)
 
     async def _stream_learning_shape(self, wire: list, tools: Optional[list], settings: ModelConfig,
-                                     signal: Optional[CancellationToken]) -> AsyncIterator[ProviderEvent]:
+                                     signal: Optional[CancellationToken],
+                                     facts: StreamFacts) -> AsyncIterator[ProviderEvent]:
         """The stream, posted once more when a 400 names a shape field the handle can adjust.
 
         The same one-retry rule as HttpModel.query: the handle keeps what it learned, so the next
         call never pays the 400.
         """
         payload = self._payload(wire, tools, settings)
-        async for event in self._post_stream(payload, signal):
+        async for event in self._post_stream(payload, signal, facts):
             if isinstance(event, ProviderErrorEvent) and (event.data or {}).get("status") == 400:
                 error = ProviderError(event.message, status=400, body=(event.data or {}).get("body"))
                 retry = self._payload(wire, tools, settings) if self.handle.learn_shape(error, settings) else payload
                 if retry != payload:
-                    async for again in self._post_stream(retry, signal):
+                    async for again in self._post_stream(retry, signal, facts):
                         yield again
                     return
             yield event
@@ -137,7 +141,8 @@ class OpenAICompatibleProvider:
             payload["stream_options"] = {"include_usage": True}
         return payload
 
-    def _post_stream(self, payload: dict, signal: Optional[CancellationToken]) -> AsyncIterator[ProviderEvent]:
+    def _post_stream(self, payload: dict, signal: Optional[CancellationToken],
+                     facts: StreamFacts) -> AsyncIterator[ProviderEvent]:
         content = self.handle.encode_body(payload)
         return stream_sse_events(
             client=self._get_client,
@@ -154,6 +159,7 @@ class OpenAICompatibleProvider:
             retry_policy=self.handle.retry,
             rng=self.handle.rng,
             rate_bucket=self.handle.rate_bucket,
+            facts=facts,
         )
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -174,6 +180,8 @@ class ChatStreamParser:
         self._builders: dict[int, _ToolCallBuilder] = {}
         self._finish_reason: Optional[str] = None
         self._usage: Optional[Usage] = None
+        self.raw_usage: Optional[dict] = None  # the last usage any chunk carried, as the endpoint sent it
+        self.body_model: Optional[str] = None  # the model the chunks name
 
     def feed(self, chunk: str) -> tuple[list[ProviderEvent], bool]:
         if chunk == "[DONE]":
@@ -185,14 +193,11 @@ class ChatStreamParser:
 
         # The usage chunk stream_options asks for carries usage at the top level and often no
         # choices at all; some gateways hang it on the choice instead.
-        if isinstance(data.get("usage"), dict):
-            self._usage = usage_from_openai_chat(data["usage"])
         choices = data.get("choices")
         choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
+        self._note(data, choice)
         if choice is None:
             return [], False
-        if not isinstance(data.get("usage"), dict) and isinstance(choice.get("usage"), dict):
-            self._usage = usage_from_openai_chat(choice["usage"])
         self._finish_reason = choice.get("finish_reason") or self._finish_reason
 
         delta = choice.get("delta")
@@ -215,6 +220,14 @@ class ChatStreamParser:
             self.emitted_content = True
             self._builders.setdefault(int(call.get("index", 0) or 0), _ToolCallBuilder()).add(call)
         return events, False
+
+    def _note(self, data: dict, choice: Optional[dict]) -> None:
+        """The model a chunk names, and its usage: the usage chunk stream_options asks for carries it at the top level
+        and often no choices at all; some gateways hang it on the choice instead."""
+        self.body_model = data.get("model") or self.body_model
+        usage = data["usage"] if isinstance(data.get("usage"), dict) else (choice or {}).get("usage")
+        if isinstance(usage, dict):
+            self.raw_usage, self._usage = usage, usage_from_openai_chat(usage)
 
     def finalize(self) -> list[ProviderEvent]:
         calls = [builder.build(index) for index, builder in sorted(self._builders.items())]
