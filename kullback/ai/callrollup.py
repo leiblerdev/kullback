@@ -63,16 +63,26 @@ def _add(b: dict, row: dict, first: Optional[bool]) -> None:
     b["reasoning_unreported"] += "reasoning" in row and row["reasoning"] is None
     for key in DOLLARS:
         b[key] += float(row.get(key) or 0.0)
+    _add_failures(b, row)
+    _add_cache(b, row, first)
+    b["wall"].append(float(row.get("wall_ms") or 0.0))
+
+
+def _add_failures(b: dict, row: dict) -> None:
+    """Retries, errors and failed statuses of one row into the bucket."""
     b["retries"] += int(row.get("attempt") or 1) > 1 or int(row.get("http_attempts") or 1) > 1
     b["errors"] += bool(row.get("error"))
     for status in row.get("failed_statuses") or ():
         b["failed_statuses"][str(status)] = b["failed_statuses"].get(str(status), 0) + 1
+
+
+def _add_cache(b: dict, row: dict, first: Optional[bool]) -> None:
+    """The cache counters of one row into the bucket: uncacheable, expected against read, misses, first or later."""
     b["uncacheable_shared"] += int(row.get("uncacheable_shared") or 0)
     if row.get("expected_cached"):
         b["expected_cached"] += int(row["expected_cached"])
         b["actual_on_expected"] += int(row.get("cache_read") or 0)
     b["misses"] += bool(row.get("miss"))
-    b["wall"].append(float(row.get("wall_ms") or 0.0))
     if first is not None:
         when = b["first" if first else "later"]
         when[0] += int(row.get("cache_read") or 0)

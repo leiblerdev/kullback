@@ -314,6 +314,19 @@ class _Prefixes:
         self.next_step[""] = parts[0]
 
 
+def _identity(ctx: dict, record: dict, model: str, route: str) -> dict:
+    """Which call a row is: time, run, stage, label, attempt, group, model, provider and route."""
+    return {"time": now(), "run_id": ctx.get("run_id"), "stage": ctx.get("stage") or "",
+            "label": ctx.get("label") or DEFAULT_LABEL, "attempt": int(ctx.get("attempt") or 1),
+            "group": ctx.get("group"), "model": model, "provider": record.get("provider"), "route": route}
+
+
+def _failure(ctx: dict, record: dict) -> dict:
+    """The call's error, and the later route of the same model it went on after a switch, when either happened."""
+    out = {"error": record.get("error"), "route_switch": ctx.get("route_switch")}
+    return {k: v for k, v in out.items() if v}
+
+
 class Log:
     """The sink of one command: rows appended to <folder>/calls.jsonl under a lock, and kept in `rows`. `cost`, when
     given, stands in for the gateway's estimate (a test's fixed price, or a route outside the gateway)."""
@@ -364,20 +377,13 @@ class Log:
         route = meta.pop("route", None) or route_of(model) or str(record.get("provider") or "")
         gateway, billed = meta.pop("usd_gateway", None), meta.pop("usd_billed", None)
         priced = meta.pop("usd_priced", None)
-        row = {"time": now(), "run_id": ctx.get("run_id"), "stage": ctx.get("stage") or "",
-               "label": ctx.get("label") or DEFAULT_LABEL, "attempt": int(ctx.get("attempt") or 1),
-               "group": ctx.get("group"), "model": model, "provider": record.get("provider"),
-               "route": route,
-               **{k: int(getattr(usage, k, 0) or 0) for k in TOKENS},
+        row = {**_identity(ctx, record, model, route), **{k: int(getattr(usage, k, 0) or 0) for k in TOKENS},
                "http_attempts": int(record.get("attempts") or 1), "wall_ms": round(float(record.get("wall_ms") or 0)),
                "system_chars": len(parts[0]), "rest_chars": sum(len(p) for p in parts[1:])}
         if self.cost is not None:
             gateway = float(self.cost(usage, model)) if usage is not None else 0.0
         row.update(dollars(usage, model, route, gateway, billed, priced))
-        if record.get("error"):
-            row["error"] = record["error"]
-        if ctx.get("route_switch"):
-            row["route_switch"] = ctx["route_switch"]  # the call went on a later route of the same model
+        row.update(_failure(ctx, record))
         row.update(meta)
         return row
 

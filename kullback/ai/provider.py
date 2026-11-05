@@ -1620,6 +1620,12 @@ def _route(wire_id: str) -> str:
     return wire_id.split("/", 1)[0] if "/" in wire_id else ""
 
 
+def _stage_tag() -> str:
+    """The current call's "run_id.stage" (either alone when the other is unset; empty outside both)."""
+    context = calllog.current()
+    return ".".join(str(context[k]) for k in ("run_id", "stage") if context.get(k))
+
+
 def marked_steps(messages: list[dict], tools_chars: int = 0) -> list[int]:
     """The messages that carry a cache mark (at most MAX_CACHE_POINTS with the system): the last message, and the
     last two assistant messages before it, where an append-only prompt's next call (the next question on the same
@@ -1672,8 +1678,7 @@ class OmniRouteModel(OpenAICompatibleModel):
         """The Bearer key, the headers that keep prompt and answer ours, and the session tag the gateway's
         call_logs keep (<run id>.<stage>, from the call log's context), so its rows match ours."""
         out = {**super().headers(body), **OMNIROUTE_HEADERS}
-        context = calllog.current()
-        tag = ".".join(str(context[k]) for k in ("run_id", "stage") if context.get(k))
+        tag = _stage_tag()
         if tag:
             out["X-OmniRoute-Session-Id"] = tag
         if self.wire_id.startswith(CACHE_KEY_ROUTES) and self.cache_key():
@@ -1682,8 +1687,7 @@ class OmniRouteModel(OpenAICompatibleModel):
 
     def cache_key(self) -> Optional[str]:
         """The stage's constant cache key: a UUID made from the run id and stage, None outside a stage."""
-        context = calllog.current()
-        tag = ".".join(str(context[k]) for k in ("run_id", "stage") if context.get(k))
+        tag = _stage_tag()
         return str(uuid.uuid5(uuid.NAMESPACE_URL, tag)) if tag else None
 
     @functools.cached_property
@@ -1716,22 +1720,26 @@ class OmniRouteModel(OpenAICompatibleModel):
         log keys the call by (correlation id), the session tag we sent, its own latency, its list price (the cost
         header, else the usage priced from its pricing table), the upstream's billed cost when the usage carries one,
         and reasoning null when the usage reports no thinking count (unknown, never 0)."""
-        context = calllog.current()
-        tag = ".".join(str(context[k]) for k in ("run_id", "stage") if context.get(k))
+        tag = _stage_tag()
         meta: dict = {"route": _route(self.wire_id) or None, "session_tag": tag or None}
         if posted is None:
             return meta
         headers = posted.headers or {}
         meta.update(answered_model=headers.get(ANSWERED_MODEL), answered_provider=headers.get(ANSWERED_PROVIDER),
                     request_id=next((headers.get(h) for h in CORRELATION_HEADERS if headers.get(h)), None),
-                    gateway_ms=_number(headers.get(LATENCY_HEADER)))
-        meta["usd_gateway"] = _number(headers.get(COST_HEADER))
+                    gateway_ms=_number(headers.get(LATENCY_HEADER)), usd_gateway=_number(headers.get(COST_HEADER)))
         usage = (posted.data or {}).get("usage") if isinstance(posted.data, dict) else None
-        meta["usd_billed"] = _number((usage or {}).get("cost"))
-        if meta["usd_gateway"] is None and usage is not None:  # no header (a stream): a 0 means no pricing row
+        if usage is not None:
+            meta.update(self._usage_meta(usage, priced=meta["usd_gateway"] is None))
+        return meta
+
+    def _usage_meta(self, usage: dict, priced: bool) -> dict:
+        """From the reply's usage: the billed cost, the list price from the pricing table when there was no cost
+        header (a stream: a 0 there means no pricing row), and reasoning null when no thinking count is reported."""
+        meta = {"usd_billed": _number(usage.get("cost"))}
+        if priced:
             meta["usd_priced"] = pricing_usd(self.pricing(), self.wire_id, usage_from_openai_chat(usage))
-        details = (usage or {}).get("completion_tokens_details") or {}
-        if usage is not None and details.get("reasoning_tokens") is None:
+        if (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") is None:
             meta["reasoning"] = None
         return meta
 
