@@ -550,15 +550,70 @@ def test_a_base_url_the_caller_passes_wins_over_the_registry(tmp_path, monkeypat
 
 @pytest.mark.parametrize("model_id,needles", [
     ("vertex/gemini-3-pro", ("@ai-sdk/google-vertex", "base_url")),
-    ("google/gemini-3-pro", ("no host",)),
     ("nowhere/model-1", ("no host",)),
-], ids=["another_request_shape", "no_host_in_registry", "unknown_provider"])
+], ids=["another_request_shape", "unknown_provider"])
 def test_a_provider_the_registry_cannot_serve_is_refused_by_name(tmp_path, monkeypatch, model_id, needles):
     registry_snapshot(tmp_path, monkeypatch, REGISTRY)
     with pytest.raises(ValueError) as raised:
         pv.model_for(model_id, env={})
     for needle in needles:
         assert needle in str(raised.value)
+
+
+def test_a_provider_with_no_host_in_the_registry_is_reached_on_its_base_url_variable(tmp_path, monkeypatch):
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    env = {"NO_WHERE_BASE_URL": "https://no-where.invalid/v1", "NO_WHERE_API_KEY": "sk-made-up"}
+    model = pv.model_for("no-where/model-1", env=env)
+    assert isinstance(model, pv.OpenAICompatibleModel) and model.key_required
+    assert model.base_url == "https://no-where.invalid/v1"
+    assert model.key_env_var == "NO_WHERE_API_KEY" and model.api_key == "sk-made-up"
+
+
+def test_the_harness_default_model_is_gemini_4_argon():
+    assert pv.DEFAULT_MODEL == "google/gemini-4-argon"
+
+
+def test_google_is_reached_on_the_interactions_api_unless_its_base_url_variable_names_another_host(
+        tmp_path, monkeypatch):
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    model = pv.model_for("google/gemini-4-argon", env={"GOOGLE_API_KEY": "sk-made-up"})
+    assert isinstance(model, pv.GoogleInteractionsModel)
+    assert model.base_url + model.path == "https://generativelanguage.googleapis.com/v1beta/interactions"
+    assert model.key_env_var == "GOOGLE_API_KEY" and model.headers()["x-goog-api-key"] == "sk-made-up"
+    model = pv.model_for("google/gemini-4-argon", env={"GOOGLE_BASE_URL": "https://proxy.invalid/v1"})
+    assert model.base_url == "https://proxy.invalid/v1"
+
+
+def test_a_google_base_url_still_set_to_the_old_compatible_route_reaches_the_interactions_api_on_its_host():
+    env = {"GOOGLE_BASE_URL": "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY": "k"}
+    model = pv.model_for("google/gemini-4-argon", env=env)
+    assert model.base_url == "https://generativelanguage.googleapis.com/v1beta"
+    assert model.api_key == "k" and model.has_credentials()
+
+
+def test_google_streams_through_its_own_provider_and_is_priced_under_the_id_it_sends(tmp_path, monkeypatch):
+    from kullback.ai.google_interactions import GoogleInteractionsProvider
+    from kullback.runner.budget import price_for
+
+    registry_snapshot(tmp_path, monkeypatch, {"google": {"id": "google", "models": {
+        "gemini-4-argon": {"cost": {"input": 2.0, "output": 10.0, "cache_read": 0.1}}}}})
+    assert isinstance(pv.provider_for("google/gemini-4-argon", env={}), GoogleInteractionsProvider)
+    assert pv.sent_model_id("google/gemini-4-argon") == "google/gemini-4-argon"
+    assert price_for(pv.sent_model_id("google/gemini-4-argon"))["cache_read"] == 0.1
+
+
+def test_the_no_host_refusal_names_the_base_url_variable(tmp_path, monkeypatch):
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    with pytest.raises(ValueError) as raised:
+        pv.model_for("no-where/model-1", env={})
+    assert "NO_WHERE_BASE_URL" in str(raised.value)
+
+
+def test_a_base_url_the_caller_passes_wins_over_the_base_url_variable(tmp_path, monkeypatch):
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    env = {"NO_WHERE_BASE_URL": "https://no-where.invalid/v1"}
+    model = pv.model_for("no-where/model-1", base_url="http://127.0.0.1:8080/v1", env=env)
+    assert model.base_url == "http://127.0.0.1:8080/v1"
 
 
 def test_the_registry_is_read_from_disk_and_never_from_the_network_with_live_calls_off(tmp_path, monkeypatch):

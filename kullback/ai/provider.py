@@ -40,6 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serial
 
 # ruff: noqa: F401 - the imports below that this module does not itself use are the re-exports
 # named in the note under them: the rest of the Harness spells them kullback.ai.provider.X.
+from kullback.ai import calllog
 from kullback.ai.cache import CACHE_TTLS, MAX_CACHE_POINTS, cache_control, count_cache_points
 from kullback.ai.events import StreamEvent
 from kullback.ai.http import (
@@ -58,6 +59,7 @@ from kullback.ai.http import (
 from kullback.ai.http_errors import (
     CONTEXT_OVERFLOW_MARKERS,
     ContextOverflowError,
+    ModelMismatch,
     ProviderError,
     RetryExhausted,
     error_text,
@@ -76,9 +78,11 @@ from kullback.ai.retry import (
 from kullback.ai.tool_call_ids import ID_ALLOWED, ID_DIGEST_LEN, clean_tool_call_id
 from kullback.ai.usage import (
     Usage,
+    hidden_thinking,
     reasoning_of,
     reasoning_share,
     usage_from_anthropic,
+    usage_from_interactions,
     usage_from_openai_chat,
     usage_from_openai_responses,
 )
@@ -95,10 +99,9 @@ _reasoning_of = reasoning_of
 # the model it wraps.
 ALLOW_MODEL_REQUESTS = False
 
-# The harness default for the Builder, the Examiner, the judges, the probe and the re-rolls:
-# Opus 5.5 on Bedrock's global profile, the experiment model (founder decision 2026-09-24;
-# openai/gpt-6-luna, the default from 2026-09-22, stays a valid choice).
-DEFAULT_MODEL = "bedrock/global.anthropic.claude-opus-5-5"
+# The harness default model for every role since 2026-10-28: Gemini 4 Argon through Google's own Interactions API
+# (GoogleInteractionsModel). Bedrock models, the default before it among them, stay valid choices by id.
+DEFAULT_MODEL = "google/gemini-4-argon"
 
 # The one way to turn live calls on: a person exports this before running the CLI. There is
 # no flag a module can set by accident, and the default above stays False.
@@ -174,6 +177,9 @@ class ModelReply(BaseModel):
         return data
 
 
+TEMPERATURE = 1.0  # every model call outside the frozen runner runs at 1; 0 buys no determinism on a reasoning model
+
+
 class ModelConfig(BaseModel):
     """Call parameters. The Runner passes the recorded values; there is no output clamp here.
 
@@ -213,7 +219,7 @@ class ModelConfig(BaseModel):
     # carries the same three answers under its own words, so the caller states one thing and each
     # adapter spells it. It is sent only with tools, because a choice with nothing to choose from
     # is refused. A gateway that does not know the field refuses the whole request, which is why
-    # the caller that forces a call also has a path for the refusal (judge.py).
+    # the caller that forces a call also has a path for the refusal.
     tool_choice: Optional[str] = None
 
     @field_validator("tool_choice")
@@ -512,11 +518,19 @@ def _content_and_calls(data: dict) -> tuple[Optional[str], list[dict]]:
 
 def _reply_from_dict(data: dict) -> ModelReply:
     """One assistant message or reply payload, in trace shape or reply shape, as a ModelReply."""
+    if data.get("object") == "interaction":
+        # A stored Interactions API payload is read the way the live adapter reads it, so a
+        # recorded reply is priced and replayed the same as the call that made it.
+        return interactions_reply(data, data.get("model"))
     usage = data.get("usage") or {}
     if not isinstance(usage, dict):
         usage = {}
     content, calls = _content_and_calls(data)
     output = int(usage.get("output", usage.get("completion_tokens", 0)) or 0)
+    # A stored chat payload may carry thinking only in total_tokens; bill it as usage_from_openai_chat does.
+    hidden = 0 if "output" in usage else hidden_thinking(usage, "prompt_tokens", "completion_tokens")
+    reasoning = max(_reasoning_share(usage, output), hidden)
+    output += hidden
     return ModelReply(
         content=content,
         thinking=data.get("thinking"),
@@ -531,12 +545,12 @@ def _reply_from_dict(data: dict) -> ModelReply:
             )
             for c in calls
         ],
-        usage=Usage(
+        usage=usage_from_interactions(usage) if "total_input_tokens" in usage else Usage(
             input=int(usage.get("input", usage.get("prompt_tokens", 0)) or 0),
             output=output,
             cache_read=int(usage.get("cache_read", 0) or 0),
             cache_write=int(usage.get("cache_write", 0) or 0),
-            reasoning=_reasoning_share(usage, output),
+            reasoning=reasoning,
         ),
         model=data.get("model"),
         stop_reason=data.get("stop_reason") or data.get("finish_reason"),
@@ -594,7 +608,7 @@ FORCED_TOOL_LINE = "Answer this turn with a tool call."
 # The keys of a request body that are the prompt itself rather than the sampling: each adapter
 # builds a different body, so the sampling is what is left after these come out, never a list of
 # the fields worth keeping (a field nobody enumerated is a field a Run would not record).
-PROMPT_BODY_KEYS = ("messages", "tools", "input", "system", "instructions")
+PROMPT_BODY_KEYS = ("messages", "tools", "input", "system", "instructions", "system_instruction")
 # The Responses API returns logprobs only for what the include list asks for.
 RESPONSES_LOGPROBS_INCLUDE = "message.output_text.logprobs"
 # An empty user turn cannot be dropped (that would end the request on an assistant message,
@@ -839,21 +853,59 @@ class HttpModel(Model):
             raise ProviderError(self.missing_key_message())
         config = config or ModelConfig()
         body = self.build_body(messages, tools, config)
+        with calllog.attempts() as retried:
+            return self._query(messages, tools, config, body, retried)
+
+    def _query(self, messages: list[dict], tools: Optional[list[dict]], config: ModelConfig, body: dict,
+               retried: list) -> ModelReply:
         started = time.monotonic()
+        posted = reply = None
         try:
-            posted = self._post_full(body)
-        except ProviderError as error:
-            # One silent retry when the 400 named a shape field this instance can adjust; the
-            # adjustment stays, so the next call never pays the 400.
-            retry = self.build_body(messages, tools, config) if self.learn_shape(error, config) else body
-            if retry == body:
-                raise
-            body = retry
-            posted = self._post_full(body)
-        wall_ms = (time.monotonic() - started) * 1000.0
-        reply = self.parse_reply(posted.data)
+            try:
+                posted = self._post_full(body)
+            except ProviderError as error:
+                # One silent retry when the 400 named a shape field this instance can adjust; the
+                # adjustment stays, so the next call never pays the 400.
+                retry = self.build_body(messages, tools, config) if self.learn_shape(error, config) else body
+                if retry == body:
+                    raise
+                body = retry
+                posted = self._post_full(body)
+            wall_ms = (time.monotonic() - started) * 1000.0
+            reply = self.parse_reply(posted.data)
+            self.check_reply(posted)
+        except Exception as error:
+            # A reply refused after it was paid for (check_reply) is logged with its usage.
+            attempts = posted.attempts if posted is not None else getattr(error, "attempts", None) or 1
+            self._log(messages, tools, reply.usage if reply is not None else None, attempts,
+                      (time.monotonic() - started) * 1000.0, f"{type(error).__name__}: {str(error)[:200]}",
+                      self._meta(posted, body, config, retried))
+            raise
         reply.exchange = self.exchange_of(body, posted, wall_ms)
+        self._log(messages, tools, reply.usage, posted.attempts, wall_ms, None, self._meta(posted, body, config, retried))
         return reply
+
+    def _meta(self, posted: Optional[Posted], body: dict, config: ModelConfig, retried: list) -> dict:
+        """The row's extras: the temperature the body carried and the effort asked (what was sent, which a gateway
+        may still drop), the status of every failed HTTP attempt (a 429 a retry hid included), and the reply's own (reply_meta)."""
+        meta = {"temperature_sent": body.get("temperature"), "effort_sent": config.reasoning_effort or config.effort}
+        if retried:
+            meta["failed_statuses"] = list(retried)
+        return {**meta, **self.reply_meta(posted)}
+
+    def check_reply(self, posted: Posted) -> None:
+        """Raise when the answer is not one this call may use (a gateway that answered with another model)."""
+
+    def reply_meta(self, posted: Optional[Posted]) -> dict:
+        """What the call log keeps from the reply besides its usage (a gateway's request id); none by default."""
+        return {}
+
+    def _log(self, messages: list[dict], tools: Optional[list[dict]], usage: Any, attempts: int, wall_ms: float,
+             error: Optional[str] = None, meta: Optional[dict] = None) -> None:
+        """The call handed to the process's call sink (calllog.py): the one place every live call is logged."""
+        system = "\n\n".join(_text_of(m) for m in messages if m.get("role") == "system")
+        rest = [m for m in messages if m.get("role") != "system"]
+        calllog.emit(self.name, self.provider, system, rest, tools, usage, attempts, wall_ms, error, meta)
 
     def exchange_of(self, body: dict, posted: Posted, wall_ms: float) -> Exchange:
         """What this call sent and how it went, from the body itself and the response's own headers.
@@ -902,6 +954,7 @@ class HttpModel(Model):
                     headers = self.headers(content)
                     response = self.client().post(url, headers=headers, content=content, timeout=self.request_timeout)
             except httpx.HTTPError as exc:
+                calllog.retried(type(exc).__name__)
                 if last_attempt:
                     # A timeout names the budget that was in force, so the log line that lands
                     # says whether the answer was slow or the host was down.
@@ -933,6 +986,7 @@ class HttpModel(Model):
                     continue
             error = self.error_for(response)
             error.attempts = attempt
+            calllog.retried(response.status_code)
             if isinstance(error, ContextOverflowError) or not retryable_status(response.status_code):
                 raise error
             note_cooldown(bucket, response.status_code,
@@ -1484,6 +1538,202 @@ class RegistryModel(OpenAICompatibleModel):
         super().__init__(model_id, base_url=base_url, key_env_var=key_env_var or None, **kwargs)
 
 
+# The local gateway every call goes through when KULLBACK_ROUTE=omniroute (the direct keys were revoked
+# 2026-11-05): OpenAI chat completions on OMNIROUTE_BASE_URL, keyed by OMNIROUTE_API_KEY as a Bearer token.
+ROUTE_VAR = "KULLBACK_ROUTE"
+OMNIROUTE = "omniroute"
+OMNIROUTE_BASE_URL = "http://localhost:20128/v1"
+OMNIROUTE_KEY_VAR = "OMNIROUTE_API_KEY"
+# Sent on every request. Compression rewrites the prompt (it breaks the provider's prefix cache and changes what
+# the model reads), the semantic cache would answer for the model, and memory or skills injection adds text we did
+# not send. Each is turned off by the header the gateway documents for it.
+OMNIROUTE_HEADERS = {"x-omniroute-compression": "off", "X-OmniRoute-No-Cache": "true",
+                     "x-omniroute-no-memory": "true"}
+# Our model id to the id the gateway serves it under (its GET /v1/models, probed 2026-11-05); an id not listed
+# goes as it is.
+OMNIROUTE_IDS: dict[str, str] = {"google/gemini-4-argon": "gemini/gemini-4-argon"}
+# The reply headers that say who answered; the gateway falls back to another model on some errors (a 402) by
+# default, and an answer from another model must never pass as the one asked.
+ANSWERED_MODEL, ANSWERED_PROVIDER = "x-omniroute-model", "x-omniroute-provider"
+FALLBACK_HEADER = "x-omniroute-emergency-fallback"
+# The id the gateway's call log keys a call by (its correlationId); on an error reply only x-request-id comes back.
+# The gateway's own x-omniroute-request-id matches nothing in its log.
+CORRELATION_HEADERS = ("x-correlation-id", "x-request-id")
+LATENCY_HEADER = "x-omniroute-latency-ms"  # the gateway's own time for a non-stream call
+PRICING_PATH = "/api/pricing"  # {route: {model: USD per 1M tokens: input, cached, cache_creation, output}}
+# Routes whose provider caches only where the request marks it (Anthropic cache_control, which the gateway keeps
+# as sent); the other routes cache a shared prefix on their own and get no marks.
+MARKED_ROUTES = ("cc", "bedrock")
+# Routes whose Claude models give the thinking text back when asked: with an effort set, it is asked back
+# summarized. The gateway's chat completions translator takes this body field for it and removes it before the
+# provider sees the request. The subscription route returns no thinking text either way (probe 2026-11-05).
+CLAUDE_ROUTES = ("bedrock/us.anthropic.",)
+SUMMARIZED_THINKING = {"_omnirouteCopilotReasoningSummary": "summarized"}
+# The gateway's own list price of the call (cache-aware); it reads 0 on a stream and on a model with no pricing
+# row, which is no price, so the call is then priced from its pricing table (PRICING_PATH) where it has a row.
+COST_HEADER = "x-omniroute-response-cost"
+NOT_ALLOWED = 403  # the gateway key's allowlist refuses the id
+
+
+def _number(value: Any) -> Optional[float]:
+    try:
+        return None if value is None or value == "" else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+_PRICING: dict[str, dict] = {}
+_PRICING_LOCK = threading.Lock()
+
+
+def pricing_usd(table: dict, wire_id: str, usage: Any) -> Optional[float]:
+    """The usage priced from the gateway's pricing table (USD per 1M tokens; reasoning is inside output), or None
+    when the table has no row for the route and model."""
+    route, _, model = wire_id.partition("/")
+    row = (table.get(route) or {}).get(model) if isinstance(table, dict) else None
+    if not isinstance(row, dict) or usage is None:
+        return None
+    rate = lambda key, default=0.0: float(row.get(key, default) or 0.0)  # noqa: E731
+    return (usage.input * rate("input") + usage.cache_read * rate("cached", row.get("input", 0))
+            + usage.cache_write * rate("cache_creation", row.get("input", 0)) + usage.output * rate("output")) / 1e6
+
+
+def _route(wire_id: str) -> str:
+    return wire_id.split("/", 1)[0] if "/" in wire_id else ""
+
+
+def marked_steps(messages: list[dict]) -> list[int]:
+    """The messages that carry a cache mark (at most MAX_CACHE_POINTS with the system): the last message, and the
+    last two assistant messages before it, where an append-only prompt's next call (the next question on the same
+    conversation, the next turn of a loop) shares everything up to."""
+    if not messages:
+        return []
+    last = len(messages) - 1
+    earlier = [i for i in range(last) if messages[i].get("role") == "assistant"][-(MAX_CACHE_POINTS - 2):]
+    systems = [i for i, m in enumerate(messages) if m.get("role") == "system"][:1]
+    return sorted(set(systems + earlier + [last]))
+
+
+def _mark(message: dict) -> dict:
+    """The message with an ephemeral cache mark on its last content block."""
+    content = message.get("content")
+    if isinstance(content, str):
+        blocks = [{"type": "text", "text": content}]
+    elif isinstance(content, list) and content:
+        blocks = [dict(block) for block in content]
+    else:
+        return message
+    blocks[-1] = {**blocks[-1], "cache_control": cache_control()}
+    return {**message, "content": blocks}
+
+
+class OmniRouteModel(OpenAICompatibleModel):
+    """Any model id reached through the OmniRoute gateway, named by our id so the call is logged under its own provider
+    and priced from the gateway's reply (calllog.dollars); only the wire id is the gateway's.
+
+    The reasoning effort is passed through (the gateway forwards it to the provider's thinking mode), cached
+    input is read from usage.prompt_tokens_details.cached_tokens and the thinking from
+    completion_tokens_details, as every chat completions reply is read (usage_from_openai_chat)."""
+
+    key_required = True
+
+    def __init__(self, model_id: str, base_url: Optional[str] = None, **kwargs):
+        env = kwargs.get("env")
+        values = os.environ if env is None else env
+        super().__init__(model_id, base_url=base_url or values.get("OMNIROUTE_BASE_URL") or OMNIROUTE_BASE_URL,
+                         key_env_var=OMNIROUTE_KEY_VAR,
+                         wire_id=kwargs.pop("wire_id", None) or OMNIROUTE_IDS.get(model_id, model_id), **kwargs)
+
+    def headers(self, body: Optional[bytes] = None) -> dict:
+        """The Bearer key, the headers that keep prompt and answer ours, and the session tag the gateway's
+        call_logs keep (<run id>.<stage>, from the call log's context), so its rows match ours."""
+        out = {**super().headers(body), **OMNIROUTE_HEADERS}
+        context = calllog.current()
+        tag = ".".join(str(context[k]) for k in ("run_id", "stage") if context.get(k))
+        if tag:
+            out["X-OmniRoute-Session-Id"] = tag
+        return out
+
+    def check_reply(self, posted: Posted) -> None:
+        """The reply came from the model asked: the gateway's model and provider headers name it, and it did
+        not fall back. Anything else is an error, never a silent answer."""
+        headers = posted.headers or {}
+        provider, _, model = self.wire_id.rpartition("/")
+        body_model = posted.data.get("model") if isinstance(posted.data, dict) else None
+        # A reply with no model header (a stream) is read by the body's bare model name, under the route asked.
+        answered = (headers.get(ANSWERED_PROVIDER) or (provider or None), headers.get(ANSWERED_MODEL) or body_model)
+        if headers.get(FALLBACK_HEADER) or answered != (provider or None, model):
+            raise ModelMismatch(f"{self.name}: the gateway answered with {answered[0]}/{answered[1]}"
+                                f"{' (emergency fallback)' if headers.get(FALLBACK_HEADER) else ''}, "
+                                f"not the model asked ({self.wire_id})")
+
+    def reply_meta(self, posted: Optional[Posted]) -> dict:
+        """What the row keeps from the gateway: the route, the model and provider it says answered, the id its call
+        log keys the call by (correlation id), the session tag we sent, its own latency, its list price (the cost
+        header, else the usage priced from its pricing table), the upstream's billed cost when the usage carries one,
+        and reasoning null when the usage reports no thinking count (unknown, never 0)."""
+        context = calllog.current()
+        tag = ".".join(str(context[k]) for k in ("run_id", "stage") if context.get(k))
+        meta: dict = {"route": _route(self.wire_id) or None, "session_tag": tag or None}
+        if posted is None:
+            return meta
+        headers = posted.headers or {}
+        meta.update(answered_model=headers.get(ANSWERED_MODEL), answered_provider=headers.get(ANSWERED_PROVIDER),
+                    request_id=next((headers.get(h) for h in CORRELATION_HEADERS if headers.get(h)), None),
+                    gateway_ms=_number(headers.get(LATENCY_HEADER)))
+        meta["usd_gateway"] = _number(headers.get(COST_HEADER))
+        usage = (posted.data or {}).get("usage") if isinstance(posted.data, dict) else None
+        meta["usd_billed"] = _number((usage or {}).get("cost"))
+        if meta["usd_gateway"] is None and usage is not None:  # no header (a stream): a 0 means no pricing row
+            meta["usd_priced"] = pricing_usd(self.pricing(), self.wire_id, usage_from_openai_chat(usage))
+        details = (usage or {}).get("completion_tokens_details") or {}
+        if usage is not None and details.get("reasoning_tokens") is None:
+            meta["reasoning"] = None
+        return meta
+
+    def pricing(self) -> dict:
+        """The gateway's pricing table, read once per gateway and process; {} when it cannot be read."""
+        root = self.base_url.rsplit("/v1", 1)[0]
+        with _PRICING_LOCK:
+            if root not in _PRICING:
+                try:
+                    response = self.client().get(root + PRICING_PATH, headers=self.headers(), timeout=10.0)
+                    data = response.json() if response.status_code == 200 else {}
+                    _PRICING[root] = data if isinstance(data, dict) else {}
+                except (httpx.HTTPError, ValueError):
+                    _PRICING[root] = {}
+            return _PRICING[root]
+
+    def build_body(self, messages: list[dict], tools: Optional[list[dict]], config: ModelConfig) -> dict:
+        """The chat completions body, with cache marks on a route that needs them (MARKED_ROUTES) and the thinking
+        asked back summarized on a Claude route with an effort set."""
+        body = super().build_body(messages, tools, config)
+        if _route(self.wire_id) in MARKED_ROUTES:
+            marked = set(marked_steps(body["messages"]))
+            body["messages"] = [_mark(m) if i in marked else m for i, m in enumerate(body["messages"])]
+        if (config.reasoning_effort or config.effort) and self.wire_id.startswith(CLAUDE_ROUTES):
+            body.update(SUMMARIZED_THINKING)
+        return body
+
+    def error_for(self, response: Any) -> ProviderError:
+        """A 403 names the id the gateway key does not allow; never a reason to try another model."""
+        error = super().error_for(response)
+        if response.status_code == NOT_ALLOWED:
+            return ProviderError(f"{self.wire_id} is not allowed by the gateway key ({error})",
+                                 status=error.status, body=error.body)
+        return error
+
+    def reasoning_fields(self, config: ModelConfig) -> dict:
+        effort = config.reasoning_effort or config.effort
+        return {"reasoning_effort": effort} if effort else {}
+
+
+def routed(env: Optional[dict] = None) -> bool:
+    """Whether every model goes through the OmniRoute gateway (KULLBACK_ROUTE=omniroute)."""
+    values = os.environ if env is None else env
+    return (values.get(ROUTE_VAR) or "").strip().lower() == OMNIROUTE
+
+
 class OpenAIResponsesModel(HttpModel):
     """OpenAI's Responses API: input items in, output items out, one round trip per query.
 
@@ -1694,7 +1944,163 @@ def _responses_text(content: Any) -> str:
     return str(content)
 
 
-ADAPTERS: dict[str, type] = {"anthropic": AnthropicModel, "openai": OpenAIModel, "bedrock": BedrockAnthropicModel}
+# Gemini through Google's own Interactions API (ai.google.dev/api/interactions, read 2026-10-28):
+# "Generally Available and recommended for all new projects". It replaced the OpenAI-compatible
+# endpoint here because that one reports no cached tokens at all and thinking only inside
+# total_tokens, while this one reports both under their own names (usage_from_interactions).
+# The conversation is a list of typed steps, sent stateless (store false) and in full each turn.
+GOOGLE_TOOL_CHOICE = {"auto": "auto", "required": "any", "none": "none"}
+# An interaction's status as the stop words the loop reads (stream.normalize_stop_reason).
+INTERACTION_STOP_REASONS = {"completed": "stop", "requires_action": "tool_calls", "incomplete": "length"}
+# The base the old OpenAI-compatible route was reached on ends in this; the same host serves the
+# Interactions API one level up, so a GOOGLE_BASE_URL still set to the old base keeps working.
+GOOGLE_COMPAT_SUFFIX = "/openai"
+
+
+class GoogleInteractionsModel(HttpModel):
+    """Google's Interactions API: system_instruction, typed input steps, thought steps echoed back.
+
+    The thought steps of a reply are kept whole, signature and all, as its thinking_blocks, and
+    lead that assistant turn on the next request: the endpoint refuses a tool loop whose history
+    drops them (HTTP 400, probed 2026-10-28). Temperature is not in the documented
+    generation_config but the endpoint accepted it on the same probe, so it is sent when set.
+    """
+
+    key_env_var = "GOOGLE_API_KEY"
+    default_base_url = "https://generativelanguage.googleapis.com/v1beta"
+    path = "/interactions"
+    alternate_key_var = "GEMINI_API_KEY"
+
+    def __init__(self, model_id: str, base_url: Optional[str] = None, env: Optional[dict[str, str]] = None,
+                 **kwargs):
+        values = os.environ if env is None else env
+        base = (base_url or values.get(base_url_var_for_provider("google")) or self.default_base_url).rstrip("/")
+        super().__init__(model_id, base_url=base.removesuffix(GOOGLE_COMPAT_SUFFIX), env=env, **kwargs)
+        self.api_key = self.api_key or self.env.get(self.alternate_key_var)
+
+    @classmethod
+    def credential_vars(cls) -> tuple[tuple[str, ...], ...]:
+        return ((cls.key_env_var,), (cls.alternate_key_var,))
+
+    def headers(self, body: Optional[bytes] = None) -> dict:
+        return {"x-goog-api-key": self.api_key or "", "content-type": "application/json"}
+
+    def build_body(self, messages: list[dict], tools: Optional[list[dict]], config: ModelConfig) -> dict:
+        system, steps = _to_interactions(messages)
+        body: dict[str, Any] = {"model": self.wire_id, "store": False, "input": steps}
+        if system:
+            body["system_instruction"] = system
+        if tools:
+            body["tools"] = [_interactions_tool(t) for t in tools]
+        generation: dict[str, Any] = {}
+        if config.max_tokens:
+            # Thought tokens count against this cap, so a small one can end "incomplete" unanswered.
+            generation["max_output_tokens"] = config.max_tokens
+        if config.temperature is not None:
+            generation["temperature"] = config.temperature
+        if config.stop:
+            generation["stop_sequences"] = list(config.stop)
+        if config.seed is not None:
+            generation["seed"] = config.seed
+        if tools and config.tool_choice:
+            generation["tool_choice"] = GOOGLE_TOOL_CHOICE[config.tool_choice]
+        # Reasoning branch: one thinking_level; unset leaves the depth to the model.
+        level = config.effort or config.reasoning_effort
+        if level:
+            generation["thinking_level"] = level
+        if generation:
+            body["generation_config"] = generation
+        return body
+
+    def parse_reply(self, data: dict) -> ModelReply:
+        return interactions_reply(data, data.get("model") or self.wire_id)
+
+
+def interactions_reply(data: dict, model: Optional[str]) -> ModelReply:
+    """One Interactions API reply as ours: its output text, its calls, its thought steps verbatim."""
+    text: list[str] = []
+    summaries: list[str] = []
+    calls: list[ToolCallRequest] = []
+    thoughts: list[dict] = []
+    for step in data.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        kind = step.get("type")
+        if kind == "thought":
+            thoughts.append(copy.deepcopy(step))
+            summaries.extend(_interactions_text(step.get("summary")))
+        elif kind == "model_output":
+            text.extend(_interactions_text(step.get("content")))
+        elif kind == "function_call":
+            calls.append(ToolCallRequest(id=step.get("id"), name=step.get("name") or "",
+                                         arguments=_arguments_of(step)))
+    status = data.get("status")
+    return ModelReply(
+        content="".join(text) or None,
+        thinking="".join(summaries) or None,
+        tool_calls=calls,
+        usage=usage_from_interactions(data.get("usage")),
+        model=model,
+        stop_reason=INTERACTION_STOP_REASONS.get(status, status),
+        raw=data,
+        thinking_blocks=thoughts or None,
+    )
+
+
+def _interactions_text(parts: Any) -> list[str]:
+    """The text parts of a step's content or summary list."""
+    return [str(part.get("text") or "") for part in parts or [] if isinstance(part, dict) and part.get("type") == "text"]
+
+
+def _interactions_tool(tool: dict) -> dict:
+    """Our OpenAI-shaped tool as the flat function tool the Interactions API takes."""
+    function = _openai_tool(tool)["function"]
+    return {"type": "function", "name": function.get("name", ""), "description": function.get("description") or "",
+            "parameters": function.get("parameters") or {"type": "object"}}
+
+
+def _to_interactions(messages: list[dict]) -> tuple[str, list[dict]]:
+    """Our wire messages as the system instruction and the input steps.
+
+    An assistant turn is its own thought steps first, unchanged, then its text, then one
+    function_call per tool call; a tool message is a function_result naming the call it answers.
+    A thought block another provider wrote is not a step here, so only type "thought" is echoed.
+    """
+    system: list[str] = []
+    steps: list[dict] = []
+    for message in messages:
+        role = message.get("role")
+        if role == "system":
+            system.append(_text_of(message))
+        elif role == "tool":
+            step = {"type": "function_result", "call_id": message.get("tool_call_id") or message.get("id"),
+                    "name": message.get("name") or "", "result": [{"type": "text", "text": _text_of(message)}]}
+            if message.get("is_error"):
+                step["is_error"] = True
+            steps.append(step)
+        elif role == "assistant":
+            steps.extend(_interactions_assistant_steps(message))
+        else:
+            steps.append({"type": "user_input", "content": [{"type": "text", "text": _text_of(message)}]})
+    return "\n\n".join(system), steps
+
+
+def _interactions_assistant_steps(message: dict) -> list[dict]:
+    """One assistant turn as steps: its thought steps unchanged, its text, then its function calls."""
+    steps = [copy.deepcopy(block) for block in message.get(THINKING_BLOCKS_KEY) or []
+             if isinstance(block, dict) and block.get("type") == "thought"]
+    text = _text_of(message)
+    if text:
+        steps.append({"type": "model_output", "content": [{"type": "text", "text": text}]})
+    for call in message.get("tool_calls") or []:
+        steps.append({"type": "function_call", "id": call.get("id"),
+                      "name": call.get("name") or (call.get("function") or {}).get("name") or "",
+                      "arguments": _arguments_of(call)})
+    return steps
+
+
+ADAPTERS: dict[str, type] = {"anthropic": AnthropicModel, "openai": OpenAIModel, "bedrock": BedrockAnthropicModel,
+                             "google": GoogleInteractionsModel}
 
 # The registry snapshot unknown providers are resolved against. None is the real default
 # (kullback.ai.pricing.snapshot_path()); tests point it at a tmp file, so no test reads the real one.
@@ -1727,15 +2133,48 @@ def sent_model_id(model_id: str) -> str:
     return f"{provider}/{adapter.for_model(model_id).sent_wire_id(wire)}"
 
 
+# The host of a provider the registry names none for, used when its PROVIDER_BASE_URL is unset too.
+# Empty since Google moved to an adapter of its own (GoogleInteractionsModel); the next such provider is one row.
+KNOWN_HOSTS: dict[str, str] = {}
+
+
+def base_url_var_for_provider(provider: str) -> str:
+    """The variable a provider's host is read from when the registry names none: PROVIDER_BASE_URL,
+    spelled by the same rule as the key variable."""
+    return f"{provider.upper().replace('-', '_')}_BASE_URL"
+
+
+def _model_from_base_url_variable(model_id: str, provider: str, **kwargs) -> Model:
+    """A provider the snapshot names no host for, reached on the host its PROVIDER_BASE_URL names,
+    else on its entry in KNOWN_HOSTS.
+
+    The key is then required under PROVIDER_API_KEY: a host set by hand for a named provider is a
+    hosted one, so a missing key is refused by name rather than sent unauthenticated.
+    """
+    values = os.environ if kwargs.get("env") is None else kwargs["env"]
+    variable = base_url_var_for_provider(provider)
+    base_url = values.get(variable) or KNOWN_HOSTS.get(provider)
+    if not base_url:
+        raise ValueError(
+            f"{model_id} has no adapter of its own and the models.dev snapshot names no host for "
+            f"{provider!r}; pass base_url, set {variable}, or refresh the snapshot with live calls on"
+        )
+    return RegistryModel(model_id, base_url=base_url, key_env_var=key_var_for_provider(provider), **kwargs)
+
+
 def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     """The one place a live adapter is built, from the 'provider/model' id.
 
-    Three ways to reach a model, in order: an adapter of its own, the base URL the caller passed,
+    With KULLBACK_ROUTE=omniroute every model goes through the OmniRoute gateway (OmniRouteModel). Otherwise
+    three ways to reach a model, in order: an adapter of its own, the base URL the caller passed,
     or the host the models.dev registry lists for that provider. The last is what puts a provider
     nobody wrote code for (OpenCode Go, Groq, DeepSeek, OpenRouter) one `--model` away, from the
     same snapshot `budget.py` prices the call from. A provider the registry does not list, or lists
-    behind a request shape this Harness does not build, still needs a base URL.
+    behind a request shape this Harness does not build, still needs a base URL: passed, or for a
+    provider the registry names no host for, read from PROVIDER_BASE_URL.
     """
+    if routed(kwargs.get("env")):
+        return OmniRouteModel(model_id, base_url=base_url, **kwargs)
     provider, _ = split_model_id(model_id)
     adapter = ADAPTERS.get(provider)
     if adapter is not None:
@@ -1752,10 +2191,7 @@ def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
         return OpenAICompatibleModel(model_id, base_url=base_url, **kwargs)
     endpoint = registry_endpoint(model_id, env=kwargs.get("env"))
     if endpoint is None:
-        raise ValueError(
-            f"{model_id} has no adapter of its own and the models.dev snapshot names no host for "
-            f"{provider!r}; pass base_url, or refresh the snapshot with live calls on"
-        )
+        return _model_from_base_url_variable(model_id, provider, **kwargs)
     from kullback.ai import pricing
 
     catalog = pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=kwargs.get("env"))
@@ -1781,11 +2217,14 @@ def provider_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Any
     request shaping they stream is the handle's, written once.
     """
     from kullback.ai.anthropic import AnthropicProvider
+    from kullback.ai.google_interactions import GoogleInteractionsProvider
     from kullback.ai.openai_compatible import OpenAICompatibleProvider
 
     handle = model_for(model_id, base_url, **kwargs)
     if isinstance(handle, AnthropicModel):
         return AnthropicProvider(handle)
+    if isinstance(handle, GoogleInteractionsModel):
+        return GoogleInteractionsProvider(handle)
     if isinstance(handle, HttpModel):
         return OpenAICompatibleProvider(handle)
     from kullback.ai.replay import ReplayProvider

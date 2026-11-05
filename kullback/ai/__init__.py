@@ -28,6 +28,7 @@ from kullback.ai.events import (
     ToolCallEnd,
     ToolCallStart,
 )
+from kullback.ai.google_interactions import GoogleInteractionsProvider
 from kullback.ai.http_errors import ContextOverflowError, ProviderError, RetryExhausted
 from kullback.ai.messages import (
     AssistantMessage,

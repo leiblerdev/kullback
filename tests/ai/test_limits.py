@@ -112,16 +112,16 @@ def test_without_a_rate_row_a_call_waits_for_nothing_and_counts_nothing(live, sl
 
 def test_two_in_flight_slots_shared_by_five_callers():
     bucket = Bucket("two", in_flight=2)
-    guard = threading.Lock()
+    lock = threading.Lock()
     active = {"n": 0, "max": 0}
 
     def call():
         with bucket.slot():
-            with guard:
+            with lock:
                 active["n"] += 1
                 active["max"] = max(active["max"], active["n"])
             time.sleep(0.02)
-            with guard:
+            with lock:
                 active["n"] -= 1
 
     threads = [threading.Thread(target=call) for _ in range(5)]
