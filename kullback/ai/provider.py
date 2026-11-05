@@ -65,7 +65,7 @@ from kullback.ai.http_errors import (
     error_text,
     is_context_overflow,
 )
-from kullback.ai.limits import Bucket, bucket_for, note_cooldown
+from kullback.ai.limits import Bucket, RateSpec, bucket_for, note_cooldown
 from kullback.ai.messages import Message
 from kullback.ai.model_limits import RequestRules, request_rules_for, split_vendor
 from kullback.ai.retry import (
@@ -1573,6 +1573,12 @@ SUMMARIZED_THINKING = {"_omnirouteCopilotReasoningSummary": "summarized"}
 # row, which is no price, so the call is then priced from its pricing table (PRICING_PATH) where it has a row.
 COST_HEADER = "x-omniroute-response-cost"
 NOT_ALLOWED = 403  # the gateway key's allowlist refuses the id
+# The gateway's own caps on its subscription routes (live 2026-11-05): calls in flight per route, and 60 requests a
+# minute per account. Extra calls queue at the gateway (up to 300 s, depth 50); holding to the same numbers here
+# keeps that queue a backstop, not the normal path. One bucket per route, shared by every model on it.
+ROUTE_CAPS: dict[str, RateSpec] = {"cc": RateSpec(requests_per_minute=60, in_flight=2),
+                                   "cx": RateSpec(requests_per_minute=60, in_flight=2),
+                                   "cu": RateSpec(requests_per_minute=60, in_flight=3)}
 
 
 def _number(value: Any) -> Optional[float]:
@@ -1653,6 +1659,18 @@ class OmniRouteModel(OpenAICompatibleModel):
         if tag:
             out["X-OmniRoute-Session-Id"] = tag
         return out
+
+    @functools.cached_property
+    def rate_bucket(self) -> Optional[Bucket]:
+        """The route's shared limiter (ROUTE_CAPS) on a capped route, else the catalogue's, as for any model."""
+        route = _route(self.wire_id)
+        spec = ROUTE_CAPS.get(route)
+        if spec is None:
+            return super().rate_bucket
+        host = urlparse(self.base_url).hostname or self.base_url
+        fingerprint = hashlib.sha256(self.api_key.encode()).hexdigest()[:12] if self.api_key else ""
+        return bucket_for(provider=self.provider, host=host, key=fingerprint, key_name=self.key_env_var or "",
+                          model=route, spec=spec)
 
     def check_reply(self, posted: Posted) -> None:
         """The reply came from the model asked: the gateway's model and provider headers name it, and it did

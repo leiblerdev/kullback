@@ -225,3 +225,15 @@ def test_a_reply_with_no_model_header_is_checked_by_the_model_its_body_names(tmp
     with pytest.raises(pv.ModelMismatch):
         _routed_model(lambda r: httpx.Response(200, json=other, headers=bare)).query(
             [{"role": "user", "content": "hi"}], config=ModelConfig(temperature=1.0))
+
+
+def test_a_subscription_route_holds_the_gateways_cap_in_one_bucket_its_models_share_and_other_routes_do_not():
+    from kullback.ai import limits
+
+    limits.reset()
+    first, second = (pv.model_for(f"cu/model-{n}", env=ROUTED) for n in "ab")
+    assert first.rate_bucket is second.rate_bucket
+    assert (first.rate_bucket.in_flight, first.rate_bucket.requests_per_minute) == (3, 60)
+    assert pv.model_for("cc/model-a", env=ROUTED).rate_bucket.in_flight == 2
+    assert pv.model_for("cc/model-a", env=ROUTED).rate_bucket is not first.rate_bucket
+    limits.reset()
