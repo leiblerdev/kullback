@@ -99,9 +99,9 @@ _reasoning_of = reasoning_of
 # the model it wraps.
 ALLOW_MODEL_REQUESTS = False
 
-# The harness default model for every role since 2026-10-28: Gemini 4 Argon through Google's own Interactions API
-# (GoogleInteractionsModel). Bedrock models, the default before it among them, stay valid choices by id.
-DEFAULT_MODEL = "google/gemini-4-argon"
+# The harness default for every role: Opus 5.5 on Bedrock's global profile (founder decision 2026-09-24).
+# Gemini 4 Argon through Google's own Interactions API (GoogleInteractionsModel) is a valid choice by id.
+DEFAULT_MODEL = "bedrock/global.anthropic.claude-opus-5-5"
 
 # The one way to turn live calls on: a person exports this before running the CLI. There is
 # no flag a module can set by accident, and the default above stays False.

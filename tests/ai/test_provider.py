@@ -569,8 +569,8 @@ def test_a_provider_with_no_host_in_the_registry_is_reached_on_its_base_url_vari
     assert model.key_env_var == "NO_WHERE_API_KEY" and model.api_key == "sk-made-up"
 
 
-def test_the_harness_default_model_is_gemini_4_argon():
-    assert pv.DEFAULT_MODEL == "google/gemini-4-argon"
+def test_the_harness_default_model_is_opus_5_5_on_bedrock():
+    assert pv.DEFAULT_MODEL == "bedrock/global.anthropic.claude-opus-5-5"
 
 
 def test_google_is_reached_on_the_interactions_api_unless_its_base_url_variable_names_another_host(
