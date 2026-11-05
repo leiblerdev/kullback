@@ -108,6 +108,27 @@ def reasoning_share(usage: Any, output: int) -> int:
     return reported
 
 
+def hidden_thinking(usage: Any, prompt_key: str, completion_key: str) -> int:
+    """The tokens a payload's total_tokens counts beyond prompt plus completion, or zero.
+
+    Some chat endpoints bill thinking at the output rate and report it only in the total: one
+    observed reply said prompt 63, completion 7, total 153, so 83 thinking tokens were billed and
+    nowhere else reported. A total that is absent, zero, or not above the sum gives zero.
+    """
+    if not isinstance(usage, dict):
+        return 0
+    total = int(usage.get("total_tokens", 0) or 0)
+    shown = int(usage.get(prompt_key, 0) or 0) + int(usage.get(completion_key, 0) or 0)
+    return max(0, total - shown) if total else 0
+
+
+def _output_and_reasoning(usage: dict, prompt_key: str, completion_key: str) -> tuple[int, int]:
+    """Output with the hidden thinking added, and reasoning as the larger of the reported share and it."""
+    completion = int(usage.get(completion_key, 0) or 0)
+    hidden = hidden_thinking(usage, prompt_key, completion_key)
+    return completion + hidden, max(reasoning_share(usage, completion), hidden)
+
+
 def usage_from_openai_chat(usage: Any) -> Usage:
     """One chat completions usage payload as ours.
 
@@ -122,15 +143,19 @@ def usage_from_openai_chat(usage: Any) -> Usage:
     details = usage.get("prompt_tokens_details") or {}
     if not isinstance(details, dict):
         details = {}
-    cached = int(details.get("cached_tokens", 0) or 0)
-    written = int(details.get("cache_write_tokens", 0) or 0)
-    output = int(usage.get("completion_tokens", 0) or 0)
+    cached = int(details.get("cached_tokens") or usage.get("cache_read_input_tokens") or 0)
+    written = int(details.get("cache_write_tokens") or details.get("cache_creation_tokens")
+                  or usage.get("cache_creation_input_tokens") or 0)
+    # A gateway that says the written tokens are not inside prompt_tokens (cache_creation_in_prompt false) has them
+    # added back, so input stays the prompt neither read from nor written to the cache.
+    prompt = int(usage.get("prompt_tokens", 0) or 0) + (written if details.get("cache_creation_in_prompt") is False else 0)
+    output, reasoning = _output_and_reasoning(usage, "prompt_tokens", "completion_tokens")
     return Usage(
-        input=max(0, int(usage.get("prompt_tokens", 0) or 0) - cached - written),
+        input=max(0, prompt - cached - written),
         output=output,
         cache_read=cached,
         cache_write=written,
-        reasoning=reasoning_share(usage, output),
+        reasoning=reasoning,
     )
 
 
@@ -142,13 +167,13 @@ def usage_from_openai_responses(usage: Any) -> Usage:
         details = {}
     cached = int(details.get("cached_tokens", 0) or 0)
     written = int(details.get("cache_write_tokens", 0) or 0)
-    output = int(usage.get("output_tokens", 0) or 0)
+    output, reasoning = _output_and_reasoning(usage, "input_tokens", "output_tokens")
     return Usage(
         input=max(0, int(usage.get("input_tokens", 0) or 0) - cached - written),
         output=output,
         cache_read=cached,
         cache_write=written,
-        reasoning=reasoning_share(usage, output),
+        reasoning=reasoning,
     )
 
 
@@ -170,4 +195,25 @@ def usage_from_anthropic(usage: Any) -> Usage:
         cache_write=written,
         reasoning=reasoning_share(usage, output),
         cache_write_1h=min(written, int(split.get("ephemeral_1h_input_tokens", 0) or 0)),
+    )
+
+
+def usage_from_interactions(usage: Any) -> Usage:
+    """One Interactions API usage payload as ours, on the same convention: the cached part comes off input.
+
+    total_input_tokens includes the cached tokens (like OpenAI's prompt_tokens), total_output_tokens
+    excludes the thought tokens and total_thought_tokens reports them on their own, so output is the
+    two together, the way they are billed (output price "including thinking tokens"), and reasoning
+    is the thought share of it. Tool-use prompt tokens sit outside total_input_tokens (a reply's
+    total_tokens is input plus output plus thought plus tool use), so they are input here.
+    """
+    usage = usage if isinstance(usage, dict) else {}
+    cached = int(usage.get("total_cached_tokens", 0) or 0)
+    thought = int(usage.get("total_thought_tokens", 0) or 0)
+    return Usage(
+        input=max(0, int(usage.get("total_input_tokens", 0) or 0) - cached)
+        + int(usage.get("total_tool_use_tokens", 0) or 0),
+        output=int(usage.get("total_output_tokens", 0) or 0) + thought,
+        cache_read=cached,
+        reasoning=thought,
     )

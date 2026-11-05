@@ -49,6 +49,10 @@ class RetryExhausted(ProviderError):
     """Every attempt failed on a retryable error."""
 
 
+class ModelMismatch(ProviderError):
+    """A gateway answered with a model other than the one asked, or fell back: never an answer to use."""
+
+
 def error_text(body: Any) -> str:
     """The message a provider's error body carries, whatever shape it came in."""
     if isinstance(body, dict):
