@@ -81,6 +81,7 @@ _DEFAULT: dict[str, Any] = {}
 _LOCK = threading.RLock()  # re-entrant: _from_env holds it across begin, which takes it again
 _OVERRIDE: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("calllog_context", default=None)
 _RETRIED: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar("calllog_retried", default=None)
+_PINNED: contextvars.ContextVar[Optional[tuple]] = contextvars.ContextVar("calllog_pinned", default=None)
 
 
 # --- the sink and the context ---
@@ -106,7 +107,10 @@ def set_default(**fields: Any) -> None:
 
 
 def current() -> dict[str, Any]:
-    """The context a call sent now carries: the process default under this thread's overrides."""
+    """The context a call sent now carries: the process default under this thread's overrides, or what is pinned."""
+    held = _PINNED.get()
+    if held is not None:
+        return dict(held[1])
     with _LOCK:
         out = dict(_DEFAULT)
     out.update(_OVERRIDE.get() or {})
@@ -152,15 +156,33 @@ def enabled() -> bool:
     return _SINK is not None or bool(os.environ.get(CALLS_DIR_VAR))
 
 
+def this_call() -> tuple:
+    """The sink and context of a call as of now, for a row another thread writes later (`pinned`)."""
+    return _SINK or _from_env(), current()
+
+
+@contextmanager
+def pinned(call: tuple) -> Iterator[None]:
+    """Inside the block `current` and `emit` use `call` (from `this_call`), whatever the process has moved on to."""
+    token = _PINNED.set(call)
+    try:
+        yield
+    finally:
+        _PINNED.reset(token)
+
+
 def emit(model: str, provider: str, system: str, messages: list[dict], tools: Any, usage: Any = None,
-         attempts: int = 1, wall_ms: float = 0.0, error: Optional[str] = None, meta: Optional[dict] = None) -> None:
-    """One call handed to the sink with its context; nothing without a sink, and a sink error is swallowed."""
-    sink = _SINK or _from_env()
+         attempts: int = 1, wall_ms: float = 0.0, error: Optional[str] = None, meta: Optional[dict] = None,
+         times: Optional[tuple[float, float]] = None) -> None:
+    """One call handed to the sink with its context; nothing without a sink, and a sink error is swallowed. `times`
+    is when the call was sent and finished (time.time()), which the row may be written well after."""
+    held = _PINNED.get()
+    sink = held[0] if held is not None else _SINK or _from_env()
     if sink is None:
         return
     record = {"context": current(), "model": model, "provider": provider, "system": system, "messages": messages,
               "tools": tools, "usage": usage, "attempts": attempts, "wall_ms": wall_ms, "error": error,
-              "meta": meta or {}}
+              "meta": meta or {}, "times": times}
     try:
         sink(record)
     except Exception:  # noqa: BLE001 - the log never fails the call it logs
@@ -392,8 +414,8 @@ class _Prefixes:
         for k, h in enumerate(hashes):
             # The first finish says from when the prefix was in the cache, the last keeps it fresh: keeping only
             # the latest let a busy shared step (the system prompt) look unsent to every call already in flight.
-            first, _last = self.done.get(h, (finished_at, finished_at))
-            self.done[h] = (min(first, finished_at), finished_at)
+            first, last = self.done.get(h, (finished_at, finished_at))
+            self.done[h] = (min(first, finished_at), max(last, finished_at))  # rows can be written out of order
             if k + 1 < len(parts):
                 self.next_step[h] = parts[k + 1][: self.keep_chars]
         self.next_step[""] = parts[0][: self.keep_chars]
@@ -441,8 +463,8 @@ class Log:
         self.misses = 0
 
     def __call__(self, record: dict) -> None:
-        finished = self.clock()
-        sent = finished - float(record.get("wall_ms") or 0.0) / 1000.0
+        now_s = self.clock()
+        sent, finished = record.get("times") or (now_s - float(record.get("wall_ms") or 0.0) / 1000.0, now_s)
         parts = steps(record.get("system") or "", record.get("messages") or [], record.get("tools"))
         row = self.row(record, parts)
         with self.lock:

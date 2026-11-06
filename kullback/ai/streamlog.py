@@ -9,7 +9,9 @@ sends them, else at the first chunk that says, before any of that chunk's output
 names one is not refused. A refusal ends the stream with an error event, the way a stream reports every failure.
 
 The row is built on a worker thread: it can wait on the gateway's price table and writes a file, and the event loop
-never waits for either. With logging off there is no row, so no price is read.
+never waits for either. What the row says of the call (its sink, its context, when it started and ended) is taken
+on the loop first, so a cancel that leaves the thread running changes none of it. With logging off there is no row,
+so no price is read.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ class _Watch:
 
     def __init__(self, handle: Any, wire: list, tools: Optional[list], config: Any, facts: StreamFacts):
         self.handle, self.wire, self.tools, self.config, self.facts = handle, wire, tools, config, facts
-        self.started = time.monotonic()
+        self.started, self.sent_at = time.monotonic(), time.time()
         self.usage: Any = None
         self.error: Optional[str] = None
         self.ended, self.checked = False, False
@@ -66,17 +68,19 @@ class _Watch:
         elif isinstance(event, ProviderResponseEnd):
             self.ended, self.usage = True, event.message.usage
 
-    def finish(self, ended: float) -> None:
-        """The row, exactly once, of a stream over at `ended`. The log never fails the call it logs."""
+    def finish(self, call: tuple, ended: float, finished_at: float) -> None:
+        """The row, exactly once, in that call's log and context, of a stream over at `ended` and `finished_at`. The
+        log never fails the call it logs."""
         usage = self.usage if self.usage is not None else getattr(self.facts.parser, "_usage", None)
         error = self.error if self.ended or self.error else CLOSED_EARLY
-        try:
-            meta = self.handle._meta(self.posted(), self.facts.body, self.config, self.facts.failed)
-        except Exception:  # noqa: BLE001
-            meta = {}
-        meta.pop("warmup_wait_ms", None)  # that thread-local belongs to the last blocking call
-        wall_ms = (ended - self.started) * 1000.0
-        self.handle._log(self.wire, self.tools, _reported(usage), max(1, self.facts.posts), wall_ms, error, meta)
+        with calllog.pinned(call):
+            try:
+                meta = self.handle._meta(self.posted(), self.facts.body, self.config, self.facts.failed)
+            except Exception:  # noqa: BLE001
+                meta = {}
+            meta.pop("warmup_wait_ms", None)  # that thread-local belongs to the last blocking call
+            self.handle._log(self.wire, self.tools, _reported(usage), max(1, self.facts.posts),
+                             (ended - self.started) * 1000.0, error, meta, (self.sent_at, finished_at))
 
 
 def _reported(usage: Any) -> Any:
@@ -105,7 +109,8 @@ async def logged_stream(handle: Any, events: AsyncIterator[ProviderEvent], wire:
     finally:
         try:
             if calllog.enabled():
-                await asyncio.to_thread(watch.finish, time.monotonic())  # a cancel here leaves the thread to finish it
+                # A cancel here leaves the thread to finish the row, so all it says of the call is taken now.
+                await asyncio.to_thread(watch.finish, calllog.this_call(), time.monotonic(), time.time())
         finally:
             closer = getattr(events, "aclose", None)
             if closer is not None:

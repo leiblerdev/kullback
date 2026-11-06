@@ -859,7 +859,7 @@ class HttpModel(Model):
 
     def _query(self, messages: list[dict], tools: Optional[list[dict]], config: ModelConfig, body: dict,
                retried: list) -> ModelReply:
-        started = time.monotonic()
+        started, sent_at = time.monotonic(), time.time()
         posted = reply = None
         spent = 0  # the HTTP requests a first post made before a shape retry
         try:
@@ -874,7 +874,7 @@ class HttpModel(Model):
                 body, spent = retry, error.attempts
                 posted = self._post_full(body)
                 posted = posted._replace(attempts=posted.attempts + spent)
-            wall_ms = (time.monotonic() - started) * 1000.0
+            wall_ms, finished_at = (time.monotonic() - started) * 1000.0, time.time()
             reply = self.parse_reply(posted.data)
             self.check_reply(posted)
         except Exception as error:
@@ -882,12 +882,14 @@ class HttpModel(Model):
             attempts = posted.attempts if posted is not None else spent + (getattr(error, "attempts", None) or 1)
             if posted is None and isinstance(error, ProviderError):
                 error.attempts = attempts  # a Run's error event says the same count
+            times = (sent_at, time.time())  # the meta below can wait on the price table
             self._log(messages, tools, reply.usage if reply is not None else None, attempts,
                       (time.monotonic() - started) * 1000.0, f"{type(error).__name__}: {str(error)[:200]}",
-                      self._meta(posted, body, config, retried))
+                      self._meta(posted, body, config, retried), times)
             raise
         reply.exchange = self.exchange_of(body, posted, wall_ms)
-        self._log(messages, tools, reply.usage, posted.attempts, wall_ms, None, self._meta(posted, body, config, retried))
+        self._log(messages, tools, reply.usage, posted.attempts, wall_ms, None,
+                  self._meta(posted, body, config, retried), (sent_at, finished_at))
         return reply
 
     def _meta(self, posted: Optional[Posted], body: dict, config: ModelConfig, retried: list) -> dict:
@@ -912,11 +914,12 @@ class HttpModel(Model):
         return {}
 
     def _log(self, messages: list[dict], tools: Optional[list[dict]], usage: Any, attempts: int, wall_ms: float,
-             error: Optional[str] = None, meta: Optional[dict] = None) -> None:
+             error: Optional[str] = None, meta: Optional[dict] = None,
+             times: Optional[tuple[float, float]] = None) -> None:
         """The call handed to the process's call sink (calllog.py): the one place every live call is logged."""
         system = "\n\n".join(_text_of(m) for m in messages if m.get("role") == "system")
         rest = [m for m in messages if m.get("role") != "system"]
-        calllog.emit(self.name, self.provider, system, rest, tools, usage, attempts, wall_ms, error, meta)
+        calllog.emit(self.name, self.provider, system, rest, tools, usage, attempts, wall_ms, error, meta, times)
 
     def exchange_of(self, body: dict, posted: Posted, wall_ms: float) -> Exchange:
         """What this call sent and how it went, from the body itself and the response's own headers.

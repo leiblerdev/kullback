@@ -4,6 +4,7 @@ import asyncio
 import json
 import random
 import threading
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -236,7 +237,7 @@ def test_a_blocking_call_with_logging_off_never_reads_the_price_table(monkeypatc
 
 def test_a_slow_price_read_is_not_counted_in_the_wall_time_of_the_stream(tmp_path, monkeypatch):
     clock = [100.0]
-    monkeypatch.setattr(streamlog, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(streamlog, "time", SimpleNamespace(monotonic=lambda: clock[0], time=lambda: clock[0]))
 
     def slow_read():
         clock[0] += 60.0
@@ -296,3 +297,71 @@ def test_a_stream_row_written_off_the_loop_carries_the_context_of_the_call(tmp_p
     asyncio.run(run())
     (row,) = calls.read(tmp_path)
     assert (row["label"], row["attempt"], row["session_tag"]) == ("the-label", 3, "r1.s")
+
+
+@pytest.mark.parametrize("another_log_begins", [False, True])
+def test_a_row_cancelled_during_the_price_read_stays_with_the_log_and_stage_of_its_call(tmp_path, another_log_begins):
+    asked, let_go = threading.Event(), threading.Event()
+
+    def held_read():
+        asked.set()
+        let_go.wait(2.0)
+
+    handle = _provider(lambda r: httpx.Response(200), on_price_read=held_read).handle
+    facts = StreamFacts()
+    facts.parser = SimpleNamespace(raw_usage=USAGE, body_model="model-a", _usage=None)
+
+    async def one_event():
+        yield SimpleNamespace()
+
+    async def consume():
+        stream = streamlog.logged_stream(handle, one_event(), [{"role": "user", "content": "hi"}], None,
+                                         ModelConfig(temperature=1.0), facts)
+        await stream.__anext__()
+        await stream.aclose()
+
+    async def run():
+        with calls.stage("first", tmp_path / "a"):
+            task = asyncio.create_task(consume())
+            await _until(asked)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if another_log_begins:
+            calls.begin(tmp_path / "b", "later", run_id="r2")
+        let_go.set()
+
+    asyncio.run(run())
+    (row,) = calls.read(tmp_path / "a")
+    assert row["stage"] == "first"
+    assert not (tmp_path / "b" / calls.CALLS_FILE).exists()
+
+
+def test_a_stream_hands_the_log_when_it_started_and_ended_not_when_the_row_was_written(monkeypatch):
+    clock, records = [100.0], []
+    monkeypatch.setattr(streamlog, "time", SimpleNamespace(monotonic=lambda: clock[0], time=lambda: clock[0]))
+
+    def slow_read():
+        clock[0] += 60.0
+
+    calls.install(records.append)
+    _turn(_provider(lambda r: httpx.Response(200, content=_answer()), on_price_read=slow_read))
+    assert records[0]["times"] == (100.0, 100.0)
+
+
+def test_a_blocking_call_hands_the_log_an_end_from_before_its_price_read(tmp_path):
+    read_at, records = [], []
+
+    def answer(request):
+        if request.url.path.endswith(pv.PRICING_PATH):
+            read_at.append(time.time())
+            return httpx.Response(200, json=PRICES)
+        return httpx.Response(200, json={"model": "model-a", "usage": USAGE,
+                                         "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+
+    pv.enable_live_calls_from_env({pv.LIVE_ENV_VAR: "1"})
+    model = pv.model_for("route-a/model-a", env=ROUTED, client=httpx.Client(transport=httpx.MockTransport(answer)),
+                         sleep=lambda _s: None, rng=random.Random(0))
+    calls.install(records.append)
+    model.query([{"role": "user", "content": "hi"}])
+    sent, finished = records[0]["times"]
+    assert sent <= finished <= read_at[0]

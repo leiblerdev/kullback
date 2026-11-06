@@ -138,6 +138,23 @@ def test_a_provider_with_no_known_cache_rule_gets_no_expectation_but_its_shared_
     assert log.rows[1]["uncacheable_shared"] > 0  # the shared words sit inside one step, past every boundary
 
 
+def test_a_prefix_that_warmed_after_a_call_was_sent_is_no_miss_however_late_the_row_is_written(tmp_path):
+    written = iter([105.0, 200.0])
+    log = calls.Log(tmp_path, cost=lambda *_: 0.0, clock=lambda: next(written), warn=lambda _l: None)
+    log(dict(_long_record("google/model-a"), usage=Usage(input=5000), provider="google", times=(90.0, 105.0)))
+    log(dict(_long_record("google/model-a"), usage=Usage(input=5000), provider="google", times=(100.0, 110.0),
+             wall_ms=10_000.0))
+    assert (log.rows[1]["expected_cached"], log.rows[1]["miss"]) == (0, False)
+
+
+def test_a_row_written_out_of_order_keeps_the_latest_finish_of_a_prefix():
+    prefixes = calls._Prefixes()
+    prefixes.add(["a"], 100.0)
+    prefixes.add(["a"], 50.0)
+    (kept,) = prefixes.done.values()
+    assert kept == (50.0, 100.0)
+
+
 def test_the_rollup_reports_actual_over_expected_misses_and_the_cached_share_of_first_and_later_calls():
     rows = [{"stage": "checks", "group": "r1", "input": 5000, "cache_read": 0, "expected_cached": 0},
             {"stage": "checks", "group": "r1", "input": 2000, "cache_read": 3000, "expected_cached": 3000},
