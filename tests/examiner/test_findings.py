@@ -225,11 +225,8 @@ def test_a_runs_disagree_finding_validates_and_is_filed(tmp_path):
 
     assert Finding(finding_id="finding-1", kind="runs_disagree", text="two versions of one row",
                    key="k").kind == "runs_disagree"
-    pins = {"runs_disagree": [
-        {"task_id": RENEW, "table": "loans", "key_class": "own", "column_classes": ["hard"],
-         "columns": 1, "run_ids": ["trace-1", "trace-9"], "split_candidate": True},
-    ]}
-    row = F.runs_disagree_rows(pins)[0]
+    row = {"kind": "runs_disagree", "text": "two versions of one row", "key": "k", "change": "split the Task",
+           "task_id": RENEW, "task_ids": [RENEW]}
     plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={})
     filed = F.file_finding(plan, kind=row["kind"], text=row["text"], key=row["key"],
                            change=row["change"], task_id=row["task_id"],

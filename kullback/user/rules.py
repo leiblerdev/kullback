@@ -229,27 +229,6 @@ def asked_fields(text: Optional[str], vocab: Vocabulary = GENERIC) -> list[str]:
             if any(re.search(cue, sentence) for sentence in requests for cue in spec.cues)]
 
 
-def named_fields(text: Optional[str], fields: Iterable[str], vocab: Vocabulary = GENERIC) -> list[str]:
-    """The fields of `fields` a request names by their own words, for wording no cue carries.
-
-    The cues are the words this corpus and the web showed (D115); an agent that asks in words
-    neither showed still names the field itself ("the name on the account"), and a fact the
-    recording holds is answered whatever the wording (D44). Build 8's Simulated user answered
-    "I do not have my name" to 63 such asks, with the name in its own rules.
-    """
-    requests = _request_sentences(_norm(text))
-    if not requests:
-        return []
-    out: list[str] = []
-    for field in fields:
-        spec = vocab.get(field)
-        words = [_words(field)] + list(spec.aliases if spec is not None else [])
-        cues = [r"\b" + re.escape(word) + r"\b" + REPOINT for word in words if word]
-        if field not in out and any(re.search(cue, sentence) for sentence in requests for cue in cues):
-            out.append(field)
-    return out
-
-
 def _flattened(text: Optional[str]) -> str:
     """A turn as the eye reads it: emphasis marks dropped, runs of whitespace one space, lower case,
     so "**Chen Johnson**" and a name broken over two lines both read as "chen johnson"."""

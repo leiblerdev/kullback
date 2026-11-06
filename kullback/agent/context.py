@@ -363,9 +363,6 @@ class ContextManager:
         """The `<skills>` block an extension places by adding a section named `skills`."""
         return self.skills.section()
 
-    def refresh_skills_section(self) -> None:
-        self.skills.refresh_section()
-
     # --- the line ---
 
     async def after_turn(self, turn: int) -> Optional[CompactionEntry]:
