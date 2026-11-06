@@ -59,6 +59,8 @@ hf download leibler/travel-agency --repo-type dataset --local-dir travel-agency
 harbor run -p travel-agency -a oracle -n 4
 ```
 
+The same Tasks are in [benchmarks/travel-agency](benchmarks/travel-agency/README.md) as one environment and its Task files; `python export.py --out harbor` there writes them.
+
 Grading a real agent needs a judge model for the reply checks; [the dataset card](https://huggingface.co/datasets/leibler/travel-agency)
 lists the variables and the agent commands.
 

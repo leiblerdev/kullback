@@ -1,0 +1,1148 @@
+[
+ {
+  "description": "Internal note on a platform booking.",
+  "name": "add_note",
+  "parameters": {
+   "properties": {
+    "platform_booking_id": {
+     "type": "string"
+    },
+    "text": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "platform_booking_id",
+    "text"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Cancel a car rental reservation before its pickup time. The vendor keeps the cancellation fee its terms set\nfor the reservation's rate plan (by hours left before pickup); the rest is the remaining value. On a pay at\ncounter plan the vendor bills its fee to the card on file instead (a rental_charges line), and waives it where\nits terms do for a flight on the reservation that the airline cancelled. Moves no TripDesk money: refund with\nissue_refund after quote_cancellation where TripDesk is merchant of record.",
+  "name": "car_cancel",
+  "parameters": {
+   "properties": {
+    "reservation_id": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "reservation_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Change a car rental's pickup time (before pickup) or return time (also during the rental, an extension).\nTimes are ISO 8601 with offset; an empty time stays as booked. Each added rental day costs the daily rate,\ncharged to the original payment of a prepaid reservation, only if within max_extra. A vendor whose terms send\nextensions to the owner refuses a return time change here.",
+  "name": "car_change",
+  "parameters": {
+   "properties": {
+    "max_extra": {
+     "type": "number"
+    },
+    "pickup_time": {
+     "type": "string"
+    },
+    "reservation_id": {
+     "type": "string"
+    },
+    "return_time": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "reservation_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Dispute a charge the car vendor billed after a rental (a rental_charges line). The vendor decides at once by\nits terms and the law of the rental's state: a damage claim made later than allowed, loss of use or admin fees\nwhere the state forbids them, fuel on a car returned with at least the fuel it left with, or a late return\nwithin the grace period is reversed by the vendor; any other line is upheld. Damage logged at pickup is not the\nrenter's: a damage line and the claim costs billed with it are reversed when the damaged area was recorded at\npickup. A low-mileage fuel fee stands on a full tank where the vendor's terms set one and no fuel receipt was\nshown.",
+  "name": "car_dispute_charge",
+  "parameters": {
+   "properties": {
+    "line_id": {
+     "type": "string"
+    },
+    "reason": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "line_id",
+    "reason"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Car rental reservation: pickup and return times and places, the flight number given, rate plan, fees, the\ndeposit hold, and every charge the vendor billed after the rental (rental_charges, with line ids).",
+  "name": "car_get_reservation",
+  "parameters": {
+   "properties": {
+    "reservation_id": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "reservation_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "File a trip protection claim with the benefit administrator of the card that paid the booking. Refused for\na booking another card or tender paid, a closed card, a payment disputed with the card issuer, a booking\nalready claimed under the same coverage, or a notice later than the program's window after the loss. The\nadministrator decides at once by the program's terms: a reason it does not cover, a one-way flight where it\ncovers round trips only, a delay not longer than its threshold or a card past its yearly delay claims is\ndenied; cancellation pays at most the booking's cost less refunds and vendor credits (the benefit is excess\nover what the vendor pays) and the per trip cap, delay at most its cap. The administrator pays the cardholder;\nTripDesk pays nothing.",
+  "name": "card_benefit_file_claim",
+  "parameters": {
+   "properties": {
+    "amount": {
+     "type": "number"
+    },
+    "benefit_id": {
+     "type": "string"
+    },
+    "coverage": {
+     "enum": [
+      "trip_cancellation",
+      "trip_interruption",
+      "trip_delay"
+     ],
+     "type": "string"
+    },
+    "currency": {
+     "type": "string"
+    },
+    "evidence": {
+     "type": "string"
+    },
+    "platform_booking_id": {
+     "type": "string"
+    },
+    "reason": {
+     "enum": [
+      "sickness_or_injury",
+      "inclement_weather",
+      "equipment_failure",
+      "strike",
+      "jury_duty",
+      "military_orders",
+      "quarantine",
+      "change_of_plans",
+      "supplier_insolvency"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "benefit_id",
+    "platform_booking_id",
+    "coverage",
+    "reason",
+    "amount",
+    "currency",
+    "evidence"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "The trip protection benefits on a customer's cards: the program (the card's benefit administrator, not\nTripDesk), card product and last 4 digits, status, the program's terms (which payments it covers, covered\nreasons, caps, delay threshold, claim notice and proof windows, documents) and the claims filed on each.",
+  "name": "card_benefit_get",
+  "parameters": {
+   "properties": {
+    "customer_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "customer_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Calculator, changes nothing: the EU261 or UK261 right to care (Art 9) and to re-routing or refund (Art 8)\non a cancelled or delayed EU or UK flight or a denied boarding (Art 4(3)), owed by the operating carrier even\nin extraordinary circumstances, or on a US flight the care a carrier's own customer service plan commits to\n(service_plan in its fare_rules) when the cause was in its control: the care items due, the customer's\nreceipts for items the carrier did not give in kind, and the amount to claim. The flights of one through\nticket (ticket_group) are one journey: the first flight's departure decides whether EU261 applies.",
+  "name": "compute_care",
+  "parameters": {
+   "properties": {
+    "platform_booking_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "platform_booking_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Calculator, changes nothing: which legal regime applies to a disruption (DOT refund, EU261, UK261, EU rail,\nIR TDR, FMC cruise refund, none), the amount or refund due, the reason and the rule id. The flights of one\nthrough ticket (ticket_group) are judged as one journey: the first flight's departure decides the regime. EU261\nand UK261 compensation is per passenger: the amount is the per passenger sum times the booking's pax.",
+  "name": "compute_entitlement",
+  "parameters": {
+   "properties": {
+    "platform_booking_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "platform_booking_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Cancel a cruise booking before the all-aboard time. The line keeps what its cancellation schedule sets by the\ncruise length (and cabin category where the line's schedule depends on it) and the days left before sailing\n(a share of the fare, at least the deposit where the band keeps it); taxes and fees come back where the line\nrefunds them. Moves no TripDesk money: refund with issue_refund after quote_cancellation.",
+  "name": "cruise_cancel",
+  "parameters": {
+   "properties": {
+    "booking_number": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "booking_number"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Cruise booking: ship, sail date, embarkation port and all-aboard time, itinerary with any change the line\nmade, fare, port taxes, deposit, final payment date, onboard credit, and whether the line booked the air.",
+  "name": "cruise_get_booking",
+  "parameters": {
+   "properties": {
+    "booking_number": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "booking_number"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Open an escalation case. Queues: tier2_goodwill, supplier_relations, legal, safety. Returns owner and SLA.",
+  "name": "escalate",
+  "parameters": {
+   "properties": {
+    "amount": {
+     "type": "number"
+    },
+    "commitment_id": {
+     "type": "string"
+    },
+    "currency": {
+     "type": "string"
+    },
+    "customer_id": {
+     "type": "string"
+    },
+    "platform_booking_id": {
+     "type": "string"
+    },
+    "queue": {
+     "enum": [
+      "tier2_goodwill",
+      "supplier_relations",
+      "legal",
+      "safety"
+     ],
+     "type": "string"
+    },
+    "summary": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "customer_id",
+    "platform_booking_id",
+    "queue",
+    "summary"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Search customers by email, phone, name, platform booking ID or vendor booking ID. Returns masked records only.",
+  "name": "find_customer",
+  "parameters": {
+   "properties": {
+    "query": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "query"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Cancel a PNR before departure at the customer's request. The fare rule decides what is left: the remaining\nvalue minus the cancellation charge, returned as cash or as an airline credit. Moves no TripDesk money.",
+  "name": "flight_cancel",
+  "parameters": {
+   "properties": {
+    "record_locator": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "record_locator"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Move a PNR's first segment to new_flight, a product_id flight_search returns. Fails after the booked flight\ndeparts (ticket has no value). Charges change fee plus fare difference to the original payment, only if within max_fare_difference.",
+  "name": "flight_change",
+  "parameters": {
+   "properties": {
+    "max_fare_difference": {
+     "type": "number"
+    },
+    "new_flight": {
+     "type": "string"
+    },
+    "record_locator": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "record_locator",
+    "new_flight",
+    "max_fare_difference"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Airline PNR by record locator, with segments, fare class and checked bags.",
+  "name": "flight_get_booking",
+  "parameters": {
+   "properties": {
+    "record_locator": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "record_locator"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Live or past operating status of a flight on a date (YYYY-MM-DD): status, delay minutes, scheduled and\nprojected arrival, and cause.",
+  "name": "flight_get_status",
+  "parameters": {
+   "properties": {
+    "date": {
+     "type": "string"
+    },
+    "flight": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "flight",
+    "date"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Re-route a passenger whose airline cancelled the flight, denied boarding or caused the missed connection, on\nnew_flight (a product_id flight_search returns) of the same airline or of another airline (new_vendor_id), at\nno cost to the passenger. Another airline only where EU261 or UK261 applies (re-routing under comparable\ntransport conditions, Art 8) or the airline's contract allows it (reroute_other_carrier in its fare_rules: every\ncondition in \"when\" holds and new_vendor_id is one of its \"partners\"), and only when the airline has no flight\nof its own on the route arriving as early. Conditions: \"controllable\" (the cause was in the airline's control),\n\"no_own_flight_until_next_day\" (no flight of its own with seats leaves on the booked day). Records the reroute\non the booking.",
+  "name": "flight_reroute",
+  "parameters": {
+   "properties": {
+    "new_flight": {
+     "type": "string"
+    },
+    "new_vendor_id": {
+     "type": "string"
+    },
+    "record_locator": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "record_locator",
+    "new_vendor_id",
+    "new_flight"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Bookable flights for a date (YYYY-MM-DD) with seats and fare difference versus the customer's fare; each\nproduct_id is a new_flight flight_change and flight_reroute accept. arrive_by (ISO 8601 with offset) keeps only\nflights that arrive at or before it, times compared with their offsets.",
+  "name": "flight_search",
+  "parameters": {
+   "properties": {
+    "arrive_by": {
+     "type": "string"
+    },
+    "date": {
+     "type": "string"
+    },
+    "dest": {
+     "type": "string"
+    },
+    "origin": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "origin",
+    "dest",
+    "date"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "One platform booking, plus its payment, the refunds and the notes already on it.",
+  "name": "get_booking",
+  "parameters": {
+   "properties": {
+    "platform_booking_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "platform_booking_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Card disputes (chargebacks) filed against TripDesk's charges to a customer: network, reason code, amount,\nthe date TripDesk must respond by, status (open, accepted, contested, won, lost) and the network's terms.",
+  "name": "get_chargebacks",
+  "parameters": {
+   "properties": {
+    "customer_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "customer_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Current time. The clock is frozen for the whole case.",
+  "name": "get_clock",
+  "parameters": {
+   "properties": {},
+   "required": [],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Promises staff made earlier (written or recorded), with status open, superseded or fulfilled.",
+  "name": "get_commitments",
+  "parameters": {
+   "properties": {
+    "customer_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "customer_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Earlier contacts on any channel, oldest first.",
+  "name": "get_contact_history",
+  "parameters": {
+   "properties": {
+    "customer_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "customer_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "All platform bookings for a customer, with vendor IDs and vendor booking IDs.",
+  "name": "get_customer_bookings",
+  "parameters": {
+   "properties": {
+    "customer_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "customer_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Documents the customer sent (invoices, receipts), including ones that were never routed to the case.",
+  "name": "get_documents",
+  "parameters": {
+   "properties": {
+    "customer_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "customer_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Add a note the front desk will see (for example a late-arrival time).",
+  "name": "hotel_add_note",
+  "parameters": {
+   "properties": {
+    "confirmation": {
+     "type": "string"
+    },
+    "text": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "confirmation",
+    "text"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Cancel a hotel reservation. A late cancellation fee per the property policy is taken once: out of the prepaid\namount still held (quote_cancellation keeps it as the vendor penalty), and only the part that amount does not\ncover is charged now (fee_charged).",
+  "name": "hotel_cancel",
+  "parameters": {
+   "properties": {
+    "confirmation": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "confirmation"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Hotel reservation, including the property's cancellation policy.",
+  "name": "hotel_get_reservation",
+  "parameters": {
+   "properties": {
+    "confirmation": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "confirmation"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Cancel a travel insurance policy with its insurer. Inside the plan's free look (days after purchase, before\nthe trip starts, no claim filed) the insurer refunds the whole premium to the card; after it the premium is\nnot refunded. Moves no TripDesk money.",
+  "name": "insurance_cancel",
+  "parameters": {
+   "properties": {
+    "policy_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "policy_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "File a claim with the insurer for a loss on a booking the policy covers. The insurer decides at once by\nits plan: a reason the plan does not cover is denied; an approved claim pays at most the booking's cost (less\nrefunds already paid where the plan pays less available refunds, less any value the vendor returned as a\ncredit, half the cost for cancel for any reason). A trip delay claim pays only when the longest delay on the\npolicy's covered bookings reaches the plan's trip_delay_min_hours, and at most the plan's trip_delay_daily_max\nper traveller for each started day of that delay. The insurer pays the customer; TripDesk pays nothing.",
+  "name": "insurance_file_claim",
+  "parameters": {
+   "properties": {
+    "amount": {
+     "type": "number"
+    },
+    "currency": {
+     "type": "string"
+    },
+    "evidence": {
+     "type": "string"
+    },
+    "platform_booking_id": {
+     "type": "string"
+    },
+    "policy_id": {
+     "type": "string"
+    },
+    "reason": {
+     "enum": [
+      "sickness_or_injury",
+      "carrier_disruption_weather",
+      "carrier_disruption_mechanical",
+      "strike",
+      "trip_delay",
+      "cancel_for_any_reason",
+      "change_of_mind"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "policy_id",
+    "platform_booking_id",
+    "reason",
+    "amount",
+    "currency",
+    "evidence"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "A travel insurance policy sold with a booking: the insurer (not TripDesk), plan, covered bookings, trip\ncost, premium, dates, status, the plan's terms (free look, covered reasons, refund basis, claim window) and\nthe claims filed on it.",
+  "name": "insurance_get_policy",
+  "parameters": {
+   "properties": {
+    "policy_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "policy_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Refund money the customer paid TripDesk on a booking, to the original payment or to wallet credit, up to the\namount paid minus earlier refunds. Refused where the vendor is merchant of record (the vendor refunds).",
+  "name": "issue_refund",
+  "parameters": {
+   "properties": {
+    "amount": {
+     "type": "number"
+    },
+    "currency": {
+     "type": "string"
+    },
+    "destination": {
+     "enum": [
+      "original_payment",
+      "wallet"
+     ],
+     "type": "string"
+    },
+    "platform_booking_id": {
+     "type": "string"
+    },
+    "reason_code": {
+     "enum": [
+      "airline_cancelled",
+      "customer_cancel_free",
+      "customer_cancel",
+      "fare_review_approved",
+      "smoking_fee_dispute",
+      "vendor_cancelled"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "platform_booking_id",
+    "amount",
+    "currency",
+    "destination",
+    "reason_code"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Legacy refund endpoint, kept for old bookings. Credits the TripDesk wallet.",
+  "name": "issue_refund_legacy",
+  "parameters": {
+   "properties": {
+    "amount": {
+     "type": "number"
+    },
+    "currency": {
+     "type": "string"
+    },
+    "platform_booking_id": {
+     "type": "string"
+    },
+    "reason_code": {
+     "enum": [
+      "airline_cancelled",
+      "customer_cancel_free",
+      "customer_cancel",
+      "fare_review_approved",
+      "smoking_fee_dispute"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "platform_booking_id",
+    "amount",
+    "currency",
+    "reason_code"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "List the policy documents (liability model, law, vendor contracts, platform internal policy).",
+  "name": "list_policies",
+  "parameters": {
+   "properties": {},
+   "required": [],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Calculator, changes nothing: the refundable amount of a booking, the fees kept (vendor penalty, platform\nfee), the rule ids applied, who refunds (the merchant of record), and whether the vendor returns the balance as\ncash or as a credit with that vendor (refund_form; refundable counts cash only, credit the credit).",
+  "name": "quote_cancellation",
+  "parameters": {
+   "properties": {
+    "platform_booking_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "platform_booking_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Cancel a rail reservation before departure at the customer's request. The fare rule decides the forfeit and\nwhether the rest comes back as cash or a voucher; some fares cannot be cancelled. Moves no TripDesk money.",
+  "name": "rail_cancel",
+  "parameters": {
+   "properties": {
+    "reservation_number": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "reservation_number"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Move a rail reservation to a later train of the same operator on the same route (new_train, a product_id\nrail_search returns). A voluntary change before departure follows the fare rule: some fares cannot be changed,\nothers charge a change fee plus the fare difference to the original payment, only if within\nmax_fare_difference. When the operator cancelled the train, or its own late train made the passenger miss this\none (missed_connection), the change is free and allowed after the booked departure. A fare may set until when\nit changes (change_until_min, minutes before departure; negative: after departure) and a fee per passenger\n(fee_per_pax); a lower fare difference then refunds nothing (no_lower_fare_refund).",
+  "name": "rail_change",
+  "parameters": {
+   "properties": {
+    "max_fare_difference": {
+     "type": "number"
+    },
+    "new_train": {
+     "type": "string"
+    },
+    "reservation_number": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "reservation_number",
+    "new_train",
+    "max_fare_difference"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Rail reservation.",
+  "name": "rail_get_booking",
+  "parameters": {
+   "properties": {
+    "reservation_number": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "reservation_number"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Live or past running status for a train on a date (YYYY-MM-DD).",
+  "name": "rail_get_train_status",
+  "parameters": {
+   "properties": {
+    "date": {
+     "type": "string"
+    },
+    "train": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "train",
+    "date"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Bookable trains of one rail operator for a date (YYYY-MM-DD) with seats and fare difference versus the\ncustomer's fare; each product_id is a new_train rail_change accepts. depart_after (ISO 8601 with offset) keeps\nonly trains that leave after it, times compared with their offsets.",
+  "name": "rail_search",
+  "parameters": {
+   "properties": {
+    "date": {
+     "type": "string"
+    },
+    "depart_after": {
+     "type": "string"
+    },
+    "dest": {
+     "type": "string"
+    },
+    "origin": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "origin",
+    "dest",
+    "date"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Read one policy document by name, for example '30_platform_internal'.",
+  "name": "read_policy",
+  "parameters": {
+   "properties": {
+    "name": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Record who caused a cancellation: customer, supplier_fault, platform_fault, force_majeure.",
+  "name": "reclassify_cancellation",
+  "parameters": {
+   "properties": {
+    "cause": {
+     "enum": [
+      "customer",
+      "supplier_fault",
+      "platform_fault",
+      "force_majeure"
+     ],
+     "type": "string"
+    },
+    "evidence": {
+     "type": "string"
+    },
+    "platform_booking_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "platform_booking_id",
+    "cause",
+    "evidence"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Answer an open card dispute before its respond_by time. accept: the network returns the disputed amount to\nthe cardholder's card (recorded as a refund by the card network) and the dispute is lost. contest: send the\nevidence (terms accepted, service delivered, cancellation record) and the network decides later.",
+  "name": "respond_chargeback",
+  "parameters": {
+   "properties": {
+    "chargeback_id": {
+     "type": "string"
+    },
+    "decision": {
+     "enum": [
+      "accept",
+      "contest"
+     ],
+     "type": "string"
+    },
+    "evidence": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "chargeback_id",
+    "decision"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Cancel a scheduled ride. A fee applies inside the vendor's fee window, and for a vendor whose rule says so\nonly once a driver accepted the ride.",
+  "name": "ride_cancel_scheduled",
+  "parameters": {
+   "properties": {
+    "ride_id": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "ride_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Ride details: a scheduled ride, or an on-demand trip with its route, times, who cancelled and fare lines.",
+  "name": "ride_get_scheduled",
+  "parameters": {
+   "properties": {
+    "ride_id": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "ride_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Schedule a ride. pickup_time is ISO 8601 with offset. payment_id names the customer's payment to charge;\nempty charges the customer's most recent payment.",
+  "name": "ride_schedule",
+  "parameters": {
+   "properties": {
+    "customer_id": {
+     "type": "string"
+    },
+    "dropoff": {
+     "type": "string"
+    },
+    "payment_id": {
+     "type": "string"
+    },
+    "pickup": {
+     "type": "string"
+    },
+    "pickup_time": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "customer_id",
+    "pickup",
+    "dropoff",
+    "pickup_time"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Read a vendor thread with the vendor's reply.",
+  "name": "vendor_check",
+  "parameters": {
+   "properties": {
+    "thread_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "thread_id"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "List vendor threads, optionally for one platform booking.",
+  "name": "vendor_list_threads",
+  "parameters": {
+   "properties": {
+    "platform_booking_id": {
+     "type": "string"
+    }
+   },
+   "required": [],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Message a vendor desk (hotel, rail, airline, ride). Request types are listed per vendor. The vendor answers\nat once by its own rules for the request type, else by the rules every vendor shares (no vendor_id); read the\nreply with vendor_check. A rule whose text names a field in braces answers from the vendor's records of the\nbooking (vendor_booking_id; refund_amount, refund_currency and refund_date of the refund the vendor paid) and\napplies only when the booking has that field. A rule marked per_pax limits the amount per passenger (its\namount_lte times the booking's pax).",
+  "name": "vendor_send",
+  "parameters": {
+   "properties": {
+    "amount": {
+     "type": "number"
+    },
+    "currency": {
+     "type": "string"
+    },
+    "message": {
+     "type": "string"
+    },
+    "platform_booking_id": {
+     "type": "string"
+    },
+    "request_type": {
+     "type": "string"
+    },
+    "vendor_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "vendor_id",
+    "platform_booking_id",
+    "request_type",
+    "message"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "IP-1: verify the requester. Needs the customer's email, one of their booking IDs (platform or vendor),\nand the last 4 digits of the card that paid for that booking.",
+  "name": "verify_identity",
+  "parameters": {
+   "properties": {
+    "booking_id": {
+     "type": "string"
+    },
+    "card_last4": {
+     "type": "string"
+    },
+    "customer_id": {
+     "type": "string"
+    },
+    "email": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "customer_id",
+    "email",
+    "booking_id",
+    "card_last4"
+   ],
+   "type": "object"
+  }
+ },
+ {
+  "description": "Send a message to the user. The last message you send is your final reply.",
+  "name": "reply_to_user",
+  "parameters": {
+   "properties": {
+    "text": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "text"
+   ],
+   "type": "object"
+  }
+ }
+]

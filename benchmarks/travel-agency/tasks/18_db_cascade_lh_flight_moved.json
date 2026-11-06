@@ -1,0 +1,515 @@
+{
+ "alts": {
+  "extra_reads_after_change.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LHR19B"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LHR19B",
+      "card_last4": "5919",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "sophie.brandt@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "train": "ICE 627",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_train_status"
+    },
+    {
+     "args": {
+      "record_locator": "LHR19B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "dest": "JFK",
+      "origin": "FRA",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_search"
+    },
+    {
+     "args": {
+      "max_fare_difference": 50.0,
+      "new_flight": "LH9406",
+      "record_locator": "LHR19B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "reservation_number": "DB-R19A",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R18A"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "text": "I moved your booking LHR19B to Lufthansa LH9406, departing Frankfurt at 20:25 tonight. The fare difference charged is EUR 45, within the EUR 50 you allowed. ICE 627 is still running, so I have not filed the DB delay compensation now; it will be claimed after the train has arrived. DB owes only the EU rail delay compensation for ICE 627, not the EUR 45 flight change."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "extra_reads_no_note.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LHR19B"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LHR19B",
+      "card_last4": "5919",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "sophie.brandt@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "reservation_number": "DB-R19A",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R18A"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "train": "ICE 627",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_train_status"
+    },
+    {
+     "args": {
+      "record_locator": "LHR19B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "dest": "JFK",
+      "origin": "FRA",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_search"
+    },
+    {
+     "args": {
+      "max_fare_difference": 50.0,
+      "new_flight": "LH9406",
+      "record_locator": "LHR19B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "text": "I moved your booking LHR19B to Lufthansa LH9406, departing Frankfurt at 20:25 tonight. The fare difference charged is EUR 45, within the EUR 50 you allowed. ICE 627 is still running, so I have not filed the DB delay compensation now; it will be claimed after the train has arrived. DB owes only the EU rail delay compensation for ICE 627, not the EUR 45 flight change."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "refused_probe_then_right.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LHR19B"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LHR19B",
+      "card_last4": "5919",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "sophie.brandt@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "train": "ICE 627",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_train_status"
+    },
+    {
+     "args": {
+      "record_locator": "LHR19B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "dest": "JFK",
+      "origin": "FRA",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_search"
+    },
+    {
+     "args": {
+      "max_fare_difference": 50.0,
+      "new_flight": "LH9408",
+      "record_locator": "LHR19B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "max_fare_difference": 50.0,
+      "new_flight": "LH9406",
+      "record_locator": "LHR19B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R18B",
+      "text": "Customer asks DB to pay the change; DB owes only the EU rail delay share, claimable after arrival."
+     },
+     "name": "add_note"
+    },
+    {
+     "args": {
+      "text": "I moved your booking LHR19B to Lufthansa LH9406, departing Frankfurt at 20:25 tonight. The fare difference charged is EUR 45, within the EUR 50 you allowed (a later flight that would have cost EUR 120 more was refused and not booked). ICE 627 is still running, so I have not filed the DB delay compensation now; it will be claimed after the train has arrived. DB owes only the EU rail delay compensation for ICE 627, not the EUR 45 flight change."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "charges": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 45.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "EUR",
+      "customer_id": "C-R18",
+      "platform_booking_id": "TD-R18B",
+      "reason": "flight_change"
+     }
+    }
+   ],
+   "inventory": [
+    {
+     "cols": {
+      "seats": 1
+     },
+     "key": "V-LH|LH9406",
+     "op": "change"
+    },
+    {
+     "cols": {
+      "seats": 4
+     },
+     "key": "V-LH|LH9400",
+     "op": "change"
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R18"
+     }
+    }
+   ],
+   "vendor_bookings": [
+    {
+     "cols": {
+      "data": {
+       "distance_km": 6200,
+       "fare_class": "Light",
+       "history": [
+        {
+         "at": "2026-10-29T12:00:00-04:00",
+         "changed_from": "LH9400",
+         "cost": 45.0
+        }
+       ],
+       "intra_eu": false,
+       "pax": 1,
+       "region": "EU",
+       "segments": [
+        {
+         "arr": "2026-10-29T23:15:00-04:00",
+         "dep": "2026-10-29T20:25:00+01:00",
+         "flight": "LH9406",
+         "from": "FRA",
+         "to": "JFK"
+        }
+       ]
+      }
+     },
+     "key": "V-LH|LHR19B",
+     "op": "change"
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.P-LIAB-4] Does the agent follow this policy line: [SHOULD P-LIAB-4] When two layers disagree, the agent should follow the layer that owns the question and record the conflict with add_note? (met = 1: Does the agent follow this policy line: [SHOULD P-LIAB-4] When two layers disagree, the agent should follow the layer that owns the question and record the conflict with add_note?)",
+    "scope": [
+     "add_note"
+    ],
+    "tag": "P-LIAB-4"
+   },
+   {
+    "checkpoint": "- [judge.IP-2] Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount? (met = 1: Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "IP-2"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.IP-11] Does the agent follow this policy line: [MUST IP-11] When a status_events row gives the projected arrival of an inbound flight or train, the agent rebooks the earliest flight that departs at least 90 minutes after the later of that arrival and a ready time the customer's message states (times compared with their offsets), and changes it before the booked flight departs; a train counts from its arrival at its station, the same 90 minutes for a station at the airport and for one in the city? (met = 1: Does the agent follow this policy line: [MUST IP-11] When a status_events row gives the projected arrival of an inbound flight or train, the agent rebooks the earliest flight that departs at least 90 minutes after the later of that arrival and a ready time the customer's message states (times compared with their offsets), and changes it before the booked flight departs; a train counts from its arrival at its station, the same 90 minutes for a station at the airport and for one in the city?)",
+    "scope": [
+     "flight_change"
+    ],
+    "tag": "IP-11"
+   },
+   {
+    "checkpoint": "- [judge.CR-FLIGHT-PORT] Does the agent follow this policy line: [MUST CR-FLIGHT-PORT] [synthetic] When a flight to the embarkation port will arrive less than 180 minutes before the cruise's all_aboard time, the agent rebooks with flight_change, before the booked flight departs, the earliest flight that departs at or after the booked flight's original departure and arrives at least 180 minutes before all_aboard? (met = 1: Does the agent follow this policy line: [MUST CR-FLIGHT-PORT] [synthetic] When a flight to the embarkation port will arrive less than 180 minutes before the cruise's all_aboard time, the agent rebooks with flight_change, before the booked flight departs, the earliest flight that departs at or after the booked flight's original departure and arrives at least 180 minutes before all_aboard?)",
+    "scope": [
+     "flight_change"
+    ],
+    "tag": "CR-FLIGHT-PORT"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.CB-FCBA] Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days? (met = 1: Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "car_dispute_charge",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "respond_chargeback",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CB-FCBA"
+   },
+   {
+    "checkpoint": "- [judge.GP-REROUTE-EARLIEST] Does the agent follow this policy line: [SHOULD GP-REROUTE-EARLIEST] The agent should re-route on the earliest arriving flight flight_search returns, narrowed with arrive_by to the time the customer must arrive, and record a refused request for another airline with add_note? (met = 1: Does the agent follow this policy line: [SHOULD GP-REROUTE-EARLIEST] The agent should re-route on the earliest arriving flight flight_search returns, narrowed with arrive_by to the time the customer must arrive, and record a refused request for another airline with add_note?)",
+    "scope": [
+     "add_note"
+    ],
+    "tag": "GP-REROUTE-EARLIEST"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.CR-MSC-NAME] Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name? (met = 1: Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name?)",
+    "scope": [
+     "car_change",
+     "flight_change",
+     "hotel_cancel",
+     "rail_change",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CR-MSC-NAME"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: States that the booking was moved to LH9406, departing Frankfurt at 20:25, with a EUR 45 fare difference charged, within the EUR 50 the customer allowed. (met = 1: In its replies to the customer, does the agent do this: States that the booking was moved to LH9406, departing Frankfurt at 20:25, with a EUR 45 fare difference charged, within the EUR 50 the customer allowed.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: Says that the DB delay compensation for ICE 627 is not filed now and will be claimed after the train has arrived. (met = 1: In its replies to the customer, does the agent do this: Says that the DB delay compensation for ICE 627 is not filed now and will be claimed after the train has arrived.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: Says that the train is still running, so the claim waits for its arrival. (met = 1: In its replies to the customer, does the agent do this: Says that the train is still running, so the claim waits for its arrival.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Says DB owes only the EU rail delay compensation for ICE 627, not the EUR 45 flight change. (met = 1: In its replies to the customer, does the agent do this: Says DB owes only the EU rail delay compensation for ICE 627, not the EUR 45 flight change.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   }
+  ],
+  "message": "I am SO angry. I was at the station on time and my ICE 627 to Frankfurt Airport is now more than two hours late. I will not make my Lufthansa flight from Frankfurt tonight (LHR19B). Get me on the next one that I can actually catch tonight, I'm not paying more than 50 euros extra. And DB better pay for this. sophie.brandt@example.com, card 5919.",
+  "strict_tables": [],
+  "task": "18_db_cascade_lh_flight_moved",
+  "token": "25a5688eb2bd821e37b8d6f95400e4d4"
+ },
+ "instruction": "I am SO angry. I was at the station on time and my ICE 627 to Frankfurt Airport is now more than two hours late. I will not make my Lufthansa flight from Frankfurt tonight (LHR19B). Get me on the next one that I can actually catch tonight, I'm not paying more than 50 euros extra. And DB better pay for this. sophie.brandt@example.com, card 5919.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R18\": {\n   \"customer_id\": \"C-R18\",\n   \"email\": \"sophie.brandt@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Sophie Brandt\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"inventory\": {\n  \"V-LH|LH9400\": {\n   \"arr\": \"2026-10-29T22:30:00-04:00\",\n   \"currency\": \"EUR\",\n   \"dep\": \"2026-10-29T19:40:00+01:00\",\n   \"dest\": \"JFK\",\n   \"fare_difference\": 0.0,\n   \"kind\": \"flight\",\n   \"origin\": \"FRA\",\n   \"product_id\": \"LH9400\",\n   \"seats\": 3,\n   \"vendor_id\": \"V-LH\"\n  },\n  \"V-LH|LH9404\": {\n   \"arr\": \"2026-10-29T22:50:00-04:00\",\n   \"currency\": \"EUR\",\n   \"dep\": \"2026-10-29T20:00:00+01:00\",\n   \"dest\": \"JFK\",\n   \"fare_difference\": 20.0,\n   \"kind\": \"flight\",\n   \"origin\": \"FRA\",\n   \"product_id\": \"LH9404\",\n   \"seats\": 4,\n   \"vendor_id\": \"V-LH\"\n  },\n  \"V-LH|LH9406\": {\n   \"arr\": \"2026-10-29T23:15:00-04:00\",\n   \"currency\": \"EUR\",\n   \"dep\": \"2026-10-29T20:25:00+01:00\",\n   \"dest\": \"JFK\",\n   \"fare_difference\": 45.0,\n   \"kind\": \"flight\",\n   \"origin\": \"FRA\",\n   \"product_id\": \"LH9406\",\n   \"seats\": 2,\n   \"vendor_id\": \"V-LH\"\n  },\n  \"V-LH|LH9408\": {\n   \"arr\": \"2026-10-30T00:20:00-04:00\",\n   \"currency\": \"EUR\",\n   \"dep\": \"2026-10-29T21:30:00+01:00\",\n   \"dest\": \"JFK\",\n   \"fare_difference\": 120.0,\n   \"kind\": \"flight\",\n   \"origin\": \"FRA\",\n   \"product_id\": \"LH9408\",\n   \"seats\": 6,\n   \"vendor_id\": \"V-LH\"\n  }\n },\n \"payments\": {\n  \"PM-R18A\": {\n   \"amount\": 79.0,\n   \"card_last4\": \"5919\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R18\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R18A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R18B\": {\n   \"amount\": 620.0,\n   \"card_last4\": \"5919\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R18\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R18B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R18C\": {\n   \"amount\": 39.9,\n   \"card_last4\": \"5919\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R18\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R18C\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R18A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R18\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R18A\",\n   \"platform_booking_id\": \"TD-R18A\",\n   \"product_type\": \"rail\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 79.0,\n   \"vendor_booking_id\": \"DB-R19A\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"TD-R18B\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R18\",\n   \"details\": {\n    \"pax\": 1,\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R18B\",\n   \"platform_booking_id\": \"TD-R18B\",\n   \"product_type\": \"flight\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 620.0,\n   \"vendor_booking_id\": \"LHR19B\",\n   \"vendor_id\": \"V-LH\"\n  },\n  \"TD-R18C\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R18\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R18C\",\n   \"platform_booking_id\": \"TD-R18C\",\n   \"product_type\": \"rail\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 39.9,\n   \"vendor_booking_id\": \"DB-R19C\",\n   \"vendor_id\": \"V-DB\"\n  }\n },\n \"status_events\": {\n  \"SE-R18A\": {\n   \"data\": {\n    \"delay_min\": 140,\n    \"projected_arrival\": \"2026-10-29T18:40:00+01:00\",\n    \"scheduled_arrival\": \"2026-10-29T16:20:00+01:00\",\n    \"status\": \"delayed\",\n    \"train\": \"ICE 627\"\n   },\n   \"event_id\": \"SE-R18A\",\n   \"service_date\": \"2026-10-29\",\n   \"service_id\": \"ICE 627\",\n   \"vendor_id\": \"V-DB\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DB|DB-R19A\": {\n   \"data\": {\n    \"date\": \"2026-10-29\",\n    \"delay_min\": 140,\n    \"dep\": \"2026-10-29T14:05:00+01:00\",\n    \"fare_class\": \"Flexpreis\",\n    \"from\": \"KA\",\n    \"region\": \"EU\",\n    \"to\": \"FFLF\",\n    \"train\": \"ICE 627\"\n   },\n   \"platform_booking_id\": \"TD-R18A\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"DB-R19A\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"V-DB|DB-R19C\": {\n   \"data\": {\n    \"date\": \"2026-11-06\",\n    \"dep\": \"2026-11-06T09:10:00+01:00\",\n    \"fare_class\": \"Sparpreis\",\n    \"from\": \"FFLF\",\n    \"region\": \"EU\",\n    \"to\": \"KA\",\n    \"train\": \"ICE 70\"\n   },\n   \"platform_booking_id\": \"TD-R18C\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"DB-R19C\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"V-LH|LHR19B\": {\n   \"data\": {\n    \"distance_km\": 6200,\n    \"fare_class\": \"Light\",\n    \"intra_eu\": false,\n    \"pax\": 1,\n    \"region\": \"EU\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-29T22:30:00-04:00\",\n      \"dep\": \"2026-10-29T19:40:00+01:00\",\n      \"flight\": \"LH9400\",\n      \"from\": \"FRA\",\n      \"to\": \"JFK\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R18B\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"LHR19B\",\n   \"vendor_id\": \"V-LH\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "25a5688eb2bd821e37b8d6f95400e4d4\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/18_db_cascade_lh_flight_moved\"\ndescription = \"DB status (ICE 627 projected at the airport station 18:40) -> LH search -> change to LH9406 at 20:25, the earliest departing 90 minutes after (IP-11), EUR 45 within the EUR 50 authorized (IP-2) -> note on who owes what.\"\nkeywords = [\"EU rail\", \"EU261\"]\n\n[metadata]\nwalk = \"18_db_cascade_lh_flight_moved__right\"\nchain = \"DB status (ICE 627 projected at the airport station 18:40) -> LH search -> change to LH9406 at 20:25, the earliest departing 90 minutes after (IP-11), EUR 45 within the EUR 50 authorized (IP-2) -> note on who owes what.\"\npersona = \"business traveller\"\nregimes = [\"EU rail\", \"EU261\"]\nvendors = [\"V-DB\", \"V-LH\"]\nvendors_written = [\"V-LH\"]\ntrap_families = [\"conditional\", \"identity\", \"liability\", \"time\"]\ntraps = [\"cancel_return_train\", \"claim_from_db_now\", \"over_budget_flight\", \"too_tight_flight\"]\ncode_guards_on_route = [\"CV-SEATS\", \"IP-1\", \"IP-1b\"]\njudge_items_on_route = [\"CB-FCBA\", \"CR-FCC\", \"CR-FLIGHT-PORT\", \"CR-ITIN\", \"CR-MSC-NAME\", \"GP-REROUTE-EARLIEST\", \"IP-11\", \"IP-2\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"P-LIAB-4\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\"]\ncomplaint = \"https://www.reddit.com/r/deutschebahn/comments/1vuj4ui/missed_my_flight_and_i_am_so_incredibly_angry/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "LHR19B"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "LHR19B",
+     "card_last4": "5919",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "sophie.brandt@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "date": "2026-10-29",
+     "train": "ICE 627",
+     "vendor_id": "V-DB"
+    },
+    "name": "rail_get_train_status"
+   },
+   {
+    "args": {
+     "record_locator": "LHR19B",
+     "vendor_id": "V-LH"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "date": "2026-10-29",
+     "dest": "JFK",
+     "origin": "FRA",
+     "vendor_id": "V-LH"
+    },
+    "name": "flight_search"
+   },
+   {
+    "args": {
+     "max_fare_difference": 50.0,
+     "new_flight": "LH9406",
+     "record_locator": "LHR19B",
+     "vendor_id": "V-LH"
+    },
+    "name": "flight_change"
+   },
+   {
+    "args": {
+     "platform_booking_id": "TD-R18B",
+     "text": "Customer asks DB to pay the change; DB owes only the EU rail delay share, claimable after arrival."
+    },
+    "name": "add_note"
+   },
+   {
+    "args": {
+     "text": "I moved your booking LHR19B to Lufthansa LH9406, departing Frankfurt at 20:25 tonight. The fare difference charged is EUR 45, within the EUR 50 you allowed. ICE 627 is still running, so I have not filed the DB delay compensation now; it will be claimed after the train has arrived. DB owes only the EU rail delay compensation for ICE 627, not the EUR 45 flight change."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

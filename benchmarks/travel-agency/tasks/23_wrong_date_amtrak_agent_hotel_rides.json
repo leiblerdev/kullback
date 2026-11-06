@@ -1,0 +1,365 @@
+{
+ "alts": {
+  "ask_amtrak_too.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "AMD05A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "AMD05A",
+      "card_last4": "6105",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "marcus.bell@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "reservation_number": "AMD05A",
+      "vendor_id": "V-AMTRAK"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "confirmation": "LKD05C",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "ride_id": "UBD05D",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_get_scheduled"
+    },
+    {
+     "args": {
+      "ride_id": "UBD05E",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_get_scheduled"
+    },
+    {
+     "args": {
+      "amount": 0.0,
+      "currency": "USD",
+      "message": "Train 19 reservation moved to Gainesville GA was set to 2026-10-27 instead of 2026-10-28 by your agent and refunded in error; please confirm the record.",
+      "platform_booking_id": "$3.platform_booking_id",
+      "request_type": "info_request",
+      "vendor_id": "V-AMTRAK"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$7.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "amount": 184.5,
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "$3.platform_booking_id",
+      "queue": "supplier_relations",
+      "summary": "Amtrak agent set the wrong date; station agent said guest relations will review the hotel (USD 129) and two Ubers (USD 24.50, USD 31) the customer paid: USD 184.50."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "text": "I have sent the USD 184.50 you paid, the hotel at USD 129 and the two Ubers at USD 24.50 and USD 31, to Amtrak supplier relations for review, since their agents made the error. I also wrote to Amtrak about the booking error. Supplier relations answer within 72 hours. Your ticket was already refunded, so I did not refund it again."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "bookings_and_documents.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "AMD05A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "AMD05A",
+      "card_last4": "6105",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "marcus.bell@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_documents"
+    },
+    {
+     "args": {
+      "amount": 184.5,
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "TD-R23A",
+      "queue": "supplier_relations",
+      "summary": "Amtrak agents set the wrong date and a station agent said guest relations will review the hotel and ride costs: USD 184.50."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "text": "I have sent the USD 184.50 you paid, the hotel at USD 129 and the two Ubers at USD 24.50 and USD 31, to Amtrak supplier relations for review, since their agents made the error. They answer within 72 hours. Your ticket was already refunded, so I did not refund it again."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {
+   "a booking was cancelled": [
+    "platform_bookings TD-R23A, cancelled, dated 2026-09-01, already on file before this conversation",
+    "vendor_bookings V-AMTRAK|AMD05A, cancelled, already on file before this conversation"
+   ],
+   "a chargeback was answered": [
+    "refunds RF-R23A, 118 USD, paid, dated 2026-10-27, already on file before this conversation"
+   ],
+   "a refund was issued to the customer": [
+    "refunds RF-R23A, 118 USD, paid, dated 2026-10-27, already on file before this conversation"
+   ]
+  },
+  "expected_diff": {
+   "escalations": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 184.5,
+      "commitment_id": null,
+      "currency": "USD",
+      "customer_id": "C-R23",
+      "owner": "Supplier relations",
+      "platform_booking_id": "TD-R23A",
+      "queue": "supplier_relations",
+      "sla_hours": 72
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R23"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-7b] Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority? (met = 1: Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7b"
+   },
+   {
+    "checkpoint": "- [judge.IP-7c] Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA? (met = 1: Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7c"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Tells the customer that the USD 184.50 they paid was sent for review. (met = 1: In its replies to the customer, does the agent do this: Tells the customer that the USD 184.50 they paid was sent for review.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: States that the USD 184.50 is the hotel at USD 129 and two Ubers at USD 24.50 and USD 31, sent to Amtrak supplier relations. (met = 1: In its replies to the customer, does the agent do this: States that the USD 184.50 is the hotel at USD 129 and two Ubers at USD 24.50 and USD 31, sent to Amtrak supplier relations.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: Gives the 72 hour response time for the supplier relations escalation. (met = 1: In its replies to the customer, does the agent do this: Gives the 72 hour response time for the supplier relations escalation.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Does not say that Amtrak or TripDesk will pay or has agreed to pay the USD 184.50. (met = 1: In its replies to the customer, does the agent do this: Does not say that Amtrak or TripDesk will pay or has agreed to pay the USD 184.50.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   }
+  ],
+  "message": "On Monday I called to move my Crescent ticket (AMD05A) so it starts in Gainesville instead of Atlanta. The rep put it on the wrong night, 12:24 am on the 27th instead of the 28th. At the station my booking had vanished, then it showed as refunded, and the train left without me. A second person admitted the first rep's mistake. I paid 129 dollars for a hotel and about 55 dollars more for two Ubers, about 185 dollars in all. I don't want a travel credit, I want those costs covered. marcus.bell@example.com, card 6105.",
+  "strict_tables": [],
+  "task": "23_wrong_date_amtrak_agent_hotel_rides",
+  "token": "6f75fb5ea00e7e9ee8e7c24c36187416"
+ },
+ "instruction": "On Monday I called to move my Crescent ticket (AMD05A) so it starts in Gainesville instead of Atlanta. The rep put it on the wrong night, 12:24 am on the 27th instead of the 28th. At the station my booking had vanished, then it showed as refunded, and the train left without me. A second person admitted the first rep's mistake. I paid 129 dollars for a hotel and about 55 dollars more for two Ubers, about 185 dollars in all. I don't want a travel credit, I want those costs covered. marcus.bell@example.com, card 6105.\n",
+ "overlay": "{\n \"contact_history\": {\n  \"CT-R23A\": {\n   \"actor\": \"amtrak_reservations\",\n   \"channel\": \"phone\",\n   \"contact_id\": \"CT-R23A\",\n   \"customer_id\": \"C-R23\",\n   \"direction\": \"outbound\",\n   \"outcome\": \"recorded\",\n   \"platform_booking_id\": \"TD-R23A\",\n   \"text\": \"Origin moved to Gainesville GA; departure set to 2026-10-27 00:24.\",\n   \"ts\": \"2026-10-26T10:15:00-04:00\"\n  },\n  \"CT-R23B\": {\n   \"actor\": \"amtrak_station_agent\",\n   \"channel\": \"phone\",\n   \"contact_id\": \"CT-R23B\",\n   \"customer_id\": \"C-R23\",\n   \"direction\": \"inbound\",\n   \"outcome\": \"recorded\",\n   \"platform_booking_id\": \"TD-R23A\",\n   \"text\": \"Our first agent set the wrong date and the ticket was refunded in error. Amtrak guest relations will review the hotel and ride costs.\",\n   \"ts\": \"2026-10-28T00:40:00-04:00\"\n  }\n },\n \"customers\": {\n  \"C-R23\": {\n   \"customer_id\": \"C-R23\",\n   \"email\": \"marcus.bell@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Marcus Bell\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"payments\": {\n  \"PM-R23A\": {\n   \"amount\": 118.0,\n   \"card_last4\": \"6105\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R23\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R23A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R23C\": {\n   \"amount\": 129.0,\n   \"card_last4\": \"6105\",\n   \"created_at\": \"2026-10-28T00:55:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R23\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R23C\",\n   \"status\": \"captured\"\n  },\n  \"PM-R23D\": {\n   \"amount\": 24.5,\n   \"card_last4\": \"6105\",\n   \"created_at\": \"2026-10-28T01:20:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R23\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R23D\",\n   \"status\": \"captured\"\n  },\n  \"PM-R23E\": {\n   \"amount\": 31.0,\n   \"card_last4\": \"6105\",\n   \"created_at\": \"2026-10-27T23:50:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R23\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R23E\",\n   \"status\": \"captured\"\n  },\n  \"PM-R23F\": {\n   \"amount\": 118.0,\n   \"card_last4\": \"6105\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R23\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R23F\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R23A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R23\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R23A\",\n   \"platform_booking_id\": \"TD-R23A\",\n   \"product_type\": \"rail\",\n   \"status\": \"cancelled\",\n   \"ticket_group\": null,\n   \"total\": 118.0,\n   \"vendor_booking_id\": \"AMD05A\",\n   \"vendor_id\": \"V-AMTRAK\"\n  },\n  \"TD-R23C\": {\n   \"created_at\": \"2026-10-28T00:55:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R23\",\n   \"details\": {\n    \"check_in\": \"2026-10-28\"\n   },\n   \"payment_id\": \"PM-R23C\",\n   \"platform_booking_id\": \"TD-R23C\",\n   \"product_type\": \"hotel\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 129.0,\n   \"vendor_booking_id\": \"LKD05C\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"TD-R23D\": {\n   \"created_at\": \"2026-10-28T01:20:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R23\",\n   \"details\": {},\n   \"payment_id\": \"PM-R23D\",\n   \"platform_booking_id\": \"TD-R23D\",\n   \"product_type\": \"ride\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 24.5,\n   \"vendor_booking_id\": \"UBD05D\",\n   \"vendor_id\": \"V-UBER\"\n  },\n  \"TD-R23E\": {\n   \"created_at\": \"2026-10-27T23:50:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R23\",\n   \"details\": {},\n   \"payment_id\": \"PM-R23E\",\n   \"platform_booking_id\": \"TD-R23E\",\n   \"product_type\": \"ride\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 31.0,\n   \"vendor_booking_id\": \"UBD05E\",\n   \"vendor_id\": \"V-UBER\"\n  },\n  \"TD-R23F\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R23\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R23F\",\n   \"platform_booking_id\": \"TD-R23F\",\n   \"product_type\": \"rail\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 118.0,\n   \"vendor_booking_id\": \"AMD05F\",\n   \"vendor_id\": \"V-AMTRAK\"\n  }\n },\n \"refunds\": {\n  \"RF-R23A\": {\n   \"amount\": 118.0,\n   \"created_at\": \"2026-10-27T23:50:00-04:00\",\n   \"currency\": \"USD\",\n   \"destination\": \"original_payment\",\n   \"payment_id\": \"PM-R23A\",\n   \"platform_booking_id\": \"TD-R23A\",\n   \"reason_code\": \"customer_cancel_free\",\n   \"refund_id\": \"RF-R23A\",\n   \"source\": \"vendor\",\n   \"state\": \"paid\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-AMTRAK|AMD05A\": {\n   \"data\": {\n    \"date\": \"2026-10-27\",\n    \"dep\": \"2026-10-27T00:24:00-04:00\",\n    \"fare_class\": \"Value\",\n    \"from\": \"Gainesville GA\",\n    \"origin_changed_from\": \"Atlanta\",\n    \"region\": \"US\",\n    \"requested_dep\": \"2026-10-28T00:24:00-04:00\",\n    \"to\": \"New Orleans\",\n    \"train\": \"19\"\n   },\n   \"platform_booking_id\": \"TD-R23A\",\n   \"status\": \"cancelled\",\n   \"vendor_booking_id\": \"AMD05A\",\n   \"vendor_id\": \"V-AMTRAK\"\n  },\n  \"V-AMTRAK|AMD05F\": {\n   \"data\": {\n    \"date\": \"2026-11-08\",\n    \"dep\": \"2026-11-08T07:00:00-06:00\",\n    \"fare_class\": \"Value\",\n    \"from\": \"New Orleans\",\n    \"region\": \"US\",\n    \"to\": \"Gainesville GA\",\n    \"train\": \"20\"\n   },\n   \"platform_booking_id\": \"TD-R23F\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"AMD05F\",\n   \"vendor_id\": \"V-AMTRAK\"\n  },\n  \"V-HTL-LAKESIDE|LKD05C\": {\n   \"data\": {\n    \"check_in\": \"2026-10-28\",\n    \"check_out\": \"2026-10-29\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-27T18:00:00-04:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 129.0,\n     \"rule_id\": \"P-HILTON\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R23C\",\n   \"status\": \"checked_out\",\n   \"vendor_booking_id\": \"LKD05C\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"V-UBER|UBD05D\": {\n   \"data\": {\n    \"dropoff\": \"Hotel, Gainesville\",\n    \"ended_at\": \"2026-10-28T01:20:00-04:00\",\n    \"fare_lines\": [\n     {\n      \"amount\": 21.5,\n      \"type\": \"trip\"\n     },\n     {\n      \"amount\": 3.0,\n      \"type\": \"booking_fee\"\n     }\n    ],\n    \"kind\": \"on_demand\",\n    \"pickup\": \"Gainesville station\",\n    \"requested_at\": \"2026-10-28T01:05:00-04:00\"\n   },\n   \"platform_booking_id\": \"TD-R23D\",\n   \"status\": \"completed\",\n   \"vendor_booking_id\": \"UBD05D\",\n   \"vendor_id\": \"V-UBER\"\n  },\n  \"V-UBER|UBD05E\": {\n   \"data\": {\n    \"dropoff\": \"Gainesville station\",\n    \"ended_at\": \"2026-10-27T23:50:00-04:00\",\n    \"fare_lines\": [\n     {\n      \"amount\": 27.0,\n      \"type\": \"trip\"\n     },\n     {\n      \"amount\": 4.0,\n      \"type\": \"booking_fee\"\n     }\n    ],\n    \"kind\": \"on_demand\",\n    \"pickup\": \"Home, Gainesville\",\n    \"requested_at\": \"2026-10-27T23:30:00-04:00\"\n   },\n   \"platform_booking_id\": \"TD-R23E\",\n   \"status\": \"completed\",\n   \"vendor_booking_id\": \"UBD05E\",\n   \"vendor_id\": \"V-UBER\"\n  }\n }\n}\n",
+ "places": {
+  "PL-11354430": {
+   "aliases": [
+    "hotel gainesville"
+   ],
+   "text": "Hotel, Gainesville"
+  },
+  "PL-94252B12": {
+   "aliases": [
+    "home gainesville"
+   ],
+   "text": "Home, Gainesville"
+  },
+  "PL-B9E0BF9B": {
+   "aliases": [
+    "gainesville station"
+   ],
+   "text": "Gainesville station"
+  }
+ },
+ "secret": "6f75fb5ea00e7e9ee8e7c24c36187416\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/23_wrong_date_amtrak_agent_hotel_rides\"\ndescription = \"Contact history (Amtrak agents made and admitted the error) -> Amtrak reservation (refunded, travel lost) -> Lakeside stay and two Uber trips (USD 184.50) -> supplier relations escalation for that amount.\"\nkeywords = [\"Amtrak\"]\n\n[metadata]\nwalk = \"23_wrong_date_amtrak_agent_hotel_rides__right\"\nchain = \"Contact history (Amtrak agents made and admitted the error) -> Amtrak reservation (refunded, travel lost) -> Lakeside stay and two Uber trips (USD 184.50) -> supplier relations escalation for that amount.\"\npersona = \"solo traveller\"\nregimes = [\"Amtrak\"]\nvendors = [\"V-AMTRAK\", \"V-HTL-LAKESIDE\", \"V-UBER\"]\nvendors_written = [\"V-AMTRAK\"]\ntrap_families = [\"history\", \"identity\", \"liability\"]\ntraps = [\"cancel_return_train\", \"escalate_ticket_too\", \"goodwill_desk_for_vendor_error\", \"pay_costs_ourselves\"]\ncode_guards_on_route = [\"IP-1\", \"IP-1b\", \"IP-7\", \"IP-7d\", \"IP-9c\", \"IP-9e\"]\njudge_items_on_route = [\"CR-FCC\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-7b\", \"IP-7c\", \"IP-8\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\"]\ncomplaint = \"https://www.reddit.com/r/Amtrak/comments/1i3lm0j/can_i_be_compensated_for_customer_service_human/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "AMD05A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "AMD05A",
+     "card_last4": "6105",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "marcus.bell@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_contact_history"
+   },
+   {
+    "args": {
+     "reservation_number": "AMD05A",
+     "vendor_id": "V-AMTRAK"
+    },
+    "name": "rail_get_booking"
+   },
+   {
+    "args": {
+     "confirmation": "LKD05C",
+     "vendor_id": "V-HTL-LAKESIDE"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "ride_id": "UBD05D",
+     "vendor_id": "V-UBER"
+    },
+    "name": "ride_get_scheduled"
+   },
+   {
+    "args": {
+     "ride_id": "UBD05E",
+     "vendor_id": "V-UBER"
+    },
+    "name": "ride_get_scheduled"
+   },
+   {
+    "args": {
+     "amount": 184.5,
+     "currency": "USD",
+     "customer_id": "$0.matches.0.customer_id",
+     "platform_booking_id": "$3.platform_booking_id",
+     "queue": "supplier_relations",
+     "summary": "Amtrak agent set the wrong date; station agent said guest relations will review the hotel (USD 129) and two Ubers (USD 24.50, USD 31) the customer paid: USD 184.50."
+    },
+    "name": "escalate"
+   },
+   {
+    "args": {
+     "text": "I have sent the USD 184.50 you paid, the hotel at USD 129 and the two Ubers at USD 24.50 and USD 31, to Amtrak supplier relations for review, since their agents made the error. They answer within 72 hours. Your ticket was already refunded, so I did not refund it again."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

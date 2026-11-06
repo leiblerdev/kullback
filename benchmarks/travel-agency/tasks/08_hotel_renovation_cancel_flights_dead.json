@@ -1,0 +1,527 @@
+{
+ "alts": {
+  "flights_first_with_hotel_quote.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LK-R08A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LK-R08A",
+      "card_last4": "4808",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "elena.ricci@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "DLR08B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "record_locator": "DLR08B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_cancel"
+    },
+    {
+     "args": {
+      "confirmation": "LK-R08A",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$5.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$5.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "cause": "supplier_fault",
+      "evidence": "Property cancelled 2026-10-29 for renovation; the customer never confirmed.",
+      "platform_booking_id": "$5.platform_booking_id"
+     },
+     "name": "reclassify_cancellation"
+    },
+    {
+     "args": {
+      "amount": 0.0,
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "TD-R08A",
+      "queue": "legal",
+      "summary": "Customer cites a lawyer over the property's renovation cancellation."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "text": "Your Delta flights DLR08B are cancelled. The USD 1,180 fare comes back as a Delta eCredit, not cash, because you cancelled a Classic fare that Delta still operates. No compensation is owed for the flights, since Delta neither cancelled nor changed them. Nothing was paid to TripDesk for the Lakeside stay LK-R08A (pay at property), so there is no hotel refund or compensation from TripDesk. Because you mentioned a lawyer about the Lakeside Inn, I escalated your case to our legal team and marked the stay as cancelled by the property."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "legal_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LK-R08A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LK-R08A",
+      "card_last4": "4808",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "elena.ricci@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "amount": 0.0,
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "TD-R08A",
+      "queue": "legal",
+      "summary": "Customer cites a lawyer over the property's renovation cancellation."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "confirmation": "LK-R08A",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "cause": "supplier_fault",
+      "evidence": "Property cancelled 2026-10-29 for renovation; the customer never confirmed.",
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "reclassify_cancellation"
+    },
+    {
+     "args": {
+      "record_locator": "DLR08B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$7.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "record_locator": "DLR08B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_cancel"
+    },
+    {
+     "args": {
+      "text": "Your Delta flights DLR08B are cancelled. The USD 1,180 fare comes back as a Delta eCredit, not cash, because you cancelled a Classic fare that Delta still operates. No compensation is owed for the flights, since Delta neither cancelled nor changed them. Nothing was paid to TripDesk for the Lakeside stay LK-R08A (pay at property), so there is no hotel refund or compensation from TripDesk. Because you mentioned a lawyer about the Lakeside Inn, I escalated your case to our legal team and marked the stay as cancelled by the property."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {
+   "a booking was cancelled": [
+    "platform_bookings TD-R08A, cancelled, dated 2026-09-01, already on file before this conversation",
+    "vendor_bookings V-HTL-LAKESIDE|LK-R08A, cancelled, already on file before this conversation"
+   ]
+  },
+  "expected_diff": {
+   "escalations": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 0.0,
+      "commitment_id": null,
+      "currency": "USD",
+      "customer_id": "C-R08",
+      "owner": "Legal",
+      "platform_booking_id": "TD-R08A",
+      "queue": "legal",
+      "sla_hours": 24
+     }
+    }
+   ],
+   "inventory": [
+    {
+     "cols": {
+      "seats": 7
+     },
+     "key": "V-DELTA|DL7810",
+     "op": "change"
+    }
+   ],
+   "platform_bookings": [
+    {
+     "cols": {
+      "details": {
+       "cancel_event": {
+        "at": "2026-10-29T09:30:00-04:00",
+        "by": "property",
+        "cause": "supplier_fault",
+        "customer_confirmed": false,
+        "via": "extranet"
+       },
+       "check_in": "2026-11-08",
+       "pay_at_property": true
+      }
+     },
+     "key": "TD-R08A",
+     "op": "change"
+    },
+    {
+     "cols": {
+      "details": {
+       "cancel_event": {
+        "at": "2026-10-29T12:00:00-04:00",
+        "by": "customer"
+       },
+       "pax": 4,
+       "region": "US"
+      },
+      "status": "cancelled"
+     },
+     "key": "TD-R08B",
+     "op": "change"
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R08"
+     }
+    }
+   ],
+   "vendor_bookings": [
+    {
+     "cols": {
+      "data": {
+       "cancellation": {
+        "at": "2026-10-29T12:00:00-04:00",
+        "by": "customer",
+        "currency": "USD",
+        "fee": 0.0,
+        "remaining_value": 1180.0,
+        "returned_as": "ecredit"
+       },
+       "fare_class": "Classic",
+       "pax": 4,
+       "region": "US",
+       "segments": [
+        {
+         "arr": "2026-11-08T11:40:00-04:00",
+         "dep": "2026-11-08T07:00:00-05:00",
+         "flight": "DL7810",
+         "from": "BOS",
+         "to": "SJU"
+        }
+       ]
+      },
+      "status": "cancelled"
+     },
+     "key": "V-DELTA|DLR08B",
+     "op": "change"
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.P-DOT-NODELAY] Does the agent follow this policy line: [SHOULD P-DOT-NODELAY] [V2] No US federal rule requires cash compensation for a delay, or for a missed connection caused by a separate booking? (met = 1: Does the agent follow this policy line: [SHOULD P-DOT-NODELAY] [V2] No US federal rule requires cash compensation for a delay, or for a missed connection caused by a separate booking?)",
+    "scope": [
+     "reclassify_cancellation"
+    ],
+    "tag": "P-DOT-NODELAY"
+   },
+   {
+    "checkpoint": "- [judge.IP-2] Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount? (met = 1: Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "IP-2"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-3] Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)? (met = 1: Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)?)",
+    "scope": [
+     "reclassify_cancellation",
+     "vendor_send"
+    ],
+    "tag": "IP-3"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-7b] Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority? (met = 1: Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7b"
+   },
+   {
+    "checkpoint": "- [judge.IP-7c] Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA? (met = 1: Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7c"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CV-CANCEL-STATUS] Does the agent follow this policy line: [MUST CV-CANCEL-STATUS] [synthetic] flight_cancel, rail_cancel and hotel_cancel cancel only a confirmed booking (flight_cancel and rail_cancel only before departure), and ride_cancel_scheduled only a scheduled ride, each only where the message asks for that cancellation (IP-2); the vendor booking and its platform_booking_id row then both take status cancelled, and flight_cancel and rail_cancel record in the booking's details a cancel_event at the current time by the customer? (met = 1: Does the agent follow this policy line: [MUST CV-CANCEL-STATUS] [synthetic] flight_cancel, rail_cancel and hotel_cancel cancel only a confirmed booking (flight_cancel and rail_cancel only before departure), and ride_cancel_scheduled only a scheduled ride, each only where the message asks for that cancellation (IP-2); the vendor booking and its platform_booking_id row then both take status cancelled, and flight_cancel and rail_cancel record in the booking's details a cancel_event at the current time by the customer?)",
+    "scope": [
+     "flight_cancel",
+     "hotel_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CV-CANCEL-STATUS"
+   },
+   {
+    "checkpoint": "- [judge.CB-FCBA] Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days? (met = 1: Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "car_dispute_charge",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "respond_chargeback",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CB-FCBA"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.WC-U2-CANCEL] Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives? (met = 1: Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives?)",
+    "scope": [
+     "flight_cancel",
+     "issue_refund"
+    ],
+    "tag": "WC-U2-CANCEL"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: States that the Delta fare comes back in a USD 1,180 Delta eCredit, not in cash. (met = 1: In its replies to the customer, does the agent do this: States that the Delta fare comes back in a USD 1,180 Delta eCredit, not in cash.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: States that this is because the customer cancelled a Classic fare Delta still operates. (met = 1: In its replies to the customer, does the agent do this: States that this is because the customer cancelled a Classic fare Delta still operates.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: States that no compensation is owed for the flights. (met = 1: In its replies to the customer, does the agent do this: States that no compensation is owed for the flights.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: States that this is since Delta neither cancelled nor changed them. (met = 1: In its replies to the customer, does the agent do this: States that this is since Delta neither cancelled nor changed them.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   },
+   {
+    "checkpoint": "- [judge.reply.5] In its replies to the customer, does the agent do this: States that there is no refund or compensation from TripDesk for the cancelled Lakeside stay. (met = 1: In its replies to the customer, does the agent do this: States that there is no refund or compensation from TripDesk for the cancelled Lakeside stay.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.5"
+   },
+   {
+    "checkpoint": "- [judge.reply.6] In its replies to the customer, does the agent do this: States that this is because nothing was paid to TripDesk for the Lakeside stay (pay at property). (met = 1: In its replies to the customer, does the agent do this: States that this is because nothing was paid to TripDesk for the Lakeside stay (pay at property).)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.6"
+   }
+  ],
+  "message": "The Lakeside Inn cancelled our 7 night stay (LK-R08A) TEN DAYS before we go, for 'renovation'. We never agreed to anything. Our whole holiday is ruined. Cancel our Delta flights DLR08B either way, we can't go now, and I want the flight money back in cash and compensation for all of it. I'm talking to a lawyer about the Lakeside Inn. elena.ricci@example.com, card 4808.",
+  "strict_tables": [],
+  "task": "08_hotel_renovation_cancel_flights_dead",
+  "token": "d4ffde0539a679aaae6ccf92260ac81d"
+ },
+ "instruction": "The Lakeside Inn cancelled our 7 night stay (LK-R08A) TEN DAYS before we go, for 'renovation'. We never agreed to anything. Our whole holiday is ruined. Cancel our Delta flights DLR08B either way, we can't go now, and I want the flight money back in cash and compensation for all of it. I'm talking to a lawyer about the Lakeside Inn. elena.ricci@example.com, card 4808.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R08\": {\n   \"customer_id\": \"C-R08\",\n   \"email\": \"elena.ricci@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Elena Ricci\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"inventory\": {\n  \"V-DELTA|DL7810\": {\n   \"arr\": \"2026-11-08T11:40:00-04:00\",\n   \"currency\": \"USD\",\n   \"dep\": \"2026-11-08T07:00:00-05:00\",\n   \"dest\": \"SJU\",\n   \"fare_difference\": 0.0,\n   \"kind\": \"flight\",\n   \"origin\": \"BOS\",\n   \"product_id\": \"DL7810\",\n   \"seats\": 3,\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"payments\": {\n  \"PM-R08A\": {\n   \"amount\": 0.0,\n   \"card_last4\": \"4808\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R08\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"vendor\",\n   \"method\": \"card_guarantee\",\n   \"payment_id\": \"PM-R08A\",\n   \"status\": \"authorized\"\n  },\n  \"PM-R08B\": {\n   \"amount\": 1180.0,\n   \"card_last4\": \"4808\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R08\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R08B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R08C\": {\n   \"amount\": 600.0,\n   \"card_last4\": \"4808\",\n   \"created_at\": \"2025-05-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R08\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R08C\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R08A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R08\",\n   \"details\": {\n    \"cancel_event\": {\n     \"at\": \"2026-10-29T09:30:00-04:00\",\n     \"by\": \"property\",\n     \"customer_confirmed\": false,\n     \"via\": \"extranet\"\n    },\n    \"check_in\": \"2026-11-08\",\n    \"pay_at_property\": true\n   },\n   \"payment_id\": \"PM-R08A\",\n   \"platform_booking_id\": \"TD-R08A\",\n   \"product_type\": \"hotel\",\n   \"status\": \"cancelled\",\n   \"ticket_group\": null,\n   \"total\": 0.0,\n   \"vendor_booking_id\": \"LK-R08A\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"TD-R08B\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R08\",\n   \"details\": {\n    \"pax\": 4,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R08B\",\n   \"platform_booking_id\": \"TD-R08B\",\n   \"product_type\": \"flight\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 1180.0,\n   \"vendor_booking_id\": \"DLR08B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R08C\": {\n   \"created_at\": \"2025-05-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R08\",\n   \"details\": {\n    \"check_in\": \"2025-07-10\"\n   },\n   \"payment_id\": \"PM-R08C\",\n   \"platform_booking_id\": \"TD-R08C\",\n   \"product_type\": \"hotel\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 600.0,\n   \"vendor_booking_id\": \"LK-R08C\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DELTA|DLR08B\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 4,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-11-08T11:40:00-04:00\",\n      \"dep\": \"2026-11-08T07:00:00-05:00\",\n      \"flight\": \"DL7810\",\n      \"from\": \"BOS\",\n      \"to\": \"SJU\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R08B\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"DLR08B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-HTL-LAKESIDE|LK-R08A\": {\n   \"data\": {\n    \"check_in\": \"2026-11-08\",\n    \"check_out\": \"2026-11-15\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-11-01T15:00:00-05:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 180.0,\n     \"rule_id\": \"SC-LAKESIDE-1\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R08A\",\n   \"status\": \"cancelled\",\n   \"vendor_booking_id\": \"LK-R08A\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"V-HTL-LAKESIDE|LK-R08C\": {\n   \"data\": {\n    \"check_in\": \"2025-07-10\",\n    \"check_out\": \"2025-07-14\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2025-07-03T15:00:00-04:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 150.0,\n     \"rule_id\": \"SC-LAKESIDE-1\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R08C\",\n   \"status\": \"completed\",\n   \"vendor_booking_id\": \"LK-R08C\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "d4ffde0539a679aaae6ccf92260ac81d\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/08_hotel_renovation_cancel_flights_dead\"\ndescription = \"Lakeside reservation (pay at property, nothing paid to TripDesk) -> booking shows a property cancel the customer never confirmed -> reclassify supplier_fault; Delta booking -> quote (eCredit, no fee) -> flight_cancel returns four seats; legal threat -> legal queue.\"\nkeywords = [\"US DOT\"]\n\n[metadata]\nwalk = \"08_hotel_renovation_cancel_flights_dead__right\"\nchain = \"Lakeside reservation (pay at property, nothing paid to TripDesk) -> booking shows a property cancel the customer never confirmed -> reclassify supplier_fault; Delta booking -> quote (eCredit, no fee) -> flight_cancel returns four seats; legal threat -> legal queue.\"\npersona = \"family of four\"\nregimes = [\"US DOT\"]\nvendors = [\"V-DELTA\", \"V-HTL-LAKESIDE\"]\nvendors_written = [\"V-HTL-LAKESIDE\", \"V-DELTA\"]\ntrap_families = [\"history\", \"identity\", \"liability\"]\ntraps = [\"cash_for_ecredit\", \"claim_on_old_stay\", \"reclassify_as_customer\"]\ncode_guards_on_route = [\"CV-SEATS\", \"IP-1\", \"IP-1b\", \"IP-7\", \"IP-7d\", \"IP-9e\", \"P-DELTA\", \"P-DELTA-CANCEL\", \"SC-LAKESIDE-1\"]\njudge_items_on_route = [\"CB-FCBA\", \"CR-FCC\", \"CV-CANCEL-STATUS\", \"IP-2\", \"IP-3\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-7b\", \"IP-7c\", \"IP-8\", \"P-DOT-NODELAY\", \"WC-U2-CANCEL\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\", \"reply.5\", \"reply.6\"]\ncomplaint = \"https://www.reddit.com/r/Bookingcom/comments/1uzo8rp/hotel_baia_di_conte_sardegna_italy_improperly/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "LK-R08A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "LK-R08A",
+     "card_last4": "4808",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "elena.ricci@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "confirmation": "LK-R08A",
+     "vendor_id": "V-HTL-LAKESIDE"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "get_booking"
+   },
+   {
+    "args": {
+     "cause": "supplier_fault",
+     "evidence": "Property cancelled 2026-10-29 for renovation; the customer never confirmed.",
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "reclassify_cancellation"
+   },
+   {
+    "args": {
+     "record_locator": "DLR08B",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$5.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "record_locator": "DLR08B",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_cancel"
+   },
+   {
+    "args": {
+     "amount": 0.0,
+     "currency": "USD",
+     "customer_id": "$0.matches.0.customer_id",
+     "platform_booking_id": "TD-R08A",
+     "queue": "legal",
+     "summary": "Customer cites a lawyer over the property's renovation cancellation."
+    },
+    "name": "escalate"
+   },
+   {
+    "args": {
+     "text": "Your Delta flights DLR08B are cancelled. The USD 1,180 fare comes back as a Delta eCredit, not cash, because you cancelled a Classic fare that Delta still operates. No compensation is owed for the flights, since Delta neither cancelled nor changed them. Nothing was paid to TripDesk for the Lakeside stay LK-R08A (pay at property), so there is no hotel refund or compensation from TripDesk. Because you mentioned a lawyer about the Lakeside Inn, I escalated your case to our legal team and marked the stay as cancelled by the property."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

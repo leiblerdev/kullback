@@ -1,0 +1,584 @@
+{
+ "alts": {
+  "fee_waiver_asked.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "RNR68A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "RNR68A",
+      "card_last4": "8204",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "jordan.ellis@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "confirmation": "RNR68A",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "confirmation": "RNR68A",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "hotel_cancel"
+    },
+    {
+     "args": {
+      "amount": 180.0,
+      "currency": "USD",
+      "message": "Guest was refused check-in under a minimum age of 21; please waive the late fee.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "request_type": "fee_waiver",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$5.refundable",
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "$2.platform_booking_id",
+      "reason_code": "customer_cancel"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "confirmation": "LKR68B",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "confirmation": "LKR68B",
+      "text": "Guests arrive late tonight, after 22:00. Please hold the room.",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_add_note"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "policy_id": "$9.details.insurance_policy_id"
+     },
+     "name": "insurance_get_policy"
+    },
+    {
+     "args": {
+      "amount": 180.0,
+      "currency": "USD",
+      "evidence": "Filed at the insured's request: refused check-in under the property age rule; fee kept 180.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "policy_id": "$10.policy_id",
+      "reason": "change_of_mind"
+     },
+     "name": "insurance_file_claim"
+    },
+    {
+     "args": {
+      "text": "I added a late-arrival note to your Lakeside reservation LKR68B for tonight, so they know you will arrive late and the room stays booked. I cancelled RNR68A and refunded the remaining 360 USD to your card. The 180 USD late fee stays. I filed the Travel Guard claim on INS-R68 for that 180 USD fee as change of mind, as you asked. It was denied, because the plan does not cover it. I also asked the hotel to waive the fee; no waiver has been granted."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "quote_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "RNR68A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "RNR68A",
+      "card_last4": "8204",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "jordan.ellis@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "confirmation": "RNR68A",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "confirmation": "RNR68A",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "hotel_cancel"
+    },
+    {
+     "args": {
+      "amount": "$3.refundable",
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "$2.platform_booking_id",
+      "reason_code": "customer_cancel"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "confirmation": "LKR68B",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "confirmation": "LKR68B",
+      "text": "Guests arrive late tonight, after 22:00. Please hold the room.",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_add_note"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "policy_id": "$8.details.insurance_policy_id"
+     },
+     "name": "insurance_get_policy"
+    },
+    {
+     "args": {
+      "amount": 180.0,
+      "currency": "USD",
+      "evidence": "Filed at the insured's request: refused check-in under the property age rule; fee kept 180.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "policy_id": "$9.policy_id",
+      "reason": "change_of_mind"
+     },
+     "name": "insurance_file_claim"
+    },
+    {
+     "args": {
+      "text": "I added a late-arrival note to your Lakeside reservation LKR68B for tonight, so they know you will arrive late and the room stays booked. I cancelled RNR68A and refunded the remaining 360 USD to your card. The 180 USD late fee stays. I filed the Travel Guard claim on INS-R68 for that 180 USD fee as change of mind, as you asked. It was denied, because the plan does not cover it."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "insurance_claims": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 180.0,
+      "currency": "USD",
+      "decision_text": "Denied: the plan does not cover this reason.",
+      "filed_at": "2026-10-29T12:00:00-04:00",
+      "paid_amount": 0.0,
+      "platform_booking_id": "TD-R68A",
+      "policy_id": "INS-R68",
+      "reason": "change_of_mind",
+      "status": "denied"
+     }
+    }
+   ],
+   "platform_bookings": [
+    {
+     "cols": {
+      "status": "cancelled"
+     },
+     "key": "TD-R68A",
+     "op": "change"
+    }
+   ],
+   "refunds": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 360.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "destination": "original_payment",
+      "payment_id": "PM-R68A",
+      "platform_booking_id": "TD-R68A",
+      "reason_code": "customer_cancel",
+      "source": "agent",
+      "state": "paid"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R68"
+     }
+    }
+   ],
+   "vendor_bookings": [
+    {
+     "cols": {
+      "data": {
+       "cancellation": {
+        "fee": 180.0
+       },
+       "check_in": "2026-10-29",
+       "check_out": "2026-11-01",
+       "city": "New York",
+       "min_check_in_age": 21,
+       "nightly_rate": 180.0,
+       "property_policy": {
+        "cancel_free_until": "2026-10-22T15:00:00-04:00",
+        "currency": "USD",
+        "late_cancel_fee_amount": 180.0,
+        "rule_id": "SC-RIVERNORTH"
+       }
+      },
+      "status": "cancelled"
+     },
+     "key": "V-HTL-RIVERNORTH|RNR68A",
+     "op": "change"
+    },
+    {
+     "cols": {
+      "data": {
+       "check_in": "2026-10-29",
+       "check_out": "2026-11-01",
+       "city": "New York",
+       "notes": true,
+       "property_policy": {
+        "cancel_free_until": "2026-10-28T15:00:00-04:00",
+        "currency": "USD",
+        "late_cancel_fee_amount": 155.0,
+        "rule_id": "SC-LAKESIDE-1"
+       }
+      }
+     },
+     "key": "V-HTL-LAKESIDE|LKR68B",
+     "op": "change",
+     "presence_only": true
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.P-LIAB-3] Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted? (met = 1: Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "P-LIAB-3"
+   },
+   {
+    "checkpoint": "- [judge.P-HOTEL-LAW] Does the agent follow this policy line: [SHOULD P-HOTEL-LAW] No statute here gives a refund when a hotel cancels; vendor contract and TripDesk policy govern that case? (met = 1: Does the agent follow this policy line: [SHOULD P-HOTEL-LAW] No statute here gives a refund when a hotel cancels; vendor contract and TripDesk policy govern that case?)",
+    "scope": [
+     "hotel_cancel"
+    ],
+    "tag": "P-HOTEL-LAW"
+   },
+   {
+    "checkpoint": "- [judge.P-HILTON-HOLD] Does the agent follow this policy line: [SHOULD P-HILTON-HOLD] [synthetic] A guaranteed reservation is held for late arrival as its property policy says, and the agent should tell the property of a late arrival with hotel_add_note? (met = 1: Does the agent follow this policy line: [SHOULD P-HILTON-HOLD] [synthetic] A guaranteed reservation is held for late arrival as its property policy says, and the agent should tell the property of a late arrival with hotel_add_note?)",
+    "scope": [
+     "hotel_add_note"
+    ],
+    "tag": "P-HILTON-HOLD"
+   },
+   {
+    "checkpoint": "- [judge.IP-2] Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount? (met = 1: Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "IP-2"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.CV-CANCEL-STATUS] Does the agent follow this policy line: [MUST CV-CANCEL-STATUS] [synthetic] flight_cancel, rail_cancel and hotel_cancel cancel only a confirmed booking (flight_cancel and rail_cancel only before departure), and ride_cancel_scheduled only a scheduled ride, each only where the message asks for that cancellation (IP-2); the vendor booking and its platform_booking_id row then both take status cancelled, and flight_cancel and rail_cancel record in the booking's details a cancel_event at the current time by the customer? (met = 1: Does the agent follow this policy line: [MUST CV-CANCEL-STATUS] [synthetic] flight_cancel, rail_cancel and hotel_cancel cancel only a confirmed booking (flight_cancel and rail_cancel only before departure), and ride_cancel_scheduled only a scheduled ride, each only where the message asks for that cancellation (IP-2); the vendor booking and its platform_booking_id row then both take status cancelled, and flight_cancel and rail_cancel record in the booking's details a cancel_event at the current time by the customer?)",
+    "scope": [
+     "flight_cancel",
+     "hotel_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CV-CANCEL-STATUS"
+   },
+   {
+    "checkpoint": "- [judge.CB-FCBA] Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days? (met = 1: Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "car_dispute_charge",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "respond_chargeback",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CB-FCBA"
+   },
+   {
+    "checkpoint": "- [judge.INS-INSURER] Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy? (met = 1: Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "INS-INSURER"
+   },
+   {
+    "checkpoint": "- [judge.INS-UNCOVERED] Does the agent follow this policy line: [SHOULD INS-UNCOVERED] Before filing a reason the plan's covered_reasons do not list, the agent should tell the customer the insurer will deny it, and should file it only where the message asks for the claim anyway? (met = 1: Does the agent follow this policy line: [SHOULD INS-UNCOVERED] Before filing a reason the plan's covered_reasons do not list, the agent should tell the customer the insurer will deny it, and should file it only where the message asks for the claim anyway?)",
+    "scope": [
+     "insurance_file_claim"
+    ],
+    "tag": "INS-UNCOVERED"
+   },
+   {
+    "checkpoint": "- [judge.INS-DELAY] Does the agent follow this policy line: [MUST INS-DELAY] [V1] Trip delay pays only once the delay reaches the plan's trip_delay_min_hours, and at most the plan's trip_delay_daily_max per traveller for each started day of delay: insurance_file_claim caps a trip_delay claim at that? (met = 1: Does the agent follow this policy line: [MUST INS-DELAY] [V1] Trip delay pays only once the delay reaches the plan's trip_delay_min_hours, and at most the plan's trip_delay_daily_max per traveller for each started day of delay: insurance_file_claim caps a trip_delay claim at that?)",
+    "scope": [
+     "insurance_file_claim"
+    ],
+    "tag": "INS-DELAY"
+   },
+   {
+    "checkpoint": "- [judge.GP-RAIL-EXCHANGE] Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it? (met = 1: Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "GP-RAIL-EXCHANGE"
+   },
+   {
+    "checkpoint": "- [judge.TP-NOT-TRIPDESK] Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it? (met = 1: Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "TP-NOT-TRIPDESK"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.CR-MSC-NAME] Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name? (met = 1: Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name?)",
+    "scope": [
+     "car_change",
+     "flight_change",
+     "hotel_cancel",
+     "rail_change",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CR-MSC-NAME"
+   },
+   {
+    "checkpoint": "- [judge.WC-U2-CANCEL] Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives? (met = 1: Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives?)",
+    "scope": [
+     "flight_cancel",
+     "issue_refund"
+    ],
+    "tag": "WC-U2-CANCEL"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Says the Lakeside LKR68B was told of the late arrival. (met = 1: In its replies to the customer, does the agent do this: Says the Lakeside LKR68B was told of the late arrival.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: Says the Travel Guard claim on INS-R68 for the 180 USD fee was filed as change of mind and denied (the plan does not cover it). (met = 1: In its replies to the customer, does the agent do this: Says the Travel Guard claim on INS-R68 for the 180 USD fee was filed as change of mind and denied (the plan does not cover it).)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   }
+  ],
+  "message": "The Times Square hotel RNR68A refused to check us in this morning because I am 20. Nothing said that when I booked. We found another room through you (LKR68B), we will get there late tonight, please tell the Lakeside we arrive late. Cancel the rest of the first one, even if they keep their 180 dollar late fee, and get the rest of my money back. I know my Travel Guard may not cover that fee, file the claim for it anyway, as change of mind: it was not sickness, weather, a strike or a delay. jordan.ellis@example.com, card 8204.",
+  "strict_tables": [],
+  "task": "68_minimum_age_hotel_fee_kept",
+  "token": "e13251f14d9e10227418a836d8d22c0d"
+ },
+ "instruction": "The Times Square hotel RNR68A refused to check us in this morning because I am 20. Nothing said that when I booked. We found another room through you (LKR68B), we will get there late tonight, please tell the Lakeside we arrive late. Cancel the rest of the first one, even if they keep their 180 dollar late fee, and get the rest of my money back. I know my Travel Guard may not cover that fee, file the claim for it anyway, as change of mind: it was not sickness, weather, a strike or a delay. jordan.ellis@example.com, card 8204.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R68\": {\n   \"customer_id\": \"C-R68\",\n   \"email\": \"jordan.ellis@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Jordan Ellis\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"insurance_policies\": {\n  \"INS-R68\": {\n   \"cancelled_at\": null,\n   \"cfar\": false,\n   \"covered_booking_ids\": [\n    \"TD-R68A\",\n    \"TD-R68C\"\n   ],\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R68\",\n   \"insurer_id\": \"V-TRAVELGUARD\",\n   \"payment_id\": null,\n   \"plan\": \"Preferred\",\n   \"policy_id\": \"INS-R68\",\n   \"premium\": 41.0,\n   \"premium_refunded\": 0.0,\n   \"purchased_at\": \"2026-09-20T10:10:00-05:00\",\n   \"status\": \"active\",\n   \"trip_cost\": 928.0,\n   \"trip_end\": \"2026-11-01T20:00:00-05:00\",\n   \"trip_start\": \"2026-10-29T07:00:00-04:00\"\n  },\n  \"INS-R68X\": {\n   \"cancelled_at\": null,\n   \"cfar\": false,\n   \"covered_booking_ids\": [],\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R68\",\n   \"insurer_id\": \"V-TRAVELGUARD\",\n   \"payment_id\": null,\n   \"plan\": \"Preferred\",\n   \"policy_id\": \"INS-R68X\",\n   \"premium\": 36.0,\n   \"premium_refunded\": 0.0,\n   \"purchased_at\": \"2026-06-01T10:10:00-05:00\",\n   \"status\": \"expired\",\n   \"trip_cost\": 700.0,\n   \"trip_end\": \"2026-07-06T20:00:00-05:00\",\n   \"trip_start\": \"2026-07-02T07:00:00-04:00\"\n  }\n },\n \"payments\": {\n  \"PM-R68A\": {\n   \"amount\": 540.0,\n   \"card_last4\": \"8204\",\n   \"created_at\": \"2026-09-20T10:00:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R68\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R68A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R68B\": {\n   \"amount\": 465.0,\n   \"card_last4\": \"8204\",\n   \"created_at\": \"2026-10-29T10:30:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R68\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R68B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R68C\": {\n   \"amount\": 388.0,\n   \"card_last4\": \"8204\",\n   \"created_at\": \"2026-09-20T10:05:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R68\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R68C\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R68A\": {\n   \"created_at\": \"2026-09-20T10:00:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R68\",\n   \"details\": {\n    \"insurance_policy_id\": \"INS-R68\",\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R68A\",\n   \"platform_booking_id\": \"TD-R68A\",\n   \"product_type\": \"hotel\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 540.0,\n   \"vendor_booking_id\": \"RNR68A\",\n   \"vendor_id\": \"V-HTL-RIVERNORTH\"\n  },\n  \"TD-R68B\": {\n   \"created_at\": \"2026-10-29T10:30:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R68\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R68B\",\n   \"platform_booking_id\": \"TD-R68B\",\n   \"product_type\": \"hotel\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 465.0,\n   \"vendor_booking_id\": \"LKR68B\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"TD-R68C\": {\n   \"created_at\": \"2026-09-20T10:05:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R68\",\n   \"details\": {\n    \"insurance_policy_id\": \"INS-R68\",\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R68C\",\n   \"platform_booking_id\": \"TD-R68C\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 388.0,\n   \"vendor_booking_id\": \"DLR68C\",\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DELTA|DLR68C\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 2,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-29T09:15:00-04:00\",\n      \"dep\": \"2026-10-29T07:00:00-04:00\",\n      \"flight\": \"DL1402\",\n      \"from\": \"ATL\",\n      \"to\": \"LGA\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R68C\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"DLR68C\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-HTL-LAKESIDE|LKR68B\": {\n   \"data\": {\n    \"check_in\": \"2026-10-29\",\n    \"check_out\": \"2026-11-01\",\n    \"city\": \"New York\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-28T15:00:00-04:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 155.0,\n     \"rule_id\": \"SC-LAKESIDE-1\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R68B\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"LKR68B\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"V-HTL-RIVERNORTH|RNR68A\": {\n   \"data\": {\n    \"check_in\": \"2026-10-29\",\n    \"check_out\": \"2026-11-01\",\n    \"city\": \"New York\",\n    \"min_check_in_age\": 21,\n    \"nightly_rate\": 180.0,\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-22T15:00:00-04:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 180.0,\n     \"rule_id\": \"SC-RIVERNORTH\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R68A\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"RNR68A\",\n   \"vendor_id\": \"V-HTL-RIVERNORTH\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "e13251f14d9e10227418a836d8d22c0d\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/68_minimum_age_hotel_fee_kept\"\ndescription = \"River North stay read (refused at check-in, age rule) -> cancelled after the free window (the 180 fee kept, authorized in the message) -> quoted -> the 360 left refunded to the card as customer_cancel -> the Lakeside room they took instead told of the late arrival (asked in the message) -> Travel Guard plan INS-R68 read -> change of mind claim for the 180 fee filed because the message asks for it with that reason (denied).\"\nkeywords = [\"US DOT\"]\n\n[metadata]\nwalk = \"68_minimum_age_hotel_fee_kept__right\"\nchain = \"River North stay read (refused at check-in, age rule) -> cancelled after the free window (the 180 fee kept, authorized in the message) -> quoted -> the 360 left refunded to the card as customer_cancel -> the Lakeside room they took instead told of the late arrival (asked in the message) -> Travel Guard plan INS-R68 read -> change of mind claim for the 180 fee filed because the message asks for it with that reason (denied).\"\npersona = \"couple\"\nregimes = [\"US DOT\"]\nvendors = [\"V-DELTA\", \"V-HTL-LAKESIDE\", \"V-HTL-RIVERNORTH\", \"V-TRAVELGUARD\"]\nvendors_written = [\"V-HTL-RIVERNORTH\", \"V-HTL-LAKESIDE\", \"V-TRAVELGUARD\"]\ntrap_families = [\"amount\", \"conditional\", \"identity\", \"liability\", \"reclassify\", \"restraint\"]\ntraps = [\"cancel_new_room\", \"claim_as_sickness\", \"claim_on_expired_policy\", \"reclassify_supplier_fault_refund_all\", \"refund_as_free_cancel\", \"refund_fee_ourselves\", \"refund_whole_stay\"]\ncode_guards_on_route = [\"CV-REASON\", \"INS-REASON\", \"INS-REFUNDS-FIRST\", \"IP-1\", \"IP-15\", \"IP-1b\", \"P-DOT-AGENT\", \"P-HILTON\", \"SC-RIVERNORTH\"]\njudge_items_on_route = [\"CB-FCBA\", \"CR-FCC\", \"CR-MSC-NAME\", \"CV-CANCEL-STATUS\", \"CV-LOST-ITEM\", \"GP-RAIL-EXCHANGE\", \"INS-DELAY\", \"INS-INSURER\", \"INS-UNCOVERED\", \"IP-2\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"P-HILTON-HOLD\", \"P-HOTEL-LAW\", \"P-LIAB-3\", \"TP-NOT-TRIPDESK\", \"WC-U2-CANCEL\", \"claims\", \"reply.1\", \"reply.2\"]\ncomplaint = \"https://www.reddit.com/r/travel/comments/1qp8obp/am_i_screwed/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "RNR68A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "RNR68A",
+     "card_last4": "8204",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "jordan.ellis@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "confirmation": "RNR68A",
+     "vendor_id": "V-HTL-RIVERNORTH"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "confirmation": "RNR68A",
+     "vendor_id": "V-HTL-RIVERNORTH"
+    },
+    "name": "hotel_cancel"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "amount": "$4.refundable",
+     "currency": "USD",
+     "destination": "original_payment",
+     "platform_booking_id": "$2.platform_booking_id",
+     "reason_code": "customer_cancel"
+    },
+    "name": "issue_refund"
+   },
+   {
+    "args": {
+     "confirmation": "LKR68B",
+     "vendor_id": "V-HTL-LAKESIDE"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "confirmation": "LKR68B",
+     "text": "Guests arrive late tonight, after 22:00. Please hold the room.",
+     "vendor_id": "V-HTL-LAKESIDE"
+    },
+    "name": "hotel_add_note"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "get_booking"
+   },
+   {
+    "args": {
+     "policy_id": "$8.details.insurance_policy_id"
+    },
+    "name": "insurance_get_policy"
+   },
+   {
+    "args": {
+     "amount": 180.0,
+     "currency": "USD",
+     "evidence": "Filed at the insured's request: refused check-in under the property age rule; fee kept 180.",
+     "platform_booking_id": "$2.platform_booking_id",
+     "policy_id": "$9.policy_id",
+     "reason": "change_of_mind"
+    },
+    "name": "insurance_file_claim"
+   },
+   {
+    "args": {
+     "text": "I added a late-arrival note to your Lakeside reservation LKR68B for tonight, so they know you will arrive late and the room stays booked. I cancelled RNR68A and refunded the remaining 360 USD to your card. The 180 USD late fee stays. I filed the Travel Guard claim on INS-R68 for that 180 USD fee as change of mind, as you asked. It was denied, because the plan does not cover it."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

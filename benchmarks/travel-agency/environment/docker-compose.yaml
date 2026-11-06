@@ -1,0 +1,14 @@
+services:
+  tools:
+    build:
+      context: .
+      target: server
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/health', timeout=2)"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+  main:
+    depends_on:
+      tools:
+        condition: service_healthy

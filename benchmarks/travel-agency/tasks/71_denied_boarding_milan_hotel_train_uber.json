@@ -1,0 +1,661 @@
+{
+ "alts": {
+  "documents_read.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LHR71B"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LHR71B",
+      "card_last4": "2468",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "owen.price@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "DLR71A",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "record_locator": "LHR71B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$3.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": "$4.amount",
+      "currency": "GBP",
+      "message": "UK261 Art 7: two passengers denied boarding on LH246 LHR-MXP 27 Oct; band under 1500 km.",
+      "platform_booking_id": "$3.platform_booking_id",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-LH"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$5.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "confirmation": "AMF-R71C",
+      "vendor_id": "V-AMALFI-PROP"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "ride_id": "UB-R71D",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_get_scheduled"
+    },
+    {
+     "args": {
+      "amount": 6.75,
+      "currency": "USD",
+      "message": "The airport surcharge was billed twice on the ride from MXP on 28 Oct.",
+      "platform_booking_id": "$8.platform_booking_id",
+      "request_type": "fare_review",
+      "vendor_id": "V-UBER"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$9.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "amount": 6.75,
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "$8.platform_booking_id",
+      "reason_code": "fare_review_approved"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "reservation_number": "DB-R71E",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_documents"
+    },
+    {
+     "args": {
+      "text": "I am sorry about the night. I claimed your denied boarding compensation of 440 GBP (220 GBP for each of the two of you) from Lufthansa, the operating carrier of LH246, not from Delta who sold the ticket. Uber approved the double airport surcharge and 6.75 USD is refunded to your card. TripDesk does not refund the lost Milan hotel night, and the Venice train that ran 12 minutes late is owed nothing, since delays under 60 minutes pay no compensation."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "waiver_asked_for_lost_night.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LHR71B"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LHR71B",
+      "card_last4": "2468",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "owen.price@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "DLR71A",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "record_locator": "LHR71B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$3.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": "$4.amount",
+      "currency": "GBP",
+      "message": "UK261 Art 7: two passengers denied boarding on LH246 LHR-MXP 27 Oct; band under 1500 km.",
+      "platform_booking_id": "$3.platform_booking_id",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-LH"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$5.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "confirmation": "AMF-R71C",
+      "vendor_id": "V-AMALFI-PROP"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "ride_id": "UB-R71D",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_get_scheduled"
+    },
+    {
+     "args": {
+      "amount": 6.75,
+      "currency": "USD",
+      "message": "The airport surcharge was billed twice on the ride from MXP on 28 Oct.",
+      "platform_booking_id": "$8.platform_booking_id",
+      "request_type": "fare_review",
+      "vendor_id": "V-UBER"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$9.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "amount": 6.75,
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "$8.platform_booking_id",
+      "reason_code": "fare_review_approved"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "reservation_number": "DB-R71E",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "amount": 240.0,
+      "currency": "EUR",
+      "message": "Guests were denied boarding on their flight to Milan on 27 Oct; please waive the no-show night.",
+      "platform_booking_id": "$7.platform_booking_id",
+      "request_type": "fee_waiver",
+      "vendor_id": "V-AMALFI-PROP"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "text": "I am sorry about the night. I claimed your denied boarding compensation of 440 GBP (220 GBP for each of the two of you) from Lufthansa, the operating carrier of LH246, not from Delta who sold the ticket. Uber approved the double airport surcharge and 6.75 USD is refunded to your card. TripDesk does not refund the lost Milan hotel night, and the Venice train that ran 12 minutes late is owed nothing, since delays under 60 minutes pay no compensation."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "refunds": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 6.75,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "destination": "original_payment",
+      "payment_id": "PM-R71D",
+      "platform_booking_id": "TD-R71D",
+      "reason_code": "fare_review_approved",
+      "source": "agent",
+      "state": "paid"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R71"
+     }
+    }
+   ],
+   "vendor_threads": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 440.0,
+      "currency": "GBP",
+      "platform_booking_id": "TD-R71B",
+      "reply_status": "approved",
+      "reply_text": "Compensation approved. Lufthansa pays it to the passenger by bank transfer.",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-LH"
+     }
+    },
+    {
+     "op": "add",
+     "row": {
+      "amount": 6.75,
+      "currency": "USD",
+      "platform_booking_id": "TD-R71D",
+      "reply_status": "approved",
+      "reply_text": "Fare adjusted. The amount reviewed is approved for refund to the rider.",
+      "request_type": "fare_review",
+      "vendor_id": "V-UBER"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.P-LIAB-3] Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted? (met = 1: Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "P-LIAB-3"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-3] Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)? (met = 1: Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)?)",
+    "scope": [
+     "reclassify_cancellation",
+     "vendor_send"
+    ],
+    "tag": "IP-3"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.INS-INSURER] Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy? (met = 1: Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "INS-INSURER"
+   },
+   {
+    "checkpoint": "- [judge.GP-VENDOR-REPLY] Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands? (met = 1: Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-VENDOR-REPLY"
+   },
+   {
+    "checkpoint": "- [judge.GP-RAIL-EXCHANGE] Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it? (met = 1: Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "GP-RAIL-EXCHANGE"
+   },
+   {
+    "checkpoint": "- [judge.GP-NO-TERMS] Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)? (met = 1: Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-NO-TERMS"
+   },
+   {
+    "checkpoint": "- [judge.TP-NOT-TRIPDESK] Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it? (met = 1: Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "TP-NOT-TRIPDESK"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.WC-U2-CANCEL] Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives? (met = 1: Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives?)",
+    "scope": [
+     "flight_cancel",
+     "issue_refund"
+    ],
+    "tag": "WC-U2-CANCEL"
+   },
+   {
+    "checkpoint": "- [judge.WC-ES-CARE] Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them? (met = 1: Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "WC-ES-CARE"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Says the compensation is not claimed from Delta. (met = 1: In its replies to the customer, does the agent do this: Says the compensation is not claimed from Delta.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: Says the denied boarding compensation of 440 GBP for the two passengers is claimed from Lufthansa. (met = 1: In its replies to the customer, does the agent do this: Says the denied boarding compensation of 440 GBP for the two passengers is claimed from Lufthansa.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: Says this is because Lufthansa operated LH246, so the claim goes to the operating carrier, not the seller. (met = 1: In its replies to the customer, does the agent do this: Says this is because Lufthansa operated LH246, so the claim goes to the operating carrier, not the seller.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Says no compensation is owed for the Venice train DB-R71E. (met = 1: In its replies to the customer, does the agent do this: Says no compensation is owed for the Venice train DB-R71E.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   },
+   {
+    "checkpoint": "- [judge.reply.5] In its replies to the customer, does the agent do this: Says the Venice train ran 12 minutes late, under the 60 minutes rail compensation needs. (met = 1: In its replies to the customer, does the agent do this: Says the Venice train ran 12 minutes late, under the 60 minutes rail compensation needs.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.5"
+   },
+   {
+    "checkpoint": "- [judge.reply.6] In its replies to the customer, does the agent do this: Says TripDesk does not refund the lost Milan hotel night AMF-R71C. (met = 1: In its replies to the customer, does the agent do this: Says TripDesk does not refund the lost Milan hotel night AMF-R71C.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.6"
+   }
+  ],
+  "message": "We were denied boarding on our connection in London (LH246 to Milan, LHR71B, sold with our Delta ticket DLR71A) and only got to Milan next morning. We lost the Milan hotel night (AMF-R71C). The Uber from the airport charged the airport surcharge twice. We missed our Venice train (DB-R71E) and had to buy a new one; it says it ran 12 minutes late. Is anything owed for that train or the hotel night? Please claim compensation from Delta, they sold it, and sort out the Uber charge. owen.price@example.com, 2468.",
+  "strict_tables": [],
+  "task": "71_denied_boarding_milan_hotel_train_uber",
+  "token": "8271a70995803d7e98287dc021132a28"
+ },
+ "instruction": "We were denied boarding on our connection in London (LH246 to Milan, LHR71B, sold with our Delta ticket DLR71A) and only got to Milan next morning. We lost the Milan hotel night (AMF-R71C). The Uber from the airport charged the airport surcharge twice. We missed our Venice train (DB-R71E) and had to buy a new one; it says it ran 12 minutes late. Is anything owed for that train or the hotel night? Please claim compensation from Delta, they sold it, and sort out the Uber charge. owen.price@example.com, 2468.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R71\": {\n   \"customer_id\": \"C-R71\",\n   \"email\": \"owen.price@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Owen Price\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"payments\": {\n  \"PM-R71A\": {\n   \"amount\": 1460.0,\n   \"card_last4\": \"2468\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R71\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R71A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R71B\": {\n   \"amount\": 210.0,\n   \"card_last4\": \"2468\",\n   \"created_at\": \"2026-09-01T10:05:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R71\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R71B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R71C\": {\n   \"amount\": 240.0,\n   \"card_last4\": \"2468\",\n   \"created_at\": \"2026-09-01T10:10:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R71\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R71C\",\n   \"status\": \"captured\"\n  },\n  \"PM-R71D\": {\n   \"amount\": 31.5,\n   \"card_last4\": \"2468\",\n   \"created_at\": \"2026-10-28T08:35:00+01:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R71\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R71D\",\n   \"status\": \"captured\"\n  },\n  \"PM-R71E\": {\n   \"amount\": 52.0,\n   \"card_last4\": \"2468\",\n   \"created_at\": \"2026-09-01T10:20:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R71\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R71E\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R71A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R71\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R71A\",\n   \"platform_booking_id\": \"TD-R71A\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 1460.0,\n   \"vendor_booking_id\": \"DLR71A\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R71B\": {\n   \"created_at\": \"2026-09-01T10:05:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R71\",\n   \"details\": {\n    \"pax\": 2,\n    \"region\": \"UK\"\n   },\n   \"payment_id\": \"PM-R71B\",\n   \"platform_booking_id\": \"TD-R71B\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 210.0,\n   \"vendor_booking_id\": \"LHR71B\",\n   \"vendor_id\": \"V-LH\"\n  },\n  \"TD-R71C\": {\n   \"created_at\": \"2026-09-01T10:10:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R71\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R71C\",\n   \"platform_booking_id\": \"TD-R71C\",\n   \"product_type\": \"hotel\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 240.0,\n   \"vendor_booking_id\": \"AMF-R71C\",\n   \"vendor_id\": \"V-AMALFI-PROP\"\n  },\n  \"TD-R71D\": {\n   \"created_at\": \"2026-10-28T08:35:00+01:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R71\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R71D\",\n   \"platform_booking_id\": \"TD-R71D\",\n   \"product_type\": \"ride\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 31.5,\n   \"vendor_booking_id\": \"UB-R71D\",\n   \"vendor_id\": \"V-UBER\"\n  },\n  \"TD-R71E\": {\n   \"created_at\": \"2026-09-01T10:20:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R71\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R71E\",\n   \"platform_booking_id\": \"TD-R71E\",\n   \"product_type\": \"rail\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 52.0,\n   \"vendor_booking_id\": \"DB-R71E\",\n   \"vendor_id\": \"V-DB\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-AMALFI-PROP|AMF-R71C\": {\n   \"data\": {\n    \"check_in\": \"2026-10-27\",\n    \"check_out\": \"2026-10-28\",\n    \"city\": \"Milan\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-25T15:00:00+01:00\",\n     \"currency\": \"EUR\",\n     \"late_cancel_fee_amount\": 240.0,\n     \"rule_id\": \"P-HILTON\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R71C\",\n   \"status\": \"no_show\",\n   \"vendor_booking_id\": \"AMF-R71C\",\n   \"vendor_id\": \"V-AMALFI-PROP\"\n  },\n  \"V-DB|DB-R71E\": {\n   \"data\": {\n    \"date\": \"2026-10-27\",\n    \"delay_min\": 12,\n    \"dep\": \"2026-10-27T15:05:00+01:00\",\n    \"fare_class\": \"Super Sparpreis\",\n    \"from\": \"Milano Centrale\",\n    \"region\": \"EU\",\n    \"to\": \"Venezia S. Lucia\",\n    \"train\": \"FR 9415\"\n   },\n   \"platform_booking_id\": \"TD-R71E\",\n   \"status\": \"no_show\",\n   \"vendor_booking_id\": \"DB-R71E\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"V-DELTA|DLR71A\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"operated_by\": \"V-LH\",\n    \"pax\": 2,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-27T07:10:00+00:00\",\n      \"dep\": \"2026-10-26T17:40:00-05:00\",\n      \"flight\": \"DL8930\",\n      \"from\": \"AUS\",\n      \"to\": \"LHR\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R71A\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"DLR71A\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-LH|LHR71B\": {\n   \"data\": {\n    \"denied_boarding\": true,\n    \"distance_km\": 960,\n    \"extraordinary\": false,\n    \"fare_class\": \"Light\",\n    \"pax\": 2,\n    \"region\": \"UK\",\n    \"reroute\": {\n     \"arr\": \"2026-10-28T08:20:00+01:00\",\n     \"dep\": \"2026-10-28T07:10:00+01:00\",\n     \"flight\": \"LH244\"\n    },\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-27T12:20:00+01:00\",\n      \"dep\": \"2026-10-27T09:10:00+00:00\",\n      \"flight\": \"LH246\",\n      \"from\": \"LHR\",\n      \"to\": \"MXP\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R71B\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"LHR71B\",\n   \"vendor_id\": \"V-LH\"\n  },\n  \"V-UBER|UB-R71D\": {\n   \"data\": {\n    \"distance_mi\": 31.0,\n    \"driver\": \"Luca\",\n    \"dropoff\": \"Milano Centrale\",\n    \"ended_at\": \"2026-10-28T09:25:00+01:00\",\n    \"fare_lines\": [\n     {\n      \"amount\": 18.0,\n      \"type\": \"base\"\n     },\n     {\n      \"amount\": 6.75,\n      \"type\": \"airport_surcharge\"\n     },\n     {\n      \"amount\": 6.75,\n      \"type\": \"airport_surcharge\"\n     }\n    ],\n    \"kind\": \"on_demand\",\n    \"pickup\": \"MXP Terminal 1\",\n    \"requested_at\": \"2026-10-28T08:35:00+01:00\"\n   },\n   \"platform_booking_id\": \"TD-R71D\",\n   \"status\": \"completed\",\n   \"vendor_booking_id\": \"UB-R71D\",\n   \"vendor_id\": \"V-UBER\"\n  }\n }\n}\n",
+ "places": {
+  "PL-EE292841": {
+   "aliases": [
+    "milano centrale"
+   ],
+   "text": "Milano Centrale"
+  },
+  "PL-F937FCDD": {
+   "aliases": [
+    "malpensa airport mxp t 1",
+    "malpensa airport mxp t1",
+    "malpensa airport mxp terminal 1",
+    "malpensa airport t 1",
+    "malpensa airport t1",
+    "malpensa airport terminal 1",
+    "malpensa international airport mxp t 1",
+    "malpensa international airport mxp t1",
+    "malpensa international airport mxp terminal 1",
+    "malpensa international airport t 1",
+    "malpensa international airport t1",
+    "malpensa international airport terminal 1",
+    "malpensa mxp t 1",
+    "malpensa mxp t1",
+    "malpensa mxp terminal 1",
+    "malpensa t 1",
+    "malpensa t1",
+    "malpensa terminal 1",
+    "milan malpensa airport mxp t 1",
+    "milan malpensa airport mxp t1",
+    "milan malpensa airport mxp terminal 1",
+    "milan malpensa airport t 1",
+    "milan malpensa airport t1",
+    "milan malpensa airport terminal 1",
+    "milan malpensa international airport mxp t 1",
+    "milan malpensa international airport mxp t1",
+    "milan malpensa international airport mxp terminal 1",
+    "milan malpensa international airport t 1",
+    "milan malpensa international airport t1",
+    "milan malpensa international airport terminal 1",
+    "milan malpensa mxp t 1",
+    "milan malpensa mxp t1",
+    "milan malpensa mxp terminal 1",
+    "milan malpensa t 1",
+    "milan malpensa t1",
+    "milan malpensa terminal 1",
+    "milano malpensa airport mxp t 1",
+    "milano malpensa airport mxp t1",
+    "milano malpensa airport mxp terminal 1",
+    "milano malpensa airport t 1",
+    "milano malpensa airport t1",
+    "milano malpensa airport terminal 1",
+    "milano malpensa international airport mxp t 1",
+    "milano malpensa international airport mxp t1",
+    "milano malpensa international airport mxp terminal 1",
+    "milano malpensa international airport t 1",
+    "milano malpensa international airport t1",
+    "milano malpensa international airport terminal 1",
+    "milano malpensa mxp t 1",
+    "milano malpensa mxp t1",
+    "milano malpensa mxp terminal 1",
+    "milano malpensa t 1",
+    "milano malpensa t1",
+    "milano malpensa terminal 1",
+    "mxp airport t 1",
+    "mxp airport t1",
+    "mxp airport terminal 1",
+    "mxp international airport t 1",
+    "mxp international airport t1",
+    "mxp international airport terminal 1",
+    "mxp t 1",
+    "mxp t1",
+    "mxp terminal 1"
+   ],
+   "text": "MXP Terminal 1"
+  }
+ },
+ "secret": "8271a70995803d7e98287dc021132a28\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/71_denied_boarding_milan_hotel_train_uber\"\ndescription = \"Delta ticket read (codeshare, Lufthansa operates) -> Lufthansa booking read -> entitlement for denied boarding claimed from the operating carrier (UK261, London departure) -> Milan hotel no-show read -> the Uber fare reviewed (airport surcharge twice) -> refund once approved -> the missed train read: a Super Sparpreis that ran, nothing owed.\"\nkeywords = [\"UK261\", \"EU rail\"]\n\n[metadata]\nwalk = \"71_denied_boarding_milan_hotel_train_uber__right\"\nchain = \"Delta ticket read (codeshare, Lufthansa operates) -> Lufthansa booking read -> entitlement for denied boarding claimed from the operating carrier (UK261, London departure) -> Milan hotel no-show read -> the Uber fare reviewed (airport surcharge twice) -> refund once approved -> the missed train read: a Super Sparpreis that ran, nothing owed.\"\npersona = \"couple\"\nregimes = [\"UK261\", \"EU rail\"]\nvendors = [\"V-AMALFI-PROP\", \"V-DB\", \"V-DELTA\", \"V-LH\", \"V-UBER\"]\nvendors_written = [\"V-LH\", \"V-AMALFI-PROP\", \"V-UBER\"]\ntrap_families = [\"conditional\", \"identity\", \"liability\", \"time\"]\ntraps = [\"compensation_from_ticket_seller\", \"one_passenger_claim\", \"rail_compensation_on_time\", \"refund_before_review\", \"refund_hotel_night\"]\ncode_guards_on_route = [\"CV-REASON\", \"CV-RIDE-FARE\", \"IP-1\", \"IP-1b\", \"P-DOT-AGENT\", \"P-UK261\"]\njudge_items_on_route = [\"CR-FCC\", \"CR-ITIN\", \"CV-LOST-ITEM\", \"GP-NO-TERMS\", \"GP-RAIL-EXCHANGE\", \"GP-VENDOR-REPLY\", \"INS-INSURER\", \"IP-3\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"P-LIAB-3\", \"TP-NOT-TRIPDESK\", \"WC-ES-CARE\", \"WC-U2-CANCEL\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\", \"reply.5\", \"reply.6\"]\ncomplaint = \"https://www.reddit.com/r/Flights/comments/1ua820m/denied_boarding_and_cancelled_flight_compensation/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "LHR71B"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "LHR71B",
+     "card_last4": "2468",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "owen.price@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "record_locator": "DLR71A",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "record_locator": "LHR71B",
+     "vendor_id": "V-LH"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$3.platform_booking_id"
+    },
+    "name": "compute_entitlement"
+   },
+   {
+    "args": {
+     "amount": "$4.amount",
+     "currency": "GBP",
+     "message": "UK261 Art 7: two passengers denied boarding on LH246 LHR-MXP 27 Oct; band under 1500 km.",
+     "platform_booking_id": "$3.platform_booking_id",
+     "request_type": "compensation_claim",
+     "vendor_id": "V-LH"
+    },
+    "name": "vendor_send"
+   },
+   {
+    "args": {
+     "thread_id": "$5.thread_id"
+    },
+    "name": "vendor_check"
+   },
+   {
+    "args": {
+     "confirmation": "AMF-R71C",
+     "vendor_id": "V-AMALFI-PROP"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "ride_id": "UB-R71D",
+     "vendor_id": "V-UBER"
+    },
+    "name": "ride_get_scheduled"
+   },
+   {
+    "args": {
+     "amount": 6.75,
+     "currency": "USD",
+     "message": "The airport surcharge was billed twice on the ride from MXP on 28 Oct.",
+     "platform_booking_id": "$8.platform_booking_id",
+     "request_type": "fare_review",
+     "vendor_id": "V-UBER"
+    },
+    "name": "vendor_send"
+   },
+   {
+    "args": {
+     "thread_id": "$9.thread_id"
+    },
+    "name": "vendor_check"
+   },
+   {
+    "args": {
+     "amount": 6.75,
+     "currency": "USD",
+     "destination": "original_payment",
+     "platform_booking_id": "$8.platform_booking_id",
+     "reason_code": "fare_review_approved"
+    },
+    "name": "issue_refund"
+   },
+   {
+    "args": {
+     "reservation_number": "DB-R71E",
+     "vendor_id": "V-DB"
+    },
+    "name": "rail_get_booking"
+   },
+   {
+    "args": {
+     "text": "I am sorry about the night. I claimed your denied boarding compensation of 440 GBP (220 GBP for each of the two of you) from Lufthansa, the operating carrier of LH246, not from Delta who sold the ticket. Uber approved the double airport surcharge and 6.75 USD is refunded to your card. TripDesk does not refund the lost Milan hotel night, and the Venice train that ran 12 minutes late is owed nothing, since delays under 60 minutes pay no compensation."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

@@ -1,0 +1,283 @@
+{
+ "alts": {
+  "partner_info_request.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLF11A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLF11A",
+      "card_last4": "6811",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "gregory.lane@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "DLF11A",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "date": "2026-10-15",
+      "flight": "DL4111",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_status"
+    },
+    {
+     "args": {
+      "record_locator": "LHF11B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": 0.0,
+      "currency": "USD",
+      "message": "Through ticket IAD-FRA-MLA, first leg on the US carrier 60 minutes late; LH4113 missed. Please confirm the cause code.",
+      "platform_booking_id": "$4.platform_booking_id",
+      "request_type": "info_request",
+      "vendor_id": "V-LH"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$6.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "text": "Neither airline owes EU261 money here. Your DLF11A and LHF11B were one through ticket, and a through ticket is judged by its first flight: that left Washington (IAD) on Delta, so EU261 does not cover the journey, including the Frankfurt to Malta leg. compute_entitlement gives nothing (0) for either flight. No US rule pays cash for the 60 minute maintenance delay either. So no one is lying, and I have not filed a claim or paid the 600 EUR per person. Your 6 November return DLF11C is unchanged."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "reads_all_bookings.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLF11A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLF11A",
+      "card_last4": "6811",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "gregory.lane@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "record_locator": "DLF11A",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "date": "2026-10-15",
+      "flight": "DL4111",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_status"
+    },
+    {
+     "args": {
+      "record_locator": "LHF11B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$5.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R51A"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "text": "Neither airline owes EU261 money here. Your DLF11A and LHF11B were one through ticket, and a through ticket is judged by its first flight: that left Washington (IAD) on Delta, so EU261 does not cover the journey, including the Frankfurt to Malta leg. compute_entitlement gives nothing (0) for either flight. No US rule pays cash for the 60 minute maintenance delay either. So no one is lying, and I have not filed a claim or paid the 600 EUR per person. Your 6 November return DLF11C is unchanged."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R51"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: States that DLF11A and LHF11B are one through ticket judged by its first flight from Washington, so EU261 does not apply to either leg. (met = 1: In its replies to the customer, does the agent do this: States that DLF11A and LHF11B are one through ticket judged by its first flight from Washington, so EU261 does not apply to either leg.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: States that no compensation is owed: neither Delta nor Lufthansa owes the 600 EUR per passenger. (met = 1: In its replies to the customer, does the agent do this: States that no compensation is owed: neither Delta nor Lufthansa owes the 600 EUR per passenger.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: States that no US rule pays cash for the 60 minute maintenance delay. (met = 1: In its replies to the customer, does the agent do this: States that no US rule pays cash for the 60 minute maintenance delay.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Says that no claim was filed and no money paid, and does not promise any payment. (met = 1: In its replies to the customer, does the agent do this: Says that no claim was filed and no money paid, and does not promise any payment.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   }
+  ],
+  "message": "We had ONE ticket Washington to Frankfurt to Malta (DLF11A, then LHF11B). The first flight left an hour late for maintenance, we missed the Lufthansa flight and got to Malta 7 hours late. Delta says EU261 doesn't apply because we started in the US, Lufthansa says it wasn't their delay. EU law says the airline owes us 600 euros each, so which one is lying? I want the money. I am not asking for a goodwill payment from you, only for what the law gives. gregory.lane@example.com, card 6811",
+  "strict_tables": [],
+  "task": "51_us_carrier_late_eu_leg_missed_who_pays",
+  "token": "8da0b2a0d7749722b4528a9871f02e3c"
+ },
+ "instruction": "We had ONE ticket Washington to Frankfurt to Malta (DLF11A, then LHF11B). The first flight left an hour late for maintenance, we missed the Lufthansa flight and got to Malta 7 hours late. Delta says EU261 doesn't apply because we started in the US, Lufthansa says it wasn't their delay. EU law says the airline owes us 600 euros each, so which one is lying? I want the money. I am not asking for a goodwill payment from you, only for what the law gives. gregory.lane@example.com, card 6811\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R51\": {\n   \"customer_id\": \"C-R51\",\n   \"email\": \"gregory.lane@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Gregory Lane\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"payments\": {\n  \"PM-R51A\": {\n   \"amount\": 1320.0,\n   \"card_last4\": \"6811\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R51\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R51A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R51B\": {\n   \"amount\": 0.0,\n   \"card_last4\": \"6811\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R51\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R51B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R51C\": {\n   \"amount\": 980.0,\n   \"card_last4\": \"6811\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R51\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R51C\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R51A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R51\",\n   \"details\": {\n    \"pax\": 2,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R51A\",\n   \"platform_booking_id\": \"TD-R51A\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": \"TG-F11\",\n   \"total\": 1320.0,\n   \"vendor_booking_id\": \"DLF11A\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R51B\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R51\",\n   \"details\": {\n    \"pax\": 2,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R51B\",\n   \"platform_booking_id\": \"TD-R51B\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": \"TG-F11\",\n   \"total\": 0.0,\n   \"vendor_booking_id\": \"LHF11B\",\n   \"vendor_id\": \"V-LH\"\n  },\n  \"TD-R51C\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R51\",\n   \"details\": {\n    \"pax\": 2,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R51C\",\n   \"platform_booking_id\": \"TD-R51C\",\n   \"product_type\": \"flight\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 980.0,\n   \"vendor_booking_id\": \"DLF11C\",\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"status_events\": {\n  \"SE-R51A\": {\n   \"data\": {\n    \"cause\": \"maintenance\",\n    \"delay_min\": 60,\n    \"flight\": \"DL4111\",\n    \"status\": \"landed\"\n   },\n   \"event_id\": \"SE-R51A\",\n   \"service_date\": \"2026-10-15\",\n   \"service_id\": \"DL4111\",\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DELTA|DLF11A\": {\n   \"data\": {\n    \"arrival_delay_min\": 60,\n    \"fare_class\": \"Classic\",\n    \"pax\": 2,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-16T07:35:00+02:00\",\n      \"dep\": \"2026-10-15T17:40:00-04:00\",\n      \"flight\": \"DL4111\",\n      \"from\": \"IAD\",\n      \"to\": \"FRA\"\n     }\n    ],\n    \"through_ticket\": \"TG-F11\"\n   },\n   \"platform_booking_id\": \"TD-R51A\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"DLF11A\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-DELTA|DLF11C\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 2,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-11-06T19:20:00-05:00\",\n      \"dep\": \"2026-11-06T11:00:00+01:00\",\n      \"flight\": \"DL4115\",\n      \"from\": \"MLA\",\n      \"to\": \"IAD\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R51C\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"DLF11C\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-LH|LHF11B\": {\n   \"data\": {\n    \"arrival_delay_min\": 420,\n    \"distance_km\": 1900,\n    \"fare_class\": \"Light\",\n    \"pax\": 2,\n    \"region\": \"EU\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-16T10:40:00+02:00\",\n      \"dep\": \"2026-10-16T08:05:00+02:00\",\n      \"flight\": \"LH4113\",\n      \"from\": \"FRA\",\n      \"to\": \"MLA\"\n     }\n    ],\n    \"through_ticket\": \"TG-F11\"\n   },\n   \"platform_booking_id\": \"TD-R51B\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"LHF11B\",\n   \"vendor_id\": \"V-LH\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "8da0b2a0d7749722b4528a9871f02e3c\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/51_us_carrier_late_eu_leg_missed_who_pays\"\ndescription = \"US carrier booking and status (maintenance, 60 minutes) -> partner leg on the same through ticket -> compute_entitlement (journey from the US: none) -> conflict note and the answer.\"\nkeywords = [\"EU261\", \"US DOT\"]\n\n[metadata]\nwalk = \"51_us_carrier_late_eu_leg_missed_who_pays__right\"\nchain = \"US carrier booking and status (maintenance, 60 minutes) -> partner leg on the same through ticket -> compute_entitlement (journey from the US: none) -> conflict note and the answer.\"\npersona = \"couple\"\nregimes = [\"EU261\", \"US DOT\"]\nvendors = [\"V-DELTA\", \"V-LH\"]\nvendors_written = [\"V-LH\"]\ntrap_families = [\"identity\", \"liability\"]\ntraps = [\"cancel_return\", \"claim_from_partner\", \"pay_eu261_as_goodwill\"]\ncode_guards_on_route = []\njudge_items_on_route = [\"CR-FCC\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\"]\ncomplaint = \"https://www.reddit.com/r/Flights/comments/1wk141b/eu261_airlines_are_saying_they_are_not_responsible/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "DLF11A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "DLF11A",
+     "card_last4": "6811",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "gregory.lane@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "record_locator": "DLF11A",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "date": "2026-10-15",
+     "flight": "DL4111",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_status"
+   },
+   {
+    "args": {
+     "record_locator": "LHF11B",
+     "vendor_id": "V-LH"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$4.platform_booking_id"
+    },
+    "name": "compute_entitlement"
+   },
+   {
+    "args": {
+     "text": "Neither airline owes EU261 money here. Your DLF11A and LHF11B were one through ticket, and a through ticket is judged by its first flight: that left Washington (IAD) on Delta, so EU261 does not cover the journey, including the Frankfurt to Malta leg. compute_entitlement gives nothing (0) for either flight. No US rule pays cash for the 60 minute maintenance delay either. So no one is lying, and I have not filed a claim or paid the 600 EUR per person. Your 6 November return DLF11C is unchanged."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}
