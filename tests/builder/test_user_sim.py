@@ -1,4 +1,4 @@
-"""Tests for builder/user_sim.py: rules derived from a trace, and a Simulated user that never invents."""
+"""Tests for user/rules.py and user/simulated.py: rules derived from a trace, and a Simulated user that never invents."""
 
 from __future__ import annotations
 
@@ -7,30 +7,6 @@ import json
 import pytest
 
 from conftest import PTR
-from kullback.builder import user_sim
-from kullback.builder.user_sim import (
-    ASKABLE,
-    CHOICE,
-    CLOSING,
-    CONFIRMATION,
-    GAVE_UP,
-    GENERIC_CONFIRM,
-    GOAL,
-    GOAL_SATISFIED,
-    HANDED_OFF,
-    RECORD,
-    SCENARIO_EXHAUSTED,
-    STRIPPED_TAG,
-    FactLookup,
-    SimulatedUser,
-    asked_fields,
-    derive_user_rules,
-    dict_reader,
-    end_of_run,
-    extracted_values,
-    fact_class,
-    spec_goal,
-)
 from kullback.builder.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
 from kullback.runner.records import (
     DisclosureRule,
@@ -43,6 +19,27 @@ from kullback.runner.records import (
     UserRules,
 )
 from kullback.user import value_strip as intent_mod
+from kullback.user.ends import FactLookup, dict_reader, end_of_run, writes_made
+from kullback.user.rules import (
+    ASKABLE,
+    CHOICE,
+    CLOSING,
+    CONFIRMATION,
+    GAVE_UP,
+    GENERIC_CONFIRM,
+    GOAL,
+    GOAL_SATISFIED,
+    HANDED_OFF,
+    RECORD,
+    SCENARIO_EXHAUSTED,
+    STRIPPED_TAG,
+    asked_fields,
+    derive_user_rules,
+    extracted_values,
+    fact_class,
+    spec_goal,
+)
+from kullback.user.simulated import SimulatedUser
 
 # What the retail build derives (D115): the generic core plus the fields retail's users state.
 RETAIL = Vocabulary(domain="retail", fields=[f.model_copy(deep=True) for f in GENERIC_FIELDS] + [
@@ -1265,29 +1262,29 @@ def test_a_refused_write_restated_once_still_reaches_an_end_kind():
 
 
 def test_a_write_happened_only_when_its_column_moved_or_its_replay_effect_check_passed():
-    made = user_sim.writes_made(
+    made = writes_made(
         [{"role": "tool", "name": "renew_loan", "content": "{}",
           "write_effect": [{"table": "loans", "row": "L2201", "path": "due_on",
                             "before": "2026-03-01", "after": "2026-04-01"}]}], {"renew_loan"})
     assert made == {"renew_loan"}
-    made = user_sim.writes_made(
+    made = writes_made(
         [{"role": "tool", "name": "renew_loan", "content": "{}", "write_effect": []}],
         {"renew_loan"})
     assert made == set()
-    made = user_sim.writes_made(
+    made = writes_made(
         [{"role": "tool", "name": "renew_loan", "content": "{}",
           "write_effect": [{"table": "loans", "row": "L2201", "path": "due_on",
                             "before": "2026-03-01", "after": "2026-03-01"}]}], {"renew_loan"})
     assert made == set()
-    made = user_sim.writes_made(
+    made = writes_made(
         [{"role": "tool", "name": "renew_loan", "content": "{}",
           "write_effect": {"effect_checks": 2, "effect_failures_total": 1,
                            "effect_failures": [{"table": "loans", "row": "L2201", "path": "due_on",
                                                 "reason": "the column did not move"}]}}],
         {"renew_loan"})
     assert made == set()
-    made = user_sim.writes_made(
+    made = writes_made(
         [{"role": "tool", "name": "renew_loan", "content": "{}",
           "write_effect": {"effect_checks": 2}}], {"renew_loan"})
     assert made == {"renew_loan"}
-    assert user_sim.writes_made(RENEWED[:2], {"renew_loan"}) == set()
+    assert writes_made(RENEWED[:2], {"renew_loan"}) == set()

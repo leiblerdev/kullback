@@ -404,7 +404,7 @@ def facts_of(calls: Iterable[dict], askable: set[str]) -> tuple[list[dict], list
     """The walk's argument values split by D210's classes: what a user could say, and what it could not.
 
     An argument path's last name is the field: `payment.method_id` is asked about as a method id
-    wherever it sits, which is the same reading `user_sim` gives a mined fact.
+    wherever it sits, which is the same reading `user/rules.py` gives a mined fact.
     """
     said: list[dict] = []
     held: list[dict] = []

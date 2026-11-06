@@ -4,8 +4,7 @@ or the world, never invented (D77).
 It moved here from kullback/builder/user_sim.py in D214, unchanged: the Simulated user is an agent
 of the harness in its own right, beside the Builder and the Examiner, and it is the floor the agent
 user (agent.py) has to beat before it drives a Task and the fallback whenever a guard drops the
-agent's turn. `kullback.builder.user_sim` re-exports every name, so a caller that has always read
-them from there still does. What a fact is, how a turn states it and how an agent asks for it come
+agent's turn. What a fact is, how a turn states it and how an agent asks for it come
 from the Vocabulary the build derived (D115); the generic core is the default.
 
 It ends by protocol and answers from typed facts (D210). Every end carries one of four reason
