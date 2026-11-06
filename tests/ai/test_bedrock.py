@@ -141,9 +141,8 @@ def test_a_profile_id_or_an_arn_goes_as_given_and_a_bare_id_goes_on_the_global_p
 
 
 def test_no_keys_at_all_is_refused_by_naming_the_aws_variables(live):
-    assert pv.DEFAULT_MODEL.startswith("bedrock/")
     with pytest.raises(pv.ProviderError) as refused:
-        bedrock(capture([]), env={}, model_id=pv.DEFAULT_MODEL).query([{"role": "user", "content": "hi"}])
+        bedrock(capture([]), env={}, model_id="bedrock/global.anthropic.claude-opus-5-5").query([{"role": "user", "content": "hi"}])
     text = str(refused.value)
     for name in ("AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
                  "AWS_REGION"):

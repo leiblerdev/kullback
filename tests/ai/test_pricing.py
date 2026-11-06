@@ -652,14 +652,86 @@ def test_a_price_list_is_read_once_a_process_and_not_once_a_lookup(tmp_path):
         "and forgetting it asks the vendor again"
 
 
-def test_a_price_list_cannot_add_a_model_the_row_does_not_offer(tmp_path):
-    """The written row says what the Harness offers. A list that prices two hundred other models
-    changes the price of the one it names and adds nothing, so nothing is offered unsized."""
-    listing = {"data": [{"id": "brisk-4", "rates": {"input": 0.5, "output": 1.25}},
-                        {"id": "brisk-9", "rates": {"input": 0.7, "output": 1.4}}]}
+def test_a_listed_model_the_row_does_not_name_is_added_with_the_listings_cost_window_and_flags(tmp_path):
+    """A gateway that starts serving a model lists and prices it. Without a row the budget gate
+    refuses every call to it as unpriced, so the listing's own reading becomes the row."""
+    listing = {"data": [
+        {"id": "brisk-4", "rates": {"input": 0.5, "output": 1.25}},
+        {"id": "brisk-9", "context_length": 1_048_576, "max_output_tokens": 65_536,
+         "capabilities": {"reasoning": True}, "features": ["tool-use"],
+         "rates": {"currency": "USD", "input_per_million": "0.075000", "output_per_million": "0.300000",
+                   "cache_read_input_per_million": "0.0015", "cache_write_input_per_million": None}},
+        {"id": "plain-2", "rates": {"input": 0.2, "output": 0.4}},
+    ]}
+    catalog = refresh_with(listing, tmp_path / "models.dev.json")
+    assert set(catalog["e-host"]["models"]) == {"brisk-4", "brisk-9", "plain-2"}
+    assert catalog["e-host"]["models"]["brisk-9"] == {
+        "id": "brisk-9", "name": "brisk-9", "reasoning": True, "tool_call": True,
+        "limit": {"context": 1_048_576, "output": 65_536},
+        "cost": {"input": 0.075, "output": 0.3, "cache_read": 0.0015}}
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-9")["cache_read"] == 0.0015
+    assert pricing.window_from_catalog(catalog, "e-host/brisk-9") == 1_048_576
+    plain = catalog["e-host"]["models"]["plain-2"]
+    assert (plain["reasoning"], plain["tool_call"], "limit" in plain) == (False, False, False), \
+        "a flag or window the listing does not state is not guessed"
+    assert pricing.endpoint_from_catalog(catalog, "e-host/brisk-9").base_url == "https://e-host.invalid/v1"
+
+
+def test_a_model_the_row_names_keeps_its_name_flags_and_window_and_takes_only_the_listed_cost(tmp_path):
+    written = {"e-host": {**LIVE_PRICED["e-host"], "models": {"brisk-4": {
+        "id": "brisk-4", "name": "Brisk 4", "reasoning": True, "tool_call": True,
+        "limit": {"context": 128_000, "output": 8_000}, "cost": dict(WRITTEN_RATES)}}}}
+    path = tmp_path / "models.dev.json"
+    pricing.forget_live_prices()
+    write_snapshot(path, CATALOG)
+    write_local(path, written)
+    listing = {"data": [{"id": "brisk-4", "context_length": 9, "max_output_tokens": 9,
+                         "capabilities": {"reasoning": False}, "features": [],
+                         "rates": {"input_per_million": "0.5", "output_per_million": "1.25"}}]}
+    catalog = pricing.refresh(client=price_list_transport(listing), path=path, env=dict(LIVE_ENV))
+    assert catalog["e-host"]["models"]["brisk-4"] == {
+        "id": "brisk-4", "name": "Brisk 4", "reasoning": True, "tool_call": True,
+        "limit": {"context": 128_000, "output": 8_000}, "cost": {"input": 0.5, "output": 1.25}}
+
+
+@pytest.mark.parametrize(
+    "rates",
+    [{"input": "half a cent", "output": 1.25}, {"input_per_million": None, "output_per_million": "1.0"},
+     {"currency": "EUR", "input_per_million": "0.5", "output_per_million": "1.0"},
+     {"input_per_million": "0.000000", "output_per_million": "0.000000"}],
+    ids=["not-a-number", "rate-missing", "other-currency", "priced-at-nothing"],
+)
+def test_a_listed_model_without_a_readable_token_price_is_not_added(tmp_path, rates):
+    """A model billed per image or second lists its token rates as zero, and a rate in another
+    currency or one that does not read is no rate: offering any of them would bill a call wrong."""
+    listing = {"data": [{"id": "brisk-9", "rates": rates}]}
     catalog = refresh_with(listing, tmp_path / "models.dev.json")
     assert set(catalog["e-host"]["models"]) == {"brisk-4"}
     assert pricing.price_from_catalog(catalog, "e-host/brisk-9") is None
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
+
+
+@pytest.mark.parametrize(("listing", "status"), [(None, 200), ({"error": "no key"}, 503)],
+                         ids=["unreachable", "error-answer"])
+def test_an_unreadable_price_list_leaves_the_row_exactly_as_written(tmp_path, listing, status):
+    catalog = refresh_with(listing, tmp_path / "models.dev.json", status=status)
+    assert catalog["e-host"]["models"] == LIVE_PRICED["e-host"]["models"]
+
+
+def test_a_provider_without_a_price_list_gains_no_model_from_another_providers_listing(tmp_path):
+    """Only the row that names a listing is grown by it; a provider beside it stays what it wrote."""
+    path = tmp_path / "models.dev.json"
+    pricing.forget_live_prices()
+    write_snapshot(path, CATALOG)
+    unlisted = {"f-host": {"id": "f-host", "npm": "@ai-sdk/openai-compatible", "api": "https://e-host.invalid/v1",
+                           "env": ["E_HOST_API_KEY"],
+                           "models": {"slow-1": {"cost": {"input": 1.0, "output": 2.0}}}}}
+    write_local(path, {**LIVE_PRICED, **unlisted})
+    listing = {"data": [{"id": "brisk-9", "rates": {"input": 0.7, "output": 1.4}}]}
+    catalog = pricing.refresh(client=price_list_transport(listing), path=path, env=dict(LIVE_ENV))
+    assert set(catalog["f-host"]["models"]) == {"slow-1"}
+    assert set(catalog["openai"]["models"]) == set(CATALOG["openai"]["models"])
+    assert "brisk-9" in catalog["e-host"]["models"]
 
 
 @pytest.mark.parametrize("models", [["not", "an", "object"], {}, {"quick-1": "1 in, 2 out"}],

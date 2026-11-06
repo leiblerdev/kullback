@@ -60,11 +60,13 @@ def snapshot_path(path: Optional[str | Path] = None) -> Path:
 #
 # url is the provider's model listing, field is the key each listed model carries its rates under,
 # in this catalog's own cost shape and unit (input, output, cache_read, cache_write, USD per 1M
-# tokens). refresh reads that listing when live calls are on and a key for the provider is held,
-# and lays the rates it finds over the model rows the row already names, matched by the same lookup
-# that resolves a call. It adds no models: the written row says which models the Harness offers and
-# what they cost when the listing cannot be read, so a vendor that renames a field, answers an
-# error, or is unreachable leaves the prices below standing rather than leaving a call unpriced.
+# tokens, or the listing's own per-million spelling, input_per_million and the like). refresh reads
+# that listing when live calls are on and a key for the provider is held, lays the rates it finds
+# over the model rows the row already names, matched by the same lookup that resolves a call, and
+# adds every other model the listing prices as a row of its own. A written row keeps its own name,
+# flags and window and only takes the listed cost; the written cost is what it is billed at when
+# the listing cannot be read, so a vendor that renames a field, answers an error, or is unreachable
+# leaves the prices below standing rather than leaving a call unpriced.
 LOCAL_PROVIDERS_NAME = "providers.local.json"
 
 # The key of the row naming a provider's live price list, and the model listing's own list of rows.
@@ -363,8 +365,63 @@ def _cost_numbers(cost: Any) -> Optional[dict[str, float]]:
     return numbers
 
 
-def _listed_prices(listing: Any, field: str) -> dict[str, dict[str, float]]:
-    """The rates a provider's model listing carries, by wire id.
+# The listing's per-million spelling of a rate, by the cost key it means in this catalog.
+_PER_MILLION_NAMES = {
+    "input": "input_per_million",
+    "output": "output_per_million",
+    "cache_read": "cache_read_input_per_million",
+    "cache_write": "cache_write_input_per_million",
+}
+LISTED_CURRENCY = "USD"
+# The feature names a listing marks tool calling with.
+_TOOL_FEATURES = ("tool-use", "tool_use", "tool_call", "tools")
+
+
+def _listed_cost(rates: Any) -> Optional[dict[str, float]]:
+    """One listed model's rates as a cost row, in the catalog's shape or the per-million one.
+
+    A rate named in another currency is no rate: the ledger is kept in dollars and a conversion
+    read wrong bills every call wrong. A rate written as null is a rate the listing does not have.
+    """
+    if not isinstance(rates, dict):
+        return None
+    if "currency" in rates and rates["currency"] != LISTED_CURRENCY:
+        return None
+    if "input" in rates or "output" in rates:
+        return _cost_numbers(rates)
+    spelled = {key: rates[name] for key, name in _PER_MILLION_NAMES.items() if rates.get(name) is not None}
+    return _cost_numbers(spelled)
+
+
+def _whole_positive(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _listed_row(row: dict, wire_id: str, cost: dict[str, float]) -> dict:
+    """The model row a listed model is offered under when the written row does not name it.
+
+    Its window and output cap are the listing's when it gives them, and it reasons or calls tools
+    only when the listing says so: a flag nobody stated is False, not a guess.
+    """
+    capabilities = row.get("capabilities") if isinstance(row.get("capabilities"), dict) else {}
+    features = row.get("features") if isinstance(row.get("features"), list) else []
+    added: dict[str, Any] = {
+        "id": wire_id,
+        "name": wire_id,
+        "reasoning": capabilities.get("reasoning") is True or "reasoning" in features,
+        "tool_call": capabilities.get("tool_call") is True or any(name in features for name in _TOOL_FEATURES),
+        "cost": cost,
+    }
+    limit = {key: number for key, number in (("context", _whole_positive(row.get("context_length"))),
+                                             ("output", _whole_positive(row.get("max_output_tokens"))))
+             if number is not None}
+    if limit:
+        added["limit"] = limit
+    return added
+
+
+def _listed_prices(listing: Any, field: str) -> dict[str, dict]:
+    """The models a provider's listing prices, by wire id, each as the row it would be offered under.
 
     The listing is the OpenAI one every gateway here serves, {"data": [{"id": ..., "<field>": ...}]},
     and a bare list of rows is read the same way. A row that prices nothing is passed over rather
@@ -373,14 +430,14 @@ def _listed_prices(listing: Any, field: str) -> dict[str, dict[str, float]]:
     rows = listing.get(LISTING_ROWS_FIELD) if isinstance(listing, dict) else listing
     if not isinstance(rows, list):
         return {}
-    prices: dict[str, dict[str, float]] = {}
+    prices: dict[str, dict] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
         wire_id = row.get("id")
-        cost = _cost_numbers(row.get(field))
+        cost = _listed_cost(row.get(field))
         if isinstance(wire_id, str) and wire_id and cost is not None:
-            prices[wire_id] = cost
+            prices[wire_id] = _listed_row(row, wire_id, cost)
     return prices
 
 
@@ -389,7 +446,7 @@ def _listed_prices(listing: Any, field: str) -> dict[str, dict[str, float]]:
 # moves in days, and the ledger already reads its prices once and keeps them. A reading that came
 # back with nothing is kept too: asking a host that is down again on the next lookup costs the
 # timeout again and answers the same nothing.
-_LIVE_PRICES_SEEN: dict[tuple[str, str], dict[str, dict[str, float]]] = {}
+_LIVE_PRICES_SEEN: dict[tuple[str, str], dict[str, dict]] = {}
 
 
 def forget_live_prices() -> None:
@@ -398,14 +455,19 @@ def forget_live_prices() -> None:
 
 
 def _overlay_live_prices(catalog: Optional[dict], client: Any, env: Optional[dict[str, str]]) -> Optional[dict]:
-    """Every provider row that names its own price list, repriced from that list.
+    """Every provider row that names its own price list, repriced from that list and grown by it.
 
     A written rate is stale the day the vendor moves it, and one gateway here moved by a factor of
     nearly two inside a day, so a row says where its prices live and this reads them. The row's own
     rates are the fallback and never the other way round: the call happens only when live calls are
     on, and an unreachable listing, an error, a renamed field or a rate that does not read as a
-    number all leave the written rates standing. No model is added, so the listing can only change
-    the price of a model the row already offers.
+    number all leave the written rates standing.
+
+    A model the listing prices and the written row does not name is added under the listed id, so
+    a gateway that starts serving a model can be called and billed the day it lists it, rather than
+    being refused as unpriced until someone writes a row by hand. A model listed at nothing for
+    both input and output is not added: that is a free model or one billed per image or second
+    rather than per token, the ledger cannot tell which, and billing it nothing would under-bill.
 
     A row whose key variable holds nothing is passed over without a request. Nobody can call a
     provider they hold no key for, so its rates price nothing, and a machine that only ever calls
@@ -423,17 +485,30 @@ def _overlay_live_prices(catalog: Optional[dict], client: Any, env: Optional[dic
         if key_var and not key:
             continue
         headers = {"Authorization": f"Bearer {key}"} if key else None
-        models = entry.get("models")
         listed = _LIVE_PRICES_SEEN.get((url, field))
         if listed is None:
             listed = _listed_prices(_get_json(client, url, headers), field)
             _LIVE_PRICES_SEEN[(url, field)] = listed
-        for row_key, cost in _by_row_key(models, listed).items():
-            models[row_key]["cost"] = cost
+        if listed:
+            _lay_listing_over(entry, listed)
     return catalog
 
 
-def _by_row_key(models: Any, listed: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+def _lay_listing_over(entry: dict, listed: dict[str, dict]) -> None:
+    """Reprice the rows the provider wrote and add the models only the listing names."""
+    models = entry.setdefault("models", {})
+    if not isinstance(models, dict):
+        return
+    written = dict(models)
+    for row_key, cost in _by_row_key(written, listed).items():
+        models[row_key]["cost"] = cost
+    for wire_id, row in listed.items():
+        cost = row["cost"]
+        if model_row_key(written, wire_id) is None and (cost["input"] > 0 or cost["output"] > 0):
+            models[wire_id] = copy.deepcopy(row)
+
+
+def _by_row_key(models: Any, listed: dict[str, dict]) -> dict[str, dict[str, float]]:
     """Listed rates keyed by the model row each one names, with the disagreements left out.
 
     A gateway lists one model under two spellings, its own and the lab's, and both resolve to the
@@ -443,13 +518,13 @@ def _by_row_key(models: Any, listed: dict[str, dict[str, float]]) -> dict[str, d
     """
     priced: dict[str, dict[str, float]] = {}
     disagreed: set[str] = set()
-    for wire_id, cost in listed.items():
+    for wire_id, row in listed.items():
         row_key = model_row_key(models, wire_id)
         if row_key is None:
             continue
-        if row_key in priced and priced[row_key] != cost:
+        if row_key in priced and priced[row_key] != row["cost"]:
             disagreed.add(row_key)
-        priced[row_key] = cost
+        priced[row_key] = dict(row["cost"])
     return {row_key: cost for row_key, cost in priced.items() if row_key not in disagreed}
 
 
@@ -466,8 +541,8 @@ def refresh(
 
     The local provider registry is laid over whatever comes back, always and last, so a provider
     models.dev does not list is answered here rather than by a second lookup somewhere else. A row
-    of that registry naming its own price list is then repriced from it, so a rate the vendor moved
-    today is what the ledger bills at. Neither overlay is written into the snapshot: the snapshot
+    of that registry naming its own price list is then repriced from it and gains every other
+    model it prices, so a rate the vendor moved today is what the ledger bills at. Neither overlay is written into the snapshot: the snapshot
     stays what models.dev said.
     """
     snap_path = snapshot_path(path)
