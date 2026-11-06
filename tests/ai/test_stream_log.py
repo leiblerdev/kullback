@@ -365,3 +365,41 @@ def test_a_blocking_call_hands_the_log_an_end_from_before_its_price_read(tmp_pat
     model.query([{"role": "user", "content": "hi"}])
     sent, finished = records[0]["times"]
     assert sent <= finished <= read_at[0]
+
+
+def test_a_row_whose_stage_ended_before_the_worker_began_still_gets_its_price(tmp_path, monkeypatch):
+    asked, let_go = threading.Event(), threading.Event()
+    handle = _provider(lambda r: httpx.Response(200)).handle
+    build_meta = handle._meta
+
+    def held_meta(*args):
+        asked.set()
+        let_go.wait(2.0)
+        return build_meta(*args)
+
+    monkeypatch.setattr(handle, "_meta", held_meta)
+    facts = StreamFacts()
+    facts.parser = SimpleNamespace(raw_usage=USAGE, body_model="model-a", _usage=pv.usage_from_openai_chat(USAGE))
+
+    async def one_event():
+        yield SimpleNamespace()
+
+    async def consume():
+        stream = streamlog.logged_stream(handle, one_event(), [{"role": "user", "content": "hi"}], None,
+                                         ModelConfig(temperature=1.0), facts)
+        await stream.__anext__()
+        await stream.aclose()
+
+    async def run():
+        with calls.stage("first", tmp_path):
+            task = asyncio.create_task(consume())
+            await _until(asked)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        assert calls.installed() is None
+        let_go.set()
+
+    asyncio.run(run())
+    (row,) = calls.read(tmp_path)
+    assert row["usd_actual"] == pytest.approx((600 * 2.0 + 400 * 0.1 + 100 * 10.0) / 1e6)
+    assert row["price_source"] == "pricing"

@@ -152,8 +152,10 @@ def retried(status: Any) -> None:
 
 
 def enabled() -> bool:
-    """Whether a call sent now is logged: a sink is installed, or the first call will install one (_from_env)."""
-    return _SINK is not None or bool(os.environ.get(CALLS_DIR_VAR))
+    """Whether a call sent now is logged: its pinned sink, else a sink is installed, or the first call will install
+    one (_from_env)."""
+    held = _PINNED.get()
+    return held[0] is not None if held is not None else _SINK is not None or bool(os.environ.get(CALLS_DIR_VAR))
 
 
 def this_call() -> tuple:
