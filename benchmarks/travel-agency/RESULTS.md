@@ -4,7 +4,7 @@ Written by `scripts/harbor_export.py --check`, which runs every task on the host
 fresh tool server (environment/runtime.py serve) on the task's world, the walk played through the `tools` CLI,
 then tests/runtime.py verify against that server. The judge is not asked (`--no-judge`), so a reward of 1.0
 here is every gate holding (end state and every code guard on every write); in a Harbor trial the judge items are
-then asked and, with no judge model set, the trial is left unscored. A reward of 0.0 names what failed: the code
+then asked and, with no judge model set, a trial that sent a reply is left unscored. A reward of 0.0 names what failed: the code
 guards by tag and `end state` for the end-state diff; `tool refuses` marks a walk the world refused a call of,
 which gates nothing (the grade lists it as attempted).
 
