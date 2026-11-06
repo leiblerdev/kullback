@@ -24,7 +24,7 @@ PROMPT_MODULES = (
     "kullback/spec/writer_tools.py", "kullback/spec/review.py", "kullback/examiner/prompt.py",
     "kullback/examiner/session.py", "kullback/examiner/rule_tool.py", "kullback/examiner/skills.py",
     "kullback/examiner/judge.py", "kullback/judge/items.py", "kullback/user/skills.py", "kullback/user/context.py",
-    "kullback/user/extension.py", "kullback/builder/skills.py", "kullback/builder/prompt.py",
+    "kullback/user/extension.py", "kullback/builder/prompt.py",
 )
 # Words of customer-service domains that are no harness word; a prompt says <record>, <field>, <value> instead.
 DOMAIN_WORDS = (
