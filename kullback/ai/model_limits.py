@@ -79,7 +79,7 @@ class RequestRules:
     sampling: bool = True
 
 
-# The model-migration guide in the claude-api reference (.claude/herdr/overhaul-0922/reference):
+# The model-migration guide in the claude-api reference:
 # sampling parameters stop being accepted at Opus 4.7 ("Sampling parameters", line 613) and the
 # later sections carry that forward; thinking is always on for Fable 5 and later (line 1322)
 # and for Opus 5.5 (line 1870); forced tool choice is refused on Fable 5.1, Mythos 5.1 (line 1557)
