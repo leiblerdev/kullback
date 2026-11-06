@@ -40,8 +40,3 @@ def toolkit_source():
 @pytest.fixture
 def hub() -> FakeHub:
     return FakeHub()
-
-
-@pytest.fixture
-def hub_with_organisation_card() -> FakeHub:
-    return FakeHub(organisation_card_supported=True)

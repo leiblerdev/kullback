@@ -235,12 +235,6 @@ def plurality_label(labels: Iterable[Sequence[str]]) -> tuple[str, ...]:
     return min(counts, key=lambda label: (-counts[label], label))
 
 
-def dissents(task: Any) -> bool:
-    """True when the Task's Runs disagree on what they wrote: the per-Task dissent flag (D313)."""
-    labels = task.get("write_labels") if isinstance(task, dict) else getattr(task, "write_labels", None)
-    return len({tuple(label) for label in (labels or {}).values()}) > 1
-
-
 def cluster_runs(
     traces: Iterable[Trace],
     tool_sigs: Any = None,

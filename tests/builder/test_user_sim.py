@@ -19,7 +19,7 @@ from kullback.runner.records import (
     UserRules,
 )
 from kullback.user import value_strip as intent_mod
-from kullback.user.ends import FactLookup, dict_reader, end_of_run, writes_made
+from kullback.user.ends import FactLookup, end_of_run, writes_made
 from kullback.user.rules import (
     ASKABLE,
     CHOICE,
@@ -50,6 +50,15 @@ RETAIL = Vocabulary(domain="retail", fields=[f.model_copy(deep=True) for f in GE
     FieldSpec(field="payment_method", pattern=r"\b(?i:gift card|credit card|debit card|paypal|mastercard|visa|amex|american express)\b",
               cues=[r"\bpayment method\b", r"\brefund method\b"], aliases=["payment method"]),
 ])
+
+
+def dict_reader(mapping: dict):
+    """A Starting state reader over a plain dict."""
+
+    class _DictReader:
+        def get(self, field: str):
+            return mapping.get(field)
+    return _DictReader()
 
 
 def make_trace(pairs, trace_id: str = "t1", calls=()) -> Trace:

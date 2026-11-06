@@ -281,15 +281,6 @@ def stop_run(cfg: RemoteConfig, run_id: str, workdir=None) -> dict:
     return {"stopped": True, "run_id": run_id, "pid": pid}
 
 
-def run_alive(cfg: RemoteConfig, run_id: str, workdir=None) -> bool:
-    """True when the run pid file exists and that pid is alive."""
-    _check_run_id(run_id)
-    pid = _read_pid(cfg, run_id, workdir)
-    if pid is None:
-        return False
-    return _pid_alive(cfg, pid, workdir)
-
-
 def _count_files(path: str) -> int:
     total = 0
     for _root, _dirs, files in os.walk(path):

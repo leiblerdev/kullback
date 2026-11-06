@@ -200,14 +200,3 @@ def missing_run_inputs(directory: Any) -> list[str]:
     if not (root / "overlays").is_dir():
         missing.append("overlays/")
     return missing
-
-
-def publish_organisation_card(organisation: str, markdown: str, *,
-                              client: Optional[HubClient] = None) -> tuple[bool, str]:
-    """Try to set the organisation's profile page; answer whether it took and what the host said."""
-    from kullback.hub.client import HubError
-
-    try:
-        return True, hub_client(client).set_organisation_card(organisation, markdown)
-    except HubError as error:
-        return False, str(error)

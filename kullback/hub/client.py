@@ -50,10 +50,6 @@ class HubClient(Protocol):
     def download(self, repo_id: str, out: Path, revision: Optional[str] = None) -> Path:
         """Lay a revision of the repository out under `out`; answer the directory."""
 
-    def set_organisation_card(self, organisation: str, markdown: str) -> str:
-        """Set an organisation's profile page; raise HubError where the host has no such call."""
-
-
 class HuggingFaceHub:
     """The one adapter, over huggingface_hub. Constructed only when a command actually publishes."""
 
@@ -84,17 +80,6 @@ class HuggingFaceHub:
                                  local_dir=str(out))
         return Path(path)
 
-    def set_organisation_card(self, organisation: str, markdown: str) -> str:
-        """An organisation profile is not a repository, and the Hub API exposes no write for it.
-
-        Saying so is the honest answer: the card is written to disk either way and a person pastes it
-        into the organisation's settings. This raises rather than pretending a publish happened.
-        """
-        raise HubError(
-            f"the Hub has no API for an organisation profile: paste the card into "
-            f"https://huggingface.co/organizations/{organisation}/settings/profile by hand")
-
-
 class LocalHub:
     """A host that is a directory: a dry run lays each upload out under `root/<repo_id>` and pushes nothing."""
 
@@ -123,10 +108,6 @@ class LocalHub:
 
         shutil.copytree(self.root / repo_id, out, dirs_exist_ok=True)
         return Path(out)
-
-    def set_organisation_card(self, organisation: str, markdown: str) -> str:
-        raise HubError("a local dry run has no organisation page")
-
 
 def url_for(repo_id: str) -> str:
     return f"https://huggingface.co/datasets/{repo_id}"

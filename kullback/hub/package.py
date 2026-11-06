@@ -807,11 +807,6 @@ def _hidden(relative: Path) -> bool:
     return any(part.startswith(".") for part in relative.parts)
 
 
-def package_hash(package: Path) -> str:
-    """One hash over every file of the package, so a fetch can tell it apart from a tampered copy."""
-    return content_hash(file_hashes(package))
-
-
 def verify_package(package: Path) -> list[str]:
     """Everything wrong with a package on disk, as words; an empty list is a package that verifies."""
     manifest = read_json(package / MANIFEST_NAME, None)
