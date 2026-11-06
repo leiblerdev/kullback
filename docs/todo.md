@@ -1,7 +1,7 @@
 # Deferred work
 
-The harness work that is known and not done, so nobody plans it twice. The company's list of 2026-09-10 is
-in [archive/company-todo.md](archive/company-todo.md); what past builds taught is in [learnings.md](learnings.md).
+The harness work that is known and not done, so nobody plans it twice. What past builds taught is in
+[learnings.md](learnings.md).
 
 ## Next
 

@@ -64,5 +64,4 @@ Kept as written; not updated.
 - [archive/cross-domain-check.md](archive/cross-domain-check.md): the cross-domain audit of 2026-08-28.
 - [archive/synthetic-rows.md](archive/synthetic-rows.md): the August design for growing Starting state rows; the
   current part is in scaling.md.
-- [archive/company-todo.md](archive/company-todo.md): the go-to-market list of 2026-09-10.
 - [live-build.md](live-build.md) and [harness-design.md](harness-design.md): pointers kept for old links.

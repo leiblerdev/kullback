@@ -15,8 +15,8 @@ from kullback.agent.harness import AgentHarness
 from kullback.agent.web_tools import OFF, TOOL_NAMES, numbered_lines, register_web_tools
 from kullback.ai.provider import TestModel
 from kullback.builder.search import MemoSearch
-from kullback.builder.search import TestSearch as ScriptedSearch
 from kullback.domain import destination_refusal
+from tests.builder.search_double import ScriptedSearch
 
 PAGE_URL = "https://example.com/help/refunds"
 HITS = {"refund": [{"title": "Refunds", "url": PAGE_URL, "snippet": "how refunds work", "site": "example.com"},

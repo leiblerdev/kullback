@@ -177,9 +177,6 @@ class Proposal:
     round_trips: tuple[int, int] = (0, 0)  # recorded results the renders wrote back, of those asked
     assisted: bool = False
 
-    def reader_for(self, tool: str) -> Optional[ToolReader]:
-        return next((r for r in self.readers if r.tool == tool), None)
-
     def changes_of(self, tool: str) -> list[str]:
         return list(self.effects.get(tool) or [])
 
@@ -891,16 +888,6 @@ def apply_to_schema(schema: EntitySchema, proposals: Iterable[Proposal],
                 samples=observed[:MAX_EXAMPLES]))
     schema.columns = sorted(schema.columns, key=lambda c: (c.table, c.name))
     return schema
-
-
-def revealed_tables(schema: EntitySchema) -> dict[str, str]:
-    """Per table, the requestor that revealed it; a table the assistant's calls describe is not here."""
-    out: dict[str, str] = {}
-    for column in schema.columns:
-        who = (column.evidence or {}).get("revealed_by")
-        if who:
-            out[column.table] = str(who)
-    return out
 
 
 def starting_rows(traces: Iterable[Trace], proposal: Proposal, parsed: dict) -> dict[str, dict]:

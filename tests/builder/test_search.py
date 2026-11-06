@@ -9,7 +9,7 @@ import pytest
 
 from kullback.ai.provider import LIVE_ENV_VAR
 from kullback.builder import search as sx
-from kullback.builder.search import TestSearch as ScriptedSearch
+from tests.builder.search_double import ScriptedSearch
 
 
 def _client(handler):

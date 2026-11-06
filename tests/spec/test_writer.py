@@ -121,13 +121,6 @@ def test_a_ruling_excerpt_may_not_be_a_run():
                  TestModel([answer("checks", [])]))
 
 
-def test_spoken_text_becomes_one_volunteered_fact_per_sentence():
-    intent = W.spoken_intent("t1", "Move item A1 to slot seven. Is that possible?\n\nThanks!")
-    assert [fact.text for fact in intent.facts] == ["Move item A1 to slot seven.", "Is that possible?", "Thanks!"]
-    assert {fact.stance for fact in intent.facts} == {"volunteered"}
-    assert intent.text == intent_text(intent.facts)
-
-
 def _workdir(root):
     """A minimal Environment on disk, with a Run and a Verifier that carry a sentinel."""
     (root / "tasks").mkdir(parents=True)

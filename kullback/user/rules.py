@@ -4,8 +4,7 @@ or the world, never invented (D77).
 It moved here from kullback/builder/user_sim.py in D214, unchanged: the Simulated user is an agent
 of the harness in its own right, beside the Builder and the Examiner, and it is the floor the agent
 user (agent.py) has to beat before it drives a Task and the fallback whenever a guard drops the
-agent's turn. `kullback.builder.user_sim` re-exports every name, so a caller that has always read
-them from there still does. What a fact is, how a turn states it and how an agent asks for it come
+agent's turn. What a fact is, how a turn states it and how an agent asks for it come
 from the Vocabulary the build derived (D115); the generic core is the default.
 
 It ends by protocol and answers from typed facts (D210). Every end carries one of four reason
@@ -227,27 +226,6 @@ def asked_fields(text: Optional[str], vocab: Vocabulary = GENERIC) -> list[str]:
         return []
     return [spec.field for spec in vocab.fields
             if any(re.search(cue, sentence) for sentence in requests for cue in spec.cues)]
-
-
-def named_fields(text: Optional[str], fields: Iterable[str], vocab: Vocabulary = GENERIC) -> list[str]:
-    """The fields of `fields` a request names by their own words, for wording no cue carries.
-
-    The cues are the words this corpus and the web showed (D115); an agent that asks in words
-    neither showed still names the field itself ("the name on the account"), and a fact the
-    recording holds is answered whatever the wording (D44). Build 8's Simulated user answered
-    "I do not have my name" to 63 such asks, with the name in its own rules.
-    """
-    requests = _request_sentences(_norm(text))
-    if not requests:
-        return []
-    out: list[str] = []
-    for field in fields:
-        spec = vocab.get(field)
-        words = [_words(field)] + list(spec.aliases if spec is not None else [])
-        cues = [r"\b" + re.escape(word) + r"\b" + REPOINT for word in words if word]
-        if field not in out and any(re.search(cue, sentence) for sentence in requests for cue in cues):
-            out.append(field)
-    return out
 
 
 def _flattened(text: Optional[str]) -> str:

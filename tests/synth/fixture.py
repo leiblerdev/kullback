@@ -9,9 +9,10 @@ from functools import partial
 from pathlib import Path
 
 from kullback.ai.provider import ModelReply, ToolCallRequest
-from kullback.builder.search import Chain, MemoSearch, TestSearch
+from kullback.builder.search import Chain, MemoSearch
 from kullback.domain import destination_refusal
 from kullback.runner.records import RawPtr, Task, Trace, Turn, as_dict, write_json
+from tests.builder.search_double import ScriptedSearch
 
 PTR = RawPtr(file_hash="fixture", sim_index=0)
 POLICY = ("A widget may be moved to another slot only before it is sealed.\n"
@@ -68,9 +69,9 @@ URL = "https://help.example/a"
 REFUSE = partial(destination_refusal, resolve=lambda host: ["93.184.215.14"])
 
 
-def web(workdir: Path, hits: dict | None = None, pages: dict | None = None) -> tuple[MemoSearch, TestSearch]:
+def web(workdir: Path, hits: dict | None = None, pages: dict | None = None) -> tuple[MemoSearch, ScriptedSearch]:
     """The harness's reader as the live path builds it, memo over a chain, with a scripted provider inside."""
-    inner = TestSearch(hits={"": [{"url": URL}]} if hits is None else hits,
+    inner = ScriptedSearch(hits={"": [{"url": URL}]} if hits is None else hits,
                        pages={URL: PAGE} if pages is None else pages)
     return MemoSearch(Chain([inner]), workdir), inner
 

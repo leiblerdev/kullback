@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from examiner.worlds import make_world
 from gates.examiner_fixtures import SIGS
 from kullback.agent.events import ToolExecutionEnd
 from kullback.agent.extensions import load_extensions
-from kullback.agent.harness import AgentHarness, drive_tool
+from kullback.agent.harness import AgentHarness
+from kullback.agent.loop import execute_tool_call
+from kullback.agent.messages import ToolCall
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.examiner import domain_tools as exam_tools
 from kullback.examiner import session as S
@@ -18,6 +21,12 @@ from kullback.runner import budget, tool
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import as_dict, read_json, write_json
 from tests.runner.test_tool import _env_with_trace
+
+
+def drive_tool(harness: AgentHarness, name: str, arguments: dict):
+    """One tool call through the harness's hooks and registry, with no model turn."""
+    call = ToolCall(id="driver", name=name, arguments=dict(arguments))
+    return asyncio.run(execute_tool_call(call, harness.registry, harness.hooks, harness.emit))
 
 
 def reply(content, *calls) -> ModelReply:

@@ -212,20 +212,6 @@ def test_a_prose_result_the_call_names_no_row_for_is_not_a_gap_this_module_can_c
 # --- what the counts reach ---------------------------------------------------
 
 
-def test_a_tool_whose_results_stay_unread_is_filed_as_a_finding_naming_its_shapes(tmp_path):
-    from kullback.examiner.findings import unread_result_rows
-
-    artifact = {"gaps": {"totals": {"results_unread_by_tool": {"track_parcel": 2}},
-                         "tools": {"track_parcel": {"unread_shapes": ["Nobody has parcel P-N today."]}}}}
-    status = {"task_1": {"reference_confirmed": False, "blocking_tools": ["track_parcel"]}}
-    rows = unread_result_rows(artifact, status)
-    assert [row["kind"] for row in rows] == ["environment"]
-    assert rows[0]["tool"] == "track_parcel"
-    assert rows[0]["task_ids"] == ["task_1"]
-    assert "Nobody has parcel P-N today." in rows[0]["text"]
-    assert rows[0]["key"] == "environment:track_parcel:"
-
-
 @pytest.mark.parametrize("results", [
     [], ["one result only"], ["Parcel P-1 is with dana.", "Parcel P-2 is with eli."],
 ])

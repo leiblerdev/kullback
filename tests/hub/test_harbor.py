@@ -792,12 +792,6 @@ def test_the_card_runs_harbor_under_use_it_without_the_tier_table_or_left_out_ta
     assert "harbor/" not in card_markdown({"name": "widgets"}, "someorg/widgets")
 
 
-def test_the_organisation_card_carries_no_news_section():
-    from kullback.hub.card import organisation_card
-
-    assert "## News" not in organisation_card([])
-
-
 def test_verified_leaves_out_a_task_the_tier_report_rules_no_verifier_though_a_draft_is_on_disk(tmp_path):
     workdir = _workdir(tmp_path / "work", trusted=False)
     write_json(workdir / "tiers.json", {"rows": [{"task_id": TASK, "tier": "untrusted", "reason": "no_verifier"}]})

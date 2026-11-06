@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional, Protocol, runtime_checkable
+from typing import Optional
 
 # What a model is assumed to take when the snapshot lists no window for it. Deliberately small:
 # compacting earlier than needed costs a summary, compacting later than the model allows costs the
@@ -47,14 +47,6 @@ class ModelLimits:
         return max(1, self.effective_context_window * COMPACTION_SHARE_PERCENT // 100)
 
 
-@runtime_checkable
-class ModelLimitsProvider(Protocol):
-    """A provider that can be asked what one model's limits are on its surface."""
-
-    def discover_model_limits(self, model: str) -> Optional[ModelLimits]:
-        ...
-
-
 def limits_for(model_id: Optional[str], *, path: Optional[str] = None,
                env: Optional[dict[str, str]] = None) -> ModelLimits:
     """The limits the snapshot lists for a model id, falling back to the generic window.
@@ -87,7 +79,7 @@ class RequestRules:
     sampling: bool = True
 
 
-# The model-migration guide in the claude-api reference (.claude/herdr/overhaul-0922/reference):
+# The model-migration guide in the claude-api reference:
 # sampling parameters stop being accepted at Opus 4.7 ("Sampling parameters", line 613) and the
 # later sections carry that forward; thinking is always on for Fable 5 and later (line 1322)
 # and for Opus 5.5 (line 1870); forced tool choice is refused on Fable 5.1, Mythos 5.1 (line 1557)

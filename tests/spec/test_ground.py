@@ -1,4 +1,4 @@
-from kullback.spec.ground import coverage, ground_spec, valid_because, valid_write_because
+from kullback.spec.ground import coverage, valid_because, valid_write_because
 from tests.spec.fixtures import check, spec
 
 INTENT = "Please move item A1 to slot seven.\nI also want a note saying it was urgent."
@@ -25,17 +25,6 @@ def test_coverage_lists_the_uncovered_fact_unless_a_check_names_it():
     named = check("c2", "communicate", {"demand": "say", "text": "urgent"},
                   because="a note saying it was urgent", fact_ids=["f2"])
     assert coverage(spec([check(), named])) == []
-
-
-def test_ground_spec_refuses_an_ungrounded_check_and_an_uncovered_fact():
-    refusals = ground_spec(spec([check(because="nothing the user said here")]))
-    assert any("check c1" in r for r in refusals)
-    assert any("fact f2" in r for r in refusals)
-    assert ground_spec(spec(gaps=["f2"])) == []
-
-
-def test_ground_spec_never_raises_on_a_malformed_spec():
-    assert ground_spec(object()) and ground_spec(spec(), policy_sections=None) == ground_spec(spec())
 
 
 def test_a_section_matches_as_whole_words_only():

@@ -310,20 +310,6 @@ def _bad_entry(commands: list) -> bool:
                or not isinstance(entry.get(FIELD_KEYSTROKES), str) for entry in commands)
 
 
-def command_entries(text: Any) -> Optional[list[dict]]:
-    """The shell batch one assistant turn requests, or None when the turn carries none.
-
-    Empty batches yield an empty list (they still submit, and the scaffold still answers);
-    anything without a command list yields None. The survey counts through this so both
-    read the same batches."""
-    kind, entries = _parsed_commands(text)
-    if kind in COMMAND_KINDS:
-        return entries
-    if kind == "empty_commands":
-        return []
-    return None
-
-
 def _batch_call(entries: list, trace_id: str, here: RawPtr) -> ToolCall:
     """One command turn as one call on the shell, carrying the batch as the turn carries it."""
     return ToolCall(

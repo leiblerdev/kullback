@@ -8,15 +8,22 @@ import time
 
 from kullback.trainer.remote import (
     RemoteConfig,
+    _pid_alive,
+    _read_pid,
     gpu_status,
     parse_nvidia_smi,
     run,
-    run_alive,
     shell,
     start_run,
     stop_run,
     sync,
 )
+
+
+def run_alive(cfg, run_id):
+    """True when the run's pid file exists and that pid is alive."""
+    pid = _read_pid(cfg, run_id)
+    return pid is not None and _pid_alive(cfg, pid)
 
 
 def make_cfg(tmp_path, name="remote"):

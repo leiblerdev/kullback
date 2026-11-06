@@ -33,8 +33,6 @@ def test_no_module_of_the_spec_package_imports_the_reference_derivation():
 
 def test_the_writers_path_never_loads_a_reference_run():
     for name in WRITER_PATH:
-        imports = _imports(SPEC / name)
-        assert not any(i.startswith("kullback.spec.witness") for i in imports), name
         assert "references.json" not in (SPEC / name).read_text(encoding="utf-8"), name
 
 

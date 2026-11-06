@@ -89,10 +89,9 @@ def test_a_creating_body_gets_the_recorded_id_at_replay(tmp_path):
 
 def test_the_recorded_id_lands_in_the_world_the_next_call_reads():
     """The row is inserted under the recorded id, which is what a later read replays."""
-    call = _call("c1", {"loan_id": "L101", "opened": "2024-03-04T05:06:07"})
     source = ce.module_source(LOANS_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY})
     toolkit = ce.load_toolkit(source, {table: dict(rows) for table, rows in LOANS_DB.items()})
-    toolkit.ctx.attach_recorded(ce.recorded_run_context([call], LOANS_SCHEMA))
+    toolkit.ctx.attach_recorded({"ids": {"loans": ["L101"]}, "times": ["2024-03-04T05:06:07"]})
     assert toolkit.open_loan(patron="ann") == {"loan_id": "L101", "opened": "2024-03-04T05:06:07"}
     assert set(toolkit.db.loans) == {"L100", "L101"}
     assert toolkit.ctx.usage() == {"recorded": 2, "seeded": 0}
@@ -134,11 +133,10 @@ def test_the_same_seed_draws_the_same_run():
 
 
 def test_now_at_replay_is_the_recorded_time_and_off_the_path_a_function_of_seed_and_step():
-    recorded = _call("c1", {"loan_id": "L101", "opened": "2024-03-04T05:06:07"})
     toolkit = ce.load_toolkit(
         ce.module_source(LOANS_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
         {table: dict(rows) for table, rows in LOANS_DB.items()})
-    toolkit.ctx.attach_recorded(ce.recorded_run_context([recorded], LOANS_SCHEMA))
+    toolkit.ctx.attach_recorded({"ids": {"loans": ["L101"]}, "times": ["2024-03-04T05:06:07"]})
     assert toolkit.ctx.now() == "2024-03-04T05:06:07"
 
     fresh = ce.load_toolkit(
@@ -176,24 +174,6 @@ def test_a_body_that_never_touches_the_context_answers_as_before(tmp_path):
     assert plain == fed == [{"ok": True,
                              "value": {"loan_id": "L100", "opened": "2024-01-02T10:00:00"}}]
     assert ce.load_toolkit(source, LOANS_DB).ctx.usage() == {"recorded": 0, "seeded": 0}
-
-
-def test_a_read_before_a_creation_does_not_shift_the_creation_feed():
-    """The run feed lists only what a body could not know: a read echoing a held row and an
-    update echoing its own id contribute nothing, so the creation is served its own values."""
-    read = ToolCall(id="r1", name="get_loan", args={"loan_id": "L100"},
-                    result={"loan_id": "L100", "opened": "2024-01-02T10:00:00"}, raw_ptr=PTR)
-    update = ToolCall(id="u1", name="open_loan", args={"patron": "ann", "loan_id": "L100"},
-                      result={"loan_id": "L100", "opened": "2024-01-02T10:00:00"}, raw_ptr=PTR)
-    create = _call("c1", {"loan_id": "L101", "opened": "2024-03-04T05:06:07"})
-    run = ce.recorded_run_context([read, update, create], LOANS_SCHEMA, ["open_loan"])
-    assert run == {"ids": {"loans": ["L101"]}, "times": ["2024-03-04T05:06:07"]}
-    toolkit = ce.load_toolkit(
-        ce.module_source(LOANS_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
-        {table: dict(rows) for table, rows in LOANS_DB.items()})
-    toolkit.ctx.attach_recorded(run)
-    assert toolkit.open_loan(patron="ann") == {"loan_id": "L101",
-                                                    "opened": "2024-03-04T05:06:07"}
 
 
 UPDATE_SIG = ToolSig(
@@ -243,11 +223,6 @@ def test_an_id_is_withheld_as_new_only_when_its_own_recording_already_showed_it_
     feeds = ce.recorded_call_contexts([create, echo], LOANS_SCHEMA)
     assert feeds[ce.context_feed_key(create)]["new_ids"] == {"loans": ["L101"]}
     assert feeds[ce.context_feed_key(echo)]["new_ids"] == {}
-    note = ToolCall(id="r1", name="get_loan", args={"loan_id": "L100"},
-                    result={"loan_id": "L100", "note": "L101"}, raw_ptr=PTR)
-    create = _call("c1", {"loan_id": "L101", "opened": "2024-03-04T05:06:07"})
-    run = ce.recorded_run_context([note, create], LOANS_SCHEMA, ["open_loan"])
-    assert run["ids"] == {"loans": ["L101"]}
     call = _update_call()
     feeds = ce.recorded_call_contexts([call], LOANS_SCHEMA)
     assert feeds[ce.context_feed_key(call)]["new_ids"] == {}

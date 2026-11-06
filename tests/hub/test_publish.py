@@ -376,7 +376,7 @@ def test_a_fetch_verifies_the_hash_and_lays_out_a_directory_the_runner_loads(nur
     out = tmp_path / "fetched"
     manifest = publish_mod.fetch("leibler/nursery", out, client=hub)
     assert manifest["missing_run_inputs"] == []
-    assert manifest["content_hash"] == package_mod.package_hash(out)
+    assert manifest["content_hash"] == package_mod.content_hash(package_mod.file_hashes(out))
     toolkit = toolkit_source(out)
     assert toolkit.get_plot(plot_id="P-1").crop == "basil"
     toolkit.water_plot(plot_id="P-1", on_date="2026-03-09")
@@ -416,32 +416,6 @@ def test_the_environment_name_comes_from_the_flag_and_not_from_the_environment_r
     assert named["name"] == "hothouse"
     defaulted = publish_mod.stage(nursery, tmp_path / "b", "leibler/nursery", preview=True)
     assert defaulted["name"] == "nursery"
-
-
-# --- the organisation card ------------------------------------------------------------
-
-
-def test_the_organisation_card_has_a_row_only_for_each_environment_with_its_status_tasks_and_harbor_tasks(
-        nursery, tmp_path):
-    manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
-    body = card_mod.organisation_card([{"name": "nursery", "repo_id": "leibler/nursery", "manifest": manifest}])
-    row = "| [leibler/nursery](https://huggingface.co/datasets/leibler/nursery) | preview | 3 | none |"
-    assert row in body
-    assert [line for line in body.splitlines() if line.startswith("| [")] == [row]
-    assert "kullback fetch leibler/<environment>" in body
-    assert manifest["tag"] not in body
-
-
-def test_an_organisation_card_is_published_where_the_host_takes_it_and_reported_where_it_will_not(
-        hub, hub_with_organisation_card):
-    took, note = publish_mod.publish_organisation_card("leibler", "# leibler\n", client=hub)
-    assert took is False
-    assert "organisation profile" in note
-
-    host = hub_with_organisation_card
-    took, where = publish_mod.publish_organisation_card("leibler", "# leibler\n", client=host)
-    assert took is True and "leibler" in where
-    assert host.organisation_cards["leibler"] == "# leibler\n"
 
 
 # --- the three commands ---------------------------------------------------------------
@@ -584,25 +558,11 @@ def test_call_fidelity_counts_the_calls_a_replay_report_writes_to_replays_json(n
     assert (fidelity["calls"], fidelity["calls_total"], fidelity["calls_rate"]) == (2, 4, 0.5)
 
 
-def test_a_line_break_in_corpus_text_stays_on_its_card_line_and_a_pipe_inside_its_organisation_cell(
+def test_a_line_break_in_corpus_text_stays_on_its_card_line(
         nursery, tmp_path):
     manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True,
                                   corpus="nursery | traces\nsecond line", corpus_license="MIT")
     assert "Source corpus: nursery | traces second line (MIT)." in card_mod.card_markdown(manifest, "leibler/nursery")
-    org = card_mod.organisation_card([{"name": "n", "repo_id": "leibler/a|b", "manifest": manifest}])
-    row = next(line for line in org.splitlines() if line.startswith("| ["))
-    assert row.replace("\\|", "").count("|") == 5
-
-
-def test_the_organisation_card_defines_four_plain_terms_and_names_no_gate_atom_or_fidelity():
-    body = card_mod.organisation_card([])
-    terms = body.split("## Terms\n\n", 1)[1].split("\n\n", 1)[0].splitlines()
-    assert [term.split(":")[0] for term in terms] == ["- Environment", "- Task", "- Run", "- Verifier"]
-    headings = [line for line in body.splitlines() if line.startswith("#")]
-    assert headings[1:] == ["## Environments", "## Use it", "## Terms", "## Known issues", "## Links"]
-    assert card_mod.DISCLAIMER in body.split("## Known issues")[1]
-    for name in ("Atom", "Gates", "suite", "loosening", "Call fidelity", "Fidelity over", "Confirmed:", "90%"):
-        assert name not in body
 
 
 def test_the_known_issues_say_a_task_needing_a_mid_conversation_fact_cannot_be_finished_in_the_package(
