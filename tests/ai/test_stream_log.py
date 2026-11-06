@@ -3,13 +3,17 @@
 import asyncio
 import json
 import random
+import threading
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
 import kullback.ai.calllog as calls
 import kullback.ai.provider as pv
+import kullback.ai.streamlog as streamlog
 from kullback.ai._provider_events import ProviderErrorEvent
+from kullback.ai._sse import StreamFacts
 from kullback.ai.events import StreamDone, StreamError
 from kullback.ai.messages import UserMessage
 from kullback.ai.openai_compatible import OpenAICompatibleProvider
@@ -42,10 +46,11 @@ def _answer(model="model-a", usage_on_choice=False) -> bytes:
                 {"model": model, "choices": [], "usage": USAGE}, {"model": model, "choices": [], "usage": None}, "[DONE]")
 
 
-def _provider(stream, prices=PRICES, wire="route-a/model-a"):
+def _provider(stream, prices=PRICES, wire="route-a/model-a", on_price_read=lambda: None):
     pv.enable_live_calls_from_env({pv.LIVE_ENV_VAR: "1"})
 
     def blocking(request):
+        on_price_read()
         return httpx.Response(200, json=prices)
 
     handle = pv.model_for(wire, env=ROUTED, client=httpx.Client(transport=httpx.MockTransport(blocking)),
@@ -168,3 +173,126 @@ def test_the_error_event_type_of_a_refusal_is_the_one_every_stream_failure_uses(
                                                                  config=ModelConfig(temperature=1.0))]
 
     assert isinstance(asyncio.run(run())[-1], ProviderErrorEvent)
+
+
+def _until(event):
+    """Other work on the loop, which runs only while the loop is free: it waits for `event`, and says so."""
+    async def wait():
+        while not event.is_set():
+            await asyncio.sleep(0.001)
+    return wait()
+
+
+def test_other_work_on_the_loop_runs_while_a_stream_row_reads_the_price_table(tmp_path):
+    calls.begin(tmp_path, "s", run_id="r1")
+    asked, loop_ran, read_saw_the_loop = threading.Event(), threading.Event(), []
+
+    def slow_read():
+        asked.set()
+        read_saw_the_loop.append(loop_ran.wait(2.0))
+
+    provider = _provider(lambda r: httpx.Response(200, content=_answer()), on_price_read=slow_read)
+
+    async def run():
+        async def other_work():
+            await _until(asked)
+            loop_ran.set()
+
+        other = asyncio.create_task(other_work())
+        events = [event async for event in provider.stream_response(
+            messages=[UserMessage(content="hi")], config=ModelConfig(temperature=1.0))]
+        await other
+        return events
+
+    assert isinstance(asyncio.run(run())[-1], StreamDone)
+    assert read_saw_the_loop == [True]
+    (row,) = calls.read(tmp_path)
+    assert row["usd_actual"] == pytest.approx((600 * 2.0 + 400 * 0.1 + 100 * 10.0) / 1e6)
+    assert row["price_source"] == "pricing"
+
+
+def test_a_stream_row_has_a_null_cost_when_the_price_table_cannot_be_read(tmp_path):
+    def unreadable():
+        raise httpx.ConnectError("the gateway is away")
+
+    calls.begin(tmp_path, "s", run_id="r1")
+    _turn(_provider(lambda r: httpx.Response(200, content=_answer()), on_price_read=unreadable))
+    (row,) = calls.read(tmp_path)
+    assert row["input"] == 600 and (row["usd_actual"], row["price_source"]) == (None, None)
+
+
+def test_a_stream_with_logging_off_never_reads_the_price_table(monkeypatch):
+    monkeypatch.delenv(calls.CALLS_DIR_VAR, raising=False)
+    reads = []
+    events = _turn(_provider(lambda r: httpx.Response(200, content=_answer()), on_price_read=lambda: reads.append(1)))
+    assert isinstance(events[-1], StreamDone) and reads == []
+
+
+def test_a_blocking_call_with_logging_off_never_reads_the_price_table(monkeypatch):
+    monkeypatch.delenv(calls.CALLS_DIR_VAR, raising=False)
+    handle = _provider(lambda r: httpx.Response(200), on_price_read=lambda: pytest.fail("read the price table")).handle
+    assert "usd_priced" not in handle._usage_meta(USAGE, priced=True)
+
+
+def test_a_slow_price_read_is_not_counted_in_the_wall_time_of_the_stream(tmp_path, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(streamlog, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def slow_read():
+        clock[0] += 60.0
+
+    calls.begin(tmp_path, "s", run_id="r1")
+    _turn(_provider(lambda r: httpx.Response(200, content=_answer()), on_price_read=slow_read))
+    assert calls.read(tmp_path)[0]["wall_ms"] == 0
+
+
+def test_a_consumer_cancelled_during_the_price_read_still_closes_the_stream_and_writes_the_row(tmp_path):
+    calls.begin(tmp_path, "s", run_id="r1")
+    asked, let_go, closed = threading.Event(), threading.Event(), []
+
+    def held_read():
+        asked.set()
+        let_go.wait(2.0)
+
+    handle = _provider(lambda r: httpx.Response(200), on_price_read=held_read).handle
+    facts = StreamFacts()
+    facts.parser = SimpleNamespace(raw_usage=USAGE, body_model="model-a", _usage=None)
+
+    async def events():
+        try:
+            yield SimpleNamespace()
+            yield SimpleNamespace()
+        finally:
+            closed.append(True)
+
+    async def consume():
+        stream = streamlog.logged_stream(handle, events(), [{"role": "user", "content": "hi"}], None,
+                                         ModelConfig(temperature=1.0), facts)
+        await stream.__anext__()
+        await stream.aclose()
+
+    async def run():
+        task = asyncio.create_task(consume())
+        await _until(asked)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert task.cancelled() and closed == [True]
+        let_go.set()
+
+    asyncio.run(run())
+    (row,) = calls.read(tmp_path)
+    assert "closed" in row["error"]
+
+
+def test_a_stream_row_written_off_the_loop_carries_the_context_of_the_call(tmp_path):
+    calls.begin(tmp_path, "s", run_id="r1")
+    provider = _provider(lambda r: httpx.Response(200, content=_answer()))
+
+    async def run():
+        with calls.labelled("the-label", attempt=3):
+            return [event async for event in provider.stream_response(
+                messages=[UserMessage(content="hi")], config=ModelConfig(temperature=1.0))]
+
+    asyncio.run(run())
+    (row,) = calls.read(tmp_path)
+    assert (row["label"], row["attempt"], row["session_tag"]) == ("the-label", 3, "r1.s")

@@ -1750,7 +1750,7 @@ class OmniRouteModel(OpenAICompatibleModel):
         absent or 0 (it reads 0 on a stream, and on a model with no pricing row, which then stays no price), and
         reasoning null when no thinking count is reported."""
         meta = {"usd_billed": _number(usage.get("cost"))}
-        if priced:
+        if priced and calllog.enabled():  # the table is a blocking read, for a row nobody writes when logging is off
             meta["usd_priced"] = pricing_usd(self.pricing(), self.wire_id, usage_from_openai_chat(usage))
         if (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") is None:
             meta["reasoning"] = None

@@ -63,6 +63,9 @@ LOCAL_PRICES: dict[str, dict[str, float]] = {
     "bedrock/us.openai.gpt-6.1-sol": {"input": 2.2, "output": 11.0, "cache_read": 0.11, "cache_write": 2.75},
     "bedrock/us.xai.grok-4.7": {"input": 2.2, "output": 6.6, "cache_read": 0.55, "cache_write": 0.0},
 }
+# A one-hour cache write under a row with no rate of its own, as a multiple of input: the rule of runner/budget.py,
+# which this layer cannot import (tests/ai/test_calllog.py holds the two together).
+CACHE_WRITE_1H_INPUT_MULTIPLE = 2.0
 # Providers with implicit step-prefix caching: the tokens a hit leaves uncached, and the fewest tokens it caches
 # (measured 2026-11-05: a 2049-token tail on every hit; under 1024 expected, 9 of 103 calls read anything).
 CACHE_TAIL = {"google": 2049}
@@ -144,6 +147,11 @@ def retried(status: Any) -> None:
         seen.append(status)
 
 
+def enabled() -> bool:
+    """Whether a call sent now is logged: a sink is installed, or the first call will install one (_from_env)."""
+    return _SINK is not None or bool(os.environ.get(CALLS_DIR_VAR))
+
+
 def emit(model: str, provider: str, system: str, messages: list[dict], tools: Any, usage: Any = None,
          attempts: int = 1, wall_ms: float = 0.0, error: Optional[str] = None, meta: Optional[dict] = None) -> None:
     """One call handed to the sink with its context; nothing without a sink, and a sink error is swallowed."""
@@ -211,12 +219,17 @@ def route_of(model_id: str) -> str:
     return model_id.split("/", 1)[0] if "/" in model_id else ""
 
 
+def _usd(usage: Any, row: dict[str, float]) -> float:
+    """The usage priced from one row per 1M tokens; the one-hour part of the cache writes at its own rate."""
+    hour_rate = row.get("cache_write_1h", row["input"] * CACHE_WRITE_1H_INPUT_MULTIPLE)
+    return (usage.input * row["input"] + usage.output * row["output"] + usage.cache_read * row["cache_read"]
+            + (usage.cache_write - usage.cache_write_1h) * row["cache_write"]
+            + usage.cache_write_1h * hour_rate) / 1_000_000
+
+
 def _local_usd(usage: Any, model_id: str) -> Optional[float]:
     row = LOCAL_PRICES.get(model_id)
-    if row is None or usage is None:
-        return None
-    return (usage.input * row["input"] + usage.output * row["output"] + usage.cache_read * row["cache_read"]
-            + usage.cache_write * row["cache_write"]) / 1_000_000
+    return None if row is None or usage is None else _usd(usage, row)
 
 
 _CATALOG_PRICES: dict[str, Optional[dict[str, float]]] = {}
@@ -266,10 +279,7 @@ def catalog_prices(model_id: str) -> Optional[dict[str, float]]:
 
 def _catalog_usd(usage: Any, model_id: str) -> Optional[float]:
     row = catalog_prices(model_id) if usage is not None and model_id else None
-    if row is None:
-        return None
-    return (usage.input * row["input"] + usage.output * row["output"] + usage.cache_read * row["cache_read"]
-            + usage.cache_write * row["cache_write"]) / 1_000_000
+    return None if row is None else _usd(usage, row)
 
 
 def _list_price(usage: Any, model_id: str, route: str, gateway: Optional[float],

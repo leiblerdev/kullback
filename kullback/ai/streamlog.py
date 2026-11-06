@@ -7,13 +7,18 @@ wall time, the HTTP requests of every post and the error, if any. A stream the c
 The check is the handle's own check_reply, run as soon as the answer names a model: at the headers where the gateway
 sends them, else at the first chunk that says, before any of that chunk's output is passed on. A stream that never
 names one is not refused. A refusal ends the stream with an error event, the way a stream reports every failure.
+
+The row is built on a worker thread: it can wait on the gateway's price table and writes a file, and the event loop
+never waits for either. With logging off there is no row, so no price is read.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, AsyncIterator, Optional
 
+from kullback.ai import calllog
 from kullback.ai._provider_events import (
     ProviderErrorEvent,
     ProviderEvent,
@@ -61,8 +66,8 @@ class _Watch:
         elif isinstance(event, ProviderResponseEnd):
             self.ended, self.usage = True, event.message.usage
 
-    def finish(self) -> None:
-        """The row, exactly once. The log never fails the call it logs."""
+    def finish(self, ended: float) -> None:
+        """The row, exactly once, of a stream over at `ended`. The log never fails the call it logs."""
         usage = self.usage if self.usage is not None else getattr(self.facts.parser, "_usage", None)
         error = self.error if self.ended or self.error else CLOSED_EARLY
         try:
@@ -70,7 +75,7 @@ class _Watch:
         except Exception:  # noqa: BLE001
             meta = {}
         meta.pop("warmup_wait_ms", None)  # that thread-local belongs to the last blocking call
-        wall_ms = (time.monotonic() - self.started) * 1000.0
+        wall_ms = (ended - self.started) * 1000.0
         self.handle._log(self.wire, self.tools, _reported(usage), max(1, self.facts.posts), wall_ms, error, meta)
 
 
@@ -98,7 +103,10 @@ async def logged_stream(handle: Any, events: AsyncIterator[ProviderEvent], wire:
         watch.error = f"{type(error).__name__}: {str(error)[:ERROR_CHARS]}"
         raise
     finally:
-        watch.finish()
-        closer = getattr(events, "aclose", None)
-        if closer is not None:
-            await closer()
+        try:
+            if calllog.enabled():
+                await asyncio.to_thread(watch.finish, time.monotonic())  # a cancel here leaves the thread to finish it
+        finally:
+            closer = getattr(events, "aclose", None)
+            if closer is not None:
+                await closer()

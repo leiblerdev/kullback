@@ -257,6 +257,22 @@ def test_a_paid_call_no_other_source_prices_is_priced_from_the_catalog_and_flagg
     assert (out["usd_gateway"], out["usd_actual"], out["price_source"]) == (4.5, 4.5, "catalog")
 
 
+def test_one_hour_cache_writes_are_priced_apart_from_five_minute_writes_as_the_budget_prices_them(tmp_path):
+    from kullback.runner import budget
+
+    _snapshot(tmp_path, {"model-a": {"cost": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75}}})
+    usage = Usage(cache_write=1_000_000, cache_write_1h=400_000)
+    out = calls.dollars(usage, "vendor/model-a", "vendor", 0.0, None)
+    assert (out["usd_actual"], out["price_source"]) == (pytest.approx(600_000 * 3.75 / 1e6 + 400_000 * 6.0 / 1e6), "catalog")
+    assert out["usd_actual"] == pytest.approx(budget._write_cost(usage, calls.catalog_prices("vendor/model-a")) / 1e6)
+
+
+def test_one_hour_cache_writes_on_a_local_priced_route_are_priced_at_the_one_hour_rate():
+    usage = Usage(cache_write=1_000_000, cache_write_1h=1_000_000)
+    out = calls.dollars(usage, "bedrock/us.anthropic.claude-opus-5-5", "bedrock", None, None)
+    assert (out["usd_actual"], out["price_source"]) == (pytest.approx(8.8), "local")
+
+
 def test_a_paid_call_nothing_prices_has_a_null_cost_and_the_rollup_counts_it_as_unknown(tmp_path):
     _snapshot(tmp_path, {"model-a": {"cost": {"input": 3.0, "output": 15.0}}})
     out = calls.dollars(Usage(input=10, output=1), "vendor/nowhere", "vendor", 0.0, None)
