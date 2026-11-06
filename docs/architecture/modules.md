@@ -11,9 +11,6 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `claims.py` | What a Run's transcript claims it did, against what its state actually received (D223). |
 | `cli.py` | The Typer app behind the `kullback` command; each subcommand imports its module only when it runs. |
 | `consistency.py` | Shrinks a failing call sequence to its shortest failing subsequence, for the laws checker. |
-| `container_cheats.py` | Cheat suite and birth scan for container Tasks. |
-| `container_grader.py` | Grade an exported end state inside a fresh, locked-down container. |
-| `container_world.py` | Disposable container backend: run commands in a fresh container per world. |
 | `curriculum.py` | Shared curriculum records and counting rules for the training agent. |
 | `derive.py` | Derive one Task's Verifier from its Reference and k re-runs read off disk (D42, D43, D91). |
 | `difficulty.py` | Every Task's objective difficulty, and the buckets a round reports trusted coverage over (D209). |
@@ -23,8 +20,6 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `processes.py` | A process pool for independent CPU-bound work, the trust ruling's Tasks and a Harbor export's (D401). |
 | `round_snapshot.py` | One round, one Task table, written once and never rewritten (D218). |
 | `sampling.py` | One keyed draw for every sample the harness takes per Task or per Run (D212). |
-| `store_specs.py` | Every single-file workdir artifact the package writes today, declared once (D267, registry step only). |
-| `store.py` | `WorkdirStore`: the durable, locked read and write of a declared workdir artifact. |
 | `synthesise.py` | Synthetic Tasks: a walk over the mined graph, run in the rebuilt world, derived and reported apart (D224). |
 | `variants.py` | Second paths synthesised from a Run's own calls, code only (D199). |
 
@@ -50,7 +45,6 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `agent/skills.py` | Skills: texts that teach one way of working, put in front of the model as prompt sections. |
 | `agent/tool_history.py` | Provider-safe repair of a transcript whose tool calls and results do not line up. |
 | `agent/tools.py` | Tools the loop can call: pydantic arguments in, pydantic result out, validated on both sides. |
-| `agent/types.py` | The JSON-like aliases tool arguments, tool results and event payloads are written in. |
 | `agent/web_tools.py` | Web search and page reading as agent tools, the same two for every role (D377). |
 
 ### kullback/ai
@@ -62,7 +56,10 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `ai/_sse.py` | The streaming POST every adapter shares: retry, cancel, and one SSE line at a time. |
 | `ai/anthropic.py` | Anthropic's Messages API, streamed. |
 | `ai/cache.py` | Prompt caching, written once for every adapter: the request fingerprint, the TTL, the break points. |
+| `ai/calllog.py` | The call log: one JSONL row per live model call, written by the provider layer for any code that calls a model. |
+| `ai/callrollup.py` | The rollup of a call log: a calls.jsonl read back and added up per stage, per step and in total. |
 | `ai/events.py` | The canonical events one assistant message is streamed as, whoever produced it. |
+| `ai/google_interactions.py` | Google's Interactions API, streamed. |
 | `ai/http_errors.py` | The errors a provider answers with, and the safe detail a message may carry. |
 | `ai/http.py` | The HTTP plumbing every adapter shares: the read budget, the client, and what one post carries. |
 | `ai/limits.py` | One rate limiter per provider key, shared by every caller on that key. |
@@ -75,9 +72,12 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `ai/replay.py` | The replay seam: a stored reply answered through the same contract a live endpoint answers. |
 | `ai/retry.py` | When a failed provider call is tried again, and how long the caller waits first. |
 | `ai/sigv4.py` | AWS Signature Version 4 for one HTTP request, from the standard library alone. |
+| `ai/stablejson.py` | Deterministic JSON text for model prompts: sorted keys, fixed separators, so equal content is byte-identical. |
 | `ai/stream.py` | One assistant message as canonical events, from a provider stream or from a whole reply. |
+| `ai/streamlog.py` | One call-log row for each streamed call, and the gateway's model check, so a stage cannot forget either. |
 | `ai/tool_call_ids.py` | Tool call ids a provider will accept, without letting two distinct ids become one. |
 | `ai/usage.py` | The token count one model call returns, the one record the provider layer owns. |
+| `ai/warmup.py` | Warm before fan-out: of several calls that share a long prompt prefix, one goes first and the rest wait for it. |
 
 ### kullback/builder
 
@@ -104,7 +104,6 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `builder/sandbox.py` | Runs a generated tool body only in a subprocess, and the five gates that check it before it is trusted. |
 | `builder/search.py` | Web search and page fetch for the Builder (D115). |
 | `builder/session.py` | The autonomous Builder as an extension on the core. |
-| `builder/skills.py` | Phase 6 skills: the stage prompts the model may rewrite, versioned by content hash (D130). |
 | `builder/sources/__init__.py` | One intake seam: every trace format enters through a registered adapter. |
 | `builder/sources/claude_code_jsonl.py` | The Claude Code JSONL adapter: one session transcript mapped to one Trace. |
 | `builder/sources/otel_genai.py` | The OpenTelemetry GenAI adapter: model-call and tool-execution spans mapped to a Trace. |
@@ -113,7 +112,6 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `builder/synth.py` | Grow the Starting state past the ids the traces named (D40, D107). |
 | `builder/templates.py` | The reader a homed prose result never got, aligned out of the tool's own recorded results. |
 | `builder/tool_effects.py` | The build's tool effects and call signatures, learned once and stored for the Spec stage (spec/effects.py). |
-| `builder/user_sim.py` | The rule-driven Simulated user, which now lives in `kullback.user.rules` (D214). |
 | `builder/vocabulary.py` | The facts a customer's users state and the words agents ask for them with (D115). |
 | `builder/world_tools.py` | The Builder's first pass as two tools: ingest and derive_world (stream 5a). |
 
@@ -126,10 +124,8 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `examiner/domain_tools.py` | The Examiner's domain tools over its root: the ruling tools, finding, no_finding, check_reference. |
 | `examiner/exam_files.py` | The Examiner's root under the workdir: what the model session may read (D123). |
 | `examiner/findings.py` | The findings the round's records file by themselves, before a model chooses what to say (D170). |
-| `examiner/goal.py` | The Examiner's own expected end state for one Task (the goal), from other evidence than the writer. |
 | `examiner/judge.py` | The reference judge as an agent with a bounded look, and the one-shot judge as its fallback (D12, D92). |
 | `examiner/lifecycle.py` | When a derived artefact stops being live: its source was withdrawn (D208). |
-| `examiner/must_not.py` | Re-exports `kullback.spec.must_not`. |
 | `examiner/plan.py` | The Examiner's plan: what one session over one workdir is given, and the store its gates rule over. |
 | `examiner/prompt.py` | The Examiner's prompt in GEPA order: receives, tools, examples, choice, feedback, stop (D320, D331). |
 | `examiner/reference_check.py` | Is the Task's Reference right? A view the Examiner judges, and the move that acts when it is not. |
@@ -164,7 +160,7 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | Module | What it does |
 |---|---|
 | `hub/__init__.py` | Publishing an Environment: the package a build leaves, its card, and the fetch that brings it back (D221). |
-| `hub/card.py` | The cards: one per Environment, one for the organisation, and the template that documents both (D221). |
+| `hub/card.py` | The card of one Environment, rendered from its manifest (D221). |
 | `hub/client.py` | The whole surface a dataset host is spoken to through, and the one adapter that speaks it (D221). |
 | `hub/harbor_world.py` | One Kullback Task as it runs inside a Harbor container: the tools, the call log, the Verifier (D363). |
 | `hub/harbor.py` | An Environment as a Harbor dataset: one Harbor task directory per Kullback Task (D363). |
@@ -264,7 +260,6 @@ owns and how they connect is on [the architecture page](../architecture.md).
 | `spec/text.py` | The word-level text rules the Builder and the Spec both read (moved from builder/cluster.py and intent.py). |
 | `spec/trust.py` | Trust on the Spec's Verifier: constructed Runs fail and no ruling is open, by code (D333). |
 | `spec/ungated.py` | Every write a born Task's scenario end names is gated by a differing cell, on every named column (D419). |
-| `spec/witness.py` | The Task's Reference as a witness Run, for the reference_passes flag only; the writer never reads it. |
 | `spec/writer_tools.py` | The writer's only tools: world search, the policy, and the one tool that adds items; the bounded session. |
 | `spec/writer.py` | The Verifier writer: items from the Intent, the policy and the world, never from a Reference. |
 
