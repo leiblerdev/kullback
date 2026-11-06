@@ -1,7 +1,7 @@
 # Decisions
 
 The decisions that govern the harness now, one entry each, by area; retired numbers are indexed at the end so citations resolve.
-A decision changes by a new D number: the old entry moves to Retired with "superseded by D<n>"; numbers are never reused; next free: D442.
+A decision changes by a new D number: the old entry moves to Retired with "superseded by D<n>"; numbers are never reused; next free: D443.
 The full history is docs/decision-log.md in git, last held at commit 8c6a2d00cf7a407f65b770a0fed1fcfb4eb8b646.
 
 ## World and builder
@@ -1251,6 +1251,12 @@ gate values and recording-only transfer gates, which D387 replaces. Where: docs 
 
 D391 (2026-10-17). The 100 again and the 253 on the gate and stray head held every bar but the stray filter; nearly every no_base Task left by D387
 sits on gated whole-field lists. Where: docs only.
+
+D442 (2026-11-06). Code with no live caller is cut from the public repo, with tests whose only subject it was; every `kullback` command stays and
+behaviour does not change: agent/types.py, the examiner must_not shim, builder/skills.py, builder/user_sim.py, the workdir store (store.py,
+store_specs.py), the container world, grader and cheat suite, examiner/goal.py, spec/witness.py, the organisation card, unused helpers, unused scripts.
+This overrides D334's "kept on purpose" for builder/skills.py and the container world and cheat suite. Rows naming those files, D402's organisation card
+among them, are read through git history. builder/policy.py, builder/parallel.py and builder/vocabulary.py stay. Where: docs only.
 
 ## Retired
 
