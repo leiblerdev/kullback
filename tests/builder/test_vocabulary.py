@@ -6,9 +6,9 @@ import re
 
 from kullback.ai.provider import TestModel
 from kullback.builder import vocabulary as vb
-from kullback.builder.search import TestSearch as ScriptedSearch
 from kullback.runner.records import EntitySchema, RawPtr, ToolCall, ToolSig, Trace, Turn
 from kullback.user.rules import asked_fields, extracted_values
+from tests.builder.search_double import ScriptedSearch
 
 
 def _ptr(i: int) -> RawPtr:

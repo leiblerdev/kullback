@@ -1,4 +1,4 @@
-"""The scenario layer's seam onto the harness's one web reader (D374, D377), on builder.search.TestSearch only."""
+"""The scenario layer's seam onto the harness's one web reader (D374, D377), on the scripted search double only."""
 
 from __future__ import annotations
 
