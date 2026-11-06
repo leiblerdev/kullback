@@ -994,12 +994,3 @@ def ask_confirm(workdir: Path, task_id: str, model: Any, ceiling_usd: Optional[f
     added = [check for check in after.checks if check.id not in held and check.demand.get("kind") == "before"
              and check.demand.get("first") == I.CONFIRM_TURN]
     return {"asked": True, "added": len(added)}
-
-
-def spoken_intent(task_id: str, text: str) -> SpecIntent:
-    """Spoken user text as one volunteered fact per sentence: the stand-in until a mined Intent exists."""
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", text or "") if s.strip()]
-    facts = [IntentFact(id=f"f{n}", text=s, stance="volunteered", source=FactSource(recording="spoken", turn=0))
-             for n, s in enumerate(sentences)]
-    return SpecIntent(task_id=task_id, facts=facts, text=intent_text(facts))
-
