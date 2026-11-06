@@ -56,7 +56,9 @@ def write_task(task: dict, root: Path, shared: dict, head: str) -> None:
     write(world / "secret", task["secret"])
     write(root / "instruction.md", head + task["instruction"])
     write(root / "task.toml", task["task_toml"])
-    write(root / "tests" / "grade.json", dump({**shared, **task["grade"]}))
+    grade = dump({**shared, **task["grade"]})
+    write(world / "grade.json", grade)
+    write(root / "tests" / "grade.json", grade)
     write(root / "solution" / "walk.json", dump(task["walk"]))
     for name, walk in task["alts"].items():
         write(root / "solution" / "alts" / name, dump(walk))

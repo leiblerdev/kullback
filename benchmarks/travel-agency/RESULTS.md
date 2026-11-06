@@ -14,7 +14,7 @@ which gates nothing (the grade lists it as attempted).
 - Null run (no calls) at 0.0: 65 of 65.
 - Trap walks below 1.0: 263 of 263.
 - MCP door (first task, over stdio against the host server): 3 answers to 3 requests; protocol 2025-06-18; 52 tools listed; an unknown tool answers isError=True.
-- Size of harbor/ on disk: 95.3 MB (file bytes).
+- Size of harbor/ on disk: 125.1 MB (file bytes).
 
 | Task | Oracle | Null | Traps: reward (caught by) | harbor loads |
 |---|---|---|---|---|

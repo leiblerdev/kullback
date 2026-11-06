@@ -13,8 +13,11 @@ The tasks share one environment, so it is kept once:
 
 ```bash
 python export.py --out harbor
+export KULLBACK_JUDGE_MODEL=anthropic/claude-opus-5-5 ANTHROPIC_API_KEY=sk-ant-...
 harbor run -p harbor -a oracle -n 4
 ```
+
+A full score needs the judge model; [card.md](card.md#quick-start) says what you can check without one.
 
 The same tasks, already exported, are on Hugging Face as
 [leibler/travel-agency](https://huggingface.co/datasets/leibler/travel-agency).

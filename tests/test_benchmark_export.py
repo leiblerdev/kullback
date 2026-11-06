@@ -15,6 +15,7 @@ HARBOR_FILES = (
     "environment/docker-compose.yaml",
     "environment/runtime.py",
     "environment/world/db.json",
+    "environment/world/grade.json",
     "environment/world/overlay.json",
     "environment/world/secret",
     "environment/world/toolkit.src",
@@ -58,3 +59,14 @@ def test_exported_grade_holds_the_shared_guards_and_the_tasks_own_end_state(expo
     grade = json.loads((out / source.stem / "tests" / "grade.json").read_text(encoding="utf-8"))
     assert grade["expected_diff"] == task["grade"]["expected_diff"]
     assert len(grade["code_guards"]) == 104
+
+
+def test_the_served_grade_file_equals_the_verifiers(export):
+    out, _ = export
+    tasks = sorted(path.stem for path in (BENCHMARK / "tasks").glob("*.json"))
+    differ = [
+        task
+        for task in tasks
+        if (out / task / "environment/world/grade.json").read_bytes() != (out / task / "tests/grade.json").read_bytes()
+    ]
+    assert differ == []
