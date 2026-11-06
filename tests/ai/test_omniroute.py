@@ -308,3 +308,74 @@ def test_a_route_that_caches_by_key_gets_one_constant_key_per_stage_in_body_and_
     model.query([{"role": "user", "content": "hi"}], config=ModelConfig(temperature=1.0))
     assert seen[0] == seen[1] and seen[0][0] == seen[0][1] and seen[0][0] and seen[2][0] != seen[0][0]
     assert "prompt_cache_key" not in _body("cu/model-a", LOOP)
+
+
+UNPRICED = {k: v for k, v in ANSWERED.items() if "Cost" not in k}
+
+
+def _priced_by(on_table, headers=None):
+    """A routed model that answers with REPLY under `headers` and reads its pricing table through on_table."""
+    def handler(request):
+        if request.url.path.endswith("/api/pricing"):
+            return on_table(request)
+        return httpx.Response(200, json=REPLY, headers=headers or UNPRICED)
+
+    pv._PRICING.clear()
+    return _routed_model(handler)
+
+
+def _broken_table(request):
+    raise RuntimeError("the table cannot be read")
+
+
+@pytest.mark.parametrize("rate", ["call us", {"per": "token"}, ["2.0"], "nan", "inf"])
+def test_a_rate_that_is_not_a_finite_number_makes_the_whole_row_unpriced(rate):
+    usage = Usage(input=10, output=10, cache_read=10, cache_write=10)
+    for key in ("input", "cached", "cache_creation", "output"):
+        row = {"input": 2.0, "cached": 0.1, "cache_creation": 2.5, "output": 10.0, key: rate}
+        assert pv.pricing_usd({"route-a": {"model-a": row}}, "route-a/model-a", usage) is None
+
+
+def test_rates_written_as_numeric_text_or_left_empty_still_price_the_usage():
+    row = {"input": "2.0", "cached": None, "output": "10"}
+    usage = Usage(input=1000000, output=1000000, cache_read=1000000, cache_write=0)
+    assert pv.pricing_usd({"route-a": {"model-a": row}}, "route-a/model-a", usage) == 12.0
+
+
+def test_a_paid_answer_survives_a_bad_rate_in_the_price_table_and_its_row_keeps_everything_but_the_price(tmp_path):
+    def handler(request):
+        if request.url.path.endswith("/api/pricing"):
+            return httpx.Response(200, json={"route-a": {"model-a": {"input": "call us", "output": 10.0}}})
+        return httpx.Response(200, json=dict(REPLY, model="model-a"), headers={
+            "X-OmniRoute-Provider": "route-a", "X-OmniRoute-Model": "model-a", "x-correlation-id": "req-7"})
+
+    pv._PRICING.clear()
+    pv.enable_live_calls_from_env({pv.LIVE_ENV_VAR: "1"})
+    model = pv.model_for("route-a/model-a", env=ROUTED, client=httpx.Client(transport=httpx.MockTransport(handler)),
+                         sleep=lambda _s: None, rng=random.Random(0))
+    calls.begin(tmp_path, "s")
+    reply = model.query([{"role": "user", "content": "hi"}])
+    assert reply.content == REPLY["choices"][0]["message"]["content"]
+    (row,) = calls.read(tmp_path)
+    assert (row["usd_gateway"], row["usd_actual"], row["price_source"]) == (None, None, None)
+    assert row["request_id"] == "req-7" and row.get("error") is None
+    pv._PRICING.clear()
+
+
+def test_a_paid_answer_survives_any_error_while_building_its_log_row_and_the_row_is_still_written(tmp_path):
+    calls.begin(tmp_path, "s")
+    reply = _priced_by(_broken_table).query([{"role": "user", "content": "hi"}])
+    assert reply.content == REPLY["choices"][0]["message"]["content"]
+    (row,) = calls.read(tmp_path)
+    assert row["cache_read"] == 2951 and row.get("error") is None
+    pv._PRICING.clear()
+
+
+def test_a_refused_answer_raises_its_own_error_when_building_its_log_row_also_fails(tmp_path):
+    calls.begin(tmp_path, "s")
+    headers = dict(UNPRICED, **{"X-OmniRoute-Model": "another-model"})
+    with pytest.raises(pv.ModelMismatch, match="not the model asked"):
+        _priced_by(_broken_table, headers).query([{"role": "user", "content": "hi"}])
+    (row,) = calls.read(tmp_path)
+    assert row["error"].startswith("ModelMismatch") and row["cache_read"] == 2951
+    pv._PRICING.clear()

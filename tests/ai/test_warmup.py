@@ -206,3 +206,68 @@ def test_a_failed_first_call_raises_and_one_waiter_becomes_the_first_instead_of_
     assert ("raised", "failing", "boom") in log
     starts = [e[1] for e in log if e[0] == "start" and e[1] != "failing"]
     assert log.index(("end", starts[0])) < log.index(("start", starts[1]))
+
+
+def test_a_finished_prefix_past_its_lifetime_leaves_the_gate_at_the_next_call():
+    clock = _Clock()
+    gate = warmup.Gate(clock=clock)
+    with gate.first(["old"]):
+        pass
+    clock.now = warmup.TTL_S * 2 + 1
+    with gate.first(["new"]):
+        pass
+    assert set(gate.entries) == {"new"}
+
+
+def test_a_finished_prefix_still_within_its_lifetime_stays_warm_through_a_sweep():
+    clock = _Clock()
+    gate = warmup.Gate(clock=clock)
+    clock.now = warmup.TTL_S
+    with gate.first(["warm"]):
+        pass
+    clock.now = warmup.TTL_S + warmup.TTL_S / 2
+    with gate.first(["new"]):
+        pass
+    assert set(gate.entries) == {"warm", "new"}
+    before = dict(gate.entries)
+    with gate.first(["warm"]):
+        pass
+    assert gate.entries == before
+
+
+def test_a_first_call_running_past_the_lifetime_is_never_swept_and_its_waiter_still_waits_for_it():
+    clock = _Clock()
+    gate, log, hold = warmup.Gate(clock=clock), [], threading.Event()
+    with gate.first(["slow"]):
+        clock.now = warmup.TTL_S * 3
+        with gate.first(["other"]):
+            pass
+        assert "slow" in gate.entries
+        waiter = _start(gate, ["slow"], "waiter", log, hold)
+        _until(lambda: gate.waited == 1)
+        assert log == []
+    _until(lambda: ("start", "waiter") in log)
+    hold.set()
+    _join(waiter)
+
+
+def test_expired_prefixes_wait_for_the_next_sweep_which_comes_at_most_once_per_lifetime():
+    clock = _Clock()
+    gate = warmup.Gate(clock=clock)
+    with gate.first(["early"]):
+        pass
+    clock.now = 2.0
+    with gate.first(["late"]):
+        pass
+    clock.now = warmup.TTL_S + 1.0  # a sweep: "early" is past its lifetime, "late" is not yet
+    with gate.first(["a"]):
+        pass
+    assert set(gate.entries) == {"late", "a"}
+    clock.now = warmup.TTL_S + 5.0  # "late" is past its lifetime now, but the last sweep was moments ago
+    with gate.first(["b"]):
+        pass
+    assert set(gate.entries) == {"late", "a", "b"}
+    clock.now = warmup.TTL_S * 2 + 1.0
+    with gate.first(["c"]):
+        pass
+    assert set(gate.entries) == {"a", "b", "c"}

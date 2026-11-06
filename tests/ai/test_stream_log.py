@@ -403,3 +403,14 @@ def test_a_row_whose_stage_ended_before_the_worker_began_still_gets_its_price(tm
     (row,) = calls.read(tmp_path)
     assert row["usd_actual"] == pytest.approx((600 * 2.0 + 400 * 0.1 + 100 * 10.0) / 1e6)
     assert row["price_source"] == "pricing"
+
+
+def test_a_streamed_answer_survives_any_error_while_building_its_log_row_and_the_row_is_still_written(tmp_path):
+    def broken_table():
+        raise RuntimeError("the table cannot be read")
+
+    calls.begin(tmp_path, "s")
+    events = _turn(_provider(lambda r: httpx.Response(200, content=_answer()), on_price_read=broken_table))
+    assert isinstance(events[-1], StreamDone)
+    (row,) = calls.read(tmp_path)
+    assert row["cache_read"] == 400 and row.get("error") is None

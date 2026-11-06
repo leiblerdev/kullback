@@ -78,11 +78,21 @@ class Gate:
     def __init__(self, clock=time.monotonic) -> None:
         self.lock, self.entries, self.clock = threading.Lock(), {}, clock
         self.waited = 0  # calls that waited for a first call (for tests and reports)
+        self.swept_at = clock()
+
+    def _sweep(self, now: float) -> None:
+        """Drop finished entries past TTL_S, at most once per TTL_S so a call does not scan the gate each time (the
+        caller holds the lock). A prefix leaves within two lifetimes of finishing; one still warming always stays."""
+        if now - self.swept_at < TTL_S:
+            return
+        self.swept_at = now
+        self.entries = {k: e for k, e in self.entries.items() if not e.done.is_set() or now - e.at <= TTL_S}
 
     def _claim(self, keys: list[str]) -> tuple[Optional[_Entry], Optional[_Entry]]:
         """(the warming entry to wait for, or None) and (this call's own entry, when it goes first on cold prefixes)."""
         now = self.clock()
         with self.lock:
+            self._sweep(now)
             found = -1
             for index in range(len(keys) - 1, -1, -1):  # the longest live prefix decides
                 entry = self.entries.get(keys[index])

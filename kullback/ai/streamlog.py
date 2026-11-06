@@ -74,10 +74,7 @@ class _Watch:
         usage = self.usage if self.usage is not None else getattr(self.facts.parser, "_usage", None)
         error = self.error if self.ended or self.error else CLOSED_EARLY
         with calllog.pinned(call):
-            try:
-                meta = self.handle._meta(self.posted(), self.facts.body, self.config, self.facts.failed)
-            except Exception:  # noqa: BLE001
-                meta = {}
+            meta = self.handle._row_meta(self.posted(), self.facts.body, self.config, self.facts.failed)
             meta.pop("warmup_wait_ms", None)  # that thread-local belongs to the last blocking call
             self.handle._log(self.wire, self.tools, _reported(usage), max(1, self.facts.posts),
                              (ended - self.started) * 1000.0, error, meta, (self.sent_at, finished_at))

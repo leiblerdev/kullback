@@ -24,6 +24,7 @@ import copy
 import functools
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -885,12 +886,19 @@ class HttpModel(Model):
             times = (sent_at, time.time())  # the meta below can wait on the price table
             self._log(messages, tools, reply.usage if reply is not None else None, attempts,
                       (time.monotonic() - started) * 1000.0, f"{type(error).__name__}: {str(error)[:200]}",
-                      self._meta(posted, body, config, retried), times)
+                      self._row_meta(posted, body, config, retried), times)
             raise
         reply.exchange = self.exchange_of(body, posted, wall_ms)
         self._log(messages, tools, reply.usage, posted.attempts, wall_ms, None,
-                  self._meta(posted, body, config, retried), (sent_at, finished_at))
+                  self._row_meta(posted, body, config, retried), (sent_at, finished_at))
         return reply
+
+    def _row_meta(self, posted: Optional[Posted], body: dict, config: ModelConfig, retried: list) -> dict:
+        """The row's extras, or none when they cannot be built: the log never costs a call its answer or its error."""
+        try:
+            return self._meta(posted, body, config, retried)
+        except Exception:  # noqa: BLE001
+            return {}
 
     def _meta(self, posted: Optional[Posted], body: dict, config: ModelConfig, retried: list) -> dict:
         """The row's extras: the temperature the body carried and the effort asked (what was sent, which a gateway
@@ -1617,14 +1625,18 @@ _PRICING_LOCK = threading.Lock()
 
 def pricing_usd(table: dict, wire_id: str, usage: Any) -> Optional[float]:
     """The usage priced from the gateway's pricing table (USD per 1M tokens; reasoning is inside output), or None
-    when the table has no row for the route and model."""
+    when the table has no row for the route and model or a rate in the row is not a finite number."""
     route, _, model = wire_id.partition("/")
     row = (table.get(route) or {}).get(model) if isinstance(table, dict) else None
     if not isinstance(row, dict) or usage is None:
         return None
     rate = lambda key, default=0.0: float(row.get(key, default) or 0.0)  # noqa: E731
-    return (usage.input * rate("input") + usage.cache_read * rate("cached", row.get("input", 0))
-            + usage.cache_write * rate("cache_creation", row.get("input", 0)) + usage.output * rate("output")) / 1e6
+    try:
+        usd = (usage.input * rate("input") + usage.cache_read * rate("cached", row.get("input", 0))
+               + usage.cache_write * rate("cache_creation", row.get("input", 0)) + usage.output * rate("output")) / 1e6
+    except (TypeError, ValueError):
+        return None
+    return usd if math.isfinite(usd) else None
 
 
 def _route(wire_id: str) -> str:
