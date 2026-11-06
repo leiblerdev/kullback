@@ -5,7 +5,7 @@ One model session reads the Intent facts, the policy, the tool list and, through
 (spec/items.py: state, event, text and judge items), each with gate, weight and provenance (the Intent
 facts it answers or a verbatim policy line). It never sees a Run, a Reference, a Verifier or an End
 state: the inputs come from the Environment's own files and `writer_tools.refuse_run_inputs` refuses
-anything else. Nothing here reads the Reference index (spec/witness.py does, for the witness flag).
+anything else. Nothing here reads the Reference index.
 
 Code decides what stands, in the tool: an item naming a value no world row, policy line or user turn
 holds is refused with the reason, as is an item with no provenance or resting on unwitnessed facts
